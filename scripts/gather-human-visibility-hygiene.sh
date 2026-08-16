@@ -11,13 +11,16 @@
 # array holding at most one candidate: the violations that are still true
 # right now, re-verified live rather than trusted from the log alone.
 #
-# Usage: gather-human-visibility-hygiene.sh <owner/repo> [violations-json] [pr-label]
-#
-# `violations-json` (default `[]`) is an array of
+# Usage: gather-human-visibility-hygiene.sh <owner/repo> [pr-label]
+# Stdin: violations-json — an array of
 #   {"repo": "owner/repo", "pr_url": "…" | "", "detail": "…", "ts": "…"}
 # — `pr_url` is "" for a repo-level (listing) violation. Entries for a
 # different repo are ignored, so a caller may hand this the whole fleet-wide
-# array without filtering first.
+# array without filtering first. Unreadable or non-array stdin (or none) is
+# treated as `[]`, delivered on stdin — never argv — because it is unbounded
+# past this call and a shell script's own CLI invocation is subject to
+# `MAX_ARG_STRLEN` exactly as `jq --argjson` is (requirement 4g;
+# tech-debt/TD-PPagop-26081502.md).
 #
 # Candidate shape — its own source (issue #284's decision 2), not a
 # register-hygiene ref-prefix split: a violation here means finished work is
@@ -197,12 +200,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$SCRIPT_DIR/lib/pipeline-marker.sh"
 
 slug="${1:-}"
-violations_json="${2:-[]}"
-pr_label="${3:-autonomous-agent}"
+pr_label="${2:-autonomous-agent}"
 if [[ -z "$slug" ]]; then
-  echo "usage: gather-human-visibility-hygiene.sh <owner/repo> [violations-json] [pr-label]" >&2
+  echo "usage: gather-human-visibility-hygiene.sh <owner/repo> [pr-label]" >&2
   exit 64
 fi
+violations_json="$(cat)"
 jq -e 'type == "array"' <<<"$violations_json" >/dev/null 2>&1 || violations_json='[]'
 
 # _warning_class DETAIL

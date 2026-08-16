@@ -14,10 +14,19 @@
 #     interleaves must be dropped by the gatherer — requirement 16.4's
 #     deterministic half — while everything else arrives whole-thread, with
 #     its `Priority` band read exactly as the source-state digest reads it.
-#   - **Degrading.** An API failure must yield `[]` (exit 0) with the failure
-#     on stderr: the array is *given to* the Co-Ordinator, so an empty array
-#     is a faithful record of its input, and aborting the cycle would make
-#     cost control a reliability risk.
+#   - **The exclusion report.** Every issue the deterministic filter drops
+#     (never a pull request, which was never a candidate) must reappear in
+#     the sibling `excluded` array with its number and why — agent-ops#447:
+#     before this, a drop here left no trace anywhere a human or the
+#     dashboard could read.
+#   - **Degrading.** An API failure must yield `{"candidates":[],
+#     "excluded":null}` (exit 0) with the failure on stderr: the output is
+#     *given to* the Co-Ordinator, so an empty `candidates` is a faithful
+#     record of its input, and aborting the cycle would make cost control a
+#     reliability risk. `excluded` degrades to `null`, not `[]` — the
+#     deterministic filter did not run to completion, so the exclusion set
+#     is unknown, not known-empty (review decision on agent-ops#452
+#     concern 3).
 #   - **The fingerprint.** An *edit* to an existing comment moves no field the
 #     issues digest samples — not even `updated_at`, which GitHub moves for
 #     new comments but not edits — while the Co-Ordinator reads the thread
@@ -137,19 +146,31 @@ cat >"$STUB_COMMENTS_DIR/5.json" <<'EOF'
 EOF
 
 issues_json="$("$SCRIPT_DIR/scripts/gather-issues.sh" o/r)"
+candidates_json="$(jq -c '.candidates' <<<"$issues_json")"
+excluded_json="$(jq -c '.excluded' <<<"$issues_json")"
 
 # --- The filter: what arrives, and what never does ---
 assert_eq "exactly the two clean issues arrive" \
-  "2" "$(jq 'length' <<<"$issues_json")"
+  "2" "$(jq 'length' <<<"$candidates_json")"
 assert_eq "the assigned issue is dropped" \
-  "false" "$(jq 'any(.[]; .number == 6)' <<<"$issues_json")"
+  "false" "$(jq 'any(.[]; .number == 6)' <<<"$candidates_json")"
 assert_eq "the Blocked-labelled issue is dropped, case notwithstanding" \
-  "false" "$(jq 'any(.[]; .number == 7)' <<<"$issues_json")"
+  "false" "$(jq 'any(.[]; .number == 7)' <<<"$candidates_json")"
 assert_eq "the pull request is dropped" \
-  "false" "$(jq 'any(.[]; .number == 8)' <<<"$issues_json")"
+  "false" "$(jq 'any(.[]; .number == 8)' <<<"$candidates_json")"
+
+# --- The exclusion report: what was dropped, and why (agent-ops#447) ---
+assert_eq "exactly the two deterministic drops are reported" \
+  "2" "$(jq 'length' <<<"$excluded_json")"
+assert_eq "the assigned issue is reported, tagged assigned" \
+  '{"number":6,"reason":"assigned"}' "$(jq -c '.[] | select(.number == 6)' <<<"$excluded_json")"
+assert_eq "the Blocked-labelled issue is reported, tagged blocked-label" \
+  '{"number":7,"reason":"blocked-label"}' "$(jq -c '.[] | select(.number == 7)' <<<"$excluded_json")"
+assert_eq "the pull request is never reported as excluded" \
+  "false" "$(jq 'any(.[]; .number == 8)' <<<"$excluded_json")"
 
 # --- The entry shape: everything the Co-Ordinator selects on ---
-entry5="$(jq -c '.[] | select(.number == 5)' <<<"$issues_json")"
+entry5="$(jq -c '.[] | select(.number == 5)' <<<"$candidates_json")"
 assert_eq "the entry's source is issues" "issues" "$(jq -r '.source' <<<"$entry5")"
 assert_eq "the ref is the bare issue number, as a string" "5" "$(jq -r '.ref' <<<"$entry5")"
 assert_eq "the Priority band arrives as priority" "High" "$(jq -r '.priority' <<<"$entry5")"
@@ -160,7 +181,7 @@ assert_eq "a comment keeps its author, timestamp and body" \
   '{"author":"reviewer","created_at":"2026-07-20T09:00:00Z","body":"Scope cut: skip the UI."}' \
   "$(jq -c '.comments[1]' <<<"$entry5")"
 
-entry9="$(jq -c '.[] | select(.number == 9)' <<<"$issues_json")"
+entry9="$(jq -c '.[] | select(.number == 9)' <<<"$candidates_json")"
 assert_eq "an untriaged issue defaults to Medium, not lowest" \
   "Medium" "$(jq -r '.priority' <<<"$entry9")"
 assert_eq "a commentless issue carries an empty comments array, not null" \
@@ -182,11 +203,11 @@ fp_input() {
      enabler_config: {}, enabler_prompt_sha: "cafebabe"}'
 }
 
-fp_before="$(fp_input "$issues_json" | noop_fingerprint)"
+fp_before="$(fp_input "$candidates_json" | noop_fingerprint)"
 assert_eq "the sample is fingerprintable" "64" "${#fp_before}"
 
 issues_edited="$(jq -c '(.[] | select(.number == 5) | .comments[1].body) = "Scope restored: include the UI."' \
-  <<<"$issues_json")"
+  <<<"$candidates_json")"
 fp_after="$(fp_input "$issues_edited" | noop_fingerprint)"
 if [[ "$fp_before" != "$fp_after" ]]; then
   printf 'ok   - %s\n' "editing a comment's text busts the no-op fingerprint"
@@ -196,10 +217,11 @@ else
   failures=$(( failures + 1 ))
 fi
 
-fp_same="$(fp_input "$issues_json" | noop_fingerprint)"
+fp_same="$(fp_input "$candidates_json" | noop_fingerprint)"
 assert_eq "an unchanged array fingerprints identically" "$fp_before" "$fp_same"
 
-# --- Degrading: a failing API yields [], exit 0, and says so on stderr ---
+# --- Degrading: a failing API yields the empty shape, exit 0, and says so
+#     on stderr ---
 cat >"$tmp_dir/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 echo "stub gh: HTTP 500" >&2
@@ -209,7 +231,10 @@ chmod +x "$tmp_dir/bin/gh"
 
 degraded="$("$SCRIPT_DIR/scripts/gather-issues.sh" o/r 2>"$tmp_dir/degrade.err")"
 degraded_rc=$?
-assert_eq "a failing API degrades to an empty array" "[]" "$degraded"
+assert_eq "a failing API degrades to an empty candidates array" \
+  "[]" "$(jq -c '.candidates' <<<"$degraded")"
+assert_eq "  ... and a null (unknown, not known-empty) excluded" \
+  "null" "$(jq -c '.excluded' <<<"$degraded")"
 assert_eq "and still exits 0" "0" "$degraded_rc"
 if [[ -s "$tmp_dir/degrade.err" ]]; then
   printf 'ok   - %s\n' "and the failure is loud on stderr"
@@ -272,16 +297,17 @@ printf '[{"user": {"login": "warwick"}, "created_at": "2026-07-19T10:00:00Z", "b
 
 oversized_out="$("$SCRIPT_DIR/scripts/gather-issues.sh" o/r 2>"$tmp_dir/oversized.err")"
 oversized_rc=$?
+oversized_candidates="$(jq -c '.candidates' <<<"$oversized_out")"
 assert_eq "an issue whose thread is past the argv cap still exits 0" "0" "$oversized_rc"
-assert_eq "  ... and still produces the entry" "1" "$(jq 'length' <<<"$oversized_out")"
-entry10_body="$(jq -r '.[0].comments[0].body // ""' <<<"$oversized_out")"
+assert_eq "  ... and still produces the entry" "1" "$(jq 'length' <<<"$oversized_candidates")"
+entry10_body="$(jq -r '.[0].comments[0].body // ""' <<<"$oversized_candidates")"
 # Bash string matching, not jq --arg with the oversized string: that would
 # hit the very argv cap this section exists to prove the real code no longer
 # does.
 assert_eq "  ... carrying the full oversized comment, not truncated or dropped" \
   "1" "$([[ "$entry10_body" == *"$oversized_comment_body"* ]] && echo 1 || echo 0)"
 assert_eq "  ... and the ref is still the bare issue number" \
-  "10" "$(jq -r '.[0].ref' <<<"$oversized_out")"
+  "10" "$(jq -r '.[0].ref' <<<"$oversized_candidates")"
 if [[ ! -s "$tmp_dir/oversized.err" ]]; then
   printf 'ok   - %s\n' "no stderr at all on the success path"
 else

@@ -997,6 +997,101 @@ assert_eq "  ... with no stage/cycle/event/unblock_condition surviving" \
   "$(jq '.blocked | any(has("stage") or has("cycle") or has("event") or has("unblock_condition"))' \
      <<<"$coordinator_input")"
 
+# --- latest_issues_excluded (requirement 33, review decisions on -------------
+# --- agent-ops#452 concerns 1 and 3) ------------------------------------------
+#
+# test/issues-excluded-wiring.test.sh already drives this function indirectly,
+# through agent-cycle.sh's on-change comparison; this pins the extractor
+# itself, the seam that comparison depends on. Lines are produced by the real
+# `log_event` (agent-cycle.sh), lifted whole the same way
+# test/log-event.test.sh does, rather than hand-written — a payload-shape
+# change in `log_event` would otherwise silently degrade on-change logging to
+# always-log without any test here noticing.
+
+cycle_log_event_src="$(awk '
+  /^log_event\(\) \{/ { on = 1 }
+  on                  { print }
+  on && /^}$/         { exit }
+' "$SCRIPT_DIR/agent-cycle.sh")"
+if [[ "$cycle_log_event_src" != *'--argjson fields'* ]]; then
+  printf 'FAIL - could not extract log_event from agent-cycle.sh (renamed or moved?)\n'
+  exit 1
+fi
+
+# emit_issues_excluded <log-file> <ts> <repo> <excluded-json> — append one
+# real issues-excluded event, via the real log_event, with a caller-chosen
+# timestamp so ordering can be asserted independently of file order.
+emit_issues_excluded() {
+  local log="$1" ts="$2" repo="$3" excluded="$4"
+  (
+    set -euo pipefail
+    # shellcheck disable=SC2034  # read by the eval'd log_event body.
+    cycle_id="test-cycle" node_name="test-node" log_file="$log"
+    eval "$cycle_log_event_src"
+    log_event "issues-excluded" "$(jq -nc --arg r "$repo" --argjson ex "$excluded" \
+      '{repo: $r, count: ($ex | length), excluded: $ex}')"
+    # log_event stamps its own `ts`; overwrite it with the caller's, the
+    # same way the file-order tests above need a controlled timestamp rather
+    # than whatever real time the write happened to land on.
+    sed -i "\$s/\"ts\":\"[^\"]*\"/\"ts\":\"$ts\"/" "$log"
+  )
+}
+
+issues_excluded_log="$tmp_dir/issues-excluded-log.jsonl"
+
+: > "$issues_excluded_log"
+assert_eq "missing log yields an empty map" "{}" \
+  "$(latest_issues_excluded "$tmp_dir/nonexistent.jsonl")"
+assert_eq "empty log yields an empty map" "{}" \
+  "$(latest_issues_excluded "$issues_excluded_log")"
+
+emit_issues_excluded "$issues_excluded_log" "2026-08-15T10:00:00Z" "o/r" \
+  '[{"number":125,"reason":"assigned"}]'
+assert_eq "a single event's excluded array is read back for its repo" \
+  '[{"number":125,"reason":"assigned"}]' \
+  "$(latest_issues_excluded "$issues_excluded_log" | jq -c '.["o/r"]')"
+
+# Latest-per-repo wins by ts, regardless of file order — the same convention
+# blocked_items' own "latest event wins regardless of file order" case above
+# asserts for that extractor.
+: > "$issues_excluded_log"
+emit_issues_excluded "$issues_excluded_log" "2026-08-15T10:00:00Z" "o/order" \
+  '[{"number":1,"reason":"assigned"}]'
+emit_issues_excluded "$issues_excluded_log" "2026-08-14T09:00:00Z" "o/order" \
+  '[{"number":2,"reason":"blocked-label"}]'
+assert_eq "the latest ts wins regardless of file order" \
+  '[{"number":1,"reason":"assigned"}]' \
+  "$(latest_issues_excluded "$issues_excluded_log" | jq -c '.["o/order"]')"
+
+# An event logged without an excluded field (should not arise from the real
+# caller, but the extractor must not crash on it) reads as [].
+: > "$issues_excluded_log"
+printf '{"ts":"2026-08-15T10:00:00Z","event":"issues-excluded","repo":"o/bare"}\n' \
+  >> "$issues_excluded_log"
+assert_eq "an event without excluded reads as an empty array" "[]" \
+  "$(latest_issues_excluded "$issues_excluded_log" | jq -c '.["o/bare"]')"
+
+# A repo-less event (should not arise from the real caller either) is
+# ignored rather than corrupting the map under a blank key.
+: > "$issues_excluded_log"
+printf '{"ts":"2026-08-15T10:00:00Z","event":"issues-excluded","excluded":[{"number":1,"reason":"assigned"}]}\n' \
+  >> "$issues_excluded_log"
+assert_eq "a repo-less event is ignored" "{}" \
+  "$(latest_issues_excluded "$issues_excluded_log")"
+
+# A second repo is tracked independently of the first.
+: > "$issues_excluded_log"
+emit_issues_excluded "$issues_excluded_log" "2026-08-15T10:00:00Z" "o/a" \
+  '[{"number":1,"reason":"assigned"}]'
+emit_issues_excluded "$issues_excluded_log" "2026-08-15T10:00:00Z" "o/b" \
+  '[{"number":2,"reason":"blocked-label"}]'
+assert_eq "two repos are tracked independently" "2" \
+  "$(latest_issues_excluded "$issues_excluded_log" | jq 'length')"
+assert_eq "  ... o/a's own entry" '[{"number":1,"reason":"assigned"}]' \
+  "$(latest_issues_excluded "$issues_excluded_log" | jq -c '.["o/a"]')"
+assert_eq "  ... o/b's own entry" '[{"number":2,"reason":"blocked-label"}]' \
+  "$(latest_issues_excluded "$issues_excluded_log" | jq -c '.["o/b"]')"
+
 printf '\n'
 if (( failures > 0 )); then
   printf '%d assertion(s) failed\n' "$failures"

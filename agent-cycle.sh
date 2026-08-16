@@ -71,6 +71,10 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/toggle.sh"
 # shellcheck source=lib/merge-autonomy.sh
 . "$SCRIPT_DIR/lib/merge-autonomy.sh"
+# shellcheck source=lib/approver-token.sh
+. "$SCRIPT_DIR/lib/approver-token.sh"
+# shellcheck source=lib/approver.sh
+. "$SCRIPT_DIR/lib/approver.sh"
 # shellcheck source=lib/noop-skip.sh
 . "$SCRIPT_DIR/lib/noop-skip.sh"
 # shellcheck source=lib/fleet.sh
@@ -334,6 +338,18 @@ reviewer_model_default="$(resolve_model_id reviewer_model_default "$(cfg '.revie
 reviewer_model_complex="$(cfg '.reviewer_model_complex')"
 [[ -n "$reviewer_model_complex" ]] || reviewer_model_complex="$reviewer_model_default"
 reviewer_model_complex="$(resolve_model_id reviewer_model_complex "$reviewer_model_complex")"
+# The Approver (requirement 8b, D18 WI-5). Three tiers on the same
+# empty-falls-back-to-the-tier-below chain `reviewer_model_complex` already
+# uses, extended one step further for adjudication — `resolve_model_id`
+# passes an empty value through unchanged, so `approver_model_default` empty
+# stays empty here and disables the whole stage further down (requirement 8b).
+approver_model_default="$(resolve_model_id approver_model_default "$(cfg '.approver_model_default')")"
+approver_model_complex="$(cfg '.approver_model_complex')"
+[[ -n "$approver_model_complex" ]] || approver_model_complex="$approver_model_default"
+approver_model_complex="$(resolve_model_id approver_model_complex "$approver_model_complex")"
+approver_model_critical="$(cfg '.approver_model_critical')"
+[[ -n "$approver_model_critical" ]] || approver_model_critical="$approver_model_complex"
+approver_model_critical="$(resolve_model_id approver_model_critical "$approver_model_critical")"
 # The Enabler (requirements 35–37). Its model is the most expensive this system
 # runs, which is affordable only because the eligibility rule engages it rarely:
 # an empty `enabler_model` disables the stage outright.
@@ -621,8 +637,10 @@ log_event() {
   local ts
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   if ! jq -e 'type == "object"' <<<"$fields" >/dev/null 2>&1; then
-    fields="$(jq -c '{fields: .}' <<<"$fields" 2>/dev/null \
-      || jq -nc --arg f "$fields" '{fields: $f}')"
+    local wrapped
+    wrapped="$(jq -c '{fields: .}' <<<"$fields" 2>/dev/null)" || true
+    [[ -n "$wrapped" ]] || wrapped="$(jq -nc --arg f "$fields" '{fields: $f}')"
+    fields="$wrapped"
   fi
   jq -nc --arg ts "$ts" --arg cycle "$cycle_id" --arg node "$node_name" --arg event "$event" --argjson fields "$fields" \
     '{ts: $ts, cycle: $cycle, node: $node, event: $event} + $fields' >> "$log_file" || true
@@ -2279,11 +2297,13 @@ gather_register_hygiene() {
 # about, so the two never share a candidate or a ref (see
 # scripts/gather-human-visibility-hygiene.sh). `violations` is the fleet-wide
 # array `human_visibility_violations` produced from the union log; the script
-# itself filters to this repo's slice.
+# itself filters to this repo's slice. Piped on stdin, never argv — it is
+# unbounded past this call and subject to `MAX_ARG_STRLEN` exactly as `jq
+# --argjson` is (requirement 4g; tech-debt/TD-PPagop-26081502.md).
 gather_human_visibility_hygiene() {
   local slug="$1" violations="${2:-[]}" out safe
   safe="${slug//\//_}"
-  out="$("$SCRIPT_DIR/scripts/gather-human-visibility-hygiene.sh" "$slug" "$violations" "$pr_label" \
+  out="$(printf '%s' "$violations" | "$SCRIPT_DIR/scripts/gather-human-visibility-hygiene.sh" "$slug" "$pr_label" \
         2>"$cycle_dir/human-visibility-hygiene-$safe.err" || true)"
   if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
     printf '%s\n' "$out" > "$cycle_dir/human-visibility-hygiene-$safe.json"
@@ -2294,22 +2314,81 @@ gather_human_visibility_hygiene() {
 }
 
 # Pre-fetch the repo's open issues, whole threads included (requirement 3j) —
-# the deterministic exclusions (assigned, labelled `blocked`, pull requests)
-# already applied, the judgement ones left to the Co-Ordinator. This source
-# used to be the Co-Ordinator's own `gh` read, and a cycle was observed
-# skipping the entire walk on a "the input carries no issues" misreading; the
-# array makes the candidate set an input rather than an errand (see
-# scripts/gather-issues.sh for the incident and the contract).
-gather_issues() {
-  local slug="$1" out safe
+# the deterministic exclusions (assigned, labelled `blocked`, unresolved
+# `Blocked-by:`, pull requests) already applied, the judgement ones left to
+# the Co-Ordinator. This source used to be the Co-Ordinator's own `gh` read,
+# and a cycle was observed skipping the entire walk on a "the input carries
+# no issues" misreading; the array makes the candidate set an input rather
+# than an errand (see scripts/gather-issues.sh for the incident and the
+# contract).
+#
+# issues_excluded_sidecar_path SLUG — the sibling exclusion-report path
+# `gather_issues` writes and `gather_issues_excluded` reads back for SLUG.
+# Computed once, here, so the two functions cannot drift apart on how `safe`
+# is derived from a slug containing `/` (review decision on agent-ops#452,
+# concern 2) — before this, each computed its own `safe` independently and
+# agreement between them depended on nothing but the two literal expressions
+# staying identical.
+issues_excluded_sidecar_path() {
+  local slug="$1" safe
   safe="${slug//\//_}"
-  out="$("$SCRIPT_DIR/scripts/gather-issues.sh" "$slug" \
+  printf '%s' "$cycle_dir/issues-excluded-$safe.json"
+}
+
+# scripts/gather-issues.sh now prints `{candidates, excluded}` rather than a
+# bare array (agent-ops#447): `candidates` is written to `issues-$safe.json`
+# exactly as the whole array always was, so this function still *returns*
+# a bare array and every caller of `gather_issues` is unchanged. `excluded`
+# — the number and reason for every deterministic drop — is written
+# alongside it to `issues_excluded_sidecar_path`'s path, read back by the
+# caller (below) to log it and fold it into the Co-Ordinator's own runtime
+# input, because a drop nothing downstream could see was the defect: see
+# `gather_issues_excluded`.
+gather_issues() {
+  local slug="$1" out safe raw candidates excl
+  safe="${slug//\//_}"
+  raw="$("$SCRIPT_DIR/scripts/gather-issues.sh" "$slug" \
         2>"$cycle_dir/issues-$safe.err" || true)"
-  if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
-    printf '%s\n' "$out" > "$cycle_dir/issues-$safe.json"
-    printf '%s' "$out"
+  # `excl` defaults to `null`, not `[]` (review decision on agent-ops#452
+  # concern 3): a gather that failed to produce the object shape at all —
+  # the catastrophic case this fallback covers, distinct from the
+  # gatherer's own degrade() — knows nothing about what was excluded, and
+  # `null` says so. The existing `.excluded | type == "array"` check below
+  # already routes a gatherer-reported `excluded: null` (its own degrade)
+  # to this same default.
+  candidates='[]'; excl='null'
+  if [[ -n "$raw" ]] && jq -e 'type == "object"' <<<"$raw" >/dev/null 2>&1; then
+    if jq -e '.candidates | type == "array"' <<<"$raw" >/dev/null 2>&1; then
+      candidates="$(jq -c '.candidates' <<<"$raw")"
+    fi
+    if jq -e '.excluded | type == "array"' <<<"$raw" >/dev/null 2>&1; then
+      excl="$(jq -c '.excluded' <<<"$raw")"
+    fi
+  fi
+  out="$candidates"
+  printf '%s\n' "$out" > "$cycle_dir/issues-$safe.json"
+  printf '%s\n' "$excl" > "$(issues_excluded_sidecar_path "$slug")"
+  printf '%s' "$out"
+}
+
+# gather_issues_excluded SLUG — read back the sibling exclusion report
+# `gather_issues` (above) just wrote for this repo, or `null` if it never ran
+# (a repo whose `sources` carries no `issues` band) or the sidecar does not
+# hold a well-formed array (the gather failed or degraded). `null` here means
+# exactly what it means on the sidecar: the exclusion set is unknown, not
+# known-empty (review decision on agent-ops#452 concern 3) — the absent-file
+# case cannot arise at the one call site, which runs immediately after
+# `gather_issues`, so it is not worth a separate `[]` reading. Kept a
+# separate read rather than a second return value, because a shell function
+# has only the one stdout channel and `gather_issues` already spends it on
+# the candidates array every existing caller depends on.
+gather_issues_excluded() {
+  local slug="$1" file
+  file="$(issues_excluded_sidecar_path "$slug")"
+  if [[ -s "$file" ]] && jq -e 'type == "array"' <"$file" >/dev/null 2>&1; then
+    jq -c '.' <"$file"
   else
-    printf '[]'
+    printf 'null'
   fi
 }
 
@@ -3334,6 +3413,308 @@ log_reviewer_handback() {
   fi
 }
 
+# review_gate_escalate_unreadable_streak
+# TD-PPagop-26081603: the streak-and-escalate half of TD-PPagop-26081404's
+# node-health bookkeeping, factored out so both call sites that run
+# `handoff_complete_review` and can see `gate.checks_unreadable: true` —
+# the Reviewer's own "ready" handoff below, and the Enabler's
+# `complete_handoff` recovery path in `maybe_run_enabler` — escalate a run
+# of consecutive unreadable-checks failures the same way, rather than only
+# the former. Prints `review_gate_unknown_streak_verdict`'s own verdict JSON
+# (empty below `review_gate_unknown_streak_after` consecutive failures) so a
+# caller that also needs to know whether the threshold was reached — the
+# Reviewer's own site logs a different per-item warning when it was not —
+# does not have to recompute it. Reads `review_gate_unknown_streak_after`,
+# `node_name` and `log_file` as globals, same as every other Script-
+# bookkeeping helper in this file. Logs `review-gate-checks-degraded` (and
+# its stderr echo) at most once per streak — `review_gate_degraded_since` is
+# the dedup.
+review_gate_escalate_unreadable_streak() {
+  local streak_json streak_count
+  streak_json="$(review_gate_unknown_streak_verdict "$review_gate_unknown_streak_after" "$node_name" < "$log_file")"
+  if [[ -n "$streak_json" ]] && ! review_gate_degraded_since "$(jq -r '.first_ts // ""' <<<"$streak_json")" "$node_name" < "$log_file"; then
+    log_event "review-gate-checks-degraded" "$streak_json"
+    streak_count="$(jq -r '.count // "?"' <<<"$streak_json")"
+    echo "agent-cycle: WARNING — node $node_name has failed to read required checks $streak_count times in a row (review-gate); see log.jsonl event review-gate-checks-degraded" >&2
+  fi
+  printf '%s' "$streak_json"
+}
+
+# approver_post_or_warn PR_URL EVENT BODY TOKEN
+# `approver_post_review` (lib/approver.sh) returns 0 only on a real 2xx from
+# GitHub, and its own header is explicit that a caller must not read a failure
+# as a posted review. This is that reading, in one place: a review GitHub
+# refused — an expired token, an App whose installation lost review rights, an
+# API outage — leaves the pull request exactly as it was, which is the
+# harmless half of requirement 8b's "a missing review, never a stranded PR".
+# The harmful half would be leaving no trace: every other way this stage can
+# fail to post logs a `warning`, so the one failure that happens at the moment
+# of the write must too, or an operator reading the log sees an
+# `approver-verdict` and no review on the pull request and has nothing to
+# connect them. Always returns 0 — the caller's own path is unchanged either
+# way.
+approver_post_or_warn() {
+  local pr_url="$1" event="$2" body="$3" token="$4"
+  if ! approver_post_review "$pr_url" "$event" "$body" "$token"; then
+    log_event "warning" "$(jq -nc --arg u "$pr_url" --arg e "$event" \
+      --arg d "the Approver's $event review of $pr_url could not be posted — GitHub refused the write, so the pull request carries no App review this round" \
+      '{detail: $d, pr_url: $u, event: $e}')"
+  fi
+  return 0
+}
+
+# approver_escalate PR_URL REASONS_JSON
+# File (or find already-filed, via create_escalation_issue's own dedup) the
+# escalation issue for a pull request an Approver adjudication engagement
+# could not settle — land it, or refuse it and let a human decide. Unlike
+# crash_loop_escalate and the Enabler's own escalations, there is no model
+# drafting this one: `reasons_json` already carries the adjudication's
+# structured findings (or the Script's own "could not settle" fallback), so
+# the Script composes the issue body directly.
+approver_escalate() {
+  local pr_url="$1" reasons_json="$2"
+  local number item_ref body_file reasons_text created
+  number="${pr_url##*/}"
+  item_ref="pr-${number}-approver-adjudication"
+  body_file="$cycle_dir/approver-escalation-${number}.md"
+  reasons_text="$(jq -r 'if length == 0 then "(no reasons given)" else map("- " + .) | join("\n") end' <<<"$reasons_json")"
+  {
+    printf '## What the autonomous pipeline needs from you\n\n'
+    printf 'Review %s and either request further changes yourself or approve and merge it — the Approver could not settle its own disagreement about this pull request.\n\n' "$pr_url"
+    printf '## Why the pipeline is blocked\n\n'
+    printf 'The Approver App refused %s twice in a row. A critical-tier adjudication engagement then read both the pull request and the prior refusals and could not resolve the disagreement on its own.\n\n' "$pr_url"
+    printf '## What has already been tried and established\n\n'
+    printf '%s\n\n' "$reasons_text"
+    cat <<APPROVER_ESC_BODY
+## When you're done: close this issue
+
+Close this issue once you have reviewed the pull request yourself. The
+pipeline takes no further automatic landing action on it — your own GitHub
+review and merge are the next step.
+
+---
+Item: \`$item_ref\` · pull request $pr_url
+Raised by the Approver stage (D18 WI-5) · cycle \`$cycle_id\` · node \`$node_name\`
+APPROVER_ESC_BODY
+  } > "$body_file"
+  if created="$(create_escalation_issue "$selected_repo" "$item_ref" \
+        "$enabler_escalation_label" \
+        "Approver adjudication could not settle $pr_url" \
+        "$body_file")" && [[ -n "$created" ]]; then
+    log_event "approver-escalated" "$(jq -nc --arg u "$pr_url" \
+      --arg n "${created%%$'\t'*}" --arg iu "${created#*$'\t'}" \
+      '{pr_url: $u, issue_number: ($n | tonumber), issue_url: $iu}')"
+  else
+    log_event "warning" "$(jq -nc --arg u "$pr_url" \
+      --arg d "Approver adjudication could not settle $u, and the escalation issue could not be filed — will retry next cycle" \
+      '{detail: $d, pr_url: $u}')"
+  fi
+}
+
+# run_approver_stage PR_URL COMPLEXITY
+# D18 WI-5 (requirement 8b): the tiered Approver, engaged once per
+# Reviewer-ready round, for every repository whose merge_autonomy is
+# currently above `human` (lib/merge-autonomy.sh's own kill-switch-aware
+# resolution — the fleet-wide kill switch reads as `human` here exactly as
+# everywhere else). Judges the pull request `confirm_pr_ready` has already
+# flipped out of draft, and posts a real GitHub review — `APPROVE` or
+# `REQUEST_CHANGES` — from the Pullwright Approver's own App identity, never
+# from a model-issued `gh` command; the model only ever returns a verdict
+# (prompts/approver.md).
+#
+# Always returns 0, and never touches the PR claim or the draft flag: a
+# stage that cannot run, or a GitHub write that fails, costs a missing App
+# review, never a blocked pull request — by construction, since every path
+# through this function ends in either a best-effort review post or a
+# best-effort escalation, and the caller's own `pr-ready` log and
+# `release_pr_claim` follow unconditionally regardless of what happened here
+# (the human still merges, at every merge_autonomy level this stage's own
+# work item implements — landing is a later work item's job).
+run_approver_stage() {
+  local pr_url="$1" complexity="$2"
+  local level login streak tier model mode="" adjudicating=0
+  local prompt out rc status_json verdict="" reasons_json="[]"
+  local token review_body prior_section adj_bool
+
+  level="$(merge_autonomy_effective_level "$DEFAULTED_CONFIG" "$selected_repo" "$state_repo" "$state_dir")"
+  [[ "$level" != "human" ]] || return 0
+
+  if [[ -z "$approver_model_default" ]]; then
+    log_event "warning" "$(jq -nc --arg u "$pr_url" --arg l "$level" \
+      --arg d "merge_autonomy is \"$level\" for $selected_repo but approver_model_default is empty — the Approver stage is disabled, so no App review was posted on $pr_url" \
+      '{detail: $d, pr_url: $u}')"
+    return 0
+  fi
+  if ! approver_token_credential_present; then
+    log_event "warning" "$(jq -nc --arg u "$pr_url" --arg l "$level" \
+      --arg d "merge_autonomy is \"$level\" for $selected_repo but the Approver's runtime credential is not present on this node — no App review was posted on $pr_url" \
+      '{detail: $d, pr_url: $u}')"
+    return 0
+  fi
+  if ! login="$(approver_token_identity_login "")" || [[ -z "$login" ]]; then
+    log_event "warning" "$(jq -nc --arg u "$pr_url" \
+      --arg d "could not read the Approver App's own login — no App review was posted on $pr_url" \
+      '{detail: $d, pr_url: $u}')"
+    return 0
+  fi
+  if ! streak="$(approver_refuse_streak "$pr_url" "$login")" || [[ ! "$streak" =~ ^[0-9]+$ ]]; then
+    log_event "warning" "$(jq -nc --arg u "$pr_url" \
+      --arg d "could not read $pr_url's own review history to count a refuse streak — no App review was posted this round" \
+      '{detail: $d, pr_url: $u}')"
+    return 0
+  fi
+  if ! token="$(approver_token_get "")"; then
+    log_event "warning" "$(jq -nc --arg u "$pr_url" \
+      --arg d "could not mint the Approver's installation token — no App review was posted on $pr_url" \
+      '{detail: $d, pr_url: $u}')"
+    return 0
+  fi
+
+  tier="$(approver_tier_for "$complexity")"
+
+  if (( streak >= 2 )); then
+    adjudicating=1
+    mode="adjudication"
+    model="$approver_model_critical"
+  elif [[ "$tier" == "trivial" ]]; then
+    # Deterministic: complexity:low already means "docs, comments, or
+    # register entries only; no behaviour change" (requirement 26a) — no
+    # model call, zero tokens, per the design's own framing of this tier
+    # (docs/reviews/2026-08-14-autonomy-investigation.md §5.2).
+    verdict="approve"
+    reasons_json='["complexity:low — deterministic approval, no model engagement (D18 §5.2)"]'
+  else
+    mode="tier"
+    model="$(approver_model_for_tier "$tier" "$approver_model_default" "$approver_model_complex")"
+  fi
+
+  if [[ -n "$mode" ]]; then
+    if [[ -z "$model" ]]; then
+      log_event "warning" "$(jq -nc --arg u "$pr_url" \
+        --arg d "no Approver model resolved for tier $tier on $pr_url (every configured tier fell back to empty) — no App review was posted this round" \
+        '{detail: $d, pr_url: $u}')"
+      return 0
+    fi
+
+    prior_section=""
+    if (( adjudicating )); then
+      prior_section="
+## Prior refusals
+
+$(approver_prior_refusal_bodies "$pr_url" "$login")
+"
+    fi
+
+    prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" approver "$prompt_overrides_json")
+
+## Work order
+
+\`\`\`json
+$(jq . <<<"$work_order_json")
+\`\`\`
+
+## Implementor summary
+
+\`\`\`json
+$(jq . <<<"$impl_status_json")
+\`\`\`
+
+## Reviewer summary
+
+\`\`\`json
+$(jq . <<<"$rev_status_json")
+\`\`\`
+
+## Tier
+
+$([[ $adjudicating -eq 1 ]] && printf 'adjudication' || printf '%s' "$tier")
+$prior_section
+## Cycle
+
+$cycle_id
+
+## Node
+
+$node_name
+"
+    out="$cycle_dir/approver.out"
+    stage_budget_apply approver "$selected_repo" "$model" \
+      "$(jq -nc --arg t "$tier" --arg m "$mode" '{complexity: $t, mode: $m}')"
+    if run_claude_stage approver "$(( stage_backstop_min * 60 ))" "$model" "$prompt" "$out" "$clone_dir" "$(( stage_inactivity_min * 60 ))"; then
+      rc=0
+    else
+      rc=$?
+    fi
+    log_event "stage-end" "$(jq -nc --argjson rc "$rc" --arg kr "$stage_kill_reason" --argjson m "$(metering_fields "$model" "$out" "$stage_gaps_json")" \
+      '{stage: "approver", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m')"
+    approver_watchdog_warning="$(stage_watchdog_warning approver || true)"
+    [[ -n "$approver_watchdog_warning" ]] && log_event "warning" "$approver_watchdog_warning"
+    (( ONCE )) && dump_stage_output "$out"
+
+    status_json="$(extract_json_result "$(jq -r '.result // empty' "$out" 2>/dev/null || true)" 2>/dev/null || true)"
+    if (( rc == 0 )) && [[ -z "$status_json" ]]; then
+      status_json="$(stage_salvage_result approver "$out" "$model" "$clone_dir" || true)"
+    fi
+
+    if (( rc != 0 )) || [[ -z "$status_json" ]]; then
+      log_event "warning" "$(jq -nc --arg u "$pr_url" \
+        --arg d "the Approver stage did not return a parseable verdict for $pr_url — no App review was posted this round" \
+        '{detail: $d, pr_url: $u}')"
+      if (( adjudicating )); then
+        approver_escalate "$pr_url" \
+          '["the adjudication engagement did not return a parseable verdict — treated as \"cannot settle\" (D18 §5.2)"]'
+      fi
+      return 0
+    fi
+
+    verdict="$(jq -r '.verdict // empty' <<<"$status_json")"
+    reasons_json="$(jq -c '[.reasons[]? | select(type == "string")]' <<<"$status_json" 2>/dev/null)"
+    [[ "$reasons_json" != "null" && -n "$reasons_json" ]] || reasons_json='[]'
+  fi
+
+  review_body="$(jq -r 'if length == 0 then "(no reasons given)" else map("- " + .) | join("\n") end' <<<"$reasons_json")"
+
+  if (( adjudicating )); then
+    case "$verdict" in
+      land)
+        approver_post_or_warn "$pr_url" APPROVE "$review_body" "$token"
+        ;;
+      refuse)
+        approver_post_or_warn "$pr_url" REQUEST_CHANGES "$review_body" "$token"
+        approver_escalate "$pr_url" "$reasons_json"
+        ;;
+      escalate)
+        approver_escalate "$pr_url" "$reasons_json"
+        ;;
+      *)
+        approver_escalate "$pr_url" \
+          '["the adjudication engagement returned an unrecognised verdict — treated as \"cannot settle\" (D18 §5.2)"]'
+        ;;
+    esac
+  else
+    case "$verdict" in
+      approve)
+        approver_post_or_warn "$pr_url" APPROVE "$review_body" "$token"
+        ;;
+      refuse)
+        approver_post_or_warn "$pr_url" REQUEST_CHANGES "$review_body" "$token"
+        ;;
+      *)
+        log_event "warning" "$(jq -nc --arg u "$pr_url" --arg v "${verdict:-empty}" \
+          --arg d "the Approver returned an unrecognised verdict (\"${verdict:-empty}\") for $pr_url — no App review was posted this round" \
+          '{detail: $d, pr_url: $u, verdict: $v}')"
+        ;;
+    esac
+  fi
+
+  adj_bool="false"
+  (( adjudicating )) && adj_bool="true"
+  log_event "approver-verdict" "$(jq -nc --arg u "$pr_url" --arg t "$tier" \
+    --arg v "${verdict:-none}" --argjson s "$streak" --argjson adj "$adj_bool" \
+    '{pr_url: $u, tier: $t, verdict: $v, refuse_streak: $s, adjudication: $adj}')"
+  return 0
+}
+
 # --- The Enabler's state for this cycle (requirements 35, 37) ---
 # All three are read from the exit trap, so they are initialised here — before
 # anything can exit — and only ever move in the safe direction. `enabler_allowed`
@@ -3678,6 +4059,9 @@ maybe_run_enabler() {
   local ex e_repo e_item verdict e_reason claimed_entry blocked_ts outcome extra e_evidence_field
   local e_void_entry e_void_refusal
   local e_pr_url e_handoff e_refusal e_refined
+  local e_block_stage e_default_branch e_review_json e_gate_word e_gate_reason
+  local e_gate_checks_unreadable e_ck_word e_ck_reason e_review_safe e_gate_checks_ok e_finding
+  local e_rereview_state e_rereview_who e_human_reviewer_state e_human_reviewer_who
   local issue_title issue_body_file created number url missing
 
   # --- Guards (requirement 35). Every one of them declining is normal. ---
@@ -3920,22 +4304,92 @@ $(jq . <<<"$input")
           # decides; the Script performs the flip, for the same reason the Script
           # and not the Enabler files an escalation issue (requirement 36): one
           # writer of the pipeline's outward acts. The handoff itself is
-          # lib/handoff.sh's, so this path and the Reviewer's cannot drift
-          # (requirement 34a).
+          # lib/handoff.sh's `handoff_complete_review` — the one gate-and-flip
+          # implementation this path and the Reviewer's own handoff above both
+          # call, so they cannot drift (requirement 34a).
           e_pr_url="$(jq -r '.pr_url // ""' <<<"$claimed_entry" 2>/dev/null || true)"
           if [[ "$(jq -r '.complete_handoff // false' <<<"$ex" 2>/dev/null || true)" == "true" \
                 && -n "$e_pr_url" ]]; then
-            e_handoff="$(confirm_pr_ready "$e_pr_url")" || true
-            case "$e_handoff" in
-              already|flipped)
+            # Requirement 31c/32b (agent-ops#440): `complete_handoff` recovers
+            # a pull request whose Reviewer ran and left it a draft — never
+            # one the Reviewer never reached. An item blocked at the
+            # Implementor or the Co-Ordinator has no Reviewer verdict on
+            # record at all: nothing has confirmed the diff is even safe to
+            # look at, let alone that CI is green, so flipping it to ready
+            # would hand a human a pull request no pipeline stage has ever
+            # examined (PR #433: the Implementor failed, the Reviewer block
+            # never ran, and an Enabler `complete_handoff` flipped it to ready
+            # anyway on four preconditions that were all vacuously true).
+            # `claimed_entry.stage` (lib/cycle-state.sh's
+            # `enabler_eligible_items`) is the block's own record of which
+            # stage produced it — `handle_stage_failure`/`log_reviewer_
+            # handback` both stamp `"reviewer"` there, whatever the Reviewer's
+            # own verdict was, so its presence is exactly "a Reviewer verdict
+            # is on record for this pull request".
+            e_block_stage="$(jq -r '.stage // ""' <<<"$claimed_entry" 2>/dev/null || true)"
+            if [[ "$e_block_stage" != "reviewer" ]]; then
+              log_event "warning" "$(jq -nc --arg u "$e_pr_url" --arg s "${e_block_stage:-none}" \
+                --arg d "enabler asked for the handoff on $e_pr_url to be completed, but this item's recorded failure never reached the Reviewer stage (stage: ${e_block_stage:-none}) — refusing; a Reviewer must examine this pull request before it can be handed off" \
+                '{detail: $d, pr_url: $u}')"
+              extra="$(jq -nc '{complete_handoff: "refused-no-reviewer"}')"
+            else
+              e_default_branch="$(jq -r --arg r "$e_repo" \
+                'map(select(.slug == $r)) | .[0].default_branch // "main"' \
+                <<<"$ordered_repos_json" 2>/dev/null || true)"
+              [[ -n "$e_default_branch" ]] || e_default_branch="main"
+              e_review_json="$(handoff_complete_review "$e_pr_url" "$e_default_branch" "$enabler_assignee")"
+
+              e_gate_word="$(jq -r '.gate.word // ""' <<<"$e_review_json")"
+              e_gate_reason="$(jq -r '.gate.reason // ""' <<<"$e_review_json")"
+              e_gate_checks_unreadable="$(jq -r '.gate.checks_unreadable // false' <<<"$e_review_json")"
+              e_ck_word="$(jq -r '.closing_keyword.word // ""' <<<"$e_review_json")"
+              e_ck_reason="$(jq -r '.closing_keyword.reason // ""' <<<"$e_review_json")"
+              e_review_safe="$(jq -r '.safe // false' <<<"$e_review_json")"
+
+              # Same node-health bookkeeping as the Reviewer's own handoff
+              # site — TD-PPagop-26081404's streak, via the shared
+              # `review_gate_escalate_unreadable_streak` (TD-PPagop-26081603),
+              # so a run of consecutive unreadable-checks failures escalates
+              # the same way here as it does at the Reviewer's own site,
+              # rather than only naming the fault per item.
+              e_gate_checks_ok=true
+              [[ "$e_gate_checks_unreadable" == "true" ]] && e_gate_checks_ok=false
+              log_event "review-gate-checks-read" "$(jq -nc --argjson ok "$e_gate_checks_ok" '{ok: $ok}')"
+
+              if [[ "$e_review_safe" != "true" ]]; then
+                if [[ "$e_gate_word" == "dirty" ]]; then
+                  e_finding="$e_gate_reason"
+                elif [[ "$e_gate_checks_unreadable" == "true" ]]; then
+                  e_finding="its required checks could not be confirmed: $e_gate_reason"
+                  review_gate_escalate_unreadable_streak >/dev/null
+                elif [[ "$e_ck_word" == "dirty" ]]; then
+                  e_finding="$e_ck_reason"
+                else
+                  e_finding="it is still a draft after the attempt"
+                fi
+                log_event "warning" "$(jq -nc --arg u "$e_pr_url" --arg d "$e_finding" \
+                  --arg m "enabler asked for the handoff on $e_pr_url to be completed, but it is not safe to hand off: " \
+                  '{detail: ($m + $d), pr_url: $u}')"
+                e_handoff="failed"
+              else
+                if [[ "$e_ck_word" == "unknown" ]]; then
+                  log_event "warning" "$(jq -nc --arg u "$e_pr_url" --arg d "$e_ck_reason" \
+                    '{detail: ("could not confirm " + $u + " carries its closing keyword: " + $d), pr_url: $u}')"
+                fi
+                if [[ "$e_gate_word" == "unknown" ]]; then
+                  log_event "warning" "$(jq -nc --arg u "$e_pr_url" --arg d "$e_gate_reason" \
+                    '{detail: ("could not confirm " + $u + " carries no new security-severity code-scanning alert: " + $d), pr_url: $u}')"
+                fi
+
+                e_handoff="$(jq -r '.handoff // ""' <<<"$e_review_json")"
+
                 # Requirement 31b on the recovery path too. `already` is the
                 # answer for a review round that stalled at the Reviewer and the
                 # Enabler has now cleared: the PR never was a draft, so the flip
                 # settles nothing and the human is still not being asked. Both
                 # handoff paths run both halves, or they drift (requirement 34a).
-                e_rereview="$(confirm_review_requested "$e_pr_url")" || true
-                e_rereview_state=""; e_rereview_who=""
-                IFS=$'\t' read -r e_rereview_state e_rereview_who <<<"$e_rereview" || true
+                e_rereview_state="$(jq -r '.rereview.state // ""' <<<"$e_review_json")"
+                e_rereview_who="$(jq -r '.rereview.who // ""' <<<"$e_review_json")"
                 if [[ "$e_rereview_state" == "failed" ]]; then
                   log_event "warning" "$(jq -nc --arg u "$e_pr_url" \
                     --arg d "enabler completed the handoff on $e_pr_url, but review could not be re-requested from ${e_rereview_who:-the reviewer} — they will not see it in their review queue" \
@@ -3944,16 +4398,12 @@ $(jq . <<<"$input")
 
                 # Requirement 38, same as the Reviewer's own handoff site
                 # above — this path exists precisely so the two cannot drift.
-                e_human_reviewer_state=""
-                e_human_reviewer_who=""
-                if [[ "$e_rereview_state" == "none" && -n "$enabler_assignee" ]]; then
-                  e_human_reviewer_result="$(ensure_human_reviewer "$e_pr_url" "$enabler_assignee")" || true
-                  IFS=$'\t' read -r e_human_reviewer_state e_human_reviewer_who <<<"$e_human_reviewer_result" || true
-                  if [[ "$e_human_reviewer_state" == "failed" ]]; then
-                    log_event "warning" "$(jq -nc --arg u "$e_pr_url" --arg a "$enabler_assignee" --arg w "$e_human_reviewer_who" \
-                      --arg d "enabler completed the handoff on $e_pr_url, but review could not be requested from ${e_human_reviewer_who:-$enabler_assignee} — it will not appear in their review queue" \
-                      '{detail: $d, pr_url: $u} + (if $w == "" then {reviewers: [$a]} else {reviewers: ($w | split(","))} end)')"
-                  fi
+                e_human_reviewer_state="$(jq -r '.human_reviewer.state // ""' <<<"$e_review_json")"
+                e_human_reviewer_who="$(jq -r '.human_reviewer.who // ""' <<<"$e_review_json")"
+                if [[ "$e_human_reviewer_state" == "failed" ]]; then
+                  log_event "warning" "$(jq -nc --arg u "$e_pr_url" --arg a "$enabler_assignee" --arg w "$e_human_reviewer_who" \
+                    --arg d "enabler completed the handoff on $e_pr_url, but review could not be requested from ${e_human_reviewer_who:-$enabler_assignee} — it will not appear in their review queue" \
+                    '{detail: $d, pr_url: $u} + (if $w == "" then {reviewers: [$a]} else {reviewers: ($w | split(","))} end)')"
                 fi
 
                 log_event "pr-ready" "$(jq -nc --arg u "$e_pr_url" --arg h "$e_handoff" \
@@ -3964,14 +4414,9 @@ $(jq . <<<"$input")
                    + (if $w == "" then {} else {reviewers: ($w | split(","))} end)
                    + (if $hr == "" or $hr == "skip" then {}
                       else {human_review_requested: $hr, human_reviewer: $ha} end)')"
-                ;;
-              *)
-                log_event "warning" "$(jq -nc --arg u "$e_pr_url" \
-                  --arg d "enabler asked for the handoff on $e_pr_url to be completed, but it is still a draft" \
-                  '{detail: $d, pr_url: $u}')"
-                ;;
-            esac
-            extra="$(jq -nc --arg h "$e_handoff" '{complete_handoff: $h}')"
+              fi
+              extra="$(jq -nc --arg h "$e_handoff" '{complete_handoff: $h}')"
+            fi
           fi
         fi
         ;;
@@ -4912,6 +5357,14 @@ human_queue_count=0
 draft_count=0
 claim_count=0
 listing_truncated=0
+# Per-repo set of PR numbers this count already holds — its drafts and its
+# CHANGES_REQUESTED-ready PRs, the same rule `counted_prs` below applies one
+# repo at a time. An object keyed by slug, each value a JSON array of PR
+# numbers. Requirement 2.2a's decision site reads this back to tell which of
+# a repo's merge-conflict/dequeued candidates (gathered later, in step 3, so
+# they cannot be folded in above) this count already counted and which it did
+# not.
+counted_prs_json='{}'
 while IFS= read -r slug; do
   prs_json="$(gh pr list -R "$slug" --state open --label "$pr_label" \
     --limit "$GITHUB_PR_LIST_LIMIT" --json number,isDraft,reviewDecision 2>/dev/null)" || prs_json=''
@@ -4939,8 +5392,12 @@ while IFS= read -r slug; do
   # GITHUB_PR_LIST_LIMIT, so it may ride argv (requirement 4g). An unreadable
   # listing leaves it empty, which counts every claim — the fail-closed
   # reading, matching the zeroed counts above.
-  counted_prs="$(jq -r '[.[] | select(.isDraft or .reviewDecision == "CHANGES_REQUESTED") | .number]
-                        | join(",")' <<<"$prs_json" 2>/dev/null)" || counted_prs=''
+  counted_prs_array="$(jq -c '[.[] | select(.isDraft or .reviewDecision == "CHANGES_REQUESTED") | .number]' \
+    <<<"$prs_json" 2>/dev/null)" || counted_prs_array='[]'
+  [[ -n "$counted_prs_array" ]] || counted_prs_array='[]'
+  counted_prs="$(jq -r 'join(",")' <<<"$counted_prs_array" 2>/dev/null)" || counted_prs=''
+  counted_prs_json="$(jq -c --arg s "$slug" --argjson ns "$counted_prs_array" \
+    '. + {($s): $ns}' <<<"$counted_prs_json" 2>/dev/null)" || counted_prs_json='{}'
   n="$("$SCRIPT_DIR/lib/claim.sh" count "$slug" "$counted_prs" 2>&1)" \
     || { guard_warn "claim-count:$slug" "$n"; n=0; }
   [[ "$n" =~ ^[0-9]+$ ]] || n=0
@@ -4998,6 +5455,13 @@ claimed_json="[]"
 # each call site would do.
 first_seen_known_json="$(first_seen_known_items "$union_log")"
 first_seen_bootstrap="$(jq -c '(length == 0)' <<<"$(first_seen_known_items "$log_file")")"
+# Review decision on agent-ops#452 concern 1: the `issues-excluded` event
+# below logs only on change, and this is the "previous state" each repo's
+# freshly gathered set is compared against — read once, here, off the same
+# union log snapshot first_seen_known_json above reads, for the same reason:
+# an event this cycle logs must not make its own repo's later comparison (if
+# the repo were ever visited twice in one cycle) see itself as unchanged.
+latest_issues_excluded_json="$(latest_issues_excluded "$union_log")"
 repo_order_now="$(date +%s)"
 while IFS= read -r slug; do
   # TD-PPagop-26081407: gh api can fail (rate limit, auth, network -- test 1);
@@ -5112,10 +5576,64 @@ while IFS=$'\t' read -r _ slug default_branch; do
   # `issues:low`, requirement 15e), so any band in `sources` warrants the one
   # fetch — the band is per issue, not per fetch.
   issues="[]"
+  issues_excluded="[]"
   if jq -e 'any(.[]; startswith("issues"))' <<<"$sources" >/dev/null 2>&1; then
     issues_raw="$(gather_issues "$slug")"
     emit_first_seen "$slug" issues "$issues_raw"
     issues="$(exclude_claimed_items "$issues_raw" "$claimed_item_refs_json")"
+    # Requirement 16.4's deterministic drops (assigned, `blocked`-labelled,
+    # unresolved `Blocked-by:`), reported rather than lost the moment
+    # scripts/gather-issues.sh applies them (agent-ops#447): a repo with
+    # drops leaves an `issues-excluded` event any reader of the shared log —
+    # the cycle record, the dashboard's log tail — can see without
+    # re-deriving the filter by hand.
+    #
+    # Logged only when this repo's exclusion set differs from the one most
+    # recently logged for it (review decision on agent-ops#452 concern 1):
+    # an onset and a release are both changes, so "now empty" logs exactly as
+    # "now non-empty" does, and a quiet cycle logs nothing because nothing
+    # changed — not because $issues_excluded happens to be empty this time.
+    # Fail open on the *previous*-state read: if it cannot be read, log
+    # unconditionally rather than risk staying silent — silence is the #447
+    # failure class this event exists to remove.
+    #
+    # The *current* set gets no such leniency (review decision on
+    # agent-ops#452 concern 3): `gather_issues_excluded` reports `null`,
+    # never `[]`, when the gather failed or degraded — the deterministic
+    # filter did not run to completion, so the exclusion set is unknown, not
+    # known-empty. Comparing an unknown current set against a known previous
+    # one would fabricate a release event on an ordinary `gh` hiccup and, by
+    # overwriting the baseline, mask a genuinely stuck exclusion behind a
+    # flapping gatherer. A `null` current set therefore skips the
+    # comparison, the event and the baseline update entirely — a failed
+    # gather is a no-op on the event stream, not a claim about it — while
+    # the Co-Ordinator's own runtime input still gets an array: `[]` for
+    # "nothing to report", the same reading requirement 3j already gives an
+    # empty `candidates`.
+    issues_excluded_raw="$(gather_issues_excluded "$slug")"
+    if [[ "$issues_excluded_raw" != "null" ]]; then
+      issues_excluded="$issues_excluded_raw"
+      issues_excluded_changed=1
+      if prev_issues_excluded="$(jq -ce --arg r "$slug" '(.[$r] // [])' \
+            <<<"$latest_issues_excluded_json" 2>/dev/null)"; then
+        if issues_excluded_same="$(jq -nc --argjson prev "$prev_issues_excluded" --argjson cur "$issues_excluded" \
+              '($prev | sort_by(.number, .reason)) == ($cur | sort_by(.number, .reason))' 2>/dev/null)" \
+            && [[ "$issues_excluded_same" == "true" ]]; then
+          issues_excluded_changed=0
+        fi
+      fi
+      if [[ "$issues_excluded_changed" == "1" ]]; then
+        log_event "issues-excluded" "$(jq -nc --arg r "$slug" --argjson ex "$issues_excluded" \
+          '{repo: $r, count: ($ex | length),
+            detail: (($ex | length | tostring) + " issue(s) excluded"
+                     + (if ($ex | length) > 0
+                        then ": " + ([$ex[] | "#\(.number) (\(.reason))"] | join(", "))
+                        else "" end)),
+            excluded: $ex}')"
+        latest_issues_excluded_json="$(jq -c --arg r "$slug" --argjson ex "$issues_excluded" \
+          '.[$r] = $ex' <<<"$latest_issues_excluded_json" 2>/dev/null || printf '%s' "$latest_issues_excluded_json")"
+      fi
+    fi
   fi
   tech_debt="[]"
   if jq -e 'any(.[]; . == "tech-debt")' <<<"$sources" >/dev/null 2>&1; then
@@ -5144,11 +5662,15 @@ while IFS=$'\t' read -r _ slug default_branch; do
   # MAX_ARG_STRLEN this build would silently drop the repo's whole entry.
   entry_docs="$(printf '%s\n' "$findings" "$review_feedback" "$abandoned_drafts" \
     "$merge_conflicts" "$dequeued" "$register_hygiene" "$issues" "$tech_debt")"
+  # `issues_excluded` rides in as its own --argjson, not on this stdin
+  # stream: unlike the eight bands above, it is bounded by the gatherer's own
+  # 100-item page (scripts/gather-issues.sh) and each entry is a bare number
+  # and a short reason, tens of bytes at most — nowhere near MAX_ARG_STRLEN.
   entry="$(jq -nc --arg slug "$slug" --arg db "$default_branch" --argjson sources "$sources" \
-    --arg ipp "$implementation_plan_path" \
+    --arg ipp "$implementation_plan_path" --argjson ie "$issues_excluded" \
     'input as $findings | input as $rf | input as $ad | input as $mc | input as $dq | input as $rh
      | input as $issues | input as $td
-     | {slug: $slug, default_branch: $db, sources: $sources, findings: $findings, review_feedback: $rf, abandoned_drafts: $ad, merge_conflicts: $mc, dequeued: $dq, register_hygiene: $rh, human_visibility: [], issues: $issues, tech_debt: $td}
+     | {slug: $slug, default_branch: $db, sources: $sources, findings: $findings, review_feedback: $rf, abandoned_drafts: $ad, merge_conflicts: $mc, dequeued: $dq, register_hygiene: $rh, human_visibility: [], issues: $issues, issues_excluded: $ie, tech_debt: $td}
      + (if $ipp == "" then {} else {implementation_plan_path: $ipp} end)' <<<"$entry_docs")"
   # $entry — one repo's whole pre-fetched sources, including issue threads
   # (requirement 3d/#118) and its open tech-debt register (requirement
@@ -6154,6 +6676,41 @@ refiner_allowed=1
 # reasoned around — a source it cannot see is a source it cannot select.
 # The system still cannot open a new PR while the gate is full; it can only
 # finish what is already in it.
+#
+# "a conflicted or dequeued PR is one the human cannot merge to free a slot
+# until it is fixed" above claims those two already hold a slot requirement
+# 2.2's own count counts — but that count was taken before this cycle's
+# merge-conflict and dequeued candidates were gathered (they arrive only
+# once ordered_repos_json's sources are populated, in step 3), and neither
+# gatherer's candidate rule reads `reviewDecision` at all
+# (scripts/gather-merge-conflicts.sh, scripts/gather-dequeued.sh) — so a
+# conflicted or dequeued PR that is not *also* `CHANGES_REQUESTED` passed
+# through 2.2's count exactly like an ordinary human-queue PR. For `dequeued`
+# it is not even a coincidence: a PR only reaches the merge queue after
+# approval, so its `reviewDecision` is `APPROVED` by construction. Fold in,
+# here, whatever `counted_prs_json` — 2.2's own record of which PRs its count
+# held — does not already hold, so the trip decision made at this site
+# actually reflects every slot that source occupies, not just the ones that
+# happened to also be `CHANGES_REQUESTED`. `ordered_repos_json` already
+# carries this cycle's `merge_conflicts`/`dequeued` candidates (gathered
+# above, in step 3) whether or not back-pressure ends up tripped, so this
+# runs unconditionally rather than only inside the `if` below.
+finishing_extra_prs_json="$(jq -c --argjson counted "$counted_prs_json" '
+    [.[] | . as $repo | (($repo.merge_conflicts // [])[], ($repo.dequeued // [])[]) | {slug: $repo.slug, number}]
+    | unique_by([.slug, .number])
+    | map(select(.number as $n | ($counted[.slug] // []) | index($n) | not))
+  ' <<<"$ordered_repos_json" 2>&1)" \
+  || { guard_warn "backpressure:finishing_extra_prs" "$finishing_extra_prs_json"; finishing_extra_prs_json='[]'; }
+finishing_extra_count="$(jq 'length' <<<"$finishing_extra_prs_json" 2>/dev/null)" || finishing_extra_count=0
+[[ "$finishing_extra_count" =~ ^[0-9]+$ ]] || finishing_extra_count=0
+if (( finishing_extra_count > 0 )); then
+  adjusted_open_count=$(( adjusted_open_count + finishing_extra_count ))
+  open_composition="$open_composition + $finishing_extra_count merge-conflict/dequeued PR(s) occupying a slot the changes-requested count above did not"
+  if (( adjusted_open_count >= max_open_agent_prs )); then
+    backpressure_tripped=1
+  fi
+fi
+
 if (( backpressure_tripped )); then
   finishing_waiting="$(jq '[.[].review_feedback[]?, .[].merge_conflicts[]?, .[].dequeued[]?, .[].abandoned_drafts[]?] | length' <<<"$ordered_repos_json")"
   if (( finishing_waiting == 0 )); then
@@ -7061,108 +7618,97 @@ fi
 
 rev_status="$(jq -r '.status // empty' <<<"$rev_status_json")"
 if [[ "$rev_status" == "ready" ]]; then
-  # Requirement 31c (agent-ops#249): a Reviewer's "ready" is a model reading a
-  # check list, exactly the judgement that missed poetic-fiddle #216's CodeQL
-  # alert hidden inside an otherwise-green list. Before any handoff mechanism
-  # runs, ask GitHub directly, the same "confirm, don't trust" shape requirement
-  # 31a already applies to the draft flag itself.
+  # Requirement 31c (agent-ops#249) and 32b (agent-ops#440): a Reviewer's
+  # "ready" is a model reading a check list, exactly the judgement that
+  # missed poetic-fiddle #216's CodeQL alert hidden inside an otherwise-green
+  # list. Before any handoff mechanism runs, ask GitHub directly, the same
+  # "confirm, don't trust" shape requirement 31a already applies to the draft
+  # flag itself — `handoff_complete_review` (lib/handoff.sh) is the one
+  # gate-and-flip implementation this call site shares with the Enabler's
+  # `complete_handoff` recovery path below, so neither can hand a pull
+  # request to a human without running the same checks the other does.
   gate_default_branch="$(jq -r '.default_branch // "main"' <<<"$work_order_json")"
-  # Captured, not discarded with `|| true`: `review_gate_verdict` exits
-  # non-zero for a `dirty` verdict *and* for the specific `unknown` that means
-  # its required-check list could not be read at all (TD-PPagop-26081305) —
-  # that one still refuses the handoff, unlike the alerts/closing-keyword
-  # `unknown`s below, so the caller must tell the two apart by exit status,
-  # not by the word alone (see lib/review-gate.sh's own header).
-  if gate_result="$(review_gate_verdict "$impl_pr_url" "$gate_default_branch")"; then
-    gate_rc=0
-  else
-    gate_rc=$?
-  fi
-  gate_word=""; gate_reason=""
-  IFS=$'\t' read -r gate_word gate_reason <<<"$gate_result" || true
+  review_json="$(handoff_complete_review "$impl_pr_url" "$gate_default_branch" "$enabler_assignee")"
+  gate_word="$(jq -r '.gate.word // ""' <<<"$review_json")"
+  gate_reason="$(jq -r '.gate.reason // ""' <<<"$review_json")"
+  gate_checks_unreadable="$(jq -r '.gate.checks_unreadable // false' <<<"$review_json")"
+  ck_word="$(jq -r '.closing_keyword.word // ""' <<<"$review_json")"
+  ck_reason="$(jq -r '.closing_keyword.reason // ""' <<<"$review_json")"
+  review_safe="$(jq -r '.safe // false' <<<"$review_json")"
+
   # TD-PPagop-26081404: bookkeeping for `review_gate_unknown_streak_verdict`,
   # logged unconditionally — regardless of which branch below is taken, or
   # none of them — so a run of consecutive failures can be told apart from
-  # ordinary noise. Exit status 2 is `review_gate_verdict`'s
-  # required-checks-read-failed signal, deliberately read instead of the
-  # word: a genuinely dirty alert outranks an unreadable check list for the
-  # word and the handback below, so the word alone would record `{ok: true}`
-  # for an evaluation whose required-checks read failed outright — falsely
-  # resetting the very streak this event exists to count. Anything but exit 2
-  # — `clean`, a `dirty` earned with the check list read, the non-blocking
-  # alerts `unknown` — proves the required-checks read itself succeeded, and
-  # resets the streak exactly the way a Co-Ordinator success resets
-  # `crash_loop_verdict` (lib/crash-loop.sh).
+  # ordinary noise. `gate.checks_unreadable`, not the word alone: a genuinely
+  # dirty alert outranks an unreadable check list for the word and the
+  # handback below (see `handoff_complete_review`'s own header), so the word
+  # alone would record `{ok: true}` for an evaluation whose required-checks
+  # read failed outright — falsely resetting the very streak this event
+  # exists to count.
   gate_checks_ok=true
-  [[ "$gate_rc" -eq 2 ]] && gate_checks_ok=false
+  [[ "$gate_checks_unreadable" == "true" ]] && gate_checks_ok=false
   log_event "review-gate-checks-read" "$(jq -nc --argjson ok "$gate_checks_ok" '{ok: $ok}')"
-  if [[ "$gate_word" == "dirty" ]]; then
-    log_reviewer_handback \
-      "the Reviewer reported ready, but $impl_pr_url is not safe to hand off: $gate_reason" \
-      "$impl_pr_url" "Get every required check green and clear the named security-severity code-scanning alert, then let the Reviewer re-examine it."
-    exit 0
-  fi
-  if [[ "$gate_word" == "unknown" && "$gate_rc" -ne 0 ]]; then
-    # A node fact, not a pull-request fact — logged as its own warning so a
-    # `gh` degraded on this node is visible as a pattern across items rather
-    # than only as N pull-request-shaped handbacks naming nothing to fix. The
-    # handback itself still runs: an unread required-check list is refused
-    # exactly like a genuinely failing one, and its unblock_condition names
-    # the node-level cause rather than telling the Enabler to inspect a pull
-    # request that may already be fine.
-    #
-    # TD-PPagop-26081404: `gh` degraded enough to fail this read is rarely
-    # wrong once — a node past a rate limit, or fighting a transient auth
-    # problem, is typically wrong for several consecutive items, and each one
-    # earning its own warning buries the pattern a human would actually act
-    # on. Once this node's own log shows `review_gate_unknown_streak_after`
-    # of these in a row, one louder escalation event replaces the per-item
-    # warning instead of piling another one on top of it — once per streak,
-    # not once per item past the threshold: `review_gate_degraded_since` is
-    # the same already-escalated dedup `crash_loop_escalated_since` gives
-    # requirement 2.7's crash loop, keyed on the run's own `first_ts`, so an
-    # already-escalated run logs nothing further here (the bookkeeping event
-    # above still records the failure, and the handback below still refuses
-    # the handoff) until a successful read starts a new streak.
-    streak_json="$(review_gate_unknown_streak_verdict "$review_gate_unknown_streak_after" "$node_name" < "$log_file")"
-    if [[ -z "$streak_json" ]]; then
-      log_event "warning" "$(jq -nc --arg u "$impl_pr_url" --arg d "$gate_reason" \
-        '{detail: ("this node could not read " + $u + "'\''s required checks, so the handoff was refused rather than trusted on an unread check list: " + $d), pr_url: $u}')"
-    elif ! review_gate_degraded_since "$(jq -r '.first_ts // ""' <<<"$streak_json")" "$node_name" < "$log_file"; then
-      log_event "review-gate-checks-degraded" "$streak_json"
-      streak_count="$(jq -r '.count // "?"' <<<"$streak_json")"
-      echo "agent-cycle: WARNING — node $node_name has failed to read required checks $streak_count times in a row (review-gate); see log.jsonl event review-gate-checks-degraded" >&2
+
+  if [[ "$review_safe" != "true" ]]; then
+    if [[ "$gate_word" == "dirty" ]]; then
+      log_reviewer_handback \
+        "the Reviewer reported ready, but $impl_pr_url is not safe to hand off: $gate_reason" \
+        "$impl_pr_url" "Get every required check green and clear the named security-severity code-scanning alert, then let the Reviewer re-examine it."
+      exit 0
     fi
+    if [[ "$gate_checks_unreadable" == "true" ]]; then
+      # A node fact, not a pull-request fact — logged as its own warning so a
+      # `gh` degraded on this node is visible as a pattern across items rather
+      # than only as N pull-request-shaped handbacks naming nothing to fix. The
+      # handback itself still runs: an unread required-check list is refused
+      # exactly like a genuinely failing one, and its unblock_condition names
+      # the node-level cause rather than telling the Enabler to inspect a pull
+      # request that may already be fine.
+      #
+      # TD-PPagop-26081404: `gh` degraded enough to fail this read is rarely
+      # wrong once — a node past a rate limit, or fighting a transient auth
+      # problem, is typically wrong for several consecutive items, and each one
+      # earning its own warning buries the pattern a human would actually act
+      # on. Once this node's own log shows `review_gate_unknown_streak_after`
+      # of these in a row, one louder escalation event replaces the per-item
+      # warning instead of piling another one on top of it — once per streak,
+      # not once per item past the threshold: `review_gate_degraded_since`,
+      # inside `review_gate_escalate_unreadable_streak` (TD-PPagop-26081603),
+      # is the same already-escalated dedup `crash_loop_escalated_since` gives
+      # requirement 2.7's crash loop, keyed on the run's own `first_ts`, so an
+      # already-escalated run logs nothing further here (the bookkeeping event
+      # above still records the failure, and the handback below still refuses
+      # the handoff) until a successful read starts a new streak.
+      streak_json="$(review_gate_escalate_unreadable_streak)"
+      if [[ -z "$streak_json" ]]; then
+        log_event "warning" "$(jq -nc --arg u "$impl_pr_url" --arg d "$gate_reason" \
+          '{detail: ("this node could not read " + $u + "'\''s required checks, so the handoff was refused rather than trusted on an unread check list: " + $d), pr_url: $u}')"
+      fi
+      log_reviewer_handback \
+        "the Reviewer reported ready, but $impl_pr_url's required checks could not be confirmed: $gate_reason" \
+        "$impl_pr_url" "Retry once a node can read GitHub's required-checks API for this pull request — nothing found here implicates the pull request itself."
+      exit 0
+    fi
+    if [[ "$ck_word" == "dirty" ]]; then
+      log_reviewer_handback \
+        "the Reviewer reported ready, but $impl_pr_url is not safe to hand off: $ck_reason" \
+        "$impl_pr_url" "Add the missing closing keyword (Closes/Fixes/Resolves #N) for the issue this PR claims to close, then let the Reviewer re-examine it."
+      exit 0
+    fi
+    # The gates were clean and the flip itself did not take.
     log_reviewer_handback \
-      "the Reviewer reported ready, but $impl_pr_url's required checks could not be confirmed: $gate_reason" \
-      "$impl_pr_url" "Retry once a node can read GitHub's required-checks API for this pull request — nothing found here implicates the pull request itself."
+      "the Reviewer reported ready, but $impl_pr_url is still a draft and the handoff could not be completed" \
+      "$impl_pr_url" "Confirm the pull request is out of draft with CI green."
     exit 0
   fi
 
-  # Requirement 25a, asked again here for the same reason requirement 31c
-  # asks the checks-and-alerts gate again at this point rather than trusting
-  # the Implementor-side pass above still holds: the PR body can change
-  # between the two handoffs (a pushed fix, an edited description), and this
-  # is the last point before a human ever sees it. Every target repository
-  # gets the same deterministic gate agent-ops's own CI workflow gives it
-  # (TD-PPagop-26080803). This is the layer that actually gates: the earlier
-  # call only tells the Reviewer, so a Reviewer that ignored it stops here.
-  ck_result="$(closing_keyword_gate "$impl_pr_url")" || true
-  ck_word=""; ck_reason=""
-  IFS=$'\t' read -r ck_word ck_reason <<<"$ck_result" || true
-  if [[ "$ck_word" == "dirty" ]]; then
-    log_reviewer_handback \
-      "the Reviewer reported ready, but $impl_pr_url is not safe to hand off: $ck_reason" \
-      "$impl_pr_url" "Add the missing closing keyword (Closes/Fixes/Resolves #N) for the issue this PR claims to close, then let the Reviewer re-examine it."
-    exit 0
-  fi
   # `unknown` is "the question could not be put" — a degraded `gh` on this
   # node, not a fault in this pull request — so it warns rather than blocks,
   # the same way an unreadable alert list does just below. A node degraded
-  # enough for this to matter does not get past `review_gate_verdict` above in
-  # any case: it already refused the handoff, with its own warning, the
-  # moment its required-check list came back unreadable rather than merely
-  # unable to confirm an alert or a keyword.
+  # enough for this to matter does not get past `handoff_complete_review`
+  # above in any case: it already refused the handoff, with its own warning,
+  # the moment its required-check list came back unreadable rather than
+  # merely unable to confirm an alert or a keyword.
   if [[ "$ck_word" == "unknown" ]]; then
     log_event "warning" "$(jq -nc --arg u "$impl_pr_url" --arg d "$ck_reason" \
       '{detail: ("could not confirm " + $u + " carries its closing keyword: " + $d), pr_url: $u}')"
@@ -7177,7 +7723,15 @@ if [[ "$rev_status" == "ready" ]]; then
   # read the diff — but the handoff is a fact about the PR, and asking GitHub
   # costs one field. `pr-ready` now means the PR is not a draft, not that
   # somebody said so; `handoff` records which of them made it true.
-  handoff_result="$(confirm_pr_ready "$impl_pr_url")" || true
+  handoff_result="$(jq -r '.handoff // ""' <<<"$review_json")"
+  # `safe: true` already guarantees one of the two arms below — the flip word
+  # is the last thing `handoff_complete_review` checks before it says so — so
+  # the case needs no `*)` arm refusing the handoff; the refusal for a flip
+  # that did not take is the `review_safe != "true"` block above. The default
+  # is still set, because the one place an unmatched word could surface is
+  # `pr-ready` below, and an unset variable under `errexit`/`nounset` would
+  # abort the cycle at exactly the point it records what it did.
+  handoff_by="script"
   case "$handoff_result" in
     already)
       handoff_by="reviewer"
@@ -7188,12 +7742,6 @@ if [[ "$rev_status" == "ready" ]]; then
         --arg d "reviewer reported ready but left $impl_pr_url a draft; the Script completed the handoff" \
         '{detail: $d, pr_url: $u}')"
       ;;
-    *)
-      log_reviewer_handback \
-        "the Reviewer reported ready, but $impl_pr_url is still a draft and the handoff could not be completed" \
-        "$impl_pr_url" "Confirm the pull request is out of draft with CI green."
-      exit 0
-      ;;
   esac
 
   # Requirement 31b: the draft flip above is the whole handoff exactly once per
@@ -7203,21 +7751,14 @@ if [[ "$rev_status" == "ready" ]]; then
   # the human: their review request was consumed when they submitted the review,
   # and the author cannot clear `CHANGES_REQUESTED`. So the second half of the
   # handoff is asked of GitHub too, on the same terms and for the same reason
-  # requirement 31a asks about the draft flag.
-  #
-  # Unconditional, not gated on `source == "review-feedback"`: the question
-  # ("does a human's review block this PR, and have they been asked to look
-  # again?") is answerable from the PR itself, costs one API call to answer `no`
-  # on a first-round PR, and gating it on the Co-Ordinator's classification
-  # would make a mislabelled source a silently unnotified human.
-  #
-  # Both `|| true`s are the shape every `confirm_*` call site carries: this runs
-  # under `errexit` at the point the cycle reports its outcome, and a non-zero
-  # return escaping from either the check or the `read` that splits its answer
-  # would abort the cycle exactly where it is recording what it did.
-  rereview_result="$(confirm_review_requested "$impl_pr_url")" || true
-  rereview_state=""; rereview_who=""
-  IFS=$'\t' read -r rereview_state rereview_who <<<"$rereview_result" || true
+  # requirement 31a asks about the draft flag — inside `handoff_complete_review`
+  # itself now, unconditionally, not gated on `source == "review-feedback"`: the
+  # question ("does a human's review block this PR, and have they been asked to
+  # look again?") is answerable from the PR itself, costs one API call to
+  # answer `no` on a first-round PR, and gating it on the Co-Ordinator's
+  # classification would make a mislabelled source a silently unnotified human.
+  rereview_state="$(jq -r '.rereview.state // ""' <<<"$review_json")"
+  rereview_who="$(jq -r '.rereview.who // ""' <<<"$review_json")"
   if [[ "$rereview_state" == "failed" ]]; then
     # A warning, never a handback: the pull request is finished, green and
     # visible, and only the notification is missing (see lib/handoff.sh).
@@ -7229,19 +7770,14 @@ if [[ "$rev_status" == "ready" ]]; then
   # Requirement 38: nothing's `CHANGES_REQUESTED` above means there is no
   # blocking reviewer to re-request from — but the pull request may still be
   # exactly where a human needs to look (a first review, or an approval
-  # nobody has acted on). `ensure_human_reviewer` asks GitHub the same way
-  # `confirm_review_requested` did, targeted at `enabler_assignee` instead of
-  # a blocking reviewer set.
-  human_reviewer_state=""
-  human_reviewer_who=""
-  if [[ "$rereview_state" == "none" && -n "$enabler_assignee" ]]; then
-    human_reviewer_result="$(ensure_human_reviewer "$impl_pr_url" "$enabler_assignee")" || true
-    IFS=$'\t' read -r human_reviewer_state human_reviewer_who <<<"$human_reviewer_result" || true
-    if [[ "$human_reviewer_state" == "failed" ]]; then
-      log_event "warning" "$(jq -nc --arg u "$impl_pr_url" --arg a "$enabler_assignee" --arg w "$human_reviewer_who" \
-        --arg d "$impl_pr_url is ready with nothing blocking it, but review could not be requested from ${human_reviewer_who:-$enabler_assignee} — it will not appear in their review queue" \
-        '{detail: $d, pr_url: $u} + (if $w == "" then {reviewers: [$a]} else {reviewers: ($w | split(","))} end)')"
-    fi
+  # nobody has acted on). `handoff_complete_review` asks GitHub the same way,
+  # targeted at `enabler_assignee` instead of a blocking reviewer set.
+  human_reviewer_state="$(jq -r '.human_reviewer.state // ""' <<<"$review_json")"
+  human_reviewer_who="$(jq -r '.human_reviewer.who // ""' <<<"$review_json")"
+  if [[ "$human_reviewer_state" == "failed" ]]; then
+    log_event "warning" "$(jq -nc --arg u "$impl_pr_url" --arg a "$enabler_assignee" --arg w "$human_reviewer_who" \
+      --arg d "$impl_pr_url is ready with nothing blocking it, but review could not be requested from ${human_reviewer_who:-$enabler_assignee} — it will not appear in their review queue" \
+      '{detail: $d, pr_url: $u} + (if $w == "" then {reviewers: [$a]} else {reviewers: ($w | split(","))} end)')"
   fi
 
   log_event "pr-ready" "$(jq -nc --arg u "$impl_pr_url" --arg h "$handoff_by" \
@@ -7256,6 +7792,18 @@ if [[ "$rev_status" == "ready" ]]; then
   # claim pr-raised left standing above is released only now, at the actual
   # handoff, not back when the item-keyed claim was.
   release_pr_claim
+
+  # --- 8b. Approver stage (D18 WI-5) ---
+  # After every existing gate has passed and the handoff itself is complete —
+  # review_gate_verdict, the closing-keyword gate, confirm_pr_ready,
+  # confirm_review_requested, ensure_human_reviewer, the pr-ready log and the
+  # claim release, all above — the tiered Approver gets one independent look,
+  # for every repository whose merge_autonomy is above `human`. Placed last
+  # and gating nothing above it: a refusal is a GitHub review sitting on an
+  # already-ready pull request, not a reason to withhold the pr-ready log or
+  # the claim release, exactly as a human's own CHANGES_REQUESTED never
+  # withheld either of those — so this runs after both, never before.
+  run_approver_stage "$impl_pr_url" "$rev_complexity"
 else
   # Requirement 32a: a Reviewer that cannot hand off hands *back*, not out. The
   # verdict names a real impediment on a real PR, which is a blocked item —

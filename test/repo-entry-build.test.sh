@@ -60,13 +60,14 @@ fi
 run_entry_build() {  # run_entry_build <slug> <default_branch> <sources-json> <ipp>
   #                     <findings> <review_feedback> <abandoned_drafts>
   #                     <merge_conflicts> <dequeued> <register_hygiene> <issues>
-  #                     <tech_debt>
+  #                     <tech_debt> [issues_excluded]
   # Every one of these is consumed only by the eval'd entry_build_block,
   # invisible to shellcheck, including the `entry` it assigns.
   # shellcheck disable=SC2034
   ( slug="$1" default_branch="$2" sources="$3" implementation_plan_path="$4" \
     findings="$5" review_feedback="$6" abandoned_drafts="$7" merge_conflicts="$8" \
-    dequeued="$9" register_hygiene="${10}" issues="${11}" tech_debt="${12}"
+    dequeued="$9" register_hygiene="${10}" issues="${11}" tech_debt="${12}" \
+    issues_excluded="${13:-[]}"
     eval "$entry_build_block"
     # shellcheck disable=SC2154
     printf '%s' "$entry" )
@@ -81,7 +82,8 @@ out="$(run_entry_build "o/r" "main" '["tech-debt"]' "" \
   '[{"source":"dequeued","ref":"pr-4-dequeued-dd"}]' \
   '[{"source":"register-hygiene","ref":"register-hygiene-cc"}]' \
   '[{"source":"issues","ref":"11"}]' \
-  '[{"source":"tech-debt","ref":"TD1"}]')"
+  '[{"source":"tech-debt","ref":"TD1"}]' \
+  '[{"number":12,"reason":"assigned"}]')"
 
 assert_eq "slug and default_branch carry through" "o/r main" \
   "$(jq -r '"\(.slug) \(.default_branch)"' <<<"$out")"
@@ -93,6 +95,8 @@ assert_eq "merge_conflicts carries through" "pr-3-conflict-bb" "$(jq -r '.merge_
 assert_eq "dequeued carries through" "pr-4-dequeued-dd" "$(jq -r '.dequeued[0].ref' <<<"$out")"
 assert_eq "register_hygiene carries through" "register-hygiene-cc" "$(jq -r '.register_hygiene[0].ref' <<<"$out")"
 assert_eq "issues carries through" "11" "$(jq -r '.issues[0].ref' <<<"$out")"
+assert_eq "issues_excluded carries through" '{"number":12,"reason":"assigned"}' \
+  "$(jq -c '.issues_excluded[0]' <<<"$out")"
 assert_eq "tech_debt carries through" "TD1" "$(jq -r '.tech_debt[0].ref' <<<"$out")"
 assert_eq "human_visibility starts empty — always filled in later" "[]" "$(jq -c '.human_visibility' <<<"$out")"
 assert_eq "no implementation_plan_path key when the source isn't configured" "false" \
