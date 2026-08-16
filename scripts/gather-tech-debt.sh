@@ -61,7 +61,8 @@
 # read.
 #
 # Degrades to `[]` (exit 0) on any failure, like gather-findings.sh — and like
-# gather-issues.sh, whose own empty result is `{"candidates":[],"excluded":[]}`
+# gather-issues.sh, whose own degraded result is
+# `{"candidates":[],"excluded":null}`
 # rather than a bare array: this output *is* the Co-Ordinator's input, so an empty
 # array faithfully records what it saw, and a repo's `head_sha` (already in the
 # no-op fingerprint) still busts the fingerprint when a real commit changes the

@@ -117,7 +117,7 @@ if [[ -z "$slug" ]]; then
   exit 64
 fi
 
-# Print the empty shape and exit 0, having said why on stderr: a gatherer
+# Print the degraded shape and exit 0, having said why on stderr: a gatherer
 # that aborted the cycle would make cost control a reliability risk.
 # `excluded: null`, not `[]` — see "Degrading" above.
 degrade() {

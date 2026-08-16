@@ -8529,7 +8529,8 @@ What exists, and the requirements each part answers to:
    own gate and assignment between the two) `test/human-visibility-wiring.test.sh`;
    must pass `shellcheck`.
 3j. `scripts/gather-issues.sh` implementing requirement 3j: given a repo slug,
-   prints `{"candidates": […], "excluded": […]}`. `candidates` is the JSON
+   prints `{"candidates": […], "excluded": […]|null}`. `candidates` is the
+   JSON
    array of the repo's candidate issues — open, unassigned, not labelled
    `blocked`, naming no unresolved `Blocked-by:` reference (requirement 34j,
    each reference's state checked live once the candidate's whole thread is
@@ -8539,7 +8540,9 @@ What exists, and the requirements each part answers to:
    `excluded` is `{number, reason}` for every issue the three deterministic
    drops above removed (never a pull request), `reason` one of `"assigned"`,
    `"blocked-label"`, `"blocked-by: <ref>"` (agent-ops#447). Fails safe to
-   `{"candidates":[],"excluded":[]}` (exit 0) with failures loud on stderr.
+   `{"candidates":[],"excluded":null}` (exit 0) with failures loud on stderr —
+   `excluded` is `null`, not `[]`, because a filter that did not run to
+   completion does not know the set to be empty (requirement 3j).
    Its filter and shape are regression-tested in `test/issues-prefetch.test.sh`
    and `test/dependency-gate.test.sh`; must pass `shellcheck`.
 3t. `scripts/gather-tech-debt.sh` implementing requirement 3t: given a repo
@@ -10101,7 +10104,7 @@ pull request, run the ones the change touches and any it could regress.
    `Medium`), its body, and its comments verbatim; the assigned and
    `Blocked`-labelled drops reappear in `excluded` tagged `assigned` and
    `blocked-label` while the pull request never does (agent-ops#447); a
-   failing API degrades to `{"candidates":[],"excluded":[]}`
+   failing API degrades to `{"candidates":[],"excluded":null}`
    (exit 0) with the failure on stderr; and the no-op fingerprint
    (`lib/noop-skip.sh`) differs between two inputs identical except for the
    text of one issue comment — the one transition only the verbatim array
