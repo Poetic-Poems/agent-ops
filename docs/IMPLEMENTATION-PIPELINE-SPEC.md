@@ -809,31 +809,80 @@ resolution, `lib/merge-autonomy.sh`):
 - **`agent-merges-routine`**, **`agent-merges-all`** — accepted and validated
   (requirement 2.3b: a level here with no `approver_app_id`, or with the
   repository's own ruleset still requiring code-owner review, is a
-  `scripts/doctor.sh` failure) and reviewed identically to
-  `agent-approves` (requirement 8c), but land no differently: **a human
-  still merges every pull request at these levels too**, because no
-  requirement in this document arms an automatic merge or enqueue yet — that
-  is a later work item's job (the design's own WI-7). Configuring either
-  level today buys the same App review `agent-approves` does and nothing
-  more.
+  `scripts/doctor.sh` failure) and reviewed identically to `agent-approves`
+  (requirement 8c). Landing differs: once the Approver's own engagement this
+  round reaches an explicit, non-adjudicating `APPROVE`, the arming step
+  (requirement 8d, `run_landing_stage`, `lib/landing.sh`) re-reads every
+  gate below fresh and, only if every one clears, lands the pull request
+  itself — enqueued where the base branch has an active merge queue, or
+  `gh pr merge --auto --squash` where it does not — under the Approver
+  App's own minted token, never the pipeline's authoring identity. A human's
+  residual act narrows to whatever the classifier below refused. Protected
+  paths refuse arming at **both** levels; `agent-merges-all` differs from
+  `agent-merges-routine` only in which sources and complexities are eligible
+  (`merge_autonomy_routine_sources`, below) — the critical tier and cool-off
+  that would let a protected-path pull request land automatically are
+  WI-12's job (Stage 4), not implemented here.
+
+  A pull request is eligible to land automatically iff **all** of:
+  - `merge_autonomy_effective_level` is `agent-merges-routine` or
+    `agent-merges-all` at the moment of decision (never the raw configured
+    value — the kill switch and a WI-6 budget freeze both bind here);
+  - its resolved `complexity` is `low` or `medium` — `high` never arms,
+    regardless of source or path, the first half of a deliberate belt and
+    braces (requirement 26a already forces `high` onto anything touching
+    concurrency, security, CI/workflow machinery or shared library code);
+  - its work order's `source` is a member of `merge_autonomy_routine_sources`
+    (config, default `register-hygiene`/`tech-debt`) for this repository;
+  - its diff touches none of six protected path prefixes — `.github/`,
+    `deploy/`, `prompts/`, `lib/`, `config.schema.json`, `CODEOWNERS` — the
+    second half of the belt and braces, and this design's own answer to risk
+    register item 1 (a pull request self-modifying the gate it is riding
+    through it). `agent-cycle.sh`, `review-cycle.sh` and `config.json` are
+    plainly gate-bearing too and are deliberately **not** on this list —
+    widening it is left to a human, not decided here.
+
+  An eligible pull request still arms nothing unless every one of a second
+  set of gates, each re-read fresh rather than reused from earlier in the
+  round, also clears: the required checks are green and the security-alert
+  delta is clean at the current head (`review_gate_verdict`, stricter here
+  than the ordinary ready-gate handoff — an alerts-only `unknown` refuses
+  arming even though it only warns there); no human `CHANGES_REQUESTED`
+  stands; the merge budget (below) says `arm`, not `hold` or `refuse`; and
+  the pull request is not already in the merge queue. **Any of these that
+  cannot be read is a refusal, logged `landing-refused`, never a pass** —
+  the same fail-closed discipline `lib/review-gate.sh` established for the
+  ready-gate handoff, applied here to the one place a pull request lands
+  without a human click.
 
 The fleet-wide kill switch (requirement 2.3b) forces every repository's
 *effective* level to `human` regardless of what is configured, independent
 of this section — `merge_autonomy_effective_level` is what every approval
-path (`run_approver_stage`) reads, never the raw configured value.
+and landing path (`run_approver_stage`, `run_landing_stage`) reads, never
+the raw configured value. Disabling the level for one repository (setting
+`merge_autonomy` back to `human` or `agent-approves`, per repository or
+fleet-wide) or pulling the kill switch both disarm cleanly and immediately:
+neither the Approver stage nor the arming step executes any further write
+at or below the level that change takes effect, and nothing about a pull
+request already landed is undone.
 
-Above `human`, until a later work item arms automatic landing, the only
-thing bounding how fast pull requests actually merge is a human's own click
-— this document arms no rate of its own. `merge_budget_per_day`
-(requirement 2.3c, `lib/merge-budget.sh`) is what replaces that bound once
-landing is armed: a rolling-24-hour cap on pull requests this pipeline may
-land in one repository, enforced at the arming step itself rather than left
-to however often a human happens to click merge. It is already partly live
-today, ahead of that work item, through the same function every level here
-is read from: a counting anomaly — more pull requests landed in a window
-than the cap ever permitted, which a correct governor should never observe
-— freezes a repository's `merge_autonomy_effective_level` at `agent-approves`
-until a human clears it, independent of whatever level is configured.
+Above `human` but below `agent-merges-routine`, the only thing bounding how
+fast pull requests actually merge is a human's own click — this document
+arms no rate of its own there. `merge_budget_per_day` (requirement 2.3c,
+`lib/merge-budget.sh`) is what replaces that bound at `agent-merges-routine`
+and above: a rolling-24-hour cap on pull requests this pipeline may land in
+one repository, enforced at the arming step itself (`merge_budget_decide`,
+one of the gates above) rather than left to however often a human happens
+to click merge. Reaching the cap approves a pull request through the
+ordinary review path but does not arm its landing — the backlog queues
+visibly rather than merging past the cap, and nothing re-attempts a held
+pull request automatically; a human merges it, or a later round's own
+Approver approval re-enters the arming step fresh (a gap tracked as
+tech-debt, not closed by this document). A counting anomaly — more pull
+requests landed in a window than the cap ever permitted, which a correct
+governor should never observe — freezes a repository's
+`merge_autonomy_effective_level` at `agent-approves` until a human clears
+it, independent of whatever level is configured.
 
 Every other branch **created by this system** (i.e. under `branch_prefix`)
 is entirely at the agents' disposal: the Reviewer may amend, add to, rebase,
@@ -1793,15 +1842,11 @@ implements.
    ref), logging `merge-budget-freeze-escalated` only on an issue actually
    filed.
 
-   Nothing in this pipeline calls `merge_budget_decide` or
-   `merge_budget_apply_decision` from a behaviour-affecting path yet — no
-   requirement anywhere arms an automatic landing today ("## The Landing
-   Gate"), so there is no call site for a budget to gate. This requirement
-   delivers the mechanism and its doctrine; the work item that arms
-   automatic landing is what calls both functions for real, the same
-   sequencing requirement 2.3b's own "at this stage nothing does" already
-   established for the kill switch. `merge_autonomy` at `human` is
-   unaffected by any of this: a freeze only ever lowers a level already
+   `run_landing_stage` (requirement 8d, D18 WI-7) is the one
+   behaviour-affecting caller of `merge_budget_decide` and
+   `merge_budget_apply_decision` — one of the gates the arming step re-reads
+   fresh before landing a pull request itself. `merge_autonomy` at `human`
+   is unaffected by any of this: a freeze only ever lowers a level already
    above `agent-approves`, and a repository configured at or below it stays
    exactly as configured, frozen or not.
 2.4. **The role guard.** The environment variable `AGENT_OPS_ROLE` names the
@@ -4337,13 +4382,13 @@ implements.
    own open-issue dedup matches on across repeated rounds, so a persisting
    disagreement raises one issue, not one per cycle.
 
-   No stage merges, at any tier, at any `merge_autonomy` level this work item
-   implements. `agent-merges-routine` and `agent-merges-all` are accepted and
-   validated (requirement 2.3b) and run the identical Approver review this
-   requirement and 8b describe, but land no differently from
-   `agent-approves`: the human still merges every pull request, because no
-   landing/arming step exists yet (that is a later work item's job — see
-   "## The Landing Gate"). The cardinal rule survives regardless of level:
+   No *Approver* engagement merges, at any tier, at any `merge_autonomy`
+   level. `agent-merges-routine` and `agent-merges-all` run the identical
+   Approver review this requirement and 8b describe, but this stage never
+   lands anything at any level — landing, where it happens at all, is
+   requirement 8d's own separate arming step, run strictly after this stage
+   returns (see "## The Landing Gate"). The cardinal rule survives
+   regardless of level:
    the model never holds approve or merge rights; every GitHub write this
    stage makes is a Script-issued `gh api` call under the Approver's own
    minted token (`approver_post_review`), never a prompt-issued `gh pr
@@ -4355,6 +4400,96 @@ implements.
    nothing else: the pull request stays exactly as the human already had it,
    which is 8b's "a missing review, never a stranded PR" at the one point
    where the failure is the write itself rather than the decision.
+8d. **The arming step (D18 WI-7, same design §5.1/§6/§7; agent-ops#410).**
+   Immediately after `run_approver_stage` returns — never before, and gating
+   nothing above it, the same placement 8b already establishes for the
+   Approver stage itself relative to the handoff — `run_landing_stage`
+   (`agent-cycle.sh`, calling `lib/landing.sh`) decides whether to land the
+   pull request this cycle just reviewed. It arms nothing at all unless this
+   very round's own Approver engagement reached an explicit, non-adjudicating
+   `approve` — an adjudication's own `land` does not count, because a
+   disagreement settled this round is not the same fact as an engagement
+   that agreed the first time, and a tier the Approver stage never reached
+   at all (the stage disabled, a credential absent, an unparseable verdict)
+   arms nothing by construction. Everything else is re-read fresh from
+   GitHub at the moment of decision, never reused from earlier in the round
+   — the same discipline `lib/review-gate.sh` established for the ready-gate
+   handoff, applied here because nothing that arms an automatic merge may
+   trust state more than one function call old:
+
+   1. `merge_autonomy_effective_level` (`lib/merge-autonomy.sh`) — must
+      still be `agent-merges-routine` or `agent-merges-all`. The kill switch
+      or a WI-6 budget freeze may have moved since the Approver stage ran.
+   2. `landing_eligible` (`lib/landing.sh`) — the deterministic classifier:
+      `complexity:low`/`medium`, a `source` in this repository's own
+      `merge_autonomy_routine_sources`, and `landing_protected_paths_hit`
+      reporting no protected path touched (`.github/`, `deploy/`,
+      `prompts/`, `lib/`, `config.schema.json`, `CODEOWNERS` — anchored
+      whole-path prefixes, in the shape `scripts/is-docs-only.sh` uses for
+      its own allowlist; `lib/landing.sh` is self-protecting through the
+      `lib/` prefix already). Reads the changed-file list fresh from GitHub
+      (`gh api repos/SLUG/pulls/N/files`), bounded and truncation-checked
+      the way `lib/github-limit.sh`'s `GITHUB_PR_LIST_LIMIT` bounds a `gh pr
+      list` — a truncated or unreadable list is `unknown`, never a pass.
+      `unknown` is treated as `ineligible` at this and every other call
+      site; an empty or unrecognised `source` is `ineligible`, never
+      eligible by omission. Protected paths refuse arming at
+      `agent-merges-all` too — relaxing that for the critical tier is
+      WI-12's job (Stage 4), not this one's.
+   3. `review_gate_verdict` (`lib/review-gate.sh`) — must read `clean`.
+      Stricter than the ready-gate handoff's own use of this function
+      (requirement 31a): there, an alerts-only `unknown` still lets the
+      handoff proceed with a logged warning; here, any word but `clean` —
+      `dirty` or either flavour of `unknown` — refuses arming outright.
+   4. No human `CHANGES_REQUESTED` stands
+      (`_handoff_blocking_reviewers`, `lib/handoff.sh`, requirement 34a's
+      own standing-position computation, reused rather than re-derived) —
+      a fresh read, since a push or a review submitted after the Approver
+      posted is exactly the fact this must catch. The Approver's own
+      standing approval for this round is gate 0 above (the explicit,
+      non-adjudicating `approve` this function already required before
+      reaching this list); re-deriving it from the reviews list a second
+      time would answer nothing that verdict does not already answer, and
+      the Approver's own review is a bot-authored one that
+      `_handoff_blocking_reviewers` excludes by construction regardless.
+   5. `merge_budget_decide`/`merge_budget_apply_decision`
+      (`lib/merge-budget.sh`, requirement 2.3c) — only `arm` proceeds.
+      `hold` (the budget is exhausted) and `refuse` (the count could not be
+      established) are applied — logging `merge-budget-hold`, or a
+      `warning` for `refuse` — and stop here; neither arms anything, and
+      `hold` does not queue a retry of its own (see "## The Landing Gate"
+      for the tracked gap this leaves).
+   6. `merge_queue_probe` (`lib/merge-queue.sh`) — the pull request must not
+      already be queued. "Could not read" is "possibly queued" (the same
+      rule the merge-queue-awareness discipline already applies elsewhere
+      in this document), so it refuses too.
+
+   Any read above that cannot be answered is a refusal — logged
+   `landing-refused` (requirement 33) — never a pass, and every refusal
+   path costs exactly that: one log event, never a blocked pull request,
+   never a withheld claim, the same "a missing action costs a missing
+   action, never a stranded PR" contract 8b already establishes for the
+   Approver stage. Only once every gate above clears does `landing_arm`
+   (`lib/landing.sh`) perform the one write: `merge_queue_for_branch`
+   (`lib/merge-queue.sh`, beside `merge_queue_probe`) reads whether the pull
+   request's base branch itself carries an active merge queue — where it
+   does, `enqueuePullRequest` (GraphQL); where it does not, `gh pr merge
+   --auto --squash`. Both run under the Approver App's own minted
+   installation token, as a leading one-invocation `GH_TOKEN="$token" gh …`
+   assignment — never `export`, exactly as `approver_post_review` already
+   does and for the same reason: never the pipeline's own authoring
+   identity (the owner PAT), which would collapse the two-identity audit
+   trail §5.3 exists for into the same account authoring, approving and
+   landing every pull request. A successful arm logs `landing-armed`
+   exactly once, naming the `method` actually used (`enqueued` or
+   `auto-merge`), and never withholds anything requirement 8b already did.
+
+   The fleet-wide kill switch and a per-repository downgrade (setting
+   `merge_autonomy` back to `human` or `agent-approves`) both disarm
+   cleanly: `merge_autonomy_effective_level` is what gate 1 above reads,
+   never the raw configured value, so the very next round this function
+   runs for a repository at or below `agent-approves` refuses at gate 1
+   before any other read — no separate switch, no partial disarm.
 9. **Failure handling.** If any stage times out, exits non-zero, or returns
    an unparseable summary: kill that stage's process group, log
    `attempt-failed` with enough detail for a future cycle to know the item
@@ -6249,12 +6384,14 @@ implements.
     `merge-budget-hold`, `merge-budget-frozen`, `merge-budget-freeze-escalated`,
     `salvage`, `chained`,
     `approver-verdict`, `approver-escalated`,
+    `landing-armed`, `landing-refused`,
     `review-gate-checks-read`, `review-gate-checks-degraded`, `first-seen`,
     `issues-excluded`,
     `warning`, `cycle-end`. `merge-budget-hold`, `merge-budget-frozen` and
     `merge-budget-freeze-escalated` (requirement 2.3c,
-    `merge_budget_apply_decision`) are logged only once something calls it —
-    nothing does yet — carrying `repo`, `cap` and `count` throughout, plus
+    `merge_budget_apply_decision`) are logged whenever `run_landing_stage`
+    (requirement 8d) reaches `merge_budget_decide` and the decision is not
+    `arm` — carrying `repo`, `cap` and `count` throughout, plus
     `waiting_backlog` on `merge-budget-hold`, `fleet_flag` (the write
     outcome) on `merge-budget-frozen`, and `issue_number`/`issue_url` on
     `merge-budget-freeze-escalated`, on the same terms
@@ -6408,7 +6545,20 @@ implements.
     `issue_number` and `issue_url` of the escalation an unsettled adjudication
     raised; a filing that failed is a `warning` instead, since
     `create_escalation_issue`'s own dedup makes the retry next cycle free. A
-    `stage-start` carries the two caps that stage
+    `landing-armed` (requirement 8d, D18 WI-7) is written once per successful
+    arm, carrying `pr_url`, `repo`, `source`, `complexity` and `method` —
+    `enqueued` or `auto-merge`, `landing_arm`'s own report of which write it
+    made. A `landing-refused` carries `pr_url`, `repo` and `reason` — a plain
+    string, one per refusal path in `run_landing_stage`, naming the gate that
+    failed (an ineligible or unreadable classifier verdict, a dirty or
+    unreadable review gate, a standing human `CHANGES_REQUESTED`, an
+    unreadable merge budget or App login, an already-queued or unreadable
+    merge-queue probe, an unreadable token mint, or `landing_arm` itself
+    refusing). A `merge_budget_decide` result of `hold` or `refuse` reached
+    from the arming step logs through `merge_budget_apply_decision` exactly
+    as it always has (above), not `landing-refused` — the two vocabularies
+    do not overlap, so a reader scanning for either finds every refusal
+    exactly once. A `stage-start` carries the two caps that stage
     was given and where each came from — `backstop_min`, `inactivity_min`,
     `source` and `basis` (requirement 4f) — because a self-tuning number that
     cannot be traced is a mystery number. A `stage-end` carries `kill_reason` —
@@ -12890,6 +13040,55 @@ pull request, run the ones the change touches and any it could regress.
     above `human` configured with `approver_model_default` empty, the same
     shape its existing `approver_app_id` pairing check already fails on
     (`test/doctor.test.sh`).
+8t. **The arming step lands only what the classifier clears, re-reads every
+    gate fresh, and disarms cleanly (requirement 8d, D18 WI-7).**
+    `test/landing.test.sh` passes against a stubbed `gh`:
+    `landing_protected_paths_hit` reports every one of the six protected
+    prefixes (`.github/`, `deploy/`, `prompts/`, `lib/`, `config.schema.json`,
+    `CODEOWNERS`) and exits 0 when any is touched, 1 when none is, and 2 —
+    never trusted as a pass — on an unreadable or page-capped changed-file
+    listing; `landing_eligible` reads `ineligible` for a level below
+    `agent-merges-routine`, for `complexity:high` regardless of source or
+    path, for a source outside the repository's own
+    `merge_autonomy_routine_sources` (a repo-level override taking
+    precedence over the top-level list, the same precedence
+    `merge_autonomy` itself uses) and for an empty source, `unknown` on an
+    unreadable protected-path read, and `eligible` only once every condition
+    clears — with a pinned case confirming the `source` comparison is exact
+    string equality, never expanded against the four `issues:<band>` ranks
+    (an `issues:low` routine-list entry never matches a real issues work
+    order's own plain `"issues"` source); `landing_arm` enqueues via
+    `enqueuePullRequest` when `merge_queue_for_branch` reports an active
+    queue on the pull request's base branch, falls back to `gh pr merge
+    --auto --squash` when it reports none, issues either write with
+    `GH_TOKEN` set for that one invocation only, and returns non-zero
+    printing nothing when the pull request's own details, the queue probe,
+    the mutation or the merge itself cannot be confirmed.
+    `test/merge-queue.test.sh` covers `merge_queue_for_branch` the same way
+    `merge_queue_probe` is already covered: the literal `null` for no
+    queue, the queue object verbatim when one exists, and non-zero on an
+    unreadable or malformed response. Wired into `agent-cycle.sh`
+    (`test/approver-wiring.test.sh` continuing to pass confirms
+    `run_approver_stage` still reports `approver_stage_verdict`/
+    `approver_stage_adjudicating` correctly for `run_landing_stage`'s own
+    precondition): a protected-path pull request is never armed at
+    `agent-merges-routine` **or** `agent-merges-all`, whatever the Approver's
+    verdict, complexity or source; an Approver refusal, an adjudication (its
+    own `land` included), an unparseable verdict, or a stage that did not
+    run each leave `run_landing_stage` returning immediately with nothing
+    armed; at `merge_autonomy: human` and `agent-approves` no arming path
+    executes at all and every existing pr-ready/Approver behaviour is
+    unchanged; a standing human `CHANGES_REQUESTED` prevents arming
+    regardless of the App's own approval; a `merge_budget_decide` result of
+    `hold` or `refuse` reaches `merge_budget_apply_decision` and arms
+    nothing; a successful arm logs `landing-armed` exactly once and never
+    withholds `pr-ready`, the claim release or the Approver's own review;
+    every refusal path logs `landing-refused` naming a reason, never a
+    blocked pull request or a withheld claim. `scripts/doctor.sh` warns when
+    a repository's effective `merge_autonomy_routine_sources` names a source
+    that repository's own `sources` never gathers (`test/doctor.test.sh`).
+    `./scripts/render-config-table.sh --check`, `./scripts/lint-shell.sh`
+    and `perl scripts/td-check.pl` are clean.
 
 ## Host provisioning (human steps)
 
