@@ -789,7 +789,7 @@ out="$(render switch-scope-mirror.json)" || { printf 'FAIL - switch-scope-mirror
 assert_contains "a set fleet flag raises the fleet banner" \
   "Fleet switch is set" "$out"
 assert_not_contains "and its local mirror does not raise a second banner beside it" \
-  "Pipeline disabled" "$out"
+  "This node is disabled" "$out"
 assert_not_contains "nor badge the node that issued it as node-scoped" \
   'node-scoped disable: “resize the VM”' "$out"
 assert_contains "while a peer's genuine --this-node disable still badges" \
@@ -804,11 +804,23 @@ out="$(render switch-scope-orphan.json)" || { printf 'FAIL - switch-scope-orphan
 assert_not_contains "with the fleet flag cleared there is no fleet banner" \
   "Fleet switch is set" "$out"
 assert_contains "but the surviving mirror does raise this node's switch banner" \
-  "Pipeline disabled" "$out"
+  "This node is disabled" "$out"
 assert_contains "saying what it is, rather than blaming a decision nobody made" \
   "left over from a fleet-wide disable that has since been cleared" "$out"
 assert_contains "and the node's own card badges it, naming the command that clears it" \
   "this node is standing down alone" "$out"
+
+# A genuine node-scoped disable (issue #514): the re-enable advice must name
+# --this-node, since a bare --enable clears the *fleet* switch and leaves this
+# node's own record — and the node — still down.
+out="$(render switch-scope-node.json)" || { printf 'FAIL - switch-scope-node.json did not render:\n%s\n' "$out"; exit 1; }
+
+assert_contains "a genuine node-scoped disable's banner says this node, not the pipeline" \
+  "This node is disabled" "$out"
+assert_contains "and its re-enable advice names --this-node" \
+  "needs \`agent-cycle.sh --enable --this-node\`" "$out"
+assert_not_contains "never the bare --enable, which clears the fleet switch instead" \
+  "needs \`agent-cycle.sh --enable\`" "$out"
 
 printf '\n'
 if (( failures > 0 )); then
