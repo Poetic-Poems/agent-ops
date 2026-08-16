@@ -86,6 +86,8 @@ gh_backing="$tmp_dir/fleet-remote"
 mkdir -p "$gh_backing"
 issue_calls="$tmp_dir/issue-create-calls"
 : > "$issue_calls"
+pr_list_calls="$tmp_dir/pr-list-calls"
+: > "$pr_list_calls"
 
 cat > "$stub_bin/gh" <<'STUB'
 #!/usr/bin/env bash
@@ -138,16 +140,23 @@ if [[ "${args[0]:-}" == "api" ]]; then
 fi
 
 # --- gh pr list -R <slug> --state merged|open ... ---
+# The `--search` qualifier is recorded rather than honoured: the fixture is
+# already the answer, and what the assertions below need to see is that the
+# merged listing was scoped to the window at all (without it the listing
+# enumerates the label's whole lifetime history and truncates permanently —
+# see lib/merge-budget.sh's own note on merge_budget_window_status).
 if [[ "${args[0]:-}" == "pr" && "${args[1]:-}" == "list" ]]; then
-  slug="" state=""
+  slug="" state="" search=""
   i=2
   while (( i < ${#args[@]} )); do
     case "${args[$i]}" in
-      -R)      i=$((i+1)); slug="${args[$i]}" ;;
-      --state) i=$((i+1)); state="${args[$i]}" ;;
+      -R)       i=$((i+1)); slug="${args[$i]}" ;;
+      --state)  i=$((i+1)); state="${args[$i]}" ;;
+      --search) i=$((i+1)); search="${args[$i]}" ;;
     esac
     i=$((i+1))
   done
+  printf '%s\t%s\t%s\n' "$state" "$slug" "$search" >> "$PR_LIST_CALLS"
   f="$GH_FIXTURES/$state/${slug//\//__}.json"
   [[ -f "$f" ]] || exit 1
   cat "$f"
@@ -200,7 +209,8 @@ exit 1
 STUB
 chmod +x "$stub_bin/gh"
 
-export GH_BACKING="$gh_backing" GH_FIXTURES="$fixtures" ISSUE_CALLS="$issue_calls" PATH="$stub_bin:$PATH"
+export GH_BACKING="$gh_backing" GH_FIXTURES="$fixtures" ISSUE_CALLS="$issue_calls" \
+       PR_LIST_CALLS="$pr_list_calls" PATH="$stub_bin:$PATH"
 
 now="2026-08-16T12:00:00Z"
 label="autonomous-agent"
@@ -223,9 +233,21 @@ jq -sc '.' <(pr 1 "2026-08-16T10:00:00Z" "pullwright-approver[bot]") \
            <(pr 5 "2026-08-16T09:00:00Z" "pullwright-approver[bot]" "") \
   > "$fixtures/merged/acme__widgets.json"
 
+: > "$pr_list_calls"
 status="$(merge_budget_window_status "acme/widgets" "$label" "pullwright-approver[bot]" "$now")"
 assert_eq "two in-window, labelled, App-merged PRs count; the 25h-old, human-merged and unlabelled ones do not" \
   "ok	2" "$status"
+
+# The merged listing must be scoped to the window by GitHub's own qualifier,
+# not merely filtered to it afterwards. Unscoped, `gh pr list --state merged`
+# enumerates the label's whole lifetime history, which passes
+# GITHUB_PR_LIST_LIMIT on every repository this fleet governs and never comes
+# back under it — so the listing would read `truncated` on every call forever
+# and `arm`/`hold`/the anomaly freeze would all be unreachable in production
+# while every fixture here, being small, still passed.
+assert_eq "the merged listing is scoped to the window by merged:>=<cutoff>, not filtered afterwards" \
+  "merged	acme/widgets	merged:>=2026-08-15T12:00:00Z" \
+  "$(head -1 "$pr_list_calls")"
 
 # An unreadable listing (no fixture file at all).
 status="$(merge_budget_window_status "acme/unreadable" "$label" "pullwright-approver[bot]" "$now")"

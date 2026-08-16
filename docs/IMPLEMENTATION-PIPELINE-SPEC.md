@@ -1659,10 +1659,19 @@ implements.
    passed in, never looked up by this file, so it stays independent of
    `lib/approver-token.sh`), with `mergedAt` inside the trailing 24 hours of
    `NOW_ISO` — counted from GitHub's own record, never a private counter a
-   restart or a second node would not share. A listing that comes back at
-   `GITHUB_PR_LIST_LIMIT` (requirement 2.2's own truncation cap) reads
-   `truncated`, the same fail-closed direction as an outright-unreadable
-   listing: an undercount here is the dangerous one for a governor.
+   restart or a second node would not share. The listing is *scoped* to the
+   window by GitHub's own `merged:>=<cutoff>` search qualifier, not merely
+   filtered to it afterwards: `gh pr list` orders by creation, so an unscoped
+   `--state merged` listing enumerates the label's whole lifetime history,
+   which every repository this fleet governs passes within weeks and never
+   comes back under — leaving the listing truncated on every call and `arm`,
+   `hold` and the anomaly freeze all permanently unreachable. The `jq` filter
+   still decides the count on an exact `mergedAt >= cutoff` comparison, so
+   the qualifier need only be a superset of the window. A listing that comes
+   back at `GITHUB_PR_LIST_LIMIT` (requirement 2.2's own truncation cap)
+   reads `truncated`, the same fail-closed direction as an
+   outright-unreadable listing: an undercount here is the dangerous one for a
+   governor.
    `merge_budget_decide` (`CONFIG_JSON`, `SLUG`, `PR_LABEL`, `MERGED_LOGIN`,
    `[NOW_ISO]`) turns the count into one of three outcomes: `arm` (under
    cap), `hold` (at or over cap — the pull request is still approved
@@ -9922,8 +9931,10 @@ What exists, and the requirements each part answers to:
     (`fleet_flag_fetch_status`'s own compound-return idiom) — `ok`,
     `unreadable` or `truncated` (at `GITHUB_PR_LIST_LIMIT`,
     `lib/github-limit.sh`'s `github_pr_list_truncated`) — from one `gh pr
-    list --state merged` read, filtered in `jq` on `mergedAt`, `mergedBy.login`
-    and `labels`. `merge_budget_oldest_waiting SLUG PR_LABEL` is a second,
+    list --state merged --search "merged:>=<cutoff>"` read, scoped to the
+    window by that qualifier (requirement 2.3c) and filtered in `jq` on
+    `mergedAt`, `mergedBy.login` and `labels`.
+    `merge_budget_oldest_waiting SLUG PR_LABEL` is a second,
     best-effort read of SLUG's open pull requests for a `hold` decision's
     backlog. `merge_budget_decide` composes both into one JSON object —
     `{decision, cap, count, anomaly, waiting_backlog}` — with no log events
@@ -13258,6 +13269,29 @@ requirements above, which state only what is.
   `stage_inactivity`'s own per-actor `0` already carries — an installation
   that wants no budget at all says so, rather than the absence of a key
   reading ambiguously as "unlimited" or "not yet configured".
+- **The 24-hour count is scoped by a search qualifier, accepting the search
+  index's lag, rather than filtered out of an unscoped listing (requirement
+  2.3c).** The obvious implementation — list merged pull requests carrying
+  `pr_label` and keep the ones inside the window — is not merely wasteful,
+  it does not work: `gh pr list` orders by creation, so the listing is the
+  label's whole lifetime history, and `GITHUB_PR_LIST_LIMIT` is 60. Every
+  repository this fleet governs crosses 60 merged labelled pull requests
+  within weeks and never comes back under it, so the listing truncates on
+  every call, and a governor that reads a truncated listing as unreadable —
+  correctly, since an undercount is its dangerous direction — can then only
+  ever answer `refuse`. `arm`, `hold` and the anomaly freeze would all be
+  unreachable in production while every fixture-sized test still passed. The
+  qualifier bounds the *window* instead, so reaching the page cap once again
+  means something real. Its cost is that GitHub's search index is eventually
+  consistent, so a merge from the last few seconds may be missing and the
+  count may be low by one — the dangerous direction, accepted knowingly:
+  undercounting by one on a rolling 24-hour window is strictly better than
+  never establishing a count at all, and the cycle's 15-minute tick confines
+  the exposure to a merge landing inside the same tick that reads it. The
+  exact alternative is a GraphQL walk of `pullRequests(states: MERGED,
+  orderBy: {field: UPDATED_AT, direction: DESC})` with an early exit once
+  `updatedAt` falls below the cutoff — no index, no lag — and it is what to
+  reach for if the lag is ever shown to matter.
 - **`fleet_flag_delete` probes every 404 unconditionally — there is no
   fail-open mode to opt into (requirement 2.3a, TD-PPagop-26081604).**
   TD-PPagop-26081602 taught the *read* side of the fleet-flag machinery to

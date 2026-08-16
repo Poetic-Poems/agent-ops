@@ -113,6 +113,30 @@ merge_budget_effective_cap() {
 # so this counts as unreadable, not as a floor to trust). NOW_ISO defaults
 # to the current time and exists only so a test can pin the window without
 # waiting for one.
+#
+# The listing is scoped to the window by GitHub's own `merged:>=<cutoff>`
+# search qualifier, not merely filtered to it afterwards, and that is a
+# correctness requirement rather than a saving. `gh pr list` returns the
+# most recently *created* pull requests, so an unscoped `--state merged`
+# listing enumerates the whole lifetime history of the label: every
+# repository this fleet governs passes `GITHUB_PR_LIST_LIMIT` merged
+# labelled pull requests within weeks and never comes back under it, at
+# which point the listing is truncated on every single call and this
+# function can only ever answer `truncated` — `arm`, `hold` and the anomaly
+# freeze all become permanently unreachable. Scoped, the page cap bounds the
+# *window* instead, so reaching it means 60-odd pull requests genuinely
+# landed in 24 hours, which is a real anomaly and rightly refuses.
+#
+# The qualifier only has to be a *superset* of the window: the `jq` filter
+# below still decides the count on an exact `mergedAt >= cutoff` comparison,
+# so nothing depends on GitHub honouring the time component (it does; it
+# would remain correct if it rounded the qualifier to whole days). What it
+# does depend on is the search index, which is eventually consistent — a
+# merge from the last few seconds may not appear yet, undercounting by one.
+# That is the dangerous direction, and it is accepted deliberately: an
+# undercount of one on a 24-hour window is strictly better than a count that
+# is never established at all, and the cycle's own 15-minute tick keeps the
+# exposure to a merge landing inside the same tick that reads it.
 merge_budget_window_status() {
   local slug="$1" pr_label="$2" merged_login="$3" now_iso="${4:-}"
   [[ -n "$now_iso" ]] || now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -123,6 +147,7 @@ merge_budget_window_status() {
   }
   local raw total
   raw="$(gh pr list -R "$slug" --state merged --label "$pr_label" \
+    --search "merged:>=$cutoff" \
     --limit "$GITHUB_PR_LIST_LIMIT" --json number,mergedAt,mergedBy,labels 2>/dev/null)" || {
     printf 'unreadable\t'
     return 0
