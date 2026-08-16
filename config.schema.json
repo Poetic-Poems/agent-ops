@@ -1175,9 +1175,8 @@
               }
             },
             "branch_prefix": {
+              "$ref": "#/$defs/branchPrefix",
               "description": "Branch naming for the review pipeline: `<branch_prefix><date>`. A branch is already scoped to its repository, so no slug is needed.",
-              "type": "string",
-              "minLength": 1,
               "x-docs": {
                 "readme": "Branch name `review/<date>`.",
                 "spec": "Branch name `review/<date>`, e.g. `review/2026-07-20`. A branch is already scoped to its repository, so no slug is needed.",
@@ -1203,9 +1202,8 @@
               }
             },
             "min_days_between_reviews": {
+              "$ref": "#/$defs/minDaysBetweenReviews",
               "description": "The skip-guard threshold: a repository reviewed within this many days is skipped. Leave a day of slack against the intended cadence, so a review that lands late one week is not pushed a full extra week the next.",
-              "type": "number",
-              "minimum": 0,
               "x-docs": {
                 "readme": "Skip a repo reviewed within this many days. This is what makes a daily cron tick behave as \"about once a week\" and stay robust to a sleeping machine.",
                 "spec": "The skip-guard threshold (R4). A repo reviewed within this many days is skipped. Six (not seven) leaves a day of slack, so a review that lands late one week is not pushed a full extra week the next.",
@@ -1213,8 +1211,8 @@
               }
             },
             "not_before": {
+              "$ref": "#/$defs/notBefore",
               "description": "Optional timestamp before which no review may start. Absent or empty means no stand-down. It expires by itself, which is why it exists rather than raising `min_days_between_reviews`: a threshold has to be put back by hand, and a cadence left quietly throttled is not noticed for weeks.",
-              "type": "string",
               "default": "",
               "x-docs": {
                 "readme": "Optional. Hold reviews until this timestamp \u2014 e.g. `2026-07-30T16:00:00Z` \u2014 while the hourly pipeline carries on. Use this rather than `agent-cycle.sh --disable`, which is shared and would stop the cycles too, and rather than raising `min_days_between_reviews`, which has to be lowered again afterwards. It expires by itself; leaving the key in place once the date has passed does nothing. An unparseable value stands reviews down rather than running through it. As `defaults.not_before` it holds every configured repository off before the pipeline even takes its lock; a repository's own `not_before` override additionally holds that repository off for longer (or shorter) than the installation-wide value, checked per repository once the cycle is under way.",
@@ -1249,9 +1247,8 @@
                 "minLength": 1
               },
               "branch_prefix": {
-                "description": "Override for `defaults.branch_prefix`, for this repository alone.",
-                "type": "string",
-                "minLength": 1
+                "$ref": "#/$defs/branchPrefix",
+                "description": "Override for `defaults.branch_prefix`, for this repository alone."
               },
               "timeout_review": {
                 "$ref": "#/$defs/timeoutMinutes",
@@ -1262,13 +1259,12 @@
                 "description": "Override for `defaults.inactivity_review`, for this repository alone."
               },
               "min_days_between_reviews": {
-                "description": "Override for `defaults.min_days_between_reviews`, for this repository alone.",
-                "type": "number",
-                "minimum": 0
+                "$ref": "#/$defs/minDaysBetweenReviews",
+                "description": "Override for `defaults.min_days_between_reviews`, for this repository alone."
               },
               "not_before": {
-                "description": "Override for `defaults.not_before`, for this repository alone.",
-                "type": "string"
+                "$ref": "#/$defs/notBefore",
+                "description": "Override for `defaults.not_before`, for this repository alone."
               }
             }
           },
@@ -1330,6 +1326,20 @@
       "description": "A liveness-watchdog threshold, in whole minutes; 0 disables the watchdog for that actor. Deliberately carries no `default`: the shipped prior for this value lives in code (`STAGE_BUDGET_PRIORS` in lib/stage-budget.sh), and a `default` here would be injected by `config_defaults` and read as a configured override, which wins permanently — turning absence into a hard setting and leaving requirement 4f's derivation unreachable.",
       "type": "integer",
       "minimum": 0
+    },
+    "branchPrefix": {
+      "description": "A non-empty branch-name prefix.",
+      "type": "string",
+      "minLength": 1
+    },
+    "minDaysBetweenReviews": {
+      "description": "A non-negative day count.",
+      "type": "number",
+      "minimum": 0
+    },
+    "notBefore": {
+      "description": "An optional timestamp string before which something may not start. Absent or empty means no stand-down; deliberately carries no `default` of its own, so the two sites that `$ref` it choose independently whether to fabricate one.",
+      "type": "string"
     }
   }
 }
