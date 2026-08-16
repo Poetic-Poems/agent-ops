@@ -8,6 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- The deterministic eligibility classifier and the arming/enqueue step (D18
+  WI-7, requirement 8d; agent-ops#410): at `merge_autonomy: agent-merges-routine`
+  or `agent-merges-all`, once the Approver's own engagement reaches an
+  explicit, non-adjudicating approval, `run_landing_stage` re-reads every
+  gate fresh — the effective level, `complexity:low`/`medium`, the work
+  order's `source` against the new `merge_autonomy_routine_sources` config
+  key, no protected path touched (`.github/`, `deploy/`, `prompts/`, `lib/`,
+  `config.schema.json`, `CODEOWNERS`), the required checks and security-alert
+  delta, no standing human `CHANGES_REQUESTED`, the merge budget, and the
+  merge queue — and lands the pull request itself: `enqueuePullRequest`
+  where the base branch has an active merge queue, `gh pr merge --auto
+  --squash` where it does not, both under the Approver App's own minted
+  token. Any unreadable gate refuses arming (`landing-refused`), never a
+  pass. Ships dormant — `merge_autonomy` is `human` fleet-wide by default,
+  so nothing arms until an installation explicitly raises a repository's
+  level (D16, §6).
 - Priority triage (D18 WI-11, requirement 39g; agent-ops#414): the Refiner now
   bands every open issue whose `Priority` field is unset, so the owner never
   has to set it by hand. `gather-issues.sh` emits a new `priority_set`
@@ -29,9 +45,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   repository. `max_open_agent_prs`'s back-pressure exclusion is now level-
   aware: at `agent-merges-routine` and above, a ready pull request counts
   toward the cap even when it is not `CHANGES_REQUESTED`, since there is no
-  human queue for it to be parked in at that level. This delivers the
-  mechanism and its doctrine only — nothing yet calls it from a behaviour-
-  affecting path, since no requirement arms an automatic landing today.
+  human queue for it to be parked in at that level. Enforced at the arming
+  step (D18 WI-7, above).
 
 ### Fixed
 
