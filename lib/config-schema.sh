@@ -16,8 +16,8 @@
 # perl and python3's standard library) or several hundred lines of jq; neither
 # buys anything the product needs. Supported: type, enum, const, minimum,
 # maximum, exclusiveMinimum, exclusiveMaximum, minLength, pattern, minItems,
-# uniqueItems, properties, required, additionalProperties (false only), items,
-# and local `$ref`s into `#/$defs`.
+# uniqueItems, contains, properties, required, additionalProperties (false
+# only), items, and local `$ref`s into `#/$defs`.
 #
 # Also holds three cross-key rules the schema itself cannot state — each
 # holds *between* two keys (or two array entries) rather than about one,
@@ -159,6 +159,21 @@ config_schema_errors() {
                  + (if ($s | has("items"))
                     then [ range($v | length) as $i
                            | errs($s.items; $v[$i]; "\($p)[\($i)]")[] ]
+                    else [] end)
+                 # `contains`: at least one entry must satisfy the subschema.
+                 # When that subschema is a bare `const` — the only form the
+                 # schema uses today — the message names the missing value,
+                 # because "no entry satisfies `contains`" would send the
+                 # operator to this file to find out what was wanted.
+                 + (if ($s | has("contains"))
+                    then (if ([ range($v | length) as $i
+                                | select((errs($s.contains; $v[$i]; "\($p)[\($i)]") | length) == 0) ]
+                              | length) == 0
+                          then [ "\($p): " +
+                                 (if (($s.contains | type) == "object") and ($s.contains | has("const"))
+                                  then "must include \($s.contains.const | tojson)"
+                                  else "no entry satisfies its `contains` subschema" end) ]
+                          else [] end)
                     else [] end)
                  else [] end)
               end

@@ -138,6 +138,7 @@ minLength
 pattern
 minItems
 uniqueItems
+contains
 properties
 required
 additionalProperties
@@ -454,6 +455,15 @@ assert_rejected "an unknown work source is rejected" \
   '.repos[0].sources += ["issues:urgnet"]' 'is not one of: security, issues:urgent'
 assert_rejected "a duplicated work source is rejected" \
   '.repos[0].sources += [.repos[0].sources[0]]' 'config.repos[0].sources: contains duplicate entries'
+# `abandoned-drafts` is the one required member (schema `contains`;
+# requirement 3e, #472): without it a repository has no route back to a
+# stalled draft it raised — the message must name the missing token, not
+# just the keyword that noticed.
+assert_rejected "a sources array without abandoned-drafts is rejected" \
+  '.repos[0].sources -= ["abandoned-drafts"]' \
+  'config.repos[0].sources: must include "abandoned-drafts"'
+assert_valid "abandoned-drafts may sit at any rank in sources" \
+  '.repos[0].sources |= (["abandoned-drafts"] + (. - ["abandoned-drafts"]))'
 assert_rejected "a repo slug that is not owner/name is rejected" \
   '.repos[0].slug = "poetic"' 'config.repos[0].slug: "poetic" does not match'
 assert_rejected "a project_review repo slug that is not owner/name is rejected" \

@@ -183,7 +183,7 @@ chmod +x "$stub_bin/claude"
 slug="acme-org/target-repo"
 base_config="$tmp/base-config.json"
 jq --arg slug "$slug" '
-  .repos = [{slug: $slug, sources: ["security"]}]
+  .repos = [{slug: $slug, sources: ["security", "abandoned-drafts"]}]
   | .project_review.repos = []
   | .state_repo = ""
   | .enabler_model = ""

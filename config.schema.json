@@ -37,9 +37,12 @@
             "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
           },
           "sources": {
-            "description": "This repository's work sources, in priority order. The four `issues:<band>` tokens are the same source at four ranks, banded by each issue's Priority field; listing none of them turns issues off for the repository.",
+            "description": "This repository's work sources, in priority order. The four `issues:<band>` tokens are the same source at four ranks, banded by each issue's Priority field; listing none of them turns issues off for the repository. `abandoned-drafts` must be listed, at whatever rank you choose: it is the only route back to a draft this pipeline raised and then abandoned, so a repository cannot opt out of recovering its own stalled work (requirement 3e; #472).",
             "type": "array",
             "uniqueItems": true,
+            "contains": {
+              "const": "abandoned-drafts"
+            },
             "items": {
               "type": "string",
               "enum": [
