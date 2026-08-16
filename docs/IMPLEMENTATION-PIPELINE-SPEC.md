@@ -907,6 +907,11 @@ implements.
    constraints at all (`getpath` on an absent path returns `null`, and jq's
    `null + {...}` would otherwise silently keep only the sibling keywords,
    turning a typo'd `$ref` into a hole under `additionalProperties: false`).
+   It is reported at the config path the `$ref` was reached from, which is
+   the reach of the check: both cycles gate on the raw config, and the walk
+   descends only into keys that config actually sets, so a `$ref` on a
+   property the operator has omitted is never resolved and its fault is not
+   seen — TD-PPagop-26081606 carries closing that half.
    `config_defaults` resolves the same fixpoint so an inner `$def`'s
    `default` reaches through a chain too, but performs no validation of its
    own: there, an unresolved `$ref` just means no `default` to find at that
