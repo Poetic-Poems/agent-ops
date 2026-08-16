@@ -101,11 +101,12 @@ merge_autonomy_configured_level() {
 # fleet_disabled_state and the limit flag are unaffected and still fail open.
 # "Unreachable" covers two cases underneath, both fail-closed here: a
 # transport-level failure fetching the flag file itself, and a repo-level 404
-# — the state repo missing, or invisible to this token — that
-# fleet_flag_fetch_status's own probe (TD-PPagop-26081602) confirmed is not
-# just the flag file's own 404. Only a probe that confirms the repo is
-# visible reads as clear; a misconfigured state_repo slug or a token whose
-# scopes lost access now fails closed the same as a DNS failure would.
+# — the state repo missing, or invisible to this token — which the `probe-404`
+# mode this caller (alone in the codebase) asks of fleet_flag_fetch_status
+# tells apart from the flag file's own 404 (TD-PPagop-26081602). Only a probe
+# that confirms the repo is visible reads as clear; a misconfigured
+# state_repo slug or a token whose scopes lost access now fails closed the
+# same as a DNS failure would.
 # present-but-garbage reads as set, not clear, the same as every other flag
 # lib/toggle.sh evaluates.
 #
@@ -118,7 +119,7 @@ merge_autonomy_configured_level() {
 # needs this).
 merge_autonomy_kill_state() {
   local combined status raw
-  combined="$(fleet_flag_fetch_status "$1" "$2" "$MERGE_AUTONOMY_KILL_FLAG")"
+  combined="$(fleet_flag_fetch_status "$1" "$2" "$MERGE_AUTONOMY_KILL_FLAG" probe-404)"
   # Parameter expansion, not `IFS=$'\t' read` — see fleet_flag_fetch_status's
   # own comment: RAW is a file from the state repository and may be several
   # lines, which a `read` would truncate to the first one.

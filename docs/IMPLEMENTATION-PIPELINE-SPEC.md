@@ -1443,9 +1443,11 @@ implements.
    usage-limit flag's fail-open one still is. One 404 is not the flag's own:
    the contents API answers "this repository does not exist, or this token
    cannot see it" with the same `404 Not Found` as "the flag file does not
-   exist", so `fleet_flag_fetch_status` never treats a flag-file 404 as clear
-   on its own — it probes `repos/<state_repo>` first, and only a probe that
-   confirms the repo is visible resolves to clear (TD-PPagop-26081602).
+   exist", so the kill switch's read never treats a flag-file 404 as clear
+   on its own — `merge_autonomy_kill_state` asks `fleet_flag_fetch_status`
+   for its probing mode (`probe-404`), which probes `repos/<state_repo>`
+   first, and only a probe that confirms the repo is visible resolves to
+   clear (TD-PPagop-26081602).
    Anything else the probe returns — 404, 403, a timed-out call — is treated
    exactly like a transport failure on the flag fetch itself: the fresh-node,
    no-cache case fails closed to `human`, and an established node falls back
@@ -9265,7 +9267,8 @@ What exists, and the requirements each part answers to:
     cached copy and resolve the latter to `disabled` (TD-PPagop-26081507),
     including a repo-level 404 — the state repo missing or invisible to the
     token, which `fleet_flag_fetch_status` tells apart from a genuine
-    missing-flag-file 404 by probing `repos/<state_repo>` itself
+    missing-flag-file 404 by probing `repos/<state_repo>` itself, in the
+    probing mode (`probe-404`) this reader alone asks for
     (TD-PPagop-26081602).
     `merge_autonomy_effective_level`
     combines both: `human` whenever the kill switch is set or unreadable,
@@ -12541,15 +12544,21 @@ requirements above, which state only what is.
   has pulled the lever. The fail-closed resolution is this one flag's alone:
   `fleet_flag_fetch` and its own callers (`fleet/disabled.json`, the
   usage-limit flag) still resolve a flag they cannot read to "nothing stands
-  you down". The repo-existence probe below is the one thing they do share,
-  since it sits in the fetch itself rather than in the status wrapper — so
-  for every flag, a flag-file 404 whose probe does not confirm the repo
-  visible falls back to the last-fetched cache the way a transport failure
-  always has, and reads as clear only when there is no cache to fall back
-  to. For the two fail-open flags that is a narrower fail-open than before
-  and never a wider one: the worst case is a node standing down for a cycle
-  on a stale copy of a flag that has in fact been cleared, until a probe
-  succeeds and drops the cache. One residual fail-open case survived,
+  you down", and their flag-file 404 stays terminal — cache dropped, clear,
+  no probe spent. The repo-existence probe below is likewise this one
+  flag's: it runs only in the probing mode (`probe-404`) that
+  `merge_autonomy_kill_state`, alone in the codebase, asks of
+  `fleet_flag_fetch_status`. That confinement is deliberate (PR #474's
+  review raised it, on a first cut that had placed the probe in the shared
+  fetch body): shared, the probe would have widened the fail-open flags'
+  cached path — a flag-file 404 whose probe failed transiently (a
+  secondary-rate-limit 403 is the realistic case, on a path that would then
+  spend two REST calls where it spent one) would fall back to a stale
+  cached "disabled" record and stand a node down against a stand-down the
+  operator had just cleared. Confined, `fleet_flag_fetch`'s contract stays
+  byte-identical for the two flags whose fail-open direction is itself a
+  decision recorded above, and their steady-state 404 spends no extra REST
+  call. One residual fail-open case survived,
   knowingly, at TD-PPagop-26081507's own landing (found in PR #448's
   review): "unreachable" there meant only a transport-level failure, because
   the contents API answers a repo-level 404 — the state repo missing, or
@@ -12561,9 +12570,10 @@ requirements above, which state only what is.
   the 404 path is the switch's steady state and the probe's own failure
   modes need the same explicit classification as the fetch's — and filed
   separately as TD-PPagop-26081602. That item closed it by having
-  `fleet_flag_fetch_status` probe `repos/<state_repo>` itself on a flag-file
-  404, cheap against the REST budget: only a probe that confirms the repo is
-  visible resolves to clear, and any probe failure — 404, 403, a timeout —
+  `fleet_flag_fetch_status`, in the kill-switch read's `probe-404` mode,
+  probe `repos/<state_repo>` itself on a flag-file 404, cheap against the
+  REST budget: only a probe that confirms the repo is visible resolves to
+  clear, and any probe failure — 404, 403, a timeout —
   now gets the same cached-or-unreachable handling a transport failure on
   the flag fetch itself gets, so it fails closed on the same terms rather
   than being read as clear. `scripts/doctor.sh`'s kill-switch report gained
