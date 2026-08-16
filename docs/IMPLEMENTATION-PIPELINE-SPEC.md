@@ -899,6 +899,28 @@ implements.
    added to the schema and forgotten in a prose copy the way `unvoid_label`
    and `state_local_cycles_retained` both once were.
 
+   A `$ref` resolves to a fixpoint, not one hop: a `$def` that itself carries
+   a `$ref` — `pr_label`'s `minLength: 1` folded into a `requiredLabel` that
+   `$ref`s `label`, say — has every level's keywords enforced, not only the
+   outermost, and each hop's sibling keywords keep winning over the target's
+   own. Resolution is bounded to a handful of iterations so a cyclic `$ref`
+   cannot hang jq. A `$ref` naming a `$defs` path that does not exist, or a
+   chain still unresolved past the bound, is a fault in the schema itself —
+   `config_schema_errors` reports it as an offending path, the same as any
+   other invalid config, rather than treating the missing target as no
+   constraints at all (`getpath` on an absent path returns `null`, and jq's
+   `null + {...}` would otherwise silently keep only the sibling keywords,
+   turning a typo'd `$ref` into a hole under `additionalProperties: false`).
+   It is reported at the config path the `$ref` was reached from, which is
+   the reach of the check: both cycles gate on the raw config, and the walk
+   descends only into keys that config actually sets, so a `$ref` on a
+   property the operator has omitted is never resolved and its fault is not
+   seen — TD-PPagop-26081606 carries closing that half.
+   `config_defaults` resolves the same fixpoint so an inner `$def`'s
+   `default` reaches through a chain too, but performs no validation of its
+   own: there, an unresolved `$ref` just means no `default` to find at that
+   hop, the same as an ordinary `$def` carrying none.
+
    The schema is likewise the single statement of the *values* a reader falls
    back to, and not merely a description of them. `lib/config-schema.sh`'s
    `config_defaults` merges a config with every `default` the schema declares

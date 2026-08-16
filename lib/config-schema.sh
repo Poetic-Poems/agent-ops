@@ -64,12 +64,30 @@ config_schema_errors() {
 
     # A `$ref` is replaced by its target, with any sibling keywords kept and
     # winning — that is how a property reuses `#/$defs/modelId` while giving
-    # its own description and default.
+    # its own description and default. Resolved to a fixpoint, not one hop: a
+    # `$def` that itself carries a `$ref` (`requiredLabel` chaining to
+    # `label`, say) must have both levels'\'' keywords survive, not just the
+    # outer one. Bounded to a handful of iterations so a cyclic `$ref` cannot
+    # hang jq — a chain still unresolved past the bound throws, same as a
+    # target that does not exist at all (`getpath` on a missing path returns
+    # `null`, and jq'\''s `null + {...}` would otherwise silently keep only
+    # the sibling keywords, turning a typo'\''d `$ref` into "no constraints"
+    # rather than a fault). Each caller below decides what an unresolved
+    # `$ref` means for it.
     | def deref($s):
-        if ($s | type) == "object" and ($s | has("$ref"))
-        then ($root | getpath($s["$ref"] | ltrimstr("#/") | split("/")))
-             + ($s | del(.["$ref"]))
-        else $s end;
+        (reduce range(0; 10) as $i
+           ($s;
+              if (type == "object") and has("$ref")
+              then . as $cur
+                | ($root | getpath($cur["$ref"] | ltrimstr("#/") | split("/"))) as $target
+                | if $target == null
+                  then error("$ref \($cur["$ref"]) does not resolve")
+                  else $target + ($cur | del(.["$ref"]))
+                  end
+              else . end)) as $resolved
+        | if ($resolved | type) == "object" and ($resolved | has("$ref"))
+          then error("$ref chain at \($resolved["$ref"]) is too deep (or cyclic)")
+          else $resolved end;
 
     # JSON Schema types over JSON values: `integer` is a number with nothing
     # after the point, and `number` accepts integers too.
@@ -81,62 +99,69 @@ config_schema_errors() {
           end;
 
     def errs($s0; $v; $p):
-        deref($s0) as $s
-        | ($v | type) as $t
-        # A wrong type makes every other keyword meaningless — and `minLength`
-        # against a number or `minimum` against a string would compare across
-        # jq'\''s type order and invent a second, misleading error. So a type
-        # mismatch is reported alone.
-        | if ($s | has("type")) and (type_ok($v; $s.type) | not)
-          then ["\($p): expected \($s.type), got \($t)"]
+        # An unresolved `$ref` is a fault in the schema, not the config: it is
+        # reported at the path it was reached from, the same way every other
+        # violation is, rather than silently passed as "no constraints".
+        (try deref($s0) catch {"__schema_fault__": .}) as $s
+        | if ($s | type) == "object" and ($s | has("__schema_fault__"))
+          then ["\($p): \($s.__schema_fault__)"]
           else
-            (if ($s | has("enum")) and ([$s.enum[] | select(. == $v)] | length) == 0
-             then ["\($p): \($v | tojson) is not one of: \($s.enum | join(", "))"]
-             else [] end)
-          + (if ($s | has("const")) and $v != $s.const
-             then ["\($p): must be \($s.const | tojson)"] else [] end)
-          + (if $t == "number" then
-               (if ($s | has("minimum")) and $v < $s.minimum
-                then ["\($p): \($v) is below the minimum \($s.minimum)"] else [] end)
-             + (if ($s | has("maximum")) and $v > $s.maximum
-                then ["\($p): \($v) is above the maximum \($s.maximum)"] else [] end)
-             + (if ($s | has("exclusiveMinimum")) and $v <= $s.exclusiveMinimum
-                then ["\($p): \($v) must be greater than \($s.exclusiveMinimum)"] else [] end)
-             + (if ($s | has("exclusiveMaximum")) and $v >= $s.exclusiveMaximum
-                then ["\($p): \($v) must be less than \($s.exclusiveMaximum)"] else [] end)
-             else [] end)
-          + (if $t == "string" then
-               (if ($s | has("minLength")) and ($v | length) < $s.minLength
-                then ["\($p): must not be empty"] else [] end)
-             + (if ($s | has("pattern")) and (($v | test($s.pattern)) | not)
-                then ["\($p): \($v | tojson) does not match \($s.pattern)"] else [] end)
-             else [] end)
-          + (if $t == "object" then
-               # `has(.)` would resolve its argument against `has`'\''s own
-               # input rather than the key in hand, so every key is bound
-               # before it is used. Same reason below.
-               [ ($s.required // [])[] as $k | select(($v | has($k)) | not)
-                 | "\($p): missing required key \"\($k)\"" ]
-             + (if ($s | has("additionalProperties")) and $s.additionalProperties == false
-                then [ ($v | keys_unsorted[]) as $k
-                       | select((($s.properties // {}) | has($k)) | not)
-                       | "\($p): unknown key \"\($k)\"" ]
-                else [] end)
-             + [ ($v | keys_unsorted[]) as $k
-                 | select(($s.properties // {}) | has($k))
-                 | errs($s.properties[$k]; $v[$k]; "\($p).\($k)")[] ]
-             else [] end)
-          + (if $t == "array" then
-               (if ($s | has("minItems")) and ($v | length) < $s.minItems
-                then ["\($p): needs at least \($s.minItems) item(s)"] else [] end)
-             + (if ($s | has("uniqueItems")) and $s.uniqueItems == true
-                   and ($v | length) != ($v | unique | length)
-                then ["\($p): contains duplicate entries"] else [] end)
-             + (if ($s | has("items"))
-                then [ range($v | length) as $i
-                       | errs($s.items; $v[$i]; "\($p)[\($i)]")[] ]
-                else [] end)
-             else [] end)
+            ($v | type) as $t
+            # A wrong type makes every other keyword meaningless — and
+            # `minLength` against a number or `minimum` against a string
+            # would compare across jq'\''s type order and invent a second,
+            # misleading error. So a type mismatch is reported alone.
+            | if ($s | has("type")) and (type_ok($v; $s.type) | not)
+              then ["\($p): expected \($s.type), got \($t)"]
+              else
+                (if ($s | has("enum")) and ([$s.enum[] | select(. == $v)] | length) == 0
+                 then ["\($p): \($v | tojson) is not one of: \($s.enum | join(", "))"]
+                 else [] end)
+              + (if ($s | has("const")) and $v != $s.const
+                 then ["\($p): must be \($s.const | tojson)"] else [] end)
+              + (if $t == "number" then
+                   (if ($s | has("minimum")) and $v < $s.minimum
+                    then ["\($p): \($v) is below the minimum \($s.minimum)"] else [] end)
+                 + (if ($s | has("maximum")) and $v > $s.maximum
+                    then ["\($p): \($v) is above the maximum \($s.maximum)"] else [] end)
+                 + (if ($s | has("exclusiveMinimum")) and $v <= $s.exclusiveMinimum
+                    then ["\($p): \($v) must be greater than \($s.exclusiveMinimum)"] else [] end)
+                 + (if ($s | has("exclusiveMaximum")) and $v >= $s.exclusiveMaximum
+                    then ["\($p): \($v) must be less than \($s.exclusiveMaximum)"] else [] end)
+                 else [] end)
+              + (if $t == "string" then
+                   (if ($s | has("minLength")) and ($v | length) < $s.minLength
+                    then ["\($p): must not be empty"] else [] end)
+                 + (if ($s | has("pattern")) and (($v | test($s.pattern)) | not)
+                    then ["\($p): \($v | tojson) does not match \($s.pattern)"] else [] end)
+                 else [] end)
+              + (if $t == "object" then
+                   # `has(.)` would resolve its argument against `has`'\''s
+                   # own input rather than the key in hand, so every key is
+                   # bound before it is used. Same reason below.
+                   [ ($s.required // [])[] as $k | select(($v | has($k)) | not)
+                     | "\($p): missing required key \"\($k)\"" ]
+                 + (if ($s | has("additionalProperties")) and $s.additionalProperties == false
+                    then [ ($v | keys_unsorted[]) as $k
+                           | select((($s.properties // {}) | has($k)) | not)
+                           | "\($p): unknown key \"\($k)\"" ]
+                    else [] end)
+                 + [ ($v | keys_unsorted[]) as $k
+                     | select(($s.properties // {}) | has($k))
+                     | errs($s.properties[$k]; $v[$k]; "\($p).\($k)")[] ]
+                 else [] end)
+              + (if $t == "array" then
+                   (if ($s | has("minItems")) and ($v | length) < $s.minItems
+                    then ["\($p): needs at least \($s.minItems) item(s)"] else [] end)
+                 + (if ($s | has("uniqueItems")) and $s.uniqueItems == true
+                       and ($v | length) != ($v | unique | length)
+                    then ["\($p): contains duplicate entries"] else [] end)
+                 + (if ($s | has("items"))
+                    then [ range($v | length) as $i
+                           | errs($s.items; $v[$i]; "\($p)[\($i)]")[] ]
+                    else [] end)
+                 else [] end)
+              end
           end;
 
     errs($root; .; "config")[]
@@ -170,26 +195,41 @@ config_defaults() {
     ($schema[0]) as $root
 
     # Shared with config_schema_errors: a `$ref` is replaced by its target,
-    # with any sibling keywords kept and winning.
+    # with any sibling keywords kept and winning, resolved to a fixpoint and
+    # bounded against a cyclic chain — see that function'\''s own comment.
+    # This function performs no validation of its own (that gate is
+    # config_schema_errors'\''), so an unresolved `$ref` here just means there
+    # is no `default` to find at that hop: fill leaves the value as it was
+    # rather than throwing.
     | def deref($s):
-        if ($s | type) == "object" and ($s | has("$ref"))
-        then ($root | getpath($s["$ref"] | ltrimstr("#/") | split("/")))
-             + ($s | del(.["$ref"]))
-        else $s end;
+        (reduce range(0; 10) as $i
+           ($s;
+              if (type == "object") and has("$ref")
+              then . as $cur
+                | ($root | getpath($cur["$ref"] | ltrimstr("#/") | split("/"))) as $target
+                | if $target == null
+                  then error("$ref \($cur["$ref"]) does not resolve")
+                  else $target + ($cur | del(.["$ref"]))
+                  end
+              else . end)) as $resolved
+        | if ($resolved | type) == "object" and ($resolved | has("$ref"))
+          then error("$ref chain at \($resolved["$ref"]) is too deep (or cyclic)")
+          else $resolved end;
 
     def fill($s0; $v):
-        deref($s0) as $s
-        | if ($s | has("properties")) then
+        (try deref($s0) catch null) as $s
+        | if ($s == null) then $v
+          elif ($s | has("properties")) then
             (if ($v | type) == "object" then $v else {} end) as $obj
             | reduce ($s.properties | keys_unsorted[]) as $k
                 ($obj;
-                   deref($s.properties[$k]) as $ps
+                   (try deref($s.properties[$k]) catch null) as $ps
                    | ($obj[$k]) as $cur
                    | if ($cur != null) then
                        .[$k] = fill($s.properties[$k]; $cur)
-                     elif ($ps | has("default")) then
+                     elif ($ps != null) and ($ps | has("default")) then
                        .[$k] = $ps.default
-                     elif ($ps | has("properties")) then
+                     elif ($ps != null) and ($ps | has("properties")) then
                        (fill($s.properties[$k]; {})) as $nested
                        | if ($nested | length) > 0 then .[$k] = $nested else . end
                      else . end)
