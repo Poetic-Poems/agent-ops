@@ -30,12 +30,16 @@
 #     stays `true`; the block must fall through to the rest of the handoff,
 #     leaving its own `warning` to the code past this extract.
 #
-# TD-PPagop-26081404's streak escalation is still this block's own
-# responsibility — `handoff_complete_review` only reports whether the
-# required-checks read failed, not how many times in a row this node has
-# failed it — so this file still stubs `review_gate_unknown_streak_verdict`
-# and `review_gate_degraded_since` (each covered by its own test in
-# test/review-gate.test.sh) to pin that part of the wiring:
+# TD-PPagop-26081404's streak escalation is still exercised here —
+# `handoff_complete_review` only reports whether the required-checks read
+# failed, not how many times in a row this node has failed it — but as of
+# TD-PPagop-26081603 the block calls the shared
+# `review_gate_escalate_unreadable_streak` (also lifted verbatim, alongside
+# the block itself) rather than running the streak-and-escalate sequence
+# inline, so this file stubs only that helper's own two callees,
+# `review_gate_unknown_streak_verdict` and `review_gate_degraded_since` (each
+# covered by its own test in test/review-gate.test.sh), to pin the same
+# behaviour:
 #
 #   - once `review_gate_unknown_streak_verdict` reports this node's run has
 #     crossed the threshold, the block logs one `review-gate-checks-degraded`
@@ -44,11 +48,12 @@
 #     neither a repeat nor the warning — while still refusing the handoff
 #     exactly as before.
 #
-# The block is lifted verbatim out of agent-cycle.sh, the same way
-# test/closing-keyword-wiring.test.sh lifts its own, so the assertions are
-# about the shipped code rather than a copy of its logic. Its callees are
-# stubbed: `handoff_complete_review`, `review_gate_unknown_streak_verdict`
-# and `review_gate_degraded_since`, `log_event` and `log_reviewer_handback`.
+# The block and the shared helper are lifted verbatim out of agent-cycle.sh,
+# the same way test/closing-keyword-wiring.test.sh lifts its own, so the
+# assertions are about the shipped code rather than a copy of its logic. Their
+# callees are stubbed: `handoff_complete_review`,
+# `review_gate_unknown_streak_verdict` and `review_gate_degraded_since`,
+# `log_event` and `log_reviewer_handback`.
 #
 # No test framework is used (none exists elsewhere in this repo). Run
 # directly:
@@ -115,6 +120,23 @@ if [[ -z "$gate_block" ]]; then
   exit 1
 fi
 
+# TD-PPagop-26081603: the gate block no longer runs the streak-and-escalate
+# sequence inline — it calls `review_gate_escalate_unreadable_streak`, shared
+# with the Enabler's `complete_handoff` recovery path — so that function is
+# lifted too, verbatim, and run for real; only its own two callees
+# (`review_gate_unknown_streak_verdict`, `review_gate_degraded_since`) are
+# stubbed below, the same way they always were.
+streak_helper_fn="$(awk '
+  /^review_gate_escalate_unreadable_streak\(\) \{/ { on = 1 }
+  on                                                { print }
+  on && /^}$/                                       { exit }
+' "$CYCLE")"
+
+if [[ -z "$streak_helper_fn" ]]; then
+  echo "FAIL - could not extract review_gate_escalate_unreadable_streak from agent-cycle.sh — has it moved?" >&2
+  exit 1
+fi
+
 URL="https://github.com/Poetic-Poems/poetic-fiddle/pull/198"
 
 # run_gate_block REVIEW_JSON [STREAK_JSON [ALREADY]]
@@ -154,6 +176,7 @@ run_gate_block() {
     printf 'handoff_complete_review() { printf %%s %q; }\n' "$review_json"
     printf 'review_gate_unknown_streak_verdict() { cat >/dev/null; printf %%s %q; }\n' "$streak_json"
     printf 'review_gate_degraded_since() { cat >/dev/null; return %s; }\n' "$since_rc"
+    printf '%s\n' "$streak_helper_fn"
     printf '%s\n' "$gate_block"
     printf '%s\n' 'printf -- "--\n" >>'"$(printf '%q' "$events")"''
   } > "$harness"

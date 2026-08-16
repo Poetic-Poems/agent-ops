@@ -120,6 +120,13 @@ extract_fn() {
 maybe_run_enabler_fn="$(extract_fn 'maybe_run_enabler() {' "$SCRIPT_DIR/agent-cycle.sh")"
 enabler_claim_key_fn="$(extract_fn 'enabler_claim_key() {' "$SCRIPT_DIR/agent-cycle.sh")"
 extract_json_result_fn="$(extract_fn 'extract_json_result() {' "$SCRIPT_DIR/agent-cycle.sh")"
+# TD-PPagop-26081603: `maybe_run_enabler`'s `complete_handoff` block calls
+# `review_gate_escalate_unreadable_streak` on an unreadable-checks verdict,
+# shared with the Reviewer's own handoff (test/review-gate-wiring.test.sh
+# lifts it the same way). Lifted for real rather than stubbed outright, so
+# the "checks-unreadable" scenario below exercises the genuine escalation
+# logic; only its own two callees are stubbed.
+review_gate_escalate_unreadable_streak_fn="$(extract_fn 'review_gate_escalate_unreadable_streak() {' "$SCRIPT_DIR/agent-cycle.sh")"
 
 if [[ "$maybe_run_enabler_fn" != *"enabler-examined"* ]]; then
   printf 'FAIL - maybe_run_enabler could not be found in agent-cycle.sh (renamed or moved?)\n'
@@ -133,9 +140,14 @@ if [[ "$extract_json_result_fn" != *"awk"* ]]; then
   printf 'FAIL - extract_json_result could not be found in agent-cycle.sh (renamed or moved?)\n'
   exit 1
 fi
+if [[ "$review_gate_escalate_unreadable_streak_fn" != *"streak_json"* ]]; then
+  printf 'FAIL - review_gate_escalate_unreadable_streak could not be found in agent-cycle.sh (renamed or moved?)\n'
+  exit 1
+fi
 
 eval "$extract_json_result_fn"
 eval "$enabler_claim_key_fn"
+eval "$review_gate_escalate_unreadable_streak_fn"
 eval "$maybe_run_enabler_fn"
 
 # --- A claim.sh stub that always wins, so the claim step needs no network ---
@@ -232,6 +244,25 @@ enabler_assignee="tester"
 ordered_repos_json='[{"slug":"acme/widgets","default_branch":"main"}]'
 SCRIPT_DIR="$fake_root"
 mkdir -p "$state_dir"
+# TD-PPagop-26081603: globals `review_gate_escalate_unreadable_streak` reads
+# directly, the same way agent-cycle.sh's own top level defines them for the
+# Reviewer's own handoff site.
+# shellcheck disable=SC2034
+log_file="$state_dir/log.jsonl"
+: > "$log_file"
+# shellcheck disable=SC2034
+review_gate_unknown_streak_after=3
+
+# `review_gate_unknown_streak_verdict`/`review_gate_degraded_since` are the
+# streak helper's own two callees (each covered by its own test in
+# test/review-gate.test.sh); the defaults answer "no streak yet, nothing
+# escalated", exactly what a fresh log gives the real functions, and are
+# overridden only by the checks-unreadable scenario below that needs
+# something else.
+# shellcheck disable=SC2317  # invoked only by the eval'd review_gate_escalate_unreadable_streak
+review_gate_unknown_streak_verdict() { cat >/dev/null; printf ''; }
+# shellcheck disable=SC2317
+review_gate_degraded_since() { cat >/dev/null; return 1; }
 
 # handoff_complete_review is overridden per-scenario below (agent-ops#440's
 # complete_handoff gate); a default that fails loudly means a scenario that
@@ -585,6 +616,65 @@ assert_contains "gate-refused: the warning names the gate's own finding" \
 xmn_evt="$(events_named "$calls" enabler-examined | head -n1)"
 assert_eq "gate-refused: enabler-examined records the flip as failed" \
   "failed" "$(jq -r '.complete_handoff' <<<"$xmn_evt")"
+
+# ============================================================================
+# complete_handoff: the gate cannot read required checks at all — a node
+# fact, not a pull-request fact. TD-PPagop-26081603: this branch shares
+# `review_gate_escalate_unreadable_streak` with the Reviewer's own handoff
+# (test/review-gate-wiring.test.sh), so a run of consecutive
+# unreadable-checks failures escalates the same way here too, rather than
+# only naming the fault per item as it did before that fix.
+# ============================================================================
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+handoff_complete_review() {
+  jq -nc '{safe: false,
+           gate: {word: "unknown", reason: "could not read required checks", checks_unreadable: true},
+           closing_keyword: {word: "", reason: ""}, handoff: "",
+           rereview: {state: "", who: ""}, human_reviewer: {state: "", who: ""}}'
+}
+calls="$(run_case "complete_handoff: checks unreadable, below streak threshold" "$pr_eligible_reviewer" "$examined")"
+
+assert_eq "checks-unreadable: no pr-ready — an unread check list is refused like a real fault" "0" \
+  "$(grep -cE '^event pr-ready ' <<<"$calls")"
+assert_eq "  ... exactly one review-gate-checks-read bookkeeping event" "1" \
+  "$(grep -cE '^event review-gate-checks-read ' <<<"$calls")"
+assert_eq "  ... recording the failed read" \
+  "false" "$(jq -r '.ok' <<<"$(events_named "$calls" review-gate-checks-read | head -n1)")"
+assert_eq "  ... exactly one warning" "1" "$(grep -cE '^event warning ' <<<"$calls")"
+warn_evt="$(events_named "$calls" warning | head -n1)"
+assert_contains "  ... the warning names the unreadable checks" \
+  "its required checks could not be confirmed" "$(jq -r '.detail' <<<"$warn_evt")"
+assert_eq "  ... below the streak threshold, no escalation event" "0" \
+  "$(grep -cE '^event review-gate-checks-degraded ' <<<"$calls")"
+xmn_evt="$(events_named "$calls" enabler-examined | head -n1)"
+assert_eq "  ... enabler-examined records the flip as failed" \
+  "failed" "$(jq -r '.complete_handoff' <<<"$xmn_evt")"
+
+# --- The same gate, but this node's own streak has crossed the threshold ---
+# shellcheck disable=SC2317  # invoked only by the eval'd review_gate_escalate_unreadable_streak
+review_gate_unknown_streak_verdict() {
+  cat >/dev/null
+  jq -nc '{node:"test-node",gate:"required-checks",count:3,
+           first_ts:"2026-08-14T10:00:00Z",last_ts:"2026-08-14T10:30:00Z"}'
+}
+# shellcheck disable=SC2317
+review_gate_degraded_since() { cat >/dev/null; return 1; }
+calls="$(run_case "complete_handoff: checks unreadable, streak escalated" "$pr_eligible_reviewer" "$examined")"
+
+assert_eq "checks-unreadable, escalated: one review-gate-checks-degraded event" "1" \
+  "$(grep -cE '^event review-gate-checks-degraded ' <<<"$calls")"
+deg_evt="$(events_named "$calls" review-gate-checks-degraded | head -n1)"
+assert_eq "  ... naming the streak's own count" "3" "$(jq -r '.count' <<<"$deg_evt")"
+assert_eq "  ... still no pr-ready" "0" "$(grep -cE '^event pr-ready ' <<<"$calls")"
+xmn_evt="$(events_named "$calls" enabler-examined | head -n1)"
+assert_eq "  ... enabler-examined still records the flip as failed" \
+  "failed" "$(jq -r '.complete_handoff' <<<"$xmn_evt")"
+
+# --- Reset the streak stubs to their "nothing escalated" defaults ---
+# shellcheck disable=SC2317
+review_gate_unknown_streak_verdict() { cat >/dev/null; printf ''; }
+# shellcheck disable=SC2317
+review_gate_degraded_since() { cat >/dev/null; return 1; }
 
 # --- The clean path: a Reviewer verdict is on record, and the gate is clean ---
 # shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
