@@ -817,12 +817,17 @@ resolution, `lib/merge-autonomy.sh`):
   itself — enqueued where the base branch has an active merge queue, or
   `gh pr merge --auto --squash` where it does not — under the Approver
   App's own minted token, never the pipeline's authoring identity. A human's
-  residual act narrows to whatever the classifier below refused. Protected
-  paths refuse arming at **both** levels; `agent-merges-all` differs from
-  `agent-merges-routine` only in which sources and complexities are eligible
-  (`merge_autonomy_routine_sources`, below) — the critical tier and cool-off
-  that would let a protected-path pull request land automatically are
-  WI-12's job (Stage 4), not implemented here.
+  residual act narrows to whatever the classifier below refused. The
+  classifier draws no distinction between the two levels: the same
+  `complexity:low`/`medium` ceiling, the same
+  `merge_autonomy_routine_sources` list and the same protected paths bind at
+  `agent-merges-all` as at `agent-merges-routine`, so a repository set to
+  `agent-merges-all` lands nothing `agent-merges-routine` would not. The
+  critical tier and cool-off that would widen it — and would be what lets a
+  protected-path pull request land automatically — are WI-12's job (Stage
+  4), not implemented here; the two levels are distinct in configuration and
+  in requirement 2.3b's own validation, and differ in behaviour elsewhere
+  (requirement 34d's void corroboration), never at this gate.
 
   A pull request is eligible to land automatically iff **all** of:
   - `merge_autonomy_effective_level` is `agent-merges-routine` or
