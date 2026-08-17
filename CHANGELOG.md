@@ -23,7 +23,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   token. Any unreadable gate refuses arming (`landing-refused`), never a
   pass. Ships dormant — `merge_autonomy` is `human` fleet-wide by default,
   so nothing arms until an installation explicitly raises a repository's
-  level (D16, §6).
+  level (D16, §6). D17's rule that the product never enqueues a pull request
+  is repealed at those two levels, and requirement 38f, requirement 3g's
+  `dequeued` paragraph and three operating prompts now say so; nothing in
+  this pipeline re-queues a *dequeued* pull request at any level, since the
+  arming step arms only on the round the Approver approves
+  (tech-debt/TD-PPagop-26081701.md).
 - Priority triage (D18 WI-11, requirement 39g; agent-ops#414): the Refiner now
   bands every open issue whose `Priority` field is unset, so the owner never
   has to set it by hand. `gather-issues.sh` emits a new `priority_set`
