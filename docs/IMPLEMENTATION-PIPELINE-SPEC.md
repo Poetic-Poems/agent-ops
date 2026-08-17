@@ -9420,14 +9420,43 @@ implements.
     treating "cannot rank" as "unset" would let this duty silently overwrite
     a band a human just set, the one thing requirement 39g exists to prevent.
 
+    A repository whose `Priority` field resolves but is missing one or more
+    of the four band options (agent-ops#534 — the narrower complement to a
+    field that cannot be resolved at all, agent-ops#511/#528) does not fail
+    the write outright: `issue_priority_apply` falls back to the nearest band
+    the field actually has an option for, via `issue_priority_fallback_band`,
+    before applying the ratchet — the nearest *lower* band first, since that
+    never overstates the issue's priority, tying upward to the nearest
+    *higher* band only when no lower option exists at all (the verdict's own
+    band was already `Low`, or every lower band is missing too; Enabler
+    refinement on agent-ops#534). The ratchet above then runs against this
+    fallback band exactly as it would against the verdict's own, so an
+    issue that already carries a band is still never overwritten by one that
+    does not outrank it, and a lower-or-equal fallback is still skipped, not
+    applied. Only a field carrying *none* of the four names at all — nothing
+    to fall back to either — reports `band-option-missing` and applies
+    nothing, a reason distinct from `field-unresolvable` because a caller
+    must be able to tell "the field itself cannot be read" apart from "the
+    field has no such option". The four results that reach the ratchet — the
+    successful write, either skip, and a failed mutation — gain an optional
+    `requested` field, present whenever the band actually written or skipped
+    differs from the band the verdict asked for, so a fallback is always
+    visible in the record rather than looking like an ordinary write of the
+    requested band. The results that fail before the ratchet carry no
+    `requested`: a bad argument is rejected before any band is chosen, and
+    `field-unresolvable`, `band-option-missing` and `issue-unreadable` — the
+    last of which *is* reached after a fallback band has been picked — are
+    each logged as a `warning` that names the verdict's own band already.
+
     Every outcome is logged: `issue-prioritised` `{repo, item, priority,
-    previous, by: "refiner"}` on a successful write, `issue-prioritised-skipped`
-    with the same shape both when the ratchet declines a band that does not
-    outrank the current one and when the current band cannot be ranked at
-    all, and a `warning` naming the repo, item and band when the field
-    cannot be resolved, the issue cannot be read, or the mutation itself
-    fails — never a `warning` for either ordinary skip, which is the ratchet
-    working as designed rather than a failure.
+    previous, by: "refiner"}` — plus `requested` when a fallback band was
+    used — on a successful write, `issue-prioritised-skipped` with the same
+    shape both when the ratchet declines a band that does not outrank the
+    current one and when the current band cannot be ranked at all, and a
+    `warning` naming the repo, item and band when the field cannot be
+    resolved, no band on it is writable at all, the issue cannot be read, or
+    the mutation itself fails — never a `warning` for either ordinary skip,
+    which is the ratchet working as designed rather than a failure.
 
     `scripts/doctor.sh` warns, for every configured repository whose
     `sources` lists any of the four `issues:<band>` tokens, when its
@@ -12711,7 +12740,18 @@ pull request, run the ones the change touches and any it could regress.
     path is marked unowned and still exists after the same call; a second
     call once it has already run, and a call in a process where the
     `mktemp -d` never produced a directory at all, each print nothing and
-    still return 0. `maybe_run_refiner`'s wiring: an ordinary `refined`
+    still return 0. A field missing one of the four options is asserted from
+    both directions (agent-ops#534): with a lower option present, the
+    verdict's band falls back to the nearest lower one and `requested` names
+    the band actually asked for; with nothing lower present (the verdict was
+    already `Low`, or every lower band is also missing), the fallback ties
+    upward to the nearest higher option instead; the ratchet then runs
+    against the fallback band, so a fallback that does not outrank the
+    current band is still `skipped-lower-or-equal` with `requested` still
+    reported; and a field with none of the four names writable at all is
+    `band-option-missing`, a reason distinct from `field-unresolvable`, with
+    no `gh` calls beyond the field resolution itself. `maybe_run_refiner`'s
+    wiring: an ordinary `refined`
     verdict carrying `priority` records both `item-refined` and
     `issue-prioritised`; a `triage_only` item's `priority`-only verdict
     records neither `item-refined` nor a label, with outcome `triage-only`

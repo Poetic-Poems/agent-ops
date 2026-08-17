@@ -390,6 +390,80 @@ assert_eq "a failed mutation is mutation-failed, not silently applied" "false" "
 assert_eq "  ... reason is mutation-failed" "mutation-failed" "$(jq -r '.reason' <<<"$result")"
 rm -f "$tmp_dir/gh-b/fail-mutation"
 
+# --- issue_priority_apply: the field resolves but is missing one of the
+# four band names (agent-ops#534) — the narrower complement to a field that
+# cannot be resolved at all. The ratchet must still band the issue, on a
+# fallback band, rather than fail forever on the same missing option.
+reset_b
+cat > "$tmp_dir/gh-b/fields-response.json" <<'EOF'
+{"data":{"repository":{"issueFields":{"nodes":[
+  {"id":"IFSS_priority","name":"Priority","options":[
+    {"id":"OPT_URGENT","name":"Urgent"},{"id":"OPT_MEDIUM","name":"Medium"},{"id":"OPT_LOW","name":"Low"}]}
+]}}}}
+EOF
+current_response "I_node_20"
+result="$(issue_priority_apply "o/case-fallback-1" 20 High)"
+assert_eq "High missing: the nearest lower writable band is applied instead" "true" \
+  "$(jq -r '.applied' <<<"$result")"
+assert_eq "  ... priority names the fallback, not the missing band" "Medium" \
+  "$(jq -r '.priority' <<<"$result")"
+assert_eq "  ... requested names what the verdict actually asked for" "High" \
+  "$(jq -r '.requested' <<<"$result")"
+
+reset_b
+cat > "$tmp_dir/gh-b/fields-response.json" <<'EOF'
+{"data":{"repository":{"issueFields":{"nodes":[
+  {"id":"IFSS_priority","name":"Priority","options":[
+    {"id":"OPT_URGENT","name":"Urgent"},{"id":"OPT_HIGH","name":"High"},{"id":"OPT_MEDIUM","name":"Medium"}]}
+]}}}}
+EOF
+current_response "I_node_21"
+result="$(issue_priority_apply "o/case-fallback-2" 21 Low)"
+assert_eq "Low missing, with nothing lower to fall to: ties break upward" "true" \
+  "$(jq -r '.applied' <<<"$result")"
+assert_eq "  ... priority is the nearest higher writable band" "Medium" \
+  "$(jq -r '.priority' <<<"$result")"
+assert_eq "  ... requested still names Low" "Low" "$(jq -r '.requested' <<<"$result")"
+
+reset_b
+cat > "$tmp_dir/gh-b/fields-response.json" <<'EOF'
+{"data":{"repository":{"issueFields":{"nodes":[
+  {"id":"IFSS_priority","name":"Priority","options":[
+    {"id":"OPT_URGENT","name":"Urgent"},{"id":"OPT_MEDIUM","name":"Medium"},{"id":"OPT_LOW","name":"Low"}]}
+]}}}}
+EOF
+current_response "I_node_22" "Medium"
+result="$(issue_priority_apply "o/case-fallback-3" 22 High)"
+assert_eq "the fallback band still runs through the ordinary ratchet" "false" \
+  "$(jq -r '.applied' <<<"$result")"
+assert_eq "  ... skipped-lower-or-equal against the fallback band, not the missing one" \
+  "skipped-lower-or-equal" "$(jq -r '.reason' <<<"$result")"
+assert_eq "  ... priority still names the fallback band" "Medium" "$(jq -r '.priority' <<<"$result")"
+assert_eq "  ... and requested is still reported" "High" "$(jq -r '.requested' <<<"$result")"
+
+reset_b
+cat > "$tmp_dir/gh-b/fields-response.json" <<'EOF'
+{"data":{"repository":{"issueFields":{"nodes":[
+  {"id":"IFSS_priority","name":"Priority","options":[{"id":"OPT_BLOCKER","name":"Blocker"}]}
+]}}}}
+EOF
+result="$(issue_priority_apply "o/case-fallback-4" 23 High)"
+assert_eq "none of the four names are writable at all: a distinct reason, not field-unresolvable" \
+  "band-option-missing" "$(jq -r '.reason' <<<"$result")"
+assert_eq "  ... and no ordinary field/issue calls were even needed to say so" "0" \
+  "$([[ -f "$tmp_dir/gh-b/mutation-calls" ]] && wc -l < "$tmp_dir/gh-b/mutation-calls" || echo 0)"
+
+# Restore the full four-option field for the tests below, which assume an
+# ordinary, complete configuration.
+cat > "$tmp_dir/gh-b/fields-response.json" <<'EOF'
+{"data":{"repository":{"issueFields":{"nodes":[
+  {"id":"IFSS_priority","name":"Priority","options":[
+    {"id":"OPT_URGENT","name":"Urgent"},{"id":"OPT_HIGH","name":"High"},
+    {"id":"OPT_MEDIUM","name":"Medium"},{"id":"OPT_LOW","name":"Low"}]},
+  {"id":"IFSS_effort","name":"Effort","options":[{"id":"OPT_E_LOW","name":"Low"}]}
+]}}}}
+EOF
+
 # Caching: two applies against the same repo resolve the field once.
 reset_b
 current_response "I_node_18" "Low"
@@ -716,6 +790,41 @@ assert_eq "triage-only: no label write" "0" "$(grep -cE '^event own-label-action
 assert_not_contains "triage-only: gh never saw a label call" "gh-label" "$calls"
 ip_evt="$(events_named "$calls" issue-prioritised | head -n1)"
 assert_eq "triage-only: the band still gets applied" "Medium" "$(jq -r '.priority' <<<"$ip_evt")"
+
+# ----------------------------------------------------------------------------
+# (iib) a triage_only item whose repo's field is missing the verdict's own
+# band (agent-ops#534): banded on a fallback band instead of looping forever
+# on the same unwritable one, and the log names what was actually asked for.
+# ----------------------------------------------------------------------------
+cat > "$gh_c/fields-response.json" <<'EOF'
+{"data":{"repository":{"issueFields":{"nodes":[
+  {"id":"IFSS_priority","name":"Priority","options":[
+    {"id":"OPT_URGENT","name":"Urgent"},{"id":"OPT_HIGH","name":"High"},{"id":"OPT_MEDIUM","name":"Medium"}]}
+]}}}}
+EOF
+jq -nc '{node_id: "I_c57", issue_field_values: []}' > "$gh_c/current-response.json"
+triage_missing_candidates_c='[{"repo":"o/r","source":"issues","item":"57","triage_only":true}]'
+verdicts='[{"repo":"o/r","item":"57","verdict":"refined","reason":"banded only, already specified",
+            "priority":"Low"}]'
+calls="$(run_case_c "triage_only: repo missing the verdict's band" "$triage_missing_candidates_c" "$verdicts")"
+
+ip_evt="$(events_named "$calls" issue-prioritised | head -n1)"
+assert_eq "missing-band triage: banded on the fallback, not left unbanded" "Medium" \
+  "$(jq -r '.priority' <<<"$ip_evt")"
+assert_eq "missing-band triage: the log still names what was actually asked for" "Low" \
+  "$(jq -r '.requested' <<<"$ip_evt")"
+xmn_evt="$(events_named "$calls" refiner-examined | head -n1)"
+assert_eq "missing-band triage: outcome is triage-only, same as an ordinary band" "triage-only" \
+  "$(jq -r '.outcome' <<<"$xmn_evt")"
+
+# Restore the ordinary complete field for the remaining cases below.
+cat > "$gh_c/fields-response.json" <<'EOF'
+{"data":{"repository":{"issueFields":{"nodes":[
+  {"id":"IFSS_priority","name":"Priority","options":[
+    {"id":"OPT_URGENT","name":"Urgent"},{"id":"OPT_HIGH","name":"High"},
+    {"id":"OPT_MEDIUM","name":"Medium"},{"id":"OPT_LOW","name":"Low"}]}
+]}}}}
+EOF
 
 # ----------------------------------------------------------------------------
 # (iii) a priority at or below the current band: skipped, logged, no mutation

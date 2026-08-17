@@ -90,6 +90,55 @@ issue_priority_rank() {
   esac
 }
 
+# issue_priority_band_name RANK
+# The inverse of issue_priority_rank, for walking the ranked bands in order
+# (issue_priority_fallback_band below). Prints nothing and returns 1 for
+# anything outside 1..4 — there is no band to name.
+issue_priority_band_name() {
+  case "${1:-}" in
+    4) printf 'Urgent' ;;
+    3) printf 'High' ;;
+    2) printf 'Medium' ;;
+    1) printf 'Low' ;;
+    *) return 1 ;;
+  esac
+}
+
+# issue_priority_fallback_band FIELD_IDS_JSON BAND
+# BAND's own option is absent from FIELD_IDS_JSON (agent-ops#534 — a
+# repository's `Priority` field missing one of the four band names, the
+# narrower complement to agent-ops#511's "field unreadable at all").
+# Rather than fail outright and have the Refiner re-offered the same
+# unwritable band forever, print the nearest band FIELD_IDS_JSON actually
+# has an option for: the nearest *lower* rank first, since that never
+# overstates the issue's priority, falling back to the nearest *higher*
+# rank only when no lower option exists at all (BAND was already `Low`, or
+# every lower band is missing too) — ending the loop is worth the
+# occasional overstatement (Enabler refinement on agent-ops#534;
+# the alternative, treating "nothing lower" as permanently unbandable,
+# reopens the same starvation this exists to close). Prints nothing and
+# returns 1 only when FIELD_IDS_JSON carries none of the four band names at
+# all — every band, not just BAND's own, is unwritable.
+issue_priority_fallback_band() {
+  local field_json="$1" band="$2" want_rank r name
+  want_rank="$(issue_priority_rank "$band")"
+  for (( r = want_rank - 1; r >= 1; r-- )); do
+    name="$(issue_priority_band_name "$r")"
+    if jq -e --arg n "$name" '(.options // {}) | has($n)' <<<"$field_json" >/dev/null 2>&1; then
+      printf '%s' "$name"
+      return 0
+    fi
+  done
+  for (( r = want_rank + 1; r <= 4; r++ )); do
+    name="$(issue_priority_band_name "$r")"
+    if jq -e --arg n "$name" '(.options // {}) | has($n)' <<<"$field_json" >/dev/null 2>&1; then
+      printf '%s' "$name"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # issue_priority_field_ids SLUG
 # Print `{"field_id": "…", "options": {"Urgent": "…", "High": "…", …}}` for
 # SLUG's `Priority` field, resolved live via GraphQL introspection of the
@@ -187,7 +236,17 @@ issue_priority_current() {
 #   {"applied": false, "reason": "skipped-lower-or-equal", "priority": "…", "previous": "…"}
 #   {"applied": false, "reason": "skipped-unrankable", "priority": "…", "previous": "…"}
 #   {"applied": false, "reason": "bad-slug"|"bad-number"|"bad-band"
-#                               |"field-unresolvable"|"issue-unreadable"|"mutation-failed"}
+#                               |"field-unresolvable"|"band-option-missing"
+#                               |"issue-unreadable"|"mutation-failed"}
+#
+# The four shapes that reach the ratchet — the successful write, either skip,
+# and `"mutation-failed"` — gain an optional `"requested"` key, present only
+# when the band actually written or skipped differs from BAND; see the
+# fallback paragraph below. No other shape carries it: the three bad-argument
+# reasons are rejected before any band is chosen, and `"field-unresolvable"`,
+# `"band-option-missing"` and `"issue-unreadable"` — the last of which *is*
+# reached after a fallback band has been picked — are each logged by the
+# caller as a `warning` naming BAND itself, so the substitution is not lost.
 #
 # "skipped-unrankable" is the band an org admin can add to the field at any
 # time (issue #509, requirement 39g's own promise never to overwrite a band a
@@ -196,15 +255,30 @@ issue_priority_current() {
 # a naive `cur_rank >= new_rank` comparison would never block the write — the
 # defect this case exists to close. `previous` carries the raw, unranked name.
 #
-# Returns 0 when the ratchet's own decision (apply, or skip because BAND does
-# not outrank the current band, or skip because the current band cannot be
-# ranked at all) completed without error — a skip is not a failure, it is the
-# ratchet working. Returns 1 for every "reason" above that names an actual
-# failure to read or write, which callers must treat as "the band may or may
-# not be what it was" and log as a warning, never retry silently in a loop.
+# `"field-unresolvable"` and `"band-option-missing"` are deliberately distinct
+# reasons (agent-ops#534) for two failures a caller must be able to tell
+# apart: the former is the field itself — missing, or
+# `ORG_ONLY`-invisible to this token (agent-ops#511) — the latter is a field
+# that resolves fine but is missing one or more of the four band names as
+# options. A missing BAND is not an immediate failure: `issue_priority_fallback_band`
+# is tried first, and the ratchet below is applied against whatever band it
+# finds, with `requested` naming BAND so a reader can see the substitution.
+# `"band-option-missing"` therefore fires only when the field carries *none*
+# of the four names at all — the degenerate case one step short of
+# `field-unresolvable` itself, and (like it) never offered a second write
+# attempt, since nothing about a retry would change the outcome.
+#
+# Returns 0 when the ratchet's own decision (apply, or skip because the
+# written band does not outrank the current band, or skip because the
+# current band cannot be ranked at all) completed without error — a skip is
+# not a failure, it is the ratchet working. Returns 1 for every "reason"
+# above that names an actual failure to read or write, which callers must
+# treat as "the band may or may not be what it was" and log as a warning,
+# never retry silently in a loop.
 issue_priority_apply() {
   local slug="$1" number="$2" band="$3" gh_bin="${ISSUE_PRIORITY_GH:-gh}"
   local field_json field_id opt_id cur_json issue_node cur_band cur_rank new_rank
+  local write_band requested=""
 
   [[ "$slug" =~ ^[^/]+/[^/]+$ ]] || { printf '{"applied":false,"reason":"bad-slug"}'; return 1; }
   [[ "$number" =~ ^[0-9]+$ ]] || { printf '{"applied":false,"reason":"bad-number"}'; return 1; }
@@ -216,9 +290,19 @@ issue_priority_apply() {
   field_json="$(issue_priority_field_ids "$slug")" \
     || { printf '{"applied":false,"reason":"field-unresolvable"}'; return 1; }
   field_id="$(jq -r '.field_id // ""' <<<"$field_json" 2>/dev/null || true)"
-  opt_id="$(jq -r --arg b "$band" '.options[$b] // ""' <<<"$field_json" 2>/dev/null || true)"
-  [[ -n "$field_id" && -n "$opt_id" ]] \
+  [[ -n "$field_id" ]] \
     || { printf '{"applied":false,"reason":"field-unresolvable"}'; return 1; }
+
+  write_band="$band"
+  opt_id="$(jq -r --arg b "$band" '.options[$b] // ""' <<<"$field_json" 2>/dev/null || true)"
+  if [[ -z "$opt_id" ]]; then
+    write_band="$(issue_priority_fallback_band "$field_json" "$band")" \
+      || { printf '{"applied":false,"reason":"band-option-missing"}'; return 1; }
+    requested="$band"
+    opt_id="$(jq -r --arg b "$write_band" '.options[$b] // ""' <<<"$field_json" 2>/dev/null || true)"
+    [[ -n "$opt_id" ]] \
+      || { printf '{"applied":false,"reason":"band-option-missing"}'; return 1; }
+  fi
 
   cur_json="$(issue_priority_current "$slug" "$number")" \
     || { printf '{"applied":false,"reason":"issue-unreadable"}'; return 1; }
@@ -228,15 +312,17 @@ issue_priority_apply() {
   cur_band="$(jq -r '.priority // ""' <<<"$cur_json" 2>/dev/null || true)"
 
   cur_rank="$(issue_priority_rank "$cur_band")"
-  new_rank="$(issue_priority_rank "$band")"
+  new_rank="$(issue_priority_rank "$write_band")"
   if [[ -n "$cur_band" ]] && (( cur_rank == 0 )); then
-    jq -nc --arg p "$band" --arg prev "$cur_band" \
-      '{applied: false, reason: "skipped-unrankable", priority: $p, previous: $prev}'
+    jq -nc --arg p "$write_band" --arg prev "$cur_band" --arg req "$requested" \
+      '{applied: false, reason: "skipped-unrankable", priority: $p, previous: $prev}
+       + (if $req == "" then {} else {requested: $req} end)'
     return 0
   fi
   if [[ -n "$cur_band" ]] && (( cur_rank >= new_rank )); then
-    jq -nc --arg p "$band" --arg prev "$cur_band" \
-      '{applied: false, reason: "skipped-lower-or-equal", priority: $p, previous: $prev}'
+    jq -nc --arg p "$write_band" --arg prev "$cur_band" --arg req "$requested" \
+      '{applied: false, reason: "skipped-lower-or-equal", priority: $p, previous: $prev}
+       + (if $req == "" then {} else {requested: $req} end)'
     return 0
   fi
 
@@ -249,11 +335,13 @@ issue_priority_apply() {
       }' \
       -f issueId="$issue_node" -f fieldId="$field_id" -f optionId="$opt_id" \
       >/dev/null 2>&1; then
-    jq -nc --arg p "$band" --arg prev "$cur_band" \
-      '{applied: true, priority: $p, previous: (if $prev == "" then null else $prev end)}'
+    jq -nc --arg p "$write_band" --arg prev "$cur_band" --arg req "$requested" \
+      '{applied: true, priority: $p, previous: (if $prev == "" then null else $prev end)}
+       + (if $req == "" then {} else {requested: $req} end)'
     return 0
   fi
-  jq -nc --arg p "$band" --arg prev "$cur_band" \
-    '{applied: false, reason: "mutation-failed", priority: $p, previous: (if $prev == "" then null else $prev end)}'
+  jq -nc --arg p "$write_band" --arg prev "$cur_band" --arg req "$requested" \
+    '{applied: false, reason: "mutation-failed", priority: $p, previous: (if $prev == "" then null else $prev end)}
+     + (if $req == "" then {} else {requested: $req} end)'
   return 1
 }
