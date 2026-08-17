@@ -145,6 +145,43 @@ assert_eq "exempt issues never triage-candidate, even unbanded and refined" "no"
   "$(jq -r 'any(.[]; .item == "1") | if . then "yes" else "no" end' <<<"$exempt_candidates")"
 
 # ============================================================================
+# (A2) The pure filter — refiner_drop_unbandable_triage, issue #511
+# ============================================================================
+# A repository this token cannot resolve `Priority` for must never keep
+# contributing `triage_only` candidates the Refiner can never band; every
+# other candidate — from that repository or any other — is untouched.
+
+triage_candidates_511='[
+  {"repo":"o/r1","source":"issues","item":"1","triage_only":true},
+  {"repo":"o/r1","source":"issues","item":"2","triage_only":true},
+  {"repo":"o/r1","source":"issues","item":"3"},
+  {"repo":"o/r2","source":"issues","item":"10","triage_only":true},
+  {"repo":"o/r3","source":"issues","item":"20"}
+]'
+
+dropped="$(refiner_drop_unbandable_triage "$triage_candidates_511" '["o/r1"]')"
+assert_eq "drops only the unresolvable slug's triage_only entries" "3" \
+  "$(jq 'length' <<<"$dropped")"
+assert_eq "  ... item 1 (o/r1, triage_only) is gone" "no" \
+  "$(jq -r 'any(.[]; .item == "1") | if . then "yes" else "no" end' <<<"$dropped")"
+assert_eq "  ... item 2 (o/r1, triage_only) is gone" "no" \
+  "$(jq -r 'any(.[]; .item == "2") | if . then "yes" else "no" end' <<<"$dropped")"
+assert_eq "  ... item 3 (o/r1, not triage_only) survives" "yes" \
+  "$(jq -r 'any(.[]; .item == "3") | if . then "yes" else "no" end' <<<"$dropped")"
+assert_eq "  ... item 10 (o/r2, triage_only, a different slug) survives" "yes" \
+  "$(jq -r 'any(.[]; .item == "10") | if . then "yes" else "no" end' <<<"$dropped")"
+assert_eq "  ... item 20 (o/r3, untouched) survives" "yes" \
+  "$(jq -r 'any(.[]; .item == "20") | if . then "yes" else "no" end' <<<"$dropped")"
+
+identity="$(refiner_drop_unbandable_triage "$triage_candidates_511" '[]')"
+assert_eq "an empty unresolvable-slug list is the identity" \
+  "$(jq -Sc . <<<"$triage_candidates_511")" "$(jq -Sc . <<<"$identity")"
+
+malformed="$(refiner_drop_unbandable_triage 'not json at all' '["o/r1"]')"
+assert_eq "malformed candidates JSON falls back to the input unchanged" \
+  "not json at all" "$malformed"
+
+# ============================================================================
 # (B) The ratchet — lib/issue-priority.sh, requirement 39g
 # ============================================================================
 
@@ -389,15 +426,21 @@ maybe_run_refiner_fn="$(extract_fn 'maybe_run_refiner() {' "$SCRIPT_DIR/agent-cy
 record_needs_refinement_block_fn="$(extract_fn 'record_needs_refinement_block() {' "$SCRIPT_DIR/agent-cycle.sh")"
 refiner_claim_key_fn="$(extract_fn 'refiner_claim_key() {' "$SCRIPT_DIR/agent-cycle.sh")"
 extract_json_result_fn="$(extract_fn 'extract_json_result() {' "$SCRIPT_DIR/agent-cycle.sh")"
+refiner_filter_unbandable_triage_fn="$(extract_fn 'refiner_filter_unbandable_triage() {' "$SCRIPT_DIR/agent-cycle.sh")"
 
 if [[ "$maybe_run_refiner_fn" != *"issue-prioritised"* ]]; then
   printf 'FAIL - maybe_run_refiner could not be found carrying the priority wiring (renamed or moved?)\n'
+  exit 1
+fi
+if [[ "$refiner_filter_unbandable_triage_fn" != *"refiner_drop_unbandable_triage"* ]]; then
+  printf 'FAIL - refiner_filter_unbandable_triage could not be found carrying the pre-flight wiring (renamed or moved?)\n'
   exit 1
 fi
 
 eval "$extract_json_result_fn"
 eval "$refiner_claim_key_fn"
 eval "$record_needs_refinement_block_fn"
+eval "$refiner_filter_unbandable_triage_fn"
 eval "$maybe_run_refiner_fn"
 
 fake_root="$tmp_dir/fake-root"
@@ -733,6 +776,106 @@ assert_eq "DRY_RUN: no mutation reached gh" "0" \
   "$([[ -f "$gh_c/mutation-calls" ]] && wc -l < "$gh_c/mutation-calls" || echo 0)"
 
 unset REFINEMENT_GH ISSUE_PRIORITY_GH
+
+# ----------------------------------------------------------------------------
+# (vii) refiner_filter_unbandable_triage — the pre-flight wiring, issue #511
+# ----------------------------------------------------------------------------
+# A dedicated `gh` stub, distinguishing repositories by owner/repo (the earlier
+# stubs in this file need no such distinction): "o/bad"'s field query fails,
+# "o/good"'s succeeds, exactly what this pre-flight has to tell apart.
+gh_e="$tmp_dir/gh-e"
+mkdir -p "$gh_e"
+cat > "$gh_e/gh" <<'STUB'
+#!/usr/bin/env bash
+d="$(dirname "$0")"
+if [[ "$1" == "api" && "$2" == "graphql" ]]; then
+  shift 2
+  owner="" repo="" jqfilter="."
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -f) case "$2" in owner=*) owner="${2#owner=}" ;; repo=*) repo="${2#repo=}" ;; esac; shift 2 ;;
+      --jq) jqfilter="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  printf '%s/%s\n' "$owner" "$repo" >> "$d/field-queries.log"
+  [[ "$repo" == "bad" ]] && exit 1
+  jq -c "$jqfilter" "$d/fields-response.json" 2>/dev/null || exit 1
+  exit 0
+fi
+exit 1
+STUB
+chmod +x "$gh_e/gh"
+cat > "$gh_e/fields-response.json" <<'EOF'
+{"data":{"repository":{"issueFields":{"nodes":[
+  {"id":"IFSS_priority","name":"Priority","options":[
+    {"id":"OPT_URGENT","name":"Urgent"},{"id":"OPT_HIGH","name":"High"},
+    {"id":"OPT_MEDIUM","name":"Medium"},{"id":"OPT_LOW","name":"Low"}]}
+]}}}}
+EOF
+: > "$gh_e/field-queries.log"
+export ISSUE_PRIORITY_GH="$gh_e/gh"
+ISSUE_PRIORITY_CACHE_DIR="$(mktemp -d "$tmp_dir/cache-pf.XXXXXX")"
+
+pf_candidates='[
+  {"repo":"o/bad","source":"issues","item":"1","triage_only":true},
+  {"repo":"o/bad","source":"issues","item":"2","triage_only":true},
+  {"repo":"o/bad","source":"issues","item":"3"},
+  {"repo":"o/good","source":"issues","item":"10","triage_only":true},
+  {"repo":"o/good","source":"issues","item":"11"}
+]'
+calls_log="$tmp_dir/pf-calls.log"
+: > "$calls_log"
+filtered="$(refiner_filter_unbandable_triage "$pf_candidates")"
+pf_calls="$(cat "$calls_log")"
+
+assert_eq "pre-flight: o/bad's triage_only candidates never reach the set (1/2)" "3" \
+  "$(jq 'length' <<<"$filtered")"
+assert_eq "  ... o/bad's non-triage_only candidate still reaches it" "yes" \
+  "$(jq -r 'any(.[]; .item == "3") | if . then "yes" else "no" end' <<<"$filtered")"
+assert_eq "  ... o/good's triage_only candidate still reaches it (field resolves)" "yes" \
+  "$(jq -r 'any(.[]; .item == "10") | if . then "yes" else "no" end' <<<"$filtered")"
+assert_eq "  ... o/good's ordinary candidate is untouched" "yes" \
+  "$(jq -r 'any(.[]; .item == "11") | if . then "yes" else "no" end' <<<"$filtered")"
+
+pf_warnings="$(events_named "$pf_calls" warning)"
+assert_eq "pre-flight: exactly one warning, for o/bad alone" "1" "$(wc -l <<<"$pf_warnings")"
+assert_eq "  ... naming the slug" "o/bad" "$(jq -r '.repo' <<<"$pf_warnings")"
+assert_eq "  ... and the count of dropped candidates, not one per item" "2" \
+  "$(jq -r '.dropped' <<<"$pf_warnings")"
+
+assert_eq "pre-flight: exactly one field query reached o/bad" "1" \
+  "$(grep -c '^o/bad$' "$gh_e/field-queries.log")"
+assert_eq "pre-flight: exactly one field query reached o/good" "1" \
+  "$(grep -c '^o/good$' "$gh_e/field-queries.log")"
+
+# criterion 6: a second consumer in the same process (an ordinary
+# issue_priority_field_ids call, standing in for issue_priority_apply's own
+# later call inside maybe_run_refiner) hits the process cache for both —
+# including o/bad's cached failure — issuing no further query.
+issue_priority_field_ids "o/bad" >/dev/null 2>&1
+issue_priority_field_ids "o/good" >/dev/null 2>&1
+assert_eq "  ... a second o/bad resolution hits the cache, not a fresh query" "1" \
+  "$(grep -c '^o/bad$' "$gh_e/field-queries.log")"
+assert_eq "  ... a second o/good resolution hits the cache, not a fresh query" "1" \
+  "$(grep -c '^o/good$' "$gh_e/field-queries.log")"
+
+# criterion 5: no triage_only candidate at all -> no query from this path.
+: > "$gh_e/field-queries.log"
+no_triage_candidates='[{"repo":"o/good","source":"issues","item":"99"}]'
+refiner_filter_unbandable_triage "$no_triage_candidates" >/dev/null
+assert_eq "pre-flight: no triage_only candidates issues no field query" "0" \
+  "$(wc -l < "$gh_e/field-queries.log")"
+
+# criterion 7: every contributing repository resolves -> byte-identical input.
+ISSUE_PRIORITY_CACHE_DIR="$(mktemp -d "$tmp_dir/cache-pf2.XXXXXX")"
+all_good_candidates='[{"repo":"o/good","source":"issues","item":"1","triage_only":true},
+                       {"repo":"o/good","source":"issues","item":"2"}]'
+all_good_result="$(refiner_filter_unbandable_triage "$all_good_candidates")"
+assert_eq "pre-flight: every field resolving returns the input byte-identical" \
+  "$all_good_candidates" "$all_good_result"
+
+unset ISSUE_PRIORITY_GH ISSUE_PRIORITY_CACHE_DIR
 
 # ============================================================================
 # (D) The doctor's own gate — scripts/doctor.sh, requirement 39g

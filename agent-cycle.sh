@@ -4645,6 +4645,50 @@ refiner_claim_key() {
     "${item//[^A-Za-z0-9._-]/-}"
 }
 
+# refiner_filter_unbandable_triage CANDIDATES_JSON
+# The I/O wrapper around `refiner_drop_unbandable_triage` (lib/refinement.sh,
+# issue #511): resolves, once per repository, the `Priority` field for every
+# repository contributing a `triage_only: true` candidate — a cycle with none
+# at all makes no query here — and drops that repository's `triage_only`
+# candidates when the field cannot be resolved, so the Refiner is never
+# engaged for a band it structurally cannot write. Every other candidate is
+# unaffected; when every contributing repository's field resolves, the input
+# is returned byte-identical.
+#
+# `issue_priority_field_ids` (lib/issue-priority.sh) is itself cached per
+# repository for the life of this process (`ISSUE_PRIORITY_CACHE_DIR`),
+# including its own failure — so this call and `issue_priority_apply`'s own
+# later call inside `maybe_run_refiner` never resolve the same repository's
+# field twice. Guarded rather than let `set -euo pipefail` abort the cycle on
+# the field's own non-zero return.
+refiner_filter_unbandable_triage() {
+  local candidates="${1:-[]}" triage_repos slug unresolvable='[]' counts count
+  triage_repos="$(jq -r '[.[] | select(.triage_only == true) | (.repo // "")] | unique | .[]' \
+    <<<"$candidates" 2>/dev/null || true)"
+  [[ -n "$triage_repos" ]] || { printf '%s' "$candidates"; return 0; }
+
+  while IFS= read -r slug; do
+    [[ -n "$slug" ]] || continue
+    issue_priority_field_ids "$slug" >/dev/null 2>&1 \
+      || unresolvable="$(jq -c --arg s "$slug" '. + [$s]' <<<"$unresolvable" 2>/dev/null \
+           || printf '%s' "$unresolvable")"
+  done <<<"$triage_repos"
+  [[ "$unresolvable" != "[]" ]] || { printf '%s' "$candidates"; return 0; }
+
+  counts="$(jq -c '[.[] | select(.triage_only == true) | (.repo // "")] | group_by(.)
+    | map({key: .[0], value: length}) | from_entries' <<<"$candidates" 2>/dev/null || printf '{}')"
+  while IFS= read -r slug; do
+    [[ -n "$slug" ]] || continue
+    count="$(jq -r --arg s "$slug" '.[$s] // 0' <<<"$counts" 2>/dev/null || printf 0)"
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    log_event "warning" "$(jq -nc --arg s "$slug" --argjson n "$count" \
+      --arg d "refiner: Priority field unresolvable for $slug — dropped $count band-only triage candidate(s)" \
+      '{detail: $d, repo: $s, dropped: $n}')"
+  done < <(jq -r '.[]' <<<"$unresolvable" 2>/dev/null || true)
+
+  refiner_drop_unbandable_triage "$candidates" "$unresolvable"
+}
+
 # maybe_run_refiner CYCLE_EXIT_CODE
 # Engage the Refiner if this cycle should, and translate its verdicts into log
 # events, labels and issue comments. Always returns without disturbing the
@@ -6850,6 +6894,13 @@ fi
 # separate array exists.
 refiner_candidates_json="$(refiner_candidate_items "$refiner_repos_json" \
   "$refinement_policy_json" "$refinements_json" "$blocked_json" "$void_json" "$claimed_json")"
+# issue #511: drop this cycle's `triage_only` candidates from any repository
+# whose `Priority` field this token cannot resolve at all, before the
+# engagement cap or any claim — a pre-flight, not a post-hoc latch, so field
+# visibility recovering needs no operator action. Run unconditionally,
+# including under --dry-run, so the fingerprint input below never differs
+# between a dry-run and a live cycle for no reason.
+refiner_candidates_json="$(refiner_filter_unbandable_triage "$refiner_candidates_json")"
 # Same reasoning as `enabler_allowed` above, for the same kind of exit-trap
 # engagement.
 refiner_allowed=1

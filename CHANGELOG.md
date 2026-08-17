@@ -76,6 +76,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   now true whenever any option is set on the field, not only one of the four
   recognised names, so a fifth-band issue is no longer offered to the
   Refiner's triage duty as if nobody had triaged it.
+- A repository whose `Priority` field this token cannot resolve at all no
+  longer re-engages the Refiner forever for band-only (`triage_only`)
+  candidates it can never actually band (issue #511). A pre-flight
+  (`refiner_filter_unbandable_triage`, `agent-cycle.sh`) now resolves each
+  contributing repository's field once per cycle before any candidate is
+  claimed, drops that repository's `triage_only` candidates when the field
+  cannot be resolved — every other candidate, from that repository or any
+  other, is unaffected — and logs one `warning` per affected repository
+  naming it and how many candidates were dropped. Previously such a
+  repository's `triage_only` candidates re-entered the candidate set every
+  cycle with no possible progress, and `refiner_engagement_set`'s
+  alphabetical cap meant an early-sorting repository in this state could
+  fill the entire engagement set, starving refinement everywhere else.
 
 ### Changed
 
