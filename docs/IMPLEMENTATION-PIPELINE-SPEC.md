@@ -839,13 +839,16 @@ resolution, `lib/merge-autonomy.sh`):
     concurrency, security, CI/workflow machinery or shared library code);
   - its work order's `source` is a member of `merge_autonomy_routine_sources`
     (config, default `register-hygiene`/`tech-debt`) for this repository;
-  - its diff touches none of six protected path prefixes — `.github/`,
-    `deploy/`, `prompts/`, `lib/`, `config.schema.json`, `CODEOWNERS` — the
-    second half of the belt and braces, and this design's own answer to risk
-    register item 1 (a pull request self-modifying the gate it is riding
-    through it). `agent-cycle.sh`, `review-cycle.sh` and `config.json` are
-    plainly gate-bearing too and are deliberately **not** on this list —
-    widening it is left to a human, not decided here.
+  - its diff touches none of nine protected path prefixes — `.github/`,
+    `deploy/`, `prompts/`, `lib/`, `config.schema.json`, `config.json`,
+    `agent-cycle.sh`, `review-cycle.sh`, `CODEOWNERS` — the second half of
+    the belt and braces, and this design's own answer to risk register
+    item 1 (a pull request self-modifying the gate it is riding through it).
+    The last three joined the list at the human review the first draft
+    deferred them to: `agent-cycle.sh` is the engine that calls the arming
+    step, `review-cycle.sh` is the review pipeline's entry point, and
+    `config.json` carries the `merge_autonomy` level and
+    `merge_autonomy_routine_sources` this very gate reads.
 
   An eligible pull request still arms nothing unless every one of a second
   set of gates, each re-read fresh rather than reused from earlier in the
@@ -13150,9 +13153,10 @@ pull request, run the ones the change touches and any it could regress.
 8t. **The arming step lands only what the classifier clears, re-reads every
     gate fresh, and disarms cleanly (requirement 8d, D18 WI-7).**
     `test/landing.test.sh` passes against a stubbed `gh`:
-    `landing_protected_paths_hit` reports every one of the six protected
+    `landing_protected_paths_hit` reports every one of the nine protected
     prefixes (`.github/`, `deploy/`, `prompts/`, `lib/`, `config.schema.json`,
-    `CODEOWNERS`) and exits 0 when any is touched, 1 when none is, and 2 —
+    `config.json`, `agent-cycle.sh`, `review-cycle.sh`, `CODEOWNERS`) and
+    exits 0 when any is touched, 1 when none is, and 2 —
     never trusted as a pass — on an unreadable or page-capped changed-file
     listing; `landing_eligible` reads `ineligible` for a level below
     `agent-merges-routine`, for `complexity:high` regardless of source or

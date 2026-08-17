@@ -43,7 +43,7 @@
 # `landing_eligible` already refuses anything above `complexity:medium`) —
 # belt and braces against the deadliest class this design names: a pull
 # request that edits the gate it is riding through the gate it just
-# weakened. Six whole-path prefixes, an explicit anchored `case` in the
+# weakened. Nine whole-path prefixes, an explicit anchored `case` in the
 # shape `scripts/is-docs-only.sh` uses (allowlist there, denylist here) —
 # never an extension rule, and that file's own argument holds here
 # unchanged: adding one line to a protected-paths list is cheap, forgetting
@@ -55,16 +55,29 @@
 #   lib/         every sourced library this file itself lives in — see below
 #   config.schema.json   the machine-readable statement of what config.json
 #                may hold, including this file's own two new keys
+#   config.json  the live configuration those keys are set in — the
+#                `merge_autonomy` level and the routine-source list this
+#                file's own gates read
+#   agent-cycle.sh   the engine every stage runs inside, this arming step
+#                included
+#   review-cycle.sh  the review pipeline's own entry point
 #   CODEOWNERS   who §5.3's ruleset lets the Approver App substitute for
 #
 # `lib/landing.sh` is self-protecting through the `lib/` prefix already —
 # no separate entry names this file, because one already covers it and a
 # redundant second entry is one more place to forget to update together.
 #
-# Deliberately **not** on this list, despite being plainly gate-bearing:
-# `agent-cycle.sh`, `review-cycle.sh` and `config.json` itself. Widening the
-# list to cover them is the reviewing human's call, raised as an explicit
-# question on this file's own pull request rather than decided here.
+# The last three were left off when this list was first written, raised as
+# an explicit question on this file's own pull request rather than decided
+# here. That question has been answered: all three are on the list. Each is
+# gate-bearing in the same direct sense as the entries above —
+# `agent-cycle.sh` is the engine that calls this very arming step,
+# `review-cycle.sh` is the review pipeline's entry point, and `config.json`
+# carries the `merge_autonomy` level and `merge_autonomy_routine_sources`
+# that `landing_eligible` reads — so a pull request editing one of them is
+# precisely the self-modifying case risk register item 1 names, and the
+# "adding one line is cheap, forgetting one is not" argument above applies
+# to them unchanged.
 # Protected paths refuse arming at `agent-merges-all` too — relaxing that
 # for the critical tier is WI-12's job (Stage 4, the cool-off), not this
 # one's.
@@ -123,7 +136,7 @@
 LANDING_PR_FILES_LIMIT="${LANDING_PR_FILES_LIMIT:-3000}"
 
 # _landing_is_protected PATH
-# True iff PATH falls under one of the six protected prefixes — see the
+# True iff PATH falls under one of the nine protected prefixes — see the
 # header for the list and why each is there. Whole-path prefixes only,
 # anchored, never an extension rule.
 _landing_is_protected() {
@@ -133,6 +146,9 @@ _landing_is_protected() {
     prompts/*) return 0 ;;
     lib/*) return 0 ;;
     config.schema.json) return 0 ;;
+    config.json) return 0 ;;
+    agent-cycle.sh) return 0 ;;
+    review-cycle.sh) return 0 ;;
     CODEOWNERS) return 0 ;;
     *) return 1 ;;
   esac

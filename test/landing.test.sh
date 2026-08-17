@@ -7,8 +7,11 @@
 #
 # Covers, against a stubbed `gh`:
 #   - landing_protected_paths_hit: a protected path is reported and exits 0,
-#     an all-clear set exits 1 with nothing printed, an unreadable or
-#     truncated changed-file listing exits 2 (never a pass), and bad
+#     all nine prefixes are recognised (the three the first draft deferred
+#     to human review — `config.json`, `agent-cycle.sh`, `review-cycle.sh` —
+#     each pinned singly as well), a nested or suffixed near-miss is not
+#     protected, an all-clear set exits 1 with nothing printed, an unreadable
+#     or truncated changed-file listing exits 2 (never a pass), and bad
 #     arguments are rejected before any gh call.
 #   - landing_eligible: LEVEL below agent-merges-routine, COMPLEXITY above
 #     medium, and a SOURCE outside the routine list are each `ineligible`
@@ -177,7 +180,8 @@ out="$(landing_protected_paths_hit acme/widgets 12)"; rc=$?
 assert_eq "no protected path: nothing printed" "" "$out"
 assert_eq "  ... exit 1" "1" "$rc"
 
-files "config.schema.json" "CODEOWNERS" "lib/x.sh" ".github/workflows/y.yml" "deploy/z" "prompts/p.md"
+files "config.schema.json" "CODEOWNERS" "lib/x.sh" ".github/workflows/y.yml" "deploy/z" "prompts/p.md" \
+      "config.json" "agent-cycle.sh" "review-cycle.sh"
 out="$(landing_protected_paths_hit acme/widgets 12)"; rc=$?
 assert_eq "every protected prefix is recognised, one per line" \
   "config.schema.json
@@ -185,8 +189,29 @@ CODEOWNERS
 lib/x.sh
 .github/workflows/y.yml
 deploy/z
-prompts/p.md" "$out"
+prompts/p.md
+config.json
+agent-cycle.sh
+review-cycle.sh" "$out"
 assert_eq "  ... exit 0" "0" "$rc"
+
+# The three the first draft left off the list, each on its own so a
+# regression names which one came off rather than failing the nine-way
+# assertion above with a diff to read.
+for protected in config.json agent-cycle.sh review-cycle.sh; do
+  files "src/app.py" "$protected" "README.md"
+  out="$(landing_protected_paths_hit acme/widgets 12)"; rc=$?
+  assert_eq "$protected is protected" "$protected" "$out"
+  assert_eq "  ... exit 0" "0" "$rc"
+done
+
+# Anchored, not a prefix match: the classifier must not catch a same-named
+# file nested under a directory, nor a longer name that merely starts the
+# same way.
+files "src/app.py" "docs/config.json" "tools/agent-cycle.sh" "config.json.bak" "review-cycle.sh.orig"
+out="$(landing_protected_paths_hit acme/widgets 12)"; rc=$?
+assert_eq "a nested or suffixed near-miss is not protected" "" "$out"
+assert_eq "  ... exit 1" "1" "$rc"
 
 : > "$fixtures/files-fail"
 out="$(landing_protected_paths_hit acme/widgets 12)"; rc=$?
