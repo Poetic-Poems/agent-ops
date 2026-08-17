@@ -9671,6 +9671,16 @@ What exists, and the requirements each part answers to:
    forms out — are asserted against `PIPELINE_COMMENT_MARKER_PREFIX` by
    `test/abandoned-drafts.test.sh` and against the header's literal form by
    `test/comment-identity.test.sh`, so neither can drift between any of them.
+   This file also defines requirement 31c's own citation line the same way:
+   `PIPELINE_RECONCILES_MARKER_PREFIX`, the fixed substring
+   `lib/reconciliation-gate.sh` (component 20a) matches on, and
+   `pipeline_reconciles_marker COMMENT_ID`, which prints
+   `<!-- agent-ops:reconciles comment=COMMENT_ID -->` — the line a pipeline
+   comment carries to cite a standing human comment as reconciled.
+   `prompts/reviewer.md` is the one place that spells this form out literally
+   (a model reads prose, not shell), and `test/comment-identity.test.sh`
+   asserts it against `pipeline_reconciles_marker`'s own output, the same way
+   it pins the header above.
 3g. `scripts/gather-merge-conflicts.sh` implementing requirement 3g (extended by
    requirement 3s for Dependabot's own PRs): given a
    repo slug, PR label and branch prefix, prints the JSON array of ready-but-

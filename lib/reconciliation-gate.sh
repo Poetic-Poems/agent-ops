@@ -59,8 +59,9 @@
 #
 # Environment:
 #   RECONCILIATION_GATE_GH  override `gh` (tests stub it).
-#   Reads PIPELINE_COMMENT_MARKER_PREFIX — source lib/pipeline-marker.sh
-#   before this file, or before calling `reconciliation_gate`.
+#   Reads PIPELINE_COMMENT_MARKER_PREFIX and PIPELINE_RECONCILES_MARKER_PREFIX
+#   — source lib/pipeline-marker.sh before this file, or before calling
+#   `reconciliation_gate`.
 
 # _reconciliation_gate_pr_parts PR_URL
 # Print `owner/repo<TAB>number`, or return non-zero printing nothing. The same
@@ -131,7 +132,7 @@ _reconciliation_gate_comments() {
 #             ask is not a failure" contract `lib/closing-keyword-gate.sh`
 #             already keeps).
 reconciliation_gate() {
-  local url="${1:-}" parts slug number anchor comments marker
+  local url="${1:-}" parts slug number anchor comments marker rprefix
   local human reconciled unreconciled
 
   if [[ -z "$url" ]] || ! parts="$(_reconciliation_gate_pr_parts "$url")"; then
@@ -156,6 +157,7 @@ reconciliation_gate() {
   fi
 
   marker="${PIPELINE_COMMENT_MARKER_PREFIX:-<!-- agent-ops:pipeline-comment}"
+  rprefix="${PIPELINE_RECONCILES_MARKER_PREFIX:-<!-- agent-ops:reconciles}"
 
   human="$(jq -r --arg marker "$marker" \
     '.[] | select(.bot | not) | select((.body | contains($marker)) | not) | (.id | tostring)' \
@@ -165,9 +167,9 @@ reconciliation_gate() {
     return 0
   fi
 
-  reconciled="$(jq -r --arg marker "$marker" \
+  reconciled="$(jq -r --arg marker "$marker" --arg rx "${rprefix#<!-- } comment=([0-9]+)" \
     '[.[] | select(.body | contains($marker)) | .body
-          | [scan("agent-ops:reconciles comment=([0-9]+)")] | map(.[0])]
+          | [scan($rx)] | map(.[0])]
      | flatten | .[]' \
     <<<"$comments" 2>/dev/null)"
 
@@ -177,7 +179,7 @@ reconciliation_gate() {
     return 0
   fi
 
-  printf 'dirty\thuman comment(s) posted on %s since it last left draft (%s) carry no <!-- agent-ops:reconciles comment=<id> --> line answering them: comment id(s) %s' \
-    "$url" "$anchor" "$(paste -sd', ' <<<"$unreconciled")"
+  printf 'dirty\thuman comment(s) posted on %s since it last left draft (%s) carry no %s comment=<id> --> line answering them: comment id(s) %s' \
+    "$url" "$anchor" "$rprefix" "$(paste -sd', ' <<<"$unreconciled")"
   return 1
 }

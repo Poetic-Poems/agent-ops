@@ -88,3 +88,20 @@ pipeline_comment_header() {
 pipeline_comment_marker() {
   printf '%s cycle=%s actor=%s -->' "$PIPELINE_COMMENT_MARKER_PREFIX" "$1" "$2"
 }
+
+# The fixed, greppable prefix a reconciliation citation starts with (the one
+# new convention requirement 31c, agent-ops#533, adds, on the Reviewer's
+# side): before flipping a draft pull request ready, the Reviewer answers
+# every standing human comment and cites it with a
+# `pipeline_reconciles_marker`-shaped line in its completion comment.
+# lib/reconciliation-gate.sh is the reader; match on this prefix, never on
+# the whole line, same rule PIPELINE_COMMENT_MARKER_PREFIX already gives.
+PIPELINE_RECONCILES_MARKER_PREFIX='<!-- agent-ops:reconciles'
+
+# pipeline_reconciles_marker COMMENT_ID
+# Print the citation line a pipeline comment carries to mark a standing human
+# comment (by its own issue-comment id) as reconciled — implemented or
+# explicitly contested, never silently dropped.
+pipeline_reconciles_marker() {
+  printf '%s comment=%s -->' "$PIPELINE_RECONCILES_MARKER_PREFIX" "$1"
+}
