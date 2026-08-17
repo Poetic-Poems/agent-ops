@@ -4,6 +4,16 @@ name: Tech-debt tooling drift check
 # Poetic-Poems/poetic (this repo does not framework-sync). This check fails
 # when the copies drift from poetic main, so divergence is noticed instead of
 # festering.
+#
+# Which files those are is poetic's to publish, not ours to keep a second copy
+# of: the list comes from `scripts/td-tooling-manifest` on poetic main, one
+# repo-relative path per line, documented under "Tooling manifest for
+# consumers" in poetic's docs/TECH-DEBT-REGISTER.md. A hard-coded list can only
+# notice drift in files someone already thought to copy, so a canonical script
+# added upstream is invisible to the very check meant to catch it — which is
+# how Poetic-Poems/poetic#166's two new scripts reached no consumer for a day
+# and a half while this workflow ran green with nothing to say. Iterating the
+# manifest covers additions in the same fetch.
 
 on:
   schedule:
@@ -21,14 +31,42 @@ jobs:
       - name: Compare tech-debt scripts against poetic main
         run: |
           set -euo pipefail
+          raw="https://raw.githubusercontent.com/Poetic-Poems/poetic/main"
+
+          if ! manifest="$(curl -fsSL "$raw/scripts/td-tooling-manifest")"; then
+            echo "::error::could not fetch scripts/td-tooling-manifest from Poetic-Poems/poetic main"
+            exit 1
+          fi
+          # Checked explicitly, not left to a loop that simply runs zero times:
+          # an empty list silently reading as "no drift" is the failure mode
+          # this change exists to retire.
+          if [[ -z "${manifest//[[:space:]]/}" ]]; then
+            echo "::error::scripts/td-tooling-manifest on Poetic-Poems/poetic main is empty — refusing to report no drift"
+            exit 1
+          fi
+
           status=0
-          for f in scripts/get-tech-debt-record.pl scripts/next-tech-debt-id.pl \
-                   scripts/reserve-tech-debt-id.pl scripts/td-check.pl \
-                   scripts/check-tech-debt-open-rewrites.pl; do
-            curl -fsSL "https://raw.githubusercontent.com/Poetic-Poems/poetic/main/$f" -o /tmp/upstream
+          # A here-string, never `curl … | while read`: a piped loop body runs
+          # in a subshell, so `status=1` is discarded and the job exits 0 on
+          # real drift.
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            # A manifest entry this repo does not have is the addition the
+            # hard-coded list could never see. It fails the check; it is never
+            # skipped.
+            if [ ! -f "$f" ]; then
+              echo "::error file=$f::$f is in Poetic-Poems/poetic's tech-debt tooling manifest but missing from this repo"
+              status=1
+              continue
+            fi
+            if ! curl -fsSL "$raw/$f" -o /tmp/upstream; then
+              echo "::error file=$f::could not fetch $f from Poetic-Poems/poetic main"
+              status=1
+              continue
+            fi
             if ! diff -u /tmp/upstream "$f"; then
               echo "::error file=$f::$f has drifted from Poetic-Poems/poetic main"
               status=1
             fi
-          done
+          done <<< "$manifest"
           exit $status
