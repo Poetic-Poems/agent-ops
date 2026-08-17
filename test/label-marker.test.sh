@@ -67,6 +67,8 @@ assert_eq "an item touched once keeps that action" "add" "$(jq -r '."o/r|6".acti
 assert_eq "a different label's action does not leak into this map" \
   "" "$(jq -r '."o/r|5".label // ""' <<<"$nr_map")"
 assert_eq "the map is keyed by repo as well as item" "add" "$(jq -r '."o/other|5".action' <<<"$nr_map")"
+assert_eq "the map also carries every recorded add, not just the latest action" \
+  '["2026-08-01T09:00:00Z"]' "$(jq -c '."o/r|5".adds' <<<"$nr_map")"
 
 refined_map="$(label_own_actions_map "refined" "$log")"
 assert_eq "the refined label's own map is independent of needs-refinement's" \
@@ -207,6 +209,77 @@ assert_eq "a malformed blocked extract has nothing to retry — the safe directi
   "$(label_own_stale_applications "$candidates" "$stuck_map" 'not json')"
 assert_eq "an empty blocked argument reads as nothing blocked" "52" \
   "$(jq -r '.[0].number' <<<"$(label_own_stale_applications "$candidates" "$stuck_map" '')")"
+
+# --- Grace period and skew tolerance (#526) ----------------------------------
+# The fixtures above all stamp `own.ts` a second *after* `labelled_at`, which
+# is the direction the pre-#526 exact-order comparison happened to work in.
+# These are the three cases #526 found it missing: a node's clock running
+# *behind* GitHub's (own.ts earlier than labelled_at, within tolerance), an
+# add whose later recorded remove did not actually take, and an
+# own-label-action record that has not propagated to the reading node yet.
+
+fixed_now="2026-08-17T12:00:00Z"
+
+# Skew: our own write is recorded a few seconds *behind* GitHub's own record
+# of the same label add — the failing direction the pre-#526 comparison
+# asserted nothing about.
+skew_log="$tmp_dir/skew.jsonl"
+printf '%s\n' '{"ts":"2026-08-17T11:00:00Z","event":"own-label-action","repo":"o/r","item":"60","label":"needs-refinement","action":"add"}' > "$skew_log"
+skew_map="$(label_own_actions_map "needs-refinement" "$skew_log")"
+if label_is_own_application "$skew_map" "o/r" "60" "2026-08-17T11:00:10Z" "$fixed_now"; then
+  assert_eq "own.ts behind labelled_at by less than the skew tolerance is still ours" "yes" "yes"
+else
+  assert_eq "own.ts behind labelled_at by less than the skew tolerance is still ours" "yes" "no"
+fi
+if label_is_own_application "$skew_map" "o/r" "60" "2026-08-17T11:05:00Z" "$fixed_now"; then
+  assert_eq "own.ts behind labelled_at by more than the skew tolerance is not ours" "no" "yes"
+else
+  assert_eq "own.ts behind labelled_at by more than the skew tolerance is not ours" "no" "no"
+fi
+
+# An add matching labelled_at, with a later remove recorded — #526 cause 2:
+# the still-present label reads as ours despite the map's latest action
+# being "remove", because a matching add exists somewhere in the record.
+addremove_log="$tmp_dir/addremove.jsonl"
+cat > "$addremove_log" <<'EOF'
+{"ts":"2026-08-16T22:39:57Z","event":"own-label-action","repo":"o/r","item":"61","label":"needs-refinement","action":"add"}
+{"ts":"2026-08-16T22:40:02Z","event":"own-label-action","repo":"o/r","item":"61","label":"needs-refinement","action":"remove"}
+EOF
+addremove_map="$(label_own_actions_map "needs-refinement" "$addremove_log")"
+assert_eq "the latest recorded action is still remove" "remove" "$(jq -r '."o/r|61".action' <<<"$addremove_map")"
+if label_is_own_application "$addremove_map" "o/r" "61" "2026-08-16T22:39:56Z" "$fixed_now"; then
+  assert_eq "an add matching labelled_at is ours even with a later recorded remove" "yes" "yes"
+else
+  assert_eq "an add matching labelled_at is ours even with a later recorded remove" "yes" "no"
+fi
+addremove_candidates='[{"repo":"o/r","number":61,"label":"needs-refinement","state":"open","labelled_at":"2026-08-16T22:39:56Z","by":"warwick"}]'
+assert_eq "  ... so the filter drops it rather than reporting it as a hand-flag" "0" \
+  "$(jq 'length' <<<"$(label_filter_own_applications "$addremove_candidates" "$addremove_map" "$fixed_now")")"
+assert_eq "  ... and it is offered back for the stale removal to retry" "61" \
+  "$(jq -r '.[0].number' <<<"$(label_own_stale_applications "$addremove_candidates" "$addremove_map" '[]' "$fixed_now")")"
+
+# Grace: no own record at all, but the label was applied recently enough that
+# an unpropagated own-label-action record — not a human — is the likely
+# explanation (#526 cause 1). Deferred: neither reported as a hand-flag nor
+# offered up for a stale-removal retry.
+grace_candidates='[{"repo":"o/r","number":62,"label":"needs-refinement","state":"open","labelled_at":"2026-08-17T11:45:00Z","by":"warwick"}]'
+assert_eq "a label applied within the grace window, with no own record, is not reported as a hand-flag" "0" \
+  "$(jq 'length' <<<"$(label_filter_own_applications "$grace_candidates" '{}' "$fixed_now")")"
+assert_eq "  ... nor is it offered for stale removal" "0" \
+  "$(jq 'length' <<<"$(label_own_stale_applications "$grace_candidates" '{}' '[]' "$fixed_now")")"
+if label_is_own_application '{}' "o/r" "62" "2026-08-17T11:45:00Z" "$fixed_now"; then
+  assert_eq "  ... and a deferred candidate is not reported as ours either" "no" "yes"
+else
+  assert_eq "  ... and a deferred candidate is not reported as ours either" "no" "no"
+fi
+
+# Past the grace window, with no own record, the pre-#526 hand-flag behaviour
+# is unchanged (requirement 34g).
+old_candidates='[{"repo":"o/r","number":63,"label":"needs-refinement","state":"open","labelled_at":"2026-08-17T11:00:00Z","by":"warwick"}]'
+assert_eq "a label applied longer ago than the grace window, with no own record, is still reported as a hand-flag" "63" \
+  "$(jq -r '.[0].number' <<<"$(label_filter_own_applications "$old_candidates" '{}' "$fixed_now")")"
+assert_eq "  ... and is not offered for stale removal either, since it was never proven ours" "0" \
+  "$(jq 'length' <<<"$(label_own_stale_applications "$old_candidates" '{}' '[]' "$fixed_now")")"
 
 # --- The argv cap (requirement 4g) -------------------------------------------
 # The own-actions map and the blocked extract both grow with the fleet's

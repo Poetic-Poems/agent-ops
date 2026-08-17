@@ -144,6 +144,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   windowed `by_actor` figure would have double-counted any transcript that
   spent on two models; `cost_rows[]` rows now also carry the transcript's own
   `cycle` id so the client can dedupe on it and count transcripts, not rows.
+- The own-label read-back (requirement 39f) no longer misattributes its own
+  `needs-refinement` label writes to a human when the reading node's clock
+  runs behind GitHub's, or when a peer node's `own-label-action` record has
+  not yet reached this node's union log (issue #526). `lib/label-marker.sh`'s
+  comparison now matches any recorded `add` within a skew tolerance of
+  GitHub's own `labelled_at`, in either direction, rather than requiring
+  ours to be no later — which the RC4-style recurrence measured failing in
+  the trailing-clock direction — and now scans every recorded `add`, not
+  only the latest action, so an add that matches followed by a `remove` that
+  silently failed is still recognised as ours. A label applied within a
+  30-minute grace period with no own record yet is deferred rather than
+  read as a human's, since the record may simply not have propagated over
+  the fleet's periodic state-sync — neither reported as a hand-flag nor
+  offered up for a stale-removal retry until the grace period passes.
 
 ### Changed
 

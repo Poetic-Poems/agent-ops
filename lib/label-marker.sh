@@ -40,8 +40,86 @@
 # only the read-back half — a pure function of the log, like every other
 # extract in `lib/cycle-state.sh`.
 #
+# #526: comparing "ours" and GitHub's clocks directly is not enough. A node
+# whose clock runs behind GitHub's can stamp `own.ts` earlier than the
+# `labelled_at` it caused, which the original exact-order comparison read as
+# a human's later touch; and the `own-label-action` record a peer node just
+# wrote has not necessarily reached the node doing the read-back yet, since
+# it arrives by the fleet's periodic state-sync rather than synchronously.
+# The read-back below instead (1) matches any recorded `add` within a skew
+# tolerance of `labelled_at`, in either direction, rather than requiring
+# ours to be no later than GitHub's, and (2) treats a label applied more
+# recently than a grace period as *not yet attributable* when no own record
+# explains it — neither a hand-flag nor a stale write to retry — rather than
+# assuming the silence means a human, since the record may simply not have
+# propagated yet. See `own_class` below for the three-way classification
+# this produces, shared verbatim by every reader so they cannot drift into
+# disagreeing about which class a candidate falls into.
+#
 # Sourced by agent-cycle.sh. Sets no shell options, because agent-cycle.sh
 # runs under `set -euo pipefail`.
+
+# How long a node's clock may disagree with GitHub's (LABEL_OWN_SKEW_TOLERANCE_SECONDS)
+# and how long an own-label-action record may take to propagate from the
+# writing node to the reading one over the fleet's periodic state-sync
+# (LABEL_OWN_GRACE_SECONDS). Both env-overridable, like every other pipeline
+# timing constant (e.g. `GITHUB_LIMIT_MAX_WAIT_SECONDS`), so a test can
+# substitute a value that reads clearly without touching production
+# behaviour. Production values: 120s comfortably exceeds every skew measured
+# on this fleet (13s and 5+s in opposite directions, per #526); 1800s
+# comfortably exceeds the ~12 minutes of state-sync staleness #526 measured
+# against a ~6-7 minute fetch cadence.
+LABEL_OWN_SKEW_TOLERANCE_SECONDS="${LABEL_OWN_SKEW_TOLERANCE_SECONDS:-120}"
+LABEL_OWN_GRACE_SECONDS="${LABEL_OWN_GRACE_SECONDS:-1800}"
+
+# The classification `label_filter_own_applications` and
+# `label_own_stale_applications` below embed verbatim, so the two can never
+# drift into disagreeing about which of three classes a candidate falls
+# into:
+#
+#   "ours"      — an own `add` for this repo+item+label is recorded within
+#                 LABEL_OWN_SKEW_TOLERANCE_SECONDS of `labelled_at`, in
+#                 either direction, regardless of what the *latest* recorded
+#                 action is — so an add that matches, followed by a remove
+#                 that silently failed, still reads as ours (#526 cause 2).
+#   "deferred"  — no own record explains the label, but `labelled_at` is
+#                 newer than LABEL_OWN_GRACE_SECONDS ago: the absence may
+#                 simply mean the writing node's record has not reached this
+#                 node yet (#526 cause 1), so this is neither reported as a
+#                 hand-flag nor offered up for a stale-removal retry.
+#   "not-ours"  — everything else: the label is old enough, or the own
+#                 record present and not near enough, that a human's own
+#                 hand is the remaining explanation. This is the fail-safe
+#                 default requirement 39f always used before #526 — an
+#                 unreadable log, a malformed argument, or a missing
+#                 `labelled_at` all resolve here too.
+#
+# A legacy `$own` object carrying only `{action, ts}` (rather than
+# `label_own_actions_map`'s richer `{action, ts, adds}`) is still matched
+# correctly: `own_add_near` treats `action == "add"` with its `ts` as an
+# implicit single-element `adds`, so a caller (or a test) that builds an
+# own-record by hand doesn't need to know about `adds` at all.
+# shellcheck disable=SC2016  # jq's own $e/$own/$now_epoch/…, not the shell's.
+_label_own_class_jq_def='
+  def own_epoch($s): (try ($s | fromdateiso8601) catch null);
+  def own_add_near($own; $at_epoch; $tol):
+    (($own.adds // []) +
+     (if (($own.action // "") == "add") and (($own.ts // "") != "")
+      then [$own.ts] else [] end)) as $adds
+    | if $at_epoch == null then false
+      else ($adds | any(own_epoch(.) as $ae
+             | $ae != null and (($ae - $at_epoch) | if . < 0 then -. else . end) <= $tol))
+      end;
+  def own_class($e; $own_map; $now_epoch; $tol; $grace):
+    ((($e.repo // "") | tostring) + "|" + (($e.number // "") | tostring)) as $key
+    | (($own_map[$key]) // {}) as $own
+    | (own_epoch($e.labelled_at // "")) as $at_epoch
+    | if own_add_near($own; $at_epoch; $tol) then "ours"
+      elif $at_epoch == null then "not-ours"
+      elif ($now_epoch != null) and (($now_epoch - $at_epoch) < $grace) then "deferred"
+      else "not-ours"
+      end;
+'
 
 # label_own_action_fields REPO ITEM LABEL ACTION
 # Print the extra fields an `own-label-action` event carries: which item, which
@@ -55,11 +133,17 @@ label_own_action_fields() {
 }
 
 # label_own_actions_map LABEL [LOG_FILE]
-# Print, as a JSON object keyed `"<repo>|<item>"`, the most recent
-# `own-label-action` this system recorded for LABEL against every repo+item
-# that has one: `{action, ts}`. Reads LOG_FILE, or stdin if it is omitted or
-# "-". Always prints a valid object; an unreadable log yields `{}`, the same
-# fail-safe shape as every other extract in `lib/cycle-state.sh`.
+# Print, as a JSON object keyed `"<repo>|<item>"`, this system's own recorded
+# history for LABEL against every repo+item that has one: `{action, ts,
+# adds}`, where `action`/`ts` are the most recent action and its timestamp
+# (unchanged from before #526) and `adds` is every `add` action's timestamp,
+# oldest first — `own_class` (above) scans the whole of `adds`, not just the
+# latest action, so an add that matches `labelled_at` is still recognised as
+# ours even when a later `remove` was also recorded (#526 cause 2: the
+# removal it attempted silently failed). Reads LOG_FILE, or stdin if it is
+# omitted or "-". Always prints a valid object; an unreadable log yields
+# `{}`, the same fail-safe shape as every other extract in
+# `lib/cycle-state.sh`.
 label_own_actions_map() {
   local label="$1" src="${2:--}" out=""
   # shellcheck disable=SC2016  # jq's $label/$e, not the shell's.
@@ -68,8 +152,13 @@ label_own_actions_map() {
                    and (.repo // "") != "" and (.item // "") != "") ]
     | sort_by(.ts)
     | reduce .[] as $e ({};
-        .[($e.repo) + "|" + (($e.item) | tostring)] =
-          {action: ($e.action // ""), ts: ($e.ts // "")})'
+        ($e.repo + "|" + ($e.item | tostring)) as $k
+        | .[$k] = ((.[$k] // {action: "", ts: "", adds: []})
+            | .action = ($e.action // "")
+            | .ts = ($e.ts // "")
+            | if ($e.action // "") == "add"
+              then .adds += [($e.ts // "")]
+              else . end))'
   if [[ "$src" == "-" ]]; then
     out="$(jq -c -R 'fromjson? // empty' 2>/dev/null \
       | jq -sc --arg label "$label" "$jq_prog" 2>/dev/null || true)"
@@ -81,40 +170,49 @@ label_own_actions_map() {
   printf '%s' "$out"
 }
 
-# label_filter_own_applications CANDIDATES_JSON OWN_ACTIONS_JSON
+# label_filter_own_applications CANDIDATES_JSON OWN_ACTIONS_JSON [NOW]
 # Print CANDIDATES_JSON — the `{repo, number, labelled_at, …}` array
 # `scripts/gather-hand-flagged-refinements.sh` produces — with every entry
-# dropped whose label is currently present by this system's own hand rather
-# than a human's: our latest recorded action for that repo+item+label was an
-# `add`, and GitHub's own record of when the label was last applied
-# (`labelled_at`) is no later than ours, since a human touching the label
-# after we did would push `labelled_at` past our own `ts`.
+# dropped that `own_class` (above) classifies as "ours" or "deferred",
+# keeping only "not-ours": a label old enough, or with no own record near
+# enough, that a human's own hand remains the explanation. NOW is compared
+# against `labelled_at` for the grace test and defaults to `date -u` — pass
+# it explicitly (as the tests do) to keep a grace-period assertion
+# deterministic; nothing in this file reads the clock itself otherwise.
 #
 # This is the read-back half requirement 39f describes, and the one place the
-# attribution is decided: `label_is_own_application` below answers the same
-# question for a single item by asking this function. Entries are kept, not
-# dropped, whenever the record is silent — an empty own record, an empty
-# `labelled_at`, a malformed argument — because "not ours" is the safe
-# direction: it leaves the caller with exactly the behaviour it had before
-# this file existed rather than swallowing a human's flag.
+# attribution is decided: `label_is_own_application` and
+# `label_own_stale_applications` below share the exact same `own_class`
+# definition (`_label_own_class_jq_def`) so all three readers can never
+# disagree about which class a candidate falls into. Entries are kept, not
+# dropped, whenever the record is
+# silent — an empty own record, an empty `labelled_at`, a malformed argument
+# — because "not ours" is the safe direction: it leaves the caller with
+# exactly the behaviour it had before this file existed rather than
+# swallowing a human's flag. A "deferred" entry (label applied within the
+# grace period, no own record yet) is *also* dropped here — neither reported
+# nor retried — because #526 found that an unpropagated own-label-action
+# record, not a human, was the actual explanation three times running.
 label_filter_own_applications() {
-  local candidates="${1:-[]}" own_map="${2:-{\}}" out="" docs
+  local candidates="${1:-[]}" own_map="${2:-{\}}" now="${3:-}" out="" docs jq_prog
+  [[ -n "$now" ]] || now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   # Both arrive on stdin, one document per line, never in argv (requirement
   # 4g): the candidate list and the own-actions map both grow with the
   # fleet's history, and past MAX_ARG_STRLEN an `--argjson` delivery makes
   # this call fail into the "not ours" fallback below.
   docs="$candidates"$'\n'"$own_map"
-  out="$(jq -nc '
+  # shellcheck disable=SC2016  # jq's own $c/$o/$e/…, not the shell's.
+  jq_prog='
+'"$_label_own_class_jq_def"'
     input as $c | input as $o |
+    (try ($now_arg | fromdateiso8601) catch null) as $now_epoch |
     [ $c[]?
       | . as $e
-      | ((($o // {})[(($e.repo // "") | tostring) + "|" + (($e.number // "") | tostring)])
-         // {}) as $own
-      | select(((($own.action // "") == "add")
-                and (($own.ts // "") != "")
-                and (($e.labelled_at // "") != "")
-                and (($e.labelled_at) <= ($own.ts))) | not) ]' \
-    <<<"$docs" 2>/dev/null || true)"
+      | select(own_class($e; ($o // {}); $now_epoch; $tol_arg; $grace_arg) == "not-ours") ]'
+  out="$(jq -nc --arg now_arg "$now" \
+      --argjson tol_arg "$LABEL_OWN_SKEW_TOLERANCE_SECONDS" \
+      --argjson grace_arg "$LABEL_OWN_GRACE_SECONDS" "$jq_prog" \
+      <<<"$docs" 2>/dev/null || true)"
   if [[ -z "$out" ]] || ! jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
     if jq -e 'type == "array"' <<<"$candidates" >/dev/null 2>&1; then
       out="$candidates"
@@ -125,20 +223,28 @@ label_filter_own_applications() {
   printf '%s' "$out"
 }
 
-# label_own_stale_applications CANDIDATES_JSON OWN_ACTIONS_JSON [BLOCKED_JSON]
+# label_own_stale_applications CANDIDATES_JSON OWN_ACTIONS_JSON [BLOCKED_JSON] [NOW]
 # Print CANDIDATES_JSON with every entry dropped *except* the ones
-# `label_filter_own_applications` above drops and that have no block open —
-# within the still-blocked set, the complement of that function, expressed in
-# terms of it so the two can never disagree about which entries are which.
-# Where that function answers "what a human might be asking about", this one
-# answers "what is safe to retry removing": a label this system's own last
-# recorded action was an `add` for, with no later human touch, still present
-# on the issue only because a previous removal attempt
-# (`release_refinement_label`, which tolerates the failure by design) did not
-# take. Requirement 39f's read-back keeps such an entry from being misread as
-# a fresh flag; this is the other half — handing it back so the call site can
-# have another go at the removal itself, rather than leaving the label to sit
-# there meaning nothing until a human notices.
+# `own_class` (above) classifies as "ours" and that have no block open —
+# sharing that classification verbatim with `label_filter_own_applications`
+# so the two can never disagree about which entries are which. Where that
+# function answers "what a human might be asking about", this one answers
+# "what is safe to retry removing": a label this system recorded a matching
+# `add` for, still present on the issue only because a previous removal
+# attempt (`release_refinement_label`, which tolerates the failure by
+# design) did not take. Requirement 39f's read-back keeps such an entry from
+# being misread as a fresh flag; this is the other half — handing it back so
+# the call site can have another go at the removal itself, rather than
+# leaving the label to sit there meaning nothing until a human notices.
+#
+# A "deferred" entry — no own record yet, but `labelled_at` within the grace
+# period — is *excluded* here too, the same as from
+# `label_filter_own_applications`: it is not proven to be ours, so it is not
+# safe to retry removing (#526's requirement 3 — deferred is a third state,
+# not a synonym for "kept" that would otherwise fall into this set as a
+# false stale-retry candidate). NOW defaults to `date -u`, same as that
+# function; pass it explicitly to keep a grace-period assertion
+# deterministic.
 #
 # BLOCKED_JSON is `lib/cycle-state.sh`'s `blocked_items` extract, and the test
 # against it is what separates a stuck label from a working one: while a block
@@ -147,8 +253,8 @@ label_filter_own_applications() {
 # reading it that the pipeline is waiting on them. Every block counts, not
 # only a refinement one — the same "any existing block disqualifies the issue"
 # rule `refinement_hand_flag_new` applies to the entries this function does
-# not take. Omitted, it defaults to "nothing is blocked", which makes this the
-# plain complement; the one caller that acts on the result passes the extract.
+# not take. Omitted, it defaults to "nothing is blocked"; the one caller that
+# acts on the result passes the extract.
 #
 # Fails safe in the direction a write demands: malformed CANDIDATES_JSON, a
 # malformed OWN_ACTIONS_JSON or a malformed BLOCKED_JSON yields nothing to
@@ -156,44 +262,60 @@ label_filter_own_applications() {
 # reading, because here that default suppresses a GitHub write rather than a
 # block.
 label_own_stale_applications() {
-  local candidates="${1:-[]}" own_map="${2:-{\}}" blocked="${3:-[]}" kept out docs
+  local candidates="${1:-[]}" own_map="${2:-{\}}" blocked="${3:-[]}" now="${4:-}" out docs jq_prog
   [[ -n "$blocked" ]] || blocked='[]'
-  kept="$(label_filter_own_applications "$candidates" "$own_map")"
-  # The candidate list, the kept set and the blocked set all arrive on
-  # stdin, one document per line, never in argv (requirement 4g): all three
-  # grow with the fleet's history, and past MAX_ARG_STRLEN an `--argjson`
-  # delivery makes this call fail into the "nothing to retry" fallback below
-  # — the safe direction for a write, but silent.
-  docs="$candidates"$'\n'"$kept"$'\n'"$blocked"
-  out="$(jq -nc '
-    input as $c | input as $k | input as $b |
-    ($k | map((.repo // "") + "|" + ((.number // "") | tostring))) as $keep
-    | ($b | map((((.repo // "") | tostring)) + "|" + (((.item // "") | tostring)))) as $open
-    | [ $c[]?
+  [[ -n "$now" ]] || now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  # The candidate list, the own-actions map and the blocked set all arrive
+  # on stdin, one document per line, never in argv (requirement 4g): all
+  # three grow with the fleet's history, and past MAX_ARG_STRLEN an
+  # `--argjson` delivery makes this call fail into the "nothing to retry"
+  # fallback below — the safe direction for a write, but silent.
+  docs="$candidates"$'\n'"$own_map"$'\n'"$blocked"
+  # shellcheck disable=SC2016  # jq's own $c/$o/$b/$e/…, not the shell's.
+  jq_prog='
+'"$_label_own_class_jq_def"'
+    input as $c | input as $o | input as $b |
+    ($b | map((((.repo // "") | tostring)) + "|" + (((.item // "") | tostring)))) as $open |
+    (try ($now_arg | fromdateiso8601) catch null) as $now_epoch |
+    [ $c[]?
         | . as $e
         | (($e.repo // "") + "|" + (($e.number // "") | tostring)) as $key
-        | select(($keep | index($key)) == null)
-        | select(($open | index($key)) == null) ]' \
-    <<<"$docs" 2>/dev/null || true)"
+        | select(own_class($e; ($o // {}); $now_epoch; $tol_arg; $grace_arg) == "ours")
+        | select(($open | index($key)) == null) ]'
+  out="$(jq -nc --arg now_arg "$now" \
+      --argjson tol_arg "$LABEL_OWN_SKEW_TOLERANCE_SECONDS" \
+      --argjson grace_arg "$LABEL_OWN_GRACE_SECONDS" "$jq_prog" \
+      <<<"$docs" 2>/dev/null || true)"
   if [[ -z "$out" ]] || ! jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
     out='[]'
   fi
   printf '%s' "$out"
 }
 
-# label_is_own_application OWN_ACTIONS_JSON REPO ITEM LABELLED_AT
+# label_is_own_application OWN_ACTIONS_JSON REPO ITEM LABELLED_AT [NOW]
 # True (exit 0) when the label's current presence on REPO/ITEM is explained by
 # this system's own last action rather than a human's — the single-item form
-# of `label_filter_own_applications` above, and deliberately expressed in
-# terms of it so the two can never drift into disagreeing about who applied a
-# label. Either an empty own record or an empty LABELLED_AT resolves to "not
-# ours", the safe direction: it is what every hand-flag read already assumed
-# before this file existed.
+# of `own_class` above, sharing its definition verbatim (not merely calling
+# `label_filter_own_applications` and checking whether it dropped the
+# candidate) precisely because that filter's *kept* set is not this
+# function's complement any more: since #526, the filter also drops a
+# "deferred" candidate, which is not yet proven ours either. Only a positive
+# "ours" verdict answers true here; both "not-ours" and "deferred" answer
+# false, and either an empty own record or an empty LABELLED_AT resolves to
+# "not-ours", the safe direction, exactly as before #526. NOW defaults to
+# `date -u`; pass it explicitly to test the grace period deterministically.
 label_is_own_application() {
-  local own_map="$1" repo="$2" item="$3" labelled_at="$4"
-  local candidate kept
-  candidate="$(jq -nc --arg r "$repo" --arg i "$item" --arg at "$labelled_at" \
-    '[{repo: $r, number: $i, labelled_at: $at}]' 2>/dev/null || printf '[]')"
-  kept="$(label_filter_own_applications "$candidate" "$own_map")"
-  [[ "$(jq 'length' <<<"$kept" 2>/dev/null || printf '1')" == "0" ]]
+  local own_map="$1" repo="$2" item="$3" labelled_at="$4" now="${5:-}" out jq_prog
+  [[ -n "$now" ]] || now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  # shellcheck disable=SC2016  # jq's own $o/$r/$i/…, not the shell's.
+  jq_prog='
+'"$_label_own_class_jq_def"'
+    input as $o |
+    (try ($now_arg | fromdateiso8601) catch null) as $now_epoch |
+    own_class({repo: $r, number: $i, labelled_at: $at}; ($o // {}); $now_epoch; $tol_arg; $grace_arg)'
+  out="$(jq -nc --arg r "$repo" --arg i "$item" --arg at "$labelled_at" --arg now_arg "$now" \
+      --argjson tol_arg "$LABEL_OWN_SKEW_TOLERANCE_SECONDS" \
+      --argjson grace_arg "$LABEL_OWN_GRACE_SECONDS" "$jq_prog" \
+      <<<"$own_map" 2>/dev/null || true)"
+  [[ "$out" == '"ours"' ]]
 }
