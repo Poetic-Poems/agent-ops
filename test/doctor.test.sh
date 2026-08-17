@@ -179,7 +179,19 @@ chmod +x "$stub_bin/claude"
 #     answer one `repos/<slug>` call per run. Review repos, state_repo and the
 #     Enabler are all switched off for the same reason — none of them is
 #     what this suite tests, and every one left on is another call the stub
-#     would need to arbitrate. ---
+#     would need to arbitrate.
+#
+#     The D18 autonomy keys are deleted for a different reason: the merge
+#     autonomy assertions below are *cross-key* rules, and each one wants a
+#     specific combination of set and unset. They were written when the
+#     shipped config carried none of these keys, so "unset" came for free and
+#     each test only ever set what it needed. Stage 1 entry then set
+#     merge_autonomy, approver_app_id and the model tiers for real, and six
+#     assertions inverted — every one that depended on a key being absent
+#     (#546). Deleting them here restores the known-empty baseline those
+#     assertions are written against, so each test states its own combination
+#     explicitly and none of them depends on what the fleet's current stage
+#     happens to be. ---
 slug="acme-org/target-repo"
 base_config="$tmp/base-config.json"
 jq --arg slug "$slug" '
@@ -188,6 +200,8 @@ jq --arg slug "$slug" '
   | .state_repo = ""
   | .enabler_model = ""
   | .enabler_assignee = ""
+  | del(.merge_autonomy, .approver_app_id, .approver_model_default,
+        .approver_model_complex, .approver_model_critical)
 ' "$CONFIG" > "$base_config"
 
 # run_doctor [VAR=value…] [-- extra doctor.sh args]

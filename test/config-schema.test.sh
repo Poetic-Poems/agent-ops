@@ -699,21 +699,38 @@ assert_doctor "doctor passes the shipped configuration" \
 # --- D18 (requirement 2.3b): merge_autonomy above human needs an Approver
 #     identity configured. Doctor-only — nothing at cycle start consumes this
 #     pairing yet, so there is no matching agent-cycle.sh refusal to mirror,
-#     unlike the two shared cross-key rules above. ---
+#     unlike the two shared cross-key rules above.
+#
+#     Every "no approver_*" case below deletes the key explicitly rather than
+#     relying on the shipped config not to carry it. These assertions were
+#     written when the fleet ran at Stage 0, where every one of these keys was
+#     absent, so `.merge_autonomy = "agent-approves"` alone did construct an
+#     unpaired config — and then Stage 1 entry set them for real and three of
+#     these assertions inverted, because the fixture they thought they were
+#     building no longer existed (#546). A cross-key rule's negative case has
+#     to state both halves: what is set, and what is not. ---
 assert_doctor "doctor fails a merge_autonomy level above human with no approver_app_id, naming the key" \
-  '.merge_autonomy = "agent-approves"' 1 \
+  '.merge_autonomy = "agent-approves" | del(.approver_app_id)' 1 \
   'merge_autonomy is "agent-approves" with no approver_app_id configured'
 assert_doctor "doctor fails a per-repo merge_autonomy override above human with no approver_app_id, naming the repo" \
-  '.repos[0].merge_autonomy = "agent-merges-all"' 1 \
+  '.repos[0].merge_autonomy = "agent-merges-all" | del(.approver_app_id)' 1 \
   "Poetic-Poems/poetic's merge_autonomy override is \"agent-merges-all\" with no approver_app_id configured"
 assert_doctor "doctor fails a merge_autonomy level above human with approver_app_id set but no approver_model_default (D18 WI-5, requirement 8b)" \
-  '.merge_autonomy = "agent-approves" | .approver_app_id = "123456"' 1 \
+  '.merge_autonomy = "agent-approves" | .approver_app_id = "123456" | del(.approver_model_default)' 1 \
   'merge_autonomy is "agent-approves" with no approver_model_default configured'
 assert_doctor "doctor passes a merge_autonomy level above human once approver_app_id and approver_model_default are both set" \
   '.merge_autonomy = "agent-approves" | .approver_app_id = "123456" | .approver_model_default = "claude-sonnet-5"' 0 \
   'merge_autonomy is "agent-approves"'
 assert_doctor "doctor passes human explicitly, same as the default, with no approver_app_id or approver_model_default" \
-  '.merge_autonomy = "human"' 0 'merge_autonomy is "human"'
+  '.merge_autonomy = "human" | del(.approver_app_id) | del(.approver_model_default)' 0 \
+  'merge_autonomy is "human"'
+# The shipped configuration's own pairing, asserted as a fact rather than left
+# implicit in "doctor passes the shipped configuration" above: at Stage 1 the
+# fleet runs above `human`, so both keys must be set, and a config change that
+# raised the level while dropping either would otherwise fail only through a
+# generic pass/fail assertion that names neither key.
+assert_doctor "the shipped configuration's own merge_autonomy is paired with both Approver keys" \
+  '.' 0 'merge_autonomy is "agent-approves"'
 
 # --- D18 §5.4 (requirement 2.3c): merge_budget_per_day, reported per
 #     configured source, and a warn (never a fail — nothing arms automatic
