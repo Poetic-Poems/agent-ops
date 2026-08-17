@@ -9082,6 +9082,49 @@ implements.
     `priority_set` key at all — every non-`issues` source, and any `issues`
     entry gathered before this requirement existed — never qualifies.
 
+    A repository this token cannot resolve `Priority` for at all — `ORG_ONLY`
+    visibility without organisation membership, or no such field — must never
+    keep offering the Refiner `triage_only` candidates it structurally cannot
+    band: `issue_priority_apply` would only ever return `field-unresolvable`
+    for them, after the model spend is already paid, and because they carry
+    no `refinements_map` entry (`triage_only` is precisely the exception that
+    lets an already-refined item back in) they re-enter the candidate set
+    every cycle with no possible progress. Worse, `refiner_engagement_set`
+    caps at `refiner_max_per_engagement` sorted by `(repo, source, item)`
+    (requirement 39b), so a single alphabetically-early repository in this
+    state can fill the entire engagement set every cycle, starving genuine
+    refinement work in every other repository, not merely wasting its own
+    slice (issue #511).
+
+    A pre-flight, not a post-hoc latch, guards against this: immediately
+    after `refiner_candidate_items` builds this cycle's candidate set, and
+    before the engagement cap or any claim, `refiner_filter_unbandable_triage`
+    (`agent-cycle.sh`) collects the distinct repositories among this cycle's
+    `triage_only` candidates — a cycle with none makes no query at all — and
+    resolves each one's `Priority` field via `issue_priority_field_ids`
+    (itself process-cached per repository, including its own failure, so this
+    call and `issue_priority_apply`'s own later call inside
+    `maybe_run_refiner` never resolve the same repository's field twice).
+    Every `triage_only` candidate from a repository whose field failed to
+    resolve is dropped via the pure filter `refiner_drop_unbandable_triage`
+    (`lib/refinement.sh`, jq-only and independently unit-testable); every
+    other candidate — `triage_only` or not, from that repository or any
+    other — passes through unchanged, and when every contributing
+    repository's field resolves the candidate set is returned
+    byte-identical. Exactly one `warning` is logged per repository whose
+    field failed, naming the repository and how many `triage_only`
+    candidates it dropped — never one per dropped item. The pre-flight runs
+    unconditionally, including under `--dry-run`: it is a read, and skipping
+    it there would make the dry-run fingerprint input (requirement 3b's own
+    `refiner_candidates_json`) differ from a live cycle's for no gain. No
+    state persists between cycles — the day field visibility or organisation
+    membership is fixed, triage resumes on its own with no operator action
+    and nothing to clear — and `issue_priority_apply`'s own
+    `field-unresolvable` path and its warning (below) are unchanged: this
+    pre-flight makes that path rare for `triage_only` items, it does not
+    replace it, and it is still the correct behaviour for a field that
+    becomes unreadable mid-cycle, after this pre-flight already ran.
+
     The Refiner's verdict (`parsed.refined[]`, requirement 39c) gains an
     optional `priority` field, one of the four band names, independent of
     `verdict` itself: an ordinary item may carry both a specification and a
@@ -12424,7 +12467,25 @@ pull request, run the ones the change touches and any it could regress.
     `priority` itself still reading Medium (`test/issues-prefetch.test.sh`).
     `scripts/doctor.sh`'s own gate is asserted against the four banded
     `sources` tokens a valid configuration actually carries, so the check
-    cannot regress to one that never runs.
+    cannot regress to one that never runs. The pre-flight (issue #511):
+    `refiner_drop_unbandable_triage` (`lib/refinement.sh`) drops only the
+    named repositories' `triage_only` entries, leaves every other candidate
+    from those repositories and every candidate from any other repository
+    untouched, is the identity on an empty unresolvable-repository list, and
+    falls back to its input unchanged (never `[]`) on malformed candidates
+    JSON. `refiner_filter_unbandable_triage` (`agent-cycle.sh`), lifted
+    verbatim and driven against a stubbed `gh` that fails one repository's
+    field query and succeeds another's: the failing repository's
+    `triage_only` candidates never reach the returned set while its other
+    candidates and the succeeding repository's candidates — `triage_only` or
+    not — do; exactly one `warning` is logged, naming the failing repository
+    and the count of candidates it dropped, not one per item; a repeat
+    resolution of either repository in the same process hits
+    `issue_priority_field_ids`'s own cache rather than issuing a second
+    query, including for the failing repository's cached failure; a cycle
+    with no `triage_only` candidate at all issues no field query from this
+    path; and when every contributing repository's field resolves, the
+    returned set is byte-identical to the input.
 11c. **A broken Enabler cannot break a cycle (requirement 37).** With a stubbed
     stage that times out, exits non-zero, or (after requirement 9e's salvage
     resume also fails to parse) returns prose instead of JSON: the
