@@ -441,13 +441,24 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
              limit:{active,note}, switch:{…} },
   counts:  { cycles_shown, failures_shown, prs_reached_ready,   // fleet-wide
              spend_today_usd, spend_total_usd,
-             by_day[], by_model[], by_actor[],   // both pipelines' actors
+             by_day[], by_model[], by_actor[],   // both pipelines' actors;
+                                    //   by_model[].n counts transcripts that
+                                    //   touched that model, not transcripts
+                                    //   attributed to it — a transcript
+                                    //   spending on two models counts under
+                                    //   both (issue #536); by_day/by_actor
+                                    //   count transcripts, unaffected
              recent_costs[],       // {ts, cost} per row, last 3 days, for the
                                     //   spend-today card's GMT/local/24h toggle
-             cost_rows[],           // {day, model, actor, usd} per row, the
-                                     //   whole COST_SCAN_DAYS window, unsummed
-                                     //   — backs the model/actor charts' own
-                                     //   time-frame selector (issue #334)
+             cost_rows[],           // {day, model, actor, usd} per row, one
+                                     //   per (transcript × model) touched —
+                                     //   each carries that model's own
+                                     //   costUSD, not the transcript's whole
+                                     //   total_cost_usd (issue #536) — over
+                                     //   the whole COST_SCAN_DAYS window,
+                                     //   unsummed — backs the model/actor
+                                     //   charts' own time-frame selector
+                                     //   (issue #334)
              coordinator_verdicts: {   // how often the Script rejects a
                window_from, window_to, //   Co-Ordinator verdict, and what
                runs, retries,          //   the fleet spent recovering

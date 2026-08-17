@@ -257,20 +257,12 @@ Pullwright organisation and carries its licence.
       from other providers can arrive later without a breaking change
       (D12). *[fleet]*
 - [ ] Make the spend data say *what* the money bought, before anything is
-      built on it (D21). Three defects stand between today's metering and any
-      productivity figure. **The model dimension is wrong:**
-      `scripts/publish-dashboard.sh`'s cost scan attributes each transcript's
-      whole `total_cost_usd` to `(.modelUsage | keys)[0]` — jq's `keys` sorts,
-      so the alphabetically-first model the invocation touched takes the
-      entire cost, subagents' included. Measured on poetic-node-1's retained
-      transcripts on 2026-08-17 (611 files, $966.06), 244 carry two models and
-      every one of those pairs sorts `claude-haiku-4-5-20251001` first. So
-      `by_model` credits Haiku with $953.03 — 98.7% of the fleet's spend —
-      against its true $119.93, credits Sonnet with $13.03 against its true
-      $634.02, and does not show Opus, whose true share is $212.11, at all.
-      The fix is exact rather than approximate: each `modelUsage` entry
-      carries its own `costUSD`, and summing those reproduces
-      `total_cost_usd` to the cent.
+      built on it (D21). Two defects stand between today's metering and any
+      productivity figure — a third, the model dimension, is already fixed
+      (issue #536): `scripts/publish-dashboard.sh`'s cost scan now reads each
+      `modelUsage` entry's own `costUSD` rather than crediting a transcript's
+      whole `total_cost_usd` to whichever model `keys` sorted first, and
+      summing those entries reproduces `total_cost_usd` to the cent.
       **The item dimension is absent:** `cost_rows[]` is
       `{day, model, actor, usd}`, so "what did we spend on work that never
       landed" cannot be asked at all — though the scan already holds the cycle
@@ -282,9 +274,9 @@ Pullwright organisation and carries its licence.
       `gaps.{n,p50,p95,p99,max}` onto every `stage-end`, and neither the
       Publisher nor the page reads one of them, so the prompt-cache
       economics and the stall profile the pipeline already pays to measure are
-      invisible. Land the model fix, carry `{repo, item, source, cycle,
-      outcome}` on each cost row, and surface the token and gap series — all
-      additive under the metering schema's own stability policy. *[fleet]*
+      invisible. Carry `{repo, item, source, cycle, outcome}` on each cost
+      row, and surface the token and gap series — both additive under the
+      metering schema's own stability policy. *[fleet]*
 - [ ] Fix the flow-and-outcome event contract now, for the reason the metering
       schema was fixed now (D21): an analytic can only ever be computed from
       what was recorded while the work happened, so every month the contract

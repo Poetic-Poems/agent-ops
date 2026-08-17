@@ -794,16 +794,37 @@ done
 # rather than a guess, so a malformed name drops out of `recent_costs` below
 # without corrupting the totals that never depended on it.
 #
-# `cost_rows` (issue #334) is this same set, trimmed to {day, model, actor,
-# usd} — every row `by_day`/`by_model`/`by_actor` already summed, but
-# un-summed, so the page can re-aggregate the model/actor breakdowns over
-# whatever time frame the reader picks instead of only the whole
-# COST_SCAN_DAYS window those three arrays are fixed to.
+# `cost_rows` (issue #334) is the per-(transcript × model) breakdown of this
+# same set, trimmed to {day, model, actor, usd} — un-summed, so the page can
+# re-aggregate the model/actor breakdowns over whatever time frame the reader
+# picks instead of only the whole COST_SCAN_DAYS window `by_day`/`by_model`/
+# `by_actor` are fixed to. `models[]` below is one entry per `modelUsage` key,
+# each carrying that model's own `costUSD` (issue #536): a transcript's whole
+# `total_cost_usd` is not one model's spend, subagent calls routinely add a
+# second (typically a cheaper model dispatched inside the same invocation),
+# and crediting all of it to whichever key `keys[0]` names credited every
+# subagent's spend to that one alphabetically-first model — systematically
+# Haiku, since it sorts before Opus and Sonnet. Summing `models[].usd` back up
+# reproduces `total_cost_usd` to the cent. `select(.value | type == "object")`
+# mirrors `lib/metering.sh`'s own `tokens` derivation: a `modelUsage` entry
+# that isn't an object (seen in the wild as a bare number) would make `.value
+# .costUSD` a hard jq error, taking a parseable envelope's whole row down with
+# it, so it is skipped rather than fatal. An empty or unreadable `modelUsage`
+# falls back to one `unknown` entry carrying the transcript's whole cost, so
+# that total is never lost — only its model attribution is.
 # shellcheck disable=SC2016  # `$p` below is a jq binding, not a shell variable
 find "${cost_dirs[@]}" -name '*.out' -type f -print0 2>/dev/null | sort -z \
   | xargs -0 -r -n 25 jq -c '
       (input_filename | split("/")) as $p
       | ($p[-2] // "") as $cid
+      | (.total_cost_usd // 0) as $total
+      | ((.modelUsage // {}) as $mu
+         | (if ($mu | type) == "object" then $mu else {} end)
+         | to_entries
+         | map(select(.value | type == "object"))
+         | map({model: .key, usd: (.value.costUSD // 0)})) as $model_entries
+      | (if ($model_entries | length) > 0 then $model_entries
+         else [{model: "unknown", usd: $total}] end) as $models
       | {
           day: ($cid[0:8]),
           ts: (if ($cid | test("^[0-9]{8}T[0-9]{6}Z"))
@@ -811,8 +832,8 @@ find "${cost_dirs[@]}" -name '*.out' -type f -print0 2>/dev/null | sort -z \
                      | capture("(?<Y>[0-9]{4})(?<Mo>[0-9]{2})(?<D>[0-9]{2})T(?<H>[0-9]{2})(?<Mi>[0-9]{2})(?<S>[0-9]{2})Z")
                      | .Y+"-"+.Mo+"-"+.D+"T"+.H+":"+.Mi+":"+.S+"Z")
                else null end),
-          cost: (.total_cost_usd // 0),
-          model: ((.modelUsage // {}) | keys | (.[0] // "unknown")),
+          cost: $total,
+          models: $models,
           actor: (if ($p[-3] // "") == "reviews" then "project-reviewer"
                   else ($p[-1] | rtrimstr(".out")) end)
         }' 2>/dev/null \
@@ -841,12 +862,21 @@ counts_json="$(jq -n --slurpfile cyc "$cycles_file" --slurpfile costs_in "$costs
     spend_total_usd: ($costs | map(.cost) | add // 0),
     spend_today_usd: ($costs | map(select(.day==$today) | .cost) | add // 0),
     by_day:   ($costs | group_by(.day)   | map({day: .[0].day, usd: (map(.cost)|add), n: length}) | sort_by(.day)),
-    by_model: ($costs | group_by(.model) | map({model: .[0].model, usd: (map(.cost)|add), n: length})
+    # Grouped over the flattened (transcript × model) rows, not `$costs`
+    # itself, so `.usd` sums each model own `costUSD` (issue #536) rather than
+    # crediting a transcript-wide total to whichever model sorted first. `.n`
+    # therefore counts transcripts that touched this model, not transcripts
+    # attributed to it — a transcript with two models now contributes to both
+    # counts, deliberately, since it spent on both. `by_day`/`by_actor` above
+    # and below still group `$costs` itself, one row per transcript, so
+    # neither is inflated by this per-model split.
+    by_model: ([$costs[] | .models[]]
+                      | group_by(.model) | map({model: .[0].model, usd: (map(.usd)|add), n: length})
                       | map(select(.model != "unknown" or .usd > 0)) | sort_by(-.usd)),
     by_actor: ($costs | group_by(.actor) | map({actor: .[0].actor, usd: (map(.cost)|add), n: length})
                       | sort_by(-.usd)),
     recent_costs: ($costs | map(select(.ts != null and .ts >= $recent_cut)) | map({ts, cost})),
-    cost_rows: ($costs | map({day, model, actor, usd: .cost}))
+    cost_rows: ([$costs[] | . as $c | $c.models[] | {day: $c.day, model: .model, actor: $c.actor, usd: .usd}])
   }')"
 
 # --- Co-Ordinator verdict quality (requirement 3w, issue #319) ----------------
