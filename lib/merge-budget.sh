@@ -268,17 +268,37 @@ merge_budget_decide() {
     '{decision:"hold", cap:$cap, count:$count, anomaly:$an, waiting_backlog:$bl}'
 }
 
-# merge_budget_freeze_state STATE_REPO STATE_DIR SLUG
+# merge_budget_freeze_state STATE_REPO STATE_DIR SLUG [FRESH]
 # The per-repo freeze, in `toggle_state`'s own vocabulary — `{"state":
 # "enabled"}` (not frozen) or `{"state":"disabled","record":{...}}` (frozen).
-# `fleet_flag_fetch` (RAW-only), exactly as `fleet_disabled_state` uses for
-# every other ordinary fleet flag: an unreachable state repo with no cache
-# and a genuinely clear flag both read as "not frozen" here — see the header
-# for why this, unlike the kill switch, does not need TD-PPagop-26081507's
-# fail-closed inversion.
+# RAW-only, exactly as `fleet_disabled_state` uses for every other ordinary
+# fleet flag: an unreachable state repo with no cache and a genuinely clear
+# flag both read as "not frozen" here — see the header for why this, unlike
+# the kill switch, does not need TD-PPagop-26081507's fail-closed inversion.
+#
+# FRESH (issue #513) skips this process's memo for the one call — the same
+# escape `fleet_flag_fetch_status`'s own FRESH argument provides, for the same
+# reason: a caller taking an outward action under the answer must see a freeze
+# another process set at the moment it decides, rather than replaying the
+# answer this cycle's first read memoised. D18 WI-7's arming step is that
+# site, and `merge_autonomy_effective_level` passes its own FRESH through to
+# here, so that function's promise — the kill switch *and* a WI-6 budget
+# freeze both bind at the moment of decision — holds for the freeze too.
+#
+# A fresh read calls `fleet_flag_fetch_status` directly, because
+# `fleet_flag_fetch` deliberately forwards neither MODE nor FRESH (that is
+# what keeps its contract byte-identical for its three original callers).
+# MODE is passed empty, so this flag's fail-open direction is untouched: only
+# the memo is bypassed, never the `clear`-vs-`unreachable` resolution, and an
+# empty RAW still reads as "not frozen" whichever path produced it.
 merge_budget_freeze_state() {
-  local raw
-  raw="$(fleet_flag_fetch "$1" "$2" "$(_merge_budget_freeze_flag_name "$3")")"
+  local raw fresh="${4:-}" combined
+  if [[ -n "$fresh" ]]; then
+    combined="$(fleet_flag_fetch_status "$1" "$2" "$(_merge_budget_freeze_flag_name "$3")" "" "$fresh")"
+    raw="${combined#*$'\t'}"
+  else
+    raw="$(fleet_flag_fetch "$1" "$2" "$(_merge_budget_freeze_flag_name "$3")")"
+  fi
   if [[ -z "$raw" ]]; then
     printf '{"state":"enabled"}'
     return 0

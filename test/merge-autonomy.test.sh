@@ -484,6 +484,39 @@ assert_eq "and the repo reverts to its own configured level" \
   "agent-merges-all" \
   "$(merge_autonomy_effective_level "$override_cfg" "acme/widgets" "$slug" "$fs_budget")"
 
+# --- PR #512 review follow-up: FRESH reaches the *freeze* read too, not the
+#     kill switch alone. Same device as the kill-switch FRESH assertions
+#     above — the record is written straight at the backing store, bypassing
+#     fleet_flag_write and so leaving this process's memo of the freeze
+#     untouched, exactly as a freeze set by another node would. Without the
+#     threading, an arming step promised "the level at the moment of
+#     decision" would still act on the memoised pre-freeze answer. ---
+fs_freeze_fresh="$tmp_dir/fleet-state-freeze-fresh"
+mkdir -p "$fs_freeze_fresh"
+freeze_flag_name="$(_merge_budget_freeze_flag_name "acme/widgets")"
+assert_eq "primed unfrozen: the repo's own configured level" "agent-merges-all" \
+  "$(merge_autonomy_effective_level "$override_cfg" "acme/widgets" "$slug" "$fs_freeze_fresh")"
+cat > "$gh_backing/fleet/$freeze_flag_name.json" <<'EXTERNALFREEZE'
+{"disabled_at": "2026-08-17T00:00:00Z", "expires_at": null, "by": "merge-budget governor",
+ "reason": "another node's governor froze this repo mid-cycle", "actor": "another node",
+ "kind": "anomaly", "cap": 8, "count": 10}
+EXTERNALFREEZE
+assert_eq "without FRESH, the freeze read replays this process's memo — still unfrozen" \
+  "agent-merges-all" \
+  "$(merge_autonomy_effective_level "$override_cfg" "acme/widgets" "$slug" "$fs_freeze_fresh")"
+assert_eq "with FRESH, the externally-set freeze binds immediately — capped at agent-approves" \
+  "agent-approves" \
+  "$(merge_autonomy_effective_level "$override_cfg" "acme/widgets" "$slug" "$fs_freeze_fresh" fresh)"
+assert_eq "merge_budget_freeze_state's own FRESH argument does the same directly" "disabled" \
+  "$(merge_budget_freeze_state "$slug" "$fs_freeze_fresh" "acme/widgets" fresh | jq -r '.state')"
+rm -f "$gh_backing/fleet/$freeze_flag_name.json"
+_fleet_flag_memo_clear "$freeze_flag_name"
+# A repository at agent-approves or below never fetches the freeze at all, so
+# FRESH must not make it start: the rank check still short-circuits first.
+assert_eq "a repo configured at agent-approves stays there under FRESH, freeze unread" \
+  "agent-approves" \
+  "$(merge_autonomy_effective_level "$top_level_cfg" "acme/widgets" "$slug" "$fs_freeze_fresh" fresh)"
+
 echo
 if (( failures == 0 )); then
   echo "All merge-autonomy assertions passed."

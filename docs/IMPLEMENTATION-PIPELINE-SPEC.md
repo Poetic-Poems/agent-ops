@@ -1627,15 +1627,18 @@ implements.
    back-pressure count and `void_obsolete_ctx_json` — pay exactly this cost,
    same as any other flag. A caller that is about to take an outward action
    under the level rather than merely compute with it — `run_approver_stage`
-   is the one such site today, D18 WI-7's arming step (not yet landed) the
-   next —
+   and D18 WI-7's arming step (requirement 8d) are the two such sites —
    asks `merge_autonomy_effective_level` for a fresh read instead: a non-empty
    FRESH argument skips this one call's memo hit and always asks GitHub, so a
    kill set from outside the process is seen at the stage boundary rather than
    replaying the cycle's first answer, at the cost of one extra contents-API
    read per acting site per cycle. The fresh answer is still written back to
    the memo afterwards, so a later advisory read in the same process benefits
-   from it rather than repeating the fetch.
+   from it rather than repeating the fetch. FRESH reaches both flags the
+   effective level rests on — the kill switch and the per-repo merge-budget
+   freeze (requirement 8c's governor) — so neither can bind a cycle late; the
+   freeze's own read is skipped entirely for any repository configured at
+   `agent-approves` or below, whose level the freeze could not lower anyway.
 
    **`--this-node` (requirement 2.3) opts a single node out of this level
    entirely.** `--disable --this-node` writes only the local record and skips
@@ -13918,12 +13921,16 @@ requirements above, which state only what is.
   so a kill an operator sets mid-cycle must stop it at that stage boundary,
   not wait for the process to end. Clearing the memo by hand at the call
   site (`_fleet_flag_memo_clear`) was rejected as the fix, because
-  D18 WI-7's arming step (not yet landed) needs the identical fresh read and
-  must not be built on an underscore-private function two work items away
+  D18 WI-7's arming step needs the identical fresh read and must not be built
+  on an underscore-private function two work items away
   from each other — `fleet_flag_fetch_status` instead grew a `FRESH`
   argument, a supported and documented part of its own contract, threaded
-  through `merge_autonomy_kill_state` and `merge_autonomy_effective_level`
-  so any future acting site opts in the same way. A fresh read still writes
+  through `merge_autonomy_kill_state`, `merge_budget_freeze_state` and
+  `merge_autonomy_effective_level` so any future acting site opts in the same
+  way. The freeze was threaded second: the arming step's eligibility contract
+  promises that a WI-6 budget freeze binds at the moment of decision, and a
+  memoised freeze read would have left that promise true of the kill switch
+  alone. A fresh read still writes
   its answer back to the memo, so it costs exactly one extra contents-API
   read at the acting site itself and nothing downstream — the back-pressure
   loop's own N→1 saving (PR #499 review follow-up,
