@@ -5412,8 +5412,18 @@ implements.
     three** hold: no open PR uses it, no registry entry stands for it (only
     a clean 404 proves absence — any other failure skips the ref, fail
     closed), and its tip commit is older than `abandoned_draft_after_hours`
-    — the same judgement that makes a draft abandoned. For each orphan the
-    sweep restores a state the pipeline already handles: commits ahead of
+    — the same judgement that makes a draft abandoned — provided it is not
+    itself `reserve-tech-debt-id.pl`'s own reservation commit: a `td/<ID>`
+    branch whose sole commit ahead carries that script's fixed
+    `chore(tech-debt): reserve <ID>` subject and touches no files is the
+    ID-reservation scheme's atomic claim lock, not work — regardless of
+    whether `<ID>` has since been filed, and regardless of which branch any
+    such filing actually landed on, since recognising the lock by its
+    commit's own shape needs no lookup into that at all (issue #545). Such a
+    ref is swept as neither recovered nor deleted: the sweep leaves it
+    exactly as found, a spent lock cleared by hand once its ID's fate is
+    settled elsewhere. For each other orphan the sweep restores a state the
+    pipeline already handles: commits ahead of
     the default branch become a **draft PR** (labelled `pr_label`, so the
     abandoned-drafts machinery recovers the work exactly as it recovers any
     stalled draft; retried without the label, loudly, where the label is
@@ -11893,7 +11903,12 @@ pull request, run the ones the change touches and any it could regress.
    rival lookup also still yields the ordinary recovery draft, but with a
    `warning` naming the branch, distinct from the silent no-match case; and
    a backlog past the per-run cap acts on the cap's worth and reports the
-   remainder (`deferred`) rather than flooding or staying silent.
+   remainder (`deferred`) rather than flooding or staying silent; a `td/<ID>`
+   branch whose sole commit ahead is `reserve-tech-debt-id.pl`'s own
+   reservation commit (fixed subject, no files touched) yields no action at
+   all — neither a recovery draft nor a ref delete; and an ordinary
+   one-commit `td/` branch that is not that reservation shape is still
+   recovered normally (issue #545).
 7c. **Claim visibility is deterministic, both shapes and both directions
    (requirement 3o, issue #175).** `test/claim.test.sh`'s `claims`/`branches`
    section passes: a fresh branch claim's registry entry appears in `claims`'

@@ -43,6 +43,16 @@
 #                                         recovery draft would resurrect
 #                                         superseded — sometimes regressed —
 #                                         code (issue #500)
+#   a `td/<ID>` branch whose sole commit
+#   ahead is reserve-tech-debt-id.pl's
+#   own reservation commit (its fixed
+#   subject, no files touched)            touch nothing: it is the
+#                                         ID-reservation scheme's atomic claim
+#                                         lock, not work, whether or not <ID>
+#                                         has since been filed — and, when it
+#                                         has, regardless of which branch that
+#                                         filing actually landed on
+#                                         (issue #545)
 #
 # Fail-closed everywhere: any answer this script cannot get (a PR list that
 # errors, a registry read that fails with anything but 404, an undatable tip)
@@ -202,6 +212,26 @@ sweep_branch() {  # <branch> <tip-sha>
   if ! [[ "$ahead" =~ ^[0-9]+$ ]]; then
     warn "$branch" "could not compare against $default_branch — leaving it alone"
     return 0
+  fi
+
+  # reserve-tech-debt-id.pl's own reservation commit: a `td/<ID>` branch
+  # whose sole commit ahead carries that script's fixed subject and touches
+  # no files is the ID-reservation scheme's atomic claim lock, not work,
+  # whether or not `<ID>` has since been filed — and, when it has, whether
+  # the filing landed on this branch or, as usually happens, on whichever
+  # branch the containing item's own work actually shipped from. The lock's
+  # own commit shape says all of that without needing a lookup into either
+  # (issue #545). Leave it exactly as found: neither recovered nor deleted.
+  if [[ "$branch" == td/* && "$ahead" == "1" ]]; then
+    local reservation_id reservation_message reservation_subject reservation_files
+    reservation_id="${branch#td/}"
+    reservation_message="$(jq -r '.commits[0].commit.message // empty' <<<"$compare_json" 2>/dev/null)"
+    reservation_subject="${reservation_message%%$'\n'*}"
+    reservation_files="$(jq -r '(.files // []) | length' <<<"$compare_json" 2>/dev/null)"
+    if [[ "$reservation_subject" == "chore(tech-debt): reserve $reservation_id" \
+          && "$reservation_files" == "0" ]]; then
+      return 0
+    fi
   fi
 
   if (( ahead == 0 )); then
