@@ -914,30 +914,32 @@ assert_eq "handoff_round_answered survives the same oversized bodies, reading th
   "answered" \
   "$(handoff_round_answered "$BLOCK_AT" "[$oversized_unmarked_review]" "[$oversized_marked_reply]" 2>/dev/null)"
 
-# --- handoff_complete_review (requirements 31c/32b, agent-ops#440) ------------
+# --- handoff_complete_review (requirements 31c/32b, agent-ops#440, #533) ------
 #
 # The one gate-and-flip implementation both the Reviewer's own handoff and
-# the Enabler's `complete_handoff` recovery path call. Its five callees —
-# `review_gate_verdict`, `closing_keyword_gate`, `confirm_pr_ready`,
-# `confirm_review_requested`, `ensure_human_reviewer` — are stubbed as plain
-# bash functions here rather than run for real: each already has its own
-# test (test/review-gate.test.sh, test/closing-keyword-gate.test.sh, and
+# the Enabler's `complete_handoff` recovery path call. Its six callees —
+# `review_gate_verdict`, `closing_keyword_gate`, `reconciliation_gate`,
+# `confirm_pr_ready`, `confirm_review_requested`, `ensure_human_reviewer` —
+# are stubbed as plain bash functions here rather than run for real: each
+# already has its own test (test/review-gate.test.sh,
+# test/closing-keyword-gate.test.sh, test/reconciliation-gate.test.sh, and
 # `confirm_pr_ready`/`confirm_review_requested`/`ensure_human_reviewer`
 # above in this file), so what this section proves is the composition —
 # which callee runs, in what order, and what `safe` ends up meaning — not
 # any one of them individually.
 REVIEW_URL="https://github.com/Poetic-Poems/agent-ops/pull/440"
 
-# Every case below defines whichever of the five stubs it needs; the rest
+# Every case below defines whichever of the six stubs it needs; the rest
 # fail loudly if called at all, so a short-circuit that should skip a later
 # gate is caught the moment it is not.
-unset -f review_gate_verdict closing_keyword_gate confirm_pr_ready \
+unset -f review_gate_verdict closing_keyword_gate reconciliation_gate confirm_pr_ready \
   confirm_review_requested ensure_human_reviewer 2>/dev/null || true
 not_reached() { echo "FAIL - $1 was called but should not have been" >&2; exit 99; }
 
 # --- a dirty review gate refuses, and nothing past it runs ---------------------
 review_gate_verdict() { printf 'dirty\trequired check(s) not green: CI'; return 1; }
 closing_keyword_gate() { not_reached closing_keyword_gate; }
+reconciliation_gate() { not_reached reconciliation_gate; }
 confirm_pr_ready() { not_reached confirm_pr_ready; }
 out="$(handoff_complete_review "$REVIEW_URL" "main" "alice")"
 assert_eq "a dirty gate: safe is false" "false" "$(jq -r '.safe' <<<"$out")"
@@ -946,11 +948,13 @@ assert_eq "  ... gate.reason names the fault" "required check(s) not green: CI" 
 assert_eq "  ... checks_unreadable is false — this is a real fault, not an unread list" \
   "false" "$(jq -r '.gate.checks_unreadable' <<<"$out")"
 assert_eq "  ... closing_keyword.word is empty — the ck gate never ran" "" "$(jq -r '.closing_keyword.word' <<<"$out")"
+assert_eq "  ... reconciliation.word is empty — the reconciliation gate never ran" "" "$(jq -r '.reconciliation.word' <<<"$out")"
 assert_eq "  ... handoff is empty — confirm_pr_ready never ran" "" "$(jq -r '.handoff' <<<"$out")"
 
 # --- an unreadable required-check list refuses too, distinctly ----------------
 review_gate_verdict() { printf 'unknown\tcould not read required checks'; return 2; }
 closing_keyword_gate() { not_reached closing_keyword_gate; }
+reconciliation_gate() { not_reached reconciliation_gate; }
 confirm_pr_ready() { not_reached confirm_pr_ready; }
 out="$(handoff_complete_review "$REVIEW_URL" "main" "alice")"
 assert_eq "an unreadable check list: safe is false" "false" "$(jq -r '.safe' <<<"$out")"
@@ -973,16 +977,33 @@ assert_eq "  ... and the reason is the alert's, not the check list's" \
 # --- a clean gate falls through to the closing-keyword gate --------------------
 review_gate_verdict() { printf 'clean'; return 0; }
 closing_keyword_gate() { printf 'dirty\tno closing keyword for #42'; return 1; }
+reconciliation_gate() { not_reached reconciliation_gate; }
 confirm_pr_ready() { not_reached confirm_pr_ready; }
 out="$(handoff_complete_review "$REVIEW_URL" "main" "alice")"
 assert_eq "a dirty closing keyword (gate clean): safe is false" "false" "$(jq -r '.safe' <<<"$out")"
 assert_eq "  ... gate.word still carries the clean gate's own word" "clean" "$(jq -r '.gate.word' <<<"$out")"
 assert_eq "  ... closing_keyword.reason names the fault" "no closing keyword for #42" "$(jq -r '.closing_keyword.reason' <<<"$out")"
+assert_eq "  ... reconciliation.word is empty — the reconciliation gate never ran" "" "$(jq -r '.reconciliation.word' <<<"$out")"
 assert_eq "  ... handoff is empty — confirm_pr_ready never ran" "" "$(jq -r '.handoff' <<<"$out")"
 
-# --- both gates clean, but the flip itself does not take -----------------------
+# --- both prior gates clean, but the reconciliation gate is dirty -------------
 review_gate_verdict() { printf 'clean'; return 0; }
 closing_keyword_gate() { printf 'clean'; return 0; }
+reconciliation_gate() { printf 'dirty\thuman comment(s) posted since the PR last left draft carry no reconcile citation: comment id(s) 4718691960'; return 1; }
+confirm_pr_ready() { not_reached confirm_pr_ready; }
+out="$(handoff_complete_review "$REVIEW_URL" "main" "alice")"
+assert_eq "a dirty reconciliation gate (both prior gates clean): safe is false" "false" "$(jq -r '.safe' <<<"$out")"
+assert_eq "  ... gate.word still carries the clean review gate's own word" "clean" "$(jq -r '.gate.word' <<<"$out")"
+assert_eq "  ... closing_keyword.word still carries the clean ck gate's own word" "clean" "$(jq -r '.closing_keyword.word' <<<"$out")"
+assert_eq "  ... reconciliation.reason names the unreconciled comment" \
+  "human comment(s) posted since the PR last left draft carry no reconcile citation: comment id(s) 4718691960" \
+  "$(jq -r '.reconciliation.reason' <<<"$out")"
+assert_eq "  ... handoff is empty — confirm_pr_ready never ran" "" "$(jq -r '.handoff' <<<"$out")"
+
+# --- all three gates clean, but the flip itself does not take -----------------
+review_gate_verdict() { printf 'clean'; return 0; }
+closing_keyword_gate() { printf 'clean'; return 0; }
+reconciliation_gate() { printf 'clean'; return 0; }
 confirm_pr_ready() { printf 'failed'; return 1; }
 confirm_review_requested() { not_reached confirm_review_requested; }
 ensure_human_reviewer() { not_reached ensure_human_reviewer; }
@@ -994,11 +1015,13 @@ assert_eq "  ... rereview never ran" "" "$(jq -r '.rereview.state' <<<"$out")"
 # --- the full clean path: flip, re-request, and the human-reviewer nudge ------
 review_gate_verdict() { printf 'clean'; return 0; }
 closing_keyword_gate() { printf 'clean'; return 0; }
+reconciliation_gate() { printf 'clean'; return 0; }
 confirm_pr_ready() { printf 'already'; return 0; }
 confirm_review_requested() { printf 'requested\tcarol'; return 0; }
 ensure_human_reviewer() { not_reached ensure_human_reviewer; }
 out="$(handoff_complete_review "$REVIEW_URL" "main" "alice")"
 assert_eq "a clean path: safe is true" "true" "$(jq -r '.safe' <<<"$out")"
+assert_eq "  ... reconciliation.word carries clean" "clean" "$(jq -r '.reconciliation.word' <<<"$out")"
 assert_eq "  ... handoff carries the flip's own word" "already" "$(jq -r '.handoff' <<<"$out")"
 assert_eq "  ... rereview carries confirm_review_requested's answer" "requested" "$(jq -r '.rereview.state' <<<"$out")"
 assert_eq "  ... and its who" "carol" "$(jq -r '.rereview.who' <<<"$out")"
@@ -1021,11 +1044,12 @@ out="$(handoff_complete_review "$REVIEW_URL" "main" "")"
 assert_eq "rereview none, no assignee: human_reviewer never ran" "" "$(jq -r '.human_reviewer.state' <<<"$out")"
 
 # --- non-blocking unknowns pass through rather than refusing -------------------
-# An alerts read or a closing-keyword read that could not be asked at all is a
-# node or token fact (see each gate's own header), not a reason to refuse the
-# handoff forever.
+# An alerts read, a closing-keyword read or a reconciliation read that could
+# not be asked at all is a node or token fact (see each gate's own header),
+# not a reason to refuse the handoff forever.
 review_gate_verdict() { printf 'unknown\tcould not confirm no new security-severity alert: 403'; return 0; }
 closing_keyword_gate() { printf 'unknown\tcould not read PR body'; return 0; }
+reconciliation_gate() { printf 'unknown\tcould not read the PR'\''s timeline'; return 0; }
 confirm_pr_ready() { printf 'already'; return 0; }
 confirm_review_requested() { printf 'none'; return 0; }
 ensure_human_reviewer() { printf 'skip'; return 0; }
@@ -1035,6 +1059,7 @@ assert_eq "  ... gate.word carries the unread-alerts unknown" "unknown" "$(jq -r
 assert_eq "  ... checks_unreadable is false — only the alerts read failed" \
   "false" "$(jq -r '.gate.checks_unreadable' <<<"$out")"
 assert_eq "  ... closing_keyword.word carries its own unknown" "unknown" "$(jq -r '.closing_keyword.word' <<<"$out")"
+assert_eq "  ... reconciliation.word carries its own unknown" "unknown" "$(jq -r '.reconciliation.word' <<<"$out")"
 assert_eq "  ... and the flip still completed" "already" "$(jq -r '.handoff' <<<"$out")"
 
 printf '\n'

@@ -762,12 +762,42 @@ review_gate_unknown_streak_verdict() { cat >/dev/null; printf ''; }
 # shellcheck disable=SC2317
 review_gate_degraded_since() { cat >/dev/null; return 1; }
 
+# ============================================================================
+# complete_handoff: both prior gates clean, but the reconciliation gate
+# (agent-ops#533) refuses the flip — a human's plain PR comment posted since
+# the pull request last left draft carries no reconcile citation. Named as
+# such, not folded into the review gate's or the closing-keyword gate's own
+# wording.
+# ============================================================================
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+handoff_complete_review() {
+  jq -nc '{safe: false,
+           gate: {word: "clean", reason: "", checks_unreadable: false},
+           closing_keyword: {word: "clean", reason: ""},
+           reconciliation: {word: "dirty", reason: "human comment(s) posted on https://github.com/acme/widgets/pull/435 since it last left draft carry no reconcile citation: comment id(s) 4718691960"},
+           handoff: "",
+           rereview: {state: "", who: ""}, human_reviewer: {state: "", who: ""}}'
+}
+calls="$(run_case "complete_handoff: reconciliation gate refuses the flip" "$pr_eligible_reviewer" "$examined")"
+
+assert_eq "reconciliation-refused: the unblock itself still stands" "1" \
+  "$(grep -cE '^event unblocked ' <<<"$calls")"
+assert_eq "reconciliation-refused: no pr-ready — the gate found a real fault" "0" \
+  "$(grep -cE '^event pr-ready ' <<<"$calls")"
+warn_evt="$(grep -E '^event warning ' <<<"$calls" | tail -n1 | sed -E 's/^event warning //')"
+assert_contains "reconciliation-refused: the warning names the unreconciled comment" \
+  "comment id(s) 4718691960" "$(jq -r '.detail' <<<"$warn_evt")"
+xmn_evt="$(events_named "$calls" enabler-examined | head -n1)"
+assert_eq "reconciliation-refused: enabler-examined records the flip as failed" \
+  "failed" "$(jq -r '.complete_handoff' <<<"$xmn_evt")"
+
 # --- The clean path: a Reviewer verdict is on record, and the gate is clean ---
 # shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
 handoff_complete_review() {
   jq -nc '{safe: true,
            gate: {word: "clean", reason: "", checks_unreadable: false},
-           closing_keyword: {word: "clean", reason: ""}, handoff: "flipped",
+           closing_keyword: {word: "clean", reason: ""},
+           reconciliation: {word: "clean", reason: ""}, handoff: "flipped",
            rereview: {state: "none", who: ""}, human_reviewer: {state: "skip", who: ""}}'
 }
 calls="$(run_case "complete_handoff: gate clean, flip completes" "$pr_eligible_reviewer" "$examined")"

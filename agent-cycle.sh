@@ -99,6 +99,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/review-gate.sh"
 # shellcheck source=lib/closing-keyword-gate.sh
 . "$SCRIPT_DIR/lib/closing-keyword-gate.sh"
+# shellcheck source=lib/reconciliation-gate.sh
+. "$SCRIPT_DIR/lib/reconciliation-gate.sh"
 # shellcheck source=lib/void-guard.sh
 . "$SCRIPT_DIR/lib/void-guard.sh"
 # shellcheck source=lib/unvoid-label.sh
@@ -4375,7 +4377,8 @@ maybe_run_enabler() {
   local e_pr_url e_handoff e_refusal e_refined
   local e_flag_evidence_field e_flag_resolvable e_flag_resolve_reason e_flag_pr_num
   local e_block_stage e_default_branch e_review_json e_gate_word e_gate_reason
-  local e_gate_checks_unreadable e_ck_word e_ck_reason e_review_safe e_gate_checks_ok e_finding
+  local e_gate_checks_unreadable e_ck_word e_ck_reason e_rc_word e_rc_reason
+  local e_review_safe e_gate_checks_ok e_finding
   local e_rereview_state e_rereview_who e_human_reviewer_state e_human_reviewer_who
   local issue_title issue_body_file created number url missing
 
@@ -4659,6 +4662,8 @@ $(jq . <<<"$input")
               e_gate_checks_unreadable="$(jq -r '.gate.checks_unreadable // false' <<<"$e_review_json")"
               e_ck_word="$(jq -r '.closing_keyword.word // ""' <<<"$e_review_json")"
               e_ck_reason="$(jq -r '.closing_keyword.reason // ""' <<<"$e_review_json")"
+              e_rc_word="$(jq -r '.reconciliation.word // ""' <<<"$e_review_json")"
+              e_rc_reason="$(jq -r '.reconciliation.reason // ""' <<<"$e_review_json")"
               e_review_safe="$(jq -r '.safe // false' <<<"$e_review_json")"
 
               # Same node-health bookkeeping as the Reviewer's own handoff
@@ -4679,6 +4684,8 @@ $(jq . <<<"$input")
                   review_gate_escalate_unreadable_streak >/dev/null
                 elif [[ "$e_ck_word" == "dirty" ]]; then
                   e_finding="$e_ck_reason"
+                elif [[ "$e_rc_word" == "dirty" ]]; then
+                  e_finding="$e_rc_reason"
                 else
                   e_finding="it is still a draft after the attempt"
                 fi
@@ -4690,6 +4697,10 @@ $(jq . <<<"$input")
                 if [[ "$e_ck_word" == "unknown" ]]; then
                   log_event "warning" "$(jq -nc --arg u "$e_pr_url" --arg d "$e_ck_reason" \
                     '{detail: ("could not confirm " + $u + " carries its closing keyword: " + $d), pr_url: $u}')"
+                fi
+                if [[ "$e_rc_word" == "unknown" ]]; then
+                  log_event "warning" "$(jq -nc --arg u "$e_pr_url" --arg d "$e_rc_reason" \
+                    '{detail: ("could not confirm every human comment on " + $u + " since it last left draft is reconciled: " + $d), pr_url: $u}')"
                 fi
                 if [[ "$e_gate_word" == "unknown" ]]; then
                   log_event "warning" "$(jq -nc --arg u "$e_pr_url" --arg d "$e_gate_reason" \
@@ -8124,6 +8135,8 @@ if [[ "$rev_status" == "ready" ]]; then
   gate_checks_unreadable="$(jq -r '.gate.checks_unreadable // false' <<<"$review_json")"
   ck_word="$(jq -r '.closing_keyword.word // ""' <<<"$review_json")"
   ck_reason="$(jq -r '.closing_keyword.reason // ""' <<<"$review_json")"
+  rc_word="$(jq -r '.reconciliation.word // ""' <<<"$review_json")"
+  rc_reason="$(jq -r '.reconciliation.reason // ""' <<<"$review_json")"
   review_safe="$(jq -r '.safe // false' <<<"$review_json")"
 
   # TD-PPagop-26081404: bookkeeping for `review_gate_unknown_streak_verdict`,
@@ -8185,6 +8198,17 @@ if [[ "$rev_status" == "ready" ]]; then
         "$impl_pr_url" "Add the missing closing keyword (Closes/Fixes/Resolves #N) for the issue this PR claims to close, then let the Reviewer re-examine it."
       exit 0
     fi
+    if [[ "$rc_word" == "dirty" ]]; then
+      # Requirement 31c's reconciliation gate (agent-ops#533): a human posted
+      # a general PR comment since this pull request last left draft, and no
+      # pipeline comment since cites a `<!-- agent-ops:reconciles
+      # comment=<id> --> line naming it — a requested change silently
+      # dropped rather than implemented or contested (PR #512).
+      log_reviewer_handback \
+        "the Reviewer reported ready, but $impl_pr_url is not safe to hand off: $rc_reason" \
+        "$impl_pr_url" "Answer every unreconciled human comment on the pull request — implement it or explicitly contest it in the completion comment — citing each with its own <!-- agent-ops:reconciles comment=<id> --> line, then let the Reviewer re-examine it."
+      exit 0
+    fi
     # The gates were clean and the flip itself did not take.
     log_reviewer_handback \
       "the Reviewer reported ready, but $impl_pr_url is still a draft and the handoff could not be completed" \
@@ -8202,6 +8226,11 @@ if [[ "$rev_status" == "ready" ]]; then
   if [[ "$ck_word" == "unknown" ]]; then
     log_event "warning" "$(jq -nc --arg u "$impl_pr_url" --arg d "$ck_reason" \
       '{detail: ("could not confirm " + $u + " carries its closing keyword: " + $d), pr_url: $u}')"
+  fi
+
+  if [[ "$rc_word" == "unknown" ]]; then
+    log_event "warning" "$(jq -nc --arg u "$impl_pr_url" --arg d "$rc_reason" \
+      '{detail: ("could not confirm every human comment on " + $u + " since it last left draft is reconciled: " + $d), pr_url: $u}')"
   fi
 
   if [[ "$gate_word" == "unknown" ]]; then

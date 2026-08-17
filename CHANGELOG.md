@@ -80,6 +80,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   request read, the merge-queue read, the enqueue mutation, its partial-write
   case, or the fallback merge) instead of one generic "could not enqueue or
   auto-merge" shared by all of them.
+- The Reviewer can no longer flip a draft pull request ready while a
+  standing human comment goes unanswered (requirement 31c, agent-ops#533,
+  PR #512): a human cannot leave a formal `REQUEST_CHANGES` review on this
+  system's own pull requests, so a plain PR comment — often paired with
+  converting the pull request back to draft — is the change-request signal
+  here, and nothing previously refused a hand-off that silently dropped one.
+  `lib/reconciliation-gate.sh`'s new gate reads every general PR comment
+  posted since the pull request's most recent `ready_for_review` timeline
+  event and refuses the flip, on the same terms as the existing
+  closing-keyword gate, unless a pipeline comment since cites it with
+  `<!-- agent-ops:reconciles comment=<id> -->`; `prompts/reviewer.md`'s
+  completion comment now carries that citation for every human comment it
+  answers.
 - `merge_budget_oldest_waiting`'s `waiting_backlog` (the pull request a
   `merge-budget-hold` event names as the one waiting longest) now sorts
   GitHub's own listing oldest-first before paging, so a repository with more

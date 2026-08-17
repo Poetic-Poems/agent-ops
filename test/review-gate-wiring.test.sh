@@ -185,15 +185,18 @@ run_gate_block() {
   cat "$events"
 }
 
-# review_json SAFE GATE_WORD GATE_REASON CHECKS_UNREADABLE CK_WORD CK_REASON [HANDOFF]
+# review_json SAFE GATE_WORD GATE_REASON CHECKS_UNREADABLE CK_WORD CK_REASON
+#             [RC_WORD RC_REASON [HANDOFF]]
 # Assembles the JSON `handoff_complete_review` would print for the given
-# shape, so each test case reads as the verdict it is asserting on.
+# shape, so each test case reads as the verdict it is asserting on. RC_WORD/
+# RC_REASON default to empty, the shape the reconciliation gate never having
+# run leaves behind.
 review_json() {
   jq -nc --argjson safe "$1" --arg gw "$2" --arg gr "$3" --argjson cu "$4" \
-    --arg cw "$5" --arg cr "$6" --arg h "${7:-}" \
+    --arg cw "$5" --arg cr "$6" --arg rw "${7:-}" --arg rr "${8:-}" --arg h "${9:-}" \
     '{safe: $safe, gate: {word: $gw, reason: $gr, checks_unreadable: $cu},
-      closing_keyword: {word: $cw, reason: $cr}, handoff: $h,
-      rereview: {state: "", who: ""}, human_reviewer: {state: "", who: ""}}'
+      closing_keyword: {word: $cw, reason: $cr}, reconciliation: {word: $rw, reason: $rr},
+      handoff: $h, rereview: {state: "", who: ""}, human_reviewer: {state: "", who: ""}}'
 }
 
 # The marker is the last line, and the command substitution above eats its
@@ -266,6 +269,20 @@ assert_contains "  ... with its own unblock_condition, not the gate's" \
 assert_lacks "  ... never the required-checks wording" \
   "Get every required check green" "$out"
 
+# --- dirty reconciliation (both prior gates clean): named as such -------------
+# agent-ops#533, PR #512: a human's plain PR comment posted since the pull
+# request last left draft, never cited by a pipeline comment since.
+out="$(run_gate_block "$(review_json false clean "" false clean "" dirty "human comment(s) posted on https://github.com/Poetic-Poems/poetic-fiddle/pull/198 since it last left draft carry no reconcile citation: comment id(s) 4718691960")")"
+assert_eq "a dirty reconciliation gate ends the cycle too" "no" "$(reached_end "$out")"
+assert_contains "  ... recording the handback naming the unreconciled comment" \
+  "comment id(s) 4718691960" "$out"
+assert_contains "  ... with its own unblock_condition, not either other gate's" \
+  "Answer every unreconciled human comment" "$out"
+assert_lacks "  ... never the required-checks wording" \
+  "Get every required check green" "$out"
+assert_lacks "  ... never the closing-keyword wording" \
+  "Add the missing closing keyword" "$out"
+
 # --- both gates clean, but the flip itself did not take -----------------------
 out="$(run_gate_block "$(review_json false clean "" false clean "")")"
 assert_eq "a flip that did not take ends the cycle with its own wording" "no" "$(reached_end "$out")"
@@ -275,6 +292,17 @@ assert_contains "  ... naming nothing to fix but the draft state itself" \
 # --- non-blocking unknown (alerts read failed, checks read fine): carries on --
 out="$(run_gate_block "$(review_json true clean "" false unknown "could not confirm no new security-severity alert: 403")")"
 assert_eq "a non-blocking unknown does not end the cycle" "yes" "$(reached_end "$out")"
+assert_lacks "  ... and records no handback" "handback" "$out"
+assert_contains "  ... while still recording a successful required-checks read" \
+  "review-gate-checks-read	true" "$out"
+
+# --- non-blocking unknown (reconciliation read failed, both other gates clean) -
+# The warning this earns is logged past this block's own extraction (see the
+# header) — the same reason the alerts-unknown case above asserts nothing
+# about its own warning text either — so this only pins that the block itself
+# does not end the cycle over it.
+out="$(run_gate_block "$(review_json true clean "" false clean "" unknown "could not read the PR's timeline")")"
+assert_eq "a non-blocking reconciliation unknown does not end the cycle" "yes" "$(reached_end "$out")"
 assert_lacks "  ... and records no handback" "handback" "$out"
 assert_contains "  ... while still recording a successful required-checks read" \
   "review-gate-checks-read	true" "$out"
