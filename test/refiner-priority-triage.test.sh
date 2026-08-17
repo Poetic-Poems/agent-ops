@@ -501,6 +501,24 @@ issue_priority_cache_cleanup
 assert_eq "cleanup removes the default cache directory, oversized fixtures included" "false" \
   "$([[ -d "$default_dir" ]] && echo true || echo false)"
 
+# Re-sourcing this file in the same process must not lose ownership of the
+# directory it already created (issue #541) — on the second source,
+# ISSUE_PRIORITY_CACHE_DIR is already non-empty only because the first
+# source filled it in, not because a caller supplied it, and recomputing
+# ownership from scratch each time read that as caller-supplied. Cleanup
+# then declined to remove the very directory this library made, reopening
+# #510's leak with no visible symptom.
+unset ISSUE_PRIORITY_CACHE_DIR ISSUE_PRIORITY_CACHE_DIR_OWNED ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH
+. "$SCRIPT_DIR/lib/issue-priority.sh"
+resourced_dir="$ISSUE_PRIORITY_CACHE_DIR"
+. "$SCRIPT_DIR/lib/issue-priority.sh"
+assert_eq "a same-process re-source still owns the directory it created" "1" "$ISSUE_PRIORITY_CACHE_DIR_OWNED"
+assert_eq "  ... and keeps the same directory rather than making a second one" \
+  "$resourced_dir" "$ISSUE_PRIORITY_CACHE_DIR"
+issue_priority_cache_cleanup
+assert_eq "cleanup after a double-source removes the directory" "false" \
+  "$([[ -d "$resourced_dir" ]] && echo true || echo false)"
+
 # A caller that supplies its own path keeps it after the same call — it is
 # that caller's directory to manage, not this library's.
 caller_dir="$(mktemp -d "$tmp_dir/cache-caller.XXXXXX")"

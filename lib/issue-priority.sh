@@ -50,15 +50,28 @@
 # immediately after this file is sourced, since it has no other trap and
 # exits from several points.
 # `ISSUE_PRIORITY_CACHE_DIR_OWNED` records which case this process is
-# in: `1` when the environment left `ISSUE_PRIORITY_CACHE_DIR` unset or empty
-# and the `mktemp -d` below ran to fill it in, `0` when the caller supplied
-# its own path — a directory that path names is the caller's to manage, and
-# `issue_priority_cache_cleanup` must never remove it.
-if [[ -n "${ISSUE_PRIORITY_CACHE_DIR:-}" ]]; then
+# in: `1` when the `mktemp -d` below ran to fill `ISSUE_PRIORITY_CACHE_DIR`
+# in, `0` when the caller supplied its own path — a directory that path
+# names is the caller's to manage, and `issue_priority_cache_cleanup` must
+# never remove it. Ownership is a property of the *directory*, not of the
+# most recent source: a process can source this file more than once (issue
+# #541 — a second library sourcing this one, or a test re-sourcing it), and
+# on that second source `ISSUE_PRIORITY_CACHE_DIR` is already non-empty
+# because the first source filled it in, not because a caller supplied it.
+# `ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH` records the path this file created
+# for itself, so a re-source can tell "the directory I made last time" apart
+# from "a directory some caller handed me" — the two cases a bare `-n
+# "$ISSUE_PRIORITY_CACHE_DIR"` check cannot distinguish.
+if [[ "${ISSUE_PRIORITY_CACHE_DIR_OWNED:-0}" == "1" && \
+      -n "${ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH:-}" && \
+      "$ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH" == "${ISSUE_PRIORITY_CACHE_DIR:-}" ]]; then
+  : # re-source with the same directory this file created earlier — still ours
+elif [[ -n "${ISSUE_PRIORITY_CACHE_DIR:-}" ]]; then
   ISSUE_PRIORITY_CACHE_DIR_OWNED=0
 else
   ISSUE_PRIORITY_CACHE_DIR="$(mktemp -d 2>/dev/null || true)"
   ISSUE_PRIORITY_CACHE_DIR_OWNED=1
+  ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH="$ISSUE_PRIORITY_CACHE_DIR"
 fi
 
 # issue_priority_cache_cleanup

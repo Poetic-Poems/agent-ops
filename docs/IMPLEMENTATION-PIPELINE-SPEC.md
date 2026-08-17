@@ -9406,8 +9406,14 @@ implements.
     `maybe_run_refiner` — the cache's main consumer — and `scripts/doctor.sh`
     calls it from an EXIT trap of its own, armed immediately after the
     library is sourced. `ISSUE_PRIORITY_CACHE_DIR_OWNED` records whether this
-    process created the directory itself (the environment left
-    `ISSUE_PRIORITY_CACHE_DIR` unset) or the caller supplied its own path;
+    process created the directory itself or the caller supplied its own
+    path; ownership is a property of the directory, not of the most recent
+    source, so a process that sources the library more than once — a second
+    file sourcing it, or a test re-sourcing it — still recognises, on a
+    later source, the directory it created on an earlier one, and does not
+    read its own output as caller-supplied (`ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH`
+    records the path this file created for itself, and is what a re-source
+    compares `ISSUE_PRIORITY_CACHE_DIR` against; agent-ops#541).
     `issue_priority_cache_cleanup` removes only a directory it created,
     leaving a caller-supplied one for that caller to manage, and is
     idempotent — a no-op, returning 0, when called again or when no
@@ -12755,7 +12761,11 @@ pull request, run the ones the change touches and any it could regress.
     path is marked unowned and still exists after the same call; a second
     call once it has already run, and a call in a process where the
     `mktemp -d` never produced a directory at all, each print nothing and
-    still return 0. A field missing one of the four options is asserted from
+    still return 0; re-sourcing the library in the same process, with
+    `ISSUE_PRIORITY_CACHE_DIR` still set to the directory the first source
+    created, still marks it owned rather than reading it as caller-supplied,
+    creates no second directory, and cleanup still removes it
+    (agent-ops#541). A field missing one of the four options is asserted from
     both directions (agent-ops#534): with a lower option present, the
     verdict's band falls back to the nearest lower one and `requested` names
     the band actually asked for; with nothing lower present (the verdict was
