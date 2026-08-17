@@ -62,6 +62,20 @@
 #   - `reviewDecision` is CHANGES_REQUESTED;
 #   - **no review-thread event answers the blocking review.**
 #
+# The first and third clauses together are why this source structurally cannot
+# see the change request PR #512 carried, and a reader should not have to
+# re-derive that. On this system's own pull requests a human cannot file a
+# formal `REQUEST_CHANGES` review at all — every pipeline write and every human
+# comment on them land under the same GitHub account, and GitHub refuses that
+# review type from a pull request's own author — so their instrument is a plain
+# PR comment, usually paired with converting the pull request back to draft.
+# That produces neither a non-draft pull request nor a `CHANGES_REQUESTED`
+# decision, so no such pull request is ever a candidate here. Requirement 31c's
+# reconciliation gate (`lib/reconciliation-gate.sh`, agent-ops#533) covers that
+# case instead, at the Reviewer's hand-off rather than at selection: widening
+# this rule would be the wrong place, since the Reviewer can push the fix
+# itself.
+#
 # That last clause is load-bearing, not a refinement. The agent raises PRs as
 # the authenticated user, and GitHub forbids approving or dismissing a review on
 # your own PR — so the agent *cannot* clear CHANGES_REQUESTED, and the decision

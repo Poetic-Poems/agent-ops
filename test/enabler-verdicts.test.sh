@@ -261,6 +261,12 @@ state_dir="$tmp_dir/state"
 node_name="test-node"
 # shellcheck disable=SC2034
 cycle_id="test-cycle"
+# The bound `complete_handoff` hands `handoff_complete_review` for requirement
+# 31c's reconciliation gate (agent-ops#533) — asserted below to be forwarded
+# rather than dropped, since a dropped bound is invisible until the gate
+# silently measures against a flip made inside the round.
+# shellcheck disable=SC2034
+cycle_started_at="2026-08-17T00:00:00Z"
 # shellcheck disable=SC2034
 prompt_overrides_json="{}"
 # shellcheck disable=SC2034
@@ -769,12 +775,15 @@ review_gate_degraded_since() { cat >/dev/null; return 1; }
 # such, not folded into the review gate's or the closing-keyword gate's own
 # wording.
 # ============================================================================
+gate_arg4="$tmp_dir/enabler-gate-arg4"
+: > "$gate_arg4"
 # shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
 handoff_complete_review() {
+  printf '%s' "${4:-}" >"$gate_arg4"
   jq -nc '{safe: false,
            gate: {word: "clean", reason: "", checks_unreadable: false},
            closing_keyword: {word: "clean", reason: ""},
-           reconciliation: {word: "dirty", reason: "human comment(s) posted on https://github.com/acme/widgets/pull/435 since it last left draft carry no reconcile citation: comment id(s) 4718691960"},
+           reconciliation: {word: "dirty", reason: "human comment(s) posted on https://github.com/acme/widgets/pull/435 since it last left draft carry no <!-- agent-ops:reconciles comment=<id> --> line answering them: https://github.com/acme/widgets/pull/435#issuecomment-4718691960"},
            handoff: "",
            rereview: {state: "", who: ""}, human_reviewer: {state: "", who: ""}}'
 }
@@ -786,7 +795,13 @@ assert_eq "reconciliation-refused: no pr-ready — the gate found a real fault" 
   "$(grep -cE '^event pr-ready ' <<<"$calls")"
 warn_evt="$(grep -E '^event warning ' <<<"$calls" | tail -n1 | sed -E 's/^event warning //')"
 assert_contains "reconciliation-refused: the warning names the unreconciled comment" \
-  "comment id(s) 4718691960" "$(jq -r '.detail' <<<"$warn_evt")"
+  "pull/435#issuecomment-4718691960" "$(jq -r '.detail' <<<"$warn_evt")"
+# The round-start bound (agent-ops#533) must reach the gate from this path too
+# — it is a fourth positional argument, so dropping it is silent, and the
+# Enabler's recovery path is exactly the caller a change to the Reviewer's own
+# site would forget.
+assert_eq "reconciliation-refused: complete_handoff forwards the round-start bound" \
+  "2026-08-17T00:00:00Z" "$(cat "$gate_arg4")"
 xmn_evt="$(events_named "$calls" enabler-examined | head -n1)"
 assert_eq "reconciliation-refused: enabler-examined records the flip as failed" \
   "failed" "$(jq -r '.complete_handoff' <<<"$xmn_evt")"

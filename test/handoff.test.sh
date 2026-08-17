@@ -1000,6 +1000,30 @@ assert_eq "  ... reconciliation.reason names the unreconciled comment" \
   "$(jq -r '.reconciliation.reason' <<<"$out")"
 assert_eq "  ... handoff is empty — confirm_pr_ready never ran" "" "$(jq -r '.handoff' <<<"$out")"
 
+# --- the round-start bound reaches the reconciliation gate --------------------
+# `handoff_complete_review` runs after the Reviewer's own step-7 `gh pr ready`,
+# so an unbounded `reconciliation_gate` anchors on that very flip and reports
+# `clean` on every pull request it exists to refuse (agent-ops#533; see
+# `_reconciliation_gate_anchor`). The bound is this function's fourth
+# argument, handed straight through as the gate's second — pinned here so a
+# change that drops it fails loudly rather than silently disarming the gate.
+review_gate_verdict() { printf 'clean'; return 0; }
+closing_keyword_gate() { printf 'clean'; return 0; }
+# Recorded through a file, not a variable: `handoff_complete_review` calls
+# each gate inside a command substitution, so an assignment made in the stub
+# dies with that subshell.
+recon_bound_file="$tmp_dir/recon-bound"
+reconciliation_gate() { printf '%s' "${2-<unset>}" >"$recon_bound_file"; printf 'clean'; return 0; }
+confirm_pr_ready() { printf 'already'; return 0; }
+confirm_review_requested() { printf 'none'; return 0; }
+ensure_human_reviewer() { printf 'skip'; return 0; }
+handoff_complete_review "$REVIEW_URL" "main" "" "2026-08-17T00:00:00Z" >/dev/null
+assert_eq "the round-start bound is forwarded to reconciliation_gate" \
+  "2026-08-17T00:00:00Z" "$(cat "$recon_bound_file")"
+handoff_complete_review "$REVIEW_URL" "main" "" >/dev/null
+assert_eq "  ... and an omitted bound reaches it as empty, not as a missing argument" \
+  "" "$(cat "$recon_bound_file")"
+
 # --- all three gates clean, but the flip itself does not take -----------------
 review_gate_verdict() { printf 'clean'; return 0; }
 closing_keyword_gate() { printf 'clean'; return 0; }

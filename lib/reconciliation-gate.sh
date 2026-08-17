@@ -25,11 +25,16 @@
 # request's own comment history rather than trusting a model's summary of it:
 #
 #   - the anchor is the pull request's most recent `ready_for_review` timeline
-#     event — the moment it last left draft — falling back to the pull
-#     request's own creation time when it has never left draft before;
+#     event *at or before NOT_AFTER* — the moment it last left draft as of
+#     the point the round began — falling back to the pull request's own
+#     creation time when it has never left draft before that point. See
+#     `_reconciliation_gate_anchor` for why the bound is not optional in
+#     practice: without it the anchor is invalidated by the very flip this
+#     gate exists to check;
 #   - a "human comment" is any general PR comment (`/issues/<n>/comments`,
 #     where `gh pr comment` files them) posted after that anchor, from a
-#     non-Bot account, whose body does not carry
+#     non-Bot account that is not a GitHub App acting on someone's behalf
+#     (`performed_via_github_app`), whose body does not carry
 #     `lib/pipeline-marker.sh`'s `PIPELINE_COMMENT_MARKER_PREFIX` — the same
 #     "no marker, not a Bot" rule that tells a human's write apart from the
 #     pipeline's own everywhere else in this codebase, because author alone
@@ -73,19 +78,60 @@ _reconciliation_gate_pr_parts() {
   printf '%s/%s\t%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
 }
 
-# _reconciliation_gate_anchor SLUG NUMBER
+# _reconciliation_gate_anchor SLUG NUMBER [NOT_AFTER]
 # Print the timestamp comments are read "since": the pull request's most
-# recent `ready_for_review` timeline event, or — when it has never left draft
-# before, a first round — its own creation time. Returns non-zero, printing
-# nothing, only when the timeline itself could not be read at all; an empty
-# but readable timeline is not a failure, it is the first-round case, and
-# falls through to the creation-time read.
+# recent `ready_for_review` timeline event at or before NOT_AFTER, or — when
+# it had never left draft by then, a first round — its own creation time.
+# Returns non-zero, printing nothing, only when the timeline itself could not
+# be read at all; an empty but readable timeline is not a failure, it is the
+# first-round case, and falls through to the creation-time read.
+#
+# ## Why NOT_AFTER exists, and why every real caller passes one
+#
+# "Most recent `ready_for_review` event" read literally is self-invalidating
+# on the one path this gate was written for. `prompts/reviewer.md` step 7 has
+# the Reviewer run `gh pr ready` itself, inside its own session; the gate runs
+# afterwards, from `handoff_complete_review`, once that session has ended. So
+# by the time the timeline is read, the most recent `ready_for_review` event
+# is the Reviewer's *own* flip — and every human comment the round was
+# supposed to answer, all of which necessarily predate it, falls before the
+# anchor and is filtered out. Verified against PR #512's real timeline: the
+# gate reported `clean` on exactly the scenario it exists to catch, and
+# reported `dirty` on the same fixture with only that one event removed. The
+# first-round fallback fails the same way, since the Reviewer's flip is also
+# the *first* `ready_for_review` event on a never-yet-ready draft, so the
+# creation-time branch stops applying at the same moment.
+#
+# NOT_AFTER is the round's own start (agent-cycle.sh passes `cycle_started_at`
+# at both call sites): every flip this pipeline performs happens after it, and
+# every flip that established the state the round inherited happened before
+# it. Bounding the search there restores the anchor the requirement actually
+# names — the moment the pull request last left draft *as the round found it*
+# — without changing the rule for the paths that were already correct: on a
+# `review-feedback` pull request, and on the Enabler's `complete_handoff`
+# recovery path, no flip happens inside the round at all, so the bound selects
+# the same event the unbounded read would have.
+#
+# Empty NOT_AFTER means unbounded, which is the pre-#533-fix behaviour and is
+# kept only so a caller that genuinely has no round to bound by (a test
+# asserting the raw rule) can ask for it. Passing one is not optional for a
+# caller that runs after a flip it performed itself.
 _reconciliation_gate_anchor() {
-  local slug="$1" number="$2" gh_bin="${RECONCILIATION_GATE_GH:-gh}" events anchor
+  local slug="$1" number="$2" not_after="${3:-}" gh_bin="${RECONCILIATION_GATE_GH:-gh}"
+  local events anchor
   events="$("$gh_bin" api "repos/$slug/issues/$number/timeline" --paginate \
               --jq '.[] | select(.event == "ready_for_review" and .created_at != null) | .created_at' \
               2>/dev/null)" || return 1
-  anchor="$(sort <<<"$events" | tail -n1)"
+  # jq rather than `sort | tail -n1` for the maximum, so the NOT_AFTER bound
+  # and `_reconciliation_gate_comments`' own `.at > $anchor` filter compare
+  # these timestamps the same byte-wise way; `sort`'s collation is locale-
+  # dependent and jq's is not, and an anchor chosen under one rule then
+  # applied under the other is exactly the kind of disagreement this gate
+  # must not have.
+  anchor="$(jq -R -s -r --arg cutoff "$not_after" '
+      [splits("\n") | select(length > 0)]
+      | map(select($cutoff == "" or . <= $cutoff))
+      | max // ""' <<<"$events" 2>/dev/null)" || return 1
   if [[ -n "$anchor" ]]; then
     printf '%s' "$anchor"
     return 0
@@ -94,7 +140,7 @@ _reconciliation_gate_anchor() {
 }
 
 # _reconciliation_gate_comments SLUG NUMBER ANCHOR
-# Print a compact JSON array of `{id, body, bot}` for every general PR
+# Print a compact JSON array of `{id, at, body, bot}` for every general PR
 # comment (`/issues/<number>/comments`, where `gh pr comment` files them)
 # whose `created_at` is strictly after ANCHOR. `id` is the issue-comment id
 # the `<!-- agent-ops:reconciles comment=<id> -->` convention refers to.
@@ -110,15 +156,20 @@ _reconciliation_gate_comments() {
   local slug="$1" number="$2" anchor="$3" gh_bin="${RECONCILIATION_GATE_GH:-gh}" lines
   lines="$("$gh_bin" api "repos/$slug/issues/$number/comments" --paginate \
              --jq '.[] | {id, at: .created_at, body: (.body // ""),
-                          bot: (((.user.type // "User") == "Bot") or (.user.login | endswith("[bot]")))}' \
+                          bot: (((.user.type // "User") == "Bot")
+                                or (.user.login | endswith("[bot]"))
+                                or (.performed_via_github_app != null))}' \
              2>/dev/null)" || return 1
   jq -s -c --arg anchor "$anchor" '[.[] | select(.at > $anchor)]' <<<"$lines" 2>/dev/null || return 1
 }
 
-# reconciliation_gate PR_URL
+# reconciliation_gate PR_URL [NOT_AFTER]
 # Print `clean`, `dirty<TAB>reason`, or `unknown<TAB>reason`. Exit 0 for
 # clean or unknown, 1 for dirty — the same shape `lib/closing-keyword-gate.sh`
-# reports, so a caller can fold it into the same handoff gate.
+# reports, so a caller can fold it into the same handoff gate. NOT_AFTER
+# bounds which `ready_for_review` event is taken as the anchor; every caller
+# that runs after a flip of its own must pass its round's start time, or the
+# anchor is the flip it is checking (see `_reconciliation_gate_anchor`).
 #   clean    every non-pipeline (human) comment posted since the pull request
 #             last left draft is reconciled — cited by a
 #             `<!-- agent-ops:reconciles comment=<id> -->` line in some
@@ -132,8 +183,8 @@ _reconciliation_gate_comments() {
 #             ask is not a failure" contract `lib/closing-keyword-gate.sh`
 #             already keeps).
 reconciliation_gate() {
-  local url="${1:-}" parts slug number anchor comments marker rprefix
-  local human reconciled unreconciled
+  local url="${1:-}" not_after="${2:-}" parts slug number anchor comments marker rprefix
+  local human reconciled unreconciled named
 
   if [[ -z "$url" ]] || ! parts="$(_reconciliation_gate_pr_parts "$url")"; then
     printf 'dirty\tno pull request URL to check'
@@ -141,7 +192,7 @@ reconciliation_gate() {
   fi
   IFS=$'\t' read -r slug number <<<"$parts"
 
-  if ! anchor="$(_reconciliation_gate_anchor "$slug" "$number")"; then
+  if ! anchor="$(_reconciliation_gate_anchor "$slug" "$number" "$not_after")"; then
     printf 'unknown\tcould not read %s'\''s timeline to find when it last left draft' "$url"
     return 0
   fi
@@ -179,7 +230,18 @@ reconciliation_gate() {
     return 0
   fi
 
-  printf 'dirty\thuman comment(s) posted on %s since it last left draft (%s) carry no %s comment=<id> --> line answering them: comment id(s) %s' \
-    "$url" "$anchor" "$rprefix" "$(paste -sd', ' <<<"$unreconciled")"
+  # Named as permalinks, not as bare ids or a count. This string is the whole
+  # of what reaches the requirement 32a handback and, through it, the next
+  # round's Reviewer: it has to be enough to *act* on, or a fail-closed gate
+  # becomes a loop that refuses the same pull request every hour without ever
+  # saying which comment to answer. The `#issuecomment-<id>` fragment carries
+  # the id the citation itself needs, so one form serves both the human
+  # reading the handback and the Reviewer writing the reply.
+  named="$(while IFS= read -r id; do
+             [[ -n "$id" ]] && printf '%s#issuecomment-%s\n' "$url" "$id"
+           done <<<"$unreconciled")"
+
+  printf 'dirty\thuman comment(s) posted on %s since it last left draft (%s) carry no %s comment=<id> --> line answering them: %s' \
+    "$url" "$anchor" "$rprefix" "$(paste -sd', ' <<<"$named")"
   return 1
 }

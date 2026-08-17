@@ -297,7 +297,10 @@ your review:
    a non-Bot account, whose body carries no
    `<!-- agent-ops:pipeline-comment …` marker, posted since this pull
    request's most recent `ready_for_review` timeline event — its own creation
-   time, if it has never left draft before. Each one is a human's own words,
+   time, if it has never left draft before. Read this *now*, before step 7:
+   your own `gh pr ready` mints a fresh `ready_for_review` event, so once you
+   have flipped it, the anchor you would compute is your own flip and every
+   comment you were meant to answer looks like ancient history. Each one is a human's own words,
    not yours, and needs answering: implement it (step 4) if you agree, or say
    plainly in your step 8 completion comment why you don't if you disagree —
    never let one go unmentioned. Cite every one you answer, agreeing or not,

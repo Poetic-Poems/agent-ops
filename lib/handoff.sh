@@ -692,7 +692,7 @@ _handoff_complete_review_json() {
      human_reviewer: {state: $hs, who: $hw}}'
 }
 
-# handoff_complete_review PR_URL DEFAULT_BRANCH ASSIGNEE
+# handoff_complete_review PR_URL DEFAULT_BRANCH ASSIGNEE [ROUND_STARTED_AT]
 # The one gate-and-flip implementation requirement 31c and 32b both bind
 # (agent-ops#440): run requirement 31c's review gate, requirement 25a's
 # closing-keyword gate and requirement 31c's reconciliation gate
@@ -784,12 +784,20 @@ _handoff_complete_review_json() {
 # existing precondition, applied here rather than by the caller, so a caller
 # cannot forget it.
 #
+# ROUND_STARTED_AT is the timestamp this cycle began (agent-cycle.sh's
+# `cycle_started_at`), passed straight through to `reconciliation_gate` as its
+# anchor bound. It is what stops that gate from measuring "since the pull
+# request last left draft" against a draft flip the Reviewer performed inside
+# this very round — see `_reconciliation_gate_anchor`'s own comment for the
+# reproduction. Both callers pass it; omitting it leaves the gate unbounded,
+# which is only ever right for a caller that performed no flip of its own.
+#
 # Never returns non-zero: every sub-call already fails closed on its own
 # terms, and the caller reads `safe` and the sub-verdicts rather than an exit
 # status — the same convention `review_gate_verdict` established for its own
 # combined word, extended one level up.
 handoff_complete_review() {
-  local url="${1:-}" default_branch="${2:-main}" assignee="${3:-}"
+  local url="${1:-}" default_branch="${2:-main}" assignee="${3:-}" round_started_at="${4:-}"
   local gate_combined gate_word="" gate_reason="" gate_rc=0 checks_unreadable=false
   local ck_combined ck_word="" ck_reason=""
   local rc_combined rc_word="" rc_reason=""
@@ -830,8 +838,10 @@ handoff_complete_review() {
   # path's draft flip, on the pull request's *current* comment history rather
   # than trusted from the Reviewer's own completion comment — the same
   # "confirm, don't trust" shape every other check in this sequence already
-  # applies.
-  rc_combined="$(reconciliation_gate "$url")" || true
+  # applies. ROUND_STARTED_AT bounds its anchor: the Reviewer has already run
+  # `gh pr ready` itself by the time this executes, and an unbounded anchor
+  # would be that very flip.
+  rc_combined="$(reconciliation_gate "$url" "$round_started_at")" || true
   IFS=$'\t' read -r rc_word rc_reason <<<"$rc_combined"
   if [[ "$rc_word" == "dirty" ]]; then
     _handoff_complete_review_json false "$gate_word" "$gate_reason" false "$ck_word" "$ck_reason" "$rc_word" "$rc_reason"

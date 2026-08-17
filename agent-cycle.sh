@@ -625,6 +625,16 @@ review_lock_file="$state_dir/review-lock.json"
 node_name="${NODE_NAME:-$(hostname)}"
 node_name="${node_name//[^A-Za-z0-9._-]/-}"
 cycle_id="$(date -u +%Y%m%dT%H%M%SZ)-$node_name-$$"
+# The same instant in the format GitHub's own API returns, so it can be
+# compared against a timeline event's `created_at` without reformatting. It is
+# the bound `handoff_complete_review` hands `reconciliation_gate` (requirement
+# 31c, agent-ops#533): "when this pull request last left draft" has to mean
+# "as this round found it", and every draft flip this cycle performs — the
+# Reviewer's own `gh pr ready` at its step 7, most of all — happens after this
+# line. The cycle id's own leading token is the same instant, but in a
+# different format and welded to the node name and pid, so it is minted
+# separately rather than parsed back out.
+cycle_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 cycle_dir="$state_dir/cycles/$cycle_id"
 # A management command runs no stages and writes no transcripts; giving it a
 # cycle directory would leave an empty one behind for every --status anyone
@@ -4655,7 +4665,7 @@ $(jq . <<<"$input")
                 'map(select(.slug == $r)) | .[0].default_branch // "main"' \
                 <<<"$ordered_repos_json" 2>/dev/null || true)"
               [[ -n "$e_default_branch" ]] || e_default_branch="main"
-              e_review_json="$(handoff_complete_review "$e_pr_url" "$e_default_branch" "$enabler_assignee")"
+              e_review_json="$(handoff_complete_review "$e_pr_url" "$e_default_branch" "$enabler_assignee" "$cycle_started_at")"
 
               e_gate_word="$(jq -r '.gate.word // ""' <<<"$e_review_json")"
               e_gate_reason="$(jq -r '.gate.reason // ""' <<<"$e_review_json")"
@@ -8129,7 +8139,7 @@ if [[ "$rev_status" == "ready" ]]; then
   # `complete_handoff` recovery path below, so neither can hand a pull
   # request to a human without running the same checks the other does.
   gate_default_branch="$(jq -r '.default_branch // "main"' <<<"$work_order_json")"
-  review_json="$(handoff_complete_review "$impl_pr_url" "$gate_default_branch" "$enabler_assignee")"
+  review_json="$(handoff_complete_review "$impl_pr_url" "$gate_default_branch" "$enabler_assignee" "$cycle_started_at")"
   gate_word="$(jq -r '.gate.word // ""' <<<"$review_json")"
   gate_reason="$(jq -r '.gate.reason // ""' <<<"$review_json")"
   gate_checks_unreadable="$(jq -r '.gate.checks_unreadable // false' <<<"$review_json")"

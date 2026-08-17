@@ -138,6 +138,10 @@ if [[ -z "$streak_helper_fn" ]]; then
 fi
 
 URL="https://github.com/Poetic-Poems/poetic-fiddle/pull/198"
+# Where the stubbed `handoff_complete_review` records the fourth argument it
+# was handed (requirement 31c's round-start bound, agent-ops#533), so the
+# assertions below can pin that the call site forwards it.
+gate_arg4="$tmp_dir/gate-arg4"
 
 # run_gate_block REVIEW_JSON [STREAK_JSON [ALREADY]]
 # Runs the block under the same `set -euo pipefail` agent-cycle.sh runs under,
@@ -163,17 +167,20 @@ run_gate_block() {
   local events="$tmp_dir/events" node_log="$tmp_dir/node-log.jsonl" since_rc=1
   [[ -n "$already" ]] && since_rc=0
   : > "$node_log"
+  : > "$gate_arg4"
   {
     printf '%s\n' 'set -euo pipefail'
     printf 'impl_pr_url=%q\n' "$URL"
     printf '%s\n' 'work_order_json='"'"'{"default_branch":"main"}'"'"''
     printf 'node_name=%q\n' "n1"
     printf 'enabler_assignee=%q\n' "alice"
+    printf 'cycle_started_at=%q\n' "2026-08-17T00:00:00Z"
     printf 'log_file=%q\n' "$node_log"
     printf '%s\n' 'review_gate_unknown_streak_after=3'
     printf '%s\n' 'log_event() { printf "%s\t%s\n" "$1" "$(jq -r ".detail // .count // (if has(\"ok\") then (.ok|tostring) else \"\" end)" <<<"$2")" >>'"$(printf '%q' "$events")"'; }'
     printf '%s\n' 'log_reviewer_handback() { printf "handback\t%s\t%s\n" "$1" "${3:-}" >>'"$(printf '%q' "$events")"'; }'
-    printf 'handoff_complete_review() { printf %%s %q; }\n' "$review_json"
+    printf 'handoff_complete_review() { printf %%s "${4:-}" >%q; printf %%s %q; }\n' \
+      "$gate_arg4" "$review_json"
     printf 'review_gate_unknown_streak_verdict() { cat >/dev/null; printf %%s %q; }\n' "$streak_json"
     printf 'review_gate_degraded_since() { cat >/dev/null; return %s; }\n' "$since_rc"
     printf '%s\n' "$streak_helper_fn"
@@ -282,6 +289,16 @@ assert_lacks "  ... never the required-checks wording" \
   "Get every required check green" "$out"
 assert_lacks "  ... never the closing-keyword wording" \
   "Add the missing closing keyword" "$out"
+
+# --- the round-start bound reaches handoff_complete_review --------------------
+# Without it the reconciliation gate anchors on the Reviewer's own step-7 `gh
+# pr ready` — a flip made inside this very round — and reports `clean` on
+# every pull request it exists to refuse (see `_reconciliation_gate_anchor`).
+# The bound is a fourth positional argument, so dropping it is silent: the
+# gate still runs, still returns a verdict, and simply never fires. Pinned
+# here at the call site, where the drop would happen.
+assert_eq "the Reviewer's handoff forwards the round-start bound as the fourth argument" \
+  "2026-08-17T00:00:00Z" "$(cat "$gate_arg4")"
 
 # --- both gates clean, but the flip itself did not take -----------------------
 out="$(run_gate_block "$(review_json false clean "" false clean "")")"

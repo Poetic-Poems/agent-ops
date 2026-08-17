@@ -6082,8 +6082,11 @@ implements.
     change-request signal here (PR #512). Before requirement 31's hand-off,
     the Reviewer reads every general PR comment from a non-Bot account whose
     body carries no pipeline marker, posted since the pull request's most
-    recent `ready_for_review` timeline event (its own creation time, on a
-    first round), and answers each — implementing it under requirement 30, or
+    recent `ready_for_review` timeline event as it found it — its own creation
+    time, on a first round; the Reviewer reads this *before* running
+    requirement 31's own `gh pr ready`, which is why requirement 31c's gate
+    has to bound its later read by the cycle's start to reach the same
+    answer — and answers each — implementing it under requirement 30, or
     explicitly contesting it in the completion comment's own prose — never
     leaving one unmentioned. It cites every one it answers with its own
     `<!-- agent-ops:reconciles comment=<id> -->` line in that same completion
@@ -6326,9 +6329,17 @@ implements.
     recent `ready_for_review` timeline event (or its own creation time, on a
     first round) from a non-Bot account whose body carries no pipeline
     marker — a human's own words, on this system's shared-account terms —
-    and refuses the flip, `dirty`, naming any whose id is not cited by a
-    `<!-- agent-ops:reconciles comment=<id> -->` line in some pipeline
-    comment since. A `dirty` verdict is recorded as the same requirement 32a
+    and refuses the flip, `dirty`, naming the permalink of any whose id is
+    not cited by a `<!-- agent-ops:reconciles comment=<id> -->` line in some
+    pipeline comment since — a permalink rather than a count, because that
+    string is the whole of what reaches the handback and the next round's
+    Reviewer, and a refusal that does not say which comment to answer is a
+    loop rather than a gate. The anchor is bounded by the cycle's own start
+    time, which `agent-cycle.sh` passes to `handoff_complete_review` at both
+    call sites: the Reviewer runs `gh pr ready` itself at requirement 31, so
+    an unbounded search would take that flip — made inside this very round —
+    as "when the pull request last left draft" and filter out every comment
+    the round existed to answer. A `dirty` verdict is recorded as the same requirement 32a
     handback on the Reviewer's own path (a `warning` naming the finding, on
     the Enabler's — requirement 32b), exactly like the closing-keyword gate's
     own; an `unknown` — the timeline, the creation-time fallback or the
@@ -6340,6 +6351,18 @@ implements.
     it in the comment's own prose — "cite", because whether a diff actually
     answers a human's words is a judgement no script can make, only confirm
     was attempted.
+
+    What "refuses the flip" means differs by path, and the difference is
+    shared with the closing-keyword gate rather than particular to this one.
+    On the Enabler's `complete_handoff` recovery path the pull request is
+    still a draft, so the refusal is literal: `confirm_pr_ready` never runs
+    and the pull request stays in draft. On the Reviewer's own path the
+    Reviewer has already run `gh pr ready` itself during its session, so what
+    the gate refuses is this pipeline's *completion* of the handoff — the
+    requirement 32a handback is recorded, no `pr-ready` event is logged, and
+    the re-request and reviewer nudge never run, leaving the item blocked for
+    the Enabler rather than recorded as handed off. Nothing here converts a
+    pull request back to draft; no component in this repository does.
 
     #216 itself: the human resolved it directly on the pull request (renaming
     the flagged constant, commit `8e62ff6`) before this requirement existed to
@@ -10884,17 +10907,28 @@ What exists, and the requirements each part answers to:
     `reconciliation_gate` prints `clean`, `dirty<TAB>reason` or
     `unknown<TAB>reason` — the same three-way shape `lib/review-gate.sh` and
     `lib/closing-keyword-gate.sh` report, so `lib/handoff.sh`'s
-    `handoff_complete_review` folds all three into one gate. The anchor is the
-    pull request's most recent `ready_for_review` timeline event
-    (`repos/<slug>/issues/<n>/timeline`, the maximum `created_at` among
+    `handoff_complete_review` folds all three into one gate. An optional
+    second argument bounds the anchor search; `handoff_complete_review` passes
+    its own fourth argument through, and `agent-cycle.sh` passes the cycle's
+    start time (`cycle_started_at`) at both call sites. The anchor is the pull
+    request's most recent `ready_for_review` timeline event at or before that
+    bound (`repos/<slug>/issues/<n>/timeline`, the maximum `created_at` among
     entries whose `event` is `ready_for_review`), falling back to the pull
-    request's own `created_at` (`repos/<slug>/pulls/<n>`) when it has never
-    left draft before; a "human comment" is any general PR comment
+    request's own `created_at` (`repos/<slug>/pulls/<n>`) when it had never
+    left draft by then. The bound is what makes the anchor mean anything on
+    the Reviewer's own path: the Reviewer runs `gh pr ready` itself
+    (requirement 31) before this gate is ever asked, so an unbounded search
+    selects that flip and every comment the round was meant to answer falls
+    before it — on the paths where no flip happens inside the round
+    (`review-feedback`, and the Enabler's `complete_handoff` recovery) the
+    bound selects the same event an unbounded search would. A "human comment"
+    is any general PR comment
     (`repos/<slug>/issues/<n>/comments`, where `gh pr comment` files them —
     never a formal review or an inline review comment, since a
     `REQUEST_CHANGES` review is unavailable to a human on this system's own
     pull requests to begin with, see the file's own header) posted after that
-    anchor, from a non-Bot account, whose body does not carry
+    anchor, from a non-Bot account that is not a GitHub App acting under a
+    user identity (`performed_via_github_app`), whose body does not carry
     `lib/pipeline-marker.sh`'s `PIPELINE_COMMENT_MARKER_PREFIX` — author alone
     cannot tell a human's write from the pipeline's, since every pipeline
     write and every human comment on this project's own pull requests land
@@ -10906,7 +10940,10 @@ What exists, and the requirements each part answers to:
     confirm the citation was made, never whether the diff it names actually
     answers the human's words, so it checks the citation exists rather than
     trying to judge the answer itself. `dirty` names every unreconciled
-    comment's id; `clean` covers both "no human comments since the anchor" and
+    comment's own `#issuecomment-<id>` permalink — one form serving both the
+    human reading the handback and the Reviewer writing the citation, since
+    the id the citation needs is the permalink's own fragment; `clean` covers
+    both "no human comments since the anchor" and
     "every one is cited". `unknown` covers the timeline, the creation-time
     fallback or the comment list failing to read at all — a node or token
     fact, never itself blocking (the same "could not ask is not a failure"
@@ -12356,9 +12393,11 @@ pull request, run the ones the change touches and any it could regress.
    agent-ops#533).** `test/reconciliation-gate.test.sh` passes: no human
    comment since the anchor, or every one cited by a `<!-- agent-ops:
    reconciles comment=<id> -->` line in some comment carrying the pipeline
-   marker, is `clean`; a comment from a Bot account, or one carrying the
+   marker, is `clean`; a comment from a Bot account, one performed via a
+   GitHub App, or one carrying the
    pipeline marker itself, never counts as human; an uncited human comment is
-   `dirty`, naming its id, and a partially-cited pair of comments names only
+   `dirty`, naming its `#issuecomment-<id>` permalink, and a partially-cited
+   pair of comments names only
    the uncited one; a comment posted before the pull request's most recent
    `ready_for_review` timeline event does not count, even when an earlier
    such event exists — the maximum, not any member; with no `ready_for_review`
@@ -12366,19 +12405,32 @@ pull request, run the ones the change touches and any it could regress.
    anchor instead; and the timeline, the creation-time fallback or the
    comment list each failing to read is `unknown`, never `dirty`, and exits 0
    so a caller warns rather than blocks. An empty URL is `dirty`, a bug in the
-   caller. `test/handoff.test.sh` passes `handoff_complete_review`'s own
+   caller. Replay PR #512's own event ordering — the human's comment, the
+   draft flip, then a *later* `ready_for_review` standing in for the
+   Reviewer's own step-7 flip: bounded by a round-start argument earlier than
+   that flip the verdict must be `dirty` and must name the human's comment,
+   while the same fixture read unbounded is `clean`, which is the whole
+   reason the bound exists; the same must hold one layer down, where the
+   in-round flip is the *first* `ready_for_review` event and the bounded read
+   must fall back to the creation time; and where no flip happened inside the
+   round, the bounded and unbounded reads must agree.
+   `test/handoff.test.sh` passes `handoff_complete_review`'s own
    composition: a dirty reconciliation gate refuses the flip with `safe:
    false` even when the review gate and the closing-keyword gate are both
-   clean, and an unknown one passes through to the flip attempt exactly as
-   the other two gates' own `unknown`s do. Then drive a cycle whose Reviewer
-   answers `{"status": "ready"}` against a pull request carrying an
+   clean, an unknown one passes through to the flip attempt exactly as
+   the other two gates' own `unknown`s do, and the round-start bound reaches
+   `reconciliation_gate` as its second argument. Then drive a cycle whose
+   Reviewer answers `{"status": "ready"}` against a pull request carrying an
    unreconciled human comment: the cycle must record the same outcome as a
    Reviewer `blocked` verdict (requirement 32a) — an `attempt-failed` naming
-   the unreconciled comment — and must never call `gh pr ready` at all
+   the unreconciled comment — and must never reach the flip and re-request
+   that follow the gate
    (`test/review-gate-wiring.test.sh`); assert the same refusal on the
    Enabler's `complete_handoff` recovery path (`test/enabler-verdicts.test.sh`)
    so the gate binds both callers of `handoff_complete_review`, not the
-   Reviewer's alone (requirement 34a).
+   Reviewer's alone (requirement 34a). Both call sites must be pinned to
+   forward the round-start bound: it is a trailing positional argument, so
+   dropping it silently disarms the gate rather than failing.
 8e. **A pull request nobody could hand off reaches the Enabler, not the human
    (requirement 32a).** Drive a cycle whose Reviewer answers `blocked` (and again
    with the legacy `needs-human`): the cycle must log an `attempt-failed` for the

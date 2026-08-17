@@ -138,8 +138,20 @@ set_comments '[{"id": 4718691960, "created_at": "2026-08-16T22:16:00Z",
 out="$(reconciliation_gate "$URL")"; rc=$?
 assert_eq "  ... exits 1" "1" "$rc"
 assert_eq "an unreconciled human comment is dirty" "dirty" "${out%%$'\t'*}"
-assert_contains "  ... naming the unreconciled comment's id" "4718691960" "$out"
+assert_contains "  ... naming the unreconciled comment by permalink, not by count" \
+  "$URL#issuecomment-4718691960" "$out"
 assert_contains "  ... naming the anchor it was measured since" "2026-08-16T20:00:00Z" "$out"
+
+# --- a GitHub App's comment is not a human's ----------------------------------
+# `performed_via_github_app` catches an App that posts under an ordinary user
+# identity, which the `.user.type`/`[bot]`-suffix pair above does not.
+
+set_comments '[{"id": 3, "created_at": "2026-08-16T21:06:00Z", "body": "Preview deployed.",
+                "user": {"login": "vercel-deploy", "type": "User"},
+                "performed_via_github_app": {"slug": "vercel"}}]'
+out="$(reconciliation_gate "$URL")"; rc=$?
+assert_eq "a comment performed via a GitHub App is not a human's: clean" "clean" "$out"
+assert_eq "  ... and exits 0" "0" "$rc"
 
 # --- reconciled: a pipeline comment since cites the human comment's id --------
 
@@ -167,8 +179,8 @@ set_comments "$(jq -nc --arg m "$PIPELINE_COMMENT_MARKER_PREFIX" '
 out="$(reconciliation_gate "$URL")"; rc=$?
 assert_eq "  ... exits 1" "1" "$rc"
 assert_eq "one of two human comments still uncited is dirty" "dirty" "${out%%$'\t'*}"
-assert_contains "  ... naming only the uncited one" "11" "$out"
-[[ "$out" == *"10"* ]] && printf 'FAIL - the cited comment id leaked into the dirty reason\n     actual: %s\n' "$out" && failures=$(( failures + 1 ))
+assert_contains "  ... naming only the uncited one" "$URL#issuecomment-11" "$out"
+[[ "$out" == *"#issuecomment-10"* ]] && printf 'FAIL - the cited comment leaked into the dirty reason\n     actual: %s\n' "$out" && failures=$(( failures + 1 ))
 
 # --- the anchor: only comments after the pull request last left draft count ---
 
@@ -193,6 +205,74 @@ assert_eq "  ... exits 1" "1" "$rc"
 assert_eq "no ready_for_review event: falls back to creation time, still dirty if unreconciled" \
   "dirty" "${out%%$'\t'*}"
 assert_contains "  ... naming the creation-time anchor" "2026-08-15T00:00:00Z" "$out"
+
+# --- NOT_AFTER: the Reviewer's own step-7 flip must not become the anchor ------
+#
+# The real ordering on PR #512, which every case above quietly avoids by
+# hand-crafting a timeline whose newest `ready_for_review` already predates
+# the human's comment. In production it does not: `prompts/reviewer.md` step 7
+# has the Reviewer run `gh pr ready` inside its own session, and the gate runs
+# afterwards from `handoff_complete_review`. So the newest `ready_for_review`
+# event is the Reviewer's own flip, and every comment the round was meant to
+# answer necessarily predates it. Unbounded, the gate reports `clean` on
+# exactly the pull request it exists to refuse.
+
+set_timeline '[{"event": "ready_for_review", "created_at": "2026-08-16T22:05:40Z"},
+               {"event": "convert_to_draft",  "created_at": "2026-08-16T22:16:30Z"},
+               {"event": "ready_for_review", "created_at": "2026-08-17T04:31:16Z"}]'
+set_pr '{"created_at": "2026-08-16T10:00:00Z"}'
+set_comments "$(jq -nc --arg m "$PIPELINE_COMMENT_MARKER_PREFIX" '
+  [{id: 5309946033, created_at: "2026-08-16T22:16:05Z",
+    body: "Three things: widen the protected-path list, rescope TD-PPagop-26081701, and re-read the kill switch.",
+    user: {login: "warwickallen", type: "User"}},
+   {id: 5309999999, created_at: "2026-08-17T04:31:39Z",
+    body: ("**Reviewer** · autonomous pipeline · node `n1`\n\nAutomated review complete.\n\n" + $m + " cycle=X actor=reviewer -->"),
+    user: {login: "warwickallen", type: "User"}}]')"
+
+out="$(reconciliation_gate "$URL" "2026-08-17T04:00:00Z")"; rc=$?
+assert_eq "  ... exits 1" "1" "$rc"
+assert_eq "bounded by the round's start, the Reviewer's own flip is not the anchor" \
+  "dirty" "${out%%$'\t'*}"
+assert_contains "  ... so PR #512's standing change request is still named" \
+  "$URL#issuecomment-5309946033" "$out"
+assert_contains "  ... measured since the flip that preceded the round, not the one inside it" \
+  "2026-08-16T22:05:40Z" "$out"
+
+out="$(reconciliation_gate "$URL")"
+assert_eq "  ... and unbounded it would have missed it entirely — why the bound is not optional" \
+  "clean" "$out"
+
+# --- NOT_AFTER on a first round: no ready_for_review event precedes the bound --
+# The same trap one layer down: the Reviewer's flip is also the *first*
+# `ready_for_review` event on a never-yet-ready draft, so an unbounded read
+# stops falling back to the creation time at the same moment.
+
+set_timeline '[{"event": "ready_for_review", "created_at": "2026-08-17T04:31:16Z"}]'
+set_pr '{"created_at": "2026-08-16T10:00:00Z"}'
+set_comments '[{"id": 40, "created_at": "2026-08-16T18:00:00Z",
+                "body": "Please rescope this before it goes ready.",
+                "user": {"login": "warwickallen", "type": "User"}}]'
+out="$(reconciliation_gate "$URL" "2026-08-17T04:00:00Z")"; rc=$?
+assert_eq "  ... exits 1" "1" "$rc"
+assert_eq "no ready_for_review event at or before the bound: creation time is the anchor" \
+  "dirty" "${out%%$'\t'*}"
+assert_contains "  ... naming the creation-time anchor, not the in-round flip" \
+  "2026-08-16T10:00:00Z" "$out"
+
+# --- NOT_AFTER changes nothing where no flip happened inside the round --------
+# The `review-feedback` and Enabler `complete_handoff` paths: the newest
+# `ready_for_review` event already predates the bound, so the bounded and
+# unbounded reads must agree.
+
+set_timeline '[{"event": "ready_for_review", "created_at": "2026-08-16T20:00:00Z"}]'
+set_comments '[{"id": 41, "created_at": "2026-08-16T22:00:00Z", "body": "One more thing.",
+                "user": {"login": "warwickallen", "type": "User"}}]'
+bounded="$(reconciliation_gate "$URL" "2026-08-17T04:00:00Z")"
+unbounded="$(reconciliation_gate "$URL")"
+assert_eq "a bound later than every ready_for_review event selects the same anchor" \
+  "$unbounded" "$bounded"
+assert_contains "  ... and that anchor is still the most recent such event" \
+  "2026-08-16T20:00:00Z" "$bounded"
 
 # --- unreadable timeline: unknown, not dirty -----------------------------------
 

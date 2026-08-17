@@ -88,9 +88,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   here, and nothing previously refused a hand-off that silently dropped one.
   `lib/reconciliation-gate.sh`'s new gate reads every general PR comment
   posted since the pull request's most recent `ready_for_review` timeline
-  event and refuses the flip, on the same terms as the existing
+  event *as the round found it* — bounded by the cycle's own start time,
+  since the Reviewer runs `gh pr ready` itself and an unbounded search would
+  take that flip as the anchor and filter out every comment the round existed
+  to answer — and refuses the flip, on the same terms as the existing
   closing-keyword gate, unless a pipeline comment since cites it with
-  `<!-- agent-ops:reconciles comment=<id> -->`; `prompts/reviewer.md`'s
+  `<!-- agent-ops:reconciles comment=<id> -->`. A refusal names each
+  unanswered comment by permalink, so the next round can act on it rather
+  than re-deriving it. `prompts/reviewer.md`'s
   completion comment now carries that citation for every human comment it
   answers.
 - `merge_budget_oldest_waiting`'s `waiting_backlog` (the pull request a
