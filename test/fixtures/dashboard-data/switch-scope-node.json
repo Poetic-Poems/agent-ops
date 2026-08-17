@@ -1,0 +1,49 @@
+{
+  "generated_at": "@now",
+  "node": "poetic-1",
+  "status": {
+    "running": false,
+    "switch": {
+      "disabled": true,
+      "reason": "resize the VM",
+      "by": "poetic-1 pid 42",
+      "actor": "poetic-1",
+      "kind": "manual",
+      "scope": "node",
+      "since": "2026-08-01T00:00:00Z",
+      "expires_at": null
+    }
+  },
+  "fleet": {
+    "flags": {
+      "disabled": null,
+      "limit": null
+    },
+    "nodes": [
+      {
+        "node": "poetic-1",
+        "self": true,
+        "stale": false,
+        "role": "active",
+        "heartbeat_ts": "@now",
+        "heartbeat_age_s": 0,
+        "last_cycle": null,
+        "live": null,
+        "switch": {
+          "disabled": true,
+          "reason": "resize the VM",
+          "by": "poetic-1 pid 42",
+          "actor": "poetic-1",
+          "kind": "manual",
+          "scope": "node",
+          "since": "2026-08-01T00:00:00Z",
+          "expires_at": null
+        }
+      }
+    ]
+  },
+  "cycles": [],
+  "log_tail": [],
+  "blocked": [],
+  "void": []
+}

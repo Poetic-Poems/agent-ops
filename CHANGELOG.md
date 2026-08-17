@@ -56,6 +56,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   be filed" warning event now carries `pr_url` and a `detail` naming it — a
   pre-existing bug (a bash string interpolation, not the intended jq `--arg`)
   silently emptied both fields under `set -u`.
+- The dashboard's switch banner for a node stood down with
+  `agent-cycle.sh --this-node --disable` (issue #514) now reads "This node is
+  disabled" rather than "Pipeline disabled" — the old wording read as a
+  fleet-wide stand-down even though only the one node had stopped. Its
+  re-enable advice now names `--enable --this-node` for a genuine node-scoped
+  disable, rather than the bare `--enable` it shared with the fleet-wide
+  banner and the orphaned-mirror case (agent-cycle.sh's own `--status` report
+  and the fleet-strip badge already drew this distinction; the banner did
+  not) — the bare command clears the fleet switch, not this node's own
+  record, and would have left the node down after an operator followed it.
 
 ### Changed
 

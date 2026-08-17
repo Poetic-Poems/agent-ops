@@ -2292,8 +2292,16 @@
       if (sw.actor || sw.by) detail += " — set by " + (sw.actor || sw.by);
       detail += " (" + (sw.kind || "manual") + ")";
       if (sw.since) detail += " at " + sw.since;
+      // The clearing command differs by scope (agent-cycle.sh's own --status
+      // report, `fleet_status_report`): a genuine --this-node disable needs
+      // --this-node on --enable too, or plain --enable clears the fleet
+      // switch instead and leaves this node's own record untouched; the
+      // orphaned mirror below has no fleet switch left to spare, so plain
+      // --enable already clears the one record standing in the way.
+      var reenableCmd = (sw.scope || "node") === "fleet"
+        ? "agent-cycle.sh --enable" : "agent-cycle.sh --enable --this-node";
       detail += sw.expires_at ? ("; expires " + sw.expires_at)
-                              : "; no expiry — needs `agent-cycle.sh --enable`";
+                              : ("; no expiry — needs `" + reenableCmd + "`");
       // The orphan: a mirror whose fleet flag has since been cleared, so this
       // node is down alone under a decision that was lifted elsewhere. Nothing
       // else on the page would explain it.
@@ -2301,7 +2309,7 @@
         detail += " — left over from a fleet-wide disable that has since been cleared";
       }
       banners.appendChild(el("div", {class:"banner amber"}, [
-        el("span", {text: "⏸ Pipeline disabled — no cycles will start."}),
+        el("span", {text: "⏸ This node is disabled — no cycles will start."}),
         el("span", {class:"sub", text: detail})
       ]));
     }
