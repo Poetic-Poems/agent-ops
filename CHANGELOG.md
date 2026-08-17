@@ -55,6 +55,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `scripts/doctor.sh` now also warns when a repository's effective
+  `merge_autonomy_routine_sources` names a banded `issues:<band>` token
+  (agent-ops#519): the existing "does this repository's own `sources` list
+  gather it" check (agent-ops#512) passes cleanly, since the banded token
+  typically is present there too, but every `issues:<band>` work order's own
+  `source` collapses to the plain word `issues` before `landing_eligible`'s
+  exact-string comparison ever runs (`lib/landing.sh`'s own header) — a
+  known, disclosed limitation — so the entry could validate clean and still
+  never match a work order. The new warn names the offending token and
+  suggests listing `issues` itself.
 - `scripts/doctor.sh` now checks that a repository configured at
   `merge_autonomy: agent-merges-routine` or above can actually land a pull
   request the way `landing_arm` would (agent-ops#532): where its default
