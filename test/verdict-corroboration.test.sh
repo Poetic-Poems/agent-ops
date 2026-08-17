@@ -348,6 +348,16 @@ release_refinement_label() { :; }
 # enough — this just keeps the call from failing loudly with "command not
 # found" for a function log_voided_items now calls unconditionally.
 void_obsolete_ctx_json() { printf '{}'; }
+# log_voided_items (issue #508) now calls the real, unstubbed
+# draft_obsolete_flags once per invocation, ahead of the loop — this file
+# sources lib/cycle-state.sh, so unlike the stub above there is a live
+# function to reach. Its LOG_FILE argument falls back to $log_file under
+# `set -u` (agent-cycle.sh's own `${union_log:-$log_file}`), so it needs a
+# defined value here; a path that is never created answers "no flags"
+# (draft_obsolete_flags' own missing-log case), harmless for every assertion
+# below.
+# shellcheck disable=SC2034
+log_file="$SCRIPT_DIR/test/.nonexistent-verdict-corroboration-log.jsonl"
 # The guard refuses TD-REFUSED and passes everything else, standing in for a
 # live-evidence rejection (the reviewer's point: not a shape test, so the
 # projection could never have pre-applied it).
