@@ -9476,10 +9476,22 @@ implements.
     used — on a successful write, `issue-prioritised-skipped` with the same
     shape both when the ratchet declines a band that does not outrank the
     current one and when the current band cannot be ranked at all, and a
-    `warning` naming the repo, item and band when the field cannot be
-    resolved, no band on it is writable at all, the issue cannot be read, or
-    the mutation itself fails — never a `warning` for either ordinary skip,
-    which is the ratchet working as designed rather than a failure.
+    `warning` when the field cannot be resolved, no band on it is writable
+    at all, the issue cannot be read, or the mutation itself fails — never a
+    `warning` for either ordinary skip, which is the ratchet working as
+    designed rather than a failure. The warning always names the repo and
+    item, but which band(s) it names depends on which of the four failures
+    it is: `field-unresolvable` and `band-option-missing` are rejected
+    before any band is chosen, and `issue-unreadable` — though reached
+    after a fallback band has been picked — still never attempted a write,
+    so each names only the verdict's own band, the one thing there is to
+    name. `mutation-failed` is the one reason that can follow an actual,
+    possibly different, attempted write: when its result carries no
+    `requested` (no fallback ran) the warning is unchanged, naming that one
+    band; when it does carry `requested`, the warning names both the band
+    the failed mutation actually targeted and the band the verdict asked
+    for, since naming the requested band alone would blame a write that was
+    never attempted (agent-ops#551).
 
     `scripts/doctor.sh` warns, for every configured repository whose
     `sources` lists any of the four `issues:<band>` tokens, when its
@@ -12793,8 +12805,12 @@ pull request, run the ones the change touches and any it could regress.
     `needs_refinement` label and no assignment, with outcome
     `triage-only-refused` and a `warning`, while its band still applies; a
     failed band write is a `warning` that leaves the refinement or block
-    already recorded untouched, while an unrankable current band is not — it
-    logs `issue-prioritised-skipped` like any other ordinary skip; and
+    already recorded untouched — naming both the band actually attempted and
+    the band the verdict asked for when the failure followed a fallback, and
+    the verdict's own band alone when it did not (agent-ops#551) — while an
+    unrankable current band is not — it logs `issue-prioritised-skipped`
+    like any other ordinary skip, still carrying `requested` when a fallback
+    ran; and
     `DRY_RUN` reaches no `gh` call and writes no event at all —
     `maybe_run_refiner`'s own first guard already returns before any
     candidate is claimed. `scripts/gather-issues.sh`'s `priority_set` is
