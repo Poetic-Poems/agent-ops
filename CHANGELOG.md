@@ -263,6 +263,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   three failure reasons (`field-unresolvable`, `band-option-missing`,
   `issue-unreadable`), keep their existing wording unchanged, since nothing
   was attempted on those paths.
+- `refiner_filter_unbandable_triage`'s pre-flight (issue #542, the degenerate
+  case between #511 and #534) now also drops a repository's `triage_only`
+  candidates when its `Priority` field resolves cleanly but carries none of
+  `Urgent`/`High`/`Medium`/`Low` at all — an organisation that renamed every
+  option, e.g. to `P0`…`P3`. Previously such a repository passed the
+  pre-flight (its field *does* resolve), paid the Refiner's spend every
+  cycle, and then hit `issue_priority_apply`'s `band-option-missing` with
+  nothing to fall back to, leaving every `triage_only` issue in that
+  repository — not just those with one band missing — re-entering the
+  candidate set forever: #511's starvation shape again, at #511's own blast
+  radius. The new check reuses the field lookup the pre-flight already made
+  (`issue_priority_options_any`, `lib/issue-priority.sh`), so it costs no
+  additional GraphQL call, and logs a warning worded distinctly from the
+  existing "Priority field unresolvable" one. A repository missing only
+  *some* of the four names is unaffected — `issue_priority_apply`'s own
+  per-issue fallback (#534, above) still bands it.
 
 ### Changed
 

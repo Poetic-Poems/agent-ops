@@ -4888,30 +4888,43 @@ refiner_claim_key() {
 # issue #511): resolves, once per repository, the `Priority` field for every
 # repository contributing a `triage_only: true` candidate — a cycle with none
 # at all makes no query here — and drops that repository's `triage_only`
-# candidates when the field cannot be resolved, so the Refiner is never
-# engaged for a band it structurally cannot write. Every other candidate is
-# unaffected; when every contributing repository's field resolves, the input
-# is returned byte-identical.
+# candidates when the field cannot be resolved *or* resolves carrying none of
+# the four band names at all (agent-ops#542 — a repository that renamed every
+# option, e.g. to `P0`…`P3`; the narrower agent-ops#534 case, missing only
+# *some* of the four, is unaffected here and still reaches the Refiner, since
+# `issue_priority_apply`'s own fallback bands it), so the Refiner is never
+# engaged for a band it structurally cannot write either way. Every other
+# candidate is unaffected; when every contributing repository's field
+# resolves with at least one band option, the input is returned
+# byte-identical.
 #
 # `issue_priority_field_ids` (lib/issue-priority.sh) is itself cached per
 # repository for the life of this process (`ISSUE_PRIORITY_CACHE_DIR`),
 # including its own failure — so this call and `issue_priority_apply`'s own
 # later call inside `maybe_run_refiner` never resolve the same repository's
-# field twice. Guarded rather than let `set -euo pipefail` abort the cycle on
-# the field's own non-zero return.
+# field twice; the "no bands at all" check below reads the same field_json
+# this call already fetched rather than issuing a second GraphQL query.
+# Guarded rather than let `set -euo pipefail` abort the cycle on the field's
+# own non-zero return.
 refiner_filter_unbandable_triage() {
-  local candidates="${1:-[]}" triage_repos slug unresolvable='[]' counts count
+  local candidates="${1:-[]}" triage_repos slug unresolvable='[]' no_bands='[]' counts count
+  local field_json
   triage_repos="$(jq -r '[.[] | select(.triage_only == true) | (.repo // "")] | unique | .[]' \
     <<<"$candidates" 2>/dev/null || true)"
   [[ -n "$triage_repos" ]] || { printf '%s' "$candidates"; return 0; }
 
   while IFS= read -r slug; do
     [[ -n "$slug" ]] || continue
-    issue_priority_field_ids "$slug" >/dev/null 2>&1 \
-      || unresolvable="$(jq -c --arg s "$slug" '. + [$s]' <<<"$unresolvable" 2>/dev/null \
+    if field_json="$(issue_priority_field_ids "$slug" 2>/dev/null)"; then
+      issue_priority_options_any "$field_json" \
+        || no_bands="$(jq -c --arg s "$slug" '. + [$s]' <<<"$no_bands" 2>/dev/null \
+             || printf '%s' "$no_bands")"
+    else
+      unresolvable="$(jq -c --arg s "$slug" '. + [$s]' <<<"$unresolvable" 2>/dev/null \
            || printf '%s' "$unresolvable")"
+    fi
   done <<<"$triage_repos"
-  [[ "$unresolvable" != "[]" ]] || { printf '%s' "$candidates"; return 0; }
+  [[ "$unresolvable" != "[]" || "$no_bands" != "[]" ]] || { printf '%s' "$candidates"; return 0; }
 
   counts="$(jq -c '[.[] | select(.triage_only == true) | (.repo // "")] | group_by(.)
     | map({key: .[0], value: length}) | from_entries' <<<"$candidates" 2>/dev/null || printf '{}')"
@@ -4923,8 +4936,19 @@ refiner_filter_unbandable_triage() {
       --arg d "refiner: Priority field unresolvable for $slug — dropped $count band-only triage candidate(s)" \
       '{detail: $d, repo: $s, dropped: $n}')"
   done < <(jq -r '.[]' <<<"$unresolvable" 2>/dev/null || true)
+  while IFS= read -r slug; do
+    [[ -n "$slug" ]] || continue
+    count="$(jq -r --arg s "$slug" '.[$s] // 0' <<<"$counts" 2>/dev/null || printf 0)"
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    log_event "warning" "$(jq -nc --arg s "$slug" --argjson n "$count" \
+      --arg d "refiner: Priority field for $slug carries none of Urgent/High/Medium/Low — dropped $count band-only triage candidate(s)" \
+      '{detail: $d, repo: $s, dropped: $n}')"
+  done < <(jq -r '.[]' <<<"$no_bands" 2>/dev/null || true)
 
-  refiner_drop_unbandable_triage "$candidates" "$unresolvable"
+  local drop_slugs
+  drop_slugs="$(jq -c -n --argjson a "$unresolvable" --argjson b "$no_bands" '$a + $b' 2>/dev/null \
+    || printf '%s' "$unresolvable")"
+  refiner_drop_unbandable_triage "$candidates" "$drop_slugs"
 }
 
 # maybe_run_refiner CYCLE_EXIT_CODE
