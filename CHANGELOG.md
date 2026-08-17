@@ -63,6 +63,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   search now also excludes drafts server-side (`draft:false`), so a
   repository whose oldest page is entirely drafts still names its true
   oldest non-draft instead of reporting no backlog at all.
+- `lib/issue-priority.sh`'s field-resolution cache directory (issue #510) is
+  now removed by the process that created it, rather than left behind once
+  per sourcing process — a directory per cycle in a long-lived node
+  container, and one per `scripts/doctor.sh` run, which had no exit trap at
+  all. `issue_priority_cache_cleanup` is idempotent and removes only a
+  directory the library itself created, never a caller-supplied
+  `ISSUE_PRIORITY_CACHE_DIR`; `agent-cycle.sh` calls it from its `cleanup()`
+  EXIT trap, after the Refiner that is the cache's main consumer, and
+  `doctor.sh` from a new EXIT trap of its own.
 - The per-process fleet-flag memo (issue #502) is now keyed by mode as well
   as by flag and `state_dir`, so a default-mode `clear` answer can never be
   served to a later `probe-404` read of the same flag, and reads it into a
@@ -96,6 +105,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   now true whenever any option is set on the field, not only one of the four
   recognised names, so a fifth-band issue is no longer offered to the
   Refiner's triage duty as if nobody had triaged it.
+- A repository whose `Priority` field this token cannot resolve at all no
+  longer re-engages the Refiner forever for band-only (`triage_only`)
+  candidates it can never actually band (issue #511). A pre-flight
+  (`refiner_filter_unbandable_triage`, `agent-cycle.sh`) now resolves each
+  contributing repository's field once per cycle before any candidate is
+  claimed, drops that repository's `triage_only` candidates when the field
+  cannot be resolved — every other candidate, from that repository or any
+  other, is unaffected — and logs one `warning` per affected repository
+  naming it and how many candidates were dropped. Previously such a
+  repository's `triage_only` candidates re-entered the candidate set every
+  cycle with no possible progress, and `refiner_engagement_set`'s
+  alphabetical cap meant an early-sorting repository in this state could
+  fill the entire engagement set, starving refinement everywhere else.
+- `gather-issues.sh`'s `priority_set` (issue #527, a follow-up to #509/#522)
+  no longer reads `true` for a `Priority` field value that carries no
+  `single_select_option` at all — GitHub's field-value union also includes
+  text and date shapes, which an admin retyping the field can produce, and
+  the raw option name it contributed was `null` rather than nothing. Such an
+  issue read as triaged and never reached the Refiner's triage duty again;
+  it now agrees with `issue_priority_current`'s own verdict and reads
+  `priority_set: false`, same as an unset field.
 
 ### Changed
 

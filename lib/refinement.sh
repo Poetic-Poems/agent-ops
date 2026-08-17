@@ -659,6 +659,33 @@ refiner_candidate_items() {
   ' <<<"$docs" 2>/dev/null || printf '[]'
 }
 
+# refiner_drop_unbandable_triage CANDIDATES_JSON UNRESOLVABLE_SLUGS_JSON
+# Print CANDIDATES_JSON with every entry whose `triage_only` is `true` *and*
+# whose `repo` appears in UNRESOLVABLE_SLUGS_JSON (a JSON array of slugs)
+# removed, every other entry printed verbatim, order preserved (issue #511).
+# A `triage_only` entry exists solely to let the Refiner band an
+# already-refined issue (requirement 39g); when this token cannot resolve
+# that repository's `Priority` field at all, the band can never be written,
+# so the engagement it would cost has nothing it could achieve. Every other
+# candidate from the same repository — and every candidate, `triage_only` or
+# not, from a repository not named here — passes through unchanged.
+#
+# Pure and jq-only, so it is directly unit-testable; the live GraphQL check
+# that produces UNRESOLVABLE_SLUGS_JSON lives in the I/O wrapper beside it,
+# `refiner_filter_unbandable_triage` (agent-cycle.sh).
+#
+# Falls back to CANDIDATES_JSON unchanged on its own jq failure — never `[]`
+# — on the same "an unchanged set is today's behaviour for one cycle; an
+# empty one silently cancels every repository's refinement" terms as
+# agent-cycle.sh's own TD-PPagop-26081407 fallbacks.
+refiner_drop_unbandable_triage() {
+  local candidates="${1:-[]}" unresolvable="${2:-[]}"
+  jq -c --argjson u "$unresolvable" \
+    '[ .[] | . as $e | ($e.repo // "") as $r
+       | select((($e.triage_only == true) and (($u | index($r)) != null)) | not) ]' \
+    <<<"$candidates" 2>/dev/null || printf '%s' "$candidates"
+}
+
 # refiner_engagement_set CANDIDATES_JSON MAX
 # Reduce CANDIDATES_JSON to at most MAX entries, sorted by `repo`, `source`
 # then `item` — deterministic, so every node in the fleet reduces to the same
