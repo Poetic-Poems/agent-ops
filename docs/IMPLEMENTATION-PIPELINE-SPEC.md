@@ -9180,9 +9180,46 @@ implements.
     `label_own_actions_map`, `label_filter_own_applications` and
     `label_is_own_application` read it back: a label currently present on an
     issue is explained by this system's own hand, rather than a human's, when
-    the most recent `own-label-action` for that repo, item and label was an
-    `add` at or after GitHub's own record of when the label was last applied
-    (`gather-hand-flagged-refinements.sh`'s `labelled_at`).
+    an `own-label-action` `add` recorded for that repo, item and label falls
+    within `LABEL_OWN_SKEW_TOLERANCE_SECONDS` (120s) of GitHub's own record of
+    when the label was last applied (`gather-hand-flagged-refinements.sh`'s
+    `labelled_at`), in either direction — not only when ours is no later.
+
+    **The comparison tolerates clock skew and log propagation lag
+    (agent-ops#526).** A per-repo+item+label `own` record is no longer a
+    single latest action; `label_own_actions_map` also carries `adds`, every
+    recorded `add`'s own timestamp, because the *latest* recorded action can
+    be a `remove` that silently failed while an earlier `add` is still what
+    explains the label's presence (#526 cause 2 below). `lib/label-marker.sh`'s
+    `own_class` — one jq definition, embedded verbatim in every reader below
+    so none of them can drift into disagreeing — classifies each candidate
+    into exactly one of three states:
+
+    - **ours**: some recorded `add`'s timestamp falls within
+      `LABEL_OWN_SKEW_TOLERANCE_SECONDS` of `labelled_at`, whichever side of
+      it falls earlier. This is symmetric where the pre-#526 comparison was
+      not: a node whose clock runs *behind* GitHub's stamps its own `ts`
+      earlier than the `labelled_at` it caused, which the exact-order test
+      read as a human's later touch (#526's own measured skew: 13s ahead on
+      one node, 5+s behind on another — the direction that used to fail).
+    - **deferred**: no recorded `add` explains the label, but `labelled_at`
+      is newer than `LABEL_OWN_GRACE_SECONDS` (1800s) ago. An
+      `own-label-action` a peer node just wrote is not necessarily in this
+      node's union log yet — state-sync fetches peer logs on a periodic
+      cadence, not synchronously, and #526 measured roughly 12 minutes of
+      staleness against a ~6–7 minute fetch cadence — so absence this recent
+      does not yet mean a human. A deferred candidate is excluded from
+      *both* directions: not reported as a hand-flag, and not offered up for
+      the stale-removal retry below, since it is not proven to be this
+      system's own write either.
+    - **not-ours**: everything else — the pre-#526 fail-safe default, and
+      still the answer for an unreadable log, a malformed argument, or a
+      missing `labelled_at`.
+
+    Both constants are env-overridable (`LABEL_OWN_SKEW_TOLERANCE_SECONDS`,
+    `LABEL_OWN_GRACE_SECONDS`), the same convention every other pipeline
+    timing constant in this codebase follows, so a test can substitute a
+    value that reads clearly without touching production behaviour.
 
     This closes the gap requirement 34g's original design left: a block that
     cleared correctly but whose `needs_refinement_label` *removal* silently
@@ -9212,13 +9249,18 @@ implements.
     this file follows.
 
     **The read-back also retries the removal it just proved is stale.**
-    `lib/label-marker.sh`'s `label_own_stale_applications` takes the
-    candidates the filter drops — the ones this system's own last action
-    explains — and returns those of them with no block still open, reading
-    `lib/cycle-state.sh`'s `blocked_items` extract for the second test. It is
-    expressed in terms of `label_filter_own_applications` so the two cannot
-    disagree about whose hand a label is in. Both tests are load-bearing, and
-    the blocked one is what keeps this from undoing requirement 34e: the label
+    `lib/label-marker.sh`'s `label_own_stale_applications` takes exactly the
+    candidates `own_class` puts in the **ours** state — never **deferred**,
+    which is not yet proven to be this system's own write and so must not be
+    torn back off the issue by its own writer — and returns those of them
+    with no block still open, reading `lib/cycle-state.sh`'s `blocked_items`
+    extract for the second test. It shares `own_class` verbatim with
+    `label_filter_own_applications` rather than being expressed in terms of
+    it, because since #526 the filter's own kept set is not this function's
+    plain complement any more (the filter also excludes **deferred**
+    candidates) — sharing the one classification is what keeps the two from
+    disagreeing about whose hand a label is in. Both tests are load-bearing,
+    and the blocked one is what keeps this from undoing requirement 34e: the label
     the Script applies to an item it has just blocked is its own last action
     too, but while that block stands the label is the live projection of it
     onto the issue — the one thing telling a human reading it that the
@@ -12600,22 +12642,35 @@ pull request, run the ones the change touches and any it could regress.
     engagement that exits non-zero or returns an unparseable final message
     (its salvage resume also failing) records no verdict events at all,
     expires every claim, and still returns 0.
-39f. **Own-label-action memory stops a failed removal reopening a block
-    (requirement 39f).** `test/label-marker.test.sh` passes:
-    `label_own_actions_map` reduces to the latest action per repo+item+label;
-    `label_is_own_application` reads true only when the last recorded action was
-    an `add` at or before GitHub's own `labelled_at`, and false when a human's
-    later application, an empty own record, or an empty `labelled_at` leaves
-    nothing to attribute to the Script; `label_filter_own_applications` drops
-    exactly those candidates from a gathered list and preserves the rest
-    verbatim, dropping none when the own map is empty or malformed.
-    `label_own_stale_applications` given no open blocks is the exact
-    complement of `label_filter_own_applications` — every candidate the filter
-    keeps or drops is accounted for on the other side, never both — and given
+39f. **Own-label-action memory stops a failed removal reopening a block, and
+    tolerates clock skew and log propagation lag (requirement 39f;
+    agent-ops#526).** `test/label-marker.test.sh` passes:
+    `label_own_actions_map` reduces to the latest action per repo+item+label
+    plus `adds`, every recorded `add`'s own timestamp; `label_is_own_application`
+    reads true only when `own_class` classifies the candidate **ours** —
+    some recorded `add` within `LABEL_OWN_SKEW_TOLERANCE_SECONDS` of
+    `labelled_at`, in either direction, even when a later `remove` was also
+    recorded — and false for both **not-ours** (a human's later application,
+    an empty own record, or an empty `labelled_at`) and **deferred**
+    (`labelled_at` newer than `LABEL_OWN_GRACE_SECONDS` ago with no own
+    record yet); `label_filter_own_applications` drops exactly the **ours**
+    and **deferred** candidates from a gathered list, preserving the rest
+    verbatim, and drops none when the own map is empty or malformed.
+    `label_own_stale_applications` given no open blocks returns exactly the
+    **ours** set (never **deferred**, and never the same entries
+    `label_filter_own_applications` still reports as a hand-flag) — and given
     a blocked extract returns nothing for an item with a block still open, of
     any kind, in that same repo; it has nothing to retry when the own map is
     empty or malformed, or when the blocked extract is malformed, the safe
-    direction for a write. `test/needs-refinement.test.sh` passes cases built on the call
+    direction for a write. Three fixtures pin the cases #526 found the
+    pre-existing exact-order comparison missing: an `own.ts` recorded a few
+    seconds *behind* `labelled_at` (within tolerance) is still ours, an
+    `add` matching `labelled_at` followed by a later recorded `remove` is
+    still ours, and a label with no own record at all but `labelled_at`
+    inside the grace window is deferred — reported neither as a hand-flag
+    nor offered for stale removal — while the identical case past the grace
+    window still earns the pre-#526 hand-flag treatment (requirement 34g
+    unchanged). `test/needs-refinement.test.sh` passes cases built on the call
     site's own composition of the two: a hand-flag scan that finds the label
     still present after a simulated removal failure, with the own-action log
     showing the Script's own `add` and nothing since, does not manufacture a
@@ -12624,7 +12679,10 @@ pull request, run the ones the change touches and any it could regress.
     to retry once no block stands behind it — while a label a human applied
     after the Script's last action, one whose removal was recorded as having
     succeeded, and one whose own block is still open, all earn their existing
-    treatment and none is ever handed back to retry.
+    treatment and none is ever handed back to retry. A fourth fixture pins
+    the deferred case at the call site: a candidate labelled inside the grace
+    window with no own record earns no fresh block and is not offered back
+    for a stale-removal retry either.
 39g. **Priority triage bands correctly and never lowers a band
     (requirement 39g).** `test/refiner-priority-triage.test.sh` passes:
     `refiner_candidate_items` admits an already-refined `issues` entry only

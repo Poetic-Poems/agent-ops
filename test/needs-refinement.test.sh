@@ -644,6 +644,26 @@ assert_eq "a label still present after a *recorded* removal is not ours to expla
 assert_eq "  ... nor ours to retry removing — our last recorded action was the removal itself" "[]" \
   "$(label_own_stale_applications "$hand_flagged" "$(label_own_actions_map "needs-refinement" "$own_log")")"
 
+# #526: at the call site, an own-label-action record from a peer node has not
+# necessarily reached this node's union log yet (fleet state-sync runs on a
+# periodic cadence, not synchronously), so a label with no own record at all
+# is not safely read as a human's the instant it appears — only once it has
+# had a grace period to propagate. A candidate labelled inside that window,
+# with no own record, is deferred: the composition earns it no fresh block,
+# but it must not be retried for removal either, since it was never proven to
+# be this system's own write (a genuine, still-unpropagated write must not be
+# torn back off the issue by its own writer).
+grace_now="2026-08-17T09:00:00Z"
+recently_flagged='[{"repo": "o/r", "number": 52, "url": "https://github.com/o/r/issues/52",
+                     "label": "needs-refinement", "state": "open",
+                     "labelled_at": "2026-08-17T08:45:00Z", "by": "warwick"}]'
+no_own_map='{}'
+assert_eq "a recently hand-flagged issue with no own record yet earns no block — deferred, not yet attributable" \
+  "[]" "$(refinement_hand_flag_new \
+           "$(label_filter_own_applications "$recently_flagged" "$no_own_map" "$grace_now")" '[]')"
+assert_eq "  ... and is not offered up for a stale-removal retry either" "[]" \
+  "$(label_own_stale_applications "$recently_flagged" "$no_own_map" '[]' "$grace_now")"
+
 # The `cleared` half must never see the filtered list: it asks which issues
 # have *lost* the label, so an entry dropped for being our own would read
 # there as a label that had gone and unblock the item.
