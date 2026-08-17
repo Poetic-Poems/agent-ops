@@ -108,7 +108,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   appear at all. `scripts/publish-dashboard.sh`'s cost scan now reads each
   `modelUsage` entry's own `costUSD` and sums them independently per model,
   reproducing `total_cost_usd` to the cent; `by_day` and `by_actor` are
-  unaffected, still counting one row per transcript.
+  unaffected, still counting one row per transcript. `cost_rows[]` — which
+  the model/actor charts' own time-frame selector (issue #334) re-aggregates
+  client-side — now carries one row per (transcript × model) rather than one
+  per transcript, and without a way to tell those rows back apart the
+  windowed `by_actor` figure would have double-counted any transcript that
+  spent on two models; `cost_rows[]` rows now also carry the transcript's own
+  `cycle` id so the client can dedupe on it and count transcripts, not rows.
 
 ### Changed
 

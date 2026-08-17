@@ -795,10 +795,19 @@ done
 # without corrupting the totals that never depended on it.
 #
 # `cost_rows` (issue #334) is the per-(transcript × model) breakdown of this
-# same set, trimmed to {day, model, actor, usd} — un-summed, so the page can
-# re-aggregate the model/actor breakdowns over whatever time frame the reader
-# picks instead of only the whole COST_SCAN_DAYS window `by_day`/`by_model`/
-# `by_actor` are fixed to. `models[]` below is one entry per `modelUsage` key,
+# same set, trimmed to {day, model, actor, usd, cycle} — un-summed, so the
+# page can re-aggregate the model/actor breakdowns over whatever time frame
+# the reader picks instead of only the whole COST_SCAN_DAYS window
+# `by_day`/`by_model`/`by_actor` are fixed to. `cycle` carries the same
+# transcript's cost across the (possibly several) model rows it now
+# contributes: the model chart's windowed `n` wants a count of rows (one per
+# model a transcript touched, matching `by_model.n` below) but the actor
+# chart's wants a count of transcripts (one per `.out` file, matching
+# `by_actor.n` below) — without `cycle` the client cannot tell those two
+# counts apart once a transcript spans more than one model, and a reader who
+# narrows the time-frame selector would see an actor's "stage run(s)" figure
+# inflated by however many of its transcripts touched two models. `models[]`
+# below is one entry per `modelUsage` key,
 # each carrying that model's own `costUSD` (issue #536): a transcript's whole
 # `total_cost_usd` is not one model's spend, subagent calls routinely add a
 # second (typically a cheaper model dispatched inside the same invocation),
@@ -834,6 +843,7 @@ find "${cost_dirs[@]}" -name '*.out' -type f -print0 2>/dev/null | sort -z \
                else null end),
           cost: $total,
           models: $models,
+          cycle: $cid,
           actor: (if ($p[-3] // "") == "reviews" then "project-reviewer"
                   else ($p[-1] | rtrimstr(".out")) end)
         }' 2>/dev/null \
@@ -876,7 +886,7 @@ counts_json="$(jq -n --slurpfile cyc "$cycles_file" --slurpfile costs_in "$costs
     by_actor: ($costs | group_by(.actor) | map({actor: .[0].actor, usd: (map(.cost)|add), n: length})
                       | sort_by(-.usd)),
     recent_costs: ($costs | map(select(.ts != null and .ts >= $recent_cut)) | map({ts, cost})),
-    cost_rows: ([$costs[] | . as $c | $c.models[] | {day: $c.day, model: .model, actor: $c.actor, usd: .usd}])
+    cost_rows: ([$costs[] | . as $c | $c.models[] | {day: $c.day, model: .model, actor: $c.actor, usd: .usd, cycle: $c.cycle}])
   }')"
 
 # --- Co-Ordinator verdict quality (requirement 3w, issue #319) ----------------

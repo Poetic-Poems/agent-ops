@@ -761,16 +761,25 @@
   }
   // Mirrors the Publisher's own `group_by(...) | map(sum)` shape for
   // `by_model`/`by_actor` (`scripts/publish-dashboard.sh`), just run here
-  // against whatever slice of `cost_rows` the picked window selects.
+  // against whatever slice of `cost_rows` the picked window selects. `n`
+  // counts distinct `cycle` values within the group, not rows: a transcript
+  // that touched two models (issue #536) contributes one `cost_rows` entry
+  // per model, and for the model chart that is exactly the right count (one
+  // row per model a transcript touched, matching `by_model.n`) but for the
+  // actor chart it would double-count that transcript's single stage run —
+  // deduping by `cycle` gets both right from the same rows. A row from a
+  // payload shipped before `cycle` existed (or a fixture predating it) falls
+  // back to counting itself uniquely by its own index — the old, row-count
+  // behaviour — rather than every such row silently collapsing into one.
   function aggregateCostRows(rows, keyFn) {
-    var order = [], sums = Object.create(null), counts = Object.create(null);
-    rows.forEach(function (r) {
+    var order = [], sums = Object.create(null), ids = Object.create(null);
+    rows.forEach(function (r, i) {
       var k = keyFn(r);
-      if (!(k in sums)) { order.push(k); sums[k] = 0; counts[k] = 0; }
+      if (!(k in sums)) { order.push(k); sums[k] = 0; ids[k] = Object.create(null); }
       sums[k] += r.usd || 0;
-      counts[k] += 1;
+      ids[k][r.cycle != null ? ("c:" + r.cycle) : ("i:" + i)] = true;
     });
-    return order.map(function (k) { return {key: k, usd: sums[k], n: counts[k]}; })
+    return order.map(function (k) { return {key: k, usd: sums[k], n: Object.keys(ids[k]).length}; })
       .sort(function (a, b) { return b.usd - a.usd; });
   }
   // How many days of real history `cost_rows` actually spans, counted back

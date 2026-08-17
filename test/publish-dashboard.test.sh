@@ -221,6 +221,8 @@ assert_eq "cost_rows sums to the same total as spend_total_usd" \
   "1" "$(jq -r '[.counts.cost_rows[].usd] | add' <<<"$data")"
 assert_eq "each cost_rows entry carries day, model and actor" "3" \
   "$(jq -r '[.counts.cost_rows[] | select(.day != null and .model != null and .actor != null)] | length' <<<"$data")"
+assert_eq "and each carries the transcript's own cycle id too" "3" \
+  "$(jq -r '[.counts.cost_rows[] | select(.cycle != null)] | length' <<<"$data")"
 assert_eq "the cycle far outside COST_SCAN_DAYS is excluded from cost_rows too" \
   "0" "$(jq -r '[.counts.cost_rows[] | select(.model=="model-old")] | length' <<<"$data")"
 
@@ -258,6 +260,13 @@ assert_eq "a transcript with no readable modelUsage lands under unknown rather t
   "0.05" "$(jq -r '.counts.by_model[] | select(.model=="unknown") | .usd' <<<"$mdata")"
 assert_eq "cost_rows carries one row per (transcript × model): two for the split cycle, one for unknown" \
   "3" "$(jq -r '.counts.cost_rows | length' <<<"$mdata")"
+# The two rows a single transcript split into (issue #536) must carry that
+# transcript's one `cycle` id, not two — the model/actor time-frame
+# selector's client-side re-aggregation dedupes windowed `by_actor.n` on it,
+# and a mismatch here would silently double-count this transcript's one
+# stage run the moment a reader narrowed the window off "Lifetime".
+assert_eq "the split cycle's two rows share one cycle id" "1" \
+  "$(jq -r --arg cid "$mcid" '[.counts.cost_rows[] | select(.model=="claude-sonnet-5" or .model=="claude-haiku-4-5-20251001") | .cycle] | unique | map(select(. == $cid)) | length' <<<"$mdata")"
 assert_eq "by_day still counts transcripts, not model touches: two transcripts, not three" \
   "2" "$(jq -r --arg d "$today_day" '.counts.by_day[] | select(.day==$d) | .n' <<<"$mdata")"
 assert_eq "and by_day sums the same total_cost_usd either way" \
