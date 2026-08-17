@@ -5412,8 +5412,18 @@ implements.
     three** hold: no open PR uses it, no registry entry stands for it (only
     a clean 404 proves absence — any other failure skips the ref, fail
     closed), and its tip commit is older than `abandoned_draft_after_hours`
-    — the same judgement that makes a draft abandoned. For each orphan the
-    sweep restores a state the pipeline already handles: commits ahead of
+    — the same judgement that makes a draft abandoned — provided it is not
+    itself `reserve-tech-debt-id.pl`'s own reservation commit: a `td/<ID>`
+    branch whose sole commit ahead carries that script's fixed
+    `chore(tech-debt): reserve <ID>` subject and touches no files is the
+    ID-reservation scheme's atomic claim lock, not work — regardless of
+    whether `<ID>` has since been filed, and regardless of which branch any
+    such filing actually landed on, since recognising the lock by its
+    commit's own shape needs no lookup into that at all (issue #545). Such a
+    ref is swept as neither recovered nor deleted: the sweep leaves it
+    exactly as found, a spent lock cleared by hand once its ID's fate is
+    settled elsewhere. For each other orphan the sweep restores a state the
+    pipeline already handles: commits ahead of
     the default branch become a **draft PR** (labelled `pr_label`, so the
     abandoned-drafts machinery recovers the work exactly as it recovers any
     stalled draft; retried without the label, loudly, where the label is

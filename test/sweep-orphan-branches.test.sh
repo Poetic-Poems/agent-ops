@@ -395,6 +395,51 @@ assert_contains "and warns, naming the branch, rather than staying silent" \
 assert_not_contains "without ever asking GitHub for rivals at all" \
   "pulls?state=closed" "$calls"
 
+# --- Case 12: a pure ID-reservation lock is never swept (issue #545) -------------
+# reserve-tech-debt-id.pl pushes a `td/<ID>` branch with exactly one commit —
+# its own reservation, touching no files — before any work exists at all.
+# That is a lock, not orphaned work, whether or not <ID> has since been filed
+# (and regardless of which branch any such filing landed on: PR #523's real
+# instance had its item filed and merged entirely under a different branch),
+# so the sweep must neither recover it as a draft PR nor delete it as an
+# empty orphan.
+c="$tmp_dir/reservation-lock"; mkdir -p "$c"
+printf 'td/TD-PPagop-26081701\tsha-reservation\n' > "$c/refs-td_tsv"
+: > "$c/refs-agent_tsv"
+echo "$stale" > "$c/date-sha-reservation"
+jq -n '{ahead_by: 1, files: [],
+        commits: [{commit: {
+          message: "chore(tech-debt): reserve TD-PPagop-26081701\n\nReservation nonce: 1755391086-123-456789",
+          committer: {date: "2026-08-17T00:38:06Z"}}}]}' \
+  > "$c/compare-td_TD-PPagop-26081701.json"
+
+out="$(run_sweep "$c")"
+calls="$(cat "$c/calls.log")"
+assert_eq "a pure ID-reservation lock produces no action at all" "" "$out"
+assert_not_contains "so no recovery draft is ever opened for it" \
+  "pr create" "$(grep 'TD-PPagop-26081701' "$c/calls.log" || true)"
+assert_not_contains "and its ref is never deleted either" \
+  "api -X DELETE repos/x/y/git/refs/heads/td/TD-PPagop-26081701" "$calls"
+
+# --- Case 13: same shape, but real work — not a reservation lock -----------------
+# A single commit ahead is not on its own proof of a lock: the commit
+# message must actually match reserve-tech-debt-id.pl's own fixed subject.
+# An ordinary one-commit `td/` orphan with unrelated work is still recovered.
+c="$tmp_dir/one-commit-real-work"; mkdir -p "$c"
+printf 'td/TD-PPagop-26081702\tsha-real-work\n' > "$c/refs-td_tsv"
+: > "$c/refs-agent_tsv"
+echo "$stale" > "$c/date-sha-real-work"
+jq -n '{ahead_by: 1, files: ["tech-debt/TD-PPagop-26081702.md"],
+        commits: [{commit: {
+          message: "chore(tech-debt): file TD-PPagop-26081702",
+          committer: {date: "2026-08-17T00:38:06Z"}}}]}' \
+  > "$c/compare-td_TD-PPagop-26081702.json"
+
+out="$(run_sweep "$c")"
+assert_eq "a one-commit branch that is not the reservation itself is still recovered" \
+  "td/TD-PPagop-26081702" \
+  "$(jq -r 'select(.action == "recovered") | .branch' <<<"$out")"
+
 printf '\n'
 if (( failures )); then
   printf '%d assertion(s) failed\n' "$failures"
