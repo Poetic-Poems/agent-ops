@@ -650,13 +650,21 @@ log_event() {
     '{ts: $ts, cycle: $cycle, node: $node, event: $event} + $fields' >> "$log_file" || true
 }
 
-# void_obsolete_ctx_json REPO_SLUG
+# void_obsolete_ctx_json REPO_SLUG [FLAGS_JSON]
 # What every `void_guard_reason` call site (the Co-Ordinator, the Enabler, the
 # Implementor) hands it as CTX_JSON, so the machine `obsolete` alternative
 # (design doc §5.5, issue #413, WI-10) has what it needs without lib/void-
 # guard.sh ever touching config, the kill switch, or the log itself — that
 # file stays self-contained and stubbable with `gh` alone, exactly as its own
 # tests rely on.
+#
+# FLAGS_JSON is optional: a caller that already holds the current
+# `draft_obsolete_flags` result — `log_voided_items` below computes it once
+# per invocation and hands it to every entry in its loop — passes it straight
+# through, skipping the two full union-log `jq` scans a fresh call would
+# otherwise pay per entry. Every other call site is single-shot per cycle
+# (issue #508) and omits it, letting this function compute it itself exactly
+# as it always has.
 #
 # `${union_log:-$log_file}` rather than `$union_log` outright: this is called
 # from functions the Script may invoke before the fleet-wide union log is
@@ -666,11 +674,15 @@ log_event() {
 # invisible to a void decided that early, never a crash under `set -u`. A
 # `draft-obsolete-flagged` event is a fact, never retracted (lib/cycle-
 # state.sh's `draft_obsolete_flags`), so a flag missed this way is not lost —
-# it is simply not yet in whichever log this call happened to read.
+# it is simply not yet in whichever log this call happened to read. The same
+# reasoning is why the level read below is never hoisted alongside it, even
+# for the looped caller: it gates the *permissive* machine-`obsolete` path, so
+# it stays live, per entry (verdict recorded on #501; do not revisit without a
+# human decision).
 void_obsolete_ctx_json() {
-  local slug="$1" level flags_json
+  local slug="$1" flags_json="${2:-}" level
   level="$(merge_autonomy_effective_level "$DEFAULTED_CONFIG" "$slug" "$state_repo" "$state_dir" 2>/dev/null || true)"
-  flags_json="$(draft_obsolete_flags "${union_log:-$log_file}")"
+  [[ -n "$flags_json" ]] || flags_json="$(draft_obsolete_flags "${union_log:-$log_file}")"
   jq -nc --arg lvl "$level" --arg cycle "$cycle_id" --argjson now "$(date -u +%s)" --argjson flags "$flags_json" \
     '{merge_autonomy_level: $lvl, cycle: $cycle, now_epoch: $now, flags: $flags}'
 }
@@ -1983,8 +1995,17 @@ log_needs_refinement_items() {
 # a block, and either takes the item out of the next cycle's eligible set. An
 # entry naming no item is the one thing that records nothing, and it is the
 # one thing not collected.
+#
+# `flags_json` is read once, here, rather than once per entry inside the
+# loop below (issue #508): within one invocation the union log is a snapshot
+# already fixed before this function runs, so `draft_obsolete_flags` gives
+# the same answer on entry ten as it did on entry one — recomputing it per
+# entry paid two full log scans for a result that never changed. It is
+# handed to `void_obsolete_ctx_json` below, which still reads the kill-switch
+# level itself, live, per entry (see that function's own comment for why).
 log_voided_items() {
-  local wo="$1" repos="${2:-[]}" entry item repo reason refusal
+  local wo="$1" repos="${2:-[]}" entry item repo reason refusal flags_json
+  flags_json="$(draft_obsolete_flags "${union_log:-$log_file}")"
   coord_recorded_voided_json="[]"
   while IFS= read -r entry; do
     item="$(jq -r '.item // ""' <<<"$entry")"
@@ -1999,7 +2020,7 @@ log_voided_items() {
     coord_recorded_voided_json="$(jq -nc 'input as $arr | input as $e | $arr + [$e]' \
       <<<"$coord_recorded_voided_json"$'\n'"$entry")"
 
-    if refusal="$(void_guard_reason "$entry" "$repos" "$(void_obsolete_ctx_json "$repo")")"; then
+    if refusal="$(void_guard_reason "$entry" "$repos" "$(void_obsolete_ctx_json "$repo" "$flags_json")")"; then
       log_event "item-void" "$(item_event_fields "coordinator" "$reason" "$repo" "$item" \
         "$(jq -nc --arg e "$(void_entry_evidence "$entry")" '{evidence: $e}')")"
       # An item with no work needs no refinement either: the label goes, on the
