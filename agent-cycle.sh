@@ -3866,9 +3866,10 @@ _landing_refuse() {
 # `lib/review-gate.sh` established, because nothing this stage arms may
 # trust state more than one function call old:
 #
-#   1. `merge_autonomy_effective_level` — must still be `agent-merges-routine`
-#      or `agent-merges-all` (the kill switch or a budget freeze may have
-#      moved since the Approver ran).
+#   1. `merge_autonomy_effective_level`, called with `fresh` (issue #513) so
+#      the kill switch bypasses this process's own memo — must still be
+#      `agent-merges-routine` or `agent-merges-all` (the kill switch or a
+#      budget freeze may have moved since the Approver ran).
 #   2. `landing_eligible` (lib/landing.sh) — complexity, source and the
 #      protected-paths classifier.
 #   3. `review_gate_verdict` — must read `clean`; `dirty` and `unknown`
@@ -3912,7 +3913,12 @@ run_landing_stage() {
     return 0
   fi
 
-  level="$(merge_autonomy_effective_level "$DEFAULTED_CONFIG" "$slug" "$state_repo" "$state_dir")"
+  # `fresh` (issue #513, PR #506 review follow-up): this stage arms a real
+  # merge/enqueue under the level it reads, so an operator's mid-cycle kill
+  # must stop it here, not wait for the next cycle's process — see
+  # merge_autonomy_effective_level's own comment on FRESH, and
+  # run_approver_stage's identical read immediately before this one.
+  level="$(merge_autonomy_effective_level "$DEFAULTED_CONFIG" "$slug" "$state_repo" "$state_dir" fresh)"
   case "$level" in
     agent-merges-routine|agent-merges-all) ;;
     *)

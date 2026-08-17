@@ -4426,9 +4426,11 @@ implements.
    handoff, applied here because nothing that arms an automatic merge may
    trust state more than one function call old:
 
-   1. `merge_autonomy_effective_level` (`lib/merge-autonomy.sh`) — must
-      still be `agent-merges-routine` or `agent-merges-all`. The kill switch
-      or a WI-6 budget freeze may have moved since the Approver stage ran.
+   1. `merge_autonomy_effective_level` (`lib/merge-autonomy.sh`), called
+      with `FRESH` (issue #513) so the kill switch bypasses this process's
+      own memo — must still be `agent-merges-routine` or
+      `agent-merges-all`. The kill switch or a WI-6 budget freeze may have
+      moved since the Approver stage ran.
    2. `landing_eligible` (`lib/landing.sh`) — the deterministic classifier:
       `complexity:low`/`medium`, a `source` in this repository's own
       `merge_autonomy_routine_sources`, and `landing_protected_paths_hit`

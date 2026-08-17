@@ -127,7 +127,13 @@ mkdir -p "$state_dir"
 # --- Stubs: everything that reaches outside this process ----------------------
 log_event() { printf '%s\t%s\n' "$1" "$2" >>"$T/events"; }
 
-merge_autonomy_effective_level() { printf '%s' "$LEVEL"; }
+# Records its own argv (issue #513, PR #506 review follow-up) so a test can
+# confirm run_landing_stage asks for a FRESH read of the level rather than
+# the process-lifetime memo every advisory reader uses — this stage arms a
+# real merge/enqueue under the answer, so a kill set mid-cycle must stop it
+# at this stage boundary, not wait for the next cycle's process. The same
+# discipline test/approver-wiring.test.sh already pins for run_approver_stage.
+merge_autonomy_effective_level() { printf '%s\n' "$*" >>"$T/mal_calls"; printf '%s' "$LEVEL"; }
 
 landing_eligible() {
   printf '%s\n' "$*" >>"$T/eligible_args"
@@ -202,6 +208,7 @@ URL="https://github.com/Poetic-Poems/agent-ops/pull/512"
 run_case() {
   : >"$tmp_dir/events"; : >"$tmp_dir/arms"; : >"$tmp_dir/budget_applied"
   : >"$tmp_dir/reached"; : >"$tmp_dir/eligible_args"; : >"$tmp_dir/standing_args"
+  : >"$tmp_dir/mal_calls"
   rm -rf "${tmp_dir:?}/state"
   env -i PATH="$PATH" HOME="$HOME" \
     T="$tmp_dir" SCRIPT_DIR="$SCRIPT_DIR" PR_URL="$URL" COMPLEXITY="medium" \
@@ -215,6 +222,7 @@ run_case() {
 
 events() { cat "$tmp_dir/events"; }
 arms() { cat "$tmp_dir/arms"; }
+mal_calls() { cat "$tmp_dir/mal_calls"; }
 reached() { [[ -s "$tmp_dir/reached" ]] && printf 'yes' || printf 'no'; }
 count() { local f="$tmp_dir/$1"; [[ -s "$f" ]] && wc -l <"$f" | tr -d ' ' || printf '0'; }
 event_of() { grep -m1 "^$1"$'\t' "$tmp_dir/events" | cut -f2- || true; }
@@ -253,6 +261,10 @@ assert_eq "  ... and logs nothing at all" "0" "$(count events)"
 assert_eq "  ... returning 0" "0" "$rc"
 
 # --- Gate 1: the effective level, re-read fresh ------------------------------
+
+rc="$(run_case)"
+assert_eq "  ... asks merge_autonomy_effective_level for a FRESH read (issue #513)" \
+  "fresh" "$(mal_calls | awk '{print $NF}')"
 
 for level in human agent-approves; do
   rc="$(run_case LEVEL="$level")"
