@@ -9115,7 +9115,7 @@ implements.
     field failed, naming the repository and how many `triage_only`
     candidates it dropped — never one per dropped item. The pre-flight runs
     unconditionally, including under `--dry-run`: it is a read, and skipping
-    it there would make the dry-run fingerprint input (requirement 3z's own
+    it there would make the dry-run fingerprint input (requirement 3b's own
     `refiner_candidates_json`) differ from a live cycle's for no gain. No
     state persists between cycles — the day field visibility or organisation
     membership is fixed, triage resumes on its own with no operator action
