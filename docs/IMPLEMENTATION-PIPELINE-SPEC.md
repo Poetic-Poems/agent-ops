@@ -9125,8 +9125,8 @@ implements.
     `gather-source-state.sh`, whose REST `issue_field_values` parse both
     collapse anything outside the four names to their Medium default,
     `issue_priority_current` reads the raw option name whatever it is, so the
-    ratchet itself can tell "no band" (safe to write) from "a band it cannot
-    rank" (must not overwrite) apart. A band a human — or another engagement
+    ratchet itself can tell "no band" (safe to write) apart from "a band it
+    cannot rank" (must not overwrite). A band a human — or another engagement
     — set between this cycle's pre-fetch and this write is honoured, never
     clobbered by a stale read, and the verdict's band is applied via the
     GraphQL `setIssueFieldValue` mutation only when the issue currently
@@ -12423,9 +12423,8 @@ pull request, run the ones the change touches and any it could regress.
     asserted true for an issue banded outside the four names, with
     `priority` itself still reading Medium (`test/issues-prefetch.test.sh`).
     `scripts/doctor.sh`'s own gate is asserted against the four banded
-    `sources` tokens a valid
-    configuration actually carries, so the check cannot regress to one that
-    never runs.
+    `sources` tokens a valid configuration actually carries, so the check
+    cannot regress to one that never runs.
 11c. **A broken Enabler cannot break a cycle (requirement 37).** With a stubbed
     stage that times out, exits non-zero, or (after requirement 9e's salvage
     resume also fails to parse) returns prose instead of JSON: the

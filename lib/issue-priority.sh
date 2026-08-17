@@ -130,8 +130,8 @@ issue_priority_options_complete() {
 # the raw option name, whatever it is — unlike gather-issues.sh's own parse,
 # which collapses anything outside the four recognised names to its Medium
 # default, this read must see an org-added fifth option too, since
-# `issue_priority_apply` needs to tell "no band" (safe to write) from "a band
-# this ratchet cannot rank" (must not overwrite) apart; `issue_priority_rank`
+# `issue_priority_apply` needs to tell "no band" (safe to write) apart from "a
+# band this ratchet cannot rank" (must not overwrite); `issue_priority_rank`
 # already treats any unrecognised name as rank 0, so only the raw value needs
 # to travel through here. Prints nothing and returns 1 on any read failure.
 issue_priority_current() {
