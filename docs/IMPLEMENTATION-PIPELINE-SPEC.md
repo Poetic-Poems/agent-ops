@@ -11832,7 +11832,12 @@ pull request, run the ones the change touches and any it could regress.
    rival lookup also still yields the ordinary recovery draft, but with a
    `warning` naming the branch, distinct from the silent no-match case; and
    a backlog past the per-run cap acts on the cap's worth and reports the
-   remainder (`deferred`) rather than flooding or staying silent.
+   remainder (`deferred`) rather than flooding or staying silent; a `td/<ID>`
+   branch whose sole commit ahead is `reserve-tech-debt-id.pl`'s own
+   reservation commit (fixed subject, no files touched) yields no action at
+   all — neither a recovery draft nor a ref delete; and an ordinary
+   one-commit `td/` branch that is not that reservation shape is still
+   recovered normally (issue #545).
 7c. **Claim visibility is deterministic, both shapes and both directions
    (requirement 3o, issue #175).** `test/claim.test.sh`'s `claims`/`branches`
    section passes: a fresh branch claim's registry entry appears in `claims`'
