@@ -5177,11 +5177,13 @@ $(jq . <<<"$input")
       if [[ "$priority_applied" == "true" ]]; then
         log_event "issue-prioritised" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" --arg by "refiner" \
           --argjson x "$priority_result" \
-          '{repo: $r, item: $i, priority: $x.priority, previous: $x.previous, by: $by}')"
+          '{repo: $r, item: $i, priority: $x.priority, previous: $x.previous, by: $by}
+           + (if ($x.requested // null) != null then {requested: $x.requested} else {} end)')"
       elif [[ "$priority_reason" == "skipped-lower-or-equal" || "$priority_reason" == "skipped-unrankable" ]]; then
         log_event "issue-prioritised-skipped" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" --arg by "refiner" \
           --argjson x "$priority_result" \
-          '{repo: $r, item: $i, priority: $x.priority, previous: $x.previous, by: $by}')"
+          '{repo: $r, item: $i, priority: $x.priority, previous: $x.previous, by: $by}
+           + (if ($x.requested // null) != null then {requested: $x.requested} else {} end)')"
       else
         log_event "warning" "$(jq -nc \
           --arg d "refiner: could not set Priority on $e_repo#$e_number to $e_priority ($priority_reason) — the refinement verdict above is recorded either way" \

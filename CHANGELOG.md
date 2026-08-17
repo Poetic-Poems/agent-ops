@@ -158,6 +158,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   read as a human's, since the record may simply not have propagated over
   the fleet's periodic state-sync — neither reported as a hand-flag nor
   offered up for a stale-removal retry until the grace period passes.
+- `issue_priority_apply` (issue #534, a narrower follow-up to #511/#528) no
+  longer fails a band write outright when a repository's `Priority` field
+  resolves but is missing one or more of the four band options — previously
+  indistinguishable from a field that cannot be resolved at all
+  (`field-unresolvable`), which left the Refiner re-offered the same
+  unwritable band, and re-spent, on the same `triage_only` issue forever.
+  It now falls back to the nearest band the field actually has an option
+  for — preferring the next lower band, tying upward only when no lower
+  option exists at all — applies the ratchet against that band instead, and
+  names the band actually requested in a new `requested` field wherever it
+  differs. A field with none of the four names writable at all is reported
+  as a new, distinct reason, `band-option-missing`, rather than reusing
+  `field-unresolvable` for a different failure.
 
 ### Changed
 
