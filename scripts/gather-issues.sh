@@ -17,7 +17,8 @@
 #     "url": "https://github.com/…/issues/125",
 #     "title": "…",
 #     "priority": "Medium",          // the Priority band, default Medium (15e)
-#     "priority_set": false,         // true iff a real band was read, never the default (requirement 39g)
+#     "priority_set": false,         // true iff any option is set on the field, even one
+#                                     // outside the four recognised names (requirement 39g)
 #     "labels": ["…"],
 #     "author": "…",
 #     "created_at": "…", "updated_at": "…",
@@ -74,16 +75,21 @@
 # requirement 18a's re-check needs the issue's thread and `updated_at` in
 # front of it to decide whether fresh evidence unblocks it.
 #
-# The `Priority` band is read exactly as gather-source-state.sh reads it for
+# The `priority` field is read exactly as gather-source-state.sh reads it for
 # the fingerprint digest — same field, same four names, same Medium default —
 # because if the two disagreed, the digest would be stable while the
 # candidate set changed (or the reverse), which is the failure requirement 3b
 # exists to prevent. `priority_set` is this script's own addition, not
-# gather-source-state.sh's: `priority` alone collapses "unset", "unreadable"
-# and "explicitly Medium" into the same value (deliberately — it must agree
-# with the Co-Ordinator's own default), so the Refiner's triage candidate rule
+# gather-source-state.sh's, and reads the field more broadly than `priority`
+# does on purpose: `priority` alone collapses "unset", "unreadable" and
+# "explicitly Medium" into the same value (deliberately — it must agree with
+# the Co-Ordinator's own default), so the Refiner's triage candidate rule
 # (requirement 39g, `refiner_candidate_items`) needs this second boolean to
-# tell an untriaged issue from a deliberately-Medium one at all.
+# tell an untriaged issue from a deliberately-Medium one at all — and it must
+# be true for *any* option a human or agent chose, including one outside the
+# four names this pipeline ranks (an org admin can add a fifth at any time),
+# or that issue reads as untriaged forever and never leaves the triage queue
+# even once someone has banded it (agent-ops#509).
 #
 # ## Degrading, and the 100-item windows
 #
@@ -142,8 +148,10 @@ jq -e 'type == "array"' <<<"$issues_raw" >/dev/null 2>&1 \
 # since a PR was never a candidate issue to begin with; the assignees check
 # drops assigned issues (requirement 16.4's deterministic half — this also
 # covers the Enabler's escalation issues, which are always assigned); the
-# label check drops `blocked` whatever its case. The Priority parse mirrors
-# gather-source-state.sh verbatim.
+# label check drops `blocked` whatever its case. `priority`'s parse mirrors
+# gather-source-state.sh verbatim; `priority_set` reads the same field more
+# broadly, from the raw option names (`$priority_names`) rather than the
+# filtered `$priority_values`, so it is true for any option at all.
 #
 # `excluded` mirrors the same two drops, reason-tagged (agent-ops#447):
 # assigned wins the tag when an issue is somehow both assigned and
@@ -162,14 +170,14 @@ candidates="$(jq -c '
    | select(((.assignees // []) | length) == 0)
    | select(([.labels[]?.name | ascii_downcase] | index("blocked")) | not)
    | ([.issue_field_values[]? | select(.issue_field_name == "Priority")
-                              | .single_select_option.name
-                              | select(. == "Urgent" or . == "High"
-                                       or . == "Medium" or . == "Low")]) as $priority_values
+                              | .single_select_option.name]) as $priority_names
+   | ($priority_names | map(select(. == "Urgent" or . == "High"
+                                    or . == "Medium" or . == "Low"))) as $priority_values
    | {number: .number,
       url: .html_url,
       title: .title,
       priority: (($priority_values | first) // "Medium"),
-      priority_set: (($priority_values | length) > 0),
+      priority_set: (($priority_names | length) > 0),
       labels: ([.labels[]?.name] | sort),
       author: (.user.login // ""),
       created_at: .created_at,

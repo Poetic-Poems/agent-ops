@@ -135,7 +135,12 @@ cat >"$STUB_ISSUES" <<'EOF'
    "user": {"login": "warwick"}, "labels": [], "assignees": [],
    "created_at": "2026-07-19T08:00:00Z", "updated_at": "2026-07-20T09:00:00Z",
    "body": "No Priority field set.",
-   "issue_field_values": []}
+   "issue_field_values": []},
+  {"number": 11, "html_url": "https://github.com/o/r/issues/11", "title": "An org-added fifth band",
+   "user": {"login": "warwick"}, "labels": [], "assignees": [],
+   "created_at": "2026-07-19T08:00:00Z", "updated_at": "2026-07-20T09:00:00Z",
+   "body": "Banded Critical, an option this pipeline does not rank.",
+   "issue_field_values": [{"issue_field_name": "Priority", "single_select_option": {"name": "Critical"}}]}
 ]
 EOF
 cat >"$STUB_COMMENTS_DIR/5.json" <<'EOF'
@@ -150,8 +155,8 @@ candidates_json="$(jq -c '.candidates' <<<"$issues_json")"
 excluded_json="$(jq -c '.excluded' <<<"$issues_json")"
 
 # --- The filter: what arrives, and what never does ---
-assert_eq "exactly the two clean issues arrive" \
-  "2" "$(jq 'length' <<<"$candidates_json")"
+assert_eq "exactly the three clean issues arrive" \
+  "3" "$(jq 'length' <<<"$candidates_json")"
 assert_eq "the assigned issue is dropped" \
   "false" "$(jq 'any(.[]; .number == 6)' <<<"$candidates_json")"
 assert_eq "the Blocked-labelled issue is dropped, case notwithstanding" \
@@ -190,6 +195,18 @@ assert_eq "...but the Medium default carries priority_set false, distinguishing 
   "false" "$(jq -r '.priority_set' <<<"$entry9")"
 assert_eq "a commentless issue carries an empty comments array, not null" \
   "[]" "$(jq -c '.comments' <<<"$entry9")"
+
+# An org-added fifth band (agent-ops#509): the recognised-only `priority`
+# still reads Medium — it must agree with the Co-Ordinator's own default,
+# same as an unset field — but `priority_set` is true, since a human (or
+# agent) did choose something on the field. Conflating the two would leave
+# this issue looking untriaged to the Refiner's triage rule forever, even
+# once someone has banded it.
+entry11="$(jq -c '.[] | select(.number == 11)' <<<"$candidates_json")"
+assert_eq "a band outside the four names still reads Medium, not its own name" \
+  "Medium" "$(jq -r '.priority' <<<"$entry11")"
+assert_eq "...but priority_set is true — something was chosen, even if unrankable" \
+  "true" "$(jq -r '.priority_set' <<<"$entry11")"
 
 # --- The fingerprint moves when only a comment's text moves ---
 #

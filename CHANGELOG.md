@@ -66,6 +66,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and the fleet-strip badge already drew this distinction; the banner did
   not) — the bare command clears the fleet switch, not this node's own
   record, and would have left the node down after an operator followed it.
+- The Priority triage ratchet (requirement 39g) no longer overwrites a band
+  outside the four names it ranks (issue #509). `issue_priority_current` used
+  to parse only `Urgent`/`High`/`Medium`/`Low`, so an organisation-added
+  fifth option read back as no band at all and the ratchet's skip guard never
+  fired; it now reads the raw option name, and `issue_priority_apply` skips
+  such a band (`skipped-unrankable`, logged like any other ordinary skip)
+  instead of silently replacing it. `gather-issues.sh`'s `priority_set` is
+  now true whenever any option is set on the field, not only one of the four
+  recognised names, so a fifth-band issue is no longer offered to the
+  Refiner's triage duty as if nobody had triaged it.
 
 ### Changed
 

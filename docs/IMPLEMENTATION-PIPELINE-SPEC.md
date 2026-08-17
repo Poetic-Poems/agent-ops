@@ -9062,11 +9062,15 @@ implements.
     "unset", "unreadable" and "explicitly Medium" into the same value
     (deliberately, to agree with the Co-Ordinator's own default), so it
     emits a second field, `priority_set` (boolean), for exactly this duty to
-    read. `gather-source-state.sh`'s own digest keeps parsing the band
-    identically (requirement 3b) but does not gain `priority_set`: nothing
-    downstream of that digest needs it, since `maybe_run_refiner` below
-    engages from every cycle's own exit trap unconditionally on the no-op
-    fingerprint that digest feeds.
+    read — true whenever *any* option is set on the field, even one outside
+    the four names `priority` itself recognises (an organisation can add a
+    fifth at any time), so an issue banded with such an option reads as
+    triaged and never re-enters the triage queue on every pass
+    (agent-ops#509). `gather-source-state.sh`'s own digest keeps parsing the
+    band identically (requirement 3b) but does not gain `priority_set`:
+    nothing downstream of that digest needs it, since `maybe_run_refiner`
+    below engages from every cycle's own exit trap unconditionally on the
+    no-op fingerprint that digest feeds.
 
     An `issues` entry with `priority_set: false` is a Refiner candidate
     (requirement 39a) even when `refinements_map` already names it refined
@@ -9117,22 +9121,31 @@ implements.
     whose own variable writes never reach the parent; a file on disk
     survives that boundary where a shell variable cannot. `issue_priority_apply`
     then re-reads the issue's current band immediately before writing
-    (`issue_priority_current`, the same REST `issue_field_values` parse
-    `gather-issues.sh` and `gather-source-state.sh` use), so a band a human
-    — or another engagement — set between this cycle's pre-fetch and this
-    write is honoured, never clobbered by a stale read, and applies the
-    verdict's band via the GraphQL `setIssueFieldValue` mutation only when
-    the issue currently carries no band or the verdict's band strictly
-    outranks it (`Urgent > High > Medium > Low`); an equal or lower band is
-    skipped, not written.
+    (`issue_priority_current`) — unlike `gather-issues.sh` and
+    `gather-source-state.sh`, whose REST `issue_field_values` parse both
+    collapse anything outside the four names to their Medium default,
+    `issue_priority_current` reads the raw option name whatever it is, so the
+    ratchet itself can tell "no band" (safe to write) apart from "a band it
+    cannot rank" (must not overwrite). A band a human — or another engagement
+    — set between this cycle's pre-fetch and this write is honoured, never
+    clobbered by a stale read, and the verdict's band is applied via the
+    GraphQL `setIssueFieldValue` mutation only when the issue currently
+    carries no band or the verdict's band strictly outranks it
+    (`Urgent > High > Medium > Low`); an equal or lower band is skipped, not
+    written — and so is a band outside those four names, however clearly the
+    verdict's own band would otherwise outrank it: an organisation-added
+    option (agent-ops#509) has no rank this ratchet can compare against, and
+    treating "cannot rank" as "unset" would let this duty silently overwrite
+    a band a human just set, the one thing requirement 39g exists to prevent.
 
     Every outcome is logged: `issue-prioritised` `{repo, item, priority,
     previous, by: "refiner"}` on a successful write, `issue-prioritised-skipped`
-    with the same shape when the ratchet declines a band that does not
-    outrank the current one, and a `warning` naming the repo, item and band
-    when the field cannot be resolved, the issue cannot be read, or the
-    mutation itself fails — never a `warning` for an ordinary skip, which is
-    the ratchet working as designed rather than a failure.
+    with the same shape both when the ratchet declines a band that does not
+    outrank the current one and when the current band cannot be ranked at
+    all, and a `warning` naming the repo, item and band when the field
+    cannot be resolved, the issue cannot be read, or the mutation itself
+    fails — never a `warning` for either ordinary skip, which is the ratchet
+    working as designed rather than a failure.
 
     `scripts/doctor.sh` warns, for every configured repository whose
     `sources` lists any of the four `issues:<band>` tokens, when its
@@ -12386,7 +12399,11 @@ pull request, run the ones the change touches and any it could regress.
     `issue_priority_apply` re-reads the issue's current band immediately
     before writing, applies only when unset or strictly outranked by the
     verdict's own band, and skips — logged, not warned — an equal or lower
-    one, asserted from both directions; a field or issue read failure, and a
+    one, asserted from both directions; `issue_priority_current` itself
+    returns the raw option name unfiltered, and a current band outside the
+    four ranked names is skipped as `skipped-unrankable` — logged, not
+    warned, and never overwritten even by a verdict that would otherwise
+    strictly outrank it (agent-ops#509); a field or issue read failure, and a
     failed mutation, are each a distinct failure reason, never silently
     read as a skip. `maybe_run_refiner`'s wiring: an ordinary `refined`
     verdict carrying `priority` records both `item-refined` and
@@ -12398,12 +12415,16 @@ pull request, run the ones the change touches and any it could regress.
     `needs_refinement` label and no assignment, with outcome
     `triage-only-refused` and a `warning`, while its band still applies; a
     failed band write is a `warning` that leaves the refinement or block
-    already recorded untouched; and `DRY_RUN` reaches no `gh` call and
-    writes no event at all — `maybe_run_refiner`'s own first guard already
-    returns before any candidate is claimed. `scripts/doctor.sh`'s own gate
-    is asserted against the four banded `sources` tokens a valid
-    configuration actually carries, so the check cannot regress to one that
-    never runs.
+    already recorded untouched, while an unrankable current band is not — it
+    logs `issue-prioritised-skipped` like any other ordinary skip; and
+    `DRY_RUN` reaches no `gh` call and writes no event at all —
+    `maybe_run_refiner`'s own first guard already returns before any
+    candidate is claimed. `scripts/gather-issues.sh`'s `priority_set` is
+    asserted true for an issue banded outside the four names, with
+    `priority` itself still reading Medium (`test/issues-prefetch.test.sh`).
+    `scripts/doctor.sh`'s own gate is asserted against the four banded
+    `sources` tokens a valid configuration actually carries, so the check
+    cannot regress to one that never runs.
 11c. **A broken Enabler cannot break a cycle (requirement 37).** With a stubbed
     stage that times out, exits non-zero, or (after requirement 9e's salvage
     resume also fails to parse) returns prose instead of JSON: the

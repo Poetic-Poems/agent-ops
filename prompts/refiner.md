@@ -93,9 +93,11 @@ heading, the Script gives you one JSON object:
 - `triage_only` (issues only) is `true` when this item reached you solely
   because its `Priority` is unset — it is already refined, and you are not
   here to write it a second specification. See "Banding" below.
-- `entry.priority_set` (issues only) tells you whether `entry.priority`
-  reflects a real field value or is just the `Medium` default standing in for
-  "nobody has triaged this" — see "Banding".
+- `entry.priority_set` (issues only) is `true` when somebody has chosen an
+  option on the field at all — including one outside the four bands, which
+  `entry.priority` still reports as `Medium`; `false` means nobody has
+  triaged this issue and `entry.priority` is only the `Medium` default
+  standing in for that — see "Banding".
 
 ## What you are here to establish
 
