@@ -757,7 +757,7 @@ _handoff_complete_review_json() {
 #     issue and its body does not, or does not any longer.
 #   - `reconciliation.word` is `dirty` — a human posted a general PR comment
 #     since the pull request last left draft, and no pipeline comment since
-#     cites a `<!-- agent-ops:reconciles comment=<id> --> line naming it
+#     cites a `<!-- agent-ops:reconciles comment=<id> -->` line naming it
 #     (`lib/reconciliation-gate.sh`, agent-ops#533).
 #   - Neither gate found anything, but the flip itself did not take —
 #     `handoff` is `failed`. This is the one `safe: false` shape that still

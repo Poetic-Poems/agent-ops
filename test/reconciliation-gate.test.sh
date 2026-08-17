@@ -4,7 +4,7 @@
 # lib/reconciliation-gate.sh (requirement 31c, agent-ops#533): the pipeline-
 # side gate that refuses a draft-to-ready flip while a human's plain PR
 # comment, posted since the pull request last left draft, carries no
-# `<!-- agent-ops:reconciles comment=<id> --> line answering it.
+# `<!-- agent-ops:reconciles comment=<id> -->` line answering it.
 #
 # `gh` is stubbed through RECONCILIATION_GATE_GH, the same convention
 # test/closing-keyword-gate.test.sh's and test/review-gate.test.sh's stubs

@@ -8202,7 +8202,7 @@ if [[ "$rev_status" == "ready" ]]; then
       # Requirement 31c's reconciliation gate (agent-ops#533): a human posted
       # a general PR comment since this pull request last left draft, and no
       # pipeline comment since cites a `<!-- agent-ops:reconciles
-      # comment=<id> --> line naming it — a requested change silently
+      # comment=<id> -->` line naming it — a requested change silently
       # dropped rather than implemented or contested (PR #512).
       log_reviewer_handback \
         "the Reviewer reported ready, but $impl_pr_url is not safe to hand off: $rc_reason" \

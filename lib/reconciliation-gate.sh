@@ -120,7 +120,7 @@ _reconciliation_gate_comments() {
 # reports, so a caller can fold it into the same handoff gate.
 #   clean    every non-pipeline (human) comment posted since the pull request
 #             last left draft is reconciled — cited by a
-#             `<!-- agent-ops:reconciles comment=<id> --> line in some
+#             `<!-- agent-ops:reconciles comment=<id> -->` line in some
 #             pipeline comment since — or there were none.
 #   dirty    at least one human comment posted since then carries no such
 #             citation: a requested change silently dropped rather than
