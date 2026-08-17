@@ -3999,13 +3999,24 @@ run_landing_stage() {
     return 0
   fi
 
-  local token method
+  local token method arm_rc=0
   if ! token="$(approver_token_get "")"; then
     _landing_refuse "$pr_url" "$slug" "could not mint the Approver's installation token"
     return 0
   fi
-  if ! method="$(landing_arm "$slug" "$number" "$token")" || [[ -z "$method" ]]; then
-    _landing_refuse "$pr_url" "$slug" "landing_arm could not enqueue or auto-merge $pr_url"
+  # Captured with `|| arm_rc=$?` rather than a bare `if ! …; then`, matching
+  # `review_gate_verdict`'s own capture above: `landing_arm`'s exit status is
+  # itself the signal (agent-ops#532, see its own header) — a bare `if !`
+  # would still branch correctly but discard the very code
+  # `_landing_arm_failure_reason` needs to say which step failed.
+  method="$(landing_arm "$slug" "$number" "$token")" || arm_rc=$?
+  if (( arm_rc != 0 )); then
+    _landing_refuse "$pr_url" "$slug" \
+      "landing_arm could not enqueue or auto-merge $pr_url: $(_landing_arm_failure_reason "$arm_rc")"
+    return 0
+  fi
+  if [[ -z "$method" ]]; then
+    _landing_refuse "$pr_url" "$slug" "landing_arm could not enqueue or auto-merge $pr_url: printed no method despite exiting 0"
     return 0
   fi
 

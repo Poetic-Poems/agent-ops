@@ -110,6 +110,15 @@ cat >"$tmp_dir/harness.sh" <<'HARNESS'
 # for why the whole point of this harness is that they are not relaxed.
 set -euo pipefail
 
+# `run_landing_stage` calls `_landing_arm_failure_reason` (agent-ops#532) to
+# turn a failed `landing_arm`'s exit status into text for the
+# `landing-refused` reason — the real function, not a stub, since it is a
+# small pure mapping test/landing.test.sh already pins directly and this
+# harness only needs it present, not faked. `landing_arm` itself is stubbed
+# below, overriding lib/landing.sh's own definition.
+# shellcheck source=lib/landing.sh
+source "$SCRIPT_DIR/lib/landing.sh"
+
 # --- Cycle globals the block reads -------------------------------------------
 selected_repo="Poetic-Poems/agent-ops"
 selected_source="tech-debt"
@@ -391,6 +400,14 @@ assert_eq "  ... returning 0" "0" "$rc"
 rc="$(run_case ARM_RC="1")"
 assert_eq "a refused enqueue logs no landing-armed" "" "$(event_of landing-armed)"
 assert_contains "  ... refusing by name" "could not enqueue or auto-merge" "$(refusal)"
+assert_eq "  ... returning 0" "0" "$rc"
+
+# landing_arm's own exit status distinguishes which step failed
+# (agent-ops#532) — the refusal must carry that specific reason, not only the
+# generic "could not enqueue or auto-merge" every code shares.
+rc="$(run_case ARM_RC="6")"
+assert_contains "  ... naming the specific step landing_arm's own exit status identifies" \
+  "the enqueue mutation reported no merge-queue entry (a partial write)" "$(refusal)"
 assert_eq "  ... returning 0" "0" "$rc"
 
 rc="$(run_case ARM_METHOD="")"

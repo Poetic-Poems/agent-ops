@@ -27,7 +27,9 @@
 #     `gh pr merge --auto --squash`; both write under GH_TOKEN for that one
 #     invocation only; an unreadable pull request, an unreadable queue
 #     probe, a refused mutation or a refused merge each return non-zero
-#     printing nothing; bad arguments are rejected before any gh call.
+#     printing nothing, each with its own distinguishable exit status
+#     (agent-ops#532); bad arguments are rejected before any gh call.
+#     `_landing_arm_failure_reason` is pinned directly for every code it maps.
 #
 # No test framework is used (none exists elsewhere in this repo). Run
 # directly:
@@ -358,19 +360,19 @@ assert_eq "  ... and enqueuePullRequest was never called" "" "$(cat "$enqueue_ca
 
 : > "$fixtures/pr-fail"
 out="$(landing_arm acme/widgets 12 a-token)"; rc=$?
-assert_eq "an unreadable pull request (node id / base): non-zero, nothing printed" "1" "$rc"
+assert_eq "an unreadable pull request (node id / base): non-zero, nothing printed" "2" "$rc"
 assert_eq "  ... nothing printed" "" "$out"
 rm -f "$fixtures/pr-fail"
 
 : > "$fixtures/queue-fail"
 out="$(landing_arm acme/widgets 12 a-token)"; rc=$?
-assert_eq "an unreadable merge-queue probe: non-zero, nothing printed" "1" "$rc"
+assert_eq "an unreadable merge-queue probe: non-zero, nothing printed" "4" "$rc"
 rm -f "$fixtures/queue-fail"
 
 queue '{"id":"MQ_fake"}'
 : > "$fixtures/enqueue-fail"
 out="$(landing_arm acme/widgets 12 a-token)"; rc=$?
-assert_eq "a refused enqueue mutation: non-zero, nothing printed" "1" "$rc"
+assert_eq "a refused enqueue mutation: non-zero, nothing printed" "5" "$rc"
 rm -f "$fixtures/enqueue-fail"
 
 # A mutation that succeeds at the transport level but carries no merge-queue
@@ -379,14 +381,14 @@ rm -f "$fixtures/enqueue-fail"
 queue '{"id":"MQ_fake"}'
 echo '{"data":{"enqueuePullRequest":{"mergeQueueEntry":null}}}' > "$fixtures/enqueue-response.json"
 out="$(landing_arm acme/widgets 12 a-token)"; rc=$?
-assert_eq "an enqueue that returned no merge-queue entry: non-zero" "1" "$rc"
+assert_eq "an enqueue that returned no merge-queue entry: non-zero" "6" "$rc"
 assert_eq "  ... nothing printed — never a landing-armed naming a queue entry that does not exist" "" "$out"
 echo '{"data":{"enqueuePullRequest":{"mergeQueueEntry":{"id":"MQE_fake"}}}}' > "$fixtures/enqueue-response.json"
 
 queue 'null'
 : > "$fixtures/merge-fail"
 out="$(landing_arm acme/widgets 12 a-token)"; rc=$?
-assert_eq "a refused gh pr merge: non-zero, nothing printed" "1" "$rc"
+assert_eq "a refused gh pr merge: non-zero, nothing printed" "7" "$rc"
 rm -f "$fixtures/merge-fail"
 
 out="$(landing_arm "" 12 a-token)"; rc=$?
@@ -395,6 +397,27 @@ out="$(landing_arm acme/widgets abc a-token)"; rc=$?
 assert_eq "a non-numeric number is rejected before calling gh" "1" "$rc"
 out="$(landing_arm acme/widgets 12 "")"; rc=$?
 assert_eq "an empty token is rejected before calling gh" "1" "$rc"
+
+# --- _landing_arm_failure_reason (agent-ops#532) -----------------------------
+# Pinned directly so the mapping cannot drift from landing_arm's own return
+# statements without a test noticing — one assertion per documented code,
+# plus the unrecognised-code fallback.
+assert_eq "code 1 names bad arguments" \
+  "bad arguments (missing slug, pull request number or token)" "$(_landing_arm_failure_reason 1)"
+assert_eq "code 2 names the unreadable pull request read" \
+  "could not read the pull request's own node id and base branch" "$(_landing_arm_failure_reason 2)"
+assert_eq "code 3 names the missing node id / base branch" \
+  "the pull request read reported no node id or no base branch" "$(_landing_arm_failure_reason 3)"
+assert_eq "code 4 names the unreadable merge-queue state" \
+  "could not read the base branch's merge-queue state" "$(_landing_arm_failure_reason 4)"
+assert_eq "code 5 names the failed enqueue mutation" \
+  "the enqueue mutation itself failed" "$(_landing_arm_failure_reason 5)"
+assert_eq "code 6 names the partial enqueue write" \
+  "the enqueue mutation reported no merge-queue entry (a partial write)" "$(_landing_arm_failure_reason 6)"
+assert_eq "code 7 names the failed gh pr merge" \
+  "gh pr merge --auto --squash failed" "$(_landing_arm_failure_reason 7)"
+assert_eq "an unrecognised code still names itself rather than nothing" \
+  "exited 99" "$(_landing_arm_failure_reason 99)"
 
 echo
 if (( failures == 0 )); then

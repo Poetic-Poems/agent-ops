@@ -644,7 +644,7 @@ and the schema must carry every one of them.
 | `abandoned_draft_after_hours` | 4 h | How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case...[continued below](#extended-notes-abandoned_draft_after_hours) |
 | `human_nudge_idle_hours` | 24 h | Hours an approved, mergeable, CI-green pull request this system raised may sit idle before `scripts/sweep-human-visibility.sh` posts a one-time nudge comment naming `enabler_assignee` (requirement 38c). `0` disables the nudge only — the sweep's self-healing review request (requirement 38a) is unconditional. poetic-fiddle #170 sat approved and green for 6.8 days with nothing asking anyone to look; this is the backstop for whatever the live review request itself does not catch. |
 | `merge_queue_dequeue_notice_max_age_hours` | 24 h | Hours a merge-queue-dequeue notice (requirement 38f) may still fire for after `dequeued_at`, so a removal event that predates this feature (or this repository's queue adoption) is not read as fresh news merely because a sweep is only now seeing it. agent-ops#394, tech-debt/TD-PPagop-26081409.md. `0` disables the notice outright (agent-ops#429), guarded explicitly rather than left to the arithmetic threshold this bounds, since a repository with no merge queue should express...[continued below](#extended-notes-merge_queue_dequeue_notice_max_age_hours) |
-| `merge_autonomy` | `human` | The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id` or no `approver_model_default`, and a level of `agent-merges-routine` or above while the repository's own default-branch ruleset still requires code-owner review...[continued below](#extended-notes-merge_autonomy) |
+| `merge_autonomy` | `human` | The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id` or no `approver_model_default`, a level of `agent-merges-routine` or above while the repository's own default-branch ruleset still requires code-owner review...[continued below](#extended-notes-merge_autonomy) |
 | `merge_budget_per_day` | `8` | D18's spend governor (§5.4, `lib/merge-budget.sh`, requirement 2.3c): a rolling-24-hour cap on pull requests this pipeline may land in one repository, fleet-wide default; a `repos[]` entry's own `merge_budget_per_day` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). `0` means unlimited and skips the count entirely. `merge_budget_decide` answers `arm` (under cap), `hold` (cap reached — approved but not armed, the backlog visible) or...[continued below](#extended-notes-merge_budget_per_day) |
 | `merge_autonomy_routine_sources` | `["register-hygiene", "tech-debt"]` | D18 WI-7 (requirement 8d, `lib/landing.sh`'s `landing_eligible`): which work sources may be armed automatically at `agent-merges-routine` and above, fleet-wide default; a `repos[]` entry's own `merge_autonomy_routine_sources` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). An eligible pull request also needs `complexity:low`/`medium` and `landing_protected_paths_hit` to report no protected path touched. Matched against a pull...[continued below](#extended-notes-merge_autonomy_routine_sources) |
 | `approver_app_id` | *(unset)* | The Approver GitHub App's id for this installation (§5.3) — required for any `merge_autonomy` level above `human`, and reconciled by `scripts/doctor.sh` against the `PULLWRIGHT_APPROVER_APP_ID` environment the token wrapper (requirement 14b) mints from: a set pair that differs is a doctor `fail`. Deliberately one fleet-wide scalar string with no per-repo override — see the Design decisions entry on this key's shape. |
@@ -770,7 +770,7 @@ Hours a merge-queue-dequeue notice (requirement 38f) may still fire for after `d
 
 ### Extended notes: `merge_autonomy`
 
-The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id` or no `approver_model_default`, and a level of `agent-merges-routine` or above while the repository's own default-branch ruleset still requires code-owner review (§5.3). At `agent-approves` and above the Approver stage (requirements 8b/8c, "### The Approver") reviews and posts a real GitHub review; a human still lands every pull request at `agent-approves`. At `agent-merges-routine`/`agent-merges-all` the arming step (requirement 8d, `lib/landing.sh`) lands an eligible pull request itself. The fleet-wide kill switch (requirement 2.3b) forces the effective level to `human` everywhere independent of this key.
+The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id` or no `approver_model_default`, a level of `agent-merges-routine` or above while the repository's own default-branch ruleset still requires code-owner review (§5.3), and a level of `agent-merges-routine` or above with no active merge queue on the default branch while either `allow_auto_merge` or `allow_squash_merge` is off (agent-ops#532) — `landing_arm`'s no-queue fallback, `gh pr merge --auto --squash`, is a call GitHub refuses outright unless both are enabled. At `agent-approves` and above the Approver stage (requirements 8b/8c, "### The Approver") reviews and posts a real GitHub review; a human still lands every pull request at `agent-approves`. At `agent-merges-routine`/`agent-merges-all` the arming step (requirement 8d, `lib/landing.sh`) lands an eligible pull request itself. The fleet-wide kill switch (requirement 2.3b) forces the effective level to `human` everywhere independent of this key.
 
 ### Extended notes: `merge_budget_per_day`
 
@@ -6585,7 +6585,14 @@ implements.
     unreadable review gate, a standing human `CHANGES_REQUESTED`, an
     unreadable merge budget or App login, an already-queued or unreadable
     merge-queue probe, an unreadable token mint, or `landing_arm` itself
-    refusing). A `merge_budget_decide` result of `hold` or `refuse` reached
+    refusing). `landing_arm`'s own refusal names which of its steps failed —
+    the pull request read, the merge-queue read, the enqueue mutation (a
+    transport failure or a partial write reporting no queue entry), or the
+    fallback `gh pr merge --auto --squash` — read off its exit status by
+    `_landing_arm_failure_reason` (`lib/landing.sh`, agent-ops#532) rather
+    than left as one bare "could not enqueue or auto-merge" every one of
+    those otherwise shared. A `merge_budget_decide` result of `hold` or
+    `refuse` reached
     from the arming step logs through `merge_budget_apply_decision` exactly
     as it always has (above), not `landing-refused` — the two vocabularies
     do not overlap, so a reader scanning for either finds every refusal
@@ -13305,7 +13312,12 @@ pull request, run the ones the change touches and any it could regress.
     --auto --squash` when it reports none, issues either write with
     `GH_TOKEN` set for that one invocation only, and returns non-zero
     printing nothing when the pull request's own details, the queue probe,
-    the mutation or the merge itself cannot be confirmed.
+    the mutation or the merge itself cannot be confirmed — each of those
+    four (plus bad arguments and the mutation's own partial-write case) its
+    own distinguishable exit status (agent-ops#532), pinned directly in
+    `test/landing.test.sh` together with `_landing_arm_failure_reason`'s
+    mapping from each one to the text `run_landing_stage` folds into its
+    `landing-refused` reason.
     `test/merge-queue.test.sh` covers `merge_queue_for_branch` the same way
     `merge_queue_probe` is already covered: the literal `null` for no
     queue, the queue object verbatim when one exists, and non-zero on an
@@ -13340,6 +13352,25 @@ pull request, run the ones the change touches and any it could regress.
     blocked pull request or a withheld claim. `scripts/doctor.sh` warns when
     a repository's effective `merge_autonomy_routine_sources` names a source
     that repository's own `sources` never gathers (`test/doctor.test.sh`).
+    `scripts/doctor.sh` also fails, for every repository at
+    `agent-merges-routine` or above (its own *configured* level), a default
+    branch with no active merge queue while either `allow_auto_merge` or
+    `allow_squash_merge` is off (agent-ops#532) — `landing_arm`'s no-queue
+    fallback is `gh pr merge --auto --squash`, a call GitHub refuses
+    outright unless both are enabled — reading `repos/$slug` and
+    `merge_queue_for_branch` once each per repository and naming in the
+    failure which of the two is off together with both fixes (enable it or
+    adopt a merge queue); an active queue is `ok` regardless of either
+    setting, an unreadable repository, an unreadable merge-queue state, and
+    a `repos/$slug` that reports neither key or only one of them (GitHub
+    returns both only to a token with admin visibility of the repository's
+    merge settings) are each a `skip` naming whichever went unreported, and
+    a repository below the routine tier is left silent. A setting read as a
+    definite `false` decides the verdict before the unreported case is
+    considered, so an unreadable sibling never masks one doctor did read as
+    off. The `ok` states only the settings actually read, since they are a
+    necessary condition for that call rather than a sufficient one
+    (`test/doctor.test.sh`).
     `./scripts/render-config-table.sh --check`, `./scripts/lint-shell.sh`
     and `perl scripts/td-check.pl` are clean.
 
