@@ -358,7 +358,14 @@ landing_arm() {
       -f query='mutation($id:ID!){enqueuePullRequest(input:{pullRequestId:$id}){mergeQueueEntry{id}}}' \
       -f id="$node_id" \
       --jq '.data.enqueuePullRequest.mergeQueueEntry.id' 2>/dev/null)" || return 1
-    [[ -n "$mutate_out" ]] || return 1
+    # `null` as well as empty: `--jq` prints a JSON null as the four-character
+    # word `null`, so a mutation that returned no `mergeQueueEntry` at all —
+    # `enqueuePullRequest` reports one as nullable, and GitHub does not
+    # always accompany that with a GraphQL error `gh` would exit non-zero on
+    # — would otherwise pass the `-n` test and be logged `landing-armed`
+    # naming a queue entry that does not exist. Exactly the "a partial write
+    # this function cannot vouch for" case the header promises to refuse.
+    [[ -n "$mutate_out" && "$mutate_out" != "null" ]] || return 1
     printf 'enqueued'
     return 0
   fi

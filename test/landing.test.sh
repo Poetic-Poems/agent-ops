@@ -348,6 +348,16 @@ out="$(landing_arm acme/widgets 12 a-token)"; rc=$?
 assert_eq "a refused enqueue mutation: non-zero, nothing printed" "1" "$rc"
 rm -f "$fixtures/enqueue-fail"
 
+# A mutation that succeeds at the transport level but carries no merge-queue
+# entry: `--jq` prints the word `null`, which must never be read as a queue
+# entry the way a non-empty string otherwise would.
+queue '{"id":"MQ_fake"}'
+echo '{"data":{"enqueuePullRequest":{"mergeQueueEntry":null}}}' > "$fixtures/enqueue-response.json"
+out="$(landing_arm acme/widgets 12 a-token)"; rc=$?
+assert_eq "an enqueue that returned no merge-queue entry: non-zero" "1" "$rc"
+assert_eq "  ... nothing printed — never a landing-armed naming a queue entry that does not exist" "" "$out"
+echo '{"data":{"enqueuePullRequest":{"mergeQueueEntry":{"id":"MQE_fake"}}}}' > "$fixtures/enqueue-response.json"
+
 queue 'null'
 : > "$fixtures/merge-fail"
 out="$(landing_arm acme/widgets 12 a-token)"; rc=$?
