@@ -55,6 +55,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `scripts/doctor.sh` now checks that a repository configured at
+  `merge_autonomy: agent-merges-routine` or above can actually land a pull
+  request the way `landing_arm` would (agent-ops#532): where its default
+  branch carries no merge queue, the arming step falls back to `gh pr merge
+  --auto --squash`, a call GitHub refuses outright when the repository's own
+  `allow_auto_merge` is off — a setting nothing in `merge_autonomy`'s own
+  validation looked at, so the combination passed every gate, reached the one
+  write, and failed it on every otherwise-eligible pull request indefinitely.
+  The check `fail`s that pairing naming both fixes (enable `allow_auto_merge`,
+  or adopt a merge queue), is `ok` for an active queue regardless of
+  `allow_auto_merge`, `skip`s whatever it cannot read — including a
+  `repos/{slug}` that returns no `allow_auto_merge` at all, the key GitHub
+  withholds from a token without admin visibility of the repository's merge
+  settings — and stays silent below the routine tier. `--offline` skips it
+  with the rest of the GitHub section.
+- `landing_arm` (`lib/landing.sh`) now returns a distinguishable exit status
+  for each of its own failure points rather than a bare non-zero, and
+  `run_landing_stage` folds `_landing_arm_failure_reason`'s text into its
+  `landing-refused` reason — so the log names which step failed (the pull
+  request read, the merge-queue read, the enqueue mutation, its partial-write
+  case, or the fallback merge) instead of one generic "could not enqueue or
+  auto-merge" shared by all of them.
 - `merge_budget_oldest_waiting`'s `waiting_backlog` (the pull request a
   `merge-budget-hold` event names as the one waiting longest) now sorts
   GitHub's own listing oldest-first before paging, so a repository with more
