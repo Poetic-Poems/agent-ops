@@ -8774,10 +8774,17 @@ implements.
     38b and 36a cover remains requirement 38d's own, deliberate, scope limit.
 
 38f. **Merge-queue awareness (D17).** Where a target repository has a GitHub
-    merge queue enabled, enqueueing is the human's own merge click ("Merge
-    when ready", D17) and the actual merge lands minutes later, asynchronously,
-    once the merge group's own checks pass — or never, if the queue dequeues
-    the pull request. Neither `isInMergeQueue` (is it queued right now) nor a
+    merge queue enabled, enqueueing is the merge act itself, and the actual
+    merge lands minutes later, asynchronously, once the merge group's own
+    checks pass — or never, if the queue dequeues the pull request. Below
+    `agent-merges-routine` on D18's ladder that act is the human's own merge
+    click ("Merge when ready", D17) and nothing in this pipeline enqueues;
+    at or above it, requirement 8d's arming step enqueues under the Approver
+    App's own identity once every gate it re-reads has cleared. Everything
+    this requirement says below holds whichever of the two put the pull
+    request in the queue: a queue entry is a landing in progress, and the
+    one direction a wrong guess costs anything — a push evicting it — is
+    the same either way. Neither `isInMergeQueue` (is it queued right now) nor a
     dequeue is exposed by `gh pr list`/`gh pr view --json` (verified against gh
     2.97.0), so `lib/merge-queue.sh`'s `merge_queue_probe` runs a dedicated
     GraphQL query instead — verified live against GitHub's own schema, via
@@ -13319,8 +13326,13 @@ requirements above, which state only what is.
   all — not even `mergeable`, which is what `merge-conflicts` rides on — the
   candidate array is fed to the no-op fingerprint verbatim, the same fix
   abandoned-drafts and merge-conflicts each need for their own invisible
-  transitions. The Implementor cannot re-queue what it fixes — D17 reserves
-  enqueueing for the human's own "Merge when ready" click — so it diagnoses
+  transitions. The Implementor cannot re-queue what it fixes — no prompt in
+  this pipeline enqueues a pull request, at any `merge_autonomy` level, and
+  requirement 8d's arming step (the one thing that does, at
+  `agent-merges-routine` and above) arms only on the round the Approver
+  approves, never a later one, so a dequeued pull request's next queue entry
+  is the human's own "Merge when ready" click either way
+  (tech-debt/TD-PPagop-26081701.md) — so it diagnoses
   and fixes the merge-group's own failed run, then leaves the pull request
   ready with a comment naming what it found, exactly as far as this system's
   side of a merge queue can ever go. That last property is also what makes the

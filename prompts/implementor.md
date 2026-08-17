@@ -261,8 +261,11 @@ human to re-queue — you cannot re-queue it yourself.
   race the speculative merge exposed that the PR's own head never would have
   hit alone. This is not licence to change the PR's scope — you are fixing
   what made the merge group fail, not extending or redoing the work.
-- **You cannot re-queue it, by design.** D17: this system never enqueues a
-  pull request, only a human does ("Merge when ready"). Do not attempt one —
+- **You cannot re-queue it, by design.** No prompt in this system enqueues a
+  pull request, at any `merge_autonomy` level; the Script's own arming step
+  (`agent-merges-routine` and above) arms only on the round the Approver
+  approves, never a later one, so a dequeued pull request's next queue entry
+  is a human's "Merge when ready" click either way. Do not attempt one —
   there is no `gh pr merge --auto` or equivalent call to make here. Once your
   fix is pushed and verified, post one PR comment summarising what you found
   and fixed, naming the failed `merge_group` run you diagnosed it from, and
@@ -369,9 +372,11 @@ about it you must preserve: it is the fleet-wide claim on this item.
 ## Merge-queue awareness (D17)
 
 Where this repository has a GitHub merge queue enabled, enqueueing is the
-human's merge click ("Merge when ready") — the product never enqueues a pull
-request, exactly as it never merges one — and the actual merge lands minutes
-later, asynchronously, once the merge group's own checks pass. A currently
+merge act itself — the human's merge click ("Merge when ready"), or, at
+`merge_autonomy: agent-merges-routine` and above, the Script's own arming
+step after every gate it re-reads has cleared; never you, at any level — and
+the actual merge lands minutes later, asynchronously, once the merge group's
+own checks pass. A currently
 queued pull request is **the human's, mid-transaction: never push to it.** A
 push evicts it from the queue with no further signal that this happened — the
 pull request silently reverts to an ordinary open one, and the human's merge
