@@ -39,15 +39,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # repository after that point reads this instead.
 repo_root="$SCRIPT_DIR"
 
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
+
 # shellcheck source=lib/void-guard.sh
 . "$SCRIPT_DIR/lib/void-guard.sh"
 # shellcheck source=lib/refinement.sh
 . "$SCRIPT_DIR/lib/refinement.sh"
+# ISSUE_PRIORITY_CACHE_DIR is set before sourcing lib/issue-priority.sh below
+# (issue #510) — a subdirectory of tmp_dir, so the trap above reclaims it and
+# the library's own source-time `mktemp -d` never runs at all.
+ISSUE_PRIORITY_CACHE_DIR="$(mktemp -d "$tmp_dir/cache-init.XXXXXX")"
 # shellcheck source=lib/issue-priority.sh
 . "$SCRIPT_DIR/lib/issue-priority.sh"
-
-tmp_dir="$(mktemp -d)"
-trap 'rm -rf "$tmp_dir"' EXIT
 
 failures=0
 
@@ -396,6 +400,61 @@ rm -f "$tmp_dir/gh-b/fields-response.json"  # the second apply must not need to 
 result="$(issue_priority_apply "o/case-cache" 20 High)"
 assert_eq "a cached field resolution serves a third apply with the fixture gone" "true" \
   "$(jq -r '.applied' <<<"$result")"
+
+# --- Cache cleanup (issue #510) ---
+#
+# lib/issue-priority.sh leaked ISSUE_PRIORITY_CACHE_DIR once per sourcing
+# process: nothing removed it. issue_priority_cache_cleanup fixes that; these
+# assertions cover both halves of the ownership rule it has to get right —
+# remove a directory this file created for itself, never one a caller
+# supplied — plus the idempotency every EXIT trap that calls it depends on.
+saved_dir="$ISSUE_PRIORITY_CACHE_DIR" saved_owned="$ISSUE_PRIORITY_CACHE_DIR_OWNED"
+
+# A process that leaves ISSUE_PRIORITY_CACHE_DIR unset gets one created and
+# owned on its behalf, and cleanup removes it — fixture files included, not
+# just an empty directory, since an empty `rm -rf` proves nothing about the
+# real per-SLUG cache this stands in for.
+unset ISSUE_PRIORITY_CACHE_DIR ISSUE_PRIORITY_CACHE_DIR_OWNED
+. "$SCRIPT_DIR/lib/issue-priority.sh"
+assert_eq "an unset ISSUE_PRIORITY_CACHE_DIR is created and marked owned" "1" "$ISSUE_PRIORITY_CACHE_DIR_OWNED"
+default_dir="$ISSUE_PRIORITY_CACHE_DIR"
+assert_eq "the default cache directory exists before cleanup" "true" \
+  "$([[ -d "$default_dir" ]] && echo true || echo false)"
+for n in $(seq 1 25); do
+  head -c 65536 /dev/zero | tr '\0' 'x' > "$default_dir/o__r$n.json"
+done
+issue_priority_cache_cleanup
+assert_eq "cleanup removes the default cache directory, oversized fixtures included" "false" \
+  "$([[ -d "$default_dir" ]] && echo true || echo false)"
+
+# A caller that supplies its own path keeps it after the same call — it is
+# that caller's directory to manage, not this library's.
+caller_dir="$(mktemp -d "$tmp_dir/cache-caller.XXXXXX")"
+touch "$caller_dir/not-mine.json"
+ISSUE_PRIORITY_CACHE_DIR="$caller_dir"
+. "$SCRIPT_DIR/lib/issue-priority.sh"
+assert_eq "a caller-supplied ISSUE_PRIORITY_CACHE_DIR is not marked owned" "0" "$ISSUE_PRIORITY_CACHE_DIR_OWNED"
+issue_priority_cache_cleanup
+assert_eq "cleanup leaves a caller-supplied directory in place" "true" \
+  "$([[ -d "$caller_dir" ]] && echo true || echo false)"
+rm -rf "$caller_dir"
+
+# Idempotent: called again with nothing left to remove, or with no directory
+# ever created at all, it is silent and still returns 0.
+out="$(issue_priority_cache_cleanup)"
+rc=$?
+assert_eq "calling cleanup again after it already ran returns 0" "0" "$rc"
+assert_eq "  ... and prints nothing" "" "$out"
+
+ISSUE_PRIORITY_CACHE_DIR_OWNED=1
+ISSUE_PRIORITY_CACHE_DIR=""
+out2="$(issue_priority_cache_cleanup)"
+rc2=$?
+assert_eq "cleanup with no directory ever created returns 0" "0" "$rc2"
+assert_eq "  ... and prints nothing" "" "$out2"
+
+ISSUE_PRIORITY_CACHE_DIR="$saved_dir"
+ISSUE_PRIORITY_CACHE_DIR_OWNED="$saved_owned"
 
 unset ISSUE_PRIORITY_GH
 

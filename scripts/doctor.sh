@@ -63,6 +63,11 @@ source "$SCRIPT_DIR/lib/merge-autonomy.sh"
 source "$SCRIPT_DIR/lib/approver-token.sh"
 # shellcheck source=lib/issue-priority.sh
 source "$SCRIPT_DIR/lib/issue-priority.sh"
+# doctor.sh has no other trap and exits from several points below (bad
+# arguments, an unusable config, the ordinary end of a clean pass) — a single
+# EXIT trap, armed as soon as the library that owns the cache directory is
+# sourced, is what makes every one of those paths remove it (issue #510).
+trap 'issue_priority_cache_cleanup' EXIT
 
 usage() {
   cat >&2 <<'USAGE'
