@@ -7170,12 +7170,14 @@ fi
 # separate array exists.
 refiner_candidates_json="$(refiner_candidate_items "$refiner_repos_json" \
   "$refinement_policy_json" "$refinements_json" "$blocked_json" "$void_json" "$claimed_json")"
-# issue #511: drop this cycle's `triage_only` candidates from any repository
-# whose `Priority` field this token cannot resolve at all, before the
-# engagement cap or any claim — a pre-flight, not a post-hoc latch, so field
-# visibility recovering needs no operator action. Run unconditionally,
-# including under --dry-run, so the fingerprint input below never differs
-# between a dry-run and a live cycle for no reason.
+# issue #511, extended by issue #542: drop this cycle's `triage_only`
+# candidates from any repository whose `Priority` field this token cannot
+# resolve at all, or which resolves carrying none of the four band names,
+# before the engagement cap or any claim — a pre-flight, not a post-hoc
+# latch, so field visibility, or a renamed option set, recovering needs no
+# operator action. Run unconditionally, including under --dry-run, so the
+# fingerprint input below never differs between a dry-run and a live cycle
+# for no reason.
 refiner_candidates_json="$(refiner_filter_unbandable_triage "$refiner_candidates_json")"
 # Same reasoning as `enabler_allowed` above, for the same kind of exit-trap
 # engagement.
