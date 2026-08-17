@@ -53,6 +53,7 @@ says why.
 | D20 | Tooling delivery | **The tooling a repository is maintained by belongs to the product, not to the repository.** Decided August 2026. Every repository-maintenance and development script the pipeline relies on — the tech-debt register's allocator, resolver, validator and CI guards (D15) first among them, and the lint, format, and drift-check helpers of the same class behind them — is *vendored* today: one canonical copy in `Poetic-Poems/poetic`, byte-identical copies walked by hand into agent-ops, poetic-fiddle and the ArtistOS ports, each policed by its own weekly workflow diffing a hard-coded file list. The copying is the defect, not the copies, and every failure mode it has is now on the record: an upstream change to `td-check.pl` (poetic#180, 2026-08-14) left two consumers validating their registers with the old checker for as long as nobody re-copied it (#485); two scripts added the day before (poetic#166) reached no consumer at all, because a file that was never copied is absent from every hard-coded list, which is how #346 and #350 came to mint the same ID — and the fix for *that* (a published manifest, poetic#188/#191) makes the copying mechanism honest without retiring it; and each consumer's adoption is then its own tracked, human-shepherded work item (#468, poetic-fiddle#326). None of it survives contact with D3's customers, who cannot be asked to vendor the product's scripts, hand-sync them on every upstream fix, and carry a drift check per repository — that is the customer-zero rule failing in advance. In the end state a repository declares which maintenance capabilities it wants and Pullwright supplies the executables; the repository holds only its own data — its register items, its configuration — a fix reaches every installation by upgrading the product, and drift stops being a category of failure rather than a category of check. *How* they are delivered is an open question with a Phase 2 gate; *that* they are delivered rather than copied is not. |
 | D21 | Productivity analytics | **The product measures the two rates it exists to raise — delivered work per elapsed hour, and delivered work per token — and no figure it publishes lacks a lever.** Decided August 2026. An installation's levers are few and enumerable: which model runs each actor (D12), how many nodes run, where the caps sit (`max_open_agent_prs`, `merge_budget_per_day`), which repositories and work-source bands the fleet is pointed at, how far up D18's ladder it has climbed, and which defect to fix next. Choosing among them needs three **exhaustive** accounts, each carrying an invariant that makes it trustworthy rather than merely plausible: **time** — every node-second in a window falls into exactly one state (producing, overhead, externally blocked, idle with demand, idle without demand, down), and the states sum to node-count × window; **spend** — every token and dollar is attributed either to one work item's fate or to a named overhead class, and those sum to the roll-up total; **flow** — every work item carries a lifecycle from first sighting to terminal fate, and items entering equals items leaving plus work in progress. A second, a token or an item that cannot be classified lands in an explicit `unaccounted` bucket and is never dropped: an account that silently loses its remainder can be glanced at but not reasoned from. Analytics is a **separate surface** from operations — "is it broken now" and "am I getting value, and what should I change" are different questions, with different windows, audiences and refresh rates, and today's dashboard mixes them — and it needs history the transcripts do not have: every rate the dashboard states is bounded by `log_retained_bytes` and the live log generation, which is why the Co-Ordinator verdict-quality panel can only honestly claim "over the log we still have". The analytics records are small, structured and append-only, so they are retained on their own schedule rather than inheriting the rotation that exists to bound 40 KB transcripts. Their production is priced under D14 like everything else: agent containers emit facts, the analytics container does the arithmetic. |
 | D22 | Evidence-driven model selection | **Models are graded on what their runs produced, not on what they did; comparisons are stratified or not made; and an installation can run controlled trials to get comparable evidence.** Decided August 2026. Per-actor model choice (D12) is the largest single lever on both of D21's rates, and it is chosen today by reputation and revised by anecdote. Grading on activity — how often each model ran, how many turns it took, what it cost — describes the fleet without informing the choice; what informs the choice is outcome: whether the Implementor's pull request landed unchanged, whether it needed a second pass, whether the Reviewer's findings held up, whether the Co-Ordinator's pick survived corroboration, and at what cost and latency per landed item. Two disciplines keep such a comparison honest. **Stratify or abstain:** models are assigned by tier and the tiers see systematically different work, so an unstratified ranking compares hard items against easy ones and will confidently recommend the wrong model; every comparison states its strata and its sample size, and shows "insufficient evidence" rather than a spurious ordering below a stated minimum. **Trial deliberately:** observational data alone cannot separate a model from the work it happened to be given, so the product supports an opt-in **model trial** — a candidate takes a configured share of one actor's eligible work for a bounded period or item count, the arm is recorded on the item, and the comparison is then between arms rather than between eras. A trial is opt-in per installation, capped by a stated cost budget, abortable at any moment, and never assigned to the critical tier unless that is separately opted into. What it yields is a recommendation with an effect size, a sample and a confidence statement — or no recommendation at all — never a leaderboard. |
+| D23 | Rework and escape accounting | **Rework is the pipeline's only honest quality signal and its largest recoverable waste, so it is counted by class, attributed to the stage that caused it, and priced — and never driven to zero.** Decided August 2026. A repetition spends both of D21's rates at once and produces nothing that did not already exist, which makes it the first place to look for either; it is also the only quality measure the product can make without asserting one, since code quality cannot be observed directly but a second attempt is a judgement already made — some actor, check or human found the first insufficient and said so. It is counted **by class**, because a single rework rate names no lever: review round-trips, human change requests after an agent had already flipped a pull request to ready, check failures on a raised pull request, merge conflicts, abandoned drafts resumed by a later cycle, re-runs of killed or crash-looped stages, work duplicated by a claim race, refinement bounce-backs, and post-merge reverts or follow-up fixes. Each has a detector already emitting today or a gap where one belongs, and each points at a different lever — a model, a prompt, a cap, the fleet size, or a product defect. It is attributed **to cause, not to performer**: a second Implementor pass spends Implementor tokens and may be the Refiner's fault for under-specifying, the Co-Ordinator's for picking something unworkable, the Reviewer's for passing a defect the human then caught, or the Implementor's own, and an account that skips this reports the Implementor as expensive when the finding is that items arrive under-specified. Cause is recorded from the detector that fired and the evidence it fired on, never inferred by a model after the fact. And it is **never a target of zero**: a Reviewer catching a defect is the system working, not failing. Detection has a cost ladder — agent review, then the human gate, then a post-merge revert — that rises steeply at each rung, so the goal is moving detection *earlier*, and a panel reading "rework bad" would reward a Reviewer that waves work through, which is the most expensive failure the ladder has. The headline measures are therefore **escape rate per detection stage** — what share of defects got past this rung to the dearer one above it — alongside first-pass yield and rework's share of tokens and of elapsed time. One class is called out separately because it prices something other than a model: a merge conflict is `main` moving under a pull request that waited, so it measures landing latency, and it is retired by D17's queues and D18's ladder rather than by any change of model. |
 
 ## End state
 
@@ -109,6 +110,11 @@ chooses:
   data over comparable work, and a customer can trial a candidate against the
   incumbent on a share of real items rather than switching on reputation and
   hoping.
+- Rework counted, attributed and priced (D23): an installation can see how
+  much of its elapsed time and its token spend went into doing work a second
+  time, which class of repetition it was, which stage caused it as against
+  which stage performed it, and how far up the detection cost ladder each
+  defect got before something caught it.
 - Several supported hosting options.
 - Source-available, under a marketable product name.
 
@@ -288,10 +294,21 @@ Pullwright organisation and carries its licence.
       lifecycle** — one durable record per work item, accumulating instants
       that already exist as scattered facts (`first-seen`, refinement,
       `selection`, stage starts and ends, `pr-raised`, checks green, review
-      verdict, `pr-ready`, human merge, item closed) plus the counts that
-      exist nowhere: how many Implementor passes it took, how many
-      `CHANGES_REQUESTED` rounds it went through, and its terminal fate
-      (`landed`, `voided`, `blocked`, `abandoned`, `superseded`, `open`). Two
+      verdict, `pr-ready`, human merge, item closed); the **rework record**
+      that exists nowhere (D23) — one entry per repetition, carrying its class
+      (review round-trip, human change request after an agent flipped the pull
+      request to ready, check failure on a raised pull request, merge
+      conflict, resumed abandoned draft, re-run of a killed or crash-looped
+      stage, work duplicated by a claim race, refinement bounce-back,
+      post-merge revert or follow-up fix), the detector that fired and the
+      evidence it fired on, and the stage the repetition is *attributed* to,
+      which is frequently not the stage that performs it; and the item's
+      terminal fate (`landed`, `voided`, `blocked`, `abandoned`, `superseded`,
+      `open`). Recording the class and its evidence as the repetition happens
+      is the whole of the difference between an account and a guess: a
+      `CHANGES_REQUESTED` round and a re-run after a stage was killed both
+      look like "two Implementor passes" to anything reading the transcripts
+      afterwards, and they have nothing in common but the cost. Two
       scripts already compute halves of this offline and are the prototypes to
       generalise rather than duplicate: `scripts/pickup-metrics.sh` pairs
       `first-seen` with `selection` for pickup latency, and
@@ -517,6 +534,37 @@ induced outage rather than only over a quiet afternoon.
       and they must not be built before the Phase 1 attribution fix lands:
       built on today's `keys[0]` join, a usage ratio inherits the same error
       that puts 98.7% of the fleet's spend on the wrong model. *[fleet]*
+- [ ] Report rework by class, cause and escape (D23). The pipeline already
+      emits every detector this needs and joins none of them: `attempt-failed`
+      and `kill_reason` for a stage that had to be re-run, the review gate's
+      own `CHANGES_REQUESTED` rounds, `claim-lost` contention for duplicated
+      work, `abandoned_draft_after_hours` for a draft another cycle resumes,
+      the `merge-conflicts` work source for a pull request `main` moved under,
+      the refinement block for an item bounced back as under-specified, and
+      `scripts/mine-merge-history.sh`'s 48-hour revert-or-follow-up check for
+      what escaped a merge. One class has no sound detector yet and this item
+      inherits rather than closes the gap: a human change request arriving as
+      a plain comment is invisible to the review gate, which is #533 — so the
+      most expensive rung but one is precisely the one currently least well
+      observed, and the escape ladder below understates itself until that
+      lands. Assemble the rest into one panel that answers three
+      questions and nothing else. **How much?** — rework's share of tokens and
+      of elapsed time, against first-pass yield: the fraction of items that go
+      from first sighting to landed with no repetition of any class. **Whose?**
+      — repetitions grouped by the stage they are attributed to rather than
+      the stage that performed them, which is what turns "the Implementor is
+      expensive" into "items are arriving under-specified" and points the fix
+      at the Refiner. **How far did it get?** — the escape ladder, one row per
+      detection stage (agent review, the human gate, post-merge), each
+      carrying what share of defects passed that rung and the measured cost of
+      catching one at the next: this is the panel's actual quality-control
+      output, and it is why the page must never present rework as a quantity
+      to minimise. A rising escape rate at the agent-review rung with a
+      falling rework rate is the signature of a Reviewer that has started
+      waving work through, and the panel has to make that legible as a
+      regression rather than as an improvement. Feeds the actor and model
+      scorecards above: rework attributed to a stage is that stage's model's
+      record, and it is the outcome half of D22's grading. *[fleet]*
 - [ ] Price the fleet and the tokens (D21, D14). Two questions the accounts
       make answerable and nothing asks today. **Is this fleet the right
       size?** — per node, the items it landed that no peer would have taken,
@@ -792,6 +840,8 @@ Parked deliberately, each with a decide-by gate:
 | Where the lifecycle and time-state records live, and for how long (D21) — a table in the state store, a time-series database beside the analytics container, or the state repository itself — priced under D14 against the retention a year of trend needs | Phase 2, with the state-store interface |
 | Wire format for the analytics export (D21) — Prometheus/OpenMetrics, OTLP, or the product's own JSON behind an adapter — and whether the analytics surface reads that export or the store behind it | Phase 2, with the control-plane skeleton |
 | Whether a model trial may ever be assigned to the critical tier, and what evidence would justify allowing it (D22) | Phase 3, with the trial facility |
+| How a repetition's cause is attributed (D23) — from the detector alone, from the diff between one pass and the next, or from the reviewing actor's own stated finding — and what is admissible when two causes are equally plausible, given that a model inferring cause after the fact is exactly what the decision forbids | Phase 2, with the rework panel |
+| How long after a merge a revert or a follow-up fix still counts as an escape (D23) — `scripts/mine-merge-history.sh` uses 48 hours — and whether that window is the same for a repository merging once a week as for one merging hourly | Phase 2, with the rework panel |
 | Multi-forge support (GitLab, Bitbucket, Gitea) | Revisit on design-partner demand, Phase 3 |
 | SaaS infrastructure | Only if Phase 4 chooses SaaS |
 
