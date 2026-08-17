@@ -140,7 +140,17 @@ cat >"$STUB_ISSUES" <<'EOF'
    "user": {"login": "warwick"}, "labels": [], "assignees": [],
    "created_at": "2026-07-19T08:00:00Z", "updated_at": "2026-07-20T09:00:00Z",
    "body": "Banded Critical, an option this pipeline does not rank.",
-   "issue_field_values": [{"issue_field_name": "Priority", "single_select_option": {"name": "Critical"}}]}
+   "issue_field_values": [{"issue_field_name": "Priority", "single_select_option": {"name": "Critical"}}]},
+  {"number": 12, "html_url": "https://github.com/o/r/issues/12", "title": "Priority retyped to a text field",
+   "user": {"login": "warwick"}, "labels": [], "assignees": [],
+   "created_at": "2026-07-19T08:00:00Z", "updated_at": "2026-07-20T09:00:00Z",
+   "body": "A valid Priority field value carrying no single_select_option at all.",
+   "issue_field_values": [{"issue_field_name": "Priority", "text_value": "whatever"}]},
+  {"number": 13, "html_url": "https://github.com/o/r/issues/13", "title": "Priority with a null option",
+   "user": {"login": "warwick"}, "labels": [], "assignees": [],
+   "created_at": "2026-07-19T08:00:00Z", "updated_at": "2026-07-20T09:00:00Z",
+   "body": "A malformed Priority field value with single_select_option explicitly null.",
+   "issue_field_values": [{"issue_field_name": "Priority", "single_select_option": null}]}
 ]
 EOF
 cat >"$STUB_COMMENTS_DIR/5.json" <<'EOF'
@@ -155,8 +165,8 @@ candidates_json="$(jq -c '.candidates' <<<"$issues_json")"
 excluded_json="$(jq -c '.excluded' <<<"$issues_json")"
 
 # --- The filter: what arrives, and what never does ---
-assert_eq "exactly the three clean issues arrive" \
-  "3" "$(jq 'length' <<<"$candidates_json")"
+assert_eq "exactly the five clean issues arrive" \
+  "5" "$(jq 'length' <<<"$candidates_json")"
 assert_eq "the assigned issue is dropped" \
   "false" "$(jq 'any(.[]; .number == 6)' <<<"$candidates_json")"
 assert_eq "the Blocked-labelled issue is dropped, case notwithstanding" \
@@ -207,6 +217,26 @@ assert_eq "a band outside the four names still reads Medium, not its own name" \
   "Medium" "$(jq -r '.priority' <<<"$entry11")"
 assert_eq "...but priority_set is true — something was chosen, even if unrankable" \
   "true" "$(jq -r '.priority_set' <<<"$entry11")"
+
+# --- agent-ops#527: a Priority field value with no single_select_option must
+#     read as unset, not set — the null it contributes to $priority_names has
+#     to be dropped, not counted. Three shapes: a valid field value of a
+#     different type (empty option list, #9, already asserted above), a
+#     field retyped to text (#12), and a malformed explicit null (#13).
+assert_eq "an unset Priority (empty option list) still carries priority_set false" \
+  "false" "$(jq -r '.priority_set' <<<"$entry9")"
+
+entry12="$(jq -c '.[] | select(.number == 12)' <<<"$candidates_json")"
+assert_eq "a Priority value with no single_select_option reads Medium" \
+  "Medium" "$(jq -r '.priority' <<<"$entry12")"
+assert_eq "...and priority_set false, not true (agent-ops#527)" \
+  "false" "$(jq -r '.priority_set' <<<"$entry12")"
+
+entry13="$(jq -c '.[] | select(.number == 13)' <<<"$candidates_json")"
+assert_eq "a Priority value with single_select_option explicitly null reads Medium" \
+  "Medium" "$(jq -r '.priority' <<<"$entry13")"
+assert_eq "...and priority_set false, not true (agent-ops#527)" \
+  "false" "$(jq -r '.priority_set' <<<"$entry13")"
 
 # --- The fingerprint moves when only a comment's text moves ---
 #
