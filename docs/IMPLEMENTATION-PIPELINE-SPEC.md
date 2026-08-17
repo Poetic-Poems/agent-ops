@@ -6581,7 +6581,8 @@ implements.
     fallback `gh pr merge --auto --squash` — read off its exit status by
     `_landing_arm_failure_reason` (`lib/landing.sh`, agent-ops#532) rather
     than left as one bare "could not enqueue or auto-merge" every one of
-    those otherwise shared. A `merge_budget_decide` result of `hold` or `refuse` reached
+    those otherwise shared. A `merge_budget_decide` result of `hold` or
+    `refuse` reached
     from the arming step logs through `merge_budget_apply_decision` exactly
     as it always has (above), not `landing-refused` — the two vocabularies
     do not overlap, so a reader scanning for either finds every refusal
@@ -13286,16 +13287,19 @@ pull request, run the ones the change touches and any it could regress.
     blocked pull request or a withheld claim. `scripts/doctor.sh` warns when
     a repository's effective `merge_autonomy_routine_sources` names a source
     that repository's own `sources` never gathers (`test/doctor.test.sh`).
-    `scripts/doctor.sh` also fails, for every repository at `agent-merges-
-    routine` or above (its own *configured* level), a default branch with no
-    active merge queue while `allow_auto_merge` is off (agent-ops#532) —
-    `landing_arm`'s no-queue fallback is a call GitHub refuses outright in
-    that combination — reading `repos/$slug` and `merge_queue_for_branch`
-    once each per repository and naming both fixes (enable `allow_auto_merge`
-    or adopt a merge queue) in the failure; an active queue is `ok`
-    regardless of `allow_auto_merge`, an unreadable repository or
-    merge-queue state is a `skip`, and a repository below the routine tier
-    is left silent (`test/doctor.test.sh`).
+    `scripts/doctor.sh` also fails, for every repository at
+    `agent-merges-routine` or above (its own *configured* level), a default
+    branch with no active merge queue while `allow_auto_merge` is off
+    (agent-ops#532) — `landing_arm`'s no-queue fallback is a call GitHub
+    refuses outright in that combination — reading `repos/$slug` and
+    `merge_queue_for_branch` once each per repository and naming both fixes
+    (enable `allow_auto_merge` or adopt a merge queue) in the failure; an
+    active queue is `ok` regardless of `allow_auto_merge`, an unreadable
+    repository, an unreadable merge-queue state, and a `repos/$slug` that
+    reports no `allow_auto_merge` at all (the key GitHub returns only to a
+    token with admin visibility of the repository's merge settings) are each
+    a `skip`, and a repository below the routine tier is left silent
+    (`test/doctor.test.sh`).
     `./scripts/render-config-table.sh --check`, `./scripts/lint-shell.sh`
     and `perl scripts/td-check.pl` are clean.
 

@@ -884,6 +884,18 @@ if ((gh_ready)); then
       ok "$slug's merge_autonomy is \"$aam_level\" and $aam_default_branch carries an active merge queue — landing_arm enqueues regardless of allow_auto_merge"
     elif [[ "$aam_auto" == "true" ]]; then
       ok "$slug's merge_autonomy is \"$aam_level\" with no merge queue on $aam_default_branch, but allow_auto_merge is enabled — landing_arm's auto-merge fallback is accepted"
+    elif [[ "$aam_auto" != "false" ]]; then
+      # Tested only once the queue read has already reported no queue, since
+      # that is the one branch whose verdict this value changes. `repos/$slug`
+      # carries `allow_auto_merge` only for a token with admin visibility of
+      # the repository's merge settings — verified live 2026-08-18: the same
+      # token that reads `true` on Poetic-Poems/agent-ops (where it is an
+      # admin) gets no such key at all from cli/cli. `jq -r` renders that
+      # absence as the string `null`, which is *unknown*, not `false`: reading
+      # it as `false` would fail an installation, exit code and all, for a
+      # setting doctor never got to see. Unreadable is a skip, exactly as an
+      # unreachable repository or merge-queue state above is.
+      skip "$slug's allow_auto_merge/merge-queue pairing — $aam_default_branch carries no merge queue and repos/$slug did not report allow_auto_merge (this token cannot see $slug's merge settings)"
     else
       fail "$slug's merge_autonomy is \"$aam_level\" with no merge queue on $aam_default_branch and allow_auto_merge disabled — landing_arm's auto-merge fallback would be refused outright; enable allow_auto_merge on $slug or adopt a merge queue on $aam_default_branch"
     fi

@@ -530,6 +530,37 @@ assert_contains "an unreadable merge-queue state is also a skip" \
   "[skip] $slug's allow_auto_merge/merge-queue pairing — could not read main's merge-queue state" \
   "$out"
 
+# GitHub omits `allow_auto_merge` from `repos/$slug` altogether unless the
+# reading token has admin visibility of the repository's merge settings —
+# verified live 2026-08-18: `gh api repos/cli/cli` from a token with no admin
+# there returns no such key at all, while the same token reading
+# `Poetic-Poems/agent-ops` (where it is an admin) returns `true`. An absent
+# key is *unknown*, not `false`, and reading it as `false` would fail an
+# installation for a setting it never got to see.
+aam_absent_json='{"permissions":{"push":true},"archived":false,"default_branch":"main"}'
+out="$(env PATH="$stub_bin:$PATH" \
+  STUB_REPO_JSON="$aam_absent_json" STUB_MERGE_QUEUE_JSON='null' \
+  bash "$DOCTOR" --config "$ma_config" 2>&1)"
+rc=$?
+assert_contains "an absent allow_auto_merge is a skip, never read as disabled" \
+  "[skip] $slug's allow_auto_merge/merge-queue pairing — main carries no merge queue and repos/$slug did not report allow_auto_merge" \
+  "$out"
+assert_not_contains "  ... never read as a failure" \
+  "auto-merge fallback would be refused" "$out"
+assert_not_contains "  ... nor as a pass" \
+  "auto-merge fallback is accepted" "$out"
+assert_eq "  ... and doctor.sh does not exit non-zero for it" "0" "$rc"
+
+# An active queue makes `allow_auto_merge` irrelevant, so an absent one is
+# still a plain `ok` there rather than the skip above.
+out="$(env PATH="$stub_bin:$PATH" \
+  STUB_REPO_JSON="$aam_absent_json" \
+  STUB_MERGE_QUEUE_JSON='{"id":"MQ_kwDOTWpCsc4AA8Qo","mergeMethod":"SQUASH","mergingStrategy":"ALLGREEN"}' \
+  bash "$DOCTOR" --config "$ma_config" 2>&1)"
+assert_contains "an absent allow_auto_merge with an active queue is still ok" \
+  "[ ok ] $slug's merge_autonomy is \"agent-merges-routine\" and main carries an active merge queue — landing_arm enqueues regardless of allow_auto_merge" \
+  "$out"
+
 # --- D18 WI-7 (requirement 8d): merge_autonomy_routine_sources naming a
 #     source this repository's own sources list never gathers ---------------
 # $base_config's own repo lists only ["security", "abandoned-drafts"], and
