@@ -256,6 +256,8 @@ else
     # shellcheck disable=SC2317
     maybe_run_refiner() { :; }
     # shellcheck disable=SC2317
+    issue_priority_cache_cleanup() { :; }
+    # shellcheck disable=SC2317
     log_event() { :; }
     eval "$cleanup_src"
     trap cleanup EXIT

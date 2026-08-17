@@ -3875,6 +3875,10 @@ cleanup() {
   # after the Enabler so a fleet-limit hit the Enabler's own engagement
   # triggers this cycle is still visible to the live check below.
   maybe_run_refiner "$exit_code" || true
+  # lib/issue-priority.sh's own cache directory (issue #510): removed here,
+  # after the Refiner, since the Refiner's own priority-triage duty is that
+  # cache's main consumer.
+  issue_priority_cache_cleanup
   log_event "cycle-end" "$(jq -nc --argjson rc "$exit_code" '{exit_code: $rc}')"
   if [[ "$lock_acquired" == "1" ]]; then
     rm -f "$lock_file"

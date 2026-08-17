@@ -676,6 +676,38 @@ assert_contains "--offline skips Claude credentials" \
 assert_contains "--offline skips the stream-flushing probe, the one check that spends" \
   "[skip] stream flushing (--offline" "$out"
 
+# --- Cache directory cleanup (issue #510) ------------------------------------
+#
+# doctor.sh sources lib/issue-priority.sh, whose ISSUE_PRIORITY_CACHE_DIR used
+# to be created at source time and never removed — a leaked directory on
+# every run, including one that exits before any check runs at all. TMPDIR is
+# pointed at an isolated, empty directory here so "did doctor.sh leave
+# anything behind" is a question this suite can actually answer, rather than
+# one lost among whatever else already lives under the real /tmp.
+doctor_tmpdir="$tmp/doctor-tmpdir"
+mkdir -p "$doctor_tmpdir"
+
+run_doctor_tmp() {  # run_doctor_tmp [doctor.sh args...]
+  out="$(env PATH="$stub_bin:$PATH" TMPDIR="$doctor_tmpdir" bash "$DOCTOR" "$@" 2>&1)"
+  rc=$?
+}
+assert_empty_tmpdir() {
+  local desc="$1" leftover
+  leftover="$(find "$doctor_tmpdir" -mindepth 1 2>/dev/null)"
+  assert_eq "$desc" "" "$leftover"
+}
+
+run_doctor_tmp --config "$base_config"
+assert_empty_tmpdir "a clean pass leaves no cache directory under TMPDIR"
+
+run_doctor_tmp --help
+assert_empty_tmpdir "--help, which exits before any check runs, still cleans up"
+
+run_doctor_tmp --config /nonexistent/config.json
+assert_empty_tmpdir "an unreadable config, which exits at argument time, still cleans up"
+
+rm -rf "$doctor_tmpdir"
+
 # --- shellcheck ---
 
 if command -v shellcheck >/dev/null 2>&1; then

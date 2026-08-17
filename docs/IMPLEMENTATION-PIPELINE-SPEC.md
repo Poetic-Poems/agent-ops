@@ -9162,7 +9162,19 @@ implements.
     (`ISSUE_PRIORITY_CACHE_DIR`) rather than an in-process variable, because
     every caller reaches it through a command substitution — a subshell —
     whose own variable writes never reach the parent; a file on disk
-    survives that boundary where a shell variable cannot. `issue_priority_apply`
+    survives that boundary where a shell variable cannot. Removing the
+    directory is each sourcing site's own job, through
+    `issue_priority_cache_cleanup`, which the library never calls itself:
+    `agent-cycle.sh` calls it from its `cleanup()` EXIT trap, after
+    `maybe_run_refiner` — the cache's main consumer — and `scripts/doctor.sh`
+    calls it from an EXIT trap of its own, armed immediately after the
+    library is sourced. `ISSUE_PRIORITY_CACHE_DIR_OWNED` records whether this
+    process created the directory itself (the environment left
+    `ISSUE_PRIORITY_CACHE_DIR` unset) or the caller supplied its own path;
+    `issue_priority_cache_cleanup` removes only a directory it created,
+    leaving a caller-supplied one for that caller to manage, and is
+    idempotent — a no-op, returning 0, when called again or when no
+    directory was ever created. `issue_priority_apply`
     then re-reads the issue's current band immediately before writing
     (`issue_priority_current`) — unlike `gather-issues.sh` and
     `gather-source-state.sh`, whose REST `issue_field_values` parse both

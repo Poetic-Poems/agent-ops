@@ -28,21 +28,52 @@
 # (tests isolate it; a fresh directory per invocation loses caching but
 # never correctness).
 
-# ISSUE_PRIORITY_CACHE_DIR — one resolution per repository per process,
-# since a single cycle's Refiner engagement can apply several verdicts
-# against the same repository and the field/option ids do not change
-# mid-cycle. A directory of one file per SLUG, not an in-memory associative
-# array: every caller here reads this file's own output through a command
-# substitution (`field_json="$(issue_priority_field_ids "$slug")"`), which
-# forks a subshell — a shell variable a function writes inside that subshell
-# never reaches the parent, so an in-memory cache would silently miss on
-# every single call, caching nothing while still claiming to. A file on disk
-# has no such boundary: any subshell can read what an earlier one wrote.
-# Created once, here, at source time — never inside a function a caller
-# might invoke through its own command substitution, for the same reason.
-# Left for the process's own temp-directory lifecycle to reclaim; the
-# contents are a handful of small JSON objects, never enough to matter.
-ISSUE_PRIORITY_CACHE_DIR="${ISSUE_PRIORITY_CACHE_DIR:-$(mktemp -d 2>/dev/null || true)}"
+# ISSUE_PRIORITY_CACHE_DIR / ISSUE_PRIORITY_CACHE_DIR_OWNED — one resolution
+# per repository per process, since a single cycle's Refiner engagement can
+# apply several verdicts against the same repository and the field/option ids
+# do not change mid-cycle. A directory of one file per SLUG, not an in-memory
+# associative array: every caller here reads this file's own output through a
+# command substitution (`field_json="$(issue_priority_field_ids "$slug")"`),
+# which forks a subshell — a shell variable a function writes inside that
+# subshell never reaches the parent, so an in-memory cache would silently
+# miss on every single call, caching nothing while still claiming to. A file
+# on disk has no such boundary: any subshell can read what an earlier one
+# wrote. Created once, here, at source time — never inside a function a
+# caller might invoke through its own command substitution, for the same
+# reason.
+#
+# Cleanup is each sourcing site's own responsibility, through
+# `issue_priority_cache_cleanup` below, since only the caller knows when it is
+# done with the cache: `agent-cycle.sh` calls it from its `cleanup()` EXIT
+# trap, after `maybe_run_refiner` — the cache's main consumer; `scripts/
+# doctor.sh` calls it from an EXIT trap of its own, armed immediately after
+# this file is sourced, since it has no other trap and exits from several
+# points. `ISSUE_PRIORITY_CACHE_DIR_OWNED` records which case this process is
+# in: `1` when the environment left `ISSUE_PRIORITY_CACHE_DIR` unset or empty
+# and the `mktemp -d` below ran to fill it in, `0` when the caller supplied
+# its own path — a directory that path names is the caller's to manage, and
+# `issue_priority_cache_cleanup` must never remove it.
+if [[ -n "${ISSUE_PRIORITY_CACHE_DIR:-}" ]]; then
+  ISSUE_PRIORITY_CACHE_DIR_OWNED=0
+else
+  ISSUE_PRIORITY_CACHE_DIR="$(mktemp -d 2>/dev/null || true)"
+  ISSUE_PRIORITY_CACHE_DIR_OWNED=1
+fi
+
+# issue_priority_cache_cleanup
+# Remove ISSUE_PRIORITY_CACHE_DIR, but only when this file created it itself
+# (ISSUE_PRIORITY_CACHE_DIR_OWNED=1) — a caller-supplied path is that caller's
+# to remove, never this function's. A no-op, printing nothing, when the
+# directory was never created (mktemp -d failed above), when the caller owns
+# it, or when it has already been removed — idempotent, so a sourcing site's
+# own trap can call it more than once with no ill effect. Always returns 0: a
+# missing cache directory is never a failure worth reporting.
+issue_priority_cache_cleanup() {
+  if [[ "${ISSUE_PRIORITY_CACHE_DIR_OWNED:-0}" == "1" && -n "${ISSUE_PRIORITY_CACHE_DIR:-}" ]]; then
+    rm -rf "$ISSUE_PRIORITY_CACHE_DIR" 2>/dev/null || true
+  fi
+  return 0
+}
 
 # issue_priority_rank BAND
 # Print the ratchet's rank for BAND — higher outranks lower — or 0 for
