@@ -76,6 +76,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   now true whenever any option is set on the field, not only one of the four
   recognised names, so a fifth-band issue is no longer offered to the
   Refiner's triage duty as if nobody had triaged it.
+- `gather-issues.sh`'s `priority_set` (issue #527, a follow-up to #509/#522)
+  no longer reads `true` for a `Priority` field value that carries no
+  `single_select_option` at all — GitHub's field-value union also includes
+  text and date shapes, which an admin retyping the field can produce, and
+  the raw option name it contributed was `null` rather than nothing. Such an
+  issue read as triaged and never reached the Refiner's triage duty again;
+  it now agrees with `issue_priority_current`'s own verdict and reads
+  `priority_set: false`, same as an unset field.
 
 ### Changed
 

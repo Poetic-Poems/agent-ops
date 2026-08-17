@@ -86,10 +86,15 @@
 # the Co-Ordinator's own default), so the Refiner's triage candidate rule
 # (requirement 39g, `refiner_candidate_items`) needs this second boolean to
 # tell an untriaged issue from a deliberately-Medium one at all — and it must
-# be true for *any* option a human or agent chose, including one outside the
-# four names this pipeline ranks (an org admin can add a fifth at any time),
-# or that issue reads as untriaged forever and never leaves the triage queue
-# even once someone has banded it (agent-ops#509).
+# be true for *any single-select option* a human or agent chose, including
+# one outside the four names this pipeline ranks (an org admin can add a
+# fifth at any time), or that issue reads as untriaged forever and never
+# leaves the triage queue even once someone has banded it (agent-ops#509).
+# A `Priority` field value carrying no `single_select_option` at all (GitHub
+# also emits text/date/etc. field-value shapes; an admin can retype the
+# field to a different type) contributes nothing to `$priority_names` — the
+# `select(. != null)` guard drops it — so it reads as unset, not set
+# (agent-ops#527).
 #
 # ## Degrading, and the 100-item windows
 #
@@ -151,7 +156,9 @@ jq -e 'type == "array"' <<<"$issues_raw" >/dev/null 2>&1 \
 # label check drops `blocked` whatever its case. `priority`'s parse mirrors
 # gather-source-state.sh verbatim; `priority_set` reads the same field more
 # broadly, from the raw option names (`$priority_names`) rather than the
-# filtered `$priority_values`, so it is true for any option at all.
+# filtered `$priority_values`, so it is true for any single-select option at
+# all, not only the four ranked names — but not for a `Priority` value with
+# no `single_select_option` at all, which `$priority_names` drops.
 #
 # `excluded` mirrors the same two drops, reason-tagged (agent-ops#447):
 # assigned wins the tag when an issue is somehow both assigned and
@@ -170,7 +177,8 @@ candidates="$(jq -c '
    | select(((.assignees // []) | length) == 0)
    | select(([.labels[]?.name | ascii_downcase] | index("blocked")) | not)
    | ([.issue_field_values[]? | select(.issue_field_name == "Priority")
-                              | .single_select_option.name]) as $priority_names
+                              | .single_select_option.name
+                              | select(. != null)]) as $priority_names
    | ($priority_names | map(select(. == "Urgent" or . == "High"
                                     or . == "Medium" or . == "Low"))) as $priority_values
    | {number: .number,
