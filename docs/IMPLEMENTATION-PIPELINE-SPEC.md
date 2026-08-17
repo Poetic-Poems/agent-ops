@@ -9174,8 +9174,8 @@ implements.
     `issue_priority_cache_cleanup` removes only a directory it created,
     leaving a caller-supplied one for that caller to manage, and is
     idempotent — a no-op, returning 0, when called again or when no
-    directory was ever created. `issue_priority_apply`
-    then re-reads the issue's current band immediately before writing
+    directory was ever created. `issue_priority_apply` then re-reads the
+    issue's current band immediately before writing
     (`issue_priority_current`) — unlike `gather-issues.sh` and
     `gather-source-state.sh`, whose REST `issue_field_values` parse both
     collapse anything outside the four names to their Medium default,
@@ -12460,7 +12460,15 @@ pull request, run the ones the change touches and any it could regress.
     warned, and never overwritten even by a verdict that would otherwise
     strictly outrank it (agent-ops#509); a field or issue read failure, and a
     failed mutation, are each a distinct failure reason, never silently
-    read as a skip. `maybe_run_refiner`'s wiring: an ordinary `refined`
+    read as a skip. The cache directory's own lifecycle: sourcing the
+    library with `ISSUE_PRIORITY_CACHE_DIR` unset creates a directory and
+    marks it owned, and `issue_priority_cache_cleanup` then removes it —
+    fixture files inside it included, since an empty `rm -rf` proves nothing
+    about the real per-SLUG cache it stands in for — while a caller-supplied
+    path is marked unowned and still exists after the same call; a second
+    call once it has already run, and a call in a process where the
+    `mktemp -d` never produced a directory at all, each print nothing and
+    still return 0. `maybe_run_refiner`'s wiring: an ordinary `refined`
     verdict carrying `priority` records both `item-refined` and
     `issue-prioritised`; a `triage_only` item's `priority`-only verdict
     records neither `item-refined` nor a label, with outcome `triage-only`
@@ -12479,7 +12487,11 @@ pull request, run the ones the change touches and any it could regress.
     `priority` itself still reading Medium (`test/issues-prefetch.test.sh`).
     `scripts/doctor.sh`'s own gate is asserted against the four banded
     `sources` tokens a valid configuration actually carries, so the check
-    cannot regress to one that never runs. The pre-flight (issue #511):
+    cannot regress to one that never runs, and its own EXIT trap is asserted
+    against an isolated `TMPDIR` left empty by all three of its exit paths —
+    a clean pass, `--help`, and an unreadable `--config`, the two of which
+    exit before any check runs at all (`test/doctor.test.sh`). The
+    pre-flight (issue #511):
     `refiner_drop_unbandable_triage` (`lib/refinement.sh`) drops only the
     named repositories' `triage_only` entries, leaves every other candidate
     from those repositories and every candidate from any other repository

@@ -43,6 +43,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   search now also excludes drafts server-side (`draft:false`), so a
   repository whose oldest page is entirely drafts still names its true
   oldest non-draft instead of reporting no backlog at all.
+- `lib/issue-priority.sh`'s field-resolution cache directory (issue #510) is
+  now removed by the process that created it, rather than left behind once
+  per sourcing process — a directory per cycle in a long-lived node
+  container, and one per `scripts/doctor.sh` run, which had no exit trap at
+  all. `issue_priority_cache_cleanup` is idempotent and removes only a
+  directory the library itself created, never a caller-supplied
+  `ISSUE_PRIORITY_CACHE_DIR`; `agent-cycle.sh` calls it from its `cleanup()`
+  EXIT trap, after the Refiner that is the cache's main consumer, and
+  `doctor.sh` from a new EXIT trap of its own.
 - The per-process fleet-flag memo (issue #502) is now keyed by mode as well
   as by flag and `state_dir`, so a default-mode `clear` answer can never be
   served to a later `probe-404` read of the same flag, and reads it into a
