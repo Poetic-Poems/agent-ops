@@ -128,6 +128,16 @@ void_guard_reason() { record "void_guard_reason $(jq -r '.item' <<<"$1")"; retur
 # enough — this just keeps the call from failing loudly with "command not
 # found" for a function log_voided_items now calls unconditionally.
 void_obsolete_ctx_json() { printf '{}'; }
+# log_voided_items (issue #508) now reads this once per invocation, ahead of
+# the loop the two stubs above already cover — stubbed for the same "command
+# not found" reason, since this file never sources lib/cycle-state.sh.
+draft_obsolete_flags() { printf '[]'; }
+# The stub above only covers the call once made; log_voided_items resolves
+# its LOG_FILE argument — `${union_log:-$log_file}` — before the call, so
+# $log_file itself must be defined under `set -u` even though the stub never
+# reads it.
+# shellcheck disable=SC2034
+log_file="$tmp_dir/log.jsonl"
 void_entry_evidence() { printf 'stub evidence'; }
 item_event_fields() { printf '{}'; }
 release_refinement_label() { record "release-refinement-label $1 ${2:-}"; }
