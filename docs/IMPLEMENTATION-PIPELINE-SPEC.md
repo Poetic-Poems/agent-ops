@@ -9437,11 +9437,16 @@ implements.
     to fall back to either — reports `band-option-missing` and applies
     nothing, a reason distinct from `field-unresolvable` because a caller
     must be able to tell "the field itself cannot be read" apart from "the
-    field has no such option". Every `issue_priority_apply`
-    result gains an optional `requested` field, present whenever the band
-    actually written, skipped, or found unwritable differs from the band the
-    verdict asked for, so a fallback is always visible in the record rather
-    than looking like an ordinary write of the requested band.
+    field has no such option". The four results that reach the ratchet — the
+    successful write, either skip, and a failed mutation — gain an optional
+    `requested` field, present whenever the band actually written or skipped
+    differs from the band the verdict asked for, so a fallback is always
+    visible in the record rather than looking like an ordinary write of the
+    requested band. The results that fail before the ratchet carry no
+    `requested`: a bad argument is rejected before any band is chosen, and
+    `field-unresolvable`, `band-option-missing` and `issue-unreadable` — the
+    last of which *is* reached after a fallback band has been picked — are
+    each logged as a `warning` that names the verdict's own band already.
 
     Every outcome is logged: `issue-prioritised` `{repo, item, priority,
     previous, by: "refiner"}` — plus `requested` when a fallback band was

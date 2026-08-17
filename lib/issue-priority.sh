@@ -239,10 +239,14 @@ issue_priority_current() {
 #                               |"field-unresolvable"|"band-option-missing"
 #                               |"issue-unreadable"|"mutation-failed"}
 #
-# Every shape above except the four bad-argument reasons gains an optional
-# `"requested"` key, present only when the band actually written (or
-# skipped, or found unwritable) differs from BAND — see the fallback
-# paragraph below.
+# The four shapes that reach the ratchet — the successful write, either skip,
+# and `"mutation-failed"` — gain an optional `"requested"` key, present only
+# when the band actually written or skipped differs from BAND; see the
+# fallback paragraph below. No other shape carries it: the three bad-argument
+# reasons are rejected before any band is chosen, and `"field-unresolvable"`,
+# `"band-option-missing"` and `"issue-unreadable"` — the last of which *is*
+# reached after a fallback band has been picked — are each logged by the
+# caller as a `warning` naming BAND itself, so the substitution is not lost.
 #
 # "skipped-unrankable" is the band an org admin can add to the field at any
 # time (issue #509, requirement 39g's own promise never to overwrite a band a
