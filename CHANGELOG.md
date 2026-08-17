@@ -72,6 +72,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `ISSUE_PRIORITY_CACHE_DIR`; `agent-cycle.sh` calls it from its `cleanup()`
   EXIT trap, after the Refiner that is the cache's main consumer, and
   `doctor.sh` from a new EXIT trap of its own.
+- `lib/issue-priority.sh`'s cache-directory ownership (issue #541, a
+  follow-up to #510) is now a property of the directory rather than of the
+  most recent source: a process that sources the library twice used to see,
+  on the second source, `ISSUE_PRIORITY_CACHE_DIR` already set to the
+  directory the first source created and read it as caller-supplied, so
+  `issue_priority_cache_cleanup` declined to remove the very directory the
+  library made. `ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH` now records the path
+  the library created for itself, so a re-source with that same path still
+  marks it owned.
 - The per-process fleet-flag memo (issue #502) is now keyed by mode as well
   as by flag and `state_dir`, so a default-mode `clear` answer can never be
   served to a later `probe-404` read of the same flag, and reads it into a
