@@ -54,6 +54,22 @@ x-agent-ops: &agent-ops
     # second buys the build log when a deployment failed.
     VERCEL_AUTOMATION_BYPASS_SECRET: ${VERCEL_AUTOMATION_BYPASS_SECRET:-}
     VERCEL_TOKEN: ${VERCEL_TOKEN:-}
+    # The Pullwright Approver App's identity (D18 §5.3, lib/approver-token.sh) —
+    # what lets a `merge_autonomy` above `human` mint a review as a non-author.
+    # All three are optional, and all three must arrive together:
+    # `approver_token_credential_present` requires both ids *and* a readable
+    # key, so a partial set reads as "not configured", the Approver stage skips
+    # the App review, and the human merges exactly as at `human`.
+    #
+    # They have to be named here explicitly. This block is an allowlist, and
+    # there is no `env_file:` anywhere in this file — compose reads .env for
+    # `${...}` interpolation only, never injecting it into a container — so a
+    # variable an operator adds to a node's .env and that is not named here is
+    # silently absent from every cycle. That is precisely how these three came
+    # to be set on all four nodes while no cycle could see any of them.
+    PULLWRIGHT_APPROVER_APP_ID: ${PULLWRIGHT_APPROVER_APP_ID:-}
+    PULLWRIGHT_APPROVER_INSTALLATION_ID: ${PULLWRIGHT_APPROVER_INSTALLATION_ID:-}
+    PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH: ${PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH:-}
     TZ: ${TZ:-Pacific/Auckland}
   volumes:
     # The three things that must survive a container being replaced by a newer
@@ -69,6 +85,22 @@ x-agent-ops: &agent-ops
     # heartbeat; a container that finds no file here is running from a
     # compose.yaml too old to carry this line, and reports exactly that.
     - ./compose.yaml:/host/compose.yaml:ro
+    # The Approver App's private key, mounted read-only at the *same* absolute
+    # path it has on the host, so `PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH` above
+    # is correct on both sides of the boundary and a node keeping its key
+    # somewhere else needs no second variable and no edit here. The host uid is
+    # preserved through a bind mount, so a `chmod 600` key owned by a uid-1000
+    # host user is readable by the container's `agent` (also uid 1000) and by
+    # nothing else.
+    #
+    # `/dev/null` when the variable is unset, which self-mounts as a harmless
+    # no-op: compose has no conditional volumes, and a missing bind source
+    # would otherwise have Docker create a *directory* at the target — which
+    # `[ -r ]` would then pass while openssl failed on it, turning "not
+    # configured" into a confusing runtime error. With /dev/null the variable
+    # itself is empty, so `approver_token_credential_present` returns false and
+    # the credential is correctly reported absent.
+    - ${PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH:-/dev/null}:${PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH:-/dev/null}:ro
   labels:
     # Only containers carrying this label are watchtower's business — the
     # laptop runs unrelated containers that are none of it.
