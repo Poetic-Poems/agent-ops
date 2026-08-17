@@ -45,10 +45,11 @@
 # Cleanup is each sourcing site's own responsibility, through
 # `issue_priority_cache_cleanup` below, since only the caller knows when it is
 # done with the cache: `agent-cycle.sh` calls it from its `cleanup()` EXIT
-# trap, after `maybe_run_refiner` — the cache's main consumer; `scripts/
-# doctor.sh` calls it from an EXIT trap of its own, armed immediately after
-# this file is sourced, since it has no other trap and exits from several
-# points. `ISSUE_PRIORITY_CACHE_DIR_OWNED` records which case this process is
+# trap, after `maybe_run_refiner` — the cache's main consumer;
+# `scripts/doctor.sh` calls it from an EXIT trap of its own, armed
+# immediately after this file is sourced, since it has no other trap and
+# exits from several points.
+# `ISSUE_PRIORITY_CACHE_DIR_OWNED` records which case this process is
 # in: `1` when the environment left `ISSUE_PRIORITY_CACHE_DIR` unset or empty
 # and the `mktemp -d` below ran to fill it in, `0` when the caller supplied
 # its own path — a directory that path names is the caller's to manage, and
