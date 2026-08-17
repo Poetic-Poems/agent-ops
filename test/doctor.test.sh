@@ -465,50 +465,76 @@ assert_not_contains "merge_autonomy at the default (human) needs no approver_mod
   "no approver_model_default configured" "$out"
 
 # --- agent-ops#532 (D18 WI-7 follow-up): merge_autonomy at
-#     agent-merges-routine+ with no merge queue must pair with
-#     allow_auto_merge, since landing_arm's no-queue fallback is `gh pr merge
-#     --auto --squash`, which GitHub refuses outright when it is off --------
+#     agent-merges-routine+ with no merge queue must pair with *both*
+#     allow_auto_merge and allow_squash_merge, since landing_arm's no-queue
+#     fallback is `gh pr merge --auto --squash`, a call GitHub refuses
+#     outright when either of the two is off ---------------------------------
 # Reuses $ma_config (merge_autonomy already at agent-merges-routine, with
 # approver_app_id/approver_model_default set so those pairings don't also
 # fire and add noise to these assertions).
-aam_ok_json='{"permissions":{"push":true},"archived":false,"allow_auto_merge":true,"default_branch":"main"}'
-aam_fail_json='{"permissions":{"push":true},"archived":false,"allow_auto_merge":false,"default_branch":"main"}'
+aam_queue_json='{"id":"MQ_kwDOTWpCsc4AA8Qo","mergeMethod":"SQUASH","mergingStrategy":"ALLGREEN"}'
+aam_ok_json='{"permissions":{"push":true},"archived":false,"allow_auto_merge":true,"allow_squash_merge":true,"default_branch":"main"}'
+aam_auto_off_json='{"permissions":{"push":true},"archived":false,"allow_auto_merge":false,"allow_squash_merge":true,"default_branch":"main"}'
+aam_squash_off_json='{"permissions":{"push":true},"archived":false,"allow_auto_merge":true,"allow_squash_merge":false,"default_branch":"main"}'
+aam_both_off_json='{"permissions":{"push":true},"archived":false,"allow_auto_merge":false,"allow_squash_merge":false,"default_branch":"main"}'
 
 out="$(env PATH="$stub_bin:$PATH" \
   STUB_REPO_JSON="$aam_ok_json" STUB_MERGE_QUEUE_JSON='null' \
   bash "$DOCTOR" --config "$ma_config" 2>&1)"
 rc=$?
-assert_contains "no merge queue but allow_auto_merge enabled is ok" \
-  "[ ok ] $slug's merge_autonomy is \"agent-merges-routine\" with no merge queue on main, but allow_auto_merge is enabled — landing_arm's auto-merge fallback is accepted" \
+assert_contains "no merge queue but both merge settings enabled is ok" \
+  "[ ok ] $slug's merge_autonomy is \"agent-merges-routine\" with no merge queue on main, but allow_auto_merge and allow_squash_merge are both enabled — no repository setting refuses landing_arm's no-queue fallback" \
   "$out"
 assert_eq "and doctor.sh exits 0" "0" "$rc"
 
 out="$(env PATH="$stub_bin:$PATH" \
-  STUB_REPO_JSON="$aam_fail_json" STUB_MERGE_QUEUE_JSON='null' \
+  STUB_REPO_JSON="$aam_auto_off_json" STUB_MERGE_QUEUE_JSON='null' \
   bash "$DOCTOR" --config "$ma_config" 2>&1)"
 rc=$?
-assert_contains "no merge queue and allow_auto_merge disabled fails, naming both fixes" \
-  "[fail] $slug's merge_autonomy is \"agent-merges-routine\" with no merge queue on main and allow_auto_merge disabled — landing_arm's auto-merge fallback would be refused outright; enable allow_auto_merge on $slug or adopt a merge queue on main" \
+assert_contains "no merge queue and allow_auto_merge disabled fails, naming it and both fixes" \
+  "[fail] $slug's merge_autonomy is \"agent-merges-routine\" with no merge queue on main and allow_auto_merge disabled — landing_arm's no-queue fallback, gh pr merge --auto --squash, would be refused outright; enable allow_auto_merge on $slug or adopt a merge queue on main" \
   "$out"
 assert_eq "and doctor.sh exits 1" "1" "$rc"
 
+# The gap this pairing would otherwise leave open: `--auto --squash` needs
+# `allow_squash_merge` just as much as `allow_auto_merge`, so a repository
+# that merges by rebase or merge commit must not collect a green all-clear.
 out="$(env PATH="$stub_bin:$PATH" \
-  STUB_REPO_JSON="$aam_fail_json" \
-  STUB_MERGE_QUEUE_JSON='{"id":"MQ_kwDOTWpCsc4AA8Qo","mergeMethod":"SQUASH","mergingStrategy":"ALLGREEN"}' \
+  STUB_REPO_JSON="$aam_squash_off_json" STUB_MERGE_QUEUE_JSON='null' \
   bash "$DOCTOR" --config "$ma_config" 2>&1)"
 rc=$?
-assert_contains "an active merge queue is ok regardless of allow_auto_merge" \
-  "[ ok ] $slug's merge_autonomy is \"agent-merges-routine\" and main carries an active merge queue — landing_arm enqueues regardless of allow_auto_merge" \
+assert_contains "allow_squash_merge disabled fails too, naming that one" \
+  "[fail] $slug's merge_autonomy is \"agent-merges-routine\" with no merge queue on main and allow_squash_merge disabled — landing_arm's no-queue fallback, gh pr merge --auto --squash, would be refused outright; enable allow_squash_merge on $slug or adopt a merge queue on main" \
   "$out"
-assert_eq "  ... even with allow_auto_merge off" "0" "$rc"
+assert_eq "  ... and doctor.sh exits 1" "1" "$rc"
+assert_not_contains "  ... and never collects the pass line as well" \
+  "no repository setting refuses" "$out"
 
 out="$(env PATH="$stub_bin:$PATH" \
-  STUB_REPO_JSON="$aam_fail_json" STUB_MERGE_QUEUE_JSON='null' \
+  STUB_REPO_JSON="$aam_both_off_json" STUB_MERGE_QUEUE_JSON='null' \
+  bash "$DOCTOR" --config "$ma_config" 2>&1)"
+assert_contains "both disabled names both in the one failure" \
+  "[fail] $slug's merge_autonomy is \"agent-merges-routine\" with no merge queue on main and allow_auto_merge and allow_squash_merge disabled — landing_arm's no-queue fallback, gh pr merge --auto --squash, would be refused outright; enable allow_auto_merge and allow_squash_merge on $slug or adopt a merge queue on main" \
+  "$out"
+
+out="$(env PATH="$stub_bin:$PATH" \
+  STUB_REPO_JSON="$aam_both_off_json" STUB_MERGE_QUEUE_JSON="$aam_queue_json" \
+  bash "$DOCTOR" --config "$ma_config" 2>&1)"
+rc=$?
+assert_contains "an active merge queue is ok regardless of either setting" \
+  "[ ok ] $slug's merge_autonomy is \"agent-merges-routine\" and main carries an active merge queue — landing_arm enqueues regardless of allow_auto_merge and allow_squash_merge" \
+  "$out"
+assert_eq "  ... even with both off" "0" "$rc"
+
+out="$(env PATH="$stub_bin:$PATH" \
+  STUB_REPO_JSON="$aam_both_off_json" STUB_MERGE_QUEUE_JSON='null' \
   bash "$DOCTOR" --config "$base_config" 2>&1)"
 assert_not_contains "below the routine tier the pairing stays silent" \
-  "allow_auto_merge/merge-queue pairing" "$out"
+  "merge-settings/merge-queue pairing" "$out"
 assert_not_contains "  ... no positive line either" \
   "landing_arm enqueues" "$out"
+assert_not_contains "  ... nor a failure" \
+  "would be refused outright" "$out"
 assert_contains "  ... and unrelated checks keep running for this repo" \
   "[ ok ] $slug is writable — the token can push claim branches" "$out"
 
@@ -516,49 +542,75 @@ out="$(env PATH="$stub_bin:$PATH" \
   STUB_REPO_FAIL=1 \
   bash "$DOCTOR" --config "$ma_config" 2>&1)"
 assert_contains "an unreachable repos/\$slug is a skip, never an ok or a fail" \
-  "[skip] $slug's allow_auto_merge/merge-queue pairing — repos/$slug is not reachable with this token" \
+  "[skip] $slug's merge-settings/merge-queue pairing — repos/$slug is not reachable with this token" \
   "$out"
 assert_not_contains "  ... never read as a pass" \
   "landing_arm enqueues" "$out"
 assert_not_contains "  ... never read as a failure either" \
-  "auto-merge fallback would be refused" "$out"
+  "would be refused outright" "$out"
 
 out="$(env PATH="$stub_bin:$PATH" \
   STUB_REPO_JSON="$aam_ok_json" STUB_MERGE_QUEUE_FAIL=1 \
   bash "$DOCTOR" --config "$ma_config" 2>&1)"
 assert_contains "an unreadable merge-queue state is also a skip" \
-  "[skip] $slug's allow_auto_merge/merge-queue pairing — could not read main's merge-queue state" \
+  "[skip] $slug's merge-settings/merge-queue pairing — could not read main's merge-queue state" \
   "$out"
 
-# GitHub omits `allow_auto_merge` from `repos/$slug` altogether unless the
-# reading token has admin visibility of the repository's merge settings —
-# verified live 2026-08-18: `gh api repos/cli/cli` from a token with no admin
-# there returns no such key at all, while the same token reading
-# `Poetic-Poems/agent-ops` (where it is an admin) returns `true`. An absent
-# key is *unknown*, not `false`, and reading it as `false` would fail an
-# installation for a setting it never got to see.
+# GitHub omits both keys from `repos/$slug` altogether unless the reading
+# token has admin visibility of the repository's merge settings — verified
+# live 2026-08-18: `gh api repos/cli/cli` from a token with no admin there
+# returns neither key, while the same token reading `Poetic-Poems/agent-ops`
+# (where it is an admin) returns `true` for both. An absent key is *unknown*,
+# not `false`, and reading it as `false` would fail an installation for a
+# setting it never got to see.
 aam_absent_json='{"permissions":{"push":true},"archived":false,"default_branch":"main"}'
 out="$(env PATH="$stub_bin:$PATH" \
   STUB_REPO_JSON="$aam_absent_json" STUB_MERGE_QUEUE_JSON='null' \
   bash "$DOCTOR" --config "$ma_config" 2>&1)"
 rc=$?
-assert_contains "an absent allow_auto_merge is a skip, never read as disabled" \
-  "[skip] $slug's allow_auto_merge/merge-queue pairing — main carries no merge queue and repos/$slug did not report allow_auto_merge" \
+assert_contains "both absent is a skip naming both, never read as disabled" \
+  "[skip] $slug's merge-settings/merge-queue pairing — main carries no merge queue and repos/$slug did not report allow_auto_merge and allow_squash_merge" \
   "$out"
 assert_not_contains "  ... never read as a failure" \
-  "auto-merge fallback would be refused" "$out"
+  "would be refused outright" "$out"
 assert_not_contains "  ... nor as a pass" \
-  "auto-merge fallback is accepted" "$out"
+  "no repository setting refuses" "$out"
 assert_eq "  ... and doctor.sh does not exit non-zero for it" "0" "$rc"
 
-# An active queue makes `allow_auto_merge` irrelevant, so an absent one is
-# still a plain `ok` there rather than the skip above.
+# One absent sibling alone is still just a skip, and names only the key that
+# was actually missing.
+aam_squash_absent_json='{"permissions":{"push":true},"archived":false,"allow_auto_merge":true,"default_branch":"main"}'
 out="$(env PATH="$stub_bin:$PATH" \
-  STUB_REPO_JSON="$aam_absent_json" \
-  STUB_MERGE_QUEUE_JSON='{"id":"MQ_kwDOTWpCsc4AA8Qo","mergeMethod":"SQUASH","mergingStrategy":"ALLGREEN"}' \
+  STUB_REPO_JSON="$aam_squash_absent_json" STUB_MERGE_QUEUE_JSON='null' \
   bash "$DOCTOR" --config "$ma_config" 2>&1)"
-assert_contains "an absent allow_auto_merge with an active queue is still ok" \
-  "[ ok ] $slug's merge_autonomy is \"agent-merges-routine\" and main carries an active merge queue — landing_arm enqueues regardless of allow_auto_merge" \
+assert_contains "a readable allow_auto_merge with an unreadable sibling is a skip" \
+  "[skip] $slug's merge-settings/merge-queue pairing — main carries no merge queue and repos/$slug did not report allow_squash_merge" \
+  "$out"
+assert_not_contains "  ... and does not claim the fallback is accepted" \
+  "no repository setting refuses" "$out"
+
+# Ordering: a setting read as a definite `false` decides the verdict before
+# the absent case is considered, so an unreadable sibling can never mask a
+# setting doctor did read as off.
+aam_off_and_absent_json='{"permissions":{"push":true},"archived":false,"allow_auto_merge":false,"default_branch":"main"}'
+out="$(env PATH="$stub_bin:$PATH" \
+  STUB_REPO_JSON="$aam_off_and_absent_json" STUB_MERGE_QUEUE_JSON='null' \
+  bash "$DOCTOR" --config "$ma_config" 2>&1)"
+rc=$?
+assert_contains "a known-false setting outranks an unreadable sibling" \
+  "[fail] $slug's merge_autonomy is \"agent-merges-routine\" with no merge queue on main and allow_auto_merge disabled — landing_arm's no-queue fallback, gh pr merge --auto --squash, would be refused outright; enable allow_auto_merge on $slug or adopt a merge queue on main" \
+  "$out"
+assert_eq "  ... and still exits 1 rather than skipping" "1" "$rc"
+assert_not_contains "  ... never downgraded to the unreadable skip" \
+  "did not report allow_squash_merge" "$out"
+
+# An active queue makes both settings irrelevant, so absent ones are still a
+# plain `ok` there rather than the skip above.
+out="$(env PATH="$stub_bin:$PATH" \
+  STUB_REPO_JSON="$aam_absent_json" STUB_MERGE_QUEUE_JSON="$aam_queue_json" \
+  bash "$DOCTOR" --config "$ma_config" 2>&1)"
+assert_contains "absent merge settings with an active queue are still ok" \
+  "[ ok ] $slug's merge_autonomy is \"agent-merges-routine\" and main carries an active merge queue — landing_arm enqueues regardless of allow_auto_merge and allow_squash_merge" \
   "$out"
 
 # --- D18 WI-7 (requirement 8d): merge_autonomy_routine_sources naming a

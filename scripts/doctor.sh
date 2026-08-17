@@ -850,13 +850,18 @@ if ((gh_ready)); then
   done < <(cfg '.repos[]?.slug // empty')
 
   # agent-ops#532 (D18 WI-7 follow-up): `landing_arm`'s no-queue fallback is
-  # `gh pr merge --auto --squash`, which GitHub refuses outright when the
-  # repository's own `allow_auto_merge` is off — a setting `merge_autonomy`
-  # itself never validates. Below the routine tier `landing_arm` is
-  # unreachable at all, so the check stays silent there; judged against each
-  # repository's *configured* level, the same "an operator raising the level
-  # later must not discover this for the first time as a stuck
-  # landing-refused loop" reasoning the pairing check above already uses.
+  # `gh pr merge --auto --squash`, a call that needs *two* of the
+  # repository's own merge settings, not one — `allow_auto_merge` and
+  # `allow_squash_merge` — and which GitHub refuses outright when either is
+  # off, neither of them something `merge_autonomy` itself validates. A
+  # repository that merges by rebase or merge commit is an ordinary
+  # configuration, so checking only the first would hand exactly that
+  # installation a green all-clear on the very failure mode this check
+  # exists to catch. Below the routine tier `landing_arm` is unreachable at
+  # all, so the check stays silent there; judged against each repository's
+  # *configured* level, the same "an operator raising the level later must
+  # not discover this for the first time as a stuck landing-refused loop"
+  # reasoning the pairing check above already uses.
   while IFS= read -r slug; do
     [[ -n "$slug" ]] || continue
     aam_level="$(merge_autonomy_configured_level "$DEFAULTED_CONFIG" "$slug")"
@@ -866,38 +871,61 @@ if ((gh_ready)); then
       continue
     fi
 
-    if ! aam_repo_json="$(gh api "repos/$slug" --jq '{auto: .allow_auto_merge, default_branch: .default_branch}' 2>/dev/null)"; then
-      skip "$slug's allow_auto_merge/merge-queue pairing — repos/$slug is not reachable with this token"
+    if ! aam_repo_json="$(gh api "repos/$slug" --jq '{auto: .allow_auto_merge, squash: .allow_squash_merge, default_branch: .default_branch}' 2>/dev/null)"; then
+      skip "$slug's merge-settings/merge-queue pairing — repos/$slug is not reachable with this token"
       continue
     fi
     aam_auto="$(jq -r '.auto' <<<"$aam_repo_json" 2>/dev/null)"
+    aam_squash="$(jq -r '.squash' <<<"$aam_repo_json" 2>/dev/null)"
     aam_default_branch="$(jq -r '.default_branch' <<<"$aam_repo_json" 2>/dev/null)"
     if [[ -z "$aam_default_branch" || "$aam_default_branch" == "null" ]]; then
-      skip "$slug's allow_auto_merge/merge-queue pairing — repos/$slug did not report a default_branch"
+      skip "$slug's merge-settings/merge-queue pairing — repos/$slug did not report a default_branch"
       continue
     fi
     if ! aam_queue_json="$(merge_queue_for_branch "$slug" "$aam_default_branch")"; then
-      skip "$slug's allow_auto_merge/merge-queue pairing — could not read $aam_default_branch's merge-queue state"
+      skip "$slug's merge-settings/merge-queue pairing — could not read $aam_default_branch's merge-queue state"
       continue
     fi
+
+    # Sort the two settings into "read as a definite `false`" and "not
+    # reported at all", so the verdict chain below can test the first before
+    # the second: an unreadable sibling must never mask a setting doctor did
+    # read as off. Both are classified only once the queue read has already
+    # reported no queue, since that is the one branch whose verdict either
+    # value changes. `repos/$slug` carries these keys only for a token with
+    # admin visibility of the repository's merge settings — verified live
+    # 2026-08-18: the same token that reads `true` for both on
+    # Poetic-Poems/agent-ops (where it is an admin) gets neither key at all
+    # from cli/cli. `jq -r` renders that absence as the string `null`, which
+    # is *unknown*, not `false`: reading it as `false` would fail an
+    # installation, exit code and all, for a setting doctor never got to see.
+    # Unreadable is a skip, exactly as an unreachable repository or
+    # merge-queue state above is.
+    aam_off=""
+    aam_unknown=""
+    for aam_pair in "allow_auto_merge:$aam_auto" "allow_squash_merge:$aam_squash"; do
+      aam_key="${aam_pair%%:*}"
+      aam_value="${aam_pair#*:}"
+      if [[ "$aam_value" == "false" ]]; then
+        aam_off="${aam_off:+$aam_off and }$aam_key"
+      elif [[ "$aam_value" != "true" ]]; then
+        aam_unknown="${aam_unknown:+$aam_unknown and }$aam_key"
+      fi
+    done
+
     if [[ "$aam_queue_json" != "null" ]]; then
-      ok "$slug's merge_autonomy is \"$aam_level\" and $aam_default_branch carries an active merge queue — landing_arm enqueues regardless of allow_auto_merge"
-    elif [[ "$aam_auto" == "true" ]]; then
-      ok "$slug's merge_autonomy is \"$aam_level\" with no merge queue on $aam_default_branch, but allow_auto_merge is enabled — landing_arm's auto-merge fallback is accepted"
-    elif [[ "$aam_auto" != "false" ]]; then
-      # Tested only once the queue read has already reported no queue, since
-      # that is the one branch whose verdict this value changes. `repos/$slug`
-      # carries `allow_auto_merge` only for a token with admin visibility of
-      # the repository's merge settings — verified live 2026-08-18: the same
-      # token that reads `true` on Poetic-Poems/agent-ops (where it is an
-      # admin) gets no such key at all from cli/cli. `jq -r` renders that
-      # absence as the string `null`, which is *unknown*, not `false`: reading
-      # it as `false` would fail an installation, exit code and all, for a
-      # setting doctor never got to see. Unreadable is a skip, exactly as an
-      # unreachable repository or merge-queue state above is.
-      skip "$slug's allow_auto_merge/merge-queue pairing — $aam_default_branch carries no merge queue and repos/$slug did not report allow_auto_merge (this token cannot see $slug's merge settings)"
+      ok "$slug's merge_autonomy is \"$aam_level\" and $aam_default_branch carries an active merge queue — landing_arm enqueues regardless of allow_auto_merge and allow_squash_merge"
+    elif [[ -n "$aam_off" ]]; then
+      fail "$slug's merge_autonomy is \"$aam_level\" with no merge queue on $aam_default_branch and $aam_off disabled — landing_arm's no-queue fallback, gh pr merge --auto --squash, would be refused outright; enable $aam_off on $slug or adopt a merge queue on $aam_default_branch"
+    elif [[ -n "$aam_unknown" ]]; then
+      skip "$slug's merge-settings/merge-queue pairing — $aam_default_branch carries no merge queue and repos/$slug did not report $aam_unknown (this token cannot see $slug's merge settings)"
     else
-      fail "$slug's merge_autonomy is \"$aam_level\" with no merge queue on $aam_default_branch and allow_auto_merge disabled — landing_arm's auto-merge fallback would be refused outright; enable allow_auto_merge on $slug or adopt a merge queue on $aam_default_branch"
+      # Deliberately claims only what was read. Repository settings are a
+      # necessary condition for the fallback call, not a sufficient one —
+      # agent-ops#553 is open on whether GitHub accepts `--auto` at all for a
+      # pull request `run_landing_stage` has already established as mergeable
+      # — so this states the settings and stops there.
+      ok "$slug's merge_autonomy is \"$aam_level\" with no merge queue on $aam_default_branch, but allow_auto_merge and allow_squash_merge are both enabled — no repository setting refuses landing_arm's no-queue fallback"
     fi
   done < <(cfg '.repos[]?.slug // empty')
 
