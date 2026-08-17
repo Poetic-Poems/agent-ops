@@ -9422,7 +9422,7 @@ implements.
 
     A repository whose `Priority` field resolves but is missing one or more
     of the four band options (agent-ops#534 — the narrower complement to a
-    field that cannot be resolved at all, agent-ops#511/#528) no longer fails
+    field that cannot be resolved at all, agent-ops#511/#528) does not fail
     the write outright: `issue_priority_apply` falls back to the nearest band
     the field actually has an option for, via `issue_priority_fallback_band`,
     before applying the ratchet — the nearest *lower* band first, since that
@@ -9431,13 +9431,13 @@ implements.
     band was already `Low`, or every lower band is missing too; Enabler
     refinement on agent-ops#534). The ratchet above then runs against this
     fallback band exactly as it would against the verdict's own, so an
-    already-triaged repository is still never overwritten and a
-    lower-or-equal fallback is still skipped, not applied. Only a field
-    carrying *none* of the four names at all — nothing to fall back to
-    either — reports `band-option-missing` and applies nothing, a reason
-    distinct from `field-unresolvable` (previously the same string for both
-    "the field itself cannot be read" and "the field has no such option",
-    which left a caller unable to tell them apart). Every `issue_priority_apply`
+    issue that already carries a band is still never overwritten by one that
+    does not outrank it, and a lower-or-equal fallback is still skipped, not
+    applied. Only a field carrying *none* of the four names at all — nothing
+    to fall back to either — reports `band-option-missing` and applies
+    nothing, a reason distinct from `field-unresolvable` because a caller
+    must be able to tell "the field itself cannot be read" apart from "the
+    field has no such option". Every `issue_priority_apply`
     result gains an optional `requested` field, present whenever the band
     actually written, skipped, or found unwritable differs from the band the
     verdict asked for, so a fallback is always visible in the record rather

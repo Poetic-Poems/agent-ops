@@ -114,7 +114,7 @@ issue_priority_band_name() {
 # overstates the issue's priority, falling back to the nearest *higher*
 # rank only when no lower option exists at all (BAND was already `Low`, or
 # every lower band is missing too) — ending the loop is worth the
-# occasional one-band overstatement (Enabler refinement on agent-ops#534;
+# occasional overstatement (Enabler refinement on agent-ops#534;
 # the alternative, treating "nothing lower" as permanently unbandable,
 # reopens the same starvation this exists to close). Prints nothing and
 # returns 1 only when FIELD_IDS_JSON carries none of the four band names at
@@ -252,8 +252,8 @@ issue_priority_current() {
 # defect this case exists to close. `previous` carries the raw, unranked name.
 #
 # `"field-unresolvable"` and `"band-option-missing"` are deliberately distinct
-# reasons (agent-ops#534) for two different failures `issue_priority_field_ids`
-# used to collapse into one: the former is the field itself — missing, or
+# reasons (agent-ops#534) for two failures a caller must be able to tell
+# apart: the former is the field itself — missing, or
 # `ORG_ONLY`-invisible to this token (agent-ops#511) — the latter is a field
 # that resolves fine but is missing one or more of the four band names as
 # options. A missing BAND is not an immediate failure: `issue_priority_fallback_band`
