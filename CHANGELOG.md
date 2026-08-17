@@ -106,6 +106,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   issue read as triaged and never reached the Refiner's triage duty again;
   it now agrees with `issue_priority_current`'s own verdict and reads
   `priority_set: false`, same as an unset field.
+- The dashboard's `by_model` chart and `cost_rows[]` (issue #536) no longer
+  credit a transcript's whole `total_cost_usd` to whichever model
+  `(.modelUsage | keys)[0]` named — jq's `keys` sorts, so a transcript that
+  spent on more than one model (routine, since a subagent call inside a
+  stage often reaches for a cheaper one) always credited its entire cost to
+  the alphabetically-first model touched, systematically Haiku ahead of Opus
+  and Sonnet. Measured on poetic-node-1 on 2026-08-17, this credited Haiku
+  98.7% of the fleet's spend against its true 12.4% share, and Opus did not
+  appear at all. `scripts/publish-dashboard.sh`'s cost scan now reads each
+  `modelUsage` entry's own `costUSD` and sums them independently per model,
+  reproducing `total_cost_usd` to the cent; `by_day` and `by_actor` are
+  unaffected, still counting one row per transcript. `cost_rows[]` — which
+  the model/actor charts' own time-frame selector (issue #334) re-aggregates
+  client-side — now carries one row per (transcript × model) rather than one
+  per transcript, and without a way to tell those rows back apart the
+  windowed `by_actor` figure would have double-counted any transcript that
+  spent on two models; `cost_rows[]` rows now also carry the transcript's own
+  `cycle` id so the client can dedupe on it and count transcripts, not rows.
 
 ### Changed
 

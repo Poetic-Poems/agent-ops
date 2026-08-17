@@ -1,0 +1,53 @@
+{
+  "generated_at": "@now",
+  "node": "poetic-1",
+  "config": {
+    "timeout_coordinator": 15, "timeout_implementor": 90,
+    "timeout_reviewer": 30, "timeout_enabler": 30,
+    "lock_stale_after": 4, "dashboard_refresh_seconds": 5,
+    "repos": [
+      {
+        "slug": "Poetic-Poems/poetic",
+        "sources": ["security", "tech-debt"]
+      }
+    ]
+  },
+  "status": {
+    "switch": {"disabled": false},
+    "limit": {"active": false},
+    "running": false,
+    "lock": null,
+    "current": null,
+    "last_cycle": null
+  },
+  "counts": {
+    "spend_today_usd": 3.0, "spend_total_usd": 3.0,
+    "failures_shown": 0, "cycles_shown": 0, "prs_reached_ready": 0,
+    "by_day": [{"day": "@day:0", "usd": 3.0, "n": 1}],
+    "by_model": [
+      {"model": "claude-opus-5-20260101",   "usd": 2.0, "n": 1},
+      {"model": "claude-sonnet-5-20260101", "usd": 1.0, "n": 1}
+    ],
+    "by_actor": [
+      {"actor": "implementor", "usd": 3.0, "n": 1}
+    ],
+    "cost_rows": [
+      {"day": "@day:0", "model": "claude-opus-5-20260101",   "actor": "implementor", "usd": 2.0, "cycle": "same-transcript-1"},
+      {"day": "@day:0", "model": "claude-sonnet-5-20260101", "actor": "implementor", "usd": 1.0, "cycle": "same-transcript-1"}
+    ]
+  },
+  "cycles": [],
+  "blocked": [],
+  "void": [],
+  "github": {
+    "ok": true, "fetched_at": "@ago:1m", "prs": [], "pr_index": {},
+    "inputs": {
+      "Poetic-Poems/poetic": {
+        "issues": [], "failed_runs": [], "tech_debt": [], "findings": []
+      }
+    }
+  },
+  "log_tail": [],
+  "cron_tail": ["30 * * * *  /app/agent-cycle.sh"],
+  "max_open_agent_prs": 3
+}

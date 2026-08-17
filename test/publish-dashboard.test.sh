@@ -114,13 +114,16 @@ dead_pid() {
 
 # One stage envelope, the shape `claude -p --output-format json` writes: a
 # single line of compact JSON. Costs are chosen float-exact (quarters) so jq's
-# additions compare cleanly.
+# additions compare cleanly. `modelUsage`'s one entry carries `costUSD` equal
+# to the whole `total_cost_usd`, matching a real single-model envelope, so
+# `by_model`/`cost_rows` (issue #536) attribute the cost to `model` exactly as
+# the older assertions, written before the per-model split existed, expect.
 make_cycle() {  # make_cycle <home> <cid> <cost> <model> [result-text]
   local home="$1" cid="$2" cost="$3" model="$4" result="${5:-ok}"
   local d="$home/.local/state/poetic-agents/cycles/$cid"
   mkdir -p "$d"
-  printf '{"type":"result","subtype":"success","total_cost_usd":%s,"duration_ms":5,"num_turns":1,"is_error":false,"modelUsage":{"%s":{}},"result":"%s"}' \
-    "$cost" "$model" "$result" > "$d/coordinator.out"
+  printf '{"type":"result","subtype":"success","total_cost_usd":%s,"duration_ms":5,"num_turns":1,"is_error":false,"modelUsage":{"%s":{"costUSD":%s}},"result":"%s"}' \
+    "$cost" "$model" "$cost" "$result" > "$d/coordinator.out"
 }
 
 # One stage of one cycle, for the cost roll-ups. `make_cycle` above is the
@@ -130,8 +133,8 @@ make_cycle() {  # make_cycle <home> <cid> <cost> <model> [result-text]
 make_stage() {  # make_stage <home> <cid> <stage> <cost> <model>
   local d="$1/.local/state/poetic-agents/cycles/$2"
   mkdir -p "$d"
-  printf '{"type":"result","subtype":"success","total_cost_usd":%s,"duration_ms":5,"num_turns":1,"is_error":false,"modelUsage":{"%s":{}},"result":"ok"}' \
-    "$4" "$5" > "$d/$3.out"
+  printf '{"type":"result","subtype":"success","total_cost_usd":%s,"duration_ms":5,"num_turns":1,"is_error":false,"modelUsage":{"%s":{"costUSD":%s}},"result":"ok"}' \
+    "$4" "$5" "$4" > "$d/$3.out"
 }
 
 # The weekly project-review pipeline's record: same envelope, a sibling
@@ -139,8 +142,8 @@ make_stage() {  # make_stage <home> <cid> <stage> <cost> <model>
 make_review() {  # make_review <home> <review-id> <repo-slug> <cost> <model>
   local d="$1/.local/state/poetic-agents/reviews/$2"
   mkdir -p "$d"
-  printf '{"type":"result","subtype":"success","total_cost_usd":%s,"duration_ms":5,"num_turns":1,"is_error":false,"modelUsage":{"%s":{}},"result":"ok"}' \
-    "$4" "$5" > "$d/reviewer-${3//\//_}.out"
+  printf '{"type":"result","subtype":"success","total_cost_usd":%s,"duration_ms":5,"num_turns":1,"is_error":false,"modelUsage":{"%s":{"costUSD":%s}},"result":"ok"}' \
+    "$4" "$5" "$4" > "$d/reviewer-${3//\//_}.out"
 }
 
 run_publish() {  # run_publish <home> [env assignments…]
@@ -218,8 +221,60 @@ assert_eq "cost_rows sums to the same total as spend_total_usd" \
   "1" "$(jq -r '[.counts.cost_rows[].usd] | add' <<<"$data")"
 assert_eq "each cost_rows entry carries day, model and actor" "3" \
   "$(jq -r '[.counts.cost_rows[] | select(.day != null and .model != null and .actor != null)] | length' <<<"$data")"
+assert_eq "and each carries the transcript's own cycle id too" "3" \
+  "$(jq -r '[.counts.cost_rows[] | select(.cycle != null)] | length' <<<"$data")"
 assert_eq "the cycle far outside COST_SCAN_DAYS is excluded from cost_rows too" \
   "0" "$(jq -r '[.counts.cost_rows[] | select(.model=="model-old")] | length' <<<"$data")"
+
+# --- The model dimension is exact, not approximate (issue #536) ------------
+# `scripts/publish-dashboard.sh` used to attribute a transcript's whole
+# `total_cost_usd` to `(.modelUsage | keys)[0]` — jq's `keys` sorts, so a
+# transcript that spent on two models credited all of it to whichever sorted
+# first (systematically Haiku, ahead of Opus and Sonnet). The fix reads each
+# `modelUsage` entry's own `costUSD` and sums them independently per model.
+m="$(new_home nodeM)"
+mcid="${today_day}T060000Z-61"
+mkdir -p "$m/.local/state/poetic-agents/cycles/$mcid"
+printf '{"type":"result","subtype":"success","total_cost_usd":0.7,"duration_ms":5,"num_turns":1,"is_error":false,"modelUsage":{"claude-haiku-4-5-20251001":{"costUSD":0.1},"claude-sonnet-5":{"costUSD":0.6}},"result":"ok"}' \
+  > "$m/.local/state/poetic-agents/cycles/$mcid/coordinator.out"
+# A transcript with no readable modelUsage (empty map here; an absent or
+# malformed one degrades the same way) must still contribute its whole cost
+# to the day and actor totals, and must not vanish from by_model — it lands
+# under "unknown" instead of being dropped, since the cost is real even
+# though its model attribution is not.
+ucid="${today_day}T060100Z-62"
+mkdir -p "$m/.local/state/poetic-agents/cycles/$ucid"
+printf '{"type":"result","subtype":"success","total_cost_usd":0.05,"duration_ms":5,"num_turns":1,"is_error":false,"modelUsage":{},"result":"ok"}' \
+  > "$m/.local/state/poetic-agents/cycles/$ucid/coordinator.out"
+
+run_publish "$m"
+mdata="$(data_of "$m")"
+
+assert_eq "a two-model transcript credits Sonnet only its own costUSD" \
+  "0.6" "$(jq -r '.counts.by_model[] | select(.model=="claude-sonnet-5") | .usd' <<<"$mdata")"
+assert_eq "and credits Haiku only its own costUSD, not the whole transcript" \
+  "0.1" "$(jq -r '.counts.by_model[] | select(.model=="claude-haiku-4-5-20251001") | .usd' <<<"$mdata")"
+assert_eq "summing every by_model row reproduces both transcripts total_cost_usd to the cent" \
+  "0.75" "$(jq -r '[.counts.by_model[].usd] | add' <<<"$mdata")"
+assert_eq "a transcript with no readable modelUsage lands under unknown rather than being dropped" \
+  "0.05" "$(jq -r '.counts.by_model[] | select(.model=="unknown") | .usd' <<<"$mdata")"
+assert_eq "cost_rows carries one row per (transcript × model): two for the split cycle, one for unknown" \
+  "3" "$(jq -r '.counts.cost_rows | length' <<<"$mdata")"
+# The two rows a single transcript split into (issue #536) must carry that
+# transcript's one `cycle` id, not two — the model/actor time-frame
+# selector's client-side re-aggregation dedupes windowed `by_actor.n` on it,
+# and a mismatch here would silently double-count this transcript's one
+# stage run the moment a reader narrowed the window off "Lifetime".
+assert_eq "the split cycle's two rows share one cycle id" "1" \
+  "$(jq -r --arg cid "$mcid" '[.counts.cost_rows[] | select(.model=="claude-sonnet-5" or .model=="claude-haiku-4-5-20251001") | .cycle] | unique | map(select(. == $cid)) | length' <<<"$mdata")"
+assert_eq "by_day still counts transcripts, not model touches: two transcripts, not three" \
+  "2" "$(jq -r --arg d "$today_day" '.counts.by_day[] | select(.day==$d) | .n' <<<"$mdata")"
+assert_eq "and by_day sums the same total_cost_usd either way" \
+  "0.75" "$(jq -r --arg d "$today_day" '.counts.by_day[] | select(.day==$d) | .usd' <<<"$mdata")"
+assert_eq "by_actor is not inflated by the per-model split either: two transcripts, not three" \
+  "2" "$(jq -r '.counts.by_actor[] | select(.actor=="coordinator") | .n' <<<"$mdata")"
+assert_eq "and by_actor sums the same total regardless of how many models a transcript touched" \
+  "0.75" "$(jq -r '.counts.by_actor[] | select(.actor=="coordinator") | .usd' <<<"$mdata")"
 
 # The verdict-quality aggregate (issue #319) ships even when the log holds no
 # Co-Ordinator record at all, zeroed rather than absent: the page distinguishes
@@ -760,7 +815,7 @@ printf '{"node":"peer1","role":"active","ts":"%s","last_cycle":"%sT040000Z-peer1
   printf '{"ts":"2026-01-01T04:00:03Z","cycle":"%sT040000Z-peer1-77","node":"peer1","event":"selection","repo":"Poetic-Poems/poetic","item":"TD26071401","source":"tech-debt","title":"share the limit detector"}\n' "$today_day"
   printf '{"ts":"2026-01-01T04:00:04Z","cycle":"%sT040000Z-peer1-77","node":"peer1","event":"stage-start","stage":"implementor"}\n' "$today_day"
 } > "$peer/log.jsonl"
-printf '{"type":"result","subtype":"success","total_cost_usd":0.25,"duration_ms":5,"num_turns":1,"is_error":false,"modelUsage":{"model-p":{}},"result":"peer secret ghp_9876543210abcdefXYZ9876 in /home/peeruser/thing"}' \
+printf '{"type":"result","subtype":"success","total_cost_usd":0.25,"duration_ms":5,"num_turns":1,"is_error":false,"modelUsage":{"model-p":{"costUSD":0.25}},"result":"peer secret ghp_9876543210abcdefXYZ9876 in /home/peeruser/thing"}' \
   > "$peer/cycles/${today_day}T040000Z-peer1-77/coordinator.out"
 # peer2 is between cycles: its last one ran to `cycle-end`.
 printf '{"node":"peer2","role":"active","ts":"%s","last_cycle":"%sT033000Z-peer2-88"}\n' \

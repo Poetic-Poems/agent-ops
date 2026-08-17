@@ -777,6 +777,25 @@ assert_not_contains "not to the disabled '90 days' option itself" \
 assert_contains "and the model chart falls back to the same lifetime total the default render shows" \
   '$11.00 · 2' "$out_90d"
 
+# --- cost-window-actor-split.json: windowed by_actor counts transcripts, not
+# model touches (issue #536) --------------------------------------------------
+# One transcript split into two `cost_rows` entries — one per model it
+# touched — sharing a single `cycle` id. Outside the time-frame selector
+# (`by_actor` itself, read straight off the Publisher) this was never wrong;
+# the risk is only in the client's own windowed re-aggregation off `cost_rows`,
+# which used to count rows rather than transcripts and would have doubled this
+# one transcript's "stage run(s)" figure the moment a reader left "Lifetime".
+out_split="$(render cost-window-actor-split.json '{"dashboard.costWindow":"1"}')" || \
+  { printf 'FAIL - cost-window-actor-split.json did not render:\n%s\n' "$out_split"; exit 1; }
+# shellcheck disable=SC2016
+assert_contains "a transcript touching two models counts once under the windowed actor chart" \
+  '$3.00 · 1' "$out_split"
+# shellcheck disable=SC2016
+assert_not_contains "not twice, one per model it happened to touch" \
+  '$3.00 · 2' "$out_split"
+assert_contains "the windowed model chart still credits each model only its own split" \
+  'title="1 stage run(s)"' "$out_split"
+
 # --- switch-scope-*.json: which switch a node card is actually claiming ----------
 # A fleet-wide --disable writes a local record on the node that issued it as
 # well as the fleet flag (implementation spec 2.3a). Before that record was
