@@ -24,21 +24,22 @@
 # governor that is wrong about its own count is a fact worth a human's
 # attention regardless of which direction it was wrong in.
 #
-# ## This is the mechanism, not the arming step
+# ## Where this is called from
 #
-# Nothing in this repository calls `merge_budget_decide` from a behaviour-
-# affecting path yet, deliberately: no requirement anywhere arms an
-# automatic landing today (see `lib/merge-autonomy.sh`'s own header and "##
-# The Landing Gate", docs/IMPLEMENTATION-PIPELINE-SPEC.md), so there is no
-# call site for a budget to gate. `merge_autonomy_effective_level` is the one
-# exception — it already calls `merge_budget_freeze_state` below, because a
-# per-repo freeze is a fact about what level a repository is governed at
-# regardless of whether anything arms landing on the strength of that level
-# yet, exactly the same reasoning that already applies to the fleet-wide kill
-# switch. The later work item that arms automatic landing is what calls
-# `merge_budget_decide` and `merge_budget_apply_decision` for real; until
-# then this file is fully implemented and regression-tested
-# (test/merge-budget.test.sh) but otherwise dormant.
+# `run_landing_stage` (D18 WI-7, requirement 8d, `agent-cycle.sh`) is the one
+# behaviour-affecting caller of `merge_budget_decide` and
+# `merge_budget_apply_decision` — one of the gates the arming step re-reads
+# fresh, immediately before it would otherwise land a pull request itself.
+# `merge_autonomy_effective_level` is the other caller in this codebase — it
+# calls `merge_budget_freeze_state` below regardless of whether the arming
+# step ever runs, because a per-repo freeze is a fact about what level a
+# repository is governed at independent of anything landing on the strength
+# of that level, exactly the same reasoning that already applies to the
+# fleet-wide kill switch. Both callers exist because `merge_autonomy` above
+# `agent-approves` is still an explicit per-installation opt-in (product
+# default `human` fleet-wide) — this file has been regression-tested
+# (test/merge-budget.test.sh) since WI-6 landed, and is live wherever an
+# operator has actually raised the level.
 #
 # ## Freeze record shape and the fail-open reading of its own reachability
 #
@@ -267,17 +268,37 @@ merge_budget_decide() {
     '{decision:"hold", cap:$cap, count:$count, anomaly:$an, waiting_backlog:$bl}'
 }
 
-# merge_budget_freeze_state STATE_REPO STATE_DIR SLUG
+# merge_budget_freeze_state STATE_REPO STATE_DIR SLUG [FRESH]
 # The per-repo freeze, in `toggle_state`'s own vocabulary — `{"state":
 # "enabled"}` (not frozen) or `{"state":"disabled","record":{...}}` (frozen).
-# `fleet_flag_fetch` (RAW-only), exactly as `fleet_disabled_state` uses for
-# every other ordinary fleet flag: an unreachable state repo with no cache
-# and a genuinely clear flag both read as "not frozen" here — see the header
-# for why this, unlike the kill switch, does not need TD-PPagop-26081507's
-# fail-closed inversion.
+# RAW-only, exactly as `fleet_disabled_state` uses for every other ordinary
+# fleet flag: an unreachable state repo with no cache and a genuinely clear
+# flag both read as "not frozen" here — see the header for why this, unlike
+# the kill switch, does not need TD-PPagop-26081507's fail-closed inversion.
+#
+# FRESH (issue #513) skips this process's memo for the one call — the same
+# escape `fleet_flag_fetch_status`'s own FRESH argument provides, for the same
+# reason: a caller taking an outward action under the answer must see a freeze
+# another process set at the moment it decides, rather than replaying the
+# answer this cycle's first read memoised. D18 WI-7's arming step is that
+# site, and `merge_autonomy_effective_level` passes its own FRESH through to
+# here, so that function's promise — the kill switch *and* a WI-6 budget
+# freeze both bind at the moment of decision — holds for the freeze too.
+#
+# A fresh read calls `fleet_flag_fetch_status` directly, because
+# `fleet_flag_fetch` deliberately forwards neither MODE nor FRESH (that is
+# what keeps its contract byte-identical for its three original callers).
+# MODE is passed empty, so this flag's fail-open direction is untouched: only
+# the memo is bypassed, never the `clear`-vs-`unreachable` resolution, and an
+# empty RAW still reads as "not frozen" whichever path produced it.
 merge_budget_freeze_state() {
-  local raw
-  raw="$(fleet_flag_fetch "$1" "$2" "$(_merge_budget_freeze_flag_name "$3")")"
+  local raw fresh="${4:-}" combined
+  if [[ -n "$fresh" ]]; then
+    combined="$(fleet_flag_fetch_status "$1" "$2" "$(_merge_budget_freeze_flag_name "$3")" "" "$fresh")"
+    raw="${combined#*$'\t'}"
+  else
+    raw="$(fleet_flag_fetch "$1" "$2" "$(_merge_budget_freeze_flag_name "$3")")"
+  fi
   if [[ -z "$raw" ]]; then
     printf '{"state":"enabled"}'
     return 0

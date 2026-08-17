@@ -76,9 +76,11 @@ Do not touch any other branch.
 ## Merge-queue awareness (D17)
 
 Where this repository has a GitHub merge queue enabled, enqueueing is the
-human's merge click ("Merge when ready") — the product never enqueues a pull
-request itself — and a push to a queued pull request evicts it from the
-queue with no further signal that this happened. This matters only while
+merge act itself — the human's merge click ("Merge when ready"), or, at
+`merge_autonomy: agent-merges-routine` and above, the Script's own arming
+step after every gate it re-reads has cleared; never you, at any level — and
+a push to a queued pull request evicts it from the queue with no further
+signal that this happened. This matters only while
 the pull request is not a draft: a draft cannot be queued, and for the
 ordinary flow the PR stays draft through step 6 below, so nothing here
 applies until step 7's flip — by which point you are done pushing. It does

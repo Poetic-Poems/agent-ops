@@ -294,12 +294,12 @@ if [[ -n "$merge_budget_sources" ]]; then
   done <<<"$merge_budget_sources"
 fi
 # A repository whose effective landing rate would be unbounded (cap 0) while
-# also trusted at agent-merges-routine or above is not wrong today — nothing
-# arms automatic landing yet (requirement 2.3c) — but it is worth surfacing
-# now: the pairing only starts to matter once a later work item arms it, and
-# an operator is better told before that day than on it. Judged against the
-# *configured* level, not the kill-switch/freeze-adjusted effective one, for
-# the same reason the merge_autonomy pairing check above is.
+# also trusted at agent-merges-routine or above is worth surfacing: at that
+# level the arming step (requirement 8d) may land pull requests itself, and
+# an operator is better told the budget will not bound that before it
+# happens than after. Judged against the *configured* level, not the
+# kill-switch/freeze-adjusted effective one, for the same reason the
+# merge_autonomy pairing check above is.
 while IFS= read -r mb_slug; do
   [[ -n "$mb_slug" ]] || continue
   mb_level="$(merge_autonomy_configured_level "$DEFAULTED_CONFIG" "$mb_slug")"
@@ -307,7 +307,32 @@ while IFS= read -r mb_slug; do
   mb_routine_rank="$(merge_autonomy_rank agent-merges-routine)"
   mb_cap="$(merge_budget_effective_cap "$DEFAULTED_CONFIG" "$mb_slug")"
   if (( mb_rank >= mb_routine_rank )) && [[ "$mb_cap" == "0" ]]; then
-    warn "$mb_slug's merge_autonomy is \"$mb_level\" with merge_budget_per_day unlimited (0) — no cap will bound its landing rate once a later work item arms automatic landing"
+    warn "$mb_slug's merge_autonomy is \"$mb_level\" with merge_budget_per_day unlimited (0) — no cap will bound its landing rate"
+  fi
+done < <(cfg '.repos[]?.slug // empty')
+
+# D18 WI-7 (requirement 8d): merge_autonomy_routine_sources names which work
+# sources the arming step may land automatically at agent-merges-routine and
+# above. An entry naming a source this repository's own `sources` list never
+# gathers can never be selected, let alone armed — dead configuration nobody
+# would notice until they went looking for why nothing autonomous ever lands
+# from it. Checked per repository, against that repository's own effective
+# list (its own override, else the top-level key, else the shipped default),
+# never fleet-wide: a source missing from one repository's `sources` may be
+# present in another's.
+while IFS= read -r rs_slug; do
+  [[ -n "$rs_slug" ]] || continue
+  rs_missing="$(jq -r --arg slug "$rs_slug" '
+    ((.repos // [])[] | select(.slug == $slug)) as $r
+    | ($r.merge_autonomy_routine_sources // .merge_autonomy_routine_sources
+       // ["register-hygiene","tech-debt"]) as $routine
+    | ($r.sources // []) as $have
+    | ($routine - $have) | .[]
+  ' <<<"$DEFAULTED_CONFIG" 2>/dev/null | paste -sd, - || true)"
+  if [[ -n "$rs_missing" ]]; then
+    warn "$rs_slug's merge_autonomy_routine_sources names [$rs_missing], which its own sources list never gathers — a routine source this repository never produces can never be selected, let alone armed (D18 WI-7)"
+  else
+    ok "$rs_slug's merge_autonomy_routine_sources are all sources it actually gathers"
   fi
 done < <(cfg '.repos[]?.slug // empty')
 

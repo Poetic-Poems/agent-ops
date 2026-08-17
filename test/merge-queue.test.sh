@@ -150,6 +150,49 @@ out="$(probe acme/acme 12)"; rc=$?
 assert_eq "a repo named the same as its owner is a valid slug" "0" "$rc"
 assert_eq "  ... and is probed like any other" "false" "$(jq -r '.queued' <<<"$out")"
 
+# --- merge_queue_for_branch (D18 WI-7, agent-ops#410) ------------------------
+# lib/landing.sh's own queue-detection read: whether BRANCH has an active
+# merge queue at all (not whether a given pull request is currently in it,
+# which merge_queue_probe above answers).
+for_branch() { MERGE_QUEUE_GH="$tmp_dir/gh" merge_queue_for_branch "$@"; }
+mq_response() {  # mq_response null|OBJECT
+  jq -nc --argjson mq "$1" '{data:{repository:{mergeQueue: $mq}}}' > "$tmp_dir/response.json"
+}
+
+mq_response 'null'
+out="$(for_branch o/r main)"; rc=$?
+assert_eq "no queue on this branch: prints the literal null, exit 0" "null" "$out"
+assert_eq "  ... exit 0" "0" "$rc"
+
+mq_response '{"id":"MQ_kwDOTWpCsc4AA8Qo","mergeMethod":"SQUASH","mergingStrategy":"ALLGREEN"}'
+out="$(for_branch o/r main)"; rc=$?
+assert_eq "an active queue: the object comes back verbatim" \
+  '{"id":"MQ_kwDOTWpCsc4AA8Qo","mergeMethod":"SQUASH","mergingStrategy":"ALLGREEN"}' "$out"
+assert_eq "  ... exit 0" "0" "$rc"
+
+mq_response 'null'
+: > "$tmp_dir/fail"
+out="$(for_branch o/r main)"; rc=$?
+assert_eq "a failed gh call: non-zero exit, no output" "1" "$rc"
+assert_eq "  ... no output" "" "$out"
+rm -f "$tmp_dir/fail"
+
+mq_response '"neither null nor an object"'
+out="$(for_branch o/r main)"; rc=$?
+assert_eq "a mergeQueue value that is neither null nor an object is rejected" "1" "$rc"
+
+mq_response '{"mergeMethod":"SQUASH"}'
+out="$(for_branch o/r main)"; rc=$?
+assert_eq "a queue object missing its own id is rejected, never handed to a caller" "1" "$rc"
+
+mq_response 'null'
+out="$(for_branch "" main)"; rc=$?
+assert_eq "an empty slug is rejected before calling gh" "1" "$rc"
+out="$(for_branch o/r "")"; rc=$?
+assert_eq "an empty branch is rejected before calling gh" "1" "$rc"
+out="$(for_branch o/r/extra main)"; rc=$?
+assert_eq "a slug with more than one '/' is rejected before calling gh" "1" "$rc"
+
 # --- merge_queue_dequeue_actionable (agent-ops#394, TD-PPagop-26081409) -----
 # Values verified live against GitHub (see lib/merge-queue.sh's own comment):
 # "manual" (the maintainer's own removal) and "merged" (the removal that *is*

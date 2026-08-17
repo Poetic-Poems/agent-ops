@@ -28,18 +28,18 @@
 # must call it, never `merge_autonomy_configured_level` directly, so the kill
 # switch actually overrides what it promises to.
 #
-# At this stage (WI-2) nothing calls `merge_autonomy_effective_level` from a
-# behaviour-affecting path — `scripts/doctor.sh` is the only reader, and it
-# validates the *configured* level, deliberately ignoring the kill switch
-# (see its own comment): a config that is invalid the moment the switch is
-# cleared is worth failing on now, not only once someone clears it. No
-# behaviour changes until WI-5 (the Approver stage) and WI-7 (the arming
-# step) read `merge_autonomy_effective_level` for real. Because that day is
-# coming, the kill switch's own read already fails closed on a fresh node
-# that cannot reach the state repo (TD-PPagop-26081507, see
-# merge_autonomy_kill_state below) — `merge_autonomy_effective_level` must
-# answer `human` from the moment WI-5 starts trusting it, not only once
-# someone remembers to revisit this file.
+# `run_approver_stage` (WI-5, the Approver stage) and `run_landing_stage`
+# (WI-7, the arming step, requirement 8d) are this file's two
+# behaviour-affecting callers of `merge_autonomy_effective_level` —
+# `scripts/doctor.sh` is a third, but it validates the *configured* level,
+# deliberately ignoring the kill switch (see its own comment): a config that
+# is invalid the moment the switch is cleared is worth failing on now, not
+# only once someone clears it. The kill switch's own read fails closed on a
+# fresh node that cannot reach the state repo (TD-PPagop-26081507, see
+# merge_autonomy_kill_state below) — a defence written at WI-2, before either
+# real caller existed, on the reasoning that the day they would was already
+# certain and a node answering the wrong thing on that day is the one this
+# switch exists to prevent.
 #
 # WI-6 (D18 §5.4, `docs/reviews/2026-08-14-autonomy-investigation.md`,
 # `lib/merge-budget.sh`) adds a second, narrower override alongside the kill
@@ -202,13 +202,19 @@ merge_autonomy_kill_clear() {
 # repository's until an operator opts one up) is the common case this skips
 # a fetch for on every single read.
 #
-# FRESH (issue #513, PR #506 review follow-up) reaches only the kill switch's
-# own read, never the freeze's: the kill switch is the one flag an acting
-# site (`run_approver_stage`) must see set from outside this process without
-# waiting for the next cycle (requirement 2.3a); the freeze read stays
-# memoised regardless, exactly as before, so the back-pressure loop's N→1
+# FRESH (issue #513, PR #506 review follow-up) reaches *both* flag reads — the
+# kill switch's and the per-repo freeze's. An acting site must see either one
+# set from outside this process at the moment it decides rather than replaying
+# the answer this cycle's first read memoised (requirement 2.3a):
+# `run_approver_stage` was the one such site when FRESH arrived, D18 WI-7's
+# arming step is the second, and this function is what both of them read, so a
+# freeze that bound only on the next cycle would quietly break the promise the
+# arming step's own eligibility bullet makes. A caller passing no FRESH is
+# unaffected — both reads stay memoised, leaving the back-pressure loop's N→1
 # saving (PR #499 review follow-up, asserted in
-# test/backpressure-wiring.test.sh) is unaffected by a caller passing FRESH.
+# test/backpressure-wiring.test.sh) untouched — and the rank check below still
+# skips the freeze fetch outright for every repository at `agent-approves` or
+# below, fresh or not.
 merge_autonomy_effective_level() {
   local config_json="$1" slug="$2" state_repo="$3" state_dir="$4" fresh="${5:-}"
   local kill_state configured configured_rank cap_rank freeze_state
@@ -221,7 +227,7 @@ merge_autonomy_effective_level() {
   configured_rank="$(merge_autonomy_rank "$configured" 2>/dev/null)" || configured_rank=0
   cap_rank="$(merge_autonomy_rank agent-approves)"
   if (( configured_rank > cap_rank )); then
-    freeze_state="$(jq -r '.state' <<<"$(merge_budget_freeze_state "$state_repo" "$state_dir" "$slug")" 2>/dev/null)"
+    freeze_state="$(jq -r '.state' <<<"$(merge_budget_freeze_state "$state_repo" "$state_dir" "$slug" "$fresh")" 2>/dev/null)"
     if [[ "$freeze_state" != "enabled" ]]; then
       printf 'agent-approves'
       return 0
