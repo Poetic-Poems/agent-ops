@@ -59,6 +59,8 @@ source "$SCRIPT_DIR/lib/toggle.sh"
 source "$SCRIPT_DIR/lib/merge-budget.sh"
 # shellcheck source=lib/merge-autonomy.sh
 source "$SCRIPT_DIR/lib/merge-autonomy.sh"
+# shellcheck source=lib/merge-queue.sh
+source "$SCRIPT_DIR/lib/merge-queue.sh"
 # shellcheck source=lib/approver-token.sh
 source "$SCRIPT_DIR/lib/approver-token.sh"
 # shellcheck source=lib/issue-priority.sh
@@ -844,6 +846,46 @@ if ((gh_ready)); then
           ok "$slug's merge_autonomy is \"$ma_level\" and its default-branch ruleset requires no code-owner review — the Approver App can clear the pull_request rule (D18 §5.3)"
         fi
       fi
+    fi
+  done < <(cfg '.repos[]?.slug // empty')
+
+  # agent-ops#532 (D18 WI-7 follow-up): `landing_arm`'s no-queue fallback is
+  # `gh pr merge --auto --squash`, which GitHub refuses outright when the
+  # repository's own `allow_auto_merge` is off — a setting `merge_autonomy`
+  # itself never validates. Below the routine tier `landing_arm` is
+  # unreachable at all, so the check stays silent there; judged against each
+  # repository's *configured* level, the same "an operator raising the level
+  # later must not discover this for the first time as a stuck
+  # landing-refused loop" reasoning the pairing check above already uses.
+  while IFS= read -r slug; do
+    [[ -n "$slug" ]] || continue
+    aam_level="$(merge_autonomy_configured_level "$DEFAULTED_CONFIG" "$slug")"
+    aam_rank="$(merge_autonomy_rank "$aam_level" 2>/dev/null || printf 0)"
+    aam_routine_rank="$(merge_autonomy_rank agent-merges-routine)"
+    if [[ ! "$aam_rank" =~ ^[0-9]+$ ]] || (( aam_rank < aam_routine_rank )); then
+      continue
+    fi
+
+    if ! aam_repo_json="$(gh api "repos/$slug" --jq '{auto: .allow_auto_merge, default_branch: .default_branch}' 2>/dev/null)"; then
+      skip "$slug's allow_auto_merge/merge-queue pairing — repos/$slug is not reachable with this token"
+      continue
+    fi
+    aam_auto="$(jq -r '.auto' <<<"$aam_repo_json" 2>/dev/null)"
+    aam_default_branch="$(jq -r '.default_branch' <<<"$aam_repo_json" 2>/dev/null)"
+    if [[ -z "$aam_default_branch" || "$aam_default_branch" == "null" ]]; then
+      skip "$slug's allow_auto_merge/merge-queue pairing — repos/$slug did not report a default_branch"
+      continue
+    fi
+    if ! aam_queue_json="$(merge_queue_for_branch "$slug" "$aam_default_branch")"; then
+      skip "$slug's allow_auto_merge/merge-queue pairing — could not read $aam_default_branch's merge-queue state"
+      continue
+    fi
+    if [[ "$aam_queue_json" != "null" ]]; then
+      ok "$slug's merge_autonomy is \"$aam_level\" and $aam_default_branch carries an active merge queue — landing_arm enqueues regardless of allow_auto_merge"
+    elif [[ "$aam_auto" == "true" ]]; then
+      ok "$slug's merge_autonomy is \"$aam_level\" with no merge queue on $aam_default_branch, but allow_auto_merge is enabled — landing_arm's auto-merge fallback is accepted"
+    else
+      fail "$slug's merge_autonomy is \"$aam_level\" with no merge queue on $aam_default_branch and allow_auto_merge disabled — landing_arm's auto-merge fallback would be refused outright; enable allow_auto_merge on $slug or adopt a merge queue on $aam_default_branch"
     fi
   done < <(cfg '.repos[]?.slug // empty')
 

@@ -338,6 +338,19 @@ landing_approver_standing_review() {
 # below), so a caller must never read a non-zero exit as anything but "no
 # write happened it can vouch for".
 #
+# The non-zero exit status itself distinguishes *which* step failed
+# (agent-ops#532) — `_landing_arm_failure_reason` below turns it into text a
+# `landing-refused` reason can carry, since a bare "landing_arm could not
+# enqueue or auto-merge" left every one of these indistinguishable in the
+# log, the one place an operator would otherwise look to find out:
+#   1 — bad arguments (missing SLUG, NUMBER or TOKEN)
+#   2 — could not read the pull request's own node id / base branch
+#   3 — that read reported no node id or no base branch
+#   4 — could not read the base branch's merge-queue state
+#   5 — the enqueue mutation itself failed
+#   6 — the enqueue mutation reported no merge-queue entry (a partial write)
+#   7 — `gh pr merge --auto --squash` failed
+#
 # Two reads precede the one write, both under whatever ambient `gh`
 # identity the caller already runs as (never TOKEN — they write nothing,
 # so the two-identity audit trail has nothing to protect here):
@@ -359,13 +372,13 @@ landing_arm() {
 
   local pr_json node_id base
   pr_json="$("$gh_bin" api "repos/$slug/pulls/$number" \
-    --jq '{id: .node_id, base: .base.ref}' 2>/dev/null)" || return 1
+    --jq '{id: .node_id, base: .base.ref}' 2>/dev/null)" || return 2
   node_id="$(jq -r '.id // empty' <<<"$pr_json" 2>/dev/null)"
   base="$(jq -r '.base // empty' <<<"$pr_json" 2>/dev/null)"
-  [[ -n "$node_id" && -n "$base" ]] || return 1
+  [[ -n "$node_id" && -n "$base" ]] || return 3
 
   local queue_json
-  queue_json="$(merge_queue_for_branch "$slug" "$base")" || return 1
+  queue_json="$(merge_queue_for_branch "$slug" "$base")" || return 4
 
   if [[ "$queue_json" != "null" ]]; then
     local mutate_out
@@ -373,7 +386,7 @@ landing_arm() {
     mutate_out="$(GH_TOKEN="$token" "$gh_bin" api graphql \
       -f query='mutation($id:ID!){enqueuePullRequest(input:{pullRequestId:$id}){mergeQueueEntry{id}}}' \
       -f id="$node_id" \
-      --jq '.data.enqueuePullRequest.mergeQueueEntry.id' 2>/dev/null)" || return 1
+      --jq '.data.enqueuePullRequest.mergeQueueEntry.id' 2>/dev/null)" || return 5
     # `null` as well as empty: `--jq` prints a JSON null as the four-character
     # word `null`, so a mutation that returned no `mergeQueueEntry` at all —
     # `enqueuePullRequest` reports one as nullable, and GitHub does not
@@ -381,11 +394,29 @@ landing_arm() {
     # — would otherwise pass the `-n` test and be logged `landing-armed`
     # naming a queue entry that does not exist. Exactly the "a partial write
     # this function cannot vouch for" case the header promises to refuse.
-    [[ -n "$mutate_out" && "$mutate_out" != "null" ]] || return 1
+    [[ -n "$mutate_out" && "$mutate_out" != "null" ]] || return 6
     printf 'enqueued'
     return 0
   fi
 
-  GH_TOKEN="$token" "$gh_bin" pr merge "$number" -R "$slug" --auto --squash >/dev/null 2>&1 || return 1
+  GH_TOKEN="$token" "$gh_bin" pr merge "$number" -R "$slug" --auto --squash >/dev/null 2>&1 || return 7
   printf 'auto-merge'
+}
+
+# _landing_arm_failure_reason CODE
+# Human-readable text for one of `landing_arm`'s seven distinguishable exit
+# statuses (see its own header) — kept beside `landing_arm` so the mapping
+# cannot drift from the return statements it describes. An unrecognised CODE
+# (there should never be one) still names itself rather than saying nothing.
+_landing_arm_failure_reason() {
+  case "$1" in
+    1) printf 'bad arguments (missing slug, pull request number or token)' ;;
+    2) printf 'could not read the pull request'\''s own node id and base branch' ;;
+    3) printf 'the pull request read reported no node id or no base branch' ;;
+    4) printf 'could not read the base branch'\''s merge-queue state' ;;
+    5) printf 'the enqueue mutation itself failed' ;;
+    6) printf 'the enqueue mutation reported no merge-queue entry (a partial write)' ;;
+    7) printf 'gh pr merge --auto --squash failed' ;;
+    *) printf 'exited %s' "${1:-unknown}" ;;
+  esac
 }

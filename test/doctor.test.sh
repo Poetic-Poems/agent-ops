@@ -106,6 +106,17 @@ case "$1" in
       esac
     done
     case "$endpoint" in
+      graphql)
+        # lib/merge-queue.sh's `merge_queue_for_branch` (the allow_auto_merge
+        # pairing check, agent-ops#532) is the only GraphQL read this suite
+        # ever triggers, so the query text itself is never inspected —
+        # STUB_MERGE_QUEUE_JSON is the raw `mergeQueue` value (`null`, or an
+        # object literal), served through the same jq_filter the real
+        # `--jq '.data.repository.mergeQueue'` applies. STUB_MERGE_QUEUE_FAIL=1
+        # is a transport-level failure.
+        [[ "${STUB_MERGE_QUEUE_FAIL:-0}" != "1" ]] || exit 1
+        printf '{"data":{"repository":{"mergeQueue":%s}}}' "${STUB_MERGE_QUEUE_JSON:-null}" \
+          | jq -c "$jq_filter" ;;
       user) printf '"stub-user"\n' ;;
       repos/*/labels) printf '' ;;
       repos/*/contents/*)
@@ -138,6 +149,7 @@ case "$1" in
         [[ -n "$rulesets_json" ]] || rulesets_json='[]'
         printf '%s' "$rulesets_json" | jq -c "$jq_filter" ;;
       repos/*)
+        [[ "${STUB_REPO_FAIL:-0}" != "1" ]] || exit 1
         # Not `${STUB_REPO_JSON:-{}}` — bash's brace-matching for a `${VAR:-…}`
         # default gets confused when the default text itself contains braces,
         # and silently appends a stray one to the *set* value too.
@@ -451,6 +463,72 @@ assert_contains "  ... and positively confirms the level, same as it did before 
 run_doctor
 assert_not_contains "merge_autonomy at the default (human) needs no approver_model_default" \
   "no approver_model_default configured" "$out"
+
+# --- agent-ops#532 (D18 WI-7 follow-up): merge_autonomy at
+#     agent-merges-routine+ with no merge queue must pair with
+#     allow_auto_merge, since landing_arm's no-queue fallback is `gh pr merge
+#     --auto --squash`, which GitHub refuses outright when it is off --------
+# Reuses $ma_config (merge_autonomy already at agent-merges-routine, with
+# approver_app_id/approver_model_default set so those pairings don't also
+# fire and add noise to these assertions).
+aam_ok_json='{"permissions":{"push":true},"archived":false,"allow_auto_merge":true,"default_branch":"main"}'
+aam_fail_json='{"permissions":{"push":true},"archived":false,"allow_auto_merge":false,"default_branch":"main"}'
+
+out="$(env PATH="$stub_bin:$PATH" \
+  STUB_REPO_JSON="$aam_ok_json" STUB_MERGE_QUEUE_JSON='null' \
+  bash "$DOCTOR" --config "$ma_config" 2>&1)"
+rc=$?
+assert_contains "no merge queue but allow_auto_merge enabled is ok" \
+  "[ ok ] $slug's merge_autonomy is \"agent-merges-routine\" with no merge queue on main, but allow_auto_merge is enabled — landing_arm's auto-merge fallback is accepted" \
+  "$out"
+assert_eq "and doctor.sh exits 0" "0" "$rc"
+
+out="$(env PATH="$stub_bin:$PATH" \
+  STUB_REPO_JSON="$aam_fail_json" STUB_MERGE_QUEUE_JSON='null' \
+  bash "$DOCTOR" --config "$ma_config" 2>&1)"
+rc=$?
+assert_contains "no merge queue and allow_auto_merge disabled fails, naming both fixes" \
+  "[fail] $slug's merge_autonomy is \"agent-merges-routine\" with no merge queue on main and allow_auto_merge disabled — landing_arm's auto-merge fallback would be refused outright; enable allow_auto_merge on $slug or adopt a merge queue on main" \
+  "$out"
+assert_eq "and doctor.sh exits 1" "1" "$rc"
+
+out="$(env PATH="$stub_bin:$PATH" \
+  STUB_REPO_JSON="$aam_fail_json" \
+  STUB_MERGE_QUEUE_JSON='{"id":"MQ_kwDOTWpCsc4AA8Qo","mergeMethod":"SQUASH","mergingStrategy":"ALLGREEN"}' \
+  bash "$DOCTOR" --config "$ma_config" 2>&1)"
+rc=$?
+assert_contains "an active merge queue is ok regardless of allow_auto_merge" \
+  "[ ok ] $slug's merge_autonomy is \"agent-merges-routine\" and main carries an active merge queue — landing_arm enqueues regardless of allow_auto_merge" \
+  "$out"
+assert_eq "  ... even with allow_auto_merge off" "0" "$rc"
+
+out="$(env PATH="$stub_bin:$PATH" \
+  STUB_REPO_JSON="$aam_fail_json" STUB_MERGE_QUEUE_JSON='null' \
+  bash "$DOCTOR" --config "$base_config" 2>&1)"
+assert_not_contains "below the routine tier the pairing stays silent" \
+  "allow_auto_merge/merge-queue pairing" "$out"
+assert_not_contains "  ... no positive line either" \
+  "landing_arm enqueues" "$out"
+assert_contains "  ... and unrelated checks keep running for this repo" \
+  "[ ok ] $slug is writable — the token can push claim branches" "$out"
+
+out="$(env PATH="$stub_bin:$PATH" \
+  STUB_REPO_FAIL=1 \
+  bash "$DOCTOR" --config "$ma_config" 2>&1)"
+assert_contains "an unreachable repos/\$slug is a skip, never an ok or a fail" \
+  "[skip] $slug's allow_auto_merge/merge-queue pairing — repos/$slug is not reachable with this token" \
+  "$out"
+assert_not_contains "  ... never read as a pass" \
+  "landing_arm enqueues" "$out"
+assert_not_contains "  ... never read as a failure either" \
+  "auto-merge fallback would be refused" "$out"
+
+out="$(env PATH="$stub_bin:$PATH" \
+  STUB_REPO_JSON="$aam_ok_json" STUB_MERGE_QUEUE_FAIL=1 \
+  bash "$DOCTOR" --config "$ma_config" 2>&1)"
+assert_contains "an unreadable merge-queue state is also a skip" \
+  "[skip] $slug's allow_auto_merge/merge-queue pairing — could not read main's merge-queue state" \
+  "$out"
 
 # --- D18 WI-7 (requirement 8d): merge_autonomy_routine_sources naming a
 #     source this repository's own sources list never gathers ---------------
