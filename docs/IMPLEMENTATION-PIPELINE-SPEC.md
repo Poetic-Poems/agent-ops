@@ -6082,13 +6082,15 @@ implements.
     change-request signal here (PR #512). Before requirement 31's hand-off,
     the Reviewer reads every general PR comment from a non-Bot account whose
     body carries no pipeline marker, posted since the pull request's most
-    recent `ready_for_review` timeline event as it found it — its own creation
-    time, on a first round; the Reviewer reads this *before* running
-    requirement 31's own `gh pr ready`, which is why requirement 31c's gate
-    has to bound its later read by the cycle's start to reach the same
-    answer — and answers each — implementing it under requirement 30, or
-    explicitly contesting it in the completion comment's own prose — never
-    leaving one unmentioned. It cites every one it answers with its own
+    recent `ready_for_review` timeline event as it found it (its own creation
+    time, on a first round), and answers each — implementing it under
+    requirement 30, or explicitly contesting it in the completion comment's
+    own prose — never leaving one unmentioned. "As it found it" is what makes
+    this read possible at all: requirement 31's own `gh pr ready`, run later
+    in the same session, mints a fresh `ready_for_review` event, so a Reviewer
+    that read the anchor afterwards would find its own flip and no standing
+    comment at all. This is the same trap requirement 31c's gate, which runs
+    later still, answers by bounding its read at the cycle's start. It cites every one it answers with its own
     `<!-- agent-ops:reconciles comment=<id> -->` line in that same completion
     comment, `<id>` the comment's own issue-comment id: a citation, because
     whether a diff actually answers a human's words is a judgement only the
