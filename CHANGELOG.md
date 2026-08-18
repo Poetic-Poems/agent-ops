@@ -129,6 +129,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the mechanics, that this exclusion's dependency half is never the
   Co-Ordinator's to re-derive, and that `evidence` may never assert the live
   state of an item outside this cycle's own runtime input.
+- `lib/issue-priority.sh`'s cache-dir ownership record could be talked into
+  removing a directory it never created (agent-ops#552, follow-up to #548/#541).
+  The record was trusted straight from the environment with no check that it
+  came from this process, so an inherited `ISSUE_PRIORITY_CACHE_DIR_OWNED=1`
+  let a child process treat a caller's own directory as its own and `rm -rf`
+  it; a new `ISSUE_PRIORITY_CACHE_DIR_OWNER_PID`, stamped with the creating
+  process's own `$$`, is now required to match before a record is trusted. A
+  stale record also outlived the directory it named — a source following a
+  cleanup could keep trusting a directory that no longer existed, leaving
+  field-id caching dead for the rest of that process — fixed by checking the
+  directory still exists independently of cleanup's own record-clearing (which
+  does not reach a caller invoking it through a command substitution), and by
+  keying `issue_priority_cache_cleanup` on the owned path itself rather than
+  the current `ISSUE_PRIORITY_CACHE_DIR`, so a directory this file created is
+  never abandoned when a caller later repoints `ISSUE_PRIORITY_CACHE_DIR`
+  elsewhere.
 - `merge_autonomy_routine_sources` can now name issue work at all
   (agent-ops#558). The key shared one `sourceToken` enum with
   `repos[].sources`, but the two are matched against different things: a

@@ -9527,8 +9527,23 @@ implements.
     later source, the directory it created on an earlier one, and does not
     read its own output as caller-supplied (`ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH`
     records the path this file created for itself, and is what a re-source
-    compares `ISSUE_PRIORITY_CACHE_DIR` against; agent-ops#541).
-    `issue_priority_cache_cleanup` removes only a directory it created,
+    compares `ISSUE_PRIORITY_CACHE_DIR` against; agent-ops#541). The record
+    is trusted only from the process that created it: `ISSUE_PRIORITY_CACHE_DIR_OWNER_PID`
+    stamps that process's own `$$`, and a re-source compares it against the
+    current `$$` before treating an inherited `ISSUE_PRIORITY_CACHE_DIR_OWNED=1`
+    as its own — an exported record a child process merely inherited, with a
+    different `$$`, is never trusted, so that child never `rm -rf`s a
+    directory it did not create (agent-ops#552). A same-process record is
+    additionally trusted only while the directory it names still exists:
+    `issue_priority_cache_cleanup`'s own record-clearing does not reach a
+    caller that invokes it through a command substitution, so a source-time
+    check independent of that clearing treats a same-process record naming a
+    missing directory as "create a fresh one", never as "still ours"
+    (agent-ops#552). `issue_priority_cache_cleanup` removes only the
+    directory this process created — keyed on the owned path itself, not on
+    whatever `ISSUE_PRIORITY_CACHE_DIR` currently names, so a directory this
+    file made is still found and removed even after a caller has since
+    repointed `ISSUE_PRIORITY_CACHE_DIR` at its own path (agent-ops#552) —
     leaving a caller-supplied one for that caller to manage, and is
     idempotent — a no-op, returning 0, when called again or when no
     directory was ever created. `issue_priority_apply` then re-reads the
@@ -12925,7 +12940,20 @@ pull request, run the ones the change touches and any it could regress.
     `ISSUE_PRIORITY_CACHE_DIR` still set to the directory the first source
     created, still marks it owned rather than reading it as caller-supplied,
     creates no second directory, and cleanup still removes it
-    (agent-ops#541). A field missing one of the four options is asserted from
+    (agent-ops#541). An ownership record exported to a `bash -c` child
+    process — `ISSUE_PRIORITY_CACHE_DIR`, `…_OWNED=1` and `…_OWNED_PATH` all
+    inherited, but stamped with the parent's own `$$` rather than the
+    child's — is not trusted: the child marks the directory unowned, and its
+    own `issue_priority_cache_cleanup` call leaves the directory in place. A
+    source that follows a cleanup does not trust the record cleanup left
+    behind: it creates a fresh directory, marks it owned, and field-id
+    caching works again in that process. A directory this file created is
+    not abandoned when a caller subsequently repoints `ISSUE_PRIORITY_CACHE_DIR`
+    at its own path: `issue_priority_cache_cleanup` still finds and removes
+    the directory it made earlier, and leaves the caller's own (now-current)
+    directory, and `ISSUE_PRIORITY_CACHE_DIR` itself, untouched (agent-ops#552).
+    A failed cache write — `ISSUE_PRIORITY_CACHE_DIR` naming a directory that
+    does not exist — prints nothing to stderr. A field missing one of the four options is asserted from
     both directions (agent-ops#534): with a lower option present, the
     verdict's band falls back to the nearest lower one and `requested` names
     the band actually asked for; with nothing lower present (the verdict was

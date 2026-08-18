@@ -538,6 +538,57 @@ issue_priority_cache_cleanup
 assert_eq "cleanup after a double-source removes the directory" "false" \
   "$([[ -d "$resourced_dir" ]] && echo true || echo false)"
 
+# A source after that cleanup must not trust the record cleanup left behind
+# — it creates a fresh directory, marks it owned, and field-id caching
+# works again in this process (agent-ops#552, defect 2's own acceptance).
+. "$SCRIPT_DIR/lib/issue-priority.sh"
+fresh_dir="$ISSUE_PRIORITY_CACHE_DIR"
+assert_eq "a source after cleanup creates a fresh directory and marks it owned" "1" \
+  "$ISSUE_PRIORITY_CACHE_DIR_OWNED"
+assert_eq "  ... a different directory than the one cleanup just removed" "true" \
+  "$([[ "$fresh_dir" != "$resourced_dir" && -d "$fresh_dir" ]] && echo true || echo false)"
+rm -f "$tmp_dir/gh-b/fail-fields"
+# The previous "cached fixture gone" test (above) deleted fields-response.json
+# on the strength of a different cache directory's own cache file — this is a
+# fresh, empty directory with nothing cached, so the fixture must exist again.
+cat > "$tmp_dir/gh-b/fields-response.json" <<'EOF'
+{"data":{"repository":{"issueFields":{"nodes":[
+  {"id":"IFSS_priority","name":"Priority","options":[
+    {"id":"OPT_URGENT","name":"Urgent"},{"id":"OPT_HIGH","name":"High"},
+    {"id":"OPT_MEDIUM","name":"Medium"},{"id":"OPT_LOW","name":"Low"}]},
+  {"id":"IFSS_effort","name":"Effort","options":[{"id":"OPT_E_LOW","name":"Low"}]}
+]}}}}
+EOF
+field_json="$(issue_priority_field_ids "o/case-fields-ok")"
+assert_eq "  ... and field-id caching works again in this process" "IFSS_priority" \
+  "$(jq -r '.field_id' <<<"$field_json")"
+assert_eq "  ... writing a cache file into the fresh directory" "true" \
+  "$([[ -f "$fresh_dir/o__case-fields-ok.json" ]] && echo true || echo false)"
+issue_priority_cache_cleanup
+
+# An ownership record inherited from a *different* process must not be
+# trusted (agent-ops#552, defect 1) — otherwise a child process that
+# inherits an exported record would treat a caller's own directory as its
+# own and remove it. `ISSUE_PRIORITY_CACHE_DIR_OWNER_PID` is stamped with
+# the parent's own `$$` here, which a genuinely same-process re-source would
+# match but a `bash -c` child, with its own distinct `$$`, cannot.
+parent_pid="$$"
+precious_dir="$(mktemp -d "$tmp_dir/precious.XXXXXX")"
+touch "$precious_dir/keepme"
+# shellcheck disable=SC2016  # the child bash -c's own $SCRIPT_DIR/etc, not this shell's.
+child_result="$(env SCRIPT_DIR="$SCRIPT_DIR" PRECIOUS_DIR="$precious_dir" \
+    ISSUE_PRIORITY_CACHE_DIR="$precious_dir" \
+    ISSUE_PRIORITY_CACHE_DIR_OWNED=1 \
+    ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH="$precious_dir" \
+    ISSUE_PRIORITY_CACHE_DIR_OWNER_PID="$parent_pid" \
+    bash -c '. "$SCRIPT_DIR/lib/issue-priority.sh"
+             printf "%s " "$ISSUE_PRIORITY_CACHE_DIR_OWNED"
+             issue_priority_cache_cleanup
+             [[ -d "$PRECIOUS_DIR" ]] && printf survives || printf deleted')"
+assert_eq "an inherited ownership record from a different process is not trusted" \
+  "0 survives" "$child_result"
+rm -rf "$precious_dir"
+
 # A caller that supplies its own path keeps it after the same call — it is
 # that caller's directory to manage, not this library's.
 caller_dir="$(mktemp -d "$tmp_dir/cache-caller.XXXXXX")"
@@ -549,6 +600,42 @@ issue_priority_cache_cleanup
 assert_eq "cleanup leaves a caller-supplied directory in place" "true" \
   "$([[ -d "$caller_dir" ]] && echo true || echo false)"
 rm -rf "$caller_dir"
+
+# A library-created directory is not abandoned when a caller subsequently
+# supplies a different ISSUE_PRIORITY_CACHE_DIR (agent-ops#552, defect 2's
+# mirror case) — cleanup is keyed on the directory this process itself
+# created, not on whatever ISSUE_PRIORITY_CACHE_DIR currently names, so it
+# still finds and removes that directory even after a caller has moved
+# ISSUE_PRIORITY_CACHE_DIR elsewhere.
+unset ISSUE_PRIORITY_CACHE_DIR ISSUE_PRIORITY_CACHE_DIR_OWNED \
+      ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH ISSUE_PRIORITY_CACHE_DIR_OWNER_PID
+. "$SCRIPT_DIR/lib/issue-priority.sh"
+mine_dir="$ISSUE_PRIORITY_CACHE_DIR"
+assert_eq "mirror case: a library-created directory exists before the caller repoints it" "true" \
+  "$([[ -d "$mine_dir" ]] && echo true || echo false)"
+theirs_dir="$(mktemp -d "$tmp_dir/cache-theirs.XXXXXX")"
+touch "$theirs_dir/not-mine-either.json"
+ISSUE_PRIORITY_CACHE_DIR="$theirs_dir"
+. "$SCRIPT_DIR/lib/issue-priority.sh"
+assert_eq "  ... the caller's own directory is not marked owned" "0" "$ISSUE_PRIORITY_CACHE_DIR_OWNED"
+issue_priority_cache_cleanup
+assert_eq "  ... cleanup still removes the directory this process made earlier" "false" \
+  "$([[ -d "$mine_dir" ]] && echo true || echo false)"
+assert_eq "  ... and leaves the caller's own (now-current) directory in place" "true" \
+  "$([[ -d "$theirs_dir" ]] && echo true || echo false)"
+assert_eq "  ... ISSUE_PRIORITY_CACHE_DIR itself is untouched, still the caller's" \
+  "$theirs_dir" "$ISSUE_PRIORITY_CACHE_DIR"
+rm -rf "$theirs_dir"
+
+# A failed cache write — ISSUE_PRIORITY_CACHE_DIR named a directory that does
+# not exist — must print nothing to stderr: the `>` redirection opening the
+# cache file fails first, and left in printf-then-suppress order that
+# failure raced ahead of its own 2>/dev/null (agent-ops#552's stderr
+# constraint).
+rm -f "$tmp_dir/gh-b/fail-fields"
+ISSUE_PRIORITY_CACHE_DIR="$tmp_dir/cache-does-not-exist-$$"
+stderr_out="$(issue_priority_field_ids "o/case-fields-ok" 2>&1 1>/dev/null)"
+assert_eq "a failed cache write prints nothing to stderr" "" "$stderr_out"
 
 # Idempotent: called again with nothing left to remove, or with no directory
 # ever created at all, it is silent and still returns 0.
