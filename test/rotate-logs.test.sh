@@ -5,8 +5,8 @@
 #
 # What matters here:
 #
-#   what rotates      dashboard.log, state-sync.log, cron.log and
-#                     review-cron.log, and only once they cross the
+#   what rotates      dashboard.log, state-sync.log, doctor.log, cron.log
+#                     and review-cron.log, and only once they cross the
 #                     threshold — a log still under it is left byte-identical.
 #   what never does   log.jsonl and review-log.jsonl are the fleet's memory
 #                     (the union readers scan them whole); no size, however
@@ -96,6 +96,13 @@ make_log "$d/cron.log" 2000
 run_rotate "$d" ROTATE_LOGS_RETAINED_BYTES=1000 ROTATE_LOGS_GENERATIONS=3
 assert_eq "the oversized log is renamed to .1" "2000" "$(stat -c%s "$d/cron.log.1" 2>/dev/null || stat -f%z "$d/cron.log.1")"
 assert_eq "the live file reappears immediately, empty" "0" "$(stat -c%s "$d/cron.log" 2>/dev/null || stat -f%z "$d/cron.log")"
+
+# --- doctor.log rotates like every other diagnostic log (agent-ops#543) ----
+d="$(new_home doctor)"
+make_log "$d/doctor.log" 2000
+run_rotate "$d" ROTATE_LOGS_RETAINED_BYTES=1000 ROTATE_LOGS_GENERATIONS=3
+assert_eq "the oversized doctor.log is renamed to .1" "2000" "$(stat -c%s "$d/doctor.log.1" 2>/dev/null || stat -f%z "$d/doctor.log.1")"
+assert_eq "and the live file reappears immediately, empty" "0" "$(stat -c%s "$d/doctor.log" 2>/dev/null || stat -f%z "$d/doctor.log")"
 
 # --- A second rotation shifts .1 to .2, dropping what falls off the end ----
 d="$(new_home stack)"

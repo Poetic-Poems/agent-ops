@@ -67,6 +67,7 @@ cfg_json() { jq -c "$1" <<<"$defaulted" 2>/dev/null; }
 excluded_minutes="$(cfg_json '.schedule.excluded_minutes')"
 review_hour="$(cfg '.schedule.review_hour')"
 review_offset="$(cfg '.schedule.review_offset_minutes')"
+doctor_offset="$(cfg '.schedule.doctor_offset_minutes')"
 cycle_hours="$(cfg '.schedule.cycle_hours')"
 cycle_interval="$(cfg '.schedule.cycle_interval_minutes')"
 heartbeat_minutes="$(cfg '.schedule.heartbeat_minutes')"
@@ -119,6 +120,11 @@ if [[ -z "$cycle_minute" ]]; then
   fi
 fi
 review_minute=$(( (cycle_minute + review_offset) % 60 ))
+# The unattended doctor pass (agent-ops#543): hourly, jittered the same way
+# the review tick is — schedule.doctor_offset_minutes past the node's own
+# base minute, mod 60 — so a fleet of nodes does not all hit GitHub's API in
+# the same minute.
+doctor_minute=$(( (cycle_minute + doctor_offset) % 60 ))
 
 # The implementation cycle fires every schedule.cycle_interval_minutes past
 # cycle_minute within an allowed hour (issue #248, "faster heartbeat"):
@@ -151,6 +157,7 @@ if ! sed \
       -e "s#@STATE_SYNC_PUSH_MINUTES@#$push_minutes#g" \
       -e "s#@STATE_SYNC_FETCH_MINUTES@#$fetch_minutes#g" \
       -e "s#@LOG_ROTATION_MINUTE@#$rotation_minute#g" \
+      -e "s#@DOCTOR_MINUTE@#$doctor_minute#g" \
       "$tmpl" > "$tmp"; then
   rm -f "$tmp"
   say "ERROR: rendering $tmpl failed — the baked schedule stays"
@@ -162,5 +169,5 @@ if grep -q '@[A-Z_]\{1,\}@' "$tmp"; then
   exit 1
 fi
 mv -f "$tmp" "$out"
-say "node $node: cycle at minute(s) $cycle_minutes past $cycle_hours (every ${cycle_interval}m), review at $review_minute past $review_hour:00"
+say "node $node: cycle at minute(s) $cycle_minutes past $cycle_hours (every ${cycle_interval}m), review at $review_minute past $review_hour:00, unattended doctor at :$doctor_minute hourly"
 exit 0

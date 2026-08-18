@@ -1226,6 +1226,46 @@
     return el("section", {}, [ el("h2", {text:title}), body ]);
   }
 
+  // ---------- Doctor panel (agent-ops#543) ----------
+  // status.doctor is THIS node's own most recent hourly `doctor.sh
+  // --unattended` pass (state_dir/.doctor-status.json, written by the pass
+  // itself and read, not recomputed, by the Publisher) — null until the
+  // first one has run. Local to this node only: unlike compose/image/switch
+  // it does not travel in the fleet heartbeat, since a peer's own config and
+  // GitHub access are its own to report.
+  function doctorPanel() {
+    var doc = (D.status && D.status.doctor) || null;
+    if (!doc) {
+      return el("div", {class:"panel"}, el("div", {class:"empty",
+        text: "No unattended doctor pass has run on this node yet."}));
+    }
+    var rows = [];
+    (doc.fails || []).forEach(function (m) {
+      rows.push(el("tr", {}, [
+        el("td", {}, el("span", {class:"badge b-red", text:"fail"})),
+        el("td", {class:"wrap roomy"}, m)
+      ]));
+    });
+    (doc.warns || []).forEach(function (m) {
+      rows.push(el("tr", {}, [
+        el("td", {}, el("span", {class:"badge b-amber", text:"warn"})),
+        el("td", {class:"wrap roomy"}, m)
+      ]));
+    });
+    if (!rows.length) {
+      return el("div", {class:"panel"}, el("div", {class:"empty",
+        text: "No failures or warnings on the last unattended pass, " + fmtAgo(doc.timestamp) + "."}));
+    }
+    return el("div", {class:"panel scroll"}, [
+      el("div", {class:"empty", style:"padding:8px 12px 0", text:
+        "Last unattended pass " + fmtAgo(doc.timestamp) + " (" + fmtTime(doc.timestamp) + ")."}),
+      el("table", {}, [
+        el("thead", {}, el("tr", {}, [el("th",{text:"Level"}), el("th",{text:"Message"})])),
+        el("tbody", {}, rows)
+      ])
+    ]);
+  }
+
   // ---------- PRs panel ----------
   // State-cell badges (agent-ops#375, D17): `queued`/`dequeued` ride in on
   // each pull request alongside `isDraft` — the Publisher's own answer, not
@@ -2467,6 +2507,25 @@
           " last pushed more than 30 minutes ago — the fleet view may lag; check state-sync on those nodes."})
       ]));
     }
+    // The unattended doctor pass (agent-ops#543): a `fail` earns a banner the
+    // same way a PR's failing checks do, since it means the pipeline is
+    // working on something other than what the configuration says. A `warn`
+    // (the common case — a missing label, a Priority field gap) gets a
+    // quieter one pointing at the Doctor section rather than repeating every
+    // line twice.
+    var doctorStatus = (st.doctor) || null;
+    if (doctorStatus && doctorStatus.verdict === "fail") {
+      banners.appendChild(el("div", {class:"banner red"}, [
+        el("span", {text: "✗ The unattended doctor pass found " + (doctorStatus.fails||[]).length + " failure(s)."}),
+        el("span", {class:"sub", text: "See Doctor below — last run " + fmtAgo(doctorStatus.timestamp) + "."})
+      ]));
+    } else if (doctorStatus && doctorStatus.verdict === "warn") {
+      banners.appendChild(el("div", {class:"banner amber"}, [
+        el("span", {text: "⚠ The unattended doctor pass found " + (doctorStatus.warns||[]).length + " warning(s)."}),
+        el("span", {class:"sub", text: "See Doctor below — last run " + fmtAgo(doctorStatus.timestamp) + "."})
+      ]));
+    }
+
     var openPrs = (D.github && D.github.prs) || [];
     var failedChecks = openPrs.filter(function (p){ return p.checks && p.checks.failed > 0; });
     if (failedChecks.length) {
@@ -2509,6 +2568,9 @@
 
     // ---------- fleet strip ----------
     if (fleetVisible()) app.appendChild(sectionOf("Fleet", fleetStrip()));
+
+    // ---------- doctor (agent-ops#543) ----------
+    app.appendChild(sectionOf("Doctor (unattended, hourly)", doctorPanel()));
 
     // ---------- metric cards ----------
     var c = D.counts || {};

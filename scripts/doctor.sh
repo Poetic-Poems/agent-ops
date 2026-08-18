@@ -33,7 +33,19 @@
 #
 #   scripts/doctor.sh                 # this installation
 #   scripts/doctor.sh --offline       # everything but GitHub access and the two Claude checks
+#   scripts/doctor.sh --unattended    # the full GitHub section, none of the model spend
 #   scripts/doctor.sh --config PATH   # a config not yet deployed
+#
+# --unattended is what deploy/docker/crontab.tmpl's own hourly line runs,
+# unprompted: the GitHub section (issue_priority_options_complete above all —
+# agent-ops#543) is the one place configuration drift shows up only against a
+# live repository, so an operator who never happens to run this by hand would
+# otherwise never see it. Skips only the two checks --offline also skips for
+# being network-gated, but for a different reason (see usage()); the GitHub
+# section itself stays in full, since every call there is a GET. When it
+# reaches the end of a run it writes state_dir/.doctor-status.json for
+# scripts/publish-dashboard.sh to surface — the one write this mode adds to
+# the "read-only, with two exceptions" rule above.
 #
 # Exit: 0 clean (warnings and skips included) · 1 at least one failure ·
 #       2 the arguments or the config file itself were unusable.
@@ -73,7 +85,7 @@ trap 'issue_priority_cache_cleanup' EXIT
 
 usage() {
   cat >&2 <<'USAGE'
-usage: doctor.sh [--config PATH] [--offline] [--quiet]
+usage: doctor.sh [--config PATH] [--offline] [--unattended] [--quiet]
 
 Check this installation end to end: the configuration against
 config.schema.json, the toolchain the pipelines need, the directories they
@@ -86,6 +98,17 @@ really flushes as it runs on this node.
                  Claude credentials, the stream-flushing probe); report them
                  skipped. The probe is the one check here that spends: a
                  single call to the cheapest configured model.
+  --unattended   For a scheduled, unprompted pass (deploy/docker/crontab.tmpl's
+                 hourly line): run the Configuration section and the whole
+                 GitHub section — every call there is a GET, so none of it
+                 costs anything a schedule shouldn't spend — but skip the two
+                 checks that do spend: the Claude-credentials check and the
+                 stream-flushing probe (a model call). Each is reported
+                 skipped with its own reason, distinct from --offline's.
+                 Also writes state_dir/.doctor-status.json, which
+                 scripts/publish-dashboard.sh reads to surface this run's
+                 warnings and failures. --offline already implies these two
+                 skips; combining the flags adds nothing.
   --quiet        Print only warnings, failures and the summary.
 
 Exit 0 clean, 1 at least one failure, 2 unusable arguments or config.
@@ -95,6 +118,7 @@ USAGE
 config_file="$SCRIPT_DIR/config.json"
 schema_file="$SCRIPT_DIR/config.schema.json"
 offline=0
+unattended=0
 quiet=0
 while (($#)); do
   case "$1" in
@@ -103,6 +127,7 @@ while (($#)); do
       [[ $# -ge 2 ]] || { echo "doctor: --config needs a path" >&2; exit 2; }
       config_file="$2"; shift 2 ;;
     --offline) offline=1; shift ;;
+    --unattended) unattended=1; shift ;;
     --quiet) quiet=1; shift ;;
     *) echo "doctor: unknown argument: $1" >&2; usage; exit 2 ;;
   esac
@@ -112,6 +137,12 @@ fails=0
 warns=0
 skips=0
 pending_section=""
+# Every warn()/fail() message, in the order printed — kept only so
+# --unattended's end-of-run write (write_unattended_status, defined beside
+# the Summary section below) can hand scripts/publish-dashboard.sh something
+# structured rather than reparsing this script's own text output.
+fail_msgs=()
+warn_msgs=()
 
 # A section heading is held back until something under it prints, so --quiet
 # never leaves a heading with nothing beneath it.
@@ -122,8 +153,8 @@ show_section() {
   pending_section=""
 }
 ok()   { ((quiet)) || { show_section; printf '  [ ok ] %s\n' "$1"; }; }
-warn() { warns=$((warns + 1)); show_section; printf '  [warn] %s\n' "$1"; }
-fail() { fails=$((fails + 1)); show_section; printf '  [fail] %s\n' "$1"; }
+warn() { warns=$((warns + 1)); warn_msgs+=("$1"); show_section; printf '  [warn] %s\n' "$1"; }
+fail() { fails=$((fails + 1)); fail_msgs+=("$1"); show_section; printf '  [fail] %s\n' "$1"; }
 skip() { skips=$((skips + 1)); ((quiet)) || { show_section; printf '  [skip] %s\n' "$1"; }; }
 
 # --- Configuration ---
@@ -1051,6 +1082,8 @@ section "Claude"
 
 if ((offline)); then
   skip "Claude credentials (--offline)"
+elif ((unattended)); then
+  skip "Claude credentials (--unattended; a scheduled pass must not read a credential)"
 elif ! command -v claude >/dev/null 2>&1; then
   skip "Claude credentials (claude is not installed)"
 elif ! claude_auth_json="$(timeout 15 claude auth status --json 2>/dev/null)"; then
@@ -1086,6 +1119,8 @@ fi
 # operator-invoked rather than per-cycle, and `--offline` skips it.
 if ((offline)); then
   skip "stream flushing (--offline; the check costs one minimal model call)"
+elif ((unattended)); then
+  skip "stream flushing (--unattended; the check costs one minimal model call, which a scheduled pass must not spend)"
 elif ! command -v claude >/dev/null 2>&1; then
   skip "stream flushing (claude is not installed)"
 elif [[ "${logged_in:-}" != "true" ]]; then
@@ -1118,6 +1153,38 @@ else
   fi
   rm -rf "$flush_dir"
 fi
+
+# --unattended's own artefact (agent-ops#543): scripts/publish-dashboard.sh
+# reads this rather than re-running the GitHub section itself, which would
+# cost several API calls per configured repository every heartbeat instead of
+# once an hour. Written only from this, the normal end-of-run path — the
+# "unusable configuration" exits far above bail before state_dir is even
+# known, so a broken config produces no dashboard artefact here; the crontab
+# render itself already fails loudly elsewhere in that state (entrypoint.sh).
+# Best-effort: a state_dir that cannot be written to is exactly what the
+# Directories section above already reported as a fail, and this must not
+# mask that behind a second, unrelated failure of its own.
+write_unattended_status() {
+  local dir="$1" ts verdict tmp fail_json warn_json
+  [[ -n "$dir" && "$dir" != "null" ]] || return 0
+  mkdir -p "$dir" 2>/dev/null && [[ -w "$dir" ]] || return 0
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if ((fails)); then verdict="fail"; elif ((warns)); then verdict="warn"; else verdict="ok"; fi
+  fail_json="$(printf '%s\n' "${fail_msgs[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))' 2>/dev/null)"
+  warn_json="$(printf '%s\n' "${warn_msgs[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))' 2>/dev/null)"
+  [[ -n "$fail_json" ]] || fail_json='[]'
+  [[ -n "$warn_json" ]] || warn_json='[]'
+  tmp="$(mktemp "$dir/.doctor-status.json.XXXXXX" 2>/dev/null)" || return 0
+  if jq -n --arg ts "$ts" --arg verdict "$verdict" \
+        --argjson fails "$fail_json" --argjson warns "$warn_json" --argjson skips "$skips" \
+        '{timestamp: $ts, verdict: $verdict, fails: $fails, warns: $warns, skips: $skips}' \
+        > "$tmp" 2>/dev/null; then
+    mv -f "$tmp" "$dir/.doctor-status.json"
+  else
+    rm -f "$tmp"
+  fi
+}
+((unattended)) && write_unattended_status "$state_dir"
 
 # --- Summary ---
 

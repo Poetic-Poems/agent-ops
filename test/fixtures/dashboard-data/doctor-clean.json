@@ -1,0 +1,25 @@
+{
+  "generated_at": "@now",
+  "node": "poetic-1",
+  "status": {
+    "running": false,
+    "doctor": {
+      "timestamp": "@ago:20m",
+      "verdict": "ok",
+      "fails": [],
+      "warns": [],
+      "skips": 2
+    }
+  },
+  "fleet": {
+    "flags": {
+      "disabled": null,
+      "limit": null
+    },
+    "nodes": []
+  },
+  "cycles": [],
+  "log_tail": [],
+  "blocked": [],
+  "void": []
+}

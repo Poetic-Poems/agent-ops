@@ -247,13 +247,13 @@
       }
     },
     "log_retained_bytes": {
-      "description": "Size at which scripts/rotate-logs.sh rotates dashboard.log, state-sync.log, cron.log and review-cron.log. log.jsonl and review-log.jsonl are never rotated regardless of size.",
+      "description": "Size at which scripts/rotate-logs.sh rotates dashboard.log, state-sync.log, doctor.log, cron.log and review-cron.log. log.jsonl and review-log.jsonl are never rotated regardless of size.",
       "type": "integer",
       "minimum": 1,
       "default": 2000000,
       "x-docs": {
-        "readme": "Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `cron.log` and `review-cron.log`. `log.jsonl` and `review-log.jsonl` are never rotated.",
-        "spec": "Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `cron.log` and `review-cron.log` (requirement 2.6). `log.jsonl` and `review-log.jsonl` are never rotated regardless of size. `ROTATE_LOGS_RETAINED_BYTES` overrides it for tests."
+        "readme": "Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `doctor.log`, `cron.log` and `review-cron.log`. `log.jsonl` and `review-log.jsonl` are never rotated.",
+        "spec": "Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `doctor.log`, `cron.log` and `review-cron.log` (requirement 2.6). `log.jsonl` and `review-log.jsonl` are never rotated regardless of size. `ROTATE_LOGS_RETAINED_BYTES` overrides it for tests."
       }
     },
     "log_generations": {
@@ -1180,6 +1180,17 @@
           "x-docs": {
             "readme": "The minute past every hour the containerised node's `rotate-logs.sh` line runs.",
             "spec": "The minute past every hour `rotate-logs.sh` runs (requirement 2.6)."
+          }
+        },
+        "doctor_offset_minutes": {
+          "description": "Minutes past the node's cycle minute (mod 60) the hourly `doctor.sh --unattended` pass's minute is set to, jittering it across the fleet the same way review_offset_minutes jitters the review tick.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 59,
+          "default": 44,
+          "x-docs": {
+            "readme": "Minutes past `CYCLE_MINUTE` (mod 60) the hourly unattended `doctor.sh` pass's minute is set to (agent-ops#543), on the same per-node jitter `review_offset_minutes` uses.",
+            "spec": "Minutes past `CYCLE_MINUTE` (mod 60) the hourly `doctor.sh --unattended` pass's minute is set to, jittering it across the fleet the same way `review_offset_minutes` jitters the review tick."
           }
         }
       }
