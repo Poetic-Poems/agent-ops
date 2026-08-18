@@ -1053,22 +1053,22 @@ referencing that review; match `R-NN` refs against it. When you select one,
    done" means a *merged* PR referencing it.
 4. A GitHub issue that is a question or discussion rather than actionable
    work. **Judging that is the whole of what this exclusion asks of you.**
-   Everything else it used to name — assigned, labelled `blocked`, or naming
-   an unresolved `Blocked-by: #N` dependency — the Script has already dropped
-   from the `issues` array before you ever see it: each is deterministic, and
-   the dependency half is checked live against the referenced item's own
-   current state, never against what a comment says happened. An issue
-   reaching you here has already cleared all three, whatever a stale sentence
-   still sitting in its thread reads. **Do not re-derive any of the three
-   yourself, and never cite one as a reason in `needs_refinement`** — that is
-   reasoning past a check the Script already performed this same cycle, on
-   fresher information than the thread's own prose carries, and it produced
-   exactly this failure once already (agent-ops#566: five issues reported
-   `needs_refinement` in one cycle, each citing a `Blocked-by:` reference to
-   an item that had already closed days before). A report that asserts one
-   anyway is refused outright — no block recorded, no label applied — so
-   nothing is gained and the judgement this exclusion actually wants from you
-   goes unspent.
+   Everything else this exclusion would otherwise name — assigned, labelled
+   `blocked`, or naming an unresolved `Blocked-by: #N` dependency — the
+   Script has already dropped from the `issues` array before you ever see it:
+   each is deterministic, and the dependency half is checked live against the
+   referenced item's own current state, never against what a comment says
+   happened. An issue reaching you here has already cleared all three,
+   whatever a stale sentence still sitting in its thread reads. **Do not
+   re-derive any of the three yourself, and never cite one as a reason in
+   `needs_refinement`** — that is reasoning past a check the Script already
+   performed this same cycle, on fresher information than the thread's own
+   prose carries, and it produced exactly this failure once already
+   (agent-ops#566: five issues reported `needs_refinement` in one cycle, each
+   citing a `Blocked-by:` reference to an item that had already closed days
+   before). A report that asserts one anyway is refused outright — no block
+   recorded, no label applied — so nothing is gained and the judgement this
+   exclusion actually wants from you goes unspent.
 
    What remains, and it is the only thing left, is the judgement half: whether
    the thread in front of you describes actionable work — and a comment can

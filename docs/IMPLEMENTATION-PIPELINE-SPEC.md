@@ -5136,7 +5136,8 @@ implements.
       (requirement 3x), so it is not silently closed off by a report that
       never engaged with it. The judgement half above is untouched by this: a
       report declining an issue as a question or discussion, or for genuine
-      under-specification, is recorded exactly as before.
+      under-specification, names no such reference, so it is recorded exactly
+      as requirement 34e describes.
 
       **The assignee exclusion is a permanent, deliberate rule, not an
       incidental side effect** (agent-ops#447). It is load-bearing for the
@@ -7146,9 +7147,11 @@ implements.
       demonstrably false, never a second opinion worth recording. Reused
       exactly as gathered — this refusal never issues a second `gh` read, and
       never re-derives what the gate already computed. Scoped to the
-      dependency claim alone: a `source: "issues"` entry declining the item as
-      a question or discussion, or for any other under-specification, is
-      unaffected and recorded exactly as before.
+      dependency claim alone: the bar reads only whether the entry's own
+      fields name a reference that item's thread carries, so a
+      `source: "issues"` entry declining the item as a question or
+      discussion, or for any other under-specification, names none and is
+      recorded on the ordinary bar above.
 
     **The label is a projection, never the record.** Where (and only where) the
     item is a GitHub issue — the `issues` source, whose ref is a bare number —
