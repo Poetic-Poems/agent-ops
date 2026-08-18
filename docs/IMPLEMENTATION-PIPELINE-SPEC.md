@@ -9350,24 +9350,41 @@ implements.
     call and `issue_priority_apply`'s own later call inside
     `maybe_run_refiner` never resolve the same repository's field twice).
     Every `triage_only` candidate from a repository whose field failed to
-    resolve is dropped via the pure filter `refiner_drop_unbandable_triage`
-    (`lib/refinement.sh`, jq-only and independently unit-testable); every
-    other candidate — `triage_only` or not, from that repository or any
+    resolve, *or* whose field resolved carrying none of the four band names
+    at all (agent-ops#542 — an organisation that renamed every option, e.g.
+    to `P0`…`P3`), is dropped via the pure filter
+    `refiner_drop_unbandable_triage` (`lib/refinement.sh`, jq-only and
+    independently unit-testable) — checked against `issue_priority_options_any`
+    (`lib/issue-priority.sh`) on the very `field_json` this call already
+    fetched, so telling the two cases apart costs no further GraphQL query. A
+    repository missing only *some* of the four names is unaffected by this
+    pre-flight — `issue_priority_apply`'s own per-issue fallback
+    (agent-ops#534, below) still bands it — since `issue_priority_options_any`
+    is true whenever at least one name is present; only a field carrying
+    *none* of the four is a terminal case for this pre-flight, on the same
+    "can never write any band" terms as a field that fails to resolve at all.
+    Every other candidate — `triage_only` or not, from that repository or any
     other — passes through unchanged, and when every contributing
-    repository's field resolves the candidate set is returned
-    byte-identical. Exactly one `warning` is logged per repository whose
-    field failed, naming the repository and how many `triage_only`
-    candidates it dropped — never one per dropped item. The pre-flight runs
-    unconditionally, including under `--dry-run`: it is a read, and skipping
-    it there would make the dry-run fingerprint input (requirement 3b's own
-    `refiner_candidates_json`) differ from a live cycle's for no gain. No
-    state persists between cycles — the day field visibility or organisation
-    membership is fixed, triage resumes on its own with no operator action
-    and nothing to clear — and `issue_priority_apply`'s own
-    `field-unresolvable` path and its warning (below) are unchanged: this
-    pre-flight makes that path rare for `triage_only` items, it does not
-    replace it, and it is still the correct behaviour for a field that
-    becomes unreadable mid-cycle, after this pre-flight already ran.
+    repository's field resolves with at least one band option, the candidate
+    set is returned byte-identical. Exactly one `warning` is logged per
+    dropped repository, naming it, how many `triage_only` candidates it
+    dropped, and which of the two cases applied — a field-unresolvable
+    warning is worded distinctly from a no-bands-at-all one, so a reader can
+    tell the two misconfigurations apart — never one per dropped item. The
+    pre-flight runs unconditionally, including under `--dry-run`: it is a
+    read, and skipping it there would make the dry-run fingerprint input
+    (requirement 3b's own `refiner_candidates_json`) differ from a live
+    cycle's for no gain. No state persists between cycles — the day field
+    visibility, its option names, or organisation membership changes, triage
+    resumes on its own with no operator action and nothing to clear — and
+    `issue_priority_apply`'s own `field-unresolvable` and `band-option-missing`
+    paths and their warnings (below) are unchanged: this pre-flight makes both
+    paths rare for `triage_only` items, it does not replace either, and they
+    remain the correct behaviour for a field that becomes unreadable, or loses
+    every band option, mid-cycle, after this pre-flight already ran — and for
+    any non-`triage_only` item, which this pre-flight never inspects at all,
+    since `issue_priority_apply` runs for those regardless of band
+    availability.
 
     The Refiner's verdict (`parsed.refined[]`, requirement 39c) gains an
     optional `priority` field, one of the four band names, independent of
@@ -12828,19 +12845,28 @@ pull request, run the ones the change touches and any it could regress.
     from those repositories and every candidate from any other repository
     untouched, is the identity on an empty unresolvable-repository list, and
     falls back to its input unchanged (never `[]`) on malformed candidates
-    JSON. `refiner_filter_unbandable_triage` (`agent-cycle.sh`), lifted
-    verbatim and driven against a stubbed `gh` that fails one repository's
-    field query and succeeds another's: the failing repository's
-    `triage_only` candidates never reach the returned set while its other
-    candidates and the succeeding repository's candidates — `triage_only` or
-    not — do; exactly one `warning` is logged, naming the failing repository
-    and the count of candidates it dropped, not one per item; a repeat
-    resolution of either repository in the same process hits
+    JSON. `issue_priority_options_any` (`lib/issue-priority.sh`,
+    agent-ops#542) is asserted true whenever the field carries at least one
+    of the four band names, including only one, and false only when it
+    carries none. `refiner_filter_unbandable_triage` (`agent-cycle.sh`),
+    lifted verbatim and driven against a stubbed `gh` distinguishing three
+    repositories — one whose field query fails outright, one whose field
+    resolves carrying none of the four band names, one whose field resolves
+    complete: the failing repository's and the no-bands repository's
+    `triage_only` candidates never reach the returned set while their other
+    candidates and the complete repository's candidates — `triage_only` or
+    not — do; exactly one `warning` per dropped repository is logged, each
+    naming the repository and the count of candidates it dropped, not one per
+    item, with the no-bands repository's wording distinct from the
+    field-unresolvable one; a repository missing only *some* of the four
+    names is asserted unaffected by this pre-flight, reaching the returned
+    set byte-identical with no warning logged; a repeat resolution of any of
+    these repositories in the same process hits
     `issue_priority_field_ids`'s own cache rather than issuing a second
     query, including for the failing repository's cached failure; a cycle
     with no `triage_only` candidate at all issues no field query from this
-    path; and when every contributing repository's field resolves, the
-    returned set is byte-identical to the input.
+    path; and when every contributing repository's field resolves with at
+    least one band option, the returned set is byte-identical to the input.
 11c. **A broken Enabler cannot break a cycle (requirement 37).** With a stubbed
     stage that times out, exits non-zero, or (after requirement 9e's salvage
     resume also fails to parse) returns prose instead of JSON: the
