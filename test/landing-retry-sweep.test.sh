@@ -2,7 +2,7 @@
 #
 # test/landing-retry-sweep.test.sh — regression test for
 # `_landing_retry_sweep_repo`, the 2.1e landing-retry sweep's own candidate
-# rule (requirement 2.1e, TD-PPagop-26081701).
+# rule (requirement 8u, TD-PPagop-26081701).
 #
 # `test/landing-wiring.test.sh` already covers the six gates
 # `_landing_stage_attempt` runs once a candidate reaches it, including a

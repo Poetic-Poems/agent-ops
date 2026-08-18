@@ -91,7 +91,7 @@ extract() {  # <function name>
 refuse_block="$(extract _landing_refuse)"
 # `run_landing_stage` is gate 0 alone since TD-PPagop-26081701 split the
 # other six gates out into `_landing_stage_attempt` (so the landing-retry
-# sweep, requirement 2.1e, can reuse them for a pull request outside the
+# sweep, requirement 8u, can reuse them for a pull request outside the
 # round that first approved it) — both are extracted and sourced together so
 # a call to `run_landing_stage` below still exercises the whole sequence,
 # unchanged from what this file asserted before the split.
