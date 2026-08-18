@@ -343,11 +343,13 @@ Keys:
 | `timeout_reviewer` | *(unset)* | Minutes, and an override. As above. |
 | `timeout_enabler` | *(unset)* | Minutes, and an override. As above. |
 | `timeout_refiner` | *(unset)* | Minutes, and an override. As above. |
+| `timeout_approver` | *(unset)* | Minutes, and an override. As above. |
 | `inactivity_coordinator` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. A repo entry's own `stage_inactivity` outranks this key in turn, for that repo alone — see [`repos`](#extended-notes-repos). |
 | `inactivity_implementor` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
 | `inactivity_reviewer` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
 | `inactivity_enabler` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
 | `inactivity_refiner` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
+| `inactivity_approver` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
 | `lock_stale_after` | *(unset)* | Hours, and a floor rather than the value. The threshold is derived from the stage backstops plus slack, so it moves with them; set this only to insist on something longer. |
 | `stage_budget` | *(unset)* | Tuning for how the stage budgets derive themselves. Every key has a default in the code and none of them is a timeout; you almost certainly want none of it. |
 | `limit_cooldown_default` | `3` | Hours. Stand-down after a usage-limit error. |
@@ -407,7 +409,7 @@ A repo entry may also carry `nice` — an optional integer from `-19` to `19` (a
 
 A non-zero `nice` shows as a badge against that repo in the dashboard's work-sources panel, naming the value and the weighting it buys; a repo at `0` or with no key shows nothing there, so a fleet that has set none sees the panel unchanged.
 
-A repo entry may also carry `stage_timeouts` and `stage_inactivity` — the per-repo form of the `timeout_<actor>` and `inactivity_<actor>` keys below, each an object in minutes keyed `coordinator`, `implementor`, `reviewer` and `enabler`, any subset of them. The Refiner spans repos, so it has no per-repo form and takes `timeout_refiner` / `inactivity_refiner` only. A repo's entry is the most specific level of the precedence — this entry, then the fleet-wide key, then the derived value — so set one only to insist on a number for one repo; omit them and both the backstop and the watchdog tune themselves. `scripts/doctor.sh`'s pinned-cap warning covers every level, naming the repo for a per-repo override.
+A repo entry may also carry `stage_timeouts` and `stage_inactivity` — the per-repo form of the `timeout_<actor>` and `inactivity_<actor>` keys below, each an object in minutes keyed `coordinator`, `implementor`, `reviewer`, `approver` and `enabler`, any subset of them. The Refiner spans repos, so it has no per-repo form and takes `timeout_refiner` / `inactivity_refiner` only. A repo's entry is the most specific level of the precedence — this entry, then the fleet-wide key, then the derived value — so set one only to insist on a number for one repo; omit them and both the backstop and the watchdog tune themselves. `scripts/doctor.sh`'s pinned-cap warning covers every level, naming the repo for a per-repo override.
 
 A repo entry may also carry `merge_autonomy` — the per-repo override of the top-level key of the same name, on the same precedence: this entry wins when present, the top-level key otherwise. Omit it and the repository follows the fleet-wide default.
 

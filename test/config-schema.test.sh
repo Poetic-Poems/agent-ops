@@ -715,8 +715,15 @@ assert_doctor "doctor reports the derived lock rather than checking a configured
   '.lock_stale_after = 1' 0 'the cycle lock is derived at'
 assert_doctor "doctor warns that a configured cap pins itself" \
   '.timeout_reviewer = 60' 0 'turns off its self-tuning'
-assert_doctor "doctor warns that a configured Refiner cap pins itself, not only the four repo-scoped actors" \
+assert_doctor "doctor warns that a configured Refiner cap pins itself, not only the repo-scoped actors" \
   '.timeout_refiner = 15' 0 "timeout_refiner is set, which pins"
+assert_doctor "doctor warns that a configured Approver backstop pins itself, the newest of the twelve top-level keys" \
+  '.timeout_approver = 15' 0 "timeout_approver is set, which pins"
+assert_doctor "doctor warns that a configured Approver watchdog pins itself too" \
+  '.inactivity_approver = 5' 0 "inactivity_approver is set, which pins"
+assert_doctor "doctor warns on a per-repo stage_timeouts.approver override, naming the repo" \
+  '.repos[0].stage_timeouts = {"approver": 45}' 0 \
+  "Poetic-Poems/poetic's stage_timeouts.approver is set, which pins"
 assert_doctor "doctor warns on a per-repo stage_timeouts override, naming the repo" \
   '.repos[0].stage_timeouts = {"implementor": 90}' 0 \
   "Poetic-Poems/poetic's stage_timeouts.implementor is set, which pins"
@@ -725,7 +732,7 @@ assert_doctor "doctor warns on a per-repo stage_inactivity override, naming the 
   "Poetic-Poems/poetic's stage_inactivity.reviewer is set, which pins"
 assert_doctor "a per-repo override wider than every prior widens the reported lock, matching what agent-cycle.sh derives" \
   '.repos[0].stage_timeouts = {"implementor": 300}' 0 \
-  "the cycle lock is derived at 500 min"
+  "the cycle lock is derived at 530 min"
 assert_doctor "doctor warns when a repo's project_review label collides with the implementation one" \
   '.project_review.repos[0].pr_label = .pr_label' 0 \
   "Poetic-Poems/poetic's project_review pr_label ($(jq -r '.pr_label' "$CONFIG")) equals pr_label"

@@ -79,6 +79,10 @@
               "enabler": {
                 "type": "integer",
                 "minimum": 0
+              },
+              "approver": {
+                "type": "integer",
+                "minimum": 0
               }
             }
           },
@@ -100,6 +104,10 @@
                 "minimum": 0
               },
               "enabler": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "approver": {
                 "type": "integer",
                 "minimum": 0
               }
@@ -146,7 +154,7 @@
           "A repo entry that lists `implementation-plan` must also carry `implementation_plan_path` \u2014 the path, relative to that repo's root, of its plan document (poetic-fiddle's is `docs/IMPLEMENTATION-PLAN.md`); the Co-Ordinator reads whatever this says, so a repo with a differently named or located plan needs no prompt change, only its own path. The Script refuses to start a cycle if a repo lists the source without it \u2014 a repo that doesn't list `implementation-plan` needs no such key.",
           "A repo entry may also carry `nice` \u2014 an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo \u2014 the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range.",
           "A non-zero `nice` shows as a badge against that repo in the dashboard's work-sources panel, naming the value and the weighting it buys; a repo at `0` or with no key shows nothing there, so a fleet that has set none sees the panel unchanged.",
-          "A repo entry may also carry `stage_timeouts` and `stage_inactivity` — the per-repo form of the `timeout_<actor>` and `inactivity_<actor>` keys below, each an object in minutes keyed `coordinator`, `implementor`, `reviewer` and `enabler`, any subset of them. The Refiner spans repos, so it has no per-repo form and takes `timeout_refiner` / `inactivity_refiner` only. A repo's entry is the most specific level of the precedence — this entry, then the fleet-wide key, then the derived value — so set one only to insist on a number for one repo; omit them and both the backstop and the watchdog tune themselves. `scripts/doctor.sh`'s pinned-cap warning covers every level, naming the repo for a per-repo override.",
+          "A repo entry may also carry `stage_timeouts` and `stage_inactivity` — the per-repo form of the `timeout_<actor>` and `inactivity_<actor>` keys below, each an object in minutes keyed `coordinator`, `implementor`, `reviewer`, `approver` and `enabler`, any subset of them. The Refiner spans repos, so it has no per-repo form and takes `timeout_refiner` / `inactivity_refiner` only. A repo's entry is the most specific level of the precedence — this entry, then the fleet-wide key, then the derived value — so set one only to insist on a number for one repo; omit them and both the backstop and the watchdog tune themselves. `scripts/doctor.sh`'s pinned-cap warning covers every level, naming the repo for a per-repo override.",
           "A repo entry may also carry `merge_autonomy` — the per-repo override of the top-level key of the same name, on the same precedence: this entry wins when present, the top-level key otherwise. Omit it and the repository follows the fleet-wide default.",
           "A repo entry may also carry `merge_budget_per_day` — the per-repo override of the top-level key of the same name, on the same precedence. Omit it and the repository follows the fleet-wide default.",
           "A repo entry may also carry `merge_autonomy_routine_sources` — the per-repo override of the top-level key of the same name, on the same precedence. Omit it and the repository follows the fleet-wide default.",
@@ -162,7 +170,7 @@
           "The `issues:<band>` tokens are the one source that appears more than once \u2014 the same `issues` source at four ranks (requirement 15e). A repo that lists none of them has the issues source off; one that lists a subset sees only issues in those bands.",
           "A repo entry may also carry `implementation_plan_path` \u2014 the path, relative to that repo's root, of its plan document; required whenever `sources` lists `implementation-plan` (requirement 3k), since that source has no path of its own outside this config. poetic-fiddle's is `docs/IMPLEMENTATION-PLAN.md`.",
           "A repo entry may also carry `nice` \u2014 an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo \u2014 the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range.",
-          "A repo entry may also carry `stage_timeouts` and `stage_inactivity` \u2014 per-actor overrides in minutes, keyed `coordinator`, `implementor`, `reviewer` and `enabler`, for that repository alone. They are the most specific level of requirement 4f's precedence, ahead of the plain `timeout_<actor>` / `inactivity_<actor>` key and ahead of the derivation; the Refiner, spanning repositories, has no per-repository form. Configuration is read, never written: requirement 4f's derivation never writes back to `config.json`.",
+          "A repo entry may also carry `stage_timeouts` and `stage_inactivity` \u2014 per-actor overrides in minutes, keyed `coordinator`, `implementor`, `reviewer`, `approver` and `enabler`, for that repository alone. They are the most specific level of requirement 4f's precedence, ahead of the plain `timeout_<actor>` / `inactivity_<actor>` key and ahead of the derivation; the Refiner, spanning repositories, has no per-repository form. Configuration is read, never written: requirement 4f's derivation never writes back to `config.json`.",
           "A repo entry may also carry `merge_autonomy` \u2014 the per-repository override of the top-level key of the same name (D18, requirement 2.3b), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
           "A repo entry may also carry `merge_budget_per_day` \u2014 the per-repository override of the top-level key of the same name (D18, requirement 2.3c), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
           "A repo entry may also carry `merge_autonomy_routine_sources` \u2014 the per-repository override of the top-level key of the same name (D18 WI-7, requirement 8d), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
@@ -775,6 +783,18 @@
         }
       }
     },
+    "timeout_approver": {
+      "$ref": "#/$defs/timeoutMinutes",
+      "description": "Override for the Approver's wall-clock backstop, in minutes. Omit it: the backstop is derived per (actor, repository, model) and starts at a shipped prior.",
+      "x-docs": {
+        "readme": "Minutes, and an override. As above.",
+        "spec": "As `timeout_coordinator`, for the Approver.",
+        "value": {
+          "readme": "*(unset)*",
+          "spec": "*(unset)*"
+        }
+      }
+    },
     "inactivity_coordinator": {
       "$ref": "#/$defs/inactivityMinutes",
       "description": "Override for the Co-Ordinator's liveness-watchdog threshold, in minutes. Omit it: the threshold is derived from the gaps this stage really leaves.",
@@ -835,13 +855,25 @@
         }
       }
     },
+    "inactivity_approver": {
+      "$ref": "#/$defs/inactivityMinutes",
+      "description": "Override for the Approver's liveness-watchdog threshold, in minutes. Omit it: the threshold is derived from the gaps this stage really leaves.",
+      "x-docs": {
+        "readme": "Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog.",
+        "spec": "An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog for that actor and leaves the backstop as the only cap.",
+        "value": {
+          "readme": "*(unset)*",
+          "spec": "*(unset)*"
+        }
+      }
+    },
     "lock_stale_after": {
       "description": "A floor, in hours, under the derived staleness threshold for a held cycle lock. Omit it: the threshold is derived from the backstops in force plus slack.",
       "type": "number",
       "exclusiveMinimum": 0,
       "x-docs": {
         "readme": "Hours, and a floor rather than the value. The threshold is derived from the stage backstops plus slack, so it moves with them; set this only to insist on something longer.",
-        "spec": "A floor under the derived value of requirement 4f, not the value itself: the threshold is the sum, over the four actors, of the widest backstop each could draw this cycle, plus slack. Deriving it is the point \u2014 an assertion checked against fixed caps had to be re-derived by hand every time any of them moved, three times in two days. Erring long is close to free: a dead holder is taken over on its pid rather than its age, so this bounds only how long a live but hung cycle may hold on.",
+        "spec": "A floor under the derived value of requirement 4f, not the value itself: the threshold is the sum, over the six actors, of the widest backstop each could draw this cycle, plus slack. Deriving it is the point \u2014 an assertion checked against fixed caps had to be re-derived by hand every time any of them moved, three times in two days. Erring long is close to free: a dead holder is taken over on its pid rather than its age, so this bounds only how long a live but hung cycle may hold on.",
         "value": {
           "readme": "*(unset)*",
           "spec": "*(unset)*"

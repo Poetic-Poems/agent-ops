@@ -82,6 +82,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   human queue for it to be parked in at that level. Enforced at the arming
   step (D18 WI-7, above).
 
+- The Approver's own backstop and watchdog overrides (TD-PPagop-26081601,
+  agent-ops#473): `timeout_approver` and `inactivity_approver` fleet-wide, and
+  `approver` under a `repos[]` entry's `stage_timeouts` / `stage_inactivity`,
+  completing requirement 4f's precedence for the one implementation actor that
+  had none. The Approver stage (D18 WI-5) shipped with its own
+  `stage_budget_apply` call but no configuration to reach it, so an
+  installation could not pin either cap for that stage while it could for
+  every other. Omitting them stays the normal case — both caps still derive
+  themselves. The derived `lock_stale_after` accordingly sums six actors
+  rather than five, widening the default cycle lock by the Approver's 30 min
+  prior, and `scripts/doctor.sh`'s pinned-cap warning now covers both new
+  keys at every level of the precedence (TD-PPagop-26081802).
+
 ### Fixed
 
 - `merge_autonomy_routine_sources` can now name issue work at all

@@ -1798,7 +1798,7 @@ h_app="$tmp_dir/overrides-app"
 mkdir -p "$h_app"
 tar -C "$SCRIPT_DIR" --exclude=.git -cf - . | tar -C "$h_app" -xf -
 jq '.timeout_implementor = 500
-    | .repos[0].stage_timeouts = ((.repos[0].stage_timeouts // {}) + {reviewer: 710})' \
+    | .repos[0].stage_timeouts = ((.repos[0].stage_timeouts // {}) + {reviewer: 740})' \
   "$SCRIPT_DIR/config.json" > "$h_app/config.json"
 
 h="$(new_home nodeH)"
@@ -1806,14 +1806,15 @@ env HOME="$h" "$h_app/scripts/publish-dashboard.sh" --no-github >/dev/null 2>&1
 assert_eq "a publish against a config with overrides still exits 0" "0" "$?"
 hdata="$(data_of "$h")"
 # coordinator 20 + implementor 500 (plain timeout_ override, wider than its
-# 150 min prior) + reviewer 710 (per-repo stage_timeouts override, wider than
-# its 90 min prior) + enabler 30 + refiner 30 + 30 min slack = 1320 min, an
-# exact number of hours so the assertion needs no float rounding — the same
-# sum scripts/doctor.sh reports and agent-cycle.sh actually locks for, given
-# the same overrides (test/stage-budget.test.sh's 9a covers the shared
-# derivation itself; this covers that the dashboard script actually calls it).
+# 150 min prior) + reviewer 740 (per-repo stage_timeouts override, wider than
+# its 90 min prior) + approver 30 + enabler 30 + refiner 30 + 30 min slack =
+# 1380 min, an exact number of hours so the assertion needs no float
+# rounding — the same sum scripts/doctor.sh reports and agent-cycle.sh
+# actually locks for, given the same overrides (test/stage-budget.test.sh's
+# 9a covers the shared derivation itself; this covers that the dashboard
+# script actually calls it).
 assert_eq "the dashboard's derived lock threshold honours a plain timeout_<actor> override and a wider per-repo one" \
-  "$(( (20 + 500 + 710 + 30 + 30 + 30) / 60 ))" \
+  "$(( (20 + 500 + 740 + 30 + 30 + 30 + 30) / 60 ))" \
   "$(jq -r '.config.lock_stale_after' <<<"$hdata")"
 
 # --- Merge-queue awareness: queued badge, sticky dequeued warning (agent-ops#375) -
