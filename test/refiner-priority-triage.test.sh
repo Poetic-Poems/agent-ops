@@ -888,6 +888,42 @@ assert_eq "unrankable: no mutation reached gh" "0" \
   "$([[ -f "$gh_c/mutation-calls" ]] && wc -l < "$gh_c/mutation-calls" || echo 0)"
 
 # ----------------------------------------------------------------------------
+# (iiic) skipped-unrankable following a fallback (agent-ops#551): the skip
+# names the fallback band it actually evaluated, and `requested` still
+# travels through — a skip is the ratchet working, so still no warning.
+# ----------------------------------------------------------------------------
+cat > "$gh_c/fields-response.json" <<'EOF'
+{"data":{"repository":{"issueFields":{"nodes":[
+  {"id":"IFSS_priority","name":"Priority","options":[
+    {"id":"OPT_HIGH","name":"High"},{"id":"OPT_MEDIUM","name":"Medium"},
+    {"id":"OPT_LOW","name":"Low"}]}
+]}}}}
+EOF
+jq -nc '{node_id: "I_c55", issue_field_values: [{issue_field_name:"Priority", single_select_option:{name:"Critical"}}]}' \
+  > "$gh_c/current-response.json"
+verdicts='[{"repo":"o/r","item":"55","verdict":"refined","reason":"already specified",
+            "comments_posted":["https://github.com/o/r/issues/55#issuecomment-2c"],
+            "priority":"Urgent"}]'
+calls="$(run_case_c "unrankable after a fallback: requested still travels" "$issue_candidates_c" "$verdicts")"
+
+skip_evt="$(events_named "$calls" issue-prioritised-skipped | head -n1)"
+assert_eq "unrankable+fallback: issue-prioritised-skipped names the fallback band" "High" \
+  "$(jq -r '.priority' <<<"$skip_evt")"
+assert_eq "unrankable+fallback: ...and requested still names Urgent" "Urgent" \
+  "$(jq -r '.requested' <<<"$skip_evt")"
+assert_eq "unrankable+fallback: still no warning — this is the ratchet working, not failing" "0" \
+  "$(grep -c 'could not set Priority' <<<"$calls")"
+
+# Restore the ordinary complete field for the remaining cases below.
+cat > "$gh_c/fields-response.json" <<'EOF'
+{"data":{"repository":{"issueFields":{"nodes":[
+  {"id":"IFSS_priority","name":"Priority","options":[
+    {"id":"OPT_URGENT","name":"Urgent"},{"id":"OPT_HIGH","name":"High"},
+    {"id":"OPT_MEDIUM","name":"Medium"},{"id":"OPT_LOW","name":"Low"}]}
+]}}}}
+EOF
+
+# ----------------------------------------------------------------------------
 # (iv) a failed write: warning, but the refinement verdict is unaffected
 # ----------------------------------------------------------------------------
 jq -nc '{node_id: "I_c55", issue_field_values: []}' > "$gh_c/current-response.json"
@@ -904,6 +940,47 @@ assert_contains "write failure: a warning names the failed band write" \
   "could not set Priority on o/r#55 to High" "$calls"
 assert_eq "write failure: no issue-prioritised event" "0" \
   "$(grep -cE '^event issue-prioritised ' <<<"$calls")"
+assert_not_contains "write failure: no fallback here, so no 'asked for' clause" \
+  "the verdict asked for" "$calls"
+
+# ----------------------------------------------------------------------------
+# (ivb) a failed write following a fallback (agent-ops#551): the warning must
+# name both the band actually attempted (the fallback) and the band the
+# verdict asked for — naming the requested band alone would blame a write
+# that was never attempted.
+# ----------------------------------------------------------------------------
+cat > "$gh_c/fields-response.json" <<'EOF'
+{"data":{"repository":{"issueFields":{"nodes":[
+  {"id":"IFSS_priority","name":"Priority","options":[
+    {"id":"OPT_URGENT","name":"Urgent"},{"id":"OPT_HIGH","name":"High"},
+    {"id":"OPT_MEDIUM","name":"Medium"}]}
+]}}}}
+EOF
+jq -nc '{node_id: "I_c55", issue_field_values: []}' > "$gh_c/current-response.json"
+touch "$gh_c/fail-mutation"
+verdicts='[{"repo":"o/r","item":"55","verdict":"refined","reason":"specified fine, band fails, and is missing",
+            "comments_posted":["https://github.com/o/r/issues/55#issuecomment-3b"],
+            "priority":"Low"}]'
+calls="$(run_case_c "mutation fails after a fallback: warning names both bands" "$issue_candidates_c" "$verdicts")"
+rm -f "$gh_c/fail-mutation"
+
+assert_eq "write failure+fallback: item-refined is recorded either way" "1" \
+  "$(grep -cE '^event item-refined ' <<<"$calls")"
+assert_contains "write failure+fallback: the warning names the band actually attempted" \
+  "could not set Priority on o/r#55 to Medium (mutation-failed)" "$calls"
+assert_contains "write failure+fallback: ...and the band the verdict asked for" \
+  "the verdict asked for Low" "$calls"
+assert_eq "write failure+fallback: no issue-prioritised event" "0" \
+  "$(grep -cE '^event issue-prioritised ' <<<"$calls")"
+
+# Restore the ordinary complete field for the remaining cases below.
+cat > "$gh_c/fields-response.json" <<'EOF'
+{"data":{"repository":{"issueFields":{"nodes":[
+  {"id":"IFSS_priority","name":"Priority","options":[
+    {"id":"OPT_URGENT","name":"Urgent"},{"id":"OPT_HIGH","name":"High"},
+    {"id":"OPT_MEDIUM","name":"Medium"},{"id":"OPT_LOW","name":"Low"}]}
+]}}}}
+EOF
 
 # ----------------------------------------------------------------------------
 # (v) needs-refinement verdict carrying priority: the block is independent,

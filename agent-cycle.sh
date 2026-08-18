@@ -4948,6 +4948,7 @@ maybe_run_refiner() {
   local ex e_repo e_item verdict e_reason claimed_entry e_source outcome extra
   local e_synthetic e_block_ok e_refined_fields e_number e_triage_only
   local e_priority priority_result priority_applied priority_reason
+  local priority_attempted priority_requested
 
   # --- Guards, mirroring requirement 35's for the Enabler ---
   (( lock_acquired )) || return 0
@@ -5196,9 +5197,20 @@ $(jq . <<<"$input")
           '{repo: $r, item: $i, priority: $x.priority, previous: $x.previous, by: $by}
            + (if ($x.requested // null) != null then {requested: $x.requested} else {} end)')"
       else
-        log_event "warning" "$(jq -nc \
-          --arg d "refiner: could not set Priority on $e_repo#$e_number to $e_priority ($priority_reason) — the refinement verdict above is recorded either way" \
-          '{detail: $d}')"
+        # requested is present only for mutation-failed after a fallback
+        # (issue_priority_apply's header comment) — the other reasons
+        # reaching this branch never set it, so they fall through unchanged.
+        priority_attempted="$(jq -r '.priority // ""' <<<"$priority_result" 2>/dev/null || true)"
+        priority_requested="$(jq -r '.requested // ""' <<<"$priority_result" 2>/dev/null || true)"
+        if [[ -n "$priority_requested" ]]; then
+          log_event "warning" "$(jq -nc \
+            --arg d "refiner: could not set Priority on $e_repo#$e_number to $priority_attempted ($priority_reason) — the verdict asked for $priority_requested; the refinement verdict above is recorded either way" \
+            '{detail: $d}')"
+        else
+          log_event "warning" "$(jq -nc \
+            --arg d "refiner: could not set Priority on $e_repo#$e_number to $e_priority ($priority_reason) — the refinement verdict above is recorded either way" \
+            '{detail: $d}')"
+        fi
       fi
     fi
 

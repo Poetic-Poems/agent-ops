@@ -215,6 +215,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   differs. A field with none of the four names writable at all is reported
   as a new, distinct reason, `band-option-missing`, rather than reusing
   `field-unresolvable` for a different failure.
+- `maybe_run_refiner`'s `mutation-failed` warning (issue #551, a follow-up to
+  #538/#534) now names the band actually attempted, not the band the verdict
+  asked for, when a fallback ran: previously the warning always named the
+  verdict's own band even though the failed write targeted a different,
+  fallback band, so an operator reading it could not tell which band the
+  pipeline actually tried to set. It now also names the requested band
+  alongside the attempted one whenever the failed result carries a
+  `requested` field; a `mutation-failed` with no fallback, and the other
+  three failure reasons (`field-unresolvable`, `band-option-missing`,
+  `issue-unreadable`), keep their existing wording unchanged, since nothing
+  was attempted on those paths.
 
 ### Changed
 
