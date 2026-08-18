@@ -1398,6 +1398,90 @@
     return tableOf(["Repo","Claim","Node","Source","Item","Held"], rows);
   }
 
+  // ---------- autonomous landings panel (D18 WI-8, agent-ops#411) ----------
+  // Risk 6 of the autonomy investigation — "overnight merges with nobody
+  // watching" — was accepted on the condition that this replaces the
+  // synchronous human gate with an asynchronous audit. So this panel answers
+  // one question for a person who was asleep: what did the Script merge
+  // without me, and on whose authority?
+  //
+  // Three deliberate choices about what it refuses to hide:
+  //
+  //  - Refusals are shown even though nothing landed from them. Two landings
+  //    beside forty refusals is a classifier holding the line; two landings
+  //    beside none may be a gate that is not running. A digest that printed
+  //    only successes could not tell those apart, and the second is the one
+  //    worth waking up for.
+  //  - A landing whose authorising verdict could not be found still appears,
+  //    with "unknown" in the tier and verdict cells. An unexplained landing
+  //    is the single most important row this table can carry, so it must
+  //    never be the one dropped for want of a join.
+  //  - A payload the Publisher could not assemble says so, rather than
+  //    rendering as a quiet day. `armed === null` is that state; an empty
+  //    array is a real, and reportable, nothing.
+  function landingsPanel() {
+    var L = D.landings;
+    if (!L || L.armed == null) {
+      return el("div", {class:"panel"}, el("div", {class:"empty",
+        text:"The landing digest could not be assembled this tick — this is not the same as nothing having landed. See cron.log."}));
+    }
+    var armed = L.armed || [], refused = L.refused || [], budget = L.budget || [];
+    var hours = L.window_hours || 24;
+    var body = [];
+
+    if (!armed.length) {
+      body.push(el("div", {class:"panel"}, el("div", {class:"empty",
+        text:"Nothing landed autonomously in the last " + hours + " h."})));
+    } else {
+      var rows = armed.map(function (a) {
+        var verdict = a.verdict || "unknown";
+        var tier = a.tier || "unknown";
+        return el("tr", {}, [
+          el("td", {class:"muted", text: fmtAgo(a.ts)}),
+          el("td", {class:"mono", text: (a.repo || "?").split("/")[1] || a.repo || "?"}),
+          el("td", {}, prRefFromUrl(a.pr_url, "landings")),
+          el("td", {class:"wrap", text: a.title || "—"}),
+          el("td", {}, sourceTag(a.source)),
+          el("td", {class:"mono", text: a.complexity || "?"}),
+          el("td", {class:"mono", text: tier}),
+          el("td", {}, el("span", {class: "badge " + (verdict === "approve" ? "b-green" : "b-amber"), text: verdict})),
+          el("td", {class:"mono", text: a.method || "?"}),
+          el("td", {}, nodeTag(a.node))
+        ]);
+      });
+      body.push(tableOf(["Landed","Repo","PR","Title","Source","Complexity","Tier","Verdict","Method","Node"], rows));
+    }
+
+    // The budget line, per repository that has either a cap or a landing.
+    if (budget.length) {
+      var bparts = budget.map(function (b) {
+        var name = (b.repo || "?").split("/")[1] || b.repo || "?";
+        if (b.unlimited) return name + " " + b.consumed + "/∞";
+        return name + " " + b.consumed + "/" + b.cap +
+          (b.remaining === 0 ? " (cap reached)" : "");
+      });
+      body.push(el("div", {class:"panel muted", text: "Merge budget, last " + hours + " h: " + bparts.join(" · ")}));
+    }
+
+    // Refusals: the count always, and the reasons grouped, because "what the
+    // classifier turned down" is the other half of what it did.
+    if (refused.length) {
+      var byReason = {};
+      refused.forEach(function (r) {
+        var key = String(r.reason || "unknown").split(":")[0] || "unknown";
+        byReason[key] = (byReason[key] || 0) + 1;
+      });
+      var rparts = Object.keys(byReason).sort().map(function (k) { return k + " ×" + byReason[k]; });
+      body.push(el("div", {class:"panel muted", text:
+        refused.length + " landing" + (refused.length === 1 ? "" : "s") + " refused in the same window: " + rparts.join(" · ")}));
+    } else if (armed.length) {
+      body.push(el("div", {class:"panel muted", text:
+        "No landings were refused in this window — every pull request the Approver approved also cleared every arming gate."}));
+    }
+
+    return el("div", {}, body);
+  }
+
   // ---------- cycles panel ----------
   function cyclesPanel(cycles) {
     var body = cyclesTable(cycles);
@@ -2519,6 +2603,12 @@
 
     // ---------- open PRs ----------
     app.appendChild(sectionOf("Open pull requests", prsPanel(openPrs)));
+
+    // ---------- autonomous landings ----------
+    // Above the fleet's own bookkeeping and directly under the open pull
+    // requests, because it is the same question one step later: these are the
+    // pull requests that stopped being anybody's to merge.
+    app.appendChild(sectionOf("Autonomous landings (last " + (((D.landings || {}).window_hours) || 24) + " h)", landingsPanel()));
 
     // ---------- live claims ----------
     if (fleetVisible()) app.appendChild(sectionOf("Live claims", claimsPanel()));
