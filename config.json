@@ -12,6 +12,7 @@
     },
     {
       "slug": "Poetic-Poems/agent-ops",
+      "merge_autonomy": "agent-merges-routine",
       "sources": ["security", "issues:urgent", "review-feedback", "merge-conflicts", "dequeued", "human-visibility", "abandoned-drafts", "failed-runs", "issues:high", "tech-debt", "issues:medium", "issues:low", "code-quality", "register-hygiene"],
       "nice": -18
     }

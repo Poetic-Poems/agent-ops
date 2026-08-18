@@ -721,8 +721,16 @@ assert_doctor "doctor fails a merge_autonomy level above human with approver_app
 assert_doctor "doctor passes a merge_autonomy level above human once approver_app_id and approver_model_default are both set" \
   '.merge_autonomy = "agent-approves" | .approver_app_id = "123456" | .approver_model_default = "claude-sonnet-5"' 0 \
   'merge_autonomy is "agent-approves"'
+#     The same lesson caught this assertion a second time at Stage 2 entry
+#     (agent-ops#560): setting the *top-level* key to `human` did construct a
+#     wholly-human fleet only while no `repos[]` entry carried an override of
+#     its own, which agent-ops' promotion to `agent-merges-routine` ended. The
+#     per-repo overrides are now cleared explicitly here for the same reason
+#     the approver keys are deleted explicitly above — a fixture must build
+#     the state it claims to test, never inherit half of it from whatever the
+#     shipped configuration happens to say this month.
 assert_doctor "doctor passes human explicitly, same as the default, with no approver_app_id or approver_model_default" \
-  '.merge_autonomy = "human" | del(.approver_app_id) | del(.approver_model_default)' 0 \
+  '.merge_autonomy = "human" | del(.repos[].merge_autonomy) | del(.approver_app_id) | del(.approver_model_default)' 0 \
   'merge_autonomy is "human"'
 # The shipped configuration's own pairing, asserted as a fact rather than left
 # implicit in "doctor passes the shipped configuration" above: at Stage 1 the
