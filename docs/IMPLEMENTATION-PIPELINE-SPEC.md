@@ -778,7 +778,7 @@ D18's spend governor (§5.4, `lib/merge-budget.sh`, requirement 2.3c): a rolling
 
 ### Extended notes: `merge_autonomy_routine_sources`
 
-D18 WI-7 (requirement 8d, `lib/landing.sh`'s `landing_eligible`): which work sources may be armed automatically at `agent-merges-routine` and above, fleet-wide default; a `repos[]` entry's own `merge_autonomy_routine_sources` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). An eligible pull request also needs `complexity:low`/`medium` and `landing_protected_paths_hit` to report no protected path touched. Matched against a pull request's own `source` by exact string equality: every `issues:<band>` work order's own `source` collapses to the plain word `issues` (`scripts/gather-issues.sh`), so an `issues:<band>` entry here never matches one — a known, disclosed limitation (`lib/landing.sh`'s own header). `scripts/doctor.sh` warns when a repository's own effective list names a source that repository's `sources` never gathers, and separately warns on any `issues:<band>` entry here (agent-ops#519) — that entry can validate clean against the first check, since the repository's own `sources` list typically does gather the banded token, while still never matching a work order once it collapses.
+D18 WI-7 (requirement 8d, `lib/landing.sh`'s `landing_eligible`): which work sources may be armed automatically at `agent-merges-routine` and above, fleet-wide default; a `repos[]` entry's own `merge_autonomy_routine_sources` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). An eligible pull request also needs `complexity:low`/`medium` and `landing_protected_paths_hit` to report no protected path touched. Matched against a pull request's own `source` by exact string equality, over the `landingSourceToken` vocabulary rather than `repos[].sources`' `sourceToken` one: `scripts/gather-issues.sh` collapses all four bands to `"source": "issues"`, so `issues` is the only spelling that can match an issue work order, and the four banded spellings are rejected by the schema outright (agent-ops#558). Until that fix the two were one shared enum, which offered only the spellings landing can never match — and `scripts/doctor.sh`'s banded-token warning (agent-ops#519) named a remedy, `issues`, that the same enum refused. `scripts/doctor.sh` warns when a repository's own effective list names a source that repository's `sources` never gathers, reading a bare `issues` as satisfied by any `issues:<band>` the repository gathers.
 
 <!-- config-table:notes-end -->
 
@@ -13314,10 +13314,15 @@ pull request, run the ones the change touches and any it could regress.
     precedence over the top-level list, the same precedence
     `merge_autonomy` itself uses) and for an empty source, `unknown` on an
     unreadable protected-path read, and `eligible` only once every condition
-    clears — with a pinned case confirming the `source` comparison is exact
-    string equality, never expanded against the four `issues:<band>` ranks
-    (an `issues:low` routine-list entry never matches a real issues work
-    order's own plain `"issues"` source); `landing_approver_standing_review`
+    clears — with pinned cases confirming the `source` comparison is exact
+    string equality, never expanded against the four `issues:<band>` ranks:
+    a plain `issues` routine-list entry matches a real issues work order's
+    own `"issues"` source, and an `issues:low` entry (a schema error, since
+    the key takes `landingSourceToken` and not `sourceToken`) does not, the
+    comparison folding no bands. The membership test is additionally guarded
+    against an empty routine list, because `jq -e` on empty input exits 0 on
+    jq 1.6 and 4 on jq 1.7, which would otherwise invert this gate on a 1.6
+    host; `landing_approver_standing_review`
     reads a login's own most recent standing `APPROVED`/`CHANGES_REQUESTED`
     review — ignoring `COMMENTED`/`DISMISSED` — reading empty for a login
     that never reviewed, and non-zero on an unreadable list, confirming this

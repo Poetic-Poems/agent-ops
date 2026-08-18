@@ -681,6 +681,38 @@ out="$(env PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$rs_ok_config" 2>&1)"
 assert_not_contains "an unbanded routine list never triggers the banded-token warning" \
   "banded issues:<band> token" "$out"
 
+# --- agent-ops#558: the remedy #519's warning names — a bare `issues` in the
+#     routine list — is now a writable token (the key takes landingSourceToken,
+#     not sourceToken), and must not then be reported as ungathered by the
+#     set-difference check above: `sources` spells the same source banded, so
+#     the routine side is normalised before the difference is taken. Without
+#     that, following doctor's own advice would trade one warning for another
+#     and there would still be no clean way to land issues work. ------------
+rs_plain_config="$tmp/rs-plain-config.json"
+jq --arg slug "$slug" \
+  '.repos = [{slug: $slug, sources: ["security", "abandoned-drafts", "issues:low", "tech-debt"],
+              merge_autonomy_routine_sources: ["issues", "tech-debt"]}]' \
+  "$base_config" > "$rs_plain_config"
+out="$(env PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$rs_plain_config" 2>&1)"
+assert_contains "a bare 'issues' routine entry is gathered, because the repo's sources carry issues:low" \
+  "[ ok ] $slug's merge_autonomy_routine_sources are all sources it actually gathers" "$out"
+assert_not_contains "  ... so the 'never gathers' warning does not fire on the normalised token" \
+  "which its own sources list never gathers" "$out"
+assert_not_contains "  ... and the banded-token warning does not fire either — nothing here is banded" \
+  "banded issues:<band> token" "$out"
+
+# A bare `issues` in a repository that gathers no issues at all is still a
+# real fault, and the normalisation must not swallow it.
+rs_noissues_config="$tmp/rs-noissues-config.json"
+jq --arg slug "$slug" \
+  '.repos = [{slug: $slug, sources: ["security", "tech-debt"],
+              merge_autonomy_routine_sources: ["issues", "tech-debt"]}]' \
+  "$base_config" > "$rs_noissues_config"
+out="$(env PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$rs_noissues_config" 2>&1)"
+assert_contains "a bare 'issues' entry still warns where the repository gathers no issues source at all" \
+  "[warn] $slug's merge_autonomy_routine_sources names [issues], which its own sources list never gathers" \
+  "$out"
+
 # --- The kill switch's own live state (requirement 2.3b), reported once per
 #     run alongside state_repo's own access check ---------------------------
 run_doctor
