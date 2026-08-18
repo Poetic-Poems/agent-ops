@@ -590,19 +590,19 @@ fi
 
 # A configured cap is an override that outranks the derivation for as long as
 # it is there, which is easy to set once and then forget about entirely —
-# at any of requirement 4f's three precedence levels: the ten top-level
-# `timeout_<actor>` / `inactivity_<actor>` keys (five actors, including the
-# Refiner), and every repository's own `stage_timeouts` / `stage_inactivity`
-# entry, named by that repository's slug so the warning says which entry to
-# edit.
+# at any of requirement 4f's three precedence levels: the twelve top-level
+# `timeout_<actor>` / `inactivity_<actor>` keys (six actors, including the
+# Refiner and the Approver), and every repository's own `stage_timeouts` /
+# `stage_inactivity` entry, named by that repository's slug so the warning
+# says which entry to edit.
 while IFS= read -r overridden; do
   [[ -n "$overridden" ]] || continue
   warn "$overridden is set, which pins that cap and turns off its self-tuning — remove it unless you mean to"
 done < <(jq -r '
   [ "timeout_coordinator", "timeout_implementor", "timeout_reviewer",
-    "timeout_enabler", "timeout_refiner", "inactivity_coordinator",
-    "inactivity_implementor", "inactivity_reviewer", "inactivity_enabler",
-    "inactivity_refiner" ]
+    "timeout_approver", "timeout_enabler", "timeout_refiner",
+    "inactivity_coordinator", "inactivity_implementor", "inactivity_reviewer",
+    "inactivity_approver", "inactivity_enabler", "inactivity_refiner" ]
   | map(select(. as $k | ($ARGS.named.cfg[$k] | type) == "number"))[],
   ( ($ARGS.named.cfg.repos // [])[] as $r
     | ["stage_timeouts", "stage_inactivity"][] as $field
