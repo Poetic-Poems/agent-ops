@@ -162,6 +162,12 @@ EXCLUDES=(
   --exclude=dashboard.log
   --exclude=dashboard-server.log
   --exclude=state-sync.log
+  # doctor.log and its structured sibling (scripts/doctor.sh --unattended,
+  # agent-ops#543): the hourly pass is local to this node the same way
+  # dashboard.log and .image-drift-cache.json below are — nothing reads
+  # either from a peer, so neither travels.
+  --exclude=doctor.log
+  --exclude=.doctor-status.json
   --exclude=.dashboard-github.json
   --exclude=.dashboard-claims.json
   --exclude=.image-drift-cache.json

@@ -298,7 +298,7 @@ Keys:
 | `cycles_retained` | `200` | Cycle directories kept in the replicated copy (~8 days of hourly cycles). Your own `state_dir` is not pruned. |
 | `state_local_cycles_retained` | `1000` | Cycle and review directories the node's own `state_dir` keeps; the same push that replicates prunes to it. Deliberately far above `cycles_retained`, so the local machine is always the longer record. |
 | `state_local_streams_retained` | `50` | Cycle and review directories whose stage event streams (`<stage>.stream.jsonl`) are kept. Streams are large and local-only — never replicated — so they are bounded well below `state_local_cycles_retained`; the records themselves are untouched. |
-| `log_retained_bytes` | `2000000` | Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `cron.log` and `review-cron.log`. `log.jsonl` and `review-log.jsonl` are never rotated. |
+| `log_retained_bytes` | `2000000` | Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `doctor.log`, `cron.log` and `review-cron.log`. `log.jsonl` and `review-log.jsonl` are never rotated. |
 | `log_generations` | `3` | Rotated generations kept beside each live log (`<name>.1` … `<name>.<log_generations>`). |
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
 | `implementor_model_default` | `claude-sonnet-5` | For code changes. |
@@ -371,6 +371,7 @@ Keys:
 | `schedule.state_sync_push_minutes` | `5` | Interval, in minutes, of the containerised node's `state-sync.sh push` line. |
 | `schedule.state_sync_fetch_minutes` | `7` | Interval, in minutes, of the containerised node's `state-sync.sh fetch` line. |
 | `schedule.log_rotation_minute` | `19` | The minute past every hour the containerised node's `rotate-logs.sh` line runs. |
+| `schedule.doctor_offset_minutes` | `44` | Minutes past `CYCLE_MINUTE` (mod 60) the hourly unattended `doctor.sh` pass's minute is set to (agent-ops#543), on the same per-node jitter `review_offset_minutes` uses. |
 <!-- config-table:end -->
 
 Every `*_model` key above, plus `project_review.defaults.model` (or a repo's
@@ -771,17 +772,27 @@ node's. It also lists any repository whose `nice` biases the walk away from
 
 ```bash
 ./scripts/doctor.sh --offline          # config, toolchain and crontab only, no network
+./scripts/doctor.sh --unattended       # full GitHub section, no model spend — what the hourly cron line runs
 ./scripts/doctor.sh --quiet            # warnings and failures only
 ./scripts/doctor.sh --config /tmp/new.json   # a config you have not deployed yet
 ```
 
 Run it after editing `config.json`, on a new node before its first cycle, and
 whenever a cycle does something the configuration does not explain. It is
-read-only bar two things it declares: the state and workspace directories
-your config names, which it creates in order to prove it can, and the trial
-crontab above, rendered into a `mktemp -d` it removes when done. Every GitHub
+read-only bar three things it declares: the state and workspace directories
+your config names, which it creates in order to prove it can; the trial
+crontab above, rendered into a `mktemp -d` it removes when done; and, under
+`--unattended` only, `state_dir/.doctor-status.json`. Every GitHub
 call it makes is a read (a GET, even the one that asks about *write*
 access) — so it is safe to run against a live node, including mid-cycle.
+
+A node also runs `--unattended` itself, unprompted, once an hour
+(`deploy/docker/crontab.tmpl`) — the same checks above, minus the two that
+spend (Claude credentials, the stream-flushing probe), so a configuration gap
+that only shows up against a live repository (a `Priority` field missing a
+band, say) does not go unseen between one operator-invoked pass and the
+next. Its result reaches the **Doctor** section of the dashboard (see
+Monitoring below), not your terminal.
 
 Inside a container node, run it there rather than on the host, since that is
 where the toolchain and the credentials are:
@@ -1487,7 +1498,9 @@ stand-downs, open agent PRs and their CI status,
 recent cycles with per-stage cost/duration/model (substantive cycles only —
 the no-op ticks the `*/15` cadence mostly produces are summarised in one
 count beneath the table instead of holding rows), failures, blocked and void
-items, the work sources the Co-Ordinator sees, how often the Script rejects
+items, the work sources the Co-Ordinator sees, the hourly unattended
+`doctor.sh` pass's own warnings and failures (a **Doctor** section, with a
+page-top banner when it has something to say), how often the Script rejects
 a Co-Ordinator verdict — by day and by the model that produced it, with what
 the fleet spent recovering, so it is visible whether the cheap Co-Ordinator
 model is paying for itself — estimated token cost by day, by

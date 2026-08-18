@@ -1,0 +1,25 @@
+{
+  "generated_at": "@now",
+  "node": "poetic-1",
+  "status": {
+    "running": false,
+    "doctor": {
+      "timestamp": "@ago:10m",
+      "verdict": "fail",
+      "fails": ["acme-org/target-repo is archived — no branch can be pushed to it, whatever the token's permissions"],
+      "warns": ["acme-org/target-repo's Priority field is readable but is missing one of Urgent/High/Medium/Low — the Refiner's triage duty can band only the options actually present"],
+      "skips": 2
+    }
+  },
+  "fleet": {
+    "flags": {
+      "disabled": null,
+      "limit": null
+    },
+    "nodes": []
+  },
+  "cycles": [],
+  "log_tail": [],
+  "blocked": [],
+  "void": []
+}

@@ -171,12 +171,17 @@ a node updates by pulling a new image rather than by pulling a branch.
   review tick — plus two fleet lines (requirement 2.5): a `state-sync.sh
   push`, which publishes this node's state and heartbeat to its own branch,
   and a `state-sync.sh fetch`, which materialises every peer's for the union
-  readers; and one log-rotation line (requirement 2.6), `rotate-logs.sh`,
-  which bounds the four logs those schedules append to. Every cadence named
-  above — the heartbeat and both fleet lines' intervals, and the
-  log-rotation minute — comes from `config.json`'s `schedule` (`heartbeat_minutes`,
-  `state_sync_push_minutes`, `state_sync_fetch_minutes`, `log_rotation_minute`;
-  see Configuration), baked at 5, 5, 7 and 19 in the checked-in config. The
+  readers; one log-rotation line (requirement 2.6), `rotate-logs.sh`,
+  which bounds the five logs those schedules append to; and one
+  unattended-doctor line (requirement 2.6a), `doctor.sh --unattended`, which
+  runs the same configuration and GitHub checks an operator would run by
+  hand, once an hour, with nobody watching. Every cadence named
+  above — the heartbeat and both fleet lines' intervals, the
+  log-rotation minute, and the doctor pass's own offset — comes from
+  `config.json`'s `schedule` (`heartbeat_minutes`,
+  `state_sync_push_minutes`, `state_sync_fetch_minutes`, `log_rotation_minute`,
+  `doctor_offset_minutes`;
+  see Configuration), baked at 5, 5, 7, 19 and 44 in the checked-in config. The
   same redirections into `state_dir` apply, so the dashboard's log-derived
   views work identically. It deliberately omits the laptop's personal
   `update-main-branches.sh` entry: that refreshes interactive checkouts, and
@@ -610,7 +615,7 @@ and the schema must carry every one of them.
 | `cycles_retained` | `200` | Cycle directories kept in the replicated mirror — about eight days of hourly cycles. Bounds a repository that is force-pushed after every cycle. The node's own `state_dir` is bounded by `state_local_cycles_retained` instead. |
 | `state_local_cycles_retained` | `1000` | Cycle and review directories the node's *own* `state_dir` keeps — about six weeks of hourly cycles; the same push that replicates prunes to it (requirement 2.5). Deliberately far above `cycles_retained`, so the local machine is always the longer record, with a floor of one protecting the cycle being recorded. `STATE_SYNC_LOCAL_RETAINED` overrides it for tests. |
 | `state_local_streams_retained` | `50` | Cycle and review directories whose stage event streams (`<stage>.stream.jsonl`, requirement 4d) are kept; the push that replicates prunes to it (requirement 2.5). Far below `state_local_cycles_retained` because a stream is a different order of size from the record holding it — a cycle directory without them is kilobytes, one Reviewer stream megabytes — so streams go early and their records stay. Streams never reach the state repository. `STATE_SYNC_STREAMS_RETAINED` overrides it for tests. |
-| `log_retained_bytes` | `2000000` | Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `cron.log` and `review-cron.log` (requirement 2.6). `log.jsonl` and `review-log.jsonl` are never rotated regardless of size. `ROTATE_LOGS_RETAINED_BYTES` overrides it for tests. |
+| `log_retained_bytes` | `2000000` | Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `doctor.log`, `cron.log` and `review-cron.log` (requirement 2.6). `log.jsonl` and `review-log.jsonl` are never rotated regardless of size. `ROTATE_LOGS_RETAINED_BYTES` overrides it for tests. |
 | `log_generations` | `3` | Rotated generations of each log kept beside the live file (`<name>.1` … `<name>.<log_generations>`), floored at one. `ROTATE_LOGS_GENERATIONS` overrides it for tests. |
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
 | `implementor_model_default` | `claude-sonnet-5` | Any change that affects runtime behaviour. |
@@ -683,6 +688,7 @@ and the schema must carry every one of them.
 | `schedule.state_sync_push_minutes` | `5` | Interval, in minutes, of `state-sync.sh push` (requirement 2.5). |
 | `schedule.state_sync_fetch_minutes` | `7` | Interval, in minutes, of `state-sync.sh fetch` (requirement 2.5). |
 | `schedule.log_rotation_minute` | `19` | The minute past every hour `rotate-logs.sh` runs (requirement 2.6). |
+| `schedule.doctor_offset_minutes` | `44` | Minutes past `CYCLE_MINUTE` (mod 60) the hourly `doctor.sh --unattended` pass's minute is set to, jittering it across the fleet the same way `review_offset_minutes` jitters the review tick. |
 <!-- config-table:end -->
 
 Model IDs are pinned in config (one place to update); do not use floating
@@ -2032,8 +2038,9 @@ implements.
 2.6. **Log rotation.** Requirement 2.5 bounds the *records* in `state_dir` —
    `cycles/` and `reviews/` are pruned on every push — but its logs are
    appended to forever otherwise. `scripts/rotate-logs.sh`, on its own
-   crontab line independent of the pipelines, bounds four of them:
-   `dashboard.log`, `state-sync.log`, `cron.log` and `review-cron.log`. Each
+   crontab line independent of the pipelines, bounds five of them:
+   `dashboard.log`, `state-sync.log`, `doctor.log`, `cron.log` and
+   `review-cron.log`. Each
    is renamed to `<name>.1` (an existing `.1` first shifts to `.2`, and so
    on) once it reaches `log_retained_bytes`, keeping the newest
    `log_generations` generations; a fresh, empty file replaces it
@@ -2048,7 +2055,53 @@ implements.
    (requirement 2.5) and its tail is rendered on the dashboard (the
    `DASHBOARD-SPEC.md` cron panel), `scripts/publish-dashboard.sh` reads
    `cron.log.1` too whenever the live file alone is shorter than the tail
-   window, so a rotation never empties the panel.
+   window, so a rotation never empties the panel. `doctor.log` (requirement
+   2.6a) is bounded here on size alone, like `dashboard.log` and
+   `state-sync.log`: it is local to the node and excluded from the state
+   branch, and the dashboard reads the structured `.doctor-status.json`
+   beside it, not this file, so nothing needs its tail kept across a
+   rotation. `.doctor-status.json` itself is not in this rotation set at
+   all — each unattended pass overwrites it in place (`mv -f` over the
+   previous run), so it never grows.
+2.6a. **The unattended doctor pass** (agent-ops#543). `scripts/doctor.sh
+   --unattended`, on its own hourly crontab line, runs unprompted the same
+   configuration and GitHub checks requirement 1b's acceptance check 1m
+   covers for an operator running the command by hand — `issue_priority_options_complete`
+   above all: the `Priority` field gap the Refiner's triage duty
+   (requirement 39g) depends on shows up only against a live repository, and
+   nobody would otherwise see it between one operator-invoked pass and the
+   next. It is a new flag, not `--offline` with its meaning stretched: the
+   cut here is by *cost*, not by network. The whole Configuration section and
+   the whole GitHub section run — every call there is a GET doctor.sh already
+   declares safe against a live node — and only the two checks that spend are
+   skipped, each with its own reason distinct from `--offline`'s: the Claude
+   credentials check (no credential is read) and the stream-flushing probe
+   (no model call is made). The crontab line's own minute is
+   `schedule.doctor_offset_minutes` past the node's base cycle minute (mod
+   60, 44 by default) — the same per-node jitter requirement 2.5's review
+   line uses, keeping a fleet of nodes off the same GitHub-API minute. A
+   `fail` verdict exits 1, which the crontab line swallows (`|| true`):
+   nothing on the image reads a cron job's exit status, and the alternative —
+   supercronic's own "job failed" log line, once an hour, for a routine
+   configuration warning — would read as a crashed script to an operator
+   tailing `docker compose logs`. The run's actual verdict travels a
+   different way: at the end of a completed run (never from one of the
+   argument- or config-unusable exits near the top of the script, which bail
+   before `state_dir` is even resolved) it writes
+   `state_dir/.doctor-status.json` — `{timestamp, verdict, fails[], warns[],
+   skips}`, `verdict` the worst of `fail`/`warn`/`ok` — atomically (`mktemp`
+   then `mv -f`), the third declared exception to doctor.sh's read-only rule
+   alongside the state/workspace directories and the trial crontab render.
+   `scripts/publish-dashboard.sh` reads this file rather than re-running the
+   pass itself — the GitHub section alone is several calls per configured
+   repository, too much to repeat on the dashboard's own 5-minute heartbeat
+   — and surfaces it as `status.doctor` (`docs/DASHBOARD-SPEC.md`), local to
+   this node only: nothing here replicates it to peers, unlike the
+   compose/image/switch verdicts the fleet heartbeat carries. `doctor.log`
+   (requirement 2.6) keeps the run's own text output, rotated on size like
+   `dashboard.log`; `.doctor-status.json` is excluded from the state branch
+   (requirement 2.5) alongside the dashboard's own local caches, since
+   nothing but this node's own Publisher ever reads it.
 2.7. **Crash-loop escalation.** A Co-Ordinator failure pins no repo/item
    (requirement 33's fields are set only after selection), so the entire
    blocked → Enabler → escalation ladder that covers item failures never
@@ -10437,7 +10490,17 @@ What exists, and the requirements each part answers to:
     `doctor.sh` leaves for both since it carries no override variable for
     either (unlike `lib/labels.sh`'s `LABELS_GH`), run without `--offline` so
     the network-gated checks are actually exercised while nothing on `PATH`
-    ever reaches a real network. Must pass `shellcheck`.
+    ever reaches a real network.
+
+    A third flag, `--unattended` (requirement 2.6a), is what
+    `deploy/docker/crontab.tmpl`'s own hourly line runs unprompted: the whole
+    Configuration and GitHub sections, skipping only the two checks that
+    spend — Claude credentials and the stream-flushing probe — each with its
+    own skip reason, distinct from `--offline`'s. At the end of a completed
+    run it writes `state_dir/.doctor-status.json`
+    (`{timestamp, verdict, fails[], warns[], skips}`) for
+    `scripts/publish-dashboard.sh` to surface, a third declared exception to
+    the read-only rule above. Must pass `shellcheck`.
 14a. `lib/merge-autonomy.sh` implementing requirement 2.3b: the D18 trust
     ladder's config resolution and its kill switch. `MERGE_AUTONOMY_LEVELS`
     (the four levels, `human` first) and `merge_autonomy_rank` (a level's
@@ -13091,6 +13154,19 @@ pull request, run the ones the change touches and any it could regress.
     at all; and `--offline` still renders the crontab and reports `nice`
     reordering while reporting write access and Claude credentials as
     `skip`. Must pass `shellcheck`.
+1n. **`--unattended` runs the GitHub section in full and skips only the two
+    checks that spend, with wording distinct from `--offline`'s, and writes
+    `state_dir/.doctor-status.json` (requirement 2.6a).** `test/doctor.test.sh`
+    passes: against the same stubbed `gh` and `claude`, a run with
+    `--unattended` still reports write access (the GitHub section is not
+    skipped, unlike under `--offline`); Claude credentials and the
+    stream-flushing probe are each reported `skip` naming `--unattended`,
+    never `--offline`'s wording; a completed run leaves
+    `state_dir/.doctor-status.json` with a `timestamp` (a real UTC instant),
+    a `verdict` (the worst of `fail`/`warn`/`ok` this run found), and its
+    `fails`/`warns` as arrays of the exact messages printed; an ordinary run
+    with neither flag writes no such file and runs the Claude section for
+    real, against the stub. Must pass `shellcheck`.
 6h. **The pipeline creates the labels it applies, and touches no others
     (requirement 6a).** `test/labels.test.sh` passes against a stubbed `gh`
     that records every invocation and refuses a duplicate the way GitHub

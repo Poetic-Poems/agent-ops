@@ -15,6 +15,19 @@
 # An idle firing stays cheap: lib/noop-skip.sh short-circuits before the
 # Co-Ordinator runs when nothing a fingerprint covers has changed.
 #
+# @DOCTOR_MINUTE@ is schedule.doctor_offset_minutes past the node's own base
+# minute (mod 60), the same jitter the review line above uses — one node's hourly
+# `doctor.sh --unattended` pass (agent-ops#543) lands away from every other
+# node's, and away from this node's own heavy pipelines. `doctor.sh` exits
+# non-zero on a `fail` verdict, which here is routine — a misconfigured
+# `Priority` field found once an hour, not a broken job — so the line ends
+# `|| true`: nothing on this image reads a cron job's exit status (no
+# MAILTO, no healthcheck), but a future reader of `docker compose logs`
+# must not mistake supercronic's own "job failed" line for a crashed
+# script. The run's actual verdict travels through the file it writes
+# (state_dir/.doctor-status.json) to the dashboard, not through this exit
+# status.
+#
 # Everything not a placeholder is documented in the baked crontab, which is
 # also the fallback whenever this template cannot be rendered.
 
@@ -23,6 +36,7 @@ LOGDIR=/home/agent/.local/state/poetic-agents
 */@HEARTBEAT_MINUTES@ * * * *  /app/scripts/publish-dashboard-launcher.sh
 @CYCLE_MINUTE@ @CYCLE_HOURS@ * * *  /app/agent-cycle.sh  >> $LOGDIR/cron.log        2>&1
 @REVIEW_MINUTE@ @REVIEW_HOUR@ * * *  /app/review-cycle.sh >> $LOGDIR/review-cron.log 2>&1
+@DOCTOR_MINUTE@ * * * *  /app/scripts/doctor.sh --unattended >> $LOGDIR/doctor.log 2>&1 || true
 
 */@STATE_SYNC_PUSH_MINUTES@ * * * *  /app/scripts/state-sync.sh push  >> $LOGDIR/state-sync.log 2>&1
 */@STATE_SYNC_FETCH_MINUTES@ * * * *  /app/scripts/state-sync.sh fetch >> $LOGDIR/state-sync.log 2>&1

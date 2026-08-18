@@ -937,6 +937,50 @@ assert_contains "--offline skips Claude credentials" \
 assert_contains "--offline skips the stream-flushing probe, the one check that spends" \
   "[skip] stream flushing (--offline" "$out"
 
+# --- --unattended runs the full GitHub section but skips the two spending
+#     checks, with wording distinct from --offline's, and writes
+#     state_dir/.doctor-status.json for scripts/publish-dashboard.sh
+#     (agent-ops#543) --------------------------------------------------------
+
+unattended_state_dir="$tmp/unattended-state-dir"
+mkdir -p "$unattended_state_dir"
+unattended_config="$tmp/unattended-config.json"
+jq --arg sd "$unattended_state_dir" '.state_dir = $sd' "$niced_config" > "$unattended_config"
+
+out="$(env PATH="$stub_bin:$PATH" \
+  STUB_REPO_JSON='{"permissions":{"push":true},"archived":false}' \
+  bash "$DOCTOR" --config "$unattended_config" --unattended 2>&1)"
+assert_contains "--unattended still renders the crontab" "cycle at minute" "$out"
+assert_contains "--unattended still runs the GitHub section (write access is checked)" \
+  "is writable — the token can push claim branches" "$out"
+assert_contains "--unattended skips Claude credentials, for its own reason" \
+  "[skip] Claude credentials (--unattended" "$out"
+assert_not_contains "not with --offline's wording" "[skip] Claude credentials (--offline)" "$out"
+assert_contains "--unattended skips the stream-flushing probe, the one check that spends" \
+  "[skip] stream flushing (--unattended" "$out"
+assert_not_contains "not with --offline's wording either" "[skip] stream flushing (--offline" "$out"
+
+status_file="$unattended_state_dir/.doctor-status.json"
+assert_eq "--unattended writes state_dir/.doctor-status.json" "1" \
+  "$( [[ -f "$status_file" ]] && echo 1 || echo 0 )"
+assert_eq "its verdict is warn (the stub labels endpoint always answers empty)" \
+  "warn" "$(jq -r '.verdict' "$status_file" 2>/dev/null)"
+assert_eq "its fails array is empty in this fixture" "[]" \
+  "$(jq -c '.fails' "$status_file" 2>/dev/null)"
+assert_eq "its warns array is non-empty in this fixture" "true" \
+  "$(jq '(.warns | length) > 0' "$status_file" 2>/dev/null)"
+assert_eq "its timestamp is a real UTC instant" "1" \
+  "$(jq -r '.timestamp' "$status_file" 2>/dev/null | grep -Ecq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'; echo $((1 - $?)))"
+
+rm -f "$status_file"
+out_plain="$(env PATH="$stub_bin:$PATH" \
+  STUB_REPO_JSON='{"permissions":{"push":true},"archived":false}' \
+  bash "$DOCTOR" --config "$unattended_config" 2>&1)"
+assert_eq "an ordinary run (no --unattended) does not write the status file" "0" \
+  "$( [[ -f "$status_file" ]] && echo 1 || echo 0 )"
+assert_contains "and its Claude section actually runs (neither --unattended nor --offline)" \
+  "[ ok ] claude is authenticated" "$out_plain"
+
 # --- Cache directory cleanup (issue #510) ------------------------------------
 #
 # doctor.sh sources lib/issue-priority.sh, whose ISSUE_PRIORITY_CACHE_DIR used
