@@ -3888,10 +3888,23 @@ _landing_refuse() {
 # function the 2.1e landing-retry sweep calls for a pull request this gate
 # already passed once, on a later cycle, for a repo and source this global
 # scope does not carry (TD-PPagop-26081701; see that function's own header).
+#
+# Passes `landing_armed_by_repo[$selected_repo]` as ALREADY_ARMED (PR #557
+# review round 2) rather than leaving it at `_landing_stage_attempt`'s own
+# default of 0: the 2.1e sweep (`_landing_retry_sweep_repo`, run earlier this
+# same cycle, well before this stage) may already have armed candidates for
+# this repository, and this stage's own live `merge_budget_decide` read must
+# discount those too, not just its own — the gap PR #557's first review round
+# left, since that round's fix bounded only the sweep's own pass, and this
+# call site threaded no ALREADY_ARMED at all.
 run_landing_stage() {
   local pr_url="$1" complexity="$2"
   [[ "$approver_stage_verdict" == "approve" && "$approver_stage_adjudicating" != "1" ]] || return 0
-  _landing_stage_attempt "$selected_repo" "$pr_url" "$complexity" "$selected_source" "$gate_default_branch"
+  local already_armed="${landing_armed_by_repo[$selected_repo]:-0}"
+  _landing_stage_attempt "$selected_repo" "$pr_url" "$complexity" "$selected_source" "$gate_default_branch" "" "$already_armed"
+  if (( _landing_stage_attempt_armed )); then
+    landing_armed_by_repo[$selected_repo]=$(( already_armed + 1 ))
+  fi
 }
 
 # _landing_stage_attempt SLUG PR_URL COMPLEXITY SOURCE DEFAULT_BRANCH [RETRY] [ALREADY_ARMED]
@@ -3908,11 +3921,14 @@ run_landing_stage() {
 # the final `landing-armed` log as `retry: true` — see that function's own
 # header. ALREADY_ARMED (default 0; PR #557 review of TD-PPagop-26081701) is
 # forwarded to `merge_budget_decide` verbatim (gate 5 below) — how many pull
-# requests this same caller has already armed earlier in this pass, and
-# therefore how far this candidate's own live budget read must be discounted
-# before it can arm another; see `_landing_retry_sweep_repo`, the only caller
-# that ever passes a non-zero value, for why a single fresh read per candidate
-# cannot answer that on its own. Sets the global `_landing_stage_attempt_armed`
+# requests this repository has already been armed for earlier in this same
+# cycle, by either caller, and therefore how far this candidate's own live
+# budget read must be discounted before it can arm another; both callers read
+# and grow the same cycle-scoped `landing_armed_by_repo[SLUG]` (declared
+# ahead of both, PR #557 review round 2) rather than a tally of their own, so
+# a repository's remaining budget is never double-spent across the sweep and
+# this round's own arming step just because neither call site knew what the
+# other had already armed. Sets the global `_landing_stage_attempt_armed`
 # to `1` immediately after a successful arm and to `0` at every other return
 # (including every refusal) — the one signal a caller can use to grow its own
 # running ALREADY_ARMED count for the next candidate, since this function's
@@ -3948,8 +3964,14 @@ run_landing_stage() {
 #   5. `merge_budget_decide`/`merge_budget_apply_decision`
 #      (lib/merge-budget.sh) — only `arm` proceeds; `hold` and `refuse` are
 #      applied and stop here.
-#   6. `merge_queue_probe` — the pull request must not already be queued;
-#      "could not read" is "possibly queued", so it refuses too.
+#   6. `merge_queue_probe` — the pull request must not already be queued,
+#      and must never have been queued and removed without being re-queued
+#      since (`merge_queue_dequeue_actionable`, lib/merge-queue.sh, PR #557
+#      review of TD-PPagop-26081701, distinguishes only the refusal wording —
+#      never re-arms either way; `scripts/gather-dequeued.sh`'s own source
+#      owns a `failed_checks` dequeue, and a human's own `manual` one is
+#      never this stage's to reverse). "Could not read" is "possibly queued
+#      or dequeued", so it refuses too.
 #
 # Any read above that cannot be answered is a refusal (`_landing_refuse`,
 # `landing-refused`), never a pass. A successful arm logs `landing-armed`
@@ -4045,7 +4067,7 @@ _landing_stage_attempt() {
     return 0
   fi
 
-  local queue_json queued
+  local queue_json queued dequeue_reason
   if ! queue_json="$(merge_queue_probe "$slug" "$number")"; then
     _landing_refuse "$pr_url" "$slug" "could not read $pr_url's merge-queue status" "$retry"
     return 0
@@ -4053,6 +4075,33 @@ _landing_stage_attempt() {
   queued="$(jq -r '.queued' <<<"$queue_json" 2>/dev/null)"
   if [[ "$queued" != "false" ]]; then
     _landing_refuse "$pr_url" "$slug" "already in the merge queue" "$retry"
+    return 0
+  fi
+  # A dequeue is otherwise invisible on an open pull request (PR #557 review
+  # of TD-PPagop-26081701): `queued` alone reads identically whether GitHub
+  # has never queued this pull request or removed it once and nobody has
+  # re-queued it since, and this stage must never arm the second case. Every
+  # `dequeue_reason` this scans for is `merge_queue_dequeue_actionable`
+  # (lib/merge-queue.sh): `manual` is the maintainer's own removal ("they
+  # caused it, so they already know" — re-enqueueing here would silently
+  # reverse it, every cycle, for as long as the pull request stays open) and
+  # any other reason (chiefly `failed_checks`) is exactly what
+  # `scripts/gather-dequeued.sh`'s own `dequeued` source exists to diagnose
+  # and fix before a human re-queues — arming it blindly here instead would
+  # re-run the same failing merge group every cycle, an unbounded CI cost for
+  # no forward progress. Neither reading is this stage's to retry: gate 5's
+  # own comment already draws the line between "this gate refuses and a
+  # later re-entry may succeed" and "a different mechanism owns this pull
+  # request now", and a dequeue is the latter, not the former.
+  dequeue_reason="$(jq -r '.dequeue_reason // empty' <<<"$queue_json" 2>/dev/null)"
+  if [[ -n "$dequeue_reason" ]]; then
+    if merge_queue_dequeue_actionable "$dequeue_reason"; then
+      _landing_refuse "$pr_url" "$slug" \
+        "GitHub's merge queue removed $pr_url over a $dequeue_reason failure — the dequeued source's own diagnose-and-fix path and a fresh human 'Merge when ready' click land this, never a blind re-arm here" "$retry"
+    else
+      _landing_refuse "$pr_url" "$slug" \
+        "GitHub's merge queue removed $pr_url (reason: $dequeue_reason) — a deliberate removal, so this stage never re-enqueues it" "$retry"
+    fi
     return 0
   fi
 
@@ -4128,17 +4177,23 @@ _landing_stage_attempt() {
 # against `merge_budget_per_day: 8`, say, all twelve arming, and the *next*
 # cycle's own budget read then seeing 12 merged against a cap of 8 and
 # tripping the counting-anomaly freeze against an operator who did nothing
-# wrong. `armed_this_pass` below is this pass's own running tally of
-# candidates `_landing_stage_attempt` has actually armed so far (read off its
-# `_landing_stage_attempt_armed` global immediately after each call, the one
-# signal that function's own always-0 exit status cannot carry), threaded
-# through as `_landing_stage_attempt`'s ALREADY_ARMED argument so
-# `merge_budget_decide` discounts it from the live count on every subsequent
-# candidate in the same pass — the pass is bounded at exactly
-# `merge_budget_per_day` arms regardless of how many candidates it is offered.
+# wrong. `armed_this_pass` below starts from — and, on every arm, writes
+# back to — the cycle-scoped `landing_armed_by_repo[$slug]` (declared ahead
+# of this function, PR #557 review round 2) rather than a tally private to
+# this one pass: `run_landing_stage`'s own gate 0, called later the same
+# cycle for whatever repository this round's own Implementor worked in,
+# reads and grows the identical global, so a repository this sweep already
+# armed candidates for cannot then have that round's own arming step push it
+# one past `merge_budget_per_day` on a live count neither call site's own
+# pass-local tally would have caught alone. Grown here (read off
+# `_landing_stage_attempt`'s own `_landing_stage_attempt_armed` global
+# immediately after each call, the one signal that function's own always-0
+# exit status cannot carry) exactly as before within one pass; only the
+# variable it starts from and feeds back into is no longer private to this
+# function.
 _landing_retry_sweep_repo() {
   local slug="$1" login="$2"
-  local level default_branch open armed_this_pass=0
+  local level default_branch open armed_this_pass="${landing_armed_by_repo[$slug]:-0}"
 
   level="$(merge_autonomy_effective_level "$DEFAULTED_CONFIG" "$slug" "$state_repo" "$state_dir" fresh)"
   case "$level" in
@@ -4181,6 +4236,7 @@ _landing_retry_sweep_repo() {
     _landing_stage_attempt "$slug" "$pr_url" "$complexity" "$source" "$default_branch" "retry" "$armed_this_pass"
     if (( _landing_stage_attempt_armed )); then
       armed_this_pass=$(( armed_this_pass + 1 ))
+      landing_armed_by_repo[$slug]="$armed_this_pass"
     fi
   done < <(jq -c '.[]' <<<"$candidates" 2>/dev/null || true)
   return 0
@@ -4198,6 +4254,19 @@ enabler_eligible_json='[]'
 refiner_allowed=0
 refiner_candidates_json='[]'
 limit_hit_this_cycle=0
+
+# `landing_armed_by_repo` (PR #557 review round 2 of TD-PPagop-26081701) is
+# this cycle's own running tally of how many pull requests each repository
+# has already been armed for so far, keyed by slug because
+# `merge_budget_decide`'s cap is per repository. Shared by the two call
+# sites of `_landing_stage_attempt` that can both run in one cycle process —
+# the 2.1e landing-retry sweep (`_landing_retry_sweep_repo`, below) and this
+# round's own arming step (`run_landing_stage`, gate 0) — so a live
+# `merge_budget_decide` read at either one discounts arms the other already
+# made this same cycle, not only its own. Declared here, ahead of both, so
+# neither reads an unset array under `set -u`; only ever grows within a
+# cycle, and this process exits before the next one, so it needs no reset.
+declare -A landing_armed_by_repo=()
 
 # --- Cleanup (always runs on exit) ---
 lock_acquired=0

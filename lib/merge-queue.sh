@@ -165,9 +165,13 @@ merge_queue_for_branch() {
 # actionable: withholding the one notice a human gets for a defect they did
 # not cause is the worse mistake, the mirror image of `merge_queue_probe`'s
 # own "unknown means possibly queued" rule. Shared so
-# `scripts/sweep-human-visibility.sh`'s own notice, the deferred `dequeued`
-# Co-Ordinator source (tech-debt/TD-PPagop-26081409.md) and the dashboard's
-# dequeue surface (agent-ops#375) read off the same decision.
+# `scripts/sweep-human-visibility.sh`'s own notice and the dashboard's
+# dequeue surface (agent-ops#375) read off the same decision, and so
+# `agent-cycle.sh`'s own landing-gate 6 (`_landing_stage_attempt`, PR #557
+# review round 2 of TD-PPagop-26081701) can tell a maintainer's own
+# deliberate removal — never this stage's to reverse — apart from any other
+# reason in its refusal wording, without re-deciding the classification
+# itself.
 merge_queue_dequeue_actionable() {
   case "${1:-}" in
     manual|merged) return 1 ;;

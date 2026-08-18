@@ -65,15 +65,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `landing_eligible` rather than a second copy of it, so a protected-path
   hit, a `complexity:high` pull request, or a source outside the routine
   list is never armed here either. `landing-armed`/`landing-refused` events
-  from the sweep carry `retry: true`. A single pass never arms more of a
-  repository's stranded pull requests than its remaining merge budget —
-  `merge_budget_per_day` less what it has already landed in the rolling
-  window: `merge_budget_decide` (`lib/merge-budget.sh`)
-  discounts a running same-pass tally from the live merged-PR count, since
-  GitHub's own record only shows a pull request as merged once the merge has
-  actually landed, never the moment this sweep arms it — without the bound,
-  every stranded candidate in one pass read the same not-yet-merged count and
-  all of them armed regardless of the cap.
+  from the sweep carry `retry: true`. Neither the sweep nor this round's own
+  arming step ever arms more of a repository's stranded pull requests,
+  between them, than its remaining merge budget — `merge_budget_per_day`
+  less what it has already landed in the rolling window: `merge_budget_decide`
+  (`lib/merge-budget.sh`) discounts a running, cycle-scoped tally (shared by
+  both call sites) from the live merged-PR count, since GitHub's own record
+  only shows a pull request as merged once the merge has actually landed,
+  never the moment either arms it — without the bound, every stranded
+  candidate offered in the same cycle read the same not-yet-merged count and
+  all of them armed regardless of the cap. Neither call site ever re-arms a
+  pull request GitHub's merge queue has already removed once and nobody has
+  re-queued since — a maintainer's own deliberate removal is never reversed,
+  and a checks-failure removal is left for `scripts/gather-dequeued.sh`'s own
+  `dequeued` source to diagnose and fix before a human re-queues, rather than
+  blindly re-running the same failing merge group every cycle.
 
 - The deterministic eligibility classifier and the arming/enqueue step (D18
   WI-7, requirement 8d; agent-ops#410): at `merge_autonomy: agent-merges-routine`

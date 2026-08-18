@@ -95,6 +95,18 @@ union_log="$T/union-log.jsonl"
 mkdir -p "$state_dir"
 : > "$union_log"
 
+# The cycle-scoped tally `_landing_retry_sweep_repo` now reads and grows
+# (PR #557 review round 2 of TD-PPagop-26081701) — declared here exactly as
+# agent-cycle.sh itself declares it ahead of this function, so the block
+# below never reads an unset array under this harness's own `set -u`.
+# SEED_ARMED_BY_REPO, when given as "slug=count" pairs (space-separated),
+# pre-seeds entries the way an earlier repository's own pass this same cycle
+# would have left behind.
+declare -A landing_armed_by_repo=()
+for pair in ${SEED_ARMED_BY_REPO:-}; do
+  landing_armed_by_repo["${pair%%=*}"]="${pair#*=}"
+done
+
 log_event() { printf '%s\t%s\n' "$1" "$2" >>"$T/events"; }
 
 merge_autonomy_effective_level() { printf '%s' "$LEVEL"; }
@@ -151,6 +163,10 @@ HARNESS
 {
   printf '%s\n' "$sweep_block"
   printf '_landing_retry_sweep_repo "acme/widgets" "pullwright-approver[bot]"\n'
+  # `landing_armed_by_repo["acme/widgets"]` after the pass (PR #557 review
+  # round 2) — so a test can confirm the sweep both reads and grows the same
+  # cycle-scoped tally `run_landing_stage` reads later the same cycle.
+  printf '%s\n' 'printf "%s" "${landing_armed_by_repo[acme/widgets]:-0}" >"$T/armed_by_repo_flag"'
 } >>"$tmp_dir/harness.sh"
 
 # --- Fixtures -----------------------------------------------------------------
@@ -162,7 +178,7 @@ pr_open() {  # number url branch draft complexity_label
 }
 
 run_case() {  # PR_LIST_JSON=... plus any stub-steering env
-  : >"$tmp_dir/events"; : >"$tmp_dir/attempts"
+  : >"$tmp_dir/events"; : >"$tmp_dir/attempts"; rm -f "$tmp_dir/armed_by_repo_flag"
   env -i PATH="$PATH" HOME="$HOME" \
     T="$tmp_dir" SCRIPT_DIR="$SCRIPT_DIR" \
     LEVEL="agent-merges-routine" \
@@ -174,6 +190,7 @@ run_case() {  # PR_LIST_JSON=... plus any stub-steering env
 attempts() { cat "$tmp_dir/attempts" 2>/dev/null || true; }
 count_attempts() { [[ -s "$tmp_dir/attempts" ]] && wc -l <"$tmp_dir/attempts" | tr -d ' ' || printf '0'; }
 events() { cat "$tmp_dir/events" 2>/dev/null || true; }
+armed_by_repo_flag() { cat "$tmp_dir/armed_by_repo_flag" 2>/dev/null || true; }
 
 open_list="$(jq -sc '.' <(
   pr_open 1 "https://github.com/acme/widgets/pull/1" "td/TD-1" false "complexity:low"
@@ -269,6 +286,8 @@ rc="$(run_case PR_LIST_JSON="$multi_list" \
 assert_eq "all three eligible candidates are offered" "3" "$(count_attempts)"
 assert_eq "  ... and the tally grows by one after each arm: 0, then 1, then 2" \
   "0,1,2" "$(already_armed_seq)"
+assert_eq "  ... and landing_armed_by_repo[acme/widgets] ends the pass at 3" \
+  "3" "$(armed_by_repo_flag)"
 
 rc="$(run_case PR_LIST_JSON="$multi_list" \
   STANDING_11="APPROVED" STANDING_12="APPROVED" STANDING_13="APPROVED" \
@@ -276,6 +295,23 @@ rc="$(run_case PR_LIST_JSON="$multi_list" \
   ARM_11="1" ARM_13="1")"
 assert_eq "a candidate that does not arm (#12) never grows the tally" \
   "0,1,1" "$(already_armed_seq)"
+
+# --- The bound is cycle-scoped, not pass-scoped (PR #557 review round 2) ----
+# `run_landing_stage`, called later the same cycle for whatever repository
+# this round's own Implementor worked in, may have already armed candidates
+# for "acme/widgets" before this sweep even runs (a chained cycle, or simply
+# this repository's own gate 0 running ahead of the sweep in source order).
+# Pre-seeding `landing_armed_by_repo[acme/widgets]` the way that earlier arm
+# would have left it must be what this pass's own first candidate starts
+# from, not a fresh 0 private to this pass.
+
+rc="$(run_case PR_LIST_JSON="$multi_list" \
+  STANDING_11="APPROVED" STANDING_12="APPROVED" STANDING_13="APPROVED" \
+  SOURCE_td_TD_11="tech-debt" SOURCE_td_TD_12="tech-debt" SOURCE_td_TD_13="tech-debt" \
+  ARM_11="1" ARM_12="1" ARM_13="1" SEED_ARMED_BY_REPO="acme/widgets=5")"
+assert_eq "a repository already armed 5 this cycle starts this pass's tally there" \
+  "5,6,7" "$(already_armed_seq)"
+assert_eq "  ... and ends the pass at 8, not 3" "8" "$(armed_by_repo_flag)"
 
 # --- Result -------------------------------------------------------------------
 
