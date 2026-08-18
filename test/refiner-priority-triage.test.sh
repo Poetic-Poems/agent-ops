@@ -636,6 +636,12 @@ rm -f "$tmp_dir/gh-b/fail-fields"
 ISSUE_PRIORITY_CACHE_DIR="$tmp_dir/cache-does-not-exist-$$"
 stderr_out="$(issue_priority_field_ids "o/case-fields-ok" 2>&1 1>/dev/null)"
 assert_eq "a failed cache write prints nothing to stderr" "" "$stderr_out"
+# ... and suppressing that message must not have cost the answer: the write
+# is the only thing that failed, so the caller still gets the resolution,
+# merely uncached. Without this, the reorder above could have turned a noisy
+# failure into a silent one.
+assert_eq "  ... and still returns the resolution it could not cache" "IFSS_priority" \
+  "$(issue_priority_field_ids "o/case-fields-ok" 2>/dev/null | jq -r '.field_id')"
 
 # Idempotent: called again with nothing left to remove, or with no directory
 # ever created at all, it is silent and still returns 0.

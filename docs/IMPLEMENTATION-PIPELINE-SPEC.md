@@ -9528,12 +9528,13 @@ implements.
     read its own output as caller-supplied (`ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH`
     records the path this file created for itself, and is what a re-source
     compares `ISSUE_PRIORITY_CACHE_DIR` against; agent-ops#541). The record
-    is trusted only from the process that created it: `ISSUE_PRIORITY_CACHE_DIR_OWNER_PID`
-    stamps that process's own `$$`, and a re-source compares it against the
-    current `$$` before treating an inherited `ISSUE_PRIORITY_CACHE_DIR_OWNED=1`
-    as its own — an exported record a child process merely inherited, with a
-    different `$$`, is never trusted, so that child never `rm -rf`s a
-    directory it did not create (agent-ops#552). A same-process record is
+    is trusted only from the process that created it:
+    `ISSUE_PRIORITY_CACHE_DIR_OWNER_PID` stamps that process's own `$$`,
+    and a re-source compares it against the current `$$` before treating an
+    inherited `ISSUE_PRIORITY_CACHE_DIR_OWNED=1` as its own — an exported
+    record a child process merely inherited, with a different `$$`, is
+    never trusted, so that child never `rm -rf`s a directory it did not
+    create (agent-ops#552). A same-process record is
     additionally trusted only while the directory it names still exists:
     `issue_priority_cache_cleanup`'s own record-clearing does not reach a
     caller that invokes it through a command substitution, so a source-time
@@ -9546,8 +9547,15 @@ implements.
     repointed `ISSUE_PRIORITY_CACHE_DIR` at its own path (agent-ops#552) —
     leaving a caller-supplied one for that caller to manage, and is
     idempotent — a no-op, returning 0, when called again or when no
-    directory was ever created. `issue_priority_apply` then re-reads the
-    issue's current band immediately before writing
+    directory was ever created. A cache write that fails — the directory
+    `ISSUE_PRIORITY_CACHE_DIR` names gone, or never writable — is silent:
+    each of `issue_priority_field_ids`'s three writes redirects stderr
+    before it opens the cache file, since redirections are applied left to
+    right and the shell's own `No such file or directory` would otherwise
+    reach a cycle's stderr ahead of a suppression written after it
+    (agent-ops#552); the resolution the write could not cache is still
+    returned to the caller, uncached. `issue_priority_apply` then re-reads
+    the issue's current band immediately before writing
     (`issue_priority_current`) — unlike `gather-issues.sh` and
     `gather-source-state.sh`, whose REST `issue_field_values` parse both
     collapse anything outside the four names to their Medium default,
@@ -12952,12 +12960,14 @@ pull request, run the ones the change touches and any it could regress.
     at its own path: `issue_priority_cache_cleanup` still finds and removes
     the directory it made earlier, and leaves the caller's own (now-current)
     directory, and `ISSUE_PRIORITY_CACHE_DIR` itself, untouched (agent-ops#552).
-    A failed cache write — `ISSUE_PRIORITY_CACHE_DIR` naming a directory that
-    does not exist — prints nothing to stderr. A field missing one of the four options is asserted from
-    both directions (agent-ops#534): with a lower option present, the
-    verdict's band falls back to the nearest lower one and `requested` names
-    the band actually asked for; with nothing lower present (the verdict was
-    already `Low`, or every lower band is also missing), the fallback ties
+    A failed cache write — `ISSUE_PRIORITY_CACHE_DIR` naming a directory
+    that does not exist — prints nothing to stderr, and still returns the
+    resolution it could not cache. A field missing one of the four options
+    is asserted from both directions (agent-ops#534): with a lower option
+    present, the verdict's band falls back to the nearest lower one and
+    `requested` names the band actually asked for; with nothing lower
+    present (the verdict was already `Low`, or every lower band is also
+    missing), the fallback ties
     upward to the nearest higher option instead; the ratchet then runs
     against the fallback band, so a fallback that does not outrank the
     current band is still `skipped-lower-or-equal` with `requested` still
