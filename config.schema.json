@@ -435,12 +435,12 @@
     },
     "refiner_model": {
       "$ref": "#/$defs/modelIdOrEmpty",
-      "description": "The Refiner's model — cheap, because it runs proactively over every unrefined candidate rather than rarely like the Enabler. Empty disables the stage.",
+      "description": "The Refiner's model. It runs proactively over every unrefined candidate rather than rarely like the Enabler, so frequency and tier pull against each other here in a way they do not for any other stage; what it emits is the specification an Implementor then works from, not a triage verdict. Empty disables the stage.",
       "default": "",
       "x-docs": {
-        "readme": "The Refiner: writes a specification for an item nobody has scoped yet and marks it `refined`, before it would otherwise have to be blocked and wait for the Enabler — see [Refined items and the Refiner](#refined-items-and-the-refiner). A cheap model, engaged every cycle there is unrefined work to do. Leave it empty to switch the stage off.",
-        "spec": "The Refiner (requirement 39). Cheap on purpose — unlike the Enabler, eligibility carries no threshold, so it runs as often as there is unrefined work. Empty disables the stage.",
-        "value": "`claude-haiku-4-5-20251001`"
+        "readme": "The Refiner: writes a specification for an item nobody has scoped yet and marks it `refined`, before it would otherwise have to be blocked and wait for the Enabler — see [Refined items and the Refiner](#refined-items-and-the-refiner). Engaged every cycle there is unrefined work to do, so how often it runs and how good it has to be pull against each other: what it writes is the brief an Implementor works from. Leave it empty to switch the stage off.",
+        "spec": "The Refiner (requirement 39). Unlike the Enabler, eligibility carries no threshold, so it runs as often as there is unrefined work, and its frequency has to be weighed against the fact that what it produces is a specification rather than a ranking. Empty disables the stage.",
+        "value": "`claude-sonnet-5`"
       }
     },
     "refined_label": {

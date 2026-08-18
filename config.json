@@ -53,6 +53,7 @@
   "unvoid_label": "unvoided",
   "needs_refinement_label": "needs-refinement",
   "refinement_max_per_engagement": 3,
+  "refiner_model": "claude-sonnet-5",
   "image_behind_grace_hours": 3,
   "limit_cooldown_default": 3,
   "disable_default_ttl": 4,
