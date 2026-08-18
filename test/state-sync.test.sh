@@ -112,6 +112,10 @@ printf '{"pid":998}\n' > "$state/review-lock.json"
 printf 'server noise\n' > "$state/dashboard.log"
 printf '{}\n' > "$state/.dashboard-github.json"
 printf '{"ok":false}\n' > "$state/.image-drift-cache.json"
+# The hourly unattended doctor pass's own artefacts (agent-ops#543): local to
+# this node, like the caches above, so neither should replicate.
+printf 'doctor noise\n' > "$state/doctor.log"
+printf '{"verdict":"ok"}\n' > "$state/.doctor-status.json"
 mkdir -p "$state/dashboard"
 printf '<html>\n' > "$state/dashboard/index.html"
 
@@ -134,6 +138,8 @@ assert_eq "the review lock does not replicate" "0" "$(test -e "$pushed/review-lo
 assert_eq "the dashboard log does not replicate" "0" "$(test -e "$pushed/dashboard.log" && echo 1 || echo 0)"
 assert_eq "the GitHub cache does not replicate" "0" "$(test -e "$pushed/.dashboard-github.json" && echo 1 || echo 0)"
 assert_eq "the image-drift cache does not replicate" "0" "$(test -e "$pushed/.image-drift-cache.json" && echo 1 || echo 0)"
+assert_eq "the doctor log does not replicate" "0" "$(test -e "$pushed/doctor.log" && echo 1 || echo 0)"
+assert_eq "the doctor status cache does not replicate" "0" "$(test -e "$pushed/.doctor-status.json" && echo 1 || echo 0)"
 assert_eq "the generated dashboard does not replicate" "0" "$(test -e "$pushed/dashboard" && echo 1 || echo 0)"
 # Both transfers are covered: the cycle directories go through their own rsync
 # with its own filter, so an exclusion that held only for the general transfer

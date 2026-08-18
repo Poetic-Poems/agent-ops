@@ -1970,6 +1970,29 @@ assert_eq "its open pull request reads not-queued" "false" \
 assert_eq "and never dequeued" "false" \
   "$(jq -r '.github.prs[] | select(.number==400) | .dequeued' <<<"$rdata")"
 
+# --- The unattended doctor pass's own status (agent-ops#543) ----------------
+# scripts/doctor.sh --unattended writes state_dir/.doctor-status.json once an
+# hour; this Publisher reads it rather than recomputing it (its GitHub
+# section is too expensive to repeat on a 5-minute heartbeat) and surfaces it
+# as status.doctor.
+d="$(new_home nodeDoctor)"
+run_publish "$d" NODE_NAME=nodeDoctor
+ddata="$(data_of "$d")"
+assert_eq "with no doctor status file yet, status.doctor is null" "null" \
+  "$(jq -c '.status.doctor' <<<"$ddata")"
+
+cat > "$d/.local/state/poetic-agents/.doctor-status.json" <<'JSON'
+{"timestamp":"2026-08-18T09:00:00Z","verdict":"warn","fails":[],"warns":["acme-org/target-repo has no \"autonomous-agent\" label"],"skips":2}
+JSON
+run_publish "$d" NODE_NAME=nodeDoctor
+ddata="$(data_of "$d")"
+assert_eq "a written status file is read verbatim into status.doctor" "warn" \
+  "$(jq -r '.status.doctor.verdict' <<<"$ddata")"
+assert_eq "its warns array reaches the page" "1" \
+  "$(jq '.status.doctor.warns | length' <<<"$ddata")"
+assert_eq "and its timestamp" "2026-08-18T09:00:00Z" \
+  "$(jq -r '.status.doctor.timestamp' <<<"$ddata")"
+
 # ---------------------------------------------------------------------------------
 if (( failures > 0 )); then
   printf '\n%d assertion(s) failed\n' "$failures"

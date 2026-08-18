@@ -1,0 +1,25 @@
+{
+  "generated_at": "@now",
+  "node": "poetic-1",
+  "status": {
+    "running": false,
+    "doctor": {
+      "timestamp": "@ago:5m",
+      "verdict": "warn",
+      "fails": [],
+      "warns": ["acme-org/target-repo has no \"autonomous-agent\" label — the next cycle that works this repo creates it (lib/labels.sh); if it is still absent after one has run, this token may not create labels"],
+      "skips": 2
+    }
+  },
+  "fleet": {
+    "flags": {
+      "disabled": null,
+      "limit": null
+    },
+    "nodes": []
+  },
+  "cycles": [],
+  "log_tail": [],
+  "blocked": [],
+  "void": []
+}

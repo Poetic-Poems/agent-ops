@@ -12,9 +12,15 @@
 # Rotation here is intentionally narrow, because the logs in state_dir are
 # not interchangeable:
 #
-#   dashboard.log, state-sync.log   pure diagnostics, excluded from the
-#                                   state branch (scripts/state-sync.sh) —
-#                                   safe to rotate on size alone.
+#   dashboard.log, state-sync.log,  pure diagnostics, excluded from the
+#   doctor.log                     state branch (scripts/state-sync.sh) —
+#                                   safe to rotate on size alone. doctor.log
+#                                   is the hourly `doctor.sh --unattended`
+#                                   pass's own text output (agent-ops#543);
+#                                   the dashboard reads the structured
+#                                   .doctor-status.json beside it, not this
+#                                   file, so rotating it costs nothing an
+#                                   operator watches for.
 #   cron.log, review-cron.log       published to the node's state branch, so
 #                                   bounding them here also bounds the
 #                                   mirror. scripts/publish-dashboard.sh
@@ -87,7 +93,7 @@ generations="${ROTATE_LOGS_GENERATIONS:-$(cfg '.log_generations')}"
 
 # The logs this script owns. log.jsonl and review-log.jsonl are deliberately
 # absent — see the file header.
-LOGS=(dashboard.log state-sync.log cron.log review-cron.log)
+LOGS=(dashboard.log state-sync.log doctor.log cron.log review-cron.log)
 
 file_size() {
   stat -c%s -- "$1" 2>/dev/null || stat -f%z -- "$1" 2>/dev/null || echo 0
