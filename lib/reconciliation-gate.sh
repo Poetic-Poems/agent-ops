@@ -25,12 +25,16 @@
 # request's own comment history rather than trusting a model's summary of it:
 #
 #   - the anchor is the pull request's most recent `ready_for_review` timeline
-#     event *at or before NOT_AFTER* — the moment it last left draft as of
-#     the point the round began — falling back to the pull request's own
-#     creation time when it has never left draft before that point. See
-#     `_reconciliation_gate_anchor` for why the bound is not optional in
-#     practice: without it the anchor is invalidated by the very flip this
-#     gate exists to check;
+#     event *at or before NOT_AFTER* that was not itself later undone by a
+#     `convert_to_draft` event at or before NOT_AFTER — the moment it last
+#     left draft, and stayed left, as of the point the round began — falling
+#     back to the pull request's own creation time when no such event exists.
+#     See `_reconciliation_gate_anchor` for why the bound is not optional in
+#     practice, and why an undone flip must be skipped too: without both, the
+#     anchor is invalidated by the very flip this gate exists to check, first
+#     within the round that flip happened in (agent-ops#533) and then again,
+#     one round later, by that same flip once refused and reverted
+#     (agent-ops#539);
 #   - a "human comment" is any general PR comment (`/issues/<n>/comments`,
 #     where `gh pr comment` files them) posted after that anchor, from a
 #     non-Bot account that is not a GitHub App acting on someone's behalf
@@ -80,11 +84,14 @@ _reconciliation_gate_pr_parts() {
 
 # _reconciliation_gate_anchor SLUG NUMBER [NOT_AFTER]
 # Print the timestamp comments are read "since": the pull request's most
-# recent `ready_for_review` timeline event at or before NOT_AFTER, or — when
-# it had never left draft by then, a first round — its own creation time.
-# Returns non-zero, printing nothing, only when the timeline itself could not
-# be read at all; an empty but readable timeline is not a failure, it is the
-# first-round case, and falls through to the creation-time read.
+# recent `ready_for_review` timeline event at or before NOT_AFTER that was
+# never subsequently undone by a `convert_to_draft` event, itself at or
+# before NOT_AFTER — or, when no such event exists (it had never left draft
+# by then, a first round, or every flip on record was later reverted), its
+# own creation time. Returns non-zero, printing nothing, only when the
+# timeline itself could not be read at all; an empty but readable timeline is
+# not a failure, it is the first-round case, and falls through to the
+# creation-time read.
 #
 # ## Why NOT_AFTER exists, and why every real caller passes one
 #
@@ -112,6 +119,29 @@ _reconciliation_gate_pr_parts() {
 # recovery path, no flip happens inside the round at all, so the bound selects
 # the same event the unbounded read would have.
 #
+# ## Why a reverted flip must not win either (agent-ops#539)
+#
+# Bounding by NOT_AFTER alone is not enough once `handoff_complete_review`
+# itself reverts a refused flip (`confirm_pr_draft`, agent-ops#539's fix to
+# the bug this comment used to describe as merely "verified against PR #512's
+# real timeline" without a second round). The reverted `ready_for_review`
+# event is not deleted by that revert — GitHub keeps it on the timeline
+# exactly where it was — so on the *next* round, unless it is specifically
+# excluded, it is again the most recent `ready_for_review` event at or before
+# the new bound, and the gate is fooled by its own refusal one round later:
+# the human comment that caused the `dirty` verdict now falls before this
+# stale anchor and reads as reconciled. Reproduced against PR #512's ordering
+# extended with the revert `confirm_pr_draft` performs: round one is `dirty`
+# (correctly), and round two — bounded past the revert — was `clean` before
+# this fix and stays `dirty` after it (test/reconciliation-gate.test.sh).
+#
+# So a `ready_for_review` event only counts as "the pull request last left
+# draft" here if no `convert_to_draft` event follows it at or before
+# NOT_AFTER — i.e. it was never subsequently undone within the window this
+# read is allowed to see. A `convert_to_draft` after NOT_AFTER (still in
+# progress, or belonging to a later round) does not count against it, the
+# same way a `ready_for_review` after NOT_AFTER already does not.
+#
 # Empty NOT_AFTER means unbounded, which is the pre-#533-fix behaviour and is
 # kept only so a caller that genuinely has no round to bound by (a test
 # asserting the raw rule) can ask for it. Passing one is not optional for a
@@ -120,7 +150,8 @@ _reconciliation_gate_anchor() {
   local slug="$1" number="$2" not_after="${3:-}" gh_bin="${RECONCILIATION_GATE_GH:-gh}"
   local events anchor
   events="$("$gh_bin" api "repos/$slug/issues/$number/timeline" --paginate \
-              --jq '.[] | select(.event == "ready_for_review" and .created_at != null) | .created_at' \
+              --jq '.[] | select((.event == "ready_for_review" or .event == "convert_to_draft") and .created_at != null)
+                        | {event, at: .created_at}' \
               2>/dev/null)" || return 1
   # jq rather than `sort | tail -n1` for the maximum, so the NOT_AFTER bound
   # and `_reconciliation_gate_comments`' own `.at > $anchor` filter compare
@@ -128,9 +159,18 @@ _reconciliation_gate_anchor() {
   # dependent and jq's is not, and an anchor chosen under one rule then
   # applied under the other is exactly the kind of disagreement this gate
   # must not have.
-  anchor="$(jq -R -s -r --arg cutoff "$not_after" '
-      [splits("\n") | select(length > 0)]
-      | map(select($cutoff == "" or . <= $cutoff))
+  #
+  # `events` is one JSON object per line (the same shape
+  # `_reconciliation_gate_comments` streams in) rather than an aggregate, so
+  # a `--paginate` read past one page does not silently disagree with itself
+  # — the aggregation below happens once, over every page slurped together.
+  anchor="$(jq -s -r --arg cutoff "$not_after" '
+      map(select($cutoff == "" or .at <= $cutoff)) as $bounded
+      | ($bounded | map(select(.event == "convert_to_draft")) | map(.at)) as $reverted_at
+      | ($bounded
+         | map(select(.event == "ready_for_review"))
+         | map(select(. as $r | ($reverted_at | map(select(. > $r.at)) | length) == 0))
+         | map(.at))
       | max // ""' <<<"$events" 2>/dev/null)" || return 1
   if [[ -n "$anchor" ]]; then
     printf '%s' "$anchor"

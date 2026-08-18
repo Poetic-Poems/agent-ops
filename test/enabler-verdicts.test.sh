@@ -784,6 +784,7 @@ handoff_complete_review() {
            gate: {word: "clean", reason: "", checks_unreadable: false},
            closing_keyword: {word: "clean", reason: ""},
            reconciliation: {word: "dirty", reason: "human comment(s) posted on https://github.com/acme/widgets/pull/435 since it last left draft carry no <!-- agent-ops:reconciles comment=<id> --> line answering them: https://github.com/acme/widgets/pull/435#issuecomment-4718691960"},
+           revert: "reverted",
            handoff: "",
            rereview: {state: "", who: ""}, human_reviewer: {state: "", who: ""}}'
 }
@@ -793,6 +794,8 @@ assert_eq "reconciliation-refused: the unblock itself still stands" "1" \
   "$(grep -cE '^event unblocked ' <<<"$calls")"
 assert_eq "reconciliation-refused: no pr-ready — the gate found a real fault" "0" \
   "$(grep -cE '^event pr-ready ' <<<"$calls")"
+assert_eq "reconciliation-refused: a successful revert earns exactly one warning" "1" \
+  "$(grep -cE '^event warning ' <<<"$calls")"
 warn_evt="$(grep -E '^event warning ' <<<"$calls" | tail -n1 | sed -E 's/^event warning //')"
 assert_contains "reconciliation-refused: the warning names the unreconciled comment" \
   "pull/435#issuecomment-4718691960" "$(jq -r '.detail' <<<"$warn_evt")"
@@ -804,6 +807,39 @@ assert_eq "reconciliation-refused: complete_handoff forwards the round-start bou
   "2026-08-17T00:00:00Z" "$(cat "$gate_arg4")"
 xmn_evt="$(events_named "$calls" enabler-examined | head -n1)"
 assert_eq "reconciliation-refused: enabler-examined records the flip as failed" \
+  "failed" "$(jq -r '.complete_handoff' <<<"$xmn_evt")"
+
+# --- complete_handoff: the reconciliation gate refuses, and the revert it
+#     tries also fails (agent-ops#539) ------------------------------------------
+# `handoff_complete_review` has already tried `confirm_pr_draft` before
+# returning; this block only reads what it found. `revert: "failed"` earns a
+# second, distinct warning: the pull request is not merely carrying an
+# unanswered comment, it is *still ready*, so a human could merge it without
+# ever seeing that the comment stands.
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+handoff_complete_review() {
+  jq -nc '{safe: false,
+           gate: {word: "clean", reason: "", checks_unreadable: false},
+           closing_keyword: {word: "clean", reason: ""},
+           reconciliation: {word: "dirty", reason: "human comment(s) posted on https://github.com/acme/widgets/pull/435 since it last left draft carry no <!-- agent-ops:reconciles comment=<id> --> line answering them: https://github.com/acme/widgets/pull/435#issuecomment-4718691960"},
+           revert: "failed",
+           handoff: "",
+           rereview: {state: "", who: ""}, human_reviewer: {state: "", who: ""}}'
+}
+calls="$(run_case "complete_handoff: reconciliation gate refuses, revert also fails" "$pr_eligible_reviewer" "$examined")"
+
+assert_eq "reconciliation-refused, revert failed: no pr-ready" "0" \
+  "$(grep -cE '^event pr-ready ' <<<"$calls")"
+assert_eq "reconciliation-refused, revert failed: exactly two warnings" "2" \
+  "$(grep -cE '^event warning ' <<<"$calls")"
+assert_contains "  ... the first still naming the unreconciled comment" \
+  "pull/435#issuecomment-4718691960" \
+  "$(jq -r '.detail' <<<"$(grep -E '^event warning ' <<<"$calls" | sed -n 1p | sed -E 's/^event warning //')")"
+assert_contains "  ... the second naming the failed revert itself" \
+  "could not be converted back to draft" \
+  "$(jq -r '.detail' <<<"$(grep -E '^event warning ' <<<"$calls" | sed -n 2p | sed -E 's/^event warning //')")"
+xmn_evt="$(events_named "$calls" enabler-examined | head -n1)"
+assert_eq "reconciliation-refused, revert failed: enabler-examined still records failed" \
   "failed" "$(jq -r '.complete_handoff' <<<"$xmn_evt")"
 
 # --- The clean path: a Reviewer verdict is on record, and the gate is clean ---

@@ -4403,7 +4403,7 @@ maybe_run_enabler() {
   local e_pr_url e_handoff e_refusal e_refined
   local e_flag_evidence_field e_flag_resolvable e_flag_resolve_reason e_flag_pr_num
   local e_block_stage e_default_branch e_review_json e_gate_word e_gate_reason
-  local e_gate_checks_unreadable e_ck_word e_ck_reason e_rc_word e_rc_reason
+  local e_gate_checks_unreadable e_ck_word e_ck_reason e_rc_word e_rc_reason e_rc_revert
   local e_review_safe e_gate_checks_ok e_finding
   local e_rereview_state e_rereview_who e_human_reviewer_state e_human_reviewer_who
   local issue_title issue_body_file created number url missing
@@ -4690,6 +4690,7 @@ $(jq . <<<"$input")
               e_ck_reason="$(jq -r '.closing_keyword.reason // ""' <<<"$e_review_json")"
               e_rc_word="$(jq -r '.reconciliation.word // ""' <<<"$e_review_json")"
               e_rc_reason="$(jq -r '.reconciliation.reason // ""' <<<"$e_review_json")"
+              e_rc_revert="$(jq -r '.revert // ""' <<<"$e_review_json")"
               e_review_safe="$(jq -r '.safe // false' <<<"$e_review_json")"
 
               # Same node-health bookkeeping as the Reviewer's own handoff
@@ -4718,6 +4719,19 @@ $(jq . <<<"$input")
                 log_event "warning" "$(jq -nc --arg u "$e_pr_url" --arg d "$e_finding" \
                   --arg m "enabler asked for the handoff on $e_pr_url to be completed, but it is not safe to hand off: " \
                   '{detail: ($m + $d), pr_url: $u}')"
+                # agent-ops#539: the same revert-on-refusal `handoff_complete_review`
+                # performs at the Reviewer's own handoff site, reached here too
+                # because both share that one function (requirement 34a) — see
+                # this file's own comment just above the call. `revert: "failed"`
+                # is worth its own warning here for the same reason it is there:
+                # this pull request may already have been sitting ready, with
+                # its comment unanswered, since the round the Reviewer's block
+                # first failed in.
+                if [[ "$e_rc_word" == "dirty" && "$e_rc_revert" == "failed" ]]; then
+                  log_event "warning" "$(jq -nc --arg u "$e_pr_url" \
+                    --arg d "$e_pr_url carries an unreconciled human comment and could not be converted back to draft — it remains ready, and a human could merge it with the comment still unanswered" \
+                    '{detail: $d, pr_url: $u}')"
+                fi
                 e_handoff="failed"
               else
                 if [[ "$e_ck_word" == "unknown" ]]; then
@@ -8201,6 +8215,7 @@ if [[ "$rev_status" == "ready" ]]; then
   ck_reason="$(jq -r '.closing_keyword.reason // ""' <<<"$review_json")"
   rc_word="$(jq -r '.reconciliation.word // ""' <<<"$review_json")"
   rc_reason="$(jq -r '.reconciliation.reason // ""' <<<"$review_json")"
+  rc_revert="$(jq -r '.revert // ""' <<<"$review_json")"
   review_safe="$(jq -r '.safe // false' <<<"$review_json")"
 
   # TD-PPagop-26081404: bookkeeping for `review_gate_unknown_streak_verdict`,
@@ -8268,6 +8283,21 @@ if [[ "$rev_status" == "ready" ]]; then
       # pipeline comment since cites a `<!-- agent-ops:reconciles
       # comment=<id> -->` line naming it — a requested change silently
       # dropped rather than implemented or contested (PR #512).
+      #
+      # agent-ops#539: `handoff_complete_review` does not merely refuse this
+      # handoff any more — it also reverts the pull request to draft
+      # (`confirm_pr_draft`), because leaving it exactly as the Reviewer's
+      # own step-7 `gh pr ready` had just left it is what let that same flip
+      # survive to become the next round's reconciliation anchor and disarm
+      # this gate one round later (see `_reconciliation_gate_anchor`'s
+      # header). `revert` carries what that call found; `failed` is worth its
+      # own warning, since a human could otherwise merge a
+      # `CHANGES_REQUESTED` pull request that GitHub still shows as ready.
+      if [[ "$rc_revert" == "failed" ]]; then
+        log_event "warning" "$(jq -nc --arg u "$impl_pr_url" \
+          --arg d "$impl_pr_url carries an unreconciled human comment and could not be converted back to draft — it remains ready, and a human could merge it with the comment still unanswered" \
+          '{detail: $d, pr_url: $u}')"
+      fi
       log_reviewer_handback \
         "the Reviewer reported ready, but $impl_pr_url is not safe to hand off: $rc_reason" \
         "$impl_pr_url" "Answer every unreconciled human comment on the pull request — implement it or explicitly contest it in the completion comment — citing each with its own <!-- agent-ops:reconciles comment=<id> --> line, then let the Reviewer re-examine it."

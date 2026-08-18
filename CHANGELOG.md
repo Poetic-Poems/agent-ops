@@ -204,6 +204,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   than re-deriving it. `prompts/reviewer.md`'s
   completion comment now carries that citation for every human comment it
   answers.
+- The reconciliation gate above (requirement 31c, agent-ops#533) could refuse
+  a pull request exactly once per unreconciled comment, never twice
+  (agent-ops#539). A `dirty` verdict left the pull request exactly as the
+  Reviewer's own step-7 `gh pr ready` had just left it — ready, not draft —
+  so that flip survived the round it was refused in, and because GitHub keeps
+  a `ready_for_review` event rather than deleting it when a later
+  `convert_to_draft` supersedes it, that surviving flip became the very next
+  round's reconciliation anchor: the standing comment the gate had just named
+  fell before it and read as reconciled, permanently, one round after the
+  refusal. `handoff_complete_review` (`lib/handoff.sh`) now calls
+  `confirm_pr_draft` on every `dirty` reconciliation verdict — the same
+  "confirm against GitHub, don't trust the call's own exit status" shape
+  `confirm_pr_ready` already applies in the forward direction — converting
+  the pull request back to draft on both the Reviewer's own handoff and the
+  Enabler's `complete_handoff` recovery path, and `_reconciliation_gate_anchor`
+  (`lib/reconciliation-gate.sh`) now skips any `ready_for_review` event that
+  has a `convert_to_draft` event after it at or before the bound, so a
+  reverted flip cannot win the anchor either. A revert that itself fails to
+  take logs its own warning, distinct from the ordinary refusal, since the
+  pull request is at that point not merely carrying an unanswered comment but
+  still ready for a human to merge. `prompts/reviewer.md`'s own anchor
+  instructions (step 6) now carry the same undone-event exclusion, since the
+  Reviewer's live read of "most recent `ready_for_review` event" was open to
+  the identical trap.
 - `merge_budget_oldest_waiting`'s `waiting_backlog` (the pull request a
   `merge-budget-hold` event names as the one waiting longest) now sorts
   GitHub's own listing oldest-first before paging, so a repository with more

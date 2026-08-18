@@ -193,16 +193,20 @@ run_gate_block() {
 }
 
 # review_json SAFE GATE_WORD GATE_REASON CHECKS_UNREADABLE CK_WORD CK_REASON
-#             [RC_WORD RC_REASON [HANDOFF]]
+#             [RC_WORD RC_REASON [HANDOFF [REVERT]]]
 # Assembles the JSON `handoff_complete_review` would print for the given
 # shape, so each test case reads as the verdict it is asserting on. RC_WORD/
 # RC_REASON default to empty, the shape the reconciliation gate never having
-# run leaves behind.
+# run leaves behind. REVERT defaults to empty too — the shape every case
+# leaves behind except a dirty reconciliation verdict (agent-ops#539), where
+# `confirm_pr_draft`'s own word (`reverted`/`already-draft`/`failed`) lands.
 review_json() {
   jq -nc --argjson safe "$1" --arg gw "$2" --arg gr "$3" --argjson cu "$4" \
     --arg cw "$5" --arg cr "$6" --arg rw "${7:-}" --arg rr "${8:-}" --arg h "${9:-}" \
+    --arg rv "${10:-}" \
     '{safe: $safe, gate: {word: $gw, reason: $gr, checks_unreadable: $cu},
       closing_keyword: {word: $cw, reason: $cr}, reconciliation: {word: $rw, reason: $rr},
+      revert: $rv,
       handoff: $h, rereview: {state: "", who: ""}, human_reviewer: {state: "", who: ""}}'
 }
 
@@ -279,7 +283,7 @@ assert_lacks "  ... never the required-checks wording" \
 # --- dirty reconciliation (both prior gates clean): named as such -------------
 # agent-ops#533, PR #512: a human's plain PR comment posted since the pull
 # request last left draft, never cited by a pipeline comment since.
-out="$(run_gate_block "$(review_json false clean "" false clean "" dirty "human comment(s) posted on https://github.com/Poetic-Poems/poetic-fiddle/pull/198 since it last left draft carry no reconcile citation: comment id(s) 4718691960")")"
+out="$(run_gate_block "$(review_json false clean "" false clean "" dirty "human comment(s) posted on https://github.com/Poetic-Poems/poetic-fiddle/pull/198 since it last left draft carry no reconcile citation: comment id(s) 4718691960" "" reverted)")"
 assert_eq "a dirty reconciliation gate ends the cycle too" "no" "$(reached_end "$out")"
 assert_contains "  ... recording the handback naming the unreconciled comment" \
   "comment id(s) 4718691960" "$out"
@@ -289,6 +293,32 @@ assert_lacks "  ... never the required-checks wording" \
   "Get every required check green" "$out"
 assert_lacks "  ... never the closing-keyword wording" \
   "Add the missing closing keyword" "$out"
+assert_lacks "  ... a successful revert earns no extra warning" \
+  "could not be converted back to draft" "$out"
+
+# --- dirty reconciliation whose own revert also fails (agent-ops#539) ---------
+# `handoff_complete_review` already reverted (or tried to) before returning —
+# this block does not perform the revert itself, only reads what it found.
+# `revert: "failed"` is the shape worth a warning of its own: the pull
+# request is not merely unreconciled, it is *still ready*, so a human could
+# merge it with the standing comment unanswered.
+out="$(run_gate_block "$(review_json false clean "" false clean "" dirty "human comment(s) posted on https://github.com/Poetic-Poems/poetic-fiddle/pull/198 since it last left draft carry no reconcile citation: comment id(s) 4718691960" "" failed)")"
+assert_eq "a dirty reconciliation gate whose revert also fails still ends the cycle" \
+  "no" "$(reached_end "$out")"
+assert_contains "  ... still recording the handback naming the unreconciled comment" \
+  "comment id(s) 4718691960" "$out"
+assert_contains "  ... and logging a warning that the revert itself did not take" \
+  "could not be converted back to draft" "$out"
+
+# --- dirty reconciliation on a pull request already a draft -------------------
+# Reachable on the Enabler's `complete_handoff` recovery path, whose block
+# never flipped this pull request ready before the gate refused it —
+# `revert: "already-draft"` is not a failure and earns no extra warning.
+out="$(run_gate_block "$(review_json false clean "" false clean "" dirty "human comment(s) posted on https://github.com/Poetic-Poems/poetic-fiddle/pull/198 since it last left draft carry no reconcile citation: comment id(s) 4718691960" "" already-draft)")"
+assert_eq "a dirty reconciliation gate on an already-draft PR still ends the cycle" \
+  "no" "$(reached_end "$out")"
+assert_lacks "  ... and logs no revert-failure warning" \
+  "could not be converted back to draft" "$out"
 
 # --- the round-start bound reaches handoff_complete_review --------------------
 # Without it the reconciliation gate anchors on the Reviewer's own step-7 `gh

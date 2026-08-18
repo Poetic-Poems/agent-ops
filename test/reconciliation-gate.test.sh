@@ -235,12 +235,84 @@ assert_eq "bounded by the round's start, the Reviewer's own flip is not the anch
   "dirty" "${out%%$'\t'*}"
 assert_contains "  ... so PR #512's standing change request is still named" \
   "$URL#issuecomment-5309946033" "$out"
-assert_contains "  ... measured since the flip that preceded the round, not the one inside it" \
-  "2026-08-16T22:05:40Z" "$out"
+# The fixture's own `convert_to_draft` at 22:16:30Z (the human's own
+# draft-flip, part of PR #512's real ordering) is itself at or before this
+# round's bound, and it follows the 22:05:40Z `ready_for_review` — so
+# agent-ops#539's fix (below) excludes that event too, same as it would a
+# revert `confirm_pr_draft` performs, and the anchor falls all the way back
+# to the pull request's own creation time. The point being pinned here is
+# unchanged: whichever anchor value it lands on, it is on the far side of the
+# human's comment, so the comment is still named.
+assert_contains "  ... measured since the pull request's own creation time, its last surviving anchor" \
+  "2026-08-16T10:00:00Z" "$out"
 
 out="$(reconciliation_gate "$URL")"
 assert_eq "  ... and unbounded it would have missed it entirely — why the bound is not optional" \
   "clean" "$out"
+
+# --- agent-ops#539: a refused, reverted flip must not become next round's
+#     anchor either — the two-round regression the Approver's review named ---
+#
+# NOT_AFTER alone (agent-ops#533, above) stops the gate being fooled by the
+# Reviewer's own flip *within* the round that made it. It does not stop the
+# gate being fooled by that same flip *one round later*, once it has been
+# refused and reverted: `handoff_complete_review` now performs that revert on
+# a `dirty` verdict (`confirm_pr_draft`, agent-ops#539), but GitHub does not
+# delete the original `ready_for_review` event, so — without also excluding a
+# `ready_for_review` that a `convert_to_draft` later undid — that stale event
+# is again the most recent `ready_for_review` at or before the next round's
+# bound, and the still-unreconciled human comment reads as answered.
+#
+# This is the Approver's own reproduction against PR #512's real timestamps,
+# extended one round past where the review noted "nothing in the diff
+# exercises two consecutive rounds": round one's `ready_for_review` at
+# 04:31:16Z is the Reviewer's step-7 flip inside round one; round one's gate
+# (bounded by round one's own start) finds the human's comment unreconciled
+# and is `dirty`; `handoff_complete_review` reverts that flip
+# (`confirm_pr_draft`), which GitHub records as a `convert_to_draft` event at
+# 04:31:40Z — after round one's own bound, so it plays no part in round one's
+# own verdict, but it is on the timeline for round two to see. Before this
+# fix, round two's bound (05:31:00Z) still fell after the *reverted*
+# 04:31:16Z flip, unbounded by anything that told the gate it had been
+# undone, so that flip won the anchor and the same unreconciled comment
+# disappeared. After this fix, round two's anchor falls back past both
+# reverted flips to the pull request's own creation time, and the comment is
+# named again.
+
+set_timeline '[{"event": "ready_for_review",  "created_at": "2026-08-16T22:05:40Z"},
+               {"event": "convert_to_draft",  "created_at": "2026-08-16T22:16:30Z"},
+               {"event": "ready_for_review",  "created_at": "2026-08-17T04:31:16Z"},
+               {"event": "convert_to_draft",  "created_at": "2026-08-17T04:31:40Z"}]'
+set_pr '{"created_at": "2026-08-16T10:00:00Z"}'
+set_comments "$(jq -nc --arg m "$PIPELINE_COMMENT_MARKER_PREFIX" '
+  [{id: 5309946033, created_at: "2026-08-16T22:16:05Z",
+    body: "Three things: widen the protected-path list, rescope TD-PPagop-26081701, and re-read the kill switch.",
+    user: {login: "warwickallen", type: "User"}},
+   {id: 5309999999, created_at: "2026-08-17T04:31:39Z",
+    body: ("**Reviewer** · autonomous pipeline · node `n1`\n\nAutomated review complete.\n\n" + $m + " cycle=X actor=reviewer -->"),
+    user: {login: "warwickallen", type: "User"}}]')"
+
+# Round one: bounded by its own start, before its own flip and before the
+# revert that follows it inside the same round. Still dirty, same as the
+# single-round case above.
+out="$(reconciliation_gate "$URL" "2026-08-17T04:00:00Z")"; rc=$?
+assert_eq "round one: exits 1" "1" "$rc"
+assert_eq "round one is dirty — the human comment is still unreconciled" \
+  "dirty" "${out%%$'\t'*}"
+assert_contains "  ... naming the comment PR #512 never answered" \
+  "$URL#issuecomment-5309946033" "$out"
+
+# Round two: bounded past both the Reviewer's flip and the revert it earned.
+# This is the case the Approver's review found nothing in the diff exercised
+# — the regression is `clean` here, not `dirty`, before this fix.
+out="$(reconciliation_gate "$URL" "2026-08-17T05:31:00Z")"; rc=$?
+assert_eq "round two: exits 1" "1" "$rc"
+assert_eq "round two stays dirty — the reverted flip is not a new anchor" \
+  "dirty" "${out%%$'\t'*}"
+assert_contains "  ... still naming the same unanswered comment one round later" \
+  "$URL#issuecomment-5309946033" "$out"
+assert_contains "  ... measured since the pull request's own creation time, past both reverted flips" \
+  "2026-08-16T10:00:00Z" "$out"
 
 # --- NOT_AFTER on a first round: no ready_for_review event precedes the bound --
 # The same trap one layer down: the Reviewer's flip is also the *first*

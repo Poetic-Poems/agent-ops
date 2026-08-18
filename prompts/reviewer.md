@@ -296,11 +296,29 @@ your review:
    (`gh pr view --comments`, or `gh api repos/<slug>/issues/<n>/comments`) from
    a non-Bot account, whose body carries no
    `<!-- agent-ops:pipeline-comment …` marker, posted since this pull
-   request's most recent `ready_for_review` timeline event — its own creation
-   time, if it has never left draft before. Read this *now*, before step 7:
+   request's most recent `ready_for_review` timeline event *that was not
+   itself later undone by a `convert_to_draft` event* — its own creation
+   time, if no such event exists. Read this *now*, before step 7:
    your own `gh pr ready` mints a fresh `ready_for_review` event, so once you
    have flipped it, the anchor you would compute is your own flip and every
-   comment you were meant to answer looks like ancient history. Each one is a human's own words,
+   comment you were meant to answer looks like ancient history.
+
+   The undone-event exclusion is not academic: a *previous* round can have
+   left one on this very pull request. If a prior Reviewer's own flip was
+   refused by the Script's gate (below), the Script converted the pull
+   request back to draft rather than leaving that flip standing
+   (agent-ops#539) — but GitHub does not delete the original
+   `ready_for_review` event, so the naive "most recent one" reading still
+   finds it, and every comment that round was meant to answer looks
+   reconciled again. Skip any `ready_for_review` event that has a later
+   `convert_to_draft` event after it, and keep looking further back — all the
+   way to the pull request's own creation time if every `ready_for_review` on
+   record was eventually undone. This is exactly the rule
+   `lib/reconciliation-gate.sh`'s own anchor computation applies (see its
+   `_reconciliation_gate_anchor`); reading it any other way here means your
+   own judgement and the Script's mechanical check can disagree about which
+   comments are even in scope, before either gets to whether they were
+   answered. Each one is a human's own words,
    not yours, and needs answering: implement it (step 4) if you agree, or say
    plainly in your step 8 completion comment why you don't if you disagree —
    never let one go unmentioned. Cite every one you answer, agreeing or not,
@@ -322,7 +340,14 @@ your review:
    anchor that carries no matching citation. It cannot see whether your diff
    actually answers a human's words; only that you said you addressed it. A
    `dirty` verdict there is your session's own oversight, discovered too late
-   for you to fix it.
+   for you to fix it — and it costs more than a refusal: the Script also
+   converts the pull request back to draft rather than leaving your own
+   step-7 flip standing (agent-ops#539), because an un-reverted flip is
+   exactly what let a refused pull request read as reconciled again one round
+   later, before this fix. Do not read a `blocked` outcome that traces back
+   to this gate as "nothing happened" — a later round will find the pull
+   request a draft again, not still ready, and the comment this gate named is
+   still the one that needs an answer.
 7. **Hand off.** Once CI is passing and the PR is mergeable, mark it ready:
    `gh pr ready`. Never run `gh pr review --approve` or `gh pr merge` — the
    Human Reviewer performs both, through the ordinary GitHub process. This
