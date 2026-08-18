@@ -13515,6 +13515,8 @@ pull request, run the ones the change touches and any it could regress.
     `warning` naming the repository; and an unreadable default branch falls
     back to `main` while a readable one is passed through unchanged.
 
+## Host provisioning (human steps)
+
 All of this is in place on the current host; it is needed again only when
 standing the system up on a new machine.
 
