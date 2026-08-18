@@ -1051,21 +1051,35 @@ referencing that review; match `R-NN` refs against it. When you select one,
    selecting a finding. For a project-review recommendation, "already claimed"
    means an open PR referencing its ref `review-<date>-R-NN`, and "already
    done" means a *merged* PR referencing it.
-4. A GitHub issue that is assigned, labelled `blocked`, names an unresolved
-   `Blocked-by: #N` dependency, or is a question or discussion rather than
-   actionable work. The Script has already dropped the first three from the
-   `issues` array (they are deterministic — a `Blocked-by:` reference is
-   checked live against the referenced item's own state, never against what
-   the note says happened), so what remains yours here is the judgement
-   half: whether the thread in front of you describes actionable work — and
-   a comment can turn either answer, so judge it over the whole entry, not
-   the body alone. When you decide it does not, **report it** in
-   `needs_refinement` (source `"issues"`) with `missing` naming what would
-   make it actionable — the decision the question is waiting on, or the
-   concrete work the discussion would imply. This is the one exclusion whose
-   judgement is entirely yours, so it is the one the Script cannot record for
-   you; leaving it silent means every cycle after yours re-reads the same
-   thread and reaches the same non-answer, forever, and nobody ever learns.
+4. A GitHub issue that is a question or discussion rather than actionable
+   work. **Judging that is the whole of what this exclusion asks of you.**
+   Everything else it used to name — assigned, labelled `blocked`, or naming
+   an unresolved `Blocked-by: #N` dependency — the Script has already dropped
+   from the `issues` array before you ever see it: each is deterministic, and
+   the dependency half is checked live against the referenced item's own
+   current state, never against what a comment says happened. An issue
+   reaching you here has already cleared all three, whatever a stale sentence
+   still sitting in its thread reads. **Do not re-derive any of the three
+   yourself, and never cite one as a reason in `needs_refinement`** — that is
+   reasoning past a check the Script already performed this same cycle, on
+   fresher information than the thread's own prose carries, and it produced
+   exactly this failure once already (agent-ops#566: five issues reported
+   `needs_refinement` in one cycle, each citing a `Blocked-by:` reference to
+   an item that had already closed days before). A report that asserts one
+   anyway is refused outright — no block recorded, no label applied — so
+   nothing is gained and the judgement this exclusion actually wants from you
+   goes unspent.
+
+   What remains, and it is the only thing left, is the judgement half: whether
+   the thread in front of you describes actionable work — and a comment can
+   turn either answer, so judge it over the whole entry, not the body alone.
+   When you decide it does not, **report it** in `needs_refinement` (source
+   `"issues"`) with `missing` naming what would make it actionable — the
+   decision the question is waiting on, or the concrete work the discussion
+   would imply. This is the one part of this exclusion whose judgement is
+   entirely yours, so it is the one the Script cannot record for you; leaving
+   it silent means every cycle after yours re-reads the same thread and
+   reaches the same non-answer, forever, and nobody ever learns.
 5. A security finding whose only fix is a decision only a human can make —
    e.g. a Dependabot alert with no patched version on the current major line,
    so resolving it needs a major-version bump that changes the repo's public
@@ -1316,6 +1330,17 @@ The rules:
   register row, the thread, the file and section you read. An entry without it
   is dropped with a warning, because a report with nothing behind it is an
   opinion about an item rather than a finding about one.
+- **`evidence` names what you read, never the live state of something you
+  didn't.** Cite only what this cycle's runtime input actually handed you —
+  the thread in front of you, the register row, the plan section. Do not
+  assert the open/closed/merged state of an item that is not itself part of
+  what you were given this cycle: you never fetched it, so a claim about it is
+  a guess dressed as a finding, and the Script has no way to tell the
+  difference from a genuine read. This binds hardest on exclusion 4's
+  dependency third, above: every item you see in `issues` has already cleared
+  it, so `evidence` must never cite a `Blocked-by:` reference as the reason
+  for a report — the Script refuses such an entry outright, on exactly this
+  runtime input, and records nothing (agent-ops#566).
 - **Reporting changes nothing about what you select.** It is side-work you do
   while walking, and it never promotes or demotes a candidate. On a cycle that
   selects, an empty array is the normal answer and reporting nothing is not a

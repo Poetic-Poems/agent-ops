@@ -97,6 +97,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A Co-Ordinator `needs_refinement` report for an issue can no longer
+  re-assert a `Blocked-by:` dependency the Script's own gate already resolved
+  (agent-ops#566). Requirement 3j drops any issue naming an unresolved
+  dependency before the Co-Ordinator ever sees it, but a stale sentence can
+  still sit in an otherwise-selectable issue's thread after the reference it
+  named has closed — one cycle read that sentence for five separate issues
+  and reported each `needs_refinement`, even though the dependency gate had
+  already cleared all five. `record_needs_refinement_block` now refuses, with
+  a logged warning and no block, label, or assignment, any `source: "issues"`
+  entry whose own `reason`/`missing`/`evidence` names — by issue number — a
+  dependency this cycle's own gathered thread already proves resolved
+  (`dependency_refusal_reason`, `lib/dependency-gate.sh`); a genuine
+  under-specification or question/discussion decline on the same item is
+  untouched. `prompts/coordinator.md` now states plainly, ahead of restating
+  the mechanics, that this exclusion's dependency half is never the
+  Co-Ordinator's to re-derive, and that `evidence` may never assert the live
+  state of an item outside this cycle's own runtime input.
 - `merge_autonomy_routine_sources` can now name issue work at all
   (agent-ops#558). The key shared one `sourceToken` enum with
   `repos[].sources`, but the two are matched against different things: a

@@ -333,11 +333,16 @@ eval "$log_needs_refinement_items_src"
 eval "$log_voided_items_src"
 
 # The stubs. The recorder keeps requirement 34d's real bar and drops the event
-# machinery — which entries it *accepts* is the behaviour under test, and
-# the real record_needs_refinement_block accepts exactly those
-# refinement_entry_problem passes (its only other refusal, an already-blocked
-# item, can never be an eligible item: blocked items were excluded from
-# eligibility before the Co-Ordinator ran).
+# machinery — which entries it *accepts* is the behaviour under test, and the
+# real record_needs_refinement_block's two other refusals (an already-blocked
+# item, and — since agent-ops#566 — a `source: "issues"` entry re-asserting a
+# resolved `Blocked-by:` dependency, `test/dependency-block-refusal.test.sh`'s
+# own job) can never reach an eligible item in the fixtures below: the former
+# because a blocked item is excluded from eligibility before the Co-Ordinator
+# ever runs, the latter because none of this file's `needs_refinement`
+# fixtures carry an `issues`-sourced dependency claim. So for this file's
+# purposes the real recorder accepts exactly those `refinement_entry_problem`
+# passes.
 record_needs_refinement_block() { refinement_entry_problem "$1" >/dev/null; }
 log_event() { :; }
 item_event_fields() { printf '{}'; }

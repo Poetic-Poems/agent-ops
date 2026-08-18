@@ -1840,7 +1840,8 @@ release_refinement_label() {
 # Record one needs_refinement-shaped ENTRY (`{repo, item, source, reason,
 # missing, evidence}`) as a block attributed to STAGE (requirement 34e).
 # Returns 1 and records nothing but a `warning` when ENTRY fails requirement
-# 34d's completeness bar or the item is already blocked.
+# 34d's completeness bar, the item is already blocked, or it re-asserts a
+# `Blocked-by:` dependency this cycle's own gate already resolved.
 #
 # The single recorder for every stage that can report this class of block —
 # the Co-Ordinator (requirement 16a), the Implementor's escape hatch
@@ -1848,8 +1849,8 @@ release_refinement_label() {
 # definition (requirement 34a): three reporters, one recorder, so the label,
 # the assignment and the block's shape can never drift between them.
 #
-# Two entries are dropped rather than recorded, each with a warning, and both
-# refusals are the Script's job rather than the reporting stage's:
+# Three entries are dropped rather than recorded, each with a warning, and all
+# three refusals are the Script's job rather than the reporting stage's:
 #
 #   - a malformed entry, on requirement 34d's discipline. The fields are what the
 #     Enabler starts from; an entry without them starves the very stage this
@@ -1860,6 +1861,15 @@ release_refinement_label() {
 #     clock forward hourly and the item would never become eligible — the same
 #     silent starvation this whole path exists to end, with an event trail that
 #     looks like progress.
+#   - a `source: "issues"` entry whose own `reason`/`missing`/`evidence` names,
+#     by number, the same `Blocked-by:` dependency this cycle's
+#     `issues_by_repo_json` already proves resolved for that item's thread
+#     (`dependency_refusal_reason`, lib/dependency-gate.sh; issue #566).
+#     Requirement 16's dependency exclusion is deterministic and applied by the
+#     Script before any candidate reaches a reporting stage — re-asserting it
+#     from a thread's own stale prose is never a legitimate reason to decline an
+#     item, and recording one as a block would silently blind selection to an
+#     item the gate already cleared.
 record_needs_refinement_block() {
   local entry="$1" stage="$2" repo item reason problem label assignee number who
   who="$(pipeline_actor_label "$stage")"
@@ -1877,6 +1887,12 @@ record_needs_refinement_block() {
        <<<"${blocked_json:-[]}" >/dev/null 2>&1; then
     log_event "warning" "$(jq -nc \
       --arg d "$who reported $repo $item as needing refinement, but it is already blocked — left as it is so the Enabler threshold keeps running" \
+      '{detail: $d}')"
+    return 1
+  fi
+
+  if ! problem="$(dependency_refusal_reason "$entry" "${issues_by_repo_json:-{\}}")"; then
+    log_event "warning" "$(jq -nc --arg d "$who needs_refinement entry for $repo $item refused — it $problem" \
       '{detail: $d}')"
     return 1
   fi

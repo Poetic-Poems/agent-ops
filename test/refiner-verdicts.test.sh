@@ -48,6 +48,8 @@ repo_root="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/cycle-state.sh"
 # shellcheck source=lib/void-guard.sh
 . "$SCRIPT_DIR/lib/void-guard.sh"
+# shellcheck source=lib/dependency-gate.sh
+. "$SCRIPT_DIR/lib/dependency-gate.sh"
 # shellcheck source=lib/refinement.sh
 . "$SCRIPT_DIR/lib/refinement.sh"
 # shellcheck source=lib/label-marker.sh

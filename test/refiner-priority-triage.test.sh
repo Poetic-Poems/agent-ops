@@ -44,6 +44,8 @@ trap 'rm -rf "$tmp_dir"' EXIT
 
 # shellcheck source=lib/void-guard.sh
 . "$SCRIPT_DIR/lib/void-guard.sh"
+# shellcheck source=lib/dependency-gate.sh
+. "$SCRIPT_DIR/lib/dependency-gate.sh"
 # shellcheck source=lib/refinement.sh
 . "$SCRIPT_DIR/lib/refinement.sh"
 # ISSUE_PRIORITY_CACHE_DIR is set before sourcing lib/issue-priority.sh below
