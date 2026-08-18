@@ -120,7 +120,7 @@
             "type": "array",
             "uniqueItems": true,
             "items": {
-              "$ref": "#/$defs/sourceToken"
+              "$ref": "#/$defs/landingSourceToken"
             }
           }
         }
@@ -667,16 +667,16 @@
       }
     },
     "merge_autonomy_routine_sources": {
-      "description": "D18 WI-7 (requirement 8d): which work sources may be armed automatically at `agent-merges-routine` and above — an eligible pull request also needs `complexity:low`/`medium` and to touch no protected path (`lib/landing.sh`'s `landing_eligible`). A `repos[]` entry's own `merge_autonomy_routine_sources` overrides this key for that repository alone, on the same precedence `merge_autonomy` uses. Compared against a pull request's own `source` field by exact string equality — the four `issues:<band>` tokens this array may hold are a config-time rank; every work order's own `source` collapses all four to the plain word `issues` before this comparison ever runs (`scripts/gather-issues.sh`), so listing an `issues:<band>` token here only ever matches a pull request whose `source` is literally that string, which none currently are. `scripts/doctor.sh` warns when an entry names a source the repository's own `sources` list never gathers, and separately warns on any `issues:<band>` entry here, since that entry can validate clean against the first check (its own `sources` list typically does gather that banded token) while still never matching a work order.",
+      "description": "D18 WI-7 (requirement 8d): which work sources may be armed automatically at `agent-merges-routine` and above — an eligible pull request also needs `complexity:low`/`medium` and to touch no protected path (`lib/landing.sh`'s `landing_eligible`). A `repos[]` entry's own `merge_autonomy_routine_sources` overrides this key for that repository alone, on the same precedence `merge_autonomy` uses. Compared against a pull request's own `source` field by exact string equality, over the `landingSourceToken` vocabulary — `repos[].sources` uses `sourceToken` instead, and the two differ in exactly one place: issue work is the plain `issues` here and one of the four `issues:<band>` ranks there, because `scripts/gather-issues.sh` spends the band at gathering time and stamps every resulting work order `\"source\": \"issues\"`. A banded token here is a schema error (agent-ops#558); before that it validated and then silently matched nothing, while `scripts/doctor.sh`'s own warning (agent-ops#519) told the operator to list `issues` itself — advice the shared enum rejected, so issue work had no valid spelling at all. `scripts/doctor.sh` also warns when an entry names a source the repository's own `sources` list never gathers, counting a bare `issues` as gathered when the repository lists any `issues:<band>`.",
       "type": "array",
       "uniqueItems": true,
       "default": ["register-hygiene", "tech-debt"],
       "items": {
-        "$ref": "#/$defs/sourceToken"
+        "$ref": "#/$defs/landingSourceToken"
       },
       "x-docs": {
-        "readme": "D18 WI-7: which work sources may be armed automatically at `agent-merges-routine` and above — a pull request also needs `complexity:low`/`medium` and to touch no protected path. A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Matched against a pull request's own `source` by exact string equality: every `issues:<band>` work order's own `source` is the plain word `issues`, so an `issues:<band>` entry here never matches one — `scripts/doctor.sh` warns on any such entry even where the repository's own `sources` list gathers that band.",
-        "spec": "D18 WI-7 (requirement 8d, `lib/landing.sh`'s `landing_eligible`): which work sources may be armed automatically at `agent-merges-routine` and above, fleet-wide default; a `repos[]` entry's own `merge_autonomy_routine_sources` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). An eligible pull request also needs `complexity:low`/`medium` and `landing_protected_paths_hit` to report no protected path touched. Matched against a pull request's own `source` by exact string equality: every `issues:<band>` work order's own `source` collapses to the plain word `issues` (`scripts/gather-issues.sh`), so an `issues:<band>` entry here never matches one — a known, disclosed limitation (`lib/landing.sh`'s own header). `scripts/doctor.sh` warns when a repository's own effective list names a source that repository's `sources` never gathers, and separately warns on any `issues:<band>` entry here (agent-ops#519) — that entry can validate clean against the first check, since the repository's own `sources` list typically does gather the banded token, while still never matching a work order once it collapses.",
+        "readme": "D18 WI-7: which work sources may be armed automatically at `agent-merges-routine` and above — a pull request also needs `complexity:low`/`medium` and to touch no protected path. A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Takes `landingSourceToken`s, not the `sourceToken`s `repos[].sources` takes: issue work is the plain `issues` here, never `issues:<band>`, because banding is spent at gathering time and a finished work order carries the bare word.",
+        "spec": "D18 WI-7 (requirement 8d, `lib/landing.sh`'s `landing_eligible`): which work sources may be armed automatically at `agent-merges-routine` and above, fleet-wide default; a `repos[]` entry's own `merge_autonomy_routine_sources` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). An eligible pull request also needs `complexity:low`/`medium` and `landing_protected_paths_hit` to report no protected path touched. Matched against a pull request's own `source` by exact string equality, over the `landingSourceToken` vocabulary rather than `repos[].sources`' `sourceToken` one: `scripts/gather-issues.sh` collapses all four bands to `\"source\": \"issues\"`, so `issues` is the only spelling that can match an issue work order, and the four banded spellings are rejected by the schema outright (agent-ops#558). Until that fix the two were one shared enum, which offered only the spellings landing can never match — and `scripts/doctor.sh`'s banded-token warning (agent-ops#519) named a remedy, `issues`, that the same enum refused. `scripts/doctor.sh` warns when a repository's own effective list names a source that repository's `sources` never gathers, reading a bare `issues` as satisfied by any `issues:<band>` the repository gathers.",
         "value": "`[\"register-hygiene\", \"tech-debt\"]`"
       }
     },
@@ -1369,7 +1369,7 @@
       "type": "string"
     },
     "sourceToken": {
-      "description": "One work-source token: an ordinary source name, or one of the four `issues:<band>` ranks (the same `issues` source at four ranks, requirement 15e). Shared between `repos[].sources` and `merge_autonomy_routine_sources` (top-level and per-repo) so the two enumerations cannot drift apart.",
+      "description": "One *gathering* token, naming what `repos[].sources` asks a cycle to collect: an ordinary source name, or one of the four `issues:<band>` ranks (the same `issues` source at four ranks, requirement 15e). Deliberately **not** shared with `merge_autonomy_routine_sources`, which enumerates `landingSourceToken` instead: the two lists are matched against different things, and sharing one enum made the difference invisible. A gathering token is compared against a *candidate* before it is banded down into a work order; a landing token is compared against a finished work order's own `source`, which `scripts/gather-issues.sh` has by then collapsed to the plain word `issues`. Every other source name is identical in both vocabularies; `issues` is the one that is not, and the shared enum silently offered exactly the four spellings landing can never match.",
       "type": "string",
       "enum": [
         "security",
@@ -1386,6 +1386,25 @@
         "implementation-plan",
         "project-review",
         "issues:low",
+        "code-quality",
+        "register-hygiene"
+      ]
+    },
+    "landingSourceToken": {
+      "description": "One *landing* token, naming a work source `merge_autonomy_routine_sources` may arm automatically. Identical to `sourceToken` except that the four `issues:<band>` gathering ranks are replaced by the single plain `issues`, because that is the value a real issues work order carries by the time `landing_eligible` compares it (`scripts/gather-issues.sh` collapses all four bands to `\"source\": \"issues\"`, the same collapse requirement 33's `first-seen` vocabulary documents). Banding is a config-time selection rank, not a property landing can see, so `issues` is all-or-nothing here: an installation that wants only its low-band issues landed must narrow what it gathers, not what it arms. Listing a banded token is now a schema error rather than a silently unmatchable entry (agent-ops#558).",
+      "type": "string",
+      "enum": [
+        "security",
+        "issues",
+        "review-feedback",
+        "merge-conflicts",
+        "dequeued",
+        "human-visibility",
+        "abandoned-drafts",
+        "failed-runs",
+        "tech-debt",
+        "implementation-plan",
+        "project-review",
         "code-quality",
         "register-hygiene"
       ]

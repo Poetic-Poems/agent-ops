@@ -89,19 +89,35 @@
 # confirmed against `agent-cycle.sh`'s own work-order construction
 # (`selected_source`, set from the work order's `.source` field) and pinned
 # by test/landing.test.sh rather than left to be re-discovered: every
-# `issues:<band>` token in `repos[].sources`/`merge_autonomy_routine_sources`
-# is a *config-time* rank (requirement 15e), but the four bands collapse to
-# one plain `"issues"` the moment a candidate becomes a work order
-# (`scripts/gather-issues.sh`, `"source": "issues"`) — the same collapse
-# requirement 33's `first-seen` vocabulary already documents for all four
-# bands. This costs nothing today: the default routine list
-# (`register-hygiene`, `tech-debt`) carries no banded token, and neither
-# name is banded to begin with. It will bite the day an installation adds
-# `issues:low` to its own `merge_autonomy_routine_sources` expecting it to
-# match — it never will, silently, because `SOURCE` here is always the
-# plain word. Left as a known, disclosed limitation rather than papered
-# over with a special case this file would then own forever; widening the
-# comparison to fold bands together is future work if it is ever wanted.
+# `issues:<band>` token in `repos[].sources` is a *config-time* rank
+# (requirement 15e), but the four bands collapse to one plain `"issues"` the
+# moment a candidate becomes a work order (`scripts/gather-issues.sh`,
+# `"source": "issues"`) — the same collapse requirement 33's `first-seen`
+# vocabulary already documents for all four bands.
+#
+# The comparison itself is unchanged, and deliberately so — no special case
+# folding bands together lives here, which was the right call. What was
+# wrong until agent-ops#558 was the *config vocabulary*: both this key and
+# `repos[].sources` referenced one shared `sourceToken` enum, which offers
+# the four banded spellings and no bare `issues`. So the only token that
+# could ever match an issues work order was un-writable, and the four that
+# were writable could never match — an installation widening its routine
+# list to include issues got a config that validated and not one issue ever
+# armed. agent-ops#519 (PR #554) caught the silence and added a doctor warn
+# whose remedy reads "list `issues` itself" — correct advice the shared
+# enum then rejected, which is how the gap survived being noticed: the
+# warning and the schema each described half of a configuration that could
+# not be written. Since #558 the key takes its own
+# `landingSourceToken` enum: bare `issues`, no bands. A banded entry is now
+# a schema error at load, which is the loud failure this quiet one deserved,
+# and `scripts/doctor.sh` reads a bare `issues` in the routine list as
+# gathered whenever the repository's own `sources` carry any `issues:<band>`
+# (without that, its set-difference check would report the fix as a fault).
+#
+# The residual limitation is real but now honest, and stated in the schema:
+# landing sees no band, so `issues` is all-or-nothing. An installation that
+# wants only its low-band issues landed narrows what it *gathers*, not what
+# it arms.
 #
 # ## Queue detection lives beside `merge_queue_probe`, not here
 #
@@ -207,13 +223,13 @@ _landing_routine_sources() {
   repo_list="$(jq -c --arg slug "$slug" \
     '(.repos // [])[] | select(.slug == $slug) | .merge_autonomy_routine_sources // empty' \
     <<<"$config_json" 2>/dev/null | head -1)"
-  if jq -e 'type == "array"' <<<"$repo_list" >/dev/null 2>&1; then
+  if [[ -n "$repo_list" ]] && jq -e 'type == "array"' <<<"$repo_list" >/dev/null 2>&1; then
     printf '%s' "$repo_list"
     return 0
   fi
   local top_list
   top_list="$(jq -c '.merge_autonomy_routine_sources // empty' <<<"$config_json" 2>/dev/null)"
-  if jq -e 'type == "array"' <<<"$top_list" >/dev/null 2>&1; then
+  if [[ -n "$top_list" ]] && jq -e 'type == "array"' <<<"$top_list" >/dev/null 2>&1; then
     printf '%s' "$top_list"
     return 0
   fi
@@ -267,7 +283,16 @@ landing_eligible() {
 
   local routine_json
   routine_json="$(_landing_routine_sources "$config_json" "$slug")"
-  if [[ -z "$source" ]] || ! jq -e --arg s "$source" 'index($s) != null' <<<"$routine_json" >/dev/null 2>&1; then
+  # The emptiness guards are not redundant with _landing_routine_sources'
+  # own guarantee, and must not be removed as though they were: `jq -e` on
+  # *empty input* exits 0 on jq 1.6 and 4 on jq 1.7, so on a 1.6 host every
+  # one of these membership tests silently inverts and this gate admits
+  # every source it exists to refuse. The image pins 1.7 (deploy/docker/
+  # Dockerfile, ubuntu:24.04), which is the only reason that was never a
+  # live fail-open — an argument from a pinned dependency, not from this
+  # code, and the wrong kind of argument to rest an arming gate on.
+  if [[ -z "$source" || -z "$routine_json" ]] \
+     || ! jq -e --arg s "$source" 'index($s) != null' <<<"$routine_json" >/dev/null 2>&1; then
     printf 'ineligible:source %s is not in %s'\''s configured routine list %s' \
       "${source:-empty}" "$slug" "$routine_json"
     return 0

@@ -55,6 +55,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `merge_autonomy_routine_sources` can now name issue work at all
+  (agent-ops#558). The key shared one `sourceToken` enum with
+  `repos[].sources`, but the two are matched against different things: a
+  `sources` token is compared against a *candidate*, while a routine-list
+  token is compared against a finished work order's own `source`, which
+  `scripts/gather-issues.sh` has by then collapsed from `issues:<band>` to
+  the plain word `issues`. The shared enum therefore offered exactly the
+  four spellings landing can never match and withheld the only one it can,
+  so an installation widening its routine list to include issues got a
+  config that validated and not one issue ever armed. agent-ops#519 caught
+  the silence and added a doctor warn whose remedy — "list `issues` itself"
+  — the same enum then rejected, leaving issue work with no writable
+  spelling at all. The key now takes its own `landingSourceToken` enum
+  (bare `issues`, no bands), a banded entry is a schema error rather than a
+  silent never-match, and `scripts/doctor.sh` reads a bare `issues` in the
+  routine list as gathered whenever the repository's own `sources` carry any
+  `issues:<band>` — without which following its own advice would simply
+  trade one warning for another. Banding remains a gathering-time rank that
+  landing cannot see, now stated plainly in the schema rather than buried as
+  a disclosed limitation: `issues` is all-or-nothing at the arming step, and
+  an installation wanting only its low-band issues landed narrows what it
+  gathers, not what it arms.
+- `landing_eligible`'s routine-source membership test no longer inverts on
+  jq 1.6 (agent-ops#558). `jq -e` exits 0 on *empty input* under jq 1.6 and
+  4 under jq 1.7, and both `_landing_routine_sources`' array probes and the
+  membership test itself fed possibly-empty strings to `jq -e`: on a 1.6
+  host the routine list resolved empty instead of falling through to the
+  shipped default, and the membership test then admitted every source the
+  gate exists to refuse. The container image pins jq 1.7 (`ubuntu:24.04`),
+  which is the only reason this was never a live fail-open on the fleet — an
+  argument from a pinned dependency rather than from the gate's own code,
+  which is the wrong thing to rest an arming decision on. All three call
+  sites now test for emptiness explicitly before consulting `jq -e`. The
+  three `test/landing.test.sh` assertions that failed on any jq 1.6 host —
+  and passed in CI purely because CI runs inside the image — now pass
+  everywhere.
+
 - `scripts/doctor.sh` now also warns when a repository's effective
   `merge_autonomy_routine_sources` names a banded `issues:<band>` token
   (agent-ops#519): the existing "does this repository's own `sources` list

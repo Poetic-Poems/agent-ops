@@ -19,9 +19,10 @@
 #     override widens what that one repository accepts; a protected path
 #     is `ineligible`; an unreadable changed-file list is `unknown`, never
 #     a pass; the plain-string SOURCE comparison this file's own header
-#     documents is pinned directly — an `issues:low` entry in the routine
-#     list never matches the plain word `issues` a real issues work order
-#     always carries.
+#     documents is pinned directly — a plain `issues` entry in the routine
+#     list matches the word a real issues work order always carries, and an
+#     `issues:low` entry (a schema error since agent-ops#558) still does
+#     not, because the comparison folds no bands.
 #   - landing_arm: a base branch with an active merge queue enqueues via
 #     the enqueuePullRequest mutation; one without falls back to
 #     `gh pr merge --auto --squash`; both write under GH_TOKEN for that one
@@ -284,8 +285,18 @@ assert_eq "a repo with no override of its own falls through to the top-level lis
 # The subtlety this file's own header documents: SOURCE is compared as a
 # plain string, never expanded against the four issues:<band> ranks. A real
 # issues work order's own .source is always the plain word "issues"
-# (scripts/gather-issues.sh) — an issues:low entry in the routine list can
-# never match it.
+# (scripts/gather-issues.sh), so `issues` is the spelling that arms one —
+# which is why the schema's landingSourceToken offers that and not the bands
+# (agent-ops#558).
+plain_cfg='{"merge_autonomy_routine_sources":["issues","tech-debt"]}'
+out="$(landing_eligible "$plain_cfg" acme/widgets 12 medium issues agent-merges-routine)"
+assert_eq "a plain 'issues' routine entry matches the source a real issues work order carries" \
+  "eligible" "$out"
+
+# The comparison is still exact-string, not band-folding — pinned because the
+# #558 fix deliberately changed the config vocabulary and left this alone. A
+# banded entry is a schema error at load; were one to reach here anyway it
+# must still not match, rather than being quietly widened by this file.
 banded_cfg='{"merge_autonomy_routine_sources":["issues:low","tech-debt"]}'
 out="$(landing_eligible "$banded_cfg" acme/widgets 12 medium issues agent-merges-routine)"
 assert_eq "an issues:low routine entry never matches the plain word 'issues' a real work order carries" \

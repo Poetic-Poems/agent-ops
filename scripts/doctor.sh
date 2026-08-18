@@ -322,6 +322,15 @@ done < <(cfg '.repos[]?.slug // empty')
 # list (its own override, else the top-level key, else the shipped default),
 # never fleet-wide: a source missing from one repository's `sources` may be
 # present in another's.
+#
+# The two lists speak deliberately different vocabularies (agent-ops#558):
+# `sources` is banded (`issues:high`), the routine list is not (`issues`),
+# because a work order's own `source` has lost its band by the time landing
+# compares it. A naive set difference would therefore report a correctly
+# configured bare `issues` as ungathered — the fix reported as the fault —
+# so the routine side is normalised first: `issues` counts as gathered when
+# the repository's `sources` carry any `issues:<band>` at all. Every other
+# token is identical in both vocabularies and compares unchanged.
 while IFS= read -r rs_slug; do
   [[ -n "$rs_slug" ]] || continue
   rs_missing="$(jq -r --arg slug "$rs_slug" '
@@ -329,6 +338,7 @@ while IFS= read -r rs_slug; do
     | ($r.merge_autonomy_routine_sources // .merge_autonomy_routine_sources
        // ["register-hygiene","tech-debt"]) as $routine
     | ($r.sources // []) as $have
+    | (if ($have | any(startswith("issues"))) then $have + ["issues"] else $have end) as $have
     | ($routine - $have) | .[]
   ' <<<"$DEFAULTED_CONFIG" 2>/dev/null | paste -sd, - || true)"
   if [[ -n "$rs_missing" ]]; then
