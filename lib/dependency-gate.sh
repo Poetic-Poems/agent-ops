@@ -136,3 +136,83 @@ dependency_clearances() {
   done < <(jq -r '.[] | [(.repo // ""), (.item // "")] | @tsv' <<<"$blocked" 2>/dev/null || true)
   printf '%s' "$out"
 }
+
+# dependency_refusal_reason ENTRY_JSON ISSUES_BY_REPO_JSON
+# Decide whether a needs_refinement-shaped ENTRY (`{repo, item, source,
+# reason, missing, evidence}`, from any reporting stage) asserts, as its
+# block, the same `Blocked-by:` dependency this cycle's own gate has already
+# resolved for that item — exclusion 4 (docs/IMPLEMENTATION-PIPELINE-SPEC.md
+# requirement 16), which belongs to the Script and must never be re-derived
+# from a model's own reading of an issue thread (issue #566: five items
+# mislabelled `needs_refinement` in one cycle, each naming a dependency issue
+# number that had already closed, because the entry's own prose — "blocked
+# on #410 (closed …)", never the raw `Blocked-by:` line itself — reasoned
+# past what the Script had already checked live).
+#
+# Prints nothing and returns 0 when ENTRY may be recorded ordinarily. Prints
+# a one-line reason and returns 1 when it must be refused instead — the same
+# calling convention as `refinement_entry_problem` in lib/refinement.sh, so a
+# caller can chain both bars the same way.
+#
+# Refusal requires all three:
+#   - ENTRY's `source` is (or defaults to, requirement 16a) `"issues"` — the
+#     `Blocked-by:` convention is documented for issue threads only.
+#   - ENTRY's own item's thread, read from ISSUES_BY_REPO_JSON, names at least
+#     one `Blocked-by:` reference (`dependency_refs`, the same parser
+#     `dependency_clearances` reads — never re-derived here, on the fix's own
+#     "the gate is already computed" terms). The thread is reachable at all
+#     only when `scripts/gather-issues.sh`'s live check this same cycle found
+#     every one of its references already resolved (the same proof
+#     `dependency_clearances` above reads: an item with an unresolved
+#     reference is dropped before it ever reaches this map, so being in it at
+#     all *is* the resolved verdict) — an item this cycle never gathered, or
+#     whose thread names no dependency at all, decides nothing here, on the
+#     same "unknown is never gone" terms `dependency_clearances` observes.
+#   - ENTRY's own `reason`/`missing`/`evidence` names that *same* reference by
+#     number — a genuine `#410` token, or the cross-repo slug verbatim, not
+#     merely the digits in passing. Deliberately not "cites a `Blocked-by:`
+#     line": the Co-Ordinator's own fields are prose about the thread, not a
+#     copy of it, so the check reads what the report actually asserts rather
+#     than demanding it echo the convention's exact keyword. An entry naming
+#     no reference the thread's own resolved list carries — a report that
+#     fails to rank, or is under-specified, for some unrelated reason — is
+#     untouched: this refuses only the specific, false, dependency claim,
+#     never the judgement half.
+#
+# ISSUES_BY_REPO_JSON is `agent-cycle.sh`'s own `issues_by_repo_json`
+# (`{"owner/repo": {"196": {"body": …, "comments": […]}}}`), computed once
+# per cycle from this cycle's freshly gathered `issues` candidates — reused
+# here exactly as `dependency_clearances` reuses it, never a second `gh`
+# read.
+dependency_refusal_reason() {
+  local entry="$1" issues_by_repo="${2:-{\}}" source repo item thread_text \
+        thread_refs entry_text ref matched=""
+  source="$(jq -r '.source // "issues"' <<<"$entry" 2>/dev/null || echo issues)"
+  [[ "$source" == "issues" ]] || return 0
+  repo="$(jq -r '.repo // ""' <<<"$entry" 2>/dev/null || true)"
+  item="$(jq -r '(.item // "") | tostring' <<<"$entry" 2>/dev/null || true)"
+  [[ -n "$repo" && "$item" =~ ^[0-9]+$ ]] || return 0
+  thread_text="$(jq -r --arg r "$repo" --arg i "$item" '
+    ((.[$r] // {})[$i]) as $e
+    | if $e == null then ""
+      else ([($e.body // "")] + (($e.comments // []) | map(.body // "")) | join("\n"))
+      end' <<<"$issues_by_repo" 2>/dev/null || true)"
+  [[ -n "$thread_text" ]] || return 0
+  thread_refs="$(dependency_refs "$thread_text")"
+  [[ "$(jq 'length' <<<"$thread_refs" 2>/dev/null || echo 0)" != "0" ]] || return 0
+  entry_text="$(jq -r '[(.reason // ""), (.missing // ""), (.evidence // "")] | join("\n")' \
+    <<<"$entry" 2>/dev/null || true)"
+  while IFS= read -r ref; do
+    [[ -n "$ref" ]] || continue
+    if [[ "$ref" == */* ]]; then
+      [[ "$entry_text" == *"$ref"* ]] && { matched="$ref"; break; }
+    elif grep -qE "(^|[^0-9])#${ref}([^0-9]|\$)" <<<"$entry_text" 2>/dev/null; then
+      matched="#$ref"
+      break
+    fi
+  done < <(jq -r '.[]' <<<"$thread_refs" 2>/dev/null || true)
+  [[ -n "$matched" ]] || return 0
+  printf 'names the same dependency (%s) this cycle'"'"'s own gate already resolved for %s#%s — exclusion 4 belongs to the Script, never re-derived from the thread' \
+    "$matched" "$repo" "$item"
+  return 1
+}

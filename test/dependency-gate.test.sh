@@ -4,7 +4,7 @@
 # structured `Blocked-by:` convention, held and released by code, never by a
 # model re-reading prose.
 #
-# Three things are asserted:
+# Four things are asserted:
 #
 #   - `dependency_refs` parses the convention correctly: same-repo and
 #     cross-repo references, several on one comma-separated line, references
@@ -21,6 +21,12 @@
 #     `scripts/gather-issues.sh` alone, with no `attempt-failed` needed to do
 #     it; an issue *already* blocked clears, by both halves, within the one
 #     cycle its dependency resolves in — no model, no Enabler round.
+#   - `dependency_refusal_reason` (agent-ops#566) refuses a needs_refinement
+#     entry only when all three hold — source `"issues"`, the item present in
+#     this cycle's reshaped `issues` map, and the entry's own text citing a
+#     `Blocked-by:` reference — and passes every entry short of one of the
+#     three, so a genuine under-specification or question/discussion decline
+#     is never caught by it.
 #
 # No test framework is used (none exists elsewhere in this repo). Run
 # directly:
@@ -47,6 +53,17 @@ assert_eq() {
     printf 'ok   - %s\n' "$desc"
   else
     printf 'FAIL - %s\n     expected: %s\n     actual:   %s\n' "$desc" "$expected" "$actual"
+    failures=$(( failures + 1 ))
+  fi
+}
+
+assert_contains() {
+  local desc="$1" needle="$2" haystack="$3"
+  if [[ "$haystack" == *"$needle"* ]]; then
+    printf 'ok   - %s\n' "$desc"
+  else
+    printf 'FAIL - %s\n     expected to contain: %s\n     actual:             %s\n' \
+      "$desc" "$needle" "$haystack"
     failures=$(( failures + 1 ))
   fi
 }
@@ -110,6 +127,69 @@ assert_eq "a non-issue-shaped blocked item is never considered" \
 
 assert_eq "an empty blocked set clears nothing" \
   '0' "$(jq 'length' <<<"$(dependency_clearances '[]' "$resolved_map")")"
+
+# --- dependency_refusal_reason (agent-ops#566) ------------------------------
+#
+# The agent-ops#566 incident shape: an issue whose own thread still reads
+# `Blocked-by: #410` after #410 closed, present in this cycle's own
+# issues_by_repo_json map (proof gather-issues.sh already resolved it), and a
+# needs_refinement entry that quoted the stale line back as its reason.
+stale_dep_map='{"o/r":{"411":{"body":"Needs #410 first.\n\nBlocked-by: #410","comments":[]}}}'
+
+nr_566='{"repo":"o/r","item":"411","source":"issues","reason":"waiting on #410",
+         "missing":"nothing — #410 is still open","evidence":"issue body: Blocked-by: #410"}'
+refusal="$(dependency_refusal_reason "$nr_566" "$stale_dep_map")"
+refusal_rc=$?
+assert_eq "the #566-shaped entry is refused" "1" "$refusal_rc"
+assert_contains "the refusal names the resolved reference" "#410" "$refusal"
+
+# The source default (requirement 16a: an entry naming no source is "issues")
+# still refuses when the source key is simply absent.
+nr_566_no_source='{"repo":"o/r","item":"411","reason":"waiting on #410",
+                    "missing":"nothing","evidence":"Blocked-by: #410"}'
+dependency_refusal_reason "$nr_566_no_source" "$stale_dep_map" >/dev/null
+assert_eq "a missing source field still defaults to issues and refuses" "1" "$?"
+
+# A non-`issues` source is never refused on this bar, whatever its text says —
+# the convention is documented for issue threads only.
+nr_other_source='{"repo":"o/r","item":"411","source":"tech-debt","reason":"waiting on #410",
+                   "missing":"nothing","evidence":"Blocked-by: #410"}'
+dependency_refusal_reason "$nr_other_source" "$stale_dep_map" >/dev/null
+assert_eq "a non-issues source is never refused" "0" "$?"
+
+# An item this cycle's map does not carry decides nothing — "unknown is never
+# gone", the same rule dependency_clearances observes above.
+dependency_refusal_reason "$nr_566" "$absent_map" >/dev/null
+assert_eq "an item absent from this cycle's issues map is not refused" "0" "$?"
+
+# A genuine under-specification report on the very same, present item is
+# untouched: the judgement half must survive this bar intact.
+nr_genuine='{"repo":"o/r","item":"411","source":"issues","reason":"no acceptance criteria",
+             "missing":"what counts as done","evidence":"issue body has no criteria at all"}'
+dependency_refusal_reason "$nr_genuine" "$stale_dep_map" >/dev/null
+assert_eq "a genuine under-specification report on the same item is not refused" "0" "$?"
+
+# A superstring digit run is not a match — #4100 naming the resolved #410 is
+# a different issue, not a stale reference to this one.
+nr_superstring='{"repo":"o/r","item":"411","source":"issues","reason":"see #4100 for context",
+                 "missing":"nothing","evidence":"no acceptance criteria at all"}'
+dependency_refusal_reason "$nr_superstring" "$stale_dep_map" >/dev/null
+assert_eq "a superstring digit run does not falsely match the resolved reference" "0" "$?"
+
+# A cross-repo reference is matched on the slug verbatim, same as
+# dependency_refs itself keeps it whole.
+cross_repo_map='{"o/r":{"412":{"body":"Needs the other side.\n\nBlocked-by: owner/repo#42","comments":[]}}}'
+nr_cross='{"repo":"o/r","item":"412","source":"issues","reason":"waiting on owner/repo#42",
+           "missing":"nothing","evidence":"owner/repo#42 closed last week"}'
+dependency_refusal_reason "$nr_cross" "$cross_repo_map" >/dev/null
+assert_eq "a cross-repo reference named in the entry is refused" "1" "$?"
+
+# Malformed input never refuses (fail-open, same terms as dependency_refs and
+# dependency_clearances above).
+dependency_refusal_reason "not json" "$stale_dep_map" >/dev/null
+assert_eq "malformed entry JSON is not refused" "0" "$?"
+dependency_refusal_reason "$nr_566" "not json" >/dev/null
+assert_eq "malformed map JSON is not refused" "0" "$?"
 
 # --- End to end: the #196-199-shaped scenario, against a stubbed gh -------
 #

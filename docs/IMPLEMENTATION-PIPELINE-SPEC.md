@@ -5120,6 +5120,25 @@ implements.
       (requirement 14a), since a comment can block, close, re-scope, or
       answer an issue that its body alone would make look selectable.
 
+      **The dependency third is never the Co-Ordinator's to re-derive, and the
+      Script refuses it if offered anyway** (agent-ops#566). An issue reaching
+      the Co-Ordinator has, by requirement 3j's own construction, no unresolved
+      `Blocked-by:` reference — but a stale sentence can still sit in its
+      thread after the reference it named has closed, and a model reading that
+      thread can reach for the sentence rather than the fact that the item is
+      in front of it at all. Requirement 34e's recorder refuses a
+      `needs_refinement` entry, from any reporting stage, whose own
+      `reason`/`missing`/`evidence` names, by its issue number, the same
+      dependency this cycle's own dependency gate (requirement 34j) already
+      proves resolved for that item's thread: no block is recorded, no label
+      applied, no assignment made, and the refusal is logged — the item is
+      left exactly as unaccounted-for as if nothing had been reported
+      (requirement 3x), so it is not silently closed off by a report that
+      never engaged with it. The judgement half above is untouched by this: a
+      report declining an issue as a question or discussion, or for genuine
+      under-specification, names no such reference, so it is recorded exactly
+      as requirement 34e describes.
+
       **The assignee exclusion is a permanent, deliberate rule, not an
       incidental side effect** (agent-ops#447). It is load-bearing for the
       Enabler's escalation protocol: requirement 36a assigns every escalation
@@ -7105,7 +7124,7 @@ implements.
     version appearing for a skipped security finding — several cycles to settle
     the item before the expensive stage is bought.
 
-    Two entries are refused, both on the Script's side of the boundary:
+    Three entries are refused, all on the Script's side of the boundary:
     - **A malformed entry** — missing `repo`, `item`, `reason`, `missing` or
       `evidence`, judged on requirement 34d's emptiness discipline — is logged
       as a `warning` and dropped. The fields are what the Enabler starts from,
@@ -7117,6 +7136,22 @@ implements.
       item every cycle would push that clock forward hourly and the item would
       never become eligible — the identical silent starvation this path exists
       to end, wearing an event trail that looks like progress.
+    - **A `source: "issues"` entry whose own `reason`/`missing`/`evidence` cites
+      a `Blocked-by:` reference this cycle's dependency gate already resolved**
+      (`dependency_refusal_reason`, `lib/dependency-gate.sh`; requirement 16's
+      dependency third; agent-ops#566) is logged as a `warning` and dropped.
+      `issues_by_repo_json` — the same reshaped candidate map requirement 34j's
+      `dependency_clearances` already reads — is the proof: an item present in
+      it has, by `scripts/gather-issues.sh`'s own live check this cycle, no
+      unresolved reference left on its thread, so a report re-asserting one is
+      demonstrably false, never a second opinion worth recording. Reused
+      exactly as gathered — this refusal never issues a second `gh` read, and
+      never re-derives what the gate already computed. Scoped to the
+      dependency claim alone: the bar reads only whether the entry's own
+      fields name a reference that item's thread carries, so a
+      `source: "issues"` entry declining the item as a question or
+      discussion, or for any other under-specification, names none and is
+      recorded on the ordinary bar above.
 
     **The label is a projection, never the record.** Where (and only where) the
     item is a GitHub issue — the `issues` source, whose ref is a bare number —
@@ -12400,6 +12435,30 @@ pull request, run the ones the change touches and any it could regress.
    both halves clear within the one cycle the dependency resolved in, and
    that neither ever spent an Enabler engagement or a Co-Ordinator judgement
    doing it.
+8i-i. **A `needs_refinement` report re-asserting a resolved dependency is
+   refused, never recorded (requirement 16's dependency third; requirement
+   34e; agent-ops#566).** `test/dependency-gate.test.sh` passes:
+   `dependency_refusal_reason` refuses an entry only when all three hold — its
+   `source` is (or defaults to) `"issues"`, its item's own thread (read from the
+   `issues_by_repo_json`-shaped map handed in) names at least one `Blocked-by:`
+   reference, and its own `reason`/`missing`/`evidence` names that same
+   reference by number (a genuine `#410` token or the cross-repo slug verbatim,
+   never a mere substring of a different number) — and passes every entry
+   short of one of the three: a non-`issues` source, an item this cycle's map
+   does not carry or whose thread names no dependency at all, and a report
+   naming no reference the thread's own resolved list carries (a genuine
+   under-specification or a question/discussion decline). Then, driving
+   `record_needs_refinement_block` itself — lifted verbatim from
+   `agent-cycle.sh`, the same technique `test/refiner-verdicts.test.sh` uses —
+   `test/dependency-block-refusal.test.sh` passes: a report shaped like the
+   agent-ops#566 incident (an issue present in `issues_by_repo_json`, `evidence`
+   quoting its thread's own stale `Blocked-by:` line) is refused with a
+   `warning` naming the resolved reference, applies no label, makes no
+   assignment, and writes no `attempt-failed` at all — while the identical
+   report on an item absent from `issues_by_repo_json`, and a genuine
+   under-specification report on an item present in it, are both recorded
+   exactly as requirement 34e already describes, proving the refusal is scoped
+   to the false dependency claim and leaves the judgement half untouched.
 8j. **A corroborated void closes the GitHub object it names, exactly once
    (requirement 34k).** `test/close-void-github-items.test.sh` passes against
    a stubbed `gh`: an open issue or an open, obsolete pull request named by a
