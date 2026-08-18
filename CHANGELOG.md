@@ -8,6 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- An hourly, unattended `scripts/doctor.sh --unattended` pass (agent-ops#543),
+  on its own `deploy/docker/crontab.tmpl` line: the same Configuration and
+  GitHub checks an operator runs by hand, run unprompted, so a configuration
+  gap that only shows up against a live repository — a repository's
+  `Priority` field missing one of `Urgent`/`High`/`Medium`/`Low`, above all —
+  is no longer invisible on a node nobody happens to run the command on.
+  Skips only the two checks that spend (the Claude-credentials check and the
+  stream-flushing probe), each with its own reason, distinct from
+  `--offline`'s; the GitHub section runs in full, since every call there is a
+  GET. Its verdict — the summary, and every `warn`/`fail` line with a
+  timestamp — reaches the dashboard as a new **Doctor** section and a
+  page-top banner (red for a failure, amber for a warning), read from
+  `state_dir/.doctor-status.json` rather than recomputed on the dashboard's
+  own 5-minute heartbeat.
+
 - The autonomous-landing digest (D18 WI-8, agent-ops#411): a new
   **Autonomous landings** dashboard section reporting, over a rolling 24 h
   window, every pull request the Script landed without a human — when, which

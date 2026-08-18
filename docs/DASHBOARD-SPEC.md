@@ -438,7 +438,14 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
   status:  { running, lock:{pid,started_at,alive},          // THIS node's lock
              current:{stage,repo,item,source,title},
              last_cycle:{id,node,ended_at,outcome,repo,item,title},  // the FLEET's newest FINISHED
-             limit:{active,note}, switch:{…} },
+             limit:{active,note}, switch:{…},
+             doctor:{timestamp,verdict,fails[],warns[],skips} | null },
+                                    //   THIS node's most recent hourly
+                                    //   `doctor.sh --unattended` pass
+                                    //   (agent-ops#543), read from
+                                    //   state_dir/.doctor-status.json —
+                                    //   null until the first hourly pass
+                                    //   has run
   counts:  { cycles_shown, failures_shown, prs_reached_ready,   // fleet-wide
              spend_today_usd, spend_total_usd,
              by_day[], by_model[], by_actor[],   // both pipelines' actors;
@@ -698,7 +705,8 @@ followed by six links — README, the three pipeline specs, the metering
 schema, the roadmap — each opening the file at `blob/main/<path>` on GitHub
 in a new tab; no data behind it, so it renders identically on every load) +
 disabled / fleet-switch / usage-limit
-/ fleet-limit / failing-checks / dequeued-pr / gh-down / stale-peer banners
+/ fleet-limit / failing-checks / dequeued-pr / gh-down / stale-peer /
+doctor-fail / doctor-warn banners
 (the switch first: when it is set, every other quiet signal on the page
 is a consequence of it rather than news, and an operator reading them in the
 other order goes looking for a fault that isn't there);
@@ -865,6 +873,26 @@ Three things it will not hide, each a way a digest could mislead by omission:
   to `null` and renders as "could not be assembled this tick", explicitly
   distinguished from a quiet night. An empty array is a real and reportable
   nothing; `null` is an outage, and the two must never render alike.
+
+The **Doctor** panel (agent-ops#543) renders `status.doctor`: the most recent
+hourly `scripts/doctor.sh --unattended` pass on *this* node, read from
+`state_dir/.doctor-status.json` rather than recomputed — its GitHub section is
+too expensive to repeat on the dashboard's own 5-minute heartbeat, so a
+separate hourly `crontab.tmpl` line runs it and this Publisher just reads the
+result. One row per `fail`/`warn` line the pass printed, each carrying a
+level badge (`fail` red, `warn` amber) and the message verbatim, plus when the
+pass last ran; a clean pass says so instead of rendering an empty table, and
+no pass having run yet (a node whose image predates the flag, or one still on
+its first hour) says that too, rather than either looking identical to a
+clean pass. A `fail` or `warn` also raises its own page-top banner (naming the
+count and pointing at this section), the same way failing PR checks do —
+because, like those, a `warn` this pass leaves unclaimed the same way a
+misconfigured `Priority` field did before this existed is otherwise invisible
+between one operator-invoked `doctor.sh` and the next. Local to this node
+only: unlike the compose/image/switch verdicts the fleet heartbeat carries,
+nothing here replicates a peer's `status.doctor` to this page — a repository's
+configuration and this node's own GitHub access are this node's alone to
+report.
 
 The **Co-Ordinator verdict quality** panel renders
 `counts.coordinator_verdicts` (issue #319). Implementation spec 3t
@@ -1099,6 +1127,15 @@ number's twins elsewhere on the page.
   `lib/compose-drift.sh` a real network round trip sits behind it — one this
   Publisher's 5-second tick cannot pay on every run. `IMAGE_DRIFT_CURL_CMD`
   is the test seam, following `DASHBOARD_GH_CMD`.
+- `scripts/doctor.sh --unattended` (agent-ops#543, `docs/IMPLEMENTATION-PIPELINE-SPEC.md`
+  requirement 2.6a) — not read live by this Publisher, unlike
+  `lib/compose-drift.sh`/`lib/image-drift.sh` above: its GitHub section costs
+  several calls per configured repository, too much for a 5-minute
+  heartbeat, so it runs on its own hourly `crontab.tmpl` line instead and
+  writes `<state_dir>/.doctor-status.json`
+  (`{timestamp, verdict, fails[], warns[], skips}`). This Publisher reads
+  that file verbatim into `status.doctor`; `null` until the first hourly
+  pass has run. Local to this node only — nothing replicates it to peers.
 - `scripts/publish-dashboard-launcher.sh` — the sub-minute heartbeat driver
   (cron runs it every 5 min; it self-loops on 5-second boundaries).
 - `dashboard/index.html` — the page (committed source; copied beside the

@@ -143,6 +143,13 @@ queue_cache="$state_dir/.dashboard-queue.json"
 # same file: whichever of the two next crosses the cache's TTL pays the one
 # query and the other reads its answer off disk.
 image_cache="$state_dir/.image-drift-cache.json"
+# The hourly `doctor.sh --unattended` pass's own artefact (agent-ops#543),
+# read rather than recomputed: its GitHub section alone makes several calls
+# per configured repository, too much to repeat on this script's own 5-minute
+# heartbeat, so a separate crontab.tmpl line runs it once an hour and writes
+# this instead. `null` when no unattended pass has run yet on this node.
+doctor_status_file="$state_dir/.doctor-status.json"
+doctor_status_json="$(jq -c '.' "$doctor_status_file" 2>/dev/null || echo null)"
 mkdir -p "$out_dir"
 
 # Large JSON blobs (the cycles array carries full transcripts) are handed to jq
@@ -691,6 +698,7 @@ status_json="$(jq -n \
   --argjson running "$running_events" \
   --argjson limit_active "$limit_active" --arg limit_note "$limit_note" \
   --argjson switch "$switch_json" \
+  --argjson doctor "$doctor_status_json" \
   --slurpfile cyc "$cycles_file" '
   ($cyc[0] | map(select(.dry_run|not))) as $real
   # (Comments in this program carry no apostrophes: it is a single-quoted shell
@@ -747,7 +755,8 @@ status_json="$(jq -n \
       # first and the floor of the outcome ladder for the second.
       last_cycle: (($last_real // $last_any) | if . == null then null else {id, node, ended_at, outcome, repo, item, title} end),
       limit: {active: $limit_active, note: $limit_note},
-      switch: $switch
+      switch: $switch,
+      doctor: $doctor
     }')"
 
 # --- Counts / roll-ups (scan all recent transcripts for cost) ----------------

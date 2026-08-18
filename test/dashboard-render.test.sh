@@ -894,6 +894,38 @@ assert_contains "an unassembled digest says it could not be assembled" \
 assert_not_contains "  ... and never reads as a quiet night instead" \
   "Nothing landed autonomously" "$out"
 
+# --- doctor-*.json: the unattended pass's own status.doctor (agent-ops#543) --
+# status.doctor is THIS node's own most recent hourly `doctor.sh --unattended`
+# run, read from state_dir/.doctor-status.json rather than recomputed — null
+# until the first hourly pass has run. A `fail` earns a red page-top banner,
+# a `warn` an amber one, and both point at the Doctor section, which lists
+# every fail/warn line with its own level badge.
+out="$(render switch-scope-node.json)" || { printf 'FAIL - switch-scope-node.json did not render:\n%s\n' "$out"; exit 1; }
+assert_contains "no unattended pass yet says so, in the Doctor section" \
+  "No unattended doctor pass has run on this node yet." "$out"
+assert_not_contains "and raises no banner about it" \
+  "unattended doctor pass found" "$out"
+
+out="$(render doctor-fail.json)" || { printf 'FAIL - doctor-fail.json did not render:\n%s\n' "$out"; exit 1; }
+assert_contains "a fail verdict raises a red banner naming the count" \
+  "unattended doctor pass found 1 failure(s)" "$out"
+assert_contains "the Doctor section lists the failing line with a fail badge" \
+  "acme-org/target-repo is archived" "$out"
+assert_contains "  ... and the warning line too, alongside it" \
+  "Priority field is readable but is missing" "$out"
+
+out="$(render doctor-warn.json)" || { printf 'FAIL - doctor-warn.json did not render:\n%s\n' "$out"; exit 1; }
+assert_contains "a warn-only verdict raises an amber banner, not a red one" \
+  "unattended doctor pass found 1 warning(s)" "$out"
+assert_contains "the Doctor section lists the warning line" \
+  "no \"autonomous-agent\" label" "$out"
+
+out="$(render doctor-clean.json)" || { printf 'FAIL - doctor-clean.json did not render:\n%s\n' "$out"; exit 1; }
+assert_not_contains "a clean pass raises no banner at all" \
+  "unattended doctor pass found" "$out"
+assert_contains "and the Doctor section says so, with when it last ran" \
+  "No failures or warnings on the last unattended pass" "$out"
+
 printf '\n'
 if (( failures > 0 )); then
   printf '%d assertion(s) failed\n' "$failures"
