@@ -213,7 +213,7 @@ merge_budget_oldest_waiting() {
     <<<"$raw" 2>/dev/null || printf 'null'
 }
 
-# merge_budget_decide CONFIG_JSON SLUG PR_LABEL MERGED_LOGIN [NOW_ISO]
+# merge_budget_decide CONFIG_JSON SLUG PR_LABEL MERGED_LOGIN [NOW_ISO] [ALREADY_ARMED]
 # One JSON object — `{decision, cap, count, anomaly, waiting_backlog}` —
 # combining `merge_budget_effective_cap` and `merge_budget_window_status`:
 #
@@ -223,8 +223,8 @@ merge_budget_oldest_waiting() {
 #   - the window unreadable or truncated → `{"decision":"refuse", "cap":
 #     <cap>, "count":null, "anomaly":false, "waiting_backlog":null}` — an
 #     uncountable spend must never read as clearance to land.
-#   - `count < cap` → `arm`.
-#   - `count >= cap` → `hold`, with `waiting_backlog` filled from
+#   - `count + ALREADY_ARMED < cap` → `arm`.
+#   - otherwise → `hold`, with `waiting_backlog` filled from
 #     `merge_budget_oldest_waiting`. Not `arm`: a full budget approves a
 #     pull request's *content* through the ordinary review path, never its
 #     landing.
@@ -232,13 +232,26 @@ merge_budget_oldest_waiting() {
 #     function only reports; `merge_budget_apply_decision` is what acts on
 #     it (freeze and escalate).
 #
+# ALREADY_ARMED (default 0; PR #557 review of TD-PPagop-26081701) is how many
+# pull requests this same pass has *already* armed but that GitHub's own
+# merged-PR record — what `merge_budget_window_status` counts — cannot see
+# yet: enqueuing or auto-merging does not merge synchronously, so a caller
+# offering more than one candidate to this function inside one pass (the 2.1e
+# landing-retry sweep, `_landing_retry_sweep_repo`) must fold its own running
+# tally in itself, or every candidate in the pass reads the same
+# not-yet-merged `count` and all of them arm. ALREADY_ARMED only ever tightens
+# the `arm`/`hold` boundary — the `count` and `anomaly` this function reports
+# stay exactly what `merge_budget_window_status` read, because `anomaly` must
+# describe a real overshoot GitHub's own record confirms, never this pass's
+# own caution about pull requests that have not landed yet.
+#
 # Pure but for its two reads (the window count, the backlog listing): no log
 # events, no freeze writes. `merge_budget_apply_decision` below is the
 # caller that turns this into log events and (on an anomaly) a freeze and an
 # escalation issue — kept separate so this function stays trivially callable
 # from a test with no `log_event`/`gh issue create` to stub.
 merge_budget_decide() {
-  local config_json="$1" slug="$2" pr_label="$3" merged_login="$4" now_iso="${5:-}"
+  local config_json="$1" slug="$2" pr_label="$3" merged_login="$4" now_iso="${5:-}" already_armed="${6:-0}"
   local cap
   cap="$(merge_budget_effective_cap "$config_json" "$slug")"
   if [[ "$cap" == "0" ]]; then
@@ -254,7 +267,7 @@ merge_budget_decide() {
       '{decision:"refuse", cap:$cap, count:null, anomaly:false, waiting_backlog:null}'
     return 0
   fi
-  if (( count < cap )); then
+  if (( count + already_armed < cap )); then
     jq -nc --argjson cap "$cap" --argjson count "$count" \
       '{decision:"arm", cap:$cap, count:$count, anomaly:false, waiting_backlog:null}'
     return 0

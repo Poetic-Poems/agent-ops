@@ -187,7 +187,10 @@ _handoff_blocking_reviewers() {
   return 0
 }
 
-merge_budget_decide() { printf '{"decision":"%s","cap":8,"count":8,"anomaly":false,"waiting_backlog":null}' "$BUDGET"; }
+merge_budget_decide() {
+  printf '%s\n' "$*" >>"$T/budget_decide_args"
+  printf '{"decision":"%s","cap":8,"count":8,"anomaly":false,"waiting_backlog":null}' "$BUDGET"
+}
 merge_budget_apply_decision() { printf '%s\n' "$1" >>"$T/budget_applied"; }
 
 merge_queue_probe() {
@@ -218,6 +221,14 @@ HARNESS
   # Reached only if the stage returned rather than aborting the cycle — the
   # difference this file exists to pin (see header).
   printf '%s\n' 'printf "stage-returned\n" >>"$T/reached"'
+  # `_landing_stage_attempt_armed` (PR #557 review of TD-PPagop-26081701) is
+  # the one global a caller of `_landing_stage_attempt` reads to grow its own
+  # ALREADY_ARMED tally — recorded here so a test can pin it directly. Read
+  # with a `:-0` default: gate 0 above can return without ever calling
+  # `_landing_stage_attempt`, which never sets the global at all, and this
+  # harness runs under the same `errexit`/`nounset` agent-cycle.sh itself
+  # does.
+  printf '%s\n' 'printf "%s" "${_landing_stage_attempt_armed:-0}" >"$T/armed_flag"'
 } >>"$tmp_dir/harness.sh"
 
 URL="https://github.com/Poetic-Poems/agent-ops/pull/512"
@@ -229,7 +240,7 @@ URL="https://github.com/Poetic-Poems/agent-ops/pull/512"
 run_case() {
   : >"$tmp_dir/events"; : >"$tmp_dir/arms"; : >"$tmp_dir/budget_applied"
   : >"$tmp_dir/reached"; : >"$tmp_dir/eligible_args"; : >"$tmp_dir/standing_args"
-  : >"$tmp_dir/mal_calls"
+  : >"$tmp_dir/mal_calls"; : >"$tmp_dir/budget_decide_args"; rm -f "$tmp_dir/armed_flag"
   rm -rf "${tmp_dir:?}/state"
   env -i PATH="$PATH" HOME="$HOME" \
     T="$tmp_dir" SCRIPT_DIR="$SCRIPT_DIR" PR_URL="$URL" COMPLEXITY="medium" \
@@ -248,6 +259,8 @@ reached() { [[ -s "$tmp_dir/reached" ]] && printf 'yes' || printf 'no'; }
 count() { local f="$tmp_dir/$1"; [[ -s "$f" ]] && wc -l <"$f" | tr -d ' ' || printf '0'; }
 event_of() { grep -m1 "^$1"$'\t' "$tmp_dir/events" | cut -f2- || true; }
 refusal() { jq -r '.reason' <<<"$(event_of landing-refused)" 2>/dev/null || true; }
+budget_decide_args() { cat "$tmp_dir/budget_decide_args" 2>/dev/null || true; }
+armed_flag() { cat "$tmp_dir/armed_flag" 2>/dev/null || true; }
 
 # --- The happy path: one landing-armed, naming the method --------------------
 
@@ -260,6 +273,9 @@ assert_eq "  ... logs exactly one event" "1" "$(count events)"
 assert_eq "  ... a landing-armed" '"enqueued"' "$(jq -c '.method' <<<"$(event_of landing-armed)")"
 assert_eq "  ... naming the source" '"tech-debt"' "$(jq -c '.source' <<<"$(event_of landing-armed)")"
 assert_eq "  ... and the complexity it was armed at" '"medium"' "$(jq -c '.complexity' <<<"$(event_of landing-armed)")"
+assert_eq "  ... and marks _landing_stage_attempt_armed for its caller" "1" "$(armed_flag)"
+assert_eq "  ... gate 0's own call site passes no ALREADY_ARMED, so merge_budget_decide sees 0" \
+  "0" "$(budget_decide_args | awk '{print $NF}')"
 
 rc="$(run_case ARM_METHOD="auto-merge")"
 assert_eq "the method landing_arm actually used is what is logged" \
@@ -274,6 +290,7 @@ for v in refuse "" land; do
   assert_eq "a verdict of '${v:-none}' arms nothing" "0" "$(count arms)"
   assert_eq "  ... and logs nothing at all" "0" "$(count events)"
   assert_eq "  ... returning 0" "0" "$rc"
+  assert_eq "  ... never reaching _landing_stage_attempt at all" "0" "$(armed_flag)"
 done
 
 rc="$(run_case ADJUDICATING="1")"
@@ -387,6 +404,7 @@ for decision in hold refuse; do
   assert_eq "  ... and applies the decision (its own event, not landing-refused)" \
     "1" "$(count budget_applied)"
   assert_eq "  ... returning 0" "0" "$rc"
+  assert_eq "  ... and never marks _landing_stage_attempt_armed" "0" "$(armed_flag)"
 done
 
 # --- Gate 6: the merge queue -------------------------------------------------
@@ -457,10 +475,11 @@ assert_eq "the ordinary path's landing-armed carries no retry field" \
 # gate 0's own entry point, which has no RETRY argument to pass through.
 run_case_direct() {
   : >"$tmp_dir/events"; : >"$tmp_dir/arms"; : >"$tmp_dir/budget_applied"
+  : >"$tmp_dir/budget_decide_args"; rm -f "$tmp_dir/armed_flag"
   env -i PATH="$PATH" HOME="$HOME" \
     T="$tmp_dir" SCRIPT_DIR="$SCRIPT_DIR" PR_URL="$URL" COMPLEXITY="medium" \
     LEVEL="agent-merges-routine" ELIGIBLE="eligible" GATE_WORD="clean" GATE_REASON="" GATE_RC="0" \
-    STANDING="APPROVED" BUDGET="arm" QUEUED="false" ARM_METHOD="enqueued" \
+    STANDING="APPROVED" BUDGET="arm" QUEUED="false" ARM_METHOD="enqueued" ALREADY_ARMED="0" \
     "$@" \
     bash -c '
       set -euo pipefail
@@ -477,14 +496,18 @@ run_case_direct() {
       approver_token_identity_login() { printf "pullwright-approver[bot]"; }
       landing_approver_standing_review() { printf "%s" "${STANDING:-}"; return "${STANDING_RC:-0}"; }
       _handoff_blocking_reviewers() { return 0; }
-      merge_budget_decide() { printf "{\"decision\":\"%s\",\"cap\":8,\"count\":8,\"anomaly\":false,\"waiting_backlog\":null}" "$BUDGET"; }
+      merge_budget_decide() {
+        printf "%s\n" "$*" >>"$T/budget_decide_args"
+        printf "{\"decision\":\"%s\",\"cap\":8,\"count\":8,\"anomaly\":false,\"waiting_backlog\":null}" "$BUDGET"
+      }
       merge_budget_apply_decision() { printf "%s\n" "$1" >>"$T/budget_applied"; }
       merge_queue_probe() { printf "{\"queued\":%s}" "${QUEUED:-false}"; }
       approver_token_get() { printf "a-minted-token"; }
       landing_arm() { printf "slug=%s\tnumber=%s\ttoken=%s\n" "$1" "$2" "$3" >>"$T/arms"; printf "%s" "${ARM_METHOD-enqueued}"; }
       '"$refuse_block"'
       '"$stage_block"'
-      _landing_stage_attempt "$selected_repo" "$PR_URL" "$COMPLEXITY" "$selected_source" "$gate_default_branch" "retry"
+      _landing_stage_attempt "$selected_repo" "$PR_URL" "$COMPLEXITY" "$selected_source" "$gate_default_branch" "retry" "$ALREADY_ARMED"
+      printf "%s" "$_landing_stage_attempt_armed" >"$T/armed_flag"
     ' >"$tmp_dir/stdout2" 2>"$tmp_dir/stderr2"
   printf '%s' "$?"
 }
@@ -494,11 +517,27 @@ assert_eq "a direct retry attempt still arms an eligible, cleared PR" "0" "$rc"
 assert_eq "  ... exactly once" "1" "$(count arms)"
 assert_eq "  ... and marks the landing-armed event retry:true" \
   "true" "$(jq -c '.retry' <<<"$(event_of landing-armed)")"
+assert_eq "  ... with no ALREADY_ARMED passed, merge_budget_decide sees 0" \
+  "0" "$(budget_decide_args | awk '{print $NF}')"
+assert_eq "  ... and marks _landing_stage_attempt_armed" "1" "$(armed_flag)"
 
 rc="$(run_case_direct ELIGIBLE="ineligible:complexity is high, not low or medium")"
 assert_eq "a retry attempt never arms complexity:high" "0" "$(count arms)"
 assert_eq "  ... and marks the landing-refused event retry:true" \
   "true" "$(jq -c '.retry' <<<"$(event_of landing-refused)")"
+assert_eq "  ... and never marks _landing_stage_attempt_armed" "0" "$(armed_flag)"
+
+# --- ALREADY_ARMED is forwarded to merge_budget_decide verbatim (PR #557) ---
+# TD-PPagop-26081701: the landing-retry sweep's own running per-pass tally —
+# `_landing_retry_sweep_repo`'s `armed_this_pass` — reaches `merge_budget_decide`
+# through this one parameter, so a candidate offered later in the same pass is
+# judged against a budget that already accounts for what this pass itself has
+# armed, not just what GitHub's own (necessarily lagging) merged-PR count shows.
+
+rc="$(run_case_direct ALREADY_ARMED="5")"
+assert_eq "a non-zero ALREADY_ARMED reaches merge_budget_decide as its own argument" \
+  "5" "$(budget_decide_args | awk '{print $NF}')"
+assert_eq "  ... and still arms when the stubbed decision itself says arm" "0" "$rc"
 
 # --- Result -------------------------------------------------------------------
 

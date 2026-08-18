@@ -50,7 +50,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `landing_eligible` rather than a second copy of it, so a protected-path
   hit, a `complexity:high` pull request, or a source outside the routine
   list is never armed here either. `landing-armed`/`landing-refused` events
-  from the sweep carry `retry: true`.
+  from the sweep carry `retry: true`. Bounded to `merge_budget_per_day` arms
+  per repository per pass: `merge_budget_decide` (`lib/merge-budget.sh`)
+  discounts a running same-pass tally from the live merged-PR count, since
+  GitHub's own record only shows a pull request as merged once the merge has
+  actually landed, never the moment this sweep arms it — without the bound,
+  every stranded candidate in one pass read the same not-yet-merged count and
+  all of them armed regardless of the cap.
 
 - The deterministic eligibility classifier and the arming/enqueue step (D18
   WI-7, requirement 8d; agent-ops#410): at `merge_autonomy: agent-merges-routine`

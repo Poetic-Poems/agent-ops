@@ -12,7 +12,12 @@
 # `landing_retry_source` lookup that resolves the one gate this sweep cannot
 # re-read fresh from GitHub. `_landing_stage_attempt` itself is stubbed here
 # — this file is about what is offered to it, never about what it does with
-# an offer.
+# an offer — except for its own `_landing_stage_attempt_armed` global, which
+# the stub sets on cue so this file can also pin the per-pass merge-budget
+# bound: `armed_this_pass`, threaded through as `_landing_stage_attempt`'s own
+# ALREADY_ARMED argument, must grow by exactly one after each candidate the
+# stub reports as armed and stay put after one it reports as refused (PR #557
+# review of TD-PPagop-26081701).
 #
 # `_landing_retry_sweep_repo` is lifted verbatim out of agent-cycle.sh, the
 # same technique test/landing-wiring.test.sh and its siblings use, so the
@@ -126,8 +131,19 @@ landing_retry_source() {
 }
 
 _landing_stage_attempt() {
-  printf 'slug=%s\tpr_url=%s\tcomplexity=%s\tsource=%s\tdefault_branch=%s\tretry=%s\n' \
-    "$1" "$2" "$3" "$4" "$5" "${6:-}" >>"$T/attempts"
+  local pr_url="$2" already_armed="${7:-0}" num="${2##*/}" armvar
+  printf 'slug=%s\tpr_url=%s\tcomplexity=%s\tsource=%s\tdefault_branch=%s\tretry=%s\talready_armed=%s\n' \
+    "$1" "$2" "$3" "$4" "$5" "${6:-}" "$already_armed" >>"$T/attempts"
+  # Simulates an arm/refusal outcome per candidate, steered by ARM_<number>
+  # (mirroring STANDING_<number> above), so a test can pin how the caller's
+  # own running tally (`armed_this_pass`) grows across a pass — PR #557
+  # review of TD-PPagop-26081701.
+  armvar="ARM_$num"
+  if [[ "${!armvar:-0}" == "1" ]]; then
+    _landing_stage_attempt_armed=1
+  else
+    _landing_stage_attempt_armed=0
+  fi
 }
 
 HARNESS
@@ -231,6 +247,35 @@ assert_contains "an unreadable default branch falls back to main" \
 rc="$(run_case PR_LIST_JSON="$open_list" STANDING_1="APPROVED" SOURCE_td_TD_1="tech-debt" DEFAULT_BRANCH="trunk")"
 assert_contains "the repository's own default branch, read fresh, is what is passed through" \
   "default_branch=trunk" "$(attempts)"
+
+# --- The per-pass merge-budget bound (PR #557 review of TD-PPagop-26081701) --
+# Three eligible candidates offered in one pass: each `_landing_stage_attempt`
+# call must carry this pass's own running arm count so far, never a stale 0
+# every time — the defect that let an unbounded pass arm every stranded pull
+# request in one go regardless of `merge_budget_per_day`.
+
+multi_list="$(jq -sc '.' <(
+  pr_open 11 "https://github.com/acme/widgets/pull/11" "td/TD-11" false "complexity:low"
+  pr_open 12 "https://github.com/acme/widgets/pull/12" "td/TD-12" false "complexity:medium"
+  pr_open 13 "https://github.com/acme/widgets/pull/13" "td/TD-13" false "complexity:low"
+))"
+
+already_armed_seq() { attempts | grep -o 'already_armed=[0-9]*' | cut -d= -f2 | paste -sd, -; }
+
+rc="$(run_case PR_LIST_JSON="$multi_list" \
+  STANDING_11="APPROVED" STANDING_12="APPROVED" STANDING_13="APPROVED" \
+  SOURCE_td_TD_11="tech-debt" SOURCE_td_TD_12="tech-debt" SOURCE_td_TD_13="tech-debt" \
+  ARM_11="1" ARM_12="1" ARM_13="1")"
+assert_eq "all three eligible candidates are offered" "3" "$(count_attempts)"
+assert_eq "  ... and the tally grows by one after each arm: 0, then 1, then 2" \
+  "0,1,2" "$(already_armed_seq)"
+
+rc="$(run_case PR_LIST_JSON="$multi_list" \
+  STANDING_11="APPROVED" STANDING_12="APPROVED" STANDING_13="APPROVED" \
+  SOURCE_td_TD_11="tech-debt" SOURCE_td_TD_12="tech-debt" SOURCE_td_TD_13="tech-debt" \
+  ARM_11="1" ARM_13="1")"
+assert_eq "a candidate that does not arm (#12) never grows the tally" \
+  "0,1,1" "$(already_armed_seq)"
 
 # --- Result -------------------------------------------------------------------
 

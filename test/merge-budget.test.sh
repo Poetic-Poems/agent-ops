@@ -15,7 +15,11 @@
 #   - merge_budget_decide's four outcomes: cap 0 arms with no count
 #     attempted at all; an unreadable or truncated window refuses; under cap
 #     arms; at or over cap holds, with the oldest waiting pull request
-#     attached; over cap also flags the anomaly.
+#     attached; over cap also flags the anomaly. Its own ALREADY_ARMED
+#     argument (PR #557 review of TD-PPagop-26081701) folds a caller's
+#     running same-pass tally into the arm/hold boundary without touching the
+#     `count`/`anomaly` it reports, which stay tied to the real merged-PR
+#     read alone.
 #   - merge_budget_apply_decision's write side: a hold logs merge-budget-hold
 #     with the backlog; a refuse logs a warning; an anomaly freezes the repo
 #     and files (and dedups) an escalation issue against the repo itself,
@@ -380,6 +384,29 @@ decision="$(merge_budget_decide "$over_cfg" "acme/widgets" "$label" "pullwright-
 assert_eq "count over cap holds and flags the anomaly" \
   '{"decision":"hold","cap":1,"count":2,"anomaly":true,"waiting_backlog":{"number":21,"url":"https://github.com/acme/widgets/pull/21","created_at":"2026-08-14T00:00:00Z"}}' \
   "$decision"
+
+# --- merge_budget_decide's ALREADY_ARMED argument (PR #557 review) -----------
+# acme/widgets counts 2 genuinely merged pull requests (above); under_cfg's
+# cap is 5, so ordinarily 3 more could arm.
+
+decision="$(merge_budget_decide "$under_cfg" "acme/widgets" "$label" "pullwright-approver[bot]" "$now" "2")"
+assert_eq "already_armed=2 still leaves one slot (2+2<5) and arms" \
+  '{"decision":"arm","cap":5,"count":2,"anomaly":false,"waiting_backlog":null}' "$decision"
+
+decision="$(merge_budget_decide "$under_cfg" "acme/widgets" "$label" "pullwright-approver[bot]" "$now" "3")"
+assert_eq "already_armed=3 exhausts the cap (2+3>=5) and holds, never arming a 4th" \
+  '{"decision":"hold","cap":5,"count":2,"anomaly":false,"waiting_backlog":{"number":21,"url":"https://github.com/acme/widgets/pull/21","created_at":"2026-08-14T00:00:00Z"}}' \
+  "$decision"
+
+decision="$(merge_budget_decide "$under_cfg" "acme/widgets" "$label" "pullwright-approver[bot]" "$now" "30")"
+assert_eq "a large already_armed still reports the real merged count, never inflated" \
+  '"count":2' "$(grep -o '"count":2' <<<"$decision")"
+assert_eq "  ... and never flags an anomaly on the strength of this pass's own caution alone" \
+  '"anomaly":false' "$(grep -o '"anomaly":false' <<<"$decision")"
+
+decision="$(merge_budget_decide "$zero_cfg" "acme/never-called" "$label" "pullwright-approver[bot]" "$now" "999")"
+assert_eq "cap 0 (unlimited) ignores already_armed entirely — still no gh call" \
+  '{"decision":"arm","cap":0,"count":null,"anomaly":false,"waiting_backlog":null}' "$decision"
 
 # --- merge_budget_freeze_state / _set / _clear ---
 

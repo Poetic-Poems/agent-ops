@@ -3894,7 +3894,7 @@ run_landing_stage() {
   _landing_stage_attempt "$selected_repo" "$pr_url" "$complexity" "$selected_source" "$gate_default_branch"
 }
 
-# _landing_stage_attempt SLUG PR_URL COMPLEXITY SOURCE DEFAULT_BRANCH [RETRY]
+# _landing_stage_attempt SLUG PR_URL COMPLEXITY SOURCE DEFAULT_BRANCH [RETRY] [ALREADY_ARMED]
 # The six re-read-fresh gates the arming step re-reads before landing a pull
 # request — extracted out of `run_landing_stage` (TD-PPagop-26081701) so the
 # 2.1e landing-retry sweep can reuse the identical, single-source-of-truth
@@ -3906,7 +3906,18 @@ run_landing_stage() {
 # work-order source and a default branch none of those globals carry this
 # cycle. RETRY, when non-empty, is threaded through to `_landing_refuse` and
 # the final `landing-armed` log as `retry: true` — see that function's own
-# header.
+# header. ALREADY_ARMED (default 0; PR #557 review of TD-PPagop-26081701) is
+# forwarded to `merge_budget_decide` verbatim (gate 5 below) — how many pull
+# requests this same caller has already armed earlier in this pass, and
+# therefore how far this candidate's own live budget read must be discounted
+# before it can arm another; see `_landing_retry_sweep_repo`, the only caller
+# that ever passes a non-zero value, for why a single fresh read per candidate
+# cannot answer that on its own. Sets the global `_landing_stage_attempt_armed`
+# to `1` immediately after a successful arm and to `0` at every other return
+# (including every refusal) — the one signal a caller can use to grow its own
+# running ALREADY_ARMED count for the next candidate, since this function's
+# own exit status stays `0` on every path (a refusal costs a `landing-refused`
+# event, never a non-zero return) and cannot carry that.
 #
 # Everything below is re-read fresh from GitHub, the discipline
 # `lib/review-gate.sh` established, because nothing this stage arms may
@@ -3948,8 +3959,9 @@ run_landing_stage() {
 # and the claim release, and nothing here can affect either; a retry attempt
 # runs long after both, against a pull request already sitting `pr-ready`.
 _landing_stage_attempt() {
-  local slug="$1" pr_url="$2" complexity="$3" source="$4" default_branch="${5:-main}" retry="${6:-}"
+  local slug="$1" pr_url="$2" complexity="$3" source="$4" default_branch="${5:-main}" retry="${6:-}" already_armed="${7:-0}"
   local number level
+  _landing_stage_attempt_armed=0
 
   if [[ "$pr_url" =~ /pull/([0-9]+)$ ]]; then
     number="${BASH_REMATCH[1]}"
@@ -4026,7 +4038,7 @@ _landing_stage_attempt() {
   fi
 
   local budget_json budget_decision
-  budget_json="$(merge_budget_decide "$DEFAULTED_CONFIG" "$slug" "$pr_label" "$login")"
+  budget_json="$(merge_budget_decide "$DEFAULTED_CONFIG" "$slug" "$pr_label" "$login" "" "$already_armed")"
   budget_decision="$(jq -r '.decision' <<<"$budget_json" 2>/dev/null)"
   if [[ "$budget_decision" != "arm" ]]; then
     merge_budget_apply_decision "$budget_json" "$slug" "$state_repo" "$enabler_escalation_label" "$enabler_assignee"
@@ -4070,6 +4082,7 @@ _landing_stage_attempt() {
   log_event "landing-armed" "$(jq -nc --arg u "$pr_url" --arg r "$slug" --arg src "$source" \
     --arg c "$complexity" --arg m "$method" --argjson retry "$retry_bool" \
     '{pr_url: $u, repo: $r, source: $src, complexity: $c, method: $m} + (if $retry then {retry: true} else {} end)')"
+  _landing_stage_attempt_armed=1
 }
 
 # _landing_retry_sweep_repo SLUG RETRY_LOGIN
@@ -4106,10 +4119,26 @@ _landing_stage_attempt() {
 #
 # Every remaining gate — level, eligibility, review, budget, queue, the arm
 # itself — is `_landing_stage_attempt`'s alone; this function never repeats
-# or second-guesses any of them.
+# or second-guesses any of them, with one exception it must carry itself
+# (PR #557 review of TD-PPagop-26081701): `merge_budget_decide`'s own count
+# is GitHub's *merged*-PR record, which a pull request this same pass just
+# armed does not join synchronously, so a naive per-candidate call would read
+# every candidate against the same stale count and arm all of them regardless
+# of the cap — 12 stranded approved pull requests each reading `count=0`
+# against `merge_budget_per_day: 8`, say, all twelve arming, and the *next*
+# cycle's own budget read then seeing 12 merged against a cap of 8 and
+# tripping the counting-anomaly freeze against an operator who did nothing
+# wrong. `armed_this_pass` below is this pass's own running tally of
+# candidates `_landing_stage_attempt` has actually armed so far (read off its
+# `_landing_stage_attempt_armed` global immediately after each call, the one
+# signal that function's own always-0 exit status cannot carry), threaded
+# through as `_landing_stage_attempt`'s ALREADY_ARMED argument so
+# `merge_budget_decide` discounts it from the live count on every subsequent
+# candidate in the same pass — the pass is bounded at exactly
+# `merge_budget_per_day` arms regardless of how many candidates it is offered.
 _landing_retry_sweep_repo() {
   local slug="$1" login="$2"
-  local level default_branch open
+  local level default_branch open armed_this_pass=0
 
   level="$(merge_autonomy_effective_level "$DEFAULTED_CONFIG" "$slug" "$state_repo" "$state_dir" fresh)"
   case "$level" in
@@ -4149,8 +4178,12 @@ _landing_retry_sweep_repo() {
     source="$(landing_retry_source "$slug" "$branch" "$union_log")"
     [[ -n "$source" ]] || continue
 
-    _landing_stage_attempt "$slug" "$pr_url" "$complexity" "$source" "$default_branch" "retry"
+    _landing_stage_attempt "$slug" "$pr_url" "$complexity" "$source" "$default_branch" "retry" "$armed_this_pass"
+    if (( _landing_stage_attempt_armed )); then
+      armed_this_pass=$(( armed_this_pass + 1 ))
+    fi
   done < <(jq -c '.[]' <<<"$candidates" 2>/dev/null || true)
+  return 0
 }
 
 # --- The Enabler's state for this cycle (requirements 35, 37) ---

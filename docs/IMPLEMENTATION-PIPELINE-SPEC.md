@@ -899,7 +899,7 @@ Nothing above re-attempts a held or refused pull request from *within* the
 round that held or refused it — a human merging it by hand, or a later
 round's own fresh Approver approval re-entering the arming step, are both
 still real paths. What closes the gap between those and never is the
-landing-retry sweep (requirement 2.1e, `_landing_stage_attempt`,
+landing-retry sweep (requirement 8u, `_landing_stage_attempt`,
 TD-PPagop-26081701): once per cycle, for every repository at
 `agent-merges-routine` or above, it re-enters the same six gates above —
 unchanged, not a second copy of them — for every open, non-draft pull request
@@ -4503,7 +4503,14 @@ implements.
       this call itself does not queue a retry of its own. The landing-retry
       sweep (requirement 8u, "## The Landing Gate") is what re-enters this
       whole gate sequence for such a pull request on a later cycle, rather
-      than this gate doing so itself.
+      than this gate doing so itself. `merge_budget_decide` reads an
+      ALREADY_ARMED count from its own caller and discounts it from the live
+      merged-PR count before comparing to the cap — GitHub's own record only
+      ever shows a pull request as merged once the merge has actually landed,
+      never the moment this gate arms its enqueue or auto-merge, so a single
+      pass offering more than one candidate to this gate must track its own
+      running tally itself or every candidate reads the same not-yet-merged
+      count and all of them arm (requirement 8u's own bound).
    6. `merge_queue_probe` (`lib/merge-queue.sh`) — the pull request must not
       already be queued. "Could not read" is "possibly queued" (the same
       rule the merge-queue-awareness discipline already applies elsewhere
@@ -13518,7 +13525,7 @@ pull request, run the ones the change touches and any it could regress.
     and `perl scripts/td-check.pl` are clean.
 8u. **A pull request the arming step already approved once, but could not
     land for a reason that can change without the pull request changing, is
-    re-armed without a human's click (requirement 2.1e, TD-PPagop-26081701).**
+    re-armed without a human's click (TD-PPagop-26081701).**
     Once per cycle, fleet-wide regardless of `--repo` and skipped on
     `--dry-run` (it can land a pull request), for every repository whose
     `merge_autonomy_effective_level` (a *fresh* read, issue #513) is
@@ -13548,6 +13555,27 @@ pull request, run the ones the change touches and any it could regress.
     true` so the fleet log (and any reader of it) can tell a sweep-driven
     landing apart from the round that first approved it.
 
+    **The sweep is bounded to `merge_budget_per_day` arms per repository per
+    pass** (PR #557 review): `_landing_retry_sweep_repo` keeps its own
+    running `armed_this_pass` tally, incremented each time
+    `_landing_stage_attempt` reports (via its own `_landing_stage_attempt_armed`
+    global) that a candidate actually armed, and passes that tally as
+    `_landing_stage_attempt`'s ALREADY_ARMED argument on every subsequent
+    candidate in the same pass. `merge_budget_decide` (requirement 2.3c)
+    discounts ALREADY_ARMED from the live merged-PR count before deciding
+    `arm` vs `hold`, because GitHub's own record only shows a pull request as
+    merged once the merge has actually landed, never the moment this sweep
+    arms its enqueue or auto-merge — without this, every candidate in one
+    pass reads the same not-yet-merged count and all of them arm regardless
+    of the cap, and the next cycle's own budget read then sees more merged
+    pull requests than the cap ever permitted and wrongly trips the
+    counting-anomaly freeze (`merge_budget_apply_decision`) against an
+    operator who did nothing wrong. ALREADY_ARMED only ever tightens the
+    `arm`/`hold` boundary; the `count` and `anomaly` `merge_budget_decide`
+    reports stay exactly what GitHub's own merged-PR record read, so a pass
+    that holds candidates back on its own running tally never reports a false
+    anomaly for doing so.
+
     `test/landing-wiring.test.sh` pins `_landing_stage_attempt`, called
     directly with a non-empty `RETRY` (bypassing `run_landing_stage`'s own
     gate 0, which a retry attempt has none of), still arms an eligible,
@@ -13572,7 +13600,19 @@ pull request, run the ones the change touches and any it could regress.
     `landing_retry_source` cannot resolve drops the candidate the same way;
     a truncated pull-request listing (`github_pr_list_truncated`) logs one
     `warning` naming the repository; and an unreadable default branch falls
-    back to `main` while a readable one is passed through unchanged.
+    back to `main` while a readable one is passed through unchanged. It also
+    pins the per-pass bound: across several eligible candidates in one pass,
+    the ALREADY_ARMED argument each successive `_landing_stage_attempt` call
+    receives is the stub's own running count of how many earlier candidates
+    in that same pass it reported as armed — `0` for the first, `1` for the
+    second once the first armed, and so on — never reset mid-pass and never
+    fed back from a candidate the stub reported as refused.
+    `test/merge-budget.test.sh` pins `merge_budget_decide`'s own half of the
+    bound directly: an ALREADY_ARMED count that pushes `count + ALREADY_ARMED`
+    to or past the cap holds rather than arms, while the `count` and
+    `anomaly` it reports stay exactly what the (unmodified) merged-PR count
+    read — an ALREADY_ARMED-driven hold never reports `anomaly: true` on its
+    own.
 
 ## Host provisioning (human steps)
 
