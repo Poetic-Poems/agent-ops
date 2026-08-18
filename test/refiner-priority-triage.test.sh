@@ -44,6 +44,8 @@ trap 'rm -rf "$tmp_dir"' EXIT
 
 # shellcheck source=lib/void-guard.sh
 . "$SCRIPT_DIR/lib/void-guard.sh"
+# shellcheck source=lib/dependency-gate.sh
+. "$SCRIPT_DIR/lib/dependency-gate.sh"
 # shellcheck source=lib/refinement.sh
 . "$SCRIPT_DIR/lib/refinement.sh"
 # ISSUE_PRIORITY_CACHE_DIR is set before sourcing lib/issue-priority.sh below
@@ -270,6 +272,8 @@ assert_eq "every band's option id resolves" "OPT_URGENT OPT_HIGH OPT_MEDIUM OPT_
   "$(jq -r '[.options.Urgent, .options.High, .options.Medium, .options.Low] | join(" ")' <<<"$field_json")"
 assert_eq "issue_priority_options_complete is true for all four" "0" \
   "$(issue_priority_options_complete "$field_json"; echo $?)"
+assert_eq "issue_priority_options_any is true for all four too" "0" \
+  "$(issue_priority_options_any "$field_json"; echo $?)"
 
 reset_b
 cat > "$tmp_dir/gh-b/fields-response.json" <<'EOF'
@@ -280,6 +284,21 @@ EOF
 incomplete_json="$(issue_priority_field_ids "o/case-fields-incomplete")"
 assert_eq "issue_priority_options_complete is false when a band is missing" "1" \
   "$(issue_priority_options_complete "$incomplete_json"; echo $?)"
+assert_eq "  ... but issue_priority_options_any is still true (one band present)" "0" \
+  "$(issue_priority_options_any "$incomplete_json"; echo $?)"
+
+reset_b
+cat > "$tmp_dir/gh-b/fields-response.json" <<'EOF'
+{"data":{"repository":{"issueFields":{"nodes":[
+  {"id":"IFSS_priority","name":"Priority","options":[
+    {"id":"OPT_P0","name":"P0"},{"id":"OPT_P1","name":"P1"}]}
+]}}}}
+EOF
+no_bands_json="$(issue_priority_field_ids "o/case-fields-no-bands")"
+assert_eq "issue_priority_options_complete is false when no band names are present" "1" \
+  "$(issue_priority_options_complete "$no_bands_json"; echo $?)"
+assert_eq "  ... and issue_priority_options_any is false too — the field is unbandable" "1" \
+  "$(issue_priority_options_any "$no_bands_json"; echo $?)"
 cat > "$tmp_dir/gh-b/fields-response.json" <<'EOF'
 {"data":{"repository":{"issueFields":{"nodes":[
   {"id":"IFSS_priority","name":"Priority","options":[
@@ -888,6 +907,42 @@ assert_eq "unrankable: no mutation reached gh" "0" \
   "$([[ -f "$gh_c/mutation-calls" ]] && wc -l < "$gh_c/mutation-calls" || echo 0)"
 
 # ----------------------------------------------------------------------------
+# (iiic) skipped-unrankable following a fallback (agent-ops#551): the skip
+# names the fallback band it actually evaluated, and `requested` still
+# travels through — a skip is the ratchet working, so still no warning.
+# ----------------------------------------------------------------------------
+cat > "$gh_c/fields-response.json" <<'EOF'
+{"data":{"repository":{"issueFields":{"nodes":[
+  {"id":"IFSS_priority","name":"Priority","options":[
+    {"id":"OPT_HIGH","name":"High"},{"id":"OPT_MEDIUM","name":"Medium"},
+    {"id":"OPT_LOW","name":"Low"}]}
+]}}}}
+EOF
+jq -nc '{node_id: "I_c55", issue_field_values: [{issue_field_name:"Priority", single_select_option:{name:"Critical"}}]}' \
+  > "$gh_c/current-response.json"
+verdicts='[{"repo":"o/r","item":"55","verdict":"refined","reason":"already specified",
+            "comments_posted":["https://github.com/o/r/issues/55#issuecomment-2c"],
+            "priority":"Urgent"}]'
+calls="$(run_case_c "unrankable after a fallback: requested still travels" "$issue_candidates_c" "$verdicts")"
+
+skip_evt="$(events_named "$calls" issue-prioritised-skipped | head -n1)"
+assert_eq "unrankable+fallback: issue-prioritised-skipped names the fallback band" "High" \
+  "$(jq -r '.priority' <<<"$skip_evt")"
+assert_eq "unrankable+fallback: ...and requested still names Urgent" "Urgent" \
+  "$(jq -r '.requested' <<<"$skip_evt")"
+assert_eq "unrankable+fallback: still no warning — this is the ratchet working, not failing" "0" \
+  "$(grep -c 'could not set Priority' <<<"$calls")"
+
+# Restore the ordinary complete field for the remaining cases below.
+cat > "$gh_c/fields-response.json" <<'EOF'
+{"data":{"repository":{"issueFields":{"nodes":[
+  {"id":"IFSS_priority","name":"Priority","options":[
+    {"id":"OPT_URGENT","name":"Urgent"},{"id":"OPT_HIGH","name":"High"},
+    {"id":"OPT_MEDIUM","name":"Medium"},{"id":"OPT_LOW","name":"Low"}]}
+]}}}}
+EOF
+
+# ----------------------------------------------------------------------------
 # (iv) a failed write: warning, but the refinement verdict is unaffected
 # ----------------------------------------------------------------------------
 jq -nc '{node_id: "I_c55", issue_field_values: []}' > "$gh_c/current-response.json"
@@ -904,6 +959,47 @@ assert_contains "write failure: a warning names the failed band write" \
   "could not set Priority on o/r#55 to High" "$calls"
 assert_eq "write failure: no issue-prioritised event" "0" \
   "$(grep -cE '^event issue-prioritised ' <<<"$calls")"
+assert_not_contains "write failure: no fallback here, so no 'asked for' clause" \
+  "the verdict asked for" "$calls"
+
+# ----------------------------------------------------------------------------
+# (ivb) a failed write following a fallback (agent-ops#551): the warning must
+# name both the band actually attempted (the fallback) and the band the
+# verdict asked for — naming the requested band alone would blame a write
+# that was never attempted.
+# ----------------------------------------------------------------------------
+cat > "$gh_c/fields-response.json" <<'EOF'
+{"data":{"repository":{"issueFields":{"nodes":[
+  {"id":"IFSS_priority","name":"Priority","options":[
+    {"id":"OPT_URGENT","name":"Urgent"},{"id":"OPT_HIGH","name":"High"},
+    {"id":"OPT_MEDIUM","name":"Medium"}]}
+]}}}}
+EOF
+jq -nc '{node_id: "I_c55", issue_field_values: []}' > "$gh_c/current-response.json"
+touch "$gh_c/fail-mutation"
+verdicts='[{"repo":"o/r","item":"55","verdict":"refined","reason":"specified fine, band fails, and is missing",
+            "comments_posted":["https://github.com/o/r/issues/55#issuecomment-3b"],
+            "priority":"Low"}]'
+calls="$(run_case_c "mutation fails after a fallback: warning names both bands" "$issue_candidates_c" "$verdicts")"
+rm -f "$gh_c/fail-mutation"
+
+assert_eq "write failure+fallback: item-refined is recorded either way" "1" \
+  "$(grep -cE '^event item-refined ' <<<"$calls")"
+assert_contains "write failure+fallback: the warning names the band actually attempted" \
+  "could not set Priority on o/r#55 to Medium (mutation-failed)" "$calls"
+assert_contains "write failure+fallback: ...and the band the verdict asked for" \
+  "the verdict asked for Low" "$calls"
+assert_eq "write failure+fallback: no issue-prioritised event" "0" \
+  "$(grep -cE '^event issue-prioritised ' <<<"$calls")"
+
+# Restore the ordinary complete field for the remaining cases below.
+cat > "$gh_c/fields-response.json" <<'EOF'
+{"data":{"repository":{"issueFields":{"nodes":[
+  {"id":"IFSS_priority","name":"Priority","options":[
+    {"id":"OPT_URGENT","name":"Urgent"},{"id":"OPT_HIGH","name":"High"},
+    {"id":"OPT_MEDIUM","name":"Medium"},{"id":"OPT_LOW","name":"Low"}]}
+]}}}}
+EOF
 
 # ----------------------------------------------------------------------------
 # (v) needs-refinement verdict carrying priority: the block is independent,
@@ -968,7 +1064,9 @@ unset REFINEMENT_GH ISSUE_PRIORITY_GH
 # ----------------------------------------------------------------------------
 # A dedicated `gh` stub, distinguishing repositories by owner/repo (the earlier
 # stubs in this file need no such distinction): "o/bad"'s field query fails,
-# "o/good"'s succeeds, exactly what this pre-flight has to tell apart.
+# "o/nobands"'s resolves but carries none of the four band names (agent-ops#542),
+# "o/good"'s resolves complete — exactly the three cases this pre-flight has
+# to tell apart.
 gh_e="$tmp_dir/gh-e"
 mkdir -p "$gh_e"
 cat > "$gh_e/gh" <<'STUB'
@@ -986,6 +1084,14 @@ if [[ "$1" == "api" && "$2" == "graphql" ]]; then
   done
   printf '%s/%s\n' "$owner" "$repo" >> "$d/field-queries.log"
   [[ "$repo" == "bad" ]] && exit 1
+  if [[ "$repo" == "nobands" ]]; then
+    jq -c "$jqfilter" "$d/fields-response-nobands.json" 2>/dev/null || exit 1
+    exit 0
+  fi
+  if [[ "$repo" == "incomplete" ]]; then
+    jq -c "$jqfilter" "$d/fields-response-incomplete.json" 2>/dev/null || exit 1
+    exit 0
+  fi
   jq -c "$jqfilter" "$d/fields-response.json" 2>/dev/null || exit 1
   exit 0
 fi
@@ -999,6 +1105,19 @@ cat > "$gh_e/fields-response.json" <<'EOF'
     {"id":"OPT_MEDIUM","name":"Medium"},{"id":"OPT_LOW","name":"Low"}]}
 ]}}}}
 EOF
+cat > "$gh_e/fields-response-nobands.json" <<'EOF'
+{"data":{"repository":{"issueFields":{"nodes":[
+  {"id":"IFSS_priority","name":"Priority","options":[
+    {"id":"OPT_P0","name":"P0"},{"id":"OPT_P1","name":"P1"},
+    {"id":"OPT_P2","name":"P2"},{"id":"OPT_P3","name":"P3"}]}
+]}}}}
+EOF
+cat > "$gh_e/fields-response-incomplete.json" <<'EOF'
+{"data":{"repository":{"issueFields":{"nodes":[
+  {"id":"IFSS_priority","name":"Priority","options":[
+    {"id":"OPT_URGENT","name":"Urgent"},{"id":"OPT_HIGH","name":"High"}]}
+]}}}}
+EOF
 : > "$gh_e/field-queries.log"
 export ISSUE_PRIORITY_GH="$gh_e/gh"
 ISSUE_PRIORITY_CACHE_DIR="$(mktemp -d "$tmp_dir/cache-pf.XXXXXX")"
@@ -1007,6 +1126,9 @@ pf_candidates='[
   {"repo":"o/bad","source":"issues","item":"1","triage_only":true},
   {"repo":"o/bad","source":"issues","item":"2","triage_only":true},
   {"repo":"o/bad","source":"issues","item":"3"},
+  {"repo":"o/nobands","source":"issues","item":"20","triage_only":true},
+  {"repo":"o/nobands","source":"issues","item":"21","triage_only":true},
+  {"repo":"o/nobands","source":"issues","item":"22"},
   {"repo":"o/good","source":"issues","item":"10","triage_only":true},
   {"repo":"o/good","source":"issues","item":"11"}
 ]'
@@ -1015,34 +1137,56 @@ calls_log="$tmp_dir/pf-calls.log"
 filtered="$(refiner_filter_unbandable_triage "$pf_candidates")"
 pf_calls="$(cat "$calls_log")"
 
-assert_eq "pre-flight: o/bad's triage_only candidates never reach the set (1/2)" "3" \
+assert_eq "pre-flight: o/bad's triage_only candidates never reach the set (1/2)" "4" \
   "$(jq 'length' <<<"$filtered")"
 assert_eq "  ... o/bad's non-triage_only candidate still reaches it" "yes" \
   "$(jq -r 'any(.[]; .item == "3") | if . then "yes" else "no" end' <<<"$filtered")"
-assert_eq "  ... o/good's triage_only candidate still reaches it (field resolves)" "yes" \
+assert_eq "  ... o/nobands's triage_only candidates never reach the set (agent-ops#542)" "no" \
+  "$(jq -r 'any(.[]; .item == "20") | if . then "yes" else "no" end' <<<"$filtered")"
+assert_eq "  ... neither does its other triage_only candidate" "no" \
+  "$(jq -r 'any(.[]; .item == "21") | if . then "yes" else "no" end' <<<"$filtered")"
+assert_eq "  ... but o/nobands's non-triage_only candidate still reaches it" "yes" \
+  "$(jq -r 'any(.[]; .item == "22") | if . then "yes" else "no" end' <<<"$filtered")"
+assert_eq "  ... o/good's triage_only candidate still reaches it (field resolves complete)" "yes" \
   "$(jq -r 'any(.[]; .item == "10") | if . then "yes" else "no" end' <<<"$filtered")"
 assert_eq "  ... o/good's ordinary candidate is untouched" "yes" \
   "$(jq -r 'any(.[]; .item == "11") | if . then "yes" else "no" end' <<<"$filtered")"
 
 pf_warnings="$(events_named "$pf_calls" warning)"
-assert_eq "pre-flight: exactly one warning, for o/bad alone" "1" "$(wc -l <<<"$pf_warnings")"
-assert_eq "  ... naming the slug" "o/bad" "$(jq -r '.repo' <<<"$pf_warnings")"
+assert_eq "pre-flight: exactly two warnings, one for o/bad and one for o/nobands" "2" \
+  "$(wc -l <<<"$pf_warnings")"
+pf_warning_bad="$(jq -c 'select(.repo == "o/bad")' <<<"$pf_warnings")"
+pf_warning_nobands="$(jq -c 'select(.repo == "o/nobands")' <<<"$pf_warnings")"
+assert_eq "  ... o/bad's warning names the slug" "o/bad" "$(jq -r '.repo' <<<"$pf_warning_bad")"
 assert_eq "  ... and the count of dropped candidates, not one per item" "2" \
-  "$(jq -r '.dropped' <<<"$pf_warnings")"
+  "$(jq -r '.dropped' <<<"$pf_warning_bad")"
+assert_eq "  ... o/nobands's warning names the slug" "o/nobands" "$(jq -r '.repo' <<<"$pf_warning_nobands")"
+assert_eq "  ... and its own dropped count" "2" "$(jq -r '.dropped' <<<"$pf_warning_nobands")"
+assert_contains "  ... o/nobands's wording is distinct from o/bad's unresolvable message" \
+  "carries none of Urgent/High/Medium/Low" "$(jq -r '.detail' <<<"$pf_warning_nobands")"
+assert_not_contains "  ... o/bad's wording does not say 'carries none of'" \
+  "carries none of" "$(jq -r '.detail' <<<"$pf_warning_bad")"
 
 assert_eq "pre-flight: exactly one field query reached o/bad" "1" \
   "$(grep -c '^o/bad$' "$gh_e/field-queries.log")"
+assert_eq "pre-flight: exactly one field query reached o/nobands" "1" \
+  "$(grep -c '^o/nobands$' "$gh_e/field-queries.log")"
 assert_eq "pre-flight: exactly one field query reached o/good" "1" \
   "$(grep -c '^o/good$' "$gh_e/field-queries.log")"
 
 # criterion 6: a second consumer in the same process (an ordinary
 # issue_priority_field_ids call, standing in for issue_priority_apply's own
 # later call inside maybe_run_refiner) hits the process cache for both —
-# including o/bad's cached failure — issuing no further query.
+# including o/bad's cached failure — issuing no further query. o/nobands's
+# resolution succeeds (it is not a `field-unresolvable` case), so it hits the
+# same per-repository cache too — criterion 4's "no additional GraphQL calls".
 issue_priority_field_ids "o/bad" >/dev/null 2>&1
+issue_priority_field_ids "o/nobands" >/dev/null 2>&1
 issue_priority_field_ids "o/good" >/dev/null 2>&1
 assert_eq "  ... a second o/bad resolution hits the cache, not a fresh query" "1" \
   "$(grep -c '^o/bad$' "$gh_e/field-queries.log")"
+assert_eq "  ... a second o/nobands resolution hits the cache, not a fresh query" "1" \
+  "$(grep -c '^o/nobands$' "$gh_e/field-queries.log")"
 assert_eq "  ... a second o/good resolution hits the cache, not a fresh query" "1" \
   "$(grep -c '^o/good$' "$gh_e/field-queries.log")"
 
@@ -1060,6 +1204,18 @@ all_good_candidates='[{"repo":"o/good","source":"issues","item":"1","triage_only
 all_good_result="$(refiner_filter_unbandable_triage "$all_good_candidates")"
 assert_eq "pre-flight: every field resolving returns the input byte-identical" \
   "$all_good_candidates" "$all_good_result"
+
+# criterion 3 (agent-ops#542): a repository missing *some* but not all four
+# bands is unaffected here — it is agent-ops#534's narrower case, which
+# `issue_priority_apply`'s own per-issue fallback handles, not this pre-flight.
+ISSUE_PRIORITY_CACHE_DIR="$(mktemp -d "$tmp_dir/cache-pf3.XXXXXX")"
+: > "$gh_e/field-queries.log"
+incomplete_candidates='[{"repo":"o/incomplete","source":"issues","item":"1","triage_only":true}]'
+incomplete_result="$(refiner_filter_unbandable_triage "$incomplete_candidates")"
+assert_eq "pre-flight: a field missing only some of the four bands is untouched" \
+  "$incomplete_candidates" "$incomplete_result"
+assert_eq "  ... no warning logged for it" "0" \
+  "$(events_named "$(cat "$calls_log")" warning | grep -c 'o/incomplete' || true)"
 
 unset ISSUE_PRIORITY_GH ISSUE_PRIORITY_CACHE_DIR
 

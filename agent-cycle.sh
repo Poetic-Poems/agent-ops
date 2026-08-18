@@ -1852,7 +1852,8 @@ release_refinement_label() {
 # Record one needs_refinement-shaped ENTRY (`{repo, item, source, reason,
 # missing, evidence}`) as a block attributed to STAGE (requirement 34e).
 # Returns 1 and records nothing but a `warning` when ENTRY fails requirement
-# 34d's completeness bar or the item is already blocked.
+# 34d's completeness bar, the item is already blocked, or it re-asserts a
+# `Blocked-by:` dependency this cycle's own gate already resolved.
 #
 # The single recorder for every stage that can report this class of block —
 # the Co-Ordinator (requirement 16a), the Implementor's escape hatch
@@ -1860,8 +1861,8 @@ release_refinement_label() {
 # definition (requirement 34a): three reporters, one recorder, so the label,
 # the assignment and the block's shape can never drift between them.
 #
-# Two entries are dropped rather than recorded, each with a warning, and both
-# refusals are the Script's job rather than the reporting stage's:
+# Three entries are dropped rather than recorded, each with a warning, and all
+# three refusals are the Script's job rather than the reporting stage's:
 #
 #   - a malformed entry, on requirement 34d's discipline. The fields are what the
 #     Enabler starts from; an entry without them starves the very stage this
@@ -1872,6 +1873,15 @@ release_refinement_label() {
 #     clock forward hourly and the item would never become eligible — the same
 #     silent starvation this whole path exists to end, with an event trail that
 #     looks like progress.
+#   - a `source: "issues"` entry whose own `reason`/`missing`/`evidence` names,
+#     by number, the same `Blocked-by:` dependency this cycle's
+#     `issues_by_repo_json` already proves resolved for that item's thread
+#     (`dependency_refusal_reason`, lib/dependency-gate.sh; issue #566).
+#     Requirement 16's dependency exclusion is deterministic and applied by the
+#     Script before any candidate reaches a reporting stage — re-asserting it
+#     from a thread's own stale prose is never a legitimate reason to decline an
+#     item, and recording one as a block would silently blind selection to an
+#     item the gate already cleared.
 record_needs_refinement_block() {
   local entry="$1" stage="$2" repo item reason problem label assignee number who
   who="$(pipeline_actor_label "$stage")"
@@ -1889,6 +1899,12 @@ record_needs_refinement_block() {
        <<<"${blocked_json:-[]}" >/dev/null 2>&1; then
     log_event "warning" "$(jq -nc \
       --arg d "$who reported $repo $item as needing refinement, but it is already blocked — left as it is so the Enabler threshold keeps running" \
+      '{detail: $d}')"
+    return 1
+  fi
+
+  if ! problem="$(dependency_refusal_reason "$entry" "${issues_by_repo_json:-{\}}")"; then
+    log_event "warning" "$(jq -nc --arg d "$who needs_refinement entry for $repo $item refused — it $problem" \
       '{detail: $d}')"
     return 1
   fi
@@ -4909,30 +4925,43 @@ refiner_claim_key() {
 # issue #511): resolves, once per repository, the `Priority` field for every
 # repository contributing a `triage_only: true` candidate — a cycle with none
 # at all makes no query here — and drops that repository's `triage_only`
-# candidates when the field cannot be resolved, so the Refiner is never
-# engaged for a band it structurally cannot write. Every other candidate is
-# unaffected; when every contributing repository's field resolves, the input
-# is returned byte-identical.
+# candidates when the field cannot be resolved *or* resolves carrying none of
+# the four band names at all (agent-ops#542 — a repository that renamed every
+# option, e.g. to `P0`…`P3`; the narrower agent-ops#534 case, missing only
+# *some* of the four, is unaffected here and still reaches the Refiner, since
+# `issue_priority_apply`'s own fallback bands it), so the Refiner is never
+# engaged for a band it structurally cannot write either way. Every other
+# candidate is unaffected; when every contributing repository's field
+# resolves with at least one band option, the input is returned
+# byte-identical.
 #
 # `issue_priority_field_ids` (lib/issue-priority.sh) is itself cached per
 # repository for the life of this process (`ISSUE_PRIORITY_CACHE_DIR`),
 # including its own failure — so this call and `issue_priority_apply`'s own
 # later call inside `maybe_run_refiner` never resolve the same repository's
-# field twice. Guarded rather than let `set -euo pipefail` abort the cycle on
-# the field's own non-zero return.
+# field twice; the "no bands at all" check below reads the same field_json
+# this call already fetched rather than issuing a second GraphQL query.
+# Guarded rather than let `set -euo pipefail` abort the cycle on the field's
+# own non-zero return.
 refiner_filter_unbandable_triage() {
-  local candidates="${1:-[]}" triage_repos slug unresolvable='[]' counts count
+  local candidates="${1:-[]}" triage_repos slug unresolvable='[]' no_bands='[]' counts count
+  local field_json
   triage_repos="$(jq -r '[.[] | select(.triage_only == true) | (.repo // "")] | unique | .[]' \
     <<<"$candidates" 2>/dev/null || true)"
   [[ -n "$triage_repos" ]] || { printf '%s' "$candidates"; return 0; }
 
   while IFS= read -r slug; do
     [[ -n "$slug" ]] || continue
-    issue_priority_field_ids "$slug" >/dev/null 2>&1 \
-      || unresolvable="$(jq -c --arg s "$slug" '. + [$s]' <<<"$unresolvable" 2>/dev/null \
+    if field_json="$(issue_priority_field_ids "$slug" 2>/dev/null)"; then
+      issue_priority_options_any "$field_json" \
+        || no_bands="$(jq -c --arg s "$slug" '. + [$s]' <<<"$no_bands" 2>/dev/null \
+             || printf '%s' "$no_bands")"
+    else
+      unresolvable="$(jq -c --arg s "$slug" '. + [$s]' <<<"$unresolvable" 2>/dev/null \
            || printf '%s' "$unresolvable")"
+    fi
   done <<<"$triage_repos"
-  [[ "$unresolvable" != "[]" ]] || { printf '%s' "$candidates"; return 0; }
+  [[ "$unresolvable" != "[]" || "$no_bands" != "[]" ]] || { printf '%s' "$candidates"; return 0; }
 
   counts="$(jq -c '[.[] | select(.triage_only == true) | (.repo // "")] | group_by(.)
     | map({key: .[0], value: length}) | from_entries' <<<"$candidates" 2>/dev/null || printf '{}')"
@@ -4944,8 +4973,19 @@ refiner_filter_unbandable_triage() {
       --arg d "refiner: Priority field unresolvable for $slug — dropped $count band-only triage candidate(s)" \
       '{detail: $d, repo: $s, dropped: $n}')"
   done < <(jq -r '.[]' <<<"$unresolvable" 2>/dev/null || true)
+  while IFS= read -r slug; do
+    [[ -n "$slug" ]] || continue
+    count="$(jq -r --arg s "$slug" '.[$s] // 0' <<<"$counts" 2>/dev/null || printf 0)"
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    log_event "warning" "$(jq -nc --arg s "$slug" --argjson n "$count" \
+      --arg d "refiner: Priority field for $slug carries none of Urgent/High/Medium/Low — dropped $count band-only triage candidate(s)" \
+      '{detail: $d, repo: $s, dropped: $n}')"
+  done < <(jq -r '.[]' <<<"$no_bands" 2>/dev/null || true)
 
-  refiner_drop_unbandable_triage "$candidates" "$unresolvable"
+  local drop_slugs
+  drop_slugs="$(jq -c -n --argjson a "$unresolvable" --argjson b "$no_bands" '$a + $b' 2>/dev/null \
+    || printf '%s' "$unresolvable")"
+  refiner_drop_unbandable_triage "$candidates" "$drop_slugs"
 }
 
 # maybe_run_refiner CYCLE_EXIT_CODE
@@ -4969,6 +5009,7 @@ maybe_run_refiner() {
   local ex e_repo e_item verdict e_reason claimed_entry e_source outcome extra
   local e_synthetic e_block_ok e_refined_fields e_number e_triage_only
   local e_priority priority_result priority_applied priority_reason
+  local priority_attempted priority_requested
 
   # --- Guards, mirroring requirement 35's for the Enabler ---
   (( lock_acquired )) || return 0
@@ -5217,9 +5258,20 @@ $(jq . <<<"$input")
           '{repo: $r, item: $i, priority: $x.priority, previous: $x.previous, by: $by}
            + (if ($x.requested // null) != null then {requested: $x.requested} else {} end)')"
       else
-        log_event "warning" "$(jq -nc \
-          --arg d "refiner: could not set Priority on $e_repo#$e_number to $e_priority ($priority_reason) — the refinement verdict above is recorded either way" \
-          '{detail: $d}')"
+        # requested is present only for mutation-failed after a fallback
+        # (issue_priority_apply's header comment) — the other reasons
+        # reaching this branch never set it, so they fall through unchanged.
+        priority_attempted="$(jq -r '.priority // ""' <<<"$priority_result" 2>/dev/null || true)"
+        priority_requested="$(jq -r '.requested // ""' <<<"$priority_result" 2>/dev/null || true)"
+        if [[ -n "$priority_requested" ]]; then
+          log_event "warning" "$(jq -nc \
+            --arg d "refiner: could not set Priority on $e_repo#$e_number to $priority_attempted ($priority_reason) — the verdict asked for $priority_requested; the refinement verdict above is recorded either way" \
+            '{detail: $d}')"
+        else
+          log_event "warning" "$(jq -nc \
+            --arg d "refiner: could not set Priority on $e_repo#$e_number to $e_priority ($priority_reason) — the refinement verdict above is recorded either way" \
+            '{detail: $d}')"
+        fi
       fi
     fi
 
@@ -7155,12 +7207,14 @@ fi
 # separate array exists.
 refiner_candidates_json="$(refiner_candidate_items "$refiner_repos_json" \
   "$refinement_policy_json" "$refinements_json" "$blocked_json" "$void_json" "$claimed_json")"
-# issue #511: drop this cycle's `triage_only` candidates from any repository
-# whose `Priority` field this token cannot resolve at all, before the
-# engagement cap or any claim — a pre-flight, not a post-hoc latch, so field
-# visibility recovering needs no operator action. Run unconditionally,
-# including under --dry-run, so the fingerprint input below never differs
-# between a dry-run and a live cycle for no reason.
+# issue #511, extended by issue #542: drop this cycle's `triage_only`
+# candidates from any repository whose `Priority` field this token cannot
+# resolve at all, or which resolves carrying none of the four band names,
+# before the engagement cap or any claim — a pre-flight, not a post-hoc
+# latch, so field visibility, or a renamed option set, recovering needs no
+# operator action. Run unconditionally, including under --dry-run, so the
+# fingerprint input below never differs between a dry-run and a live cycle
+# for no reason.
 refiner_candidates_json="$(refiner_filter_unbandable_triage "$refiner_candidates_json")"
 # Same reasoning as `enabler_allowed` above, for the same kind of exit-trap
 # engagement.

@@ -239,18 +239,18 @@ assert_eq "…and leaves the threshold to the derivation" \
 # --- 9. The derived lock ----------------------------------------------------------------
 # It must clear the worst case the cycle could draw, which is why it sums the
 # widest backstop each actor could be given rather than the one it will be.
-# Five implementation actors as of the Refiner (requirement 39): coordinator,
-# implementor, reviewer, enabler, refiner — each contributes its widest
-# backstop, plus slack.
+# Six implementation actors as of the Approver (requirements 8b/8c):
+# coordinator, implementor, reviewer, enabler, refiner, approver — each
+# contributes its widest backstop, plus slack.
 lock_sec="$(stage_budget_lock_seconds "$tk3" '{}' 30 0)"
 assert_eq "the lock clears the summed worst-case backstops plus slack" \
-  "$(( (20 + 150 + 180 + 30 + 30 + 30) * 60 ))" "$lock_sec"
+  "$(( (20 + 150 + 180 + 30 + 30 + 30 + 30) * 60 ))" "$lock_sec"
 assert_eq "a configured value is a floor, not the answer" \
   "$(( 12 * 3600 ))" "$(stage_budget_lock_seconds "$tk3" '{}' 30 12)"
 assert_eq "…and is ignored when the derivation already exceeds it" \
   "$lock_sec" "$(stage_budget_lock_seconds "$tk3" '{}' 30 1)"
 assert_eq "an empty table still derives a lock, from the priors alone" \
-  "$(( (20 + 150 + 90 + 30 + 30 + 30) * 60 ))" "$(stage_budget_lock_seconds '{}' '{}' 30 0)"
+  "$(( (20 + 150 + 90 + 30 + 30 + 30 + 30) * 60 ))" "$(stage_budget_lock_seconds '{}' '{}' 30 0)"
 
 # --- 9a. All-actor overrides, the shared input scripts/doctor.sh and --------------------
 #         agent-cycle.sh both derive the lock from (requirement 4f)
@@ -271,13 +271,17 @@ assert_eq "an actor nobody configured answers null, not zero" \
   "null" "$(jq -r '.enabler.backstop' <<<"$overrides")"
 assert_eq "the Refiner is covered too, fleet-wide only (no per-repo form)" \
   "20" "$(jq -r '.refiner.backstop' <<<"$(stage_budget_all_overrides '{"timeout_refiner": 20}')")"
+assert_eq "the Approver is covered, fleet-wide timeout" \
+  "25" "$(jq -r '.approver.backstop' <<<"$(stage_budget_all_overrides '{"timeout_approver": 25}')")"
+assert_eq "the Approver is covered, fleet-wide inactivity" \
+  "8" "$(jq -r '.approver.inactivity' <<<"$(stage_budget_all_overrides '{"inactivity_approver": 8}')")"
 wide_cfg='{"repos": [{"slug": "a/one", "stage_timeouts": {"reviewer": 10}},
                      {"slug": "a/two", "stage_timeouts": {"reviewer": 99}}]}'
 wide_overrides="$(stage_budget_all_overrides "$wide_cfg")"
 assert_eq "the *largest* configured value wins across repositories, not the last one read" \
   "99" "$(jq -r '.reviewer.backstop' <<<"$wide_overrides")"
 assert_eq "…so the lock derived from it clears that widest per-repo backstop, exactly as scripts/doctor.sh reports" \
-  "$(( (20 + 150 + 99 + 30 + 30 + 30) * 60 ))" \
+  "$(( (20 + 150 + 99 + 30 + 30 + 30 + 30) * 60 ))" \
   "$(stage_budget_lock_seconds '{}' "$wide_overrides" 30 0)"
 
 # --- 10. Degradation ---------------------------------------------------------------------

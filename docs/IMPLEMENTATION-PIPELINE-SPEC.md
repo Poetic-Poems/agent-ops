@@ -628,7 +628,7 @@ and the schema must carry every one of them.
 | `enabler_escalation_label` | `enabler-escalation` | Applied to every issue the Enabler raises, for the human's filter and for the duplicate guard of requirement 36a. It must not be `blocked`: that label is an exclusion criterion for the `issues` source (requirement 16.4) and would double-count with the assignment. Nor `obsolete`: that name is the human-only corroboration requirement 34k closes a draft pull request on, and no configured label may carry it — `scripts/doctor.sh` fails a config that does. |
 | `needs_refinement_label` | `needs-refinement` | The label the Script projects onto an issue-type item while its refinement block is open (requirement 34e), and removes when the block clears. Also the label a human applies by hand to flag an item themselves, which the Script scans every repo's issues for and records as the same kind of block (requirement 34g) — removing it while that block is open clears it the same way. Empty disables both directions: the log is the record, so the mechanism is unaffected and the item still...[continued below](#extended-notes-needs_refinement_label) |
 | `refinement_max_per_engagement` | `3` | How many refinement-class items one Enabler engagement takes on (requirement 35d); ordinary blocked items are uncapped and are never displaced by them. The cap exists because the backlog of items silently skipped before requirement 16a existed is unbounded, and an engagement spent entirely on old vagueness would delay the pull request nobody can see. `0` removes the class from engagements entirely — blocks are still recorded, and the items wait. |
-| `refiner_model` | `claude-haiku-4-5-20251001` | The Refiner (requirement 39). Cheap on purpose — unlike the Enabler, eligibility carries no threshold, so it runs as often as there is unrefined work. Empty disables the stage. |
+| `refiner_model` | `claude-sonnet-5` | The Refiner (requirement 39). Unlike the Enabler, eligibility carries no threshold, so it runs as often as there is unrefined work, and its frequency has to be weighed against the fact that what it produces is a specification rather than a ranking. Empty disables the stage. |
 | `refined_label` | `refined` | The label the Script projects onto an issue-type item once the Refiner records it `refined` (requirement 39c). One-way and never read back — unlike `needs_refinement_label`'s hand-flag path, there is no hand-applied form of this label: the shared log is the sole record of whether an item is refined, exactly as requirement 34e already establishes for the negative marker. Empty disables the projection only: the `item-refined` event is still logged and the Co-Ordinator still...[continued below](#extended-notes-refined_label) |
 | `refiner_max_per_engagement` | `5` | How many unrefined items one Refiner engagement takes on (requirement 39b), chosen oldest-seen first so every node in the fleet reduces to the same set. `0` removes the class from engagements entirely. |
 | `refinement_policy` | `{"issues":"preferred"}` | Per-source refinement policy (requirement 39a): `required`, `preferred` or `exempt`, read by the Co-Ordinator alongside `refinements` (requirement 3h) to decide whether an unrefined item may be ranked at all. A source absent from this object is `exempt`. Bounded by what requirement 39's candidate gathering reads — the `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`, `dequeued`, `register_hygiene`, `issues` and `tech_debt` arrays every repo's...[continued below](#extended-notes-refinement_policy) |
@@ -655,12 +655,14 @@ and the schema must carry every one of them.
 | `timeout_reviewer` | *(unset)* | As `timeout_coordinator`, for the Reviewer. This is the key #203 was opened about: it was raised 30 → 45 → 60 in two days, and 45 lasted six hours before a complex-model review of a 16-file diff consumed all of it. Complex-model reviews are killed roughly six times as often as default-model ones, so a single fixed number spans two quite different populations — which is why the derivation keys on the model. |
 | `timeout_enabler` | *(unset)* | As `timeout_coordinator`, for the Enabler — which, spanning repositories, has a single `(enabler, *, model)` cell. |
 | `timeout_refiner` | *(unset)* | As `timeout_coordinator`, for the Refiner — which, spanning repositories, has a single `(refiner, *, model)` cell. |
+| `timeout_approver` | *(unset)* | As `timeout_coordinator`, for the Approver. |
 | `inactivity_coordinator` | *(unset)* | An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog for that actor and leaves the backstop as the only cap. |
 | `inactivity_implementor` | *(unset)* | An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog for that actor and leaves the backstop as the only cap. |
 | `inactivity_reviewer` | *(unset)* | An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog for that actor and leaves the backstop as the only cap. |
 | `inactivity_enabler` | *(unset)* | An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog for that actor and leaves the backstop as the only cap. |
 | `inactivity_refiner` | *(unset)* | An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog for that actor and leaves the backstop as the only cap. |
-| `lock_stale_after` | *(unset)* | A floor under the derived value of requirement 4f, not the value itself: the threshold is the sum, over the four actors, of the widest backstop each could draw this cycle, plus slack. Deriving it is the point — an assertion checked against fixed caps had to be re-derived by hand every time any of them moved, three times in two days. Erring long is close to free: a dead holder is taken over on its pid rather than its age, so this bounds only how long a live but hung cycle may hold on. |
+| `inactivity_approver` | *(unset)* | An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog for that actor and leaves the backstop as the only cap. |
+| `lock_stale_after` | *(unset)* | A floor under the derived value of requirement 4f, not the value itself: the threshold is the sum, over the six actors, of the widest backstop each could draw this cycle, plus slack. Deriving it is the point — an assertion checked against fixed caps had to be re-derived by hand every time any of them moved, three times in two days. Erring long is close to free: a dead holder is taken over on its pid rather than its age, so this bounds only how long a live but hung cycle may hold on. |
 | `stage_budget` | *(unset)* | Tuning for the derivation of requirement 4f: `gap_multiplier` and `shrinkage_runs` shape the watchdog estimate, `increase_factor`, `decrease_after_runs`, `decrease_step_min`, `kill_rate_slo` and `ceiling_multiple` shape the backstop controller, and `window_days`/`window_runs` bound what either looks at. Defaults live in `lib/stage-budget.sh`, not here, on requirement 4e's reasoning: a value an installation must set is a value it can set wrongly. |
 | `limit_cooldown_default` | 3 h | Stand-down period after an ordinary/transient usage-limit error whose reset time cannot be parsed. A weekly/monthly match with no parseable reset time uses the longer `LIMIT_LONG_COOLDOWN_HOURS` fallback in `lib/limit-detect.sh` instead (see requirement 10) — not this key. |
 | `limit_escalate_after_hours` | 24 h | The automatic-freeze escalation threshold of requirement 2 (#244): aged from `limit_standdown_since` (the first `limit-hit` of the current freeze, not its latest extension), raised once per freeze via the `limit-freeze-escalated` event, filed in `crash_loop_repo` with `enabler_escalation_label` and `enabler_assignee`. `0` disables it. A manual stand-down never pages the person who set it. |
@@ -705,7 +707,7 @@ A repo entry may also carry `implementation_plan_path` — the path, relative to
 
 A repo entry may also carry `nice` — an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo — the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range.
 
-A repo entry may also carry `stage_timeouts` and `stage_inactivity` — per-actor overrides in minutes, keyed `coordinator`, `implementor`, `reviewer` and `enabler`, for that repository alone. They are the most specific level of requirement 4f's precedence, ahead of the plain `timeout_<actor>` / `inactivity_<actor>` key and ahead of the derivation; the Refiner, spanning repositories, has no per-repository form. Configuration is read, never written: requirement 4f's derivation never writes back to `config.json`.
+A repo entry may also carry `stage_timeouts` and `stage_inactivity` — per-actor overrides in minutes, keyed `coordinator`, `implementor`, `reviewer`, `approver` and `enabler`, for that repository alone. They are the most specific level of requirement 4f's precedence, ahead of the plain `timeout_<actor>` / `inactivity_<actor>` key and ahead of the derivation; the Refiner, spanning repositories, has no per-repository form. Configuration is read, never written: requirement 4f's derivation never writes back to `config.json`.
 
 A repo entry may also carry `merge_autonomy` — the per-repository override of the top-level key of the same name (D18, requirement 2.3b), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.
 
@@ -778,7 +780,7 @@ D18's spend governor (§5.4, `lib/merge-budget.sh`, requirement 2.3c): a rolling
 
 ### Extended notes: `merge_autonomy_routine_sources`
 
-D18 WI-7 (requirement 8d, `lib/landing.sh`'s `landing_eligible`): which work sources may be armed automatically at `agent-merges-routine` and above, fleet-wide default; a `repos[]` entry's own `merge_autonomy_routine_sources` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). An eligible pull request also needs `complexity:low`/`medium` and `landing_protected_paths_hit` to report no protected path touched. Matched against a pull request's own `source` by exact string equality: every `issues:<band>` work order's own `source` collapses to the plain word `issues` (`scripts/gather-issues.sh`), so an `issues:<band>` entry here never matches one — a known, disclosed limitation (`lib/landing.sh`'s own header). `scripts/doctor.sh` warns when a repository's own effective list names a source that repository's `sources` never gathers.
+D18 WI-7 (requirement 8d, `lib/landing.sh`'s `landing_eligible`): which work sources may be armed automatically at `agent-merges-routine` and above, fleet-wide default; a `repos[]` entry's own `merge_autonomy_routine_sources` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). An eligible pull request also needs `complexity:low`/`medium` and `landing_protected_paths_hit` to report no protected path touched. Matched against a pull request's own `source` by exact string equality, over the `landingSourceToken` vocabulary rather than `repos[].sources`' `sourceToken` one: `scripts/gather-issues.sh` collapses all four bands to `"source": "issues"`, so `issues` is the only spelling that can match an issue work order, and the four banded spellings are rejected by the schema outright (agent-ops#558). Until that fix the two were one shared enum, which offered only the spellings landing can never match — and `scripts/doctor.sh`'s banded-token warning (agent-ops#519) named a remedy, `issues`, that the same enum refused. `scripts/doctor.sh` warns when a repository's own effective list names a source that repository's `sources` never gathers, reading a bare `issues` as satisfied by any `issues:<band>` the repository gathers.
 
 <!-- config-table:notes-end -->
 
@@ -3953,7 +3955,7 @@ implements.
    against other constants, and that check had to be re-derived by hand every
    time any of them moved — three times in the two days before this was
    written, each raise forcing a knock-on recalculation somewhere else. The
-   threshold is now the sum, over the four actors, of the widest backstop each
+   threshold is now the sum, over the six actors, of the widest backstop each
    could draw this cycle, plus slack; a configured `lock_stale_after` is a
    floor under it rather than the value. Erring long is close to free, because
    a dead holder is taken over on its pid rather than on its age, so this
@@ -5117,6 +5119,25 @@ implements.
       judgement half is the Co-Ordinator's, over the whole thread
       (requirement 14a), since a comment can block, close, re-scope, or
       answer an issue that its body alone would make look selectable.
+
+      **The dependency third is never the Co-Ordinator's to re-derive, and the
+      Script refuses it if offered anyway** (agent-ops#566). An issue reaching
+      the Co-Ordinator has, by requirement 3j's own construction, no unresolved
+      `Blocked-by:` reference — but a stale sentence can still sit in its
+      thread after the reference it named has closed, and a model reading that
+      thread can reach for the sentence rather than the fact that the item is
+      in front of it at all. Requirement 34e's recorder refuses a
+      `needs_refinement` entry, from any reporting stage, whose own
+      `reason`/`missing`/`evidence` names, by its issue number, the same
+      dependency this cycle's own dependency gate (requirement 34j) already
+      proves resolved for that item's thread: no block is recorded, no label
+      applied, no assignment made, and the refusal is logged — the item is
+      left exactly as unaccounted-for as if nothing had been reported
+      (requirement 3x), so it is not silently closed off by a report that
+      never engaged with it. The judgement half above is untouched by this: a
+      report declining an issue as a question or discussion, or for genuine
+      under-specification, names no such reference, so it is recorded exactly
+      as requirement 34e describes.
 
       **The assignee exclusion is a permanent, deliberate rule, not an
       incidental side effect** (agent-ops#447). It is load-bearing for the
@@ -6727,8 +6748,8 @@ implements.
     common `cycle` and `ts` are what requirement 3h reads it back by, and what
     requirement 39a's own read compares against a fresher block's `ts` to
     decide whether the refinement still stands. A
-    `stage-start`/`stage-end` pair's `stage` is
-    `coordinator`, `implementor`, `reviewer`, `enabler` or `refiner`; the last
+    `stage-start`/`stage-end` pair's `stage` is `coordinator`,
+    `implementor`, `reviewer`, `approver`, `enabler` or `refiner`; the last
     two are the ones that may appear on a cycle which selected nothing, since
     both run from the cleanup of requirement 11. An `enabler-examined` carries
     `repo`, `item`, the
@@ -7184,7 +7205,7 @@ implements.
     version appearing for a skipped security finding — several cycles to settle
     the item before the expensive stage is bought.
 
-    Two entries are refused, both on the Script's side of the boundary:
+    Three entries are refused, all on the Script's side of the boundary:
     - **A malformed entry** — missing `repo`, `item`, `reason`, `missing` or
       `evidence`, judged on requirement 34d's emptiness discipline — is logged
       as a `warning` and dropped. The fields are what the Enabler starts from,
@@ -7196,6 +7217,22 @@ implements.
       item every cycle would push that clock forward hourly and the item would
       never become eligible — the identical silent starvation this path exists
       to end, wearing an event trail that looks like progress.
+    - **A `source: "issues"` entry whose own `reason`/`missing`/`evidence` cites
+      a `Blocked-by:` reference this cycle's dependency gate already resolved**
+      (`dependency_refusal_reason`, `lib/dependency-gate.sh`; requirement 16's
+      dependency third; agent-ops#566) is logged as a `warning` and dropped.
+      `issues_by_repo_json` — the same reshaped candidate map requirement 34j's
+      `dependency_clearances` already reads — is the proof: an item present in
+      it has, by `scripts/gather-issues.sh`'s own live check this cycle, no
+      unresolved reference left on its thread, so a report re-asserting one is
+      demonstrably false, never a second opinion worth recording. Reused
+      exactly as gathered — this refusal never issues a second `gh` read, and
+      never re-derives what the gate already computed. Scoped to the
+      dependency claim alone: the bar reads only whether the entry's own
+      fields name a reference that item's thread carries, so a
+      `source: "issues"` entry declining the item as a question or
+      discussion, or for any other under-specification, names none and is
+      recorded on the ordinary bar above.
 
     **The label is a projection, never the record.** Where (and only where) the
     item is a GitHub issue — the `issues` source, whose ref is a bare number —
@@ -9431,24 +9468,41 @@ implements.
     call and `issue_priority_apply`'s own later call inside
     `maybe_run_refiner` never resolve the same repository's field twice).
     Every `triage_only` candidate from a repository whose field failed to
-    resolve is dropped via the pure filter `refiner_drop_unbandable_triage`
-    (`lib/refinement.sh`, jq-only and independently unit-testable); every
-    other candidate — `triage_only` or not, from that repository or any
+    resolve, *or* whose field resolved carrying none of the four band names
+    at all (agent-ops#542 — an organisation that renamed every option, e.g.
+    to `P0`…`P3`), is dropped via the pure filter
+    `refiner_drop_unbandable_triage` (`lib/refinement.sh`, jq-only and
+    independently unit-testable) — checked against `issue_priority_options_any`
+    (`lib/issue-priority.sh`) on the very `field_json` this call already
+    fetched, so telling the two cases apart costs no further GraphQL query. A
+    repository missing only *some* of the four names is unaffected by this
+    pre-flight — `issue_priority_apply`'s own per-issue fallback
+    (agent-ops#534, below) still bands it — since `issue_priority_options_any`
+    is true whenever at least one name is present; only a field carrying
+    *none* of the four is a terminal case for this pre-flight, on the same
+    "can never write any band" terms as a field that fails to resolve at all.
+    Every other candidate — `triage_only` or not, from that repository or any
     other — passes through unchanged, and when every contributing
-    repository's field resolves the candidate set is returned
-    byte-identical. Exactly one `warning` is logged per repository whose
-    field failed, naming the repository and how many `triage_only`
-    candidates it dropped — never one per dropped item. The pre-flight runs
-    unconditionally, including under `--dry-run`: it is a read, and skipping
-    it there would make the dry-run fingerprint input (requirement 3b's own
-    `refiner_candidates_json`) differ from a live cycle's for no gain. No
-    state persists between cycles — the day field visibility or organisation
-    membership is fixed, triage resumes on its own with no operator action
-    and nothing to clear — and `issue_priority_apply`'s own
-    `field-unresolvable` path and its warning (below) are unchanged: this
-    pre-flight makes that path rare for `triage_only` items, it does not
-    replace it, and it is still the correct behaviour for a field that
-    becomes unreadable mid-cycle, after this pre-flight already ran.
+    repository's field resolves with at least one band option, the candidate
+    set is returned byte-identical. Exactly one `warning` is logged per
+    dropped repository, naming it, how many `triage_only` candidates it
+    dropped, and which of the two cases applied — a field-unresolvable
+    warning is worded distinctly from a no-bands-at-all one, so a reader can
+    tell the two misconfigurations apart — never one per dropped item. The
+    pre-flight runs unconditionally, including under `--dry-run`: it is a
+    read, and skipping it there would make the dry-run fingerprint input
+    (requirement 3b's own `refiner_candidates_json`) differ from a live
+    cycle's for no gain. No state persists between cycles — the day field
+    visibility, its option names, or organisation membership changes, triage
+    resumes on its own with no operator action and nothing to clear — and
+    `issue_priority_apply`'s own `field-unresolvable` and `band-option-missing`
+    paths and their warnings (below) are unchanged: this pre-flight makes both
+    paths rare for `triage_only` items, it does not replace either, and they
+    remain the correct behaviour for a field that becomes unreadable, or loses
+    every band option, mid-cycle, after this pre-flight already ran — and for
+    any non-`triage_only` item, which this pre-flight never inspects at all,
+    since `issue_priority_apply` runs for those regardless of band
+    availability.
 
     The Refiner's verdict (`parsed.refined[]`, requirement 39c) gains an
     optional `priority` field, one of the four band names, independent of
@@ -9557,10 +9611,22 @@ implements.
     used — on a successful write, `issue-prioritised-skipped` with the same
     shape both when the ratchet declines a band that does not outrank the
     current one and when the current band cannot be ranked at all, and a
-    `warning` naming the repo, item and band when the field cannot be
-    resolved, no band on it is writable at all, the issue cannot be read, or
-    the mutation itself fails — never a `warning` for either ordinary skip,
-    which is the ratchet working as designed rather than a failure.
+    `warning` when the field cannot be resolved, no band on it is writable
+    at all, the issue cannot be read, or the mutation itself fails — never a
+    `warning` for either ordinary skip, which is the ratchet working as
+    designed rather than a failure. The warning always names the repo and
+    item, but which band(s) it names depends on which of the four failures
+    it is: `field-unresolvable` and `band-option-missing` are rejected
+    before any band is chosen, and `issue-unreadable` — though reached
+    after a fallback band has been picked — still never attempted a write,
+    so each names only the verdict's own band, the one thing there is to
+    name. `mutation-failed` is the one reason that can follow an actual,
+    possibly different, attempted write: when its result carries no
+    `requested` (no fallback ran) the warning is unchanged, naming that one
+    band; when it does carry `requested`, the warning names both the band
+    the failed mutation actually targeted and the band the verdict asked
+    for, since naming the requested band alone would blame a write that was
+    never attempted (agent-ops#551).
 
     `scripts/doctor.sh` warns, for every configured repository whose
     `sources` lists any of the four `issues:<band>` tokens, when its
@@ -12552,6 +12618,30 @@ pull request, run the ones the change touches and any it could regress.
    both halves clear within the one cycle the dependency resolved in, and
    that neither ever spent an Enabler engagement or a Co-Ordinator judgement
    doing it.
+8i-i. **A `needs_refinement` report re-asserting a resolved dependency is
+   refused, never recorded (requirement 16's dependency third; requirement
+   34e; agent-ops#566).** `test/dependency-gate.test.sh` passes:
+   `dependency_refusal_reason` refuses an entry only when all three hold — its
+   `source` is (or defaults to) `"issues"`, its item's own thread (read from the
+   `issues_by_repo_json`-shaped map handed in) names at least one `Blocked-by:`
+   reference, and its own `reason`/`missing`/`evidence` names that same
+   reference by number (a genuine `#410` token or the cross-repo slug verbatim,
+   never a mere substring of a different number) — and passes every entry
+   short of one of the three: a non-`issues` source, an item this cycle's map
+   does not carry or whose thread names no dependency at all, and a report
+   naming no reference the thread's own resolved list carries (a genuine
+   under-specification or a question/discussion decline). Then, driving
+   `record_needs_refinement_block` itself — lifted verbatim from
+   `agent-cycle.sh`, the same technique `test/refiner-verdicts.test.sh` uses —
+   `test/dependency-block-refusal.test.sh` passes: a report shaped like the
+   agent-ops#566 incident (an issue present in `issues_by_repo_json`, `evidence`
+   quoting its thread's own stale `Blocked-by:` line) is refused with a
+   `warning` naming the resolved reference, applies no label, makes no
+   assignment, and writes no `attempt-failed` at all — while the identical
+   report on an item absent from `issues_by_repo_json`, and a genuine
+   under-specification report on an item present in it, are both recorded
+   exactly as requirement 34e already describes, proving the refusal is scoped
+   to the false dependency claim and leaves the judgement half untouched.
 8j. **A corroborated void closes the GitHub object it names, exactly once
    (requirement 34k).** `test/close-void-github-items.test.sh` passes against
    a stubbed `gh`: an open issue or an open, obsolete pull request named by a
@@ -12976,8 +13066,12 @@ pull request, run the ones the change touches and any it could regress.
     `needs_refinement` label and no assignment, with outcome
     `triage-only-refused` and a `warning`, while its band still applies; a
     failed band write is a `warning` that leaves the refinement or block
-    already recorded untouched, while an unrankable current band is not — it
-    logs `issue-prioritised-skipped` like any other ordinary skip; and
+    already recorded untouched — naming both the band actually attempted and
+    the band the verdict asked for when the failure followed a fallback, and
+    the verdict's own band alone when it did not (agent-ops#551) — while an
+    unrankable current band is not — it logs `issue-prioritised-skipped`
+    like any other ordinary skip, still carrying `requested` when a fallback
+    ran; and
     `DRY_RUN` reaches no `gh` call and writes no event at all —
     `maybe_run_refiner`'s own first guard already returns before any
     candidate is claimed. `scripts/gather-issues.sh`'s `priority_set` is
@@ -12995,19 +13089,28 @@ pull request, run the ones the change touches and any it could regress.
     from those repositories and every candidate from any other repository
     untouched, is the identity on an empty unresolvable-repository list, and
     falls back to its input unchanged (never `[]`) on malformed candidates
-    JSON. `refiner_filter_unbandable_triage` (`agent-cycle.sh`), lifted
-    verbatim and driven against a stubbed `gh` that fails one repository's
-    field query and succeeds another's: the failing repository's
-    `triage_only` candidates never reach the returned set while its other
-    candidates and the succeeding repository's candidates — `triage_only` or
-    not — do; exactly one `warning` is logged, naming the failing repository
-    and the count of candidates it dropped, not one per item; a repeat
-    resolution of either repository in the same process hits
+    JSON. `issue_priority_options_any` (`lib/issue-priority.sh`,
+    agent-ops#542) is asserted true whenever the field carries at least one
+    of the four band names, including only one, and false only when it
+    carries none. `refiner_filter_unbandable_triage` (`agent-cycle.sh`),
+    lifted verbatim and driven against a stubbed `gh` distinguishing three
+    repositories — one whose field query fails outright, one whose field
+    resolves carrying none of the four band names, one whose field resolves
+    complete: the failing repository's and the no-bands repository's
+    `triage_only` candidates never reach the returned set while their other
+    candidates and the complete repository's candidates — `triage_only` or
+    not — do; exactly one `warning` per dropped repository is logged, each
+    naming the repository and the count of candidates it dropped, not one per
+    item, with the no-bands repository's wording distinct from the
+    field-unresolvable one; a repository missing only *some* of the four
+    names is asserted unaffected by this pre-flight, reaching the returned
+    set byte-identical with no warning logged; a repeat resolution of any of
+    these repositories in the same process hits
     `issue_priority_field_ids`'s own cache rather than issuing a second
     query, including for the failing repository's cached failure; a cycle
     with no `triage_only` candidate at all issues no field query from this
-    path; and when every contributing repository's field resolves, the
-    returned set is byte-identical to the input.
+    path; and when every contributing repository's field resolves with at
+    least one band option, the returned set is byte-identical to the input.
 11c. **A broken Enabler cannot break a cycle (requirement 37).** With a stubbed
     stage that times out, exits non-zero, or (after requirement 9e's salvage
     resume also fails to parse) returns prose instead of JSON: the
@@ -13481,10 +13584,15 @@ pull request, run the ones the change touches and any it could regress.
     precedence over the top-level list, the same precedence
     `merge_autonomy` itself uses) and for an empty source, `unknown` on an
     unreadable protected-path read, and `eligible` only once every condition
-    clears — with a pinned case confirming the `source` comparison is exact
-    string equality, never expanded against the four `issues:<band>` ranks
-    (an `issues:low` routine-list entry never matches a real issues work
-    order's own plain `"issues"` source); `landing_approver_standing_review`
+    clears — with pinned cases confirming the `source` comparison is exact
+    string equality, never expanded against the four `issues:<band>` ranks:
+    a plain `issues` routine-list entry matches a real issues work order's
+    own `"issues"` source, and an `issues:low` entry (a schema error, since
+    the key takes `landingSourceToken` and not `sourceToken`) does not, the
+    comparison folding no bands. The membership test is additionally guarded
+    against an empty routine list, because `jq -e` on empty input exits 0 on
+    jq 1.6 and 4 on jq 1.7, which would otherwise invert this gate on a 1.6
+    host; `landing_approver_standing_review`
     reads a login's own most recent standing `APPROVED`/`CHANGES_REQUESTED`
     review — ignoring `COMMENTED`/`DISMISSED` — reading empty for a login
     that never reviewed, and non-zero on an unreadable list, confirming this
@@ -13534,7 +13642,14 @@ pull request, run the ones the change touches and any it could regress.
     every refusal path logs `landing-refused` naming a reason, never a
     blocked pull request or a withheld claim. `scripts/doctor.sh` warns when
     a repository's effective `merge_autonomy_routine_sources` names a source
-    that repository's own `sources` never gathers (`test/doctor.test.sh`).
+    that repository's own `sources` never gathers, and separately warns when
+    that effective list carries any `issues:<band>` entry (agent-ops#519) —
+    an entry that can validate clean against the first check (the
+    repository's own `sources` list typically does gather that banded
+    token) while still never matching a work order once its `source`
+    collapses to the plain word `issues` — naming the banded entry and
+    `lib/landing.sh`'s own header as the cause, and never firing for an
+    unbanded entry (`test/doctor.test.sh`).
     `scripts/doctor.sh` also fails, for every repository at
     `agent-merges-routine` or above (its own *configured* level), a default
     branch with no active merge queue while either `allow_auto_merge` or

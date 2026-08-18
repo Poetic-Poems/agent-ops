@@ -84,14 +84,16 @@ assert_rejected() {
   fi
 }
 
-# assert_doctor DESC JQ_MUTATION EXPECTED_EXIT SUBSTRING
-assert_doctor() {
-  local desc="$1" mutation="$2" expected_exit="$3" expect="$4" out status
-  jq "$mutation" "$CONFIG" > "$tmp/c.json" || { bad "$desc (mutation did not apply)"; return; }
+# _assert_doctor_check DESC EXPECTED_EXIT SUBSTRING FIXTURE_PATH — runs
+# doctor.sh against an already-built fixture and grades the result; shared by
+# assert_doctor and assert_doctor_shipped below, which differ only in how
+# they build the fixture the check runs against.
+_assert_doctor_check() {
+  local desc="$1" expected_exit="$2" expect="$3" fixture="$4" out status
   # Not --quiet: several of the rules below are asserted through the `ok` line
   # they print, and a check that passes silently cannot be told from one that
   # never ran.
-  out="$(bash "$SCRIPT_DIR/scripts/doctor.sh" --offline --config "$tmp/c.json" 2>&1)"
+  out="$(bash "$SCRIPT_DIR/scripts/doctor.sh" --offline --config "$fixture" 2>&1)"
   status=$?
   if (( status != expected_exit )); then
     printf 'FAIL - %s\n     expected exit %s, got %s\n     output: %s\n' \
@@ -104,6 +106,46 @@ assert_doctor() {
       "$desc" "$expect" "$out"
     failures=$(( failures + 1 ))
   fi
+}
+
+# DOCTOR_NEUTRAL_MUTATION clears every merge_autonomy(-adjacent) key —
+# top-level and per-repo merge_autonomy and merge_autonomy_routine_sources,
+# and the four approver_* keys — back to its schema default before an
+# assert_doctor fixture's own mutation is applied on top. Without this, a
+# fixture whose mutation never mentions these keys still silently inherits
+# whatever config.json currently says about them, so a routine change to
+# one (a merge-autonomy Stage promotion, an Approver key rotation) can flip
+# an assertion that was never about that key at all (TD-PPagop-26081801,
+# recurring as agent-ops#546 and agent-ops#560). A fixture that wants one of
+# these keys set now has to say so itself, in its own mutation.
+# shellcheck disable=SC2016  # a jq program, not meant to expand
+DOCTOR_NEUTRAL_MUTATION='
+  del(.merge_autonomy, .merge_autonomy_routine_sources,
+      .approver_app_id, .approver_model_default,
+      .approver_model_complex, .approver_model_critical)
+  | .repos = [ .repos[]? | del(.merge_autonomy, .merge_autonomy_routine_sources) ]
+'
+
+# assert_doctor DESC JQ_MUTATION EXPECTED_EXIT SUBSTRING
+# Builds the fixture from the neutral base above, so it opts in to whatever
+# merge_autonomy/Approver state it needs rather than inheriting it.
+assert_doctor() {
+  local desc="$1" mutation="$2" expected_exit="$3" expect="$4"
+  jq "$DOCTOR_NEUTRAL_MUTATION | ($mutation)" "$CONFIG" > "$tmp/c.json" \
+    || { bad "$desc (mutation did not apply)"; return; }
+  _assert_doctor_check "$desc" "$expected_exit" "$expect" "$tmp/c.json"
+}
+
+# assert_doctor_shipped DESC JQ_MUTATION EXPECTED_EXIT SUBSTRING
+# Same as assert_doctor, but builds the fixture straight from config.json
+# with none of the normalisation above — for the handful of assertions that
+# are deliberately about the shipped file's own merge_autonomy/Approver
+# state, not a constructed fixture, so they must keep reading it for real.
+assert_doctor_shipped() {
+  local desc="$1" mutation="$2" expected_exit="$3" expect="$4"
+  jq "$mutation" "$CONFIG" > "$tmp/c.json" \
+    || { bad "$desc (mutation did not apply)"; return; }
+  _assert_doctor_check "$desc" "$expected_exit" "$expect" "$tmp/c.json"
 }
 
 # --- The shipped configuration is the schema's first and most important
@@ -594,7 +636,7 @@ assert_project_review "a repo entry with no overrides resolves to every default"
   '.project_review.repos = [{slug: "Poetic-Poems/poetic"}]' \
   '.[0].model == "claude-sonnet-5" and .[0].pr_label == "project-review"
    and .[0].branch_prefix == "review/" and .[0].min_days_between_reviews == 13
-   and .[0].not_before == "2026-07-30T16:00:00Z"
+   and .[0].not_before == "2026-08-21T12:00:00Z"
    and .[0].model_key == "project_review.defaults.model"'
 assert_project_review "a repo's own override wins over the default, for that key alone" \
   '.project_review.repos = [{slug: "Poetic-Poems/poetic", model: "claude-opus-5"}]' \
@@ -648,7 +690,7 @@ assert_doctor "doctor fails an implementation-plan source with no path, as agent
 assert_doctor "doctor fails duplicate slugs in project_review.repos, as review-cycle.sh would" \
   '.project_review.repos[1].slug = .project_review.repos[0].slug' 1 \
   'project_review.repos lists [Poetic-Poems/poetic] more than once'
-assert_doctor "doctor passes distinct project_review.repos slugs" \
+assert_doctor_shipped "doctor passes distinct project_review.repos slugs" \
   '.' 0 'every project_review.repos entry names a distinct repository'
 assert_doctor "doctor fails a label set to blocked, which would make its item unselectable" \
   '.unvoid_label = "blocked"' 1 'unvoid_label is "blocked"'
@@ -673,8 +715,15 @@ assert_doctor "doctor reports the derived lock rather than checking a configured
   '.lock_stale_after = 1' 0 'the cycle lock is derived at'
 assert_doctor "doctor warns that a configured cap pins itself" \
   '.timeout_reviewer = 60' 0 'turns off its self-tuning'
-assert_doctor "doctor warns that a configured Refiner cap pins itself, not only the four repo-scoped actors" \
+assert_doctor "doctor warns that a configured Refiner cap pins itself, not only the repo-scoped actors" \
   '.timeout_refiner = 15' 0 "timeout_refiner is set, which pins"
+assert_doctor "doctor warns that a configured Approver backstop pins itself, the newest of the twelve top-level keys" \
+  '.timeout_approver = 15' 0 "timeout_approver is set, which pins"
+assert_doctor "doctor warns that a configured Approver watchdog pins itself too" \
+  '.inactivity_approver = 5' 0 "inactivity_approver is set, which pins"
+assert_doctor "doctor warns on a per-repo stage_timeouts.approver override, naming the repo" \
+  '.repos[0].stage_timeouts = {"approver": 45}' 0 \
+  "Poetic-Poems/poetic's stage_timeouts.approver is set, which pins"
 assert_doctor "doctor warns on a per-repo stage_timeouts override, naming the repo" \
   '.repos[0].stage_timeouts = {"implementor": 90}' 0 \
   "Poetic-Poems/poetic's stage_timeouts.implementor is set, which pins"
@@ -683,7 +732,7 @@ assert_doctor "doctor warns on a per-repo stage_inactivity override, naming the 
   "Poetic-Poems/poetic's stage_inactivity.reviewer is set, which pins"
 assert_doctor "a per-repo override wider than every prior widens the reported lock, matching what agent-cycle.sh derives" \
   '.repos[0].stage_timeouts = {"implementor": 300}' 0 \
-  "the cycle lock is derived at 500 min"
+  "the cycle lock is derived at 530 min"
 assert_doctor "doctor warns when a repo's project_review label collides with the implementation one" \
   '.project_review.repos[0].pr_label = .pr_label' 0 \
   "Poetic-Poems/poetic's project_review pr_label ($(jq -r '.pr_label' "$CONFIG")) equals pr_label"
@@ -693,7 +742,7 @@ assert_doctor "doctor warns when crash-loop escalation is configured with nowher
   '.crash_loop_after = 4 | .crash_loop_repo = ""' 0 'crash_loop_after is set but crash_loop_repo is empty'
 assert_doctor "doctor reports a schema violation as a failure, naming the path" \
   '.pr_labell = "x"' 1 'config: unknown key "pr_labell"'
-assert_doctor "doctor passes the shipped configuration" \
+assert_doctor_shipped "doctor passes the shipped configuration" \
   '.' 0 'No failures'
 
 # --- D18 (requirement 2.3b): merge_autonomy above human needs an Approver
@@ -702,11 +751,14 @@ assert_doctor "doctor passes the shipped configuration" \
 #     unlike the two shared cross-key rules above.
 #
 #     Every "no approver_*" case below deletes the key explicitly rather than
-#     relying on the shipped config not to carry it. These assertions were
-#     written when the fleet ran at Stage 0, where every one of these keys was
-#     absent, so `.merge_autonomy = "agent-approves"` alone did construct an
-#     unpaired config — and then Stage 1 entry set them for real and three of
-#     these assertions inverted, because the fixture they thought they were
+#     relying on the shipped config not to carry it — belt and suspenders
+#     with DOCTOR_NEUTRAL_MUTATION, which now clears the same keys for every
+#     assert_doctor fixture before this mutation ever runs
+#     (TD-PPagop-26081801). These assertions were written when the fleet ran
+#     at Stage 0, where every one of these keys was absent, so
+#     `.merge_autonomy = "agent-approves"` alone did construct an unpaired
+#     config — and then Stage 1 entry set them for real and three of these
+#     assertions inverted, because the fixture they thought they were
 #     building no longer existed (#546). A cross-key rule's negative case has
 #     to state both halves: what is set, and what is not. ---
 assert_doctor "doctor fails a merge_autonomy level above human with no approver_app_id, naming the key" \
@@ -721,15 +773,25 @@ assert_doctor "doctor fails a merge_autonomy level above human with approver_app
 assert_doctor "doctor passes a merge_autonomy level above human once approver_app_id and approver_model_default are both set" \
   '.merge_autonomy = "agent-approves" | .approver_app_id = "123456" | .approver_model_default = "claude-sonnet-5"' 0 \
   'merge_autonomy is "agent-approves"'
+#     The same lesson caught this assertion a second time at Stage 2 entry
+#     (agent-ops#560): setting the *top-level* key to `human` did construct a
+#     wholly-human fleet only while no `repos[]` entry carried an override of
+#     its own, which agent-ops' promotion to `agent-merges-routine` ended. The
+#     per-repo overrides are now cleared explicitly here for the same reason
+#     the approver keys are deleted explicitly above — a fixture must build
+#     the state it claims to test, never inherit half of it from whatever the
+#     shipped configuration happens to say this month.
 assert_doctor "doctor passes human explicitly, same as the default, with no approver_app_id or approver_model_default" \
-  '.merge_autonomy = "human" | del(.approver_app_id) | del(.approver_model_default)' 0 \
+  '.merge_autonomy = "human" | del(.repos[].merge_autonomy) | del(.approver_app_id) | del(.approver_model_default)' 0 \
   'merge_autonomy is "human"'
 # The shipped configuration's own pairing, asserted as a fact rather than left
 # implicit in "doctor passes the shipped configuration" above: at Stage 1 the
 # fleet runs above `human`, so both keys must be set, and a config change that
 # raised the level while dropping either would otherwise fail only through a
-# generic pass/fail assertion that names neither key.
-assert_doctor "the shipped configuration's own merge_autonomy is paired with both Approver keys" \
+# generic pass/fail assertion that names neither key. Deliberately
+# assert_doctor_shipped, not assert_doctor: this one is about what
+# config.json really says, so it must not be normalised away.
+assert_doctor_shipped "the shipped configuration's own merge_autonomy is paired with both Approver keys" \
   '.' 0 'merge_autonomy is "agent-approves"'
 
 # --- D18 §5.4 (requirement 2.3c): merge_budget_per_day, reported per

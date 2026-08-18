@@ -322,6 +322,15 @@ done < <(cfg '.repos[]?.slug // empty')
 # list (its own override, else the top-level key, else the shipped default),
 # never fleet-wide: a source missing from one repository's `sources` may be
 # present in another's.
+#
+# The two lists speak deliberately different vocabularies (agent-ops#558):
+# `sources` is banded (`issues:high`), the routine list is not (`issues`),
+# because a work order's own `source` has lost its band by the time landing
+# compares it. A naive set difference would therefore report a correctly
+# configured bare `issues` as ungathered — the fix reported as the fault —
+# so the routine side is normalised first: `issues` counts as gathered when
+# the repository's `sources` carry any `issues:<band>` at all. Every other
+# token is identical in both vocabularies and compares unchanged.
 while IFS= read -r rs_slug; do
   [[ -n "$rs_slug" ]] || continue
   rs_missing="$(jq -r --arg slug "$rs_slug" '
@@ -329,12 +338,30 @@ while IFS= read -r rs_slug; do
     | ($r.merge_autonomy_routine_sources // .merge_autonomy_routine_sources
        // ["register-hygiene","tech-debt"]) as $routine
     | ($r.sources // []) as $have
+    | (if ($have | any(startswith("issues"))) then $have + ["issues"] else $have end) as $have
     | ($routine - $have) | .[]
   ' <<<"$DEFAULTED_CONFIG" 2>/dev/null | paste -sd, - || true)"
   if [[ -n "$rs_missing" ]]; then
     warn "$rs_slug's merge_autonomy_routine_sources names [$rs_missing], which its own sources list never gathers — a routine source this repository never produces can never be selected, let alone armed (D18 WI-7)"
   else
     ok "$rs_slug's merge_autonomy_routine_sources are all sources it actually gathers"
+  fi
+  # A banded `issues:<band>` token validates clean against the check above —
+  # it is typically present in the repository's own `sources` list too — but
+  # can still never match a work order: every `issues:<band>` candidate's own
+  # `source` collapses to the plain word "issues" the moment it becomes a
+  # work order (scripts/gather-issues.sh), before landing_eligible's exact
+  # string comparison ever runs (lib/landing.sh's own header). Left
+  # unreported, that reads as a clean doctor run and a silent, permanent
+  # never-match (#519).
+  rs_banded="$(jq -r --arg slug "$rs_slug" '
+    ((.repos // [])[] | select(.slug == $slug)) as $r
+    | ($r.merge_autonomy_routine_sources // .merge_autonomy_routine_sources
+       // ["register-hygiene","tech-debt"])
+    | map(select(startswith("issues:"))) | .[]
+  ' <<<"$DEFAULTED_CONFIG" 2>/dev/null | paste -sd, - || true)"
+  if [[ -n "$rs_banded" ]]; then
+    warn "$rs_slug's merge_autonomy_routine_sources names [$rs_banded], a banded issues:<band> token — every issues:<band> work order's own source collapses to the plain word \"issues\" before landing_eligible's comparison ever runs (lib/landing.sh's own header), so this entry can never match a work order; list \"issues\" itself if this repository should land issues work routinely (D18 WI-7)"
   fi
 done < <(cfg '.repos[]?.slug // empty')
 
@@ -563,19 +590,19 @@ fi
 
 # A configured cap is an override that outranks the derivation for as long as
 # it is there, which is easy to set once and then forget about entirely —
-# at any of requirement 4f's three precedence levels: the ten top-level
-# `timeout_<actor>` / `inactivity_<actor>` keys (five actors, including the
-# Refiner), and every repository's own `stage_timeouts` / `stage_inactivity`
-# entry, named by that repository's slug so the warning says which entry to
-# edit.
+# at any of requirement 4f's three precedence levels: the twelve top-level
+# `timeout_<actor>` / `inactivity_<actor>` keys (six actors, including the
+# Refiner and the Approver), and every repository's own `stage_timeouts` /
+# `stage_inactivity` entry, named by that repository's slug so the warning
+# says which entry to edit.
 while IFS= read -r overridden; do
   [[ -n "$overridden" ]] || continue
   warn "$overridden is set, which pins that cap and turns off its self-tuning — remove it unless you mean to"
 done < <(jq -r '
   [ "timeout_coordinator", "timeout_implementor", "timeout_reviewer",
-    "timeout_enabler", "timeout_refiner", "inactivity_coordinator",
-    "inactivity_implementor", "inactivity_reviewer", "inactivity_enabler",
-    "inactivity_refiner" ]
+    "timeout_approver", "timeout_enabler", "timeout_refiner",
+    "inactivity_coordinator", "inactivity_implementor", "inactivity_reviewer",
+    "inactivity_approver", "inactivity_enabler", "inactivity_refiner" ]
   | map(select(. as $k | ($ARGS.named.cfg[$k] | type) == "number"))[],
   ( ($ARGS.named.cfg.repos // [])[] as $r
     | ["stage_timeouts", "stage_inactivity"][] as $field

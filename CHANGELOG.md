@@ -8,6 +8,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- The autonomous-landing digest (D18 WI-8, agent-ops#411): a new
+  **Autonomous landings** dashboard section reporting, over a rolling 24 h
+  window, every pull request the Script landed without a human — when, which
+  repository and pull request, its title, the work source, the complexity it
+  was armed at, the `enqueued`/`auto-merge` method used, the node that armed
+  it, and the Approver tier and verdict that authorised it. This is the
+  asynchronous audit D18 accepts unattended merging in exchange for (risk 6 of
+  `docs/reviews/2026-08-14-autonomy-investigation.md`), and is permanent
+  rather than rollout scaffolding: at `agent-merges-all` it is the only
+  routine account of what merged.
+
+  Built from the fleet-wide event union, so a landing armed on any node shows
+  on every node's page. The verdict join takes the newest `approver-verdict`
+  for that pull request *at or before* the arm, never a later re-review — an
+  Approver may review the same pull request across several cycles, and only
+  the verdict the arming stage could have seen explains the landing. A landing
+  whose verdict cannot be located still renders, marked `unknown`, since an
+  unexplained landing is the most important row the panel can carry.
+
+  Alongside the landings it reports what would otherwise mislead by omission:
+  refusals over the same window grouped by reason class (two landings beside
+  forty refusals is a classifier holding the line; two beside none may be a
+  gate that is not running), and each repository's `merge_budget_per_day` cap
+  against what the window consumed, with an unlimited repository reading as
+  `∞` rather than a cap of zero. A payload the Publisher could not assemble
+  renders as "could not be assembled this tick", explicitly distinguished from
+  a quiet night — an empty list is a reportable nothing, `null` is an outage,
+  and the two must not look alike.
+
 - The deterministic eligibility classifier and the arming/enqueue step (D18
   WI-7, requirement 8d; agent-ops#410): at `merge_autonomy: agent-merges-routine`
   or `agent-merges-all`, once the Approver's own engagement reaches an
@@ -53,8 +82,85 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   human queue for it to be parked in at that level. Enforced at the arming
   step (D18 WI-7, above).
 
+- The Approver's own backstop and watchdog overrides (TD-PPagop-26081601,
+  agent-ops#473): `timeout_approver` and `inactivity_approver` fleet-wide, and
+  `approver` under a `repos[]` entry's `stage_timeouts` / `stage_inactivity`,
+  completing requirement 4f's precedence for the one implementation actor that
+  had none. The Approver stage (D18 WI-5) shipped with its own
+  `stage_budget_apply` call but no configuration to reach it, so an
+  installation could not pin either cap for that stage while it could for
+  every other. Omitting them stays the normal case — both caps still derive
+  themselves. The derived `lock_stale_after` accordingly sums six actors
+  rather than five, widening the default cycle lock by the Approver's 30 min
+  prior, and `scripts/doctor.sh`'s pinned-cap warning now covers both new
+  keys at every level of the precedence (TD-PPagop-26081802).
+
 ### Fixed
 
+- A Co-Ordinator `needs_refinement` report for an issue can no longer
+  re-assert a `Blocked-by:` dependency the Script's own gate already resolved
+  (agent-ops#566). Requirement 3j drops any issue naming an unresolved
+  dependency before the Co-Ordinator ever sees it, but a stale sentence can
+  still sit in an otherwise-selectable issue's thread after the reference it
+  named has closed — one cycle read that sentence for five separate issues
+  and reported each `needs_refinement`, even though the dependency gate had
+  already cleared all five. `record_needs_refinement_block` now refuses, with
+  a logged warning and no block, label, or assignment, any `source: "issues"`
+  entry whose own `reason`/`missing`/`evidence` names — by issue number — a
+  dependency this cycle's own gathered thread already proves resolved
+  (`dependency_refusal_reason`, `lib/dependency-gate.sh`); a genuine
+  under-specification or question/discussion decline on the same item is
+  untouched. `prompts/coordinator.md` now states plainly, ahead of restating
+  the mechanics, that this exclusion's dependency half is never the
+  Co-Ordinator's to re-derive, and that `evidence` may never assert the live
+  state of an item outside this cycle's own runtime input.
+- `merge_autonomy_routine_sources` can now name issue work at all
+  (agent-ops#558). The key shared one `sourceToken` enum with
+  `repos[].sources`, but the two are matched against different things: a
+  `sources` token is compared against a *candidate*, while a routine-list
+  token is compared against a finished work order's own `source`, which
+  `scripts/gather-issues.sh` has by then collapsed from `issues:<band>` to
+  the plain word `issues`. The shared enum therefore offered exactly the
+  four spellings landing can never match and withheld the only one it can,
+  so an installation widening its routine list to include issues got a
+  config that validated and not one issue ever armed. agent-ops#519 caught
+  the silence and added a doctor warn whose remedy — "list `issues` itself"
+  — the same enum then rejected, leaving issue work with no writable
+  spelling at all. The key now takes its own `landingSourceToken` enum
+  (bare `issues`, no bands), a banded entry is a schema error rather than a
+  silent never-match, and `scripts/doctor.sh` reads a bare `issues` in the
+  routine list as gathered whenever the repository's own `sources` carry any
+  `issues:<band>` — without which following its own advice would simply
+  trade one warning for another. Banding remains a gathering-time rank that
+  landing cannot see, now stated plainly in the schema rather than buried as
+  a disclosed limitation: `issues` is all-or-nothing at the arming step, and
+  an installation wanting only its low-band issues landed narrows what it
+  gathers, not what it arms.
+- `landing_eligible`'s routine-source membership test no longer inverts on
+  jq 1.6 (agent-ops#558). `jq -e` exits 0 on *empty input* under jq 1.6 and
+  4 under jq 1.7, and both `_landing_routine_sources`' array probes and the
+  membership test itself fed possibly-empty strings to `jq -e`: on a 1.6
+  host the routine list resolved empty instead of falling through to the
+  shipped default, and the membership test then admitted every source the
+  gate exists to refuse. The container image pins jq 1.7 (`ubuntu:24.04`),
+  which is the only reason this was never a live fail-open on the fleet — an
+  argument from a pinned dependency rather than from the gate's own code,
+  which is the wrong thing to rest an arming decision on. All three call
+  sites now test for emptiness explicitly before consulting `jq -e`. The
+  three `test/landing.test.sh` assertions that failed on any jq 1.6 host —
+  and passed in CI purely because CI runs inside the image — now pass
+  everywhere.
+
+- `scripts/doctor.sh` now also warns when a repository's effective
+  `merge_autonomy_routine_sources` names a banded `issues:<band>` token
+  (agent-ops#519): the existing "does this repository's own `sources` list
+  gather it" check (agent-ops#512) passes cleanly, since the banded token
+  typically is present there too, but every `issues:<band>` work order's own
+  `source` collapses to the plain word `issues` before `landing_eligible`'s
+  exact-string comparison ever runs (`lib/landing.sh`'s own header) — a
+  known, disclosed limitation — so the entry could validate clean and still
+  never match a work order. The new warn names the offending token and
+  suggests listing `issues` itself.
 - `scripts/doctor.sh` now checks that a repository configured at
   `merge_autonomy: agent-merges-routine` or above can actually land a pull
   request the way `landing_arm` would (agent-ops#532): where its default
@@ -223,6 +329,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   differs. A field with none of the four names writable at all is reported
   as a new, distinct reason, `band-option-missing`, rather than reusing
   `field-unresolvable` for a different failure.
+- `maybe_run_refiner`'s `mutation-failed` warning (issue #551, a follow-up to
+  #538/#534) now names the band actually attempted, not the band the verdict
+  asked for, when a fallback ran: previously the warning always named the
+  verdict's own band even though the failed write targeted a different,
+  fallback band, so an operator reading it could not tell which band the
+  pipeline actually tried to set. It now also names the requested band
+  alongside the attempted one whenever the failed result carries a
+  `requested` field; a `mutation-failed` with no fallback, and the other
+  three failure reasons (`field-unresolvable`, `band-option-missing`,
+  `issue-unreadable`), keep their existing wording unchanged, since nothing
+  was attempted on those paths.
+- `refiner_filter_unbandable_triage`'s pre-flight (issue #542, the degenerate
+  case between #511 and #534) now also drops a repository's `triage_only`
+  candidates when its `Priority` field resolves cleanly but carries none of
+  `Urgent`/`High`/`Medium`/`Low` at all — an organisation that renamed every
+  option, e.g. to `P0`…`P3`. Previously such a repository passed the
+  pre-flight (its field *does* resolve), paid the Refiner's spend every
+  cycle, and then hit `issue_priority_apply`'s `band-option-missing` with
+  nothing to fall back to, leaving every `triage_only` issue in that
+  repository — not just those with one band missing — re-entering the
+  candidate set forever: #511's starvation shape again, at #511's own blast
+  radius. The new check reuses the field lookup the pre-flight already made
+  (`issue_priority_options_any`, `lib/issue-priority.sh`), so it costs no
+  additional GraphQL call, and logs a warning worded distinctly from the
+  existing "Priority field unresolvable" one. A repository missing only
+  *some* of the four names is unaffected — `issue_priority_apply`'s own
+  per-issue fallback (#534, above) still bands it.
 
 ### Changed
 

@@ -661,14 +661,17 @@ refiner_candidate_items() {
 
 # refiner_drop_unbandable_triage CANDIDATES_JSON UNRESOLVABLE_SLUGS_JSON
 # Print CANDIDATES_JSON with every entry whose `triage_only` is `true` *and*
-# whose `repo` appears in UNRESOLVABLE_SLUGS_JSON (a JSON array of slugs)
-# removed, every other entry printed verbatim, order preserved (issue #511).
+# whose `repo` appears in UNRESOLVABLE_SLUGS_JSON (a JSON array of the slugs
+# the I/O wrapper named below found unbandable, by either route) removed,
+# every other entry printed verbatim, order preserved (issue #511).
 # A `triage_only` entry exists solely to let the Refiner band an
 # already-refined issue (requirement 39g); when this token cannot resolve
-# that repository's `Priority` field at all, the band can never be written,
-# so the engagement it would cost has nothing it could achieve. Every other
-# candidate from the same repository — and every candidate, `triage_only` or
-# not, from a repository not named here — passes through unchanged.
+# that repository's `Priority` field at all — or resolves it to a field
+# carrying none of the four band names (issue #542) — the band can never be
+# written, so the engagement it would cost has nothing it could achieve.
+# Every other candidate from the same repository — and every candidate,
+# `triage_only` or not, from a repository not named here — passes through
+# unchanged.
 #
 # Pure and jq-only, so it is directly unit-testable; the live GraphQL check
 # that produces UNRESOLVABLE_SLUGS_JSON lives in the I/O wrapper beside it,

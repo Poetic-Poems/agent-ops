@@ -217,6 +217,22 @@ issue_priority_options_complete() {
     <<<"${1:-}" >/dev/null 2>&1
 }
 
+# issue_priority_options_any FIELD_IDS_JSON
+# True (exit 0) iff FIELD_IDS_JSON carries at least one of the four band
+# names among its options. The complement of `issue_priority_options_complete`
+# above, and needed for a different distinction: `refiner_filter_unbandable_triage`
+# (agent-cycle.sh, agent-ops#542) must tell "some bands missing, `triage_only`
+# candidates still unaffected" (agent-ops#534, `issue_priority_fallback_band`
+# handles it per-issue) apart from "every band missing" — a field that
+# resolves but carries none of the four names can never write any
+# `triage_only` verdict at all, the same terminal state, for that pre-flight's
+# purposes, as a field that fails to resolve outright.
+issue_priority_options_any() {
+  jq -e '(.options // {}) as $o
+         | ["Urgent","High","Medium","Low"] | any(. as $n | $o | has($n))' \
+    <<<"${1:-}" >/dev/null 2>&1
+}
+
 # issue_priority_current SLUG NUMBER
 # Print `{"node_id": "…", "priority": "<raw option name>"|null}` for issue
 # NUMBER in SLUG, read live — the pre-write re-read the ratchet needs so a
