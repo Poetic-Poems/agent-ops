@@ -6603,13 +6603,18 @@ implements.
     `landing-armed` (requirement 8d, D18 WI-7) is written once per successful
     arm, carrying `pr_url`, `repo`, `source`, `complexity` and `method` —
     `enqueued` or `auto-merge`, `landing_arm`'s own report of which write it
-    made. A `landing-refused` carries `pr_url`, `repo` and `reason` — a plain
-    string, one per refusal path in `run_landing_stage`, naming the gate that
-    failed (an ineligible or unreadable classifier verdict, a dirty or
+    made — plus `retry: true` when the arm came from the landing-retry sweep
+    rather than the round that first approved the pull request (requirement
+    8u); the field is absent, never `false`, on that original round. A
+    `landing-refused` carries `pr_url`, `repo` and `reason` — a plain
+    string, one per refusal path in `_landing_stage_attempt`, naming the gate
+    that failed (an ineligible or unreadable classifier verdict, a dirty or
     unreadable review gate, a standing human `CHANGES_REQUESTED`, an
     unreadable merge budget or App login, an already-queued or unreadable
     merge-queue probe, an unreadable token mint, or `landing_arm` itself
-    refusing). `landing_arm`'s own refusal names which of its steps failed —
+    refusing) — and, on the same terms as `landing-armed` above, `retry:
+    true` when the refusal came from the landing-retry sweep.
+    `landing_arm`'s own refusal names which of its steps failed —
     the pull request read, the merge-queue read, the enqueue mutation (a
     transport failure or a partial write reporting no queue entry), or the
     fallback `gh pr merge --auto --squash` — read off its exit status by
