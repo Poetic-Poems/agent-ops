@@ -778,7 +778,7 @@ D18's spend governor (§5.4, `lib/merge-budget.sh`, requirement 2.3c): a rolling
 
 ### Extended notes: `merge_autonomy_routine_sources`
 
-D18 WI-7 (requirement 8d, `lib/landing.sh`'s `landing_eligible`): which work sources may be armed automatically at `agent-merges-routine` and above, fleet-wide default; a `repos[]` entry's own `merge_autonomy_routine_sources` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). An eligible pull request also needs `complexity:low`/`medium` and `landing_protected_paths_hit` to report no protected path touched. Matched against a pull request's own `source` by exact string equality: every `issues:<band>` work order's own `source` collapses to the plain word `issues` (`scripts/gather-issues.sh`), so an `issues:<band>` entry here never matches one — a known, disclosed limitation (`lib/landing.sh`'s own header). `scripts/doctor.sh` warns when a repository's own effective list names a source that repository's `sources` never gathers.
+D18 WI-7 (requirement 8d, `lib/landing.sh`'s `landing_eligible`): which work sources may be armed automatically at `agent-merges-routine` and above, fleet-wide default; a `repos[]` entry's own `merge_autonomy_routine_sources` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). An eligible pull request also needs `complexity:low`/`medium` and `landing_protected_paths_hit` to report no protected path touched. Matched against a pull request's own `source` by exact string equality: every `issues:<band>` work order's own `source` collapses to the plain word `issues` (`scripts/gather-issues.sh`), so an `issues:<band>` entry here never matches one — a known, disclosed limitation (`lib/landing.sh`'s own header). `scripts/doctor.sh` warns when a repository's own effective list names a source that repository's `sources` never gathers, and separately warns on any `issues:<band>` entry here (agent-ops#519) — that entry can validate clean against the first check, since the repository's own `sources` list typically does gather the banded token, while still never matching a work order once it collapses.
 
 <!-- config-table:notes-end -->
 
@@ -13351,7 +13351,14 @@ pull request, run the ones the change touches and any it could regress.
     every refusal path logs `landing-refused` naming a reason, never a
     blocked pull request or a withheld claim. `scripts/doctor.sh` warns when
     a repository's effective `merge_autonomy_routine_sources` names a source
-    that repository's own `sources` never gathers (`test/doctor.test.sh`).
+    that repository's own `sources` never gathers, and separately warns when
+    that effective list carries any `issues:<band>` entry (agent-ops#519) —
+    an entry that can validate clean against the first check (the
+    repository's own `sources` list typically does gather that banded
+    token) while still never matching a work order once its `source`
+    collapses to the plain word `issues` — naming the banded entry and
+    `lib/landing.sh`'s own header as the cause, and never firing for an
+    unbanded entry (`test/doctor.test.sh`).
     `scripts/doctor.sh` also fails, for every repository at
     `agent-merges-routine` or above (its own *configured* level), a default
     branch with no active merge queue while either `allow_auto_merge` or

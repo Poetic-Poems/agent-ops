@@ -336,6 +336,23 @@ while IFS= read -r rs_slug; do
   else
     ok "$rs_slug's merge_autonomy_routine_sources are all sources it actually gathers"
   fi
+  # A banded `issues:<band>` token validates clean against the check above —
+  # it is typically present in the repository's own `sources` list too — but
+  # can still never match a work order: every `issues:<band>` candidate's own
+  # `source` collapses to the plain word "issues" the moment it becomes a
+  # work order (scripts/gather-issues.sh), before landing_eligible's exact
+  # string comparison ever runs (lib/landing.sh's own header). Left
+  # unreported, that reads as a clean doctor run and a silent, permanent
+  # never-match (#519).
+  rs_banded="$(jq -r --arg slug "$rs_slug" '
+    ((.repos // [])[] | select(.slug == $slug)) as $r
+    | ($r.merge_autonomy_routine_sources // .merge_autonomy_routine_sources
+       // ["register-hygiene","tech-debt"])
+    | map(select(startswith("issues:"))) | .[]
+  ' <<<"$DEFAULTED_CONFIG" 2>/dev/null | paste -sd, - || true)"
+  if [[ -n "$rs_banded" ]]; then
+    warn "$rs_slug's merge_autonomy_routine_sources names [$rs_banded], a banded issues:<band> token — every issues:<band> work order's own source collapses to the plain word \"issues\" before landing_eligible's comparison ever runs (lib/landing.sh's own header), so this entry can never match a work order; list \"issues\" itself if this repository should land issues work routinely (D18 WI-7)"
+  fi
 done < <(cfg '.repos[]?.slug // empty')
 
 # `blocked` excludes an issue from the issues source, so projecting it onto an
