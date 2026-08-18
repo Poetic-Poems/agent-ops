@@ -636,7 +636,7 @@ assert_project_review "a repo entry with no overrides resolves to every default"
   '.project_review.repos = [{slug: "Poetic-Poems/poetic"}]' \
   '.[0].model == "claude-sonnet-5" and .[0].pr_label == "project-review"
    and .[0].branch_prefix == "review/" and .[0].min_days_between_reviews == 13
-   and .[0].not_before == "2026-07-30T16:00:00Z"
+   and .[0].not_before == "2026-08-21T12:00:00Z"
    and .[0].model_key == "project_review.defaults.model"'
 assert_project_review "a repo's own override wins over the default, for that key alone" \
   '.project_review.repos = [{slug: "Poetic-Poems/poetic", model: "claude-opus-5"}]' \

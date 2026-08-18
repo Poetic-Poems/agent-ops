@@ -77,11 +77,20 @@
       "pr_label": "project-review",
       "branch_prefix": "review/",
       "min_days_between_reviews": 13,
-      "not_before": "2026-07-30T16:00:00Z"
+      "not_before": "2026-08-21T12:00:00Z"
     },
     "repos": [
-      { "slug": "Poetic-Poems/poetic" },
-      { "slug": "Poetic-Poems/poetic-fiddle" }
+      {
+        "slug": "Poetic-Poems/poetic"
+      },
+      {
+        "slug": "Poetic-Poems/poetic-fiddle",
+        "min_days_between_reviews": 15
+      },
+      {
+        "slug": "Poetic-Poems/agent-ops",
+        "min_days_between_reviews": 6
+      }
     ]
   }
 }
