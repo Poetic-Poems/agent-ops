@@ -89,13 +89,24 @@ extract() {  # <function name>
 }
 
 refuse_block="$(extract _landing_refuse)"
-stage_block="$(extract run_landing_stage)"
+# `run_landing_stage` is gate 0 alone since TD-PPagop-26081701 split the
+# other six gates out into `_landing_stage_attempt` (so the landing-retry
+# sweep, requirement 2.1e, can reuse them for a pull request outside the
+# round that first approved it) — both are extracted and sourced together so
+# a call to `run_landing_stage` below still exercises the whole sequence,
+# unchanged from what this file asserted before the split.
+wrapper_block="$(extract run_landing_stage)"
+stage_block="$(extract _landing_stage_attempt)"
 if [[ -z "$refuse_block" || "$refuse_block" != *"landing-refused"* ]]; then
   echo "FAIL - could not extract _landing_refuse from agent-cycle.sh — has it moved?" >&2
   exit 1
 fi
-if [[ -z "$stage_block" || "$stage_block" != *"landing_arm"* ]]; then
+if [[ -z "$wrapper_block" || "$wrapper_block" != *"_landing_stage_attempt"* ]]; then
   echo "FAIL - could not extract run_landing_stage from agent-cycle.sh — has it moved?" >&2
+  exit 1
+fi
+if [[ -z "$stage_block" || "$stage_block" != *"landing_arm"* ]]; then
+  echo "FAIL - could not extract _landing_stage_attempt from agent-cycle.sh — has it moved?" >&2
   exit 1
 fi
 
@@ -202,6 +213,7 @@ HARNESS
 {
   printf '%s\n' "$refuse_block"
   printf '%s\n' "$stage_block"
+  printf '%s\n' "$wrapper_block"
   printf 'run_landing_stage "$PR_URL" "$COMPLEXITY"\n'
   # Reached only if the stage returned rather than aborting the cycle — the
   # difference this file exists to pin (see header).
@@ -421,6 +433,72 @@ rc="$(run_case PR_URL="https://github.com/Poetic-Poems/agent-ops/pull/not-a-numb
 assert_eq "an unparseable pull request URL arms nothing" "0" "$(count arms)"
 assert_contains "  ... refusing by name" "could not parse a pull request number" "$(refusal)"
 assert_eq "  ... returning 0" "0" "$rc"
+
+# --- The happy path through run_landing_stage never marks retry -------------
+# Gate 0 always calls `_landing_stage_attempt` with no sixth argument, so the
+# ordinary round-of-approval path stays byte-identical to before the split.
+
+rc="$(run_case)"
+assert_eq "the ordinary path's landing-armed carries no retry field" \
+  "null" "$(jq -c '.retry // null' <<<"$(event_of landing-armed)")"
+
+# --- `_landing_stage_attempt`, called directly with RETRY set (2.1e) --------
+# TD-PPagop-26081701: the landing-retry sweep calls this function directly,
+# for a pull request outside the round that first approved it, passing a
+# non-empty sixth argument. Same stubs and defaults as above, but the block
+# is invoked without `run_landing_stage`'s own gate 0 (there is no "this
+# round's Approver verdict" for a retry attempt to read).
+
+# run_case_direct [KEY=VALUE ...]
+# Assembles its own minimal harness — a fresh preamble plus `_refuse_block`/
+# `$stage_block` — and calls `_landing_stage_attempt` directly with a
+# non-empty RETRY, the way the 2.1e landing-retry sweep does. Deliberately
+# not `run_case`'s own harness.sh: that one ends with `run_landing_stage`,
+# gate 0's own entry point, which has no RETRY argument to pass through.
+run_case_direct() {
+  : >"$tmp_dir/events"; : >"$tmp_dir/arms"; : >"$tmp_dir/budget_applied"
+  env -i PATH="$PATH" HOME="$HOME" \
+    T="$tmp_dir" SCRIPT_DIR="$SCRIPT_DIR" PR_URL="$URL" COMPLEXITY="medium" \
+    LEVEL="agent-merges-routine" ELIGIBLE="eligible" GATE_WORD="clean" GATE_REASON="" GATE_RC="0" \
+    STANDING="APPROVED" BUDGET="arm" QUEUED="false" ARM_METHOD="enqueued" \
+    "$@" \
+    bash -c '
+      set -euo pipefail
+      source "$SCRIPT_DIR/lib/landing.sh"
+      selected_repo="Poetic-Poems/agent-ops"; selected_source="tech-debt"
+      state_repo="Poetic-Poems/agent-ops"; state_dir="$T/state"
+      DEFAULTED_CONFIG="{}"; gate_default_branch="main"; pr_label="autonomous-agent"
+      enabler_escalation_label="agent-escalation"; enabler_assignee="warwickallen"
+      mkdir -p "$state_dir"
+      log_event() { printf "%s\t%s\n" "$1" "$2" >>"$T/events"; }
+      merge_autonomy_effective_level() { printf "%s" "$LEVEL"; }
+      landing_eligible() { printf "%s" "$ELIGIBLE"; }
+      review_gate_verdict() { printf "%s" "$GATE_WORD"; return "${GATE_RC:-0}"; }
+      approver_token_identity_login() { printf "pullwright-approver[bot]"; }
+      landing_approver_standing_review() { printf "%s" "${STANDING:-}"; return "${STANDING_RC:-0}"; }
+      _handoff_blocking_reviewers() { return 0; }
+      merge_budget_decide() { printf "{\"decision\":\"%s\",\"cap\":8,\"count\":8,\"anomaly\":false,\"waiting_backlog\":null}" "$BUDGET"; }
+      merge_budget_apply_decision() { printf "%s\n" "$1" >>"$T/budget_applied"; }
+      merge_queue_probe() { printf "{\"queued\":%s}" "${QUEUED:-false}"; }
+      approver_token_get() { printf "a-minted-token"; }
+      landing_arm() { printf "slug=%s\tnumber=%s\ttoken=%s\n" "$1" "$2" "$3" >>"$T/arms"; printf "%s" "${ARM_METHOD-enqueued}"; }
+      '"$refuse_block"'
+      '"$stage_block"'
+      _landing_stage_attempt "$selected_repo" "$PR_URL" "$COMPLEXITY" "$selected_source" "$gate_default_branch" "retry"
+    ' >"$tmp_dir/stdout2" 2>"$tmp_dir/stderr2"
+  printf '%s' "$?"
+}
+
+rc="$(run_case_direct)"
+assert_eq "a direct retry attempt still arms an eligible, cleared PR" "0" "$rc"
+assert_eq "  ... exactly once" "1" "$(count arms)"
+assert_eq "  ... and marks the landing-armed event retry:true" \
+  "true" "$(jq -c '.retry' <<<"$(event_of landing-armed)")"
+
+rc="$(run_case_direct ELIGIBLE="ineligible:complexity is high, not low or medium")"
+assert_eq "a retry attempt never arms complexity:high" "0" "$(count arms)"
+assert_eq "  ... and marks the landing-refused event retry:true" \
+  "true" "$(jq -c '.retry' <<<"$(event_of landing-refused)")"
 
 # --- Result -------------------------------------------------------------------
 

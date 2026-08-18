@@ -3839,30 +3839,60 @@ $node_name
   return 0
 }
 
-# _landing_refuse PR_URL REPO REASON
+# _landing_refuse PR_URL REPO REASON [RETRY]
 # Log `landing-refused` (requirement 8d, requirement 33). The one write
-# every refusal path in `run_landing_stage` makes — never a blocked pull
+# every refusal path in `_landing_stage_attempt` makes — never a blocked pull
 # request, never a withheld claim, exactly as an Approver refusal (8b/8c)
-# costs a missing review and nothing else.
+# costs a missing review and nothing else. RETRY, when non-empty, marks the
+# event `retry: true` (TD-PPagop-26081701) — a fact worth keeping distinct in
+# the log, since it means the refusal happened outside the round that first
+# approved this pull request.
 _landing_refuse() {
-  log_event "landing-refused" "$(jq -nc --arg u "$1" --arg r "$2" --arg reason "$3" \
-    '{pr_url: $u, repo: $r, reason: $reason}')"
+  local retry_bool="false"
+  [[ -z "${4:-}" ]] || retry_bool="true"
+  log_event "landing-refused" "$(jq -nc --arg u "$1" --arg r "$2" --arg reason "$3" --argjson retry "$retry_bool" \
+    '{pr_url: $u, repo: $r, reason: $reason} + (if $retry then {retry: true} else {} end)')"
 }
 
 # run_landing_stage PR_URL COMPLEXITY
-# The arming step (D18 WI-7, docs/reviews/2026-08-14-autonomy-investigation.md
-# §5.1, §6, §7; requirement 8d). Called immediately after `run_approver_stage`
-# — deliberately after, not folded into it: `run_approver_stage` is the
-# review, and every failure mode this function has of its own (a budget
-# hold, a protected path, a queue race) must never be confused for "the
-# Approver refused to review", which requirement 8c's own `approver-verdict`
-# event already speaks for.
+# The arming step's own gate 0 (D18 WI-7,
+# docs/reviews/2026-08-14-autonomy-investigation.md §5.1, §6, §7; requirement
+# 8d). Called immediately after `run_approver_stage` — deliberately after,
+# not folded into it: `run_approver_stage` is the review, and every failure
+# mode `_landing_stage_attempt` has of its own (a budget hold, a protected
+# path, a queue race) must never be confused for "the Approver refused to
+# review", which requirement 8c's own `approver-verdict` event already
+# speaks for.
 #
 # Arms nothing at all unless this very round's Approver engagement reached
 # an explicit, non-adjudicating `approve` — read from `approver_stage_verdict`/
 # `approver_stage_adjudicating`, the globals `run_approver_stage` set
-# immediately before returning (never reused beyond this one read).
-# Everything else below is re-read fresh from GitHub, the discipline
+# immediately before returning (never reused beyond this one read). Once that
+# holds, every other gate is `_landing_stage_attempt`'s job — the same
+# function the 2.1e landing-retry sweep calls for a pull request this gate
+# already passed once, on a later cycle, for a repo and source this global
+# scope does not carry (TD-PPagop-26081701; see that function's own header).
+run_landing_stage() {
+  local pr_url="$1" complexity="$2"
+  [[ "$approver_stage_verdict" == "approve" && "$approver_stage_adjudicating" != "1" ]] || return 0
+  _landing_stage_attempt "$selected_repo" "$pr_url" "$complexity" "$selected_source" "$gate_default_branch"
+}
+
+# _landing_stage_attempt SLUG PR_URL COMPLEXITY SOURCE DEFAULT_BRANCH [RETRY]
+# The six re-read-fresh gates the arming step re-reads before landing a pull
+# request — extracted out of `run_landing_stage` (TD-PPagop-26081701) so the
+# 2.1e landing-retry sweep can reuse the identical, single-source-of-truth
+# sequence for a pull request outside the round that first approved it,
+# rather than a second copy that could drift from what this one actually
+# does. SLUG, SOURCE and DEFAULT_BRANCH are parameters rather than
+# `$selected_repo`/`$selected_source`/`$gate_default_branch` for exactly that
+# reason: the retry sweep runs fleet-wide, for a repository, an originating
+# work-order source and a default branch none of those globals carry this
+# cycle. RETRY, when non-empty, is threaded through to `_landing_refuse` and
+# the final `landing-armed` log as `retry: true` — see that function's own
+# header.
+#
+# Everything below is re-read fresh from GitHub, the discipline
 # `lib/review-gate.sh` established, because nothing this stage arms may
 # trust state more than one function call old:
 #
@@ -3898,18 +3928,17 @@ _landing_refuse() {
 # `landing-refused`), never a pass. A successful arm logs `landing-armed`
 # exactly once, naming the method (`enqueued`/`auto-merge`) `landing_arm`
 # actually used, and never withholds anything requirement 8b already did —
-# this stage runs strictly after the `pr-ready` log and the claim release,
-# and nothing here can affect either.
-run_landing_stage() {
-  local pr_url="$1" complexity="$2"
-  local slug="$selected_repo" number level
-
-  [[ "$approver_stage_verdict" == "approve" && "$approver_stage_adjudicating" != "1" ]] || return 0
+# the *first* attempt (RETRY empty) runs strictly after the `pr-ready` log
+# and the claim release, and nothing here can affect either; a retry attempt
+# runs long after both, against a pull request already sitting `pr-ready`.
+_landing_stage_attempt() {
+  local slug="$1" pr_url="$2" complexity="$3" source="$4" default_branch="${5:-main}" retry="${6:-}"
+  local number level
 
   if [[ "$pr_url" =~ /pull/([0-9]+)$ ]]; then
     number="${BASH_REMATCH[1]}"
   else
-    _landing_refuse "$pr_url" "$slug" "could not parse a pull request number from $pr_url"
+    _landing_refuse "$pr_url" "$slug" "could not parse a pull request number from $pr_url" "$retry"
     return 0
   fi
 
@@ -3922,15 +3951,15 @@ run_landing_stage() {
   case "$level" in
     agent-merges-routine|agent-merges-all) ;;
     *)
-      _landing_refuse "$pr_url" "$slug" "merge_autonomy effective level is $level, not agent-merges-routine or agent-merges-all"
+      _landing_refuse "$pr_url" "$slug" "merge_autonomy effective level is $level, not agent-merges-routine or agent-merges-all" "$retry"
       return 0
       ;;
   esac
 
   local elig
-  elig="$(landing_eligible "$DEFAULTED_CONFIG" "$slug" "$number" "$complexity" "$selected_source" "$level")"
+  elig="$(landing_eligible "$DEFAULTED_CONFIG" "$slug" "$number" "$complexity" "$source" "$level")"
   if [[ "$elig" != "eligible" ]]; then
-    _landing_refuse "$pr_url" "$slug" "$elig"
+    _landing_refuse "$pr_url" "$slug" "$elig" "$retry"
     return 0
   fi
 
@@ -3945,38 +3974,38 @@ run_landing_stage() {
   # exists to refuse. A refusal here must cost one `landing-refused` event and
   # nothing else, exactly like every other gate in this function.
   local gate_combined gate_word gate_reason gate_rc=0
-  gate_combined="$(review_gate_verdict "$pr_url" "$gate_default_branch" 2>/dev/null)" || gate_rc=$?
+  gate_combined="$(review_gate_verdict "$pr_url" "$default_branch" 2>/dev/null)" || gate_rc=$?
   gate_word="${gate_combined%%$'\t'*}"
   gate_reason="${gate_combined#*$'\t'}"
   if [[ "$gate_word" != "clean" || "$gate_rc" != "0" ]]; then
     _landing_refuse "$pr_url" "$slug" \
-      "review gate: ${gate_reason:-${gate_word:-unreadable (review_gate_verdict exited $gate_rc)}}"
+      "review gate: ${gate_reason:-${gate_word:-unreadable (review_gate_verdict exited $gate_rc)}}" "$retry"
     return 0
   fi
 
   local login
   if ! login="$(approver_token_identity_login "")" || [[ -z "$login" ]]; then
-    _landing_refuse "$pr_url" "$slug" "could not read the Approver App's own login"
+    _landing_refuse "$pr_url" "$slug" "could not read the Approver App's own login" "$retry"
     return 0
   fi
 
   local standing
   if ! standing="$(landing_approver_standing_review "$slug" "$number" "$login")"; then
-    _landing_refuse "$pr_url" "$slug" "could not read $pr_url's own review list to confirm the Approver's review actually landed"
+    _landing_refuse "$pr_url" "$slug" "could not read $pr_url's own review list to confirm the Approver's review actually landed" "$retry"
     return 0
   fi
   if [[ "$standing" != "APPROVED" ]]; then
-    _landing_refuse "$pr_url" "$slug" "the Approver's own review is not standing APPROVED on GitHub (state: ${standing:-none})"
+    _landing_refuse "$pr_url" "$slug" "the Approver's own review is not standing APPROVED on GitHub (state: ${standing:-none})" "$retry"
     return 0
   fi
 
   local blocking
   if ! blocking="$(_handoff_blocking_reviewers "$slug" "$number")"; then
-    _landing_refuse "$pr_url" "$slug" "could not read $pr_url's own review list to confirm no human CHANGES_REQUESTED stands"
+    _landing_refuse "$pr_url" "$slug" "could not read $pr_url's own review list to confirm no human CHANGES_REQUESTED stands" "$retry"
     return 0
   fi
   if [[ -n "$blocking" ]]; then
-    _landing_refuse "$pr_url" "$slug" "a human CHANGES_REQUESTED stands ($(paste -sd, - <<<"$blocking"))"
+    _landing_refuse "$pr_url" "$slug" "a human CHANGES_REQUESTED stands ($(paste -sd, - <<<"$blocking"))" "$retry"
     return 0
   fi
 
@@ -3990,18 +4019,18 @@ run_landing_stage() {
 
   local queue_json queued
   if ! queue_json="$(merge_queue_probe "$slug" "$number")"; then
-    _landing_refuse "$pr_url" "$slug" "could not read $pr_url's merge-queue status"
+    _landing_refuse "$pr_url" "$slug" "could not read $pr_url's merge-queue status" "$retry"
     return 0
   fi
   queued="$(jq -r '.queued' <<<"$queue_json" 2>/dev/null)"
   if [[ "$queued" != "false" ]]; then
-    _landing_refuse "$pr_url" "$slug" "already in the merge queue"
+    _landing_refuse "$pr_url" "$slug" "already in the merge queue" "$retry"
     return 0
   fi
 
   local token method arm_rc=0
   if ! token="$(approver_token_get "")"; then
-    _landing_refuse "$pr_url" "$slug" "could not mint the Approver's installation token"
+    _landing_refuse "$pr_url" "$slug" "could not mint the Approver's installation token" "$retry"
     return 0
   fi
   # Captured with `|| arm_rc=$?` rather than a bare `if ! …; then`, matching
@@ -4012,17 +4041,100 @@ run_landing_stage() {
   method="$(landing_arm "$slug" "$number" "$token")" || arm_rc=$?
   if (( arm_rc != 0 )); then
     _landing_refuse "$pr_url" "$slug" \
-      "landing_arm could not enqueue or auto-merge $pr_url: $(_landing_arm_failure_reason "$arm_rc")"
+      "landing_arm could not enqueue or auto-merge $pr_url: $(_landing_arm_failure_reason "$arm_rc")" "$retry"
     return 0
   fi
   if [[ -z "$method" ]]; then
-    _landing_refuse "$pr_url" "$slug" "landing_arm could not enqueue or auto-merge $pr_url: printed no method despite exiting 0"
+    _landing_refuse "$pr_url" "$slug" "landing_arm could not enqueue or auto-merge $pr_url: printed no method despite exiting 0" "$retry"
     return 0
   fi
 
-  log_event "landing-armed" "$(jq -nc --arg u "$pr_url" --arg r "$slug" --arg src "$selected_source" \
-    --arg c "$complexity" --arg m "$method" \
-    '{pr_url: $u, repo: $r, source: $src, complexity: $c, method: $m}')"
+  local retry_bool="false"
+  [[ -z "$retry" ]] || retry_bool="true"
+  log_event "landing-armed" "$(jq -nc --arg u "$pr_url" --arg r "$slug" --arg src "$source" \
+    --arg c "$complexity" --arg m "$method" --argjson retry "$retry_bool" \
+    '{pr_url: $u, repo: $r, source: $src, complexity: $c, method: $m} + (if $retry then {retry: true} else {} end)')"
+}
+
+# _landing_retry_sweep_repo SLUG RETRY_LOGIN
+# One repository's own pass of the 2.1e landing-retry sweep
+# (TD-PPagop-26081701) — every candidate this repository currently has,
+# offered to `_landing_stage_attempt` with `RETRY` set. See that requirement
+# for the full design; this function is the candidate rule alone:
+#
+#   - Same FRESH discipline every other landing read uses (issue #513): a
+#     repository the kill switch or a budget freeze currently holds at
+#     `human`/`agent-approves` is skipped before any further GitHub call —
+#     `_landing_stage_attempt` would refuse every candidate on this gate
+#     alone, so asking is pure cost for a repository this sweep cannot act
+#     on regardless.
+#   - A candidate is open, non-draft, carries `pr_label`, and its own
+#     `complexity:*` label reads `low` or `medium` (never `high` — the
+#     cheapest of the six gates to pre-check, from data already fetched here,
+#     so a permanently-ineligible pull request costs one list call per
+#     repository per cycle rather than the changed-file read
+#     `landing_eligible` would otherwise repeat forever).
+#   - Only a pull request the Approver has genuinely, currently approved is
+#     this sweep's business (`landing_approver_standing_review`, the same
+#     fresh read `_landing_stage_attempt`'s own gate 4 makes) — one never
+#     reviewed (still mid-Reviewer, or `run_approver_stage` never ran for it)
+#     is not a stranded approval, it is ordinary in-flight work, and logging
+#     a `landing-refused` against it every cycle would be pure noise.
+#   - `landing_retry_source` (lib/landing.sh) resolves the pull request's
+#     originating `source` from the fleet's own union log (`$union_log`) —
+#     the one fact this sweep cannot re-read fresh from GitHub, because
+#     GitHub carries no field for it and a pull request's source is fixed at
+#     claim time regardless. A pull request whose source cannot be resolved
+#     this cycle (the claim predates this node's log window, or the union
+#     log itself could not be read) is skipped, never guessed at.
+#
+# Every remaining gate — level, eligibility, review, budget, queue, the arm
+# itself — is `_landing_stage_attempt`'s alone; this function never repeats
+# or second-guesses any of them.
+_landing_retry_sweep_repo() {
+  local slug="$1" login="$2"
+  local level default_branch open
+
+  level="$(merge_autonomy_effective_level "$DEFAULTED_CONFIG" "$slug" "$state_repo" "$state_dir" fresh)"
+  case "$level" in
+    agent-merges-routine|agent-merges-all) ;;
+    *) return 0 ;;
+  esac
+
+  default_branch="$(gh api "repos/$slug" --jq '.default_branch' 2>/dev/null)" || default_branch=""
+  [[ -n "$default_branch" ]] || default_branch="main"
+
+  open="$(gh pr list -R "$slug" --state open --label "$pr_label" \
+    --json number,url,headRefName,isDraft,labels --limit "$GITHUB_PR_LIST_LIMIT" 2>/dev/null || true)"
+  jq -e 'type == "array"' <<<"$open" >/dev/null 2>&1 || open='[]'
+  if github_pr_list_truncated "$(jq 'length' <<<"$open")"; then
+    log_event "warning" "$(jq -nc --arg r "$slug" \
+      --arg d "landing-retry sweep ($slug): the pull-request listing came back at its ${GITHUB_PR_LIST_LIMIT}-item cap; a stranded pull request beyond it is not retried this cycle" \
+      '{detail: $d, repo: $r}')"
+  fi
+
+  local candidates
+  candidates="$(jq -c '[.[] | select(.isDraft | not)
+    | . + {complexity: ((.labels // []) | map(.name) | map(select(startswith("complexity:"))) | first // "" | sub("^complexity:";""))}
+    | select(.complexity == "low" or .complexity == "medium")
+    | {number, url, branch: .headRefName, complexity}]' <<<"$open" 2>/dev/null || echo '[]')"
+
+  local cand pr_url branch number complexity standing source
+  while IFS= read -r cand; do
+    [[ -n "$cand" ]] || continue
+    pr_url="$(jq -r '.url' <<<"$cand")"
+    branch="$(jq -r '.branch' <<<"$cand")"
+    number="$(jq -r '.number' <<<"$cand")"
+    complexity="$(jq -r '.complexity' <<<"$cand")"
+
+    standing="$(landing_approver_standing_review "$slug" "$number" "$login" 2>/dev/null)" || continue
+    [[ "$standing" == "APPROVED" ]] || continue
+
+    source="$(landing_retry_source "$slug" "$branch" "$union_log")"
+    [[ -n "$source" ]] || continue
+
+    _landing_stage_attempt "$slug" "$pr_url" "$complexity" "$source" "$default_branch" "retry"
+  done < <(jq -c '.[]' <<<"$candidates" 2>/dev/null || true)
 }
 
 # --- The Enabler's state for this cycle (requirements 35, 37) ---
@@ -5782,6 +5894,35 @@ if ! (( DRY_RUN )); then
                2>>"$cycle_dir/human-visibility-sweep.err" || true)
   done < <(jq -r '.repos[].slug' "$CONFIG_FILE" 2>/dev/null || true)
   tail -n "+$(( log_lines_before + 1 ))" "$log_file" >> "$union_log" 2>/dev/null || true
+fi
+
+# 2.1e Landing-retry sweep (TD-PPagop-26081701) — the tracked gap "## The
+# Landing Gate" and requirement 8d gate 5 both name: a pull request the
+# arming step already approved once, but could not land for a reason that
+# can change without the pull request itself changing (the merge budget
+# resetting, the kill switch or a per-repo freeze lifting, a
+# `merge_autonomy`/`merge_autonomy_routine_sources` config change, a
+# transient unreadable, a red required check going green), otherwise sits
+# there until a human merges it by hand — forever, for the fail-closed
+# unreadables. `_landing_retry_sweep_repo` (below) re-enters
+# `_landing_stage_attempt`'s own six gates verbatim for each candidate (RETRY
+# set), rather than a second copy of them. Fleet-wide like the sweeps above,
+# regardless of --repo: any repository at `agent-merges-routine` or above may
+# have a stranded, Approver-approved pull request waiting. Skipped on
+# --dry-run: it can land a pull request. `approver_token_identity_login` is
+# asked once, fleet-wide (the Approver App's own login does not vary by
+# repository), rather than once per repository as `_landing_stage_attempt`'s
+# own gate 4 already does per pull request — an unreadable login here means
+# nothing in the sweep can confirm a standing review, so the whole sweep is
+# skipped for the cycle rather than every repository paying for the same
+# unreadable credential.
+if ! (( DRY_RUN )); then
+  if retry_login="$(approver_token_identity_login "")" && [[ -n "$retry_login" ]]; then
+    while IFS= read -r sweep_slug; do
+      [[ -n "$sweep_slug" ]] || continue
+      _landing_retry_sweep_repo "$sweep_slug" "$retry_login"
+    done < <(jq -r '.repos[].slug' "$CONFIG_FILE" 2>/dev/null || true)
+  fi
 fi
 
 # 2.2 Back-pressure — across ALL configured repos, regardless of --repo.

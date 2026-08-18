@@ -445,3 +445,50 @@ _landing_arm_failure_reason() {
     *) printf 'exited %s' "${1:-unknown}" ;;
   esac
 }
+
+# landing_retry_source REPO BRANCH [LOG_FILE]
+# Print the `source` this pull request's claim was raised under — the
+# `selection` event `agent-cycle.sh` already logs once per work order,
+# `{repo, item, source, model, title, branch}`, verbatim regardless of which
+# source it came from (a fresh item or a finishing one). Read back here so the
+# 2.1e landing-retry sweep (TD-PPagop-26081701) can call `landing_eligible`
+# with the same fact the round that first approved this pull request used,
+# for a repository and branch its own process never claimed and so has no
+# `$selected_source` for.
+#
+# This is the one fact `_landing_stage_attempt`'s gates read from the fleet
+# log rather than fresh from GitHub, and deliberately so: unlike every other
+# gate (a review, a check, the budget, the queue), a pull request's source is
+# fixed at claim time and never mutates over its life — GitHub carries no
+# field for it at all — so the log's own append-only record of the one
+# `selection` event that raised this branch is exactly as current as a fresh
+# read would be, for a fact that cannot go stale.
+#
+# LOG_FILE is the fleet's own union log (`$union_log`, built once per cycle
+# from every node's synced log — see agent-cycle.sh's own "1a. The fleet's
+# memory"), or stdin if omitted or "-", matching every reader in
+# lib/cycle-state.sh. Malformed lines are skipped, not fatal (`fromjson? //
+# empty`, the same tolerant-line convention `blocked_items` uses); several
+# `selection` events for the same repo/branch keep only the most recent
+# (`sort_by(.ts) | last`) — a branch this system reuses (a tech-debt item's
+# `td/<ID>` retried under a fresh claim) still resolves to its current claim,
+# never a stale one. Empty on no match, an unreadable log, or nothing to
+# read — the sweep must skip a candidate it cannot classify, never guess at
+# a source that could put a non-routine pull request through the routine
+# gate.
+landing_retry_source() {
+  local repo="$1" branch="$2" src="${3:--}" out=""
+  # shellcheck disable=SC2016  # $repo/$branch are jq's own --arg variables, not the shell's.
+  local jq_prog='
+    [ .[] | select(.event == "selection" and (.repo // "") == $repo
+                   and (.branch // "") == $branch and (.source // "") != "") ]
+    | sort_by(.ts) | last | .source // empty'
+  if [[ "$src" == "-" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' 2>/dev/null \
+      | jq -rs --arg repo "$repo" --arg branch "$branch" "$jq_prog" 2>/dev/null || true)"
+  elif [[ -s "$src" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null \
+      | jq -rs --arg repo "$repo" --arg branch "$branch" "$jq_prog" 2>/dev/null || true)"
+  fi
+  printf '%s' "$out"
+}

@@ -889,14 +889,34 @@ one repository, enforced at the arming step itself (`merge_budget_decide`,
 one of the gates above) rather than left to however often a human happens
 to click merge. Reaching the cap approves a pull request through the
 ordinary review path but does not arm its landing — the backlog queues
-visibly rather than merging past the cap, and nothing re-attempts a held
-pull request automatically; a human merges it, or a later round's own
-Approver approval re-enters the arming step fresh (a gap tracked as
-tech-debt, not closed by this document). A counting anomaly — more pull
+visibly rather than merging past the cap. A counting anomaly — more pull
 requests landed in a window than the cap ever permitted, which a correct
 governor should never observe — freezes a repository's
 `merge_autonomy_effective_level` at `agent-approves` until a human clears
 it, independent of whatever level is configured.
+
+Nothing above re-attempts a held or refused pull request from *within* the
+round that held or refused it — a human merging it by hand, or a later
+round's own fresh Approver approval re-entering the arming step, are both
+still real paths. What closes the gap between those and never is the
+landing-retry sweep (requirement 2.1e, `_landing_stage_attempt`,
+TD-PPagop-26081701): once per cycle, for every repository at
+`agent-merges-routine` or above, it re-enters the same six gates above —
+unchanged, not a second copy of them — for every open, non-draft pull request
+whose Approver review is genuinely standing `APPROVED` on GitHub right now.
+A pull request whose gates still refuse is refused again, at whatever cost
+that refusal already had (a protected-path hit or a `complexity:high` pull
+request is never eligible in the first place, so the classifier refuses it
+identically every time it is asked); a pull request whose refusal reason has
+since cleared — the budget window rolling over, the kill switch or a
+per-repo freeze lifting, a `merge_autonomy`/`merge_autonomy_routine_sources`
+config change, a required check going green, a transient read that now
+succeeds — lands on this sweep's own pass rather than waiting for a human or
+a fresh review round. The one gate the sweep answers differently from the
+original round is the pull request's own `source`: never re-derivable from
+GitHub (there is no field for it), so the sweep reads it back from the
+fleet's own union log instead (`landing_retry_source`, `lib/landing.sh`) and
+skips a pull request it cannot resolve one for, rather than guessing.
 
 Every other branch **created by this system** (i.e. under `branch_prefix`)
 is entirely at the agents' disposal: the Reviewer may amend, add to, rebase,
@@ -4480,8 +4500,10 @@ implements.
       `hold` (the budget is exhausted) and `refuse` (the count could not be
       established) are applied — logging `merge-budget-hold`, or a
       `warning` for `refuse` — and stop here; neither arms anything, and
-      `hold` does not queue a retry of its own (see "## The Landing Gate"
-      for the tracked gap this leaves).
+      this call itself does not queue a retry of its own. The landing-retry
+      sweep (requirement 8u, "## The Landing Gate") is what re-enters this
+      whole gate sequence for such a pull request on a later cycle, rather
+      than this gate doing so itself.
    6. `merge_queue_probe` (`lib/merge-queue.sh`) — the pull request must not
       already be queued. "Could not read" is "possibly queued" (the same
       rule the merge-queue-awareness discipline already applies elsewhere
@@ -13375,8 +13397,9 @@ pull request, run the ones the change touches and any it could regress.
     `run_approver_stage` still reports `approver_stage_verdict`/
     `approver_stage_adjudicating` correctly for `run_landing_stage`'s own
     precondition), with `test/landing-wiring.test.sh` lifting
-    `run_landing_stage` and `_landing_refuse` verbatim out of
-    `agent-cycle.sh` and exercising every gate under `set -euo pipefail`,
+    `run_landing_stage`, `_landing_stage_attempt` and `_landing_refuse`
+    verbatim out of `agent-cycle.sh` and exercising every gate under `set
+    -euo pipefail`,
     the options that file itself runs under rather than the `set -uo
     pipefail` a library test uses — a refusal a gate helper reports in its
     *exit status* (`review_gate_verdict` exits 1 for `dirty`, 2 for an
@@ -13429,8 +13452,63 @@ pull request, run the ones the change touches and any it could regress.
     (`test/doctor.test.sh`).
     `./scripts/render-config-table.sh --check`, `./scripts/lint-shell.sh`
     and `perl scripts/td-check.pl` are clean.
+8u. **A pull request the arming step already approved once, but could not
+    land for a reason that can change without the pull request changing, is
+    re-armed without a human's click (requirement 2.1e, TD-PPagop-26081701).**
+    Once per cycle, fleet-wide regardless of `--repo` and skipped on
+    `--dry-run` (it can land a pull request), for every repository whose
+    `merge_autonomy_effective_level` (a *fresh* read, issue #513) is
+    `agent-merges-routine` or `agent-merges-all`: every open, non-draft pull
+    request carrying `pr_label` whose own `complexity:*` label reads `low` or
+    `medium` and whose Approver review is genuinely standing `APPROVED` on
+    GitHub right now is offered to `_landing_stage_attempt` (requirement 8d)
+    with `RETRY` set — the identical six gates the round that first approved
+    it ran, never a second copy of them, so a protected-path hit, a
+    `complexity:high` pull request, or a source outside the repository's own
+    `merge_autonomy_routine_sources` is refused exactly as it always was: by
+    `landing_eligible`, on the same terms, every time it is asked. A pull
+    request whose `complexity:*` label already reads `high`, or that carries
+    no standing Approver `APPROVED` review (ordinary in-flight work, not a
+    stranded approval), is never offered at all — cheap, fresh-read
+    exclusions that keep this sweep from re-attempting, and re-logging, work
+    the gates below would refuse identically every cycle. The one gate this
+    sweep answers differently from the original round is the pull request's
+    own `source`: not re-derivable from GitHub (there is no field for it, and
+    it is fixed at claim time regardless), so `landing_retry_source`
+    (`lib/landing.sh`) reads it back from the fleet's own union log's
+    `selection` event for that repository and branch, keeping only the most
+    recent when a branch was reused; a pull request whose source cannot be
+    resolved this cycle is skipped, never guessed at. Every arm or refusal
+    this sweep produces is `landing-armed`/`landing-refused`, the same events
+    requirement 8d's own gates always log, additionally carrying `retry:
+    true` so the fleet log (and any reader of it) can tell a sweep-driven
+    landing apart from the round that first approved it.
 
-## Host provisioning (human steps)
+    `test/landing-wiring.test.sh` pins `_landing_stage_attempt`, called
+    directly with a non-empty `RETRY` (bypassing `run_landing_stage`'s own
+    gate 0, which a retry attempt has none of), still arms an eligible,
+    fully-cleared pull request and marks its `landing-armed` event `retry:
+    true`; a `complexity:high` verdict from the classifier still arms
+    nothing and marks the resulting `landing-refused` event `retry: true`
+    the same way; and the ordinary path through `run_landing_stage` continues
+    to log no `retry` field at all. `lib/landing.sh`'s own
+    `landing_retry_source` is pinned directly: the most recent matching
+    `selection` event's `source` wins when a branch was claimed more than
+    once, a malformed log line is skipped rather than aborting the read, and
+    an unmatched repository/branch or an unreadable log both print nothing.
+    `test/landing-retry-sweep.test.sh` lifts `_landing_retry_sweep_repo`
+    (`agent-cycle.sh`) verbatim — the candidate rule that decides which pull
+    requests reach `_landing_stage_attempt` at all, with that function itself
+    stubbed to record what it is offered — and pins: below
+    `agent-merges-routine` nothing is even listed; a draft, a
+    `complexity:high` pull request and one carrying no `complexity:*` label
+    at all are excluded before any per-candidate read; a pull request with no
+    standing Approver `APPROVED` review is skipped silently, logging nothing
+    (ordinary in-flight work, never a stall to report); a source
+    `landing_retry_source` cannot resolve drops the candidate the same way;
+    a truncated pull-request listing (`github_pr_list_truncated`) logs one
+    `warning` naming the repository; and an unreadable default branch falls
+    back to `main` while a readable one is passed through unchanged.
 
 All of this is in place on the current host; it is needed again only when
 standing the system up on a new machine.
