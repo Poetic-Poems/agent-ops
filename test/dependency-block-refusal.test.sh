@@ -129,11 +129,13 @@ refined_label=""
 refinements_json="{}"
 # shellcheck disable=SC2034
 DRY_RUN=0
+# shellcheck disable=SC2034  # read by the eval'd record_needs_refinement_block
 blocked_json="[]"
 
 # events_of collects every event this run's stubbed log_event recorded, one
 # "name payload" line per call.
 events_log=""
+# shellcheck disable=SC2317  # called only from the eval'd record_needs_refinement_block
 log_event() { events_log+="$1 $2"$'\n'; }
 
 run_block() {  # run_block ENTRY STAGE -> rc on stdout as "rc N", then the event log
@@ -155,6 +157,7 @@ run_block() {  # run_block ENTRY STAGE -> rc on stdout as "rc N", then the event
 # Co-Ordinator's own entry names #410 as the reason. Refused: no block, no
 # label, no assignment, a warning naming the resolved reference.
 # ==============================================================================
+# shellcheck disable=SC2034  # read by the eval'd record_needs_refinement_block
 issues_by_repo_json='{"o/r":{"411":{"body":"Needs #410 first.\n\nBlocked-by: #410","comments":[]}}}'
 entry_566='{"repo":"o/r","item":"411","source":"issues","reason":"blocked on #410",
             "missing":"nothing — waiting on #410 to close","evidence":"issue thread: Blocked-by #410, still open"}'
