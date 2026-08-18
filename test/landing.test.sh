@@ -31,6 +31,11 @@
 #     printing nothing, each with its own distinguishable exit status
 #     (agent-ops#532); bad arguments are rejected before any gh call.
 #     `_landing_arm_failure_reason` is pinned directly for every code it maps.
+#   - landing_retry_source (TD-PPagop-26081701): the most recent matching
+#     `selection` event's source wins when a branch was claimed more than
+#     once, a malformed log line is skipped rather than aborting the read,
+#     an unmatched repo/branch or an unreadable log both print nothing, and
+#     stdin works the same as a named LOG_FILE.
 #
 # No test framework is used (none exists elsewhere in this repo). Run
 # directly:
@@ -429,6 +434,35 @@ assert_eq "code 7 names the failed gh pr merge" \
   "gh pr merge --auto --squash failed" "$(_landing_arm_failure_reason 7)"
 assert_eq "an unrecognised code still names itself rather than nothing" \
   "exited 99" "$(_landing_arm_failure_reason 99)"
+
+# --- landing_retry_source (TD-PPagop-26081701) -------------------------------
+# The one gate the 2.1e landing-retry sweep answers from the fleet's own
+# union log rather than fresh from GitHub — pinned directly against a
+# hand-built log file (LOG_FILE argument, and stdin).
+
+log_file="$tmp_dir/union-log.jsonl"
+cat > "$log_file" <<'LOG'
+{"ts":"2026-08-10T00:00:00Z","event":"selection","repo":"acme/widgets","item":"TD-1","source":"tech-debt","model":"m","title":"t","branch":"td/TD-1"}
+this line is not json at all
+{"ts":"2026-08-12T00:00:00Z","event":"landing-refused","repo":"acme/widgets","pr_url":"https://github.com/acme/widgets/pull/1","reason":"a human CHANGES_REQUESTED stands (someone)"}
+{"ts":"2026-08-11T00:00:00Z","event":"selection","repo":"acme/widgets","item":"TD-1","source":"tech-debt","model":"m","title":"t","branch":"td/TD-1"}
+{"ts":"2026-08-09T23:00:00Z","event":"selection","repo":"acme/widgets","item":"9","source":"issues","model":"m","title":"t2","branch":"agent/9"}
+LOG
+
+out="$(landing_retry_source acme/widgets td/TD-1 "$log_file")"
+assert_eq "the most recent matching selection's source wins" "tech-debt" "$out"
+
+out="$(landing_retry_source acme/widgets agent/9 "$log_file")"
+assert_eq "a different branch resolves independently" "issues" "$out"
+
+out="$(landing_retry_source acme/widgets no/such-branch "$log_file")"
+assert_eq "an unmatched repo/branch prints nothing" "" "$out"
+
+out="$(landing_retry_source acme/widgets td/TD-1 "$tmp_dir/does-not-exist.jsonl")"
+assert_eq "an unreadable log prints nothing rather than guessing" "" "$out"
+
+out="$(landing_retry_source acme/widgets td/TD-1 < "$log_file")"
+assert_eq "stdin works the same as a named file (LOG_FILE omitted/-)" "tech-debt" "$out"
 
 echo
 if (( failures == 0 )); then
