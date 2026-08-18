@@ -1906,6 +1906,117 @@ else
   fi
 fi
 
+# --- The autonomous-landing digest (D18 WI-8, agent-ops#411) -----------------
+# Risk 6 of the autonomy investigation ("overnight merges with nobody
+# watching") is accepted deliberately, on the stated condition that this
+# replaces the synchronous human gate with an asynchronous audit: the queue
+# re-tests, `failed-runs` turns post-merge breakage back into selectable work,
+# and this section is where a human sees, once a day, everything the Script
+# landed without them. It is permanent, not rollout scaffolding — at
+# `agent-merges-all` it is the *only* routine account of what merged.
+#
+# Built from the fleet-wide event union, never from a private counter, so a
+# landing armed on any node appears on every node's dashboard. Three parts:
+#
+#   armed    — one row per `landing-armed` inside the window, joined to the
+#              `approver-verdict` that authorised it (its tier and verdict are
+#              the audit's whole point: "which model tier passed this, and did
+#              it approve or merely not refuse") and, where GitHub has been
+#              read this tick, to the pull request's own title and state.
+#   refused  — the counterpart the digest would lie by omitting. A day with
+#              two landings and forty refusals is a classifier holding the
+#              line; the same two landings with no refusals is a gate that
+#              may not be running at all, and those must not look alike.
+#   budget   — per repository, `merge_budget_per_day`'s cap against what the
+#              window actually consumed, so an operator can see a repository
+#              approaching its governor before it starts holding work.
+#
+# The join is by `pr_url` and is deliberately last-write-wins over verdicts
+# *at or before* the arm: an Approver may review the same pull request across
+# several cycles (a refuse streak, then an approval), and the verdict that
+# authorised the landing is the newest one the arming stage could have seen,
+# never a later re-review. A landing whose verdict cannot be found still
+# appears, with nulls — an unexplained landing is precisely what an audit
+# must show, not drop.
+# Both inputs travel by file, not argv: `github_json` carries every open pull
+# request the fleet knows about and is exactly the kind of value requirement
+# 4g's MAX_ARG_STRLEN rule exists for (see the note above the assemble call).
+# The caps are derived here rather than by sourcing lib/merge-budget.sh, whose
+# `merge_budget_effective_cap` also consults the freeze flag over the network —
+# a read this script has no business making on a dashboard tick. The precedence
+# is the same one that file documents: the repository's own entry, else the
+# top-level key, else the shipped default of 8.
+printf '%s' "$github_json" > "$work_tmp/landing-github.json"
+jq -c '(.merge_budget_per_day // 8) as $top
+  | [ (.repos // [])[] | {key: .slug, value: ((.merge_budget_per_day // $top))} ]
+  | from_entries' "$CONFIG_FILE" > "$work_tmp/landing-config.json" 2>/dev/null \
+  || printf '{}' > "$work_tmp/landing-config.json"
+jq -e 'type == "object"' "$work_tmp/landing-config.json" >/dev/null 2>&1 \
+  || printf '{}' > "$work_tmp/landing-config.json"
+landings_json="$(printf '%s\n' "$ALL_EVENTS" | jq -c -s \
+  --arg now "$now_iso" \
+  --argjson hours "${LANDING_DIGEST_WINDOW_HOURS:-24}" \
+  --slurpfile ghf "$work_tmp/landing-github.json" \
+  --slurpfile cfgf "$work_tmp/landing-config.json" '
+  ($now | fromdateiso8601) as $now_s
+  | ($now_s - ($hours * 3600)) as $from_s
+  | def in_window: (.ts // "") as $t
+      | ($t | length) > 0
+      and (try ($t | fromdateiso8601) catch 0) >= $from_s;
+  # Every verdict, newest last, so a lookup can take the last one at or
+  # before a given arm. Not restricted to the window: the verdict that
+  # authorised a landing early in the window may predate the window itself.
+  ([ .[] | select(.event == "approver-verdict") ]
+    | sort_by(.ts // "")) as $verdicts
+  | ([ .[] | select(.event == "landing-armed") | select(in_window) ]
+      | sort_by(.ts // "") | reverse) as $armed
+  | ([ .[] | select(.event == "landing-refused") | select(in_window) ]
+      | sort_by(.ts // "") | reverse) as $refused
+  | (($ghf[0].prs // []) | map({key: (.url // ""), value: .}) | from_entries) as $prs
+  | ($cfgf[0] // {}) as $caps
+  | def verdict_for($url; $at):
+      ([ $verdicts[] | select((.pr_url // "") == $url) | select((.ts // "") <= $at) ] | last);
+  {
+    window_hours: $hours,
+    generated_at: $now,
+    armed: [ $armed[] | (.pr_url // "") as $u | (.ts // "") as $at
+      | (verdict_for($u; $at)) as $v | ($prs[$u] // null) as $pr
+      | { ts: $at,
+          repo: (.repo // ""),
+          pr_url: $u,
+          ref: ($pr.ref // (if ($u | test("/pull/[0-9]+$")) then
+                  ((.repo // "") + "#" + ($u | capture("/pull/(?<n>[0-9]+)$").n)) else $u end)),
+          title: ($pr.title // null),
+          state: ($pr.state // null),
+          merged_at: ($pr.merged_at // null),
+          source: (.source // ""),
+          complexity: (.complexity // ""),
+          method: (.method // ""),
+          node: (.node // ""),
+          tier: ($v.tier // null),
+          verdict: ($v.verdict // null),
+          adjudication: ($v.adjudication // null) } ],
+    refused: [ $refused[] | { ts: (.ts // ""), repo: (.repo // ""),
+                              pr_url: (.pr_url // ""), reason: (.reason // "") } ],
+    budget: ( ($armed | group_by(.repo // "")
+        | map({ repo: (.[0].repo // ""), consumed: length })) as $used
+      | ([ ($used[] | .repo), ($caps | keys[]) ] | unique | map(select(. != ""))) as $repos
+      | [ $repos[] | . as $r
+          | (($caps[$r] // null)) as $cap
+          | (([ $used[] | select(.repo == $r) | .consumed ] | first) // 0) as $c
+          | { repo: $r, cap: $cap, consumed: $c,
+              unlimited: ($cap == 0 or $cap == null),
+              remaining: (if ($cap == 0 or $cap == null) then null
+                          else ([ ($cap - $c), 0 ] | max) end) } ] )
+  }' 2>/dev/null)"
+if ! jq -e 'type == "object"' <<<"$landings_json" >/dev/null 2>&1; then
+  # Same fail-visible-not-fail-silent rule the rest of this script follows: an
+  # empty object renders as "nothing landed", which is a claim, so degrade to
+  # a shape the page can tell apart from a real quiet day.
+  landings_json="$(jq -nc --arg now "$now_iso" \
+    '{window_hours: null, generated_at: $now, armed: null, refused: null, budget: null}')"
+fi
+
 # --- Assemble ----------------------------------------------------------------
 # --- The stage budgets, as the page needs them (requirement 4f) -----------------
 # Two things the page cannot work out for itself. `lock_stale_after` is no
@@ -1952,6 +2063,7 @@ printf '%s' "$log_tail_json" > "$work_tmp/logtail.json"
 # values bounded by configuration (a node name, the config object, a count) may
 # still ride argv.
 printf '%s' "$counts_json"  > "$work_tmp/counts.json"
+printf '%s' "$landings_json" > "$work_tmp/landings.json"
 printf '%s' "$blocked_json" > "$work_tmp/blocked.json"
 printf '%s' "$void_json"    > "$work_tmp/void.json"
 data_json="$(jq -n \
@@ -1964,6 +2076,7 @@ data_json="$(jq -n \
   --argjson noop "$noop_json" \
   --slurpfile blocked "$work_tmp/blocked.json" \
   --slurpfile void "$work_tmp/void.json" \
+  --slurpfile landings "$work_tmp/landings.json" \
   --slurpfile gh "$work_tmp/github.json" \
   --slurpfile lt "$work_tmp/logtail.json" \
   --argjson cron_tail "$cron_tail_json" \
@@ -1972,7 +2085,7 @@ data_json="$(jq -n \
   --arg max_prs "$max_open_agent_prs" \
   '{generated_at: $generated_at, node: $self_node, config: $config, status: $status,
     counts: $counts[0], cycles: $cyc[0], noop_ticks: $noop, blocked: $blocked[0],
-    void: $void[0], github: $gh[0], log_tail: $lt[0],
+    void: $void[0], github: $gh[0], log_tail: $lt[0], landings: $landings[0],
     cron_tail: $cron_tail, max_open_agent_prs: ($max_prs|tonumber),
     fleet: {nodes: $fleet_nodes, flags: $fleet_flags, claims: ($gh[0].claims // [])}}')"
 

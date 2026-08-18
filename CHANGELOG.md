@@ -8,6 +8,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- The autonomous-landing digest (D18 WI-8, agent-ops#411): a new
+  **Autonomous landings** dashboard section reporting, over a rolling 24 h
+  window, every pull request the Script landed without a human — when, which
+  repository and pull request, its title, the work source, the complexity it
+  was armed at, the `enqueued`/`auto-merge` method used, the node that armed
+  it, and the Approver tier and verdict that authorised it. This is the
+  asynchronous audit D18 accepts unattended merging in exchange for (risk 6 of
+  `docs/reviews/2026-08-14-autonomy-investigation.md`), and is permanent
+  rather than rollout scaffolding: at `agent-merges-all` it is the only
+  routine account of what merged.
+
+  Built from the fleet-wide event union, so a landing armed on any node shows
+  on every node's page. The verdict join takes the newest `approver-verdict`
+  for that pull request *at or before* the arm, never a later re-review — an
+  Approver may review the same pull request across several cycles, and only
+  the verdict the arming stage could have seen explains the landing. A landing
+  whose verdict cannot be located still renders, marked `unknown`, since an
+  unexplained landing is the most important row the panel can carry.
+
+  Alongside the landings it reports what would otherwise mislead by omission:
+  refusals over the same window grouped by reason class (two landings beside
+  forty refusals is a classifier holding the line; two beside none may be a
+  gate that is not running), and each repository's `merge_budget_per_day` cap
+  against what the window consumed, with an unlimited repository reading as
+  `∞` rather than a cap of zero. A payload the Publisher could not assemble
+  renders as "could not be assembled this tick", explicitly distinguished from
+  a quiet night — an empty list is a reportable nothing, `null` is an outage,
+  and the two must not look alike.
+
 - The deterministic eligibility classifier and the arming/enqueue step (D18
   WI-7, requirement 8d; agent-ops#410): at `merge_autonomy: agent-merges-routine`
   or `agent-merges-all`, once the Approver's own engagement reaches an

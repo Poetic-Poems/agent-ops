@@ -821,6 +821,51 @@ persisted choice the control has since disabled this way (grown stale as
 selected `<option>` and the chart it drives in agreement — and reverts to the
 persisted choice on its own once the window it names is available again.
 
+The **Autonomous landings** panel (D18 WI-8, agent-ops#411) is the
+asynchronous audit that D18 accepts unattended merging in exchange for. Risk 6
+of `docs/reviews/2026-08-14-autonomy-investigation.md` — "overnight merges with
+nobody watching" — is accepted deliberately, and this panel is the named
+condition: the queue re-tests, `failed-runs` turns post-merge breakage back
+into selectable work, and once a day a human sees everything the Script landed
+without them. It is permanent rather than rollout scaffolding, because at
+`agent-merges-all` it is the only routine account of what merged.
+
+It renders `landings`, which the Publisher assembles from the fleet-wide event
+union (never a private counter, so a landing armed on any node appears on every
+node's page): one row per `landing-armed` inside the window — default 24 h,
+overridable for tests by `LANDING_DIGEST_WINDOW_HOURS` — carrying when, the
+repository, the pull request, its title and state where GitHub was read this
+tick, the work source, the complexity it was armed at, the `enqueued`/
+`auto-merge` method `landing_arm` actually used, and the node that armed it.
+
+Each row is joined to the **`approver-verdict` that authorised it**: the newest
+verdict for that `pr_url` at or before the arm, never a later re-review. That
+qualifier is the whole correctness of the join — an Approver may review the
+same pull request across several cycles (a refuse streak, then an approval, and
+possibly another refusal afterwards on a later push), and only the verdict the
+arming stage could actually have seen explains the landing. A landing whose
+verdict cannot be located still renders, with `unknown` in the tier and verdict
+cells: an unexplained landing is the single most important row this panel can
+carry, so it is never the one dropped for want of a join.
+
+Three things it will not hide, each a way a digest could mislead by omission:
+
+- **Refusals**, counted and grouped by reason class over the same window. Two
+  landings beside forty refusals is a classifier holding the line; two beside
+  none may be a gate that is not running at all. A panel showing only successes
+  could not tell those apart, and the second is the one worth waking for.
+- **The merge budget**, per repository: `merge_budget_per_day`'s effective cap
+  against what the window consumed, so a repository approaching its governor is
+  visible before it starts holding work back. An unlimited repository (`0`)
+  reads as `∞`, never as a cap of zero. The caps are derived from
+  `config.json` here rather than by calling `merge_budget_effective_cap`, whose
+  own resolution also consults the freeze flag over the network — a read a
+  dashboard tick has no business making.
+- **Its own failure.** A payload the Publisher could not assemble sets `armed`
+  to `null` and renders as "could not be assembled this tick", explicitly
+  distinguished from a quiet night. An empty array is a real and reportable
+  nothing; `null` is an outage, and the two must never render alike.
+
 The **Co-Ordinator verdict quality** panel renders
 `counts.coordinator_verdicts` (issue #319). Implementation spec 3t
 corroborates a `selected: false` verdict against the Script's own eligible

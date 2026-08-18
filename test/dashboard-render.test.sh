@@ -841,6 +841,59 @@ assert_contains "and its re-enable advice names --this-node" \
 assert_not_contains "never the bare --enable, which clears the fleet switch instead" \
   "needs \`agent-cycle.sh --enable\`" "$out"
 
+# --- The autonomous-landing digest (D18 WI-8, agent-ops#411) ----------------
+# Risk 6 of the autonomy investigation accepts unattended merges on the
+# stated condition that this panel is the asynchronous audit replacing the
+# synchronous gate. So the assertions below are about what it refuses to
+# hide, not merely that it draws: an unexplained landing, the refusals that
+# say whether the gate is running at all, and a payload that failed to
+# assemble reading differently from a quiet night.
+out="$(render landings.json)" || { printf 'FAIL - landings.json did not render:\n%s\n' "$out"; exit 1; }
+
+assert_contains "the landings section names its own window" \
+  "Autonomous landings (last 24 h)" "$out"
+assert_contains "a landed pull request shows the title joined from GitHub" \
+  "tidy the hygiene ledger" "$out"
+assert_contains "  ... and the Approver tier that authorised it" \
+  "complex" "$out"
+# The join is by pr_url against the newest verdict at or before the arm. A
+# landing whose verdict cannot be found is the most important row here, so it
+# must render with "unknown" rather than be dropped for want of a join.
+assert_contains "a landing with no locatable Approver verdict still appears, marked unknown" \
+  "unknown" "$out"
+# Two landings beside forty refusals is a classifier holding the line; two
+# beside none may be a gate that is not running. The digest must not be able
+# to show the first while looking like the second.
+assert_contains "refusals in the same window are reported, grouped by reason" \
+  "refused in the same window" "$out"
+assert_contains "  ... naming each refusal class and its count" \
+  "ineligible ×2" "$out"
+assert_contains "the merge budget shows consumed against the cap" \
+  "agent-ops 2/8" "$out"
+assert_contains "  ... and an unlimited repository reads as unlimited, never as 0" \
+  "poetic 0/∞" "$out"
+
+# A quiet window is a real, reportable nothing — and still accounts for the
+# budget, so "nothing landed" and "nothing could land" stay distinguishable.
+out="$(render landings-quiet.json)" || { printf 'FAIL - landings-quiet.json did not render:\n%s\n' "$out"; exit 1; }
+
+assert_contains "a genuinely quiet window says so" \
+  "Nothing landed autonomously in the last 24 h." "$out"
+assert_contains "  ... and still reports the budget, so a quiet night is not mistaken for a stalled one" \
+  "agent-ops 0/8" "$out"
+assert_not_contains "  ... and claims no refusals it did not have" \
+  "refused in the same window" "$out"
+
+# The failure this panel exists to not commit: rendering an unassembled
+# payload as a quiet night. `armed: null` is that state, and it must read as
+# an outage, not as an absence of landings.
+out="$(render landings-degraded.json)" || { printf 'FAIL - landings-degraded.json did not render:\n%s\n' "$out"; exit 1; }
+
+assert_contains "an unassembled digest says it could not be assembled" \
+  "could not be assembled this tick" "$out"
+assert_not_contains "  ... and never reads as a quiet night instead" \
+  "Nothing landed autonomously" "$out"
+
 printf '\n'
 if (( failures > 0 )); then
   printf '%d assertion(s) failed\n' "$failures"
