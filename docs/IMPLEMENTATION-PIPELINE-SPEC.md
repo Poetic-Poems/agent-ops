@@ -6470,11 +6470,14 @@ implements.
     `issues-excluded`,
     `warning`, `cycle-end`. `merge-budget-hold`, `merge-budget-frozen` and
     `merge-budget-freeze-escalated` (requirement 2.3c,
-    `merge_budget_apply_decision`) are logged whenever `run_landing_stage`
-    (requirement 8d) reaches `merge_budget_decide` and the decision is not
-    `arm` — carrying `repo`, `cap` and `count` throughout, plus
-    `waiting_backlog` on `merge-budget-hold`, `fleet_flag` (the write
-    outcome) on `merge-budget-frozen`, and `issue_number`/`issue_url` on
+    `merge_budget_apply_decision`) are logged whenever gate 5 of
+    `_landing_stage_attempt` (requirement 8d) reaches `merge_budget_decide`
+    and the decision is not `arm` — from `run_landing_stage`'s own round and
+    from the requirement 8u landing-retry sweep alike, since both enter that
+    gate through the same function — carrying `repo`, `cap` and `count`
+    throughout, plus `waiting_backlog` on `merge-budget-hold`, `fleet_flag`
+    (the write outcome) on `merge-budget-frozen`, and
+    `issue_number`/`issue_url` on
     `merge-budget-freeze-escalated`, on the same terms
     `crash-loop-escalated`/`approver-escalated` already carry theirs.
     `review-gate-checks-read` (requirement 31c,
@@ -13555,9 +13558,11 @@ pull request, run the ones the change touches and any it could regress.
     true` so the fleet log (and any reader of it) can tell a sweep-driven
     landing apart from the round that first approved it.
 
-    **The sweep is bounded to `merge_budget_per_day` arms per repository per
-    pass** (PR #557 review): `_landing_retry_sweep_repo` keeps its own
-    running `armed_this_pass` tally, incremented each time
+    **A single pass never arms more of a repository's stranded pull requests
+    than that repository's remaining merge budget** — `merge_budget_per_day`
+    less what it has already landed in the rolling window (PR #557 review):
+    `_landing_retry_sweep_repo` keeps its own running `armed_this_pass`
+    tally, incremented each time
     `_landing_stage_attempt` reports (via its own `_landing_stage_attempt_armed`
     global) that a candidate actually armed, and passes that tally as
     `_landing_stage_attempt`'s ALREADY_ARMED argument on every subsequent

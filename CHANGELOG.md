@@ -50,8 +50,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `landing_eligible` rather than a second copy of it, so a protected-path
   hit, a `complexity:high` pull request, or a source outside the routine
   list is never armed here either. `landing-armed`/`landing-refused` events
-  from the sweep carry `retry: true`. Bounded to `merge_budget_per_day` arms
-  per repository per pass: `merge_budget_decide` (`lib/merge-budget.sh`)
+  from the sweep carry `retry: true`. A single pass never arms more of a
+  repository's stranded pull requests than its remaining merge budget —
+  `merge_budget_per_day` less what it has already landed in the rolling
+  window: `merge_budget_decide` (`lib/merge-budget.sh`)
   discounts a running same-pass tally from the live merged-PR count, since
   GitHub's own record only shows a pull request as merged once the merge has
   actually landed, never the moment this sweep arms it — without the bound,
