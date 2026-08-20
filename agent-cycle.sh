@@ -7469,10 +7469,16 @@ refiner_candidates_json="$(refiner_candidate_items "$refiner_repos_json" \
 # resolve at all, or which resolves carrying none of the four band names,
 # before the engagement cap or any claim — a pre-flight, not a post-hoc
 # latch, so field visibility, or a renamed option set, recovering needs no
-# operator action. Run unconditionally, including under --dry-run, so the
+# operator action. Run unconditionally whenever this installation has a
+# Refiner (`refiner_model` set), including under --dry-run, so the
 # fingerprint input below never differs between a dry-run and a live cycle
-# for no reason.
-refiner_candidates_json="$(refiner_filter_unbandable_triage "$refiner_candidates_json")"
+# for no reason. Skipped outright when `refiner_model` is empty — with no
+# Refiner to spend an engagement on a triage-only candidate either way, the
+# GraphQL read this performs, and any `refiner:` warning it can log, would
+# cost every cycle for a stage that never runs (issue #567).
+if [[ -n "$refiner_model" ]]; then
+  refiner_candidates_json="$(refiner_filter_unbandable_triage "$refiner_candidates_json")"
+fi
 # Same reasoning as `enabler_allowed` above, for the same kind of exit-trap
 # engagement.
 refiner_allowed=1

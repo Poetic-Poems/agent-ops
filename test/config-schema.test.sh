@@ -881,6 +881,57 @@ assert_not_contains() {
   fi
 }
 
+# --- issue #567: a key whose `x-docs.value` documents a specific
+#     installation's choice, rather than the product default, is compared
+#     against what the live config actually resolves to. `refiner_model`
+#     documented as `claude-haiku-4-5-20251001` while the key had never once
+#     been set in config.json — silently running the empty-string default,
+#     the stage off — for eight days is the failure this exists to catch. ---
+# shellcheck disable=SC2016  # backticks here are literal Markdown, not command substitution
+assert_doctor "doctor warns when a documented installation value drifts from what config.json resolves" \
+  '.refiner_model = "claude-haiku-4-5-20251001"' 0 \
+  'refiner_model is documented (README.md/docs/IMPLEMENTATION-PIPELINE-SPEC.md) as `claude-sonnet-5` but resolves to `claude-haiku-4-5-20251001`'
+# shellcheck disable=SC2016  # backticks here are literal Markdown, not command substitution
+assert_doctor "doctor renders an empty resolved value as *(unset)*, the same convention the docs use for one" \
+  '.refiner_model = ""' 0 \
+  'refiner_model is documented (README.md/docs/IMPLEMENTATION-PIPELINE-SPEC.md) as `claude-sonnet-5` but resolves to *(unset)*'
+# shellcheck disable=SC2016  # backticks here are literal Markdown, not command substitution
+assert_doctor "doctor compares an array-valued x-docs.value by its parsed JSON, naming the resolved array" \
+  '.schedule.excluded_minutes = [5]' 0 \
+  'schedule.excluded_minutes is documented (README.md/docs/IMPLEMENTATION-PIPELINE-SPEC.md) as `[0]` but resolves to `[5]`'
+
+# A key whose `x-docs.value` equals its own schema `default` documents the
+# product's shipped behaviour, not this installation's — `merge_autonomy` is
+# the acceptance criterion's own example — so no rung of it, at either of its
+# two sources (the top-level key, a repo's own override), is ever reported.
+# assert_doctor only checks a substring is present, so this runs doctor.sh
+# directly and checks the absence instead.
+jq '.merge_autonomy = "agent-merges-routine" | .repos[0].merge_autonomy = "agent-merges-all"
+    | .approver_app_id = "123456" | .approver_model_default = "claude-sonnet-5"' "$CONFIG" > "$tmp/c.json"
+merge_autonomy_out="$(bash "$SCRIPT_DIR/scripts/doctor.sh" --offline --config "$tmp/c.json" 2>&1)"
+assert_not_contains "doctor never reports merge_autonomy as a documented-value mismatch, at any rung" \
+  "merge_autonomy is documented" "$merge_autonomy_out"
+
+# A key with no `x-docs.value` at all, and one whose `x-docs.value` is an
+# object keyed readme/spec (the two documents assert different things there —
+# there is no single value to check the live config against), are both
+# skipped without error even when set far from their own default.
+jq '.cycles_retained = 999999 | .approver_app_id = "999999999" | .void_retire_after_days = 1
+    | .approver_model_default = "claude-sonnet-5"' "$CONFIG" > "$tmp/c.json"
+skip_out="$(bash "$SCRIPT_DIR/scripts/doctor.sh" --offline --config "$tmp/c.json" 2>&1)"
+assert_not_contains "a key with no x-docs.value is never reported (cycles_retained)" \
+  "cycles_retained is documented" "$skip_out"
+assert_not_contains "a key whose x-docs.value is an object keyed readme/spec is never reported (approver_app_id)" \
+  "approver_app_id is documented" "$skip_out"
+assert_not_contains "  ... nor is another such key (void_retire_after_days)" \
+  "void_retire_after_days is documented" "$skip_out"
+
+# The verification the issue itself asks for: once the gate exists, the
+# shipped configuration — unmodified, so #568's fix is read for real — must
+# report no mismatch for refiner_model, or anything else.
+assert_doctor_shipped "the shipped configuration carries no documented-value mismatch (issue #567; refiner_model in particular, per #568)" \
+  '.' 0 'every documented installation value (x-docs.value differing from its own default) matches config.json'
+
 guard_app="$tmp/guard-app"
 mkdir -p "$guard_app"
 cp "$SCRIPT_DIR/agent-cycle.sh" "$SCHEMA" "$guard_app/"

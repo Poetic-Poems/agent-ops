@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `scripts/doctor.sh` warns when a key documented as installed —
+  `x-docs.value` differing from its own schema `default` — resolves, from the
+  live `config.json`, to something else (agent-ops#567): `refiner_model`
+  documented as `claude-haiku-4-5-20251001` while the key had never once been
+  set in `config.json` (silently running the Refiner off) went undetected for
+  eight days, and nothing before this compared what the configuration tables
+  claimed against what the config actually had. A key whose `x-docs.value`
+  equals its own `default` — describing the product's shipped behaviour, not
+  an installation's choice — is never checked, and neither is one with no
+  `x-docs.value` at all or one keyed `readme`/`spec`.
+
 - An hourly, unattended `scripts/doctor.sh --unattended` pass (agent-ops#543),
   on its own `deploy/docker/crontab.tmpl` line: the same Configuration and
   GitHub checks an operator runs by hand, run unprompted, so a configuration
@@ -140,6 +151,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   keys at every level of the precedence (TD-PPagop-26081802).
 
 ### Fixed
+
+- A cycle with `refiner_model` empty (no Refiner) no longer pays for the
+  Refiner's `triage_only` pre-flight (agent-ops#567): candidate computation
+  itself is unconditional, so a repository contributing a triage-only
+  candidate still cost a `Priority`-field GraphQL read, and could still log a
+  `refiner:` warning about candidates it dropped, for a stage that could never
+  engage. The pre-flight now runs only when this installation has a Refiner —
+  unchanged, including under `--dry-run`, for one that does.
 
 - A Co-Ordinator `needs_refinement` report for an issue can no longer
   re-assert a `Blocked-by:` dependency the Script's own gate already resolved

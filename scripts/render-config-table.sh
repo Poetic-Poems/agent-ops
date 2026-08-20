@@ -24,6 +24,23 @@
 # no `default` either renders `*(required)*`. A key entirely absent from
 # `x-docs` falls back to its plain `description`.
 #
+# A bare-string `x-docs.value` carries a second meaning besides the cell text:
+# whether it equals this key's own schema `default` says which installation it
+# describes. Equal, it documents the product's shipped behaviour — the value
+# every fresh install gets, not a claim about any config.json — and nothing
+# checks a live installation against it. Differing, it documents Poetic's own
+# choice for this key, and `scripts/doctor.sh` (`lib/config-schema.sh`'s
+# `config_documented_value_mismatches`) warns if a live config.json ever
+# resolves that key to something else — `refiner_model` documented as
+# `claude-haiku-4-5-20251001` while the key had never once been set, silently
+# running the stage off, was exactly this drift with nothing to catch it
+# (issue #567). That check compares parsed values, not this script's rendered
+# text, so a documented `["a", "b"]` and a live `["a","b"]` compare equal
+# despite the whitespace this script's own compact-JSON rendering never
+# produces; an `x-docs.value` keyed `readme`/`spec` (the two documents assert
+# different things there) or a key with no `default` to differ from is outside
+# what that single-value comparison can state, and is skipped.
+#
 # `x-docs.readme`/`x-docs.spec` (a key's notes, not its value) is a plain
 # string, or an array of *blocks* (#220): a plain string element is its own
 # paragraph; `{"list": [...]}` is an unordered list, each item a string; and

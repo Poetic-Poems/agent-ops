@@ -201,6 +201,23 @@ case "$?" in
   *) warn "$schema_errors — the schema check did not run" ;;
 esac
 
+# issue #567: a key whose `x-docs.value` documents a specific installation's
+# choice — differing from that key's own schema `default` — is itself a claim
+# nothing had ever checked against the live config. `refiner_model` documented
+# as `claude-haiku-4-5-20251001` while the key had never once been set in
+# config.json (it silently ran the empty-string default — the stage off — for
+# eight days) is exactly this failure, and it looked like a healthy install:
+# every unrefined item still fell through to the ordinary Enabler path.
+doc_value_mismatches="$(config_documented_value_mismatches "$DEFAULTED_CONFIG" "$schema_file")"
+if [[ -n "$doc_value_mismatches" ]]; then
+  while IFS=$'\t' read -r dvm_key dvm_doc dvm_resolved; do
+    [[ -n "$dvm_key" ]] || continue
+    warn "$dvm_key is documented (README.md/docs/IMPLEMENTATION-PIPELINE-SPEC.md) as $dvm_doc but resolves to $dvm_resolved from $config_file — the documentation describes an installation that does not exist"
+  done <<<"$doc_value_mismatches"
+else
+  ok "every documented installation value (x-docs.value differing from its own default) matches config.json"
+fi
+
 # The rules below are the ones the schema cannot state, because each holds
 # between two keys rather than about one. A `fail` here mirrors a startup guard
 # in agent-cycle.sh — the cycle would refuse to run; a `warn` is a combination
