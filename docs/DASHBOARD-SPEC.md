@@ -1049,6 +1049,26 @@ Three things it will not hide, each a way a digest could mislead by omission:
   distinguished from a quiet night. An empty array is a real and reportable
   nothing; `null` is an outage, and the two must never render alike.
 
+Each `armed` row also carries the classifier-escape audit's own verdict
+(requirement 8e, agent-ops#572) — `audit`, one of `"clean"`, `"escape"`,
+`"unverifiable"` or `null` (not yet audited), joined by `pr_url` against the
+newest `classifier-escape`/`landing-audit` event for that pull request — and
+`audit_reason`, rendered as a badge on the row (green/red/amber respectively)
+so a human reading one landing sees, without leaving the row, whether the
+Approver's own decision was independently re-checked and what it found.
+`null` reads "pending", never folded into a false "clean": a landing this
+audit has not reached yet is not the same fact as one it checked and cleared.
+
+Beside the digest, `counts.escape_audits` (requirement 8e) is the audit's own
+all-time scoreboard — `checked`/`clean`/`escapes`/`unverifiable`, plus
+`escape_list`/`unverifiable_list` naming each one — folded from the same
+`classifier-escape`/`landing-audit` events, fleet-wide, but **never windowed**
+like the digest above it: an escape is a permanent fact about one merged pull
+request, and letting it age out of a 24 h window would recreate the exact
+"row nobody reads" the audit exists to prevent. A payload the Publisher could
+not assemble sets every field to `null`, the same "outage, not a quiet night"
+distinction `armed` above makes.
+
 The **Doctor** panel (agent-ops#543) renders `status.doctor`: the most recent
 hourly `scripts/doctor.sh --unattended` pass on *this* node, read from
 `state_dir/.doctor-status.json` rather than recomputed — its GitHub section is

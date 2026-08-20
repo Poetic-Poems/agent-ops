@@ -29,7 +29,22 @@
     "prs_reached_ready": 0,
     "by_day": [],
     "by_model": [],
-    "by_actor": []
+    "by_actor": [],
+    "escape_audits": {
+      "checked": 2,
+      "clean": 1,
+      "escapes": 1,
+      "unverifiable": 0,
+      "escape_list": [
+        {
+          "ts": "@ago:2h",
+          "repo": "Poetic-Poems/agent-ops",
+          "pr_url": "https://github.com/Poetic-Poems/agent-ops/pull/601",
+          "reason": "landed under the Approver identity but recomputed eligibility disagrees: touched protected path(s): lib/landing.sh"
+        }
+      ],
+      "unverifiable_list": []
+    }
   },
   "cycles": [],
   "blocked": [],
@@ -161,7 +176,9 @@
         "node": "node-1",
         "tier": "complex",
         "verdict": "approve",
-        "adjudication": true
+        "adjudication": true,
+        "audit": "escape",
+        "audit_reason": "landed under the Approver identity but recomputed eligibility disagrees: touched protected path(s): lib/landing.sh"
       },
       {
         "ts": "@ago:9h",
@@ -177,7 +194,9 @@
         "node": "node-2",
         "tier": null,
         "verdict": null,
-        "adjudication": null
+        "adjudication": null,
+        "audit": "clean",
+        "audit_reason": "recomputed eligibility agrees: this landing should have been eligible"
       }
     ],
     "refused": [

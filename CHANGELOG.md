@@ -310,6 +310,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `dequeued` source to diagnose and fix before a human re-queues, rather than
   blindly re-running the same failing merge group every cycle.
 
+- The classifier-escape audit (requirement 8e, D18 Stage 2 exit criterion
+  "zero classifier escapes"; agent-ops#572): `scripts/detect-classifier-
+  escapes.sh`, run once per cycle for every configured repository, is an
+  independent, read-only, post-hoc check that every pull request which
+  actually landed under the Approver identity really was eligible — never
+  calling `landing_eligible`, and never sourcing `lib/landing.sh` at all
+  (the protected-path list and the routine-sources resolution are each
+  reimplemented from scratch, so a bug shared between the classifier and its
+  own auditor cannot pass unnoticed by both agreeing). For every merged,
+  `pr_label`-carrying pull request whose `merged_by` is the Approver App's
+  own login, it recomputes the protected-path hit from the merge commit's
+  own file list, the complexity from the pull request's labelled/unlabelled
+  timeline as it stood at `merged_at`, and takes the work source from the
+  fleet log's own `landing-armed` event (the one input GitHub carries no
+  field for at all) — never from what this pipeline recorded about its own
+  decision. Any input that cannot be reconstructed reports `unverifiable`,
+  never `clean`; a disagreement is a first-class `classifier-escape` event,
+  loud rather than a row nobody reads. Each merged pull request is audited
+  at most once, ever. Surfaces as a new `audit`/`audit_reason` column on the
+  autonomous-landings digest's own rows, and as an all-time
+  `counts.escape_audits` scoreboard (checked/clean/escapes/unverifiable) on
+  the dashboard, never windowed like the digest above it — an escape is a
+  permanent fact about one merged pull request.
+
 - The deterministic eligibility classifier and the arming/enqueue step (D18
   WI-7, requirement 8d; agent-ops#410): at `merge_autonomy: agent-merges-routine`
   or `agent-merges-all`, once the Approver's own engagement reaches an

@@ -975,6 +975,20 @@ assert_contains "the merge budget shows consumed against the cap" \
 assert_contains "  ... and an unlimited repository reads as unlimited, never as 0" \
   "poetic 0/∞" "$out"
 
+# --- The classifier-escape audit's own row and scoreboard (requirement 8e,
+# agent-ops#572) — a landed pull request that disagreed with recomputed
+# eligibility badges "escape", one whose recomputation agreed badges
+# "clean", and the all-time scoreboard (never scoped to this window, since
+# an escape is a permanent fact) counts both, distinctly from the refusal
+# count above: a refusal is the classifier holding the line before landing,
+# an escape is the classifier having been wrong after it already landed.
+assert_contains "an escaped landing badges its own outcome" \
+  "escape" "$out"
+assert_contains "a clean-audited landing badges its own outcome" \
+  "clean" "$out"
+assert_contains "the all-time scoreboard reports checked/clean/escapes/unverifiable" \
+  "Classifier-escape audit (all-time): 2 landings checked, 1 clean, 0 unverifiable, 1 escape." "$out"
+
 # A quiet window is a real, reportable nothing — and still accounts for the
 # budget, so "nothing landed" and "nothing could land" stay distinguishable.
 out="$(render landings-quiet.json)" || { printf 'FAIL - landings-quiet.json did not render:\n%s\n' "$out"; exit 1; }

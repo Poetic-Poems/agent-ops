@@ -4924,6 +4924,72 @@ implements.
    never the raw configured value, so the very next round this function
    runs for a repository at or below `agent-approves` refuses at gate 1
    before any other read — no separate switch, no partial disarm.
+8e. **The classifier-escape audit re-checks the outcome, not just the
+   decision (D18 Stage 2 exit criterion "zero classifier escapes";
+   agent-ops#572).** Requirement 8d's `landing_eligible` is a decision:
+   asking it whether its own decision was right is no check at all, so
+   nothing above tests whether a pull request that actually landed
+   autonomously was in fact eligible. `scripts/detect-classifier-escapes.sh`
+   is that independent, read-only, post-hoc test — deliberately never
+   calling `landing_eligible`, and never sourcing `lib/landing.sh` at all:
+   the protected-path list and the routine-sources resolution are each
+   reimplemented from scratch in the detector itself, so a bug shared
+   between the classifier and its own auditor cannot pass unnoticed by both
+   agreeing. Run once per cycle, fleet-wide regardless of `--repo`, and safe
+   on `--dry-run` — it never arms or lands anything, only reads.
+
+   For every repository, the detector finds every merged, `pr_label`-carrying
+   pull request whose own `merged_by.login` (GitHub's live record, never this
+   pipeline's own event log — trusting the log to say what it landed would
+   make the audit circular) is the Approver App's login, skips any already
+   carrying a `classifier-escape` or `landing-audit` event for its `pr_url`
+   in the fleet log (audited at most once, ever — a merged pull request's
+   history is a fixed, past fact), and for each remainder recomputes three
+   things from the merged artefacts themselves, never from what this
+   pipeline recorded about its own decision: the protected-path hit, from
+   the merge commit's own file list (`repos/SLUG/commits/SHA`, a different
+   GitHub resource from `landing_protected_paths_hit`'s own read); the
+   complexity, replayed from the pull request's labelled/unlabelled timeline
+   up to `merged_at` — the label standing *at merge*, never today's; and the
+   work source, read back from the fleet log's own `landing-armed` event for
+   that `pr_url`, the one input GitHub carries no field for at all and the
+   one input the detector is permitted to read as recorded rather than
+   re-derive. The routine-sources list itself is resolved fresh from current
+   configuration (repo override, else the top level, else the shipped
+   default) — a real, accepted limitation, since nothing in this codebase
+   preserves that key's history, so a landing audited long after a
+   deliberate widening or narrowing of the list is judged against today's
+   list, not the one in force when it landed.
+
+   Any of those three inputs that cannot be reconstructed — an unreadable or
+   too-large-to-enumerate merge commit, zero or more than one
+   `complexity:*` label standing at merge time, no matching `landing-armed`
+   event to read a source from — reports `outcome: "unverifiable"`, never
+   `"clean"`: an audit that cannot answer must never be read as an audit
+   that passed. Otherwise, recomputed eligibility (complexity `low`/`medium`,
+   source in the routine list, no protected path touched) either agrees with
+   the fact that the pull request landed (`outcome: "clean"`) or disagrees
+   (a `classifier-escape` event — the loud one, a first-class event of its
+   own rather than a value nested inside a routine one, per the issue's own
+   "make it loud rather than a row nobody reads"). Every outcome is logged
+   under the single-writer rule (requirement 33): the detector itself only
+   prints one JSON object per newly-audited pull request to stdout, and
+   `agent-cycle.sh`'s own loop — the same "sweep prints, the Script logs"
+   shape `scripts/sweep-human-visibility.sh` already established — is what
+   calls `log_event`.
+
+   `scripts/publish-dashboard.sh` folds every `classifier-escape` and
+   `landing-audit` event, fleet-wide and all-time (never windowed — an
+   escape is a permanent fact about one merged pull request, and a window
+   that let it age out of view would be exactly the "row nobody reads" this
+   requirement exists to prevent), into `counts.escape_audits`
+   (`{checked, clean, escapes, unverifiable, escapes: [...], unverifiable:
+   [...]}`), and joins the newest audit outcome for each landed pull
+   request's own `pr_url` into its row of the WI-8 autonomous-landing digest
+   ("## The Landing Gate", requirement 8d) as `audit`/`audit_reason` — a row
+   with no audit yet (not merged long enough ago for the sweep to have
+   reached it, or genuinely unauditable) reads `audit: null`, never folded
+   into either `clean` or `escape`.
 9. **Failure handling.** If any stage times out, exits non-zero, or returns
    an unparseable summary: kill that stage's process group, log
    `attempt-failed` with enough detail for a future cycle to know the item
@@ -6976,10 +7042,23 @@ implements.
     `merge-budget-hold`, `merge-budget-frozen`, `merge-budget-freeze-escalated`,
     `salvage`, `chained`,
     `approver-verdict`, `approver-escalated`,
-    `landing-armed`, `landing-refused`,
+    `landing-armed`, `landing-refused`, `classifier-escape`, `landing-audit`,
     `review-gate-checks-read`, `review-gate-checks-degraded`, `first-seen`,
     `issues-excluded`,
-    `warning`, `cycle-end`. `merge-budget-hold`, `merge-budget-frozen` and
+    `warning`, `cycle-end`. `classifier-escape` and `landing-audit`
+    (requirement 8e, `scripts/detect-classifier-escapes.sh`) are the D18
+    Stage 2 escape-audit's own two outcomes for a merged pull request the
+    audit found no earlier record of auditing: `classifier-escape` is the
+    loud one — recomputed eligibility disagreed with the fact that the pull
+    request landed under the Approver identity — and `landing-audit` covers
+    the other two outcomes, `outcome: "clean"` (recomputation agreed) and
+    `outcome: "unverifiable"` (an input could not be reconstructed from the
+    merged artefacts). Both carry `pr_url`, `repo`, `number`,
+    `merge_commit_sha`, `source`, `complexity_recomputed`,
+    `protected_paths_hit`, `protected_paths` and `reason`; `classifier-escape`
+    omits `outcome` (the event name itself already says it), `landing-audit`
+    keeps it so a reader of the log alone can tell `clean` from
+    `unverifiable` without cross-referencing the event name. `merge-budget-hold`, `merge-budget-frozen` and
     `merge-budget-freeze-escalated` (requirement 2.3c,
     `merge_budget_apply_decision`) are logged whenever gate 5 of
     `_landing_stage_attempt` (requirement 8d) reaches `merge_budget_decide`
@@ -15207,6 +15286,32 @@ pull request, run the ones the change touches and any it could regress.
     `CHANGES_REQUESTED` verdict its `divergence` criterion `met`, naming the
     sample the zero is backed by. `lib/verdict-fate.sh` and
     `scripts/verdict-fate-report.sh` pass `shellcheck`.
+8x. **The classifier-escape audit recomputes independently, never trusts
+    what it is auditing, and never confuses "cannot tell" with "clean"
+    (requirement 8e, agent-ops#572).** `test/detect-classifier-escapes.test.sh`
+    pins the reimplemented protected-path list and routine-sources resolution
+    in `scripts/detect-classifier-escapes.sh` byte-for-byte identical to
+    `lib/landing.sh`'s own `_landing_is_protected`/`_landing_routine_sources`
+    over the same battery of inputs, so the two cannot drift apart
+    unnoticed despite neither sourcing the other; against a stubbed `gh`, a
+    merged pull request whose merge commit touches a protected path (an
+    injected known escape) is reported `classifier-escape` even though it
+    carries a `landing-armed` event recording `complexity: low` — the
+    detector's own recomputation, not the recorded value, is what disagreed;
+    a merged pull request whose recomputed complexity, source and
+    protected-path check all agree with its having landed is `outcome:
+    "clean"`; a merge commit GitHub reports with no `files` array (too large
+    to enumerate), a merge with zero or more than one `complexity:*` label
+    standing at `merged_at`, and a `pr_url` with no `landing-armed` event to
+    read a source from are each `outcome: "unverifiable"`, never `"clean"`;
+    a pull request merged by an account other than the passed-in Approver
+    login is not audited at all; and a `pr_url` already carrying a
+    `classifier-escape`/`landing-audit` event in the fleet log is skipped
+    before any further `gh` call is spent on it. `test/publish-dashboard.
+    test.sh` pins `counts.escape_audits`'s aggregation over `classifier-
+    escape`/`landing-audit` events (all-time, not windowed) and the
+    per-row `audit`/`audit_reason` join into the WI-8 digest's `armed`
+    rows. `./scripts/lint-shell.sh` and `perl scripts/td-check.pl` are clean.
 
 8w. **A repository's autonomy readiness is one verdict, and it never fails for
     what it could not read (component 14, agent-ops#575).**
