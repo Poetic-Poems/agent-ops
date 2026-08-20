@@ -1025,7 +1025,14 @@ implements.
    `scripts/render-config-table.sh` (component 16) rendering it into the
    documents' marked regions and gating it in CI, so a key can no longer be
    added to the schema and forgotten in a prose copy the way `unvoid_label`
-   and `state_local_cycles_retained` both once were.
+   and `state_local_cycles_retained` both once were. A leaf's `x-docs.value`
+   equal to its own schema `default` documents the product's shipped
+   behaviour and nothing checks a live installation against it; one that
+   differs documents Poetic's own choice for that key, and `scripts/doctor.sh`
+   (component 14) warns when a live `config.json` resolves it to something
+   else — `refiner_model` documented as installed while the key had never
+   once been set, silently running the stage off, is exactly the drift this
+   catches (issue #567).
 
    A `$ref` resolves to a fixpoint, not one hop: a `$def` that itself carries
    a `$ref` — `pr_label`'s `minLength: 1` folded into a `requiredLabel` that
@@ -9520,10 +9527,17 @@ implements.
     dropped, and which of the two cases applied — a field-unresolvable
     warning is worded distinctly from a no-bands-at-all one, so a reader can
     tell the two misconfigurations apart — never one per dropped item. The
-    pre-flight runs unconditionally, including under `--dry-run`: it is a
-    read, and skipping it there would make the dry-run fingerprint input
-    (requirement 3b's own `refiner_candidates_json`) differ from a live
-    cycle's for no gain. No state persists between cycles — the day field
+    pre-flight runs unconditionally whenever this installation has a Refiner
+    (`refiner_model` set), including under `--dry-run`: it is a read, and
+    skipping it there would make the dry-run fingerprint input (requirement
+    3b's own `refiner_candidates_json`) differ from a live cycle's for no
+    gain. With `refiner_model` empty the call site skips the pre-flight
+    outright — no `issue_priority_field_ids` read, no `refiner:` warning —
+    since candidate computation itself is unconditional (requirement 3y) and
+    would otherwise pay for a GraphQL read, per cycle, for a stage that never
+    engages (issue #567); the fingerprint invariant above holds only for an
+    installation that has a Refiner, since one without it never paid this
+    cost in the first place. No state persists between cycles — the day field
     visibility, its option names, or organisation membership changes, triage
     resumes on its own with no operator action and nothing to clear — and
     `issue_priority_apply`'s own `field-unresolvable` and `band-option-missing`
@@ -10426,7 +10440,14 @@ What exists, and the requirements each part answers to:
     between `review-cycle.sh`'s own startup refusal and `doctor.sh`'s `fail`
     (`docs/REVIEW-PIPELINE-SPEC.md` requirement R1b) instead of
     `agent-cycle.sh`'s. `doctor.sh` is the operator's command: it runs the
-    schema check, then those three cross-key rules, then the D18 merge-autonomy
+    schema check, then `config_documented_value_mismatches` — every leaf whose
+    `x-docs.value` differs from its own schema `default` (documenting Poetic's
+    own choice for that key, not the product's shipped one) compared, by
+    parsed value rather than rendered text, against what the live config
+    actually resolves to, `warn` naming the key, the documented value and the
+    resolved one when they differ, silent for a key whose `x-docs.value`
+    equals its `default`, has none at all, is keyed `readme`/`spec`, or has no
+    `default` to differ from (issue #567) — then those three cross-key rules, then the D18 merge-autonomy
     pairing (requirement 2.3b) — every configured *source* of a level (the
     top-level `merge_autonomy` key, and each repository's own override) is a
     `fail` where the level is above `human` and `approver_app_id` is empty,
@@ -13050,6 +13071,12 @@ pull request, run the ones the change touches and any it could regress.
     with no `triage_only` candidate at all issues no field query from this
     path; and when every contributing repository's field resolves with at
     least one band option, the returned set is byte-identical to the input.
+    The call site's own guard (issue #567): lifted verbatim by the comment
+    that immediately precedes it, since it is a call site rather than a
+    function of its own, and driven with a stubbed
+    `refiner_filter_unbandable_triage` counting its own invocations — with
+    `refiner_model` empty the pre-flight is never called at all, and with it
+    set the pre-flight still runs exactly once, unchanged.
 11c. **A broken Enabler cannot break a cycle (requirement 37).** With a stubbed
     stage that times out, exits non-zero, or (after requirement 9e's salvage
     resume also fails to parse) returns prose instead of JSON: the
@@ -13101,6 +13128,23 @@ pull request, run the ones the change touches and any it could regress.
     configuration, run against the shipped scripts, so what is asserted is
     the product rather than a restatement of it. `--offline` throughout: no
     assertion here needs the network.
+
+    A documented installation value is checked against the live config the
+    same way (`config_documented_value_mismatches`, issue #567): a key whose
+    `x-docs.value` differs from its own schema `default` — `refiner_model`
+    documented as `claude-haiku-4-5-20251001` while the key had never once
+    been set — earns a `warn` naming the key, the documented value and the
+    resolved one; an empty resolved value renders `*(unset)*`, and an
+    array-valued documented cell is compared by its parsed JSON rather than
+    this script's rendered text, so `[5]` against a documented `[0]` still
+    warns while whitespace alone never does; `merge_autonomy` — whose
+    `x-docs.value` equals its own `default` — earns no such warning at any
+    rung, at either the top-level key or a repository's own override; a key
+    with no `x-docs.value` at all, and one whose `x-docs.value` is an object
+    keyed `readme`/`spec`, are both asserted silent even set far from their
+    own default; and the shipped `config.json`, unmodified, is asserted to
+    report no such mismatch at all — closing the loop #568 opened by
+    installing `refiner_model` for real.
 1d. **The prose configuration tables are generated from the schema, and
     regenerating them is gated (requirement 1b, component 16).**
     `scripts/render-config-table.sh` with no arguments run against this

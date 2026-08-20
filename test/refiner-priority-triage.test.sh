@@ -1219,6 +1219,45 @@ assert_eq "  ... no warning logged for it" "0" \
 
 unset ISSUE_PRIORITY_GH ISSUE_PRIORITY_CACHE_DIR
 
+# ----------------------------------------------------------------------------
+# (viii) The pre-flight's call site skips outright with no Refiner (issue
+# #567) — refiner_filter_unbandable_triage itself is unchanged (case (vii)
+# above); what changed is agent-cycle.sh's own call site, gating the whole
+# pre-flight (the GraphQL read and any `refiner:` warning it can cost) on
+# `refiner_model` being set, the same fact `maybe_run_refiner`'s own first
+# guard already reads. Lifted verbatim, by the comment that immediately
+# precedes it, rather than by function name: this is a call site, not a
+# function of its own.
+# ----------------------------------------------------------------------------
+refiner_preflight_guard="$(awk '
+  /cost every cycle for a stage that never runs \(issue #567\)\.$/ { grab = 3; next }
+  grab > 0 { print; grab--; next }
+' "$repo_root/agent-cycle.sh")"
+if [[ "$refiner_preflight_guard" != *'if [[ -n "$refiner_model" ]]; then'* \
+   || "$refiner_preflight_guard" != *'refiner_filter_unbandable_triage'* ]]; then
+  printf 'FAIL - the pre-flight call site could not be found guarded by refiner_model (renamed or moved?)\n'
+  exit 1
+fi
+
+preflight_call_log="$tmp_dir/preflight-calls.log"
+refiner_filter_unbandable_triage() { printf '%s\n' "$1" >> "$preflight_call_log"; }
+
+refiner_candidates_json='[{"repo":"o/good","source":"issues","item":"1","triage_only":true}]'
+refiner_model=""
+: > "$preflight_call_log"
+eval "$refiner_preflight_guard"
+assert_eq "refiner_model empty: the pre-flight is never called — no GraphQL read, no refiner: warning" \
+  "0" "$(wc -l < "$preflight_call_log")"
+
+refiner_model="claude-test-model"
+: > "$preflight_call_log"
+eval "$refiner_preflight_guard"
+assert_eq "refiner_model set: the pre-flight still runs unconditionally, unchanged (fingerprint stable)" \
+  "1" "$(wc -l < "$preflight_call_log")"
+
+unset -f refiner_filter_unbandable_triage
+unset refiner_model refiner_candidates_json
+
 # ============================================================================
 # (D) The doctor's own gate — scripts/doctor.sh, requirement 39g
 # ============================================================================

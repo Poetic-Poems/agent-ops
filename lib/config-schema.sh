@@ -338,6 +338,111 @@ config_duplicate_project_review_slugs() {
   jq -r '[.[].slug] | group_by(.) | map(select(length > 1) | .[0]) | join(", ")' <<<"$repos_json"
 }
 
+# config_documented_value_mismatches DEFAULTED_CONFIG_JSON SCHEMA_FILE
+# Prints one `key<TAB>documented<TAB>resolved` line per leaf key whose
+# `x-docs.value` documents a specific installation's choice — differs,
+# semantically, from that key's own schema `default` — but the live config
+# resolves to something else (issue #567: `refiner_model` documented as
+# `claude-haiku-4-5-20251001` while `config.json` had never set it, so it
+# silently ran the empty-string default — off — for eight days). Empty when
+# every such key's resolved value matches what is documented.
+#
+# A key's `x-docs.value` equal to its own `default` documents the product's
+# shipped behaviour, not this installation's, so it is never checked (an
+# operator running below the ladder's `merge_autonomy` default, say, is not a
+# documentation bug); a key with no `x-docs.value` at all, one whose
+# `x-docs.value` is an object keyed `readme`/`spec` (the two documents assert
+# different things there, so there is no one value to check the config
+# against), and one with no schema `default` to differ from in the first
+# place, are likewise skipped — each is a case this single-value comparison
+# cannot be reduced to. "Differs" and "matches" are both judged on the parsed
+# value a documented cell encodes, not its Markdown spelling: a documented
+# `` `["a", "b"]` `` and a `default` of `["a","b"]` compare equal despite the
+# whitespace, the same way `` `claude-sonnet-5` `` compares to the bare string
+# it names and `*(unset)*` compares to an empty string — the same convention
+# `scripts/render-config-table.sh`'s own header documents. The *reported*
+# resolved value, when a mismatch is found, is rendered the way that script's
+# `value_for` renders an unset `default` — a non-empty string bare in
+# backticks, `*(unset)*` for an empty one, anything else as compact JSON in
+# backticks — so a `scripts/doctor.sh` warning names the same cell a
+# regenerated config table would show.
+config_documented_value_mismatches() {
+  local defaulted_config="$1" schema_file="$2"
+  jq -rn --argjson cfg "$defaulted_config" --slurpfile schema "$schema_file" '
+    ($schema[0]) as $root
+
+    # Shared with config_schema_errors/config_defaults: a `$ref` is replaced
+    # by its target, sibling keywords kept and winning, resolved to a
+    # fixpoint and bounded against a cyclic chain.
+    | def deref($s):
+        (reduce range(0; 10) as $i
+           ($s;
+              if (type == "object") and has("$ref")
+              then . as $cur
+                | ($root | getpath($cur["$ref"] | ltrimstr("#/") | split("/"))) as $target
+                | if $target == null
+                  then error("$ref \($cur["$ref"]) does not resolve")
+                  else $target + ($cur | del(.["$ref"]))
+                  end
+              else . end)) as $resolved
+        | if ($resolved | type) == "object" and ($resolved | has("$ref"))
+          then error("$ref chain at \($resolved["$ref"]) is too deep (or cyclic)")
+          else $resolved end;
+
+    # value_for'\''s own fallback rendering (scripts/render-config-table.sh),
+    # applied here to a *resolved* config value rather than a schema
+    # `default`: a non-empty string bare in backticks, an empty string as
+    # `*(unset)*` (the convention every `x-docs.value` already uses for one),
+    # anything else as compact JSON in backticks.
+    def render_value:
+        if (type == "string") then
+          (if . == "" then "*(unset)*" else "`" + . + "`" end)
+        else "`" + (tojson) + "`" end;
+
+    def strip_backticks:
+        if (type == "string") and (length >= 2) and startswith("`") and endswith("`")
+        then .[1:-1] else . end;
+
+    # The value a documented cell (a bare `x-docs.value` string) encodes:
+    # `*(unset)*` is the empty string, a backtick-wrapped JSON literal parses
+    # to the value it spells, and anything else — a bare model id, a bare
+    # repository slug — is the literal string between the backticks.
+    def doc_semantic_value:
+        strip_backticks as $inner
+        | if $inner == "*(unset)*" then ""
+          else ($inner | try fromjson catch null) as $parsed
+            | if $parsed != null then $parsed else $inner end
+          end;
+
+    # Every leaf under `.properties`, one level of `properties` at a time —
+    # `schedule` and `project_review` (and its own `defaults`) recurse the
+    # same way render-config-table.sh'\''s `flatten_region` does; anything
+    # without its own `properties` (after `$ref` resolution) is a leaf.
+    def leaf_paths($node0; $path):
+        (try deref($node0) catch null) as $node
+        | if ($node == null) then empty
+          elif ($node | type) == "object" and ($node | has("properties")) then
+            ($node.properties | keys_unsorted[] as $k | leaf_paths($node.properties[$k]; $path + [$k]))
+          else {path: $path, node: $node} end;
+
+    [ ($root.properties // {}) | keys_unsorted[] as $k
+      | leaf_paths($root.properties[$k]; [$k]) ] as $leaves
+
+    | $leaves[]
+    | select((.node["x-docs"].value?) != null)
+    | select((.node["x-docs"].value | type) == "string")
+    | select(.node | has("default"))
+    | . as $e
+    | ($e.node["x-docs"].value) as $doc_value
+    | ($doc_value | doc_semantic_value) as $doc_semantic
+    | select($e.node.default != $doc_semantic)
+    | ($cfg | getpath($e.path)) as $resolved
+    | select($resolved != null)
+    | select($resolved != $doc_semantic)
+    | [($e.path | join(".")), $doc_value, ($resolved | render_value)] | @tsv
+  ' 2>/dev/null || true
+}
+
 # config_project_review_repos DEFAULTED_CONFIG_JSON
 # `project_review.repos`, each entry resolved against `project_review.defaults`
 # per requirement 342's rule: a key present and non-null on the repo's own
