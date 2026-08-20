@@ -176,6 +176,138 @@ assert_eq "  ... and exits 1" "1" "$rc"
 ) >/dev/null 2>&1
 assert_eq "the real call-site shape survives set -e" "0" "$?"
 
+# --- confirm_pr_draft (agent-ops#539): the mirror of confirm_pr_ready ---------
+# `handoff_complete_review`'s last resort when the reconciliation gate
+# refuses a handoff: put the pull request back in draft, not merely refuse it
+# — otherwise the Reviewer's own step-7 flip survives the round it was
+# refused in and becomes the very next round's reconciliation anchor
+# (lib/reconciliation-gate.sh's `_reconciliation_gate_anchor`), and the
+# refused pull request reads `clean` one round later with the same comment
+# still unanswered (agent-ops#539). Same "confirm, don't trust" shape as
+# `confirm_pr_ready`, mirrored: the `--undo` call's own exit status is not
+# the answer, a re-read of the draft flag is.
+#
+# `confirm_pr_ready`'s own stub above, extended to answer `pr ready … --undo`
+# too:
+#   $tmp_dir/draft       "true" | "false" | "error" — what `pr view` reports
+#   $tmp_dir/undo        "works" | "silent" — whether `pr ready --undo` changes anything
+#   $tmp_dir/undo-calls  incremented on every `gh pr ready … --undo`
+cat >"$tmp_dir/gh" <<'STUB'
+#!/usr/bin/env bash
+d="$(dirname "$0")"
+case "$1 $2" in
+  "pr view")
+    flag="$(cat "$d/draft")"
+    [[ "$flag" == "error" ]] && exit 1
+    printf '%s' "$flag"
+    ;;
+  "pr ready")
+    if [[ "$*" == *"--undo"* ]]; then
+      printf 'x' >>"$d/undo-calls"
+      [[ "$(cat "$d/undo" 2>/dev/null)" == "works" ]] && printf 'true' >"$d/draft"
+    else
+      echo "stub gh: confirm_pr_draft must never call the forward flip" >&2
+      exit 1
+    fi
+    ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "$tmp_dir/gh"
+# HANDOFF_GH is already exported (line 82) pointing at this same path — only
+# the file's own content changes here, so it does not need re-exporting.
+
+reset_draft_stub() {  # <draft-flag> <undo-behaviour>
+  printf '%s' "$1" >"$tmp_dir/draft"
+  printf '%s' "$2" >"$tmp_dir/undo"
+  : >"$tmp_dir/undo-calls"
+}
+undo_calls() { wc -c <"$tmp_dir/undo-calls" | tr -d ' '; }
+
+# --- the ordinary repeat path: the pull request is already a draft ------------
+# Reachable on the Enabler's `complete_handoff` recovery path, whose block
+# never ran a flip of its own before this gate refused it — must not
+# "helpfully" call `gh pr ready --undo` on a pull request that is already a
+# draft, the same reason `confirm_pr_ready` must not flip an already-ready one.
+reset_draft_stub true works
+out="$(confirm_pr_draft "$URL")"; rc=$?
+assert_eq "a draft PR reports already-draft" "already-draft" "$out"
+assert_eq "  ... and exits 0" "0" "$rc"
+assert_eq "  ... without calling gh pr ready --undo" "0" "$(undo_calls)"
+
+# --- the revert itself: ready, and the gate just refused it -------------------
+reset_draft_stub false works
+out="$(confirm_pr_draft "$URL")"; rc=$?
+assert_eq "a ready PR is reverted, not left exactly as the Reviewer's flip left it" \
+  "reverted" "$out"
+assert_eq "  ... and exits 0" "0" "$rc"
+assert_eq "  ... having called gh pr ready --undo once" "1" "$(undo_calls)"
+assert_eq "  ... and GitHub now says it is a draft" "true" "$(cat "$tmp_dir/draft")"
+
+# --- the undo that does not take -----------------------------------------------
+# `gh pr ready --undo` can exit 0 and change nothing, the same shape
+# `confirm_pr_ready` guards against in the forward direction. The re-read,
+# not the exit status, is the answer.
+reset_draft_stub false silent
+out="$(confirm_pr_draft "$URL")"; rc=$?
+assert_eq "an undo that changes nothing is a failure" "failed" "$out"
+assert_eq "  ... and exits 1" "1" "$rc"
+assert_eq "  ... still ready" "false" "$(cat "$tmp_dir/draft")"
+
+# --- the unreadable PR -----------------------------------------------------------
+# "Could not ask" must never resolve to "reverted": a pull request this
+# gate meant to pull back from a human's view must not be silently trusted
+# to have been, on an API outage standing in for GitHub's own answer.
+reset_draft_stub error works
+out="$(confirm_pr_draft "$URL")"; rc=$?
+assert_eq "an unreadable PR is a failure, never an assumed revert" "failed" "$out"
+assert_eq "  ... and exits 1" "1" "$rc"
+assert_eq "  ... without attempting an undo it cannot verify" "0" "$(undo_calls)"
+
+# --- a PR that vanishes mid-undo --------------------------------------------------
+# First read says ready, the undo runs, the confirming read fails. Nothing is
+# known, so nothing is claimed.
+printf 'false' >"$tmp_dir/draft"; printf 'silent' >"$tmp_dir/undo"; : >"$tmp_dir/undo-calls"
+cat >"$tmp_dir/gh" <<'STUB'
+#!/usr/bin/env bash
+d="$(dirname "$0")"
+case "$1 $2" in
+  "pr view")
+    n="$(cat "$d/views" 2>/dev/null || echo 0)"; printf '%s' "$(( n + 1 ))" >"$d/views"
+    (( n == 0 )) || exit 1
+    printf 'false'
+    ;;
+  "pr ready") printf 'x' >>"$d/undo-calls" ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "$tmp_dir/gh"
+printf '0' >"$tmp_dir/views"
+out="$(confirm_pr_draft "$URL")"; rc=$?
+assert_eq "a confirming read that fails is a failure" "failed" "$out"
+assert_eq "  ... and exits 1" "1" "$rc"
+
+# --- No URL at all --------------------------------------------------------------
+out="$(confirm_pr_draft "")"; rc=$?
+assert_eq "an empty PR url is a failure" "failed" "$out"
+assert_eq "  ... and exits 1" "1" "$rc"
+
+# --- Survives the caller's shell options -----------------------------------------
+# `handoff_complete_review`'s call site is `x="$(confirm_pr_draft …)" || true`
+# under `set -euo pipefail`, the same shape `confirm_pr_ready`'s own test
+# above pins.
+(
+  set -euo pipefail
+  . "$SCRIPT_DIR/lib/handoff.sh"
+  # shellcheck disable=SC2030  # Not leaking is the point: the stub outside
+  # this subshell must go on answering for the assertions that follow it.
+  HANDOFF_GH="/nonexistent/gh"
+  x="$(confirm_pr_draft "$URL")" || true
+  [[ "$x" == "failed" ]] || exit 9
+  exit 0
+) >/dev/null 2>&1
+assert_eq "the real call-site shape survives set -e" "0" "$?"
+
 # --- pr_url_for_branch: naming the PR a failed stage never named (req. 9) -------
 # The other end of the same story. `confirm_pr_ready` above cannot run at all on
 # a pull request nobody can name, and on 2026-08-03 three finished items were
@@ -914,30 +1046,34 @@ assert_eq "handoff_round_answered survives the same oversized bodies, reading th
   "answered" \
   "$(handoff_round_answered "$BLOCK_AT" "[$oversized_unmarked_review]" "[$oversized_marked_reply]" 2>/dev/null)"
 
-# --- handoff_complete_review (requirements 31c/32b, agent-ops#440) ------------
+# --- handoff_complete_review (requirements 31c/32b, agent-ops#440, #533) ------
 #
 # The one gate-and-flip implementation both the Reviewer's own handoff and
-# the Enabler's `complete_handoff` recovery path call. Its five callees —
-# `review_gate_verdict`, `closing_keyword_gate`, `confirm_pr_ready`,
-# `confirm_review_requested`, `ensure_human_reviewer` — are stubbed as plain
-# bash functions here rather than run for real: each already has its own
-# test (test/review-gate.test.sh, test/closing-keyword-gate.test.sh, and
-# `confirm_pr_ready`/`confirm_review_requested`/`ensure_human_reviewer`
-# above in this file), so what this section proves is the composition —
-# which callee runs, in what order, and what `safe` ends up meaning — not
-# any one of them individually.
+# the Enabler's `complete_handoff` recovery path call. Its seven callees —
+# `review_gate_verdict`, `closing_keyword_gate`, `reconciliation_gate`,
+# `confirm_pr_draft`, `confirm_pr_ready`, `confirm_review_requested`,
+# `ensure_human_reviewer` — are stubbed as plain bash functions here rather
+# than run for real: each already has its own test (test/review-gate.test.sh,
+# test/closing-keyword-gate.test.sh, test/reconciliation-gate.test.sh, and
+# `confirm_pr_draft`/`confirm_pr_ready`/`confirm_review_requested`/
+# `ensure_human_reviewer` above in this file), so what this section proves is
+# the composition — which callee runs, in what order, and what `safe` and
+# `revert` end up meaning — not any one of them individually.
 REVIEW_URL="https://github.com/Poetic-Poems/agent-ops/pull/440"
 
-# Every case below defines whichever of the five stubs it needs; the rest
+# Every case below defines whichever of the seven stubs it needs; the rest
 # fail loudly if called at all, so a short-circuit that should skip a later
-# gate is caught the moment it is not.
-unset -f review_gate_verdict closing_keyword_gate confirm_pr_ready \
-  confirm_review_requested ensure_human_reviewer 2>/dev/null || true
+# gate — or, for `confirm_pr_draft`, a case that never reaches a `dirty`
+# reconciliation verdict at all — is caught the moment it is not.
+unset -f review_gate_verdict closing_keyword_gate reconciliation_gate confirm_pr_draft \
+  confirm_pr_ready confirm_review_requested ensure_human_reviewer 2>/dev/null || true
 not_reached() { echo "FAIL - $1 was called but should not have been" >&2; exit 99; }
 
 # --- a dirty review gate refuses, and nothing past it runs ---------------------
 review_gate_verdict() { printf 'dirty\trequired check(s) not green: CI'; return 1; }
 closing_keyword_gate() { not_reached closing_keyword_gate; }
+reconciliation_gate() { not_reached reconciliation_gate; }
+confirm_pr_draft() { not_reached confirm_pr_draft; }
 confirm_pr_ready() { not_reached confirm_pr_ready; }
 out="$(handoff_complete_review "$REVIEW_URL" "main" "alice")"
 assert_eq "a dirty gate: safe is false" "false" "$(jq -r '.safe' <<<"$out")"
@@ -946,11 +1082,15 @@ assert_eq "  ... gate.reason names the fault" "required check(s) not green: CI" 
 assert_eq "  ... checks_unreadable is false — this is a real fault, not an unread list" \
   "false" "$(jq -r '.gate.checks_unreadable' <<<"$out")"
 assert_eq "  ... closing_keyword.word is empty — the ck gate never ran" "" "$(jq -r '.closing_keyword.word' <<<"$out")"
+assert_eq "  ... reconciliation.word is empty — the reconciliation gate never ran" "" "$(jq -r '.reconciliation.word' <<<"$out")"
+assert_eq "  ... revert is empty — confirm_pr_draft never ran" "" "$(jq -r '.revert' <<<"$out")"
 assert_eq "  ... handoff is empty — confirm_pr_ready never ran" "" "$(jq -r '.handoff' <<<"$out")"
 
 # --- an unreadable required-check list refuses too, distinctly ----------------
 review_gate_verdict() { printf 'unknown\tcould not read required checks'; return 2; }
 closing_keyword_gate() { not_reached closing_keyword_gate; }
+reconciliation_gate() { not_reached reconciliation_gate; }
+confirm_pr_draft() { not_reached confirm_pr_draft; }
 confirm_pr_ready() { not_reached confirm_pr_ready; }
 out="$(handoff_complete_review "$REVIEW_URL" "main" "alice")"
 assert_eq "an unreadable check list: safe is false" "false" "$(jq -r '.safe' <<<"$out")"
@@ -973,32 +1113,107 @@ assert_eq "  ... and the reason is the alert's, not the check list's" \
 # --- a clean gate falls through to the closing-keyword gate --------------------
 review_gate_verdict() { printf 'clean'; return 0; }
 closing_keyword_gate() { printf 'dirty\tno closing keyword for #42'; return 1; }
+reconciliation_gate() { not_reached reconciliation_gate; }
+confirm_pr_draft() { not_reached confirm_pr_draft; }
 confirm_pr_ready() { not_reached confirm_pr_ready; }
 out="$(handoff_complete_review "$REVIEW_URL" "main" "alice")"
 assert_eq "a dirty closing keyword (gate clean): safe is false" "false" "$(jq -r '.safe' <<<"$out")"
 assert_eq "  ... gate.word still carries the clean gate's own word" "clean" "$(jq -r '.gate.word' <<<"$out")"
 assert_eq "  ... closing_keyword.reason names the fault" "no closing keyword for #42" "$(jq -r '.closing_keyword.reason' <<<"$out")"
+assert_eq "  ... reconciliation.word is empty — the reconciliation gate never ran" "" "$(jq -r '.reconciliation.word' <<<"$out")"
+assert_eq "  ... revert is empty — confirm_pr_draft never ran" "" "$(jq -r '.revert' <<<"$out")"
 assert_eq "  ... handoff is empty — confirm_pr_ready never ran" "" "$(jq -r '.handoff' <<<"$out")"
 
-# --- both gates clean, but the flip itself does not take -----------------------
+# --- both prior gates clean, but the reconciliation gate is dirty -------------
+# agent-ops#539: a `dirty` verdict now reverts the pull request to draft
+# (`confirm_pr_draft`) rather than merely refusing — this is the fix's core
+# assertion, that `revert` carries what that call found.
 review_gate_verdict() { printf 'clean'; return 0; }
 closing_keyword_gate() { printf 'clean'; return 0; }
+reconciliation_gate() { printf 'dirty\thuman comment(s) posted since the PR last left draft carry no reconcile citation: comment id(s) 4718691960'; return 1; }
+confirm_pr_draft() { printf 'reverted'; return 0; }
+confirm_pr_ready() { not_reached confirm_pr_ready; }
+out="$(handoff_complete_review "$REVIEW_URL" "main" "alice")"
+assert_eq "a dirty reconciliation gate (both prior gates clean): safe is false" "false" "$(jq -r '.safe' <<<"$out")"
+assert_eq "  ... gate.word still carries the clean review gate's own word" "clean" "$(jq -r '.gate.word' <<<"$out")"
+assert_eq "  ... closing_keyword.word still carries the clean ck gate's own word" "clean" "$(jq -r '.closing_keyword.word' <<<"$out")"
+assert_eq "  ... reconciliation.reason names the unreconciled comment" \
+  "human comment(s) posted since the PR last left draft carry no reconcile citation: comment id(s) 4718691960" \
+  "$(jq -r '.reconciliation.reason' <<<"$out")"
+assert_eq "  ... revert carries confirm_pr_draft's own word" "reverted" "$(jq -r '.revert' <<<"$out")"
+assert_eq "  ... handoff is empty — confirm_pr_ready never ran" "" "$(jq -r '.handoff' <<<"$out")"
+
+# `confirm_pr_draft` can also answer `already-draft` (the Enabler's
+# `complete_handoff` path, whose block never flipped this pull request ready
+# in the first place) or `failed` (the pull request could not be confirmed
+# back in draft at all) — both must reach `revert` unchanged, the same as
+# `reverted` above, so a caller can tell them apart.
+confirm_pr_draft() { printf 'already-draft'; return 0; }
+out="$(handoff_complete_review "$REVIEW_URL" "main" "alice")"
+assert_eq "a dirty reconciliation gate on an already-draft PR: revert says so" \
+  "already-draft" "$(jq -r '.revert' <<<"$out")"
+assert_eq "  ... safe is still false" "false" "$(jq -r '.safe' <<<"$out")"
+
+confirm_pr_draft() { printf 'failed'; return 1; }
+out="$(handoff_complete_review "$REVIEW_URL" "main" "alice")"
+assert_eq "a dirty reconciliation gate whose revert itself fails: revert says so" \
+  "failed" "$(jq -r '.revert' <<<"$out")"
+assert_eq "  ... safe is still false — this is worse than the ordinary dirty case, not better" \
+  "false" "$(jq -r '.safe' <<<"$out")"
+
+# --- the round-start bound reaches the reconciliation gate --------------------
+# `handoff_complete_review` runs after the Reviewer's own step-7 `gh pr ready`,
+# so an unbounded `reconciliation_gate` anchors on that very flip and reports
+# `clean` on every pull request it exists to refuse (agent-ops#533; see
+# `_reconciliation_gate_anchor`). The bound is this function's fourth
+# argument, handed straight through as the gate's second — pinned here so a
+# change that drops it fails loudly rather than silently disarming the gate.
+review_gate_verdict() { printf 'clean'; return 0; }
+closing_keyword_gate() { printf 'clean'; return 0; }
+# Recorded through a file, not a variable: `handoff_complete_review` calls
+# each gate inside a command substitution, so an assignment made in the stub
+# dies with that subshell.
+recon_bound_file="$tmp_dir/recon-bound"
+reconciliation_gate() { printf '%s' "${2-<unset>}" >"$recon_bound_file"; printf 'clean'; return 0; }
+confirm_pr_draft() { not_reached confirm_pr_draft; }
+confirm_pr_ready() { printf 'already'; return 0; }
+confirm_review_requested() { printf 'none'; return 0; }
+ensure_human_reviewer() { printf 'skip'; return 0; }
+handoff_complete_review "$REVIEW_URL" "main" "" "2026-08-17T00:00:00Z" >/dev/null
+assert_eq "the round-start bound is forwarded to reconciliation_gate" \
+  "2026-08-17T00:00:00Z" "$(cat "$recon_bound_file")"
+handoff_complete_review "$REVIEW_URL" "main" "" >/dev/null
+assert_eq "  ... and an omitted bound reaches it as empty, not as a missing argument" \
+  "" "$(cat "$recon_bound_file")"
+
+# --- all three gates clean, but the flip itself does not take -----------------
+review_gate_verdict() { printf 'clean'; return 0; }
+closing_keyword_gate() { printf 'clean'; return 0; }
+reconciliation_gate() { printf 'clean'; return 0; }
+confirm_pr_draft() { not_reached confirm_pr_draft; }
 confirm_pr_ready() { printf 'failed'; return 1; }
 confirm_review_requested() { not_reached confirm_review_requested; }
 ensure_human_reviewer() { not_reached ensure_human_reviewer; }
 out="$(handoff_complete_review "$REVIEW_URL" "main" "alice")"
 assert_eq "gates clean, flip fails: safe is false" "false" "$(jq -r '.safe' <<<"$out")"
 assert_eq "  ... handoff carries failed, naming the one real fault left" "failed" "$(jq -r '.handoff' <<<"$out")"
+assert_eq "  ... revert is empty — the reconciliation gate was clean, nothing to revert" \
+  "" "$(jq -r '.revert' <<<"$out")"
 assert_eq "  ... rereview never ran" "" "$(jq -r '.rereview.state' <<<"$out")"
 
 # --- the full clean path: flip, re-request, and the human-reviewer nudge ------
 review_gate_verdict() { printf 'clean'; return 0; }
 closing_keyword_gate() { printf 'clean'; return 0; }
+reconciliation_gate() { printf 'clean'; return 0; }
+confirm_pr_draft() { not_reached confirm_pr_draft; }
 confirm_pr_ready() { printf 'already'; return 0; }
 confirm_review_requested() { printf 'requested\tcarol'; return 0; }
 ensure_human_reviewer() { not_reached ensure_human_reviewer; }
 out="$(handoff_complete_review "$REVIEW_URL" "main" "alice")"
 assert_eq "a clean path: safe is true" "true" "$(jq -r '.safe' <<<"$out")"
+assert_eq "  ... reconciliation.word carries clean" "clean" "$(jq -r '.reconciliation.word' <<<"$out")"
+assert_eq "  ... revert is empty — nothing was ever dirty enough to revert" \
+  "" "$(jq -r '.revert' <<<"$out")"
 assert_eq "  ... handoff carries the flip's own word" "already" "$(jq -r '.handoff' <<<"$out")"
 assert_eq "  ... rereview carries confirm_review_requested's answer" "requested" "$(jq -r '.rereview.state' <<<"$out")"
 assert_eq "  ... and its who" "carol" "$(jq -r '.rereview.who' <<<"$out")"
@@ -1021,11 +1236,12 @@ out="$(handoff_complete_review "$REVIEW_URL" "main" "")"
 assert_eq "rereview none, no assignee: human_reviewer never ran" "" "$(jq -r '.human_reviewer.state' <<<"$out")"
 
 # --- non-blocking unknowns pass through rather than refusing -------------------
-# An alerts read or a closing-keyword read that could not be asked at all is a
-# node or token fact (see each gate's own header), not a reason to refuse the
-# handoff forever.
+# An alerts read, a closing-keyword read or a reconciliation read that could
+# not be asked at all is a node or token fact (see each gate's own header),
+# not a reason to refuse the handoff forever.
 review_gate_verdict() { printf 'unknown\tcould not confirm no new security-severity alert: 403'; return 0; }
 closing_keyword_gate() { printf 'unknown\tcould not read PR body'; return 0; }
+reconciliation_gate() { printf 'unknown\tcould not read the PR'\''s timeline'; return 0; }
 confirm_pr_ready() { printf 'already'; return 0; }
 confirm_review_requested() { printf 'none'; return 0; }
 ensure_human_reviewer() { printf 'skip'; return 0; }
@@ -1035,6 +1251,9 @@ assert_eq "  ... gate.word carries the unread-alerts unknown" "unknown" "$(jq -r
 assert_eq "  ... checks_unreadable is false — only the alerts read failed" \
   "false" "$(jq -r '.gate.checks_unreadable' <<<"$out")"
 assert_eq "  ... closing_keyword.word carries its own unknown" "unknown" "$(jq -r '.closing_keyword.word' <<<"$out")"
+assert_eq "  ... reconciliation.word carries its own unknown" "unknown" "$(jq -r '.reconciliation.word' <<<"$out")"
+assert_eq "  ... revert is empty — unknown is not dirty, confirm_pr_draft never ran" \
+  "" "$(jq -r '.revert' <<<"$out")"
 assert_eq "  ... and the flip still completed" "already" "$(jq -r '.handoff' <<<"$out")"
 
 printf '\n'

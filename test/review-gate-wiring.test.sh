@@ -138,6 +138,10 @@ if [[ -z "$streak_helper_fn" ]]; then
 fi
 
 URL="https://github.com/Poetic-Poems/poetic-fiddle/pull/198"
+# Where the stubbed `handoff_complete_review` records the fourth argument it
+# was handed (requirement 31c's round-start bound, agent-ops#533), so the
+# assertions below can pin that the call site forwards it.
+gate_arg4="$tmp_dir/gate-arg4"
 
 # run_gate_block REVIEW_JSON [STREAK_JSON [ALREADY]]
 # Runs the block under the same `set -euo pipefail` agent-cycle.sh runs under,
@@ -163,17 +167,20 @@ run_gate_block() {
   local events="$tmp_dir/events" node_log="$tmp_dir/node-log.jsonl" since_rc=1
   [[ -n "$already" ]] && since_rc=0
   : > "$node_log"
+  : > "$gate_arg4"
   {
     printf '%s\n' 'set -euo pipefail'
     printf 'impl_pr_url=%q\n' "$URL"
     printf '%s\n' 'work_order_json='"'"'{"default_branch":"main"}'"'"''
     printf 'node_name=%q\n' "n1"
     printf 'enabler_assignee=%q\n' "alice"
+    printf 'cycle_started_at=%q\n' "2026-08-17T00:00:00Z"
     printf 'log_file=%q\n' "$node_log"
     printf '%s\n' 'review_gate_unknown_streak_after=3'
     printf '%s\n' 'log_event() { printf "%s\t%s\n" "$1" "$(jq -r ".detail // .count // (if has(\"ok\") then (.ok|tostring) else \"\" end)" <<<"$2")" >>'"$(printf '%q' "$events")"'; }'
     printf '%s\n' 'log_reviewer_handback() { printf "handback\t%s\t%s\n" "$1" "${3:-}" >>'"$(printf '%q' "$events")"'; }'
-    printf 'handoff_complete_review() { printf %%s %q; }\n' "$review_json"
+    printf 'handoff_complete_review() { printf %%s "${4:-}" >%q; printf %%s %q; }\n' \
+      "$gate_arg4" "$review_json"
     printf 'review_gate_unknown_streak_verdict() { cat >/dev/null; printf %%s %q; }\n' "$streak_json"
     printf 'review_gate_degraded_since() { cat >/dev/null; return %s; }\n' "$since_rc"
     printf '%s\n' "$streak_helper_fn"
@@ -185,15 +192,22 @@ run_gate_block() {
   cat "$events"
 }
 
-# review_json SAFE GATE_WORD GATE_REASON CHECKS_UNREADABLE CK_WORD CK_REASON [HANDOFF]
+# review_json SAFE GATE_WORD GATE_REASON CHECKS_UNREADABLE CK_WORD CK_REASON
+#             [RC_WORD RC_REASON [HANDOFF [REVERT]]]
 # Assembles the JSON `handoff_complete_review` would print for the given
-# shape, so each test case reads as the verdict it is asserting on.
+# shape, so each test case reads as the verdict it is asserting on. RC_WORD/
+# RC_REASON default to empty, the shape the reconciliation gate never having
+# run leaves behind. REVERT defaults to empty too — the shape every case
+# leaves behind except a dirty reconciliation verdict (agent-ops#539), where
+# `confirm_pr_draft`'s own word (`reverted`/`already-draft`/`failed`) lands.
 review_json() {
   jq -nc --argjson safe "$1" --arg gw "$2" --arg gr "$3" --argjson cu "$4" \
-    --arg cw "$5" --arg cr "$6" --arg h "${7:-}" \
+    --arg cw "$5" --arg cr "$6" --arg rw "${7:-}" --arg rr "${8:-}" --arg h "${9:-}" \
+    --arg rv "${10:-}" \
     '{safe: $safe, gate: {word: $gw, reason: $gr, checks_unreadable: $cu},
-      closing_keyword: {word: $cw, reason: $cr}, handoff: $h,
-      rereview: {state: "", who: ""}, human_reviewer: {state: "", who: ""}}'
+      closing_keyword: {word: $cw, reason: $cr}, reconciliation: {word: $rw, reason: $rr},
+      revert: $rv,
+      handoff: $h, rereview: {state: "", who: ""}, human_reviewer: {state: "", who: ""}}'
 }
 
 # The marker is the last line, and the command substitution above eats its
@@ -266,6 +280,56 @@ assert_contains "  ... with its own unblock_condition, not the gate's" \
 assert_lacks "  ... never the required-checks wording" \
   "Get every required check green" "$out"
 
+# --- dirty reconciliation (both prior gates clean): named as such -------------
+# agent-ops#533, PR #512: a human's plain PR comment posted since the pull
+# request last left draft, never cited by a pipeline comment since.
+out="$(run_gate_block "$(review_json false clean "" false clean "" dirty "human comment(s) posted on https://github.com/Poetic-Poems/poetic-fiddle/pull/198 since it last left draft carry no reconcile citation: comment id(s) 4718691960" "" reverted)")"
+assert_eq "a dirty reconciliation gate ends the cycle too" "no" "$(reached_end "$out")"
+assert_contains "  ... recording the handback naming the unreconciled comment" \
+  "comment id(s) 4718691960" "$out"
+assert_contains "  ... with its own unblock_condition, not either other gate's" \
+  "Answer every unreconciled human comment" "$out"
+assert_lacks "  ... never the required-checks wording" \
+  "Get every required check green" "$out"
+assert_lacks "  ... never the closing-keyword wording" \
+  "Add the missing closing keyword" "$out"
+assert_lacks "  ... a successful revert earns no extra warning" \
+  "could not be converted back to draft" "$out"
+
+# --- dirty reconciliation whose own revert also fails (agent-ops#539) ---------
+# `handoff_complete_review` already reverted (or tried to) before returning —
+# this block does not perform the revert itself, only reads what it found.
+# `revert: "failed"` is the shape worth a warning of its own: the pull
+# request is not merely unreconciled, it is *still ready*, so a human could
+# merge it with the standing comment unanswered.
+out="$(run_gate_block "$(review_json false clean "" false clean "" dirty "human comment(s) posted on https://github.com/Poetic-Poems/poetic-fiddle/pull/198 since it last left draft carry no reconcile citation: comment id(s) 4718691960" "" failed)")"
+assert_eq "a dirty reconciliation gate whose revert also fails still ends the cycle" \
+  "no" "$(reached_end "$out")"
+assert_contains "  ... still recording the handback naming the unreconciled comment" \
+  "comment id(s) 4718691960" "$out"
+assert_contains "  ... and logging a warning that the revert itself did not take" \
+  "could not be converted back to draft" "$out"
+
+# --- dirty reconciliation on a pull request already a draft -------------------
+# Reachable on the Enabler's `complete_handoff` recovery path, whose block
+# never flipped this pull request ready before the gate refused it —
+# `revert: "already-draft"` is not a failure and earns no extra warning.
+out="$(run_gate_block "$(review_json false clean "" false clean "" dirty "human comment(s) posted on https://github.com/Poetic-Poems/poetic-fiddle/pull/198 since it last left draft carry no reconcile citation: comment id(s) 4718691960" "" already-draft)")"
+assert_eq "a dirty reconciliation gate on an already-draft PR still ends the cycle" \
+  "no" "$(reached_end "$out")"
+assert_lacks "  ... and logs no revert-failure warning" \
+  "could not be converted back to draft" "$out"
+
+# --- the round-start bound reaches handoff_complete_review --------------------
+# Without it the reconciliation gate anchors on the Reviewer's own step-7 `gh
+# pr ready` — a flip made inside this very round — and reports `clean` on
+# every pull request it exists to refuse (see `_reconciliation_gate_anchor`).
+# The bound is a fourth positional argument, so dropping it is silent: the
+# gate still runs, still returns a verdict, and simply never fires. Pinned
+# here at the call site, where the drop would happen.
+assert_eq "the Reviewer's handoff forwards the round-start bound as the fourth argument" \
+  "2026-08-17T00:00:00Z" "$(cat "$gate_arg4")"
+
 # --- both gates clean, but the flip itself did not take -----------------------
 out="$(run_gate_block "$(review_json false clean "" false clean "")")"
 assert_eq "a flip that did not take ends the cycle with its own wording" "no" "$(reached_end "$out")"
@@ -275,6 +339,17 @@ assert_contains "  ... naming nothing to fix but the draft state itself" \
 # --- non-blocking unknown (alerts read failed, checks read fine): carries on --
 out="$(run_gate_block "$(review_json true clean "" false unknown "could not confirm no new security-severity alert: 403")")"
 assert_eq "a non-blocking unknown does not end the cycle" "yes" "$(reached_end "$out")"
+assert_lacks "  ... and records no handback" "handback" "$out"
+assert_contains "  ... while still recording a successful required-checks read" \
+  "review-gate-checks-read	true" "$out"
+
+# --- non-blocking unknown (reconciliation read failed, both other gates clean) -
+# The warning this earns is logged past this block's own extraction (see the
+# header) — the same reason the alerts-unknown case above asserts nothing
+# about its own warning text either — so this only pins that the block itself
+# does not end the cycle over it.
+out="$(run_gate_block "$(review_json true clean "" false clean "" unknown "could not read the PR's timeline")")"
+assert_eq "a non-blocking reconciliation unknown does not end the cycle" "yes" "$(reached_end "$out")"
 assert_lacks "  ... and records no handback" "handback" "$out"
 assert_contains "  ... while still recording a successful required-checks read" \
   "review-gate-checks-read	true" "$out"

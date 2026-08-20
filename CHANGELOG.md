@@ -230,6 +230,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   request read, the merge-queue read, the enqueue mutation, its partial-write
   case, or the fallback merge) instead of one generic "could not enqueue or
   auto-merge" shared by all of them.
+- The Reviewer can no longer flip a draft pull request ready while a
+  standing human comment goes unanswered (requirement 31c, agent-ops#533,
+  PR #512): a human cannot leave a formal `REQUEST_CHANGES` review on this
+  system's own pull requests, so a plain PR comment — often paired with
+  converting the pull request back to draft — is the change-request signal
+  here, and nothing previously refused a hand-off that silently dropped one.
+  `lib/reconciliation-gate.sh`'s new gate reads every general PR comment
+  posted since the pull request's most recent `ready_for_review` timeline
+  event *as the round found it* — bounded by the cycle's own start time,
+  since the Reviewer runs `gh pr ready` itself and an unbounded search would
+  take that flip as the anchor and filter out every comment the round existed
+  to answer — and refuses the flip, on the same terms as the existing
+  closing-keyword gate, unless a pipeline comment since cites it with
+  `<!-- agent-ops:reconciles comment=<id> -->`. A refusal names each
+  unanswered comment by permalink, so the next round can act on it rather
+  than re-deriving it. `prompts/reviewer.md`'s
+  completion comment now carries that citation for every human comment it
+  answers.
+- The reconciliation gate above (requirement 31c, agent-ops#533) could refuse
+  a pull request exactly once per unreconciled comment, never twice
+  (agent-ops#539). A `dirty` verdict left the pull request exactly as the
+  Reviewer's own step-7 `gh pr ready` had just left it — ready, not draft —
+  so that flip survived the round it was refused in, and because GitHub keeps
+  a `ready_for_review` event rather than deleting it when a later
+  `convert_to_draft` supersedes it, that surviving flip became the very next
+  round's reconciliation anchor: the standing comment the gate had just named
+  fell before it and read as reconciled, permanently, one round after the
+  refusal. `handoff_complete_review` (`lib/handoff.sh`) now calls
+  `confirm_pr_draft` on every `dirty` reconciliation verdict — the same
+  "confirm against GitHub, don't trust the call's own exit status" shape
+  `confirm_pr_ready` already applies in the forward direction — converting
+  the pull request back to draft on both the Reviewer's own handoff and the
+  Enabler's `complete_handoff` recovery path, and `_reconciliation_gate_anchor`
+  (`lib/reconciliation-gate.sh`) now skips any `ready_for_review` event that
+  has a `convert_to_draft` event after it at or before the bound, so a
+  reverted flip cannot win the anchor either. A revert that itself fails to
+  take logs its own warning, distinct from the ordinary refusal, since the
+  pull request is at that point not merely carrying an unanswered comment but
+  still ready for a human to merge. `prompts/reviewer.md`'s own anchor
+  instructions (step 6) now carry the same undone-event exclusion, since the
+  Reviewer's live read of "most recent `ready_for_review` event" was open to
+  the identical trap.
 - `merge_budget_oldest_waiting`'s `waiting_backlog` (the pull request a
   `merge-budget-hold` event names as the one waiting longest) now sorts
   GitHub's own listing oldest-first before paging, so a repository with more

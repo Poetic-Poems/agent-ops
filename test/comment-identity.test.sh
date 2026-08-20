@@ -79,6 +79,16 @@ assert_eq "every marker still starts with the fixed, greppable prefix" \
   "$(pipeline_comment_marker 20260807T010000Z-poetic-1-123 implementor \
      | grep -qF -- "$PIPELINE_COMMENT_MARKER_PREFIX" && echo yes || echo no)"
 
+# --- pipeline_reconciles_marker: the Reviewer's own citation line -------------
+
+assert_eq "the reconciles marker carries the comment id" \
+  '<!-- agent-ops:reconciles comment=4718691960 -->' \
+  "$(pipeline_reconciles_marker 4718691960)"
+assert_eq "every reconciles marker still starts with its own greppable prefix" \
+  "yes" \
+  "$(pipeline_reconciles_marker 4718691960 \
+     | grep -qF -- "$PIPELINE_RECONCILES_MARKER_PREFIX" && echo yes || echo no)"
+
 # --- The prompts cannot drift from the header the library produces ---
 #
 # A model reads prose, not shell, so prompts/implementor.md, prompts/enabler.md,
@@ -105,6 +115,18 @@ done
 # reads.
 assert_eq "prompts/reviewer.md instructs an unconditional completion comment" "yes" \
   "$(grep -qF -- "Report completion, always." "$SCRIPT_DIR/prompts/reviewer.md" && echo yes || echo no)"
+
+# --- prompts/reviewer.md cannot drift from the citation line the gate reads ---
+#
+# lib/reconciliation-gate.sh (requirement 31c, agent-ops#533) refuses a ready
+# flip while a human comment posted since the pull request last left draft
+# carries no `pipeline_reconciles_marker`-shaped citation. A model reads
+# prose, not shell, so prompts/reviewer.md is the one place allowed to spell
+# that literal form out, the same way the four prompts above spell out the
+# header.
+reconciles_line="$(pipeline_reconciles_marker '<id>')"
+assert_eq "prompts/reviewer.md spells out the literal reconciliation citation its stage must post" "yes" \
+  "$(grep -qF -- "$reconciles_line" "$SCRIPT_DIR/prompts/reviewer.md" && echo yes || echo no)"
 
 printf '\n'
 if (( failures > 0 )); then

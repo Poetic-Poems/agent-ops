@@ -69,17 +69,22 @@
 # action.
 #
 # `handoff_complete_review` is the whole pre-flip sequence — requirement 31c's
-# gate, requirement 25a's closing-keyword gate, the draft flip, the re-request,
-# `ensure_human_reviewer` — as the one function both the Reviewer's own handoff
-# and the Enabler's `complete_handoff` recovery path call (agent-ops#440). The
-# two used to run only the flip/re-request/nudge half in common, each with its
-# own inline copy of that sequence in agent-cycle.sh; the gate half was never
-# duplicated, it was simply never called at all on the Enabler's path, so a
-# `complete_handoff` on a pull request whose required checks were red or which
-# carried a fresh security-severity code-scanning alert flipped it to ready
-# regardless. See its own comment for the fix and for what it does not cover
-# (whether a Reviewer verdict is on record at all, which is the caller's job —
-# see agent-cycle.sh's own comment at each call site).
+# gate, requirement 25a's closing-keyword gate, requirement 31c's reconciliation
+# gate (agent-ops#533) and its revert-on-refusal (`confirm_pr_draft`,
+# agent-ops#539), the draft flip, the re-request, `ensure_human_reviewer` — as
+# the one function both the Reviewer's own handoff and the Enabler's
+# `complete_handoff` recovery path call (agent-ops#440). The two used to run
+# only the flip/re-request/nudge half in common, each with its own inline copy
+# of that sequence in agent-cycle.sh; the gate half was never duplicated, it
+# was simply never called at all on the Enabler's path, so a `complete_
+# handoff` on a pull request whose required checks were red or which carried
+# a fresh security-severity code-scanning alert flipped it to ready
+# regardless. Sharing one function is also what makes the revert-on-refusal
+# fix reach both paths at once: a `dirty` reconciliation verdict left the
+# pull request ready rather than reverting it to draft, on either path, until
+# agent-ops#539. See its own comment for the fix and for what it does not
+# cover (whether a Reviewer verdict is on record at all, which is the
+# caller's job — see agent-cycle.sh's own comment at each call site).
 #
 # Sourced, never executed: it sets no shell options, because agent-cycle.sh
 # runs under `set -euo pipefail` and a library that re-sets options silently
@@ -90,8 +95,9 @@
 #   `handoff_answer_events` and `handoff_round_answered` read
 #   `PIPELINE_COMMENT_MARKER_PREFIX` — source lib/pipeline-marker.sh before
 #   this file, or before calling either.
-#   `handoff_complete_review` calls `review_gate_verdict` (lib/review-gate.sh)
-#   and `closing_keyword_gate` (lib/closing-keyword-gate.sh) — source both
+#   `handoff_complete_review` calls `review_gate_verdict` (lib/review-gate.sh),
+#   `closing_keyword_gate` (lib/closing-keyword-gate.sh) and
+#   `reconciliation_gate` (lib/reconciliation-gate.sh) — source all three
 #   before this file, or before calling it.
 
 # pr_url_for_branch TARGET_SLUG BRANCH
@@ -202,6 +208,75 @@ confirm_pr_ready() {
   fi
   if [[ "$flag" == "false" ]]; then
     printf 'flipped'
+    return 0
+  fi
+
+  printf 'failed'
+  return 1
+}
+
+# confirm_pr_draft PR_URL
+# The mirror of `confirm_pr_ready` above, for the direction requirement 31c's
+# reconciliation gate needs (agent-ops#533/#539): ensure a pull request the
+# gate has just refused is genuinely back in draft, and say what that took.
+#
+# Before this existed, `handoff_complete_review` answered a `dirty`
+# reconciliation verdict with `safe: false` and nothing else — the pull
+# request stayed exactly as the Reviewer's own step-7 `gh pr ready` had just
+# left it: ready, not draft. That flip is not undone by refusing the handoff,
+# so it survived, and it is the anchor `_reconciliation_gate_anchor` selects
+# on the very next round (see that function's header) — the gate refused
+# once and then, having nothing left to refuse *from*, read the identical
+# unreconciled comment as reconciled forever after. Reverting the flip here
+# is what gives the *next* round's timeline a `convert_to_draft` event to
+# find, which is what Part B of that same fix (the anchor skipping a
+# subsequently-undone `ready_for_review`) needs in order to do anything.
+#
+# Prints exactly one word:
+#   already-draft  the pull request was already a draft — nothing to undo.
+#                   Reachable on the Enabler's `complete_handoff` recovery
+#                   path, whose block never ran a flip of its own before this
+#                   gate refused it.
+#   reverted       the pull request was ready; this call ran
+#                   `gh pr ready <url> --undo` and GitHub now agrees it is a
+#                   draft again.
+#   failed         the pull request is still ready after the attempt, or its
+#                   state could not be read at all.
+#
+# Exit status is 0 for `already-draft` and `reverted`, 1 for `failed` — the
+# same convention `confirm_pr_ready` uses, inverted, for the same reason: the
+# undo call's own exit status is not trusted, only a re-read of the draft
+# flag is, since a `gh pr ready --undo` that exits 0 and changes nothing is
+# exactly the shape of failure `confirm_pr_ready`'s own header already
+# documents for the forward direction.
+confirm_pr_draft() {
+  local url="${1:-}" gh_bin="${HANDOFF_GH:-gh}" flag
+
+  if [[ -z "$url" ]]; then
+    printf 'failed'
+    return 1
+  fi
+
+  if ! flag="$(_handoff_draft_flag "$url")"; then
+    printf 'failed'
+    return 1
+  fi
+  if [[ "$flag" == "true" ]]; then
+    printf 'already-draft'
+    return 0
+  fi
+
+  # As with `confirm_pr_ready`, the undo's own exit status is not the answer
+  # — the re-read below is, and it doubles as the retry for a first read that
+  # was merely unlucky.
+  "$gh_bin" pr ready "$url" --undo >/dev/null 2>&1 || true
+
+  if ! flag="$(_handoff_draft_flag "$url")"; then
+    printf 'failed'
+    return 1
+  fi
+  if [[ "$flag" == "true" ]]; then
+    printf 'reverted'
     return 0
   fi
 
@@ -668,35 +743,49 @@ ensure_human_reviewer() {
 }
 
 # _handoff_complete_review_json SAFE GATE_WORD GATE_REASON CHECKS_UNREADABLE
-#                                CK_WORD CK_REASON [HANDOFF RS RW HS HW]
+#                                CK_WORD CK_REASON RECON_WORD RECON_REASON
+#                                [REVERT HANDOFF RVS RVW HS HW]
 # Assemble `handoff_complete_review`'s one return shape. Not meant to be
 # called from outside this file — a plain formatter, split out only so
-# `handoff_complete_review`'s five return points below read as "here is the
-# verdict" rather than repeating the same eleven-argument `jq -nc` each time.
+# `handoff_complete_review`'s return points below read as "here is the
+# verdict" rather than repeating the same fourteen-argument `jq -nc` each
+# time. REVERT is `confirm_pr_draft`'s own word
+# (`reverted`/`already-draft`/`failed`), populated only on the one return
+# point where a `dirty` reconciliation verdict triggers it (agent-ops#539);
+# every other return point leaves it empty, the same way HANDOFF and the rest
+# stay empty on every return point that never reaches them.
 _handoff_complete_review_json() {
-  local safe="$1" gw="$2" gr="$3" cu="$4" cw="$5" cr="$6"
-  local h="${7:-}" rs="${8:-}" rw="${9:-}" hs="${10:-}" hw="${11:-}"
+  local safe="$1" gw="$2" gr="$3" cu="$4" cw="$5" cr="$6" rw="$7" rr="$8"
+  local rv="${9:-}" h="${10:-}" rvs="${11:-}" rvw="${12:-}" hs="${13:-}" hw="${14:-}"
   jq -nc --argjson safe "$safe" --arg gw "$gw" --arg gr "$gr" --argjson cu "$cu" \
-    --arg cw "$cw" --arg cr "$cr" --arg h "$h" --arg rs "$rs" --arg rw "$rw" \
-    --arg hs "$hs" --arg hw "$hw" '
+    --arg cw "$cw" --arg cr "$cr" --arg rw "$rw" --arg rr "$rr" --arg rv "$rv" \
+    --arg h "$h" --arg rvs "$rvs" --arg rvw "$rvw" --arg hs "$hs" --arg hw "$hw" '
     {safe: $safe,
      gate: {word: $gw, reason: $gr, checks_unreadable: $cu},
      closing_keyword: {word: $cw, reason: $cr},
+     reconciliation: {word: $rw, reason: $rr},
+     revert: $rv,
      handoff: $h,
-     rereview: {state: $rs, who: $rw},
+     rereview: {state: $rvs, who: $rvw},
      human_reviewer: {state: $hs, who: $hw}}'
 }
 
-# handoff_complete_review PR_URL DEFAULT_BRANCH ASSIGNEE
+# handoff_complete_review PR_URL DEFAULT_BRANCH ASSIGNEE [ROUND_STARTED_AT]
 # The one gate-and-flip implementation requirement 31c and 32b both bind
-# (agent-ops#440): run requirement 31c's review gate and requirement 25a's
-# closing-keyword gate against the pull request's *current* state, and only
-# once both are clean, perform the handoff itself — the draft flip
+# (agent-ops#440): run requirement 31c's review gate, requirement 25a's
+# closing-keyword gate and requirement 31c's reconciliation gate
+# (agent-ops#533) against the pull request's *current* state, and only once
+# all three are clean, perform the handoff itself — the draft flip
 # (`confirm_pr_ready`), the re-request of a blocking reviewer's review
 # (`confirm_review_requested`), and the nudge to a first or idle reviewer
-# (`ensure_human_reviewer`, targeted at ASSIGNEE). Every one of those five
-# calls is asked fresh here rather than reused from anything a caller read
-# earlier in its own engagement, for the same reason `lib/review-gate.sh`
+# (`ensure_human_reviewer`, targeted at ASSIGNEE). A `dirty` reconciliation
+# verdict does not merely refuse: it reverts the pull request to draft
+# (`confirm_pr_draft`, agent-ops#539) rather than leaving it exactly as the
+# Reviewer's own step-7 `gh pr ready` had just left it — see that function's
+# own header and `_reconciliation_gate_anchor`'s for why an un-reverted flip
+# defeats this gate one round after the round it was refused in. Every one of
+# these calls is asked fresh here rather than reused from anything a caller
+# read earlier in its own engagement, for the same reason `lib/review-gate.sh`
 # gives its own two checks: a state read once and trusted twice is exactly
 # what let poetic-fiddle #216's CodeQL alert through a Reviewer's own "CI is
 # green" judgement.
@@ -709,7 +798,9 @@ _handoff_complete_review_json() {
 # a fresh security-severity code-scanning alert, flipped it to ready anyway —
 # the gate requirement 31c exists for was simply absent from that path. One
 # function both paths call is what makes that class of drift structurally
-# impossible rather than merely undesirable (requirement 34a).
+# impossible rather than merely undesirable (requirement 34a) — which is why
+# the reconciliation gate, and now its revert-on-refusal, were added here, in
+# this one function, rather than beside the Reviewer's own handoff site alone.
 #
 # Prints one JSON object:
 #
@@ -718,6 +809,8 @@ _handoff_complete_review_json() {
 #     "gate": {"word": "clean"|"dirty"|"unknown", "reason": "…",
 #               "checks_unreadable": true|false},
 #     "closing_keyword": {"word": "clean"|"dirty"|"unknown", "reason": "…"},
+#     "reconciliation": {"word": "clean"|"dirty"|"unknown", "reason": "…"},
+#     "revert": "reverted"|"already-draft"|"failed"|"",
 #     "handoff": "already"|"flipped"|"failed"|"",
 #     "rereview": {"state": "…", "who": "…"},
 #     "human_reviewer": {"state": "…", "who": "…"}
@@ -725,10 +818,10 @@ _handoff_complete_review_json() {
 #
 # `safe` is the one field a caller must branch on before doing anything else:
 # `false` means the pull request must not be handed off, full stop, and every
-# field past `closing_keyword` is empty — there is nothing further to report,
-# because nothing further ran. It is false for exactly four reasons, in the
-# order they are checked (a `dirty` review gate outranks everything else, the
-# same "the pull request's own fault always wins" rule
+# field past `closing_keyword` is empty except `revert` — there is nothing
+# further to report, because nothing further ran. It is false for exactly
+# five reasons, in the order they are checked (a `dirty` review gate outranks
+# everything else, the same "the pull request's own fault always wins" rule
 # `review_gate_verdict` already applies between its own two sub-checks):
 #
 #   - `gate.word` is `dirty` — a required check is red, or a required-check
@@ -746,18 +839,30 @@ _handoff_complete_review_json() {
 #     `gh` goes dark.
 #   - `closing_keyword.word` is `dirty` — the pull request claims to close an
 #     issue and its body does not, or does not any longer.
+#   - `reconciliation.word` is `dirty` — a human posted a general PR comment
+#     since the pull request last left draft, and no pipeline comment since
+#     cites a `<!-- agent-ops:reconciles comment=<id> -->` line naming it
+#     (`lib/reconciliation-gate.sh`, agent-ops#533). This is the one branch
+#     that populates `revert`: `confirm_pr_draft` is called before returning,
+#     and its word — `reverted`, `already-draft`, or `failed` — is carried in
+#     `revert` so a caller can tell "the refusal took, the pull request is a
+#     draft again" from "the refusal was recorded but the pull request is
+#     still sitting ready" (`revert: "failed"`), which is worth a warning of
+#     its own since a human could otherwise merge a `CHANGES_REQUESTED` pull
+#     request that reads as ready.
 #   - Neither gate found anything, but the flip itself did not take —
 #     `handoff` is `failed`. This is the one `safe: false` shape that still
 #     names a stage: `handoff` carries `"failed"` so a caller can tell "this
 #     pull request has a real, nameable problem" apart from "the gates were
 #     clean and confirm_pr_ready simply could not confirm the flip", which
-#     reads differently to a human.
+#     reads differently to a human. `revert` is empty here — the
+#     reconciliation gate was clean, so nothing was reverted.
 #
-# `gate.word`/`closing_keyword.word` being `unknown` does not, on its own,
-# make `safe` false — an alerts read that could not be asked at all, or a
-# closing-keyword read that could not be asked at all, is a node or token
-# fact (see each gate's own header for why), and blocking every handoff on it
-# forever would trade one hazard for a worse one. Only `gate.checks_
+# `gate.word`/`closing_keyword.word`/`reconciliation.word` being `unknown`
+# does not, on its own, make `safe` false — an alerts read, a closing-keyword
+# read or a reconciliation read that could not be asked at all is a node or
+# token fact (see each gate's own header for why), and blocking every handoff
+# on it forever would trade one hazard for a worse one. Only `gate.checks_
 # unreadable` refuses on an `unknown`; the caller is still expected to warn
 # on the other two rather than pass them over in silence — read them off the
 # JSON and log accordingly, the same way agent-cycle.sh's Reviewer and
@@ -771,14 +876,23 @@ _handoff_complete_review_json() {
 # existing precondition, applied here rather than by the caller, so a caller
 # cannot forget it.
 #
+# ROUND_STARTED_AT is the timestamp this cycle began (agent-cycle.sh's
+# `cycle_started_at`), passed straight through to `reconciliation_gate` as its
+# anchor bound. It is what stops that gate from measuring "since the pull
+# request last left draft" against a draft flip the Reviewer performed inside
+# this very round — see `_reconciliation_gate_anchor`'s own comment for the
+# reproduction. Both callers pass it; omitting it leaves the gate unbounded,
+# which is only ever right for a caller that performed no flip of its own.
+#
 # Never returns non-zero: every sub-call already fails closed on its own
 # terms, and the caller reads `safe` and the sub-verdicts rather than an exit
 # status — the same convention `review_gate_verdict` established for its own
 # combined word, extended one level up.
 handoff_complete_review() {
-  local url="${1:-}" default_branch="${2:-main}" assignee="${3:-}"
+  local url="${1:-}" default_branch="${2:-main}" assignee="${3:-}" round_started_at="${4:-}"
   local gate_combined gate_word="" gate_reason="" gate_rc=0 checks_unreadable=false
   local ck_combined ck_word="" ck_reason=""
+  local rc_combined rc_word="" rc_reason="" revert_word=""
   local handoff_word rereview_result rereview_state="" rereview_who=""
   local human_result human_state="" human_who=""
 
@@ -796,24 +910,49 @@ handoff_complete_review() {
   [[ "$gate_rc" -eq 2 ]] && checks_unreadable=true
 
   if [[ "$gate_word" == "dirty" ]]; then
-    _handoff_complete_review_json false "$gate_word" "$gate_reason" "$checks_unreadable" "" ""
+    _handoff_complete_review_json false "$gate_word" "$gate_reason" "$checks_unreadable" "" "" "" ""
     return 0
   fi
   if [[ "$gate_word" == "unknown" && "$gate_rc" -ne 0 ]]; then
-    _handoff_complete_review_json false "$gate_word" "$gate_reason" "$checks_unreadable" "" ""
+    _handoff_complete_review_json false "$gate_word" "$gate_reason" "$checks_unreadable" "" "" "" ""
     return 0
   fi
 
   ck_combined="$(closing_keyword_gate "$url")" || true
   IFS=$'\t' read -r ck_word ck_reason <<<"$ck_combined"
   if [[ "$ck_word" == "dirty" ]]; then
-    _handoff_complete_review_json false "$gate_word" "$gate_reason" false "$ck_word" "$ck_reason"
+    _handoff_complete_review_json false "$gate_word" "$gate_reason" false "$ck_word" "$ck_reason" "" ""
+    return 0
+  fi
+
+  # Requirement 31c's reconciliation gate (agent-ops#533): asked here too,
+  # after the review gate and the closing-keyword gate and before either
+  # path's draft flip, on the pull request's *current* comment history rather
+  # than trusted from the Reviewer's own completion comment — the same
+  # "confirm, don't trust" shape every other check in this sequence already
+  # applies. ROUND_STARTED_AT bounds its anchor: the Reviewer has already run
+  # `gh pr ready` itself by the time this executes, and an unbounded anchor
+  # would be that very flip.
+  rc_combined="$(reconciliation_gate "$url" "$round_started_at")" || true
+  IFS=$'\t' read -r rc_word rc_reason <<<"$rc_combined"
+  if [[ "$rc_word" == "dirty" ]]; then
+    # agent-ops#539: a `dirty` verdict alone left the pull request exactly as
+    # the Reviewer's own step-7 `gh pr ready` had just left it — ready, not
+    # draft — which is what let that same flip survive to become the next
+    # round's reconciliation anchor and disarm the gate one round later (see
+    # `_reconciliation_gate_anchor`'s header). Reverting it here, on GitHub's
+    # own confirmation rather than the undo call's own exit status
+    # (`confirm_pr_draft`, the same "confirm, don't trust" shape
+    # `confirm_pr_ready` already applies to the forward flip), is what gives
+    # the next round's timeline a `convert_to_draft` event to find.
+    revert_word="$(confirm_pr_draft "$url")" || true
+    _handoff_complete_review_json false "$gate_word" "$gate_reason" false "$ck_word" "$ck_reason" "$rc_word" "$rc_reason" "$revert_word"
     return 0
   fi
 
   handoff_word="$(confirm_pr_ready "$url")" || true
   if [[ "$handoff_word" != "already" && "$handoff_word" != "flipped" ]]; then
-    _handoff_complete_review_json false "$gate_word" "$gate_reason" false "$ck_word" "$ck_reason" failed
+    _handoff_complete_review_json false "$gate_word" "$gate_reason" false "$ck_word" "$ck_reason" "$rc_word" "$rc_reason" "" failed
     return 0
   fi
 
@@ -825,7 +964,7 @@ handoff_complete_review() {
     IFS=$'\t' read -r human_state human_who <<<"$human_result" || true
   fi
 
-  _handoff_complete_review_json true "$gate_word" "$gate_reason" false "$ck_word" "$ck_reason" \
+  _handoff_complete_review_json true "$gate_word" "$gate_reason" false "$ck_word" "$ck_reason" "$rc_word" "$rc_reason" "" \
     "$handoff_word" "$rereview_state" "$rereview_who" "$human_state" "$human_who"
 }
 
