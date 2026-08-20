@@ -403,7 +403,7 @@ crit_human_merges() {
 # --- Per-repository evaluation ----------------------------------------------
 
 evaluate_repo() {
-  local slug="$1" level stage_entry stage criteria_ids results='[]' c cid desc threshold elapsed_thr window_days
+  local slug="$1" level stage_entry stage results='[]' c cid desc threshold elapsed_thr window_days
   level="$(merge_autonomy_configured_level "$DEFAULTED_CONFIG" "$slug")"
   stage_entry="$(jq -c --arg lvl "$level" '.[] | select(.level == $lvl)' <<<"$STAGE_TABLE")"
   if [[ -z "$stage_entry" ]]; then
