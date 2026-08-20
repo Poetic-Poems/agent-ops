@@ -344,6 +344,48 @@ assert_eq "with no rate at all, since nothing was corroborated" "null" \
 assert_eq "and the per-band tally reads as a real empty array too" "[]" \
   "$(jq -c '.counts.coordinator_verdicts.by_band' <<<"$data")"
 
+# --- The classifier-escape audit roll-up (requirement 8e, agent-ops#572) ----
+# Real bash/jq aggregation over classifier-escape/landing-audit events,
+# distinct from test/dashboard-render.test.sh's own coverage — that file
+# only proves the page renders a hand-built fixture correctly, never that
+# this Publisher's own jq actually produces one. Three audited pull
+# requests, one of each outcome, plus a landing-armed event for the escaped
+# one so its join into landings.armed can be checked directly; and a stale
+# earlier landing-audit for the clean pull request, superseded by a newer
+# one, to pin the "newest event per pr_url wins" rule the join relies on.
+es="$(new_home nodeEscape)"
+now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+{
+  printf '{"ts":"%s","cycle":"c1","node":"nodeEscape","event":"landing-armed","repo":"acme/widgets","pr_url":"https://github.com/acme/widgets/pull/1","source":"tech-debt","complexity":"low","method":"auto-merge"}\n' "$now_iso"
+  printf '{"ts":"2026-01-01T00:05:00Z","cycle":"c1","node":"nodeEscape","event":"classifier-escape","repo":"acme/widgets","pr_url":"https://github.com/acme/widgets/pull/1","reason":"touched protected path(s): lib/landing.sh"}\n'
+  printf '{"ts":"2026-01-01T00:01:00Z","cycle":"c1","node":"nodeEscape","event":"landing-audit","repo":"acme/widgets","pr_url":"https://github.com/acme/widgets/pull/2","outcome":"clean","reason":"stale — superseded below"}\n'
+  printf '{"ts":"2026-01-01T00:06:00Z","cycle":"c1","node":"nodeEscape","event":"landing-audit","repo":"acme/widgets","pr_url":"https://github.com/acme/widgets/pull/2","outcome":"clean","reason":"recomputed eligibility agrees"}\n'
+  printf '{"ts":"2026-01-01T00:05:00Z","cycle":"c1","node":"nodeEscape","event":"landing-audit","repo":"acme/widgets","pr_url":"https://github.com/acme/widgets/pull/3","outcome":"unverifiable","reason":"the merge commit'"'"'s own file list could not be read"}\n'
+} > "$es/.local/state/poetic-agents/log.jsonl"
+run_publish "$es"
+edata="$(data_of "$es")"
+
+assert_eq "checked counts every distinct audited pull request" \
+  "3" "$(jq -r '.counts.escape_audits.checked' <<<"$edata")"
+assert_eq "clean counts the clean outcome" \
+  "1" "$(jq -r '.counts.escape_audits.clean' <<<"$edata")"
+assert_eq "escapes counts the classifier-escape event" \
+  "1" "$(jq -r '.counts.escape_audits.escapes' <<<"$edata")"
+assert_eq "unverifiable counts the unverifiable outcome" \
+  "1" "$(jq -r '.counts.escape_audits.unverifiable' <<<"$edata")"
+assert_eq "the escape list names the escaped pull request" \
+  "https://github.com/acme/widgets/pull/1" \
+  "$(jq -r '.counts.escape_audits.escape_list[0].pr_url' <<<"$edata")"
+assert_eq "the unverifiable list names its own pull request" \
+  "https://github.com/acme/widgets/pull/3" \
+  "$(jq -r '.counts.escape_audits.unverifiable_list[0].pr_url' <<<"$edata")"
+
+assert_eq "the landed digest row for the escaped pull request joins audit: escape" \
+  "escape" "$(jq -r '.landings.armed[] | select(.pr_url == "https://github.com/acme/widgets/pull/1") | .audit' <<<"$edata")"
+assert_eq "  ... carrying the escape's own reason" \
+  "touched protected path(s): lib/landing.sh" \
+  "$(jq -r '.landings.armed[] | select(.pr_url == "https://github.com/acme/widgets/pull/1") | .audit_reason' <<<"$edata")"
+
 raw="$(cat "$a/.local/state/poetic-agents/dashboard/data.js")"
 assert_contains "token shapes are redacted" "[REDACTED-TOKEN]" "$raw"
 assert_lacks "no raw token survives"        "ghp_0123456789abcdefXYZ0123" "$raw"
