@@ -213,7 +213,7 @@ jq --arg slug "$slug" '
   | .enabler_model = ""
   | .enabler_assignee = ""
   | del(.merge_autonomy, .approver_app_id, .approver_model_default,
-        .approver_model_complex, .approver_model_critical)
+        .approver_model_complex, .approver_model_critical, .escalation_autonomy)
 ' "$CONFIG" > "$base_config"
 
 # run_doctor [VAR=value…] [-- extra doctor.sh args]
@@ -477,6 +477,27 @@ assert_contains "  ... and positively confirms the level, same as it did before 
 run_doctor
 assert_not_contains "merge_autonomy at the default (human) needs no approver_model_default" \
   "no approver_model_default configured" "$out"
+
+# --- agent-ops#627: escalation_autonomy's adjudicate-first needs the
+#     Enabler enabled to run its adjudication pass against ------------------
+ea_no_enabler_config="$tmp/ea-no-enabler-config.json"
+jq '.escalation_autonomy = "adjudicate-first"' "$base_config" > "$ea_no_enabler_config"
+out="$(env PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$ea_no_enabler_config" 2>&1)"
+assert_contains "adjudicate-first with the Enabler disabled warns, naming the key" \
+  '[warn] escalation_autonomy is "adjudicate-first" but enabler_model is empty' "$out"
+
+ea_enabled_config="$tmp/ea-enabled-config.json"
+jq '.escalation_autonomy = "adjudicate-first" | .enabler_model = "claude-opus-5"
+    | .enabler_assignee = "octocat"' "$base_config" > "$ea_enabled_config"
+out="$(env PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$ea_enabled_config" 2>&1)"
+assert_not_contains "adjudicate-first with the Enabler enabled does not warn on this pairing" \
+  "enabler_model is empty" "$out"
+assert_contains "  ... and positively confirms the level" \
+  '[ ok ] escalation_autonomy is "adjudicate-first"' "$out"
+
+run_doctor
+assert_contains "always-escalate (the default) needs no enabler_model either" \
+  '[ ok ] escalation_autonomy is "always-escalate"' "$out"
 
 # --- agent-ops#532 (D18 WI-7 follow-up): merge_autonomy at
 #     agent-merges-routine+ with no merge queue must pair with *both*

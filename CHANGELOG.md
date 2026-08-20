@@ -18,6 +18,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   #573) and are always reported `unavailable`, never a guessed `0`, so a
   promotion decision is never made to look ready on missing data.
 
+- `escalation_autonomy` config key (D18, agent-ops#627): `always-escalate`
+  (the default, today's behaviour byte-for-byte) or `adjudicate-first`, which
+  runs one bounded Enabler adjudication pass — a fresh, narrower engagement
+  over one item alone, at `enabler_model` — before the Script files an
+  escalation issue for a refinement disagreement (requirement 36b's thrash
+  guard: a `needs-refinement` block that was already refined once and has
+  since been re-flagged). The pass either confirms the existing refinement
+  (recorded exactly as an ordinary `unblocked` refinement, no issue ever
+  filed) or escalates exactly as `always-escalate` already does, logged
+  either way as an `enabler-adjudication` event carrying its verdict and
+  evidence. `scripts/doctor.sh` warns when `adjudicate-first` is configured
+  with no `enabler_model` to run the pass with. Poetic's own `config.json`
+  sets `adjudicate-first`.
+
 - `scripts/doctor.sh` warns when a key documented as installed —
   `x-docs.value` differing from its own schema `default` — resolves, from the
   live `config.json`, to something else (agent-ops#567): `refiner_model`

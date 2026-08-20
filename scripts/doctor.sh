@@ -71,6 +71,8 @@ source "$SCRIPT_DIR/lib/toggle.sh"
 source "$SCRIPT_DIR/lib/merge-budget.sh"
 # shellcheck source=lib/merge-autonomy.sh
 source "$SCRIPT_DIR/lib/merge-autonomy.sh"
+# shellcheck source=lib/escalation-autonomy.sh
+source "$SCRIPT_DIR/lib/escalation-autonomy.sh"
 # shellcheck source=lib/merge-queue.sh
 source "$SCRIPT_DIR/lib/merge-queue.sh"
 # shellcheck source=lib/approver-token.sh
@@ -231,6 +233,31 @@ elif [[ -n "$enabler_model" ]]; then
   ok "the Enabler is enabled; its escalations are assigned to @$enabler_assignee"
 else
   ok "the Enabler is disabled (enabler_model is empty)"
+fi
+
+# D18 (agent-ops#627): `escalation_autonomy`'s `adjudicate-first` runs one
+# extra Enabler engagement per refinement-disagreement escalation, so it is a
+# configuration nobody can act on with the Enabler itself disabled — the same
+# pairing check merge_autonomy's own block runs against approver_app_id
+# above. Checked against every configured *source* of a level, on the same
+# terms as merge_autonomy_sources below: the top-level key and each repo's
+# own override, not the level each repo is effectively governed by.
+escalation_autonomy_sources="$(jq -r '
+  [{label: "escalation_autonomy", level: (.escalation_autonomy // "always-escalate")}]
+  + [(.repos // [])[] | select(has("escalation_autonomy"))
+     | {label: (.slug + "'"'"'s escalation_autonomy override"), level: .escalation_autonomy}]
+  | .[] | [.label, .level] | @tsv' <<<"$DEFAULTED_CONFIG" 2>/dev/null || true)"
+if [[ -n "$escalation_autonomy_sources" ]]; then
+  while IFS=$'\t' read -r ea_label ea_level; do
+    [[ -n "$ea_label" ]] || continue
+    if [[ "$ea_level" == "adjudicate-first" && -z "$enabler_model" ]]; then
+      warn "$ea_label is \"adjudicate-first\" but enabler_model is empty — the Enabler is disabled, so no refinement-disagreement escalation is ever raised for an adjudication pass to run before"
+    else
+      ok "$ea_label is \"$ea_level\""
+    fi
+  done <<<"$escalation_autonomy_sources"
+else
+  warn "escalation_autonomy could not be resolved from $config_file — the schema check above should already have failed this"
 fi
 
 missing_plan_path="$(config_missing_plan_path_repos "$(cfg_json '.repos // []')")"

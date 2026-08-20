@@ -50,6 +50,7 @@
   "enabler_after_coordinator_cycles": 3,
   "enabler_recheck_hours": 72,
   "enabler_escalation_label": "enabler-escalation",
+  "escalation_autonomy": "adjudicate-first",
   "crash_loop_after": 4,
   "crash_loop_repo": "Poetic-Poems/agent-ops",
   "unvoid_label": "unvoided",

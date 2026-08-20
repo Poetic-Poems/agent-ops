@@ -119,6 +119,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 # shellcheck source=lib/refinement.sh
 # Sourced after void-guard.sh, which defines the `entry_field_text` it uses.
 . "$SCRIPT_DIR/lib/refinement.sh"
+# shellcheck source=lib/escalation-autonomy.sh
+. "$SCRIPT_DIR/lib/escalation-autonomy.sh"
 # shellcheck source=lib/issue-priority.sh
 . "$SCRIPT_DIR/lib/issue-priority.sh"
 # shellcheck source=lib/label-marker.sh
@@ -4604,6 +4606,82 @@ CRASH_LOOP_BODY
   fi
 }
 
+# run_enabler_adjudication REPO ITEM CLAIMED_ENTRY_JSON EX_JSON CYCLE_DIR IDX
+# One bounded adjudication pass (agent-ops#627, D18 pattern,
+# `escalation_autonomy: "adjudicate-first"`): before the Script files the
+# escalation issue for a refinement-disagreement item (requirement 36b), ask
+# a fresh, narrower Enabler engagement — over this one item alone — whether
+# CLAIMED_ENTRY's own existing refinement (`refined_before`) already answers
+# the re-flag's reason, mirroring the Approver's own adjudication path
+# (requirement 8c) in shape: bounded, once, verdict-plus-evidence logged.
+# Deliberately not its tiering — the Enabler has no second, critical model
+# tier to call this at, unlike the Approver's three (Refiner's own note on
+# #627), so this runs at the ordinary `enabler_model`, reusing the backstop
+# and inactivity caps `stage_budget_apply` already resolved for the calling
+# engagement rather than deriving a second budget for an actor this system
+# has no per-actor timeout key for.
+#
+# Prints `{"verdict": "adequate"|"inadequate", "evidence": "..."}` on stdout.
+# A missing prompt file, a stage failure, or an unparseable verdict all print
+# `inadequate` with an `evidence` string naming why — "cannot settle" reads
+# the same way the Approver's own adjudication reads it: not as "nothing
+# wrong" (requirement 8c).
+run_enabler_adjudication() {
+  local repo="$1" item="$2" claimed_entry="$3" ex="$4" cycle_dir="$5" idx="$6"
+  local input prompt out rc=0 result parsed verdict evidence
+
+  if [[ ! -f "$PROMPTS_DIR/enabler-adjudicate.md" ]]; then
+    printf '{"verdict":"inadequate","evidence":"no prompts/enabler-adjudicate.md in this installation"}'
+    return 0
+  fi
+
+  input="$(jq -nc --arg r "$repo" --arg i "$item" \
+    --argjson refinement "$(jq -c '.refined_before // {}' <<<"$claimed_entry" 2>/dev/null || printf '{}')" \
+    --argjson reflag "$(jq -c '{reason: (.reason // ""), detail: (.detail // ""), unblock_condition: (.unblock_condition // "")}' \
+       <<<"$claimed_entry" 2>/dev/null || printf '{}')" \
+    --argjson escalation "$(jq -c '{title: (.issue.title // ""), body: (.issue.body // "")}' <<<"$ex" 2>/dev/null || printf '{}')" \
+    '{repo: $r, item: $i, refinement: $refinement, reflag: $reflag, escalation: $escalation}' \
+    2>/dev/null || true)"
+  if [[ -z "$input" ]]; then
+    printf '{"verdict":"inadequate","evidence":"could not build the adjudication input"}'
+    return 0
+  fi
+
+  prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" enabler-adjudicate "$prompt_overrides_json")
+
+## Runtime input for this adjudication
+
+\`\`\`json
+$(jq . <<<"$input")
+\`\`\`
+"
+  out="$cycle_dir/enabler-adjudicate-$idx.out"
+  if run_claude_stage enabler-adjudicate "$(( stage_backstop_min * 60 ))" "$enabler_model" "$prompt" "$out" "$cycle_dir" "$(( stage_inactivity_min * 60 ))"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  log_event "stage-end" "$(jq -nc --argjson rc "$rc" --arg kr "$stage_kill_reason" \
+    --argjson m "$(metering_fields "$enabler_model" "$out" "$stage_gaps_json")" \
+    '{stage: "enabler-adjudicate", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m')"
+
+  result="$(jq -r '.result // empty' "$out" 2>/dev/null || true)"
+  parsed="$(extract_json_result "$result" 2>/dev/null || true)"
+  if (( rc != 0 )) || [[ -z "$parsed" ]]; then
+    if (( rc == 124 )); then
+      printf '{"verdict":"inadequate","evidence":"the adjudication engagement timed out"}'
+    else
+      printf '{"verdict":"inadequate","evidence":"the adjudication engagement returned no parseable verdict"}'
+    fi
+    return 0
+  fi
+  verdict="$(jq -r '.verdict // ""' <<<"$parsed" 2>/dev/null || true)"
+  evidence="$(jq -r '.evidence // ""' <<<"$parsed" 2>/dev/null || true)"
+  [[ "$verdict" == "adequate" ]] || verdict="inadequate"
+  jq -nc --arg v "$verdict" --arg e "$evidence" '{verdict: $v, evidence: $e}' 2>/dev/null \
+    || printf '{"verdict":"inadequate","evidence":"could not encode the adjudication verdict"}'
+}
+
 # maybe_run_enabler CYCLE_EXIT_CODE
 # Engage the Enabler if this cycle should, and translate its verdicts into log
 # events and issues. Always returns without disturbing the cycle's outcome.
@@ -4621,6 +4699,7 @@ maybe_run_enabler() {
   local e_review_safe e_gate_checks_ok e_finding
   local e_rereview_state e_rereview_who e_human_reviewer_state e_human_reviewer_who
   local issue_title issue_body_file created number url missing
+  local e_adjudication e_adj_verdict e_adj_evidence e_adjudicated e_refined_adj
 
   # --- Guards (requirement 35). Every one of them declining is normal. ---
   # The lock is the log's single-writer guarantee, and this stage writes events.
@@ -5084,25 +5163,70 @@ $(jq . <<<"$input")
         issue_title="$(jq -r '.issue.title // ""' <<<"$ex" 2>/dev/null || true)"
         issue_body_file="$cycle_dir/enabler-issue-$j.md"
         jq -r '.issue.body // ""' <<<"$ex" > "$issue_body_file" 2>/dev/null || true
-        if [[ -z "$issue_title" || ! -s "$issue_body_file" ]]; then
-          log_event "warning" "$(jq -nc \
-            --arg d "enabler: escalate verdict for $e_repo $e_item carried no issue title or body — nothing filed" \
-            '{detail: $d}')"
-          outcome="escalation-failed"
-        elif created="$(create_escalation_issue "$e_repo" "$e_item" "$enabler_escalation_label" \
-                          "$issue_title" "$issue_body_file")" && [[ -n "$created" ]]; then
-          IFS=$'\t' read -r number url <<<"$created"
-          log_event "escalated" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" \
-            --argjson n "$number" --arg u "$url" --arg b "$blocked_ts" \
-            '{repo: $r, item: $i, issue_number: $n, issue_url: $u, blocked_ts: $b}')"
-        else
-          # The examined event records `escalation-failed`, which requirement 35a
-          # deliberately does not count as an examination: the item stays at the
-          # threshold and is retried once its claim expires.
-          log_event "warning" "$(jq -nc \
-            --arg d "enabler: could not file the escalation issue for $e_repo $e_item (see enabler-issue.err) — retried after the claim TTL" \
-            '{detail: $d}')"
-          outcome="escalation-failed"
+
+        # D18 (agent-ops#627): `escalation_autonomy: "adjudicate-first"` runs
+        # one bounded adjudication pass, over this item alone, before a
+        # refinement-disagreement escalation is actually filed. Only a
+        # refinement disagreement qualifies — `refinement_is_disagreement`,
+        # the same shape `refinement_second_pass_refused` refuses a second
+        # `unblocked` verdict against — and only once a title/body actually
+        # exist to adjudicate; an escalate verdict that already carried
+        # nothing filable is unaffected by the setting.
+        e_adjudicated=0
+        if [[ -n "$issue_title" && -s "$issue_body_file" ]] \
+             && refinement_is_disagreement "$claimed_entry" \
+             && [[ "$(escalation_autonomy_configured_level "$DEFAULTED_CONFIG" "$e_repo")" == "adjudicate-first" ]]; then
+          e_adjudication="$(run_enabler_adjudication "$e_repo" "$e_item" "$claimed_entry" "$ex" "$cycle_dir" "$j")"
+          e_adj_verdict="$(jq -r '.verdict // "inadequate"' <<<"$e_adjudication" 2>/dev/null || printf 'inadequate')"
+          e_adj_evidence="$(jq -r '.evidence // ""' <<<"$e_adjudication" 2>/dev/null || true)"
+          log_event "enabler-adjudication" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" \
+            --arg v "$e_adj_verdict" --arg ev "$e_adj_evidence" \
+            '{repo: $r, item: $i, verdict: $v, evidence: $ev, adjudication: true}')"
+          if [[ "$e_adj_verdict" == "adequate" ]]; then
+            e_adjudicated=1
+            # Recorded exactly as an ordinary unblocked refinement
+            # (requirement 36b): the adjudication confirmed the *existing*
+            # refinement rather than writing a new one, so item-refined
+            # carries refined_before's own spec/comment_url, unchanged.
+            log_event "unblocked" "$(jq -nc --arg i "$e_item" --arg r "$e_repo" --arg reason "$e_reason" \
+              '{item: $i, repo: $r, by: "enabler", reason: $reason}')"
+            e_refined_adj="$(jq -c '(.refined_before // {}) | {spec: (.spec // ""), comment_url: (.comment_url // "")}
+                                     | with_entries(select(.value != ""))' \
+                                <<<"$claimed_entry" 2>/dev/null || printf '{}')"
+            if [[ "$e_refined_adj" != "{}" ]]; then
+              log_event "item-refined" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" \
+                --argjson x "$e_refined_adj" '{repo: $r, item: $i} + $x')"
+            else
+              log_event "warning" "$(jq -nc \
+                --arg d "enabler: adjudication confirmed $e_repo $e_item's existing refinement as adequate, but refined_before carried neither a spec nor a comment_url — nothing was recorded for the next Co-Ordinator to read" \
+                '{detail: $d}')"
+            fi
+            release_refinement_label "$e_item" "$e_repo"
+            outcome="unblocked"
+          fi
+        fi
+
+        if (( ! e_adjudicated )); then
+          if [[ -z "$issue_title" || ! -s "$issue_body_file" ]]; then
+            log_event "warning" "$(jq -nc \
+              --arg d "enabler: escalate verdict for $e_repo $e_item carried no issue title or body — nothing filed" \
+              '{detail: $d}')"
+            outcome="escalation-failed"
+          elif created="$(create_escalation_issue "$e_repo" "$e_item" "$enabler_escalation_label" \
+                            "$issue_title" "$issue_body_file")" && [[ -n "$created" ]]; then
+            IFS=$'\t' read -r number url <<<"$created"
+            log_event "escalated" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" \
+              --argjson n "$number" --arg u "$url" --arg b "$blocked_ts" \
+              '{repo: $r, item: $i, issue_number: $n, issue_url: $u, blocked_ts: $b}')"
+          else
+            # The examined event records `escalation-failed`, which requirement 35a
+            # deliberately does not count as an examination: the item stays at the
+            # threshold and is retried once its claim expires.
+            log_event "warning" "$(jq -nc \
+              --arg d "enabler: could not file the escalation issue for $e_repo $e_item (see enabler-issue.err) — retried after the claim TTL" \
+              '{detail: $d}')"
+            outcome="escalation-failed"
+          fi
         fi
         ;;
       *)

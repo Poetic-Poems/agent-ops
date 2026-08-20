@@ -631,6 +631,7 @@ and the schema must carry every one of them.
 | `refinement_after_coordinator_cycles` | *(`enabler_after_coordinator_cycles`)* | The same threshold, applied instead of `enabler_after_coordinator_cycles` when the block's `kind` is `needs-refinement` (requirement 35a). Unset, it inherits `enabler_after_coordinator_cycles`'s value, which is what keeps the two classes aging identically until fleet behaviour justifies pulling them apart. |
 | `enabler_recheck_hours` | `72` | How long after an examination the Enabler may examine the same item again (requirement 35a). Requirement 18a catches most of the failure mode `TECH-DEBT.md` TD26072101 recorded — a GitHub issue gaining evidence after it was blocked — same-cycle, off the issue's own `updated_at`; this bound is the lever for everything that leaves no such signal: every non-issue blocked source, and a blocker that clears without a comment landing on the issue. `0` disables re-examination. |
 | `enabler_escalation_label` | `enabler-escalation` | Applied to every issue the Enabler raises, for the human's filter and for the duplicate guard of requirement 36a. It must not be `blocked`: that label is an exclusion criterion for the `issues` source (requirement 16.4) and would double-count with the assignment. Nor `obsolete`: that name is the human-only corroboration requirement 34k closes a draft pull request on, and no configured label may carry it — `scripts/doctor.sh` fails a config that does. |
+| `escalation_autonomy` | `always-escalate` | The D18 escalation-autonomy ladder (agent-ops#627), fleet-wide default; a `repos[]` entry's own `escalation_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). At `adjudicate-first`, before the Script files the escalation issue for a refinement-disagreement item (requirement 36b: a `needs-refinement` block whose `refined_before` is set), one bounded adjudication pass runs at `enabler_model` — the Enabler has no second...[continued below](#extended-notes-escalation_autonomy) |
 | `needs_refinement_label` | `needs-refinement` | The label the Script projects onto an issue-type item while its refinement block is open (requirement 34e), and removes when the block clears. Also the label a human applies by hand to flag an item themselves, which the Script scans every repo's issues for and records as the same kind of block (requirement 34g) — removing it while that block is open clears it the same way. Empty disables both directions: the log is the record, so the mechanism is unaffected and the item still...[continued below](#extended-notes-needs_refinement_label) |
 | `refinement_max_per_engagement` | `3` | How many refinement-class items one Enabler engagement takes on (requirement 35d); ordinary blocked items are uncapped and are never displaced by them. The cap exists because the backlog of items silently skipped before requirement 16a existed is unbounded, and an engagement spent entirely on old vagueness would delay the pull request nobody can see. `0` removes the class from engagements entirely — blocks are still recorded, and the items wait. |
 | `refiner_model` | `claude-sonnet-5` | The Refiner (requirement 39). Unlike the Enabler, eligibility carries no threshold, so it runs as often as there is unrefined work, and its frequency has to be weighed against the fact that what it produces is a specification rather than a ranking. Empty disables the stage. |
@@ -721,6 +722,8 @@ A repo entry may also carry `merge_budget_per_day` — the per-repository overri
 
 A repo entry may also carry `merge_autonomy_routine_sources` — the per-repository override of the top-level key of the same name (D18 WI-7, requirement 8d), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.
 
+A repo entry may also carry `escalation_autonomy` — the per-repository override of the top-level key of the same name (D18, agent-ops#627), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.
+
 Every optional key sits on the repository's own entry, beside `slug` and `sources`:
 
 ```json
@@ -739,6 +742,10 @@ Every optional key sits on the repository's own entry, beside `slug` and `source
   }
 ]
 ```
+
+### Extended notes: `escalation_autonomy`
+
+The D18 escalation-autonomy ladder (agent-ops#627), fleet-wide default; a `repos[]` entry's own `escalation_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). At `adjudicate-first`, before the Script files the escalation issue for a refinement-disagreement item (requirement 36b: a `needs-refinement` block whose `refined_before` is set), one bounded adjudication pass runs at `enabler_model` — the Enabler has no second, critical tier to call this at, unlike the Approver's own adjudication (requirement 8c) — and is logged as an `enabler-adjudication` event carrying its `verdict` (`adequate`/`inadequate`) and `evidence`. `adequate` is recorded exactly as an ordinary `unblocked` refinement (an `unblocked` event plus `item-refined`, carrying the existing refinement's own `spec`/`comment_url`); `inadequate`, an unparseable verdict, or a failed adjudication engagement all escalate exactly as `always-escalate` already does. Owner-only decisions (spec edits, architecture and strategy choices) escalate at every level; nothing here relaxes requirement 36a's protocol.
 
 ### Extended notes: `needs_refinement_label`
 
@@ -6668,6 +6675,7 @@ implements.
     `stage-end`, `pr-raised`, `pr-ready`, `attempt-failed`, `unblocked`,
     `recheck-clean`, `item-void`, `unvoided`, `item-refined`,
     `enabler-examined`, `refiner-examined`, `own-label-action`, `escalated`,
+    `enabler-adjudication`,
     `crash-loop-escalated`,
     `labels-ensured`, `limit-hit`, `limit-cleared`,
     `orphan-branch-recovered`, `orphan-branch-released`,
@@ -6693,6 +6701,14 @@ implements.
     `issue_number`/`issue_url` on
     `merge-budget-freeze-escalated`, on the same terms
     `crash-loop-escalated`/`approver-escalated` already carry theirs.
+    `enabler-adjudication` (requirement 36b, `escalation_autonomy:
+    "adjudicate-first"`, agent-ops#627) is logged once per adjudication pass
+    `run_enabler_adjudication` runs, carrying `repo`, `item`, `verdict`
+    (`adequate`/`inadequate`), `evidence` and `adjudication: true` — the same
+    verdict-plus-evidence shape `approver-verdict`'s own `adjudication: true`
+    marker carries (requirement 8c), read here rather than reused there
+    because the two adjudications judge different questions over different
+    stages' own verdicts.
     `review-gate-checks-read` (requirement 31c,
     TD-PPagop-26081404) is bookkeeping, one per ready-gate evaluation, carrying
     `ok: true|false` — machine-read by the streak verdict, and kept out of
@@ -8594,6 +8610,40 @@ implements.
       Where the work item is itself an issue, the Enabler also posts one
       one-line comment on it linking to the escalation, so the context stays
       visible where the work lives.
+
+      **`escalation_autonomy` (D18, agent-ops#627).** When the item this
+      verdict escalates is a refinement disagreement — `kind:
+      "needs-refinement"` with `refined_before` set, the same shape the thrash
+      guard below refuses a second `unblocked` verdict against
+      (`refinement_is_disagreement`, `lib/refinement.sh`) — and this
+      repository's `escalation_autonomy` resolves to `adjudicate-first`
+      (`escalation_autonomy_configured_level`, `lib/escalation-autonomy.sh`,
+      the same `stage_timeouts`/`merge_autonomy` per-repo-override precedence,
+      requirement 4f), the Script runs one
+      bounded adjudication pass (`run_enabler_adjudication`,
+      `prompts/enabler-adjudicate.md`) — a fresh, narrower engagement over
+      this one item alone, at `enabler_model` — before it files the issue
+      above. The pass reads the item's existing refinement
+      (`refined_before`'s own `spec`/`comment_url`), the re-flag's recorded
+      reason (`detail`/`unblock_condition`), and this verdict's own
+      `issue.title`/`issue.body`, and returns exactly `adequate` or
+      `inadequate`, logged as an `enabler-adjudication` event carrying that
+      verdict, its `evidence`, and `adjudication: true`. `adequate` is
+      recorded exactly as an ordinary `unblocked` refinement — an `unblocked`
+      event plus `item-refined`, carrying the *existing* refinement's own
+      `spec`/`comment_url` unchanged, since the pass confirmed it rather than
+      writing a new one — and no escalation issue is filed. `inadequate`, a
+      missing adjudication prompt, a stage failure, or an unparseable verdict
+      all escalate exactly as `always-escalate` already does: "cannot settle"
+      is not read as "nothing wrong" (the same rule requirement 8c's own
+      adjudication path applies to its own unreadable verdicts). The default,
+      `always-escalate`, is byte-for-byte today's behaviour — no adjudication
+      pass ever runs. Every escalation this verdict can reach that is not a
+      refinement disagreement (an ordinary blocked item, an owner-only
+      decision, a strategy call) is unaffected by this key at every level: the
+      setting only ever replaces one escalation with one adjudication pass
+      that itself either confirms the earlier refinement or escalates anyway,
+      never widens what the Script may decide without a human.
     - **Leaves it blocked**, where the gating decision is recorded as
       deliberately parked — an open question with a decide-by gate in a roadmap
       or plan, or a thread saying the decision is intentionally deferred. The
@@ -10253,9 +10303,13 @@ What exists, and the requirements each part answers to:
    fields and label projection and requirement 38b's assignment projection
    beside it (`REFINEMENT_GH` substitutes a stub for tests,
    following `CLAIM_GH`), requirement 35d's per-engagement cap, and requirement
-   36b's `item-refined` payload and thrash guard — plus, for the Refiner,
-   requirement 39a's `refiner_candidate_items`/`refiner_policy_value` and
-   requirement 39b's `refiner_engagement_set`. Sourced after
+   36b's `item-refined` payload and thrash guard — `refinement_is_disagreement`
+   beside it, the same "needs-refinement block with `refined_before` set" shape
+   read without the verdict/`issue-closed` conditions the guard itself also
+   checks, since `escalation_autonomy`'s `adjudicate-first` setting
+   (agent-ops#627, requirement 36b) is this predicate's one caller — plus, for
+   the Refiner, requirement 39a's `refiner_candidate_items`/`refiner_policy_value`
+   and requirement 39b's `refiner_engagement_set`. Sourced after
    `lib/void-guard.sh`, whose `entry_field_text` it shares rather than keeping a
    second opinion about what counts as a filled-in field (requirement 34a).
    Unit-tested (`test/needs-refinement.test.sh`, `test/refiner-eligibility.test.sh`);
@@ -10921,6 +10975,20 @@ What exists, and the requirements each part answers to:
     integration with `merge_autonomy_effective_level` is
     `test/merge-autonomy.test.sh`'s own coverage instead, so the two files'
     tests do not restate each other. Must pass `shellcheck`.
+14e. `lib/escalation-autonomy.sh` implementing the `escalation_autonomy`
+    config key (D18, agent-ops#627, requirement 36b): the one function
+    `escalation_autonomy_configured_level CONFIG_JSON SLUG` resolves a
+    repository's configured level — its own `repos[]` override, else the
+    top-level key, else `always-escalate` — the same precedence
+    `merge_autonomy_configured_level` uses, and nothing else: there is no
+    kill switch and no `_effective_level` layer here, because
+    `adjudicate-first` never lets the Script act with less human oversight
+    than `always-escalate` already does (this file's own header explains why
+    that makes a safety override pointless). Sourced by `agent-cycle.sh`
+    (`maybe_run_enabler`'s `escalate` verdict handling) and `scripts/doctor.sh`
+    (the `enabler_model` pairing check). Regression-tested in
+    `test/escalation-autonomy.test.sh`, on the same terms
+    `test/merge-autonomy.test.sh` covers its own precedence resolution.
 15. `lib/labels.sh` implementing requirement 6a: `labels_catalogue` (what a
     repository in a given role — `target`, `review`, `escalation` — needs, as
     `name`/`colour`/`description`, with the names taken from the config as

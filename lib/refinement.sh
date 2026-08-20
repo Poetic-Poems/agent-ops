@@ -424,6 +424,27 @@ refinement_second_pass_refused() {
   return 1
 }
 
+# refinement_is_disagreement ENTRY_JSON
+# True (exit 0) iff ENTRY_JSON is a `needs-refinement` block that already
+# carries a prior refinement (`refined_before` set) — the same shape
+# `refinement_second_pass_refused` refuses a second `unblocked` verdict
+# against, read here without the verdict/`issue-closed` conditions that
+# function also checks, since this predicate is not about which verdict is
+# allowed but about which *item* the disagreement is about.
+#
+# `escalation_autonomy`'s `adjudicate-first` setting (agent-ops#627) is this
+# predicate's one caller: it decides whether an `escalate` verdict on this
+# item is a genuine, fresh escalation or a re-flag of the same disagreement
+# the thrash guard already knows about — the only shape a bounded adjudication
+# pass can usefully judge, since it is the only one with a prior refinement to
+# check the re-flag against.
+refinement_is_disagreement() {
+  local entry="$1" kind
+  kind="$(jq -r '.kind // ""' <<<"$entry" 2>/dev/null || true)"
+  [[ "$kind" == "$REFINEMENT_BLOCK_KIND" ]] || return 1
+  [[ "$(jq -r 'if (.refined_before // null) == null then "" else "x" end' <<<"$entry" 2>/dev/null || true)" == "x" ]]
+}
+
 # refinement_hand_flag_new LABELLED_JSON BLOCKED_JSON
 # Print, as a JSON array, the entries of LABELLED_JSON (the shape
 # `scripts/gather-hand-flagged-refinements.sh` produces:
