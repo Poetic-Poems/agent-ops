@@ -4610,6 +4610,12 @@ implements.
    landing every pull request. A successful arm logs `landing-armed`
    exactly once, naming the `method` actually used (`enqueued` or
    `auto-merge`), and never withholds anything requirement 8b already did.
+   `auto-merge` names the *call* made (`gh pr merge --auto --squash`), not a
+   guarantee it armed anything to fire later: with the `gh` CLI version the
+   node image installs, that call merges the pull request immediately from
+   `CLEAN`/`UNSTABLE` rather than deferring, and only genuinely arms
+   auto-merge from `BLOCKED` (agent-ops#553; `lib/landing.sh`'s own header
+   carries the full finding).
 
    The fleet-wide kill switch and a per-repository downgrade (setting
    `merge_autonomy` back to `human` or `agent-approves`) both disarm
