@@ -566,6 +566,50 @@ assert_eq "  ... writing a cache file into the fresh directory" "true" \
   "$([[ -f "$fresh_dir/o__case-fields-ok.json" ]] && echo true || echo false)"
 issue_priority_cache_cleanup
 
+# Cleanup invoked through a command substitution — a subshell — removes the
+# directory from disk but its variable-clearing never reaches the parent
+# shell (see the function's own header above): the parent's record still
+# names the now-removed directory, still marked owned, still stamped with
+# this process's own $$. The source-time check at line 101 has to notice the
+# directory is gone independently of that clearing — the property the
+# earlier "source after cleanup" case above never exercised, since it calls
+# cleanup directly and the record really is empty by the time it re-sources
+# (agent-ops#552 review, PR #618).
+unset ISSUE_PRIORITY_CACHE_DIR ISSUE_PRIORITY_CACHE_DIR_OWNED \
+      ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH ISSUE_PRIORITY_CACHE_DIR_OWNER_PID
+. "$SCRIPT_DIR/lib/issue-priority.sh"
+subshell_dir="$ISSUE_PRIORITY_CACHE_DIR"
+assert_eq "cleanup-via-subshell: the directory exists before cleanup" "true" \
+  "$([[ -d "$subshell_dir" ]] && echo true || echo false)"
+out="$(issue_priority_cache_cleanup)"
+assert_eq "  ... cleanup through a command substitution prints nothing" "" "$out"
+assert_eq "  ... and removes the directory from disk" "false" \
+  "$([[ -d "$subshell_dir" ]] && echo true || echo false)"
+assert_eq "  ... but the parent's own record is untouched by the subshell" "1" \
+  "$ISSUE_PRIORITY_CACHE_DIR_OWNED"
+assert_eq "  ... still naming the now-removed directory" "$subshell_dir" \
+  "$ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH"
+. "$SCRIPT_DIR/lib/issue-priority.sh"
+resubshell_dir="$ISSUE_PRIORITY_CACHE_DIR"
+assert_eq "  ... a re-source does not trust that stale record" "true" \
+  "$([[ "$resubshell_dir" != "$subshell_dir" && -d "$resubshell_dir" ]] && echo true || echo false)"
+assert_eq "  ... and marks the fresh directory owned" "1" "$ISSUE_PRIORITY_CACHE_DIR_OWNED"
+rm -f "$tmp_dir/gh-b/fail-fields"
+# Same reasoning as the "source after cleanup" case above: a fresh, empty
+# directory has nothing cached, so the fixture must exist again.
+cat > "$tmp_dir/gh-b/fields-response.json" <<'EOF'
+{"data":{"repository":{"issueFields":{"nodes":[
+  {"id":"IFSS_priority","name":"Priority","options":[
+    {"id":"OPT_URGENT","name":"Urgent"},{"id":"OPT_HIGH","name":"High"},
+    {"id":"OPT_MEDIUM","name":"Medium"},{"id":"OPT_LOW","name":"Low"}]},
+  {"id":"IFSS_effort","name":"Effort","options":[{"id":"OPT_E_LOW","name":"Low"}]}
+]}}}}
+EOF
+field_json="$(issue_priority_field_ids "o/case-fields-ok")"
+assert_eq "  ... and field-id caching works again after the subshell scenario" "IFSS_priority" \
+  "$(jq -r '.field_id' <<<"$field_json")"
+issue_priority_cache_cleanup
+
 # An ownership record inherited from a *different* process must not be
 # trusted (agent-ops#552, defect 1) — otherwise a child process that
 # inherits an exported record would treat a caller's own directory as its
