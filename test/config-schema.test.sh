@@ -883,12 +883,15 @@ assert_not_contains() {
 #     documented as `claude-haiku-4-5-20251001` while the key had never once
 #     been set in config.json — silently running the empty-string default,
 #     the stage off — for eight days is the failure this exists to catch. ---
+# shellcheck disable=SC2016  # backticks here are literal Markdown, not command substitution
 assert_doctor "doctor warns when a documented installation value drifts from what config.json resolves" \
   '.refiner_model = "claude-haiku-4-5-20251001"' 0 \
   'refiner_model is documented (README.md/docs/IMPLEMENTATION-PIPELINE-SPEC.md) as `claude-sonnet-5` but resolves to `claude-haiku-4-5-20251001`'
+# shellcheck disable=SC2016  # backticks here are literal Markdown, not command substitution
 assert_doctor "doctor renders an empty resolved value as *(unset)*, the same convention the docs use for one" \
   '.refiner_model = ""' 0 \
   'refiner_model is documented (README.md/docs/IMPLEMENTATION-PIPELINE-SPEC.md) as `claude-sonnet-5` but resolves to *(unset)*'
+# shellcheck disable=SC2016  # backticks here are literal Markdown, not command substitution
 assert_doctor "doctor compares an array-valued x-docs.value by its parsed JSON, naming the resolved array" \
   '.schedule.excluded_minutes = [5]' 0 \
   'schedule.excluded_minutes is documented (README.md/docs/IMPLEMENTATION-PIPELINE-SPEC.md) as `[0]` but resolves to `[5]`'

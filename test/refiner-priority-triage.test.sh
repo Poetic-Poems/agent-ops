@@ -1233,6 +1233,7 @@ refiner_preflight_guard="$(awk '
   /cost every cycle for a stage that never runs \(issue #567\)\.$/ { grab = 3; next }
   grab > 0 { print; grab--; next }
 ' "$repo_root/agent-cycle.sh")"
+# shellcheck disable=SC2016  # the literal call-site text to grep for, not meant to expand
 if [[ "$refiner_preflight_guard" != *'if [[ -n "$refiner_model" ]]; then'* \
    || "$refiner_preflight_guard" != *'refiner_filter_unbandable_triage'* ]]; then
   printf 'FAIL - the pre-flight call site could not be found guarded by refiner_model (renamed or moved?)\n'
@@ -1240,15 +1241,25 @@ if [[ "$refiner_preflight_guard" != *'if [[ -n "$refiner_model" ]]; then'* \
 fi
 
 preflight_call_log="$tmp_dir/preflight-calls.log"
-refiner_filter_unbandable_triage() { printf '%s\n' "$1" >> "$preflight_call_log"; }
+# Defined through eval, like refiner_filter_unbandable_triage_fn itself above:
+# a literal `refiner_filter_unbandable_triage() { ... }` here would make the
+# linter treat *this* definition as the one case (vii) above's own calls
+# resolve against, and flag them as used before it. `refiner_model` and
+# `refiner_candidates_json` below are read only from inside
+# `refiner_preflight_guard`'s own eval'd text, which is exactly why the
+# linter cannot see the use.
+eval 'refiner_filter_unbandable_triage() { printf "%s\n" "$1" >> "$preflight_call_log"; }'
 
+# shellcheck disable=SC2034  # read by refiner_preflight_guard's eval'd text
 refiner_candidates_json='[{"repo":"o/good","source":"issues","item":"1","triage_only":true}]'
+# shellcheck disable=SC2034  # read by refiner_preflight_guard's eval'd text
 refiner_model=""
 : > "$preflight_call_log"
 eval "$refiner_preflight_guard"
 assert_eq "refiner_model empty: the pre-flight is never called — no GraphQL read, no refiner: warning" \
   "0" "$(wc -l < "$preflight_call_log")"
 
+# shellcheck disable=SC2034  # read by refiner_preflight_guard's eval'd text
 refiner_model="claude-test-model"
 : > "$preflight_call_log"
 eval "$refiner_preflight_guard"
