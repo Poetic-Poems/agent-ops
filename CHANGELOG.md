@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `scripts/autonomy-stage-report.sh` (D18, agent-ops#571): a read-only
+  operator report answering "has this repository met its current D18
+  rollout-stage exit criteria?" — its `merge_autonomy` level, the stage
+  (agent-ops#402) that level corresponds to, that stage's exit criteria, the
+  measured value of each, and a closing `met`/`not-met (criterion: …)`/
+  `insufficient-evidence` verdict. Two criteria — classifier escapes and the
+  Stage 1 Approver/human divergence — have no detector yet (agent-ops#572,
+  #573) and are always reported `unavailable`, never a guessed `0`, so a
+  promotion decision is never made to look ready on missing data.
+
 - `scripts/doctor.sh` warns when a key documented as installed —
   `x-docs.value` differing from its own schema `default` — resolves, from the
   live `config.json`, to something else (agent-ops#567): `refiner_model`
