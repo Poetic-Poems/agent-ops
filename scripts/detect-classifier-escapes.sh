@@ -80,9 +80,12 @@
 # Each merged, Approver-identified pull request is audited at most once,
 # ever: LOG_FILE (the fleet's own union log, or stdin/"-") is scanned first
 # for every prior `classifier-escape`/`landing-audit` event's own `pr_url`,
-# and every one already seen is skipped before a single `gh` call is spent on
-# it. A pull request's own merged history is a fixed, past fact, so nothing
-# about re-checking it later could change the answer.
+# and every one already seen is skipped as soon as its own `pr_url` is known
+# — after the one `repos/SLUG/pulls/N` read that establishes it, which is
+# also the read that says whether the Approver identity merged it at all,
+# and before the merge-commit and label-timeline reads. A pull request's own
+# merged history is a fixed, past fact, so nothing about re-checking it later
+# could change the answer.
 #
 # ## Output
 #
@@ -241,9 +244,16 @@ _escape_audit_merge_files() {
 # Prints the single complexity:* label standing at MERGED_AT, or nothing if
 # zero or more than one were standing (the caller treats either as
 # unverifiable, never guesses between them).
+#
+# `--method GET` is not decoration, here or in `_escape_audit_candidates`
+# below: `gh api` switches a request carrying `-f`/`-F` fields to POST unless
+# told otherwise (the same trap `lib/review-gate.sh`'s own reads document),
+# and a POST to either endpoint answers 404/422 rather than the listing this
+# needs — which `gh_retry` would report as an unreadable timeline, so every
+# landing would read `unverifiable` and no escape could ever be found.
 _escape_audit_complexity_at_merge() {
   local repo_slug="$1" number="$2" merged_at="$3" raw
-  raw="$(gh_retry api "repos/$repo_slug/issues/$number/events" --paginate -F per_page=100 \
+  raw="$(gh_retry api "repos/$repo_slug/issues/$number/events" --method GET --paginate -F per_page=100 \
     --jq '.[] | select(.event == "labeled" or .event == "unlabeled") | select((.label.name // "") | test("^complexity:")) | {event, label: .label.name, at: .created_at}')" \
     || return 2
   jq -s -r --arg cut "$merged_at" '
@@ -260,7 +270,7 @@ _escape_audit_complexity_at_merge() {
 # `pull_request.merged_at` distinguishes a merge from a plain close.
 _escape_audit_candidates() {
   local repo_slug="$1"
-  gh_retry api "repos/$repo_slug/issues" --paginate -F per_page=100 \
+  gh_retry api "repos/$repo_slug/issues" --method GET --paginate -F per_page=100 \
     -f state=closed -f labels="$LABEL" \
     --jq '.[] | select(.pull_request != null and .pull_request.merged_at != null) | .number'
 }

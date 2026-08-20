@@ -4983,9 +4983,9 @@ implements.
    escape is a permanent fact about one merged pull request, and a window
    that let it age out of view would be exactly the "row nobody reads" this
    requirement exists to prevent), into `counts.escape_audits`
-   (`{checked, clean, escapes, unverifiable, escapes: [...], unverifiable:
-   [...]}`), and joins the newest audit outcome for each landed pull
-   request's own `pr_url` into its row of the WI-8 autonomous-landing digest
+   (`{checked, clean, escapes, unverifiable, escape_list: [...],
+   unverifiable_list: [...]}`), and joins the newest audit outcome for each
+   landed pull request's own `pr_url` into its row of the WI-8 autonomous-landing digest
    ("## The Landing Gate", requirement 8d) as `audit`/`audit_reason` — a row
    with no audit yet (not merged long enough ago for the sweep to have
    reached it, or genuinely unauditable) reads `audit: null`, never folded
@@ -7058,7 +7058,8 @@ implements.
     `protected_paths_hit`, `protected_paths` and `reason`; `classifier-escape`
     omits `outcome` (the event name itself already says it), `landing-audit`
     keeps it so a reader of the log alone can tell `clean` from
-    `unverifiable` without cross-referencing the event name. `merge-budget-hold`, `merge-budget-frozen` and
+    `unverifiable` without cross-referencing the event name.
+    `merge-budget-hold`, `merge-budget-frozen` and
     `merge-budget-freeze-escalated` (requirement 2.3c,
     `merge_budget_apply_decision`) are logged whenever gate 5 of
     `_landing_stage_attempt` (requirement 8d) reaches `merge_budget_decide`
@@ -15297,9 +15298,11 @@ pull request, run the ones the change touches and any it could regress.
     merged pull request whose merge commit touches a protected path (an
     injected known escape) is reported `classifier-escape` even though it
     carries a `landing-armed` event recording `complexity: low` — the
-    detector's own recomputation, not the recorded value, is what disagreed;
-    a merged pull request whose recomputed complexity, source and
-    protected-path check all agree with its having landed is `outcome:
+    detector's own recomputation, not the recorded value, is what disagreed
+    — as are the other two ways the recomputation can disagree, a complexity
+    above `medium` standing at merge and a source outside the repository's
+    routine list; a merged pull request whose recomputed complexity, source
+    and protected-path check all agree with its having landed is `outcome:
     "clean"`; a merge commit GitHub reports with no `files` array (too large
     to enumerate), a merge with zero or more than one `complexity:*` label
     standing at `merged_at`, and a `pr_url` with no `landing-armed` event to
@@ -15307,8 +15310,11 @@ pull request, run the ones the change touches and any it could regress.
     a pull request merged by an account other than the passed-in Approver
     login is not audited at all; and a `pr_url` already carrying a
     `classifier-escape`/`landing-audit` event in the fleet log is skipped
-    before any further `gh` call is spent on it. `test/publish-dashboard.
-    test.sh` pins `counts.escape_audits`'s aggregation over `classifier-
+    before any further `gh` call is spent on it. The same stub refuses any
+    call carrying `-f`/`-F` fields without `--method GET`, since the real
+    `gh api` turns one into a POST — which these endpoints answer 404/422,
+    so a detector that read them that way would silently audit nothing at
+    all for ever. `test/publish-dashboard.test.sh` pins `counts.escape_audits`'s aggregation over `classifier-
     escape`/`landing-audit` events (all-time, not windowed) and the
     per-row `audit`/`audit_reason` join into the WI-8 digest's `armed`
     rows. `./scripts/lint-shell.sh` and `perl scripts/td-check.pl` are clean.

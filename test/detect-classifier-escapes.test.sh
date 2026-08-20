@@ -21,12 +21,17 @@
 #   - The script itself, invoked as a subprocess against a stubbed `gh`
 #     (PATH-prepended, the same technique test/mine-merge-history.test.sh
 #     uses): a merged pull request whose merge commit touches a protected
-#     path is an injected known escape, and must be caught; one whose three
-#     recomputed inputs all agree is clean; each of the ways an input can
-#     fail to reconstruct is unverifiable, never clean; a pull request
-#     merged by anyone other than the passed-in Approver login is not
-#     audited at all; and a pull request already carrying an audit event in
-#     the log is skipped before any further `gh` call.
+#     path is an injected known escape, and must be caught, as are the other
+#     two ways recomputation can disagree with a landing that happened — a
+#     complexity above `medium`, and a source outside the repository's
+#     routine list; one whose three recomputed inputs all agree is clean;
+#     each of the ways an input can fail to reconstruct is unverifiable,
+#     never clean; a pull request merged by anyone other than the passed-in
+#     Approver login is not audited at all; and a pull request already
+#     carrying an audit event in the log is skipped before any further `gh`
+#     call. The stub also refuses any parameterised call that does not say
+#     `--method GET`, because the real `gh api` would POST it — see its own
+#     note below.
 #
 # Run directly:
 #
@@ -134,6 +139,24 @@ apply() {
   if [[ -n "$jqfilter" ]]; then jq -c "$jqfilter" "$1" 2>/dev/null; else cat "$1"; fi
 }
 
+# The real `gh api` switches a request carrying `-f`/`-F` fields to POST
+# unless it is told `--method GET` (lib/review-gate.sh's own reads carry the
+# same note), and a POST to any of the endpoints below answers 404/422
+# instead of the listing the detector needs — silently, since gh_retry sends
+# stderr to /dev/null, so the detector would simply audit nothing at all
+# for ever. A stub that answered such a call anyway would prove the detector
+# works against a GitHub that does not exist, so refuse it here instead.
+for a in "${args[@]}"; do
+  case "$a" in
+    -f|-F)
+      if [[ "${args[*]}" != *"--method GET"* ]]; then
+        echo "gh-stub: parameterised call with no --method GET — real gh would POST this: ${args[*]}" >&2
+        exit 1
+      fi
+      ;;
+  esac
+done
+
 if [[ "${args[0]:-}" == "api" && "${args[1]:-}" == repos/*/issues && "${args[*]}" == *"state=closed"* ]]; then
   [[ -f "$f/issues-fail" ]] && exit 1
   apply "$f/issues.json"; exit 0
@@ -182,12 +205,21 @@ LOGIN="pullwright-approver[bot]"
 #       (ambiguous) — unverifiable.
 #   #5  merged by someone else entirely (a human's own manual merge) — not
 #       audited at all: no output line for it.
+#   #6  merged by the Approver, no protected path, source register-hygiene,
+#       but complexity:high standing at merge — an escape the protected-path
+#       check alone would have called clean.
+#   #7  merged by the Approver, no protected path, complexity:low, but the
+#       source recorded for it is `issues`, which is not in this repository's
+#       routine list — the third of the three ways recomputation can
+#       disagree, and the only one neither of the two above covers.
 cat > "$STUB_DIR/issues.json" <<EOF
 [{"number": 1, "pull_request": {"merged_at": "2026-08-20T10:00:00Z"}},
  {"number": 2, "pull_request": {"merged_at": "2026-08-20T10:00:00Z"}},
  {"number": 3, "pull_request": {"merged_at": "2026-08-20T10:00:00Z"}},
  {"number": 4, "pull_request": {"merged_at": "2026-08-20T10:00:00Z"}},
- {"number": 5, "pull_request": {"merged_at": "2026-08-20T10:00:00Z"}}]
+ {"number": 5, "pull_request": {"merged_at": "2026-08-20T10:00:00Z"}},
+ {"number": 6, "pull_request": {"merged_at": "2026-08-20T10:00:00Z"}},
+ {"number": 7, "pull_request": {"merged_at": "2026-08-20T10:00:00Z"}}]
 EOF
 
 pr_json() {  # <number> <merged_by>
@@ -202,6 +234,8 @@ pr_json 2 "$LOGIN" > "$STUB_DIR/pr-2.json"
 pr_json 3 "$LOGIN" > "$STUB_DIR/pr-3.json"
 pr_json 4 "$LOGIN" > "$STUB_DIR/pr-4.json"
 pr_json 5 "a-human" > "$STUB_DIR/pr-5.json"
+pr_json 6 "$LOGIN" > "$STUB_DIR/pr-6.json"
+pr_json 7 "$LOGIN" > "$STUB_DIR/pr-7.json"
 
 cat > "$STUB_DIR/commit-sha1.json" <<'EOF'
 {"files": [{"filename": "lib/landing.sh"}, {"filename": "README.md"}]}
@@ -211,6 +245,12 @@ cat > "$STUB_DIR/commit-sha2.json" <<'EOF'
 EOF
 echo '{"truncated": true}' > "$STUB_DIR/commit-sha3.json"
 cat > "$STUB_DIR/commit-sha4.json" <<'EOF'
+{"files": [{"filename": "scripts/foo.sh"}]}
+EOF
+cat > "$STUB_DIR/commit-sha6.json" <<'EOF'
+{"files": [{"filename": "scripts/foo.sh"}]}
+EOF
+cat > "$STUB_DIR/commit-sha7.json" <<'EOF'
 {"files": [{"filename": "scripts/foo.sh"}]}
 EOF
 
@@ -227,6 +267,12 @@ cat > "$STUB_DIR/events-4.json" <<'EOF'
 [{"event": "labeled", "label": {"name": "complexity:low"}, "created_at": "2026-08-20T08:00:00Z"},
  {"event": "labeled", "label": {"name": "complexity:medium"}, "created_at": "2026-08-20T09:00:00Z"}]
 EOF
+cat > "$STUB_DIR/events-6.json" <<'EOF'
+[{"event": "labeled", "label": {"name": "complexity:high"}, "created_at": "2026-08-20T09:00:00Z"}]
+EOF
+cat > "$STUB_DIR/events-7.json" <<'EOF'
+[{"event": "labeled", "label": {"name": "complexity:low"}, "created_at": "2026-08-20T09:00:00Z"}]
+EOF
 
 log_file="$tmp_dir/log.jsonl"
 cat > "$log_file" <<EOF
@@ -234,6 +280,8 @@ cat > "$log_file" <<EOF
 {"event":"landing-armed","repo":"$SLUG","pr_url":"https://github.com/$SLUG/pull/2","source":"register-hygiene","complexity":"medium"}
 {"event":"landing-armed","repo":"$SLUG","pr_url":"https://github.com/$SLUG/pull/3","source":"tech-debt","complexity":"low"}
 {"event":"landing-armed","repo":"$SLUG","pr_url":"https://github.com/$SLUG/pull/4","source":"tech-debt","complexity":"low"}
+{"event":"landing-armed","repo":"$SLUG","pr_url":"https://github.com/$SLUG/pull/6","source":"register-hygiene","complexity":"low"}
+{"event":"landing-armed","repo":"$SLUG","pr_url":"https://github.com/$SLUG/pull/7","source":"issues","complexity":"low"}
 EOF
 
 out="$("$DETECTOR" "$SLUG" "$LOGIN" "$log_file" --config "$config_file")"
@@ -243,6 +291,8 @@ line2="$(grep '"number":2,' <<<"$out")"
 line3="$(grep '"number":3,' <<<"$out")"
 line4="$(grep '"number":4,' <<<"$out")"
 line5="$(grep '"number":5,' <<<"$out")"
+line6="$(grep '"number":6,' <<<"$out")"
+line7="$(grep '"number":7,' <<<"$out")"
 
 assert_contains "an injected known escape (a protected-path landing) is caught" \
   "$line1" '"outcome":"escape"'
@@ -266,6 +316,20 @@ assert_contains "  ... naming the ambiguity as the reason" \
 
 assert_eq "a pull request merged by someone other than the Approver login is not audited at all" \
   "" "$line5"
+
+# The other two ways recomputation can disagree, neither of which the
+# protected-path escape above would have caught: the merge commit is clean
+# and the source is routine, so only the recomputed complexity (#6) or the
+# recorded source (#7) is left to disagree.
+assert_contains "a landing whose recomputed complexity was high is an escape" \
+  "$line6" '"outcome":"escape"'
+assert_contains "  ... naming the complexity it recomputed, not the low the log recorded" \
+  "$line6" "complexity was high"
+
+assert_contains "a landing whose source is outside the repository's routine list is an escape" \
+  "$line7" '"outcome":"escape"'
+assert_contains "  ... naming the source and the list it is not in" \
+  "$line7" "source issues is not in"
 
 # --- Idempotency: an already-audited pull request costs no further gh call --
 log_file2="$tmp_dir/log2.jsonl"
