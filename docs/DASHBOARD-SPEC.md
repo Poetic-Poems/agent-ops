@@ -492,7 +492,37 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                  detail, eligible_total, unaccounted_total,
                                  bands,  // {source: count}, spec 3x; null pre-3x
                                  unaccounted:[{repo,item,source}],
-                                 outcome } } },  // what became of that cycle
+                                 outcome } },  // what became of that cycle
+             stage_models: {        // which model the Implementor/Reviewer
+               window_from, window_to,  //   stages were each *asked* to run
+               by_stage: [ {stage, model, n} ],   // (issue #529); the dashboard's
+                                      //   two "model used" pies. `model` is
+                                      //   `lib/metering.sh`'s own field — what
+                                      //   the invocation was asked for, never
+                                      //   re-derived from `cost_rows`/`modelUsage`,
+                                      //   which are spend attribution and would
+                                      //   report a stage's subagent models
+                                      //   instead of its own (the #536 failure
+                                      //   this issue was asked not to repeat).
+                                      //   One stage-end is one unit, including a
+                                      //   failed run (`exit_code != 0`) or a
+                                      //   retry; no readable `model` lands under
+                                      //   "unknown" rather than being dropped,
+                                      //   matching `by_model` above. `by_stage`
+                                      //   is the whole retained window's totals,
+                                      //   for the page's "Lifetime" default
+               rows: [ {day, stage, model, n} ] } },  // day-summed, so the page can
+                                      //   re-aggregate over its shared cost-chart
+                                      //   time-frame selector, exactly as
+                                      //   `cost_rows` does for the bar charts —
+                                      //   `window_from`/`window_to` are the span
+                                      //   of the *whole* retained log (not just
+                                      //   these two stages' own events), since
+                                      //   `log.jsonl` is rotated at
+                                      //   `log_retained_bytes` independently of
+                                      //   `COST_SCAN_DAYS`, so these pies can
+                                      //   span less history than the cost charts
+                                      //   beside them
   cycles:  [ { id, node, started_at, ended_at, outcome, repo, item, source, title,
                pr_url, reason, fail_detail, warning, total_cost_usd, limit_hit,
                raced, race_losses,          // true/count iff the cycle lost a claim
@@ -810,24 +840,41 @@ ships wholesale — so this is rendering only: the Publisher is unchanged;
 **Co-Ordinator verdict quality** (immediately below the work sources, and
 deliberately: that panel is what the Co-Ordinator was handed, this one is how
 often its answer about it survived the Script checking that answer);
-the cost charts — by-day, by-model, by-actor and the two cost notes flowed
-through a CSS multi-column layout in that reading order, letting the browser
-balance the split by height rather than pinning by-day to a column of its
-own, since it runs to sixty rows against five each for the other two, with a
-**time-frame selector** (issue #334) above the grid — one `<select>`, labelled
-as covering the model and actor charts specifically, offering 1/7/30/90 days
-and the unlabelled lifetime default — that re-aggregates `counts.cost_rows`
-client-side on change rather than re-fetching, so both charts redraw from the
-same choice with no round trip; recent log; `cron.log` tail. An option is
-disabled whenever its span exceeds how far back `cost_rows` actually reaches
-— capped both by the Publisher's own `COST_SCAN_DAYS` truncation and, on a
-younger fleet, by how long the pipeline has been running — since selecting it
-would otherwise silently show the same figures as a narrower window (or as
+the cost charts — by-day, by-model, by-actor, the two cost notes, then the two
+"model used" pies (Implementor and Reviewer, issue #529) and their own note —
+flowed through a CSS multi-column layout in that reading order, letting the
+browser balance the split by height rather than pinning by-day to a column of
+its own, since it runs to sixty rows against five each for by-model/by-actor,
+with a **time-frame selector** (issue #334) above the grid — one `<select>`,
+labelled as covering the model, actor and model-used charts, offering 1/7/30/90
+days and the unlabelled lifetime default — that re-aggregates `counts.cost_rows`
+client-side on change rather than re-fetching, so all the windowed charts
+redraw from the same choice with no round trip; recent log; `cron.log` tail. An
+option is disabled whenever its span exceeds how far back `cost_rows` actually
+reaches — capped both by the Publisher's own `COST_SCAN_DAYS` truncation and,
+on a younger fleet, by how long the pipeline has been running — since selecting
+it would otherwise silently show the same figures as a narrower window (or as
 Lifetime) without saying so; the Lifetime option itself is never disabled. A
 persisted choice the control has since disabled this way (grown stale as
 `cost_rows` moved) renders, and aggregates, as Lifetime instead — keeping the
 selected `<option>` and the chart it drives in agreement — and reverts to the
 persisted choice on its own once the window it names is available again.
+
+The two **model-used pies** re-aggregate `counts.stage_models.rows` off the
+same selector rather than `cost_rows` — a different Publisher aggregate, since
+`stage_models` counts stage-end runs by the model they were *asked* to run,
+never spend attribution — and render as a `<div>` with a CSS `conic-gradient`
+background plus a text legend rather than SVG, since `el()` never calls
+`createElementNS`. A model this page has not seen falls open to a grey slice
+rather than dropping it, the same as every other vocabulary table here (`ACTOR`,
+`VERDICT_OUTCOME`). Because `stage_models` reads `log.jsonl` directly rather
+than retained transcripts, its window can be shorter than `cost_rows`' — a
+muted caption under the pies states the aggregate's own `window_from`/
+`window_to` rather than letting a reader assume it matches the selector's
+label, and states that a failed run or a retry each count as their own slice.
+A stage with nothing in the selected window renders the same `.empty` panel
+every other chart on this page uses for "no data here", never a blank or a
+zero-slice pie.
 
 The **Autonomous landings** panel (D18 WI-8, agent-ops#411) is the
 asynchronous audit that D18 accepts unattended merging in exchange for. Risk 6
@@ -1296,6 +1343,22 @@ number's twins elsewhere on the page.
   `bands` at all, which lands under `unknown` rather than being dropped or
   folded into a real band, its `unaccounted` read from the sibling `warning`
   of its cycle since the legacy event carries no figure of its own.
+  `counts.stage_models` (issue #529) is asserted from a synthetic log of six
+  `stage-end` events: an Implementor run, a second that failed
+  (`exit_code != 0`), that same cycle's retry, a Reviewer run with no `model`
+  field, a second Reviewer run that has one, and a Co-Ordinator run — the
+  failed run and its retry both count (one unit per stage-end, regardless of
+  outcome), the model-less Reviewer event lands under `by_stage`'s "unknown"
+  rather than being dropped, the Co-Ordinator's own stage-end contributes to
+  neither stage, and a seventh event outside `COST_SCAN_DAYS` is excluded from
+  both `by_stage` and `rows` while still being the log's oldest event and
+  therefore setting `window_from` — proving that field spans the *whole*
+  retained log, not just these two stages' own events. `rows` carries the same
+  day-summed `{day, stage, model, n}` shape the page re-aggregates client-side.
+  A log with no Implementor or Reviewer `stage-end` at all still ships the
+  aggregate as a real, zeroed object (empty `by_stage`/`rows`) rather than
+  omitting the key, the same "empty window, not missing data" contract
+  `coordinator_verdicts` keeps.
 
 - `test/dashboard-render.test.sh` passes its plain-`grep` check, run without
   `node` and independent of the harness below, that the header's documentation
@@ -1395,17 +1458,35 @@ number's twins elsewhere on the page.
   and no contradiction block at all, while a `data.js` from before the
   aggregate existed says so outright rather than rendering that same clean
   zero for data it does not have.
-  The cost section's four blocks (issue #330) render inside one `.costgrid`
-  container in reading order — by-day, by-model, by-actor, then the cost note
-  at the same depth as the three charts rather than as a paragraph beside the
-  section. Document order is what is asserted because it is what the layout
-  rests on: a multi-column flow fills each column top-to-bottom in document
-  order, so the order of the appends *is* the order a reader sees, whichever
-  column each block lands in.
+  The cost section's blocks (issue #330) render inside one `.costgrid`
+  container in reading order — by-day, by-model, by-actor, both cost notes,
+  then (issue #529) the two model-used pies — at the same depth as the charts
+  rather than as paragraphs beside the section. Document order is what is
+  asserted because it is what the layout rests on: a multi-column flow fills
+  each column top-to-bottom in document order, so the order of the appends
+  *is* the order a reader sees, whichever column each block lands in.
   Out of scope by the same tree-building limit:
   the pull-request hover card's pointer/focus behaviour, and which column the
   browser balances each cost block into — that is layout, and layout is what
   this stub does not do; it is covered by the manual check below.
+  The model-used pies themselves (issue #529) are asserted from
+  `stage-models.json`, which carries Implementor rows at day 0 (sonnet, opus)
+  and day 3 (sonnet), and Reviewer rows at day 3 (sonnet) and day 40 (a
+  model-less event): the default (Lifetime) render sums the Publisher's own
+  `by_stage` totals straight through, including the day-40 row folded into
+  "unknown" rather than dropped, with each slice's full model id in `title=`,
+  its `shortModel()` label, and its percentage and count in the legend; a
+  1-day window re-aggregates the Implementor pie to that day alone (50/50) and
+  renders the Reviewer panel as `.empty` — its only row that day was never
+  logged — rather than a blank or a zero-slice pie; a 7-day window restores the
+  Implementor pie's lifetime ratio and gives Reviewer its one (day-3) model at
+  100%, still excluding the day-40 "unknown" row; and the caption states both
+  the aggregate's own retained-log window and that a failed run or a retry each
+  count as their own slice. A `finished.json`-shaped fixture predating
+  `counts.stage_models` entirely still renders both pie headings — reading `[]`
+  off the absent aggregate, same as any other pre-#529 payload — with no third
+  costnote, since that caption only exists once the Publisher actually ships
+  the aggregate.
 - The back-pressure card agrees with the gate it depicts, in both directions,
   from two fixtures of its own. `backpressure-claims.json` (issue #427) holds
   a changes-requested PR, a draft, an approved PR waiting on a human, one
@@ -1773,18 +1854,20 @@ number's twins elsewhere on the page.
   relative height rather than measured against it. `column-count: 2` with
   `break-inside: avoid` on each block instead lets the browser's own balance
   algorithm decide the split from the rendered heights on every load: the
-  blocks — day, model, actor, then the two cost notes — stay in that reading
-  order and simply land wherever the shorter side is, no JS layout code and
-  no new data needed.
+  blocks — day, model, actor, both cost notes, then the two model-used pies
+  (issue #529) and their own note — stay in that reading order and simply
+  land wherever the shorter side is, no JS layout code and no new data
+  needed.
 
   What this buys is a split that is right for the data in front of it rather
   than for the data the layout was written against, plus the note's own
   height reclaimed from a gap it used to sit below. It does not flatten the
-  section: while by-day holds sixty rows and the other two hold five each, no
-  arrangement of four whole blocks fills a column that one of them sets the
-  height of, so the right column still ends well short of the left. Closing
-  that would mean letting by-day itself break across both columns, which buys
-  the space at the price of a chart whose heading stands over half of it.
+  section: while by-day holds sixty rows and the other blocks hold five rows
+  or fewer each, no arrangement of them fills a column that one of them sets
+  the height of, so the right column still ends well short of the left.
+  Closing that would mean letting by-day itself break across both columns,
+  which buys the space at the price of a chart whose heading stands over half
+  of it.
 - **"Today" defaulted to GMT with no way to say so, until #186.** The card's
   figure was always `spend_today_usd`, computed against `date -u`, and nothing
   on the page told a reader in another zone that "today" wasn't theirs. Fixing

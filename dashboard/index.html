@@ -167,6 +167,19 @@
   .gauge > span { display: block; height: 100%; }
   .empty { padding: 18px; color: var(--muted); font-style: italic; }
   p.costnote { font-size: 12px; color: var(--muted); max-width: 78ch; }
+  /* The two model pies (issue #529): a fixed-size conic-gradient disc plus a
+     text legend, not SVG — `el()` builds elements with `createElement`, never
+     `createElementNS`, and the render-test harness's DOM stub only implements
+     that subset, so an SVG chart would need a second helper and break the
+     harness both at once. `flex-wrap` is what keeps the section single-column
+     at narrow widths (matching .costgrid's own media query): the legend drops
+     below the disc instead of squeezing it. */
+  .piewrap { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .pie { width: 120px; height: 120px; border-radius: 50%; flex: 0 0 auto; background: var(--grey-bg); }
+  .pielegend { display: flex; flex-direction: column; gap: 5px; font-size: 12px; flex: 1 1 140px; min-width: 140px; }
+  .pielegenditem { display: flex; align-items: center; gap: 6px; }
+  .pielegenditem .n { margin-left: auto; }
+  .pieswatch { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
   /* By-day runs to sixty rows and by-model/by-actor to five each, so a fixed
      two-column split under- or over-fills a side depending on the day. A
      multi-column flow instead lets the browser balance the blocks —
@@ -724,6 +737,11 @@
   // client-side, with no re-fetch. Persisted the same way `spendMode` is
   // (#186): a reader's choice should survive a page reload, not just an
   // in-place refresh.
+  //
+  // Issue #529's two model-used pies share this same `costWindow` state (one
+  // control, not a second selector) but re-aggregate a different Publisher
+  // field (`D.counts.stage_models.rows`) — see that section's own comment for
+  // why it cannot simply reuse `cost_rows`.
   var COST_WINDOWS = [
     {key: "1",   label: "1 day",   days: 1},
     {key: "7",   label: "7 days",  days: 7},
@@ -827,7 +845,7 @@
         disabled: disabled ? "" : null});
     }));
     return el("div", {class: "costwindow-bar"}, [
-      el("label", {class: "muted", text: "Time frame (model & actor charts): "}),
+      el("label", {class: "muted", text: "Time frame (model, actor & model-used charts): "}),
       select
     ]);
   }
@@ -2234,6 +2252,88 @@
     }));
   }
 
+  // ---------- model used — Implementor/Reviewer pies (issue #529) ----------
+  // `counts.stage_models` (see the Publisher's own comment) is a different
+  // measure from `cost_rows` above — a count of stage-end runs by the model
+  // they were *asked* to run, not dollars — and its window is bounded by
+  // log.jsonl's own retention rather than COST_SCAN_DAYS. So these pies share
+  // the cost charts' time-frame control (one control drives all five charts,
+  // per the issue) but read a separate aggregate and report their own window
+  // in a caption rather than lean on `costWindowAvailableDays()`, which
+  // describes `cost_rows` alone and would silently misstate this one.
+  function stageModelRowsForWindow(key) {
+    var rows = (D.counts && D.counts.stage_models && D.counts.stage_models.rows) || [];
+    var cutoff = costWindowCutoff(key);
+    return cutoff == null ? rows : rows.filter(function (r) { return r.day >= cutoff; });
+  }
+  // null means "render the Publisher's own by_stage totals" (the cheap path
+  // when untouched, same rule windowedCostBreakdown() already follows) —
+  // distinct from an empty array, which means "windowed, and zero for this
+  // stage".
+  function windowedStageModelBreakdown(stage) {
+    var effective = effectiveCostWindow(costWindowAvailableDays());
+    if (effective === "all" || !(D.counts && D.counts.stage_models && D.counts.stage_models.rows)) return null;
+    var rows = stageModelRowsForWindow(effective).filter(function (r) { return r.stage === stage; });
+    var order = [], sums = Object.create(null);
+    rows.forEach(function (r) {
+      if (!(r.model in sums)) { order.push(r.model); sums[r.model] = 0; }
+      sums[r.model] += r.n || 0;
+    });
+    return order.map(function (m) { return {model: m, n: sums[m]}; })
+      .sort(function (a, b) { return b.n - a.n; });
+  }
+  function stageModelLifetimeBreakdown(stage) {
+    var by = (D.counts && D.counts.stage_models && D.counts.stage_models.by_stage) || [];
+    return by.filter(function (r) { return r.stage === stage; })
+             .map(function (r) { return {model: r.model, n: r.n}; })
+             .sort(function (a, b) { return b.n - a.n; });
+  }
+  // A small fixed palette keyed by model *family* (sonnet/opus/haiku/fable),
+  // matched by substring against the raw id so a dated id
+  // (`claude-haiku-4-5-20251001`) or a provider-qualified one
+  // (`anthropic/claude-sonnet-5`) still resolves. Reuses the page's existing
+  // named accents rather than inventing new ones — each already carries its
+  // own light/dark value beside `--accent`. A family this page has not seen
+  // fails open to `--grey`, exactly like ACTOR/VERDICT_OUTCOME above, rather
+  // than dropping the slice.
+  var MODEL_FAMILY_COLOR = {
+    sonnet: "var(--blue)", opus: "var(--purple)", haiku: "var(--teal)", fable: "var(--pink)"
+  };
+  function modelColor(m) {
+    var s = String(m || "").toLowerCase();
+    for (var fam in MODEL_FAMILY_COLOR) { if (s.indexOf(fam) >= 0) return MODEL_FAMILY_COLOR[fam]; }
+    return "var(--grey)";
+  }
+  // `slices` is non-empty with every `n > 0` — callers filter before calling.
+  function pieChart(slices) {
+    var total = slices.reduce(function (s, x) { return s + x.n; }, 0);
+    var acc = 0;
+    var stops = slices.map(function (s) {
+      var from = acc / total * 100;
+      acc += s.n;
+      return modelColor(s.model) + " " + from + "% " + (acc / total * 100) + "%";
+    });
+    var pie = el("div", {class:"pie", style:"background: conic-gradient(" + stops.join(", ") + ")"});
+    var legend = el("div", {class:"pielegend"}, slices.map(function (s) {
+      var p = Math.round(s.n / total * 1000) / 10;
+      return el("div", {class:"pielegenditem"}, [
+        el("span", {class:"pieswatch", style:"background:" + modelColor(s.model)}),
+        el("span", {class:"mono", title: s.model, text: shortModel(s.model)}),
+        el("span", {class:"mono muted n", text: p + "% · " + s.n})
+      ]);
+    }));
+    return el("div", {class:"piewrap"}, [pie, legend]);
+  }
+  var STAGE_LABEL = {implementor: "Implementor", reviewer: "Reviewer"};
+  function stageModelPie(stage) {
+    var windowed = windowedStageModelBreakdown(stage);
+    var slices = (windowed || stageModelLifetimeBreakdown(stage))
+      .filter(function (s) { return s.n > 0; });
+    if (!slices.length) return el("div", {class:"empty", text:
+      "No " + STAGE_LABEL[stage] + " runs recorded" + (windowed != null ? " in this time frame." : ".")});
+    return pieChart(slices);
+  }
+
   // ---------- log & cron ----------
   // Which agent an event is the work of, or null where none was acting.
   //
@@ -2711,6 +2811,21 @@
     costgrid.appendChild(el("p", {class:"costnote", text:
       "All figures on this page are US dollars (USD), regardless of the " +
       "Claude account's own billing currency or region."}));
+    // The two model pies (issue #529), appended after the by-actor chart per
+    // the issue's own placement: same two-column flow, same time-frame
+    // control, a different measure (stage-end run counts, not spend).
+    costgrid.appendChild(el("div", {}, [ el("h2", {text:"Model used — Implementor"}), el("div", {class:"panel", style:"padding:14px"}, stageModelPie("implementor")) ]));
+    costgrid.appendChild(el("div", {}, [ el("h2", {text:"Model used — Reviewer"}), el("div", {class:"panel", style:"padding:14px"}, stageModelPie("reviewer")) ]));
+    var sm = D.counts && D.counts.stage_models;
+    if (sm) {
+      costgrid.appendChild(el("p", {class:"costnote", text:
+        "Each slice is one Implementor or Reviewer stage-end run of that model, " +
+        "including runs that failed and retries — the question is which model was " +
+        "dispatched, not whether the run succeeded. These two pies read the retained " +
+        "log directly, which can span less history than the cost charts above: " +
+        (sm.window_from ? fmtTime(sm.window_from) : "—") + " → " +
+        (sm.window_to ? fmtTime(sm.window_to) : "—") + "."}));
+    }
     app.appendChild(el("section", {}, [costWindowControl(), costgrid]));
 
     app.appendChild(sectionOf(nodeFilter ? "Recent log events — " + nodeFilter + " only (click its card to clear)" : "Recent log events",
