@@ -572,6 +572,7 @@ assert_eq "escalate: names the filed issue number" "42" "$(jq -r '.issue_number'
 xmn_evt="$(events_named "$calls" enabler-examined | head -n1)"
 assert_eq "escalate: enabler-examined outcome is escalate" "escalate" "$(jq -r '.outcome' <<<"$xmn_evt")"
 
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
 create_escalation_issue() { return 1; }
 calls="$(run_case "escalate: filing failed" "$eligible" "$examined")"
 
@@ -637,6 +638,7 @@ assert_eq "adjudicate-first, adequate: enabler-examined outcome is unblocked, no
 run_enabler_adjudication() {
   printf '{"verdict":"inadequate","evidence":"the spec never names a concrete acceptance criterion"}'
 }
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
 create_escalation_issue() { printf '43\thttps://github.com/acme/widgets/issues/43'; return 0; }
 calls="$(run_case "adjudicate-first: inadequate" "$eligible_disagreement" "$examined")"
 
@@ -669,6 +671,7 @@ run_enabler_adjudication() {
 # always-escalate (the default) never adjudicates, even for the same
 # disagreement shape — no run_enabler_adjudication call, straight to the
 # ordinary escalate path, byte-for-byte today's behaviour.
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
 create_escalation_issue() { printf '44\thttps://github.com/acme/widgets/issues/44'; return 0; }
 calls="$(run_case "always-escalate: a disagreement item still escalates directly" \
   "$eligible_disagreement" "$examined")"

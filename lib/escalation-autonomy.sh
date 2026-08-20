@@ -21,8 +21,6 @@
 # read the same evidence) or escalates anyway. There is nothing here for a
 # kill switch to override.
 
-ESCALATION_AUTONOMY_LEVELS=(always-escalate adjudicate-first)
-
 # escalation_autonomy_configured_level CONFIG_JSON SLUG
 # The level `config.json` (already schema-defaulted, or not — an absent
 # top-level key reads as "always-escalate" either way) names for SLUG: that
