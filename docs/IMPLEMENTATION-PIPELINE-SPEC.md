@@ -12955,10 +12955,18 @@ pull request, run the ones the change touches and any it could regress.
     own `issue_priority_cache_cleanup` call leaves the directory in place. A
     source that follows a cleanup does not trust the record cleanup left
     behind: it creates a fresh directory, marks it owned, and field-id
-    caching works again in that process. A directory this file created is
-    not abandoned when a caller subsequently repoints `ISSUE_PRIORITY_CACHE_DIR`
-    at its own path: `issue_priority_cache_cleanup` still finds and removes
-    the directory it made earlier, and leaves the caller's own (now-current)
+    caching works again in that process. A cleanup reached through a command
+    substitution is pinned as a case of its own, since that direct call
+    clears the record before the re-source ever reads it and so leaves the
+    source-time existence check unexercised: the subshell removes the
+    directory but its record-clearing never reaches the parent, which
+    re-sources holding a record still marked owned, still stamped with this
+    same `$$` and still naming the now-removed directory, and a fresh owned
+    directory is created and caches field ids regardless (agent-ops#552). A
+    directory this file created is not abandoned when a caller subsequently
+    repoints `ISSUE_PRIORITY_CACHE_DIR` at its own path:
+    `issue_priority_cache_cleanup` still finds and removes the directory it
+    made earlier, and leaves the caller's own (now-current)
     directory, and `ISSUE_PRIORITY_CACHE_DIR` itself, untouched (agent-ops#552).
     A failed cache write — `ISSUE_PRIORITY_CACHE_DIR` naming a directory
     that does not exist — prints nothing to stderr, and still returns the
