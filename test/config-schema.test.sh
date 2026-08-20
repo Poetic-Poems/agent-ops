@@ -633,14 +633,16 @@ assert_project_review() {
 }
 
 assert_project_review "a repo entry with no overrides resolves to every default" \
-  '.project_review.repos = [{slug: "Poetic-Poems/poetic"}]' \
-  '.[0].model == "claude-sonnet-5" and .[0].pr_label == "project-review"
-   and .[0].branch_prefix == "review/" and .[0].min_days_between_reviews == 13
-   and .[0].not_before == "2026-08-21T12:00:00Z"
+  '.project_review.defaults = {model: "test-model-1", pr_label: "test-label-1", branch_prefix: "test-prefix/", min_days_between_reviews: 99, not_before: "2025-01-01T00:00:00Z", timeout_review: 60, inactivity_review: 7} |
+   .project_review.repos = [{slug: "Poetic-Poems/poetic"}]' \
+  '.[0].model == "test-model-1" and .[0].pr_label == "test-label-1"
+   and .[0].branch_prefix == "test-prefix/" and .[0].min_days_between_reviews == 99
+   and .[0].not_before == "2025-01-01T00:00:00Z"
    and .[0].model_key == "project_review.defaults.model"'
 assert_project_review "a repo's own override wins over the default, for that key alone" \
-  '.project_review.repos = [{slug: "Poetic-Poems/poetic", model: "claude-opus-5"}]' \
-  '.[0].model == "claude-opus-5" and .[0].pr_label == "project-review"
+  '.project_review.defaults = {model: "test-model-1", pr_label: "test-label-1", branch_prefix: "test-prefix/", min_days_between_reviews: 99, not_before: "2025-01-01T00:00:00Z", timeout_review: 60, inactivity_review: 7} |
+   .project_review.repos = [{slug: "Poetic-Poems/poetic", model: "claude-opus-5"}]' \
+  '.[0].model == "claude-opus-5" and .[0].pr_label == "test-label-1"
    and .[0].model_key == "project_review.repos[0].model"'
 assert_project_review "a repo may override every key defaults carries" \
   '.project_review.repos = [{slug: "Poetic-Poems/poetic", model: "claude-opus-5",
@@ -650,13 +652,15 @@ assert_project_review "a repo may override every key defaults carries" \
      pr_label: "custom-review", branch_prefix: "custom/", min_days_between_reviews: 1, not_before: "2026-01-01T00:00:00Z",
      timeout_review: 30, inactivity_review: 5}'
 assert_project_review "an explicit null inherits, exactly as an absent key does" \
-  '.project_review.repos = [{slug: "Poetic-Poems/poetic", model: null, min_days_between_reviews: null}]' \
-  '.[0].model == "claude-sonnet-5" and .[0].min_days_between_reviews == 13
+  '.project_review.defaults = {model: "test-model-1", pr_label: "test-label-1", branch_prefix: "test-prefix/", min_days_between_reviews: 99, not_before: "2025-01-01T00:00:00Z", timeout_review: 60, inactivity_review: 7} |
+   .project_review.repos = [{slug: "Poetic-Poems/poetic", model: null, min_days_between_reviews: null}]' \
+  '.[0].model == "test-model-1" and .[0].min_days_between_reviews == 99
    and .[0].model_key == "project_review.defaults.model"'
 assert_project_review "two repos resolve independently — one overriding, one inheriting" \
-  '.project_review.repos = [{slug: "Poetic-Poems/poetic", model: "claude-opus-5"},
+  '.project_review.defaults = {model: "test-model-1", pr_label: "test-label-1", branch_prefix: "test-prefix/", min_days_between_reviews: 99, not_before: "2025-01-01T00:00:00Z", timeout_review: 60, inactivity_review: 7} |
+   .project_review.repos = [{slug: "Poetic-Poems/poetic", model: "claude-opus-5"},
      {slug: "Poetic-Poems/poetic-fiddle"}]' \
-  '.[0].model == "claude-opus-5" and .[1].model == "claude-sonnet-5"
+  '.[0].model == "claude-opus-5" and .[1].model == "test-model-1"
    and .[0].model_key == "project_review.repos[0].model"
    and .[1].model_key == "project_review.defaults.model"'
 assert_project_review "an absent project_review resolves to no repos, never an error" \
