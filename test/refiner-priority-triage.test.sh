@@ -570,7 +570,7 @@ issue_priority_cache_cleanup
 # directory from disk but its variable-clearing never reaches the parent
 # shell (see the function's own header above): the parent's record still
 # names the now-removed directory, still marked owned, still stamped with
-# this process's own $$. The source-time check at line 101 has to notice the
+# this process's own $$. The source-time ownership check has to notice the
 # directory is gone independently of that clearing — the property the
 # earlier "source after cleanup" case above never exercised, since it calls
 # cleanup directly and the record really is empty by the time it re-sources
