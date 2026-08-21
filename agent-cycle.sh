@@ -4145,7 +4145,8 @@ run_landing_stage() {
 #      tolerates an alerts-only `unknown` as a warning — arming an
 #      automatic merge does not).
 #   4. The Approver App's own review is genuinely standing `APPROVED` on
-#      GitHub right now (`landing_approver_standing_review`, lib/landing.sh)
+#      GitHub right now (`landing_approver_standing_review_at`,
+#      lib/landing.sh)
 #      — never inferred from this round's own `approver_stage_verdict`
 #      alone: `approver_post_or_warn` always returns 0 even when the write
 #      itself failed ("a missing review, never a stranded PR"), so a local
@@ -4386,7 +4387,7 @@ _landing_stage_attempt() {
 #     on regardless.
 #   - A candidate is open, non-draft, carries `pr_label`, and its own
 #     `complexity:*` label reads `low` or `medium` (never `high` — the
-#     cheapest of the six gates to pre-check, from data already fetched here,
+#     cheapest of the seven gates to pre-check, from data already fetched here,
 #     so a permanently-ineligible pull request costs one list call per
 #     repository per cycle rather than the changed-file read
 #     `landing_eligible` would otherwise repeat forever).
@@ -6448,7 +6449,7 @@ fi
 # transient unreadable, a red required check going green), otherwise sits
 # there until a human merges it by hand — forever, for the fail-closed
 # unreadables. `_landing_retry_sweep_repo` (below) re-enters
-# `_landing_stage_attempt`'s own six gates verbatim for each candidate (RETRY
+# `_landing_stage_attempt`'s own seven gates verbatim for each candidate (RETRY
 # set), rather than a second copy of them. Fleet-wide like the sweeps above,
 # regardless of --repo: any repository at `agent-merges-routine` or above may
 # have a stranded, Approver-approved pull request waiting. Skipped on
@@ -9216,7 +9217,7 @@ if [[ "$rev_status" == "ready" ]]; then
   # reason 8b gates nothing above it: an arm or a refusal is a fact about
   # this pull request's landing, never a reason to withhold the pr-ready log,
   # the claim release, or the Approver's own review. See run_landing_stage's
-  # own header for the six gates it re-reads fresh before arming anything.
+  # own header for the seven gates it re-reads fresh before arming anything.
   run_landing_stage "$impl_pr_url" "$approver_complexity"
 else
   # Requirement 32a: a Reviewer that cannot hand off hands *back*, not out. The

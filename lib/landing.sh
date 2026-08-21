@@ -281,7 +281,11 @@ _landing_routine_sources() {
 #   - SOURCE is a member of `_landing_routine_sources`'s list for SLUG — an
 #     empty or unrecognised SOURCE is ineligible, never eligible by
 #     omission;
-#   - `landing_protected_paths_hit` says no.
+#   - `landing_protected_paths_hit` says no — below `agent-merges-all`. At
+#     `agent-merges-all` a hit is instead reported `eligible` and deferred
+#     to `landing_protected_path_controls_ok` (D18 WI-12), which needs
+#     facts this function is never handed; see the hit branch's own comment
+#     below.
 #
 # `unknown` is returned only for `landing_protected_paths_hit`'s own exit 2
 # (the changed-file list could not be read or was truncated) — every other
@@ -509,9 +513,11 @@ landing_approver_standing_review() {
 # path cool-off is measured from exactly this timestamp — GitHub's own
 # record of when the review it is gating on was actually submitted, never
 # anything this process remembers — so gate 4 of `_landing_stage_attempt`
-# reads it here instead of `landing_approver_standing_review` once
-# `merge_autonomy_effective_level` is `agent-merges-all`, at no extra `gh`
-# call: the same one reviews-list read either function makes. Returns
+# reads it here rather than `landing_approver_standing_review`, at every
+# level and at no extra `gh` call: the same one reviews-list read either
+# function makes, so the timestamp gate 4.5 needs at `agent-merges-all`
+# costs nothing to carry everywhere. (The landing-retry sweep's own
+# pre-filter still calls the plain reader, which is all it wants.) Returns
 # non-zero, printing nothing, under the same conditions
 # `landing_approver_standing_review` does — an unreadable reviews list is
 # never read as "not approved, and no timestamp".
