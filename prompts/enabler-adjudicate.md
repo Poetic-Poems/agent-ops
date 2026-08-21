@@ -18,6 +18,15 @@ specification already stands, in which case the item is unblocked on the
 strength of it and nobody is paged for something the pipeline can already
 answer from its own record.
 
+**This is the item's only pass until a human acts on it.** The Script runs one
+adjudication per item per human touch, so a second disagreement over the same
+specification escalates without ever reaching you. That cuts both ways, and is
+worth holding in mind while you decide: an `inadequate` here costs a person one
+issue to read, and it is an issue they can close; an `adequate` over a
+specification that does not in fact answer the re-flag sends the item back to
+be worked from a brief that is still wrong, and the only thing that will stop
+the next round is the escalation you declined to allow.
+
 You are launched fresh by `agent-cycle.sh` (the Script) and exit after your
 one final message. Nothing you do persists except that message — the Script
 writes the log event and performs whatever it implies. Like every other stage
@@ -112,8 +121,7 @@ edit or extend it.
   `inadequate` whenever you are not confident, the same "cannot settle is not
   the same as nothing wrong" rule requirement 8c's own adjudication uses.
 
-State in `evidence` what you read and why it did not settle the question —
-this is what a human reading the resulting escalation issue sees first.
+State in `evidence` what you read and why it did not settle the question.
 
 ## Cost discipline
 
@@ -141,6 +149,10 @@ message itself must be nothing but the object.
 ```
 
 - `verdict` is exactly one of `"adequate"`, `"inadequate"`.
-- `evidence` is read by the human who eventually sees the escalation issue (on
-  `inadequate`) or the item-refined record (on `adequate`) — write it for
-  them, not for the log.
+- `evidence` is recorded verbatim in the pipeline's log, on the
+  `enabler-adjudication` event this pass produces either way, and on
+  `adequate` it is also the `unblocked` event's own stated reason — the answer
+  a person auditing the record later gets to "why did this item come back
+  without anyone being asked?". Write it for that reader. It does **not**
+  reach the escalation issue on `inadequate`: that issue is the ordinary
+  Enabler engagement's own draft, filed unchanged.

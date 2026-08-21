@@ -134,6 +134,14 @@ extract_json_result_fn="$(extract_fn 'extract_json_result() {' "$SCRIPT_DIR/agen
 # the "checks-unreadable" scenario below exercises the genuine escalation
 # logic; only its own two callees are stubbed.
 review_gate_escalate_unreadable_streak_fn="$(extract_fn 'review_gate_escalate_unreadable_streak() {' "$SCRIPT_DIR/agent-cycle.sh")"
+# agent-ops#627: the bound on `adjudicate-first` — one adjudication pass per
+# item, per human touch. Lifted for real rather than stubbed, because it is
+# the whole of requirement 36b's "bounded, not a loop": a guard that fails
+# open here does not break a scenario, it silently reinstates the two-model
+# loop the thrash guard beside it exists to end. Its own log predicate
+# (`escalation_autonomy_adjudicated_before`) is sourced for real above and
+# unit-tested in test/escalation-autonomy.test.sh.
+escalation_autonomy_pass_available_fn="$(extract_fn 'escalation_autonomy_pass_available() {' "$SCRIPT_DIR/agent-cycle.sh")"
 
 if [[ "$maybe_run_enabler_fn" != *"enabler-examined"* ]]; then
   printf 'FAIL - maybe_run_enabler could not be found in agent-cycle.sh (renamed or moved?)\n'
@@ -151,10 +159,15 @@ if [[ "$review_gate_escalate_unreadable_streak_fn" != *"streak_json"* ]]; then
   printf 'FAIL - review_gate_escalate_unreadable_streak could not be found in agent-cycle.sh (renamed or moved?)\n'
   exit 1
 fi
+if [[ "$escalation_autonomy_pass_available_fn" != *"escalation_autonomy_adjudicated_before"* ]]; then
+  printf 'FAIL - escalation_autonomy_pass_available could not be found in agent-cycle.sh (renamed or moved?)\n'
+  exit 1
+fi
 
 eval "$extract_json_result_fn"
 eval "$enabler_claim_key_fn"
 eval "$review_gate_escalate_unreadable_streak_fn"
+eval "$escalation_autonomy_pass_available_fn"
 eval "$maybe_run_enabler_fn"
 
 # --- A claim.sh stub that always wins, so the claim step needs no network ---
@@ -656,6 +669,52 @@ assert_eq "adjudicate-first, inadequate: names the filed issue" "43" "$(jq -r '.
 xmn_evt="$(events_named "$calls" enabler-examined | head -n1)"
 assert_eq "adjudicate-first, inadequate: enabler-examined outcome is escalate" \
   "escalate" "$(jq -r '.outcome' <<<"$xmn_evt")"
+
+# The bound (requirement 36b, "bounded, not a loop"): a second disagreement
+# over the same item, with an adjudication already on the record and no human
+# having acted since, escalates *without* adjudicating. Without this, the
+# adequate path above re-arms itself — it clears the block and re-records the
+# existing refinement, so the re-flagged item arrives back here with
+# `refined_before` still set and reaches the very same escalate verdict, over
+# the very same evidence, that a pass has already answered once.
+#
+# The fixture goes in `log_file` because the harness never sets `union_log`,
+# and `escalation_autonomy_pass_available` reads `${union_log:-$log_file}`;
+# `log_event` is stubbed to `record`, so nothing a scenario writes lands there
+# to disturb it.
+adj_spent_evt="$(jq -nc '{ts: "2026-08-02T00:00:00Z", event: "enabler-adjudication",
+  repo: "acme/widgets", item: "TD26071901", verdict: "adequate", evidence: "…", adjudication: true}')"
+printf '%s\n' "$adj_spent_evt" > "$log_file"
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+create_escalation_issue() { printf '45\thttps://github.com/acme/widgets/issues/45'; return 0; }
+calls="$(run_case "adjudicate-first: the pass is already spent" "$eligible_disagreement" "$examined")"
+
+assert_eq "pass spent: no second adjudication pass is run" "0" \
+  "$(grep -cE '^event enabler-adjudication ' <<<"$calls")"
+assert_eq "pass spent: no unblocked event — the loop is what this guard exists to stop" "0" \
+  "$(grep -cE '^event unblocked ' <<<"$calls")"
+assert_eq "pass spent: it escalates to the human instead" "1" \
+  "$(grep -cE '^event escalated ' <<<"$calls")"
+assert_contains "pass spent: and says in the log why it did not adjudicate" \
+  "already spent its one adjudication pass" "$calls"
+
+# The one exemption, and the thrash guard's own: eligibility reason
+# `issue-closed` exists only because a human acted on an escalation about this
+# item (requirement 35a), so the pass it authorises is the first since they
+# did — one per item, per human touch, not one per item ever.
+eligible_disagreement_closed="$(jq -c '[.[0] + {reason: "issue-closed"}]' <<<"$eligible_disagreement")"
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+run_enabler_adjudication() {
+  record "run_enabler_adjudication $1 $2"
+  printf '{"verdict":"adequate","evidence":"the original spec already names the acceptance criteria"}'
+}
+calls="$(run_case "adjudicate-first: a human has acted since" "$eligible_disagreement_closed" "$examined")"
+
+assert_contains "human touch: the pass is available again" \
+  "run_enabler_adjudication acme/widgets TD26071901" "$calls"
+assert_eq "human touch: exactly one enabler-adjudication event" "1" \
+  "$(grep -cE '^event enabler-adjudication ' <<<"$calls")"
+: > "$log_file"
 
 # Reset to the product default and the harness's own always-loud default,
 # so a scenario below that forgets to set either is caught rather than

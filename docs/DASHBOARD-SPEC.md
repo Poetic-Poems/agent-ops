@@ -1002,8 +1002,9 @@ implementation pipeline's `stage`; `handoff` on `pr-ready`, naming which actor
 took the pull request out of draft; `by` on `unblocked` and on `item-refined`
 (and on those two events only — `by` elsewhere names a *person*, who set the
 switch or cleared a stand-down); the Enabler's own `escalated`,
-`enabler-examined` and `item-refined`, and the Refiner's `refiner-examined`,
-which carry none of the first three. `item-refined` is the one event with two
+`enabler-examined`, `enabler-adjudication` (implementation spec requirement
+36b's `adjudicate-first` pass) and `item-refined`, and the Refiner's
+`refiner-examined`, which carry none of the first three. `item-refined` is the one event with two
 writers — the Enabler's refinement pass and the Refiner — and only the
 Refiner's carries `by`, so one without it is the Enabler's. A review-pipeline
 event is the Project Reviewer's, which is a different actor from the cycle

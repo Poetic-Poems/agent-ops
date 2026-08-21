@@ -314,7 +314,7 @@ Keys:
 | `refinement_after_coordinator_cycles` | *(same as `enabler_after_coordinator_cycles`)* | The same wait, but for an item the pipeline recorded as too under-specified to work on (an issue picks up the `needs-refinement` label) rather than one blocked by something in the world. Left unset it waits exactly as long as any other block; set it separately once fleet behaviour tells you refinement items should age faster or slower. |
 | `enabler_recheck_hours` | `72` | Hours before the Enabler re-examines an item it has already examined. This is the bound on how long new evidence — a diagnosis posted into the very thread whose absence blocked the item — can sit unread. `0` switches re-examination off. |
 | `enabler_escalation_label` | `enabler-escalation` | Label applied to every issue the Enabler raises, for your filters and for its own duplicate check. The pipeline creates it in each target repo it works, so there is nothing to set up; without it the issue is still raised, just unlabelled. |
-| `escalation_autonomy` | `always-escalate` | The D18 escalation-autonomy ladder: `always-escalate` (today's behaviour — every refinement-disagreement escalation goes straight to a human) or `adjudicate-first` (one bounded Enabler adjudication pass runs first; it either confirms the earlier refinement or escalates anyway). A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Owner-only decisions still escalate at every level. |
+| `escalation_autonomy` | `always-escalate` | The D18 escalation-autonomy ladder: `always-escalate` (today's behaviour — every refinement-disagreement escalation goes straight to a human) or `adjudicate-first` (one bounded Enabler adjudication pass runs first; it either confirms the earlier refinement or escalates anyway). One such pass per item: a second disagreement over the same item comes to you regardless, until you act on it. A `repos[]` entry may override this per repository — see...[continued below](#extended-notes-escalation_autonomy) |
 | `needs_refinement_label` | `needs-refinement` | Label put on an **issue** while the pipeline has it recorded as too under-specified to work on, and taken off again when that clears — see [Items nobody has specified](#items-nobody-has-specified). You can also apply it yourself to flag one directly; the pipeline reads that back the same way. The pipeline creates it in each target repo it works, so there is nothing to set up; without it the item is still recorded and still reaches the Enabler, you just do not see it in the...[continued below](#extended-notes-needs_refinement_label) |
 | `refinement_max_per_engagement` | `3` | How many under-specified items one Enabler engagement will take on. Ordinary blocked items are never displaced by them, and items over the cap simply wait for a later engagement. `0` switches the refinement work off while still recording it. |
 | `refiner_model` | `claude-sonnet-5` | The Refiner: writes a specification for an item nobody has scoped yet and marks it `refined`, before it would otherwise have to be blocked and wait for the Enabler — see [Refined items and the Refiner](#refined-items-and-the-refiner). Engaged every cycle there is unrefined work to do, so how often it runs and how good it has to be pull against each other: what it writes is the brief an Implementer works from. Leave it empty to switch the stage off. |
@@ -441,6 +441,10 @@ Every optional key goes on the repo's own entry, beside `slug` and `sources`:
 ```
 
 Each of them is set by editing `config.json`, like every other key here — see [Configuration](#configuration) for how that edit reaches a fleet already running.
+
+### Extended notes: `escalation_autonomy`
+
+The D18 escalation-autonomy ladder: `always-escalate` (today's behaviour — every refinement-disagreement escalation goes straight to a human) or `adjudicate-first` (one bounded Enabler adjudication pass runs first; it either confirms the earlier refinement or escalates anyway). One such pass per item: a second disagreement over the same item comes to you regardless, until you act on it. A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Owner-only decisions still escalate at every level.
 
 ### Extended notes: `needs_refinement_label`
 
@@ -1214,6 +1218,13 @@ narrower pass first — reading only the earlier specification and the
 disagreement — and either confirms the item is already specified (no issue
 raised; it just becomes selectable again) or escalates to you anyway when it
 genuinely cannot tell.
+
+That pass runs **once per item**. If the same item comes back disagreed-about
+a second time, it is raised for you as it always would have been, without a
+second pass — so the setting can save you an issue, but it cannot quietly keep
+an item circulating between two models forever. Acting on an escalation about
+the item (closing the issue it raised) gives it a fresh pass, on the same
+terms every other "one per human touch" rule here uses.
 
 **Closing that issue is the whole protocol.** Do the thing it asks, close it, and
 say nothing: the next cycle notices the closure, the Enabler re-checks the item

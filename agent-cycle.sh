@@ -4606,6 +4606,39 @@ CRASH_LOOP_BODY
   fi
 }
 
+# escalation_autonomy_pass_available REPO ITEM CLAIMED_ENTRY_JSON
+# The bound on `adjudicate-first` (agent-ops#627, requirement 36b): one
+# adjudication pass per item, per human touch. True (exit 0) when this item
+# still has its pass to spend; false, having logged why, when it does not.
+#
+# Mechanical, for the same reason the thrash guard beside it is. An `adequate`
+# verdict clears the block and re-records the *existing* refinement, so the
+# item returns to the pool with `refined_before` still set — and a re-flag of
+# it reaches the very same `escalate` verdict, over the very same evidence, a
+# pass has already answered once. Left unbounded, that pass would run again
+# and answer the same way, and the disagreement requirement 36b routes to a
+# human would loop between two models indefinitely with nobody ever paged:
+# the failure the thrash guard exists to stop, one level up.
+#
+# The one exemption is the thrash guard's own — eligibility `reason:
+# "issue-closed"`, which exists only because a human acted on an escalation
+# about this item (requirement 35a), making the pass it authorises the first
+# since they did. `${union_log:-$log_file}` for the reason
+# `void_obsolete_ctx_json` uses it: a peer's adjudication counts as much as
+# this node's, and an Enabler reached before the union log is built falls back
+# to this node's own record rather than dying under `errexit`.
+escalation_autonomy_pass_available() {
+  local repo="$1" item="$2" entry="$3" elig_reason
+  elig_reason="$(jq -r '.reason // ""' <<<"$entry" 2>/dev/null || true)"
+  [[ "$elig_reason" != "issue-closed" ]] || return 0
+  escalation_autonomy_adjudicated_before "$repo" "$item" \
+    < "${union_log:-$log_file}" || return 0
+  log_event "warning" "$(jq -nc --arg r "$repo" --arg i "$item" \
+    --arg d "enabler: $repo $item has already spent its one adjudication pass and no human has acted on it since — escalating without adjudicating (escalation_autonomy is bounded per item, per human touch)" \
+    '{detail: $d, repo: $r, item: $i}')"
+  return 1
+}
+
 # run_enabler_adjudication REPO ITEM CLAIMED_ENTRY_JSON EX_JSON CYCLE_DIR IDX
 # One bounded adjudication pass (agent-ops#627, D18 pattern,
 # `escalation_autonomy: "adjudicate-first"`): before the Script files the
@@ -5175,7 +5208,8 @@ $(jq . <<<"$input")
         e_adjudicated=0
         if [[ -n "$issue_title" && -s "$issue_body_file" ]] \
              && refinement_is_disagreement "$claimed_entry" \
-             && [[ "$(escalation_autonomy_configured_level "$DEFAULTED_CONFIG" "$e_repo")" == "adjudicate-first" ]]; then
+             && [[ "$(escalation_autonomy_configured_level "$DEFAULTED_CONFIG" "$e_repo")" == "adjudicate-first" ]] \
+             && escalation_autonomy_pass_available "$e_repo" "$e_item" "$claimed_entry"; then
           e_adjudication="$(run_enabler_adjudication "$e_repo" "$e_item" "$claimed_entry" "$ex" "$cycle_dir" "$j")"
           e_adj_verdict="$(jq -r '.verdict // "inadequate"' <<<"$e_adjudication" 2>/dev/null || printf 'inadequate')"
           e_adj_evidence="$(jq -r '.evidence // ""' <<<"$e_adjudication" 2>/dev/null || true)"
@@ -5188,7 +5222,15 @@ $(jq . <<<"$input")
             # (requirement 36b): the adjudication confirmed the *existing*
             # refinement rather than writing a new one, so item-refined
             # carries refined_before's own spec/comment_url, unchanged.
-            log_event "unblocked" "$(jq -nc --arg i "$e_item" --arg r "$e_repo" --arg reason "$e_reason" \
+            #
+            # The reason is the adjudication's own, never `$e_reason` — that
+            # is the *escalate* verdict's rationale for why the item needed a
+            # human, and an `unblocked` event carrying it would read, to
+            # whoever later asks why this item came back, as the pipeline
+            # unblocking an item on the strength of an argument that it could
+            # not proceed.
+            log_event "unblocked" "$(jq -nc --arg i "$e_item" --arg r "$e_repo" \
+              --arg reason "the existing refinement was adjudicated adequate${e_adj_evidence:+: $e_adj_evidence}" \
               '{item: $i, repo: $r, by: "enabler", reason: $reason}')"
             e_refined_adj="$(jq -c '(.refined_before // {}) | {spec: (.spec // ""), comment_url: (.comment_url // "")}
                                      | with_entries(select(.value != ""))' \

@@ -39,3 +39,37 @@ escalation_autonomy_configured_level() {
   [[ -n "$top_level" && "$top_level" != "null" ]] || top_level="always-escalate"
   printf '%s' "$top_level"
 }
+
+# escalation_autonomy_adjudicated_before REPO ITEM < union.jsonl
+# Exit 0 when an `enabler-adjudication` event for REPO+ITEM already exists in
+# the log on stdin — this item's one adjudication pass has been spent — and 1
+# otherwise. The item match is `ENABLER_ELIGIBLE_JQ`'s own `same_item`: the id
+# must match, and the repo must match or be absent, so an event written before
+# the field existed still counts against its item rather than silently
+# granting a second pass.
+#
+# The bound requirement 36b states (agent-ops#627, "bounded, not a loop"), on
+# the Script's side of the boundary and mechanical for exactly the reason the
+# thrash guard beside it is: an `adequate` verdict clears the block and
+# re-records the *existing* refinement, so the item comes back selectable with
+# `refined_before` still set — and a re-flag of it reaches the same `escalate`
+# verdict, over the same evidence, that an adjudication pass has already
+# answered once. Without this, the pass that answered it would simply run
+# again and answer it the same way, and the disagreement the thrash guard
+# routes to a human would loop between two models forever with nobody paged.
+#
+# The caller's one exemption is the thrash guard's own: eligibility
+# `reason: "issue-closed"`, which exists only because a human acted on an
+# escalation about this item (requirement 35a), so the pass it authorises is
+# the first since they did — one per item, per human touch.
+escalation_autonomy_adjudicated_before() {
+  local repo="$1" item="$2" hits
+  hits="$(jq -r -R -s --arg r "$repo" --arg i "$item" '
+    [ splits("\n") | select(length > 0) | (fromjson? // empty)
+      | select(.event == "enabler-adjudication"
+               and (.item // "") == $i
+               and ((.repo // "") == "" or (.repo // "") == $r)) ]
+    | length
+  ' 2>/dev/null || echo 0)"
+  [[ "$hits" =~ ^[0-9]+$ ]] && (( hits > 0 ))
+}

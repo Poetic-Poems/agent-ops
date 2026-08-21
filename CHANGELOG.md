@@ -28,7 +28,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (recorded exactly as an ordinary `unblocked` refinement, no issue ever
   filed) or escalates exactly as `always-escalate` already does, logged
   either way as an `enabler-adjudication` event carrying its verdict and
-  evidence. `scripts/doctor.sh` warns when `adjudicate-first` is configured
+  evidence. Bounded, not a loop: one pass per item, per human touch — an item
+  that has already had one escalates without a second, the one exemption
+  being a human having acted on an escalation about it since. `scripts/doctor.sh` warns when `adjudicate-first` is configured
   with no `enabler_model` to run the pass with. Poetic's own `config.json`
   sets `adjudicate-first`.
 

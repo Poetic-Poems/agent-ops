@@ -2263,7 +2263,7 @@
   //   any other event is a *person* (who set the switch, who cleared the
   //   stand-down), never an agent, which is why this is read for those two
   //   events and not in general.
-  // - the Enabler's own three events, and the Refiner's `refiner-examined`,
+  // - the Enabler's own four events, and the Refiner's `refiner-examined`,
   //   predate all of the above and carry none of them.
   // - `review-gate-*` events (implementation spec requirement 31c,
   //   TD-PPagop-26081404) are the implementation pipeline Script's own,
@@ -2276,6 +2276,7 @@
   // added upstream shows up unlabelled instead of vanishing.
   var VERDICT_EVENT = {
     "escalated": "enabler", "enabler-examined": "enabler",
+    "enabler-adjudication": "enabler",
     "item-refined": "enabler", "refiner-examined": "refiner"
   };
   function eventActor(e) {
