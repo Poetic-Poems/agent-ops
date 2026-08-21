@@ -129,51 +129,79 @@ no_reviews='[]'
 cra_review='[{"login":"human1","state":"CHANGES_REQUESTED","submitted_at":"2026-08-10T00:00:00Z","bot":false}]'
 bot_cra_review='[{"login":"some-bot[bot]","state":"CHANGES_REQUESTED","submitted_at":"2026-08-10T00:00:00Z","bot":true}]'
 stale_cra_review='[{"login":"human1","state":"CHANGES_REQUESTED","submitted_at":"2026-08-01T00:00:00Z","bot":false}]'
-VTS="2026-08-05T00:00:00Z"
+# The window every classify assertion below is tested against is the pull
+# request's *first* APPROVE, never the latest verdict's own `ts`
+# (agent-ops#661) — `FIRST_APPROVE_TS`, `verdict_fate_latest_per_pr`'s own
+# field. Named for what it is, so the two assertions that turn on "before" and
+# "after" it read as the rule they enforce.
+FIRST_APPROVE_TS="2026-08-05T00:00:00Z"
 
-r="$(verdict_fate_classify APPROVE true merged "$no_reviews" "$VTS")"
+r="$(verdict_fate_classify APPROVE true merged "$no_reviews" "$FIRST_APPROVE_TS")"
 assert_eq "APPROVE + armed + merged -> landed-by-script/agreement" \
   '{"fate":"landed-by-script","comparison":"agreement"}' "$r"
 
-r="$(verdict_fate_classify APPROVE false merged "$no_reviews" "$VTS")"
+r="$(verdict_fate_classify APPROVE false merged "$no_reviews" "$FIRST_APPROVE_TS")"
 assert_eq "APPROVE + unarmed + merged -> landed-by-human/agreement" \
   '{"fate":"landed-by-human","comparison":"agreement"}' "$r"
 
-r="$(verdict_fate_classify APPROVE false closed "$no_reviews" "$VTS")"
+r="$(verdict_fate_classify APPROVE false closed "$no_reviews" "$FIRST_APPROVE_TS")"
 assert_eq "APPROVE + closed unmerged -> divergence" \
   '{"fate":"closed-unmerged","comparison":"divergence"}' "$r"
 
-r="$(verdict_fate_classify APPROVE false open "$no_reviews" "$VTS")"
+r="$(verdict_fate_classify APPROVE false open "$no_reviews" "$FIRST_APPROVE_TS")"
 assert_eq "APPROVE + still open, no standing request -> pending" \
   '{"fate":"still-open","comparison":"pending"}' "$r"
 
-r="$(verdict_fate_classify APPROVE false open "$cra_review" "$VTS")"
+r="$(verdict_fate_classify APPROVE false open "$cra_review" "$FIRST_APPROVE_TS")"
 assert_eq "APPROVE + a human CHANGES_REQUESTED afterwards -> its own fate, divergence, even while still open" \
   '{"fate":"changes-requested-after-approval","comparison":"divergence"}' "$r"
 
-r="$(verdict_fate_classify APPROVE true merged "$cra_review" "$VTS")"
+r="$(verdict_fate_classify APPROVE true merged "$cra_review" "$FIRST_APPROVE_TS")"
 assert_eq "  ... and stays that fate even once the pull request later lands anyway (the sharp edge)" \
   '{"fate":"changes-requested-after-approval","comparison":"divergence"}' "$r"
 
-r="$(verdict_fate_classify APPROVE false open "$bot_cra_review" "$VTS")"
+r="$(verdict_fate_classify APPROVE false open "$bot_cra_review" "$FIRST_APPROVE_TS")"
 assert_eq "a bot's own CHANGES_REQUESTED never counts as a human's" \
   '{"fate":"still-open","comparison":"pending"}' "$r"
 
-r="$(verdict_fate_classify APPROVE false open "$stale_cra_review" "$VTS")"
-assert_eq "a CHANGES_REQUESTED submitted BEFORE the verdict's own ts does not count as 'after'" \
+r="$(verdict_fate_classify APPROVE false open "$stale_cra_review" "$FIRST_APPROVE_TS")"
+assert_eq "a CHANGES_REQUESTED submitted BEFORE the first approval does not count as 'after'" \
   '{"fate":"still-open","comparison":"pending"}' "$r"
 
-r="$(verdict_fate_classify REQUEST_CHANGES false closed "$no_reviews" "$VTS")"
+r="$(verdict_fate_classify REQUEST_CHANGES false closed "$no_reviews" "$FIRST_APPROVE_TS")"
 assert_eq "REQUEST_CHANGES + closed unmerged -> agreement (the human concurred)" \
   '{"fate":"closed-unmerged","comparison":"agreement"}' "$r"
 
-r="$(verdict_fate_classify REQUEST_CHANGES false merged "$no_reviews" "$VTS")"
+r="$(verdict_fate_classify REQUEST_CHANGES false merged "$no_reviews" "$FIRST_APPROVE_TS")"
 assert_eq "REQUEST_CHANGES + landed anyway -> divergence (a human override)" \
   '{"fate":"landed-by-human","comparison":"divergence"}' "$r"
 
-r="$(verdict_fate_classify REQUEST_CHANGES false open "$no_reviews" "$VTS")"
+r="$(verdict_fate_classify REQUEST_CHANGES false open "$no_reviews" "$FIRST_APPROVE_TS")"
 assert_eq "REQUEST_CHANGES + still open -> pending" \
   '{"fate":"still-open","comparison":"pending"}' "$r"
+
+# --- The two together, on the sequence agent-ops#661 was raised about --------
+#
+# Both halves of that fix pass in isolation above; the defect lived in their
+# composition. pull/5 in EVENTS is approved at 2026-08-06 and re-approved at
+# 2026-08-08 — the `review-feedback` source bringing a pull request back round
+# after a human asked for changes — so a human `CHANGES_REQUESTED` at
+# 2026-08-07 falls between the two. Fed `verdict_fate_latest_per_pr`'s own
+# output, as both callers do, that pull request must still record a
+# divergence; read against the *latest* verdict's `ts` the human's review looks
+# like it came first and the signal disappears, which is the whole defect.
+pr5="$(jq -c '.[] | select(.pr_url | endswith("/5"))' <<<"$latest")"
+mid_cra_review='[{"login":"human1","state":"CHANGES_REQUESTED","submitted_at":"2026-08-07T00:00:00Z","bot":false}]'
+r="$(verdict_fate_classify \
+  "$(jq -r '.posted_review' <<<"$pr5")" false merged "$mid_cra_review" \
+  "$(jq -r '.first_approve_ts' <<<"$pr5")")"
+assert_eq "a human CHANGES_REQUESTED between two approvals survives the re-approval" \
+  '{"fate":"changes-requested-after-approval","comparison":"divergence"}' "$r"
+r="$(verdict_fate_classify \
+  "$(jq -r '.posted_review' <<<"$pr5")" false merged "$mid_cra_review" \
+  "$(jq -r '.ts' <<<"$pr5")")"
+assert_eq "  ... and would have been dropped had the window been the latest verdict's ts" \
+  '{"fate":"landed-by-human","comparison":"agreement"}' "$r"
 
 # --- verdict_fate_summarize ---------------------------------------------------
 

@@ -14882,11 +14882,23 @@ pull request, run the ones the change touches and any it could regress.
     `FIRST_APPROVE_TS` not counting as "after" it; `verdict_fate_summarize`
     excludes `pending` from both the sample and the rate, and reports
     `insufficient-sample` rather than state a rate below the stated minimum.
+    The two are also exercised *together*, on the sequence that defeats
+    either read alone: fed `verdict_fate_latest_per_pr`'s own entry for a
+    pull request approved, sent a human `CHANGES_REQUESTED`, and re-approved,
+    `verdict_fate_classify` still scores
+    `changes-requested-after-approval`/`divergence`, and the same call handed
+    that entry's latest `ts` instead of its `first_approve_ts` is asserted to
+    lose it — the composition, not either half, is where agent-ops#661's
+    defect lived.
     `test/verdict-fate-report.test.sh` passes: against a stubbed `gh`,
     `scripts/verdict-fate-report.sh` exits 0 with a silent stderr, prints one
     entry per pull request the Approver ruled on across every fate, counts a
     superseded verdict once and as its later one, excludes a same-prefix
-    decoy repository, and honours `--min-sample` and `--since`.
+    decoy repository, and honours `--min-sample` and `--since`; one of those
+    pull requests carries a human `CHANGES_REQUESTED` between two `APPROVE`
+    verdicts, so it records as a divergence only while the wrapper threads
+    `first_approve_ts` through to `verdict_fate_classify` — the end-to-end
+    guard that a caller cannot quietly drop the window (agent-ops#661).
     `test/autonomy-stage-report.test.sh`'s fourth repository proves component
     22 consumes that join rather than the `unavailable` placeholder it used
     to report: five approved-and-landed pull requests carrying no human

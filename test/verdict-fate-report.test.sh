@@ -8,10 +8,19 @@
 #
 #   pull/1  APPROVE, closed unmerged                 -> divergence
 #   pull/2  APPROVE, landed (a landing-armed event exists) -> agreement
-#   pull/3  APPROVE, still open, a human CHANGES_REQUESTED
-#           posted after the verdict's own ts          -> divergence,
+#   pull/3  APPROVE, a human CHANGES_REQUESTED, then a *second* APPROVE
+#           once `review-feedback` brought it back round — still open
+#                                                      -> divergence,
 #           its own fate (`changes-requested-after-approval`), never
-#           collapsed into `closed-unmerged`
+#           collapsed into `closed-unmerged`. The human's review falls
+#           between the two approvals, so this entry stays a divergence only
+#           while the window is tested against the pull request's *first*
+#           approval; against the latest verdict's own `ts` the human's
+#           review reads as "before" the approval and the divergence
+#           vanishes, which is exactly what agent-ops#661 fixed. This is the
+#           end-to-end guard on that fix: `verdict_fate_latest_per_pr`
+#           carrying `first_approve_ts` is worth nothing if a caller does not
+#           thread it through to `verdict_fate_classify`.
 #   pull/4  REQUEST_CHANGES, closed unmerged (the human agreed) -> agreement
 #   pull/5  APPROVE, still open, no standing request    -> pending, excluded
 #           from the sample
@@ -76,6 +85,12 @@ EOF
   printf '{"ts":"2026-08-02T00:00:00Z","node":"n","event":"approver-verdict","pr_url":"https://github.com/o/repo/pull/2","repo":"o/repo","tier":"medium","model":"m1","verdict":"approve","refuse_streak":0,"adjudication":false,"posted":true}\n'
   printf '{"ts":"2026-08-02T00:00:00Z","node":"n","event":"landing-armed","repo":"o/repo","pr_url":"https://github.com/o/repo/pull/2","source":"tech-debt","complexity":"medium","method":"auto-merge"}\n'
   printf '{"ts":"2026-08-03T00:00:00Z","node":"n","event":"approver-verdict","pr_url":"https://github.com/o/repo/pull/3","repo":"o/repo","tier":"medium","model":"m1","verdict":"approve","refuse_streak":0,"adjudication":false,"posted":true}\n'
+  # pull/3's re-approval (agent-ops#661): the human's CHANGES_REQUESTED in the
+  # stub below is stamped 06:00, between this pull request's first approval and
+  # this one. Both approvals are stamped the same day as the first, so the
+  # --since window the last assertion uses still excludes pull/3 entirely and
+  # its own count is unchanged by this event.
+  printf '{"ts":"2026-08-03T12:00:00Z","node":"n","event":"approver-verdict","pr_url":"https://github.com/o/repo/pull/3","repo":"o/repo","tier":"medium","model":"m1","verdict":"approve","refuse_streak":0,"adjudication":false,"posted":true}\n'
   printf '{"ts":"2026-08-04T00:00:00Z","node":"n","event":"approver-verdict","pr_url":"https://github.com/o/repo/pull/4","repo":"o/repo","tier":"medium","model":"m1","verdict":"refuse","refuse_streak":0,"adjudication":false,"posted":true}\n'
   printf '{"ts":"2026-08-05T00:00:00Z","node":"n","event":"approver-verdict","pr_url":"https://github.com/o/repo/pull/5","repo":"o/repo","tier":"medium","model":"m1","verdict":"approve","refuse_streak":0,"adjudication":false,"posted":true}\n'
   printf '{"ts":"2026-08-06T00:00:00Z","node":"n","event":"approver-verdict","pr_url":"https://github.com/o/repo/pull/6","repo":"o/repo","tier":"medium","model":"m1","verdict":"refuse","refuse_streak":1,"adjudication":false,"posted":true}\n'
@@ -104,7 +119,7 @@ case "$path" in
   repos/o/repo/pulls/2) body='{"state":"closed","merged":true}' ;;
   repos/o/repo/pulls/2/reviews) body='[]' ;;
   repos/o/repo/pulls/3) body='{"state":"open","merged":false}' ;;
-  repos/o/repo/pulls/3/reviews) body='[{"user":{"login":"human1","type":"User"},"state":"CHANGES_REQUESTED","submitted_at":"2026-08-04T00:00:00Z"}]' ;;
+  repos/o/repo/pulls/3/reviews) body='[{"user":{"login":"human1","type":"User"},"state":"CHANGES_REQUESTED","submitted_at":"2026-08-03T06:00:00Z"}]' ;;
   repos/o/repo/pulls/4) body='{"state":"closed","merged":false}' ;;
   repos/o/repo/pulls/4/reviews) body='[]' ;;
   repos/o/repo/pulls/5) body='{"state":"open","merged":false}' ;;
@@ -142,6 +157,10 @@ assert_eq "pull/3: a standing CHANGES_REQUESTED after approval -> its own fate" 
   "changes-requested-after-approval" "$(jq -r '.entries[] | select(.pr_url | endswith("/3")) | .fate' <<<"$repo")"
 assert_eq "  ... and counts as divergence even while the pull request is still open" \
   "divergence" "$(jq -r '.entries[] | select(.pr_url | endswith("/3")) | .comparison' <<<"$repo")"
+assert_eq "  ... and survives the later re-approval that supersedes the verdict (agent-ops#661)" \
+  "2026-08-03T12:00:00Z" "$(jq -r '.entries[] | select(.pr_url | endswith("/3")) | .ts' <<<"$repo")"
+assert_eq "  ... which is the whole point: the window is the first approval, not that later ts" \
+  "2026-08-03T00:00:00Z" "$(jq -r '.entries[] | select(.pr_url | endswith("/3")) | .first_approve_ts' <<<"$repo")"
 assert_eq "pull/4: REQUEST_CHANGES, closed unmerged -> agreement" \
   "agreement" "$(jq -r '.entries[] | select(.pr_url | endswith("/4")) | .comparison' <<<"$repo")"
 assert_eq "pull/5: still open, no standing request -> pending" \
