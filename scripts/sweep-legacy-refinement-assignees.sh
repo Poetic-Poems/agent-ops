@@ -45,6 +45,18 @@
 # sweep would be a one-way door: labels applied here, recorded nowhere, and
 # never removed.
 #
+# One gap that reading does not close: because this script logs no
+# `own-label-action` (it runs outside a cycle, with nothing to log to), a
+# *removal* `release_refinement_label` attempts against a migrated block that
+# then silently fails leaves no trail either — `refinement_blocked_label_stale`
+# (requirement 38b's reconciliation sweep, agent-ops#651) offers up only a
+# label whose logged own-label-action history says `add`, so a legacy block's
+# never-logged application never enters that history to begin with. The
+# backlog this script exists to clear is one-off and only ever shrinks, so a
+# stuck removal here is rarer and narrower than the ordinary case that sweep
+# covers — but it is not covered by it, and a human re-running this script is
+# still the fallback if one is ever suspected.
+#
 # Usage: sweep-legacy-refinement-assignees.sh <owner/repo> [log-file]
 #
 # Prints one line per issue actually touched, `<repo>#<number>: <what>`, to

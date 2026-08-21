@@ -151,12 +151,19 @@ chmod +x "$fake_root/lib/claim.sh"
 # --- The gh stub, through the library's own REFINEMENT_GH hook --------------
 # The same stub shape as test/needs-refinement.test.sh: label edits append to
 # $tmp_dir/label-calls, assignee edits (only ever `refinement_assignee_remove`
-# now — nothing here adds an assignment any more) to $tmp_dir/assignee-calls.
+# now — nothing here adds an assignment any more) to $tmp_dir/assignee-calls,
+# and `issue view --json labels` serves $tmp_dir/issue-labels (empty by
+# default — no issue in this file starts out already carrying `blocked`), the
+# read `refinement_label_project` does before it writes (agent-ops#651).
 # Stubbing here rather than overriding `refinement_label_add` keeps the label
 # projections themselves under test.
 cat >"$tmp_dir/gh" <<'STUB'
 #!/usr/bin/env bash
 d="$(dirname "$0")"
+if [[ "$1" == "issue" && "$2" == "view" ]]; then
+  cat "$d/issue-labels" 2>/dev/null
+  exit 0
+fi
 [[ "$1" == "issue" && "$2" == "edit" ]] || exit 1
 number="$3"; shift 3
 repo=""; action=""; label=""; assignee=""

@@ -5446,8 +5446,8 @@ implements.
       `needs_refinement` entry, from any reporting stage, whose own
       `reason`/`missing`/`evidence` names, by its issue number, the same
       dependency this cycle's own dependency gate (requirement 34j) already
-      proves resolved for that item's thread: no block is recorded, no label
-      applied, no assignment made, and the refusal is logged — the item is
+      proves resolved for that item's thread: no block is recorded, no labels
+      applied, and the refusal is logged — the item is
       left exactly as unaccounted-for as if nothing had been reported
       (requirement 3x), so it is not silently closed off by a report that
       never engaged with it. The judgement half above is untouched by this: a
@@ -8931,12 +8931,15 @@ implements.
 
 38. **Human-visibility.** Work genuinely waiting on the human must be visible
     to the human — on `github.com/pulls/review-requested` for a pull request,
-    on Assigned-to-me for an issue — not merely recorded in the pipeline's own
-    log. A 2026-08-07 pipeline-flow review found neither guarantee held: no
-    currently-open pull request carried a live review request (every prior
-    request had been consumed by a submitted review), and the one genuine
-    human-decision block in this repository (#203) was unassigned, so it never
-    appeared on Assigned-to-me either.
+    on Assigned-to-me for a genuine Enabler escalation (requirement 36a), on a
+    filtered issue list (`blocked`/`blocked:needs-refinement` — requirement
+    38b) for a Co-Ordinator-, Refiner- or Implementer-recorded refinement
+    block — not merely recorded in the pipeline's own log. A 2026-08-07
+    pipeline-flow review found neither guarantee held: no currently-open pull
+    request carried a live review request (every prior request had been
+    consumed by a submitted review), and the one genuine human-decision block
+    in this repository (#203) was unassigned, so it never appeared on
+    Assigned-to-me either.
 
 38a. **A ready pull request's live review request is kept, not only made
     once.** `lib/handoff.sh`'s `ensure_human_reviewer(pr_url, assignee)`
@@ -9051,16 +9054,29 @@ implements.
     Both are fixed, unconfigurable names, like `blocked` itself always has
     been — there is nothing here for an installation to rename or disable, in
     contrast to `needs_refinement_label` alongside them. `record_needs_refinement_block`
-    applies both through `refinement_label_add` (the same primitive
-    `needs_refinement_label` uses), recording which it actually managed to
-    apply as `blocked_label`/`blocked_reason_label` on the block's
-    `attempt-failed` event (`refinement_block_fields`'s third and fourth
-    arguments) so `release_refinement_label` can take them off again — via
+    applies `blocked:<reason>` through `refinement_label_add` (the same
+    primitive `needs_refinement_label` uses) unconditionally, because no human
+    reaches for that compound name on their own — but applies `blocked`
+    through `refinement_label_project` instead (agent-ops#651), which reads
+    the issue's labels before writing: `lib/labels.sh`'s own catalogue still
+    documents `blocked` as the human's own, hand-applied control, so an
+    unconditional add-and-record would let `release_refinement_label` later
+    remove a `blocked` a human applied for their own reasons before this block
+    existed — the same defect the deleted `refinement_assignee_project` once
+    existed to prevent, moved from the assignee list to the label list.
+    Whichever of the two actually landed — `added` for a genuinely fresh
+    label, never `present`, which the projection leaves unrecorded — is kept
+    as `blocked_label`/`blocked_reason_label` on the block's `attempt-failed`
+    event (`refinement_block_fields`'s third and fourth arguments) so
+    `release_refinement_label` can take them off again — via
     `refinement_blocked_label_targets`, read from the block record exactly as
     `refinement_label_targets` is — the moment the block clears, by the same
     three paths that already release `needs_refinement_label`. Best-effort,
-    like that label: a failed application is a `warning`, and the block is
-    recorded regardless.
+    like that label: a failed application, or a read that fails outright
+    (`unrecorded`, applied best-effort but not recorded — over-holding
+    `blocked` is cosmetic; removing one that may have pre-existed is the
+    defect this exists to prevent), is a `warning`, and the block is recorded
+    regardless.
 
     **This requirement never assigns anything.** Assignment stays reserved
     for requirement 36a's own, genuine escalations — a *separate* issue a
@@ -9106,6 +9122,30 @@ implements.
     kind's own reason label. A legacy block the sweep has not reached yet
     costs one `gh` removal that finds nothing to remove, best-effort like
     every other removal on that path.
+
+    **The reconciliation sweep for a removal that silently failed**
+    (agent-ops#651). Unlike `needs_refinement_label`'s hand-flag path
+    (requirement 39f), `blocked`/`blocked:<reason>` have no live-GitHub
+    attribution to make: nothing but this pipeline ever applies them — a
+    human's own `blocked` is exactly what `refinement_label_project` above
+    already keeps out of `blocked_label`, so it is never mistaken for this
+    system's to remove — so a logged `own-label-action add` with no later
+    `remove` for a given repo/item/label is proof enough on its own that a
+    removal is ours to retry, with no `labelled_at` comparison or skew
+    tolerance required. `lib/refinement.sh`'s `refinement_blocked_label_stale`
+    takes the current `blocked_items` extract and the shared log, and returns
+    every `blocked`/`blocked:<reason>` whose own-label-action history's most
+    recent action is `add` for an item no longer in that extract — i.e. the
+    block cleared, but nothing proves the label came off. `agent-cycle.sh`
+    retries `refinement_label_remove` on each, unconditionally and every
+    cycle (guarded only by requirement 12's dry-run switch, the same as every
+    other label write here) — not gated on `needs_refinement_label` being
+    configured, since neither label depends on it. Otherwise a
+    `release_refinement_label` removal that failed the moment its block
+    cleared would never be retried again: `scripts/gather-issues.sh` would
+    keep excluding the issue forever (requirement 16.4's deterministic half),
+    invisibly, the same permanently-stuck-hold class of failure agent-ops#639
+    ended for the assignment-based mechanism.
 
 38c. **An idle, approved pull request is nudged, not left silent.** For every
     open, non-draft, `pr_label`-carrying pull request in every configured
@@ -10017,8 +10057,9 @@ implements.
 
     A `needs-refinement` verdict on a `triage_only` item is refused rather
     than recorded: outcome `triage-only-refused` and a `warning`, no block,
-    no `needs_refinement` label, no assignment. The item is already refined
-    and reached the Refiner only for its band, so a block here would hold an
+    no `needs_refinement` label, no `blocked`/`blocked:needs-refinement`
+    labels. The item is already refined and reached the Refiner only for its
+    band, so a block here would hold an
     item that already carries a specification out of selection until a human
     cleared a block nobody asked for — the one way this requirement's own
     candidate rule could cost the pipeline work rather than save it. The band
@@ -13825,8 +13866,9 @@ pull request, run the ones the change touches and any it could regress.
     and no uncorroborated-comment warning; a `needs-refinement` verdict
     carrying `priority` still applies the band despite the decline; the same
     verdict on a `triage_only` item records no block, no
-    `needs_refinement` label and no assignment, with outcome
-    `triage-only-refused` and a `warning`, while its band still applies; a
+    `needs_refinement` label and no `blocked`/`blocked:needs-refinement`
+    labels, with outcome `triage-only-refused` and a `warning`, while its
+    band still applies; a
     failed band write is a `warning` that leaves the refinement or block
     already recorded untouched — naming both the band actually attempted and
     the band the verdict asked for when the failure followed a fallback, and
@@ -14098,7 +14140,18 @@ pull request, run the ones the change touches and any it could regress.
     surviving a void the same way, and finds the same fixed pair for a legacy
     block that records `needs_refinement_assignee` and neither blocked-label
     field, so what the migration sweep applied is still released when the
-    block clears. `refinement_assignee_remove` — the one
+    block clears. `refinement_label_project` (agent-ops#651) reads before it
+    writes: an absent `blocked` is added and reported `added`; a pre-existing
+    one — another label on the issue does not mask this — is `present`,
+    untouched and unrecorded; an unreadable label list is applied best-effort
+    but `unrecorded`; and a label the repo does not have is `failed`, the same
+    four-way contract the deleted `refinement_assignee_project` once had for
+    the assignment this replaced. `refinement_blocked_label_stale`
+    (agent-ops#651) offers up exactly the `blocked`/`blocked:<reason>` pair
+    whose own-label-action history's latest action is `add` for an item no
+    longer open, correctly leaving alone a label whose block is still open, one
+    whose removal already succeeded, and another repo's identically-numbered
+    item. `refinement_assignee_remove` — the one
     survivor of what used to be a pair, kept for
     `scripts/sweep-legacy-refinement-assignees.sh` alone — still makes one
     `gh issue edit --remove-assignee` call. `test/sweep-human-visibility.test.sh`

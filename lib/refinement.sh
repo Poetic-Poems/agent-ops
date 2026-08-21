@@ -287,6 +287,52 @@ refinement_blocked_label_targets() {
     | unique | .[]' <<<"$blocked" 2>/dev/null || true
 }
 
+# refinement_blocked_label_stale BLOCKED_JSON [LOG_FILE]
+# Print, one per line as `<repo>\t<item>\t<label>`, every `blocked`/
+# `blocked:<reason>` label whose own-label-action history's most recent
+# action for that repo+item+label is `add` — a removal either never attempted
+# or attempted and silently failed (`release_refinement_label`, which
+# tolerates the failure by design) — where the item is not currently in
+# BLOCKED_JSON, i.e. its block has since cleared. Reads LOG_FILE, or stdin if
+# it is omitted or "-", the same convention `lib/cycle-state.sh`'s
+# `blocked_items` uses.
+#
+# Unlike `needs_refinement_label`'s stale-retry (`label_own_stale_applications`,
+# requirement 39f), no live GitHub read or own/human attribution heuristic is
+# needed here: `blocked`/`blocked:<reason>` are never applied by this pipeline
+# except through `refinement_label_project`'s read-before-write (the generic
+# label) or `record_needs_refinement_block`'s unconditional add (the fixed
+# reason label) — never by a human's own hand, which is exactly what
+# `refinement_label_project` exists to keep true for `blocked` too — so a
+# logged `own-label-action add` with no later `remove` is proof enough on its
+# own that a removal is ours to retry, with no `labelled_at` comparison
+# required.
+refinement_blocked_label_stale() {
+  local blocked="${1:-[]}" src="${2:--}" log_json docs
+  [[ -n "$blocked" ]] || blocked='[]'
+  if [[ "$src" == "-" ]]; then
+    log_json="$(jq -c -R 'fromjson? // empty' 2>/dev/null | jq -sc '.' 2>/dev/null || true)"
+  elif [[ -s "$src" ]]; then
+    log_json="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null | jq -sc '.' 2>/dev/null || true)"
+  fi
+  [[ -n "$log_json" ]] || log_json='[]'
+  docs="$log_json"$'\n'"$blocked"
+  jq -nr '
+    input as $log | input as $b |
+    ($b | map((((.repo // "") | tostring)) + "|" + (((.item // "") | tostring)))) as $open |
+    [ $log[]?
+      | select((.event // "") == "own-label-action")
+      | select((.label // "") == "blocked" or ((.label // "") | startswith("blocked:")))
+      | select((.repo // "") != "" and ((.item // "") | tostring) != "") ]
+    | group_by([(.repo // ""), ((.item // "") | tostring), (.label // "")])
+    | map(sort_by(.ts) | last)
+    | map(select((.action // "") == "add"))
+    | map(select( ((((.repo // "") | tostring) + "|" + ((.item // "") | tostring)) as $k
+                  | ($open | index($k)) == null) ))
+    | .[]
+    | "\(.repo)\t\(.item)\t\(.label)"' <<<"$docs" 2>/dev/null || true
+}
+
 # refinement_label_add REPO NUMBER LABEL
 # refinement_label_remove REPO NUMBER LABEL
 # Project the label onto an issue, or take it off again. Return non-zero when
@@ -303,6 +349,62 @@ refinement_label_remove() {
   local repo="$1" number="$2" label="$3" gh_bin="${REFINEMENT_GH:-gh}"
   [[ -n "$repo" && -n "$number" && -n "$label" ]] || return 1
   "$gh_bin" issue edit "$number" -R "$repo" --remove-label "$label" >/dev/null 2>&1
+}
+
+# refinement_label_project REPO NUMBER LABEL
+# Put LABEL on the issue iff it is not already there, and say whether the
+# resulting label is this projection's to remove later. Mirrors the deleted
+# `refinement_assignee_project`'s read-before-write contract (agent-ops#651):
+# `gh issue edit --add-label` succeeds as a no-op on an issue that already
+# carries the label, so an unconditional add-and-record would later let
+# `release_refinement_label` remove a label a human applied for their own
+# reasons before this block ever existed — precisely the defect the deleted
+# assignee projection's read existed to prevent, needed here for `blocked`
+# because `lib/labels.sh`'s own catalogue still documents it as the human's
+# own, hand-applied control (a repository without the label offers no way to
+# say "not this one"), so a pipeline-projected `blocked` and a human's own can
+# land on the same issue. `blocked:<reason>` does not need this: no human
+# reaches for that compound name on their own, so its lifecycle stays
+# unconditional, the same as `needs_refinement_label`'s.
+#
+# Prints one word, exactly the shape `refinement_assignee_project` used:
+#   added       LABEL was absent and is now on the issue — record it, so the
+#               block's clearing takes it off again.
+#   present     LABEL was already on the issue. Nothing is touched and
+#               nothing must be recorded.
+#   unrecorded  the issue's labels could not be read, so the add was
+#               attempted best-effort but must not be recorded — over-holding
+#               a label is cosmetic; removing one that may have pre-existed is
+#               the defect this function exists to prevent.
+#   failed      the list was readable, LABEL was absent, and the add would not
+#               take (a repo where the label was never created is the
+#               practical case) — same contract as `refinement_label_add`: the
+#               caller records the block regardless.
+#
+# Exit status is 0 for `added` and `present` (the projection is healthy), 1
+# for `unrecorded` and `failed`.
+refinement_label_project() {
+  local repo="$1" number="$2" label="$3" gh_bin="${REFINEMENT_GH:-gh}" existing
+  if [[ -z "$repo" || -z "$number" || -z "$label" ]]; then
+    printf 'failed'
+    return 1
+  fi
+  if ! existing="$("$gh_bin" issue view "$number" -R "$repo" --json labels \
+                     --jq '.labels[].name' 2>/dev/null)"; then
+    refinement_label_add "$repo" "$number" "$label" || true
+    printf 'unrecorded'
+    return 1
+  fi
+  if grep -qxF "$label" <<<"$existing"; then
+    printf 'present'
+    return 0
+  fi
+  if refinement_label_add "$repo" "$number" "$label"; then
+    printf 'added'
+    return 0
+  fi
+  printf 'failed'
+  return 1
 }
 
 # refinement_assignee_remove REPO NUMBER ASSIGNEE

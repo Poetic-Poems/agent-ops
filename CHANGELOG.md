@@ -601,7 +601,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   old mechanism left behind on every still-open block that recorded one (21
   cleared by hand on 2026-08-21 ahead of this fix; 14 more had accumulated in
   `Poetic-Poems/agent-ops` by the time this landed) — idempotent, safe to
-  re-run against any repository at any time.
+  re-run against any repository at any time. `blocked` — unlike its reason
+  label — is also a human's own, hand-applied control, so it is projected
+  through a read-before-write (`refinement_label_project`) rather than an
+  unconditional add, the same guard the deleted `refinement_assignee_project`
+  gave the assignment this replaced; and a removal that silently fails when a
+  block clears is retried every cycle by a new reconciliation sweep
+  (`refinement_blocked_label_stale`), so a stuck `blocked`/
+  `blocked:needs-refinement` no longer needs a human to notice it.
 - Every `item-void` a Co-Ordinator, Enabler or Implementer
   writes must now cite evidence in one of two checkable forms — a structured
   `{ref, path, expect, pattern}` shape, or a PR/commit citation naming the

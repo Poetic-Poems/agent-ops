@@ -1896,7 +1896,10 @@ log_recheck_clean_items() {
 # ITEM, if this item's refinement block put them there. Called wherever a
 # block clears — the Co-Ordinator's own re-check, an Enabler `unblocked`, and
 # a `void` from either — because all three labels' lifecycles mirror the
-# block's and nothing else would ever take them off.
+# block's. A removal that fails here is retried later, not by anything else:
+# `needs_refinement_label` by requirement 39f's stale-retry,
+# `blocked`/`blocked:<reason>` by the reconciliation sweep beside it
+# (agent-ops#651).
 #
 # Reads the blocked extract this cycle computed *before* the Co-Ordinator ran,
 # which is the correct one: the block being cleared is by definition one that was
@@ -2014,22 +2017,39 @@ record_needs_refinement_block() {
             '{detail: $d}')"
         fi
       fi
-      # Requirement 38b (agent-ops#639): a block gated on a decision the human
-      # has not made gets `blocked` — the generic hold marker
-      # `scripts/gather-issues.sh` already excludes on — plus a reason label
-      # naming why, so it reaches the human's own filtered issue list the
-      # moment it is recorded, rather than waiting for the Enabler's own,
-      # much later, escalation. Fixed, unconfigurable names, unlike the label
-      # above: there is nothing to read back or disable.
-      if refinement_label_add "$repo" "$number" "$REFINEMENT_BLOCKED_LABEL"; then
-        blocked_label="$REFINEMENT_BLOCKED_LABEL"
-        log_event "own-label-action" \
-          "$(label_own_action_fields "$repo" "$number" "$REFINEMENT_BLOCKED_LABEL" "add")"
-      else
-        log_event "warning" "$(jq -nc \
-          --arg d "could not apply the $REFINEMENT_BLOCKED_LABEL label to $repo#$number — the block is recorded either way" \
-          '{detail: $d}')"
-      fi
+      # Requirement 38b (agent-ops#639, read-before-write agent-ops#651): a
+      # block gated on a decision the human has not made gets `blocked` — the
+      # generic hold marker `scripts/gather-issues.sh` already excludes on —
+      # plus a reason label naming why, so it reaches the human's own
+      # filtered issue list the moment it is recorded, rather than waiting
+      # for the Enabler's own, much later, escalation. Through
+      # `refinement_label_project`, not `refinement_label_add`: `blocked` is
+      # also a human's own, hand-applied control (`lib/labels.sh`'s own
+      # catalogue), so a pre-existing instance — applied for the human's own
+      # reasons before this block existed — is left exactly as found and
+      # recorded as nothing, the same read-before-write contract the deleted
+      # `refinement_assignee_project` once gave the assignment this replaced.
+      case "$(refinement_label_project "$repo" "$number" "$REFINEMENT_BLOCKED_LABEL")" in
+        added)
+          blocked_label="$REFINEMENT_BLOCKED_LABEL"
+          log_event "own-label-action" \
+            "$(label_own_action_fields "$repo" "$number" "$REFINEMENT_BLOCKED_LABEL" "add")"
+          ;;
+        present) ;;
+        unrecorded)
+          log_event "warning" "$(jq -nc \
+            --arg d "could not read $repo#$number's labels — $REFINEMENT_BLOCKED_LABEL was applied best-effort but not recorded on the block, so clearing it will not remove it" \
+            '{detail: $d}')"
+          ;;
+        *)
+          log_event "warning" "$(jq -nc \
+            --arg d "could not apply the $REFINEMENT_BLOCKED_LABEL label to $repo#$number — the block is recorded either way" \
+            '{detail: $d}')"
+          ;;
+      esac
+      # `blocked:<reason>` keeps the unconditional lifecycle `needs_refinement_label`
+      # already has: no human reaches for this compound name on their own, so
+      # there is nothing here to read back before writing.
       reason_label="$(refinement_blocked_reason_label "$REFINEMENT_BLOCK_KIND")"
       if [[ -n "$reason_label" ]]; then
         if refinement_label_add "$repo" "$number" "$reason_label"; then
@@ -5736,11 +5756,12 @@ $(jq . <<<"$input")
         # requirement 39g: never from a `triage_only` item. That item is
         # already refined — it reached the Refiner solely for its missing
         # band, and recording a block here would label an item that already
-        # carries a specification `needs_refinement`, assign a human to it,
-        # and hold it out of selection until someone clears a block nobody
-        # asked for. The decline is refused rather than obeyed, on the same
-        # terms as the ratchet itself: the Script is what enforces the shape
-        # of this duty, never the prompt alone. The band below still applies.
+        # carries a specification `needs_refinement`, `blocked` and
+        # `blocked:needs-refinement`, and hold it out of selection until
+        # someone clears a block nobody asked for. The decline is refused
+        # rather than obeyed, on the same terms as the ratchet itself: the
+        # Script is what enforces the shape of this duty, never the prompt
+        # alone. The band below still applies.
         if [[ "$e_triage_only" == "true" ]]; then
           outcome="triage-only-refused"
           log_event "warning" "$(jq -nc --arg d "refiner: needs-refinement for $e_repo $e_item, an already-refined item offered only for its Priority band — not recorded as a block" \
@@ -6961,6 +6982,32 @@ if [[ -n "$needs_refinement_label" ]]; then
     done < <(jq -c '.[]' <<<"$hand_flag_cleared_json" 2>/dev/null || true)
     tail -n "+$(( log_lines_before + 1 ))" "$log_file" >> "$union_log" 2>/dev/null || true
   fi
+fi
+
+# Requirement 38b's own reconciliation sweep for `blocked`/`blocked:<reason>`
+# (agent-ops#651), unconditional — unlike the `needs_refinement_label` block
+# above, these two labels are not configurable and carry no hand-flag path, so
+# this runs every cycle regardless. Unlike requirement 39f's stale-retry, no
+# live GitHub read or own/human attribution heuristic is needed:
+# `refinement_blocked_label_stale` already proves an `own-label-action add`
+# recorded for the label is ours with nothing but the log, so a
+# `release_refinement_label` removal that silently failed at the moment its
+# block cleared gets retried here rather than sitting on the issue forever —
+# the same permanently-stuck-hold class of failure agent-ops#639 ended for the
+# assignment-based mechanism, reopened on the label list if this half were
+# skipped.
+if ! (( DRY_RUN )); then
+  while IFS=$'\t' read -r stale_repo stale_item stale_label; do
+    [[ -n "$stale_repo" && -n "$stale_item" && -n "$stale_label" ]] || continue
+    if refinement_label_remove "$stale_repo" "$stale_item" "$stale_label"; then
+      log_event "own-label-action" \
+        "$(label_own_action_fields "$stale_repo" "$stale_item" "$stale_label" "remove")"
+    else
+      log_event "warning" \
+        "$(jq -nc --arg d "could not retry removing the $stale_label label from $stale_repo#$stale_item" \
+           '{detail: $d}')"
+    fi
+  done < <(refinement_blocked_label_stale "$(blocked_items "$union_log")" "$union_log")
 fi
 
 # Requirement 34i, applied last of the three reconciliations, and for the same
