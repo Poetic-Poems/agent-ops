@@ -8,6 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `scripts/run-tests.sh`: run the `test/` suite the way CI runs it — the
+  working tree copied into a throwaway `docker run` container from the image,
+  with nothing of the host or of any running node reaching it. The suite will
+  *start* anywhere and only *pass* in the environment CI uses, and both ways of
+  getting that wrong fail on an untouched `main` while naming something other
+  than their own cause: from the checkout, the host's `jq` (1.6 and 1.7
+  disagree about enough for roughly nine files to fail); through `docker exec`
+  into a running node, that container's `PULLWRIGHT_APPROVER_APP_ID`, which
+  `doctor.sh` reconciles against `approver_app_id` — so a fixture deleting the
+  config key builds "an Approver the config does not declare" instead of "no
+  Approver", and three assertions in `test/config-schema.test.sh` invert.
+  `README.md`'s "Running the tests" recommended the first of those and now
+  documents both.
+
+
 - `scripts/autonomy-stage-report.sh` (D18, agent-ops#571): a read-only
   operator report answering "has this repository met its current D18
   rollout-stage exit criteria?" — its `merge_autonomy` level, the stage
