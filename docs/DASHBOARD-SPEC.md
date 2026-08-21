@@ -457,8 +457,10 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                     //   count transcripts, unaffected
              recent_costs[],       // {ts, cost} per row, last 3 days, for the
                                     //   spend-today card's GMT/local/24h toggle
-             cost_rows[],           // {day, model, actor, usd, cycle} per
-                                     //   row, one per (transcript × model)
+             cost_rows[],           // {day, model, actor, usd, cycle,
+                                     //  repo, item, source, outcome,
+                                     //  attributed} per row, one per
+                                     //   (transcript × model)
                                      //   touched — each carries that model's
                                      //   own costUSD, not the transcript's
                                      //   whole total_cost_usd (issue #536) —
@@ -472,7 +474,30 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                      //   dedupes on it so a transcript that
                                      //   touched two models still counts once
                                      //   under `by_actor`'s windowed `n`,
-                                     //   never twice (issue #536)
+                                     //   never twice (issue #536).
+                                     //   repo/item/source/outcome (issue
+                                     //   #593, D21) are joined onto `cycle`
+                                     //   from the same fleet-wide event
+                                     //   union `cycles[]` renders from —
+                                     //   bounded by log_retained_bytes, not
+                                     //   by cycles[]'s own MAX_CYCLES cap —
+                                     //   and populated only when
+                                     //   `attributed` is true: a
+                                     //   coordinator/implementer/reviewer
+                                     //   row whose own cycle has events in
+                                     //   that union. Every other row —
+                                     //   enabler/refiner/limit-probe (which
+                                     //   share their triggering cycle's id
+                                     //   but spent on a different item),
+                                     //   project-reviewer (whose cycle id
+                                     //   never reaches log.jsonl), or a
+                                     //   coordinator/implementer/reviewer
+                                     //   row whose cycle has rotated out of
+                                     //   the union — carries all four as
+                                     //   null and `attributed:false`, never
+                                     //   dropping the row itself. See
+                                     //   docs/METERING-SCHEMA.md for the
+                                     //   field-by-field contract
              coordinator_verdicts: {   // how often the Script rejects a
                window_from, window_to, //   Co-Ordinator verdict, and what
                runs, retries,          //   the fleet spent recovering

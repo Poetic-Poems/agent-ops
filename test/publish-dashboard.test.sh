@@ -276,6 +276,60 @@ assert_eq "by_actor is not inflated by the per-model split either: two transcrip
 assert_eq "and by_actor sums the same total regardless of how many models a transcript touched" \
   "0.75" "$(jq -r '.counts.by_actor[] | select(.actor=="coordinator") | .usd' <<<"$mdata")"
 
+# --- cost_rows carries what the money bought (issue #593, D21) -------------
+# The join is against the fleet-wide event union (log.jsonl), not
+# cycles.json — this fixture never runs a real cycle, so the union is just
+# the hand-written lines below. Five attribution cases:
+#   coordinator/implementer/reviewer, same cycle as a real selection+outcome:
+#     attributed:true, carrying that cycle's repo/item/source/outcome
+#   enabler, sharing that same cycle's directory (and so its cycle id):
+#     attributed:false — the Enabler spent on a different item than the one
+#     the cycle itself selected, so inheriting the cycle's facts would lie
+#   project-reviewer, from reviews/ rather than cycles/: attributed:false —
+#     the weekly pipeline logs to review-log.jsonl, never log.jsonl, so its
+#     cycle id is never in the union at all
+#   coordinator whose own cycle never logged anything (rotated out, or never
+#     written): attributed:false, same as the two cases above
+w="$(new_home nodeW)"
+wcid="${today_day}T070000Z-71"
+make_stage "$w" "$wcid" coordinator 0.10 model-a
+make_stage "$w" "$wcid" implementer 0.20 model-a
+make_stage "$w" "$wcid" reviewer 0.05 model-a
+make_stage "$w" "$wcid" enabler 0.03 model-a
+{
+  printf '{"ts":"2026-01-01T00:00:00Z","cycle":"%s","node":"nodeW","event":"selection","repo":"Poetic-Poems/poetic","item":"42","source":"tech-debt","model":"model-a","title":"a title"}\n' "$wcid"
+  printf '{"ts":"2026-01-01T00:05:00Z","cycle":"%s","node":"nodeW","event":"pr-ready","repo":"Poetic-Poems/poetic","pr_url":"https://github.com/Poetic-Poems/poetic/pull/1"}\n' "$wcid"
+} > "$w/.local/state/poetic-agents/log.jsonl"
+# A cycle that never logged anything at all — no events in the union — but
+# still has a real transcript, so its cost must still surface, unattributed.
+wcid2="${today_day}T070100Z-72"
+make_stage "$w" "$wcid2" coordinator 0.15 model-b
+make_review "$w" "${today_day}T070200Z-73" "Poetic-Poems/agent-ops" 0.07 model-a
+
+run_publish "$w"
+wdata="$(data_of "$w")"
+
+assert_eq "cost_rows carries one row per (transcript × model): three attributable, one same-cycle enabler, one no-events, one review" \
+  "6" "$(jq -r '.counts.cost_rows | length' <<<"$wdata")"
+assert_eq "coordinator/implementer/reviewer rows on the selected cycle all attribute true" \
+  "3" "$(jq -r --arg cid "$wcid" '[.counts.cost_rows[] | select(.cycle==$cid and (.actor=="coordinator" or .actor=="implementer" or .actor=="reviewer") and .attributed==true)] | length' <<<"$wdata")"
+assert_eq "and each carries the cycle own repo/item/source/outcome" "3" \
+  "$(jq -r --arg cid "$wcid" '[.counts.cost_rows[] | select(.cycle==$cid and (.actor=="coordinator" or .actor=="implementer" or .actor=="reviewer") and .repo=="Poetic-Poems/poetic" and .item=="42" and .source=="tech-debt" and .outcome=="pr-ready")] | length' <<<"$wdata")"
+assert_eq "an enabler row sharing that same cycle id attributes false" "false" \
+  "$(jq -r --arg cid "$wcid" '.counts.cost_rows[] | select(.cycle==$cid and .actor=="enabler") | .attributed' <<<"$wdata")"
+assert_eq "and carries nulls rather than the cycle own facts" "true" \
+  "$(jq -r --arg cid "$wcid" '.counts.cost_rows[] | select(.cycle==$cid and .actor=="enabler") | (.repo==null and .item==null and .source==null and .outcome==null)' <<<"$wdata")"
+assert_eq "a coordinator row whose own cycle logged no events attributes false" "false" \
+  "$(jq -r --arg cid "$wcid2" '.counts.cost_rows[] | select(.cycle==$cid) | .attributed' <<<"$wdata")"
+assert_eq "and carries nulls too" "true" \
+  "$(jq -r --arg cid "$wcid2" '.counts.cost_rows[] | select(.cycle==$cid) | (.repo==null and .item==null and .source==null and .outcome==null)' <<<"$wdata")"
+assert_eq "a project-reviewer row attributes false — its pipeline never logs to log.jsonl" "false" \
+  "$(jq -r '.counts.cost_rows[] | select(.actor=="project-reviewer") | .attributed' <<<"$wdata")"
+assert_eq "and carries nulls too" "true" \
+  "$(jq -r '.counts.cost_rows[] | select(.actor=="project-reviewer") | (.repo==null and .item==null and .source==null and .outcome==null)' <<<"$wdata")"
+assert_eq "the sum property (issue #536) still holds with the join in place" \
+  "true" "$(jq -r '([.counts.cost_rows[].usd] | add) == .counts.spend_total_usd' <<<"$wdata")"
+
 # The verdict-quality aggregate (issue #319) ships even when the log holds no
 # Co-Ordinator record at all, zeroed rather than absent: the page distinguishes
 # "no rejected verdicts in the window" from "this Publisher never recorded any
