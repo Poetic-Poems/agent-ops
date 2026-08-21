@@ -11320,6 +11320,63 @@ What exists, and the requirements each part answers to:
     first-seen race between two nodes, and a legacy numeric-`item`,
     node-less `selection` (`test/pickup-metrics.test.sh`); must pass
     `shellcheck`.
+22. `scripts/autonomy-stage-report.sh` — a read-only operator report, like
+    `scripts/pickup-metrics.sh` (component 21): for each `config.json` repository
+    (or `--repo` override), prints its `merge_autonomy_configured_level`, the
+    D18 rollout stage (agent-ops#402, 2026-08-18 amendment) that level
+    corresponds to, that stage's exit criteria, the measured value of each,
+    and a closing verdict — `met`, `not-met (criterion: …)` or
+    `insufficient-evidence` — as Markdown followed by a machine-readable JSON
+    block, on stdout. Itself adds no event and touches no pipeline behaviour.
+    Reads the configured level rather than `merge_autonomy_effective_level`,
+    matching `scripts/doctor.sh`'s own reasoning (requirement 2.3b): a
+    momentary kill-switch trip answers whether autonomy is running right now,
+    not how much rollout evidence a repository has earned, and checking it
+    would add a state-repo network read this report has no other reason to
+    make. Stages 2 and 3 share the level `agent-merges-routine` and identical
+    exit criteria (agent-ops#402: "Stage 3 … Same metrics per repo"), so a
+    repository at that level is reported once, against "Stage 2/3".
+
+    Two exit criteria have no detector yet — classifier escapes
+    (agent-ops#572) and the Stage 1 divergence between an Approver verdict and
+    the human's eventual action (agent-ops#573) — and are always reported
+    `unavailable`, never a guessed `0`; building either detector is out of
+    this component's scope. "Elapsed time at the current level" is read off
+    `lib/fleet.sh`'s union event log rather than this repository's own git
+    history, because the deployed image never carries `.git` (`.dockerignore`)
+    and this report has to behave identically there and in a checkout: the
+    repository's own earliest `landing-armed` event for
+    `agent-merges-routine`/`agent-merges-all` (the Script only ever arms a
+    landing once a repository's level has reached that rung), or earliest
+    `approver-verdict` event (matched by `pr_url`, since that event carries no
+    `repo` field of its own) for `agent-approves` — the same Approver stage
+    that arms "from the moment [the level] lands" (`lib/merge-autonomy.sh`).
+    A repository with no such event yet reports elapsed time `unavailable`,
+    which under-counts, never over-counts, time already accrued.
+
+    Autonomous landings and, at `agent-merges-all`, human-authored merges are
+    each GitHub's own merged-pull-request record (one `gh api` read per
+    repository, filtered to `pr_label`) inner-joined by pull-request URL
+    against the fleet's own `landing-armed` events for that repository — a
+    landing-armed pull request that never actually merged (a later dequeue,
+    say) does not inflate the count. The revert-or-follow-up rate compares a
+    fresh `scripts/mine-merge-history.sh` run against the earliest
+    `docs/reviews/*-merge-autonomy-baseline.md` on disk (sorted by its own
+    dated filename) — the Stage 0 baseline that script's own header says it
+    satisfies — `unavailable` when no such file exists or the fresh run
+    itself fails.
+
+    `--config`, `--repo`, `--label`, `--reviews-dir`, `--state-dir`,
+    `--peers-dir` and `--now` all override their `config.json`-derived
+    defaults, the last existing so a test run can fix "elapsed since" against
+    a stable clock. Regression-tested
+    (`test/autonomy-stage-report.test.sh`) against three repositories, one
+    per verdict: every criterion met; a real failure on a measurable
+    criterion outranking an unrelated unavailable one (`not-met`, never
+    `insufficient-evidence`); and every measurable criterion met while one
+    remains permanently unavailable (`insufficient-evidence`, never `met`,
+    proving a criterion is never reported satisfied from missing data); must
+    pass `shellcheck`.
 
 ## Acceptance checks
 
@@ -14129,6 +14186,25 @@ pull request, run the ones the change touches and any it could regress.
     `anomaly` it reports stay exactly what the (unmodified) merged-PR count
     read — an ALREADY_ARMED-driven hold never reports `anomaly: true` on its
     own.
+8v. **A D18 rollout stage's own exit criteria are measured, not recalled
+    (component 22).** `test/autonomy-stage-report.test.sh` passes: a
+    repository at `human` (Stage 0) verdicts `met` once a baseline file
+    exists and `merge_autonomy` is configured; a repository at
+    `agent-approves` (Stage 1) short of its 15-agent-approved-pull-request
+    bar verdicts `not-met (criterion: agent_approved_prs)` even though its
+    other criterion (App-verdict/human-action divergence, agent-ops#573) is
+    simultaneously `unavailable` — a real failure outranks a merely-missing
+    measurement; a `pr_url` counted toward one repository's agent-approved
+    count is never credited to a same-prefixed sibling repository (an exact
+    `owner/repo/pull/` match, not a substring one). A repository at
+    `agent-merges-routine` (Stage 2/3) whose autonomous-landing count and
+    revert rate both clear their bars still verdicts `insufficient-evidence`,
+    never `met`, because `classifier_escapes` has no detector yet
+    (agent-ops#572) — no criterion is ever reported satisfied from missing
+    data. The revert-rate criterion reads the *earliest* dated
+    `docs/reviews/*-merge-autonomy-baseline.md` as the Stage 0 baseline, not
+    a later, worse one placed beside it in the fixture.
+    `scripts/autonomy-stage-report.sh` passes `shellcheck`.
 
 ## Host provisioning (human steps)
 
