@@ -16,7 +16,7 @@
 #     refinement of an item already refined once since the last human touch.
 #   - `complete_handoff` (requirements 31c/32b, agent-ops#440) — refused when
 #     this item's recorded failure never reached the Reviewer stage (PR #433:
-#     the Implementor failed, the Reviewer block never ran, and this recovery
+#     the Implementer failed, the Reviewer block never ran, and this recovery
 #     path flipped the pull request to ready anyway) or when `handoff_
 #     complete_review`'s (lib/handoff.sh) own gate finds a real fault — the
 #     same gate the Reviewer's own handoff runs, genuinely shared rather than
@@ -635,13 +635,13 @@ assert_eq "  ... and no enabler-examined/item-void/unblocked/attempt-failed at a
 # item's recorded failure never reached the Reviewer stage — no Reviewer
 # verdict is on record for the pull request at all, so nothing has confirmed
 # it is even safe to hand off, let alone that CI is green (PR #433: the
-# Implementor failed, the Reviewer block never ran, and complete_handoff
+# Implementer failed, the Reviewer block never ran, and complete_handoff
 # flipped it to ready anyway on four preconditions that were all vacuously
 # true for want of a Reviewer having ever examined it).
 # ============================================================================
 pr_eligible_no_reviewer='[{"repo":"acme/widgets","item":"PR433","blocked_ts":"2026-08-01T00:00:00Z","kind":"",
-                           "reason":"threshold","stage":"implementor","pr_url":"https://github.com/acme/widgets/pull/433"}]'
-examined='[{"repo":"acme/widgets","item":"PR433","verdict":"unblocked","reason":"the Implementor bug is fixed now",
+                           "reason":"threshold","stage":"implementer","pr_url":"https://github.com/acme/widgets/pull/433"}]'
+examined='[{"repo":"acme/widgets","item":"PR433","verdict":"unblocked","reason":"the Implementer bug is fixed now",
             "complete_handoff":true}]'
 calls="$(run_case "complete_handoff: stage never reached Reviewer" "$pr_eligible_no_reviewer" "$examined")"
 
@@ -655,7 +655,7 @@ warn_evt="$(events_named "$calls" warning | head -n1)"
 assert_contains "no-reviewer: the warning names the pull request" \
   "https://github.com/acme/widgets/pull/433" "$(jq -r '.pr_url' <<<"$warn_evt")"
 assert_contains "no-reviewer: ...and says which stage the failure actually reached" \
-  "never reached the Reviewer stage (stage: implementor)" "$(jq -r '.detail' <<<"$warn_evt")"
+  "never reached the Reviewer stage (stage: implementer)" "$(jq -r '.detail' <<<"$warn_evt")"
 xmn_evt="$(events_named "$calls" enabler-examined | head -n1)"
 assert_eq "no-reviewer: enabler-examined records the refusal, not a flip word" \
   "refused-no-reviewer" "$(jq -r '.complete_handoff' <<<"$xmn_evt")"

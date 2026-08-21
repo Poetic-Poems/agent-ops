@@ -79,7 +79,7 @@ assert_eq "only open, ready, agent-branch, changes-requested PRs are candidates"
   "[57]" "$(pr_filter)"
 
 # Each exclusion, named, so a future edit that drops one fails loudly:
-# - #58 draft: a draft PR is the Implementor's own claim marker, not something a
+# - #58 draft: a draft PR is the Implementer's own claim marker, not something a
 #   human has finished reviewing.
 # - #59/#60/#61: nobody has asked for changes.
 # - #62: the Landing Gate is explicit that branches outside `branch_prefix` belong
@@ -122,16 +122,16 @@ blocking_of() {
 }
 # extract_answer_events REVIEWS ISSUE_COMMENTS REREQUESTS
 # The exact extraction scripts/gather-review-feedback.sh runs: a marked review
-# or marked general comment whose marker's `actor=` field is `implementor`, or
+# or marked general comment whose marker's `actor=` field is `implementer`, or
 # any review-requested timeline event. Other actors (`script`, `enabler`,
 # `reviewer`, `refiner`) and a legacy marker with no `actor=` field at all are
-# marked but must not close a round — only the Implementor's own reply does
+# marked but must not close a round — only the Implementer's own reply does
 # (agent-ops#292, decided in agent-ops#278).
 extract_answer_events() {
-  jq -c -n --arg marker "$marker" --arg implementor_actor "actor=implementor -->" \
+  jq -c -n --arg marker "$marker" --arg implementer_actor "actor=implementer -->" \
       --argjson reviews "$1" --argjson comments "$2" --argjson rr "$3" '
-    ([$reviews[]  | select((.body // "") | contains($marker) and contains($implementor_actor)) | .at]
-     + [$comments[] | select((.body // "") | contains($marker) and contains($implementor_actor)) | .at]
+    ([$reviews[]  | select((.body // "") | contains($marker) and contains($implementer_actor)) | .at]
+     + [$comments[] | select((.body // "") | contains($marker) and contains($implementer_actor)) | .at]
      + [$rr[] | .at]) | sort
   '
 }
@@ -149,14 +149,14 @@ blocking_at="$(jq -r '.at' <<<"$(blocking_of "$reviews")")"
 assert_eq "no answer event at all — unanswered, our turn" \
   "0" "$(answered_after '[]' "$blocking_at")"
 
-# The case that decides whether this feature loops forever: the Implementor
+# The case that decides whether this feature loops forever: the Implementer
 # has answered — a marked reply comment, timestamped by GitHub when it was
 # posted, not by any commit. The reply is a *general PR comment* (`gh pr
 # comment`), which lands in issue comments, not the reviews collection.
 # shellcheck disable=SC2016  # the backtick is literal Markdown, not command substitution
-implementor_reply="$(jq -c -n --arg at "2026-07-17T01:30:00Z" --arg body "$(printf '**Implementor** · autonomous pipeline · node `poetic-1`\n\nAddressed both points.\n\n%s cycle=X actor=implementor -->' "$marker")" \
+implementer_reply="$(jq -c -n --arg at "2026-07-17T01:30:00Z" --arg body "$(printf '**Implementer** · autonomous pipeline · node `poetic-1`\n\nAddressed both points.\n\n%s cycle=X actor=implementer -->' "$marker")" \
   '[{at: $at, body: $body}]')"
-answered_by_reply="$(extract_answer_events '[]' "$implementor_reply" '[]')"
+answered_by_reply="$(extract_answer_events '[]' "$implementer_reply" '[]')"
 assert_eq "a marked reply after the review — answered, the human's turn" \
   "1" "$(answered_after "$answered_by_reply" "$blocking_at")"
 
@@ -171,10 +171,10 @@ assert_eq "an unmarked comment after the review does not answer it" \
 # On PR #269, an `actor=script` comment (a stage giving up) and an
 # `actor=enabler` comment (a stall being diagnosed) each carried the marker
 # and, under the old "any marked reply" rule, closed the round — the work sat
-# stranded until a human was escalated (agent-ops#278). Only `actor=implementor`
+# stranded until a human was escalated (agent-ops#278). Only `actor=implementer`
 # may close a round.
 # shellcheck disable=SC2016  # the backtick is literal Markdown, not command substitution
-script_giveup="$(jq -c -n --arg at "2026-07-17T01:30:00Z" --arg body "$(printf '**Script** · autonomous pipeline · node `poetic-1`\n\nThe Implementor stage stopped on this pull request.\n\n%s cycle=X actor=script -->' "$marker")" \
+script_giveup="$(jq -c -n --arg at "2026-07-17T01:30:00Z" --arg body "$(printf '**Script** · autonomous pipeline · node `poetic-1`\n\nThe Implementer stage stopped on this pull request.\n\n%s cycle=X actor=script -->' "$marker")" \
   '[{at: $at, body: $body}]')"
 assert_eq "an actor=script comment (a stage giving up) does not answer the round" \
   "0" "$(answered_after "$(extract_answer_events '[]' "$script_giveup" '[]')" "$blocking_at")"
@@ -187,7 +187,7 @@ assert_eq "an actor=enabler comment (a stall being diagnosed) does not answer th
 
 # A legacy marker with no `actor=` field at all — from before the field
 # existed — must not be treated as an answer either; only a positive
-# `actor=implementor` match closes the round.
+# `actor=implementer` match closes the round.
 legacy_marker="$(jq -c -n --arg at "2026-07-17T01:30:00Z" --arg body "$(printf 'Addressed both points.\n\n%s cycle=X -->' "$marker")" \
   '[{at: $at, body: $body}]')"
 assert_eq "a legacy marked comment with no actor= field does not answer the round" \
@@ -228,7 +228,7 @@ assert_eq "...and the old answer event does not satisfy the new round" \
 #
 # Scoped to the blocking review's id, not the PR. An item recorded blocked
 # (requirement 34) stays blocked until something clears it, so a bare `pr-57`
-# that the Implementor once failed on would still be blocked when the human
+# that the Implementer once failed on would still be blocked when the human
 # posted fresh guidance — and their new review would land on a dead item. A
 # per-round ref means each round is a new item no old block covers, the same
 # reasoning as the review-dated `review-<date>-R-NN` refs.
@@ -249,7 +249,7 @@ assert_eq "a second round yields a different ref, so an old block cannot cover i
 # on it. In the wild here: `warwickallen` (the agent's own account, so
 # COMMENTED is all it can leave) wrote 6.5 KB of specific findings, and the
 # human's second account posted the CHANGES_REQUESTED whose body reads, in full,
-# "Refer to <link>". Gathering only the blocking review hands the Implementor
+# "Refer to <link>". Gathering only the blocking review hands the Implementer
 # the word "Refer to" and nothing to act on.
 round='[
   {"id": 1, "state": "COMMENTED", "at": "2026-07-17T01:22:24Z", "who": "warwickallen", "body": "the gitignore gap is the one I would block on"},
@@ -425,15 +425,15 @@ assert_eq "  ... the body carries the blocking review's own text" \
 assert_eq "  ... and the inline comment that itself landed on page two" \
   "1" "$(jq -r '.[0].body' <<<"$out" | grep -c 'this is the inline comment on the second page')"
 
-# Now the answer — the Implementor's own marked reply — is what lands alone on
+# Now the answer — the Implementer's own marked reply — is what lands alone on
 # page two of the issue-comments read. Before the fix this is exactly the
 # read whose --argjson downstream failed on a multi-page value; after it, the
 # round must read cleanly as answered and the PR must drop out of the
 # candidate list.
 marker="$PIPELINE_COMMENT_MARKER_PREFIX"
 # shellcheck disable=SC2016  # the backtick is literal Markdown, not command substitution
-implementor_reply="$(printf '**Implementor** · autonomous pipeline · node `poetic-1`\n\nAddressed the pagination bug.\n\n%s cycle=X actor=implementor -->' "$marker")"
-jq --arg body "$implementor_reply" \
+implementer_reply="$(printf '**Implementer** · autonomous pipeline · node `poetic-1`\n\nAddressed the pagination bug.\n\n%s cycle=X actor=implementer -->' "$marker")"
+jq --arg body "$implementer_reply" \
   '. + [{"created_at": "2026-08-01T00:10:00Z", "body": $body}]' \
   "$tmp_dir/issue-comments-unanswered.json" > "$tmp_dir/issue-comments.json"
 

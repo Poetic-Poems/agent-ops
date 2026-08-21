@@ -3,7 +3,7 @@
   "node": "poetic-1",
   "config": {
     "timeout_coordinator": 15,
-    "timeout_implementor": 90,
+    "timeout_implementer": 90,
     "timeout_reviewer": 30,
     "timeout_enabler": 30,
     "lock_stale_after": 4,
@@ -38,7 +38,7 @@
       "item": "TD-PPagop-26071801",
       "repo": "Poetic-Poems/agent-ops",
       "ts": "@ago:11d",
-      "stage": "implementor",
+      "stage": "implementer",
       "detail": "the eleventh-newest void, past the cap",
       "evidence": "hidden until the control is used"
     },
@@ -46,7 +46,7 @@
       "item": "TD-PPagop-26071802",
       "repo": "Poetic-Poems/agent-ops",
       "ts": "@ago:1h",
-      "stage": "implementor",
+      "stage": "implementer",
       "detail": "the newest void, and the one whose reason runs long enough to be clipped: the Enabler writes the whole story of why an item was retired into this field, which is why the cap is a clip that opens rather than a truncation that cannot",
       "evidence": "already done in #144"
     },
@@ -62,7 +62,7 @@
       "item": "TD-PPagop-26071804",
       "repo": "Poetic-Poems/poetic",
       "ts": "@ago:3h",
-      "stage": "implementor",
+      "stage": "implementer",
       "detail": "the flag it asks for was never shipped",
       "evidence": ""
     },
@@ -78,7 +78,7 @@
       "item": "TD-PPagop-26071806",
       "repo": "Poetic-Poems/agent-ops",
       "ts": "@ago:5h",
-      "stage": "implementor",
+      "stage": "implementer",
       "detail": "duplicate of an item already closed",
       "evidence": ""
     },
@@ -94,7 +94,7 @@
       "item": "TD-PPagop-26071808",
       "repo": "Poetic-Poems/poetic-fiddle",
       "ts": "@ago:7h",
-      "stage": "implementor",
+      "stage": "implementer",
       "detail": "fixed upstream before the cycle reached it",
       "evidence": ""
     },
@@ -110,7 +110,7 @@
       "item": "TD-PPagop-26071810",
       "repo": "Poetic-Poems/agent-ops",
       "ts": "@ago:9h",
-      "stage": "implementor",
+      "stage": "implementer",
       "detail": "the config key was renamed two releases ago",
       "evidence": ""
     },
@@ -126,7 +126,7 @@
       "item": "TD-PPagop-26071812",
       "repo": "Poetic-Poems/agent-ops",
       "ts": "@ago:12d",
-      "stage": "implementor",
+      "stage": "implementer",
       "detail": "the twelfth-newest void, past the cap",
       "evidence": "hidden until the control is used"
     }

@@ -42,7 +42,7 @@ prompts_dir="$tmp_dir/prompts"
 state_dir="$tmp_dir/state"
 mkdir -p "$prompts_dir" "$state_dir"
 printf 'base coordinator prompt\n' > "$prompts_dir/coordinator.md"
-printf 'base implementor prompt\n' > "$prompts_dir/implementor.md"
+printf 'base implementer prompt\n' > "$prompts_dir/implementer.md"
 
 failures=0
 assert_eq() {
@@ -71,7 +71,7 @@ assert_eq "no override: prompt text is byte-identical to the base file" \
 
 assert_eq "a stage missing from prompt_overrides behaves the same as {}" \
   "$(cat "$prompts_dir/coordinator.md")" \
-  "$(stage_prompt_text "$prompts_dir" "$state_dir" coordinator '{"implementor":{"extend":["x.md"]}}')"
+  "$(stage_prompt_text "$prompts_dir" "$state_dir" coordinator '{"implementer":{"extend":["x.md"]}}')"
 
 sha_none="$(stage_prompt_sha "$prompts_dir" "$state_dir" coordinator '{}')"
 assert_eq "no override: the fingerprint is just the base file's content hash, hashed — no path" \
@@ -191,7 +191,7 @@ assert_eq "a replace file with the shipped prompt's exact content computes the n
 
 # --- A different stage's override does not leak into this one, and an
 #     absolute extend path is used as-is. ---
-overrides_other_stage='{"implementor":{"extend":["one.md"]}}'
+overrides_other_stage='{"implementer":{"extend":["one.md"]}}'
 assert_eq "an override configured for a different stage has no effect here" \
   "$(cat "$prompts_dir/coordinator.md")" \
   "$(stage_prompt_text "$prompts_dir" "$state_dir" coordinator "$overrides_other_stage")"

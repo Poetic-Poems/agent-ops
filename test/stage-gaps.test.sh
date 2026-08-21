@@ -134,7 +134,7 @@ export PATH="$tmp_dir/bin:$PATH"
 capture="$tmp_dir/paced"
 mkdir -p "$capture"
 STUB_LINES="$tmp_dir/lines.paced" \
-  run_claude_stage implementor 120 test-model "a prompt" "$capture/implementor.out" "$capture"
+  run_claude_stage implementer 120 test-model "a prompt" "$capture/implementer.out" "$capture"
 rc=$?
 
 assert_eq "a measured stage still exits with the invocation's own status" 0 "$rc"
@@ -153,7 +153,7 @@ assert_eq "and the median is the short gaps, not the long one" \
 # The measurement must not have cost the stage anything: the envelope is still
 # where its readers look for it.
 assert_eq "the stage's envelope is unaffected by being measured" \
-  "ok" "$(jq -r '.result' "$capture/implementor.out" 2>/dev/null)"
+  "ok" "$(jq -r '.result' "$capture/implementer.out" 2>/dev/null)"
 
 # --- 3. The silence after the last event -------------------------------------------
 # The gap that matters most on a stage that was killed is the unterminated one

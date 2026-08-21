@@ -310,7 +310,7 @@ assert_contains "spend-by-day renders a bar per day" \
 assert_contains "spend-by-model renders a bar per model" \
   "opus-5" "$out"
 assert_contains "spend-by-actor renders a bar per actor" \
-  "implementor" "$out"
+  "implementer" "$out"
 # issue #245: a cycle that recovered from a lost claim carries a second badge
 # beside its outcome, distinct from the outcome badge itself.
 assert_contains "a recovered race is marked, beside its outcome badge" \

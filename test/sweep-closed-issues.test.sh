@@ -128,7 +128,7 @@ assert_not_contains "and no issue lookup is even made" "issues/" "$calls"
 
 # --- Case 3a: no marker, but the head branch is agent/<N> --------------------------
 # The branch is the Script's own name for an issue-sourced work order — the
-# anchor that survives an Implementor forgetting the marker, so the sweep and
+# anchor that survives an Implementer forgetting the marker, so the sweep and
 # the CI check cannot both be blinded by the same omission (issue #240).
 c="$tmp_dir/case3a"; mkdir -p "$c"
 jq -n '[{number: 600, url: "https://github.com/x/y/pull/600",

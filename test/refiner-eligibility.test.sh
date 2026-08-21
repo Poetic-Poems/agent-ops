@@ -61,7 +61,7 @@ repos='[
      {"source": "issues", "ref": "6", "title": "already refined"},
      {"source": "issues", "ref": "7", "title": "already blocked"},
      {"source": "issues", "ref": "8", "title": "voided"},
-     {"source": "issues", "ref": "9", "title": "claimed by an Implementor"}
+     {"source": "issues", "ref": "9", "title": "claimed by an Implementer"}
    ],
    "merge_conflicts": [
      {"source": "merge-conflicts", "ref": "pr-1-conflict-abc", "title": "exempt by default"}

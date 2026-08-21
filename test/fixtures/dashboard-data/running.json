@@ -2,7 +2,7 @@
   "generated_at": "@now",
   "node": "poetic-1",
   "config": {
-    "timeout_coordinator": 15, "timeout_implementor": 90,
+    "timeout_coordinator": 15, "timeout_implementer": 90,
     "timeout_reviewer": 30, "timeout_enabler": 30,
     "lock_stale_after": 4, "dashboard_refresh_seconds": 5,
     "image_behind_grace_hours": 2
@@ -28,7 +28,7 @@
       "repo": "Poetic-Poems/agent-ops", "item": null, "source": null, "title": null,
       "pr_url": null, "reason": null, "fail_detail": null, "warning": null,
       "outcome": "ended",
-      "stages": {"coordinator": null, "implementor": null, "reviewer": null},
+      "stages": {"coordinator": null, "implementer": null, "reviewer": null},
       "total_cost_usd": 0, "limit_hit": false
     },
     {
@@ -38,7 +38,7 @@
       "title": "a stage the log never recorded the end of",
       "pr_url": null, "reason": null, "fail_detail": null, "warning": null,
       "outcome": "selected",
-      "stages": {"coordinator": null, "implementor": null, "reviewer": null},
+      "stages": {"coordinator": null, "implementer": null, "reviewer": null},
       "total_cost_usd": 1.2, "limit_hit": false
     }
   ],
@@ -84,7 +84,7 @@
         "last_cycle": "20260731T230000Z-poetic-2-9977", "self": false, "stale": false,
         "live": {
           "cycle": "20260731T230000Z-poetic-2-9977", "since": "@ago:90m", "running": false,
-          "ended_at": null, "stage": "implementor", "stage_since": "@ago:85m",
+          "ended_at": null, "stage": "implementer", "stage_since": "@ago:85m",
           "repo": "Poetic-Poems/poetic", "item": "TD-PPpoetic-26073099", "source": "tech-debt",
           "title": "a stage the log never recorded the end of"
         },

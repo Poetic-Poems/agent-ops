@@ -3,7 +3,7 @@
 # lib/model-id.sh — provider-qualified model identifiers (D12 groundwork,
 # docs/IMPLEMENTATION-PIPELINE-SPEC.md requirement 1a).
 #
-# Every model key in config.json (coordinator_model, implementor_model_*,
+# Every model key in config.json (coordinator_model, implementer_model_*,
 # reviewer_model_*, enabler_model, project_review.defaults.model and its
 # per-repo overrides) accepts either a bare model
 # id (`claude-sonnet-5`) or one qualified with a provider prefix

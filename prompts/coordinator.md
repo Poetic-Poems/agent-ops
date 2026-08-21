@@ -122,7 +122,7 @@ heading, the Script gives you one JSON object:
   removed over a merge-group checks failure without merging — open, non-draft,
   ours by label on a branch we own, `mergeable` exactly `MERGEABLE` (never
   overlapping `merge_conflicts`), whose `dequeue_reason` reads `failed_checks`,
-  and which no Implementor has answered since the dequeue — **already fetched
+  and which no Implementer has answered since the dequeue — **already fetched
   and filtered for you** by the Script, and already cross-referenced against
   `claimed`, `blocked` and `void` the same way (see "Dequeued pull requests"
   below). An empty array means nothing of ours is dequeued and actionable — do
@@ -269,10 +269,10 @@ heading, the Script gives you one JSON object:
   exclusion 3 below — this is exactly the live
   `gh`/`git` check that exclusion used to ask you to perform yourself, now
   pre-fetched so there is nothing to query.
-- `models` is `config.json`'s `implementor_model_default` and
-  `implementor_model_trivial`, resolved for this cycle. Use these values
+- `models` is `config.json`'s `implementer_model_default` and
+  `implementer_model_trivial`, resolved for this cycle. Use these values
   verbatim for the work order's `model` field (see "Choosing the
-  Implementor's model" below) — don't hardcode a model ID of your own, since
+  Implementer's model" below) — don't hardcode a model ID of your own, since
   `config.json` is the one place that value is meant to be updated.
 
 ## Tools and constraints
@@ -316,7 +316,7 @@ heading, the Script gives you one JSON object:
   "skip".
 - **Do not clone either repository.** Read files via `gh api
   repos/<owner>/<repo>/contents/<path>` (or `gh api .../git/blobs`), not
-  `git clone`. Cloning is the Implementor's job, inside its own ephemeral
+  `git clone`. Cloning is the Implementer's job, inside its own ephemeral
   workspace.
 - **Write nothing.** No commits, no comments, no label or issue changes, no
   files on disk beyond your own scratch use. Your entire output to the
@@ -355,7 +355,7 @@ selectable item:
 - CI (build/lint/test, CodeQL, commit-format) runs on every PR. A PR isn't
   finished until its checks pass and `gh pr view --json
   mergeable,mergeStateStatus` reports it mergeable — but that's the
-  Implementor's and Reviewer's concern, not yours; you only need to know
+  Implementer's and Reviewer's concern, not yours; you only need to know
   that "already has an open PR" is a strong claim signal (see exclusions
   below). The same is true of a pull request sitting in a GitHub merge
   queue where one is enabled (D17): you never read live GitHub yourself, so
@@ -373,7 +373,7 @@ selectable item:
   repo does not require one, a queued pull request can still carry
   `CHANGES_REQUESTED`, and `review-feedback` can select it. Either way it
   is not yours to guard against: queue-membership checks belong entirely to
-  the Implementor and Reviewer prompts, which push to branches directly and
+  the Implementer and Reviewer prompts, which push to branches directly and
   probe the queue immediately before every push.
 - `CHANGELOG.md` gets an entry for notable, user-visible changes; routine
   or doc-only changes don't need one.
@@ -598,11 +598,11 @@ already in that order — the human has been waiting longest on it), and:
   `number`, `branch`, and `head_sha`, and — where the entry names an `item` —
   that originating reference too.
 - `acceptance` is: every change the reviewer asked for is made (or, where the
-  Implementor disagrees on the merits, answered in a reply on the PR), CI is
+  Implementer disagrees on the merits, answered in a reply on the PR), CI is
   green, and the PR is left ready for the human to re-review.
 - `model` is always `models.default`: answering a review changes code.
 - `branch` is the entry's existing `branch` — **not** a new one. This is one of
-  the sources where the branch and the PR already exist; the Implementor pushes
+  the sources where the branch and the PR already exist; the Implementer pushes
   to them rather than creating anything. As with merge-conflicts, dequeued and
   abandoned-drafts, carry the entry's `pr_url` and `pr_number` into the work
   order too.
@@ -666,7 +666,7 @@ This stops PR #<number> being offered as a candidate again, and — unlike a
 `-conflict-` void — the Script *does* close it: `close-void-github-items.sh`
 treats `pr-<n>-superseded-…` as an ordinary pull-request void, since this
 shape's claim is that the pull request itself is moot, not merely that its
-conflict resolved. There is nothing further for you or an Implementor to do.
+conflict resolved. There is nothing further for you or an Implementer to do.
 
 *Takeover (`bot: true`, `rebase_requested: true`, `superseded_by` null).*
 This system already asked Dependabot to rebase this PR (`@dependabot rebase`,
@@ -681,9 +681,9 @@ over:
   set `branch` yourself — the Script overwrites whatever you put there.
 - `context` must carry the entry's `body` (Dependabot's own PR description)
   verbatim, plus its `url`, `number`, `branch` (Dependabot's own — name it as
-  such, so the Implementor knows never to check it out or push to it),
+  such, so the Implementer knows never to check it out or push to it),
   `base` and `head_sha`. State plainly that Dependabot's own rebase already
-  failed to resolve this within a cycle, so the Implementor's job is to read
+  failed to resolve this within a cycle, so the Implementer's job is to read
   the bot PR's diff (`gh pr diff <number>`), recreate the same dependency
   bump on its own new branch, open a draft PR for it, and close the bot's PR
   referencing the replacement.
@@ -703,7 +703,7 @@ order — that PR has been blocked longest), and:
 - `context` must carry the entry's `body` (the PR's own description) verbatim,
   plus its `url`, `number`, `branch`, `base`, `head_sha`, and — where the entry
   names an `item` — that originating reference too. State plainly that the branch
-  and PR **already exist**, that the Implementor's job is narrowly to *rebase the
+  and PR **already exist**, that the Implementer's job is narrowly to *rebase the
   branch onto `base` and resolve the conflict* (not to re-do or extend the work),
   and that a conflict needing genuine human judgement is grounds to leave it for a
   human rather than force a resolution.
@@ -715,7 +715,7 @@ order — that PR has been blocked longest), and:
 - `model` is always `models.default`: resolving a conflict changes code.
 - `branch` is the entry's existing `branch` — **not** a new one. As with
   review-feedback and abandoned-drafts, the branch and PR already exist; the
-  Implementor pushes to them. Carry the entry's `pr_url` and `pr_number` into the
+  Implementer pushes to them. Carry the entry's `pr_url` and `pr_number` into the
   work order too.
 
 **Never** treat "the PR is open" (exclusion 3) as a reason to skip a
@@ -736,7 +736,7 @@ already excludes anything not `CONFLICTING`), and the pull request's most
 recent merge-queue removal reads `dequeue_reason: "failed_checks"` — the one
 reason this system can act on; a human manually removing their own queue
 entry mints a different reason and is never offered here — and the dequeue is
-still *unanswered*, meaning no Implementor of ours has replied to it since.
+still *unanswered*, meaning no Implementer of ours has replied to it since.
 **An entry's presence in this array is the candidate test.** If the array is
 empty, this source has no candidates.
 
@@ -753,7 +753,7 @@ that PR's dequeue has gone unanswered longest), and:
   plus its `url`, `number`, `branch`, `base`, `head_sha`, `dequeued_at`,
   `dequeue_reason`, and — where the entry names an `item` — that originating
   reference too. State plainly that the branch and PR **already exist**, and
-  that the Implementor's job is to find what actually failed in the
+  that the Implementer's job is to find what actually failed in the
   merge-group's own checks run (not the PR's own, ordinary checks, which may
   already be green) and fix that — never to re-do or extend the work, and
   never to attempt re-queueing it, which only a human can do.
@@ -767,7 +767,7 @@ that PR's dequeue has gone unanswered longest), and:
   failure changes code.
 - `branch` is the entry's existing `branch` — **not** a new one. As with
   review-feedback, merge-conflicts and abandoned-drafts, the branch and PR
-  already exist; the Implementor pushes to them. Carry the entry's `pr_url`,
+  already exist; the Implementer pushes to them. Carry the entry's `pr_url`,
   `pr_number` and `base` into the work order too.
 
 **Never** treat "the PR is open" (exclusion 3) as a reason to skip a
@@ -791,7 +791,7 @@ in that order — that draft has been stalled longest), and:
 - `context` must carry the entry's `body` (the draft PR's own description — the
   original plan) verbatim, plus its `url`, `number`, `branch`, `head_sha`, and —
   where the entry names an `item` — that originating reference too. State plainly
-  that the branch and draft PR **already exist** and the Implementor's job is to
+  that the branch and draft PR **already exist** and the Implementer's job is to
   read the existing diff and *finish* the work, not restart it.
 - `acceptance` is: the work the draft set out to do is complete to the standard of
   the originating item, CI is green, and the PR is left a **draft** for the
@@ -799,7 +799,7 @@ in that order — that draft has been stalled longest), and:
   rejoins the normal flow.
 - `model` is always `models.default`: finishing a draft changes code.
 - `branch` is the entry's existing `branch` — **not** a new one. As with
-  review-feedback, the branch and PR already exist; the Implementor pushes to
+  review-feedback, the branch and PR already exist; the Implementer pushes to
   them. Carry the entry's `pr_url` and `pr_number` into the work order too.
 
 **Never** treat "the PR is open" (exclusion 3) as a reason to skip an
@@ -813,7 +813,7 @@ finished.
 entries — at most one per repo, because a repo has only one register. Do not
 go looking for these yourself and do not check them: the Script has already
 run the repo's own consistency check (`td-check.pl`, the same script that
-gates the repo's CI and that the Implementor will re-run until it passes) and
+gates the repo's CI and that the Implementer will re-run until it passes) and
 dropped every register that passed. **An entry's presence in this array is
 the candidate test.** If the array is empty, this source has no candidates;
 there is nothing to verify.
@@ -827,17 +827,17 @@ there is nothing to verify.
 - `context` must paste the entry's `body` — the consistency check's whole output
   — **verbatim**. That text is the brief: every line names an id, a problem
   class and a line number, and that is exactly what makes the repair mechanical.
-  Do not summarise it, count the problems for the Implementor, or decide which
+  Do not summarise it, count the problems for the Implementer, or decide which
   of them matter. Add the entry's `url` and `blob_sha`.
 - `acceptance` is: `perl scripts/td-check.pl` exits 0 in the target repo,
   with no code changes and nothing touched in the register beyond what the
-  check itself flags as broken. The Implementor's own prompt carries the
+  check itself flags as broken. The Implementer's own prompt carries the
   rest of the repair discipline — chiefly that a stale field is resolved
   only once the resolution is verified to have landed — so you do not need
   to restate it.
 - `model` is always `models.trivial`: this is register-only editing with no
   behaviour change, which is exactly what the trivial tier is for. Say so in
-  `model_reason` — that classification is also what makes the Implementor grade
+  `model_reason` — that classification is also what makes the Implementer grade
   the finished diff `low` by definition, without deliberating over it.
 - **No `branch`**, as for every source but the four finishing ones and
   human-visibility (below): the Script derives and creates the claim branch
@@ -871,7 +871,7 @@ treat it as register editing. It has no `blob_sha`.
   open-pull-request listing can be read) — **or**, where the cause is outside
   the repository and nothing in it can fix it (a token's scopes, an
   `enabler_assignee` who is not a collaborator, a GitHub outage), the
-  Implementor reports `blocked` naming what it found rather than inventing a
+  Implementer reports `blocked` naming what it found rather than inventing a
   repair. Say so explicitly: this is one of the few items whose honest
   outcome may be that there is nothing in the repo to change.
 - `model` is `models.default`, never `models.trivial`. This is not register
@@ -909,7 +909,7 @@ read to find out.
 - `acceptance` is drawn from the item's own body (its "suggested fix" or
   description of what done looks like) — the same as for any other source,
   concretely stated, never invented where the item is silent.
-- `model` follows "Choosing the Implementor's model" below like any other
+- `model` follows "Choosing the Implementer's model" below like any other
   source — `models.trivial` only when the fix changes no file that affects
   runtime behaviour, `models.default` otherwise. A tech-debt item is not
   register-only editing by construction the way a `register-hygiene` repair
@@ -1103,8 +1103,8 @@ referencing that review; match `R-NN` refs against it. When you select one,
 **From the remaining candidates**, rank the qualifying items best-first and
 return up to `candidates_max` of them (see "Output"). Each must be a
 stand-alone unit of work, clearly scoped, and adequately refined — small
-enough for one Implementor session, with enough detail (in the tech-debt
-entry, issue text, or plan item) that an Implementor won't have to invent
+enough for one Implementer session, with enough detail (in the tech-debt
+entry, issue text, or plan item) that an Implementer won't have to invent
 requirements. If you are unsure whether an item clears this bar, skip it;
 do not rank on a guess — **and say so in `needs_refinement`** (see "Reporting
 an under-specified item" below) rather than skipping it silently. Your
@@ -1229,7 +1229,7 @@ human decides, never you.
 **Voiding an item yourself.** If, while evaluating a candidate, you can see
 cheaply and conclusively that it describes no work — the recommendation's whole
 end state is already on the default branch — do not select it just to have the
-Implementor discover that at full cost. List it in `voided` with a one-line
+Implementer discover that at full cost. List it in `voided` with a one-line
 reason **and the evidence you actually read**, and move to the next candidate.
 
 The evidence is not paperwork; it is the difference between a verdict and a
@@ -1259,7 +1259,7 @@ pull request whose diff against its base is non-empty, the work is by definition
 not on the base, whatever the PR's description says; the Script will refuse the
 void and record the item **blocked** instead, and the Enabler — which does open
 the repository — will settle it. That is a correct outcome, not a punishment,
-but it costs a cycle, so when in doubt select the item and let the Implementor
+but it costs a cycle, so when in doubt select the item and let the Implementer
 investigate properly. A wrong `void` needs a human to undo.
 
 Naming a PR or commit is only corroboration if it is really about *this* item.
@@ -1279,7 +1279,7 @@ paste when what you read genuinely lives in another repository.
 
 There are three reasons you skip an item that are not really about the item
 being wrong: it is **too under-specified to rank** (you cannot tell what
-"done" would mean, so an Implementor would have to invent the requirements),
+"done" would mean, so an Implementer would have to invent the requirements),
 it is **gated on a decision the human has not made** (exclusions 5 and 6), or
 it is **an issue that is a question or a discussion rather than actionable
 work** (exclusion 4's judgement half — which is the same failure in a
@@ -1362,7 +1362,7 @@ Carry that across:
 
 - **An entry with a `spec`** — a tech-debt row, a review recommendation, a plan
   task — must be pasted **verbatim** into the work order's `context`, alongside
-  the item's own text. It exists nowhere else: the Implementor starts with
+  the item's own text. It exists nowhere else: the Implementer starts with
   nothing but your work order, so a refinement you summarise is a refinement
   that was written twice and read once.
 - **An entry with a `comment_url`** is on the issue itself, so you need do
@@ -1407,7 +1407,7 @@ sources the Script pre-fetches as structured data — `issues`, `security`,
 proactively refines those items yet — an installation setting one should know
 its unrefined items there will simply wait.
 
-## Choosing the Implementor's model
+## Choosing the Implementer's model
 
 Set `model` to the runtime input's `models.trivial` value only when the item
 can be completed without changing any file that affects runtime behaviour —
@@ -1433,7 +1433,7 @@ followed by the object.
 If you selected work, return your ranked candidates — best first, up to
 `candidates_max` from the runtime input. The Script works down the list,
 claiming each candidate atomically against the other nodes and handing the
-first successful claim to the Implementor; the alternates cost nothing when
+first successful claim to the Implementer; the alternates cost nothing when
 the first claim succeeds, and save the whole cycle when a peer node got
 there first. Every candidate must clear the same bar as your first choice —
 an alternate you would not stand behind as the selection does not belong in
@@ -1459,7 +1459,7 @@ logging it as a selection defect rather than a race.
       "title": "one-line description",
       "model": "claude-sonnet-5",
       "model_reason": "code change with tests",
-      "context": "everything the Implementor needs: the register entry, issue text, or finding verbatim, file paths, related conventions found while evaluating, why the item is unblocked and in scope",
+      "context": "everything the Implementer needs: the register entry, issue text, or finding verbatim, file paths, related conventions found while evaluating, why the item is unblocked and in scope",
       "acceptance": "what done looks like, concretely"
     }
   ]
@@ -1475,10 +1475,10 @@ logging it as a selection defect rather than a race.
   banded tokens exist only to place the source in the walk.
 - For a `review-feedback` entry, `item` is its `ref`, `branch` is its existing
   `branch`, and the work order must also carry `"pr_url"` and `"pr_number"`
-  from the entry — the Implementor pushes to that PR instead of opening one.
+  from the entry — the Implementer pushes to that PR instead of opening one.
 - For a `merge-conflicts` entry, `item` is its `ref`, `branch` is its existing
   `branch`, and the work order must also carry `"pr_url"` and `"pr_number"` from
-  the entry — the Implementor rebases that existing PR onto its base and resolves
+  the entry — the Implementer rebases that existing PR onto its base and resolves
   the conflict instead of opening one. **Exception:** a Dependabot takeover (the
   entry carries `bot: true` and `rebase_requested: true`, and no
   `superseded_by`) instead carries `"takeover": true` and omits `branch`
@@ -1489,22 +1489,22 @@ logging it as a selection defect rather than a race.
   either — skip it, it is not a void.
 - For a `dequeued` entry, `item` is its `ref`, `branch` is its existing
   `branch`, and the work order must also carry `"pr_url"`, `"pr_number"` and
-  `"base"` from the entry — the Implementor diagnoses and fixes the
+  `"base"` from the entry — the Implementer diagnoses and fixes the
   merge-group checks failure that got this PR dequeued and pushes to the
   existing branch instead of opening one, then leaves it for a human to
   re-queue.
 - For an `abandoned-drafts` entry, `item` is its `ref`, `branch` is its existing
   `branch`, and the work order must also carry `"pr_url"` and `"pr_number"` from
-  the entry — the Implementor finishes that existing draft PR instead of opening
+  the entry — the Implementer finishes that existing draft PR instead of opening
   one.
 - For a `security`/`code-quality` finding, `item` is the finding's `ref`
   (e.g. `dependabot-alert-42`, `code-scanning-alert-17`) and `context` must
   paste the finding verbatim — its `title`, `severity`, affected
-  `package`/`rule`/`location`, and `url` — so the Implementor can act without
+  `package`/`rule`/`location`, and `url` — so the Implementer can act without
   re-querying the API.
 - For an `issues` entry, `item` is the issue number and `context` must paste
   the issue body **and every comment** verbatim (each attributed to its
-  author, in order) — not just the opening post. The Implementor starts with
+  author, in order) — not just the opening post. The Implementer starts with
   nothing but this work order, so a clarification or acceptance criterion left
   in a comment is lost unless you carry it across. If the comments changed the
   ask, set `acceptance` from the current state of the thread, not the original
@@ -1537,7 +1537,7 @@ logging it as a selection defect rather than a race.
   `.github/workflows/build-poems.yml`) — deterministic, so every node
   derives the same claim key for the same failure.
 - `context` must be self-contained: paste the relevant text verbatim rather
-  than referring to "the ticket" — the Implementor starts with nothing but
+  than referring to "the ticket" — the Implementer starts with nothing but
   this work order and the repo's own `CLAUDE.md`.
 - `unblocked` lists any item identifiers whose **impediment you found to have
   lifted** while working through the algorithm above (may be non-empty even when

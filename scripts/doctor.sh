@@ -426,7 +426,7 @@ done
 # human's own corroboration for closing a still-open, still-diff-carrying
 # draft pull request (requirement 34k), so a configured label carrying that
 # name would have a pipeline stage apply the corroboration itself — pr_label
-# alone is projected onto every draft the Implementor raises. Case-insensitive,
+# alone is projected onto every draft the Implementer raises. Case-insensitive,
 # as the guard reads labels.
 for key in pr_label enabler_escalation_label needs_refinement_label refined_label unvoid_label; do
   label_name="$(cfg ".$key // \"\"")"
@@ -493,8 +493,8 @@ while IFS=$'\t' read -r key value; do
   fi
 done < <(jq -r '
   [ {k: "coordinator_model",          v: .coordinator_model},
-    {k: "implementor_model_default",  v: .implementor_model_default},
-    {k: "implementor_model_trivial",  v: .implementor_model_trivial},
+    {k: "implementer_model_default",  v: .implementer_model_default},
+    {k: "implementer_model_trivial",  v: .implementer_model_trivial},
     {k: "reviewer_model_default",     v: .reviewer_model_default},
     {k: "reviewer_model_complex",     v: .reviewer_model_complex},
     {k: "approver_model_default",     v: .approver_model_default},
@@ -515,7 +515,7 @@ state_dir="$(cfg '.state_dir')"
 [[ "$state_dir" == "~"* ]] && state_dir="$HOME${state_dir:1}"
 
 missing_prompt=0
-for prompt in coordinator implementor reviewer approver enabler project-reviewer; do
+for prompt in coordinator implementer reviewer approver enabler project-reviewer; do
   if [[ ! -r "$SCRIPT_DIR/prompts/$prompt.md" ]]; then
     fail "prompts/$prompt.md is missing or unreadable"
     missing_prompt=1
@@ -571,7 +571,7 @@ fi
 if command -v shellcheck >/dev/null 2>&1; then
   ok "shellcheck — $(shellcheck --version 2>/dev/null | awk '/^version:/ {print $2}')"
 else
-  warn "shellcheck is not on PATH — an Implementor working on shell cannot lint before it pushes"
+  warn "shellcheck is not on PATH — an Implementer working on shell cannot lint before it pushes"
 fi
 
 # --- Directories ---
@@ -647,9 +647,9 @@ while IFS= read -r overridden; do
   [[ -n "$overridden" ]] || continue
   warn "$overridden is set, which pins that cap and turns off its self-tuning — remove it unless you mean to"
 done < <(jq -r '
-  [ "timeout_coordinator", "timeout_implementor", "timeout_reviewer",
+  [ "timeout_coordinator", "timeout_implementer", "timeout_reviewer",
     "timeout_approver", "timeout_enabler", "timeout_refiner",
-    "inactivity_coordinator", "inactivity_implementor", "inactivity_reviewer",
+    "inactivity_coordinator", "inactivity_implementer", "inactivity_reviewer",
     "inactivity_approver", "inactivity_enabler", "inactivity_refiner" ]
   | map(select(. as $k | ($ARGS.named.cfg[$k] | type) == "number"))[],
   ( ($ARGS.named.cfg.repos // [])[] as $r
@@ -1145,7 +1145,7 @@ elif [[ "${logged_in:-}" != "true" ]]; then
 else
   flush_dir="$(mktemp -d)"
   flush_stream="$flush_dir/probe.stream.jsonl"
-  claude -p --model "$(cfg '.implementor_model_trivial // "claude-haiku-4-5-20251001"')" \
+  claude -p --model "$(cfg '.implementer_model_trivial // "claude-haiku-4-5-20251001"')" \
     --dangerously-skip-permissions --output-format stream-json --verbose \
     <<<"Reply with the single word: ok" >"$flush_stream" 2>"$flush_dir/err" &
   flush_pid=$!

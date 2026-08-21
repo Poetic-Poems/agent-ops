@@ -10,8 +10,8 @@
     "state_dir",
     "workspace_root",
     "coordinator_model",
-    "implementor_model_default",
-    "implementor_model_trivial",
+    "implementer_model_default",
+    "implementer_model_trivial",
     "reviewer_model_default",
     "pr_label",
     "branch_prefix",
@@ -68,7 +68,7 @@
                 "type": "integer",
                 "minimum": 0
               },
-              "implementor": {
+              "implementer": {
                 "type": "integer",
                 "minimum": 0
               },
@@ -95,7 +95,7 @@
                 "type": "integer",
                 "minimum": 0
               },
-              "implementor": {
+              "implementer": {
                 "type": "integer",
                 "minimum": 0
               },
@@ -154,13 +154,13 @@
           "A repo entry that lists `implementation-plan` must also carry `implementation_plan_path` \u2014 the path, relative to that repo's root, of its plan document (poetic-fiddle's is `docs/IMPLEMENTATION-PLAN.md`); the Co-Ordinator reads whatever this says, so a repo with a differently named or located plan needs no prompt change, only its own path. The Script refuses to start a cycle if a repo lists the source without it \u2014 a repo that doesn't list `implementation-plan` needs no such key.",
           "A repo entry may also carry `nice` \u2014 an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo \u2014 the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range.",
           "A non-zero `nice` shows as a badge against that repo in the dashboard's work-sources panel, naming the value and the weighting it buys; a repo at `0` or with no key shows nothing there, so a fleet that has set none sees the panel unchanged.",
-          "A repo entry may also carry `stage_timeouts` and `stage_inactivity` — the per-repo form of the `timeout_<actor>` and `inactivity_<actor>` keys below, each an object in minutes keyed `coordinator`, `implementor`, `reviewer`, `approver` and `enabler`, any subset of them. The Refiner spans repos, so it has no per-repo form and takes `timeout_refiner` / `inactivity_refiner` only. A repo's entry is the most specific level of the precedence — this entry, then the fleet-wide key, then the derived value — so set one only to insist on a number for one repo; omit them and both the backstop and the watchdog tune themselves. `scripts/doctor.sh`'s pinned-cap warning covers every level, naming the repo for a per-repo override.",
+          "A repo entry may also carry `stage_timeouts` and `stage_inactivity` — the per-repo form of the `timeout_<actor>` and `inactivity_<actor>` keys below, each an object in minutes keyed `coordinator`, `implementer`, `reviewer`, `approver` and `enabler`, any subset of them. The Refiner spans repos, so it has no per-repo form and takes `timeout_refiner` / `inactivity_refiner` only. A repo's entry is the most specific level of the precedence — this entry, then the fleet-wide key, then the derived value — so set one only to insist on a number for one repo; omit them and both the backstop and the watchdog tune themselves. `scripts/doctor.sh`'s pinned-cap warning covers every level, naming the repo for a per-repo override.",
           "A repo entry may also carry `merge_autonomy` — the per-repo override of the top-level key of the same name, on the same precedence: this entry wins when present, the top-level key otherwise. Omit it and the repository follows the fleet-wide default.",
           "A repo entry may also carry `merge_budget_per_day` — the per-repo override of the top-level key of the same name, on the same precedence. Omit it and the repository follows the fleet-wide default.",
           "A repo entry may also carry `merge_autonomy_routine_sources` — the per-repo override of the top-level key of the same name, on the same precedence. Omit it and the repository follows the fleet-wide default.",
           "Every optional key goes on the repo's own entry, beside `slug` and `sources`:",
           {
-            "code": "\"repos\": [\n  {\n    \"slug\": \"Poetic-Poems/poetic\",\n    \"sources\": [\"security\", \"issues:urgent\", \"tech-debt\", \"issues:low\"]\n  },\n  {\n    \"slug\": \"Poetic-Poems/poetic-fiddle\",\n    \"sources\": [\"security\", \"issues:urgent\", \"implementation-plan\", \"issues:low\"],\n    \"implementation_plan_path\": \"docs/IMPLEMENTATION-PLAN.md\",\n    \"nice\": -5,\n    \"stage_timeouts\": { \"implementor\": 90 },\n    \"stage_inactivity\": { \"implementor\": 20 }\n  }\n]",
+            "code": "\"repos\": [\n  {\n    \"slug\": \"Poetic-Poems/poetic\",\n    \"sources\": [\"security\", \"issues:urgent\", \"tech-debt\", \"issues:low\"]\n  },\n  {\n    \"slug\": \"Poetic-Poems/poetic-fiddle\",\n    \"sources\": [\"security\", \"issues:urgent\", \"implementation-plan\", \"issues:low\"],\n    \"implementation_plan_path\": \"docs/IMPLEMENTATION-PLAN.md\",\n    \"nice\": -5,\n    \"stage_timeouts\": { \"implementer\": 90 },\n    \"stage_inactivity\": { \"implementer\": 20 }\n  }\n]",
             "lang": "json"
           },
           "Each of them is set by editing `config.json`, like every other key here — see [Configuration](#configuration) for how that edit reaches a fleet already running."
@@ -170,13 +170,13 @@
           "The `issues:<band>` tokens are the one source that appears more than once \u2014 the same `issues` source at four ranks (requirement 15e). A repo that lists none of them has the issues source off; one that lists a subset sees only issues in those bands.",
           "A repo entry may also carry `implementation_plan_path` \u2014 the path, relative to that repo's root, of its plan document; required whenever `sources` lists `implementation-plan` (requirement 3k), since that source has no path of its own outside this config. poetic-fiddle's is `docs/IMPLEMENTATION-PLAN.md`.",
           "A repo entry may also carry `nice` \u2014 an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo \u2014 the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range.",
-          "A repo entry may also carry `stage_timeouts` and `stage_inactivity` \u2014 per-actor overrides in minutes, keyed `coordinator`, `implementor`, `reviewer`, `approver` and `enabler`, for that repository alone. They are the most specific level of requirement 4f's precedence, ahead of the plain `timeout_<actor>` / `inactivity_<actor>` key and ahead of the derivation; the Refiner, spanning repositories, has no per-repository form. Configuration is read, never written: requirement 4f's derivation never writes back to `config.json`.",
+          "A repo entry may also carry `stage_timeouts` and `stage_inactivity` \u2014 per-actor overrides in minutes, keyed `coordinator`, `implementer`, `reviewer`, `approver` and `enabler`, for that repository alone. They are the most specific level of requirement 4f's precedence, ahead of the plain `timeout_<actor>` / `inactivity_<actor>` key and ahead of the derivation; the Refiner, spanning repositories, has no per-repository form. Configuration is read, never written: requirement 4f's derivation never writes back to `config.json`.",
           "A repo entry may also carry `merge_autonomy` \u2014 the per-repository override of the top-level key of the same name (D18, requirement 2.3b), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
           "A repo entry may also carry `merge_budget_per_day` \u2014 the per-repository override of the top-level key of the same name (D18, requirement 2.3c), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
           "A repo entry may also carry `merge_autonomy_routine_sources` \u2014 the per-repository override of the top-level key of the same name (D18 WI-7, requirement 8d), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
           "Every optional key sits on the repository's own entry, beside `slug` and `sources`:",
           {
-            "code": "\"repos\": [\n  {\n    \"slug\": \"Poetic-Poems/poetic\",\n    \"sources\": [\"security\", \"issues:urgent\", \"tech-debt\", \"issues:low\"]\n  },\n  {\n    \"slug\": \"Poetic-Poems/poetic-fiddle\",\n    \"sources\": [\"security\", \"issues:urgent\", \"implementation-plan\", \"issues:low\"],\n    \"implementation_plan_path\": \"docs/IMPLEMENTATION-PLAN.md\",\n    \"nice\": -5,\n    \"stage_timeouts\": { \"implementor\": 90 },\n    \"stage_inactivity\": { \"implementor\": 20 }\n  }\n]",
+            "code": "\"repos\": [\n  {\n    \"slug\": \"Poetic-Poems/poetic\",\n    \"sources\": [\"security\", \"issues:urgent\", \"tech-debt\", \"issues:low\"]\n  },\n  {\n    \"slug\": \"Poetic-Poems/poetic-fiddle\",\n    \"sources\": [\"security\", \"issues:urgent\", \"implementation-plan\", \"issues:low\"],\n    \"implementation_plan_path\": \"docs/IMPLEMENTATION-PLAN.md\",\n    \"nice\": -5,\n    \"stage_timeouts\": { \"implementer\": 90 },\n    \"stage_inactivity\": { \"implementer\": 20 }\n  }\n]",
             "lang": "json"
           }
         ],
@@ -275,18 +275,18 @@
         "value": "`claude-haiku-4-5-20251001`"
       }
     },
-    "implementor_model_default": {
+    "implementer_model_default": {
       "$ref": "#/$defs/modelId",
-      "description": "The Implementor's model for any change that affects runtime behaviour.",
+      "description": "The Implementer's model for any change that affects runtime behaviour.",
       "x-docs": {
         "readme": "For code changes.",
         "spec": "Any change that affects runtime behaviour.",
         "value": "`claude-sonnet-5`"
       }
     },
-    "implementor_model_trivial": {
+    "implementer_model_trivial": {
       "$ref": "#/$defs/modelId",
-      "description": "The Implementor's model for docs-, comment- or register-only items.",
+      "description": "The Implementer's model for docs-, comment- or register-only items.",
       "x-docs": {
         "readme": "For docs, comments, register entries only.",
         "spec": "Docs-, comment-, or register-only items. The Co-Ordinator classifies each item and records its reasoning in the work order.",
@@ -297,7 +297,7 @@
       "$ref": "#/$defs/modelId",
       "description": "The Reviewer's model for work graded `complexity:low` or `complexity:medium`.",
       "x-docs": {
-        "readme": "Quality gate before human review, for work the Implementor graded `complexity:low` or `complexity:medium`.",
+        "readme": "Quality gate before human review, for work the Implementer graded `complexity:low` or `complexity:medium`.",
         "spec": "Reviews of `low`- and `medium`-complexity work (requirement 8a).",
         "value": "`claude-sonnet-5`"
       }
@@ -307,7 +307,7 @@
       "description": "The Reviewer's model for work graded `complexity:high`. Empty falls back to `reviewer_model_default`, which switches the escalation off.",
       "default": "",
       "x-docs": {
-        "readme": "The same gate for work graded `complexity:high` \u2014 the Implementor grades each PR ex post and labels it; the higher of that grade and the PR's existing label picks the tier. Leave it empty to review everything on `reviewer_model_default`.",
+        "readme": "The same gate for work graded `complexity:high` \u2014 the Implementer grades each PR ex post and labels it; the higher of that grade and the PR's existing label picks the tier. Leave it empty to review everything on `reviewer_model_default`.",
         "spec": "Reviews of `high`-complexity work (requirement 8a). Empty falls back to `reviewer_model_default`, which switches the escalation off.",
         "value": "`claude-opus-5`"
       }
@@ -435,10 +435,10 @@
     },
     "refiner_model": {
       "$ref": "#/$defs/modelIdOrEmpty",
-      "description": "The Refiner's model. It runs proactively over every unrefined candidate rather than rarely like the Enabler, so frequency and tier pull against each other here in a way they do not for any other stage; what it emits is the specification an Implementor then works from, not a triage verdict. Empty disables the stage.",
+      "description": "The Refiner's model. It runs proactively over every unrefined candidate rather than rarely like the Enabler, so frequency and tier pull against each other here in a way they do not for any other stage; what it emits is the specification an Implementer then works from, not a triage verdict. Empty disables the stage.",
       "default": "",
       "x-docs": {
-        "readme": "The Refiner: writes a specification for an item nobody has scoped yet and marks it `refined`, before it would otherwise have to be blocked and wait for the Enabler — see [Refined items and the Refiner](#refined-items-and-the-refiner). Engaged every cycle there is unrefined work to do, so how often it runs and how good it has to be pull against each other: what it writes is the brief an Implementor works from. Leave it empty to switch the stage off.",
+        "readme": "The Refiner: writes a specification for an item nobody has scoped yet and marks it `refined`, before it would otherwise have to be blocked and wait for the Enabler — see [Refined items and the Refiner](#refined-items-and-the-refiner). Engaged every cycle there is unrefined work to do, so how often it runs and how good it has to be pull against each other: what it writes is the brief an Implementer works from. Leave it empty to switch the stage off.",
         "spec": "The Refiner (requirement 39). Unlike the Enabler, eligibility carries no threshold, so it runs as often as there is unrefined work, and its frequency has to be weighed against the fact that what it produces is a specification rather than a ranking. Empty disables the stage.",
         "value": "`claude-sonnet-5`"
       }
@@ -529,7 +529,7 @@
         "coordinator": {
           "$ref": "#/$defs/promptOverride"
         },
-        "implementor": {
+        "implementer": {
           "$ref": "#/$defs/promptOverride"
         },
         "reviewer": {
@@ -544,7 +544,7 @@
       },
       "x-docs": {
         "readme": "Add house rules to a stage's operating prompt, or replace it outright, without forking `prompts/`. The Approver's prompt takes no override — it is the trust gate the merge-autonomy ladder rests on. See [Prompt overrides](#prompt-overrides).",
-        "spec": "Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementor`/`reviewer`/`enabler`/`refiner`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. `approver` is deliberately absent from the enumeration: the Approver's adversarial prompt is the gate the D18 trust ladder rests on, and no installation may extend or replace it (requirement 4a, #469)."
+        "spec": "Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementer`/`reviewer`/`enabler`/`refiner`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. `approver` is deliberately absent from the enumeration: the Approver's adversarial prompt is the gate the D18 trust ladder rests on, and no installation may extend or replace it (requirement 4a, #469)."
       }
     },
     "pr_label": {
@@ -588,7 +588,7 @@
       }
     },
     "max_chained_cycles": {
-      "description": "Finish-then-continue: the most cycles that may run back-to-back in one process lineage — the cron-fired original plus however many it chains immediately afterward, each one launched only when the cycle before it did real work (claimed an item and ran the Implementor). The remaining-sources gate counts enabled source categories, not items, and back-pressure never empties it, so in practice a productive cycle chains to this cap regardless of remaining work. Never chains past a stand-down, a disabled pipeline, or a cycle that selected nothing. 1 disables chaining outright — the fleet is exactly the one-item-per-cron-firing shape every release before this key carried.",
+      "description": "Finish-then-continue: the most cycles that may run back-to-back in one process lineage — the cron-fired original plus however many it chains immediately afterward, each one launched only when the cycle before it did real work (claimed an item and ran the Implementer). The remaining-sources gate counts enabled source categories, not items, and back-pressure never empties it, so in practice a productive cycle chains to this cap regardless of remaining work. Never chains past a stand-down, a disabled pipeline, or a cycle that selected nothing. 1 disables chaining outright — the fleet is exactly the one-item-per-cron-firing shape every release before this key carried.",
       "type": "integer",
       "minimum": 1,
       "default": 3,
@@ -604,7 +604,7 @@
       "default": 6,
       "x-docs": {
         "readme": "Hours before a dead node's claim-registry entry is swept (`lib/claim.sh gc`); far beyond one full cycle.",
-        "spec": "Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry \u2014 far beyond a whole cycle (120 min Implementor + 60 min Reviewer), so only a dead node's claim ever expires. The branch itself is deleted only if untouched and PR-less."
+        "spec": "Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry \u2014 far beyond a whole cycle (120 min Implementer + 60 min Reviewer), so only a dead node's claim ever expires. The branch itself is deleted only if untouched and PR-less."
       }
     },
     "abandoned_draft_after_hours": {
@@ -616,7 +616,7 @@
         "readme": "Hours a draft PR this system raised may sit untouched before it counts as abandoned and finishing it becomes selectable work (the `abandoned-drafts` source). Beyond one full cycle, so a draft still being worked never qualifies. Also the staleness threshold `scripts/sweep-orphan-branches.sh` uses.",
         "spec": [
           "How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day.",
-          "Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case Implementor-plus-Reviewer cycle to 180 minutes and would otherwise have left this threshold no margin at all."
+          "Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case Implementer-plus-Reviewer cycle to 180 minutes and would otherwise have left this threshold no margin at all."
         ],
         "value": {
           "readme": "`4`",
@@ -735,12 +735,12 @@
         }
       }
     },
-    "timeout_implementor": {
+    "timeout_implementer": {
       "$ref": "#/$defs/timeoutMinutes",
-      "description": "Override for the Implementor's wall-clock backstop, in minutes. Omit it: the backstop is derived per (actor, repository, model) and starts at a shipped prior.",
+      "description": "Override for the Implementer's wall-clock backstop, in minutes. Omit it: the backstop is derived per (actor, repository, model) and starts at a shipped prior.",
       "x-docs": {
         "readme": "Minutes, and an override. As above.",
-        "spec": "As `timeout_coordinator`, for the Implementor. The interim raise to 120 this key carried (#203, #209) has gone with the fixed cap it belonged to: the shipped prior is 150 and the derivation moves from there.",
+        "spec": "As `timeout_coordinator`, for the Implementer. The interim raise to 120 this key carried (#203, #209) has gone with the fixed cap it belonged to: the shipped prior is 150 and the derivation moves from there.",
         "value": {
           "readme": "*(unset)*",
           "spec": "*(unset)*"
@@ -807,9 +807,9 @@
         }
       }
     },
-    "inactivity_implementor": {
+    "inactivity_implementer": {
       "$ref": "#/$defs/inactivityMinutes",
-      "description": "Override for the Implementor's liveness-watchdog threshold, in minutes. Omit it: the threshold is derived from the gaps this stage really leaves.",
+      "description": "Override for the Implementer's liveness-watchdog threshold, in minutes. Omit it: the threshold is derived from the gaps this stage really leaves.",
       "x-docs": {
         "readme": "Minutes of total silence before the stage is treated as wedged, and an override. Omit it \u2014 the threshold is derived; `0` disables the watchdog.",
         "spec": "An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog for that actor and leaves the backstop as the only cap.",

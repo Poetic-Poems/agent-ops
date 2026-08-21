@@ -2,7 +2,7 @@
   "generated_at": "@now",
   "node": "poetic-1",
   "config": {
-    "timeout_coordinator": 15, "timeout_implementor": 90,
+    "timeout_coordinator": 15, "timeout_implementer": 90,
     "timeout_reviewer": 30, "timeout_enabler": 30,
     "lock_stale_after": 4, "dashboard_refresh_seconds": 5
   },
@@ -23,7 +23,7 @@
   "blocked": [
     {
       "item": "TD-PPagop-26071900", "repo": "Poetic-Poems/agent-ops", "ts": "@ago:1d",
-      "stage": "implementor", "detail": "tests keep failing against the fixture",
+      "stage": "implementer", "detail": "tests keep failing against the fixture",
       "kind": null, "escalation_url": null, "enabler_outcome": null, "enabler_ts": null
     },
     {
@@ -42,7 +42,7 @@
   "void": [
     {
       "item": "TD-PPagop-26071800", "repo": "Poetic-Poems/agent-ops", "ts": "@ago:5d",
-      "stage": "implementor", "detail": "the file it names no longer exists",
+      "stage": "implementer", "detail": "the file it names no longer exists",
       "evidence": "removed in #144"
     }
   ],

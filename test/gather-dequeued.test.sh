@@ -26,7 +26,7 @@
 # `isInMergeQueue` back. So a fixed pull request keeps passing both gates
 # above, and the head-SHA-scoped ref means each fix push mints a *fresh*
 # candidate no block, void or claim covers. The answered clause — no marked
-# `actor=implementor` reply newer than `dequeued_at` — is what stops that loop,
+# `actor=implementer` reply newer than `dequeued_at` — is what stops that loop,
 # and its assertions below are the ones to be most careful with: they are the
 # difference between finishing a dequeue and re-opening it for ever.
 #
@@ -223,7 +223,7 @@ pr_entry() {  # <number> <headRefName> <mergeable> <isDraft> [updatedAt]
 }
 
 # The marker `handoff_answer_events` keys the answered clause on. Only
-# `actor=implementor` closes a round; the others are here to prove they do not
+# `actor=implementer` closes a round; the others are here to prove they do not
 # (the PR #269 / agent-ops#278 rule).
 marker() {  # <actor>
   printf '<!-- agent-ops:pipeline-comment cycle=20260814T010000Z-n-1 actor=%s -->' "$1"
@@ -237,10 +237,10 @@ marker() {  # <actor>
 #   100 CONFLICTING, would otherwise match failed_checks                -> not a candidate (merge-conflicts' own)
 # …and the answered clause, whose whole point is that the five gates above
 # all still pass on every one of these:
-#   101 implementor's marked reply AFTER dequeued_at                   -> not a candidate (answered)
+#   101 implementer's marked reply AFTER dequeued_at                   -> not a candidate (answered)
 #   102 the same reply BEFORE dequeued_at (a second dequeue since)     -> candidate
-#   103 marked reviewer reply + an unmarked comment, both after        -> candidate (only implementor answers)
-#   104 implementor's marked reply in a REVIEW body, after            -> not a candidate (both collections read)
+#   103 marked reviewer reply + an unmarked comment, both after        -> candidate (only implementer answers)
+#   104 implementer's marked reply in a REVIEW body, after            -> not a candidate (both collections read)
 #   105 comments read fails (absent from the fixture)                  -> not a candidate (fail closed)
 #
 # 96/102/103 are the three candidates, and their `dequeued_at` order is
@@ -271,16 +271,16 @@ jq -nc '{
   "105": {queued: false, dequeued_at: "2026-08-14T01:00:00Z", dequeue_reason: "failed_checks"}
 }' > "$tmp_dir/probes.json"
 
-# Reviews: only #104's carries the implementor's marked reply; everything else
+# Reviews: only #104's carries the implementer's marked reply; everything else
 # has an empty (but readable) review list.
-jq -nc --arg impl "$(marker implementor)" '{
+jq -nc --arg impl "$(marker implementer)" '{
   "96": [], "97": [], "98": [], "99": [], "100": [], "101": [], "102": [], "103": [], "105": [],
   "104": [{submitted_at: "2026-08-14T02:00:00Z", body: ("Fixed the merge-group run.\n\n" + $impl)},
           {submitted_at: null, body: "a pending review, never submitted, never an answer"}]
 }' > "$tmp_dir/reviews.json"
 
 # Comments. #105 is deliberately absent: that read fails.
-jq -nc --arg impl "$(marker implementor)" --arg rev "$(marker reviewer)" '{
+jq -nc --arg impl "$(marker implementer)" --arg rev "$(marker reviewer)" '{
   "96": [], "97": [], "98": [], "99": [], "100": [], "104": [],
   "101": [{created_at: "2026-08-14T02:00:00Z", body: ("Found and fixed it.\n\n" + $impl)}],
   "102": [{created_at: "2026-08-12T02:00:00Z", body: ("Found and fixed it.\n\n" + $impl)}],
@@ -313,7 +313,7 @@ assert_eq "a CONFLICTING PR is never a candidate even with a matching probe — 
 # only a human's re-queue flips `isInMergeQueue` back — so without this clause
 # #101 and #104 would be re-offered on every cycle, at a fresh head-SHA ref no
 # block covers, for as long as the human took to press "Merge when ready".
-assert_eq "a dequeue the Implementor has already answered is not a candidate" \
+assert_eq "a dequeue the Implementer has already answered is not a candidate" \
   "0" "$(jq '[.[] | select(.number == 101)] | length' <<<"$out")"
 assert_eq "the same reply BEFORE dequeued_at does not answer it — a second dequeue re-opens candidacy" \
   "1" "$(jq '[.[] | select(.number == 102)] | length' <<<"$out")"

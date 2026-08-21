@@ -19,7 +19,7 @@
 # (`docs/IMPLEMENTATION-PIPELINE-SPEC.md`, requirement 16) — the review folder
 # itself is a point-in-time record and is never edited to say a recommendation
 # is done (requirement 25), so a merged PR naming the ref, put there by the
-# Implementor that closed it out (the Implementor prompt's `source: project-review`
+# Implementer that closed it out (the Implementer prompt's `source: project-review`
 # section), is the only fact anywhere that can answer "is this one finished?".
 # This reads that same fact, so a block can clear on it without paying for a
 # Co-Ordinator to notice.

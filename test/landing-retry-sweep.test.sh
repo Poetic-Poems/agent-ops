@@ -298,7 +298,7 @@ assert_eq "a candidate that does not arm (#12) never grows the tally" \
 
 # --- The bound is cycle-scoped, not pass-scoped (PR #557 review round 2) ----
 # `run_landing_stage`, called later the same cycle for whatever repository
-# this round's own Implementor worked in, may have already armed candidates
+# this round's own Implementer worked in, may have already armed candidates
 # for "acme/widgets" before this sweep even runs (a chained cycle, or simply
 # this repository's own gate 0 running ahead of the sweep in source order).
 # Pre-seeding `landing_armed_by_repo[acme/widgets]` the way that earlier arm

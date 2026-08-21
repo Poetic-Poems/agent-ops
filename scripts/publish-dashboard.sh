@@ -386,7 +386,7 @@ def build_stage($entry; $cap):
 def cycle_obj($cid; $ev; $manifest_idx; $cap):
   ($ev | sort_by(.ts)) as $e
   | ($e | map(.event)) as $types
-  | (["coordinator","implementor","reviewer"] | map(build_stage($manifest_idx[$cid + "|" + .]; $cap))) as $built
+  | (["coordinator","implementer","reviewer"] | map(build_stage($manifest_idx[$cid + "|" + .]; $cap))) as $built
   | if any($built[]; . != null and (.ok | not)) then empty
     else
       ($built | map(.obj)) as $stageobjs
@@ -434,7 +434,7 @@ def cycle_obj($cid; $ev; $manifest_idx; $cap):
             elif ($types | any(. == "selection"))      then "selected"
             else "ended" end
           ),
-          stages: { coordinator: $stageobjs[0], implementor: $stageobjs[1], reviewer: $stageobjs[2] },
+          stages: { coordinator: $stageobjs[0], implementer: $stageobjs[1], reviewer: $stageobjs[2] },
           total_cost_usd: ([ $stageobjs[] | .cost_usd // 0 ] | add),
           limit_hit: ([ $stageobjs[] | .limit_hit // false ] | any),
           events: $e
@@ -560,7 +560,7 @@ cycle_n=0
 while IFS=$'\t' read -r cid cdir; do
   [[ -n "$cid" ]] || continue
   order_items+=("\"$cid\"")
-  for stage in coordinator implementor reviewer; do
+  for stage in coordinator implementer reviewer; do
     outfile="${cdir:-$cycles_dir}/$cid/$stage.out"
     [[ -f "$outfile" ]] || continue
     ovar="o${cycle_n}_$stage"
@@ -677,7 +677,7 @@ if [[ "$limit_active" != "true" ]]; then
   lt="$(jq -r '
     [ .[] | select(any(.stages[]?; .ran)) ] | (.[0] // {})
     | if .limit_hit
-      then (.stages.implementor.limit_text // .stages.reviewer.limit_text // .stages.coordinator.limit_text // "usage limit reported in transcript")
+      then (.stages.implementer.limit_text // .stages.reviewer.limit_text // .stages.coordinator.limit_text // "usage limit reported in transcript")
       else "" end' "$cycles_file" 2>/dev/null)"
   if [[ -n "$lt" ]]; then limit_active=true; limit_note="$lt"; fi
 fi
@@ -937,7 +937,7 @@ counts_json="$(jq -n --slurpfile cyc "$cycles_file" --slurpfile costs_in "$costs
 # `stage-end` — which is the same invocation id, so the two never disagree —
 # so the card populates from history already in the log rather than only from
 # cycles run after this ships. `selection` carries a `model` of its own; it is
-# the *Implementor* model chosen for the item, and reading it here would
+# the *Implementer* model chosen for the item, and reading it here would
 # attribute a Co-Ordinator verdict to whichever model was about to do the
 # work, so this reads the cycle map and never that field.
 #
@@ -2044,7 +2044,7 @@ lock_stale_derived_hours="$(jq -nr --argjson sec \
      "$(jq -r '.lock_stale_after // 0' "$CONFIG_FILE" 2>/dev/null || printf 0)")" \
   '(($sec / 3600) * 100 | round) / 100' 2>/dev/null || printf 4)"
 config_json="$(jq -c --argjson t "$stage_budget_json" --argjson lock "$lock_stale_derived_hours" \
-  '{repos, coordinator_model, implementor_model_default, implementor_model_trivial,
+  '{repos, coordinator_model, implementer_model_default, implementer_model_trivial,
     reviewer_model_default, reviewer_model_complex, pr_label, branch_prefix,
     max_open_agent_prs, limit_cooldown_default, dashboard_refresh_seconds,
     image_behind_grace_hours}

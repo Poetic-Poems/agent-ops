@@ -129,7 +129,7 @@ RUN case "$TARGETARCH" in \
     && echo "${supercronic_sha1sum}  /usr/local/bin/supercronic" | sha1sum -c - \
     && chmod +x /usr/local/bin/supercronic
 
-# shellcheck: an Implementor working inside this image needs to run
+# shellcheck: an Implementer working inside this image needs to run
 # scripts/lint-shell.sh — the gate its own pull request is judged by — before
 # pushing, and cannot without a shellcheck on PATH. Release asset name and
 # checksum key off TARGETARCH, the same pattern as supercronic above.

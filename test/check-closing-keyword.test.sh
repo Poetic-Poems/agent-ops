@@ -106,7 +106,7 @@ assert_pass "an empty body has no marker to fail" ""
 # --- The branch anchor: `agent/<N>` demands presence, not just consistency ---------
 # The Script mints `agent/<N>` (a bare issue number) for issue-sourced work
 # orders and for nothing else, so the branch — which no model writes — demands
-# both the marker and the keyword be *present*. Without this, an Implementor
+# both the marker and the keyword be *present*. Without this, an Implementer
 # that forgot the marker passed trivially: the same silent prompt-skip the
 # check exists to prevent.
 assert_pass "an agent/<N> branch with marker and keyword passes" \

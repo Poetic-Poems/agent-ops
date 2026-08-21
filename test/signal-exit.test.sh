@@ -172,7 +172,7 @@ assert_contains "and the lifted stage runner advertises its pid" 'stage_pid="$pi
 mid_stage_mainline='
 touch "$CAPTURE/ready.pre"
 ( while [[ ! -f "$CAPTURE/claude.pid" ]]; do sleep 0.1; done; touch "$CAPTURE/ready" ) &
-run_claude_stage implementor 60 test-model "a prompt" "$CAPTURE/out" "$CAPTURE" || true
+run_claude_stage implementer 60 test-model "a prompt" "$CAPTURE/out" "$CAPTURE" || true
 record "stage-returned"
 '
 
@@ -184,7 +184,7 @@ calls="$(cat "$capture/calls.log" 2>/dev/null)"
 
 assert_eq "agent-cycle: a TERM mid-stage exits 143 through the EXIT trap" "143" "$rc"
 assert_contains "agent-cycle: and the death is recorded against the stage in flight" \
-  "attempt-failed stage=implementor detail=implementor terminated by SIGTERM" "$calls"
+  "attempt-failed stage=implementer detail=implementer terminated by SIGTERM" "$calls"
 assert_contains "agent-cycle: the claim is released no-pr when no PR is known" \
   "release-claim no-pr" "$calls"
 assert_contains "agent-cycle: cycle-end still carries the truthful code" \

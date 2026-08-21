@@ -30,7 +30,7 @@
 # outage and the 2026-08-12 void-extract one both took this shape). It shares
 # the same properties above, grouped by `exit_code` instead of `detail` since
 # a pre-selection death carries no detail string, and a completed cycle
-# reaching a selection-path stage (`coordinator`, `implementor`, `reviewer`)
+# reaching a selection-path stage (`coordinator`, `implementer`, `reviewer`)
 # resets it exactly as a success does — reaching selection proves the systemic
 # block is not reproducing right now. A cleanup-path stage (`enabler`,
 # `refiner`) never resets: those start after a pre-selection death has already
@@ -133,7 +133,7 @@ assert_eq "with the newest detail carried, at count two" \
   '["coordinator timed out",2]' \
   "$(crash_loop_verdict 2 <<<"$mixed" | jq -c '[.detail, .count]')"
 
-noise="$(fail_at 2026-08-01T10:05:00Z n1 'implementor exited 1' | jq -c '.stage = "implementor"'
+noise="$(fail_at 2026-08-01T10:05:00Z n1 'implementer exited 1' | jq -c '.stage = "implementer"'
   jq -nc '{ts: "2026-08-01T10:06:00Z", node: "n2", event: "claim-lost", rc: 3}'
   cat <<<"$four_fails")"
 assert_eq "item-stage failures and unrelated events never contribute or reset" \
@@ -217,7 +217,7 @@ with_still_running="$(cat <<<"$four_deaths"
 assert_eq "a cycle with no cycle-end is dropped, not counted either way" \
   "4" "$(crash_loop_preselection_verdict 4 <<<"$with_still_running" | jq -r '.count')"
 
-preselection_noise="$(fail_at 2026-08-01T10:05:00Z n1 'implementor exited 1' | jq -c '.stage = "implementor"'
+preselection_noise="$(fail_at 2026-08-01T10:05:00Z n1 'implementer exited 1' | jq -c '.stage = "implementer"'
   jq -nc '{ts: "2026-08-01T10:06:00Z", node: "n2", event: "claim-lost", rc: 3}'
   cat <<<"$four_deaths")"
 assert_eq "item-stage failures and unrelated events never contribute or reset" \

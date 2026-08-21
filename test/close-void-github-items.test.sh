@@ -143,12 +143,12 @@ assert_contains "the close comment names the obsolete label" \
 
 # --- Case 3b: every corroborated writer's void is actioned -------------------------
 # Requirement 34d's guard (issue #243) corroborates `item-void` from all three
-# writers before it is ever logged, so the Enabler's and the Implementor's
+# writers before it is ever logged, so the Enabler's and the Implementer's
 # voids are eligible here exactly as the Co-Ordinator's are — the gate is on
 # corroboration, not on which stage wrote it.
 c="$tmp_dir/case3b"; mkdir -p "$c"
-out="$(run "$c" '[{"item":"198","detail":"implementor says already done","stage":"implementor"}]')"
-assert_eq "an implementor void closes the issue" \
+out="$(run "$c" '[{"item":"198","detail":"implementer says already done","stage":"implementer"}]')"
+assert_eq "an implementer void closes the issue" \
   '{"action":"closed","item":"198","kind":"issue","closed_by":"sweep"}' \
   "$(jq -c . <<<"$out")"
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # lib/preflight.sh — the done-check the Script runs on the item a cycle just
-# claimed, before it pays for an Implementor engagement (issue #245).
+# claimed, before it pays for an Implementer engagement (issue #245).
 #
 # `lib/work-gone.sh` already answers "is this item's work gone?" for the
 # blocked set, from digests the cycle gathers anyway — an issue closed, a pull
@@ -10,7 +10,7 @@
 # TD-PPpfid-26072801 (re-selected and re-implemented 21 hours after it
 # merged) shows it is exactly as live for a fresh claim as for a stalled one:
 # the register said `resolved` the whole time, and nothing asked it until the
-# Implementor stage did — a full engagement to learn what one `gh` read
+# Implementer stage did — a full engagement to learn what one `gh` read
 # already sitting in the cycle's own gathered state would have said.
 #
 # `preflight_done_reason` is a one-item call into that same machinery, not a
@@ -59,7 +59,7 @@
 # depends on `work_gone_clearances` (lib/work-gone.sh), sourced first.
 
 # The four sources whose branch (and PR) already existed before this cycle's
-# claim — the Implementor prompt's own "the branch and the PR exist" sources.
+# claim — the Implementer prompt's own "the branch and the PR exist" sources.
 # Space-padded so a plain substring test (below) cannot mistake, say,
 # "merge-conflicts" for a source named "conflicts".
 PREFLIGHT_EXISTING_BRANCH_SOURCES=" review-feedback merge-conflicts dequeued abandoned-drafts "

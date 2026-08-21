@@ -45,7 +45,7 @@
 # keying, same tolerance of a torn line.
 
 # read_pr_url_breadcrumb CLONE_DIR
-# Print the PR URL the Implementor left under .git/ the moment it opened its
+# Print the PR URL the Implementer left under .git/ the moment it opened its
 # draft PR, or nothing if it never got that far.
 #
 # The fallback for when a stage exits without ever producing a final message
@@ -53,7 +53,7 @@
 # and flagged instead of going silent.
 #
 # Not the last fallback, and not a reliable one: writing this file is a step in
-# the Implementor's own procedure, so a stage that skipped its final message
+# the Implementer's own procedure, so a stage that skipped its final message
 # may equally have skipped this — and on 2026-08-03 three did. What requirement
 # 9 falls back to when this comes up empty is `pr_url_for_branch`
 # (lib/handoff.sh), which asks GitHub about the branch the *Script* pushed and
@@ -550,7 +550,7 @@ open_blocked_items() {
 # must never be selected again.
 #
 # A refinement is also dropped once a *fresher* needs-refinement block stands
-# against the same item — the Implementor's escape hatch (requirement 9f) or a
+# against the same item — the Implementer's escape hatch (requirement 9f) or a
 # further Refiner decline (requirement 39d) saying the specification it names
 # was tried and found wanting. Comparing timestamps rather than existence alone
 # is what lets the item be refined again afterwards: a later `item-refined`
@@ -790,7 +790,7 @@ enabler_eligible_items() {
 
 # reviewer_complexity SUMMARY_GRADE TRIVIAL [LABEL_GRADE...]
 # Print the effective complexity the Reviewer stage runs at (requirement 8a):
-# the highest valid grade (`low` < `medium` < `high`) among the Implementor
+# the highest valid grade (`low` < `medium` < `high`) among the Implementer
 # summary's `complexity` and the PR's `complexity:*` label values — taking the
 # maximum is what makes the label's raise-never-lower rule (requirement 26a)
 # hold at the decision point too. When no argument carries a valid grade at

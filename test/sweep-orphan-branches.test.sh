@@ -3,7 +3,7 @@
 # test/sweep-orphan-branches.test.sh — an orphaned claim branch is put back in
 # front of the pipeline (requirement 17b, acceptance check 7b).
 #
-# What this guards: an Implementor that pushes commits and dies before its
+# What this guards: an Implementer that pushes commits and dies before its
 # draft PR exists leaves a moved ref no machinery can see — the gc keeps it
 # (pushed work is never deleted), the abandoned-drafts gatherer lists PRs, not
 # branches, and every later claim 422s against it. The item is wedged forever

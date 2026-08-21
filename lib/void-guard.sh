@@ -58,7 +58,7 @@
 # repair: "be certain" is already in prompts/coordinator.md, twice, and the
 # model that voided #92 was certain. Nor is it enough to point at which stage
 # can see the most — the Co-Ordinator reads a JSON digest of candidates and
-# nothing else, but the Implementor (requirement 27b) and the Enabler
+# nothing else, but the Implementer (requirement 27b) and the Enabler
 # (requirement 35) read the tree, the issue and the PR directly, and issue #243
 # is what a Co-Ordinator void looked like anyway: it voided #224 citing "PR
 # #232 implemented all five rewrites" — a real, mergeable PR, just one that
@@ -69,7 +69,7 @@
 #
 # So the guard is mechanical, and it runs on the Script's side of the boundary
 # — for every stage that can write `item-void` (the Co-Ordinator, the Enabler,
-# the Implementor), through the one shared entry point, `void_guard_reason`:
+# the Implementer), through the one shared entry point, `void_guard_reason`:
 #
 #   1. **Evidence must exist.** Requirement 34c has always said an `item-void`
 #      carries `reason` *and* `evidence` — "the SHAs, paths, or commands proving
@@ -590,7 +590,7 @@ void_draft_obsolete_flag_reason() {
 # A finishing-source item exists only to finish one specific, named pull
 # request, so the void is decided against that PR's own live state, fetched
 # here (never from a gathered candidate list, so this works identically for a
-# stage that has no such list — the Enabler, the Implementor). A pull request
+# stage that has no such list — the Enabler, the Implementer). A pull request
 # the API will not answer for is refused whatever the shape: an unreadable
 # citation corroborates nothing.
 #
@@ -615,7 +615,7 @@ void_draft_obsolete_flag_reason() {
 #     fetch that read `state`, before the `/files` call below is ever made
 #     (TD-PPagop-26081308). That label is the deliberate, corroborable "no
 #     longer wanted" signal a diff can never be: no pipeline stage may ever
-#     apply it (lib/labels.sh's catalogue comment, prompts/implementor.md's
+#     apply it (lib/labels.sh's catalogue comment, prompts/implementer.md's
 #     prohibition) — a stage that could would be corroborating its own
 #     judgement. **A machine-checkable alternative to the label** (issue
 #     #413, WI-10, design doc §5.5) corroborates too, but only at
@@ -770,7 +770,7 @@ void_finishing_pr_reason() {
   # `-review-` shape outright — read live off `pr_json`, the fetch already
   # made above, before the `/files` call below ever runs, so a labelled draft
   # never pays for a diff nobody needs read. No pipeline stage may ever apply
-  # this label (lib/labels.sh, prompts/implementor.md), so its presence here
+  # this label (lib/labels.sh, prompts/implementer.md), so its presence here
   # is always a human's own judgement, never the guard corroborating itself.
   if [[ "$shape" == "abandoned" || "$shape" == "review" ]]; then
     if jq -e '[(.labels // [])[].name // "" | ascii_downcase] | index("obsolete") != null' \
@@ -801,7 +801,7 @@ void_finishing_pr_reason() {
 # Test one cited PR against the item it is supposed to corroborate: fetched
 # live from the API — never from a gathered candidate list, so this works
 # identically for a stage that has no such list (the Enabler, the
-# Implementor) — and checked for ITEM in its body or its head branch, the same
+# Implementer) — and checked for ITEM in its body or its head branch, the same
 # two places `scripts/gather-*.sh` reads to associate a PR with an item in the
 # first place. Prints nothing and returns 0 on a match; prints a one-line
 # reason and returns 1 otherwise, including when the PR cannot be read at all
@@ -831,7 +831,7 @@ void_finishing_pr_reason() {
 # register id the branch or body named, or `null`
 # (`scripts/gather-abandoned-drafts.sh`, `gather-review-feedback.sh`,
 # `gather-merge-conflicts.sh`, `gather-dequeued.sh`). So the Co-Ordinator's extra candidate-diff test
-# is silent on this shape exactly as the Enabler's and the Implementor's
+# is silent on this shape exactly as the Enabler's and the Implementer's
 # `repos: []` calls are, which is why the fetch here has to be the thing that
 # looks.
 #
@@ -940,7 +940,7 @@ void_commit_matches_item() {
 # about *this* item.
 #
 # This asks exactly that, and it is what makes the guard usable by the
-# Enabler and the Implementor as well as the Co-Ordinator: unlike
+# Enabler and the Implementer as well as the Co-Ordinator: unlike
 # `void_candidate_prs`, it needs no cycle-gathered candidate list — every
 # citation is resolved live against the API — so a stage that never gathered
 # candidates in the first place gets the same check.
@@ -1003,7 +1003,7 @@ void_citation_reason() {
 # stages that write `item-void` (requirement 34d, extended by issue #243 from
 # "the Co-Ordinator" to "every stage"): the Co-Ordinator passes REPOS_JSON, its
 # gathered candidates, so `void_candidate_prs` below can also weigh in;
-# the Enabler and the Implementor have no such list and call this with `[]`,
+# the Enabler and the Implementer have no such list and call this with `[]`,
 # which simply skips that one extra check — the checks below need nothing
 # from it, since every one resolves live.
 #

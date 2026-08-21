@@ -54,7 +54,7 @@
 # And only a void whose writer's verdict passes requirement 34d's
 # corroboration guard — every stage, now that issue #243 made
 # `void_guard_reason` the one path all three (`coordinator`, `enabler`,
-# `implementor`) write `item-void` through. Before #243 the Implementor's and
+# `implementer`) write `item-void` through. Before #243 the Implementer's and
 # the Enabler's voids were the model's own unexamined claim — issue #240
 # scoped this action to a void that "survives corroboration (WI-7)", and
 # until #243 corroborated those two writers, acting on them would have let an
@@ -150,7 +150,7 @@ while IFS=$'\t' read -r item detail evidence stage; do
   # skipped before the action cap: an ineligible item must not eat a slot, nor
   # count as deferred work that a later pass could do.
   case "$stage" in
-    coordinator|enabler|implementor) ;;
+    coordinator|enabler|implementer) ;;
     *) continue ;;
   esac
 

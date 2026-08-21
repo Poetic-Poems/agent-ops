@@ -17,6 +17,30 @@
 # two-identity audit trail §5.3 exists for survives the write that actually
 # lands a pull request, not only the review that approved it.
 #
+# ## The no-queue fallback does not always arm anything (agent-ops#553)
+#
+# `gh pr merge --auto --squash` reads as "arm auto-merge and let GitHub fire
+# it later", but that is only true from `mergeStateStatus: BLOCKED` (a
+# required check still pending) — the one state where it genuinely calls
+# `enablePullRequestAutoMerge` and returns with the pull request still open.
+# From `CLEAN` and `UNSTABLE` (every required check already passed, whether
+# or not a non-required one is still running) `gh` instead detects the pull
+# request is already mergeable and issues `mergePullRequest` directly, so
+# the call merges it immediately rather than arming anything — confirmed
+# live against `gh 2.96.0` (2026-08-18, agent-ops#553) with `GH_DEBUG=api`
+# showing no `enablePullRequestAutoMerge` mutation sent from either state.
+# Since `run_landing_stage` only ever reaches `landing_arm` once
+# `review_gate_verdict` has already read `clean`, the immediate-merge path
+# is the one this pipeline actually takes whenever the no-queue fallback
+# fires at all. This is a property of the **`gh` CLI version**, not of the
+# GitHub API — the `Pull request is in clean status` refusal older reports
+# describe is a `enablePullRequestAutoMerge` error current `gh` simply never
+# sends from an already-mergeable pull request — and `deploy/docker/
+# Dockerfile` installs `gh` unpinned from GitHub's own apt repository (lines
+# 85–93), so a later image rebuild can move this behaviour without any
+# change in this file. `UNSTABLE`'s immediate merge carries its own
+# behavioural caveat, filed separately as TD-PPagop-26082101.
+#
 # `agent-cycle.sh`'s own arming block (`run_landing_stage`, immediately
 # after `run_approver_stage`) is what re-reads every other gate fresh at the
 # moment of decision and calls these four functions; nothing in this file
@@ -357,11 +381,15 @@ landing_approver_standing_review() {
 # base branch has an active merge queue (`enqueuePullRequest`), or
 # `gh pr merge --auto --squash` where it does not. Prints the method used —
 # `enqueued` or `auto-merge` — the word `agent-cycle.sh` logs verbatim as
-# `landing-armed`'s own `method` field; prints nothing and returns non-zero
-# on any failure, including one this function cannot tell apart from a
-# partial write (GitHub's own response is what decides that, per call,
-# below), so a caller must never read a non-zero exit as anything but "no
-# write happened it can vouch for".
+# `landing-armed`'s own `method` field; `auto-merge` names the *call* this
+# function made, not a guarantee that call armed anything — see the "no-queue
+# fallback" section in the file header above: from `CLEAN`/`UNSTABLE` it
+# merges the pull request immediately, and only from `BLOCKED` does it arm
+# auto-merge as the name suggests. Prints nothing and returns non-zero on any
+# failure, including one this function cannot tell apart from a partial write
+# (GitHub's own response is what decides that, per call, below), so a caller
+# must never read a non-zero exit as anything but "no write happened it can
+# vouch for".
 #
 # The non-zero exit status itself distinguishes *which* step failed
 # (agent-ops#532) — `_landing_arm_failure_reason` below turns it into text a

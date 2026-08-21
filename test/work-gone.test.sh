@@ -9,7 +9,7 @@
 #
 #   - **Too eager** clears a block out from under work that is still real. The
 #     item goes back in the candidate pool, a Co-Ordinator selects it, an
-#     Implementor runs, and it re-blocks — a full cycle spent to arrive where it
+#     Implementer runs, and it re-blocks — a full cycle spent to arrive where it
 #     started, hourly, for as long as the mistake stands. So every "unknown"
 #     shape is asserted to clear nothing: a repo missing from the digest, a repo
 #     whose digest says `ok: false`, an id no register file claims, an id two of

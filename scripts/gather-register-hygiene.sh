@@ -62,12 +62,12 @@
 #      tokens for `diff`.
 #   2. Determinism, which matters more here than for any other source: the
 #      candidate rule *is* `td-check.pl`'s exit status, and that same script is
-#      what the consumer repos' CI runs and what the Implementor re-runs until
+#      what the consumer repos' CI runs and what the Implementer re-runs until
 #      it passes. One definition, three consumers (requirement 34a). A model
 #      re-deriving the rule would be a fourth opinion about what a consistent
 #      register looks like, and the one that disagreed would be the one nobody
 #      noticed.
-#   3. The checker's output is the Implementor's brief and must reach it
+#   3. The checker's output is the Implementer's brief and must reach it
 #      verbatim — every problem line names an item file and what disagrees,
 #      which is the whole of what makes the repair mechanical.
 #
@@ -118,7 +118,7 @@
 #
 # `register-hygiene-<12 hex>`, not a bare `register-hygiene`. An item recorded
 # blocked (requirement 34) stays blocked until something clears it, so a bare
-# ref that an Implementor once failed to repair would still be blocked after
+# ref that an Implementer once failed to repair would still be blocked after
 # the register had moved on — and the new state, which might be trivially
 # repairable, would never be looked at again. Scoping the ref to the register's
 # content means each distinct *state* is its own item that no older block
@@ -239,7 +239,7 @@ if [[ -z "$root" || ! -d "$root/tech-debt" ]]; then
 fi
 
 # Checked from the extraction root, so the output names `tech-debt/…` — the
-# paths a human or an Implementor would type.
+# paths a human or an Implementer would type.
 out="$(cd "$root" && perl "$SCRIPT_DIR/td-check.pl" tech-debt 2>&1)"
 check_rc=$?
 ref="register-hygiene-$(printf '%s:%s' "$dir_sha" "$policy_sha" | sha256sum | cut -c1-12)"
@@ -258,7 +258,7 @@ fi
 
 # The problem lines, split out of the report so the Co-Ordinator can price the
 # item without parsing prose, while `body` keeps the report whole for the
-# Implementor. The labels are td-check.pl's own; keep the two in step.
+# Implementer. The labels are td-check.pl's own; keep the two in step.
 # check_rc == 0 (a consistent register, per td-check.pl) leaves this empty —
 # the ordinary answer this source expects to give almost every cycle — and
 # nothing here forces `out` non-empty for it either, unlike the guard above.
