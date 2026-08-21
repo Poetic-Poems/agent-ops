@@ -28,8 +28,10 @@
 #     each of the ways an input can fail to reconstruct is unverifiable,
 #     never clean; a pull request merged by anyone other than the passed-in
 #     Approver login is not audited at all; and a pull request already
-#     carrying an audit event in the log is skipped before any further `gh`
-#     call. The stub also refuses any parameterised call that does not say
+#     carrying an audit event in the log is skipped before any `gh` call is
+#     spent on it at all, verified against the stub's own call log rather
+#     than only the detector's output. The stub also refuses any
+#     parameterised call that does not say
 #     `--method GET`, because the real `gh api` would POST it — see its own
 #     note below.
 #
@@ -128,6 +130,7 @@ cat > "$tmp_dir/bin/gh" <<'STUB'
 set -uo pipefail
 args=("$@")
 f="$STUB_DIR"
+printf '%s\n' "${args[*]}" >> "$f/calls.log"
 
 jqfilter=""
 prev=""
@@ -331,14 +334,44 @@ assert_contains "a landing whose source is outside the repository's routine list
 assert_contains "  ... naming the source and the list it is not in" \
   "$line7" "source issues is not in"
 
-# --- Idempotency: an already-audited pull request costs no further gh call --
+# --- A merge commit whose file list reaches the truncation cap: isolated
+# under its own STUB_DIR/ESCAPE_AUDIT_MERGE_FILES_LIMIT so the cap can be
+# small enough to fixture without disturbing the battery above, which relies
+# on the real (300-file) default never tripping on its own small fixtures --
+STUB_DIR_TRUNC="$tmp_dir/fixtures-trunc"
+mkdir -p "$STUB_DIR_TRUNC"
+cat > "$STUB_DIR_TRUNC/issues.json" <<EOF
+[{"number": 1, "pull_request": {"merged_at": "2026-08-20T10:00:00Z"}}]
+EOF
+pr_json 1 "$LOGIN" > "$STUB_DIR_TRUNC/pr-1.json"
+cat > "$STUB_DIR_TRUNC/commit-sha1.json" <<'EOF'
+{"files": [{"filename": "scripts/foo.sh"}, {"filename": "scripts/bar.sh"}]}
+EOF
+cat > "$STUB_DIR_TRUNC/events-1.json" <<'EOF'
+[{"event": "labeled", "label": {"name": "complexity:low"}, "created_at": "2026-08-20T09:00:00Z"}]
+EOF
+log_file_trunc="$tmp_dir/log-trunc.jsonl"
+echo "{\"event\":\"landing-armed\",\"repo\":\"$SLUG\",\"pr_url\":\"https://github.com/$SLUG/pull/1\",\"source\":\"tech-debt\",\"complexity\":\"low\"}" \
+  > "$log_file_trunc"
+
+out_trunc="$(STUB_DIR="$STUB_DIR_TRUNC" ESCAPE_AUDIT_MERGE_FILES_LIMIT=2 \
+  "$DETECTOR" "$SLUG" "$LOGIN" "$log_file_trunc" --config "$config_file")"
+assert_contains "a merge commit whose file list reaches the truncation cap is unverifiable, never clean" \
+  "$out_trunc" '"outcome":"unverifiable"'
+assert_contains "  ... naming the cap as the reason" \
+  "$out_trunc" "capped at the 2-file limit"
+
+# --- Idempotency: an already-audited pull request costs no gh call at all --
 log_file2="$tmp_dir/log2.jsonl"
 cat "$log_file" > "$log_file2"
 echo "{\"event\":\"landing-audit\",\"repo\":\"$SLUG\",\"pr_url\":\"https://github.com/$SLUG/pull/2\",\"outcome\":\"clean\"}" >> "$log_file2"
 
+: > "$STUB_DIR/calls.log"
 out2="$("$DETECTOR" "$SLUG" "$LOGIN" "$log_file2" --config "$config_file")"
 assert_eq "an already-audited pull request is skipped on a later run" \
   "" "$(grep '"number":2,' <<<"$out2")"
+assert_eq "  ... and costs no gh call at all, not merely no output — never even the pulls/N read" \
+  "" "$(grep -xF "api repos/$SLUG/pulls/2" "$STUB_DIR/calls.log" 2>/dev/null)"
 assert_contains "  ... while an unaudited one in the same run still gets checked" \
   "$out2" '"number":1,'
 

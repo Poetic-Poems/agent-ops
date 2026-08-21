@@ -80,12 +80,31 @@
 # Each merged, Approver-identified pull request is audited at most once,
 # ever: LOG_FILE (the fleet's own union log, or stdin/"-") is scanned first
 # for every prior `classifier-escape`/`landing-audit` event's own `pr_url`,
-# and every one already seen is skipped as soon as its own `pr_url` is known
-# — after the one `repos/SLUG/pulls/N` read that establishes it, which is
-# also the read that says whether the Approver identity merged it at all,
-# and before the merge-commit and label-timeline reads. A pull request's own
-# merged history is a fixed, past fact, so nothing about re-checking it later
-# could change the answer.
+# and every candidate number is checked against that set *before* the
+# `repos/SLUG/pulls/N` read that would otherwise be the only way to learn
+# its own `pr_url` — GitHub's `html_url` for a pull request is always
+# `https://github.com/SLUG/pull/N`, so an already-audited candidate is
+# recognised, and skipped, at zero further `gh` cost: not the one read that
+# establishes merged-by plus the merge-commit and label-timeline reads that
+# would have followed it, but none of the three at all. A pull request's own
+# merged history is a fixed, past fact, so nothing about re-checking it
+# later could change the answer.
+#
+# That only bounds the cost of a pull request this script has *already*
+# audited, which by construction was merged by the Approver identity. It
+# does nothing for one merged by anyone else: nothing short of the
+# `repos/SLUG/pulls/N` read itself can say who merged a closed,
+# `pr_label`-carrying issue, and a non-Approver merge is never logged (see
+# "What counts..." above), so that read is paid again every cycle, forever,
+# for as long as a repository keeps producing them — see the comment beside
+# this script's own invocation in `agent-cycle.sh` for the accepted
+# reasoning. `_escape_audit_candidates` lists oldest-merged first for this
+# reason: whatever a single `timeout 120` budget reaches, it reaches
+# starting from the oldest still-unaudited history rather than an
+# ever-shifting newest slice, so a repository's Approver-merged backlog
+# — the audit's actual subject — converges within a bounded number of
+# cycles even while the non-Approver majority keeps costing one read apiece
+# on every one of them.
 #
 # ## Output
 #
@@ -123,6 +142,11 @@
 #                                retry around each `gh` read (tests set 0),
 #                                matching mine-merge-history.sh's own
 #                                MINE_RETRY_DELAY_SECONDS.
+#   ESCAPE_AUDIT_MERGE_FILES_LIMIT  the merge-commit file-list cap past which
+#                                a response is treated as possibly truncated
+#                                rather than complete (default 300, GitHub's
+#                                own cap on `repos/SLUG/commits/SHA`'s
+#                                `files` array).
 
 set -uo pipefail
 
@@ -227,15 +251,28 @@ _escape_audit_routine_sources() {
 
 # --- The merge commit's own file list ---------------------------------------
 # repos/SLUG/commits/SHA, never repos/SLUG/pulls/N/files (landing_protected_
-# paths_hit's own read) — a genuinely different GitHub resource. GitHub omits
-# `files` from this response outright once a commit's diff is too large to
-# enumerate rather than paginating it, so a response with no `files` array at
-# all is exactly as untrustworthy as a truncated listing is elsewhere in this
-# codebase: a refusal to answer "no protected path", never a pass.
+# paths_hit's own read) — a genuinely different GitHub resource. Two distinct
+# ways this response can be hiding files past whatever it returned, both
+# treated as a refusal to answer "no protected path", never a pass, the same
+# "a page cap is a truncation signal, not a floor to trust" reasoning
+# `LANDING_PR_FILES_LIMIT`/`github_pr_list_truncated` (lib/landing.sh,
+# lib/github-limit.sh, sourced above) already apply to the sibling read:
+#
+#   - GitHub omits `files` from this response outright once a commit's diff
+#     is too large to enumerate rather than paginating it — a response with
+#     no `files` array at all.
+#   - Short of that, GitHub still caps `files` at 300 entries and does not
+#     paginate past it or say so: a response with exactly
+#     ESCAPE_AUDIT_MERGE_FILES_LIMIT entries may be hiding more past the cap,
+#     indistinguishable from a merge that touched exactly that many files and
+#     no more.
+ESCAPE_AUDIT_MERGE_FILES_LIMIT="${ESCAPE_AUDIT_MERGE_FILES_LIMIT:-300}"
 _escape_audit_merge_files() {
-  local repo_slug="$1" sha="$2" raw
+  local repo_slug="$1" sha="$2" raw count
   raw="$(gh_retry api "repos/$repo_slug/commits/$sha")" || return 2
   jq -e '.files | type == "array"' <<<"$raw" >/dev/null 2>&1 || return 2
+  count="$(jq '.files | length' <<<"$raw" 2>/dev/null)"
+  github_pr_list_truncated "$count" "$ESCAPE_AUDIT_MERGE_FILES_LIMIT" && return 2
   jq -r '.files[].filename' <<<"$raw" 2>/dev/null
 }
 
@@ -268,10 +305,21 @@ _escape_audit_complexity_at_merge() {
 # repos/SLUG/issues, state=closed, filtered by label, one flat 1-point-per-
 # page cost against the shared `core` budget. A closed issue's own
 # `pull_request.merged_at` distinguishes a merge from a plain close.
+#
+# `sort=created,direction=asc` — GitHub's own default for this endpoint is
+# newest-first, which is the wrong order for a sweep that cannot always
+# finish inside one `timeout 120` (see the invocation site in
+# agent-cycle.sh): newest-first would spend every cycle re-establishing the
+# same recent slice, since new pull requests keep merging in ahead of
+# whatever the sweep last reached. Oldest-first instead makes each cycle's
+# budget buy forward progress through history that stays put once made —
+# the pull requests behind the frontier this reaches are never reordered by
+# a later merge — which is what lets a repository's Approver-merged backlog
+# converge over a bounded number of cycles (see "Idempotency" above).
 _escape_audit_candidates() {
   local repo_slug="$1"
   gh_retry api "repos/$repo_slug/issues" --method GET --paginate -F per_page=100 \
-    -f state=closed -f labels="$LABEL" \
+    -f state=closed -f labels="$LABEL" -f sort=created -f direction=asc \
     --jq '.[] | select(.pull_request != null and .pull_request.merged_at != null) | .number'
 }
 
@@ -330,6 +378,14 @@ emit() {
 while IFS= read -r number; do
   [[ -n "$number" ]] || continue
 
+  # GitHub's own `html_url` for a pull request is always this exact shape —
+  # the same value `pr_url` below reads back out of the pulls/N response —
+  # so an already-audited candidate is recognised, and skipped, without
+  # spending that read at all. See "Idempotency" above for why this bounds
+  # only the Approver-merged half of the candidate list.
+  pr_url="https://github.com/$slug/pull/$number"
+  already_audited "$pr_url" && continue
+
   pr_json="$(gh_retry api "repos/$slug/pulls/$number")" || {
     # An unreadable pull request record: cannot even confirm merged_by, so
     # this candidate is neither confirmed as an Approver-identity landing
@@ -342,10 +398,6 @@ while IFS= read -r number; do
   [[ "$merged" == "true" ]] || continue
   merged_by="$(jq -r '.merged_by.login // ""' <<<"$pr_json" 2>/dev/null)"
   [[ "$merged_by" == "$approver_login" ]] || continue
-
-  pr_url="$(jq -r '.html_url // ""' <<<"$pr_json" 2>/dev/null)"
-  [[ -n "$pr_url" ]] || continue
-  already_audited "$pr_url" && continue
 
   merged_at="$(jq -r '.merged_at // ""' <<<"$pr_json" 2>/dev/null)"
   sha="$(jq -r '.merge_commit_sha // ""' <<<"$pr_json" 2>/dev/null)"
@@ -364,7 +416,7 @@ while IFS= read -r number; do
   else
     files_out="$(_escape_audit_merge_files "$slug" "$sha")"; files_rc=$?
     if (( files_rc != 0 )); then
-      reasons+=("the merge commit's own file list could not be read (unreadable or too large to enumerate)")
+      reasons+=("the merge commit's own file list could not be read (unreadable, too large to enumerate, or capped at the ${ESCAPE_AUDIT_MERGE_FILES_LIMIT}-file limit)")
       hit="" paths_json='[]'
     else
       declare -a protected=()

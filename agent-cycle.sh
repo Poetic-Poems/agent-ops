@@ -6566,11 +6566,24 @@ fi
 # of `--repo`, and safe on `--dry-run`: it never arms or lands anything,
 # only reads GitHub's own merged-PR record and the fleet log. Run every
 # cycle rather than gated on `merge_autonomy`: idempotent against its own
-# prior findings (LOG_FILE), so a repository that has never reached
-# `agent-merges-routine` costs one cheap, empty candidate listing. The same
-# unreadable-login skip the retry sweep above uses applies here too — with
-# no Approver identity to test `merged_by` against, nothing below could tell
-# an autonomous landing apart from a human's own merge.
+# prior findings (LOG_FILE) for any pull request the Approver identity did
+# merge, but that is not the same as cheap for a repository that has never
+# reached `agent-merges-routine`. `_escape_audit_candidates` still lists
+# every merged, `pr_label`-carrying pull request regardless of who merged
+# it, and the script has no way to learn who merged one short of the
+# `repos/SLUG/pulls/N` read that answers it — so a repository sitting below
+# `agent-merges-routine`, where a merge under the Approver identity is rare
+# or never happens, pays that one read for every such pull request, every
+# cycle, forever: it is never logged (a non-Approver merge "is not audited
+# at all", per the script's own header), so nothing ever makes it cheap to
+# skip. `timeout 120` bounds what a single cycle spends on this either way;
+# see the script's own "Idempotency" section for why oldest-first candidate
+# order still lets a repository's actual audit subject — its
+# Approver-merged landings — converge over a bounded number of cycles
+# despite that recurring cost. The same unreadable-login skip the retry
+# sweep above uses applies here too — with no Approver identity to test
+# `merged_by` against, nothing below could tell an autonomous landing apart
+# from a human's own merge.
 if escape_login="$(approver_token_identity_login "")" && [[ -n "$escape_login" ]]; then
   while IFS= read -r escape_slug; do
     [[ -n "$escape_slug" ]] || continue

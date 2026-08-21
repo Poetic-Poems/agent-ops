@@ -4938,14 +4938,21 @@ implements.
    agreeing. Run once per cycle, fleet-wide regardless of `--repo`, and safe
    on `--dry-run` — it never arms or lands anything, only reads.
 
-   For every repository, the detector finds every merged, `pr_label`-carrying
-   pull request whose own `merged_by.login` (GitHub's live record, never this
-   pipeline's own event log — trusting the log to say what it landed would
-   make the audit circular) is the Approver App's login, skips any already
-   carrying a `classifier-escape` or `landing-audit` event for its `pr_url`
-   in the fleet log (audited at most once, ever — a merged pull request's
-   history is a fixed, past fact), and for each remainder recomputes three
-   things from the merged artefacts themselves, never from what this
+   For every repository, the detector considers every merged, `pr_label`-
+   carrying pull request, oldest-merged first, and for each already carrying
+   a `classifier-escape` or `landing-audit` event for its `pr_url` in the
+   fleet log skips it at zero `gh` cost (audited at most once, ever — a
+   merged pull request's history is a fixed, past fact — and GitHub's
+   `html_url` for a pull request is deterministic from its own repository
+   and number, so an already-audited one is recognised before any read, not
+   just before the reads past the first). For the remainder it reads
+   `merged_by.login` (GitHub's live record, never this pipeline's own event
+   log — trusting the log to say what it landed would make the audit
+   circular): one merged by anyone other than the Approver App's login is
+   not audited at all, and — because that fact was never logged — is read
+   again the same way on every future cycle for as long as the repository
+   keeps producing them; one merged by the Approver App's login recomputes
+   three things from the merged artefacts themselves, never from what this
    pipeline recorded about its own decision: the protected-path hit, from
    the merge commit's own file list (`repos/SLUG/commits/SHA`, a different
    GitHub resource from `landing_protected_paths_hit`'s own read); the
@@ -4961,10 +4968,25 @@ implements.
    deliberate widening or narrowing of the list is judged against today's
    list, not the one in force when it landed.
 
-   Any of those three inputs that cannot be reconstructed — an unreadable or
-   too-large-to-enumerate merge commit, zero or more than one
-   `complexity:*` label standing at merge time, no matching `landing-armed`
-   event to read a source from — reports `outcome: "unverifiable"`, never
+   `agent-cycle.sh` runs the detector once per repository per cycle under
+   `timeout 120`, so a repository whose candidate list does not fit inside
+   that budget is not fully audited in one pass. Coverage still converges
+   over a bounded number of cycles rather than stalling: an already-audited
+   pull request costs nothing to skip (above), so the budget a cycle spends
+   re-confirming earlier history shrinks every time one of those becomes
+   free, and the oldest-first candidate order means whatever a cycle does
+   reach stays reached rather than being displaced by newer merges landing
+   ahead of it. What does not shrink is the read spent on every pull request
+   merged by someone other than the Approver App's login, since that fact is
+   never logged and so is never free to skip on a later cycle — a real,
+   accepted, permanent cost for a repository that produces many of those,
+   not evidence of a stalled sweep.
+
+   Any of those three inputs that cannot be reconstructed — an unreadable,
+   too-large-to-enumerate, or (short of either) file-count-capped merge
+   commit, zero or more than one `complexity:*` label standing at merge
+   time, no matching `landing-armed` event to read a source from — reports
+   `outcome: "unverifiable"`, never
    `"clean"`: an audit that cannot answer must never be read as an audit
    that passed. Otherwise, recomputed eligibility (complexity `low`/`medium`,
    source in the routine list, no protected path touched) either agrees with
@@ -15304,14 +15326,18 @@ pull request, run the ones the change touches and any it could regress.
     routine list; a merged pull request whose recomputed complexity, source
     and protected-path check all agree with its having landed is `outcome:
     "clean"`; a merge commit GitHub reports with no `files` array (too large
-    to enumerate), a merge with zero or more than one `complexity:*` label
-    standing at `merged_at`, and a `pr_url` with no `landing-armed` event to
-    read a source from are each `outcome: "unverifiable"`, never `"clean"`;
-    a pull request merged by an account other than the passed-in Approver
-    login is not audited at all; and a `pr_url` already carrying a
-    `classifier-escape`/`landing-audit` event in the fleet log is skipped
-    before any further `gh` call is spent on it. The same stub refuses any
-    call carrying `-f`/`-F` fields without `--method GET`, since the real
+    to enumerate), a merge commit whose `files` array reaches the 300-entry
+    cap (may be hiding more, exactly like the too-large case), a merge with
+    zero or more than one `complexity:*` label standing at `merged_at`, and a
+    `pr_url` with no `landing-armed` event to read a source from are each
+    `outcome: "unverifiable"`, never `"clean"`; a pull request merged by an
+    account other than the passed-in Approver login is not audited at all;
+    and a `pr_url` already carrying a `classifier-escape`/`landing-audit`
+    event in the fleet log is skipped before any `gh` call is spent on it at
+    all, verified by the stub logging every call it receives and the test
+    asserting the skipped pull request's own number never appears in that
+    log, not merely absent from the detector's output. The same stub refuses
+    any call carrying `-f`/`-F` fields without `--method GET`, since the real
     `gh api` turns one into a POST — which these endpoints answer 404/422,
     so a detector that read them that way would silently audit nothing at
     all for ever. `test/publish-dashboard.test.sh` pins `counts.escape_audits`'s aggregation over `classifier-
