@@ -26,7 +26,11 @@
 # Environment: ISSUE_PRIORITY_GH overrides `gh` (tests stub it);
 # ISSUE_PRIORITY_CACHE_DIR overrides the field-id cache directory below
 # (tests isolate it; a fresh directory per invocation loses caching but
-# never correctness).
+# never correctness). ISSUE_PRIORITY_CACHE_DIR_OWNED, its …_OWNED_PATH and
+# …_OWNER_PID companions are this file's own bookkeeping — internal, never
+# exported by anything in this repository, and not supported as caller
+# input (agent-ops#552): a value inherited from a different process is
+# deliberately not trusted, see the ownership comment below.
 
 # ISSUE_PRIORITY_CACHE_DIR / ISSUE_PRIORITY_CACHE_DIR_OWNED — one resolution
 # per repository per process, since a single cycle's Refiner engagement can
@@ -62,29 +66,85 @@
 # for itself, so a re-source can tell "the directory I made last time" apart
 # from "a directory some caller handed me" — the two cases a bare `-n
 # "$ISSUE_PRIORITY_CACHE_DIR"` check cannot distinguish.
+#
+# Trusting an inherited record from the environment, rather than always
+# recomputing ownership from scratch (the pre-#548 behaviour), opened a gap:
+# nothing stopped a process that exports its own `ISSUE_PRIORITY_CACHE_DIR`,
+# `…_OWNED=1` and `…_OWNED_PATH` from talking a child process into treating
+# the parent's own directory as the child's to `rm -rf` (agent-ops#552).
+# `ISSUE_PRIORITY_CACHE_DIR_OWNER_PID` closes it: the record additionally
+# carries the `$$` of the process that created it, and only a source running
+# as that same `$$` may treat the record as its own. `$$` rather than
+# `$BASHPID`, because `$$` alone stays the top-level shell's value inside the
+# command substitutions this cache exists to survive, which is what keeps
+# the same-process re-source (#541) working; `$BASHPID` changes inside one
+# and would break that caching. A record whose stamped PID does not match
+# the current process falls through to the caller-supplied branch
+# (`OWNED=0`) below, so `issue_priority_cache_cleanup` never removes it.
+#
+# A record this same process created can still name a directory that no
+# longer exists: `issue_priority_cache_cleanup` clears the record when it
+# can, but a caller that invokes it through a command substitution — a
+# subshell — leaves the parent's own record untouched even though the
+# directory really was removed (see that function's header below). The
+# check below is therefore in two parts: whether the record is this
+# process's own, and, independently, whether the directory it names still
+# exists — a same-process record naming a missing directory is treated as
+# "create a fresh one", never as "still ours".
+_issue_priority_own_record=0
 if [[ "${ISSUE_PRIORITY_CACHE_DIR_OWNED:-0}" == "1" && \
       -n "${ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH:-}" && \
-      "$ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH" == "${ISSUE_PRIORITY_CACHE_DIR:-}" ]]; then
-  : # re-source with the same directory this file created earlier — still ours
-elif [[ -n "${ISSUE_PRIORITY_CACHE_DIR:-}" ]]; then
+      "$ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH" == "${ISSUE_PRIORITY_CACHE_DIR:-}" && \
+      "${ISSUE_PRIORITY_CACHE_DIR_OWNER_PID:-}" == "$$" ]]; then
+  _issue_priority_own_record=1
+fi
+if [[ "$_issue_priority_own_record" == "1" && -d "${ISSUE_PRIORITY_CACHE_DIR:-}" ]]; then
+  : # re-source, same process, same directory it created earlier, and that
+    # directory still exists — still ours
+elif [[ "$_issue_priority_own_record" == "0" && -n "${ISSUE_PRIORITY_CACHE_DIR:-}" ]]; then
   ISSUE_PRIORITY_CACHE_DIR_OWNED=0
 else
   ISSUE_PRIORITY_CACHE_DIR="$(mktemp -d 2>/dev/null || true)"
   ISSUE_PRIORITY_CACHE_DIR_OWNED=1
   ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH="$ISSUE_PRIORITY_CACHE_DIR"
+  ISSUE_PRIORITY_CACHE_DIR_OWNER_PID="$$"
 fi
+unset _issue_priority_own_record
 
 # issue_priority_cache_cleanup
-# Remove ISSUE_PRIORITY_CACHE_DIR, but only when this file created it itself
-# (ISSUE_PRIORITY_CACHE_DIR_OWNED=1) — a caller-supplied path is that caller's
-# to remove, never this function's. A no-op, printing nothing, when the
-# directory was never created (mktemp -d failed above), when the caller owns
-# it, or when it has already been removed — idempotent, so a sourcing site's
-# own trap can call it more than once with no ill effect. Always returns 0: a
-# missing cache directory is never a failure worth reporting.
+# Remove the directory this same process created for itself
+# (ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH, guarded by
+# ISSUE_PRIORITY_CACHE_DIR_OWNER_PID matching the current `$$`) — a
+# caller-supplied path is that caller's to remove, never this function's.
+# Keyed on the *owned* path rather than on the current
+# ISSUE_PRIORITY_CACHE_DIR, so a caller that has since pointed
+# ISSUE_PRIORITY_CACHE_DIR at its own directory does not orphan the one this
+# file made earlier (agent-ops#552's mirror case): that caller's directory is
+# left untouched either way, since only the owned path is ever removed.
+# Also clears the ownership record — ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH and
+# …_OWNER_PID always, and ISSUE_PRIORITY_CACHE_DIR/…_OWNED too when the
+# caller never repointed them — so a later source in this same process finds
+# no stale record and creates a fresh directory rather than trusting a path
+# that no longer exists. That clearing reaches only the calling shell: a
+# caller that invokes this function through a command substitution runs it
+# in a subshell, whose variable assignments never reach the parent, which is
+# why the source-time branch above independently checks the directory still
+# exists rather than trusting this function tidied up. A no-op, printing
+# nothing, when the directory was never created (mktemp -d failed above),
+# when the caller owns it, or when it has already been removed —
+# idempotent, so a sourcing site's own trap can call it more than once with
+# no ill effect. Always returns 0: a missing cache directory is never a
+# failure worth reporting.
 issue_priority_cache_cleanup() {
-  if [[ "${ISSUE_PRIORITY_CACHE_DIR_OWNED:-0}" == "1" && -n "${ISSUE_PRIORITY_CACHE_DIR:-}" ]]; then
-    rm -rf "$ISSUE_PRIORITY_CACHE_DIR" 2>/dev/null || true
+  local owned_path="${ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH:-}"
+  if [[ "${ISSUE_PRIORITY_CACHE_DIR_OWNER_PID:-}" == "$$" && -n "$owned_path" ]]; then
+    rm -rf "$owned_path" 2>/dev/null || true
+    if [[ "${ISSUE_PRIORITY_CACHE_DIR:-}" == "$owned_path" ]]; then
+      ISSUE_PRIORITY_CACHE_DIR=""
+      ISSUE_PRIORITY_CACHE_DIR_OWNED=0
+    fi
+    ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH=""
+    ISSUE_PRIORITY_CACHE_DIR_OWNER_PID=""
   fi
   return 0
 }
@@ -192,16 +252,16 @@ issue_priority_field_ids() {
     --jq '.data.repository.issueFields.nodes[]? | select(.name == "Priority")' \
     2>/dev/null)"
   if [[ -z "$node" ]]; then
-    [[ -n "$cache_file" ]] && printf 'FAIL' > "$cache_file" 2>/dev/null
+    [[ -n "$cache_file" ]] && printf 'FAIL' 2>/dev/null > "$cache_file"
     return 1
   fi
   result="$(jq -c '{field_id: .id, options: (reduce .options[] as $o ({}; .[$o.name] = $o.id))}' \
     <<<"$node" 2>/dev/null)"
   if [[ -z "$result" ]]; then
-    [[ -n "$cache_file" ]] && printf 'FAIL' > "$cache_file" 2>/dev/null
+    [[ -n "$cache_file" ]] && printf 'FAIL' 2>/dev/null > "$cache_file"
     return 1
   fi
-  [[ -n "$cache_file" ]] && printf '%s' "$result" > "$cache_file" 2>/dev/null
+  [[ -n "$cache_file" ]] && printf '%s' "$result" 2>/dev/null > "$cache_file"
   printf '%s' "$result"
 }
 
