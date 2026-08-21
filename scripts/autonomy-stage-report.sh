@@ -34,12 +34,20 @@
 #
 # ## What is unavailable, and why that is not zero
 #
-# Two of the ladder's measures have no detector yet: classifier escapes
-# (agent-ops#572, still open) and the Stage 1 divergence between an Approver
-# verdict and the human's eventual action (agent-ops#573, still open). Both
-# are always reported `unavailable`, never a guessed `0` — a `0` a human could
-# mistake for "checked, and clean" is worse than an honest gap (acceptance
-# 3). Neither detector is built here; that is each issue's own scope.
+# One of the ladder's measures still has no detector: classifier escapes
+# (agent-ops#572, still open), always reported `unavailable`, never a guessed
+# `0` — a `0` a human could mistake for "checked, and clean" is worse than an
+# honest gap (acceptance 3). That detector is not built here; it is #572's
+# own scope.
+#
+# The Stage 1 `divergence` criterion (agent-ops#573) is real: it calls
+# `lib/verdict-fate.sh` to join the `approver-verdict` events
+# `run_approver_stage` writes live against each pull request's own eventual
+# GitHub state, and reports `met`/`not-met`/`unavailable` off that join —
+# never a rate computed on too small a sample (`lib/verdict-fate.sh`'s own
+# `insufficient-sample`, reported here as `unavailable` too, the same "not
+# enough evidence to call it either way" this report already gives every
+# other criterion in that state).
 #
 # ## "Elapsed time at this level" — an event-log proxy, not config history
 #
@@ -97,6 +105,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$SCRIPT_DIR/lib/fleet.sh"
 # shellcheck source=lib/github-limit.sh
 . "$SCRIPT_DIR/lib/github-limit.sh"
+# shellcheck source=lib/verdict-fate.sh
+. "$SCRIPT_DIR/lib/verdict-fate.sh"
 
 CONFIG_FILE="$SCRIPT_DIR/config.json"
 SCHEMA_FILE="$SCRIPT_DIR/config.schema.json"
@@ -294,6 +304,102 @@ crit_unavailable() {  # <id> <desc> <reason>
     '{id:$id, desc:$desc, status:"unavailable", measured:$reason}'
 }
 
+# --- The divergence join (agent-ops#573) ------------------------------------
+# The same per-pull-request GitHub reads scripts/verdict-fate-report.sh
+# makes, duplicated here rather than shelled out to: this report already
+# holds $EVENTS and the fleet's `gh` wrapper in-process, and a second `gh`
+# process per pull request would double the calls a Stage 1 evaluation makes
+# for no benefit. `lib/verdict-fate.sh`'s pure join and classification logic
+# is shared, never duplicated — only this I/O sits in both places, the same
+# `_approver_pr_parts`-style duplication lib/approver.sh's own header already
+# explains (so each file sources and runs standalone).
+_divergence_pr_parts() {
+  local url="${1:-}"
+  [[ "$url" =~ ^https?://[^/]+/([^/]+)/([^/]+)/pull/([0-9]+) ]] || return 1
+  printf '%s/%s\t%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+}
+
+_divergence_pr_state() {  # PR_URL -> {ok, state}
+  local url="$1" parts slug number body
+  parts="$(_divergence_pr_parts "$url")" || { jq -nc '{ok:false, state:""}'; return 0; }
+  IFS=$'\t' read -r slug number <<<"$parts"
+  body="$(gh api "repos/$slug/pulls/$number" --jq '{state, merged}' 2>/dev/null)"
+  if [[ -z "$body" ]]; then
+    jq -nc '{ok:false, state:""}'
+    return 0
+  fi
+  jq -nc --argjson b "$body" '{ok:true, state: (if $b.merged then "merged" else $b.state end)}'
+}
+
+_divergence_pr_reviews() {  # PR_URL -> {ok, reviews}
+  local url="$1" parts slug number lines rc
+  parts="$(_divergence_pr_parts "$url")" || { jq -nc '{ok:false, reviews:[]}'; return 0; }
+  IFS=$'\t' read -r slug number <<<"$parts"
+  lines="$(gh api "repos/$slug/pulls/$number/reviews" --paginate \
+            --jq '.[] | select(.submitted_at != null)
+                      | {login: .user.login, state: .state, submitted_at: .submitted_at,
+                         bot: (((.user.type // "User") == "Bot") or (.user.login | endswith("[bot]")))}' \
+            2>/dev/null)"
+  rc=$?
+  if (( rc != 0 )); then
+    jq -nc '{ok:false, reviews:[]}'
+    return 0
+  fi
+  jq -nc --argjson r "$(jq -s -c '.' <<<"$lines" 2>/dev/null || echo '[]')" '{ok:true, reviews:$r}'
+}
+
+crit_divergence() {
+  local slug="$1" desc="$2"
+  local entries entry pr_url posted_review armed armed_urls
+  local state_json reviews_json state ok1 ok2 classified classified_list='[]'
+  local summary sample status measured
+
+  entries="$(verdict_fate_latest_per_pr "$EVENTS" "$slug")"
+  armed_urls="$(jq -c --arg slug "$slug" \
+    '[.[] | select(.event == "landing-armed" and .repo == $slug) | (.pr_url // "")] | unique' <<<"$EVENTS")"
+
+  local unreadable=0
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    pr_url="$(jq -r '.pr_url' <<<"$entry")"
+    posted_review="$(jq -r '.posted_review' <<<"$entry")"
+    armed="$(jq -r --arg u "$pr_url" 'index($u) != null' <<<"$armed_urls")"
+    state_json="$(_divergence_pr_state "$pr_url")"
+    ok1="$(jq -r '.ok' <<<"$state_json")"
+    reviews_json="$(_divergence_pr_reviews "$pr_url")"
+    ok2="$(jq -r '.ok' <<<"$reviews_json")"
+    if [[ "$ok1" != "true" || "$ok2" != "true" ]]; then
+      unreadable=$(( unreadable + 1 ))
+      continue
+    fi
+    state="$(jq -r '.state' <<<"$state_json")"
+    classified="$(verdict_fate_classify "$posted_review" "$armed" "$state" \
+      "$(jq -c '.reviews' <<<"$reviews_json")" "$(jq -r '.ts' <<<"$entry")")"
+    classified_list="$(jq -c --argjson c "$classified" '. + [$c]' <<<"$classified_list")"
+  done < <(jq -c '.[]' <<<"$entries")
+
+  if (( unreadable > 0 )) && [[ "$(jq 'length' <<<"$classified_list")" == "0" ]]; then
+    crit_unavailable "divergence" "$desc" "$unreadable pull request(s) could not be read from GitHub this run, and none of the rest yielded a settled comparison"
+    return 0
+  fi
+
+  summary="$(verdict_fate_summarize "$classified_list" 5)"
+  sample="$(jq -r '.sample' <<<"$summary")"
+  if [[ "$(jq -r '.status' <<<"$summary")" == "insufficient-sample" ]]; then
+    measured="$sample settled pull request(s) (need ≥5 to state a rate; $unreadable unreadable this run)"
+    crit_unavailable "divergence" "$desc" "$measured"
+    return 0
+  fi
+  if [[ "$(jq -r '.divergence' <<<"$summary")" != "0" ]]; then
+    status="not-met"
+  else
+    status="met"
+  fi
+  measured="$(jq -r '"\(.agreement) agreement, \(.divergence) divergence, \(.pending) pending (sample \(.sample))"' <<<"$summary")"
+  jq -nc --arg id "divergence" --arg desc "$desc" --arg status "$status" --arg measured "$measured" \
+    '{id:$id, desc:$desc, status:$status, measured:$measured}'
+}
+
 crit_autonomous_landings() {
   local slug="$1" desc="$2" threshold="$3" elapsed_threshold="$4"
   local since count elapsed status measured
@@ -424,7 +530,7 @@ evaluate_repo() {
         results="$(jq -c --argjson r "$(crit_agent_approved_prs "$slug" "$desc" "$threshold")" '. + [$r]' <<<"$results")"
         ;;
       divergence)
-        results="$(jq -c --argjson r "$(crit_unavailable "divergence" "$desc" "no App-verdict/human-action divergence tracker yet (agent-ops#573)")" '. + [$r]' <<<"$results")"
+        results="$(jq -c --argjson r "$(crit_divergence "$slug" "$desc")" '. + [$r]' <<<"$results")"
         ;;
       autonomous_landings)
         threshold="$(jq -r '.threshold' <<<"$c")"; elapsed_thr="$(jq -r '.elapsed_days' <<<"$c")"

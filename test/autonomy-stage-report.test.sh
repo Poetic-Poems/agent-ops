@@ -3,28 +3,42 @@
 # test/autonomy-stage-report.test.sh — regression test for
 # scripts/autonomy-stage-report.sh (issue #571, D18 WI of umbrella #402).
 #
-# Three repositories, one per scenario the acceptance criteria name:
+# Four repositories, one per scenario the acceptance criteria name:
 #
-#   o/human-repo    Stage 0 (`human`, the config default). Both its
-#                   criteria are mechanically checkable today (a baseline
-#                   file exists; `merge_autonomy` is configured somewhere) —
-#                   this is the "repo meeting bars" case, verdict `met`.
-#   o/approves-repo Stage 1 (`agent-approves`). Two agent-approved pull
-#                   requests, short of the ≥15 bar — the "failing one" case,
-#                   verdict `not-met (criterion: agent_approved_prs)`, even
-#                   though the stage's other criterion (divergence) is *also*
-#                   unavailable: a genuine failure must still win over a
-#                   merely-missing measurement. Also proves the `pr_url`
-#                   match is exact-prefix, not substring: a decoy
-#                   `o/approves-repo-extra` approval must not be counted.
-#   o/routine-repo  Stage 2/3 (`agent-merges-routine`). 15 autonomous
-#                   landings (met) and a clean current revert rate against
-#                   the recorded Stage 0 baseline (met) — but
-#                   `classifier_escapes` has no detector yet (agent-ops#572)
-#                   and is always `unavailable`. This is the "missing data
-#                   source" case: every measurable criterion passes and the
-#                   verdict is still `insufficient-evidence`, never `met`
-#                   (acceptance 3).
+#   o/human-repo      Stage 0 (`human`, the config default). Both its
+#                     criteria are mechanically checkable today (a baseline
+#                     file exists; `merge_autonomy` is configured somewhere) —
+#                     this is the "repo meeting bars" case, verdict `met`.
+#   o/approves-repo   Stage 1 (`agent-approves`). Two agent-approved pull
+#                     requests, short of the ≥15 bar — the "failing one" case,
+#                     verdict `not-met (criterion: agent_approved_prs)`, even
+#                     though the stage's other criterion (divergence) is
+#                     *also* `unavailable` here (both its pull requests are
+#                     unreadable from GitHub in this fixture): a genuine
+#                     failure must still win over a merely-missing
+#                     measurement. Also proves the `pr_url` match is
+#                     exact-prefix, not substring: a decoy
+#                     `o/approves-repo-extra` approval must not be counted.
+#   o/routine-repo    Stage 2/3 (`agent-merges-routine`). 15 autonomous
+#                     landings (met) and a clean current revert rate against
+#                     the recorded Stage 0 baseline (met) — but
+#                     `classifier_escapes` has no detector yet (agent-ops#572)
+#                     and is always `unavailable`. This is the "missing data
+#                     source" case: every measurable criterion passes and the
+#                     verdict is still `insufficient-evidence`, never `met`
+#                     (acceptance 3).
+#   o/divergence-repo Stage 1 (`agent-approves`), exercising the real
+#                     divergence join (agent-ops#573) rather than the
+#                     unavailable fallback: five agent-approved pull requests,
+#                     all landed and none carrying a standing human
+#                     `CHANGES_REQUESTED` — `divergence` reads `met` (a real
+#                     zero, backed by a sample), and since
+#                     `agent_approved_prs` also clears its own ≥15-or-elapsed
+#                     bar isn't needed here (only `divergence` is asserted;
+#                     `agent_approved_prs` is left `not-met` on 5 pull
+#                     requests, which is fine — this repo's fixture exists to
+#                     prove the divergence join, not to double as Stage 1's
+#                     full exit).
 #
 # `gh` is stubbed via `PATH`, the same technique test/mine-merge-history.test.sh
 # uses — reused here as-is because scripts/autonomy-stage-report.sh shells out
@@ -77,7 +91,8 @@ cat > "$tmp_dir/config.json" <<'EOF'
   "repos": [
     {"slug": "o/human-repo", "sources": ["abandoned-drafts"]},
     {"slug": "o/approves-repo", "sources": ["abandoned-drafts"], "merge_autonomy": "agent-approves"},
-    {"slug": "o/routine-repo", "sources": ["abandoned-drafts"], "merge_autonomy": "agent-merges-routine"}
+    {"slug": "o/routine-repo", "sources": ["abandoned-drafts"], "merge_autonomy": "agent-merges-routine"},
+    {"slug": "o/divergence-repo", "sources": ["abandoned-drafts"], "merge_autonomy": "agent-approves"}
   ],
   "state_dir": "/unused",
   "workspace_root": "/unused",
@@ -102,6 +117,12 @@ EOF
   printf '{"ts":"2026-08-03T00:00:00Z","node":"n","event":"approver-verdict","pr_url":"https://github.com/o/approves-repo-extra/pull/9","tier":"medium","verdict":"approve","refuse_streak":0,"adjudication":false}\n'
   for i in $(seq 101 115); do
     printf '{"ts":"2026-08-%02dT00:00:00Z","node":"n","event":"landing-armed","repo":"o/routine-repo","pr_url":"https://github.com/o/routine-repo/pull/%d","source":"tech-debt","complexity":"medium","method":"auto-merge"}\n' "$(( (i - 100) % 28 + 1 ))" "$i"
+  done
+  # o/divergence-repo (agent-ops#573): 5 approved-and-landed pull requests,
+  # none carrying a standing human CHANGES_REQUESTED — a real, sample-backed
+  # zero, not the criterion's `unavailable` fallback.
+  for i in $(seq 1 5); do
+    printf '{"ts":"2026-08-%02dT00:00:00Z","node":"n","event":"approver-verdict","pr_url":"https://github.com/o/divergence-repo/pull/%d","repo":"o/divergence-repo","tier":"medium","model":"claude-sonnet-5","verdict":"approve","refuse_streak":0,"adjudication":false,"posted":true}\n' "$i" "$i"
   done
 } > "$tmp_dir/state/log.jsonl"
 
@@ -162,6 +183,11 @@ case "$path" in
   repos/*/pulls/*/reviews\?*) body='[]' ;;
   repos/*/pulls/*/files\?*) body='[]' ;;
   repos/*/issues/*/timeline\?*) body='[]' ;;
+  # agent-ops#573's divergence join: each divergence-repo pull request is
+  # merged, with no standing review at all — a real, sample-backed
+  # agreement, not the criterion's `unavailable` fallback.
+  repos/o/divergence-repo/pulls/[0-9]*/reviews) body='[]' ;;
+  repos/o/divergence-repo/pulls/[0-9]*) body='{"state":"closed","merged":true}' ;;
   *) echo "stub gh: unexpected path: $path" >&2; exit 1 ;;
 esac
 jq -r "$filter" <<<"$body"
@@ -171,7 +197,7 @@ export STUB_DIR
 export PATH="$tmp_dir/bin:$PATH"
 
 out="$("$REPORT" --config "$tmp_dir/config.json" \
-  --repo o/human-repo --repo o/approves-repo --repo o/routine-repo \
+  --repo o/human-repo --repo o/approves-repo --repo o/routine-repo --repo o/divergence-repo \
   --label agent-test-label \
   --reviews-dir "$tmp_dir/reviews" \
   --state-dir "$tmp_dir/state" --peers-dir "$tmp_dir/peers" \
@@ -181,7 +207,7 @@ assert_eq "a clean run exits 0" "0" "$rc"
 assert_eq "  ... and stderr is silent" "" "$(cat "$tmp_dir/run.err")"
 
 raw_json="$(awk '/```json/{flag=1;next}/```/{flag=0}flag' <<<"$out")"
-assert_eq "raw JSON parses" "3" "$(jq -r '.repos | length' <<<"$raw_json")"
+assert_eq "raw JSON parses" "4" "$(jq -r '.repos | length' <<<"$raw_json")"
 
 # --- Scenario 1: o/human-repo (Stage 0) — meets both its bars --------------
 human="$(jq -c '.repos[] | select(.slug == "o/human-repo")' <<<"$raw_json")"
@@ -220,7 +246,18 @@ assert_eq "routine-repo: classifier_escapes always unavailable (agent-ops#572)" 
 assert_eq "routine-repo: every measurable bar met, but the verdict is still insufficient-evidence, never met" \
   "insufficient-evidence" "$(jq -r '.verdict' <<<"$routine")"
 
+# --- Scenario 4: o/divergence-repo (Stage 1) — the real divergence join
+#     (agent-ops#573), not the unavailable fallback ---------------------------
+divergence="$(jq -c '.repos[] | select(.slug == "o/divergence-repo")' <<<"$raw_json")"
+assert_eq "divergence-repo: level" "agent-approves" "$(jq -r '.level' <<<"$divergence")"
+assert_eq "divergence-repo: stage" "1" "$(jq -r '.stage' <<<"$divergence")"
+assert_eq "divergence-repo: divergence criterion reads met, backed by a real sample" \
+  "met" "$(jq -r '.criteria[] | select(.id == "divergence") | .status' <<<"$divergence")"
+assert_contains "  ... and states the sample it is backed by" \
+  "$(jq -r '.criteria[] | select(.id == "divergence") | .measured' <<<"$divergence")" "5 agreement, 0 divergence"
+
 assert_contains "the Markdown body cites the stage-table source" "$out" "agent-ops#402"
+assert_contains "  ... and includes the divergence-repo's own section" "$out" "o/divergence-repo"
 
 echo "---"
 if [[ "$failures" -eq 0 ]]; then

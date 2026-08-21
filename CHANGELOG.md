@@ -42,15 +42,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   re-arm outside the round that first approved the pull request. Below
   `agent-merges-all` a protected path stays ineligible exactly as before.
 
+- `lib/verdict-fate.sh` and `scripts/verdict-fate-report.sh` (D18,
+  agent-ops#573): a durable, per-pull-request record of the Approver's
+  verdict against that pull request's eventual GitHub fate — landed by the
+  Script, landed by a human, closed unmerged, still open, or a human
+  `CHANGES_REQUESTED` standing after an agent approval, its own fate, never
+  collapsed into "closed unmerged" even once the pull request is later fixed
+  and lands anyway, including across a later re-approval (agent-ops#661).
+  `agent-cycle.sh`'s `run_approver_stage` now logs `repo`,
+  `model` and `posted` (whether the review it describes actually reached
+  GitHub) on every `approver-verdict` event, written live as the verdict
+  happens; `lib/verdict-fate.sh` joins that record against each pull
+  request's live state and reports agreement, divergence and sample size,
+  declining to state a rate below a stated minimum sample and reporting the
+  rate `unavailable`, never `met`, over a partial read.
+  `scripts/autonomy-stage-report.sh`'s Stage 1 `divergence` criterion
+  (previously always `unavailable`, agent-ops#571) now consumes this join
+  rather than a placeholder.
+
 - `scripts/autonomy-stage-report.sh` (D18, agent-ops#571): a read-only
   operator report answering "has this repository met its current D18
   rollout-stage exit criteria?" — its `merge_autonomy` level, the stage
   (agent-ops#402) that level corresponds to, that stage's exit criteria, the
   measured value of each, and a closing `met`/`not-met (criterion: …)`/
-  `insufficient-evidence` verdict. Two criteria — classifier escapes and the
-  Stage 1 Approver/human divergence — have no detector yet (agent-ops#572,
-  #573) and are always reported `unavailable`, never a guessed `0`, so a
-  promotion decision is never made to look ready on missing data.
+  `insufficient-evidence` verdict. One criterion, classifier escapes, has no
+  detector yet (agent-ops#572) and is always reported `unavailable`, never a
+  guessed `0`, so a promotion decision is never made to look ready on
+  missing data.
 
 - `coordinator_prompt_max_bytes` config key (agent-ops#641), and
   `lib/coordinator-input.sh` behind it: a bound on the assembled Co-Ordinator
