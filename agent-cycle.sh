@@ -129,6 +129,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/prompt-overrides.sh"
 # shellcheck source=lib/coordinator-brief.sh
 . "$SCRIPT_DIR/lib/coordinator-brief.sh"
+# shellcheck source=lib/coordinator-input.sh
+. "$SCRIPT_DIR/lib/coordinator-input.sh"
 # shellcheck source=lib/repo-order.sh
 . "$SCRIPT_DIR/lib/repo-order.sh"
 # shellcheck source=lib/pipeline-marker.sh
@@ -582,6 +584,12 @@ GITHUB_LIMIT_TOTAL_WAIT_SECONDS=$(( GITHUB_LIMIT_MAX_WAIT_SECONDS * 2 ))
 export GITHUB_LIMIT_MAX_WAIT_SECONDS GITHUB_LIMIT_TOTAL_WAIT_SECONDS
 none_selected_recheck_hours="$(cfg '.none_selected_recheck_hours')"
 candidates_max="$(cfg '.candidates_max')"
+# Requirement 4i (agent-ops#641): the largest assembled prompt the Co-Ordinator
+# may be handed. Non-numeric or absent reads as 0 — the bound off — because a
+# misread here must not be able to trim a cycle's candidates to nothing, which
+# is a worse failure than the overflow the bound exists to catch.
+coordinator_prompt_max_bytes="$(cfg '.coordinator_prompt_max_bytes')"
+[[ "$coordinator_prompt_max_bytes" =~ ^[0-9]+$ ]] || coordinator_prompt_max_bytes=0
 max_chained_cycles="$(cfg '.max_chained_cycles')"
 # How long a draft PR this system raised may sit untouched before it counts as
 # abandoned and finishing it becomes selectable work (requirement 3e). Comfortably
@@ -2850,15 +2858,62 @@ dump_stage_output() {
   return 0
 }
 
+# Requirement 4i (agent-ops#641): the terminal reason a headless `claude` run
+# records for itself when the API refused the request outright, and the message
+# it came with. Empty for every ordinary failure, so the caller's own ladder is
+# untouched by stages that failed some other way.
+#
+# The two halves are deliberately separate. `stage_api_refusal` is the *stable*
+# token (`prompt_too_long`, `invalid_request_error`, …) and is what goes in the
+# `detail` a crash-loop verdict groups on — requirement 2.7 counts consecutive
+# failures carrying the *same* detail, and on 2026-08-21 the accompanying
+# message named a token count that moved every cycle, so a detail built from it
+# would have been four distinct failures and the ladder would never have fired
+# on the very outage it was needed for. The message travels beside it, on the
+# event, where a reader gets the numbers and nothing groups on them.
+# The test is `api_error_status` being a number, not merely `is_error` being
+# true: `is_error` covers every way a stage can end badly, including ones that
+# ran and then failed, and calling those "refused by the API before it could
+# run" would put a confident falsehood where an honest exit code used to be.
+# An HTTP status on the record is the API itself saying it declined the
+# request. `terminal_reason` names which refusal when the runner recorded one
+# (`prompt_too_long`); the status stands in when it did not.
+stage_api_refusal() {  # <out-file> -> terminal reason, or empty
+  local out_file="$1"
+  [[ -s "$out_file" ]] || return 0
+  jq -r 'select((.is_error // false) == true)
+         | select((.api_error_status // null) | type == "number")
+         | ((.terminal_reason // "") as $r
+            | if $r == "" or $r == "completed" then "api_error_\(.api_error_status)" else $r end)' \
+    "$out_file" 2>/dev/null | head -1
+}
+
+stage_api_refusal_message() {  # <out-file> -> the API's own words, truncated
+  local out_file="$1"
+  [[ -s "$out_file" ]] || return 0
+  jq -r 'select((.is_error // false) == true)
+         | select((.api_error_status // null) | type == "number")
+         | (.result // "") | .[0:600]' \
+    "$out_file" 2>/dev/null | head -1
+}
+
 handle_stage_failure() {
-  local stage="$1" rc="$2" out_file="$3" pr_url="${4:-}" detail
+  local stage="$1" rc="$2" out_file="$3" pr_url="${4:-}" detail refusal refusal_msg
   # 124 is now both caps, and they are not the same news to whoever reads this
   # next — the Enabler, or a human asking why an item is blocked. "Ran to its
   # wall-clock cap while still working" argues for a longer cap; "produced
   # nothing at all for ten minutes" argues for looking at what it was waiting
   # on. So the reason is stated rather than left to be inferred from an exit
   # code that cannot carry it.
-  if [[ "$rc" == "124" && "$stage_kill_reason" == "inactivity" ]]; then
+  refusal="$(stage_api_refusal "$out_file")"
+  if [[ -n "$refusal" ]]; then
+    # An API refusal is not a crash, and "coordinator exited 1" is a true but
+    # useless account of one: on 2026-08-21 that was every record the fleet
+    # kept of four cycles it lost to a prompt past the context window, and the
+    # escalation it raised sent its reader to `coordinator.out.stderr`, which
+    # an API refusal leaves empty because the refusal is in `coordinator.out`.
+    detail="$stage was refused by the API before it could run: $refusal"
+  elif [[ "$rc" == "124" && "$stage_kill_reason" == "inactivity" ]]; then
     detail="$stage produced no output at all for its inactivity threshold and was stopped as wedged"
   elif [[ "$rc" == "124" && "$stage_kill_reason" == "rate-limit" ]]; then
     detail="$stage was stopped the moment the account reported a usage limit — nothing it did after that could have succeeded"
@@ -2870,9 +2925,15 @@ handle_stage_failure() {
   detect_and_log_limit_hit "$out_file" || true
   # The PR travels on the event (requirement 32a) so the Enabler can open it
   # without re-deriving it from the item id — for a finishing source the item
-  # may not name the PR at all.
+  # may not name the PR at all. So does the API's own refusal message, which
+  # carries the numbers `detail` deliberately leaves out.
+  refusal_msg=""
+  [[ -n "$refusal" ]] && refusal_msg="$(stage_api_refusal_message "$out_file")"
   log_attempt_failed "$stage" "$detail" \
-    "$(jq -nc --arg u "$pr_url" 'if $u == "" then {} else {pr_url: $u} end')"
+    "$(jq -nc --arg u "$pr_url" --arg r "$refusal" --arg m "$refusal_msg" \
+       '(if $u == "" then {} else {pr_url: $u} end)
+        + (if $r == "" then {} else {api_refusal: $r} end)
+        + (if $m == "" then {} else {api_message: $m} end)')"
   if [[ -n "$pr_url" ]]; then
     gh pr comment "$pr_url" --body "$(pipeline_comment_header script "$node_name")
 
@@ -5884,7 +5945,7 @@ if ! (( DRY_RUN )) && (( crash_loop_after > 0 )) \
     crash_loop_escalate "$crash_loop_json" "crash-loop:coordinator" \
       "Co-Ordinator failures" \
       "Crash loop: the Co-Ordinator is failing fleet-wide" \
-      "Start with the newest failing cycle's \`coordinator.out.stderr\` under \`state_dir/cycles/\`; the stage transcripts survive every failure."
+      "Start with the newest failing cycle's \`coordinator.out\` under \`state_dir/cycles/\` — a stage the API refused outright records the refusal there, as a \`result\` with \`is_error: true\`, and leaves \`coordinator.out.stderr\` empty (agent-ops#641). Read \`coordinator.out.stderr\` too, for a stage that died rather than being refused; the stage transcripts survive every failure."
   fi
 
   crash_loop_preselection_json="$(crash_loop_preselection_verdict "$crash_loop_after" < "$union_log")"
@@ -7739,6 +7800,134 @@ if (( backpressure_tripped )); then
     '{detail: $d}')"
 fi
 
+# The repo/work-sources table prompts/coordinator.md used to hand-maintain is
+# generated from config.json instead (requirement 4b), from the plain
+# configured repo list (`all_repos_json`), never the cycle's back-pressure-
+# restricted `ordered_repos_json` — so it always shows each repo's full
+# configured priority regardless of this cycle's restrictions (see "--- 4.
+# Co-Ordinator stage ---" below, which substitutes this same value into the
+# prompt). Computed here, ahead of the fingerprint, and hashed verbatim:
+# `ordered_repos_json`'s `sources` is *not* a substitute for it, because
+# back-pressure (requirement 2.2a) narrows that array's `sources` to the three
+# finishing sources for a repo with work waiting, while this table — and the
+# prompt text the Co-Ordinator actually reads — still shows that repo's full
+# configured list regardless. Without hashing the table itself, a config edit
+# to a non-finishing source during a back-pressure cycle would change the
+# assembled prompt while leaving the fingerprint's `repos[].sources`
+# unchanged — the exact silent-stall shape this rule exists to prevent.
+coordinator_sources_table="$(coordinator_work_sources_table "$all_repos_json")"
+
+# --- 3ac. The Co-Ordinator's prompt, fitted to its model's context window
+#          (requirement 4i, agent-ops#641) ---
+# The base prompt, rendered here rather than at "--- 4. Co-Ordinator stage ---"
+# below, because the fit immediately after it cannot decide what the runtime
+# input may spend until it knows what the prompt text has already spent. The
+# substitution is the same one it has always been; only its position moved.
+coordinator_base_prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" coordinator "$prompt_overrides_json")"
+coordinator_base_prompt="${coordinator_base_prompt//@@WORK_SOURCES_TABLE@@/$coordinator_sources_table}"
+
+# On 2026-08-21 this Script assembled a Co-Ordinator prompt of ~226580 tokens
+# against its model's 200000-token window, and the API refused it — four
+# cycles running, every node, `coordinator exited 1`. Nothing had broken: the
+# `issues` band had simply grown, one comment at a time, from ~212999 tokens
+# three cycles earlier. Requirement 4g's own text had already named this
+# shape — moving the aggregates off argv "raised the ceiling; it did not stop
+# the set from still climbing toward whatever ceiling came next" — and this is
+# the next ceiling, measured at last.
+#
+# The allowance handed to `coordinator_fit_bands` is what the configured
+# maximum has left after everything the fit cannot shed, each term measured
+# rather than assumed:
+#
+#   - the rendered base prompt, which is over 100 KB on its own;
+#   - the fenced scaffolding the runtime input is wrapped in;
+#   - the rest of the input document — `blocked`, `refinements`, `claimed`,
+#     the model names and the refinement policy — assembled here from the very
+#     same values "4. Co-Ordinator stage" will assemble the real one from, with
+#     an empty `repos`, so what is subtracted is exactly what will be spent.
+#
+# Deriving the overhead against the *unfitted* array would be the tempting
+# shortcut and is not what happens: the two differ by the indentation of the
+# lines the fit removes, and an overhead measured on the fatter array would
+# quietly narrow the allowance as the fit worked. Measuring it against an empty
+# `repos` makes it independent of the rung, which is what lets the ladder's own
+# measurements be trusted.
+#
+# Placed here, after back-pressure and before `coordinator_eligible_items`
+# below, for the reason that block states of its own emptying of these same two
+# bands: the eligible set must be what the Co-Ordinator is actually given, or
+# requirement 3x's corroboration would demand an account of an entry the
+# Script never offered.
+# Initialised ahead of the guard because `set -u` is in force and the second
+# `if` below reads it whichever way the first one went.
+coordinator_fit_allowance=0
+if (( coordinator_prompt_max_bytes > 0 )); then
+  coordinator_fit_overhead_json="$(jq -nc \
+    --argjson blocked "$(coordinator_blocked_view "$blocked_json")" \
+    --arg model_default "$implementer_model_default" \
+    --arg model_trivial "$implementer_model_trivial" \
+    --argjson cmax "$candidates_max" \
+    --argjson policies "$refinement_policy_json" \
+    'input as $refinements | input as $claimed
+     | {repos: [], blocked: $blocked, refinements: $refinements, claimed: $claimed,
+        models: {default: $model_default, trivial: $model_trivial},
+        candidates_max: $cmax, refinement_policy: $policies}' \
+    <<<"$refinements_json"$'\n'"$claimed_json" 2>/dev/null)" \
+    || coordinator_fit_overhead_json='{"repos":[]}'
+  # The wrapper "4. Co-Ordinator stage" puts around the rendered input: a blank
+  # line, the heading, the two fence lines and the trailing newline. Counted
+  # rather than estimated so the arithmetic below has no unmeasured term in it.
+  coordinator_fit_scaffold_bytes="$(printf '%s' '
+
+## Runtime input for this cycle
+
+```json
+```
+' | wc -c)"
+  coordinator_fit_overhead_bytes=$((
+    $(printf '%s' "$coordinator_base_prompt" | wc -c)
+    + $(printf '%s' "$coordinator_fit_overhead_json" | coordinator_rendered_bytes)
+    + coordinator_fit_scaffold_bytes ))
+  coordinator_fit_allowance=$(( coordinator_prompt_max_bytes - coordinator_fit_overhead_bytes ))
+fi
+# An allowance that came out at or below zero is *not* the same fact as the
+# bound being switched off, and must not go through the same door: the prompt
+# text and the unsheddable half of the input have between them already spent
+# the whole maximum, so there is nothing the fit could remove to make room —
+# the remedy is a larger `coordinator_prompt_max_bytes` (or a smaller prompt),
+# not a deeper trim. `coordinator_fit_bands` reads a zero budget as "bound
+# off" by design, so this case is answered here, loudly, rather than by
+# overloading that sentinel with a second meaning.
+if (( coordinator_prompt_max_bytes > 0 && coordinator_fit_allowance <= 0 )); then
+  log_event "warning" "$(jq -nc \
+    --arg d "the Co-Ordinator's prompt text and unsheddable input ($coordinator_fit_overhead_bytes bytes) already meet or exceed coordinator_prompt_max_bytes ($coordinator_prompt_max_bytes) — nothing the runtime-input fit can shed will make this cycle's prompt fit, and the API will refuse it" \
+    '{detail: $d}')"
+elif (( coordinator_prompt_max_bytes > 0 )); then
+  coordinator_fit_json="$(coordinator_fit_bands "$coordinator_fit_allowance" <<<"$ordered_repos_json" 2>&1)" \
+    || { guard_warn "coordinator_fit" "$coordinator_fit_json"; coordinator_fit_json=""; }
+  if [[ -n "$coordinator_fit_json" ]] && jq -e '.repos | type == "array"' <<<"$coordinator_fit_json" >/dev/null 2>&1; then
+    ordered_repos_json="$(jq -c '.repos' <<<"$coordinator_fit_json")"
+    coordinator_fit_report_json="$(jq -c '.fit' <<<"$coordinator_fit_json")"
+    coordinator_fit_detail_text="$(coordinator_fit_detail "$coordinator_fit_report_json")"
+    if [[ -n "$coordinator_fit_detail_text" ]]; then
+      # An informational record, not a warning: a fleet whose backlog has
+      # outgrown the window will trim on every cycle from here on, and a
+      # standing `warning` for the ordinary case is how a log stops being read.
+      log_event "coordinator-input-fitted" "$(jq -nc --arg d "$coordinator_fit_detail_text" \
+        --argjson f "$coordinator_fit_report_json" '{detail: $d} + $f')"
+      # Not fitting is the other thing entirely: the identity fields alone have
+      # outgrown the allowance, the ladder has nothing left to shed, and the
+      # API will refuse the prompt this cycle is about to send. Say so *before*
+      # it does, so the union log carries the cause rather than an exit code —
+      # the exact gap agent-ops#641 was filed into.
+      if ! jq -e '.fits' <<<"$coordinator_fit_report_json" >/dev/null 2>&1; then
+        log_event "warning" "$(jq -nc --arg d "$coordinator_fit_detail_text" '{detail: $d}')"
+      fi
+    fi
+  fi
+fi
+# --- end of requirement 4i's fit ---
+
 # The Script's own count of what *every* pre-fetched band could actually offer
 # this cycle, and which repo+item+source triples make it up — the
 # machine-corroboration baseline "5a. Verdict corroboration" below tests the
@@ -7794,23 +7983,6 @@ selection_config_json="$(jq -nc \
   '{coordinator_model: $cm, models: {default: $md, trivial: $mt}, candidates_max: $cmax}
    + $nice')"
 coordinator_prompt_sha="$(stage_prompt_sha "$PROMPTS_DIR" "$state_dir" coordinator "$prompt_overrides_json")"
-# The repo/work-sources table prompts/coordinator.md used to hand-maintain is
-# generated from config.json instead (requirement 4b), from the plain
-# configured repo list (`all_repos_json`), never the cycle's back-pressure-
-# restricted `ordered_repos_json` — so it always shows each repo's full
-# configured priority regardless of this cycle's restrictions (see "--- 4.
-# Co-Ordinator stage ---" below, which substitutes this same value into the
-# prompt). Computed here, ahead of the fingerprint, and hashed verbatim:
-# `ordered_repos_json`'s `sources` is *not* a substitute for it, because
-# back-pressure (requirement 2.2a) narrows that array's `sources` to the three
-# finishing sources for a repo with work waiting, while this table — and the
-# prompt text the Co-Ordinator actually reads — still shows that repo's full
-# configured list regardless. Without hashing the table itself, a config edit
-# to a non-finishing source during a back-pressure cycle would change the
-# assembled prompt while leaving the fingerprint's `repos[].sources`
-# unchanged — the exact silent-stall shape this rule exists to prevent.
-coordinator_sources_table="$(coordinator_work_sources_table "$all_repos_json")"
-
 # The Enabler's three inputs join the fingerprint for the same reason (requirement
 # 35b). Its eligible set is the third array whose candidacy turns on something no
 # repo signal carries — an item becomes eligible when the fleet has run its third
@@ -7942,11 +8114,10 @@ coordinator_input="$(jq -nc \
       candidates_max: $cmax, refinement_policy: $policies}' <<<"$coordinator_stdin")"
 
 # --- 4. Co-Ordinator stage ---
-# `coordinator_sources_table` (computed above, ahead of the no-op fingerprint
-# so its bytes join it) is substituted for the @@WORK_SOURCES_TABLE@@ marker
-# the base prompt carries in its place.
-coordinator_base_prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" coordinator "$prompt_overrides_json")"
-coordinator_base_prompt="${coordinator_base_prompt//@@WORK_SOURCES_TABLE@@/$coordinator_sources_table}"
+# `coordinator_base_prompt` is rendered further up, ahead of requirement 4i's
+# fit, because that fit has to know how many of the window's bytes the prompt
+# text itself has already spent before it can decide what the runtime input may
+# have.
 coordinator_prompt="$coordinator_base_prompt
 
 ## Runtime input for this cycle

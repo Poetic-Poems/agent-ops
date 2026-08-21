@@ -605,6 +605,16 @@
         "spec": "How many ranked candidates the Co-Ordinator returns; the Script claims down the list (requirement 17a), so alternates turn a lost race into the next-best item instead of a wasted cycle."
       }
     },
+    "coordinator_prompt_max_bytes": {
+      "description": "The largest assembled prompt the Script will hand the Co-Ordinator. What overflows a context window is the whole prompt, not the runtime input alone, so the Script measures the rendered base prompt, subtracts it, and trims the two whole-document bands (issues threads and tech-debt item files) into what is left \u2014 shedding prose, never candidacy, and marking every cut with where the whole of it can be read. 0 disables the bound.",
+      "type": "integer",
+      "minimum": 0,
+      "default": 350000,
+      "x-docs": {
+        "readme": "The largest assembled prompt the Script will hand the Co-Ordinator. What a context window rejects is the whole prompt, not the runtime input alone, so the Script measures the rendered base prompt, subtracts it, and trims the two bands that carry a whole document each \u2014 an issue's entire thread and a tech-debt item's entire file \u2014 into what is left. Prose is shed and candidacy is not: every entry stays selectable, and every cut carries a marker naming how many bytes went and the URL to read it whole. Raise it for a Co-Ordinator model with a larger context window; `0` disables the bound, which is how every release before this key behaved.",
+        "spec": "The largest assembled prompt the Script will hand the Co-Ordinator (requirement 4i). The default is derived from the 200000-token window of the Co-Ordinator model this installation runs, less the ~50000 tokens of system prompt and tool definitions the Script neither assembles nor can measure, less a reserve for the verdict itself, at the ~2.35 bytes per token JSON-escaped Markdown actually costs. Stated in bytes because bytes are what the Script can count without a tokenizer. `0` disables the bound."
+      }
+    },
     "max_chained_cycles": {
       "description": "Finish-then-continue: the most cycles that may run back-to-back in one process lineage — the cron-fired original plus however many it chains immediately afterward, each one launched only when the cycle before it did real work (claimed an item and ran the Implementer). The remaining-sources gate counts enabled source categories, not items, and back-pressure never empties it, so in practice a productive cycle chains to this cap regardless of remaining work. Never chains past a stand-down, a disabled pipeline, or a cycle that selected nothing. 1 disables chaining outright — the fleet is exactly the one-item-per-cron-firing shape every release before this key carried.",
       "type": "integer",

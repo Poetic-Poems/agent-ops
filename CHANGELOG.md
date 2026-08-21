@@ -18,6 +18,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   #573) and are always reported `unavailable`, never a guessed `0`, so a
   promotion decision is never made to look ready on missing data.
 
+- `coordinator_prompt_max_bytes` config key (agent-ops#641), and
+  `lib/coordinator-input.sh` behind it: a bound on the assembled Co-Ordinator
+  prompt, so it can no longer grow past its model's context window unnoticed.
+  The Script measures the rendered base prompt, subtracts it and the rest of
+  the runtime-input document, and trims the two bands that carry a whole
+  document each — an issue's entire thread, a tech-debt item's entire file —
+  into what is left, along an eight-rung ladder walked only as far as the
+  allowance requires. Prose is shed and candidacy is not: every entry keeps
+  its `ref`, `url`, `title`, `priority` and `updated_at`, so a trimmed item is
+  ranked and selected exactly as an untrimmed one, and every cut ends in
+  `…[Script: elided N of M bytes … read it whole at <url>]` — which
+  `prompts/coordinator.md` now obliges the Co-Ordinator to follow before it
+  may *select* that entry, so the fetch is paid once for the item picked
+  rather than for every item considered. Dropping whole entries is the last
+  rung only, keeps the highest-`Priority` and freshest first, and is counted
+  on the repo entry and in the union log. Trimming logs
+  `coordinator-input-fitted`; a prompt that still does not fit logs a
+  `warning` before the API refuses it. `0` disables the bound, which is how
+  every release before this key behaved.
+
 - `escalation_autonomy` config key (D18, agent-ops#627): `always-escalate`
   (the default, today's behaviour byte-for-byte) or `adjudicate-first`, which
   runs one bounded Enabler adjudication pass — a fresh, narrower engagement
@@ -177,6 +197,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   keys at every level of the precedence (TD-PPagop-26081802).
 
 ### Fixed
+
+- The Co-Ordinator no longer takes the fleet down by outgrowing its model's
+  context window (agent-ops#641). On 2026-08-21 the assembled prompt reached
+  ~226580 tokens against a 200000-token window and the API refused four
+  consecutive cycles on every node; nothing had broken, the `issues` band had
+  simply grown one comment at a time past a limit nothing measured. See
+  `coordinator_prompt_max_bytes` under Added for the bound.
+
+- A stage the API refuses outright now says which refusal it was
+  (agent-ops#641). The whole record of those four lost cycles was `coordinator
+  exited 1`, and the crash-loop escalation sent its reader to
+  `coordinator.out.stderr` — which an API refusal leaves empty, because the
+  refusal is a `result` with `is_error: true` in `coordinator.out`. The
+  `attempt-failed` detail is now "<stage> was refused by the API before it
+  could run: <terminal reason>", with the API's own message beside it on the
+  event as `api_message`; the two are kept apart deliberately, since the
+  crash-loop ladder groups on the detail and the message carries a token count
+  that moves every cycle. The escalation's hint names `coordinator.out` first.
 
 - A cycle with `refiner_model` empty (no Refiner) no longer pays for the
   Refiner's `triage_only` pre-flight (agent-ops#567): candidate computation
