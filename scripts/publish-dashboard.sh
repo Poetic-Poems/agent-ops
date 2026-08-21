@@ -870,10 +870,49 @@ today="$(date -u +%Y%m%d)"
 # "last 24h" only ever reaches 24h back — while staying a rounding error next
 # to the 60-day `by_day` window it rides alongside.
 recent_cut="$(date -u -d "-3 days" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "1970-01-01T00:00:00Z")"
+# `cost_rows[]`'s join (issue #593, D21): which work item the money bought,
+# derived from the same fleet-wide event union `$events_file` already holds
+# (`$ev` below) rather than from `$cycles_file` — `$cycles_file` is capped at
+# MAX_CYCLES (40) so a fleet running several cycles an hour loses the join for
+# all but the newest few hours, while the event union is bounded only by
+# `log_retained_bytes`, the same window the cost scan itself already outlives
+# (COST_SCAN_DAYS reaches 60 days back; the log rotates far sooner). Grouping
+# the union by `.cycle` and re-deriving `repo`/`item`/`source`/`outcome` here
+# is deliberately the same expression `cycle_obj` (above) uses for its own
+# per-cycle rendering — one cycle's facts must read the same on both surfaces
+# — except `title` is dropped: no reader of `cost_rows` needs it, and carrying
+# it here would just be one more field to keep in lock-step for nothing.
+cycle_index_file="$work_tmp/cycle-index.json"
+jq -c --slurpfile ev "$events_file" -n '
+  ($ev[0] // [] | map(select((.cycle // "") != ""))) as $events
+  | ($events | group_by(.cycle) | map(
+      (.[0].cycle) as $cid
+      | (sort_by(.ts)) as $se
+      | ($se | map(.event)) as $types
+      | { ($cid): {
+            repo:   ([ $se[] | select(.repo)  | .repo ] | last),
+            item:   ([ $se[] | select(.item)  | .item ] | last),
+            source: ([ $se[] | select(.event=="selection") | .source ] | last),
+            outcome: (
+              if   ($types | any(. == "pr-ready"))       then "pr-ready"
+              elif ($types | any(. == "pr-raised"))      then "pr-raised"
+              elif ($types | any(. == "attempt-failed")) then "failed"
+              elif ($types | any(. == "none-selected"))  then "none-selected"
+              elif ($types | any(. == "stand-down"))     then "stand-down"
+              elif ($types | any(. == "cycle-skipped"))  then "skipped"
+              elif ($types | any(. == "selection"))      then "selected"
+              else "ended" end
+            )
+          }
+        }
+    ) | add // {})' > "$cycle_index_file" 2>/dev/null
+jq -e 'type == "object"' "$cycle_index_file" >/dev/null 2>&1 || printf '{}' > "$cycle_index_file"
 counts_json="$(jq -n --slurpfile cyc "$cycles_file" --slurpfile costs_in "$costs_file" \
+  --slurpfile cycle_index_in "$cycle_index_file" \
   --arg today "$today" --arg recent_cut "$recent_cut" '
   ($cyc[0]) as $cycles
   | ($costs_in[0]) as $costs
+  | ($cycle_index_in[0]) as $cycle_index
   | {
     cycles_shown: ($cycles | length),
     failures_shown: ($cycles | map(select(.outcome=="failed")) | length),
@@ -895,7 +934,30 @@ counts_json="$(jq -n --slurpfile cyc "$cycles_file" --slurpfile costs_in "$costs
     by_actor: ($costs | group_by(.actor) | map({actor: .[0].actor, usd: (map(.cost)|add), n: length})
                       | sort_by(-.usd)),
     recent_costs: ($costs | map(select(.ts != null and .ts >= $recent_cut)) | map({ts, cost})),
-    cost_rows: ([$costs[] | . as $c | $c.models[] | {day: $c.day, model: .model, actor: $c.actor, usd: .usd, cycle: $c.cycle}])
+    # (No apostrophes below: this whole block is a single-quoted shell
+    # string, so one would end it and hand the rest of the jq to the shell.)
+    #
+    # `attributed` is true only for a coordinator/implementer/reviewer row
+    # whose cycle actually has events in `$cycle_index` — an Enabler/Refiner/
+    # limit-probe row (which shares its cycle directory, and so its `cycle`
+    # id, with whichever coordinator/implementer/reviewer cycle triggered it
+    # from the exit trap) never attributes, because that cycle owns the item
+    # some other stage of the same cycle worked, not the one the
+    # Enabler/Refiner/probe itself examined; a `project-reviewer` row (from
+    # `reviews/`, never `cycles/`) never has a cycle in this index at all. A
+    # coordinator/implementer/reviewer row whose own cycle has rotated out of
+    # the log union attributes false too, rather than guessing — carrying
+    # nulls, exactly like a row that was never attributable.
+    cost_rows: ([$costs[] | . as $c | $c.models[] | . as $m
+        | ($cycle_index[$c.cycle]) as $facts
+        | (($c.actor == "coordinator" or $c.actor == "implementer" or $c.actor == "reviewer")
+           and $facts != null) as $attributed
+        | {day: $c.day, model: $m.model, actor: $c.actor, usd: $m.usd, cycle: $c.cycle,
+           repo:      (if $attributed then $facts.repo else null end),
+           item:      (if $attributed then $facts.item else null end),
+           source:    (if $attributed then $facts.source else null end),
+           outcome:   (if $attributed then $facts.outcome else null end),
+           attributed: $attributed}])
   }')"
 
 # --- Co-Ordinator verdict quality (requirement 3w, issue #319) ----------------

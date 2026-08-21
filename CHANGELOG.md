@@ -79,6 +79,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   retained-log window — which can be shorter than the cost charts' — since
   `log.jsonl` is rotated independently of `COST_SCAN_DAYS`.
 
+- `counts.cost_rows[]` entries now carry `repo`, `item`, `source`, `outcome`
+  and `attributed` (issue #593, D21) — the money's spend total already said,
+  which the item dimension left "what did we spend on work that never landed"
+  unanswerable to ask. Joined by `cycle` against the same fleet-wide event
+  union `cycles[]` renders from, not against `cycles[]` itself: the union is
+  bounded by `log_retained_bytes`, independent of `cycles[]`'s own
+  `MAX_CYCLES` cap, so the join reaches back over the whole `COST_SCAN_DAYS`
+  span the cost roll-ups already cover. `attributed:true`, with the other
+  four fields populated, only for a coordinator/implementer/reviewer row
+  whose own cycle has events in that union; every other row —
+  enabler/refiner/limit-probe (which share their triggering cycle's id but
+  spent on a different item than the one that cycle selected),
+  project-reviewer (whose review id never reaches `log.jsonl`), or a
+  coordinator/implementer/reviewer row whose cycle has rotated out of the
+  union — carries all four as `null` and `attributed:false`, never dropping
+  the row itself.
+
 - An hourly, unattended `scripts/doctor.sh --unattended` pass (agent-ops#543),
   on its own `deploy/docker/crontab.tmpl` line: the same Configuration and
   GitHub checks an operator runs by hand, run unprompted, so a configuration
