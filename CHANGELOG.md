@@ -65,6 +65,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   an installation's choice — is never checked, and neither is one with no
   `x-docs.value` at all or one keyed `readme`/`spec`.
 
+- Two dashboard pie charts, **Model used — Implementer** and **Model used —
+  Reviewer** (issue #529): which model each stage was *asked* to run, not
+  spend attribution — a single Implementer stage on Sonnet still emits Haiku
+  `modelUsage` rows for the subagents its own invocation spawns, so a ratio
+  built from `cost_rows` would have reported Haiku for most Implementer runs
+  (the #536 failure this issue was asked not to repeat). Backed by a new
+  `counts.stage_models` Publisher aggregate, read from `stage-end` events'
+  own `model` field; every stage-end counts once, including a failed run or a
+  retry, and one with no readable model lands under "unknown" rather than
+  being dropped. Appended to the existing cost section, sharing its
+  time-frame selector, with a muted caption naming the aggregate's own
+  retained-log window — which can be shorter than the cost charts' — since
+  `log.jsonl` is rotated independently of `COST_SCAN_DAYS`.
+
 - An hourly, unattended `scripts/doctor.sh --unattended` pass (agent-ops#543),
   on its own `deploy/docker/crontab.tmpl` line: the same Configuration and
   GitHub checks an operator runs by hand, run unprompted, so a configuration

@@ -1,0 +1,63 @@
+{
+  "generated_at": "@now",
+  "node": "poetic-1",
+  "config": {
+    "timeout_coordinator": 15, "timeout_implementer": 90,
+    "timeout_reviewer": 30, "timeout_enabler": 30,
+    "lock_stale_after": 4, "dashboard_refresh_seconds": 5,
+    "repos": [
+      {
+        "slug": "Poetic-Poems/poetic",
+        "sources": ["security", "tech-debt"]
+      }
+    ]
+  },
+  "status": {
+    "switch": {"disabled": false},
+    "limit": {"active": false},
+    "running": false,
+    "lock": null,
+    "current": null,
+    "last_cycle": null
+  },
+  "counts": {
+    "spend_today_usd": 0, "spend_total_usd": 0,
+    "failures_shown": 0, "cycles_shown": 0, "prs_reached_ready": 0,
+    "by_day": [], "by_model": [], "by_actor": [],
+    "cost_rows": [
+      {"day": "@day:0", "model": "claude-sonnet-5-20260101", "actor": "implementer", "usd": 0.1},
+      {"day": "@day:40", "model": "claude-sonnet-5-20260101", "actor": "implementer", "usd": 0.1}
+    ],
+    "stage_models": {
+      "window_from": "@ago:45d",
+      "window_to": "@now",
+      "by_stage": [
+        {"stage": "implementer", "model": "claude-sonnet-5-20260101", "n": 3},
+        {"stage": "implementer", "model": "claude-opus-5-20260101",   "n": 1},
+        {"stage": "reviewer",    "model": "claude-sonnet-5-20260101", "n": 2},
+        {"stage": "reviewer",    "model": "unknown",                  "n": 1}
+      ],
+      "rows": [
+        {"day": "@day:0", "stage": "implementer", "model": "claude-sonnet-5-20260101", "n": 1},
+        {"day": "@day:0", "stage": "implementer", "model": "claude-opus-5-20260101",   "n": 1},
+        {"day": "@day:3", "stage": "implementer", "model": "claude-sonnet-5-20260101", "n": 2},
+        {"day": "@day:3", "stage": "reviewer",    "model": "claude-sonnet-5-20260101", "n": 2},
+        {"day": "@day:40", "stage": "reviewer",   "model": "unknown",                  "n": 1}
+      ]
+    }
+  },
+  "cycles": [],
+  "blocked": [],
+  "void": [],
+  "github": {
+    "ok": true, "fetched_at": "@ago:1m", "prs": [], "pr_index": {},
+    "inputs": {
+      "Poetic-Poems/poetic": {
+        "issues": [], "failed_runs": [], "tech_debt": [], "findings": []
+      }
+    }
+  },
+  "log_tail": [],
+  "cron_tail": ["30 * * * *  /app/agent-cycle.sh"],
+  "max_open_agent_prs": 3
+}

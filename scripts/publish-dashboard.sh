@@ -1127,6 +1127,60 @@ counts_merged="$(jq -c --slurpfile v "$coord_verdicts_file" \
   '. + {coordinator_verdicts: $v[0]}' <<<"$counts_json" 2>/dev/null)"
 [[ -n "$counts_merged" ]] && counts_json="$counts_merged"
 
+# --- Implementer/Reviewer model selection (issue #529) -----------------------
+# Which model each of these two stages was *asked* to run, as a ratio — the
+# dashboard's two "model used" pies. The unit is the stage-end event, not the
+# cycle: a cycle logs at most one Implementer and one Reviewer stage-end, so
+# double-counting is not a risk here the way it is for the Co-Ordinator block
+# above (which can see two verdicts from one cycle's retry).
+#
+# `.model` is `lib/metering.sh`'s own field — the id passed to the `claude`
+# invocation, not read back out of the transcript envelope — deliberately not
+# `counts.cost_rows[]`/`modelUsage`: those are spend attribution, and a single
+# Implementer stage running on Sonnet still emits Haiku `modelUsage` rows for
+# the subagents its own invocation spawns, so a ratio built from them would
+# report Haiku for most Implementer runs, which is the #536 failure this issue
+# was explicitly asked not to repeat. Every stage-end for these two stages
+# counts once, including a failed run (`exit_code != 0`) or a retry: the
+# question is which model was dispatched, and a failed run still consumed
+# one. A stage-end with no readable model falls back to `unknown`, exactly as
+# `by_model` above does, rather than being dropped.
+#
+# Shaped like `coordinator_verdicts` just above: `by_stage` is the whole
+# retained window's totals for the client's "Lifetime" default, `rows` is
+# per-day so the page can re-aggregate over whatever narrower window its
+# shared time-frame selector picks, and `window_from`/`window_to` are the span
+# of the *whole* retained log (not just these two stages' own events) — the
+# same "figure here is 'over the log we still have'" reasoning
+# `coordinator_verdicts` already documents, since `log.jsonl` is rotated at
+# `log_retained_bytes` independently of `COST_SCAN_DAYS`, so these pies can
+# span less history than the cost charts beside them.
+stage_models_file="$work_tmp/stage-models.json"
+jq -c --arg cut "$day_cut" '
+  . as $ev
+  | def day_of: ((.ts // "" | tostring)
+                 | if test("^[0-9]{4}-[0-9]{2}-[0-9]{2}")
+                   then (.[0:4] + .[5:7] + .[8:10]) else null end);
+    ([ $ev[] | select(.event == "stage-end" and (.stage == "implementer" or .stage == "reviewer"))
+             | {day: day_of, stage: .stage, model: (.model // "unknown")} ]
+     | map(select(.day != null and .day >= $cut))) as $recs
+  | ($recs | group_by([.stage, .model])
+           | map({stage: .[0].stage, model: .[0].model, n: length})
+           | sort_by([.stage, - .n, .model])) as $by_stage
+  | ($recs | group_by([.day, .stage, .model])
+           | map({day: .[0].day, stage: .[0].stage, model: .[0].model, n: length})
+           | sort_by([.day, .stage, .model])) as $rows
+  | ([ $ev[] | .ts // empty ]) as $tss
+  | {window_from: ($tss | min), window_to: ($tss | max), by_stage: $by_stage, rows: $rows}
+' "$events_file" > "$stage_models_file" 2>/dev/null
+if ! jq -e 'type == "object"' "$stage_models_file" >/dev/null 2>&1; then
+  printf '%s' '{"window_from":null,"window_to":null,"by_stage":[],"rows":[]}' \
+    > "$stage_models_file"
+fi
+counts_merged="$(jq -c --slurpfile v "$stage_models_file" \
+  '. + {stage_models: $v[0]}' <<<"$counts_json" 2>/dev/null)"
+[[ -n "$counts_merged" ]] && counts_json="$counts_merged"
+
 # --- Blocked and void items (requirements 34, 34c, 34h) ----------------------
 # Both rules live in lib/cycle-state.sh, shared with agent-cycle.sh, so what the
 # dashboard calls blocked or void is by construction what the Co-Ordinator is
