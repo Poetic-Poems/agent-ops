@@ -162,16 +162,17 @@ with no code changes; agent-ops contains no pipeline code, only Poetic's
 configuration and deployment; the product repository exists in the
 Pullwright organisation and carries its licence.
 
-- [ ] Audit and sweep the Poetic-specifics out of scripts, prompts, and
-      config: hardcoded repo slugs, the owner's username, label names,
-      branch conventions, and the poetic-fiddle implementation-plan source.
-      Four are swept (the Enabler's assignee, the entrypoint's git identity,
-      the implementation-plan path, the Co-Ordinator's repo/source table);
-      the audit that would say what is left has not been done, and
-      `config.schema.json` is now the place to do it from — writing it
-      surfaced that the specs' configuration tables state *Poetic's* values
-      where they say "default", `crash_loop_repo` among them.
-      *[fleet — one item per specific]*
+- [ ] Sweep the Poetic-specifics out of scripts, prompts, and config:
+      hardcoded repo slugs, the owner's username, label names, branch
+      conventions, and the poetic-fiddle implementation-plan source. Four are
+      swept (the Enabler's assignee, the entrypoint's git identity, the
+      implementation-plan path, the Co-Ordinator's repo/source table); the
+      audit is done —
+      [`docs/PHASE-1-POETIC-SPECIFICS-AUDIT.md`](PHASE-1-POETIC-SPECIFICS-AUDIT.md)
+      inventories what is left across `prompts/`, `lib/`, `scripts/`,
+      `deploy/` and `config.schema.json`, classified, with one follow-up
+      issue per hit that needs a config key or a generic default (#585,
+      #586, #653–#657). *[fleet — one item per specific]*
 - [x] Parameterise the operating prompts so an installation can extend or
       override them without forking the product (`prompt_overrides` in
       `config.json`, docs/IMPLEMENTATION-PIPELINE-SPEC.md requirement 4a).
