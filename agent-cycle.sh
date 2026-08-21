@@ -6576,14 +6576,15 @@ fi
 # or never happens, pays that one read for every such pull request, every
 # cycle, forever: it is never logged (a non-Approver merge "is not audited
 # at all", per the script's own header), so nothing ever makes it cheap to
-# skip. `timeout 120` bounds what a single cycle spends on this either way;
-# see the script's own "Idempotency" section for why oldest-first candidate
-# order still lets a repository's actual audit subject — its
-# Approver-merged landings — converge over a bounded number of cycles
-# despite that recurring cost. The same unreadable-login skip the retry
-# sweep above uses applies here too — with no Approver identity to test
-# `merged_by` against, nothing below could tell an autonomous landing apart
-# from a human's own merge.
+# skip. `timeout 120` bounds what a single cycle spends on this either way,
+# and where that recurring cost alone exceeds the budget the sweep stops at
+# the same frontier every cycle rather than converging — see the script's
+# own "Idempotency" section for what oldest-first candidate order does and
+# does not buy, and for the measurement of where that frontier sits on this
+# repository today. The same unreadable-login skip the retry sweep above
+# uses applies here too — with no Approver identity to test `merged_by`
+# against, nothing below could tell an autonomous landing apart from a
+# human's own merge.
 if escape_login="$(approver_token_identity_login "")" && [[ -n "$escape_login" ]]; then
   while IFS= read -r escape_slug; do
     [[ -n "$escape_slug" ]] || continue

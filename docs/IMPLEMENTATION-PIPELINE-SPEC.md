@@ -4939,9 +4939,11 @@ implements.
    on `--dry-run` — it never arms or lands anything, only reads.
 
    For every repository, the detector considers every merged, `pr_label`-
-   carrying pull request, oldest-merged first, and for each already carrying
-   a `classifier-escape` or `landing-audit` event for its `pr_url` in the
-   fleet log skips it at zero `gh` cost (audited at most once, ever — a
+   carrying pull request, oldest-created first (GitHub's own
+   `sort=created&direction=asc`, which is creation order rather than merge
+   order), and for each already carrying a `classifier-escape` or
+   `landing-audit` event for its `pr_url` in the fleet log skips it at zero
+   `gh` cost (audited at most once, ever — a
    merged pull request's history is a fixed, past fact — and GitHub's
    `html_url` for a pull request is deterministic from its own repository
    and number, so an already-audited one is recognised before any read, not
@@ -4970,17 +4972,26 @@ implements.
 
    `agent-cycle.sh` runs the detector once per repository per cycle under
    `timeout 120`, so a repository whose candidate list does not fit inside
-   that budget is not fully audited in one pass. Coverage still converges
-   over a bounded number of cycles rather than stalling: an already-audited
-   pull request costs nothing to skip (above), so the budget a cycle spends
-   re-confirming earlier history shrinks every time one of those becomes
-   free, and the oldest-first candidate order means whatever a cycle does
-   reach stays reached rather than being displaced by newer merges landing
-   ahead of it. What does not shrink is the read spent on every pull request
+   that budget is audited only as far as one pass reaches, oldest candidate
+   first. What a cycle spends re-confirming history it has already audited
+   shrinks as it goes — an already-audited pull request costs nothing to
+   skip (above) — and the oldest-first order means the ground one cycle
+   covers stays covered rather than being displaced by newer merges landing
+   ahead of it. What never shrinks is the read spent on every pull request
    merged by someone other than the Approver App's login, since that fact is
-   never logged and so is never free to skip on a later cycle — a real,
-   accepted, permanent cost for a repository that produces many of those,
-   not evidence of a stalled sweep.
+   never logged and so is never free to skip on a later cycle. Coverage
+   therefore advances past a given candidate only while the reads it sits
+   behind still fit inside the budget: a repository whose
+   non-Approver-merged candidates alone exceed it stops at the same frontier
+   on every cycle, indefinitely, and never audits the candidates behind that
+   frontier — newly merged pull requests, which sort last, among them.
+   Measured against `Poetic-Poems/agent-ops` on 2026-08-22: 190 merged
+   `pr_label`-carrying pull requests, none of them merged by the Approver
+   identity, at ~0.9 s per `repos/SLUG/pulls/N` read — about 170 s of
+   unavoidable reads against the 120 s budget, a frontier around the 130th
+   oldest candidate. The `counts.escape_audits` totals the dashboard renders
+   (below) are accordingly a floor on what has been audited, never a
+   statement of coverage.
 
    Any of those three inputs that cannot be reconstructed — an unreadable,
    too-large-to-enumerate, or (short of either) file-count-capped merge

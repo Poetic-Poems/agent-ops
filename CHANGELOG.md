@@ -332,7 +332,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   autonomous-landings digest's own rows, and as an all-time
   `counts.escape_audits` scoreboard (checked/clean/escapes/unverifiable) on
   the dashboard, never windowed like the digest above it — an escape is a
-  permanent fact about one merged pull request.
+  permanent fact about one merged pull request. The sweep runs under a
+  120-second budget per repository per cycle and reads its candidates
+  oldest-first, so on a repository whose candidate list costs more than that
+  to walk it audits only as far as one pass reaches: the scoreboard is a
+  floor on what has been checked, not a coverage statement (requirement 8e
+  records where that frontier sits today).
 
 - The deterministic eligibility classifier and the arming/enqueue step (D18
   WI-7, requirement 8d; agent-ops#410): at `merge_autonomy: agent-merges-routine`

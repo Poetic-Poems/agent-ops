@@ -98,13 +98,27 @@
 # "What counts..." above), so that read is paid again every cycle, forever,
 # for as long as a repository keeps producing them — see the comment beside
 # this script's own invocation in `agent-cycle.sh` for the accepted
-# reasoning. `_escape_audit_candidates` lists oldest-merged first for this
-# reason: whatever a single `timeout 120` budget reaches, it reaches
-# starting from the oldest still-unaudited history rather than an
-# ever-shifting newest slice, so a repository's Approver-merged backlog
-# — the audit's actual subject — converges within a bounded number of
-# cycles even while the non-Approver majority keeps costing one read apiece
-# on every one of them.
+# reasoning. `_escape_audit_candidates` lists oldest-created first for this
+# reason (GitHub's own `sort=created&direction=asc` — creation order, which
+# is not quite merge order: a long-lived pull request merges after a younger
+# one and still sorts ahead of it): whatever a single `timeout 120` budget
+# reaches, it reaches starting from the oldest still-unaudited history
+# rather than an ever-shifting newest slice, so the ground a cycle covers
+# stays covered instead of being displaced by newer merges landing ahead
+# of it.
+#
+# That buys forward progress only while the reads a candidate sits behind
+# still fit inside the budget. They are the non-Approver-merged candidates
+# ahead of it, and their cost never shrinks — so where that cost alone
+# exceeds the budget the sweep stops at the same frontier on every cycle,
+# indefinitely, and the candidates behind it are never audited at all. Newly
+# merged pull requests sort last, so they are the ones a frozen frontier
+# never reaches. Measured against Poetic-Poems/agent-ops on 2026-08-22: 190
+# merged `pr_label`-carrying pull requests, none of them merged by the
+# Approver identity, at ~0.9 s per `repos/SLUG/pulls/N` read — about 170 s
+# of unavoidable reads against a 120 s budget, a frontier around the 130th
+# oldest candidate. What this audit reports is therefore a floor on what has
+# been checked, never a statement of coverage.
 #
 # ## Output
 #
@@ -255,8 +269,9 @@ _escape_audit_routine_sources() {
 # ways this response can be hiding files past whatever it returned, both
 # treated as a refusal to answer "no protected path", never a pass, the same
 # "a page cap is a truncation signal, not a floor to trust" reasoning
-# `LANDING_PR_FILES_LIMIT`/`github_pr_list_truncated` (lib/landing.sh,
-# lib/github-limit.sh, sourced above) already apply to the sibling read:
+# `LANDING_PR_FILES_LIMIT` (lib/landing.sh, which this script deliberately
+# never sources — see the header) and `github_pr_list_truncated`
+# (lib/github-limit.sh, sourced above) already apply to the sibling read:
 #
 #   - GitHub omits `files` from this response outright once a commit's diff
 #     is too large to enumerate rather than paginating it — a response with
@@ -314,8 +329,9 @@ _escape_audit_complexity_at_merge() {
 # whatever the sweep last reached. Oldest-first instead makes each cycle's
 # budget buy forward progress through history that stays put once made —
 # the pull requests behind the frontier this reaches are never reordered by
-# a later merge — which is what lets a repository's Approver-merged backlog
-# converge over a bounded number of cycles (see "Idempotency" above).
+# a later merge. It does not make an over-budget candidate list finish: see
+# "Idempotency" above for what a frontier that stops advancing costs, and
+# why it is the newest landings that a frozen one never reaches.
 _escape_audit_candidates() {
   local repo_slug="$1"
   gh_retry api "repos/$repo_slug/issues" --method GET --paginate -F per_page=100 \
