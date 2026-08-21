@@ -153,7 +153,7 @@ while IFS=$'\t' read -r number assignee; do
       printf '%s#%s: %s already present — left as is\n' "$repo" "$number" "$REFINEMENT_BLOCKED_LABEL"
       ;;
     unrecorded)
-      echo "sweep-legacy-refinement-assignees: $repo#$number: could not read $repo#$number's labels — $REFINEMENT_BLOCKED_LABEL was applied best-effort" >&2
+      echo "sweep-legacy-refinement-assignees: $repo#$number: could not read its labels — $REFINEMENT_BLOCKED_LABEL was applied best-effort" >&2
       ;;
     *)
       echo "sweep-legacy-refinement-assignees: $repo#$number: could not apply the $REFINEMENT_BLOCKED_LABEL label" >&2

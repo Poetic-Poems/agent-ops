@@ -9137,10 +9137,12 @@ implements.
     than guessed at, the same trade-off `refinement_label_project` already
     makes for an unreadable label list, and bounded to the same one-off,
     only-ever-shrinking backlog the migration itself is scoped to. It comes
-    off only by a human's own hand, or once the issue earns a *fresh* block
-    whose own event can prove what it applied. A legacy block the sweep has
-    not reached yet costs one `gh` call that finds nothing to remove,
-    best-effort like every other call on that path.
+    off only by a human's own hand: a *fresh* block landing on the same issue
+    later does not release it either, because `refinement_label_project` finds
+    the label already `present` and so records nothing for that block to give
+    back. A legacy block the sweep has not reached yet costs one `gh` call
+    that finds nothing to remove, best-effort like every other call on that
+    path.
 
     **The reconciliation sweep for a removal that silently failed**
     (agent-ops#651). Unlike `needs_refinement_label`'s hand-flag path
