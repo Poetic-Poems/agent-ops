@@ -68,6 +68,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$SCRIPT_DIR/lib/cycle-state.sh"
 # shellcheck source=lib/refinement.sh
 . "$SCRIPT_DIR/lib/refinement.sh"
+# shellcheck source=lib/escalation-autonomy.sh
+. "$SCRIPT_DIR/lib/escalation-autonomy.sh"
 # shellcheck source=lib/void-guard.sh
 . "$SCRIPT_DIR/lib/void-guard.sh"
 
@@ -132,6 +134,14 @@ extract_json_result_fn="$(extract_fn 'extract_json_result() {' "$SCRIPT_DIR/agen
 # the "checks-unreadable" scenario below exercises the genuine escalation
 # logic; only its own two callees are stubbed.
 review_gate_escalate_unreadable_streak_fn="$(extract_fn 'review_gate_escalate_unreadable_streak() {' "$SCRIPT_DIR/agent-cycle.sh")"
+# agent-ops#627: the bound on `adjudicate-first` — one adjudication pass per
+# item, per human touch. Lifted for real rather than stubbed, because it is
+# the whole of requirement 36b's "bounded, not a loop": a guard that fails
+# open here does not break a scenario, it silently reinstates the two-model
+# loop the thrash guard beside it exists to end. Its own log predicate
+# (`escalation_autonomy_adjudicated_before`) is sourced for real above and
+# unit-tested in test/escalation-autonomy.test.sh.
+escalation_autonomy_pass_available_fn="$(extract_fn 'escalation_autonomy_pass_available() {' "$SCRIPT_DIR/agent-cycle.sh")"
 
 if [[ "$maybe_run_enabler_fn" != *"enabler-examined"* ]]; then
   printf 'FAIL - maybe_run_enabler could not be found in agent-cycle.sh (renamed or moved?)\n'
@@ -149,10 +159,15 @@ if [[ "$review_gate_escalate_unreadable_streak_fn" != *"streak_json"* ]]; then
   printf 'FAIL - review_gate_escalate_unreadable_streak could not be found in agent-cycle.sh (renamed or moved?)\n'
   exit 1
 fi
+if [[ "$escalation_autonomy_pass_available_fn" != *"escalation_autonomy_adjudicated_before"* ]]; then
+  printf 'FAIL - escalation_autonomy_pass_available could not be found in agent-cycle.sh (renamed or moved?)\n'
+  exit 1
+fi
 
 eval "$extract_json_result_fn"
 eval "$enabler_claim_key_fn"
 eval "$review_gate_escalate_unreadable_streak_fn"
+eval "$escalation_autonomy_pass_available_fn"
 eval "$maybe_run_enabler_fn"
 
 # --- A claim.sh stub that always wins, so the claim step needs no network ---
@@ -250,6 +265,11 @@ DRY_RUN=0
 limit_hit_this_cycle=0
 # shellcheck disable=SC2034
 enabler_model="claude-test-model"
+# escalation_autonomy_configured_level's own input (agent-ops#627) — the real
+# function is sourced above and runs for real, so most scenarios need only
+# the product default; the adjudicate-first scenario below overrides this.
+# shellcheck disable=SC2034
+DEFAULTED_CONFIG='{}'
 # shellcheck disable=SC2034
 PROMPTS_DIR="$fake_root/prompts"
 # shellcheck disable=SC2034
@@ -311,6 +331,21 @@ review_gate_degraded_since() { cat >/dev/null; return 1; }
 handoff_complete_review() {
   echo "FAIL - handoff_complete_review was called but no scenario stub was set" >&2
   exit 98
+}
+
+# run_enabler_adjudication (agent-ops#627) launches a live nested Claude
+# engagement in the real agent-cycle.sh — a side effect this file's own
+# stubbing philosophy (see the header) keeps out of scope, the same reason
+# `create_escalation_issue` below is stubbed rather than wired for real. The
+# gating logic that decides *whether* to call it — refinement_is_disagreement
+# and escalation_autonomy_configured_level, both real, both sourced above —
+# and what the escalate branch does with its answer are what this file
+# actually tests. Overridden per-scenario below; a default that fails loudly
+# means a scenario expecting it never called is not silently masking a bug.
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+run_enabler_adjudication() {
+  echo "FAIL - run_enabler_adjudication was called but no scenario stub was set" >&2
+  exit 97
 }
 
 # run_case DESC ELIGIBLE_JSON EXAMINED_JSON [CYCLE_RC]
@@ -550,6 +585,7 @@ assert_eq "escalate: names the filed issue number" "42" "$(jq -r '.issue_number'
 xmn_evt="$(events_named "$calls" enabler-examined | head -n1)"
 assert_eq "escalate: enabler-examined outcome is escalate" "escalate" "$(jq -r '.outcome' <<<"$xmn_evt")"
 
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
 create_escalation_issue() { return 1; }
 calls="$(run_case "escalate: filing failed" "$eligible" "$examined")"
 
@@ -560,6 +596,149 @@ assert_eq "escalation-failed: enabler-examined outcome is escalation-failed" \
   "escalation-failed" "$(jq -r '.outcome' <<<"$xmn_evt")"
 assert_not_contains "escalation-failed: is never confused with void-refused or refinement-refused" \
   "-refused" "$xmn_evt"
+
+# ============================================================================
+# escalate, adjudicate-first (agent-ops#627): a refinement-disagreement item
+# — kind needs-refinement, refined_before set — under escalation_autonomy:
+# "adjudicate-first" runs one adjudication pass before filing. "adequate"
+# resolves it exactly like an ordinary unblocked refinement, with no
+# escalation issue ever filed; "inadequate" escalates exactly as
+# always-escalate already does.
+# ============================================================================
+eligible_disagreement='[{"repo":"acme/widgets","item":"TD26071901","blocked_ts":"2026-08-01T00:00:00Z",
+  "kind":"needs-refinement","reason":"threshold",
+  "refined_before":{"ts":"2026-08-01T09:00:00Z","cycle":"c1","comment_url":"","spec":"the original spec"}}]'
+examined='[{"repo":"acme/widgets","item":"TD26071901","verdict":"escalate","reason":"still too vague",
+            "issue":{"title":"Refinement disagreement for TD26071901","body":"…draft escalation…"}}]'
+
+# shellcheck disable=SC2034
+DEFAULTED_CONFIG='{"escalation_autonomy": "adjudicate-first"}'
+
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+run_enabler_adjudication() {
+  record "run_enabler_adjudication $1 $2"
+  printf '{"verdict":"adequate","evidence":"the original spec already names the acceptance criteria"}'
+}
+calls="$(run_case "adjudicate-first: adequate" "$eligible_disagreement" "$examined")"
+
+assert_contains "adjudicate-first, adequate: the adjudication pass was actually called" \
+  "run_enabler_adjudication acme/widgets TD26071901" "$calls"
+assert_eq "adjudicate-first, adequate: exactly one enabler-adjudication event" "1" \
+  "$(grep -cE '^event enabler-adjudication ' <<<"$calls")"
+adj_evt="$(events_named "$calls" enabler-adjudication | head -n1)"
+assert_eq "adjudicate-first, adequate: the event carries the adequate verdict" \
+  "adequate" "$(jq -r '.verdict' <<<"$adj_evt")"
+assert_eq "adjudicate-first, adequate: ...the adjudication marker" \
+  "true" "$(jq -r '.adjudication' <<<"$adj_evt")"
+assert_eq "adjudicate-first, adequate: no escalation issue is ever filed" "0" \
+  "$(grep -cE '^event escalated ' <<<"$calls")"
+assert_eq "adjudicate-first, adequate: exactly one unblocked event" "1" \
+  "$(grep -cE '^event unblocked ' <<<"$calls")"
+unblk_evt="$(events_named "$calls" unblocked | head -n1)"
+assert_eq "adjudicate-first, adequate: ...crediting the enabler" "enabler" "$(jq -r '.by' <<<"$unblk_evt")"
+assert_eq "adjudicate-first, adequate: exactly one item-refined event" "1" \
+  "$(grep -cE '^event item-refined ' <<<"$calls")"
+refined_evt="$(events_named "$calls" item-refined | head -n1)"
+assert_eq "adjudicate-first, adequate: ...carrying the *existing* refinement's own spec" \
+  "the original spec" "$(jq -r '.spec' <<<"$refined_evt")"
+assert_contains "adjudicate-first, adequate: the refinement label is released" \
+  "release-refinement-label TD26071901 acme/widgets" "$calls"
+xmn_evt="$(events_named "$calls" enabler-examined | head -n1)"
+assert_eq "adjudicate-first, adequate: enabler-examined outcome is unblocked, not escalate" \
+  "unblocked" "$(jq -r '.outcome' <<<"$xmn_evt")"
+
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+run_enabler_adjudication() {
+  printf '{"verdict":"inadequate","evidence":"the spec never names a concrete acceptance criterion"}'
+}
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+create_escalation_issue() { printf '43\thttps://github.com/acme/widgets/issues/43'; return 0; }
+calls="$(run_case "adjudicate-first: inadequate" "$eligible_disagreement" "$examined")"
+
+assert_eq "adjudicate-first, inadequate: exactly one enabler-adjudication event" "1" \
+  "$(grep -cE '^event enabler-adjudication ' <<<"$calls")"
+adj_evt="$(events_named "$calls" enabler-adjudication | head -n1)"
+assert_eq "adjudicate-first, inadequate: the event carries the inadequate verdict" \
+  "inadequate" "$(jq -r '.verdict' <<<"$adj_evt")"
+assert_eq "adjudicate-first, inadequate: no unblocked event" "0" \
+  "$(grep -cE '^event unblocked ' <<<"$calls")"
+assert_eq "adjudicate-first, inadequate: escalates exactly as always-escalate already does" "1" \
+  "$(grep -cE '^event escalated ' <<<"$calls")"
+esc_evt="$(events_named "$calls" escalated | head -n1)"
+assert_eq "adjudicate-first, inadequate: names the filed issue" "43" "$(jq -r '.issue_number' <<<"$esc_evt")"
+xmn_evt="$(events_named "$calls" enabler-examined | head -n1)"
+assert_eq "adjudicate-first, inadequate: enabler-examined outcome is escalate" \
+  "escalate" "$(jq -r '.outcome' <<<"$xmn_evt")"
+
+# The bound (requirement 36b, "bounded, not a loop"): a second disagreement
+# over the same item, with an adjudication already on the record and no human
+# having acted since, escalates *without* adjudicating. Without this, the
+# adequate path above re-arms itself — it clears the block and re-records the
+# existing refinement, so the re-flagged item arrives back here with
+# `refined_before` still set and reaches the very same escalate verdict, over
+# the very same evidence, that a pass has already answered once.
+#
+# The fixture goes in `log_file` because the harness never sets `union_log`,
+# and `escalation_autonomy_pass_available` reads `${union_log:-$log_file}`;
+# `log_event` is stubbed to `record`, so nothing a scenario writes lands there
+# to disturb it.
+adj_spent_evt="$(jq -nc '{ts: "2026-08-02T00:00:00Z", event: "enabler-adjudication",
+  repo: "acme/widgets", item: "TD26071901", verdict: "adequate", evidence: "…", adjudication: true}')"
+printf '%s\n' "$adj_spent_evt" > "$log_file"
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+create_escalation_issue() { printf '45\thttps://github.com/acme/widgets/issues/45'; return 0; }
+calls="$(run_case "adjudicate-first: the pass is already spent" "$eligible_disagreement" "$examined")"
+
+assert_eq "pass spent: no second adjudication pass is run" "0" \
+  "$(grep -cE '^event enabler-adjudication ' <<<"$calls")"
+assert_eq "pass spent: no unblocked event — the loop is what this guard exists to stop" "0" \
+  "$(grep -cE '^event unblocked ' <<<"$calls")"
+assert_eq "pass spent: it escalates to the human instead" "1" \
+  "$(grep -cE '^event escalated ' <<<"$calls")"
+assert_contains "pass spent: and says in the log why it did not adjudicate" \
+  "already spent its one adjudication pass" "$calls"
+
+# The one exemption, and the thrash guard's own: eligibility reason
+# `issue-closed` exists only because a human acted on an escalation about this
+# item (requirement 35a), so the pass it authorises is the first since they
+# did — one per item, per human touch, not one per item ever.
+eligible_disagreement_closed="$(jq -c '[.[0] + {reason: "issue-closed"}]' <<<"$eligible_disagreement")"
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+run_enabler_adjudication() {
+  record "run_enabler_adjudication $1 $2"
+  printf '{"verdict":"adequate","evidence":"the original spec already names the acceptance criteria"}'
+}
+calls="$(run_case "adjudicate-first: a human has acted since" "$eligible_disagreement_closed" "$examined")"
+
+assert_contains "human touch: the pass is available again" \
+  "run_enabler_adjudication acme/widgets TD26071901" "$calls"
+assert_eq "human touch: exactly one enabler-adjudication event" "1" \
+  "$(grep -cE '^event enabler-adjudication ' <<<"$calls")"
+: > "$log_file"
+
+# Reset to the product default and the harness's own always-loud default,
+# so a scenario below that forgets to set either is caught rather than
+# silently reusing what this section left behind.
+# shellcheck disable=SC2034
+DEFAULTED_CONFIG='{}'
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+run_enabler_adjudication() {
+  echo "FAIL - run_enabler_adjudication was called but no scenario stub was set" >&2
+  exit 97
+}
+
+# always-escalate (the default) never adjudicates, even for the same
+# disagreement shape — no run_enabler_adjudication call, straight to the
+# ordinary escalate path, byte-for-byte today's behaviour.
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+create_escalation_issue() { printf '44\thttps://github.com/acme/widgets/issues/44'; return 0; }
+calls="$(run_case "always-escalate: a disagreement item still escalates directly" \
+  "$eligible_disagreement" "$examined")"
+
+assert_eq "always-escalate: no enabler-adjudication event" "0" \
+  "$(grep -cE '^event enabler-adjudication ' <<<"$calls")"
+assert_eq "always-escalate: files the escalation directly" "1" \
+  "$(grep -cE '^event escalated ' <<<"$calls")"
 
 # ============================================================================
 # An item this cycle did not claim is ignored, not acted on

@@ -454,6 +454,26 @@ assert_eq "but a recheck is not a human touch" "1" \
   "$(refinement_second_pass_refused "$(jq -c '.reason = "recheck"' <<<"$refined_entry")" \
        "$unblock" >/dev/null; echo $?)"
 
+# --- Requirement 36b: refinement_is_disagreement (agent-ops#627) ---------------
+# The same "needs-refinement block with refined_before set" shape the thrash
+# guard above refuses a second unblocked verdict against, read here without the
+# verdict/issue-closed conditions that guard also checks — escalation_
+# autonomy's adjudicate-first setting is this predicate's one caller, and it
+# decides on the item alone, before any verdict is in hand.
+assert_eq "a refined item is a disagreement" "0" \
+  "$(refinement_is_disagreement "$refined_entry" >/dev/null; echo $?)"
+assert_eq "a fresh (never-refined) item is not" "1" \
+  "$(refinement_is_disagreement "$fresh_entry" >/dev/null; echo $?)"
+assert_eq "an ordinary (non-refinement) item is not, even with refined_before set" "1" \
+  "$(refinement_is_disagreement \
+       "$(jq -c '.kind = "" | .refined_before = {"ts": "2026-07-22T11:00:00Z"}' <<<"$refined_entry")" \
+       >/dev/null; echo $?)"
+assert_eq "reason is irrelevant to this predicate — issue-closed is still a disagreement" "0" \
+  "$(refinement_is_disagreement "$(jq -c '.reason = "issue-closed"' <<<"$refined_entry")" \
+       >/dev/null; echo $?)"
+assert_eq "malformed input is not a disagreement" "1" \
+  "$(refinement_is_disagreement 'not json' >/dev/null; echo $?)"
+
 # --- Requirement 36b: what an unblocked refinement records ----------------------
 # Two shapes, because the refinement has to land where a future Co-Ordinator
 # reads: a comment for an issue (which it pastes with the rest of the thread),

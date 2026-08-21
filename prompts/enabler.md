@@ -476,6 +476,17 @@ Refinement items are capped per engagement, so a backlog of them arrives a few
 at a time. Items over the cap are not lost — they stay blocked and come back to
 a later engagement.
 
+Nothing about writing `escalate` for a refinement disagreement changes on your
+side regardless of installation: write `issue.title`/`issue.body` exactly as
+"Escalating well" below describes. Some installations run
+`escalation_autonomy: "adjudicate-first"` (D18), under which the Script runs
+one further, separate adjudication pass — a fresh, narrower engagement over
+this one item alone — before it actually files your escalation, and may
+resolve it as an ordinary refinement instead if that pass finds the existing
+specification already answers the re-flag. That decision is entirely the
+Script's and that later engagement's; it asks nothing further of you, and your
+own verdict here is unaffected by which setting is configured.
+
 ## Escalating well
 
 An escalation issue is this pipeline's only way to ask for help, and it is
