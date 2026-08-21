@@ -2175,12 +2175,41 @@ docker compose exec scheduler /app/agent-cycle.sh --enable
 
 ### Running the tests
 
-The unit tests are plain bash, no framework; each is self-contained and
-exits non-zero on the first failed assertion. They run straight out of the
-checkout — no node, no Docker, no installation:
+The unit tests are plain bash, no framework; each is self-contained and exits
+non-zero on the first failed assertion. Run the suite the way CI runs it:
 
 ```bash
-for t in test/*.test.sh; do "$t" || break; done
+./scripts/run-tests.sh                      # every test/*.test.sh
+./scripts/run-tests.sh cycle-state doctor   # only those whose name matches
+```
+
+That copies the working tree into a throwaway container built from the image
+and runs the suite there. It takes a few minutes, and it is worth them: the
+tests will *start* anywhere and only *pass* in the environment CI uses, and
+both ways of getting that wrong produce failures on an untouched `main` that
+read as a broken branch rather than a broken invocation.
+
+- **Straight out of the checkout** — which is what this section used to
+  recommend — the host's `jq` is whatever the host has. `jq` 1.6 and 1.7
+  disagree about enough for roughly nine of these files to fail, and not one of
+  those failures mentions `jq`.
+
+- **Through `docker exec` into a running node** — the obvious fix for the
+  first, and a worse trap, because that container is *configured*.
+  `PULLWRIGHT_APPROVER_APP_ID` and its two companions are set there from the
+  stack's `.env`, and `scripts/doctor.sh` reconciles those against
+  `approver_app_id` (see `lib/approver-token.sh`). So every fixture in
+  `test/config-schema.test.sh` that builds "no Approver configured" by deleting
+  the config key instead builds "an Approver in the environment that the config
+  does not declare", which is a different case with the opposite verdict. Three
+  assertions invert. `docker run`, never `docker exec`.
+
+`AGENT_OPS_TEST_IMAGE` picks the image, for testing against a locally built one
+rather than `ghcr.io`'s latest:
+
+```bash
+docker build -f deploy/docker/Dockerfile -t agent-ops:dev .
+AGENT_OPS_TEST_IMAGE=agent-ops:dev ./scripts/run-tests.sh
 ```
 
 CI runs the same suite *inside* the freshly built image on every push that
