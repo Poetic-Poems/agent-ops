@@ -11808,15 +11808,19 @@ What exists, and the requirements each part answers to:
     `--peers-dir` and `--now` all override their `config.json`-derived
     defaults, the last existing so a test run can fix "elapsed since" against
     a stable clock. Regression-tested
-    (`test/autonomy-stage-report.test.sh`) against four repositories: every
+    (`test/autonomy-stage-report.test.sh`) against five repositories: every
     criterion met; a real failure on a measurable criterion outranking an
     unrelated unavailable one (`not-met`, never `insufficient-evidence`);
     every measurable criterion met while one remains permanently unavailable
     (`insufficient-evidence`, never `met`, proving a criterion is never
-    reported satisfied from missing data); and a real, sample-backed `met`
+    reported satisfied from missing data); a real, sample-backed `met`
     verdict on the `divergence` criterion (component 22a), proving the join
-    is exercised end to end and not merely its unavailable fallback; must
-    pass `shellcheck`.
+    is exercised end to end and not merely its unavailable fallback; and a
+    partial read of that same join — a settled sample of pull requests
+    clearing the minimum bar alongside one unreadable pull request —
+    reporting `divergence` `unavailable`, never `met`, proving a zero over an
+    incomplete read is never mistaken for a confirmed zero; must pass
+    `shellcheck`.
 22a. `lib/verdict-fate.sh` and `scripts/verdict-fate-report.sh` implement the
     D18 Approver-verdict/human-action divergence record (agent-ops#573, a WI
     of umbrella #402) — the pairing component 22's own `divergence` criterion
