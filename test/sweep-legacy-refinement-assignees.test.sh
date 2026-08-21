@@ -14,6 +14,12 @@
 # nothing at all (idempotency is what makes this safe to re-run from a cron
 # job rather than a careful one-off).
 #
+# The `blocked` half of that pair is also guarded read-before-write
+# (agent-ops#651): a pre-existing `blocked` — a human's own, applied for
+# their own reasons before this legacy block was ever migrated — is left
+# exactly as found, never re-added and never claimed on stdout as this run's
+# own doing.
+#
 # `gh` is a stub on PATH via REFINEMENT_GH; no network.
 #
 # Run directly: ./test/sweep-legacy-refinement-assignees.test.sh — exit 0 iff
@@ -39,10 +45,20 @@ assert_eq() {
   fi
 }
 
-# --- The stub: `gh issue edit <n> -R <slug> --remove-assignee|--add-label` --
+# --- The stub: `gh issue edit <n> -R <slug> --remove-assignee|--add-label`,
+# and `gh issue view <n> -R <slug> --json labels --jq ...` for
+# `refinement_label_project`'s read-before-write on `blocked`. The view call
+# serves the label names in $tmp_dir/issue-labels, one per line — empty (the
+# common case) unless a test seeds it — and is never itself counted in
+# $tmp_dir/calls, which stays scoped to the label/assignee *mutations* the
+# assertions below count.
 cat >"$tmp_dir/gh" <<'STUB'
 #!/usr/bin/env bash
 d="$(dirname "$0")"
+if [[ "$1" == "issue" && "$2" == "view" ]]; then
+  cat "$d/issue-labels" 2>/dev/null
+  exit 0
+fi
 [[ "$1" == "issue" && "$2" == "edit" ]] || exit 1
 number="$3"; shift 3
 repo=""; action=""; label=""; assignee=""
@@ -64,6 +80,8 @@ export REFINEMENT_GH="$tmp_dir/gh"
 
 calls() { cat "$tmp_dir/calls" 2>/dev/null || true; }
 reset_calls() { rm -f "$tmp_dir/calls"; }
+issue_labels() { printf '%s\n' "$@" > "$tmp_dir/issue-labels"; }
+reset_issue_labels() { rm -f "$tmp_dir/issue-labels"; }
 
 log="$tmp_dir/log.jsonl"
 cat > "$log" <<'EOF'
@@ -74,6 +92,7 @@ cat > "$log" <<'EOF'
 EOF
 
 reset_calls
+reset_issue_labels
 out="$("$SWEEP" "o/r" "$log")"
 assert_eq "the legacy block's assignment is removed, exactly once" "1" \
   "$(grep -cE '^unassign o/r 52 warwickallen$' <<<"$(calls)")"
@@ -102,6 +121,30 @@ assert_eq "a repeat run finds the same one item, and only it" "3" \
   "$(grep -cE '^o/r#52: ' <<<"$out2")"
 assert_eq "  ... never touching 53, 54 or o/other#52" "0" \
   "$(calls | grep -cE '53|54|o/other')"
+
+# --- A pre-existing `blocked` — a human's own — is read before it is written ---
+# (agent-ops#651). Same legacy shape as item 52 above, a fresh item number (77)
+# so nothing here can be confused with the idempotency run's own calls. The
+# issue already carries `blocked` when the sweep reaches it: `blocked` must
+# not be re-added or claimed as "applied" on stdout, while the reason label —
+# a name no human reaches for on their own — still goes on unconditionally.
+cat >> "$log" <<'EOF'
+{"ts":"2026-08-01T09:00:04Z","cycle":"c0","event":"attempt-failed","stage":"coordinator","repo":"o/r","item":"77","kind":"needs-refinement","detail":"gated","unblock_condition":"w","needs_refinement_label":"needs-refinement","needs_refinement_assignee":"octocat"}
+EOF
+reset_calls
+issue_labels "blocked"
+out4="$("$SWEEP" "o/r" "$log")"
+assert_eq "the legacy assignment on the human-blocked issue is still removed" "1" \
+  "$(grep -cE '^unassign o/r 77 octocat$' <<<"$(calls)")"
+assert_eq "the pre-existing blocked label is never re-added" "0" \
+  "$(grep -cE '^add o/r 77 blocked$' <<<"$(calls)")"
+assert_eq "  ... nor claimed as applied on stdout" "0" \
+  "$(grep -cE '^o/r#77: applied blocked$' <<<"$out4")"
+assert_eq "  ... it is named as already present instead" "1" \
+  "$(grep -cE '^o/r#77: blocked already present' <<<"$out4")"
+assert_eq "the reason label still goes on unconditionally" "1" \
+  "$(grep -cE '^add o/r 77 blocked:needs-refinement$' <<<"$(calls)")"
+reset_issue_labels
 
 # --- An already-clean repository does nothing at all -------------------------
 reset_calls

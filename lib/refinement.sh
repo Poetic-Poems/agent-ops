@@ -254,22 +254,35 @@ refinement_label_targets() {
 # together.
 #
 # A *legacy* block — one recorded before agent-ops#639, whose event carries
-# `needs_refinement_assignee` and neither blocked-label field — yields the
-# fixed pair regardless, because `scripts/sweep-legacy-refinement-assignees.sh`
-# is what reconciles those blocks and it applies exactly `blocked` and this
-# kind's reason label, under names no installation can change. Without this
-# the sweep would be a one-way door: a migrated block's labels would be
-# applied by the sweep, recorded nowhere, and so never taken off when the
-# block cleared — leaving the issue permanently unselectable, which is the
-# very failure this whole change is undoing, moved from the assignee list to
-# the label list. A legacy block whose issue the sweep has not reached yet
-# costs one `gh` call that finds nothing to remove, and a warning: the same
-# best-effort contract every other removal on this path already has.
+# `needs_refinement_assignee` and neither blocked-label field — yields only
+# the reason label, never the generic `blocked`. `blocked:<reason>` is safe
+# regardless: no human reaches for that compound name on their own, so
+# `scripts/sweep-legacy-refinement-assignees.sh` can only ever have applied
+# it, unconditionally, exactly as the fresh path does. `blocked` is not: it
+# is a human's own, hand-applied control (`lib/labels.sh`'s own catalogue),
+# and the sweep — like the fresh path — projects it through
+# `refinement_label_project`'s read-before-write rather than an unconditional
+# add. But unlike the fresh path, the sweep has no event of its own to record
+# which of `added`/`present` actually happened: it does not rewrite the
+# block's original `attempt-failed` event (nothing rewrites history), so a
+# legacy block's `blocked_label` field can never be filled the way a fresh
+# block's is. Treating every legacy block as carrying the generic `blocked`
+# regardless — the way this once read — would let `release_refinement_label`
+# remove a `blocked` a human applied for their own reasons on any issue that
+# happens to also carry a still-open pre-agent-ops#639 block: the exact
+# defect `refinement_label_project` exists to prevent, reappearing on the one
+# path that cannot prove its own history. So a legacy block's `blocked` is
+# left alone here — over-held rather than guessed at, the same trade-off
+# `refinement_label_project` already makes for an unreadable label list — and
+# comes off only by a human's own hand. A legacy block whose issue the sweep
+# has not reached yet costs one `gh` call that finds nothing to remove, and a
+# warning: the same best-effort contract every other removal on this path
+# already has.
 refinement_blocked_label_targets() {
   local blocked="$1" item="$2" repo="${3:-}" reason_label
   reason_label="$(refinement_blocked_reason_label "$REFINEMENT_BLOCK_KIND")"
   jq -r --arg it "$item" --arg repo "$repo" --arg kind "$REFINEMENT_BLOCK_KIND" \
-     --arg generic "$REFINEMENT_BLOCKED_LABEL" --arg reason "$reason_label" '
+     --arg reason "$reason_label" '
     [ .[]?
       | select((.kind // "") == $kind)
       | select($it != "" and (((.item // "") | tostring) == $it))
@@ -279,7 +292,7 @@ refinement_blocked_label_targets() {
       | . as $e
       | ( if (($e.blocked_label // "") == "" and ($e.blocked_reason_label // "") == ""
               and ($e.needs_refinement_assignee // "") != "")
-          then [$generic, $reason]
+          then [$reason]
           else [$e.blocked_label, $e.blocked_reason_label] end
           | map(select((. // "") != ""))
           | .[]

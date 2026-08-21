@@ -367,28 +367,34 @@ done < <(refinement_blocked_label_targets "$blocked" 52 "o/r")
 assert_eq "clearing the block takes both labels off" \
   "$(printf 'remove o/r 52 blocked\nremove o/r 52 blocked:needs-refinement')" "$(label_calls)"
 
-# --- Requirement 38b's migration: a legacy block's labels come off too ---------
+# --- Requirement 38b's migration: a legacy block's reason label comes off, ---
+# --- but its generic `blocked` is never assumed to be the pipeline's own ----
 # `scripts/sweep-legacy-refinement-assignees.sh` applies the fixed pair to a
 # pre-agent-ops#639 block's issue without rewriting that block's own event, so
-# the record says nothing about them. Reading the record alone would leave
-# `blocked` on the issue forever once the block cleared — permanently
-# unselectable, the very failure agent-ops#639 undoes, moved to the label
-# list. A block carrying `needs_refinement_assignee` and neither blocked-label
-# field therefore yields the fixed pair regardless.
+# the record says nothing about them. For the reason label — a name no human
+# reaches for on their own — reading the record alone is enough: the sweep
+# can only ever have applied it, so a block carrying `needs_refinement_assignee`
+# and neither blocked-label field yields it regardless. Not so for `blocked`
+# itself: it is a human's own, hand-applied control, the sweep projects it
+# through the same read-before-write `refinement_label_project` uses, and it
+# has no event of its own to record whether a given run found it `added` or
+# `present` — so a legacy block never yields the generic `blocked` here at
+# all, over-holding it rather than guessing whether it is safe to remove
+# (agent-ops#651).
 cat > "$log" <<'EOF'
 {"ts":"2026-07-01T09:00:00Z","cycle":"c0","event":"attempt-failed","stage":"coordinator","repo":"o/r","item":"77","kind":"needs-refinement","detail":"gated on a decision","unblock_condition":"which packaging approach","needs_refinement_label":"needs-refinement","needs_refinement_assignee":"octocat"}
 EOF
 legacy_blocked="$(blocked_items "$log")"
-assert_eq "a legacy block yields the fixed pair the sweep applied" \
-  "$(printf 'o/r\t77\tblocked\no/r\t77\tblocked:needs-refinement')" \
+assert_eq "a legacy block yields only the reason label the sweep applied" \
+  "$(printf 'o/r\t77\tblocked:needs-refinement')" \
   "$(refinement_blocked_label_targets "$legacy_blocked" 77 "o/r")"
 
 reset_calls
 while IFS=$'\t' read -r t_repo t_num t_label; do
   refinement_label_remove "$t_repo" "$t_num" "$t_label"
 done < <(refinement_blocked_label_targets "$legacy_blocked" 77 "o/r")
-assert_eq "  ... so clearing a migrated block takes both off" \
-  "$(printf 'remove o/r 77 blocked\nremove o/r 77 blocked:needs-refinement')" "$(label_calls)"
+assert_eq "  ... so clearing a migrated block takes only the reason label off" \
+  "remove o/r 77 blocked:needs-refinement" "$(label_calls)"
 
 # --- Requirement 38b's migration: `refinement_assignee_remove` survives ---------
 # alone (agent-ops#639) — the one primitive `scripts/sweep-legacy-refinement-

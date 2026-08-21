@@ -9096,32 +9096,51 @@ implements.
     assignment (`refinement_assignee_remove`, the one function this
     requirement's old mechanism left behind, kept for exactly this) and
     applies the `blocked`/`blocked:needs-refinement` pair this requirement
-    would have applied instead, all best-effort and idempotent — safe to
-    re-run, including from a cron job or a future cycle, since every step is
-    a no-op once already done and the matching set only ever shrinks as
-    blocks clear. Run once against every configured repository as part of
-    landing agent-ops#639 (21 assignments cleared by hand on 2026-08-21,
-    ahead of this fix; 14 more had accumulated in `Poetic-Poems/agent-ops`
-    alone by the time this script ran against it). A block recorded *after*
+    would have applied instead — `blocked:needs-refinement` unconditionally,
+    the same as the fresh path; `blocked` through the same read-before-write
+    `refinement_label_project` the fresh path uses (agent-ops#651), so a
+    pre-existing `blocked` on a legacy issue is left exactly as found rather
+    than reapplied — all best-effort and idempotent — safe to re-run,
+    including from a cron job or a future cycle, since every step is a no-op
+    once already done and the matching set only ever shrinks as blocks
+    clear. Run once against every configured repository as part of landing
+    agent-ops#639 (21 assignments cleared by hand on 2026-08-21, ahead of
+    this fix; 14 more had accumulated in `Poetic-Poems/agent-ops` alone by
+    the time this script ran against it). A block recorded *after*
     agent-ops#639 landed never carries `needs_refinement_assignee` in the
     first place — `record_needs_refinement_block` never sets it — so the
     script's matching set can only ever be the pre-existing backlog, never a
     growing one.
 
-    The labels the sweep applies are released by the same path a freshly
-    recorded block's are, and for the same reason they must be: the sweep does
-    not rewrite the block's own event, so a migrated block records neither
-    `blocked_label` nor `blocked_reason_label`, and reading the block record
-    alone would leave those labels on the issue forever once the block
-    cleared — the permanent unselectability this requirement's change exists
-    to end, moved from the assignee list to the label list.
-    `refinement_blocked_label_targets` therefore treats a legacy block — one
-    whose event carries `needs_refinement_assignee` and neither blocked-label
-    field — as carrying the fixed pair, which is sound precisely because both
-    names are fixed: the sweep can only ever have applied `blocked` and the
-    kind's own reason label. A legacy block the sweep has not reached yet
-    costs one `gh` removal that finds nothing to remove, best-effort like
-    every other removal on that path.
+    **Only the reason label is released this way; the generic `blocked` is
+    not** (agent-ops#651). The reason label needs no proof of provenance: no
+    human reaches for `blocked:needs-refinement` on their own, so the sweep
+    can only ever have applied it, unconditionally, and the record alone —
+    `needs_refinement_assignee` present, neither blocked-label field set — is
+    enough for `refinement_blocked_label_targets` to offer it up wherever it
+    would otherwise be left on the issue forever once the block cleared.
+    `blocked` is different: it *is* a name a human reaches for
+    (`lib/labels.sh`'s own catalogue), which is exactly why the sweep projects
+    it through the read-before-write above rather than an unconditional add.
+    But the sweep has nowhere to record which of `added`/`present` a given
+    run actually saw — it does not rewrite the block's own event, and, unlike
+    `record_needs_refinement_block`, has no cycle log of its own to append an
+    `own-label-action` to — so a legacy block's `blocked_label` field can
+    never be filled the way a fresh block's is. Inferring the fixed pair for
+    every legacy block regardless — which is what this once did — would let
+    `release_refinement_label` remove a `blocked` a human applied for their
+    own reasons on any issue that also happens to carry a still-open
+    pre-agent-ops#639 block: the exact defect `refinement_label_project`
+    exists to prevent, reappearing on the one path that cannot prove its own
+    history. `refinement_blocked_label_targets` therefore never offers a
+    legacy block's generic `blocked` for removal at all — over-held rather
+    than guessed at, the same trade-off `refinement_label_project` already
+    makes for an unreadable label list, and bounded to the same one-off,
+    only-ever-shrinking backlog the migration itself is scoped to. It comes
+    off only by a human's own hand, or once the issue earns a *fresh* block
+    whose own event can prove what it applied. A legacy block the sweep has
+    not reached yet costs one `gh` call that finds nothing to remove,
+    best-effort like every other call on that path.
 
     **The reconciliation sweep for a removal that silently failed**
     (agent-ops#651). Unlike `needs_refinement_label`'s hand-flag path
@@ -14137,10 +14156,12 @@ pull request, run the ones the change touches and any it could regress.
     already uses, apply and remove both `blocked` and its reason label; and
     `refinement_blocked_label_targets` finds both of an issue's blocked
     labels, scoped by repo the same way `refinement_label_targets` is,
-    surviving a void the same way, and finds the same fixed pair for a legacy
-    block that records `needs_refinement_assignee` and neither blocked-label
-    field, so what the migration sweep applied is still released when the
-    block clears. `refinement_label_project` (agent-ops#651) reads before it
+    surviving a void the same way, and finds only the reason label — never
+    the generic `blocked` — for a legacy block that records
+    `needs_refinement_assignee` and neither blocked-label field, since that
+    block's own event cannot prove which of `added`/`present` the migration
+    sweep actually saw when it applied `blocked`. `refinement_label_project`
+    (agent-ops#651) reads before it
     writes: an absent `blocked` is added and reported `added`; a pre-existing
     one — another label on the issue does not mask this — is `present`,
     untouched and unrecorded; an unreadable label list is applied best-effort

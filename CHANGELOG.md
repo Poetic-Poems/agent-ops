@@ -605,10 +605,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   label — is also a human's own, hand-applied control, so it is projected
   through a read-before-write (`refinement_label_project`) rather than an
   unconditional add, the same guard the deleted `refinement_assignee_project`
-  gave the assignment this replaced; and a removal that silently fails when a
-  block clears is retried every cycle by a new reconciliation sweep
+  gave the assignment this replaced — in both the fresh path and the
+  migration sweep — and a removal that silently fails when a block clears is
+  retried every cycle by a new reconciliation sweep
   (`refinement_blocked_label_stale`), so a stuck `blocked`/
-  `blocked:needs-refinement` no longer needs a human to notice it.
+  `blocked:needs-refinement` no longer needs a human to notice it. Because
+  the migration sweep has no event of its own to record whether a given run
+  actually added `blocked` or found it already there, a legacy block never
+  offers the generic `blocked` up for release at all — only its reason
+  label does — so a legacy-swept issue's `blocked` is over-held rather than
+  guessed at, and comes off only by a human's own hand.
 - Every `item-void` a Co-Ordinator, Enabler or Implementer
   writes must now cite evidence in one of two checkable forms — a structured
   `{ref, path, expect, pattern}` shape, or a PR/commit citation naming the

@@ -24,10 +24,12 @@
 # event carries `needs_refinement_assignee`:
 #   - removes that assignment from the issue (`refinement_assignee_remove`) —
 #     a no-op, not a failure, if it is already gone;
-#   - applies `blocked` and `blocked:needs-refinement` to the same issue
-#     (`refinement_label_add`) — the pair requirement 38b would have applied
-#     instead, had this block been recorded after agent-ops#639 — a no-op if
-#     either is already there.
+#   - applies `blocked:needs-refinement` to the same issue
+#     (`refinement_label_add`, unconditionally — no human reaches for that
+#     compound name on their own) and `blocked` (`refinement_label_project`,
+#     read-before-write — see below) — the pair requirement 38b would have
+#     applied instead, had this block been recorded after agent-ops#639 — a
+#     no-op if either is already there.
 #
 # Every step is best-effort and idempotent: safe to run more than once,
 # against the same repository or a fresh one, from a terminal or a cron job.
@@ -38,19 +40,47 @@
 #
 # This script does not touch the log itself: `needs_refinement_assignee`
 # stays on the historical event forever, and that is what the release path
-# reads it as — `refinement_blocked_label_targets` treats a block carrying it
-# (and neither `blocked_label` nor `blocked_reason_label`) as carrying the
-# fixed pair this script applies, so the labels come off again when the block
-# clears, exactly as a freshly recorded block's do. Without that reading this
-# sweep would be a one-way door: labels applied here, recorded nowhere, and
-# never removed.
+# reads it as. For the reason label that reading is enough on its own —
+# `refinement_blocked_label_targets` (lib/refinement.sh) treats a block
+# carrying `needs_refinement_assignee` and neither `blocked_label` nor
+# `blocked_reason_label` as carrying `blocked:needs-refinement`, so that
+# label comes off again when the block clears, exactly as a freshly recorded
+# block's does — safe because the name is fixed and no human ever applies it
+# themselves, so this script can only ever be the one that did.
 #
-# One gap that reading does not close: because this script logs no
-# `own-label-action` (it runs outside a cycle, with nothing to log to), a
-# *removal* `release_refinement_label` attempts against a migrated block that
-# then silently fails leaves no trail either — `refinement_blocked_label_stale`
-# (requirement 38b's reconciliation sweep, agent-ops#651) offers up only a
-# label whose logged own-label-action history says `add`, so a legacy block's
+# The generic `blocked` label does not get the same treatment, and that is
+# deliberate (agent-ops#651). `blocked` *is* a name a human reaches for on
+# their own (`lib/labels.sh`'s own catalogue documents it as their hand-applied
+# control), so this script projects it through `refinement_label_project`
+# instead of an unconditional add — a pre-existing `blocked` is left exactly
+# as found, the same read-before-write guard the fresh path
+# (`record_needs_refinement_block`) uses. But this script has nowhere to
+# record which of `added`/`present` actually happened — it does not rewrite
+# the block's own event, and, unlike the fresh path, has no cycle log of its
+# own to append an `own-label-action` to — so a legacy block's `blocked_label`
+# field can never be filled the way a fresh block's is.
+# `refinement_blocked_label_targets` therefore never treats a legacy block's
+# generic `blocked` as this pipeline's to remove, whether this run actually
+# added it or found it already there: doing so regardless, the way this once
+# read, would let a later block-clearing remove a `blocked` a human applied
+# for their own reasons on any issue that also happens to carry a still-open
+# pre-agent-ops#639 block — the exact defect `refinement_label_project` exists
+# to prevent, reappearing on the one path that cannot prove its own history.
+#
+# **The residual gap, stated plainly:** a legacy-swept issue's generic
+# `blocked` label is never removed by this pipeline once the block clears —
+# it is over-held, not guessed at, the same trade-off `refinement_label_project`
+# already makes for an unreadable label list — and comes off only by a
+# human's own hand. This is narrower than it sounds: the backlog this script
+# exists to clear is one-off and only ever shrinks (see above), so the
+# over-held label is bounded to that same, shrinking set, never a growing one.
+#
+# A second, separate gap: because this script logs no `own-label-action` (it
+# runs outside a cycle, with nothing to log to), a *removal* the reason label
+# still gets from `release_refinement_label`, that then silently fails,
+# leaves no trail either — `refinement_blocked_label_stale` (requirement
+# 38b's reconciliation sweep, agent-ops#651) offers up only a label whose
+# logged own-label-action history says `add`, so a legacy block's
 # never-logged application never enters that history to begin with. The
 # backlog this script exists to clear is one-off and only ever shrinks, so a
 # stuck removal here is rarer and narrower than the ordinary case that sweep
@@ -104,11 +134,31 @@ while IFS=$'\t' read -r number assignee; do
   else
     echo "sweep-legacy-refinement-assignees: $repo#$number: could not remove the legacy $assignee assignment" >&2
   fi
-  if refinement_label_add "$repo" "$number" "$REFINEMENT_BLOCKED_LABEL"; then
-    printf '%s#%s: applied %s\n' "$repo" "$number" "$REFINEMENT_BLOCKED_LABEL"
-  else
-    echo "sweep-legacy-refinement-assignees: $repo#$number: could not apply the $REFINEMENT_BLOCKED_LABEL label" >&2
-  fi
+  # `blocked` is a human's own, hand-applied control (`lib/labels.sh`'s own
+  # catalogue), so this reads before it writes — `refinement_label_project`,
+  # the same guard the fresh path (`record_needs_refinement_block`) uses —
+  # rather than an unconditional `refinement_label_add`: a pre-existing
+  # `blocked` is left exactly as found. Unlike the fresh path, this script has
+  # no event of its own to record whether the label was actually `added` or
+  # already `present`, so `refinement_blocked_label_targets` never treats a
+  # legacy block's generic `blocked` as this pipeline's to remove either way
+  # (lib/refinement.sh) — this read stops a needless re-add and a
+  # misleading "applied" line, not a later false removal, which the targets
+  # change already prevents on its own.
+  case "$(refinement_label_project "$repo" "$number" "$REFINEMENT_BLOCKED_LABEL")" in
+    added)
+      printf '%s#%s: applied %s\n' "$repo" "$number" "$REFINEMENT_BLOCKED_LABEL"
+      ;;
+    present)
+      printf '%s#%s: %s already present — left as is\n' "$repo" "$number" "$REFINEMENT_BLOCKED_LABEL"
+      ;;
+    unrecorded)
+      echo "sweep-legacy-refinement-assignees: $repo#$number: could not read $repo#$number's labels — $REFINEMENT_BLOCKED_LABEL was applied best-effort" >&2
+      ;;
+    *)
+      echo "sweep-legacy-refinement-assignees: $repo#$number: could not apply the $REFINEMENT_BLOCKED_LABEL label" >&2
+      ;;
+  esac
   reason_label="$(refinement_blocked_reason_label "$REFINEMENT_BLOCK_KIND")"
   if [[ -n "$reason_label" ]]; then
     if refinement_label_add "$repo" "$number" "$reason_label"; then
