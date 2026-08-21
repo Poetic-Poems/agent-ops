@@ -198,6 +198,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The Co-Ordinator's `refinements` input is scoped to candidacy
+  (agent-ops#643). `refinements` is a ledger that is never retired, and an
+  entry for an item type with no thread to hold it carries the whole
+  specification in markdown. By 2026-08-21 it had reached 237,339 bytes, 24
+  `spec` payloads accounting for 219,175 of them, and the Co-Ordinator's
+  prompt text plus the unsheddable half of its input came to 387,840 bytes
+  against a 350,000-byte maximum *before any candidate was added* — so the
+  allowance `coordinator_prompt_max_bytes` computes came out negative, the
+  fit ladder was never walked, and the API refused the stage on every node of
+  the fleet for eleven consecutive cycles with no work selected anywhere.
+  `coordinator_refinements_view` now keeps a `spec` only for an item some
+  band of the cycle actually offers, and keeps `ts`/`cycle`/`comment_url` for
+  every item as before. `prompts/coordinator.md` gives a spec exactly one use
+  — pasted verbatim into the work order of an item being selected — so a spec
+  for a non-candidate was prose the model paid to read and could never act
+  on. On the cycle that found the outage this took the band from 237,339
+  bytes to 29,304, and the unsheddable overhead from 387,840 to 179,629.
+
+- A Co-Ordinator allowance that comes out at or below zero now sheds as much
+  as the ladder can rather than nothing at all (agent-ops#643). The branch
+  added with `coordinator_prompt_max_bytes` warned and then fell past the fit
+  entirely, sending the candidate bands whole — which is how a 350,052-byte
+  `issues` extract went into a prompt that was already over the window
+  without it. The allowance is now clamped to 1 before the ladder is walked:
+  0 or less means "bound off" to `coordinator_fit_bands` and returns the
+  array unchanged, while 1 fails every rung and lands in its final branch,
+  which returns the smallest array the ladder can build with `fits: false`.
+  The warning still says the prompt may be refused regardless; the cycle just
+  no longer makes that more likely on its way out.
+
+
 - The Co-Ordinator no longer takes the fleet down by outgrowing its model's
   context window (agent-ops#641). On 2026-08-21 the assembled prompt reached
   ~226580 tokens against a 200000-token window and the API refused four
