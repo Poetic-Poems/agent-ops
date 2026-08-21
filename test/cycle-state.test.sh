@@ -8,7 +8,7 @@
 #
 # Covers the two defects that let a stale work order (review-2026-07-11-R-01,
 # "Add a licence" — already done on main) be re-selected nine times, each time
-# paying for a full Implementor run that correctly reported `blocked` and was
+# paying for a full Implementer run that correctly reported `blocked` and was
 # then forgotten:
 #
 #   1. read_pr_url_breadcrumb returned non-zero when no PR had been opened,
@@ -76,12 +76,12 @@ assert_eq "present breadcrumb is read and trimmed" \
 # --- item_event_fields ---
 
 assert_eq "attempt-failed carries the item it failed on" \
-  '{"stage":"implementor","detail":"blocked on an unmerged dep","repo":"o/r","item":"review-2026-07-11-R-01"}' \
-  "$(item_event_fields "implementor" "blocked on an unmerged dep" "o/r" "review-2026-07-11-R-01")"
+  '{"stage":"implementer","detail":"blocked on an unmerged dep","repo":"o/r","item":"review-2026-07-11-R-01"}' \
+  "$(item_event_fields "implementer" "blocked on an unmerged dep" "o/r" "review-2026-07-11-R-01")"
 
 assert_eq "extra fields are merged in" \
-  '{"stage":"implementor","detail":"dep unmerged","repo":"o/r","item":"R-01","unblock_condition":"refresh the review"}' \
-  "$(item_event_fields "implementor" "dep unmerged" "o/r" "R-01" '{"unblock_condition":"refresh the review"}')"
+  '{"stage":"implementer","detail":"dep unmerged","repo":"o/r","item":"R-01","unblock_condition":"refresh the review"}' \
+  "$(item_event_fields "implementer" "dep unmerged" "o/r" "R-01" '{"unblock_condition":"refresh the review"}')"
 
 # A stage that fails before anything is selected blames no item.
 assert_eq "repo/item omitted when there is no selection" \
@@ -98,8 +98,8 @@ assert_eq "missing log yields no blocked items" "[]" "$(blocked_items "$tmp_dir/
 assert_eq "empty log yields no blocked items" "[]" "$(blocked_items "$log")"
 
 cat > "$log" <<'EOF'
-{"ts":"2026-07-16T08:00:00Z","event":"attempt-failed","stage":"implementor","repo":"o/r","item":"R-01","detail":"already done on main"}
-{"ts":"2026-07-16T09:00:00Z","event":"attempt-failed","stage":"implementor","repo":"o/r","item":"R-02","detail":"premise wrong"}
+{"ts":"2026-07-16T08:00:00Z","event":"attempt-failed","stage":"implementer","repo":"o/r","item":"R-01","detail":"already done on main"}
+{"ts":"2026-07-16T09:00:00Z","event":"attempt-failed","stage":"implementer","repo":"o/r","item":"R-02","detail":"premise wrong"}
 {"ts":"2026-07-16T10:00:00Z","event":"unblocked","item":"R-02"}
 {"ts":"2026-07-16T11:00:00Z","event":"attempt-failed","stage":"coordinator","detail":"unparseable final message"}
 EOF
@@ -119,7 +119,7 @@ assert_eq "the blocking detail is carried through for the Co-Ordinator to judge"
 # Ordering is by timestamp, not by file order: a re-blocked item stays blocked
 # even if its unblocked event happens to appear later in the file.
 cat > "$log" <<'EOF'
-{"ts":"2026-07-16T10:00:00Z","event":"attempt-failed","stage":"implementor","repo":"o/r","item":"R-03","detail":"still wrong"}
+{"ts":"2026-07-16T10:00:00Z","event":"attempt-failed","stage":"implementer","repo":"o/r","item":"R-03","detail":"still wrong"}
 {"ts":"2026-07-16T09:00:00Z","event":"unblocked","item":"R-03"}
 EOF
 assert_eq "latest event wins regardless of file order" \
@@ -128,8 +128,8 @@ assert_eq "latest event wins regardless of file order" \
 # An item id is only unique within its repo: both repos carry a
 # dependabot-alert-1, and blocking one must not starve the other.
 cat > "$log" <<'EOF'
-{"ts":"2026-07-16T10:00:00Z","event":"attempt-failed","stage":"implementor","repo":"o/a","item":"dependabot-alert-1","detail":"a"}
-{"ts":"2026-07-16T10:00:00Z","event":"attempt-failed","stage":"implementor","repo":"o/b","item":"dependabot-alert-1","detail":"b"}
+{"ts":"2026-07-16T10:00:00Z","event":"attempt-failed","stage":"implementer","repo":"o/a","item":"dependabot-alert-1","detail":"a"}
+{"ts":"2026-07-16T10:00:00Z","event":"attempt-failed","stage":"implementer","repo":"o/b","item":"dependabot-alert-1","detail":"b"}
 {"ts":"2026-07-16T11:00:00Z","event":"unblocked","repo":"o/b","item":"dependabot-alert-1"}
 EOF
 assert_eq "a repo-scoped unblock clears only that repo's item" \
@@ -138,8 +138,8 @@ assert_eq "a repo-scoped unblock clears only that repo's item" \
 # The Co-Ordinator reports unblocked as a bare item id, and a human may append
 # one by hand — neither carries a repo, so it has to clear the item anywhere.
 cat > "$log" <<'EOF'
-{"ts":"2026-07-16T10:00:00Z","event":"attempt-failed","stage":"implementor","repo":"o/a","item":"dependabot-alert-1","detail":"a"}
-{"ts":"2026-07-16T10:00:00Z","event":"attempt-failed","stage":"implementor","repo":"o/b","item":"dependabot-alert-1","detail":"b"}
+{"ts":"2026-07-16T10:00:00Z","event":"attempt-failed","stage":"implementer","repo":"o/a","item":"dependabot-alert-1","detail":"a"}
+{"ts":"2026-07-16T10:00:00Z","event":"attempt-failed","stage":"implementer","repo":"o/b","item":"dependabot-alert-1","detail":"b"}
 {"ts":"2026-07-16T11:00:00Z","event":"unblocked","item":"dependabot-alert-1"}
 EOF
 assert_eq "a repo-less unblock clears the item in every repo" \
@@ -250,11 +250,11 @@ assert_eq "missing log yields no void items" "[]" "$(void_items "$tmp_dir/nonexi
 assert_eq "empty log yields no void items" "[]" "$(void_items "$log")"
 
 # The production sequence this state exists to stop, replayed exactly: the
-# Implementor finds R-02 already done; the next Co-Ordinator sees the work is
+# Implementer finds R-02 already done; the next Co-Ordinator sees the work is
 # done and reports it unblocked. Under the old single-state design that freed
 # R-02 for reselection every cycle, forever. `unblocked` must not touch a void.
 cat > "$log" <<'EOF'
-{"ts":"2026-07-16T09:03:10Z","event":"item-void","stage":"implementor","repo":"o/poetic","item":"review-2026-07-11-R-02","detail":"already implemented on main","evidence":"e0ac584"}
+{"ts":"2026-07-16T09:03:10Z","event":"item-void","stage":"implementer","repo":"o/poetic","item":"review-2026-07-11-R-02","detail":"already implemented on main","evidence":"e0ac584"}
 {"ts":"2026-07-16T09:12:21Z","event":"unblocked","item":"review-2026-07-11-R-02"}
 EOF
 assert_eq "an unblocked event cannot clear a void item" \
@@ -266,25 +266,25 @@ assert_eq "the void evidence is carried through" \
 
 # Only a human, appending unvoided by hand, may reopen one.
 cat > "$log" <<'EOF'
-{"ts":"2026-07-16T09:03:10Z","event":"item-void","stage":"implementor","repo":"o/poetic","item":"R-02","detail":"already done"}
+{"ts":"2026-07-16T09:03:10Z","event":"item-void","stage":"implementer","repo":"o/poetic","item":"R-02","detail":"already done"}
 {"ts":"2026-07-17T09:00:00Z","event":"unvoided","item":"R-02"}
 EOF
 assert_eq "a later unvoided event reopens the item" "0" "$(void_items "$log" | jq 'length')"
 
-# Re-voiding after an unvoid: the human reopened it, the Implementor looked
+# Re-voiding after an unvoid: the human reopened it, the Implementer looked
 # again and still found no work. Latest event wins, as for blocked.
 cat > "$log" <<'EOF'
-{"ts":"2026-07-16T09:03:10Z","event":"item-void","stage":"implementor","repo":"o/poetic","item":"R-02","detail":"already done"}
+{"ts":"2026-07-16T09:03:10Z","event":"item-void","stage":"implementer","repo":"o/poetic","item":"R-02","detail":"already done"}
 {"ts":"2026-07-17T09:00:00Z","event":"unvoided","item":"R-02"}
-{"ts":"2026-07-18T09:00:00Z","event":"item-void","stage":"implementor","repo":"o/poetic","item":"R-02","detail":"still nothing to do"}
+{"ts":"2026-07-18T09:00:00Z","event":"item-void","stage":"implementer","repo":"o/poetic","item":"R-02","detail":"still nothing to do"}
 EOF
 assert_eq "an item can be voided again after being unvoided" \
   "still nothing to do" "$(void_items "$log" | jq -r '.[].detail')"
 
 # The two states are independent channels over the same log.
 cat > "$log" <<'EOF'
-{"ts":"2026-07-16T08:00:00Z","event":"attempt-failed","stage":"implementor","repo":"o/r","item":"R-01","detail":"dep unmerged"}
-{"ts":"2026-07-16T09:00:00Z","event":"item-void","stage":"implementor","repo":"o/r","item":"R-02","detail":"already done"}
+{"ts":"2026-07-16T08:00:00Z","event":"attempt-failed","stage":"implementer","repo":"o/r","item":"R-01","detail":"dep unmerged"}
+{"ts":"2026-07-16T09:00:00Z","event":"item-void","stage":"implementer","repo":"o/r","item":"R-02","detail":"already done"}
 EOF
 assert_eq "blocked and void are separate lists: blocked" "R-01" "$(blocked_items "$log" | jq -r '.[].item')"
 assert_eq "blocked and void are separate lists: void" "R-02" "$(void_items "$log" | jq -r '.[].item')"
@@ -298,7 +298,7 @@ assert_eq "an itemless void voids nothing" "0" "$(void_items "$log" | jq 'length
 # A void must not be killed by a malformed line elsewhere in the log, or one
 # truncated append would silently reopen every void item.
 cat > "$log" <<'EOF'
-{"ts":"2026-07-16T09:00:00Z","event":"item-void","stage":"implementor","repo":"o/r","item":"R-02","detail":"already done"}
+{"ts":"2026-07-16T09:00:00Z","event":"item-void","stage":"implementer","repo":"o/r","item":"R-02","detail":"already done"}
 {"ts":"2026-07-16T09:01:00Z","event":"cycle-e
 EOF
 assert_eq "a malformed trailing line does not strand void items" \
@@ -391,7 +391,7 @@ assert_eq "malformed actioned_json fails safe to no retirement" \
 # second definition of void, so an item retired from one cycle's delivered
 # extract still cannot resurface as blocked.
 cat > "$log" <<'EOF'
-{"ts":"2026-06-01T00:00:00Z","event":"item-void","stage":"implementor","repo":"o/r","item":"7","detail":"already done"}
+{"ts":"2026-06-01T00:00:00Z","event":"item-void","stage":"implementer","repo":"o/r","item":"7","detail":"already done"}
 EOF
 assert_eq "a void old enough to retire is still void, not blocked, on the raw log" \
   "0" "$(open_blocked_items "$log" | jq 'length')"
@@ -443,7 +443,7 @@ assert_eq "subtract_retired_voids: a malformed retired set fails safe to no subt
 # subtracting the recorded set no longer carries it, until a fresh verdict
 # post-dates the retirement and re-enters on its own terms.
 cat > "$log" <<'EOF'
-{"ts":"2026-06-01T00:00:00Z","event":"item-void","stage":"implementor","repo":"o/r","item":"8","detail":"already done"}
+{"ts":"2026-06-01T00:00:00Z","event":"item-void","stage":"implementer","repo":"o/r","item":"8","detail":"already done"}
 {"ts":"2026-07-01T00:00:00Z","event":"void-retired","repo":"o/r","item":"8","void_ts":"2026-06-01T00:00:00Z","by":"object-closed"}
 EOF
 assert_eq "round-trip: void_items still reports a retired item, unretired" \
@@ -740,8 +740,8 @@ assert_eq "missing log yields no open blocked items" "[]" \
 assert_eq "empty log yields no open blocked items" "[]" "$(open_blocked_items "$log")"
 
 cat > "$log" <<'EOF'
-{"ts":"2026-07-16T08:00:00Z","event":"attempt-failed","stage":"implementor","repo":"o/r","item":"R-01","detail":"dep unmerged"}
-{"ts":"2026-07-16T09:00:00Z","event":"attempt-failed","stage":"implementor","repo":"o/r","item":"R-02","detail":"dep unmerged"}
+{"ts":"2026-07-16T08:00:00Z","event":"attempt-failed","stage":"implementer","repo":"o/r","item":"R-01","detail":"dep unmerged"}
+{"ts":"2026-07-16T09:00:00Z","event":"attempt-failed","stage":"implementer","repo":"o/r","item":"R-02","detail":"dep unmerged"}
 {"ts":"2026-07-18T09:00:00Z","event":"item-void","repo":"o/r","item":"R-02","detail":"already done","evidence":"e0ac584"}
 EOF
 assert_eq "a blocked item a later void covers is not open" \
@@ -758,13 +758,13 @@ assert_eq "and the void item is still void" \
 # `unvoided` reopens the item, and then the block underneath it stands again.
 cat > "$log" <<'EOF'
 {"ts":"2026-07-16T08:00:00Z","event":"item-void","repo":"o/r","item":"R-03","detail":"already done"}
-{"ts":"2026-07-17T08:00:00Z","event":"attempt-failed","stage":"implementor","repo":"o/r","item":"R-03","detail":"dep unmerged"}
+{"ts":"2026-07-17T08:00:00Z","event":"attempt-failed","stage":"implementer","repo":"o/r","item":"R-03","detail":"dep unmerged"}
 EOF
 assert_eq "a void older than the block still covers it" "0" \
   "$(open_blocked_items "$log" | jq 'length')"
 
 cat > "$log" <<'EOF'
-{"ts":"2026-07-16T08:00:00Z","event":"attempt-failed","stage":"implementor","repo":"o/r","item":"R-03","detail":"dep unmerged"}
+{"ts":"2026-07-16T08:00:00Z","event":"attempt-failed","stage":"implementer","repo":"o/r","item":"R-03","detail":"dep unmerged"}
 {"ts":"2026-07-17T08:00:00Z","event":"item-void","repo":"o/r","item":"R-03","detail":"already done"}
 {"ts":"2026-07-18T08:00:00Z","event":"unvoided","item":"R-03"}
 EOF
@@ -774,16 +774,16 @@ assert_eq "a human's unvoided returns the item to the blocked list" \
 # Requirement 34's matching rule, not a stricter one: either half of the void
 # pair may be hand-appended by a human, who has no repo to hand.
 cat > "$log" <<'EOF'
-{"ts":"2026-07-16T08:00:00Z","event":"attempt-failed","stage":"implementor","repo":"o/a","item":"R-04","detail":"dep unmerged"}
-{"ts":"2026-07-16T08:00:01Z","event":"attempt-failed","stage":"implementor","repo":"o/b","item":"R-04","detail":"dep unmerged"}
+{"ts":"2026-07-16T08:00:00Z","event":"attempt-failed","stage":"implementer","repo":"o/a","item":"R-04","detail":"dep unmerged"}
+{"ts":"2026-07-16T08:00:01Z","event":"attempt-failed","stage":"implementer","repo":"o/b","item":"R-04","detail":"dep unmerged"}
 {"ts":"2026-07-17T08:00:00Z","event":"item-void","item":"R-04","detail":"already done"}
 EOF
 assert_eq "a repo-less void covers the item in every repo" "0" \
   "$(open_blocked_items "$log" | jq 'length')"
 
 cat > "$log" <<'EOF'
-{"ts":"2026-07-16T08:00:00Z","event":"attempt-failed","stage":"implementor","repo":"o/a","item":"R-05","detail":"dep unmerged"}
-{"ts":"2026-07-16T08:00:01Z","event":"attempt-failed","stage":"implementor","repo":"o/b","item":"R-05","detail":"dep unmerged"}
+{"ts":"2026-07-16T08:00:00Z","event":"attempt-failed","stage":"implementer","repo":"o/a","item":"R-05","detail":"dep unmerged"}
+{"ts":"2026-07-16T08:00:01Z","event":"attempt-failed","stage":"implementer","repo":"o/b","item":"R-05","detail":"dep unmerged"}
 {"ts":"2026-07-17T08:00:00Z","event":"item-void","repo":"o/a","item":"R-05","detail":"already done"}
 EOF
 assert_eq "a repo-scoped void covers only that repo's item" \
@@ -803,7 +803,7 @@ assert_eq "and its recheck_clean_ts" \
 # Same tolerance as every other extract: the caller runs under `set -e`, and a
 # torn append must not empty the panel that says the pipeline is stuck.
 cat > "$log" <<'EOF'
-{"ts":"2026-07-16T08:00:00Z","event":"attempt-failed","stage":"implementor","repo":"o/r","item":"R-06","detail":"dep unmerged"}
+{"ts":"2026-07-16T08:00:00Z","event":"attempt-failed","stage":"implementer","repo":"o/r","item":"R-06","detail":"dep unmerged"}
 {"ts":"2026-07-16T09:01:00Z","event":"cycle-e
 EOF
 assert_eq "a malformed trailing line does not strand open blocked items" \
@@ -980,8 +980,8 @@ fi
   ordered_repos_json='[{"slug":"o/r"}]'
   refinements_json='{}'
   claimed_json='[]'
-  implementor_model_default="claude-sonnet-5"
-  implementor_model_trivial="claude-haiku-4-5-20251001"
+  implementer_model_default="claude-sonnet-5"
+  implementer_model_trivial="claude-haiku-4-5-20251001"
   candidates_max=3
   refinement_policy_json='{}'
 }

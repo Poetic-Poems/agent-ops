@@ -94,7 +94,7 @@ VOID_LIVENESS_MERGE_CONFLICT_RE='^pr-[0-9]+-(conflict|superseded)-[0-9a-f]{6,40}
 # merge-conflict shapes use, since that script's candidate rule is re-read live
 # each cycle — but note *what* makes it absent, which differs from the shapes
 # above. A re-queue, a merge, a close or a draft ends the pull request's
-# candidacy outright; the Implementor's own fix push does not, and is caught
+# candidacy outright; the Implementer's own fix push does not, and is caught
 # instead by that script's answered clause (its "Why the dequeue must still be
 # unanswered" section). A push alone merely replaces this ref with one at the
 # new head, which is why the clause and not the scoping is what stops the entry

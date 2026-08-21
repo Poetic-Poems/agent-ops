@@ -32,7 +32,7 @@
 #      nothing else will ever ask this human, so this is the one `skip`
 #      reason worth surfacing rather than passing over in silence.
 #   2. Where something *is* CHANGES_REQUESTED-blocking it, the round has
-#      already been answered by a marked Implementor reply, and the pull
+#      already been answered by a marked Implementer reply, and the pull
 #      request's checks are green, repeats requirement 31b's re-request
 #      (`confirm_review_requested`) — the crash recovery this section
 #      explains. An answered round whose checks are not green is a silent
@@ -68,10 +68,10 @@
 # ## Why the sweep may call `confirm_review_requested`, and only narrowly
 #
 # `confirm_review_requested` (requirement 31b) exists for the round *after*
-# the Implementor answers a review, and its ordinary call site is
+# the Implementer answers a review, and its ordinary call site is
 # agent-cycle.sh, on the Reviewer's `ready` verdict — the one place the
 # judgement "these changes answer the review" is made. If the cycle dies
-# between the Implementor's push and that call, or the call itself reports
+# between the Implementer's push and that call, or the call itself reports
 # `failed`, the pull request is left answered, green, and in nobody's review
 # queue: `reviewDecision` stays `CHANGES_REQUESTED` (the author can never
 # clear it) with no live request against it, and nothing before this
@@ -84,7 +84,7 @@
 # something quieter and worse — requirement 3c's candidate rule reads a
 # review-requested timeline event as the round having been *answered*
 # (scripts/gather-review-feedback.sh — the events-not-timestamps fix), so a
-# blind re-request would drop the pull request out of the Implementor's own
+# blind re-request would drop the pull request out of the Implementer's own
 # review-feedback selection while the human's `CHANGES_REQUESTED` sat
 # unanswered — PR #205's silent-starvation failure, reintroduced hourly and
 # fleet-wide.
@@ -92,7 +92,7 @@
 # The discriminating judgement is `lib/handoff.sh`'s `handoff_round_answered`
 # (requirement 34a, tech-debt/TD-PPagop-26080804.md): the same predicate
 # requirement 3c's candidate rule uses, called here with the timeline signal
-# omitted — only a marked reply from the Implementor counts as `answered`,
+# omitted — only a marked reply from the Implementer counts as `answered`,
 # never a `review_requested` event, because this call's *own* re-request
 # would otherwise read back next cycle as the round having answered itself.
 # `unanswered` and `unknown` (a read this script could not make) are both
@@ -384,10 +384,10 @@ $mq_marker"
 
   # Requirement 38c's self-heal (see the header's design note;
   # tech-debt/TD-PPagop-26080804.md): a pull request still
-  # CHANGES_REQUESTED-blocked whose round the Implementor has already
+  # CHANGES_REQUESTED-blocked whose round the Implementer has already
   # answered gets requirement 31b's re-request repeated here — the one call
   # `agent-cycle.sh` makes on the Reviewer's `ready` verdict, which a crash
-  # between the Implementor's push and that verdict can lose. Unconditional,
+  # between the Implementer's push and that verdict can lose. Unconditional,
   # like `ensure_human_reviewer` above — not gated on `idle_hours`, which
   # governs the nudge alone.
   #
@@ -424,7 +424,7 @@ $mq_marker"
 
   # The idle nudge stands on its own facts, read below: being approved — not
   # `CHANGES_REQUESTED` — is what keeps it off a pull request whose round the
-  # Implementor still has to answer; that state has its own actor and its
+  # Implementer still has to answer; that state has its own actor and its
   # own clock, not this one's. Approval is derived from the reviews list
   # itself (`_handoff_pr_approved`, lib/handoff.sh) rather than read off
   # `reviewDecision`: that field never becomes `APPROVED` on a repository

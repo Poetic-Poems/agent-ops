@@ -124,10 +124,10 @@ mkdir -p "$capture"
 export STUB_CAPTURE="$capture"
 export STUB_LINES="$tmp_dir/lines.happy"
 
-out="$capture/implementor.out"
+out="$capture/implementer.out"
 stream="$(stage_stream_file "$out")"
 assert_eq "the stream sits beside the .out under a derived name" \
-  "$capture/implementor.stream.jsonl" "$stream"
+  "$capture/implementer.stream.jsonl" "$stream"
 
 # Sampled from a watcher rather than after the fact: what is under test is that
 # bytes land in the file *before* the run ends. The stub pauses between lines,
@@ -143,7 +143,7 @@ assert_eq "the stream sits beside the .out under a derived name" \
 ) &
 watcher=$!
 
-STUB_PAUSE=0.3 run_claude_stage implementor 60 test-model "a prompt" "$out" "$capture"
+STUB_PAUSE=0.3 run_claude_stage implementer 60 test-model "a prompt" "$out" "$capture"
 rc=$?
 wait "$watcher" 2>/dev/null || true
 

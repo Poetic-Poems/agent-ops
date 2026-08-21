@@ -5,7 +5,7 @@
 #
 # Updating a container means destroying it and creating a new one, and
 # destroying the scheduler kills the process group its cycle runs in: an
-# Implementor dies mid-edit, its clone is orphaned under `workspace_root`, and
+# Implementer dies mid-edit, its clone is orphaned under `workspace_root`, and
 # any branch or draft pull request it had already pushed is left behind. The
 # pipeline itself heals — the lock is taken over as stale on a later tick and
 # the claim GC releases what the dead cycle held — but nothing cleans up that

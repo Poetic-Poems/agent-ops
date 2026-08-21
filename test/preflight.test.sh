@@ -2,7 +2,7 @@
 #
 # test/preflight.test.sh — regression test for lib/preflight.sh (issue #245):
 # the done-check the Script runs on the item a cycle just claimed, before it
-# pays for an Implementor engagement.
+# pays for an Implementer engagement.
 #
 # `preflight_done_reason` is a thin wrapper: `work_gone_clearances`
 # (test/work-gone.test.sh already covers that function's own decisions in

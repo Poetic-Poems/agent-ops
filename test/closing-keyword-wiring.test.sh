@@ -3,7 +3,7 @@
 # test/closing-keyword-wiring.test.sh — regression test for the two blocks in
 # agent-cycle.sh that decide what requirement 25a's script-side gate
 # (lib/closing-keyword-gate.sh) actually *does* with its verdict at the
-# Implementor→Reviewer handoff.
+# Implementer→Reviewer handoff.
 #
 # test/closing-keyword-gate.test.sh covers the gate's own verdict, and
 # test/check-closing-keyword.test.sh the rule underneath it. Both pass with the

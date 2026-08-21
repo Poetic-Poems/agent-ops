@@ -446,7 +446,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- Every `item-void` a Co-Ordinator, Enabler or Implementor
+- Every `item-void` a Co-Ordinator, Enabler or Implementer
   writes must now cite evidence in one of two checkable forms — a structured
   `{ref, path, expect, pattern}` shape, or a PR/commit citation naming the
   item — or, for a finishing-source item, corroborate directly against its

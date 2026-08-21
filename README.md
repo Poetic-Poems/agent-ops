@@ -7,8 +7,8 @@ A self-hosted, unattended pipeline that automatically selects, implements, and r
 Once an hour:
 
 1. **Co-Ordinator** (Haiku) selects at most one well-scoped item of work (security findings, review feedback, merge conflicts on otherwise-ready PRs of ours, abandoned draft PRs of ours, failed CI runs, tech-debt, issues, fiddle's implementation plan, project-review recommendations, or code-quality findings). Security work — open Dependabot alerts and security code-scanning alerts — is always prioritised ahead of everything else; an issue you have marked `Urgent` comes second; answering your review feedback comes third, rebasing a ready PR of ours that has hit a merge conflict comes fourth, and finishing a draft PR this system started and then abandoned comes fifth. Issues rank by their **`Priority`** field — `Urgent`, `High`, `Medium` (also the default when the field is unset) and `Low` each sit at a different point in the order — so triaging an issue is how you move it up or down the queue.
-2. **Implementor** (Sonnet/Haiku) clones the repo, implements the item on a feature branch, and opens a draft pull request — or, for review feedback, pushes to the existing branch of the PR you commented on.
-3. **Reviewer** (Sonnet, or Opus when the Implementor graded the work `complexity:high`) checks and corrects the implementation, then marks the PR ready for review.
+2. **Implementer** (Sonnet/Haiku) clones the repo, implements the item on a feature branch, and opens a draft pull request — or, for review feedback, pushes to the existing branch of the PR you commented on.
+3. **Reviewer** (Sonnet, or Opus when the Implementer graded the work `complexity:high`) checks and corrects the implementation, then marks the PR ready for review.
 4. **Human** reviews and merges via the normal GitHub process. At the default
    `merge_autonomy` (`human`) this is the only gate; where an installation has
    raised it, an **Approver** App reviews first (see
@@ -63,7 +63,7 @@ Four things to know:
 - **Every comment the pipeline posts says so, up top.** Because it writes as
   you, the author field can't tell your own comments from the pipeline's — so
   every comment it posts opens with a bold label naming which stage wrote it
-  and which node ran it, e.g. `**Implementor** · autonomous pipeline · node
+  and which node ran it, e.g. `**Implementer** · autonomous pipeline · node
   \`poetic-2\``. A comment with no such label is one you, or another human,
   wrote.
 - **It answers each round exactly once.** Whose turn it is comes from comparing
@@ -301,10 +301,10 @@ Keys:
 | `log_retained_bytes` | `2000000` | Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `doctor.log`, `cron.log` and `review-cron.log`. `log.jsonl` and `review-log.jsonl` are never rotated. |
 | `log_generations` | `3` | Rotated generations kept beside each live log (`<name>.1` … `<name>.<log_generations>`). |
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
-| `implementor_model_default` | `claude-sonnet-5` | For code changes. |
-| `implementor_model_trivial` | `claude-haiku-4-5-20251001` | For docs, comments, register entries only. |
-| `reviewer_model_default` | `claude-sonnet-5` | Quality gate before human review, for work the Implementor graded `complexity:low` or `complexity:medium`. |
-| `reviewer_model_complex` | `claude-opus-5` | The same gate for work graded `complexity:high` — the Implementor grades each PR ex post and labels it; the higher of that grade and the PR's existing label picks the tier. Leave it empty to review everything on `reviewer_model_default`. |
+| `implementer_model_default` | `claude-sonnet-5` | For code changes. |
+| `implementer_model_trivial` | `claude-haiku-4-5-20251001` | For docs, comments, register entries only. |
+| `reviewer_model_default` | `claude-sonnet-5` | Quality gate before human review, for work the Implementer graded `complexity:low` or `complexity:medium`. |
+| `reviewer_model_complex` | `claude-opus-5` | The same gate for work graded `complexity:high` — the Implementer grades each PR ex post and labels it; the higher of that grade and the PR's existing label picks the tier. Leave it empty to review everything on `reviewer_model_default`. |
 | `approver_model_default` | `claude-sonnet-5` | The Approver's model for work graded `complexity:medium`, active once `merge_autonomy` (see below) is above `human`. Leave it empty to switch the whole stage off — no App review is ever posted, at any level. |
 | `approver_model_complex` | `claude-opus-5` | The same gate for work graded `complexity:high`, refuse-by-default. Leave it empty to run every Approver engagement on `approver_model_default`. |
 | `approver_model_critical` | `claude-fable-5` | The Approver's model for adjudicating a pull request the Approver has refused twice in a row — the rarest and most expensive tier, re-entered every round while that two-refusal streak holds, until an approval resets it; the escalation issue a refusal raises stays deduplicated to one per pull request rather than one per round. Leave it empty to fall back to `approver_model_complex`. |
@@ -316,7 +316,7 @@ Keys:
 | `enabler_escalation_label` | `enabler-escalation` | Label applied to every issue the Enabler raises, for your filters and for its own duplicate check. The pipeline creates it in each target repo it works, so there is nothing to set up; without it the issue is still raised, just unlabelled. |
 | `needs_refinement_label` | `needs-refinement` | Label put on an **issue** while the pipeline has it recorded as too under-specified to work on, and taken off again when that clears — see [Items nobody has specified](#items-nobody-has-specified). You can also apply it yourself to flag one directly; the pipeline reads that back the same way. The pipeline creates it in each target repo it works, so there is nothing to set up; without it the item is still recorded and still reaches the Enabler, you just do not see it in the...[continued below](#extended-notes-needs_refinement_label) |
 | `refinement_max_per_engagement` | `3` | How many under-specified items one Enabler engagement will take on. Ordinary blocked items are never displaced by them, and items over the cap simply wait for a later engagement. `0` switches the refinement work off while still recording it. |
-| `refiner_model` | `claude-sonnet-5` | The Refiner: writes a specification for an item nobody has scoped yet and marks it `refined`, before it would otherwise have to be blocked and wait for the Enabler — see [Refined items and the Refiner](#refined-items-and-the-refiner). Engaged every cycle there is unrefined work to do, so how often it runs and how good it has to be pull against each other: what it writes is the brief an Implementor works from. Leave it empty to switch the stage off. |
+| `refiner_model` | `claude-sonnet-5` | The Refiner: writes a specification for an item nobody has scoped yet and marks it `refined`, before it would otherwise have to be blocked and wait for the Enabler — see [Refined items and the Refiner](#refined-items-and-the-refiner). Engaged every cycle there is unrefined work to do, so how often it runs and how good it has to be pull against each other: what it writes is the brief an Implementer works from. Leave it empty to switch the stage off. |
 | `refined_label` | `refined` | Label put on an **issue** once the Refiner has written it a specification — see [Refined items and the Refiner](#refined-items-and-the-refiner). Purely informational: nothing reads it back, so removing it by hand does nothing. The pipeline creates it in each target repo it works, so there is nothing to set up. Leave it empty to switch the labelling off; the item is still recorded as refined and the Co-Ordinator still reads that record. Do not set it to `blocked`, which is a...[continued below](#extended-notes-refined_label) |
 | `refiner_max_per_engagement` | `5` | How many unrefined items one Refiner engagement will write specifications for. Items over the cap simply wait for a later engagement. `0` switches proactive refinement off. |
 | `refinement_policy` | `{"issues":"preferred"}` | Per source: `required` (never select unrefined), `preferred` (rank refined items first, but an unrefined one may still be picked), or `exempt` (no refinement dimension — the default for every source not listed). See [Refined items and the Refiner](#refined-items-and-the-refiner). Every source the Refiner's own candidate gathering reads — `issues`, `security`, `code-quality`, `review-feedback`, `abandoned-drafts`, `merge-conflicts`, `dequeued`, `register-hygiene`, `tech-debt`...[continued below](#extended-notes-refinement_policy) |
@@ -339,13 +339,13 @@ Keys:
 | `crash_loop_after` | `4` | Consecutive fleet-wide failures, with no intervening recovery, before the Script files a crash-loop escalation issue — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. Neither class blames a repo or an item, so without this nothing ever surfaces a deterministic fleet-wide failure — the dashboard shows a healthy idle fleet. `0` (or absent) disables both checks. |
 | `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where the crash-loop escalation issues are filed — the pipeline's own repository. Deduplicated like an Enabler escalation and assigned to `enabler_assignee`, so the pipeline never selects its own SOS as work. Empty disables both checks. |
 | `timeout_coordinator` | *(unset)* | Minutes, and an override. Leave it out — the backstop tunes itself, and a key set here outranks the derivation for as long as it is there. A repo entry's own `stage_timeouts` outranks this key in turn, for that repo alone — see [`repos`](#extended-notes-repos). |
-| `timeout_implementor` | *(unset)* | Minutes, and an override. As above. |
+| `timeout_implementer` | *(unset)* | Minutes, and an override. As above. |
 | `timeout_reviewer` | *(unset)* | Minutes, and an override. As above. |
 | `timeout_enabler` | *(unset)* | Minutes, and an override. As above. |
 | `timeout_refiner` | *(unset)* | Minutes, and an override. As above. |
 | `timeout_approver` | *(unset)* | Minutes, and an override. As above. |
 | `inactivity_coordinator` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. A repo entry's own `stage_inactivity` outranks this key in turn, for that repo alone — see [`repos`](#extended-notes-repos). |
-| `inactivity_implementor` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
+| `inactivity_implementer` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
 | `inactivity_reviewer` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
 | `inactivity_enabler` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
 | `inactivity_refiner` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
@@ -410,7 +410,7 @@ A repo entry may also carry `nice` — an optional integer from `-19` to `19` (a
 
 A non-zero `nice` shows as a badge against that repo in the dashboard's work-sources panel, naming the value and the weighting it buys; a repo at `0` or with no key shows nothing there, so a fleet that has set none sees the panel unchanged.
 
-A repo entry may also carry `stage_timeouts` and `stage_inactivity` — the per-repo form of the `timeout_<actor>` and `inactivity_<actor>` keys below, each an object in minutes keyed `coordinator`, `implementor`, `reviewer`, `approver` and `enabler`, any subset of them. The Refiner spans repos, so it has no per-repo form and takes `timeout_refiner` / `inactivity_refiner` only. A repo's entry is the most specific level of the precedence — this entry, then the fleet-wide key, then the derived value — so set one only to insist on a number for one repo; omit them and both the backstop and the watchdog tune themselves. `scripts/doctor.sh`'s pinned-cap warning covers every level, naming the repo for a per-repo override.
+A repo entry may also carry `stage_timeouts` and `stage_inactivity` — the per-repo form of the `timeout_<actor>` and `inactivity_<actor>` keys below, each an object in minutes keyed `coordinator`, `implementer`, `reviewer`, `approver` and `enabler`, any subset of them. The Refiner spans repos, so it has no per-repo form and takes `timeout_refiner` / `inactivity_refiner` only. A repo's entry is the most specific level of the precedence — this entry, then the fleet-wide key, then the derived value — so set one only to insist on a number for one repo; omit them and both the backstop and the watchdog tune themselves. `scripts/doctor.sh`'s pinned-cap warning covers every level, naming the repo for a per-repo override.
 
 A repo entry may also carry `merge_autonomy` — the per-repo override of the top-level key of the same name, on the same precedence: this entry wins when present, the top-level key otherwise. Omit it and the repository follows the fleet-wide default.
 
@@ -431,8 +431,8 @@ Every optional key goes on the repo's own entry, beside `slug` and `sources`:
     "sources": ["security", "issues:urgent", "implementation-plan", "issues:low"],
     "implementation_plan_path": "docs/IMPLEMENTATION-PLAN.md",
     "nice": -5,
-    "stage_timeouts": { "implementor": 90 },
-    "stage_inactivity": { "implementor": 20 }
+    "stage_timeouts": { "implementer": 90 },
+    "stage_inactivity": { "implementer": 20 }
   }
 ]
 ```
@@ -491,13 +491,13 @@ instead of needing to be re-applied after every one.
   "coordinator": {
     "extend": ["prompt-overrides/coordinator-house-rules.md"]
   },
-  "implementor": {
-    "extend": ["prompt-overrides/implementor-house-rules.md"]
+  "implementer": {
+    "extend": ["prompt-overrides/implementer-house-rules.md"]
   }
 }
 ```
 
-Keys are stage names — `coordinator`, `implementor`, `reviewer`, `enabler`,
+Keys are stage names — `coordinator`, `implementer`, `reviewer`, `enabler`,
 `refiner` — each holding:
 
 - **`extend`** — an array of file paths, appended to the stage's prompt in
@@ -541,7 +541,7 @@ stages, that is still visible: a configured file going missing (or a new one
 appearing, or an existing one changing) moves the hash the no-op
 short-circuit tracks (see [Skipping no-op cycles](#skipping-no-op-cycles)),
 so a broken path shows up as an unexplained Co-Ordinator or Enabler run
-rather than being silently swallowed. `implementor` and `reviewer` overrides
+rather than being silently swallowed. `implementer` and `reviewer` overrides
 need no such tracking — those stages only ever run once an item is already
 selected, so nothing about them feeds the "is there anything new to do at
 all" decision.
@@ -634,7 +634,7 @@ Five things are worth knowing:
   deployments.** poetic-fiddle deploys every pull request to Vercel, and that
   deployment reports through GitHub's deployments API rather than as a check
   run — so a pull request can be entirely green over a preview that never
-  built. `scripts/preview-deploy.sh` is what the Implementor and Reviewer run
+  built. `scripts/preview-deploy.sh` is what the Implementer and Reviewer run
   to find out, and it needs `VERCEL_AUTOMATION_BYPASS_SECRET` in the node's
   `.env` (Vercel → the project → Settings → Deployment Protection → Protection
   Bypass for Automation), because preview deployments sit behind Vercel
@@ -813,7 +813,7 @@ Completes stand-down checks, repo ordering, and coordinator selection, then exit
 ```bash
 ./agent-cycle.sh --once
 ```
-Launches implementor and reviewer in the foreground. Leaves the PR and workspace for inspection.
+Launches implementer and reviewer in the foreground. Leaves the PR and workspace for inspection.
 
 ### Restrict to one repo (for testing)
 ```bash
@@ -1115,7 +1115,7 @@ printf '%s\n' "$(jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
 
 Omit `repo` to reopen the item in every repo, or add it to scope the change to
 one. Either way the item becomes a candidate again; if there is still no work,
-the Implementor will simply void it again — with evidence this time.
+the Implementer will simply void it again — with evidence this time.
 
 **Keep `cycle: "manual"` exactly as it is** here and in any other event you
 append by hand — an `unblocked`, a `limit-hit`. It is not a placeholder for a
@@ -1279,7 +1279,7 @@ forever, without recording anything. Nothing looked wrong. The work simply
 never happened, and you were never told it was waiting on you.
 
 Now the Co-Ordinator reports such an item — or the Refiner declines one it was
-given, or an Implementor gets partway into one and finds the brief itself
+given, or an Implementer gets partway into one and finds the brief itself
 insufficient — and the Script records it as blocked with what is missing.
 Nothing else changes about that cycle. If the item is a GitHub issue it also
 picks up the `needs-refinement` label — and is assigned to you, so it shows up
@@ -2006,7 +2006,7 @@ follow [Removing a node for good](#removing-a-node-for-good) instead.
 
 ## For maintainers: the as-built specifications
 
-To modify this system (add a new work source, change the selection logic, etc.), start from `docs/IMPLEMENTATION-PIPELINE-SPEC.md` — the as-built requirements specification for the pipeline, with numbered requirements and acceptance checks. The specs are maintained as-built: a change to a component lands in the same pull request as the spec edit that keeps its document accurate (see `CLAUDE.md`, "As-built specifications"). `prompts/coordinator.md`, `prompts/implementor.md`, and `prompts/reviewer.md` are the operating prompts actually fed to each stage's headless `claude -p` invocation — update the spec first, then bring the affected operating prompt(s) in line with it.
+To modify this system (add a new work source, change the selection logic, etc.), start from `docs/IMPLEMENTATION-PIPELINE-SPEC.md` — the as-built requirements specification for the pipeline, with numbered requirements and acceptance checks. The specs are maintained as-built: a change to a component lands in the same pull request as the spec edit that keeps its document accurate (see `CLAUDE.md`, "As-built specifications"). `prompts/coordinator.md`, `prompts/implementer.md`, and `prompts/reviewer.md` are the operating prompts actually fed to each stage's headless `claude -p` invocation — update the spec first, then bring the affected operating prompt(s) in line with it.
 
 `docs/DASHBOARD-SPEC.md` is the companion specification for the monitoring dashboard (`scripts/publish-dashboard.sh` and `dashboard/index.html`).
 

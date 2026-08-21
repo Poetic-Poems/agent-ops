@@ -3,7 +3,7 @@
 # scripts/sweep-orphan-branches.sh — find claim branches whose work became
 # invisible, and put it back in front of the pipeline (requirement 17b).
 #
-# The orphan this hunts: an Implementor pushes commits to its claim branch and
+# The orphan this hunts: an Implementer pushes commits to its claim branch and
 # dies before the draft pull request exists. Nothing recovers it —
 # `gather-abandoned-drafts.sh` lists PRs, not branches — and nothing can even
 # reach it again: the claim gc keeps a moved ref on purpose (pushed work is
@@ -330,7 +330,7 @@ PR, and the live claim ref blocks every later attempt at the same item
 (IMPLEMENTATION-PIPELINE-SPEC requirement 17b).
 
 This draft makes the work visible to the abandoned-drafts source again. Its
-Implementor should read \`gh pr diff\` and the commit messages here, continue
+Implementer should read \`gh pr diff\` and the commit messages here, continue
 from what already exists rather than starting the item over, and open the
 result for review as usual.
 

@@ -2,7 +2,7 @@
 #
 # test/void-obsolete-ctx-json.test.sh — regression test for
 # `void_obsolete_ctx_json` (agent-cycle.sh), the function every
-# `void_guard_reason` call site (Co-Ordinator, Enabler, Implementor) hands it
+# `void_guard_reason` call site (Co-Ordinator, Enabler, Implementer) hands it
 # as CTX_JSON for the machine `obsolete` alternative (design doc §5.5, issue
 # #413, WI-10).
 #

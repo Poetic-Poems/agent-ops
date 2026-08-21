@@ -21,10 +21,10 @@
 #                              skew between two machines into the arithmetic,
 #                              where measuring one node against its own two
 #                              timestamps has none
-#   per-stage timeouts         an Implementor gets 120 minutes and a Co-Ordinator
+#   per-stage timeouts         an Implementer gets 120 minutes and a Co-Ordinator
 #                              15; one shared threshold would either miss the
 #                              Co-Ordinator case entirely or condemn every
-#                              healthy Implementor
+#                              healthy Implementer
 #   silence on unknown stages  the review pipeline runs stages this map does not
 #                              name, and a stage with no configured timeout is
 #                              one the rule may make no claim about
@@ -99,7 +99,7 @@ assert_contains "and both entry points" "function nodeStageOverrun" "$rule"
 # Config mirrors the shipped config.json. Timestamps are absolute so the verdicts
 # do not move with the wall clock — which is itself the point of case `heartbeat`.
 verdicts="$(node -e '
-  var D = {config: {stage_backstops: {coordinator: 15, implementor: 90,
+  var D = {config: {stage_backstops: {coordinator: 15, implementer: 90,
                                       reviewer: 30, enabler: 30}},
            generated_at: "2026-01-01T04:40:00Z"};
 '"$helper"'
@@ -113,7 +113,7 @@ verdicts="$(node -e '
     inside_grace: stageOverrun("coordinator", T(0), T(16)),
     past_grace:   stageOverrun("coordinator", T(0), T(18)),
     heartbeat:    stageOverrun("coordinator", T(0), T(5)),
-    implementor:  stageOverrun("implementor", T(0), T(40)),
+    implementer:  stageOverrun("implementer", T(0), T(40)),
     unknown:      stageOverrun("project-reviewer", T(0), T(600)),
     no_timestamp: stageOverrun("coordinator", null, T(40)),
     announced:    stageOverrun("coordinator", T(0), T(40), 60),
@@ -149,7 +149,7 @@ assert_eq "a stage judged only to the heartbeat is not flagged for the gap after
   "null" "$(v heartbeat)"
 
 assert_eq "each stage is held against its own timeout, not a shared one" \
-  "null" "$(v implementor)"
+  "null" "$(v implementer)"
 assert_eq "a stage with no cap known to the page gets no verdict at all" \
   "null" "$(v unknown)"
 assert_eq "and neither does one the log never dated" "null" "$(v no_timestamp)"

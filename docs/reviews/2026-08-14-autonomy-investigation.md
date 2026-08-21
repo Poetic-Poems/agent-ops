@@ -74,7 +74,7 @@ the merge click, and — since the merge queue went live on `agent-ops` on
 Nothing in the system approves, merges, or enqueues: the only merge-adjacent
 GraphQL in the codebase is the read-only queue probe (`lib/merge-queue.sh`).
 The prohibitions are uniform across `prompts/reviewer.md:8`,
-`prompts/implementor.md:7`, `prompts/enabler.md:209` and
+`prompts/implementer.md:7`, `prompts/enabler.md:209` and
 `prompts/project-reviewer.md:8`.
 
 ### 2.2 The escalation taxonomy already matches the target
@@ -114,7 +114,7 @@ Three known weaknesses currently resolve to "a human will notice":
   tell" is answered with "there is nothing". Tolerable while a human reads
   the output; disqualifying on an arming path with nobody behind it.
 - **Void integrity** (flow-review RC9; prior art #243, closed): the
-  Implementor and Enabler can write an `item-void` on their own say-so, and
+  Implementer and Enabler can write an `item-void` on their own say-so, and
   only the human `unvoided` label reverses one. The residual gap was
   documented as deliberate — its justification was the human backstop.
 - **Human-only corroboration labels**: `obsolete` (this draft is unwanted)
@@ -190,7 +190,7 @@ Doctrine touched, and when:
 | `docs/IMPLEMENTATION-PIPELINE-SPEC.md:10390` economics | Governor replacement | WI-6 |
 | `docs/REVIEW-PIPELINE-SPEC.md:196` | Review PRs follow the same ladder | WI-9 |
 | `README.md:3,:12,:50-56` | Product promise: default human gate, opt-in ladder, structural human veto | WI-9 |
-| `prompts/{reviewer,implementor,enabler,project-reviewer}.md` | Prohibition retained for the model; attribution reworded ("the Script performs approval and landing where the trust level allows; you never do") | WI-9 |
+| `prompts/{reviewer,implementer,enabler,project-reviewer}.md` | Prohibition retained for the model; attribution reworded ("the Script performs approval and landing where the trust level allows; you never do") | WI-9 |
 | `config.schema.json` + generated tables | `merge_autonomy`, `approver_model_default/_complex/_critical`, `merge_budget_per_day`, `sensitive_paths` | WI-2, WI-5, WI-6, WI-7 |
 
 Per the as-built rule (`CLAUDE.md`), each spec edit travels in the PR that
@@ -383,7 +383,7 @@ source is the natural consumer.
 ## 8. Work items
 
 Tracked in umbrella #402, one issue per item, `Blocked-by:` lines carrying the
-dependencies. Suggested complexity in each body anchors the Implementor's
+dependencies. Suggested complexity in each body anchors the Implementer's
 self-grading and so the Reviewer/Approver model tier — every part of the
 implementation runs at the cheapest tier that can do it well.
 

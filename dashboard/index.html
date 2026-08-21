@@ -969,7 +969,7 @@
   // towards the widest is deliberate: an over-wide limit delays the verdict,
   // while an under-wide one would assert that a healthy stage is dead.
   var STAGE_BACKSTOP_PRIOR = {
-    coordinator: 20, implementor: 150, reviewer: 90, enabler: 30
+    coordinator: 20, implementer: 150, reviewer: 90, enabler: 30
   };
   function stageBackstopMin(stage, announced) {
     if (+announced > 0) return +announced;
@@ -1549,7 +1549,7 @@
     var showNode = fleetVisible();
     var rows = [];
     cycles.forEach(function (cy, i) {
-      var stageCells = el("div", {class:"stagecells"}, ["coordinator","implementor","reviewer"].map(function (s) {
+      var stageCells = el("div", {class:"stagecells"}, ["coordinator","implementer","reviewer"].map(function (s) {
         var g = cy.stages && cy.stages[s];
         if (!g) return el("span", {class:"stagecell sc-none", title:s, text: s[0].toUpperCase()});
         var cls = g.limit_hit ? "sc-fail" : (g.is_error ? "sc-fail" : "sc-ok");
@@ -1615,7 +1615,7 @@
     if (cy.fail_detail) w.appendChild(el("div", {class:"banner red", style:"margin:8px 0"}, esc(cy.fail_detail)));
     if (cy.warning) w.appendChild(el("div", {class:"banner amber", style:"margin:8px 0"}, esc(cy.warning)));
 
-    ["coordinator","implementor","reviewer"].forEach(function (s) {
+    ["coordinator","implementer","reviewer"].forEach(function (s) {
       var g = cy.stages && cy.stages[s];
       if (!g) return;
       var box = el("div", {class:"stagebox"});
@@ -2205,7 +2205,7 @@
   // under its raw token rather than vanishing into the totals.
   var ACTOR = {
     "coordinator":      ["coordinator", "the Co-Ordinator — chooses the work"],
-    "implementor":      ["implementor", "the Implementor — makes the change and raises the PR"],
+    "implementer":      ["implementer", "the Implementer — makes the change and raises the PR"],
     "reviewer":         ["reviewer",    "the Reviewer — reviews the PR and marks it ready"],
     "enabler":          ["enabler",     "the Enabler — examines blocked items and escalates"],
     "refiner":          ["refiner",     "the Refiner — specifies items nobody has scoped"],

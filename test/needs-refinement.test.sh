@@ -227,7 +227,7 @@ rm -f "$tmp_dir/missing-labels"
 cat > "$log" <<'EOF'
 {"ts":"2026-07-22T09:00:00Z","cycle":"c0","event":"attempt-failed","stage":"coordinator","repo":"o/r","item":"52","kind":"needs-refinement","detail":"no acceptance criteria","unblock_condition":"acceptance criteria","needs_refinement_label":"needs-refinement"}
 {"ts":"2026-07-22T09:00:01Z","cycle":"c0","event":"attempt-failed","stage":"coordinator","repo":"o/r","item":"TD26071901","kind":"needs-refinement","detail":"no scope bound","unblock_condition":"a scope bound"}
-{"ts":"2026-07-22T09:00:02Z","cycle":"c0","event":"attempt-failed","stage":"implementor","repo":"o/r","item":"77","detail":"needs a repo secret"}
+{"ts":"2026-07-22T09:00:02Z","cycle":"c0","event":"attempt-failed","stage":"implementer","repo":"o/r","item":"77","detail":"needs a repo secret"}
 EOF
 blocked="$(blocked_items "$log")"
 
@@ -386,7 +386,7 @@ assert_eq "and the entry carries the class the engagement acts on" "needs-refine
 assert_eq "and the condition promoted from the report's missing" \
   "a scope bound and acceptance criteria" "$(eligible | jq -r '.[0].unblock_condition')"
 assert_eq "an ordinary block carries an empty kind" '""' \
-  "$(printf '%s\n' '{"ts":"2026-07-22T09:00:00Z","cycle":"c0","event":"attempt-failed","stage":"implementor","repo":"o/r","item":"TD1","detail":"x"}' > "$log"
+  "$(printf '%s\n' '{"ts":"2026-07-22T09:00:00Z","cycle":"c0","event":"attempt-failed","stage":"implementer","repo":"o/r","item":"TD1","detail":"x"}' > "$log"
      coord_cycles 3 >> "$log"; eligible | jq -c '.[0].kind')"
 
 # --- Requirement 36b: refined_before, derived from the log ----------------------
@@ -510,7 +510,7 @@ assert_eq "a malformed trailing line does not lose the map" "the current spec" \
   "$(refinements_map "$log" | jq -r '."o/r".TD26071901.spec')"
 
 # --- Requirement 39d: a fresher needs-refinement block shadows a refinement ------
-# The Implementor's escape hatch (or a further Refiner decline) says a named
+# The Implementer's escape hatch (or a further Refiner decline) says a named
 # specification did not hold up, so a later Co-Ordinator must not be handed it
 # again — but a *later* refinement must still win once someone writes one.
 stale_log="$(mktemp)"
@@ -521,7 +521,7 @@ assert_eq "before any block, the refinement stands" \
   "https://github.com/o/r/issues/88#issuecomment-1" \
   "$(refinements_map "$stale_log" | jq -r '."o/r"."88".comment_url')"
 
-printf '%s\n' '{"ts":"2026-08-01T10:00:00Z","cycle":"c2","event":"attempt-failed","stage":"implementor","kind":"needs-refinement","repo":"o/r","item":"88","reason":"acceptance criteria do not match the body","unblock_condition":"say which of the two behaviours is wanted"}' >> "$stale_log"
+printf '%s\n' '{"ts":"2026-08-01T10:00:00Z","cycle":"c2","event":"attempt-failed","stage":"implementer","kind":"needs-refinement","repo":"o/r","item":"88","reason":"acceptance criteria do not match the body","unblock_condition":"say which of the two behaviours is wanted"}' >> "$stale_log"
 assert_eq "a fresher needs-refinement block shadows the refinement" "null" \
   "$(refinements_map "$stale_log" | jq -r '."o/r"."88" // "null"')"
 

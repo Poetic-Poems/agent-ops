@@ -354,7 +354,7 @@ assert_contains "having said it was waiting" "waiting" "$out"
 
 # --- Resolving the pull request without --sha (TD-PPagop-26080301) ------------
 # The default invocation — no arguments at all — is how both prompts/
-# implementor.md and prompts/reviewer.md run this script, from their own
+# implementer.md and prompts/reviewer.md run this script, from their own
 # workspace clone. It used to always exit 2: with no --repo and no --pr, the
 # script filled slug from `gh repo view` and then unconditionally passed
 # --repo to `gh pr view` even with no PR number, URL or branch given — a
@@ -423,7 +423,7 @@ else
   printf 'FAIL - agent-cycle.sh does not export AGENT_OPS_ROOT — the prompts name a path nothing sets\n'
   failures=$(( failures + 1 ))
 fi
-for prompt in implementor reviewer; do
+for prompt in implementer reviewer; do
   assert_contains "prompts/$prompt.md invokes the check through AGENT_OPS_ROOT" \
     "$invocation" "$(cat "$SCRIPT_DIR/prompts/$prompt.md")"
 done
@@ -433,7 +433,7 @@ done
 # invocation as the readiness check, so it costs no second network round trip.
 # shellcheck disable=SC2016
 fetch_invocation='"$AGENT_OPS_ROOT/scripts/preview-deploy.sh" --wait 180 --fetch <path> [--fetch <path> ...]'
-for prompt in implementor reviewer; do
+for prompt in implementer reviewer; do
   assert_contains "prompts/$prompt.md invokes --fetch for the diff-touched routes" \
     "$fetch_invocation" "$(cat "$SCRIPT_DIR/prompts/$prompt.md")"
 done

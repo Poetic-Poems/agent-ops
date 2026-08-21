@@ -257,7 +257,7 @@ assert_eq "and doctor.sh exits 1" "1" "$rc"
 
 # project_review.repos gets the same write-access check as repos[] — the
 # Reviewer stage pushes a branch and opens a PR against them exactly as an
-# Implementor does against a target repo, so a review repo the token can read
+# Implementer does against a target repo, so a review repo the token can read
 # but not push to loses the review the same way a target repo loses an item.
 review_config="$tmp/review-config.json"
 jq --arg slug "$slug" '.repos = [] | .project_review.repos = [{slug: $slug}]' "$base_config" > "$review_config"

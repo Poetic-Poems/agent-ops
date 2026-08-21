@@ -109,7 +109,7 @@ case "${STUB_MODE:-prompt}" in
     ;;
   quoted)
     # The string, but inside a tool result rather than as an event of its own:
-    # an Implementor working on limit detection reads fixtures like this.
+    # an Implementer working on limit detection reads fixtures like this.
     printf '%s\n' '{"type":"user","message":{"content":[{"type":"tool_result","content":"expected {\"status\":\"rejected\"} here"}]}}'
     sleep 1
     ;;
@@ -222,7 +222,7 @@ assert_eq "a rate-limit warning does not stop the stage" "0" "$rc"
 assert_eq "and nothing is recorded against it" "" "$stage_kill_reason"
 
 # The same string inside a tool result is content, not an event. An
-# Implementor working on limit detection reads fixtures shaped exactly like
+# Implementer working on limit detection reads fixtures shaped exactly like
 # this, and must not abort itself for doing so.
 run_case quoted quoted 0 60 30
 assert_eq "the status string inside a tool result is content, not a refusal" \

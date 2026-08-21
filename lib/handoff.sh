@@ -16,7 +16,7 @@
 # `pr-ready` and moved on. The PR stayed a draft — invisible to the human, who
 # is watching for review requests, and invisible to the log, which recorded a
 # successful handoff. Three hours later the abandoned-drafts source (requirement
-# 3e) correctly re-detected it as a stalled draft and paid an Implementor and a
+# 3e) correctly re-detected it as a stalled draft and paid an Implementer and a
 # Reviewer to finish work that was already finished, at a fresh head SHA, which
 # is a fresh ref no block covers — so it would have done that on the hour,
 # indefinitely, each round looking productive.
@@ -108,9 +108,9 @@
 # what it had opened, and the only one that does not depend on that stage. The
 # other three — the final message's `pr_url`, a URL grepped out of the stage
 # output, the `.git/agent-ops-pr-url` breadcrumb (requirement 23) — are all
-# things the Implementor must have done something to produce, and an
-# Implementor that failed to emit a parseable final message is precisely an
-# Implementor that may have skipped them. All three came up empty on three
+# things the Implementer must have done something to produce, and an
+# Implementer that failed to emit a parseable final message is precisely an
+# Implementer that may have skipped them. All three came up empty on three
 # items in one hour on 2026-08-03 (agent-ops #172, #173, #175), each with
 # finished, pushed, CI-green work in a draft pull request the Script could no
 # longer name: no stage-failure comment landed on any of them, and the
@@ -422,7 +422,7 @@ _handoff_pr_author() {
 #   none       nobody's review blocks this PR — the ordinary path, and the
 #              answer for every first-round pull request. One API call.
 #   already    a re-review is pending from every blocking reviewer; whoever did
-#              it (normally the Implementor, requirement 26b) got there first.
+#              it (normally the Implementer, requirement 26b) got there first.
 #   requested  this call asked, and GitHub now shows the request pending.
 #   failed     the request could not be made, or did not take.
 #
@@ -430,7 +430,7 @@ _handoff_pr_author() {
 #
 # ## Why this exists
 #
-# A human asks for changes; the Implementor answers them and pushes; the
+# A human asks for changes; the Implementer answers them and pushes; the
 # Reviewer confirms CI is green and reports `ready`. Every actor has done its
 # job, and the pull request is now in a state no one is watching: its
 # `reviewDecision` is still `CHANGES_REQUESTED` — the author cannot clear that,
@@ -449,7 +449,7 @@ _handoff_pr_author() {
 #
 # ## Why the Script and not the prompt
 #
-# The Implementor prompt has told it to re-request review since the
+# The Implementer prompt has told it to re-request review since the
 # review-feedback source existed, and #200 is what that instruction is worth on
 # its own: best-effort prose, unverified, and the one round it was skipped is
 # the round nobody could see had gone wrong. This is requirement 31a's lesson in
@@ -468,7 +468,7 @@ _handoff_pr_author() {
 # this does is put the PR back in the queue the human actually reads.
 #
 # Nor does it fail the handoff when it fails. The PR is finished, green and
-# visible; what is missing is a notification, and the Implementor's own reply
+# visible; what is missing is a notification, and the Implementer's own reply
 # comment (requirement 26b) mentions the reviewer, which notifies them too.
 # Recording an `attempt-failed` here would put a certified pull request in front
 # of the Enabler as a problem — the outcome requirement 31a exists to avoid — to
@@ -970,8 +970,8 @@ handoff_complete_review() {
 
 # handoff_answer_events REVIEWS_JSON COMMENTS_JSON [REREQUESTS_JSON]
 # Print, sorted oldest first, the timestamp of every event that answers a
-# review round: a marked reply from the Implementor — a review or general PR
-# comment carrying `lib/pipeline-marker.sh`'s marker with `actor=implementor`
+# review round: a marked reply from the Implementer — a review or general PR
+# comment carrying `lib/pipeline-marker.sh`'s marker with `actor=implementer`
 # — found in REVIEWS_JSON or COMMENTS_JSON, and, only where REREQUESTS_JSON
 # names one, a review-requested timeline event. REVIEWS_JSON and
 # COMMENTS_JSON are arrays of objects carrying at least `at` (a timestamp)
@@ -1000,7 +1000,7 @@ handoff_complete_review() {
 # reads: a force-push re-stamps every commit's date to push time without a
 # human, or the agent, having answered anything (agent-ops#239, PR #205).
 #
-# Only `actor=implementor` closes a round. The marker also carries
+# Only `actor=implementer` closes a round. The marker also carries
 # `actor=script`, `actor=enabler`, `actor=reviewer` and `actor=refiner` for
 # other pipeline writes, and two of those are by definition not answers:
 # `actor=script` records a stage giving up, `actor=enabler` a stall being
@@ -1047,7 +1047,7 @@ handoff_answer_events() {
   # `[inputs] | length` raises none of the three: it consumes whatever
   # remains, counts a trailing `null` as the document it is, and lets a parse
   # error propagate as jq's own exit 5.
-  jq -c -n --arg marker "$PIPELINE_COMMENT_MARKER_PREFIX" --arg actor "actor=implementor -->" '
+  jq -c -n --arg marker "$PIPELINE_COMMENT_MARKER_PREFIX" --arg actor "actor=implementer -->" '
     input as $reviews | input as $comments | input as $rr |
     ([inputs] | length) as $extra |
     if $extra > 0 then error("handoff_answer_events: multiple JSON documents in one argument")

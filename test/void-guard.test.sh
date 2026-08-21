@@ -491,7 +491,7 @@ assert_eq "the real call-site shape survives set -e and bad input" "0" "$?"
 
 # --- Citation corroboration (issue #243) ---------------------------------------
 # void_guard_reason is now shared by every stage that writes `item-void`, not
-# only the Co-Ordinator — the Enabler and the Implementor call it with no
+# only the Co-Ordinator — the Enabler and the Implementer call it with no
 # gathered candidate list (`repos` = `[]`), so every assertion below passes
 # `'[]'` rather than $REPOS, exactly as those two call sites do.
 
@@ -637,7 +637,7 @@ assert_eq "an ordinary tech-debt id names no source" \
 # void is corroborated by that PR's own live state rather than by a diff
 # against a gathered candidate — the fetch these items need is driven by their
 # id, not by a per-cycle candidate list, so it works identically for the
-# Enabler and the Implementor (repos: []) as for the Co-Ordinator
+# Enabler and the Implementer (repos: []) as for the Co-Ordinator
 # (TD-PPagop-26080807). Closed corroborates every shape; an *open* PR is read
 # against what its own shape claims, with the strictness calibrated to what
 # requirement 34k then does with the void.
@@ -1094,7 +1094,7 @@ assert_eq "an entry with no repo falls through to the live test, and can corrobo
 # --- void_guard_reason: the acceptance criteria, verbatim -----------------------
 # "a void citing an unrelated-but-real PR is rejected; a void citing the
 # genuinely implementing PR passes" — and with `repos` = `[]`, exactly the way
-# the Enabler and the Implementor call it (neither gathers candidates).
+# the Enabler and the Implementer call it (neither gathers candidates).
 out="$(void_guard_reason "$entry_224_bad" '[]')"; rc=$?
 assert_eq "void_guard_reason rejects a void citing an unrelated-but-real PR" "1" "$rc"
 assert_contains "  ... not corroborated" "not corroborated" "$out"
@@ -1105,7 +1105,7 @@ assert_eq "void_guard_reason accepts a void citing the genuinely implementing PR
 assert_eq "  ... silently" "" "$(void_guard_reason "$entry_224_good" '[]')"
 
 # The same corroboration applies with no `repos` argument at all — the exact
-# call shape the Enabler and Implementor use.
+# call shape the Enabler and Implementer use.
 assert_eq "void_guard_reason works with repos omitted entirely" \
   "0" "$(void_guard_reason "$entry_224_good"; echo $?)"
 out="$(void_guard_reason "$entry_224_bad")"; rc=$?
@@ -1177,7 +1177,7 @@ assert_eq "  ... while the same claim about a still-conflicting PR is refused" "
 assert_contains "  ... on the conflict itself" "still conflicting" "$out"
 
 # ... while the cross-repo number coincidence (issue #290) is refused end to
-# end, on the Enabler's and Implementor's own `[]` call shape — the shape the
+# end, on the Enabler's and Implementer's own `[]` call shape — the shape the
 # no-fetch shortcut used to corroborate.
 out="$(void_guard_reason "$entry_281_cross" '[]')"; rc=$?
 assert_eq "void_guard_reason refuses a cross-repo URL citation of a coinciding number" "1" "$rc"

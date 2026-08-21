@@ -9,7 +9,7 @@
 # repository that ships it, and only agent-ops does. For poetic and
 # poetic-fiddle — the other two repositories this pipeline raises pull
 # requests in — an issue-sourced pull request could still merge without its
-# closing keyword: pre-merge enforcement there was the Implementor prompt
+# closing keyword: pre-merge enforcement there was the Implementer prompt
 # again, the same prompt-only enforcement that was already asked for this and
 # silently skipped once (PR #206, issue #198 open three days — issue #240).
 #

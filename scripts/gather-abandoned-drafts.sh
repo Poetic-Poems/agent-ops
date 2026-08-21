@@ -5,7 +5,7 @@
 #
 # Given a repo slug, print a JSON array of abandoned-draft candidates: open,
 # *draft* PRs this system raised whose last **real** activity was at least
-# <stale-hours> ago. Each is a nearly-finished piece of work an Implementor stage
+# <stale-hours> ago. Each is a nearly-finished piece of work an Implementer stage
 # started, claimed with a draft PR, and never carried to `ready` — because the
 # stage timed out, hit a usage limit, or died. Finishing one costs less than
 # starting fresh and frees the back-pressure slot the stalled PR occupies.
@@ -34,7 +34,7 @@
 # is again the one that matters:
 #   1. Cost, as with gather-findings.sh (requirement 3a): the staleness test is a
 #      timestamp comparison against the clock, not something worth a model turn.
-#   2. The draft PR's own body is the original plan and must reach the Implementor
+#   2. The draft PR's own body is the original plan and must reach the Implementer
 #      verbatim, not summarised.
 #   3. The candidate rule below has to exist in the fingerprint (requirement 3b)
 #      regardless, and requirement 34a says a rule two components compute gets one
@@ -44,7 +44,7 @@
 # ## The candidate rule
 #
 # A PR is a candidate iff all of:
-#   - it is open and **is** a draft. A draft is precisely the Implementor's own
+#   - it is open and **is** a draft. A draft is precisely the Implementer's own
 #     claim marker (requirement 23): a draft that has been sitting untouched is a
 #     claim whose owner never came back. A *ready* PR is finished work waiting on
 #     the human and is not ours to touch (that is review-feedback's job).
@@ -77,7 +77,7 @@
 #         matched against the marker. A human's review — an approval, a
 #         change request, an inline note — carries no marker either way.
 #     The threshold is `abandoned_draft_after_hours` (4 h), comfortably beyond a
-#     whole cycle (120 min Implementor + 60 min Reviewer) so a draft that is
+#     whole cycle (120 min Implementer + 60 min Reviewer) so a draft that is
 #     merely being worked never qualifies. It was 3 h until #203's interim
 #     timeout raises took a worst-case cycle to exactly 180 minutes and left it
 #     no margin at all; the two must move together, which is one of the reasons
@@ -129,7 +129,7 @@
 #
 # `pr-<n>-abandoned-<head-sha>`, not `pr-<n>-abandoned`. An item recorded blocked
 # (requirement 34) stays blocked until something clears it, so a bare
-# `pr-<n>-abandoned` that an Implementor once failed on would still be blocked
+# `pr-<n>-abandoned` that an Implementer once failed on would still be blocked
 # after fresh commits landed on the branch — and the new state, which might be
 # perfectly finishable, would never be looked at again. Scoping the ref to the
 # head SHA means each distinct abandoned state is its own item that no older block
@@ -270,7 +270,7 @@ fi
 # not a formality: without it a failed fetch would leave the PR's activity to
 # be decided by its reviews and comments alone, so a draft a human pushed to
 # five minutes ago — but never commented on — would read as untouched since its
-# last review and be handed to an Implementor to force-push over. Skipped
+# last review and be handed to an Implementer to force-push over. Skipped
 # entirely for `at_cap` PRs, which are excluded regardless, so a truncated
 # response costs no calls.
 head_dates='{}'
@@ -306,7 +306,7 @@ fi
 # redundant. jq sorts `null` *below* every string, so a null activity satisfies
 # `$activity < $cutoff` on its own: without the guard a malformed API response
 # would make the PR look maximally stale and this source would hand a human's
-# live work to an Implementor to force-push over.
+# live work to an Implementer to force-push over.
 prs="$(jq -c --arg cutoff "$cutoff" --arg marker "$PIPELINE_COMMENT_MARKER_PREFIX" '
   [.[]
    | (if .at_cap or .head_committed_at == null then null
@@ -329,7 +329,7 @@ while IFS= read -r pr; do
   head_sha="$(jq -r '.headRefOid // ""' <<<"$pr")"
   [[ -n "$head_sha" ]] || continue
 
-  # The originating item, so the Implementor can find the tech-debt entry, issue,
+  # The originating item, so the Implementer can find the tech-debt entry, issue,
   # or finding this PR came from. Best-effort: a ref in the branch name or body.
   # Absence is normal and must not disqualify the candidate — the PR body and its
   # diff are the brief, not the register entry.

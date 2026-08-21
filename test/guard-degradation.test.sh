@@ -172,15 +172,15 @@ reset_guard_counts
 
 : > "$log_file"
 CONFIG_FILE="$tmp_dir/does-not-exist.json"
-out="$(stage_budget_overrides implementor "org/repo")"
+out="$(stage_budget_overrides implementer "org/repo")"
 assert_eq "a missing CONFIG_FILE still yields the documented {} fallback" "{}" "$out"
 assert_eq "…and the read failure is reported" "1" "$(last_guard_events | jq -s 'length')"
 assert_eq "…under the right site" "stage_budget_overrides" "$(last_guard_events | jq -r '.site')"
 
 : > "$log_file"
 CONFIG_FILE="$tmp_dir/config.json"
-printf '{"repos": [{"slug": "org/repo", "stage_timeouts": {"implementor": 42}}]}' > "$CONFIG_FILE"
-out="$(stage_budget_overrides implementor "org/repo")"
+printf '{"repos": [{"slug": "org/repo", "stage_timeouts": {"implementer": 42}}]}' > "$CONFIG_FILE"
+out="$(stage_budget_overrides implementer "org/repo")"
 assert_eq "a healthy CONFIG_FILE is read normally" "42" "$(jq -r '.backstop' <<<"$out")"
 assert_eq "…and nothing is reported on the happy path" "0" "$(last_guard_events | jq -s 'length')"
 

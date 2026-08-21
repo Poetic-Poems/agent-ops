@@ -78,7 +78,7 @@
 #     or absent reason is never a candidate, on the same "the wrong direction
 #     here is unsafe" reasoning gather-merge-conflicts.sh applies to `UNKNOWN`.
 #   - **the dequeue has not already been answered** — no marked
-#     `actor=implementor` reply on the pull request, in a review body or a
+#     `actor=implementer` reply on the pull request, in a review body or a
 #     general comment, is newer than `dequeued_at`. See "Why the dequeue must
 #     still be unanswered" below: this is the clause that stops a fixed
 #     dequeue being selected again for ever, and it is load-bearing, not a
@@ -112,7 +112,7 @@
 # history, so `merge_queue_probe` returns the same `dequeued_at` and
 # `dequeue_reason` for ever, and `isInMergeQueue` only returns to `true` when a
 # *human* clicks "Merge when ready" again — which D17 deliberately reserves to
-# them. So after the Implementor diagnoses the merge-group failure and pushes
+# them. So after the Implementer diagnoses the merge-group failure and pushes
 # its fix, every other clause above still holds, and the only thing that has
 # moved is the head SHA. The ref is scoped to that (below), so the fix does not
 # retire the old ref, it *replaces* it with one no `blocked`, `void` or
@@ -132,7 +132,7 @@
 # Three properties of how it is called here are deliberate:
 #
 #   - **The round starts at `dequeued_at`, not at the pull request's birth.**
-#     Keying on the timestamp rather than on "has any implementor comment"
+#     Keying on the timestamp rather than on "has any implementer comment"
 #     is what keeps the clause exact: a *second* dequeue after the fix stamps a
 #     later `dequeued_at` than the answering comment, so the pull request
 #     correctly becomes a candidate again. The clause suppresses the
@@ -143,7 +143,7 @@
 #     sweep-human-visibility.sh's own re-request — posted beside the very
 #     requirement 38f notice this source rides alongside — read back next
 #     cycle as an answer to itself (tech-debt/TD-PPagop-26080804.md). Only a
-#     marked `actor=implementor` reply closes this round.
+#     marked `actor=implementer` reply closes this round.
 #   - **A read this cannot make yields no candidate, never "unanswered".**
 #     gather-review-feedback.sh defaults an unreadable comments read to `[]`,
 #     which reads as `unanswered` and *admits* its candidate; that is safe
@@ -156,9 +156,9 @@
 #
 # Same reasoning as gather-merge-conflicts.sh's own `pr-<n>-conflict-<sha>`
 # (see that script's header): an item recorded blocked stays blocked until
-# something clears it, so a bare `pr-<n>-dequeued` that an Implementor once
+# something clears it, so a bare `pr-<n>-dequeued` that an Implementer once
 # failed to resolve would still read blocked after a fresh push — including
-# the Implementor's own fix — changed the very state the item names. Scoping
+# the Implementer's own fix — changed the very state the item names. Scoping
 # to the head SHA means a block recorded against one dequeued state does not
 # swallow a later, possibly-resolvable one, while a re-detected dequeue at the
 # *same* head keeps the same ref and stays correctly blocked.
@@ -260,7 +260,7 @@ emit() {  # <pr-json>
 
   # The answered clause (see "Why the dequeue must still be unanswered"). Read
   # last of the gates, so it costs nothing for the PRs the probe already
-  # rejected. Both collections: the Implementor's summary lands via `gh pr
+  # rejected. Both collections: the Implementer's summary lands via `gh pr
   # comment` (issue comments) but the same marked reply in a review body counts
   # too, and the two file under different endpoints — gather-review-feedback.sh
   # reads both for the same reason.
@@ -301,7 +301,7 @@ emit() {  # <pr-json>
     return 0
   }
 
-  # The originating item, so the Implementor can find the tech-debt entry or
+  # The originating item, so the Implementer can find the tech-debt entry or
   # issue this PR came from — best-effort, absence is normal. Same regex
   # gather-merge-conflicts.sh reads its own "ours" candidates with.
   item="$(jq -r '(.headRefName + " " + (.body // ""))' <<<"$pr" \

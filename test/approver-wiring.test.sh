@@ -26,7 +26,7 @@
 #   - **The ordinary tiers pick their own model** — `medium` on
 #     `approver_model_default`, `high` on `approver_model_complex` — and a
 #     refusal's `reasons` become the `REQUEST_CHANGES` body a human and the
-#     next Implementor read.
+#     next Implementer read.
 #   - **Every failure costs a missing review, never a stranded pull request**:
 #     the stage disabled, a verdict that would not parse, or a review GitHub
 #     refused, each log a `warning` and return 0.

@@ -543,7 +543,7 @@ assert_eq "and the other model is counted apart from it" "2" \
   "$(jq -r --arg m "$haiku" '.by_model[] | select(.model == $m) | .rejected' <<<"$vdata")"
 assert_eq "at its own rate too" "0.5" \
   "$(jq -r --arg m "$haiku" '.by_model[] | select(.model == $m) | .rate' <<<"$vdata")"
-assert_eq "a selection is attributed to the Co-Ordinator model, never the Implementor one" "0" \
+assert_eq "a selection is attributed to the Co-Ordinator model, never the Implementer one" "0" \
   "$(jq -r '[.by_model[] | select(.model == "claude-opus-5")] | length' <<<"$vdata")"
 assert_eq "a verdict written before 3v is still attributed by its own cycle" "3" \
   "$(jq -r --arg m "$haiku" '.by_model[] | select(.model == $m) | .none_selected' <<<"$vdata")"
@@ -805,7 +805,7 @@ mkdir -p "$peer/cycles/${today_day}T040000Z-peer1-77" "$peer2" "$f/.local/state/
 printf '{"node":"peer1","role":"active","ts":"%s","last_cycle":"%sT040000Z-peer1-77"}\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$today_day" > "$peer/heartbeat.json"
 # peer1 is mid-cycle: a `cycle-start` with no `cycle-end`, a coordinator stage
-# that finished, an implementor stage that has not, and the selection between
+# that finished, an implementer stage that has not, and the selection between
 # them. That is the whole of what a peer publishes about what it is doing —
 # it publishes no lock — so it is the whole of what its card can be built from.
 {
@@ -813,7 +813,7 @@ printf '{"node":"peer1","role":"active","ts":"%s","last_cycle":"%sT040000Z-peer1
   printf '{"ts":"2026-01-01T04:00:01Z","cycle":"%sT040000Z-peer1-77","node":"peer1","event":"stage-start","stage":"coordinator"}\n' "$today_day"
   printf '{"ts":"2026-01-01T04:00:02Z","cycle":"%sT040000Z-peer1-77","node":"peer1","event":"stage-end","stage":"coordinator","exit_code":0}\n' "$today_day"
   printf '{"ts":"2026-01-01T04:00:03Z","cycle":"%sT040000Z-peer1-77","node":"peer1","event":"selection","repo":"Poetic-Poems/poetic","item":"TD26071401","source":"tech-debt","title":"share the limit detector"}\n' "$today_day"
-  printf '{"ts":"2026-01-01T04:00:04Z","cycle":"%sT040000Z-peer1-77","node":"peer1","event":"stage-start","stage":"implementor"}\n' "$today_day"
+  printf '{"ts":"2026-01-01T04:00:04Z","cycle":"%sT040000Z-peer1-77","node":"peer1","event":"stage-start","stage":"implementer"}\n' "$today_day"
 } > "$peer/log.jsonl"
 printf '{"type":"result","subtype":"success","total_cost_usd":0.25,"duration_ms":5,"num_turns":1,"is_error":false,"modelUsage":{"model-p":{"costUSD":0.25}},"result":"peer secret ghp_9876543210abcdefXYZ9876 in /home/peeruser/thing"}' \
   > "$peer/cycles/${today_day}T040000Z-peer1-77/coordinator.out"
@@ -837,7 +837,7 @@ make_cycle "$f" "$self_cid" 0.50 model-a
   printf '{"ts":"2026-01-01T05:00:01Z","cycle":"%s","node":"nodeF-self","event":"stage-start","stage":"coordinator"}\n' "$self_cid"
   printf '{"ts":"2026-01-01T05:00:02Z","cycle":"%s","node":"nodeF-self","event":"stage-end","stage":"coordinator","exit_code":0}\n' "$self_cid"
   printf '{"ts":"2026-01-01T05:00:03Z","cycle":"%s","node":"nodeF-self","event":"selection","repo":"Poetic-Poems/poetic","item":"TD26072004","source":"tech-debt","title":"bound the local history"}\n' "$self_cid"
-  printf '{"ts":"2026-01-01T05:00:04Z","cycle":"%s","node":"nodeF-self","event":"stage-start","stage":"implementor"}\n' "$self_cid"
+  printf '{"ts":"2026-01-01T05:00:04Z","cycle":"%s","node":"nodeF-self","event":"stage-start","stage":"implementer"}\n' "$self_cid"
   printf '{"ts":"2026-01-01T05:10:00Z","cycle":"%sT051000Z-nodeF-self-skipped","node":"nodeF-self","event":"cycle-start"}\n' "$today_day"
   printf '{"ts":"2026-01-01T05:10:01Z","cycle":"%sT051000Z-nodeF-self-skipped","node":"nodeF-self","event":"cycle-skipped","detail":"lock held"}\n' "$today_day"
   printf '{"ts":"2026-01-01T05:10:02Z","cycle":"%sT051000Z-nodeF-self-skipped","node":"nodeF-self","event":"cycle-end","exit_code":0}\n' "$today_day"
@@ -883,7 +883,7 @@ assert_lacks "a peer's home path is redacted like our own" "/home/peeruser" "$ra
 assert_eq "a peer mid-cycle is reported running" "true" "$(node_live peer1 running)"
 assert_eq "from its own cycle, not the fleet's newest" "${today_day}T040000Z-peer1-77" \
   "$(node_live peer1 cycle)"
-assert_eq "its live stage is the stage-start with no stage-end" "implementor" \
+assert_eq "its live stage is the stage-start with no stage-end" "implementer" \
   "$(node_live peer1 stage)"
 # The clock the page holds that stage against its own timeout: the *live*
 # stage's start, not the cycle's and not the finished coordinator's. Getting
@@ -905,7 +905,7 @@ assert_eq "a live lock makes this node running" "true" "$(jq -r '.status.running
 assert_eq "and its row says so too" "true" "$(node_live nodeF-self running)"
 assert_eq "our own row is the lock's cycle, not the newest cycle-start" "$self_cid" \
   "$(node_live nodeF-self cycle)"
-assert_eq "so a skipped tick cannot masquerade as what we are doing" "implementor" \
+assert_eq "so a skipped tick cannot masquerade as what we are doing" "implementer" \
   "$(node_live nodeF-self stage)"
 assert_eq "our own row is dated by its live stage too" "2026-01-01T05:00:04Z" \
   "$(node_live nodeF-self stage_since)"
@@ -1042,7 +1042,7 @@ rm -f "$lock_of_h"
 # only one invisible, and every total on the page was quietly partial.
 k="$(new_home nodeK)"
 make_stage "$k" "${today_day}T060000Z-21" coordinator 0.25 model-a
-make_stage "$k" "${today_day}T060000Z-21" implementor 2.00 model-b
+make_stage "$k" "${today_day}T060000Z-21" implementer 2.00 model-b
 make_stage "$k" "${today_day}T060000Z-21" reviewer    0.75 model-b
 make_stage "$k" "${today_day}T070000Z-22" enabler     0.50 model-a
 make_review "$k" "${today_day}T080000Z-nodeK-31" Poetic-Poems/poetic 4.00 model-b
@@ -1055,7 +1055,7 @@ kdata="$(data_of "$k")"
 # rather than the two jqs' formatting.
 actor_usd() { jq -r --arg a "$1" '.counts.by_actor[] | select(.actor==$a) | .usd + 0' <<<"$kdata"; }
 
-assert_eq "each stage's cost is attributed to its own actor" "2" "$(actor_usd implementor)"
+assert_eq "each stage's cost is attributed to its own actor" "2" "$(actor_usd implementer)"
 assert_eq "including the Enabler, which no cycle total counts" "0.5" "$(actor_usd enabler)"
 # The one attribution that is not the filename verbatim: a review's transcript
 # is `reviewer-<repo>.out`, and reading it as a second Reviewer would merge two
@@ -1473,7 +1473,7 @@ zlog="$z/.local/state/poetic-agents/log.jsonl"
   # A third item, blocked and then voided: `item-void` clears no block, so this
   # is the shape every Enabler `void` verdict leaves behind, and the page must
   # show it under one heading, not two (requirement 34h).
-  printf '{"ts":"2026-07-26T00:00:00Z","event":"attempt-failed","repo":"Poetic-Poems/agent-ops","item":"TD26072612","stage":"implementor","detail":"waiting on an upstream release"}\n'
+  printf '{"ts":"2026-07-26T00:00:00Z","event":"attempt-failed","repo":"Poetic-Poems/agent-ops","item":"TD26072612","stage":"implementer","detail":"waiting on an upstream release"}\n'
   printf '{"ts":"2026-07-27T00:00:00Z","event":"item-void","repo":"Poetic-Poems/agent-ops","item":"TD26072612","detail":"already on main","evidence":"merged in #144"}\n'
 } > "$zlog"
 run_publish "$z"
@@ -1797,7 +1797,7 @@ assert_lacks "so no page is ever served an empty assignment" \
 h_app="$tmp_dir/overrides-app"
 mkdir -p "$h_app"
 tar -C "$SCRIPT_DIR" --exclude=.git -cf - . | tar -C "$h_app" -xf -
-jq '.timeout_implementor = 500
+jq '.timeout_implementer = 500
     | .repos[0].stage_timeouts = ((.repos[0].stage_timeouts // {}) + {reviewer: 740})' \
   "$SCRIPT_DIR/config.json" > "$h_app/config.json"
 
@@ -1805,7 +1805,7 @@ h="$(new_home nodeH)"
 env HOME="$h" "$h_app/scripts/publish-dashboard.sh" --no-github >/dev/null 2>&1
 assert_eq "a publish against a config with overrides still exits 0" "0" "$?"
 hdata="$(data_of "$h")"
-# coordinator 20 + implementor 500 (plain timeout_ override, wider than its
+# coordinator 20 + implementer 500 (plain timeout_ override, wider than its
 # 150 min prior) + reviewer 740 (per-repo stage_timeouts override, wider than
 # its 90 min prior) + approver 30 + enabler 30 + refiner 30 + 30 min slack =
 # 1380 min, an exact number of hours so the assertion needs no float

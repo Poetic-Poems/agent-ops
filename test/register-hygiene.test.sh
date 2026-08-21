@@ -3,7 +3,7 @@
 # test/register-hygiene.test.sh — regression test for
 # scripts/gather-register-hygiene.sh (requirement 3i): the source that notices a
 # repository's tech-debt register has stopped agreeing with itself, and hands
-# the repair to an ordinary Implementor.
+# the repair to an ordinary Implementer.
 #
 # Four behaviours are asserted, and each of them fails silently if broken:
 #
@@ -168,7 +168,7 @@ assert_eq "every per-item problem class in the fixture is reported" \
   "$(jq -r '[.[0].problems[] | .[0:15] | sub(" +$"; "")] | join(" ")' <<<"$out")"
 
 # The body is the checker's report verbatim, naming the directory a human or
-# an Implementor would type.
+# an Implementer would type.
 body="$(jq -r '.[0].body' <<<"$out")"
 expected_body="$( cd "$tmp_dir" \
                   && rm -rf items && mkdir items \
