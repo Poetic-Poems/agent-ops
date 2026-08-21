@@ -260,6 +260,91 @@ Two things to know:
   including a `--force-with-lease` rebase to clear a conflict — and it counts
   toward the open-PR back-pressure cap. Remove the label to take the PR back.
 
+## Merge autonomy
+
+Every pull request this pipeline raises goes through the same review and
+merge machinery; what varies is *who* performs the approve and the merge.
+That's `merge_autonomy`, a four-level trust ladder — see [The Landing
+Gate](docs/IMPLEMENTATION-PIPELINE-SPEC.md#the-landing-gate) for the full
+requirements this section summarises:
+
+| Level | Who approves | Who lands | Your residual act |
+|---|---|---|---|
+| `human` — **the product default** | You | You | Everything — the pipeline never approves or merges anything |
+| `agent-approves` | The Approver App | You | The merge (or enqueue) click |
+| `agent-merges-routine` | The Approver App | The Script — for a `complexity:low`/`medium` pull request from a source in `merge_autonomy_routine_sources`, touching no protected path | The click for anything the classifier doesn't cover |
+| `agent-merges-all` | The Approver App | The Script — the same classifier as `agent-merges-routine`; nothing lands here that wouldn't already land there | The click for anything the classifier doesn't cover, same as `agent-merges-routine` |
+
+The top two rungs are configured and validated separately even though they
+land the same pull requests today: `agent-merges-all` is where a protected
+path (the pipeline's own gate code, its prompts, its CI) becomes eligible to
+land with no human click at all, once that class carries its own stronger
+review tier and a cool-off between approval and landing — controls not yet
+built, so a protected-path change needs your click at either level for now.
+
+**The invariants, at every level:**
+
+- **Nothing lands that you have not opted into.** A fresh install ships
+  `merge_autonomy: human`, and it stays there — fleet-wide, and for every
+  repository — until you deliberately raise it, per repository or across the
+  whole installation.
+- **You retain ultimate control.** No model ever holds approve or merge
+  rights — not the Implementer, not the Reviewer, not even the Approver's own
+  prompt, which only judges and never fixes. Only the Script does, under a
+  non-author identity, and only once every deterministic gate and an
+  independent Approver verdict have passed. A `CHANGES_REQUESTED` review from
+  your own account blocks landing at every level, unconditionally: the
+  pipeline never dismisses a human review, so raising the level narrows what
+  still needs your merge click, never what needs your veto.
+
+**Identity.** Every level above `human` needs a non-author GitHub App to hold
+approve rights — the pipeline authors every pull request as its own
+configured owner, and GitHub refuses to let a pull request's author approve
+it, so no level of agent approval is possible without a second identity. This
+App (**"Pullwright Approver"**) needs `pull_requests: write` and
+`contents: write`; its installation token, minted fresh each time
+(`lib/approver-token.sh`), is what the Script signs its reviews and merges
+with — never the owner credential the pipeline authors with. Set the App's
+id as `approver_app_id`, and its three cost tiers as
+`approver_model_default`/`_complex`/`_critical`; leaving `approver_model_default`
+empty switches the whole Approver stage off regardless of `merge_autonomy`,
+and leaving either of the other two empty falls that tier back to the one
+below it.
+
+**What each level needs at the forge**, beyond `config.json`:
+
+- **`agent-approves` and above** — install the App on the repository, with
+  `approver_app_id` and `approver_model_default` both set in `config.json`
+  ([`scripts/doctor.sh`](#checking-an-installation) fails the installation
+  otherwise); set the three `PULLWRIGHT_APPROVER_*` environment variables the
+  token wrapper reads (the App's id, its installation id, and the path to
+  its private key), which `doctor.sh` cross-checks against `approver_app_id`
+  itself; and turn the default branch ruleset's code-owner review
+  requirement *off* — an App cannot satisfy it, and `doctor.sh` fails the
+  installation if a ruleset still demands it at `agent-merges-routine` or
+  above (it is only ever a recommendation, not a hard requirement, below
+  that). A `pull_request` rule requiring at least one approving review is
+  recommended so `reviewDecision` reflects the App's review normally, though
+  nothing here fails on `0`.
+- **`agent-merges-routine` and `agent-merges-all`**, in addition — if the
+  repository has no active merge queue on its default branch, both
+  `allow_auto_merge` and `allow_squash_merge` must be enabled, and
+  `doctor.sh` fails the installation if either is off: the Script's no-queue
+  landing fallback (`gh pr merge --auto --squash`) is refused outright
+  otherwise. Where a merge queue does exist, landing is enqueueing, and the
+  queue's own checks are one more gate a pull request must clear first.
+
+**The kill switch is a permanent operational control, not rollout
+scaffolding.** Independent of `merge_autonomy` itself,
+`agent-cycle.sh --kill-merge-autonomy "<reason>"` forces every repository's
+*effective* level to `human` immediately and fleet-wide, without touching
+`config.json` — cycles keep running exactly as they otherwise would, but no
+Approver review and no automatic landing happens anywhere until
+`agent-cycle.sh --restore-merge-autonomy` clears it. `--status` reports
+whether it's set. Reach for it exactly as you would `--disable` (see
+[Pausing the pipelines](#pausing-the-pipelines)), when what you want stood
+down is the landing gate itself rather than the whole pipeline.
+
 ## Configuration
 
 Edit `config.json` before first run, then check it with
