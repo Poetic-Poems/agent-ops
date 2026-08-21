@@ -302,9 +302,10 @@ approve rights — the pipeline authors every pull request as its own
 configured owner, and GitHub refuses to let a pull request's author approve
 it, so no level of agent approval is possible without a second identity. This
 App (**"Pullwright Approver"**) needs `pull_requests: write` and
-`contents: write`; its installation token, minted fresh each time
-(`lib/approver-token.sh`), is what the Script signs its reviews and merges
-with — never the owner credential the pipeline authors with. Set the App's
+`contents: write`; its installation token — minted and cached for its
+~1-hour lifetime by `lib/approver-token.sh` — is what the Script signs its
+reviews and merges with, never the owner credential the pipeline authors
+with. Set the App's
 id as `approver_app_id`, and its three cost tiers as
 `approver_model_default`/`_complex`/`_critical`; leaving `approver_model_default`
 empty switches the whole Approver stage off regardless of `merge_autonomy`,
