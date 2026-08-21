@@ -97,6 +97,7 @@ cell() { jq -r --arg k "$2" ".cells[\$k].$3 // \"missing\"" <<<"$1"; }
   selection 2026-08-05T01:00:00Z c2 Poetic-Poems/poetic
   run 2026-08-05T01:10:00Z c2 reviewer 0 claude-sonnet-5 300000 30
   run 2026-08-05T01:20:00Z c2 coordinator 0 claude-haiku-4-5 90000 20
+  run 2026-08-05T01:30:00Z c2 enabler-adjudicate 0 claude-sonnet-5 60000 10
 } > "$tmp_dir/join.jsonl"
 t="$(table_for "$tmp_dir/join.jsonl")"
 
@@ -113,6 +114,11 @@ assert_eq "the model is part of the key, not folded away" \
 # neither has a repository, and inventing one would fragment its sample.
 assert_eq "the Co-Ordinator has no repository axis" \
   "*" "$(cell "$t" "coordinator|*|claude-haiku-4-5" repo)"
+# The Enabler's own enabler-adjudicate pass spans repositories exactly as the
+# Enabler does (requirement 36b), even though its stage-end names no cycle
+# that ran an unrelated repository's `selection` first.
+assert_eq "the enabler-adjudicate pass has no repository axis either" \
+  "*" "$(cell "$t" "enabler-adjudicate|*|claude-sonnet-5" repo)"
 
 # --- 2. The cold start ---------------------------------------------------------------
 # The Pullwright requirement: a repository nobody has ever run gets a working

@@ -3971,9 +3971,10 @@ implements.
    dimension, though nodes differ in speed: it would cut the largest cell to
    about eleven runs and the interesting one to about five, and no estimator
    recovers a distribution's tail from five observations — while the tail is
-   the entire quantity of interest. The Co-Ordinator and the Enabler are keyed
-   `(actor, *, model)`: the first runs before selection and the second spans
-   repositories, so neither has one.
+   the entire quantity of interest. The Co-Ordinator, the Enabler and its
+   `enabler-adjudicate` pass (requirement 36b) are keyed `(actor, *, model)`:
+   the first runs before selection, and the other two span repositories, so
+   none of them has one.
    **The watchdog threshold is estimated; the backstop is controlled.** They
    are different quantities and deserve different instruments, and splitting
    them is also what removes any wait for data. The threshold's sample is
@@ -6936,7 +6937,12 @@ implements.
     `stage-start`/`stage-end` pair's `stage` is `coordinator`,
     `implementer`, `reviewer`, `approver`, `enabler` or `refiner`; the last
     two are the ones that may appear on a cycle which selected nothing, since
-    both run from the cleanup of requirement 11. An `enabler-examined` carries
+    both run from the cleanup of requirement 11. A `stage-end` alone, with no
+    paired `stage-start`, also carries `stage: "enabler-adjudicate"`
+    (requirement 36b, `run_enabler_adjudication`) — the one caller of
+    `run_claude_stage` outside those six actors that logs a `stage-end` at
+    all; the usage-limit probe and a `<stage>-salvage` resume log neither. An
+    `enabler-examined` carries
     `repo`, `item`, the
     `blocked_ts` it was examined against, an `outcome`, and the Enabler's own
     `detail`; a `refiner-examined` carries the same shape plus `source`
