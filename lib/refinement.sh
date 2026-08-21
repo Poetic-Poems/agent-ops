@@ -116,7 +116,7 @@
 REFINEMENT_BLOCK_KIND="needs-refinement"
 
 # The generic hold marker (requirement 38b, agent-ops#639): fixed and
-# uncofigurable, the same as `scripts/gather-issues.sh`'s own hardcoded
+# unconfigurable, the same as `scripts/gather-issues.sh`'s own hardcoded
 # `blocked` exclusion check, so the two can never drift apart by a renamed
 # config key.
 # shellcheck disable=SC2034  # read by agent-cycle.sh and scripts/sweep-legacy-refinement-assignees.sh, which source this file
@@ -132,7 +132,7 @@ REFINEMENT_BLOCKED_LABEL="blocked"
 # table, not a placeholder: a future block class that earns its own reason
 # label extends the `case` here, not the caller.
 #
-# Fixed and uncofigurable, like `REFINEMENT_BLOCKED_LABEL` above: an
+# Fixed and unconfigurable, like `REFINEMENT_BLOCKED_LABEL` above: an
 # installation cannot rename `blocked:needs-refinement` any more than it can
 # rename `blocked` itself.
 refinement_blocked_reason_label() {
@@ -246,15 +246,30 @@ refinement_label_targets() {
 
 # refinement_blocked_label_targets BLOCKED_JSON ITEM [REPO]
 # Print, one per line as `<repo>\t<number>\t<label>`, every `blocked`/
-# `blocked:<reason>` label an open refinement block for ITEM's event records
-# having applied (requirement 38b, agent-ops#639). Same shape and the same
-# reasoning as `refinement_label_targets` — read that comment for why REPO
-# empty matches every repo — extended to two possible label fields per block
-# rather than one, since a block projects both `blocked_label` and
-# `blocked_reason_label` together.
+# `blocked:<reason>` label an open refinement block for ITEM carries
+# (requirement 38b, agent-ops#639). Same shape and the same reasoning as
+# `refinement_label_targets` — read that comment for why REPO empty matches
+# every repo — extended to two possible label fields per block rather than
+# one, since a block projects both `blocked_label` and `blocked_reason_label`
+# together.
+#
+# A *legacy* block — one recorded before agent-ops#639, whose event carries
+# `needs_refinement_assignee` and neither blocked-label field — yields the
+# fixed pair regardless, because `scripts/sweep-legacy-refinement-assignees.sh`
+# is what reconciles those blocks and it applies exactly `blocked` and this
+# kind's reason label, under names no installation can change. Without this
+# the sweep would be a one-way door: a migrated block's labels would be
+# applied by the sweep, recorded nowhere, and so never taken off when the
+# block cleared — leaving the issue permanently unselectable, which is the
+# very failure this whole change is undoing, moved from the assignee list to
+# the label list. A legacy block whose issue the sweep has not reached yet
+# costs one `gh` call that finds nothing to remove, and a warning: the same
+# best-effort contract every other removal on this path already has.
 refinement_blocked_label_targets() {
-  local blocked="$1" item="$2" repo="${3:-}"
-  jq -r --arg it "$item" --arg repo "$repo" --arg kind "$REFINEMENT_BLOCK_KIND" '
+  local blocked="$1" item="$2" repo="${3:-}" reason_label
+  reason_label="$(refinement_blocked_reason_label "$REFINEMENT_BLOCK_KIND")"
+  jq -r --arg it "$item" --arg repo "$repo" --arg kind "$REFINEMENT_BLOCK_KIND" \
+     --arg generic "$REFINEMENT_BLOCKED_LABEL" --arg reason "$reason_label" '
     [ .[]?
       | select((.kind // "") == $kind)
       | select($it != "" and (((.item // "") | tostring) == $it))
@@ -262,7 +277,10 @@ refinement_blocked_label_targets() {
       | select($repo == "" or (.repo // "") == $repo)
       | select(((.item // "") | tostring) | test("^[0-9]+$"))
       | . as $e
-      | ( [$e.blocked_label, $e.blocked_reason_label]
+      | ( if (($e.blocked_label // "") == "" and ($e.blocked_reason_label // "") == ""
+              and ($e.needs_refinement_assignee // "") != "")
+          then [$generic, $reason]
+          else [$e.blocked_label, $e.blocked_reason_label] end
           | map(select((. // "") != ""))
           | .[]
           | "\($e.repo)\t\($e.item)\t\(.)" ) ]

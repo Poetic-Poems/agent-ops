@@ -2019,7 +2019,7 @@ record_needs_refinement_block() {
       # `scripts/gather-issues.sh` already excludes on — plus a reason label
       # naming why, so it reaches the human's own filtered issue list the
       # moment it is recorded, rather than waiting for the Enabler's own,
-      # much later, escalation. Fixed, uncofigurable names, unlike the label
+      # much later, escalation. Fixed, unconfigurable names, unlike the label
       # above: there is nothing to read back or disable.
       if refinement_label_add "$repo" "$number" "$REFINEMENT_BLOCKED_LABEL"; then
         blocked_label="$REFINEMENT_BLOCKED_LABEL"

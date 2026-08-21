@@ -37,9 +37,13 @@
 # already-swept repository finds nothing and does nothing.
 #
 # This script does not touch the log itself: `needs_refinement_assignee`
-# stays on the historical event forever, which is harmless — nothing else
-# reads that field once `refinement_assignee_targets` (the only reader) was
-# retired alongside the mechanism it served.
+# stays on the historical event forever, and that is what the release path
+# reads it as — `refinement_blocked_label_targets` treats a block carrying it
+# (and neither `blocked_label` nor `blocked_reason_label`) as carrying the
+# fixed pair this script applies, so the labels come off again when the block
+# clears, exactly as a freshly recorded block's do. Without that reading this
+# sweep would be a one-way door: labels applied here, recorded nowhere, and
+# never removed.
 #
 # Usage: sweep-legacy-refinement-assignees.sh <owner/repo> [log-file]
 #

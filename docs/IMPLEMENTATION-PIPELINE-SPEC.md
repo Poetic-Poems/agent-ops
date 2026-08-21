@@ -9048,7 +9048,7 @@ implements.
       future block class that earns its own reason label extends that
       function's `case`, not this projection's callers.
 
-    Both are fixed, uncofigurable names, like `blocked` itself always has
+    Both are fixed, unconfigurable names, like `blocked` itself always has
     been — there is nothing here for an installation to rename or disable, in
     contrast to `needs_refinement_label` alongside them. `record_needs_refinement_block`
     applies both through `refinement_label_add` (the same primitive
@@ -9091,6 +9091,21 @@ implements.
     first place — `record_needs_refinement_block` never sets it — so the
     script's matching set can only ever be the pre-existing backlog, never a
     growing one.
+
+    The labels the sweep applies are released by the same path a freshly
+    recorded block's are, and for the same reason they must be: the sweep does
+    not rewrite the block's own event, so a migrated block records neither
+    `blocked_label` nor `blocked_reason_label`, and reading the block record
+    alone would leave those labels on the issue forever once the block
+    cleared — the permanent unselectability this requirement's change exists
+    to end, moved from the assignee list to the label list.
+    `refinement_blocked_label_targets` therefore treats a legacy block — one
+    whose event carries `needs_refinement_assignee` and neither blocked-label
+    field — as carrying the fixed pair, which is sound precisely because both
+    names are fixed: the sweep can only ever have applied `blocked` and the
+    kind's own reason label. A legacy block the sweep has not reached yet
+    costs one `gh` removal that finds nothing to remove, best-effort like
+    every other removal on that path.
 
 38c. **An idle, approved pull request is nudged, not left silent.** For every
     open, non-draft, `pr_label`-carrying pull request in every configured
@@ -14080,7 +14095,10 @@ pull request, run the ones the change touches and any it could regress.
     already uses, apply and remove both `blocked` and its reason label; and
     `refinement_blocked_label_targets` finds both of an issue's blocked
     labels, scoped by repo the same way `refinement_label_targets` is,
-    surviving a void the same way. `refinement_assignee_remove` — the one
+    surviving a void the same way, and finds the same fixed pair for a legacy
+    block that records `needs_refinement_assignee` and neither blocked-label
+    field, so what the migration sweep applied is still released when the
+    block clears. `refinement_assignee_remove` — the one
     survivor of what used to be a pair, kept for
     `scripts/sweep-legacy-refinement-assignees.sh` alone — still makes one
     `gh issue edit --remove-assignee` call. `test/sweep-human-visibility.test.sh`
