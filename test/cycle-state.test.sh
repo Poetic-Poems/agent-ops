@@ -854,7 +854,7 @@ extract_function() {  # extract_function <name>
   ' "$SCRIPT_DIR/agent-cycle.sh"
 }
 
-for fn in exclude_blocked_or_void_items exclude_blocked_or_void_issues coordinator_blocked_view; do
+for fn in exclude_blocked_or_void_items exclude_blocked_or_void_issues coordinator_blocked_view coordinator_refinements_view; do
   fn_src="$(extract_function "$fn")"
   if [[ "$fn_src" != *"$fn()"* ]]; then
     printf 'FAIL - could not extract %s from agent-cycle.sh (renamed or moved?)\n' "$fn"
@@ -979,6 +979,10 @@ fi
   blocked_json="$rich_blocked"
   ordered_repos_json='[{"slug":"o/r"}]'
   refinements_json='{}'
+  # Requirement 4j: the lifted build spends the scoped view, which the block
+  # above it in agent-cycle.sh assigns. Produced here by the shipped function
+  # rather than hard-coded, so this stays a lift rather than a re-implementation.
+  coordinator_refinements_json="$(coordinator_refinements_view "$refinements_json" "$ordered_repos_json")"
   claimed_json='[]'
   implementer_model_default="claude-sonnet-5"
   implementer_model_trivial="claude-haiku-4-5-20251001"

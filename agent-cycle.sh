@@ -1480,6 +1480,78 @@ coordinator_blocked_view() {  # <blocked-json>
     <<<"$1" 2>/dev/null || printf '%s' "$1" # TD-PPagop-26081407: passes test 2 -- falls back to the unfiltered $1, a value the caller already accepted
 }
 
+# Requirement 4j/issue #643: the `refinements` half of the Co-Ordinator's
+# unsheddable input, trimmed the way `coordinator_blocked_view` above trims the
+# other half.
+#
+# A refinement entry is small — `ts`, `cycle`, and either a `comment_url` or a
+# `spec`. The `spec` is not: it is a whole work order in markdown, several
+# kilobytes of it, written for an item type with no thread to hold it
+# (tech-debt, a review recommendation, a plan task). The map is a ledger, never
+# retired, so every spec the Refiner has ever written is still in it — on
+# 2026-08-21 that was 24 specs totalling 219,175 bytes, of which 22 (203,645
+# bytes) belonged to items no band of this cycle still names as a candidate.
+# That is what took the assembled prompt past the model's window and had the
+# API refuse the stage on every node of the fleet, eleven consecutive cycles,
+# with no work selected anywhere while it lasted.
+#
+# The prompt's "Items that have been refined" gives the spec exactly one use:
+# an item the Co-Ordinator is about to put in a work order must have its spec
+# pasted verbatim into `context`, because it exists nowhere else. That use is
+# reachable only for an item that is a candidate this cycle. So the spec of an
+# item no band offers is bytes the Co-Ordinator is told to read and can never
+# act on, and dropping it removes no judgement — the same test
+# `coordinator_blocked_view` is trimmed against.
+#
+# What is *not* dropped is the entry: `ts`, `cycle` and `comment_url` stay for
+# every item, refined or not, because "Look the item up here before you decide
+# it is under-specified" and the `refinement_policy` gate both read the entry's
+# presence rather than its spec, and a `comment_url` is a pointer whose cost is
+# a line. Only the payload with a single, candidate-scoped use is shed.
+#
+# Both documents arrive on stdin, never in argv (requirement 4g): this map is
+# the value that crossed MAX_ARG_STRLEN, and an `--argjson` here would trade
+# the refusal this function exists to prevent for the execve death that
+# requirement exists to prevent.
+#
+# Every degradation is toward the *untrimmed* ledger, never toward a smaller
+# one — the same direction `coordinator_blocked_view` and requirement 4i's own
+# guards take. Note which way that points for each document: a `repos` array
+# that will not parse, or is not an array, means candidacy cannot be decided at
+# all, so nothing may be shed on the strength of it. Coercing it to `[]` would
+# read as "no candidates" and strip every spec in the fleet — an un-refinement
+# of every item at once, dressed as a successful trim, and a far worse failure
+# than the overflow this function exists to prevent. An empty array is a
+# different fact and is honoured: a cycle really can offer no candidates, and
+# then no spec has a use.
+coordinator_refinements_view() {  # <refinements-json> <ordered-repos-json>
+  local refinements="${1:-{\}}" repos="${2:-[]}" docs
+  jq -e 'type == "object"' <<<"$refinements" >/dev/null 2>&1 \
+    || { printf '%s' "$refinements"; return 0; }
+  jq -e 'type == "array"' <<<"$repos" >/dev/null 2>&1 \
+    || { printf '%s' "$refinements"; return 0; }
+  docs="$(printf '%s\n' "$refinements" "$repos")"
+  jq -cn '
+    input as $refinements | input as $repos
+    | ( [ $repos[]?
+          | {key: (.slug // "" | tostring),
+             value: ( [ (.findings, .review_feedback, .issues, .register_hygiene,
+                         .human_visibility, .tech_debt, .plan_tasks)[]?
+                        | .ref? // empty | tostring ]
+                      | map({key: ., value: true}) | from_entries )} ]
+        | from_entries ) as $live
+    | $refinements
+    | with_entries(
+        .key as $slug
+        | .value |= ( if type == "object"
+                      then with_entries(
+                             if (.value | type) == "object" and (.value | has("spec"))
+                                and (($live[$slug] // {})[.key] | not)
+                             then .value |= del(.spec)
+                             else . end)
+                      else . end))' <<<"$docs" 2>/dev/null || printf '%s' "$refinements"
+}
+
 # Requirement 3u/issue #320: the same deterministic-code-not-model-judgement
 # exclusion as exclude_blocked_or_void_items above, purpose-built for the one
 # pre-fetched band that function cannot be reused for as-is. Requirement 3t
@@ -7861,6 +7933,25 @@ coordinator_base_prompt="${coordinator_base_prompt//@@WORK_SOURCES_TABLE@@/$coor
 # Initialised ahead of the guard because `set -u` is in force and the second
 # `if` below reads it whichever way the first one went.
 coordinator_fit_allowance=0
+
+# The Co-Ordinator's view of `refinements` (requirement 4j/issue #643),
+# computed once, here, and spent unchanged by both the overhead measurement
+# below and the input assembly under "--- 4. Co-Ordinator stage ---".
+# `blocked` can afford to call its own view at both places because
+# `coordinator_blocked_view` reads nothing but the array it trims; this one is
+# scoped against `ordered_repos_json`, which the fit below reassigns, so
+# calling it twice would measure the overhead against the unfitted candidate
+# set and spend it against the fitted one — an error in the safe direction and
+# still a measurement that is not of the thing it claims to be. Scoped against
+# the unfitted array on purpose, for the same reason the overhead is measured
+# against an empty `repos`: the fit only ever removes candidates, so this stays
+# independent of the rung, and a spec kept for a candidate the ladder later
+# sheds is a handful of bytes already accounted for.
+#
+# Unconditional, outside the bound's own guard: `coordinator_prompt_max_bytes`
+# of `0` switches off the *fit*, not the Co-Ordinator's input document, and the
+# assembly below reads this variable on every path.
+coordinator_refinements_json="$(coordinator_refinements_view "$refinements_json" "$ordered_repos_json")"
 if (( coordinator_prompt_max_bytes > 0 )); then
   coordinator_fit_overhead_json="$(jq -nc \
     --argjson blocked "$(coordinator_blocked_view "$blocked_json")" \
@@ -7872,7 +7963,7 @@ if (( coordinator_prompt_max_bytes > 0 )); then
      | {repos: [], blocked: $blocked, refinements: $refinements, claimed: $claimed,
         models: {default: $model_default, trivial: $model_trivial},
         candidates_max: $cmax, refinement_policy: $policies}' \
-    <<<"$refinements_json"$'\n'"$claimed_json" 2>/dev/null)" \
+    <<<"$coordinator_refinements_json"$'\n'"$claimed_json" 2>/dev/null)" \
     || coordinator_fit_overhead_json='{"repos":[]}'
   # The wrapper "4. Co-Ordinator stage" puts around the rendered input: a blank
   # line, the heading, the two fence lines and the trailing newline. Counted
@@ -7893,16 +7984,34 @@ fi
 # An allowance that came out at or below zero is *not* the same fact as the
 # bound being switched off, and must not go through the same door: the prompt
 # text and the unsheddable half of the input have between them already spent
-# the whole maximum, so there is nothing the fit could remove to make room —
-# the remedy is a larger `coordinator_prompt_max_bytes` (or a smaller prompt),
-# not a deeper trim. `coordinator_fit_bands` reads a zero budget as "bound
-# off" by design, so this case is answered here, loudly, rather than by
-# overloading that sentinel with a second meaning.
+# the whole maximum, so no rung of the ladder can make this cycle's prompt fit
+# — the remedy is a smaller unsheddable half (issue #643's own fix, the
+# refinements view above) or a larger `coordinator_prompt_max_bytes`.
+#
+# What this case must *not* do is what it did between agent-ops#642 and #643:
+# warn, fall past the fit entirely, and send the array whole. "The prompt is
+# already too long" is the one circumstance in which shedding nothing is the
+# worst available answer — on 2026-08-21 it put a 350,052-byte issues extract
+# into a prompt that was over the window without it, and the API refused the
+# stage on every node of the fleet for eight hours. A hopeless budget is still
+# a budget: the ladder is walked to its last rung, the array comes back as
+# small as it can be built, and the prompt goes out with the best chance the
+# Script can give it rather than the worst.
+#
+# 1, not 0: `coordinator_fit_bands` reads a budget of 0 or less as "bound off"
+# and hands the array back unchanged, which is precisely the behaviour this
+# block exists to avoid. A budget of 1 fails every rung — prose first, then
+# entry caps — and lands in that function's final branch, which returns the
+# smallest array the ladder can build together with `fits: false`. The warning
+# below still tells the operator the whole truth; the clamp just stops the
+# cycle from making it worse on the way out.
 if (( coordinator_prompt_max_bytes > 0 && coordinator_fit_allowance <= 0 )); then
   log_event "warning" "$(jq -nc \
-    --arg d "the Co-Ordinator's prompt text and unsheddable input ($coordinator_fit_overhead_bytes bytes) already meet or exceed coordinator_prompt_max_bytes ($coordinator_prompt_max_bytes) — nothing the runtime-input fit can shed will make this cycle's prompt fit, and the API will refuse it" \
+    --arg d "the Co-Ordinator's prompt text and unsheddable input ($coordinator_fit_overhead_bytes bytes) already meet or exceed coordinator_prompt_max_bytes ($coordinator_prompt_max_bytes) — no runtime-input fit can make this cycle's prompt fit; shedding the candidate bands to the ladder's last rung anyway, and the API may still refuse it" \
     '{detail: $d}')"
-elif (( coordinator_prompt_max_bytes > 0 )); then
+  coordinator_fit_allowance=1
+fi
+if (( coordinator_prompt_max_bytes > 0 )); then
   coordinator_fit_json="$(coordinator_fit_bands "$coordinator_fit_allowance" <<<"$ordered_repos_json" 2>&1)" \
     || { guard_warn "coordinator_fit" "$coordinator_fit_json"; coordinator_fit_json=""; }
   if [[ -n "$coordinator_fit_json" ]] && jq -e '.repos | type == "array"' <<<"$coordinator_fit_json" >/dev/null 2>&1; then
@@ -8102,7 +8211,7 @@ coordinator_blocked_json="$(coordinator_blocked_view "$blocked_json")"
 # same delivery, order coupling and here-string reasoning as the no-op
 # fingerprint's build above.
 coordinator_stdin="$(printf '%s\n' \
-  "$ordered_repos_json" "$coordinator_blocked_json" "$refinements_json" "$claimed_json")"
+  "$ordered_repos_json" "$coordinator_blocked_json" "$coordinator_refinements_json" "$claimed_json")"
 coordinator_input="$(jq -nc \
   --arg model_default "$implementer_model_default" \
   --arg model_trivial "$implementer_model_trivial" \

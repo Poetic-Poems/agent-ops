@@ -258,7 +258,13 @@ heading, the Script gives you one JSON object:
   because that item type (tech-debt, a review recommendation, a plan task) has
   no thread to write it into; an entry with a `comment_url` is a pointer to a
   comment on the issue, where the refinement already lives in the thread you
-  would read anyway. Look the item up here before you decide it is
+  would read anyway. A `spec` is carried only for an item some band above
+  actually offers you this cycle — it is the one thing here you would paste
+  rather than merely consult, and a specification for an item you cannot
+  select is prose you would pay to read and could never use, so the Script
+  leaves it out. An entry with neither `spec` nor `comment_url` is therefore
+  a refined item that is not a candidate today, and its presence is all you
+  need from it. Look the item up here before you decide it is
   under-specified, and see "Items that have been refined" below for what to do
   with what you find.
 - `refinement_policy` says, per source, whether an unrefined item from it may
@@ -1404,7 +1410,9 @@ Carry that across:
   task — must be pasted **verbatim** into the work order's `context`, alongside
   the item's own text. It exists nowhere else: the Implementer starts with
   nothing but your work order, so a refinement you summarise is a refinement
-  that was written twice and read once.
+  that was written twice and read once. Every item you can actually select and
+  that has a spec will have it here; an entry without one is an item no band
+  offered you, so the question never arises.
 - **An entry with a `comment_url`** is on the issue itself, so you need do
   nothing special — you already paste the body and every comment (see the
   `issues` rules under "Output"). Just make sure the comment is actually in

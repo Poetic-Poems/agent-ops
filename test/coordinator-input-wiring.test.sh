@@ -119,6 +119,7 @@ implementer_model_default="claude-sonnet-5"
 implementer_model_trivial="claude-haiku-4-5-20251001"
 candidates_max=3
 refinement_policy_json='{}'
+# shellcheck disable=SC2034  # Read by the lifted fit block, which assigns coordinator_refinements_json from it.
 refinements_json='{}'
 claimed_json='[]'
 blocked_json='[]'
@@ -128,6 +129,11 @@ blocked_json='[]'
 # bytes `blocked` contributes to the overhead, which is part of what is being
 # measured.
 eval "$(extract_block '^coordinator_blocked_view\(\) \{' '^\}$' "$AGENT_CYCLE")"
+# And requirement 4j's view of `refinements`, lifted for the same reason: it
+# decides how many bytes that band contributes to the overhead, which on the
+# outage it was written for was more than every other unsheddable term put
+# together.
+eval "$(extract_block '^coordinator_refinements_view\(\) \{' '^\}$' "$AGENT_CYCLE")"
 # shellcheck disable=SC2317  # Called from the lifted base-prompt render below.
 stage_prompt_text() { cat "$PROMPTS_DIR/coordinator.md"; }
 
@@ -165,9 +171,13 @@ run_fit() {  # <max-bytes> <repos-json>  -> assembled prompt size on stdout
   coordinator_sources_table="$(coordinator_work_sources_table "$all_repos_json")"
   eval "$prompt_block"
   eval "$fit_block"
+  # `coordinator_refinements_json` is assigned by the lifted fit block above,
+  # not here: requirement 4j has the measurement and the assembly spend the
+  # same value, and a test that recomputed it would not be able to tell.
+  # shellcheck disable=SC2154  # Assigned by the lifted fit block eval'd above — spending its value is the point.
   coordinator_stdin="$(printf '%s\n' \
     "$ordered_repos_json" "$(coordinator_blocked_view "$blocked_json")" \
-    "$refinements_json" "$claimed_json")"
+    "$coordinator_refinements_json" "$claimed_json")"
   # shellcheck disable=SC2034  # Assembled here only to be interpolated by the lifted assembly block below.
   coordinator_input="$(jq -nc \
     --arg model_default "$implementer_model_default" \
@@ -248,13 +258,26 @@ assert_eq "a cycle that needed no trimming logs nothing" "" "$(cat "$events")"
 # A maximum smaller than the prompt text itself leaves no allowance at all, so
 # there is nothing for the ladder to shed and the warning has to say so rather
 # than reading as the bound being switched off.
-run_fit 1 "$(mk_repos 40 6000 6 6000)" >/dev/null
-assert_eq "a maximum the prompt text alone exceeds logs a warning" \
-  "1" "$(grep -c '^warning' "$events")"
-assert_eq "…and does not pretend it trimmed anything" \
-  "0" "$(grep -c '^coordinator-input-fitted' "$events")"
+repos_hopeless="$(mk_repos 40 6000 6 6000)"
+run_fit 1 "$repos_hopeless" >/dev/null
+assert_ok "a maximum the prompt text alone exceeds logs a warning" \
+  "$(( $(grep -c '^warning' "$events") >= 1 ))"
 assert_true "the warning names the maximum it could not work inside" \
   "$(grep '^warning' "$events" | cut -f2- | jq -r '.detail' | grep -qF "coordinator_prompt_max_bytes" && echo true || echo false)"
+
+# Requirement 4j: a hopeless allowance still walks the ladder. Before it, this
+# branch warned and fell past the fit entirely, sending the array whole — which
+# is how a 350052-byte `issues` extract went into a prompt that was over the
+# window without it. Shedding nothing is the worst answer available in the one
+# case where nothing can be enough.
+assert_eq "…and still sheds, rather than sending the array whole" \
+  "1" "$(grep -c '^coordinator-input-fitted' "$events")"
+assert_true "…down to the ladder's last rung, which reports it does not fit" \
+  "$(grep '^coordinator-input-fitted' "$events" | cut -f2- | jq -e '.fits == false' >/dev/null && echo true || echo false)"
+n_hopeless="$(run_fit 1 "$repos_hopeless")"
+n_unbounded="$(run_fit 0 "$repos_hopeless")"
+assert_ok "…so a hopeless bound sends strictly less than no bound at all" \
+  "$(( n_hopeless < n_unbounded ))"
 
 # An allowance that exists but that even one entry per band cannot meet is the
 # other shape: the ladder ran, bottomed out, and the API will refuse the

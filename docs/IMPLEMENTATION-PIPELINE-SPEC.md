@@ -4427,6 +4427,73 @@ implements.
    ladder would never have fired on the outage it was needed for. The
    escalation's own hint now names `coordinator.out` first.
 
+4j. **The unsheddable half of the Co-Ordinator's input is bounded too, and
+   `refinements` is bounded by candidacy.** Requirement 4i bounds the prompt
+   and sheds `issues` and `tech_debt` to meet the bound. It says nothing about
+   the rest of the input document, and on 2026-08-21 that omission cost the
+   fleet eight hours: `refinements` had reached 237,339 bytes — 24 `spec`
+   payloads totalling 219,175 of them — and the prompt text plus the
+   unsheddable bands came to 387,840 bytes against a 350,000-byte maximum
+   *before a single candidate was added*. The allowance came out negative, the
+   ladder was never walked, and the Co-Ordinator was refused on every node of
+   the fleet, eleven consecutive cycles, with no work selected anywhere. The
+   bound requirement 4i had just added was in force and could not help,
+   because nothing it could shed was the thing that was too big.
+
+   `refinements` is a ledger and is never retired: it holds every refinement
+   the Enabler or the Refiner has ever settled, keyed by repo and item. Most
+   entries are a line — `ts`, `cycle`, and a `comment_url` pointing at the
+   thread where the refinement lives. An entry for an item type with no thread
+   to hold it (tech-debt, a review recommendation, a plan task) instead
+   carries the specification itself, in markdown, several kilobytes of it. Of
+   the 24 such payloads in the ledger that day, 22 — 203,645 bytes — belonged
+   to items no band of that cycle still named as a candidate.
+
+   So the Script scopes it. `coordinator_refinements_view` keeps every entry's
+   `ts`, `cycle` and `comment_url` for every item, and keeps a `spec` only for
+   an item some band of this cycle actually offers. The rule falls out of what
+   `prompts/coordinator.md` does with a spec: "Items that have been refined"
+   gives it exactly one use — an item about to go into a work order must have
+   its spec pasted verbatim into `context`, because it exists nowhere else —
+   and that use is reachable only for a candidate. A spec for an item no band
+   offers is bytes the Co-Ordinator is told to read and can never act on, so
+   dropping it removes no judgement. That is the same test
+   `coordinator_blocked_view` is trimmed against, applied to the other half of
+   the same document; what stays is presence, which is what "look the item up
+   here before you decide it is under-specified" and the `refinement_policy`
+   gate both actually read.
+
+   **The view is computed once and spent unchanged.** `blocked` can afford to
+   call its own view at both the measurement and the assembly, because that
+   view reads nothing but the array it trims. This one is scoped against
+   `ordered_repos_json`, which requirement 4i's fit reassigns — calling it
+   twice would measure the overhead against the unfitted candidate set and
+   spend it against the fitted one, an error in the safe direction and still a
+   measurement that is not of the thing it claims to be. It is scoped against
+   the *unfitted* array on purpose, for the same reason 4i measures its
+   overhead against an empty `repos`: the fit only ever removes candidates, so
+   the scoping stays independent of the rung the ladder settles on, and a spec
+   kept for a candidate the ladder later sheds is a handful of bytes already
+   accounted for.
+
+   **A hopeless allowance sheds everything it can rather than nothing at
+   all.** The negative-allowance branch requirement 4i introduced warned and
+   then fell past the fit entirely, sending the array whole — which is how a
+   350,052-byte `issues` extract went into a prompt already over the window
+   without it. Shedding nothing is the worst available answer in precisely the
+   one case where nothing can be enough. The Script now clamps the allowance
+   to 1 before walking the ladder: `coordinator_fit_bands` reads 0 or less as
+   "bound off" and returns the array unchanged, whereas 1 fails every rung —
+   prose, then entry caps — and lands in that function's final branch, which
+   hands back the smallest array the ladder can build together with
+   `fits: false`. The `warning` still names the overhead, the maximum and the
+   fact that the API may refuse the prompt regardless; the clamp only stops
+   the cycle from making its own refusal more likely on the way out. This
+   preserves requirement 4i's own "every degradation is toward the unbounded
+   input, never toward an empty one" for every *other* path: a budget of 0
+   still means the bound is off, and it is only this branch — where the Script
+   has already established that no input fits — that shedding is forced.
+
 5. If the work order is `{"selected": false}`, log `none-selected` with the
    Co-Ordinator's reason **and the fingerprint computed in requirement 3b**
    (omitted entirely, not stored empty, when the cycle was unfingerprintable —
