@@ -388,6 +388,41 @@ while IFS= read -r mb_slug; do
   fi
 done < <(cfg '.repos[]?.slug // empty')
 
+# D18 WI-12 (Stage 4, agent-ops#415): landing_cool_off_hours, reported per
+# configured source the same way merge_budget_per_day is above — the
+# top-level key and each repo's own override.
+landing_cool_off_sources="$(jq -r '
+  [{label: "landing_cool_off_hours", hours: (.landing_cool_off_hours // 24)}]
+  + [(.repos // [])[] | select(has("landing_cool_off_hours"))
+     | {label: (.slug + "'"'"'s landing_cool_off_hours override"), hours: .landing_cool_off_hours}]
+  | .[] | [.label, (.hours | tostring)] | @tsv' <<<"$DEFAULTED_CONFIG" 2>/dev/null || true)"
+if [[ -n "$landing_cool_off_sources" ]]; then
+  while IFS=$'\t' read -r lc_label lc_hours; do
+    [[ -n "$lc_label" ]] || continue
+    ok "$lc_label is ${lc_hours}h$([[ "$lc_hours" == "0" ]] && printf ' (no wait)')"
+  done <<<"$landing_cool_off_sources"
+fi
+# A repository trusted at agent-merges-all with landing_cool_off_hours
+# resolved to 0 disables D18 WI-12's own cool-off control entirely — worth
+# surfacing before a protected-path pull request lands on the strength of
+# the critical-tier control alone, since §7 risk 1's residual risk is
+# accepted only with both compensating controls in force. Judged against the
+# *configured* level, not the kill-switch/freeze-adjusted effective one, the
+# same reason the merge_autonomy pairing check above is.
+while IFS= read -r lc_slug; do
+  [[ -n "$lc_slug" ]] || continue
+  lc_level="$(merge_autonomy_configured_level "$DEFAULTED_CONFIG" "$lc_slug")"
+  lc_rank="$(merge_autonomy_rank "$lc_level" 2>/dev/null || printf 0)"
+  lc_all_rank="$(merge_autonomy_rank agent-merges-all)"
+  lc_hours="$(jq -r --arg slug "$lc_slug" \
+    '(.repos // [])[] | select(.slug == $slug) | .landing_cool_off_hours // empty' \
+    <<<"$DEFAULTED_CONFIG" 2>/dev/null | head -1)"
+  [[ -n "$lc_hours" ]] || lc_hours="$(jq -r '.landing_cool_off_hours // 24' <<<"$DEFAULTED_CONFIG" 2>/dev/null)"
+  if (( lc_rank >= lc_all_rank )) && [[ "$lc_hours" == "0" ]]; then
+    warn "$lc_slug's merge_autonomy is \"$lc_level\" with landing_cool_off_hours 0 — a protected-path pull request lands the moment its critical-tier Approver review stands, with no fleet-day observation window (D18 WI-12)"
+  fi
+done < <(cfg '.repos[]?.slug // empty')
+
 # D18 WI-7 (requirement 8d): merge_autonomy_routine_sources names which work
 # sources the arming step may land automatically at agent-merges-routine and
 # above. An entry naming a source this repository's own `sources` list never

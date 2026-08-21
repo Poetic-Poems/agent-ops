@@ -81,9 +81,11 @@ approver_tier_for() {
 # approver_model_for_tier TIER MODEL_DEFAULT MODEL_COMPLEX
 # Print the model an ordinary (non-adjudication) engagement launches on:
 # MODEL_COMPLEX for `high`, MODEL_DEFAULT otherwise. `trivial` never reaches
-# this — the caller skips the model call entirely — and adjudication always
-# launches on MODEL_CRITICAL directly, so only the two ordinary tiers are
-# resolved here.
+# this — the caller skips the model call entirely — and every route to the
+# Critical tier launches on MODEL_CRITICAL directly instead: an
+# adjudication (requirement 8c), and a protected-path hit forcing Critical
+# ahead of the complexity grade (D18 WI-12, requirement 8b). So only the
+# two ordinary tiers are resolved here.
 approver_model_for_tier() {
   local tier="${1:-}" default_m="${2:-}" complex_m="${3:-}"
   if [[ "$tier" == "high" ]]; then

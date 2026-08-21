@@ -3786,18 +3786,25 @@ approver_stage_complexity() {
 # best-effort escalation, and the caller's own `pr-ready` log and
 # `release_pr_claim` follow unconditionally regardless of what happened here.
 #
-# Reports its own outcome through two globals, reset here on every call
+# Reports its own outcome through three globals, reset here on every call
 # rather than left to whatever a previous pull request's round left behind
 # — `approver_stage_verdict` (this round's `verdict`, or empty when the
-# stage did not reach one) and `approver_stage_adjudicating` (`1` iff the
-# refuse streak, not the complexity grade, chose the tier). `run_landing_stage`
+# stage did not reach one), `approver_stage_adjudicating` (`1` iff the
+# refuse streak, not the complexity grade, chose the tier), and
+# `approver_stage_tier` (D18 WI-12, agent-ops#415: this round's own tier,
+# `trivial`/`standard`/`high`/`critical` — `critical` whenever a protected
+# path forced it, whatever the complexity grade said). `run_landing_stage`
 # (D18 WI-7, requirement 8d), called immediately after this function
-# returns, is the one reader: it arms nothing at all unless this round's
-# own engagement reached an explicit, non-adjudicating `approve` — an
-# adjudication's own `land` does not count, because a disagreement settled
-# this round is not the same fact as an engagement that agreed the first
-# time. A return value rather than a global would say the same thing, but
-# every existing caller of this function already reads nothing from it
+# returns, is the one reader of the first two: it arms nothing at all unless
+# this round's own engagement reached an explicit, non-adjudicating
+# `approve` — an adjudication's own `land` does not count, because a
+# disagreement settled this round is not the same fact as an engagement
+# that agreed the first time. `_landing_stage_attempt`'s own protected-path
+# gate (D18 WI-12) is the reader of the third, on the original arming round
+# only — a re-arm reads `landing_retry_tier` from the fleet log instead,
+# since that round's own `approver_stage_tier` belongs to a process this one
+# never was. A return value rather than a global would say the same thing,
+# but every existing caller of this function already reads nothing from it
 # (`run_approver_stage "$impl_pr_url" "$approver_complexity"`, no
 # assignment) and a second, unrelated caller could plausibly want the
 # verdict without wanting to restructure that call — the same reasoning
@@ -3810,7 +3817,9 @@ run_approver_stage() {
   local prompt out rc status_json verdict="" reasons_json="[]"
   approver_stage_verdict=""
   approver_stage_adjudicating=0
+  approver_stage_tier=""
   local token review_body prior_section adj_bool
+  local number="" protected_rc=0 protected_hit=0 critical_reason=""
 
   # `fresh` (issue #513, PR #506 review follow-up): this stage posts a real
   # App review under the level it reads, so an operator's mid-cycle kill must
@@ -3852,6 +3861,37 @@ run_approver_stage() {
 
   tier="$(approver_tier_for "$complexity")"
 
+  # D18 WI-12 (Stage 4, agent-ops#415, docs/reviews/2026-08-14-autonomy-
+  # investigation.md §7 risk 1): a pull request touching a protected path
+  # routes to the critical tier regardless of its complexity grade — the
+  # deadliest class this design names is a self-modifying change riding a
+  # cheap tier through the gate it just weakened. `landing_protected_paths_hit`
+  # is the one classifier this reads (lib/landing.sh); nothing here keeps a
+  # second copy of its list. This read only ever runs once the stage has
+  # already committed to engaging (every check above has passed), so it
+  # never costs a `gh` call at `merge_autonomy: human`, where the stage
+  # already returned. Its own exit 2 (the changed-file list unreadable or
+  # truncated) routes *to* the critical tier, not away from it — the
+  # opposite fail-closed polarity from `landing_eligible`'s own exit-2
+  # handling, since here fail-closed means the more expensive tier, never
+  # the cheaper one.
+  if [[ "$pr_url" =~ /pull/([0-9]+)$ ]]; then
+    number="${BASH_REMATCH[1]}"
+    landing_protected_paths_hit "$selected_repo" "$number" >/dev/null 2>&1 || protected_rc=$?
+  else
+    protected_rc=2
+  fi
+  if (( protected_rc == 0 || protected_rc == 2 )); then
+    protected_hit=1
+    tier="critical"
+  fi
+
+  if (( protected_hit )); then
+    critical_reason="protected-path"
+  elif (( streak >= 2 )); then
+    critical_reason="refuse-streak"
+  fi
+
   if (( streak >= 2 )); then
     adjudicating=1
     mode="adjudication"
@@ -3860,9 +3900,15 @@ run_approver_stage() {
     # Deterministic: complexity:low already means "docs, comments, or
     # register entries only; no behaviour change" (requirement 26a) — no
     # model call, zero tokens, per the design's own framing of this tier
-    # (docs/reviews/2026-08-14-autonomy-investigation.md §5.2).
+    # (docs/reviews/2026-08-14-autonomy-investigation.md §5.2). A protected
+    # path already forced tier to `critical` above, so this branch is only
+    # ever reached for a genuinely untouched-protected-path complexity:low
+    # pull request.
     verdict="approve"
     reasons_json='["complexity:low — deterministic approval, no model engagement (D18 §5.2)"]'
+  elif [[ "$tier" == "critical" ]]; then
+    mode="tier"
+    model="$approver_model_critical"
   else
     mode="tier"
     model="$(approver_model_for_tier "$tier" "$approver_model_default" "$approver_model_complex")"
@@ -3995,10 +4041,12 @@ $node_name
   adj_bool="false"
   (( adjudicating )) && adj_bool="true"
   log_event "approver-verdict" "$(jq -nc --arg u "$pr_url" --arg t "$tier" \
-    --arg v "${verdict:-none}" --argjson s "$streak" --argjson adj "$adj_bool" \
-    '{pr_url: $u, tier: $t, verdict: $v, refuse_streak: $s, adjudication: $adj}')"
+    --arg v "${verdict:-none}" --argjson s "$streak" --argjson adj "$adj_bool" --arg cr "$critical_reason" \
+    '{pr_url: $u, tier: $t, verdict: $v, refuse_streak: $s, adjudication: $adj}
+     + (if $cr == "" then {} else {critical_reason: $cr} end)')"
   approver_stage_verdict="$verdict"
   approver_stage_adjudicating="$adjudicating"
+  approver_stage_tier="$tier"
   return 0
 }
 
@@ -4055,7 +4103,7 @@ run_landing_stage() {
 }
 
 # _landing_stage_attempt SLUG PR_URL COMPLEXITY SOURCE DEFAULT_BRANCH [RETRY] [ALREADY_ARMED]
-# The six re-read-fresh gates the arming step re-reads before landing a pull
+# The seven re-read-fresh gates the arming step re-reads before landing a pull
 # request — extracted out of `run_landing_stage` (TD-PPagop-26081701) so the
 # 2.1e landing-retry sweep can reuse the identical, single-source-of-truth
 # sequence for a pull request outside the round that first approved it,
@@ -4097,7 +4145,8 @@ run_landing_stage() {
 #      tolerates an alerts-only `unknown` as a warning — arming an
 #      automatic merge does not).
 #   4. The Approver App's own review is genuinely standing `APPROVED` on
-#      GitHub right now (`landing_approver_standing_review`, lib/landing.sh)
+#      GitHub right now (`landing_approver_standing_review_at`,
+#      lib/landing.sh)
 #      — never inferred from this round's own `approver_stage_verdict`
 #      alone: `approver_post_or_warn` always returns 0 even when the write
 #      itself failed ("a missing review, never a stranded PR"), so a local
@@ -4108,6 +4157,24 @@ run_landing_stage() {
 #      re-derived). Both are fresh reads: a token that expired between
 #      minting and posting, or a push/review submitted after the Approver
 #      ran, are exactly the facts this step must catch.
+#   4.5. D18 WI-12 (Stage 4, agent-ops#415): only at `agent-merges-all`, and
+#      only for a pull request `landing_protected_path_controls_ok`
+#      (lib/landing.sh) itself confirms still touches a protected path —
+#      gate 2's own `landing_eligible` already deferred rather than refused
+#      that case. Requires the approving engagement to have run at the
+#      critical Approver tier, the standing review's own `commit_id` (gate
+#      4's own `landing_approver_standing_review_at` read, no extra `gh`
+#      call) to still match a fresh read of the pull request's current
+#      `headRefOid`, and the configurable `landing_cool_off_hours` wait
+#      since that review's own `submitted_at` to have elapsed. A push after
+#      approval moves `headRefOid` without touching the standing review at
+#      all — nothing here dismisses a stale review — so a `commit_id`
+#      mismatch refuses outright rather than measuring a cool-off against a
+#      timestamp that no longer speaks for the code on the branch; this is
+#      the sense in which a fresh push restarts the wait, since nothing
+#      resumes it until a later review matches the new head. TIER comes from
+#      this round's own `approver_stage_tier` on the first-approval round, or
+#      `landing_retry_tier`'s fleet-log read on a retry — never re-derived.
 #   5. `merge_budget_decide`/`merge_budget_apply_decision`
 #      (lib/merge-budget.sh) — only `arm` proceeds; `hold` and `refuse` are
 #      applied and stop here.
@@ -4186,11 +4253,20 @@ _landing_stage_attempt() {
     return 0
   fi
 
-  local standing
-  if ! standing="$(landing_approver_standing_review "$slug" "$number" "$login")"; then
+  # `_at` rather than the plain reader: D18 WI-12's protected-path cool-off
+  # (gate 4.5, below) is measured from this exact standing review's own
+  # `submitted_at`, and reset by its own `commit_id`, at no extra `gh` call —
+  # the same one reviews-list read either function makes (lib/landing.sh's
+  # own header).
+  local standing_at standing submitted_at review_commit rest
+  if ! standing_at="$(landing_approver_standing_review_at "$slug" "$number" "$login")"; then
     _landing_refuse "$pr_url" "$slug" "could not read $pr_url's own review list to confirm the Approver's review actually landed" "$retry"
     return 0
   fi
+  standing="${standing_at%%$'\t'*}"
+  rest="${standing_at#*$'\t'}"
+  submitted_at="${rest%%$'\t'*}"
+  review_commit="${rest#*$'\t'}"
   if [[ "$standing" != "APPROVED" ]]; then
     _landing_refuse "$pr_url" "$slug" "the Approver's own review is not standing APPROVED on GitHub (state: ${standing:-none})" "$retry"
     return 0
@@ -4204,6 +4280,34 @@ _landing_stage_attempt() {
   if [[ -n "$blocking" ]]; then
     _landing_refuse "$pr_url" "$slug" "a human CHANGES_REQUESTED stands ($(paste -sd, - <<<"$blocking"))" "$retry"
     return 0
+  fi
+
+  # Gate 4.5 (D18 WI-12, Stage 4, agent-ops#415): the protected-path
+  # compensating controls — critical-tier approval, the standing review's
+  # `commit_id` still matching the pull request's current head, and the
+  # cool-off since the review's own `submitted_at` — only ever bind at
+  # `agent-merges-all`, and only for a pull request
+  # `landing_protected_path_controls_ok` itself confirms still touches a
+  # protected path (gate 2's own `landing_eligible` already deferred that
+  # decision here rather than refusing outright, see its own header). TIER
+  # is this round's own in-process fact on the first-approval round
+  # (`run_approver_stage`'s `approver_stage_tier`), or read back from the
+  # fleet log's `approver-verdict` event on a retry (`landing_retry_tier`) —
+  # a retry attempt has no in-process fact for a pull request this process
+  # never claimed, the same reasoning `landing_retry_source` already applies
+  # to a work order's own source.
+  if [[ "$level" == "agent-merges-all" ]]; then
+    local pp_tier pp_ctl
+    if [[ -n "$retry" ]]; then
+      pp_tier="$(landing_retry_tier "$pr_url" "$union_log")"
+    else
+      pp_tier="$approver_stage_tier"
+    fi
+    pp_ctl="$(landing_protected_path_controls_ok "$DEFAULTED_CONFIG" "$slug" "$number" "$pp_tier" "$submitted_at" "$review_commit")"
+    if [[ "$pp_ctl" != "ok" ]]; then
+      _landing_refuse "$pr_url" "$slug" "$pp_ctl" "$retry"
+      return 0
+    fi
   fi
 
   local budget_json budget_decision
@@ -4295,7 +4399,7 @@ _landing_stage_attempt() {
 #     on regardless.
 #   - A candidate is open, non-draft, carries `pr_label`, and its own
 #     `complexity:*` label reads `low` or `medium` (never `high` — the
-#     cheapest of the six gates to pre-check, from data already fetched here,
+#     cheapest of the seven gates to pre-check, from data already fetched here,
 #     so a permanently-ineligible pull request costs one list call per
 #     repository per cycle rather than the changed-file read
 #     `landing_eligible` would otherwise repeat forever).
@@ -6357,7 +6461,7 @@ fi
 # transient unreadable, a red required check going green), otherwise sits
 # there until a human merges it by hand — forever, for the fail-closed
 # unreadables. `_landing_retry_sweep_repo` (below) re-enters
-# `_landing_stage_attempt`'s own six gates verbatim for each candidate (RETRY
+# `_landing_stage_attempt`'s own seven gates verbatim for each candidate (RETRY
 # set), rather than a second copy of them. Fleet-wide like the sweeps above,
 # regardless of --repo: any repository at `agent-merges-routine` or above may
 # have a stranded, Approver-approved pull request waiting. Skipped on
@@ -9125,7 +9229,7 @@ if [[ "$rev_status" == "ready" ]]; then
   # reason 8b gates nothing above it: an arm or a refusal is a fact about
   # this pull request's landing, never a reason to withhold the pr-ready log,
   # the claim release, or the Approver's own review. See run_landing_stage's
-  # own header for the six gates it re-reads fresh before arming anything.
+  # own header for the seven gates it re-reads fresh before arming anything.
   run_landing_stage "$impl_pr_url" "$approver_complexity"
 else
   # Requirement 32a: a Reviewer that cannot hand off hands *back*, not out. The

@@ -147,7 +147,10 @@ enabler_escalation_label="agent-escalation"
 enabler_assignee="warwickallen"
 approver_stage_verdict="$VERDICT"
 approver_stage_adjudicating="$ADJUDICATING"
+approver_stage_tier="${APPROVER_STAGE_TIER:-critical}"
+union_log="$T/union.jsonl"
 mkdir -p "$state_dir"
+: > "$union_log"
 
 # The cycle-scoped tally `run_landing_stage`'s own gate 0 now reads and grows
 # (PR #557 review round 2 of TD-PPagop-26081701) — declared here exactly as
@@ -189,16 +192,33 @@ approver_token_identity_login() {
   printf 'pullwright-approver[bot]'
 }
 
-landing_approver_standing_review() {
+# Three tab-separated fields, exactly as lib/landing.sh's own
+# `landing_approver_standing_review_at` prints them (agent-ops#658): STATE,
+# `submitted_at`, and the standing review's own `commit_id`. A two-field stub
+# would still satisfy `_landing_stage_attempt`'s parsing without failing —
+# `${rest#*<TAB>}` on a tab-less string is the string itself — and would
+# silently hand gate 4.5 the timestamp where the commit belongs.
+landing_approver_standing_review_at() {
   printf '%s\n' "$*" >>"$T/standing_args"
   [[ "${STANDING_RC:-0}" == "0" ]] || return "$STANDING_RC"
-  printf '%s' "${STANDING:-}"
+  printf '%s\t%s\t%s' "${STANDING:-}" "${SUBMITTED_AT:-2026-08-17T10:00:00Z}" \
+    "${REVIEW_COMMIT:-sha-approved-head}"
 }
 
 _handoff_blocking_reviewers() {
   [[ "${BLOCKING_RC:-0}" == "0" ]] || return "$BLOCKING_RC"
   [[ -z "${BLOCKING:-}" ]] || printf '%s\n' "$BLOCKING"
   return 0
+}
+
+landing_protected_path_controls_ok() {
+  printf '%s\n' "$*" >>"$T/pp_ctl_args"
+  printf '%s' "${PP_CTL:-ok}"
+}
+
+landing_retry_tier() {
+  printf '%s\n' "$*" >>"$T/retry_tier_args"
+  printf '%s' "${RETRY_TIER:-critical}"
 }
 
 merge_budget_decide() {
@@ -264,12 +284,14 @@ run_case() {
   : >"$tmp_dir/reached"; : >"$tmp_dir/eligible_args"; : >"$tmp_dir/standing_args"
   : >"$tmp_dir/mal_calls"; : >"$tmp_dir/budget_decide_args"; rm -f "$tmp_dir/armed_flag"
   rm -f "$tmp_dir/armed_by_repo_flag"
+  : >"$tmp_dir/pp_ctl_args"; : >"$tmp_dir/retry_tier_args"
   rm -rf "${tmp_dir:?}/state"
   env -i PATH="$PATH" HOME="$HOME" \
     T="$tmp_dir" SCRIPT_DIR="$SCRIPT_DIR" PR_URL="$URL" COMPLEXITY="medium" \
     VERDICT="approve" ADJUDICATING="0" LEVEL="agent-merges-routine" \
     ELIGIBLE="eligible" GATE_WORD="clean" GATE_REASON="" GATE_RC="0" \
     STANDING="APPROVED" BUDGET="arm" QUEUED="false" ARM_METHOD="enqueued" \
+    PP_CTL="ok" APPROVER_STAGE_TIER="critical" \
     "$@" \
     bash "$tmp_dir/harness.sh" >"$tmp_dir/stdout" 2>"$tmp_dir/stderr"
   printf '%s' "$?"
@@ -285,6 +307,8 @@ refusal() { jq -r '.reason' <<<"$(event_of landing-refused)" 2>/dev/null || true
 budget_decide_args() { cat "$tmp_dir/budget_decide_args" 2>/dev/null || true; }
 armed_flag() { cat "$tmp_dir/armed_flag" 2>/dev/null || true; }
 armed_by_repo_flag() { cat "$tmp_dir/armed_by_repo_flag" 2>/dev/null || true; }
+pp_ctl_args() { cat "$tmp_dir/pp_ctl_args" 2>/dev/null || true; }
+retry_tier_args() { cat "$tmp_dir/retry_tier_args" 2>/dev/null || true; }
 
 # --- The happy path: one landing-armed, naming the method --------------------
 
@@ -354,6 +378,50 @@ done
 rc="$(run_case LEVEL="agent-merges-all")"
 assert_eq "agent-merges-all arms on the same terms" "1" "$(count arms)"
 assert_eq "  ... returning 0" "0" "$rc"
+
+# --- Gate 4.5: the D18 WI-12 protected-path compensating controls -----------
+# Only ever consulted at agent-merges-all, and never at a lower level — the
+# same "landing_eligible already refuses a protected path below Stage 4"
+# invariant means gate 4.5 has nothing to add there.
+
+rc="$(run_case LEVEL="agent-merges-routine")"
+assert_eq "below agent-merges-all, gate 4.5 is never even consulted" "" "$(pp_ctl_args)"
+assert_eq "  ... and the PR still arms (its own protected-path refusal, if any, is gate 2's job)" \
+  "1" "$(count arms)"
+
+rc="$(run_case LEVEL="agent-merges-all" PP_CTL="ineligible:protected-path cool-off has 3.2h remaining (approved 2026-08-17T10:00:00Z, landing_cool_off_hours=24)")"
+assert_eq "gate 4.5 refusing a live cool-off arms nothing" "0" "$(count arms)"
+assert_contains "  ... naming the remaining time" "cool-off has 3.2h remaining" "$(refusal)"
+assert_eq "  ... returning 0" "0" "$rc"
+
+rc="$(run_case LEVEL="agent-merges-all" PP_CTL="ineligible:touches a protected path at agent-merges-all but the approving engagement did not run at the critical tier (tier: standard)")"
+assert_eq "gate 4.5 refusing a non-critical-tier approval arms nothing" "0" "$(count arms)"
+assert_contains "  ... naming the tier it actually found" "did not run at the critical tier (tier: standard)" "$(refusal)"
+assert_eq "  ... returning 0" "0" "$rc"
+
+rc="$(run_case LEVEL="agent-merges-all" PP_CTL="unknown:could not re-establish acme/widgets#512's changed-file list for the protected-path controls")"
+assert_eq "gate 4.5's own unknown is never a pass" "0" "$(count arms)"
+assert_eq "  ... returning 0" "0" "$rc"
+
+rc="$(run_case LEVEL="agent-merges-all" PP_CTL="ok")"
+assert_eq "gate 4.5 clearing (cool-off elapsed, critical tier confirmed) arms normally" "1" "$(count arms)"
+assert_contains "  ... consulted with this round's own approver_stage_tier" "critical" "$(pp_ctl_args)"
+assert_eq "  ... and never asked the fleet log for a tier (this is the original round, not a retry)" \
+  "" "$(retry_tier_args)"
+# TIER, SUBMITTED_AT and REVIEW_COMMIT, in that order and in those positions —
+# a containment check on each alone would still pass if the last two were
+# transposed, which is exactly how `landing_approver_standing_review_at`'s
+# three-field return gets mis-parsed (agent-ops#658).
+assert_contains "  ... and with the standing review's own submitted_at and commit_id, in that order" \
+  "critical 2026-08-17T10:00:00Z sha-approved-head" "$(pp_ctl_args)"
+
+rc="$(run_case LEVEL="agent-merges-all" PP_CTL="ok" REVIEW_COMMIT="sha-some-other-commit")"
+assert_contains "gate 4.5 is consulted with whatever commit the standing review actually carries" \
+  "sha-some-other-commit" "$(pp_ctl_args)"
+
+rc="$(run_case LEVEL="agent-merges-all" APPROVER_STAGE_TIER="standard" PP_CTL="ok")"
+assert_contains "gate 4.5 is consulted with whatever tier this round actually ran at" \
+  "standard" "$(pp_ctl_args)"
 
 # --- Gate 2: the classifier's own verdict, passed through verbatim -----------
 
@@ -538,10 +606,12 @@ assert_eq "the ordinary path's landing-armed carries no retry field" \
 run_case_direct() {
   : >"$tmp_dir/events"; : >"$tmp_dir/arms"; : >"$tmp_dir/budget_applied"
   : >"$tmp_dir/budget_decide_args"; rm -f "$tmp_dir/armed_flag"
+  : >"$tmp_dir/pp_ctl_args"; : >"$tmp_dir/retry_tier_args"
   env -i PATH="$PATH" HOME="$HOME" \
     T="$tmp_dir" SCRIPT_DIR="$SCRIPT_DIR" PR_URL="$URL" COMPLEXITY="medium" \
     LEVEL="agent-merges-routine" ELIGIBLE="eligible" GATE_WORD="clean" GATE_REASON="" GATE_RC="0" \
     STANDING="APPROVED" BUDGET="arm" QUEUED="false" ARM_METHOD="enqueued" ALREADY_ARMED="0" \
+    PP_CTL="ok" RETRY_TIER="critical" \
     "$@" \
     bash -c '
       set -euo pipefail
@@ -551,13 +621,20 @@ run_case_direct() {
       state_repo="Poetic-Poems/agent-ops"; state_dir="$T/state"
       DEFAULTED_CONFIG="{}"; gate_default_branch="main"; pr_label="autonomous-agent"
       enabler_escalation_label="agent-escalation"; enabler_assignee="warwickallen"
-      mkdir -p "$state_dir"
+      union_log="$T/union.jsonl"
+      mkdir -p "$state_dir"; : > "$union_log"
       log_event() { printf "%s\t%s\n" "$1" "$2" >>"$T/events"; }
       merge_autonomy_effective_level() { printf "%s" "$LEVEL"; }
       landing_eligible() { printf "%s" "$ELIGIBLE"; }
       review_gate_verdict() { printf "%s" "$GATE_WORD"; return "${GATE_RC:-0}"; }
       approver_token_identity_login() { printf "pullwright-approver[bot]"; }
-      landing_approver_standing_review() { printf "%s" "${STANDING:-}"; return "${STANDING_RC:-0}"; }
+      landing_approver_standing_review_at() {
+        printf "%s" "${STANDING:-}"; printf "\t%s" "${SUBMITTED_AT:-2026-08-17T10:00:00Z}"
+        printf "\t%s" "${REVIEW_COMMIT:-sha-approved-head}"
+        return "${STANDING_RC:-0}"
+      }
+      landing_protected_path_controls_ok() { printf "%s\n" "$*" >>"$T/pp_ctl_args"; printf "%s" "${PP_CTL:-ok}"; }
+      landing_retry_tier() { printf "%s\n" "$*" >>"$T/retry_tier_args"; printf "%s" "${RETRY_TIER:-critical}"; }
       _handoff_blocking_reviewers() { return 0; }
       merge_budget_decide() {
         printf "%s\n" "$*" >>"$T/budget_decide_args"
@@ -623,6 +700,27 @@ rc="$(run_case_direct ALREADY_ARMED="5")"
 assert_eq "a non-zero ALREADY_ARMED reaches merge_budget_decide as its own argument" \
   "5" "$(budget_decide_args | awk '{print $NF}')"
 assert_eq "  ... and still arms when the stubbed decision itself says arm" "0" "$rc"
+
+# --- Gate 4.5 on a retry attempt: TIER comes from the fleet log, never from
+# an in-process fact this process never set (D18 WI-12, agent-ops#415) ------
+
+rc="$(run_case_direct LEVEL="agent-merges-routine")"
+assert_eq "below agent-merges-all, a retry attempt never consults gate 4.5 either" \
+  "" "$(pp_ctl_args)"
+
+rc="$(run_case_direct LEVEL="agent-merges-all")"
+assert_eq "a retry attempt at agent-merges-all still arms when gate 4.5 clears" "0" "$rc"
+assert_eq "  ... exactly once" "1" "$(count arms)"
+assert_contains "  ... having resolved TIER via landing_retry_tier, from the fleet log" \
+  "$URL" "$(retry_tier_args)"
+assert_contains "  ... and consulting gate 4.5 with the standing review's own submitted_at and commit_id" \
+  "critical 2026-08-17T10:00:00Z sha-approved-head" "$(pp_ctl_args)"
+
+rc="$(run_case_direct LEVEL="agent-merges-all" PP_CTL="ineligible:touches a protected path at agent-merges-all but the approving engagement did not run at the critical tier (tier: standard)")"
+assert_eq "a retry attempt gate 4.5 refuses is never armed" "0" "$(count arms)"
+assert_contains "  ... naming the reason" "did not run at the critical tier" "$(refusal)"
+assert_eq "  ... and marks the landing-refused event retry:true" \
+  "true" "$(jq -c '.retry' <<<"$(event_of landing-refused)")"
 
 # --- Result -------------------------------------------------------------------
 

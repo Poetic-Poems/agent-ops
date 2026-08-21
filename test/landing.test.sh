@@ -69,6 +69,17 @@ assert_eq() {
   fi
 }
 
+assert_contains() {
+  local desc="$1" needle="$2" haystack="$3"
+  if [[ "$haystack" == *"$needle"* ]]; then
+    printf 'ok   - %s\n' "$desc"
+  else
+    printf 'FAIL - %s\n     expected to contain: %s\n     actual:             %s\n' \
+      "$desc" "$needle" "$haystack"
+    failures=$(( failures + 1 ))
+  fi
+}
+
 # --- The stub gh -------------------------------------------------------------
 # Dispatches on the sub-command / path shape, the same per-call-type fixture
 # technique test/merge-budget.test.sh and test/merge-queue.test.sh both use.
@@ -148,6 +159,15 @@ if [[ "${args[0]:-}" == "pr" && "${args[1]:-}" == "merge" ]]; then
   exit 0
 fi
 
+# --- gh pr view NUMBER -R SLUG --json headRefOid --jq '.headRefOid' ---
+# (landing_protected_path_controls_ok's own fresh read of the pull request's
+# current head, checked against the standing review's commit_id)
+if [[ "${args[0]:-}" == "pr" && "${args[1]:-}" == "view" ]]; then
+  [[ -f "$f/pr-head-fail" ]] && exit 1
+  cat "$f/pr-head-sha.txt" 2>/dev/null
+  exit 0
+fi
+
 echo "gh-stub: unhandled invocation: ${args[*]}" >&2
 exit 1
 STUB
@@ -161,18 +181,20 @@ files() { printf '%s\n' "$@" > "$fixtures/files.txt"; }
 prd() {  # prd NODE_ID BASE
   jq -nc --arg id "$1" --arg base "$2" '{id: $id, base: $base}' > "$fixtures/pr.json"
 }
+head_sha() { printf '%s' "$1" > "$fixtures/pr-head-sha.txt"; }  # the PR's current headRefOid
 queue() {  # queue null|OBJECT — the raw mergeQueue value, wrapped as the
            # GraphQL envelope merge_queue_for_branch's own --jq filter
            # (.data.repository.mergeQueue) expects.
   jq -nc --argjson mq "$1" '{data:{repository:{mergeQueue: $mq}}}' > "$fixtures/queue-response.json"
 }
-review() {  # review LOGIN STATE AT
-  jq -nc --arg l "$1" --arg s "$2" --arg at "$3" \
-    '{user: {login: $l}, submitted_at: $at, state: $s}'
+review() {  # review LOGIN STATE AT [COMMIT]
+  jq -nc --arg l "$1" --arg s "$2" --arg at "$3" --arg c "${4:-}" \
+    '{user: {login: $l}, submitted_at: $at, state: $s, commit_id: (if $c == "" then null else $c end)}'
 }
 set_reviews() { jq -sc '.' > "$fixtures/reviews.json"; }  # one `review …` per stdin line
 
 prd "PR_kwDOfake" "main"
+head_sha "sha-head-1"
 queue null
 echo '{"data":{"enqueuePullRequest":{"mergeQueueEntry":{"id":"MQE_fake"}}}}' > "$fixtures/enqueue-response.json"
 
@@ -272,6 +294,15 @@ files "lib/x.sh"
 out="$(landing_eligible "$base_cfg" acme/widgets 12 medium tech-debt agent-merges-routine)"
 assert_eq "a protected path is ineligible, naming the path" \
   "ineligible:touches protected path(s): lib/x.sh" "$out"
+
+# D18 WI-12 (agent-ops#415): at agent-merges-all, and only there, a protected
+# path is deferred to `eligible` rather than refused outright — the
+# compensating controls (critical tier, cool-off) are
+# `landing_protected_path_controls_ok`'s job, which needs facts (the
+# standing review's own tier and timestamp) this function is never handed.
+out="$(landing_eligible "$base_cfg" acme/widgets 12 medium tech-debt agent-merges-all)"
+assert_eq "a protected path at agent-merges-all is eligible, deferred to the compensating-control gate" \
+  "eligible" "$out"
 files "src/app.py"
 
 : > "$fixtures/files-fail"
@@ -355,6 +386,169 @@ out="$(landing_approver_standing_review "" 12 "pullwright-approver[bot]")"; rc=$
 assert_eq "an empty slug is rejected before calling gh" "1" "$rc"
 out="$(landing_approver_standing_review acme/widgets 12 "")"; rc=$?
 assert_eq "an empty login is rejected before calling gh" "1" "$rc"
+
+# --- landing_approver_standing_review_at (D18 WI-12, agent-ops#415) ---------
+# The same answer, plus the standing review's own submitted_at and
+# commit_id — the timestamp the protected-path cool-off is measured from,
+# and the commit landing_protected_path_controls_ok checks against the pull
+# request's current head to detect a push after approval, both at no extra
+# gh call (the same reviews-list read either function makes).
+
+set_reviews <<REVIEWS
+$(review "pullwright-approver[bot]" APPROVED "2026-08-17T10:00:00Z" "sha-head-1")
+REVIEWS
+out="$(landing_approver_standing_review_at acme/widgets 12 "pullwright-approver[bot]")"; rc=$?
+assert_eq "a standing APPROVED review carries its own submitted_at and commit_id" \
+  "APPROVED	2026-08-17T10:00:00Z	sha-head-1" "$out"
+assert_eq "  ... exit 0" "0" "$rc"
+
+set_reviews <<REVIEWS
+$(review "a-human" APPROVED "2026-08-17T10:00:00Z" "sha-head-1")
+REVIEWS
+out="$(landing_approver_standing_review_at acme/widgets 12 "pullwright-approver[bot]")"
+assert_eq "no standing review for this login: empty state, empty at, empty commit" "		" "$out"
+
+set_reviews <<REVIEWS
+$(review "pullwright-approver[bot]" APPROVED "2026-08-17T10:00:00Z" "sha-head-1")
+REVIEWS
+: > "$fixtures/reviews-fail"
+out="$(landing_approver_standing_review_at acme/widgets 12 "pullwright-approver[bot]")"; rc=$?
+assert_eq "an unreadable reviews list: non-zero, nothing printed" "1" "$rc"
+assert_eq "  ... nothing printed" "" "$out"
+rm -f "$fixtures/reviews-fail"
+
+# --- landing_cool_off_effective_hours (D18 WI-12) ----------------------------
+
+out="$(landing_cool_off_effective_hours '{}' acme/widgets)"
+assert_eq "no config at all: the shipped default, 24" "24" "$out"
+
+out="$(landing_cool_off_effective_hours '{"landing_cool_off_hours": 6}' acme/widgets)"
+assert_eq "a top-level override wins over the shipped default" "6" "$out"
+
+out="$(landing_cool_off_effective_hours \
+  '{"landing_cool_off_hours": 6, "repos":[{"slug":"acme/widgets","landing_cool_off_hours": 0}]}' \
+  acme/widgets)"
+assert_eq "a repo-level override wins over the top-level key, and 0 means no wait, not unset" \
+  "0" "$out"
+
+out="$(landing_cool_off_effective_hours \
+  '{"landing_cool_off_hours": 6, "repos":[{"slug":"acme/widgets","landing_cool_off_hours": 0}]}' \
+  acme/gizmos)"
+assert_eq "a repo with no override of its own falls through to the top-level key" "6" "$out"
+
+out="$(landing_cool_off_effective_hours '{"landing_cool_off_hours": "not-a-number"}' acme/widgets)"
+assert_eq "a malformed value falls through to the shipped default" "24" "$out"
+
+# --- landing_cool_off_remaining_hours (D18 WI-12) ----------------------------
+
+out="$(landing_cool_off_remaining_hours "2026-08-17T10:00:00Z" 24 "2026-08-17T12:48:00Z")"
+assert_eq "2h48m into a 24h cool-off: 21.2h remaining" "21.2" "$out"
+
+out="$(landing_cool_off_remaining_hours "2026-08-17T10:00:00Z" 24 "2026-08-18T10:00:00Z")"
+assert_eq "24h elapsed exactly: 0, not negative" "0" "$out"
+
+out="$(landing_cool_off_remaining_hours "2026-08-17T10:00:00Z" 24 "2026-08-19T10:00:00Z")"
+assert_eq "well past the window: clamped to 0, never negative" "0" "$out"
+
+out="$(landing_cool_off_remaining_hours "2026-08-17T10:00:00Z" 0 "2026-08-17T10:00:01Z")"
+assert_eq "landing_cool_off_hours: 0 disables the wait" "0" "$out"
+
+out="$(landing_cool_off_remaining_hours "not-a-timestamp" 24 "2026-08-17T12:00:00Z")"
+assert_eq "an unparseable submitted_at: empty, never a pass" "" "$out"
+
+out="$(landing_cool_off_remaining_hours "2026-08-17T10:00:00Z" "not-a-number" "2026-08-17T12:00:00Z")"
+assert_eq "a non-numeric cool-off duration: empty, never a pass" "" "$out"
+
+# --- landing_protected_path_controls_ok (D18 WI-12) --------------------------
+# Fixture head_sha "sha-head-1" (set above) is the pull request's current
+# headRefOid throughout; REVIEW_COMMIT matching it is what lets the cool-off
+# checks below run at all.
+
+files "src/app.py"
+out="$(landing_protected_path_controls_ok '{}' acme/widgets 12 critical "2026-08-17T10:00:00Z" "sha-head-1")"
+assert_eq "no protected path at all: ok immediately, neither control consulted" "ok" "$out"
+
+files "lib/x.sh"
+out="$(landing_protected_path_controls_ok '{}' acme/widgets 12 standard "2026-08-17T10:00:00Z" "sha-head-1" \
+  "2026-08-17T11:00:00Z")"
+assert_contains "a non-critical tier is refused, naming the tier it actually found" \
+  "did not run at the critical tier (tier: standard)" "$out"
+
+out="$(landing_protected_path_controls_ok '{}' acme/widgets 12 "" "2026-08-17T10:00:00Z" "sha-head-1" \
+  "2026-08-17T11:00:00Z")"
+assert_contains "an empty tier is refused the same way, naming it empty" \
+  "tier: empty" "$out"
+
+out="$(landing_protected_path_controls_ok '{}' acme/widgets 12 critical "" "sha-head-1" "2026-08-17T11:00:00Z")"
+assert_contains "a critical tier but no submitted_at: refused, naming the missing timestamp" \
+  "no approval timestamp could be established" "$out"
+
+out="$(landing_protected_path_controls_ok '{}' acme/widgets 12 critical "2026-08-17T10:00:00Z" "sha-head-1" \
+  "2026-08-17T11:00:00Z")"
+assert_contains "critical tier, commit matches head, cool-off still open: refused, naming the remaining time" \
+  "cool-off has 23h remaining" "$out"
+
+out="$(landing_protected_path_controls_ok '{"landing_cool_off_hours": 0}' acme/widgets 12 critical \
+  "2026-08-17T10:00:00Z" "sha-head-1" "2026-08-17T11:00:00Z")"
+assert_eq "critical tier, commit matches head, landing_cool_off_hours: 0: ok immediately" "ok" "$out"
+
+out="$(landing_protected_path_controls_ok '{}' acme/widgets 12 critical "2026-08-17T10:00:00Z" "sha-head-1" \
+  "2026-08-18T10:00:00Z")"
+assert_eq "critical tier, commit matches head, a full day elapsed: ok" "ok" "$out"
+
+# A push after approval (agent-ops#658 review): the standing review's own
+# commit_id no longer matches the pull request's current head, so the
+# cool-off is never even consulted — refused outright, naming both commits,
+# regardless of how much time has elapsed since the stale submitted_at.
+out="$(landing_protected_path_controls_ok '{}' acme/widgets 12 critical "2026-08-17T10:00:00Z" "sha-stale" \
+  "2026-08-18T10:00:00Z")"
+assert_contains "a push after approval refuses even past a full day elapsed, naming the mismatch" \
+  "the standing review approved commit sha-stale, but acme/widgets#12's current head is sha-head-1" "$out"
+assert_contains "  ... names it a restart of the cool-off" \
+  "restarts the protected-path cool-off" "$out"
+
+out="$(landing_protected_path_controls_ok '{}' acme/widgets 12 critical "2026-08-17T10:00:00Z" "" \
+  "2026-08-17T11:00:00Z")"
+assert_contains "an empty review commit is refused the same way, naming it empty" \
+  "approved commit empty" "$out"
+
+: > "$fixtures/pr-head-fail"
+out="$(landing_protected_path_controls_ok '{}' acme/widgets 12 critical "2026-08-17T10:00:00Z" "sha-head-1")"
+assert_contains "an unreadable current-head read: unknown, never a pass" \
+  "unknown:could not re-establish acme/widgets#12's current head commit" "$out"
+rm -f "$fixtures/pr-head-fail"
+
+: > "$fixtures/files-fail"
+out="$(landing_protected_path_controls_ok '{}' acme/widgets 12 critical "2026-08-17T10:00:00Z" "sha-head-1")"
+assert_contains "an unreadable changed-file list on re-check: unknown, never a pass" \
+  "unknown:could not re-establish" "$out"
+rm -f "$fixtures/files-fail"
+files "src/app.py"
+
+# --- landing_retry_tier (D18 WI-12, agent-ops#415) ---------------------------
+# The fleet's own union log stands in for `run_approver_stage`'s in-process
+# `approver_stage_tier` on a re-arm, exactly as `landing_retry_source` already
+# does for a work order's `source` — pinned against a hand-built log.
+
+tier_log="$tmp_dir/tier-union-log.jsonl"
+cat > "$tier_log" <<'LOG'
+{"ts":"2026-08-17T09:00:00Z","event":"approver-verdict","pr_url":"https://github.com/acme/widgets/pull/12","tier":"standard","verdict":"refuse","refuse_streak":0,"adjudication":false}
+this line is not json at all
+{"ts":"2026-08-17T10:00:00Z","event":"approver-verdict","pr_url":"https://github.com/acme/widgets/pull/12","tier":"critical","verdict":"approve","refuse_streak":0,"adjudication":false,"critical_reason":"protected-path"}
+{"ts":"2026-08-17T09:30:00Z","event":"landing-refused","pr_url":"https://github.com/acme/widgets/pull/12","repo":"acme/widgets","reason":"a human CHANGES_REQUESTED stands (someone)"}
+LOG
+
+out="$(landing_retry_tier "https://github.com/acme/widgets/pull/12" "$tier_log")"
+assert_eq "the most recent matching approver-verdict's tier wins" "critical" "$out"
+
+out="$(landing_retry_tier "https://github.com/acme/widgets/pull/999" "$tier_log")"
+assert_eq "an unmatched pull request prints nothing" "" "$out"
+
+out="$(landing_retry_tier "https://github.com/acme/widgets/pull/12" "$tmp_dir/does-not-exist.jsonl")"
+assert_eq "an unreadable log prints nothing rather than guessing" "" "$out"
+
+out="$(landing_retry_tier "https://github.com/acme/widgets/pull/12" < "$tier_log")"
+assert_eq "stdin works the same as a named file (LOG_FILE omitted/-)" "critical" "$out"
 
 # --- landing_arm ---------------------------------------------------------------
 
