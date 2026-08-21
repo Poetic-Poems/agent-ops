@@ -119,6 +119,7 @@ implementer_model_default="claude-sonnet-5"
 implementer_model_trivial="claude-haiku-4-5-20251001"
 candidates_max=3
 refinement_policy_json='{}'
+# shellcheck disable=SC2034  # Read by the lifted fit block, which assigns coordinator_refinements_json from it.
 refinements_json='{}'
 claimed_json='[]'
 blocked_json='[]'
@@ -173,6 +174,7 @@ run_fit() {  # <max-bytes> <repos-json>  -> assembled prompt size on stdout
   # `coordinator_refinements_json` is assigned by the lifted fit block above,
   # not here: requirement 4j has the measurement and the assembly spend the
   # same value, and a test that recomputed it would not be able to tell.
+  # shellcheck disable=SC2154  # Assigned by the lifted fit block eval'd above — spending its value is the point.
   coordinator_stdin="$(printf '%s\n' \
     "$ordered_repos_json" "$(coordinator_blocked_view "$blocked_json")" \
     "$coordinator_refinements_json" "$claimed_json")"
