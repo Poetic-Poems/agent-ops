@@ -11772,8 +11772,10 @@ What exists, and the requirements each part answers to:
     `met` (a sample-backed zero), `not-met (criterion: divergence)` (at least
     one divergent pull request) or `unavailable` (no settled comparison yet,
     or fewer than five — `lib/verdict-fate.sh`'s own `insufficient-sample`)
-    off that join — never a rate stated on too small a sample. "Elapsed time
-    at the current level" is read off
+    off that join — never a rate stated on too small a sample, and always
+    naming any pull request it could not read from GitHub this run, so a
+    `met` is never mistaken for a zero over pull requests nobody looked at.
+    "Elapsed time at the current level" is read off
     `lib/fleet.sh`'s union event log rather than this repository's own git
     history, because the deployed image never carries `.git` (`.dockerignore`)
     and this report has to behave identically there and in a checkout: the
@@ -14509,6 +14511,13 @@ pull request, run the ones the change touches and any it could regress.
     launched, logged as the high tier), confirming the raise reaches the same
     round's Approver rather than only the next one; a `gh pr view` reporting
     no change, or an unreadable label, leaves `rev_complexity` unchanged.
+    Every `approver-verdict` the stage logs carries the `repo` it ran for, the
+    `model` that reached the verdict — empty on the deterministic Trivial
+    tier, which launches none — and `posted` (requirement 33): `true` where
+    the review reached GitHub, `false` both for a write GitHub refused
+    despite an `approve` verdict and for a verdict that attempted no write at
+    all (an adjudication `escalate`, or a verdict the Script does not
+    recognise).
     `scripts/doctor.sh` fails a `merge_autonomy`
     above `human` configured with `approver_model_default` empty, the same
     shape its existing `approver_app_id` pairing check already fails on
@@ -14814,8 +14823,9 @@ pull request, run the ones the change touches and any it could regress.
     exists and `merge_autonomy` is configured; a repository at
     `agent-approves` (Stage 1) short of its 15-agent-approved-pull-request
     bar verdicts `not-met (criterion: agent_approved_prs)` even though its
-    other criterion (App-verdict/human-action divergence, agent-ops#573) is
-    simultaneously `unavailable` — a real failure outranks a merely-missing
+    other criterion (App-verdict/human-action divergence, component 22a) is
+    simultaneously `unavailable`, both its pull requests being unreadable
+    from GitHub in that fixture — a real failure outranks a merely-missing
     measurement; a `pr_url` counted toward one repository's agent-approved
     count is never credited to a same-prefixed sibling repository (an exact
     `owner/repo/pull/` match, not a substring one). A repository at
@@ -14827,6 +14837,35 @@ pull request, run the ones the change touches and any it could regress.
     `docs/reviews/*-merge-autonomy-baseline.md` as the Stage 0 baseline, not
     a later, worse one placed beside it in the fixture.
     `scripts/autonomy-stage-report.sh` passes `shellcheck`.
+8w. **The Approver's verdict is paired with the pull request's eventual fate,
+    and a divergence is never silently dropped (component 22a).**
+    `test/verdict-fate.test.sh` passes: `verdict_fate_posted_review` maps the
+    Approver's own verdict vocabulary onto the two GitHub review events the
+    Script posts and prints empty for a verdict that reaches neither;
+    `verdict_fate_latest_per_pr` collapses a pull request carrying several
+    `approver-verdict` events to its single latest by `ts`, excludes a
+    verdict whose review never reached GitHub (`posted: false`, or no mapped
+    review at all) while reading an event predating that field as `true`, and
+    matches a repository by exact prefix so a same-prefix decoy is never
+    counted; `verdict_fate_classify` returns each fate and comparison the
+    record's own vocabulary names, with a human `CHANGES_REQUESTED` submitted
+    after the verdict scoring `changes-requested-after-approval`/`divergence`
+    even once the pull request later lands anyway, a bot's own
+    `CHANGES_REQUESTED` never counting as a human's, and one submitted before
+    the verdict's own `ts` not counting as "after" it; `verdict_fate_summarize`
+    excludes `pending` from both the sample and the rate, and reports
+    `insufficient-sample` rather than state a rate below the stated minimum.
+    `test/verdict-fate-report.test.sh` passes: against a stubbed `gh`,
+    `scripts/verdict-fate-report.sh` exits 0 with a silent stderr, prints one
+    entry per pull request the Approver ruled on across every fate, counts a
+    superseded verdict once and as its later one, excludes a same-prefix
+    decoy repository, and honours `--min-sample` and `--since`.
+    `test/autonomy-stage-report.test.sh`'s fourth repository proves component
+    22 consumes that join rather than the `unavailable` placeholder it used
+    to report: five approved-and-landed pull requests carrying no human
+    `CHANGES_REQUESTED` verdict its `divergence` criterion `met`, naming the
+    sample the zero is backed by. `lib/verdict-fate.sh` and
+    `scripts/verdict-fate-report.sh` pass `shellcheck`.
 
 ## Host provisioning (human steps)
 

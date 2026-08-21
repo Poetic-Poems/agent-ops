@@ -7,7 +7,7 @@
 # (`approver-verdict`, requirement 33) carries only half the pairing this
 # report exists to state — the verdict. This joins that half with each pull
 # request's own live GitHub state (whether it merged, who armed it, whether a
-# human has since posted a standing `CHANGES_REQUESTED`) via
+# human has posted a `CHANGES_REQUESTED` since the verdict) via
 # `lib/verdict-fate.sh`'s pure classifier, and prints, for each configured
 # repository, its current D18 level and stage, and — for that repository —
 # agreement, divergence and sample size over the report's window, declining

@@ -32,13 +32,11 @@
 #                     unavailable fallback: five agent-approved pull requests,
 #                     all landed and none carrying a standing human
 #                     `CHANGES_REQUESTED` — `divergence` reads `met` (a real
-#                     zero, backed by a sample), and since
-#                     `agent_approved_prs` also clears its own ≥15-or-elapsed
-#                     bar isn't needed here (only `divergence` is asserted;
-#                     `agent_approved_prs` is left `not-met` on 5 pull
-#                     requests, which is fine — this repo's fixture exists to
-#                     prove the divergence join, not to double as Stage 1's
-#                     full exit).
+#                     zero, backed by a sample). Only `divergence` is
+#                     asserted for this repository: `agent_approved_prs` is
+#                     left `not-met` on its five pull requests, which is
+#                     fine — this fixture exists to prove the divergence join
+#                     runs end to end, not to double as a full Stage 1 exit.
 #
 # `gh` is stubbed via `PATH`, the same technique test/mine-merge-history.test.sh
 # uses — reused here as-is because scripts/autonomy-stage-report.sh shells out

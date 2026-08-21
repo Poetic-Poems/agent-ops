@@ -42,13 +42,13 @@
 # happened next:
 #
 #   - An `APPROVE` diverges if the pull request closed unmerged, or if a
-#     human posted a standing `CHANGES_REQUESTED` after the approval — this
-#     second case is `changes-requested-after-approval`, its own fate, never
-#     folded into `closed-unmerged` even when the pull request is later fixed
-#     and lands anyway (the issue's own "sharp edge": this is the specific
-#     signal Stage 1/2 exist to observe, and it must never be silently
-#     dropped). It agrees if the pull request landed (by the Script or by a
-#     human) with no such standing request.
+#     human posted a `CHANGES_REQUESTED` after the approval — this second
+#     case is `changes-requested-after-approval`, its own fate, never folded
+#     into `closed-unmerged` even when the pull request is later fixed and
+#     lands anyway (the issue's own "sharp edge": this is the specific signal
+#     Stage 1/2 exist to observe, and it must never be silently dropped). It
+#     agrees if the pull request landed (by the Script or by a human) with no
+#     such request against it.
 #   - A `REQUEST_CHANGES` diverges if the pull request landed anyway (a human
 #     overrode the standing refusal) — `landed-by-script` cannot happen here,
 #     since the arming step never lands a pull request the Approver refused.
@@ -140,7 +140,16 @@ verdict_fate_latest_per_pr() {
 #   PR_STATE       `open`, `closed` or `merged` (GitHub's own three states;
 #                  case-insensitive).
 #   REVIEWS_JSON   array of `{login, state, submitted_at, bot}` — every review
-#                  currently standing on the pull request.
+#                  ever submitted on the pull request, *not* reduced to each
+#                  reviewer's standing position. A `CHANGES_REQUESTED` the
+#                  same human later replaced with an `APPROVED` still counts
+#                  here, deliberately: a divergence that happened is one this
+#                  record states, however it was later resolved. That is
+#                  where this differs from `_handoff_latest_reviews`'
+#                  group-by-login-take-last rule (lib/handoff.sh), which
+#                  answers the different question "does a human review block
+#                  this pull request right now" — the one the landing gate
+#                  asks.
 #   VERDICT_TS     the approver-verdict entry's own `ts` (ISO 8601) — a human
 #                  review submitted after this counts toward
 #                  `changes-requested-after-approval`.

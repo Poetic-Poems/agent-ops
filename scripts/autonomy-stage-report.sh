@@ -395,7 +395,14 @@ crit_divergence() {
   else
     status="met"
   fi
-  measured="$(jq -r '"\(.agreement) agreement, \(.divergence) divergence, \(.pending) pending (sample \(.sample))"' <<<"$summary")"
+  # The unreadable count rides along on a settled verdict too, not only on the
+  # `insufficient-sample` one below: a `met` here is "zero divergence among the
+  # pull requests this run could actually read", and a human reading it as
+  # "zero divergence" needs to see what was left out to tell the difference.
+  measured="$(jq -r --argjson u "$unreadable" \
+    '"\(.agreement) agreement, \(.divergence) divergence, \(.pending) pending (sample \(.sample))"
+     + (if $u > 0 then "; \($u) pull request(s) unreadable this run and excluded" else "" end)' \
+    <<<"$summary")"
   jq -nc --arg id "divergence" --arg desc "$desc" --arg status "$status" --arg measured "$measured" \
     '{id:$id, desc:$desc, status:$status, measured:$measured}'
 }

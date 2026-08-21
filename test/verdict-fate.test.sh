@@ -96,7 +96,7 @@ assert_eq "o/repo-extra's decoy is excluded by the exact-prefix match" \
   "" "$(jq -r '.[] | select(.repo == "o/repo-extra") | .pr_url' <<<"$latest")"
 assert_eq "pull/4, with no explicit posted field, defaults to true and is included" \
   "APPROVE" "$(jq -r '.[] | select(.pr_url | endswith("/4")) | .posted_review' <<<"$latest")"
-assert_eq "exactly three surviving entries (1, and 4 default true; 2 and 3 excluded)" \
+assert_eq "exactly two surviving entries (1, and 4 defaulting to posted:true; 2 and 3 excluded)" \
   "2" "$(jq 'length' <<<"$latest")"
 
 no_prefix="$(verdict_fate_latest_per_pr "$EVENTS" "")"
