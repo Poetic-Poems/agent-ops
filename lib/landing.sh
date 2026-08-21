@@ -403,7 +403,7 @@ landing_cool_off_remaining_hours() {
   ' 2>/dev/null
 }
 
-# landing_protected_path_controls_ok CONFIG_JSON SLUG NUMBER TIER SUBMITTED_AT [NOW_ISO]
+# landing_protected_path_controls_ok CONFIG_JSON SLUG NUMBER TIER SUBMITTED_AT REVIEW_COMMIT [NOW_ISO]
 # The D18 WI-12 Stage 4 compensating controls (§7 risk 1) a protected-path
 # pull request at `agent-merges-all` must additionally clear before
 # `_landing_stage_attempt` arms it, once `landing_eligible` has already
@@ -414,21 +414,37 @@ landing_cool_off_remaining_hours() {
 # caller's own earlier read (never more than one function call old, the same
 # discipline every other landing gate follows): a pull request not actually
 # touching a protected path is `ok` immediately, since neither control below
-# applies to it. TIER and SUBMITTED_AT are the caller's own facts about the
-# Approver's already-*standing* review — never re-derived here: TIER is
-# either `run_approver_stage`'s own in-process fact (the round that first
-# approved this pull request) or read back from the fleet log's own
-# `approver-verdict` event (`landing_retry_tier`, a re-arm on a later cycle);
-# SUBMITTED_AT is `landing_approver_standing_review_at`'s own timestamp,
-# already fetched fresh by the same gate that confirmed the review is
-# standing `APPROVED`. Only `critical` satisfies the tier control — an
-# adjudication settled by a refuse-streak counts exactly the same as an
-# ordinary engagement forced critical by the protected path itself, since
-# both mean the pull request actually got the critical-tier scrutiny Stage 4
-# requires, whichever cause `run_approver_stage`'s own `critical_reason`
-# names for the log.
+# applies to it. TIER, SUBMITTED_AT and REVIEW_COMMIT are the caller's own
+# facts about the Approver's already-*standing* review — never re-derived
+# here: TIER is either `run_approver_stage`'s own in-process fact (the round
+# that first approved this pull request) or read back from the fleet log's
+# own `approver-verdict` event (`landing_retry_tier`, a re-arm on a later
+# cycle); SUBMITTED_AT and REVIEW_COMMIT are `landing_approver_standing_review_at`'s
+# own timestamp and `commit_id`, already fetched fresh by the same gate that
+# confirmed the review is standing `APPROVED`. Only `critical` satisfies the
+# tier control — an adjudication settled by a refuse-streak counts exactly
+# the same as an ordinary engagement forced critical by the protected path
+# itself, since both mean the pull request actually got the critical-tier
+# scrutiny Stage 4 requires, whichever cause `run_approver_stage`'s own
+# `critical_reason` names for the log.
+#
+# The cool-off is only ever measured against a review that still covers the
+# pull request's *current* code: REVIEW_COMMIT (the standing review's own
+# `commit_id`) is checked against a fresh read of the pull request's own
+# `headRefOid` before `submitted_at` is trusted for anything. A push after
+# approval moves the head without touching the standing review at all —
+# nothing in this pipeline dismisses a stale review on push — so a mismatch
+# here is the only signal a later push ever leaves, and it refuses outright
+# rather than measuring a cool-off against a timestamp that no longer speaks
+# for the code actually sitting on the branch. There is no fresher
+# `submitted_at` to restart the clock from until the Approver reviews the new
+# head and a later gate-4 read finds a `commit_id` that matches again — until
+# then this control simply never clears, which is what "a fresh push
+# restarts the wait" means in practice: the wait does not resume where it
+# left off, it starts over from an unmet state.
 landing_protected_path_controls_ok() {
-  local config_json="$1" slug="$2" number="$3" tier="${4:-}" submitted_at="${5:-}" now_iso="${6:-}"
+  local config_json="$1" slug="$2" number="$3" tier="${4:-}" submitted_at="${5:-}" review_commit="${6:-}" now_iso="${7:-}"
+  local gh_bin="${LANDING_GH:-gh}"
   local hit_rc=0
   landing_protected_paths_hit "$slug" "$number" >/dev/null 2>&1 || hit_rc=$?
   case "$hit_rc" in
@@ -449,6 +465,18 @@ landing_protected_path_controls_ok() {
   fi
   if [[ -z "$submitted_at" ]]; then
     printf 'ineligible:touches a protected path at agent-merges-all but no approval timestamp could be established for the cool-off'
+    return 0
+  fi
+
+  local head_sha
+  head_sha="$("$gh_bin" pr view "$number" -R "$slug" --json headRefOid --jq '.headRefOid' 2>/dev/null)"
+  if [[ -z "$head_sha" ]]; then
+    printf 'unknown:could not re-establish %s#%s'\''s current head commit for the protected-path cool-off' "$slug" "$number"
+    return 0
+  fi
+  if [[ -z "$review_commit" || "$review_commit" != "$head_sha" ]]; then
+    printf 'ineligible:the standing review approved commit %s, but %s#%s'\''s current head is %s — a push after approval restarts the protected-path cool-off' \
+      "${review_commit:-empty}" "$slug" "$number" "$head_sha"
     return 0
   fi
 
@@ -507,30 +535,33 @@ landing_approver_standing_review() {
 
 # landing_approver_standing_review_at SLUG NUMBER LOGIN
 # `landing_approver_standing_review`'s own answer, plus the standing
-# review's own `submitted_at` — printed as `STATE<TAB>AT` (empty AT when
-# there is no standing review to have one), the same compound-return idiom
+# review's own `submitted_at` and `commit_id` — printed as
+# `STATE<TAB>AT<TAB>COMMIT` (empty AT and COMMIT when there is no standing
+# review to have them), the same compound-return idiom
 # `merge_budget_window_status` uses. D18 WI-12 (agent-ops#415)'s protected-
-# path cool-off is measured from exactly this timestamp — GitHub's own
-# record of when the review it is gating on was actually submitted, never
-# anything this process remembers — so gate 4 of `_landing_stage_attempt`
-# reads it here rather than `landing_approver_standing_review`, at every
-# level and at no extra `gh` call: the same one reviews-list read either
-# function makes, so the timestamp gate 4.5 needs at `agent-merges-all`
-# costs nothing to carry everywhere. (The landing-retry sweep's own
-# pre-filter still calls the plain reader, which is all it wants.) Returns
-# non-zero, printing nothing, under the same conditions
-# `landing_approver_standing_review` does — an unreadable reviews list is
-# never read as "not approved, and no timestamp".
+# path cool-off is measured from exactly this timestamp, but only once
+# COMMIT is confirmed to still match the pull request's current head
+# (`landing_protected_path_controls_ok`'s own job) — GitHub's own record of
+# when, and against which commit, the review it is gating on was actually
+# submitted, never anything this process remembers — so gate 4 of
+# `_landing_stage_attempt` reads it here rather than
+# `landing_approver_standing_review`, at every level and at no extra `gh`
+# call: the same one reviews-list read either function makes, so the
+# timestamp and commit gate 4.5 needs at `agent-merges-all` cost nothing to
+# carry everywhere. (The landing-retry sweep's own pre-filter still calls the
+# plain reader, which is all it wants.) Returns non-zero, printing nothing,
+# under the same conditions `landing_approver_standing_review` does — an
+# unreadable reviews list is never read as "not approved, and no timestamp".
 landing_approver_standing_review_at() {
   local slug="$1" number="${2:-}" login="${3:-}" gh_bin="${LANDING_GH:-gh}" lines
   [[ -n "$slug" && "$number" =~ ^[0-9]+$ && -n "$login" ]] || return 1
   lines="$("$gh_bin" api "repos/$slug/pulls/$number/reviews" --paginate \
-            --jq '.[] | select(.submitted_at != null) | {login: .user.login, at: .submitted_at, state: .state}' \
+            --jq '.[] | select(.submitted_at != null) | {login: .user.login, at: .submitted_at, state: .state, commit: .commit_id}' \
             2>/dev/null)" || return 1
   jq -s -r --arg l "$login" '
     [.[] | select(.login == $l and (.state == "APPROVED" or .state == "CHANGES_REQUESTED"))]
     | sort_by(.at) | last
-    | ((.state // "") + "\t" + (.at // ""))
+    | ((.state // "") + "\t" + (.at // "") + "\t" + (.commit // ""))
   ' <<<"$lines" 2>/dev/null || return 1
 }
 

@@ -35,7 +35,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   but only once the approving engagement ran at that critical tier and a
   new `landing_cool_off_hours` config key (default 24, per-repo override,
   `0` disables) has elapsed since the standing review's own timestamp; a
-  fresh push resets the wait by carrying a fresh review. Both controls are
+  fresh push restarts the wait, since the standing review's own `commit_id`
+  no longer matches the pull request's current head and nothing here
+  dismisses a stale review on push. Both controls are
   re-read fresh at every arming attempt, including a landing-retry sweep
   re-arm outside the round that first approved the pull request. Below
   `agent-merges-all` a protected path stays ineligible exactly as before.

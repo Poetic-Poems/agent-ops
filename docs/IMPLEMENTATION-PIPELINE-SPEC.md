@@ -805,7 +805,7 @@ D18 WI-7 (requirement 8d, `lib/landing.sh`'s `landing_eligible`): which work sou
 
 ### Extended notes: `landing_cool_off_hours`
 
-D18 WI-12 (Stage 4, §7 risk 1, `lib/landing.sh`'s `landing_protected_path_controls_ok`/`landing_cool_off_effective_hours`/`landing_cool_off_remaining_hours`): the wait between the Approver's own approval of a protected-path pull request and the arming step (requirement 8d) landing it, fleet-wide default; a `repos[]` entry's own `landing_cool_off_hours` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). Binds only at `agent-merges-all`, alongside the critical-tier control (`approver_model_critical`, forced regardless of complexity by a protected-path hit) — both compensating controls Stage 4 requires before a protected-path pull request is eligible at all. Measured from `landing_approver_standing_review_at`'s own `submitted_at`, re-read fresh at every arming attempt; a dismissed-and-re-approved review restarts the wait, since it is a different standing review. `0` disables the wait.
+D18 WI-12 (Stage 4, §7 risk 1, `lib/landing.sh`'s `landing_protected_path_controls_ok`/`landing_cool_off_effective_hours`/`landing_cool_off_remaining_hours`): the wait between the Approver's own approval of a protected-path pull request and the arming step (requirement 8d) landing it, fleet-wide default; a `repos[]` entry's own `landing_cool_off_hours` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). Binds only at `agent-merges-all`, alongside the critical-tier control (`approver_model_critical`, forced regardless of complexity by a protected-path hit) — both compensating controls Stage 4 requires before a protected-path pull request is eligible at all. Measured from `landing_approver_standing_review_at`'s own `submitted_at`, re-read fresh at every arming attempt; a fresh push restarts the wait, since the standing review's own `commit_id` (also read there) no longer matches a fresh read of the pull request's `headRefOid`, and the mismatch alone refuses regardless of how much of `submitted_at`'s own cool-off has elapsed. `0` disables the wait.
 
 <!-- config-table:notes-end -->
 
@@ -4808,26 +4808,35 @@ implements.
       reads the same endpoint directly, filtered to the App's own login.
       `landing_approver_standing_review_at` (D18 WI-12) is what this gate
       actually calls — the same one reviews-list read, plus the standing
-      review's own `submitted_at`, at no extra cost — since gate 4.5 needs
-      that timestamp and it is never worth a second fetch.
+      review's own `submitted_at` and `commit_id`, at no extra cost — since
+      gate 4.5 needs both and it is never worth a second fetch.
    4.5. D18 WI-12 (Stage 4, agent-ops#415): only at `agent-merges-all`, and
       only for a pull request `landing_protected_path_controls_ok`
       (`lib/landing.sh`) itself re-confirms still touches a protected path —
-      gate 2 above already deferred, rather than refused, that case. Both
-      compensating controls §7 risk 1 requires must hold: the approving
-      engagement ran at the Critical tier (requirement 8b's own
+      gate 2 above already deferred, rather than refused, that case. All
+      three compensating controls §7 risk 1 requires must hold: the
+      approving engagement ran at the Critical tier (requirement 8b's own
       `critical_reason`; read from this round's own in-process fact on the
       round that first approved the pull request, or from the fleet log's
       `approver-verdict` event, `landing_retry_tier`, on a landing-retry
-      sweep re-arm outside that round — requirement 8u), and the
-      configurable `landing_cool_off_hours` (default 24, `0` disables) has
-      elapsed since gate 4's own `submitted_at`, re-read fresh every time
-      this gate runs rather than cached anywhere. Either control unmet
-      refuses, naming the tier it actually found or the remaining cool-off
-      time; an unreadable re-check of the changed-file list is `unknown`,
-      never a pass. A pull request that does not touch a protected path at
-      all clears this gate immediately, since neither control applies to
-      it.
+      sweep re-arm outside that round — requirement 8u); the standing
+      review's own `commit_id` (gate 4's own read) still matches a fresh
+      read of the pull request's current `headRefOid`; and the configurable
+      `landing_cool_off_hours` (default 24, `0` disables) has elapsed since
+      gate 4's own `submitted_at`, re-read fresh every time this gate runs
+      rather than cached anywhere. A push after approval moves `headRefOid`
+      without touching the standing review at all — nothing in this
+      pipeline dismisses a stale review on push — so a `commit_id` mismatch
+      refuses on its own, regardless of how much of the cool-off has
+      otherwise elapsed: there is no fresher `submitted_at` to measure from
+      until the Approver reviews the new head, which is the sense in which
+      a fresh push restarts the wait rather than merely pausing it. Any
+      control unmet refuses, naming the tier it actually found, the
+      mismatched commits, or the remaining cool-off time; an unreadable
+      re-check of the changed-file list or of the pull request's current
+      head is `unknown`, never a pass. A pull request that does not touch a
+      protected path at all clears this gate immediately, since none of the
+      three controls applies to it.
    5. `merge_budget_decide`/`merge_budget_apply_decision`
       (`lib/merge-budget.sh`, requirement 2.3c) — only `arm` proceeds.
       `hold` (the budget is exhausted) and `refuse` (the count could not be
@@ -14466,8 +14475,9 @@ pull request, run the ones the change touches and any it could regress.
     `ineligible`, for a protected path at `agent-merges-all` (deferred,
     never refused, since this classifier alone cannot see the compensating
     controls); `landing_approver_standing_review_at` returns the standing
-    review's own state and `submitted_at` together, at the same one reviews
-    read `landing_approver_standing_review` already makes; `landing_cool_off_effective_hours`
+    review's own state, `submitted_at` and `commit_id` together, at the same
+    one reviews read `landing_approver_standing_review` already makes;
+    `landing_cool_off_effective_hours`
     resolves the repo-override-else-top-level-else-24 precedence, `0`
     included, exactly as `merge_budget_effective_cap` does;
     `landing_cool_off_remaining_hours` computes the correct remaining time
@@ -14476,9 +14486,14 @@ pull request, run the ones the change touches and any it could regress.
     `landing_protected_path_controls_ok` is `ok` immediately for a pull
     request touching no protected path, refuses naming the tier for
     anything but `critical`, refuses naming the missing timestamp with no
-    `submitted_at`, refuses naming the remaining time while the cool-off is
-    open, is `ok` once it has elapsed or `landing_cool_off_hours` is `0`,
-    and is `unknown` on a re-check that cannot read the changed-file list;
+    `submitted_at`, refuses naming both commits (even past a full day
+    elapsed) when the standing review's `commit_id` does not match a fresh
+    read of the pull request's current head — the push-after-approval case,
+    agent-ops#658 — refuses naming the remaining time while the cool-off is
+    open once the commits do match, is `ok` once it has elapsed or
+    `landing_cool_off_hours` is `0`, and is `unknown` on a re-check that
+    cannot read either the changed-file list or the pull request's current
+    head;
     `landing_retry_tier` reads the most recent matching `approver-verdict`
     event's own `tier` from the fleet log, the same "several events, keep
     the latest, skip malformed lines, stdin works like a named file" shape

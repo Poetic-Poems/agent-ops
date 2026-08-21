@@ -4162,12 +4162,19 @@ run_landing_stage() {
 #      (lib/landing.sh) itself confirms still touches a protected path —
 #      gate 2's own `landing_eligible` already deferred rather than refused
 #      that case. Requires the approving engagement to have run at the
-#      critical Approver tier and the configurable `landing_cool_off_hours`
-#      wait since that review's own `submitted_at` (gate 4's own
-#      `landing_approver_standing_review_at` read, no extra `gh` call) to
-#      have elapsed. TIER comes from this round's own `approver_stage_tier`
-#      on the first-approval round, or `landing_retry_tier`'s fleet-log read
-#      on a retry — never re-derived.
+#      critical Approver tier, the standing review's own `commit_id` (gate
+#      4's own `landing_approver_standing_review_at` read, no extra `gh`
+#      call) to still match a fresh read of the pull request's current
+#      `headRefOid`, and the configurable `landing_cool_off_hours` wait
+#      since that review's own `submitted_at` to have elapsed. A push after
+#      approval moves `headRefOid` without touching the standing review at
+#      all — nothing here dismisses a stale review — so a `commit_id`
+#      mismatch refuses outright rather than measuring a cool-off against a
+#      timestamp that no longer speaks for the code on the branch; this is
+#      the sense in which a fresh push restarts the wait, since nothing
+#      resumes it until a later review matches the new head. TIER comes from
+#      this round's own `approver_stage_tier` on the first-approval round, or
+#      `landing_retry_tier`'s fleet-log read on a retry — never re-derived.
 #   5. `merge_budget_decide`/`merge_budget_apply_decision`
 #      (lib/merge-budget.sh) — only `arm` proceeds; `hold` and `refuse` are
 #      applied and stop here.
@@ -4248,15 +4255,18 @@ _landing_stage_attempt() {
 
   # `_at` rather than the plain reader: D18 WI-12's protected-path cool-off
   # (gate 4.5, below) is measured from this exact standing review's own
-  # `submitted_at`, at no extra `gh` call — the same one reviews-list read
-  # either function makes (lib/landing.sh's own header).
-  local standing_at standing submitted_at
+  # `submitted_at`, and reset by its own `commit_id`, at no extra `gh` call —
+  # the same one reviews-list read either function makes (lib/landing.sh's
+  # own header).
+  local standing_at standing submitted_at review_commit rest
   if ! standing_at="$(landing_approver_standing_review_at "$slug" "$number" "$login")"; then
     _landing_refuse "$pr_url" "$slug" "could not read $pr_url's own review list to confirm the Approver's review actually landed" "$retry"
     return 0
   fi
   standing="${standing_at%%$'\t'*}"
-  submitted_at="${standing_at#*$'\t'}"
+  rest="${standing_at#*$'\t'}"
+  submitted_at="${rest%%$'\t'*}"
+  review_commit="${rest#*$'\t'}"
   if [[ "$standing" != "APPROVED" ]]; then
     _landing_refuse "$pr_url" "$slug" "the Approver's own review is not standing APPROVED on GitHub (state: ${standing:-none})" "$retry"
     return 0
@@ -4273,8 +4283,10 @@ _landing_stage_attempt() {
   fi
 
   # Gate 4.5 (D18 WI-12, Stage 4, agent-ops#415): the protected-path
-  # compensating controls — critical-tier approval, and the cool-off since
-  # it — only ever bind at `agent-merges-all`, and only for a pull request
+  # compensating controls — critical-tier approval, the standing review's
+  # `commit_id` still matching the pull request's current head, and the
+  # cool-off since the review's own `submitted_at` — only ever bind at
+  # `agent-merges-all`, and only for a pull request
   # `landing_protected_path_controls_ok` itself confirms still touches a
   # protected path (gate 2's own `landing_eligible` already deferred that
   # decision here rather than refusing outright, see its own header). TIER
@@ -4291,7 +4303,7 @@ _landing_stage_attempt() {
     else
       pp_tier="$approver_stage_tier"
     fi
-    pp_ctl="$(landing_protected_path_controls_ok "$DEFAULTED_CONFIG" "$slug" "$number" "$pp_tier" "$submitted_at")"
+    pp_ctl="$(landing_protected_path_controls_ok "$DEFAULTED_CONFIG" "$slug" "$number" "$pp_tier" "$submitted_at" "$review_commit")"
     if [[ "$pp_ctl" != "ok" ]]; then
       _landing_refuse "$pr_url" "$slug" "$pp_ctl" "$retry"
       return 0
