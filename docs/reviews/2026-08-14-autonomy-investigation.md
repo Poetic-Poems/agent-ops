@@ -350,6 +350,45 @@ Script becomes the enqueuer, a dequeue is the pipeline's own problem, and the
 deferral rationale is repealed — a `dequeued` facet of the `merge-conflicts`
 source is the natural consumer.
 
+### 6.1 Stage 1 exit check (2026-08-21)
+
+Verification record for what the App-approval mechanism (WI-3/WI-4/WI-5) has
+actually demonstrated, written for issue #518. This is evidence for the
+Stage 2 entry decision, not that decision itself — item 2's residual and
+item 3 below still stand open, and the Stage 1 row above is unchanged.
+
+1. **The Stage 1 ruleset amendment is applied.** Ruleset `18857310` on
+   `main` reads `required_approving_review_count: 1`,
+   `require_code_owner_review: false`, `dismiss_stale_reviews_on_push: true`,
+   `bypass_actors: []`, merge queue `ALLGREEN`/`SQUASH` — exactly WI-3
+   item 2.
+2. **The App's review alone satisfies the one required approval.** Six pull
+   requests have merged to `main` whose only `APPROVED` review is
+   `pullwright-approver-poetic[bot]`: #617, #618, #620, #622, #624, #632.
+3. **Token authority to call `enqueuePullRequest` is established
+   negatively, not positively.** A 2026-08-17 probe against #525 (already
+   merged, so no merge could result) returned `UNPROCESSABLE` on
+   pull-request state, not `FORBIDDEN` — GitHub accepted the App's
+   authority to call the mutation and refused only on the pull request's
+   eligibility (issue #518,
+   [2026-08-17T11:44:25Z comment](https://github.com/Poetic-Poems/agent-ops/issues/518#issuecomment-5315585316)).
+4. **No enqueue under the App token has ever succeeded, and no merge has
+   ever been performed by the App.** Each of the six pull requests above,
+   and every other recent merge to `main`, was merged by a human account
+   (`Warwick-Allen` or `warwickallen`); the fleet's retained `log.jsonl`
+   (covering events back to 2026-07-25T22:30Z, bounded by log rotation)
+   carries no `landing-armed` event.
+5. **The `--auto --squash` fallback (item 3) is unverified.** #532, the
+   `allow_auto_merge` doctor check it depended on, is closed, but the
+   fallback path itself has not been exercised.
+
+**"Merged with only the App's approval" and "merged by the App" are
+different facts, not two phrasings of one fact.** Statement 2 has been
+observed six times; statement 4 — the App actually performing an enqueue or
+a merge — has been observed zero times. A reader deciding Stage 2 entry from
+this record alone should conclude that the App's *review* authority is
+proven and its *merge* authority remains unexercised.
+
 ## 7. Risk register
 
 1. **Self-merge of a gate-weakening change.** The deadliest class: a PR
