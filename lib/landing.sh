@@ -105,11 +105,13 @@
 # Protected paths refuse arming at every level below `agent-merges-all`
 # unconditionally. At `agent-merges-all` a hit is deliberately relaxed to
 # `eligible` by `landing_eligible` itself, and the decision deferred to
-# `landing_protected_path_controls_ok` — D18 WI-12's own two compensating
+# `landing_protected_path_controls_ok` — D18 WI-12's own compensating
 # controls (§7 risk 1): the critical Approver tier, forced regardless of
 # complexity (`run_approver_stage`, agent-cycle.sh), and a `landing_cool_off_hours`
-# wait since that approval's own timestamp, both re-read fresh at the moment
-# of arming, never trusted from this round alone.
+# wait since that approval's own timestamp — measured only against a standing
+# review whose own `commit_id` still matches the pull request's current head,
+# so a push after approval restarts it — all re-read fresh at the moment of
+# arming, never trusted from this round alone.
 #
 # ## The `SOURCE` comparison is a plain string, never a banded one
 #
@@ -339,9 +341,11 @@ landing_eligible() {
       # at every level below `agent-merges-all` exactly as before. At
       # `agent-merges-all` this is deliberately *not* the final word — the
       # compensating controls §7 risk 1 requires (the critical Approver tier,
-      # the cool-off since that approval) are gates only `_landing_stage_attempt`
+      # the cool-off since that approval, measured only against a review that
+      # still covers the current head) are gates only `_landing_stage_attempt`
       # can check, since they need facts (the tier an already-standing review
-      # ran at, its own submitted_at) this function is never handed. Reporting
+      # ran at, its own submitted_at and commit_id) this function is never
+      # handed. Reporting
       # `eligible` here defers the decision to `landing_protected_path_controls_ok`,
       # never skips it.
       if [[ "$level" == "agent-merges-all" ]]; then

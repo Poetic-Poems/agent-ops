@@ -805,7 +805,7 @@ D18 WI-7 (requirement 8d, `lib/landing.sh`'s `landing_eligible`): which work sou
 
 ### Extended notes: `landing_cool_off_hours`
 
-D18 WI-12 (Stage 4, §7 risk 1, `lib/landing.sh`'s `landing_protected_path_controls_ok`/`landing_cool_off_effective_hours`/`landing_cool_off_remaining_hours`): the wait between the Approver's own approval of a protected-path pull request and the arming step (requirement 8d) landing it, fleet-wide default; a `repos[]` entry's own `landing_cool_off_hours` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). Binds only at `agent-merges-all`, alongside the critical-tier control (`approver_model_critical`, forced regardless of complexity by a protected-path hit) — both compensating controls Stage 4 requires before a protected-path pull request is eligible at all. Measured from `landing_approver_standing_review_at`'s own `submitted_at`, re-read fresh at every arming attempt; a fresh push restarts the wait, since the standing review's own `commit_id` (also read there) no longer matches a fresh read of the pull request's `headRefOid`, and the mismatch alone refuses regardless of how much of `submitted_at`'s own cool-off has elapsed. `0` disables the wait.
+D18 WI-12 (Stage 4, §7 risk 1, `lib/landing.sh`'s `landing_protected_path_controls_ok`/`landing_cool_off_effective_hours`/`landing_cool_off_remaining_hours`): the wait between the Approver's own approval of a protected-path pull request and the arming step (requirement 8d) landing it, fleet-wide default; a `repos[]` entry's own `landing_cool_off_hours` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). Binds only at `agent-merges-all`, alongside the critical-tier control (`approver_model_critical`, forced regardless of complexity by a protected-path hit) — the compensating controls Stage 4 requires before a protected-path pull request is eligible at all. Measured from `landing_approver_standing_review_at`'s own `submitted_at`, re-read fresh at every arming attempt; a fresh push restarts the wait, since the standing review's own `commit_id` (also read there) no longer matches a fresh read of the pull request's `headRefOid`, and the mismatch alone refuses regardless of how much of `submitted_at`'s own cool-off has elapsed. `0` disables the wait.
 
 <!-- config-table:notes-end -->
 
@@ -849,14 +849,16 @@ resolution, `lib/merge-autonomy.sh`):
   same `complexity:low`/`medium` ceiling and the same
   `merge_autonomy_routine_sources` list bind at `agent-merges-all` as at
   `agent-merges-routine`, but a protected-path hit — refused outright at
-  `agent-merges-routine` — is deferred at `agent-merges-all` to the two
+  `agent-merges-routine` — is deferred at `agent-merges-all` to the
   compensating controls D18 WI-12 (Stage 4, agent-ops#415) adds: the
   Critical Approver tier, forced by the hit itself regardless of complexity
   (requirement 8b), and the `landing_cool_off_hours` wait since that
-  approval (gate 4.5 of the sequence below). So a repository set to
-  `agent-merges-all` lands exactly one class of pull request
+  approval — measured only against a standing review whose own `commit_id`
+  still matches the pull request's current head, so that a push after
+  approval restarts it (gate 4.5 of the sequence below). So a repository set
+  to `agent-merges-all` lands exactly one class of pull request
   `agent-merges-routine` would not — the protected-path one, and only once
-  both controls hold. The two levels are also distinct in configuration and
+  every one of those controls holds. The two levels are also distinct in configuration and
   in requirement 2.3b's own validation, and differ in behaviour elsewhere
   (requirement 34d's void corroboration).
 
@@ -877,9 +879,10 @@ resolution, `lib/merge-autonomy.sh`):
     the belt and braces, and this design's own answer to risk register
     item 1 (a pull request self-modifying the gate it is riding through it).
     At `agent-merges-all` a hit is not eligibility's own answer: it is
-    deferred to gate 4.5's two compensating controls (D18 WI-12), which
-    refuse unless the approving engagement ran at the Critical tier and the
-    `landing_cool_off_hours` wait since it has elapsed.
+    deferred to gate 4.5's compensating controls (D18 WI-12), which refuse
+    unless the approving engagement ran at the Critical tier, the standing
+    review's own `commit_id` still matches the pull request's current head,
+    and the `landing_cool_off_hours` wait since it has elapsed.
     The last three joined the list at the human review the first draft
     deferred them to: `agent-cycle.sh` is the engine that calls the arming
     step, `review-cycle.sh` is the review pipeline's entry point, and
@@ -4813,8 +4816,10 @@ implements.
    4.5. D18 WI-12 (Stage 4, agent-ops#415): only at `agent-merges-all`, and
       only for a pull request `landing_protected_path_controls_ok`
       (`lib/landing.sh`) itself re-confirms still touches a protected path —
-      gate 2 above already deferred, rather than refused, that case. All
-      three compensating controls §7 risk 1 requires must hold: the
+      gate 2 above already deferred, rather than refused, that case. Three
+      controls must hold — the two compensating controls §7 risk 1 names,
+      plus the head-match that is what makes the second of them measurable
+      here: the
       approving engagement ran at the Critical tier (requirement 8b's own
       `critical_reason`; read from this round's own in-process fact on the
       round that first approved the pull request, or from the fleet log's

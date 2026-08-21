@@ -192,10 +192,17 @@ approver_token_identity_login() {
   printf 'pullwright-approver[bot]'
 }
 
+# Three tab-separated fields, exactly as lib/landing.sh's own
+# `landing_approver_standing_review_at` prints them (agent-ops#658): STATE,
+# `submitted_at`, and the standing review's own `commit_id`. A two-field stub
+# would still satisfy `_landing_stage_attempt`'s parsing without failing —
+# `${rest#*<TAB>}` on a tab-less string is the string itself — and would
+# silently hand gate 4.5 the timestamp where the commit belongs.
 landing_approver_standing_review_at() {
   printf '%s\n' "$*" >>"$T/standing_args"
   [[ "${STANDING_RC:-0}" == "0" ]] || return "$STANDING_RC"
-  printf '%s\t%s' "${STANDING:-}" "${SUBMITTED_AT:-2026-08-17T10:00:00Z}"
+  printf '%s\t%s\t%s' "${STANDING:-}" "${SUBMITTED_AT:-2026-08-17T10:00:00Z}" \
+    "${REVIEW_COMMIT:-sha-approved-head}"
 }
 
 _handoff_blocking_reviewers() {
@@ -401,6 +408,16 @@ assert_eq "gate 4.5 clearing (cool-off elapsed, critical tier confirmed) arms no
 assert_contains "  ... consulted with this round's own approver_stage_tier" "critical" "$(pp_ctl_args)"
 assert_eq "  ... and never asked the fleet log for a tier (this is the original round, not a retry)" \
   "" "$(retry_tier_args)"
+# TIER, SUBMITTED_AT and REVIEW_COMMIT, in that order and in those positions —
+# a containment check on each alone would still pass if the last two were
+# transposed, which is exactly how `landing_approver_standing_review_at`'s
+# three-field return gets mis-parsed (agent-ops#658).
+assert_contains "  ... and with the standing review's own submitted_at and commit_id, in that order" \
+  "critical 2026-08-17T10:00:00Z sha-approved-head" "$(pp_ctl_args)"
+
+rc="$(run_case LEVEL="agent-merges-all" PP_CTL="ok" REVIEW_COMMIT="sha-some-other-commit")"
+assert_contains "gate 4.5 is consulted with whatever commit the standing review actually carries" \
+  "sha-some-other-commit" "$(pp_ctl_args)"
 
 rc="$(run_case LEVEL="agent-merges-all" APPROVER_STAGE_TIER="standard" PP_CTL="ok")"
 assert_contains "gate 4.5 is consulted with whatever tier this round actually ran at" \
@@ -613,6 +630,7 @@ run_case_direct() {
       approver_token_identity_login() { printf "pullwright-approver[bot]"; }
       landing_approver_standing_review_at() {
         printf "%s" "${STANDING:-}"; printf "\t%s" "${SUBMITTED_AT:-2026-08-17T10:00:00Z}"
+        printf "\t%s" "${REVIEW_COMMIT:-sha-approved-head}"
         return "${STANDING_RC:-0}"
       }
       landing_protected_path_controls_ok() { printf "%s\n" "$*" >>"$T/pp_ctl_args"; printf "%s" "${PP_CTL:-ok}"; }
@@ -695,6 +713,8 @@ assert_eq "a retry attempt at agent-merges-all still arms when gate 4.5 clears" 
 assert_eq "  ... exactly once" "1" "$(count arms)"
 assert_contains "  ... having resolved TIER via landing_retry_tier, from the fleet log" \
   "$URL" "$(retry_tier_args)"
+assert_contains "  ... and consulting gate 4.5 with the standing review's own submitted_at and commit_id" \
+  "critical 2026-08-17T10:00:00Z sha-approved-head" "$(pp_ctl_args)"
 
 rc="$(run_case_direct LEVEL="agent-merges-all" PP_CTL="ineligible:touches a protected path at agent-merges-all but the approving engagement did not run at the critical tier (tier: standard)")"
 assert_eq "a retry attempt gate 4.5 refuses is never armed" "0" "$(count arms)"
