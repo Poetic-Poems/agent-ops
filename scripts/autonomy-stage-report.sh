@@ -47,7 +47,11 @@
 # never a rate computed on too small a sample (`lib/verdict-fate.sh`'s own
 # `insufficient-sample`, reported here as `unavailable` too, the same "not
 # enough evidence to call it either way" this report already gives every
-# other criterion in that state).
+# other criterion in that state). The same rule holds when the sample is
+# large enough but incomplete: a run where some pull requests 404 or hit the
+# rate limit reports `unavailable`, never `met`, even when every pull request
+# it *could* read agreed — a zero divergence rate over a partial read is not
+# yet a confirmed clean one (agent-ops#661).
 #
 # ## "Elapsed time at this level" — an event-log proxy, not config history
 #
@@ -374,7 +378,7 @@ crit_divergence() {
     fi
     state="$(jq -r '.state' <<<"$state_json")"
     classified="$(verdict_fate_classify "$posted_review" "$armed" "$state" \
-      "$(jq -c '.reviews' <<<"$reviews_json")" "$(jq -r '.ts' <<<"$entry")")"
+      "$(jq -c '.reviews' <<<"$reviews_json")" "$(jq -r '.first_approve_ts' <<<"$entry")")"
     classified_list="$(jq -c --argjson c "$classified" '. + [$c]' <<<"$classified_list")"
   done < <(jq -c '.[]' <<<"$entries")
 
@@ -390,19 +394,26 @@ crit_divergence() {
     crit_unavailable "divergence" "$desc" "$measured"
     return 0
   fi
-  if [[ "$(jq -r '.divergence' <<<"$summary")" != "0" ]]; then
-    status="not-met"
-  else
-    status="met"
-  fi
-  # The unreadable count rides along on a settled verdict too, not only on the
-  # `insufficient-sample` one below: a `met` here is "zero divergence among the
-  # pull requests this run could actually read", and a human reading it as
-  # "zero divergence" needs to see what was left out to tell the difference.
+  # The unreadable count rides along on every settled verdict, not only the
+  # `insufficient-sample` one above: a human reading "zero divergence" needs to
+  # see what was left out to tell a checked-and-clean zero from one this run
+  # simply couldn't confirm.
   measured="$(jq -r --argjson u "$unreadable" \
     '"\(.agreement) agreement, \(.divergence) divergence, \(.pending) pending (sample \(.sample))"
      + (if $u > 0 then "; \($u) pull request(s) unreadable this run and excluded" else "" end)' \
     <<<"$summary")"
+  if [[ "$(jq -r '.divergence' <<<"$summary")" != "0" ]]; then
+    status="not-met"
+  elif (( unreadable > 0 )); then
+    # A partial read cannot certify a zero: some pull requests this run could
+    # not confirm agreed, so reporting `met` would overstate what was actually
+    # checked (agent-ops#661) — the same "never a guessed 0" principle this
+    # file already applies to classifier escapes above.
+    crit_unavailable "divergence" "$desc" "$measured — not all pull requests could be read, so this zero is unconfirmed"
+    return 0
+  else
+    status="met"
+  fi
   jq -nc --arg id "divergence" --arg desc "$desc" --arg status "$status" --arg measured "$measured" \
     '{id:$id, desc:$desc, status:$status, measured:$measured}'
 }

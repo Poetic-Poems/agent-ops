@@ -11771,10 +11771,14 @@ What exists, and the requirements each part answers to:
     events against each named pull request's live GitHub state, and reports
     `met` (a sample-backed zero), `not-met (criterion: divergence)` (at least
     one divergent pull request) or `unavailable` (no settled comparison yet,
-    or fewer than five — `lib/verdict-fate.sh`'s own `insufficient-sample`)
-    off that join — never a rate stated on too small a sample, and always
-    naming any pull request it could not read from GitHub this run, so a
-    `met` is never mistaken for a zero over pull requests nobody looked at.
+    fewer than five — `lib/verdict-fate.sh`'s own `insufficient-sample` — or
+    at least one pull request this run could not read from GitHub, even once
+    the readable rest alone would clear the sample bar and read clean:
+    a zero divergence rate over a partial read is not a confirmed zero
+    (agent-ops#661)) off that join — never a rate stated on too small or too
+    incomplete a sample, and always naming any pull request it could not read
+    from GitHub this run, so a `met` is never mistaken for a zero over pull
+    requests nobody looked at.
     "Elapsed time at the current level" is read off
     `lib/fleet.sh`'s union event log rather than this repository's own git
     history, because the deployed image never carries `.git` (`.dockerignore`)
@@ -11840,25 +11844,39 @@ What exists, and the requirements each part answers to:
       excluded — nothing to compare a human's action against. An event
       logged before this component existed carries no `posted` field at all
       and defaults to `true`, the best available assumption for history this
-      component cannot re-observe. REPO_PREFIX, when given, restricts to
-      pull requests under that `owner/repo`, matched by exact prefix — the
-      same no-substring discipline component 22's own `agent_approved_prs`
-      criterion already applies, so a same-prefix decoy repository is never
-      counted.
+      component cannot re-observe; `repo` is likewise always derived from
+      `pr_url` rather than read off the event's own field (requirement 33),
+      so such an event, which carries no `repo` field at all, still reports
+      one. REPO_PREFIX, when given, restricts to pull requests under that
+      `owner/repo`, matched by exact prefix — the same no-substring
+      discipline component 22's own `agent_approved_prs` criterion already
+      applies, so a same-prefix decoy repository is never counted. Each entry
+      also carries `first_approve_ts` — the earliest `ts` among that pull
+      request's own surviving `APPROVE` verdicts, empty when it has none —
+      which is not necessarily the latest verdict's own `ts`: a pull request
+      approved, sent a standing human `CHANGES_REQUESTED`, and re-approved
+      once `review-feedback` brings it back round carries a later `ts` than
+      that `CHANGES_REQUESTED`, but its *first* approval does not, and
+      `verdict_fate_classify` must test the standing-request window against
+      the latter, never the former, or the divergence goes silently
+      unrecorded (agent-ops#661).
     - `verdict_fate_classify POSTED_REVIEW ARMED PR_STATE REVIEWS_JSON
-      VERDICT_TS` compares the posted review against the pull request's live
-      GitHub state and prints `{fate, comparison}`. `fate` is one of
-      `landed-by-script` (merged, and a `landing-armed` event exists for this
-      pull request — the same join component 22's own `autonomous_landings`
-      criterion already performs), `landed-by-human` (merged, no such
-      event), `closed-unmerged`, `still-open`, or
+      FIRST_APPROVE_TS` compares the posted review against the pull
+      request's live GitHub state and prints `{fate, comparison}`. `fate` is
+      one of `landed-by-script` (merged, and a `landing-armed` event exists
+      for this pull request — the same join component 22's own
+      `autonomous_landings` criterion already performs), `landed-by-human`
+      (merged, no such event), `closed-unmerged`, `still-open`, or
       `changes-requested-after-approval` — a human review of state
-      `CHANGES_REQUESTED`, not from a bot, submitted after `VERDICT_TS`,
-      standing on an `APPROVE`. That fifth fate is never collapsed into
-      `closed-unmerged` even once the pull request is later fixed and lands
-      anyway — agent-ops#573's own stated "sharp edge": a standing human
-      override of an agent approval is the signal Stage 1/2 exist to
-      observe, and it must never be silently dropped. `comparison` is
+      `CHANGES_REQUESTED`, not from a bot, submitted after
+      `FIRST_APPROVE_TS` (`verdict_fate_latest_per_pr`'s own field: the
+      *earliest* posted `APPROVE` for this pull request, not the latest
+      verdict's own `ts`), standing on an `APPROVE`. That fifth fate is never
+      collapsed into `closed-unmerged` even once the pull request is later
+      fixed and lands anyway — agent-ops#573's own stated "sharp edge": a
+      standing human override of an agent approval is the signal Stage 1/2
+      exist to observe, and it must never be silently dropped, including
+      across a re-approval agent-ops#661 fixed this against. `comparison` is
       `agreement`, `divergence` or `pending` (still open, no standing
       request) — symmetric by posted review: an `APPROVE` diverges on
       `closed-unmerged` or the fifth fate and agrees on either landed fate; a
@@ -14835,7 +14853,13 @@ pull request, run the ones the change touches and any it could regress.
     (agent-ops#572) — no criterion is ever reported satisfied from missing
     data. The revert-rate criterion reads the *earliest* dated
     `docs/reviews/*-merge-autonomy-baseline.md` as the Stage 0 baseline, not
-    a later, worse one placed beside it in the fixture.
+    a later, worse one placed beside it in the fixture. A fifth repository,
+    at `agent-approves` with six agent-approved pull requests — five reading
+    clean and one 404ing from the stub — verdicts `divergence: unavailable`,
+    never `met`, even though the five it could read alone clear the minimum
+    sample and carry no divergence between them: a partial read never
+    certifies a zero (agent-ops#661), and its `measured` string still names
+    both the settled sample and the pull request left unread.
     `scripts/autonomy-stage-report.sh` passes `shellcheck`.
 8w. **The Approver's verdict is paired with the pull request's eventual fate,
     and a divergence is never silently dropped (component 22a).**
@@ -14845,14 +14869,17 @@ pull request, run the ones the change touches and any it could regress.
     `verdict_fate_latest_per_pr` collapses a pull request carrying several
     `approver-verdict` events to its single latest by `ts`, excludes a
     verdict whose review never reached GitHub (`posted: false`, or no mapped
-    review at all) while reading an event predating that field as `true`, and
+    review at all) while reading an event predating that field as `true`,
     matches a repository by exact prefix so a same-prefix decoy is never
-    counted; `verdict_fate_classify` returns each fate and comparison the
-    record's own vocabulary names, with a human `CHANGES_REQUESTED` submitted
-    after the verdict scoring `changes-requested-after-approval`/`divergence`
+    counted, derives `repo` from `pr_url` even for an event carrying no `repo`
+    field at all, and carries a pull request with two `APPROVE` verdicts'
+    `first_approve_ts` as the earlier one, not the later verdict's own `ts`;
+    `verdict_fate_classify` returns each fate and comparison the record's own
+    vocabulary names, with a human `CHANGES_REQUESTED` submitted after
+    `FIRST_APPROVE_TS` scoring `changes-requested-after-approval`/`divergence`
     even once the pull request later lands anyway, a bot's own
     `CHANGES_REQUESTED` never counting as a human's, and one submitted before
-    the verdict's own `ts` not counting as "after" it; `verdict_fate_summarize`
+    `FIRST_APPROVE_TS` not counting as "after" it; `verdict_fate_summarize`
     excludes `pending` from both the sample and the rate, and reports
     `insufficient-sample` rather than state a rate below the stated minimum.
     `test/verdict-fate-report.test.sh` passes: against a stubbed `gh`,

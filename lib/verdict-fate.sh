@@ -18,13 +18,21 @@
 # functions rather than recomputing the join itself (agent-ops#571 must
 # consume this record, not re-derive it).
 #
-# ## One entry per pull request: the *latest* verdict wins
+# ## One entry per pull request: the *latest* verdict wins, but not for every field
 #
 # A pull request can carry more than one `approver-verdict` event — a refusal
 # the Implementer then addresses, followed by an approval once the Reviewer
-# and Approver re-run. The entry this file reports is always the most recent
-# by `ts`: an early refusal that was later superseded is not "the" verdict
-# this pull request's eventual fate is judged against, only its last one is.
+# and Approver re-run, or an approval, a human `CHANGES_REQUESTED`, and a
+# second approval once the `review-feedback` source brings the pull request
+# back round. The entry this file reports is always the most recent by `ts`:
+# an early refusal that was later superseded is not "the" verdict this pull
+# request's eventual fate is judged against, only its last one is. The one
+# exception is `first_approve_ts` (`verdict_fate_latest_per_pr`): the window a
+# standing human `CHANGES_REQUESTED` is tested against is the *earliest*
+# `APPROVE`, not the latest verdict's own `ts` — otherwise a human review that
+# lands between two approvals reads as coming "before" the (later) one this
+# entry reports, and the divergence it represents never surfaces
+# (agent-ops#661).
 #
 # ## Verdict vocabulary vs GitHub's own
 #
@@ -95,11 +103,24 @@ verdict_fate_posted_review() {
 # `https://github.com/<REPO_PREFIX>/pull/` (case-insensitive), the same
 # exact-prefix match `scripts/autonomy-stage-report.sh`'s own
 # `crit_agent_approved_prs` already uses so a same-prefix decoy repo is never
-# counted.
+# counted. `repo` is always derived from `pr_url` rather than read off the
+# event's own `repo` field (docs/IMPLEMENTATION-PIPELINE-SPEC.md requirement
+# 33), so a pre-agent-ops#573 event carrying no `repo` at all reads the same
+# as a current one.
+#
+# Also carries `first_approve_ts` — the earliest `ts` among every surviving
+# `approver-verdict` for this pull request whose own posted review was
+# `APPROVE`, empty when there was none. A pull request can be approved,
+# re-reviewed, and approved again (`review-feedback` is this pipeline's own
+# way of bringing one back round after a human requests changes), and the
+# *first* approval is what a standing human `CHANGES_REQUESTED` must be
+# compared against — testing against the latest verdict's own `ts` would put
+# an earlier human review "before" it and hide the divergence entirely
+# (agent-ops#661). `verdict_fate_classify` is the reader.
 #
 # Prints a JSON array of `{pr_url, repo, tier, model, adjudication, verdict,
-# posted_review, ts}`, oldest-verdict information already collapsed away —
-# this is "one entry per pull request" (agent-ops#573).
+# posted_review, ts, first_approve_ts}`, oldest-verdict information already
+# collapsed away — this is "one entry per pull request" (agent-ops#573).
 verdict_fate_latest_per_pr() {
   local events_json="$1" prefix="${2:-}"
   jq -c --arg prefix "$prefix" '
@@ -113,22 +134,30 @@ verdict_fate_latest_per_pr() {
         elif .verdict == "refuse" then "REQUEST_CHANGES"
         else "" end
       end;
+    def repo_from_pr_url:
+      ((.pr_url // "")
+        | capture("^https://github\\.com/(?<r>[^/]+/[^/]+)/pull/[0-9]+"; "i").r) // "";
     [.[] | select(.event == "approver-verdict") | select((.pr_url // "") != "")]
     | (if $prefix == "" then . else
          [.[] | select(((.pr_url // "") | ascii_downcase)
                        | startswith(("https://github.com/" + $prefix + "/pull/") | ascii_downcase))]
        end)
-    | group_by(.pr_url)
-    | map(sort_by(.ts) | last)
     | map(. + {posted_review: posted_review})
     | map(select((if .posted == null then true else .posted end) == true and .posted_review != ""))
-    | map({pr_url, repo: (.repo // ""), tier: (.tier // ""), model: (.model // ""),
-           adjudication: (.adjudication // false), verdict, posted_review, ts})
+    | group_by(.pr_url)
+    | map(
+        (sort_by(.ts) | last) as $latest
+        | (($latest | repo_from_pr_url)) as $repo
+        | ((map(select(.posted_review == "APPROVE")) | map(.ts) | sort | first) // "") as $first_approve_ts
+        | {pr_url: $latest.pr_url, repo: $repo, tier: ($latest.tier // ""), model: ($latest.model // ""),
+           adjudication: ($latest.adjudication // false), verdict: $latest.verdict,
+           posted_review: $latest.posted_review, ts: $latest.ts, first_approve_ts: $first_approve_ts}
+      )
     | sort_by(.pr_url)
   ' <<<"$events_json"
 }
 
-# verdict_fate_classify POSTED_REVIEW ARMED PR_STATE REVIEWS_JSON VERDICT_TS
+# verdict_fate_classify POSTED_REVIEW ARMED PR_STATE REVIEWS_JSON FIRST_APPROVE_TS
 # Classify one pull request's eventual fate against its posted review.
 #
 #   POSTED_REVIEW  `APPROVE` or `REQUEST_CHANGES` (verdict_fate_latest_per_pr's
@@ -150,18 +179,27 @@ verdict_fate_latest_per_pr() {
 #                  answers the different question "does a human review block
 #                  this pull request right now" — the one the landing gate
 #                  asks.
-#   VERDICT_TS     the approver-verdict entry's own `ts` (ISO 8601) — a human
-#                  review submitted after this counts toward
-#                  `changes-requested-after-approval`.
+#   FIRST_APPROVE_TS  the earliest `ts` (ISO 8601) among every `approver-verdict`
+#                  for this pull request whose posted review was `APPROVE`
+#                  (`verdict_fate_latest_per_pr`'s own `first_approve_ts`) —
+#                  never the latest verdict's own `ts`. A pull request
+#                  approved at T0, sent a standing human `CHANGES_REQUESTED`
+#                  at T1, and re-approved at T2 after a `review-feedback`
+#                  round must still record that divergence: testing the
+#                  window against T2 would put T1 "before" it and silently
+#                  drop the signal this file exists to keep (agent-ops#661).
+#                  Empty when no verdict for this pull request was ever
+#                  posted `APPROVE` — harmless, since the window below is
+#                  only consulted when `POSTED_REVIEW` is `APPROVE`.
 #
 # Prints `{fate, comparison}` — `fate` one of `landed-by-script`,
 # `landed-by-human`, `closed-unmerged`, `still-open`,
 # `changes-requested-after-approval`; `comparison` one of `agreement`,
 # `divergence`, `pending`.
 verdict_fate_classify() {
-  local posted_review="${1:-}" armed="${2:-false}" pr_state="${3:-}" reviews_json="${4:-[]}" verdict_ts="${5:-}"
+  local posted_review="${1:-}" armed="${2:-false}" pr_state="${3:-}" reviews_json="${4:-[]}" first_approve_ts="${5:-}"
   jq -nc --arg pr "$posted_review" --arg armed "$armed" --arg state "$pr_state" \
-    --argjson reviews "$reviews_json" --arg ts "$verdict_ts" '
+    --argjson reviews "$reviews_json" --arg ts "$first_approve_ts" '
     ($state | ascii_downcase) as $s
     | ($armed == "true") as $armed_b
     | (if $s == "merged" then (if $armed_b then "landed-by-script" else "landed-by-human" end)

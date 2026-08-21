@@ -3,7 +3,7 @@
 # test/autonomy-stage-report.test.sh — regression test for
 # scripts/autonomy-stage-report.sh (issue #571, D18 WI of umbrella #402).
 #
-# Four repositories, one per scenario the acceptance criteria name:
+# Five repositories, one per scenario the acceptance criteria name:
 #
 #   o/human-repo      Stage 0 (`human`, the config default). Both its
 #                     criteria are mechanically checkable today (a baseline
@@ -37,6 +37,14 @@
 #                     left `not-met` on its five pull requests, which is
 #                     fine — this fixture exists to prove the divergence join
 #                     runs end to end, not to double as a full Stage 1 exit.
+#   o/partial-repo    Stage 1 (`agent-approves`), six agent-approved pull
+#                     requests: five read clean (merged, no standing
+#                     `CHANGES_REQUESTED` — a settled sample of 5, at the
+#                     minimum bar) and one 404s from the stub. `divergence`
+#                     must still read `unavailable`, never `met` — a partial
+#                     read cannot certify a zero divergence rate even once the
+#                     readable sample alone would clear the minimum
+#                     (agent-ops#661).
 #
 # `gh` is stubbed via `PATH`, the same technique test/mine-merge-history.test.sh
 # uses — reused here as-is because scripts/autonomy-stage-report.sh shells out
@@ -90,7 +98,8 @@ cat > "$tmp_dir/config.json" <<'EOF'
     {"slug": "o/human-repo", "sources": ["abandoned-drafts"]},
     {"slug": "o/approves-repo", "sources": ["abandoned-drafts"], "merge_autonomy": "agent-approves"},
     {"slug": "o/routine-repo", "sources": ["abandoned-drafts"], "merge_autonomy": "agent-merges-routine"},
-    {"slug": "o/divergence-repo", "sources": ["abandoned-drafts"], "merge_autonomy": "agent-approves"}
+    {"slug": "o/divergence-repo", "sources": ["abandoned-drafts"], "merge_autonomy": "agent-approves"},
+    {"slug": "o/partial-repo", "sources": ["abandoned-drafts"], "merge_autonomy": "agent-approves"}
   ],
   "state_dir": "/unused",
   "workspace_root": "/unused",
@@ -121,6 +130,12 @@ EOF
   # zero, not the criterion's `unavailable` fallback.
   for i in $(seq 1 5); do
     printf '{"ts":"2026-08-%02dT00:00:00Z","node":"n","event":"approver-verdict","pr_url":"https://github.com/o/divergence-repo/pull/%d","repo":"o/divergence-repo","tier":"medium","model":"claude-sonnet-5","verdict":"approve","refuse_streak":0,"adjudication":false,"posted":true}\n' "$i" "$i"
+  done
+  # o/partial-repo (agent-ops#661): 6 agent-approved pull requests, 5 of
+  # which read clean and one the stub 404s on — a partial read that must
+  # never certify the readable sample's own zero as `met`.
+  for i in $(seq 1 6); do
+    printf '{"ts":"2026-08-%02dT00:00:00Z","node":"n","event":"approver-verdict","pr_url":"https://github.com/o/partial-repo/pull/%d","repo":"o/partial-repo","tier":"medium","model":"claude-sonnet-5","verdict":"approve","refuse_streak":0,"adjudication":false,"posted":true}\n' "$i" "$i"
   done
 } > "$tmp_dir/state/log.jsonl"
 
@@ -186,6 +201,11 @@ case "$path" in
   # agreement, not the criterion's `unavailable` fallback.
   repos/o/divergence-repo/pulls/[0-9]*/reviews) body='[]' ;;
   repos/o/divergence-repo/pulls/[0-9]*) body='{"state":"closed","merged":true}' ;;
+  # agent-ops#661's partial-read fixture: pull/6 404s (a real, transient
+  # GitHub read failure), the other five read exactly like divergence-repo's.
+  repos/o/partial-repo/pulls/6*) echo "stub gh: 404" >&2; exit 1 ;;
+  repos/o/partial-repo/pulls/[0-9]*/reviews) body='[]' ;;
+  repos/o/partial-repo/pulls/[0-9]*) body='{"state":"closed","merged":true}' ;;
   *) echo "stub gh: unexpected path: $path" >&2; exit 1 ;;
 esac
 jq -r "$filter" <<<"$body"
@@ -196,6 +216,7 @@ export PATH="$tmp_dir/bin:$PATH"
 
 out="$("$REPORT" --config "$tmp_dir/config.json" \
   --repo o/human-repo --repo o/approves-repo --repo o/routine-repo --repo o/divergence-repo \
+  --repo o/partial-repo \
   --label agent-test-label \
   --reviews-dir "$tmp_dir/reviews" \
   --state-dir "$tmp_dir/state" --peers-dir "$tmp_dir/peers" \
@@ -205,7 +226,7 @@ assert_eq "a clean run exits 0" "0" "$rc"
 assert_eq "  ... and stderr is silent" "" "$(cat "$tmp_dir/run.err")"
 
 raw_json="$(awk '/```json/{flag=1;next}/```/{flag=0}flag' <<<"$out")"
-assert_eq "raw JSON parses" "4" "$(jq -r '.repos | length' <<<"$raw_json")"
+assert_eq "raw JSON parses" "5" "$(jq -r '.repos | length' <<<"$raw_json")"
 
 # --- Scenario 1: o/human-repo (Stage 0) — meets both its bars --------------
 human="$(jq -c '.repos[] | select(.slug == "o/human-repo")' <<<"$raw_json")"
@@ -253,6 +274,16 @@ assert_eq "divergence-repo: divergence criterion reads met, backed by a real sam
   "met" "$(jq -r '.criteria[] | select(.id == "divergence") | .status' <<<"$divergence")"
 assert_contains "  ... and states the sample it is backed by" \
   "$(jq -r '.criteria[] | select(.id == "divergence") | .measured' <<<"$divergence")" "5 agreement, 0 divergence"
+
+# --- Scenario 5: o/partial-repo (Stage 1) — a partial read never certifies
+#     a zero (agent-ops#661) ---------------------------------------------------
+partial="$(jq -c '.repos[] | select(.slug == "o/partial-repo")' <<<"$raw_json")"
+assert_eq "partial-repo: divergence unavailable, never met, over a partial read" \
+  "unavailable" "$(jq -r '.criteria[] | select(.id == "divergence") | .status' <<<"$partial")"
+assert_contains "  ... names the settled, sample-clearing zero it found" \
+  "$(jq -r '.criteria[] | select(.id == "divergence") | .measured' <<<"$partial")" "5 agreement, 0 divergence"
+assert_contains "  ... and the pull request it could not read" \
+  "$(jq -r '.criteria[] | select(.id == "divergence") | .measured' <<<"$partial")" "1 pull request(s) unreadable"
 
 assert_contains "the Markdown body cites the stage-table source" "$out" "agent-ops#402"
 assert_contains "  ... and includes the divergence-repo's own section" "$out" "o/divergence-repo"

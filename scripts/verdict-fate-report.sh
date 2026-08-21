@@ -214,7 +214,7 @@ evaluate_repo() {
     fi
     state="$(jq -r '.state' <<<"$state_json")"
     classified="$(verdict_fate_classify "$posted_review" "$armed" "$state" \
-      "$(jq -c '.reviews' <<<"$reviews_json")" "$(jq -r '.ts' <<<"$entry")")"
+      "$(jq -c '.reviews' <<<"$reviews_json")" "$(jq -r '.first_approve_ts' <<<"$entry")")"
     classified_list="$(jq -c --argjson e "$entry" --argjson c "$classified" '. + [$e + $c]' <<<"$classified_list")"
   done < <(jq -c '.[]' <<<"$entries")
 

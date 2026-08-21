@@ -16,10 +16,18 @@
 #     escalate/unrecognised verdict with no `posted_review` at all) while
 #     defaulting a pre-agent-ops#573 event with no `posted` field at all to
 #     `true` (the best available assumption for history this file cannot
-#     re-observe); and matches a repo prefix exactly, the same
+#     re-observe); matches a repo prefix exactly, the same
 #     no-substring-match discipline `scripts/autonomy-stage-report.sh`'s own
 #     `crit_agent_approved_prs` already applies (a `o/repo-extra` decoy must
-#     never count toward `o/repo`).
+#     never count toward `o/repo`); derives `repo` from `pr_url` rather than
+#     trusting the event's own field (docs/IMPLEMENTATION-PIPELINE-SPEC.md
+#     requirement 33), so a pre-agent-ops#573 event with no `repo` field at
+#     all still reports one; and carries `first_approve_ts` as the *earliest*
+#     `ts` among that pull request's own APPROVE verdicts, not the latest
+#     verdict's `ts` — a pull request approved, sent a standing human
+#     `CHANGES_REQUESTED`, and re-approved must still surface that first
+#     approval's timestamp so the divergence is never silently dropped
+#     (agent-ops#661).
 #   - `verdict_fate_classify` covers every fate/comparison pair the issue's
 #     own vocabulary names: an APPROVE landing by the Script or by a human
 #     (agreement), an APPROVE closing unmerged (divergence), an APPROVE with
@@ -80,7 +88,9 @@ EVENTS='[
   {"ts":"2026-08-01T00:00:00Z","event":"approver-verdict","pr_url":"https://github.com/o/repo/pull/2","repo":"o/repo","tier":"medium","model":"m1","verdict":"approve","adjudication":false,"posted":false},
   {"ts":"2026-08-01T00:00:00Z","event":"approver-verdict","pr_url":"https://github.com/o/repo/pull/3","repo":"o/repo","tier":"low","model":"","verdict":"maybe","adjudication":false,"posted":true},
   {"ts":"2026-08-01T00:00:00Z","event":"approver-verdict","pr_url":"https://github.com/o/repo-extra/pull/9","repo":"o/repo-extra","tier":"medium","model":"m1","verdict":"approve","adjudication":false,"posted":true},
-  {"ts":"2026-08-05T00:00:00Z","event":"approver-verdict","pr_url":"https://github.com/o/repo/pull/4","tier":"medium","verdict":"approve","adjudication":false}
+  {"ts":"2026-08-05T00:00:00Z","event":"approver-verdict","pr_url":"https://github.com/o/repo/pull/4","tier":"medium","verdict":"approve","adjudication":false},
+  {"ts":"2026-08-06T00:00:00Z","event":"approver-verdict","pr_url":"https://github.com/o/repo/pull/5","repo":"o/repo","tier":"medium","model":"m1","verdict":"approve","adjudication":false,"posted":true},
+  {"ts":"2026-08-08T00:00:00Z","event":"approver-verdict","pr_url":"https://github.com/o/repo/pull/5","repo":"o/repo","tier":"medium","model":"m1","verdict":"approve","adjudication":false,"posted":true}
 ]'
 
 latest="$(verdict_fate_latest_per_pr "$EVENTS" "o/repo")"
@@ -96,12 +106,22 @@ assert_eq "o/repo-extra's decoy is excluded by the exact-prefix match" \
   "" "$(jq -r '.[] | select(.repo == "o/repo-extra") | .pr_url' <<<"$latest")"
 assert_eq "pull/4, with no explicit posted field, defaults to true and is included" \
   "APPROVE" "$(jq -r '.[] | select(.pr_url | endswith("/4")) | .posted_review' <<<"$latest")"
-assert_eq "exactly two surviving entries (1, and 4 defaulting to posted:true; 2 and 3 excluded)" \
-  "2" "$(jq 'length' <<<"$latest")"
+assert_eq "pull/4's repo is derived from pr_url, since the event carries no repo field at all" \
+  "o/repo" "$(jq -r '.[] | select(.pr_url | endswith("/4")) | .repo' <<<"$latest")"
+assert_eq "pull/5 collapses two APPROVE verdicts to its later ts" \
+  "2026-08-08T00:00:00Z" "$(jq -r '.[] | select(.pr_url | endswith("/5")) | .ts' <<<"$latest")"
+assert_eq "  ... but first_approve_ts is the earlier APPROVE, not the latest verdict's own ts" \
+  "2026-08-06T00:00:00Z" "$(jq -r '.[] | select(.pr_url | endswith("/5")) | .first_approve_ts' <<<"$latest")"
+assert_eq "pull/1's first_approve_ts is its own single APPROVE (no earlier one to prefer)" \
+  "2026-08-02T00:00:00Z" "$(jq -r '.[] | select(.pr_url | endswith("/1")) | .first_approve_ts' <<<"$latest")"
+assert_eq "exactly three surviving entries (1, 4 defaulting to posted:true, and 5; 2 and 3 excluded)" \
+  "3" "$(jq 'length' <<<"$latest")"
 
 no_prefix="$(verdict_fate_latest_per_pr "$EVENTS" "")"
 assert_eq "no prefix filter includes the decoy repo too" \
-  "3" "$(jq 'length' <<<"$no_prefix")"
+  "4" "$(jq 'length' <<<"$no_prefix")"
+assert_eq "the decoy repo's own repo field is still derived from its own pr_url" \
+  "o/repo-extra" "$(jq -r '.[] | select(.pr_url | endswith("/9")) | .repo' <<<"$no_prefix")"
 
 # --- verdict_fate_classify ---------------------------------------------------
 
