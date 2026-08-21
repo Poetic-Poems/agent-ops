@@ -102,9 +102,14 @@
 # precisely the self-modifying case risk register item 1 names, and the
 # "adding one line is cheap, forgetting one is not" argument above applies
 # to them unchanged.
-# Protected paths refuse arming at `agent-merges-all` too — relaxing that
-# for the critical tier is WI-12's job (Stage 4, the cool-off), not this
-# one's.
+# Protected paths refuse arming at every level below `agent-merges-all`
+# unconditionally. At `agent-merges-all` a hit is deliberately relaxed to
+# `eligible` by `landing_eligible` itself, and the decision deferred to
+# `landing_protected_path_controls_ok` — D18 WI-12's own two compensating
+# controls (§7 risk 1): the critical Approver tier, forced regardless of
+# complexity (`run_approver_stage`, agent-cycle.sh), and a `landing_cool_off_hours`
+# wait since that approval's own timestamp, both re-read fresh at the moment
+# of arming, never trusted from this round alone.
 #
 # ## The `SOURCE` comparison is a plain string, never a banded one
 #
@@ -326,7 +331,20 @@ landing_eligible() {
   hit_paths="$(landing_protected_paths_hit "$slug" "$number")"; hit_rc=$?
   case "$hit_rc" in
     0)
-      printf 'ineligible:touches protected path(s): %s' "$(paste -sd, - <<<"$hit_paths")"
+      # D18 WI-12 (Stage 4, agent-ops#415): a protected path stays ineligible
+      # at every level below `agent-merges-all` exactly as before. At
+      # `agent-merges-all` this is deliberately *not* the final word — the
+      # compensating controls §7 risk 1 requires (the critical Approver tier,
+      # the cool-off since that approval) are gates only `_landing_stage_attempt`
+      # can check, since they need facts (the tier an already-standing review
+      # ran at, its own submitted_at) this function is never handed. Reporting
+      # `eligible` here defers the decision to `landing_protected_path_controls_ok`,
+      # never skips it.
+      if [[ "$level" == "agent-merges-all" ]]; then
+        printf 'eligible'
+      else
+        printf 'ineligible:touches protected path(s): %s' "$(paste -sd, - <<<"$hit_paths")"
+      fi
       return 0
       ;;
     2)
@@ -336,6 +354,113 @@ landing_eligible() {
   esac
 
   printf 'eligible'
+}
+
+# landing_cool_off_effective_hours CONFIG_JSON SLUG
+# The D18 WI-12 protected-path cool-off for SLUG: its own `repos[]` override
+# when present, else the top-level `landing_cool_off_hours` key, else 24 —
+# the same precedence `merge_budget_effective_cap` and
+# `merge_autonomy_configured_level` both already use. `0` at either level
+# means no wait, and is returned as-is, never treated as "unset". Accepts a
+# non-negative integer or decimal; anything else falls through exactly as a
+# missing key does.
+landing_cool_off_effective_hours() {
+  local config_json="$1" slug="$2" repo_hours top_hours
+  repo_hours="$(jq -r --arg slug "$slug" \
+    '(.repos // [])[] | select(.slug == $slug) | .landing_cool_off_hours // empty' \
+    <<<"$config_json" 2>/dev/null | head -1)"
+  if [[ "$repo_hours" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    printf '%s' "$repo_hours"
+    return 0
+  fi
+  top_hours="$(jq -r '.landing_cool_off_hours // empty' <<<"$config_json" 2>/dev/null)"
+  [[ "$top_hours" =~ ^[0-9]+(\.[0-9]+)?$ ]] || top_hours=24
+  printf '%s' "$top_hours"
+}
+
+# landing_cool_off_remaining_hours SUBMITTED_AT COOL_OFF_HOURS [NOW_ISO]
+# Hours still remaining before the D18 WI-12 cool-off since SUBMITTED_AT
+# (ISO 8601, the Approver's standing review's own `submitted_at`) elapses,
+# one decimal place; `0` once it already has. Empty — never `0` — on
+# unparseable input (a bad SUBMITTED_AT or a non-numeric COOL_OFF_HOURS): the
+# caller must treat that as "could not establish", not as "elapsed". NOW_ISO
+# defaults to the current time and exists so a test can pin the window
+# without waiting for one — the same convention `merge_budget_window_status`
+# uses.
+landing_cool_off_remaining_hours() {
+  local submitted_at="${1:-}" cool_off_hours="${2:-}" now_iso="${3:-}"
+  [[ -n "$now_iso" ]] || now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  [[ "$cool_off_hours" =~ ^[0-9]+(\.[0-9]+)?$ ]] || return 0
+  jq -nr --arg at "$submitted_at" --arg now "$now_iso" --argjson hrs "$cool_off_hours" '
+    (($at | fromdateiso8601) as $a
+     | ($now | fromdateiso8601) as $n
+     | (($a + ($hrs * 3600) - $n) / 3600)
+     | if . < 0 then 0 else ((. * 10 | round) / 10) end)
+  ' 2>/dev/null
+}
+
+# landing_protected_path_controls_ok CONFIG_JSON SLUG NUMBER TIER SUBMITTED_AT [NOW_ISO]
+# The D18 WI-12 Stage 4 compensating controls (§7 risk 1) a protected-path
+# pull request at `agent-merges-all` must additionally clear before
+# `_landing_stage_attempt` arms it, once `landing_eligible` has already
+# deferred the decision here. Print `ok`, `ineligible:<reason>` or
+# `unknown:<reason>` — never a pass on anything this cannot establish.
+#
+# Re-reads `landing_protected_paths_hit` itself rather than trust the
+# caller's own earlier read (never more than one function call old, the same
+# discipline every other landing gate follows): a pull request not actually
+# touching a protected path is `ok` immediately, since neither control below
+# applies to it. TIER and SUBMITTED_AT are the caller's own facts about the
+# Approver's already-*standing* review — never re-derived here: TIER is
+# either `run_approver_stage`'s own in-process fact (the round that first
+# approved this pull request) or read back from the fleet log's own
+# `approver-verdict` event (`landing_retry_tier`, a re-arm on a later cycle);
+# SUBMITTED_AT is `landing_approver_standing_review_at`'s own timestamp,
+# already fetched fresh by the same gate that confirmed the review is
+# standing `APPROVED`. Only `critical` satisfies the tier control — an
+# adjudication settled by a refuse-streak counts exactly the same as an
+# ordinary engagement forced critical by the protected path itself, since
+# both mean the pull request actually got the critical-tier scrutiny Stage 4
+# requires, whichever cause `run_approver_stage`'s own `critical_reason`
+# names for the log.
+landing_protected_path_controls_ok() {
+  local config_json="$1" slug="$2" number="$3" tier="${4:-}" submitted_at="${5:-}" now_iso="${6:-}"
+  local hit_rc=0
+  landing_protected_paths_hit "$slug" "$number" >/dev/null 2>&1 || hit_rc=$?
+  case "$hit_rc" in
+    1)
+      printf 'ok'
+      return 0
+      ;;
+    0) ;;
+    *)
+      printf 'unknown:could not re-establish %s#%s'\''s changed-file list for the protected-path controls' "$slug" "$number"
+      return 0
+      ;;
+  esac
+
+  if [[ "$tier" != "critical" ]]; then
+    printf 'ineligible:touches a protected path at agent-merges-all but the approving engagement did not run at the critical tier (tier: %s)' "${tier:-empty}"
+    return 0
+  fi
+  if [[ -z "$submitted_at" ]]; then
+    printf 'ineligible:touches a protected path at agent-merges-all but no approval timestamp could be established for the cool-off'
+    return 0
+  fi
+
+  local cool_off_hours remaining
+  cool_off_hours="$(landing_cool_off_effective_hours "$config_json" "$slug")"
+  remaining="$(landing_cool_off_remaining_hours "$submitted_at" "$cool_off_hours" "$now_iso")"
+  if [[ -z "$remaining" ]]; then
+    printf 'unknown:could not compute the protected-path cool-off remaining time for %s#%s' "$slug" "$number"
+    return 0
+  fi
+  if awk -v r="$remaining" 'BEGIN { exit !(r > 0) }'; then
+    printf 'ineligible:protected-path cool-off has %sh remaining (approved %s, landing_cool_off_hours=%s)' \
+      "$remaining" "$submitted_at" "$cool_off_hours"
+    return 0
+  fi
+  printf 'ok'
 }
 
 # landing_approver_standing_review SLUG NUMBER LOGIN
@@ -373,6 +498,33 @@ landing_approver_standing_review() {
   jq -s -r --arg l "$login" '
     [.[] | select(.login == $l and (.state == "APPROVED" or .state == "CHANGES_REQUESTED"))]
     | sort_by(.at) | last | (.state // "")
+  ' <<<"$lines" 2>/dev/null || return 1
+}
+
+# landing_approver_standing_review_at SLUG NUMBER LOGIN
+# `landing_approver_standing_review`'s own answer, plus the standing
+# review's own `submitted_at` — printed as `STATE<TAB>AT` (empty AT when
+# there is no standing review to have one), the same compound-return idiom
+# `merge_budget_window_status` uses. D18 WI-12 (agent-ops#415)'s protected-
+# path cool-off is measured from exactly this timestamp — GitHub's own
+# record of when the review it is gating on was actually submitted, never
+# anything this process remembers — so gate 4 of `_landing_stage_attempt`
+# reads it here instead of `landing_approver_standing_review` once
+# `merge_autonomy_effective_level` is `agent-merges-all`, at no extra `gh`
+# call: the same one reviews-list read either function makes. Returns
+# non-zero, printing nothing, under the same conditions
+# `landing_approver_standing_review` does — an unreadable reviews list is
+# never read as "not approved, and no timestamp".
+landing_approver_standing_review_at() {
+  local slug="$1" number="${2:-}" login="${3:-}" gh_bin="${LANDING_GH:-gh}" lines
+  [[ -n "$slug" && "$number" =~ ^[0-9]+$ && -n "$login" ]] || return 1
+  lines="$("$gh_bin" api "repos/$slug/pulls/$number/reviews" --paginate \
+            --jq '.[] | select(.submitted_at != null) | {login: .user.login, at: .submitted_at, state: .state}' \
+            2>/dev/null)" || return 1
+  jq -s -r --arg l "$login" '
+    [.[] | select(.login == $l and (.state == "APPROVED" or .state == "CHANGES_REQUESTED"))]
+    | sort_by(.at) | last
+    | ((.state // "") + "\t" + (.at // ""))
   ' <<<"$lines" 2>/dev/null || return 1
 }
 
@@ -517,6 +669,38 @@ landing_retry_source() {
   elif [[ -s "$src" ]]; then
     out="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null \
       | jq -rs --arg repo "$repo" --arg branch "$branch" "$jq_prog" 2>/dev/null || true)"
+  fi
+  printf '%s' "$out"
+}
+
+# landing_retry_tier PR_URL [LOG_FILE]
+# Print the tier (`trivial`, `standard`, `high` or `critical`) of the most
+# recent `approver-verdict` event for PR_URL — the same "fixed at the
+# moment, read back from the fleet log" reasoning `landing_retry_source`
+# already applies to a work order's `source`, for the same reason: TIER is
+# `run_approver_stage`'s own in-process fact on the round that first
+# approved a pull request (D18 WI-12, agent-ops#415), and the 2.1e
+# landing-retry sweep re-arms a pull request on a later cycle, outside that
+# round, with no in-process fact to read. Keyed on `pr_url` rather than
+# repo/branch, matching the `approver-verdict` event's own shape — a pull
+# request's tier is fixed by that round's engagement and never mutates
+# afterwards, so the log's record is exactly as current as a fresh read
+# would be. Several `approver-verdict` events for the same pull request keep
+# only the most recent. Empty on no match, an unreadable log, or nothing to
+# read — `landing_protected_path_controls_ok` must never guess a tier a
+# protected-path pull request never actually got.
+landing_retry_tier() {
+  local pr_url="$1" src="${2:--}" out=""
+  # shellcheck disable=SC2016  # $pr_url is jq's own --arg variable, not the shell's.
+  local jq_prog='
+    [ .[] | select(.event == "approver-verdict" and (.pr_url // "") == $u) ]
+    | sort_by(.ts) | last | .tier // empty'
+  if [[ "$src" == "-" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' 2>/dev/null \
+      | jq -rs --arg u "$pr_url" "$jq_prog" 2>/dev/null || true)"
+  elif [[ -s "$src" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null \
+      | jq -rs --arg u "$pr_url" "$jq_prog" 2>/dev/null || true)"
   fi
   printf '%s' "$out"
 }

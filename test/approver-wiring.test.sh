@@ -174,6 +174,18 @@ approver_token_identity_login() { printf 'pullwright-approver[bot]'; }
 approver_refuse_streak() { printf '%s' "$STREAK"; }
 approver_token_get() { printf 'a-minted-token'; }
 approver_prior_refusal_bodies() { printf '### earlier\n\nthe first refusal'; }
+# D18 WI-12 (agent-ops#415): the one classifier a protected-path engagement
+# reads to force the critical tier — PROTECTED_RC defaults to 1 (no
+# protected path touched), so every case below this file already had keeps
+# its previous tier/model assertions unless a case sets it explicitly.
+landing_protected_paths_hit() {
+  printf '%s\n' "$*" >>"$T/protected_calls"
+  if [[ "${PROTECTED_RC:-1}" == "0" ]]; then
+    printf '%s\n' "${PROTECTED_PATH:-lib/landing.sh}"
+    return 0
+  fi
+  return "${PROTECTED_RC:-1}"
+}
 stage_prompt_text() { printf '%s\n' "${4-}" >>"$T/prompt_override_args"; printf 'THE APPROVER PROMPT'; }
 stage_budget_apply() { :; }
 stage_watchdog_warning() { printf ''; }
@@ -245,7 +257,7 @@ run_case() {
   : >"$tmp_dir/events"; : >"$tmp_dir/posts"
   : >"$tmp_dir/escalations"; : >"$tmp_dir/launches"
   : >"$tmp_dir/resolved_complexity"; : >"$tmp_dir/prompt_override_args"
-  : >"$tmp_dir/mal_calls"
+  : >"$tmp_dir/mal_calls"; : >"$tmp_dir/protected_calls"
   rm -rf "${tmp_dir:?}/cycle" "${tmp_dir:?}/clone" "${tmp_dir:?}/state"
   env -i PATH="$PATH" HOME="$HOME" \
     T="$tmp_dir" SCRIPT_DIR="$SCRIPT_DIR" PR_URL="$URL" \
@@ -257,6 +269,7 @@ run_case() {
   printf '%s' "$?"
 }
 
+protected_calls() { cat "$tmp_dir/protected_calls"; }
 mal_calls() { cat "$tmp_dir/mal_calls"; }
 posts() { cat "$tmp_dir/posts"; }
 launches() { cat "$tmp_dir/launches"; }
@@ -318,6 +331,8 @@ assert_eq "  ... even for complexity:low, which alone would have skipped the mod
   "1" "$(count launches)"
 assert_eq "  ... logged as an adjudication" 'true' "$(jq -c '.adjudication' <<<"$(verdict_event)")"
 assert_eq "  ... carrying the streak it was chosen by" '2' "$(jq -c '.refuse_streak' <<<"$(verdict_event)")"
+assert_eq "  ... and names refuse-streak as the critical_reason, not protected-path" \
+  '"refuse-streak"' "$(jq -c '.critical_reason' <<<"$(verdict_event)")"
 assert_eq "  ... an escalate verdict posts no review" "0" "$(count posts)"
 assert_eq "  ... and raises the escalation instead" "1" "$(count escalations)"
 assert_contains "  ... carrying the adjudication's own reasons" \
@@ -396,6 +411,49 @@ assert_eq "an unreadable post-review label leaves the pre-Reviewer grade untouch
   "medium" "$(resolved_complexity)"
 assert_eq "  ... and still launches approver_model_default" \
   "model-default" "$(launches)"
+
+# --- D18 WI-12 (agent-ops#415): a protected path forces the critical tier,
+# regardless of complexity — including complexity:low, which alone would
+# have short-circuited to a deterministic approval with no model call at all.
+
+run_case agent-approves low 0 '{"verdict":"approve","reasons":["read it, protected but fine"]}' \
+  PROTECTED_RC=0 >/dev/null
+assert_eq "a protected-path complexity:low PR launches a real model engagement" \
+  "model-critical" "$(launches)"
+assert_eq "  ... rather than the deterministic no-model approval" "1" "$(count launches)"
+assert_eq "  ... logged as the critical tier" '"critical"' "$(jq -c '.tier' <<<"$(verdict_event)")"
+assert_eq "  ... naming protected-path as the critical_reason" \
+  '"protected-path"' "$(jq -c '.critical_reason' <<<"$(verdict_event)")"
+assert_eq "  ... and not an adjudication (no refuse streak drove this)" \
+  'false' "$(jq -c '.adjudication' <<<"$(verdict_event)")"
+assert_contains "  ... having asked the one classifier, landing_protected_paths_hit" \
+  "Poetic-Poems/agent-ops" "$(protected_calls)"
+
+run_case agent-approves medium 0 '{"verdict":"approve","reasons":["fine, and protected"]}' \
+  PROTECTED_RC=0 >/dev/null
+assert_eq "a protected-path complexity:medium PR still routes to critical, not standard" \
+  "model-critical" "$(launches)"
+assert_eq "  ... logged as the critical tier" '"critical"' "$(jq -c '.tier' <<<"$(verdict_event)")"
+
+# Fail-closed the opposite way from landing_eligible: an unreadable changed-
+# file list (exit 2) routes *to* critical, the more expensive tier, never
+# away from it.
+run_case agent-approves low 0 '{"verdict":"approve","reasons":["fine"]}' \
+  PROTECTED_RC=2 >/dev/null
+assert_eq "an unreadable changed-file list (exit 2) also forces the critical tier" \
+  "model-critical" "$(launches)"
+assert_eq "  ... logged as the critical tier" '"critical"' "$(jq -c '.tier' <<<"$(verdict_event)")"
+
+# An untouched protected path (the PROTECTED_RC=1 default every case above
+# this block already relied on) leaves every tier exactly as before —
+# regression-pinned directly rather than only implied by every other case's
+# default.
+run_case agent-approves low 0 '' >/dev/null
+assert_eq "no protected path, complexity:low: still the deterministic trivial tier" \
+  "0" "$(count launches)"
+assert_eq "  ... logged as trivial, not critical" '"trivial"' "$(jq -c '.tier' <<<"$(verdict_event)")"
+assert_eq "  ... with no critical_reason at all" \
+  "null" "$(jq -c '.critical_reason // null' <<<"$(verdict_event)")"
 
 echo
 if (( failures == 0 )); then

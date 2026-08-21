@@ -131,6 +131,11 @@
               "$ref": "#/$defs/landingSourceToken"
             }
           },
+          "landing_cool_off_hours": {
+            "description": "Override for the top-level landing_cool_off_hours key, for this repository only. Absent means this repository follows the top-level key.",
+            "type": "number",
+            "minimum": 0
+          },
           "escalation_autonomy": {
             "description": "Override for the top-level escalation_autonomy key, for this repository only. Absent means this repository follows the top-level key.",
             "type": "string",
@@ -163,6 +168,7 @@
           "A repo entry may also carry `merge_autonomy` — the per-repo override of the top-level key of the same name, on the same precedence: this entry wins when present, the top-level key otherwise. Omit it and the repository follows the fleet-wide default.",
           "A repo entry may also carry `merge_budget_per_day` — the per-repo override of the top-level key of the same name, on the same precedence. Omit it and the repository follows the fleet-wide default.",
           "A repo entry may also carry `merge_autonomy_routine_sources` — the per-repo override of the top-level key of the same name, on the same precedence. Omit it and the repository follows the fleet-wide default.",
+          "A repo entry may also carry `landing_cool_off_hours` — the per-repo override of the top-level key of the same name, on the same precedence. Omit it and the repository follows the fleet-wide default.",
           "A repo entry may also carry `escalation_autonomy` — the per-repo override of the top-level key of the same name, on the same precedence. Omit it and the repository follows the fleet-wide default.",
           "Every optional key goes on the repo's own entry, beside `slug` and `sources`:",
           {
@@ -180,6 +186,7 @@
           "A repo entry may also carry `merge_autonomy` \u2014 the per-repository override of the top-level key of the same name (D18, requirement 2.3b), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
           "A repo entry may also carry `merge_budget_per_day` \u2014 the per-repository override of the top-level key of the same name (D18, requirement 2.3c), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
           "A repo entry may also carry `merge_autonomy_routine_sources` \u2014 the per-repository override of the top-level key of the same name (D18 WI-7, requirement 8d), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
+          "A repo entry may also carry `landing_cool_off_hours` \u2014 the per-repository override of the top-level key of the same name (D18 WI-12, agent-ops#415), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
           "A repo entry may also carry `escalation_autonomy` \u2014 the per-repository override of the top-level key of the same name (D18, agent-ops#627), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
           "Every optional key sits on the repository's own entry, beside `slug` and `sources`:",
           {
@@ -714,6 +721,20 @@
         "readme": "D18 WI-7: which work sources may be armed automatically at `agent-merges-routine` and above — a pull request also needs `complexity:low`/`medium` and to touch no protected path. A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Takes `landingSourceToken`s, not the `sourceToken`s `repos[].sources` takes: issue work is the plain `issues` here, never `issues:<band>`, because banding is spent at gathering time and a finished work order carries the bare word.",
         "spec": "D18 WI-7 (requirement 8d, `lib/landing.sh`'s `landing_eligible`): which work sources may be armed automatically at `agent-merges-routine` and above, fleet-wide default; a `repos[]` entry's own `merge_autonomy_routine_sources` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). An eligible pull request also needs `complexity:low`/`medium` and `landing_protected_paths_hit` to report no protected path touched. Matched against a pull request's own `source` by exact string equality, over the `landingSourceToken` vocabulary rather than `repos[].sources`' `sourceToken` one: `scripts/gather-issues.sh` collapses all four bands to `\"source\": \"issues\"`, so `issues` is the only spelling that can match an issue work order, and the four banded spellings are rejected by the schema outright (agent-ops#558). Until that fix the two were one shared enum, which offered only the spellings landing can never match — and `scripts/doctor.sh`'s banded-token warning (agent-ops#519) named a remedy, `issues`, that the same enum refused. `scripts/doctor.sh` warns when a repository's own effective list names a source that repository's `sources` never gathers, reading a bare `issues` as satisfied by any `issues:<band>` the repository gathers.",
         "value": "`[\"register-hygiene\", \"tech-debt\"]`"
+      }
+    },
+    "landing_cool_off_hours": {
+      "description": "D18 WI-12 (Stage 4, agent-ops#415, docs/reviews/2026-08-14-autonomy-investigation.md §7 risk 1): the wait between the Approver's own approval of a protected-path pull request and the arming step landing it, at `agent-merges-all` only — a whole fleet-day of the pipeline's own behaviour observed under the unchanged gate before a gate-code change can land unattended. Measured from the standing review's own `submitted_at` (`lib/landing.sh`'s `landing_approver_standing_review_at`), re-read fresh at every arming attempt, never cached; a fresh push that resets the standing review restarts the wait. A `repos[]` entry's own `landing_cool_off_hours` overrides this key for that repository alone, on the same precedence `merge_autonomy` and `merge_budget_per_day` use. `0` disables the wait entirely. Only ever consulted for a pull request that already cleared `landing_protected_path_controls_ok`'s other control — the approving engagement having run at the critical Approver tier; at every level below `agent-merges-all` a protected path stays ineligible regardless of this key.",
+      "type": "number",
+      "minimum": 0,
+      "default": 24,
+      "x-docs": {
+        "readme": "D18 WI-12 (Stage 4): the wait, in hours, between the Approver's own approval of a protected-path pull request and the arming step landing it — only at `agent-merges-all`, and only alongside the critical-tier control. Measured from the standing review's own timestamp, re-read fresh every cycle; a fresh push restarts it. A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). `0` disables the wait.",
+        "spec": "D18 WI-12 (Stage 4, §7 risk 1, `lib/landing.sh`'s `landing_protected_path_controls_ok`/`landing_cool_off_effective_hours`/`landing_cool_off_remaining_hours`): the wait between the Approver's own approval of a protected-path pull request and the arming step (requirement 8d) landing it, fleet-wide default; a `repos[]` entry's own `landing_cool_off_hours` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). Binds only at `agent-merges-all`, alongside the critical-tier control (`approver_model_critical`, forced regardless of complexity by a protected-path hit) — both compensating controls Stage 4 requires before a protected-path pull request is eligible at all. Measured from `landing_approver_standing_review_at`'s own `submitted_at`, re-read fresh at every arming attempt; a dismissed-and-re-approved review restarts the wait, since it is a different standing review. `0` disables the wait.",
+        "value": {
+          "readme": "`24`",
+          "spec": "24 h"
+        }
       }
     },
     "approver_app_id": {

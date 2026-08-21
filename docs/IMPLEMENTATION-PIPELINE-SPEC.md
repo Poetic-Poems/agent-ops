@@ -654,6 +654,7 @@ and the schema must carry every one of them.
 | `merge_autonomy` | `human` | The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id` or no `approver_model_default`, a level of `agent-merges-routine` or above while the repository's own default-branch ruleset still requires code-owner review...[continued below](#extended-notes-merge_autonomy) |
 | `merge_budget_per_day` | `8` | D18's spend governor (§5.4, `lib/merge-budget.sh`, requirement 2.3c): a rolling-24-hour cap on pull requests this pipeline may land in one repository, fleet-wide default; a `repos[]` entry's own `merge_budget_per_day` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). `0` means unlimited and skips the count entirely. `merge_budget_decide` answers `arm` (under cap), `hold` (cap reached — approved but not armed, the backlog visible) or...[continued below](#extended-notes-merge_budget_per_day) |
 | `merge_autonomy_routine_sources` | `["register-hygiene", "tech-debt"]` | D18 WI-7 (requirement 8d, `lib/landing.sh`'s `landing_eligible`): which work sources may be armed automatically at `agent-merges-routine` and above, fleet-wide default; a `repos[]` entry's own `merge_autonomy_routine_sources` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). An eligible pull request also needs `complexity:low`/`medium` and `landing_protected_paths_hit` to report no protected path touched. Matched against a pull...[continued below](#extended-notes-merge_autonomy_routine_sources) |
+| `landing_cool_off_hours` | 24 h | D18 WI-12 (Stage 4, §7 risk 1, `lib/landing.sh`'s `landing_protected_path_controls_ok`/`landing_cool_off_effective_hours`/`landing_cool_off_remaining_hours`): the wait between the Approver's own approval of a protected-path pull request and the arming step (requirement 8d) landing it, fleet-wide default; a `repos[]` entry's own `landing_cool_off_hours` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). Binds only at...[continued below](#extended-notes-landing_cool_off_hours) |
 | `approver_app_id` | *(unset)* | The Approver GitHub App's id for this installation (§5.3) — required for any `merge_autonomy` level above `human`, and reconciled by `scripts/doctor.sh` against the `PULLWRIGHT_APPROVER_APP_ID` environment the token wrapper (requirement 14b) mints from: a set pair that differs is a doctor `fail`. Deliberately one fleet-wide scalar string with no per-repo override — see the Design decisions entry on this key's shape. |
 | `crash_loop_after` | `4` | Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue (requirement 2.7) — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. At four nodes an hourly deterministic failure crosses this within about an hour. `0` (or absent) disables both checks. |
 | `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where requirement 2.7's escalation issues are filed — the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks. |
@@ -722,6 +723,8 @@ A repo entry may also carry `merge_autonomy` — the per-repository override of 
 A repo entry may also carry `merge_budget_per_day` — the per-repository override of the top-level key of the same name (D18, requirement 2.3c), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.
 
 A repo entry may also carry `merge_autonomy_routine_sources` — the per-repository override of the top-level key of the same name (D18 WI-7, requirement 8d), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.
+
+A repo entry may also carry `landing_cool_off_hours` — the per-repository override of the top-level key of the same name (D18 WI-12, agent-ops#415), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.
 
 A repo entry may also carry `escalation_autonomy` — the per-repository override of the top-level key of the same name (D18, agent-ops#627), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.
 
@@ -799,6 +802,10 @@ D18's spend governor (§5.4, `lib/merge-budget.sh`, requirement 2.3c): a rolling
 ### Extended notes: `merge_autonomy_routine_sources`
 
 D18 WI-7 (requirement 8d, `lib/landing.sh`'s `landing_eligible`): which work sources may be armed automatically at `agent-merges-routine` and above, fleet-wide default; a `repos[]` entry's own `merge_autonomy_routine_sources` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). An eligible pull request also needs `complexity:low`/`medium` and `landing_protected_paths_hit` to report no protected path touched. Matched against a pull request's own `source` by exact string equality, over the `landingSourceToken` vocabulary rather than `repos[].sources`' `sourceToken` one: `scripts/gather-issues.sh` collapses all four bands to `"source": "issues"`, so `issues` is the only spelling that can match an issue work order, and the four banded spellings are rejected by the schema outright (agent-ops#558). Until that fix the two were one shared enum, which offered only the spellings landing can never match — and `scripts/doctor.sh`'s banded-token warning (agent-ops#519) named a remedy, `issues`, that the same enum refused. `scripts/doctor.sh` warns when a repository's own effective list names a source that repository's `sources` never gathers, reading a bare `issues` as satisfied by any `issues:<band>` the repository gathers.
+
+### Extended notes: `landing_cool_off_hours`
+
+D18 WI-12 (Stage 4, §7 risk 1, `lib/landing.sh`'s `landing_protected_path_controls_ok`/`landing_cool_off_effective_hours`/`landing_cool_off_remaining_hours`): the wait between the Approver's own approval of a protected-path pull request and the arming step (requirement 8d) landing it, fleet-wide default; a `repos[]` entry's own `landing_cool_off_hours` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). Binds only at `agent-merges-all`, alongside the critical-tier control (`approver_model_critical`, forced regardless of complexity by a protected-path hit) — both compensating controls Stage 4 requires before a protected-path pull request is eligible at all. Measured from `landing_approver_standing_review_at`'s own `submitted_at`, re-read fresh at every arming attempt; a dismissed-and-re-approved review restarts the wait, since it is a different standing review. `0` disables the wait.
 
 <!-- config-table:notes-end -->
 
@@ -4633,7 +4640,30 @@ implements.
    convention requirement 8a's own `reviewer_model_complex` uses). A
    **Critical** fourth tier (`approver_model_critical`, falling back to
    `approver_model_complex`) is never chosen by complexity — see requirement
-   8c for what does choose it.
+   8c for the refuse-streak that chooses it, and this requirement's own next
+   paragraph for the second, independent cause D18 WI-12 (Stage 4,
+   agent-ops#415) adds.
+
+   **A protected path forces Critical too, whatever the complexity grade
+   says (D18 WI-12, same design §7 risk 1).** Before choosing a tier, the
+   Script asks `landing_protected_paths_hit` (`lib/landing.sh`, the one
+   protected-path classifier requirement 8d's gate 2 already reads) whether
+   this pull request's diff touches a protected path. A hit — or that
+   classifier's own exit 2, an unreadable or truncated changed-file list,
+   which routes *to* Critical rather than away from it, the opposite
+   fail-closed polarity from gate 2's own exit-2 handling — routes to
+   Critical regardless of `complexity`, including `complexity:low`, which
+   alone would have short-circuited to the deterministic Trivial approval
+   with no model call at all: a one-line docs-graded change to `lib/` or
+   `prompts/` gets the same critical-tier scrutiny as a genuine security
+   fix, because both are self-modifying changes to the gate itself. This
+   read costs one changed-file lookup per Approver engagement, and never
+   runs at `merge_autonomy: human`, where the stage has already returned.
+   The `approver-verdict` event's own `tier` field reads `critical` for
+   either cause; a `critical_reason` field (`protected-path` or
+   `refuse-streak`) distinguishes which one, since requirement 8d's own
+   gate 4.5 needs to know it was specifically the critical tier that ran,
+   not merely that an adjudication happened to land on the same model.
 
    `approver_model_default` empty disables the whole stage (the same
    convention `enabler_model` empty already uses for the Enabler) — every
@@ -4737,9 +4767,12 @@ implements.
       list` — a truncated or unreadable list is `unknown`, never a pass.
       `unknown` is treated as `ineligible` at this and every other call
       site; an empty or unrecognised `source` is `ineligible`, never
-      eligible by omission. Protected paths refuse arming at
-      `agent-merges-all` too — relaxing that for the critical tier is
-      WI-12's job (Stage 4), not this one's.
+      eligible by omission. Protected paths refuse arming at every level
+      below `agent-merges-all` unconditionally. At `agent-merges-all` a hit
+      is deliberately reported `eligible` instead (D18 WI-12, Stage 4,
+      agent-ops#415) — this classifier alone cannot see the two
+      compensating controls §7 risk 1 requires, so it defers rather than
+      refuses, and gate 4.5 below is what actually decides.
    3. `review_gate_verdict` (`lib/review-gate.sh`) — must read `clean`.
       Stricter than the ready-gate handoff's own use of this function
       (requirement 31a): there, an alerts-only `unknown` still lets the
@@ -4760,6 +4793,28 @@ implements.
       half either way — it excludes bots outright (requirement 34a), and
       the Approver posts as one — so `landing_approver_standing_review`
       reads the same endpoint directly, filtered to the App's own login.
+      `landing_approver_standing_review_at` (D18 WI-12) is what this gate
+      actually calls — the same one reviews-list read, plus the standing
+      review's own `submitted_at`, at no extra cost — since gate 4.5 needs
+      that timestamp and it is never worth a second fetch.
+   4.5. D18 WI-12 (Stage 4, agent-ops#415): only at `agent-merges-all`, and
+      only for a pull request `landing_protected_path_controls_ok`
+      (`lib/landing.sh`) itself re-confirms still touches a protected path —
+      gate 2 above already deferred, rather than refused, that case. Both
+      compensating controls §7 risk 1 requires must hold: the approving
+      engagement ran at the Critical tier (requirement 8b's own
+      `critical_reason`; read from this round's own in-process fact on the
+      round that first approved the pull request, or from the fleet log's
+      `approver-verdict` event, `landing_retry_tier`, on a landing-retry
+      sweep re-arm outside that round — requirement 8u), and the
+      configurable `landing_cool_off_hours` (default 24, `0` disables) has
+      elapsed since gate 4's own `submitted_at`, re-read fresh every time
+      this gate runs rather than cached anywhere. Either control unmet
+      refuses, naming the tier it actually found or the remaining cool-off
+      time; an unreadable re-check of the changed-file list is `unknown`,
+      never a pass. A pull request that does not touch a protected path at
+      all clears this gate immediately, since neither control applies to
+      it.
    5. `merge_budget_decide`/`merge_budget_apply_decision`
       (`lib/merge-budget.sh`, requirement 2.3c) — only `arm` proceeds.
       `hold` (the budget is exhausted) and `refuse` (the count could not be
@@ -7041,8 +7096,14 @@ implements.
     a verdict, carrying the `pr_url`, the `tier` it was judged at, the
     `verdict` itself, the `refuse_streak` that tier was chosen against, and
     `adjudication` — `true` where the streak, not the complexity grade, chose
-    the tier. It records what the Approver decided, never that GitHub accepted
-    the review: a review the API refused is a `warning` naming the pull
+    the tier. A `critical_reason` field (`protected-path` or `refuse-streak`;
+    absent when `tier` is not `critical`) distinguishes D18 WI-12's two causes
+    of the critical tier — a protected-path hit and a two-refusal streak can
+    both route here, and requirement 8d's own gate 4.5 needs to know it was
+    genuinely the critical tier that ran, not merely that an adjudication
+    happened to land on the same model. It records what the Approver decided,
+    never that GitHub accepted the review: a review the API refused is a
+    `warning` naming the pull
     request and the event (`approver_post_or_warn`), so an operator finding an
     `approver-verdict` with no review on the pull request has the write's own
     failure logged beside it rather than having to infer it. An
@@ -7059,10 +7120,13 @@ implements.
     `landing-refused` carries `pr_url`, `repo` and `reason` — a plain
     string, one per refusal path in `_landing_stage_attempt`, naming the gate
     that failed (an ineligible or unreadable classifier verdict, a dirty or
-    unreadable review gate, a standing human `CHANGES_REQUESTED`, an
-    unreadable merge budget or App login, an already-queued or unreadable
-    merge-queue probe, an unreadable token mint, or `landing_arm` itself
-    refusing) — and, on the same terms as `landing-armed` above, `retry:
+    unreadable review gate, a standing human `CHANGES_REQUESTED`, D18 WI-12's
+    own gate 4.5 refusing a protected-path pull request at `agent-merges-all`
+    whose approving engagement did not run at the critical tier or whose
+    `landing_cool_off_hours` wait has not yet elapsed (naming the remaining
+    time), an unreadable merge budget or App login, an already-queued or
+    unreadable merge-queue probe, an unreadable token mint, or `landing_arm`
+    itself refusing) — and, on the same terms as `landing-armed` above, `retry:
     true` when the refusal came from the landing-retry sweep.
     `landing_arm`'s own refusal names which of its steps failed —
     the pull request read, the merge-queue read, the enqueue mutation (a
@@ -14366,8 +14430,9 @@ pull request, run the ones the change touches and any it could regress.
     unreadable required-check list) must log `landing-refused` and return,
     never abort the cycle mid-stage, and only the production options can
     tell the two apart: a protected-path pull request is never armed at
-    `agent-merges-routine` **or** `agent-merges-all`, whatever the Approver's
-    verdict, complexity or source; an Approver refusal, an adjudication (its
+    `agent-merges-routine`, whatever the Approver's verdict, complexity or
+    source; at `agent-merges-all` it is armed only once D18 WI-12's own gate
+    4.5 clears (below) — an Approver refusal, an adjudication (its
     own `land` included), an unparseable verdict, or a stage that did not
     run each leave `run_landing_stage` returning immediately with nothing
     armed; at `merge_autonomy: human` and `agent-approves` no arming path
@@ -14381,7 +14446,55 @@ pull request, run the ones the change touches and any it could regress.
     nothing; a successful arm logs `landing-armed` exactly once and never
     withholds `pr-ready`, the claim release or the Approver's own review;
     every refusal path logs `landing-refused` naming a reason, never a
-    blocked pull request or a withheld claim. `scripts/doctor.sh` warns when
+    blocked pull request or a withheld claim.
+
+    D18 WI-12 (Stage 4, agent-ops#415) is pinned separately, in both files.
+    `test/landing.test.sh`: `landing_eligible` reads `eligible`, not
+    `ineligible`, for a protected path at `agent-merges-all` (deferred,
+    never refused, since this classifier alone cannot see the compensating
+    controls); `landing_approver_standing_review_at` returns the standing
+    review's own state and `submitted_at` together, at the same one reviews
+    read `landing_approver_standing_review` already makes; `landing_cool_off_effective_hours`
+    resolves the repo-override-else-top-level-else-24 precedence, `0`
+    included, exactly as `merge_budget_effective_cap` does;
+    `landing_cool_off_remaining_hours` computes the correct remaining time
+    (clamped to `0`, never negative) against a pinned `NOW_ISO`, and is
+    empty — never `0` — on an unparseable timestamp or duration;
+    `landing_protected_path_controls_ok` is `ok` immediately for a pull
+    request touching no protected path, refuses naming the tier for
+    anything but `critical`, refuses naming the missing timestamp with no
+    `submitted_at`, refuses naming the remaining time while the cool-off is
+    open, is `ok` once it has elapsed or `landing_cool_off_hours` is `0`,
+    and is `unknown` on a re-check that cannot read the changed-file list;
+    `landing_retry_tier` reads the most recent matching `approver-verdict`
+    event's own `tier` from the fleet log, the same "several events, keep
+    the latest, skip malformed lines, stdin works like a named file" shape
+    `landing_retry_source` already has pinned. `test/landing-wiring.test.sh`
+    lifts the new gate 4.5 in place, stubbed as its own function: never
+    consulted at all below `agent-merges-all` (confirmed by an empty call
+    log) with the pull request still arming normally; at `agent-merges-all`
+    a refusal from the gate — a live cool-off, a non-critical tier, an
+    unreadable re-check — arms nothing and is named in `landing-refused`;
+    the gate is consulted with this round's own in-process `approver_stage_tier`
+    on the ordinary path, and with `landing_retry_tier`'s own fleet-log read
+    instead on a direct `_landing_stage_attempt` call with `RETRY` set,
+    confirming a re-arm never trusts a tier fact that belongs to a different
+    process. `test/approver-wiring.test.sh` covers the tier-forcing half:
+    a protected-path pull request launches a real critical-tier engagement
+    at every complexity grade, `complexity:low` included (which alone would
+    have skipped the model entirely), logging `critical_reason: "protected-path"`;
+    the classifier's own exit 2 (an unreadable changed-file list) forces the
+    same critical tier rather than falling back to a cheaper one; a refuse
+    streak of two still logs `critical_reason: "refuse-streak"`, so the two
+    causes are pinned as distinguishable in the log; and a pull request
+    touching no protected path is unaffected, keeping every tier exactly as
+    requirement 8s already pins it. `scripts/doctor.sh` warns when a
+    repository's own configured `merge_autonomy` is `agent-merges-all` and
+    its effective `landing_cool_off_hours` resolves to `0` — the cool-off
+    control disabled entirely, the residual risk §7 risk 1 accepts only with
+    both controls in force (`test/doctor.test.sh`).
+
+    `scripts/doctor.sh` warns when
     a repository's effective `merge_autonomy_routine_sources` names a source
     that repository's own `sources` never gathers, and separately warns when
     that effective list carries any `issues:<band>` entry (agent-ops#519) —

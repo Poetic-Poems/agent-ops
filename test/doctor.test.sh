@@ -734,6 +734,47 @@ assert_contains "a bare 'issues' entry still warns where the repository gathers 
   "[warn] $slug's merge_autonomy_routine_sources names [issues], which its own sources list never gathers" \
   "$out"
 
+# --- D18 WI-12 (Stage 4, agent-ops#415): landing_cool_off_hours reported
+#     per configured source, and a warn when a repository trusted at
+#     agent-merges-all resolves it to 0 — the cool-off control disabled
+#     entirely, which §7 risk 1 accepts the residual risk of only with both
+#     compensating controls in force. ---------------------------------------
+lc_config="$tmp/lc-config.json"
+jq --arg slug "$slug" \
+  '.merge_autonomy = "agent-merges-all" | .approver_app_id = "123456" | .approver_model_default = "claude-sonnet-5"
+   | .repos = [{slug: $slug, sources: ["security", "abandoned-drafts"]}]' \
+  "$base_config" > "$lc_config"
+out="$(env PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$lc_config" 2>&1)"
+assert_contains "the shipped default landing_cool_off_hours is reported ok" \
+  "[ ok ] landing_cool_off_hours is 24h" "$out"
+assert_not_contains "  ... and agent-merges-all with the default cool-off in force draws no warning" \
+  "landing_cool_off_hours 0" "$out"
+
+lc_zero_config="$tmp/lc-zero-config.json"
+jq '.landing_cool_off_hours = 0' "$lc_config" > "$lc_zero_config"
+out="$(env PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$lc_zero_config" 2>&1)"
+assert_contains "landing_cool_off_hours 0 is reported ok, as a value (the sanity check is separate)" \
+  "[ ok ] landing_cool_off_hours is 0h (no wait)" "$out"
+assert_contains "  ... but agent-merges-all with it at 0 draws a warning naming both facts" \
+  "[warn] $slug's merge_autonomy is \"agent-merges-all\" with landing_cool_off_hours 0 — a protected-path pull request lands the moment its critical-tier Approver review stands, with no fleet-day observation window (D18 WI-12)" \
+  "$out"
+
+lc_repo_override_config="$tmp/lc-repo-override-config.json"
+jq --arg slug "$slug" \
+  '.repos = [{slug: $slug, sources: ["security", "abandoned-drafts"], landing_cool_off_hours: 0}]' \
+  "$lc_config" > "$lc_repo_override_config"
+out="$(env PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$lc_repo_override_config" 2>&1)"
+assert_contains "a repo-level override is reported under its own label" \
+  "[ ok ] $slug's landing_cool_off_hours override is 0h (no wait)" "$out"
+assert_contains "  ... and still warns, resolved through the repo's own override" \
+  "[warn] $slug's merge_autonomy is \"agent-merges-all\" with landing_cool_off_hours 0" "$out"
+
+lc_routine_config="$tmp/lc-routine-config.json"
+jq '.merge_autonomy = "agent-merges-routine" | .landing_cool_off_hours = 0' "$lc_config" > "$lc_routine_config"
+out="$(env PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$lc_routine_config" 2>&1)"
+assert_not_contains "below agent-merges-all, landing_cool_off_hours 0 draws no warning — the control does not bind there" \
+  "landing_cool_off_hours 0 —" "$out"
+
 # --- The kill switch's own live state (requirement 2.3b), reported once per
 #     run alongside state_repo's own access check ---------------------------
 run_doctor

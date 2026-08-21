@@ -22,6 +22,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `README.md`'s "Running the tests" recommended the first of those and now
   documents both.
 
+- D18 Stage 4's protected-path compensating controls (agent-ops#415): a
+  pull request touching a protected path (`.github/`, `deploy/`, `prompts/`,
+  `lib/`, `config.schema.json`, `config.json`, `agent-cycle.sh`,
+  `review-cycle.sh`, `CODEOWNERS`) now routes to the Approver's critical
+  tier regardless of its complexity grade, including `complexity:low` (which
+  otherwise short-circuits to a deterministic, model-free approval); the
+  `approver-verdict` event's own `critical_reason` field
+  (`protected-path`/`refuse-streak`) distinguishes the two causes a critical
+  engagement can have. At `agent-merges-all`, a protected-path pull request
+  is now eligible to land automatically — the one relaxation Stage 4 makes —
+  but only once the approving engagement ran at that critical tier and a
+  new `landing_cool_off_hours` config key (default 24, per-repo override,
+  `0` disables) has elapsed since the standing review's own timestamp; a
+  fresh push resets the wait by carrying a fresh review. Both controls are
+  re-read fresh at every arming attempt, including a landing-retry sweep
+  re-arm outside the round that first approved the pull request. Below
+  `agent-merges-all` a protected path stays ineligible exactly as before.
 
 - `scripts/autonomy-stage-report.sh` (D18, agent-ops#571): a read-only
   operator report answering "has this repository met its current D18
