@@ -350,9 +350,12 @@ assert_eq "and the per-band tally reads as a real empty array too" "[]" \
 # only proves the page renders a hand-built fixture correctly, never that
 # this Publisher's own jq actually produces one. Three audited pull
 # requests, one of each outcome, plus a landing-armed event for the escaped
-# one so its join into landings.armed can be checked directly; and a stale
+# one so its join into landings.armed can be checked directly; a stale
 # earlier landing-audit for the clean pull request, superseded by a newer
-# one, to pin the "newest event per pr_url wins" rule the join relies on.
+# one, to pin the "newest event per pr_url wins" rule the join relies on;
+# and a landing-audit-skip event for a fourth pull request merged by someone
+# other than the Approver identity — not an audit finding, so it must never
+# inflate checked/clean/escapes/unverifiable.
 es="$(new_home nodeEscape)"
 now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 {
@@ -361,11 +364,12 @@ now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   printf '{"ts":"2026-01-01T00:01:00Z","cycle":"c1","node":"nodeEscape","event":"landing-audit","repo":"acme/widgets","pr_url":"https://github.com/acme/widgets/pull/2","outcome":"clean","reason":"stale — superseded below"}\n'
   printf '{"ts":"2026-01-01T00:06:00Z","cycle":"c1","node":"nodeEscape","event":"landing-audit","repo":"acme/widgets","pr_url":"https://github.com/acme/widgets/pull/2","outcome":"clean","reason":"recomputed eligibility agrees"}\n'
   printf '{"ts":"2026-01-01T00:05:00Z","cycle":"c1","node":"nodeEscape","event":"landing-audit","repo":"acme/widgets","pr_url":"https://github.com/acme/widgets/pull/3","outcome":"unverifiable","reason":"the merge commit'"'"'s own file list could not be read"}\n'
+  printf '{"ts":"2026-01-01T00:05:00Z","cycle":"c1","node":"nodeEscape","event":"landing-audit-skip","repo":"acme/widgets","pr_url":"https://github.com/acme/widgets/pull/4","outcome":"not-approver","reason":"merged by a-human, not the Approver identity"}\n'
 } > "$es/.local/state/poetic-agents/log.jsonl"
 run_publish "$es"
 edata="$(data_of "$es")"
 
-assert_eq "checked counts every distinct audited pull request" \
+assert_eq "checked counts every distinct audited pull request, never a landing-audit-skip" \
   "3" "$(jq -r '.counts.escape_audits.checked' <<<"$edata")"
 assert_eq "clean counts the clean outcome" \
   "1" "$(jq -r '.counts.escape_audits.clean' <<<"$edata")"

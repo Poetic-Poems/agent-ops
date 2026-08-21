@@ -88,12 +88,18 @@ routine_sources_block="$(extract _escape_audit_routine_sources "$DETECTOR")"
 [[ -n "$routine_sources_block" ]] || { echo "FAIL - could not extract _escape_audit_routine_sources from $DETECTOR — has it moved?" >&2; exit 1; }
 eval "$routine_sources_block"
 
+configured_level_block="$(extract _escape_audit_configured_level "$DETECTOR")"
+[[ -n "$configured_level_block" ]] || { echo "FAIL - could not extract _escape_audit_configured_level from $DETECTOR — has it moved?" >&2; exit 1; }
+eval "$configured_level_block"
+
 # shellcheck source=lib/github-limit.sh
 . "$SCRIPT_DIR/lib/github-limit.sh"
 # shellcheck source=lib/merge-queue.sh
 . "$SCRIPT_DIR/lib/merge-queue.sh"
 # shellcheck source=lib/landing.sh
 . "$SCRIPT_DIR/lib/landing.sh"
+# shellcheck source=lib/merge-autonomy.sh
+. "$SCRIPT_DIR/lib/merge-autonomy.sh"
 
 for path in ".github/workflows/ci.yml" "deploy/docker/Dockerfile" "prompts/implementer.md" \
             "lib/landing.sh" "config.schema.json" "config.json" "agent-cycle.sh" \
@@ -114,6 +120,17 @@ for cfg in '{"repos":[]}' \
   landing_out="$(_landing_routine_sources "$cfg" "acme/widgets")"
   escape_out="$(_escape_audit_routine_sources "$cfg" "acme/widgets")"
   assert_eq "routine-sources resolution for config '$cfg' matches lib/landing.sh's own" \
+    "$landing_out" "$escape_out"
+done
+
+for cfg in '{"repos":[]}' \
+           '{"repos":[{"slug":"acme/widgets","merge_autonomy":"agent-merges-all"}]}' \
+           '{"merge_autonomy":"agent-approves"}' \
+           '{"merge_autonomy":"agent-merges-routine","repos":[{"slug":"acme/widgets","merge_autonomy":"human"}]}' \
+           '{}'; do
+  landing_out="$(merge_autonomy_configured_level "$cfg" "acme/widgets")"
+  escape_out="$(_escape_audit_configured_level "$cfg" "acme/widgets")"
+  assert_eq "configured-level resolution for config '$cfg' matches lib/merge-autonomy.sh's own" \
     "$landing_out" "$escape_out"
 done
 
@@ -190,12 +207,16 @@ export STUB_DIR PATH="$tmp_dir/bin:$PATH"
 export ESCAPE_AUDIT_RETRY_DELAY_SECONDS=0
 
 config_file="$tmp_dir/config.json"
-echo '{"repos":[]}' > "$config_file"
+# agent-merges-routine: the level every fixture below except #8 is written
+# against, so #2/#6/#7 exercise the other three eligibility inputs without
+# also tripping the level check — #8 is the one fixture that deliberately
+# reads a different, insufficient level.
+echo '{"merge_autonomy":"agent-merges-routine","repos":[]}' > "$config_file"
 
 SLUG="acme/widgets"
 LOGIN="pullwright-approver[bot]"
 
-# --- Fixture set: five candidate pull requests -------------------------------
+# --- Fixture set: eight candidate pull requests -------------------------------
 #
 #   #1  merged by the Approver, merge commit touches lib/landing.sh (a
 #       protected path) and README.md, complexity:low at merge, source
@@ -207,7 +228,13 @@ LOGIN="pullwright-approver[bot]"
 #   #4  merged by the Approver, two complexity:* labels standing at merge
 #       (ambiguous) — unverifiable.
 #   #5  merged by someone else entirely (a human's own manual merge) — not
-#       audited at all: no output line for it.
+#       an audit finding: reports outcome "not-approver" instead, naming who
+#       merged it.
+#   #8  merged by the Approver, no protected path, complexity:low, source
+#       register-hygiene — every input the other checks look at agrees, but
+#       the repository's own configured merge_autonomy level (set separately
+#       for this fixture, below) is below agent-merges-routine — the fourth
+#       way recomputation can disagree, and the one none of #1/#6/#7 cover.
 #   #6  merged by the Approver, no protected path, source register-hygiene,
 #       but complexity:high standing at merge — an escape the protected-path
 #       check alone would have called clean.
@@ -317,8 +344,10 @@ assert_contains "an ambiguous (two-label) complexity at merge time is unverifiab
 assert_contains "  ... naming the ambiguity as the reason" \
   "$line4" "complexity"
 
-assert_eq "a pull request merged by someone other than the Approver login is not audited at all" \
-  "" "$line5"
+assert_contains "a pull request merged by someone other than the Approver login is not an audit finding" \
+  "$line5" '"outcome":"not-approver"'
+assert_contains "  ... naming who merged it instead" \
+  "$line5" "merged by a-human"
 
 # The other two ways recomputation can disagree, neither of which the
 # protected-path escape above would have caught: the merge commit is clean
@@ -361,6 +390,35 @@ assert_contains "a merge commit whose file list reaches the truncation cap is un
 assert_contains "  ... naming the cap as the reason" \
   "$out_trunc" "capped at the 2-file limit"
 
+# --- Fixture #8: every other input agrees, but the repository's own
+# configured merge_autonomy level is below agent-merges-routine — isolated
+# under its own STUB_DIR/config so the main battery above can stay pinned to
+# agent-merges-routine ------------------------------------------------------
+STUB_DIR_LEVEL="$tmp_dir/fixtures-level"
+mkdir -p "$STUB_DIR_LEVEL"
+cat > "$STUB_DIR_LEVEL/issues.json" <<EOF
+[{"number": 8, "pull_request": {"merged_at": "2026-08-20T10:00:00Z"}}]
+EOF
+pr_json 8 "$LOGIN" > "$STUB_DIR_LEVEL/pr-8.json"
+cat > "$STUB_DIR_LEVEL/commit-sha8.json" <<'EOF'
+{"files": [{"filename": "scripts/foo.sh"}]}
+EOF
+cat > "$STUB_DIR_LEVEL/events-8.json" <<'EOF'
+[{"event": "labeled", "label": {"name": "complexity:low"}, "created_at": "2026-08-20T09:00:00Z"}]
+EOF
+log_file_level="$tmp_dir/log-level.jsonl"
+echo "{\"event\":\"landing-armed\",\"repo\":\"$SLUG\",\"pr_url\":\"https://github.com/$SLUG/pull/8\",\"source\":\"register-hygiene\",\"complexity\":\"low\"}" \
+  > "$log_file_level"
+config_file_level="$tmp_dir/config-level.json"
+echo '{"merge_autonomy":"agent-approves","repos":[]}' > "$config_file_level"
+
+out_level="$(STUB_DIR="$STUB_DIR_LEVEL" \
+  "$DETECTOR" "$SLUG" "$LOGIN" "$log_file_level" --config "$config_file_level")"
+assert_contains "a landing whose repository's configured merge_autonomy level is below agent-merges-routine is an escape" \
+  "$out_level" '"outcome":"escape"'
+assert_contains "  ... naming the configured level it recomputed" \
+  "$out_level" "configured merge_autonomy level is agent-approves"
+
 # --- Idempotency: an already-audited pull request costs no gh call at all --
 log_file2="$tmp_dir/log2.jsonl"
 cat "$log_file" > "$log_file2"
@@ -374,6 +432,20 @@ assert_eq "  ... and costs no gh call at all, not merely no output — never eve
   "" "$(grep -xF "api repos/$SLUG/pulls/2" "$STUB_DIR/calls.log" 2>/dev/null)"
 assert_contains "  ... while an unaudited one in the same run still gets checked" \
   "$out2" '"number":1,'
+
+# --- Idempotency: a previously-recorded not-approver skip also costs no gh
+# call at all — the fact of who merged something is as fixed as an audit
+# finding, so it must be free to skip the same way -------------------------
+log_file2b="$tmp_dir/log2b.jsonl"
+cat "$log_file" > "$log_file2b"
+echo "{\"event\":\"landing-audit-skip\",\"repo\":\"$SLUG\",\"pr_url\":\"https://github.com/$SLUG/pull/5\",\"outcome\":\"not-approver\"}" >> "$log_file2b"
+
+: > "$STUB_DIR/calls.log"
+out2b="$("$DETECTOR" "$SLUG" "$LOGIN" "$log_file2b" --config "$config_file")"
+assert_eq "a previously-recorded not-approver skip is skipped on a later run" \
+  "" "$(grep '"number":5,' <<<"$out2b")"
+assert_eq "  ... and costs no gh call at all, never even the pulls/N read" \
+  "" "$(grep -xF "api repos/$SLUG/pulls/5" "$STUB_DIR/calls.log" 2>/dev/null)"
 
 # --- A source not recorded at all: unverifiable, never guessed -------------
 log_file3="$tmp_dir/log3.jsonl"

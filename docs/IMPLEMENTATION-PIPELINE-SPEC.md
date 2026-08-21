@@ -4941,88 +4941,103 @@ implements.
    For every repository, the detector considers every merged, `pr_label`-
    carrying pull request, oldest-created first (GitHub's own
    `sort=created&direction=asc`, which is creation order rather than merge
-   order), and for each already carrying a `classifier-escape` or
-   `landing-audit` event for its `pr_url` in the fleet log skips it at zero
-   `gh` cost (audited at most once, ever — a
+   order), and for each already carrying a `classifier-escape`,
+   `landing-audit` or `landing-audit-skip` event for its `pr_url` in the
+   fleet log skips it at zero `gh` cost (looked at most once, ever — a
    merged pull request's history is a fixed, past fact — and GitHub's
    `html_url` for a pull request is deterministic from its own repository
-   and number, so an already-audited one is recognised before any read, not
+   and number, so an already-seen one is recognised before any read, not
    just before the reads past the first). For the remainder it reads
    `merged_by.login` (GitHub's live record, never this pipeline's own event
    log — trusting the log to say what it landed would make the audit
    circular): one merged by anyone other than the Approver App's login is
-   not audited at all, and — because that fact was never logged — is read
-   again the same way on every future cycle for as long as the repository
-   keeps producing them; one merged by the Approver App's login recomputes
-   three things from the merged artefacts themselves, never from what this
-   pipeline recorded about its own decision: the protected-path hit, from
-   the merge commit's own file list (`repos/SLUG/commits/SHA`, a different
-   GitHub resource from `landing_protected_paths_hit`'s own read); the
-   complexity, replayed from the pull request's labelled/unlabelled timeline
-   up to `merged_at` — the label standing *at merge*, never today's; and the
-   work source, read back from the fleet log's own `landing-armed` event for
-   that `pr_url`, the one input GitHub carries no field for at all and the
-   one input the detector is permitted to read as recorded rather than
-   re-derive. The routine-sources list itself is resolved fresh from current
-   configuration (repo override, else the top level, else the shipped
-   default) — a real, accepted limitation, since nothing in this codebase
-   preserves that key's history, so a landing audited long after a
-   deliberate widening or narrowing of the list is judged against today's
-   list, not the one in force when it landed.
+   not an audit finding — nothing armed that merge, so there is no
+   eligibility to have recomputed — but the fact is recorded once, as
+   `outcome: "not-approver"` (logged as its own `landing-audit-skip` event,
+   kept out of `counts.escape_audits` below since it is not a finding), so
+   the `repos/SLUG/pulls/N` read that established it is never paid again on
+   a later cycle; one merged by the Approver App's login recomputes four
+   things from the merged artefacts and from current configuration, never
+   from what this pipeline recorded about its own decision: the
+   protected-path hit, from the merge commit's own file list
+   (`repos/SLUG/commits/SHA`, a different GitHub resource from
+   `landing_protected_paths_hit`'s own read); the complexity, replayed from
+   the pull request's labelled/unlabelled timeline up to `merged_at` — the
+   label standing *at merge*, never today's; the work source, read back
+   from the fleet log's own `landing-armed` event for that `pr_url`, the one
+   input GitHub carries no field for at all and the one input the detector
+   is permitted to read as recorded rather than re-derive; and the
+   repository's own configured `merge_autonomy` level — `landing_eligible`'s
+   own first gate (requirement 8d), which this recomputation must not skip,
+   since an Approver-identity merge at a repository whose level forbids
+   autonomous landing outright is exactly the shape a broken gate 1 would
+   produce. The routine-sources list and the configured level are each
+   resolved fresh from current configuration (repo override, else the top
+   level, else the default) — a real, accepted limitation, since nothing in
+   this codebase preserves either key's history, so a landing audited long
+   after a deliberate change to either is judged against today's
+   configuration, not the one in force when it landed.
 
    `agent-cycle.sh` runs the detector once per repository per cycle under
    `timeout 120`, so a repository whose candidate list does not fit inside
-   that budget is audited only as far as one pass reaches, oldest candidate
-   first. What a cycle spends re-confirming history it has already audited
-   shrinks as it goes — an already-audited pull request costs nothing to
-   skip (above) — and the oldest-first order means the ground one cycle
-   covers stays covered rather than being displaced by newer merges landing
-   ahead of it. What never shrinks is the read spent on every pull request
-   merged by someone other than the Approver App's login, since that fact is
-   never logged and so is never free to skip on a later cycle. Coverage
-   therefore advances past a given candidate only while the reads it sits
-   behind still fit inside the budget: a repository whose
-   non-Approver-merged candidates alone exceed it stops at the same frontier
-   on every cycle, indefinitely, and never audits the candidates behind that
-   frontier — newly merged pull requests, which sort last, among them.
-   Measured against `Poetic-Poems/agent-ops` on 2026-08-22: 190 merged
-   `pr_label`-carrying pull requests, none of them merged by the Approver
-   identity, at ~0.9 s per `repos/SLUG/pulls/N` read — about 170 s of
-   unavoidable reads against the 120 s budget, a frontier around the 130th
-   oldest candidate. The `counts.escape_audits` totals the dashboard renders
-   (below) are accordingly a floor on what has been audited, never a
-   statement of coverage.
+   that budget is looked at only as far as one pass reaches, oldest
+   candidate first. What a cycle spends re-confirming history it has
+   already looked at shrinks as it goes — an already-seen pull request,
+   whether previously audited or previously recorded as `not-approver`,
+   costs nothing to skip (above) — and the oldest-first order means the
+   ground one cycle covers stays covered rather than being displaced by
+   newer merges landing ahead of it. Unlike an audit finding, a
+   `not-approver` fact needs no eligibility recomputed, but the
+   `repos/SLUG/pulls/N` read that discovers it is exactly as expensive, and
+   recording it the same way is what stops that read recurring: a
+   repository whose non-Approver-merged backlog alone exceeds one cycle's
+   budget pays it down over as many cycles as it takes rather than at the
+   same frontier forever, since every pull request a cycle reaches — either
+   kind — becomes free to skip from the very next cycle onward. Measured
+   against `Poetic-Poems/agent-ops` on 2026-08-22, before any of that
+   backlog had ever been recorded: 190 merged `pr_label`-carrying pull
+   requests, none of them merged by the Approver identity, at ~0.9 s per
+   `repos/SLUG/pulls/N` read — about 170 s to record all of them once
+   against the 120 s budget, so paying down that one-time backlog itself
+   spans more than a single cycle. The `counts.escape_audits` totals the
+   dashboard renders (below) are accordingly a floor on what has been
+   checked at any given moment, but one that converges on complete coverage
+   as a repository's backlog is paid down, rather than one permanently short
+   of it.
 
-   Any of those three inputs that cannot be reconstructed — an unreadable,
-   too-large-to-enumerate, or (short of either) file-count-capped merge
-   commit, zero or more than one `complexity:*` label standing at merge
-   time, no matching `landing-armed` event to read a source from — reports
-   `outcome: "unverifiable"`, never
+   Any of the first three recomputed inputs that cannot be reconstructed —
+   an unreadable, too-large-to-enumerate, or (short of either)
+   file-count-capped merge commit, zero or more than one `complexity:*`
+   label standing at merge time, no matching `landing-armed` event to read a
+   source from — reports `outcome: "unverifiable"`, never
    `"clean"`: an audit that cannot answer must never be read as an audit
-   that passed. Otherwise, recomputed eligibility (complexity `low`/`medium`,
+   that passed. Otherwise, recomputed eligibility (configured level
+   `agent-merges-routine`/`agent-merges-all`, complexity `low`/`medium`,
    source in the routine list, no protected path touched) either agrees with
    the fact that the pull request landed (`outcome: "clean"`) or disagrees
    (a `classifier-escape` event — the loud one, a first-class event of its
    own rather than a value nested inside a routine one, per the issue's own
    "make it loud rather than a row nobody reads"). Every outcome is logged
    under the single-writer rule (requirement 33): the detector itself only
-   prints one JSON object per newly-audited pull request to stdout, and
+   prints one JSON object per newly-seen pull request to stdout, and
    `agent-cycle.sh`'s own loop — the same "sweep prints, the Script logs"
    shape `scripts/sweep-human-visibility.sh` already established — is what
    calls `log_event`.
 
    `scripts/publish-dashboard.sh` folds every `classifier-escape` and
-   `landing-audit` event, fleet-wide and all-time (never windowed — an
-   escape is a permanent fact about one merged pull request, and a window
-   that let it age out of view would be exactly the "row nobody reads" this
-   requirement exists to prevent), into `counts.escape_audits`
-   (`{checked, clean, escapes, unverifiable, escape_list: [...],
-   unverifiable_list: [...]}`), and joins the newest audit outcome for each
-   landed pull request's own `pr_url` into its row of the WI-8 autonomous-landing digest
-   ("## The Landing Gate", requirement 8d) as `audit`/`audit_reason` — a row
-   with no audit yet (not merged long enough ago for the sweep to have
-   reached it, or genuinely unauditable) reads `audit: null`, never folded
-   into either `clean` or `escape`.
+   `landing-audit` event — never `landing-audit-skip`, which names a merge
+   nothing armed rather than an audit finding — fleet-wide and all-time
+   (never windowed — an escape is a permanent fact about one merged pull
+   request, and a window that let it age out of view would be exactly the
+   "row nobody reads" this requirement exists to prevent), into
+   `counts.escape_audits` (`{checked, clean, escapes, unverifiable,
+   escape_list: [...], unverifiable_list: [...]}`), and joins the newest
+   audit outcome for each landed pull request's own `pr_url` into its row of
+   the WI-8 autonomous-landing digest ("## The Landing Gate", requirement
+   8d) as `audit`/`audit_reason` — a row with no audit yet (not merged long
+   enough ago for the sweep to have reached it, merged by someone other than
+   the Approver identity, or genuinely unauditable) reads `audit: null`,
+   never folded into either `clean` or `escape`.
 9. **Failure handling.** If any stage times out, exits non-zero, or returns
    an unparseable summary: kill that stage's process group, log
    `attempt-failed` with enough detail for a future cycle to know the item
@@ -15323,38 +15338,49 @@ pull request, run the ones the change touches and any it could regress.
 8x. **The classifier-escape audit recomputes independently, never trusts
     what it is auditing, and never confuses "cannot tell" with "clean"
     (requirement 8e, agent-ops#572).** `test/detect-classifier-escapes.test.sh`
-    pins the reimplemented protected-path list and routine-sources resolution
-    in `scripts/detect-classifier-escapes.sh` byte-for-byte identical to
+    pins the reimplemented protected-path list, routine-sources resolution
+    and `merge_autonomy` configured-level resolution in
+    `scripts/detect-classifier-escapes.sh` byte-for-byte identical to
     `lib/landing.sh`'s own `_landing_is_protected`/`_landing_routine_sources`
-    over the same battery of inputs, so the two cannot drift apart
-    unnoticed despite neither sourcing the other; against a stubbed `gh`, a
-    merged pull request whose merge commit touches a protected path (an
-    injected known escape) is reported `classifier-escape` even though it
-    carries a `landing-armed` event recording `complexity: low` — the
-    detector's own recomputation, not the recorded value, is what disagreed
-    — as are the other two ways the recomputation can disagree, a complexity
-    above `medium` standing at merge and a source outside the repository's
-    routine list; a merged pull request whose recomputed complexity, source
-    and protected-path check all agree with its having landed is `outcome:
+    and `lib/merge-autonomy.sh`'s own `merge_autonomy_configured_level`, over
+    the same battery of inputs, so none of the three can drift apart
+    unnoticed despite neither being sourced; against a stubbed `gh`, a merged
+    pull request whose merge commit touches a protected path (an injected
+    known escape) is reported `classifier-escape` even though it carries a
+    `landing-armed` event recording `complexity: low` — the detector's own
+    recomputation, not the recorded value, is what disagreed — as are the
+    other three ways the recomputation can disagree: a complexity above
+    `medium` standing at merge, a source outside the repository's routine
+    list, and a repository whose own configured `merge_autonomy` level sits
+    below `agent-merges-routine` even though every other input agrees; a
+    merged pull request whose recomputed level, complexity, source and
+    protected-path check all agree with its having landed is `outcome:
     "clean"`; a merge commit GitHub reports with no `files` array (too large
     to enumerate), a merge commit whose `files` array reaches the 300-entry
     cap (may be hiding more, exactly like the too-large case), a merge with
     zero or more than one `complexity:*` label standing at `merged_at`, and a
     `pr_url` with no `landing-armed` event to read a source from are each
     `outcome: "unverifiable"`, never `"clean"`; a pull request merged by an
-    account other than the passed-in Approver login is not audited at all;
-    and a `pr_url` already carrying a `classifier-escape`/`landing-audit`
-    event in the fleet log is skipped before any `gh` call is spent on it at
-    all, verified by the stub logging every call it receives and the test
-    asserting the skipped pull request's own number never appears in that
-    log, not merely absent from the detector's output. The same stub refuses
-    any call carrying `-f`/`-F` fields without `--method GET`, since the real
-    `gh api` turns one into a POST — which these endpoints answer 404/422,
-    so a detector that read them that way would silently audit nothing at
-    all for ever. `test/publish-dashboard.test.sh` pins `counts.escape_audits`'s aggregation over `classifier-
-    escape`/`landing-audit` events (all-time, not windowed) and the
-    per-row `audit`/`audit_reason` join into the WI-8 digest's `armed`
-    rows. `./scripts/lint-shell.sh` and `perl scripts/td-check.pl` are clean.
+    account other than the passed-in Approver login is `outcome:
+    "not-approver"`, not an audit finding; and a `pr_url` already carrying a
+    `classifier-escape`/`landing-audit`/`landing-audit-skip` event in the
+    fleet log — whether a prior audit finding or a prior `not-approver`
+    record — is skipped before any `gh` call is spent on it at all, verified
+    by the stub logging every call it receives and the test asserting the
+    skipped pull request's own number never appears in that log, not merely
+    absent from the detector's output. The same stub refuses any call
+    carrying `-f`/`-F` fields without `--method GET`, since the real `gh api`
+    turns one into a POST — which these endpoints answer 404/422, so a
+    detector that read them that way would silently find nothing at all for
+    ever. `test/escape-audit-wiring.test.sh` pins `agent-cycle.sh`'s own
+    translation of an `outcome: "not-approver"` line into its own
+    `landing-audit-skip` event, kept apart from `landing-audit` in the
+    logged fields. `test/publish-dashboard.test.sh` pins
+    `counts.escape_audits`'s aggregation over `classifier-escape`/
+    `landing-audit` events only — never `landing-audit-skip` — (all-time,
+    not windowed) and the per-row `audit`/`audit_reason` join into the WI-8
+    digest's `armed` rows. `./scripts/lint-shell.sh` and
+    `perl scripts/td-check.pl` are clean.
 
 8w. **A repository's autonomy readiness is one verdict, and it never fails for
     what it could not read (component 14, agent-ops#575).**

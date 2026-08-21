@@ -6566,25 +6566,24 @@ fi
 # of `--repo`, and safe on `--dry-run`: it never arms or lands anything,
 # only reads GitHub's own merged-PR record and the fleet log. Run every
 # cycle rather than gated on `merge_autonomy`: idempotent against its own
-# prior findings (LOG_FILE) for any pull request the Approver identity did
-# merge, but that is not the same as cheap for a repository that has never
-# reached `agent-merges-routine`. `_escape_audit_candidates` still lists
-# every merged, `pr_label`-carrying pull request regardless of who merged
-# it, and the script has no way to learn who merged one short of the
-# `repos/SLUG/pulls/N` read that answers it — so a repository sitting below
+# prior findings (LOG_FILE) for any pull request this repository has already
+# produced a `classifier-escape`/`landing-audit`/`landing-audit-skip` event
+# for, regardless of who merged it — a repository sitting below
 # `agent-merges-routine`, where a merge under the Approver identity is rare
-# or never happens, pays that one read for every such pull request, every
-# cycle, forever: it is never logged (a non-Approver merge "is not audited
-# at all", per the script's own header), so nothing ever makes it cheap to
-# skip. `timeout 120` bounds what a single cycle spends on this either way,
-# and where that recurring cost alone exceeds the budget the sweep stops at
-# the same frontier every cycle rather than converging — see the script's
-# own "Idempotency" section for what oldest-first candidate order does and
-# does not buy, and for the measurement of where that frontier sits on this
-# repository today. The same unreadable-login skip the retry sweep above
-# uses applies here too — with no Approver identity to test `merged_by`
-# against, nothing below could tell an autonomous landing apart from a
-# human's own merge.
+# or never happens, still pays the one `repos/SLUG/pulls/N` read each such
+# pull request needs to learn who merged it, but only once: that fact is
+# recorded (as `outcome: "not-approver"`, logged below as
+# `landing-audit-skip`) exactly like an audited landing is, so it is never
+# paid again on a later cycle. `timeout 120` bounds what a single cycle
+# spends on this either way, and while a repository with a large backlog of
+# never-yet-recorded pull requests may need several cycles to work through
+# it, each cycle's budget goes further than the last rather than being
+# pinned at a permanent frontier — see the script's own "Idempotency"
+# section for what oldest-first candidate order buys and for the size of
+# that backlog on this repository as of 2026-08-22. The same
+# unreadable-login skip the retry sweep above uses applies here too — with
+# no Approver identity to test `merged_by` against, nothing below could
+# tell an autonomous landing apart from a human's own merge.
 if escape_login="$(approver_token_identity_login "")" && [[ -n "$escape_login" ]]; then
   while IFS= read -r escape_slug; do
     [[ -n "$escape_slug" ]] || continue
@@ -6595,6 +6594,7 @@ if escape_login="$(approver_token_identity_login "")" && [[ -n "$escape_login" ]
       case "$(jq -r '.outcome // ""' <<<"$escape_action" 2>/dev/null || true)" in
         escape) log_event "classifier-escape" "$(jq -c 'del(.outcome)' <<<"$escape_action")" ;;
         clean|unverifiable) log_event "landing-audit" "$(jq -c '.' <<<"$escape_action")" ;;
+        not-approver) log_event "landing-audit-skip" "$(jq -c '.' <<<"$escape_action")" ;;
       esac
     done < <(timeout 120 "$SCRIPT_DIR/scripts/detect-classifier-escapes.sh" \
                "$escape_slug" "$escape_login" "$union_log" --config "$CONFIG_FILE" \

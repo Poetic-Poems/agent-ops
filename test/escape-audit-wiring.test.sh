@@ -17,6 +17,11 @@
 #     `outcome` stripped (the event name itself already says it).
 #   - An `outcome: "clean"`/`"unverifiable"` line becomes a `landing-audit`
 #     event, `outcome` kept so a reader of the log alone can tell them apart.
+#   - An `outcome: "not-approver"` line — a merge nothing armed, so there is
+#     nothing to audit — becomes its own `landing-audit-skip` event, kept
+#     apart from `landing-audit` so `scripts/publish-dashboard.sh`'s
+#     `counts.escape_audits` (which folds only `classifier-escape` and
+#     `landing-audit`) never counts it as an audit finding.
 #   - No Approver login resolvable at all (an unset or unreadable
 #     credential) skips the whole block — no detector call, no log_event —
 #     rather than auditing against an identity nothing can confirm.
@@ -140,7 +145,8 @@ assert_eq "the detector is invoked once per configured repo, in order" \
 # landing-audit ---------------------------------------------------------------
 
 DETECTOR_OUT='{"outcome":"escape","pr_url":"https://github.com/acme/widgets/pull/1","repo":"acme/widgets","reason":"touched protected path(s): lib/landing.sh"}
-{"outcome":"clean","pr_url":"https://github.com/acme/widgets/pull/2","repo":"acme/widgets","reason":"recomputed eligibility agrees"}'
+{"outcome":"clean","pr_url":"https://github.com/acme/widgets/pull/2","repo":"acme/widgets","reason":"recomputed eligibility agrees"}
+{"outcome":"not-approver","pr_url":"https://github.com/acme/widgets/pull/3","repo":"acme/widgets","reason":"merged by a-human, not the Approver identity"}'
 
 out="$(run_block "pullwright-approver[bot]" '["acme/widgets"]' "$DETECTOR_OUT")"
 events_out="$(sed '/^--$/,$d' <<<"$out")"
@@ -150,9 +156,13 @@ assert_eq "an escape line becomes a classifier-escape event" \
 assert_eq "  ... with outcome stripped from its fields" \
   "" "$(grep '^classifier-escape' <<<"$events_out" | grep -o '"outcome"')"
 assert_eq "a clean line becomes a landing-audit event" \
-  "1" "$(grep -c '^landing-audit' <<<"$events_out")"
+  "1" "$(grep -cP '^landing-audit\t' <<<"$events_out")"
 assert_eq "  ... keeping outcome in its fields, so the log alone tells clean from unverifiable" \
-  '"outcome":"clean"' "$(grep '^landing-audit' <<<"$events_out" | grep -o '"outcome":"clean"')"
+  '"outcome":"clean"' "$(grep -P '^landing-audit\t' <<<"$events_out" | grep -o '"outcome":"clean"')"
+assert_eq "a not-approver line becomes its own landing-audit-skip event" \
+  "1" "$(grep -c '^landing-audit-skip' <<<"$events_out")"
+assert_eq "  ... never folded into landing-audit itself" \
+  "0" "$(grep -P '^landing-audit\t' <<<"$events_out" | grep -c 'not-approver')"
 
 # --- No resolvable Approver login: the whole block no-ops ---------------------
 

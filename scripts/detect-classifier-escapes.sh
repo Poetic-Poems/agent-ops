@@ -56,6 +56,20 @@
 #     `landing-armed` event for this `pr_url`, which itself only ever holds
 #     the value the round that armed the landing was given — never a value
 #     `landing_eligible` derived.
+#   - **The `merge_autonomy` level** — SLUG's own configured level (repo
+#     override, else the top-level key, else `human` — a byte-for-byte copy
+#     of `merge_autonomy_configured_level`, lib/merge-autonomy.sh, declared
+#     fresh here rather than sourced, for the same reason as the
+#     protected-path list), never the *effective* level
+#     `landing_eligible`'s own caller resolves: this recomputation has no way
+#     to reconstruct a since-cleared fleet-wide kill switch or a since-lifted
+#     merge-budget freeze, so like the routine-sources list below, a landing
+#     is judged against what SLUG's configuration says today, not whatever
+#     was in force the moment it merged. A pull request merged under the
+#     Approver identity while today's configured level sits below
+#     `agent-merges-routine` disagrees with this input exactly as it would
+#     disagree over complexity or source — `landing_eligible`'s own first
+#     gate, and the one this recomputation must not silently skip.
 #   - **The routine-sources list** — SLUG's own `merge_autonomy_routine_sources`
 #     (repo override, else the top-level key, else the shipped default),
 #     resolved fresh from CONFIG_FILE by a copy of the precedence
@@ -77,60 +91,60 @@
 #
 # ## Idempotency
 #
-# Each merged, Approver-identified pull request is audited at most once,
-# ever: LOG_FILE (the fleet's own union log, or stdin/"-") is scanned first
-# for every prior `classifier-escape`/`landing-audit` event's own `pr_url`,
-# and every candidate number is checked against that set *before* the
-# `repos/SLUG/pulls/N` read that would otherwise be the only way to learn
-# its own `pr_url` — GitHub's `html_url` for a pull request is always
-# `https://github.com/SLUG/pull/N`, so an already-audited candidate is
-# recognised, and skipped, at zero further `gh` cost: not the one read that
-# establishes merged-by plus the merge-commit and label-timeline reads that
-# would have followed it, but none of the three at all. A pull request's own
+# Each merged, `pr_label`-carrying pull request this candidate list can name
+# is looked up at most once, ever, regardless of who merged it: LOG_FILE
+# (the fleet's own union log, or stdin/"-") is scanned first for every prior
+# `classifier-escape`/`landing-audit`/`landing-audit-skip` event's own
+# `pr_url`, and every candidate number is checked against that set *before*
+# the `repos/SLUG/pulls/N` read that would otherwise be the only way to
+# learn its own `pr_url` — GitHub's `html_url` for a pull request is always
+# `https://github.com/SLUG/pull/N`, so an already-seen candidate is
+# recognised, and skipped, at zero further `gh` cost. A pull request's own
 # merged history is a fixed, past fact, so nothing about re-checking it
 # later could change the answer.
 #
-# That only bounds the cost of a pull request this script has *already*
-# audited, which by construction was merged by the Approver identity. It
-# does nothing for one merged by anyone else: nothing short of the
-# `repos/SLUG/pulls/N` read itself can say who merged a closed,
-# `pr_label`-carrying issue, and a non-Approver merge is never logged (see
-# "What counts..." above), so that read is paid again every cycle, forever,
-# for as long as a repository keeps producing them — see the comment beside
-# this script's own invocation in `agent-cycle.sh` for the accepted
-# reasoning. `_escape_audit_candidates` lists oldest-created first for this
-# reason (GitHub's own `sort=created&direction=asc` — creation order, which
-# is not quite merge order: a long-lived pull request merges after a younger
-# one and still sorts ahead of it): whatever a single `timeout 120` budget
-# reaches, it reaches starting from the oldest still-unaudited history
+# A candidate merged by anyone other than the Approver identity is not
+# *audited* — there is nothing for this detector to recompute against a
+# merge nothing in this pipeline armed — but the `repos/SLUG/pulls/N` read
+# that established that fact is recorded too, once, as its own
+# `outcome: "not-approver"` line (`agent-cycle.sh` logs it as a distinct
+# `landing-audit-skip` event, kept out of `counts.escape_audits` — see
+# "Output" below — since it is not a landing audit finding). That read is
+# therefore paid exactly once per pull request, the same as an audited one,
+# never again on a later cycle: the fact of who merged something is as fixed
+# as the fact of whether recomputed eligibility agreed with it.
+# `_escape_audit_candidates` lists oldest-created first for this reason
+# (GitHub's own `sort=created&direction=asc` — creation order, which is not
+# quite merge order: a long-lived pull request merges after a younger one
+# and still sorts ahead of it): whatever a single `timeout 120` budget
+# reaches, it reaches starting from the oldest still-unrecorded history
 # rather than an ever-shifting newest slice, so the ground a cycle covers
-# stays covered instead of being displaced by newer merges landing ahead
-# of it.
-#
-# That buys forward progress only while the reads a candidate sits behind
-# still fit inside the budget. They are the non-Approver-merged candidates
-# ahead of it, and their cost never shrinks — so where that cost alone
-# exceeds the budget the sweep stops at the same frontier on every cycle,
-# indefinitely, and the candidates behind it are never audited at all. Newly
-# merged pull requests sort last, so they are the ones a frozen frontier
-# never reaches. Measured against Poetic-Poems/agent-ops on 2026-08-22: 190
-# merged `pr_label`-carrying pull requests, none of them merged by the
-# Approver identity, at ~0.9 s per `repos/SLUG/pulls/N` read — about 170 s
-# of unavoidable reads against a 120 s budget, a frontier around the 130th
-# oldest candidate. What this audit reports is therefore a floor on what has
-# been checked, never a statement of coverage.
+# stays covered instead of being displaced by newer merges landing ahead of
+# it, and — because every candidate this reaches becomes free to skip from
+# the very next cycle onward, whichever of the two facts it turned out to
+# carry — a cycle's budget goes further than the last cycle's until the
+# whole backlog is recorded, rather than being pinned at a permanent
+# frontier. Measured against Poetic-Poems/agent-ops on 2026-08-22, before
+# this backlog was ever recorded: 190 merged `pr_label`-carrying pull
+# requests, none of them merged by the Approver identity, at ~0.9 s per
+# `repos/SLUG/pulls/N` read — about 170 s to record all of them once against
+# a 120 s budget, so paying down that one-time backlog itself spans more
+# than a single cycle. What `counts.escape_audits` reports is therefore a
+# floor on what has been checked at any given moment, but, unlike before
+# this fix, one that converges on complete coverage as the backlog is paid
+# down rather than one permanently short of it.
 #
 # ## Output
 #
-# One compact JSON object per newly-audited pull request, printed to stdout —
-# never appended to the fleet log directly. Requirement 33 reserves that
-# single-writer act to `agent-cycle.sh`, under its own lock (agents/scripts
-# report; the Script translates into events) — this script is invoked from
-# there, once per repository per cycle, and never runs standalone against
-# the live log for that reason, exactly the same shape
+# One compact JSON object per newly-recorded pull request, printed to
+# stdout — never appended to the fleet log directly. Requirement 33 reserves
+# that single-writer act to `agent-cycle.sh`, under its own lock
+# (agents/scripts report; the Script translates into events) — this script
+# is invoked from there, once per repository per cycle, and never runs
+# standalone against the live log for that reason, exactly the same shape
 # `scripts/sweep-human-visibility.sh` already established. Each line:
 #
-#   {"outcome": "clean"|"escape"|"unverifiable", "pr_url": "...",
+#   {"outcome": "clean"|"escape"|"unverifiable"|"not-approver", "pr_url": "...",
 #    "repo": "OWNER/REPO", "number": 123, "merge_commit_sha": "..."|null,
 #    "source": "..."|null, "complexity_recomputed": "low"|"medium"|"high"|null,
 #    "protected_paths_hit": true|false|null, "protected_paths": [...]|null,
@@ -138,7 +152,15 @@
 #
 # `reason` is always present: for `clean` it says so plainly; for `escape` it
 # names which check disagreed; for `unverifiable` it names which input could
-# not be reconstructed.
+# not be reconstructed; for `not-approver` it names who merged it instead. The
+# first three are audit findings — `agent-cycle.sh` logs them as
+# `classifier-escape` (escape) or `landing-audit` (clean/unverifiable), and
+# `scripts/publish-dashboard.sh` folds exactly those two event names into
+# `counts.escape_audits`. `not-approver` is not an audit finding — nothing
+# armed this merge, so there is no eligibility to have recomputed —
+# `agent-cycle.sh` logs it instead as `landing-audit-skip`, a durable record
+# of "already looked at, nothing to audit" that `counts.escape_audits`
+# deliberately never folds in, kept apart for exactly that reason.
 #
 # Usage:
 #   scripts/detect-classifier-escapes.sh SLUG APPROVER_LOGIN LOG_FILE
@@ -263,6 +285,29 @@ _escape_audit_routine_sources() {
   printf '["register-hygiene","tech-debt"]'
 }
 
+# --- The reimplemented merge_autonomy configured-level resolution -----------
+# Deliberately not sourced from lib/merge-autonomy.sh's
+# merge_autonomy_configured_level — same reasoning as the protected-path list
+# above, and pinned against it the same way in
+# test/detect-classifier-escapes.test.sh. Configured, not effective: this
+# recomputation has no state-repo access to reconstruct a since-cleared kill
+# switch or a since-lifted merge-budget freeze, so — like the routine-sources
+# resolution above — it judges a landing against what SLUG's configuration
+# says today, never what was in force the moment it merged.
+_escape_audit_configured_level() {
+  local config_json="$1" repo_slug="$2" repo_level top_level
+  repo_level="$(jq -r --arg slug "$repo_slug" \
+    '(.repos // [])[] | select(.slug == $slug) | .merge_autonomy // empty' \
+    <<<"$config_json" 2>/dev/null | head -1)"
+  if [[ -n "$repo_level" && "$repo_level" != "null" ]]; then
+    printf '%s' "$repo_level"
+    return 0
+  fi
+  top_level="$(jq -r '.merge_autonomy // "human"' <<<"$config_json" 2>/dev/null)"
+  [[ -n "$top_level" && "$top_level" != "null" ]] || top_level="human"
+  printf '%s' "$top_level"
+}
+
 # --- The merge commit's own file list ---------------------------------------
 # repos/SLUG/commits/SHA, never repos/SLUG/pulls/N/files (landing_protected_
 # paths_hit's own read) — a genuinely different GitHub resource. Two distinct
@@ -339,11 +384,15 @@ _escape_audit_candidates() {
     --jq '.[] | select(.pull_request != null and .pull_request.merged_at != null) | .number'
 }
 
-# --- Already-audited pr_urls, and recorded landing-armed facts, from the
-# fleet log -------------------------------------------------------------------
+# --- Already-seen pr_urls, and recorded landing-armed facts, from the fleet
+# log -------------------------------------------------------------------------
 audited_file="$(mktemp)"
 armed_file="$(mktemp)"
-trap 'rm -f "$audited_file" "$armed_file"' EXIT
+# INT/TERM/HUP alongside EXIT: `agent-cycle.sh` runs this script under
+# `timeout 120`, and on a timeout bash takes the default fatal action for
+# SIGTERM and never reaches an EXIT-only trap, leaking both temp files every
+# time the sweep actually times out — the normal case here, not an edge case.
+trap 'rm -f "$audited_file" "$armed_file"' EXIT INT TERM HUP
 
 read_log() {
   if [[ "$log_source" == "-" ]]; then
@@ -356,7 +405,7 @@ read_log() {
 read_log | jq -c -R 'fromjson? // empty' 2>/dev/null > "$audited_file.raw" || true
 
 jq -c --arg r "$slug" \
-  'select((.repo // "") == $r and (.event == "classifier-escape" or .event == "landing-audit")) | .pr_url // empty' \
+  'select((.repo // "") == $r and (.event == "classifier-escape" or .event == "landing-audit" or .event == "landing-audit-skip")) | .pr_url // empty' \
   "$audited_file.raw" 2>/dev/null | sort -u > "$audited_file" || true
 
 jq -c --arg r "$slug" \
@@ -376,6 +425,7 @@ recorded_source_for() {
 
 config_json="$(cat "$CONFIG_FILE" 2>/dev/null || printf '{}')"
 routine_json="$(_escape_audit_routine_sources "$config_json" "$slug")"
+configured_level="$(_escape_audit_configured_level "$config_json" "$slug")"
 
 emit() {
   local outcome="$1" pr_url="$2" number="$3" sha="$4" source="$5" complexity="$6" \
@@ -396,16 +446,15 @@ while IFS= read -r number; do
 
   # GitHub's own `html_url` for a pull request is always this exact shape —
   # the same value `pr_url` below reads back out of the pulls/N response —
-  # so an already-audited candidate is recognised, and skipped, without
-  # spending that read at all. See "Idempotency" above for why this bounds
-  # only the Approver-merged half of the candidate list.
+  # so an already-seen candidate is recognised, and skipped, without
+  # spending that read at all. See "Idempotency" above for what this bounds.
   pr_url="https://github.com/$slug/pull/$number"
   already_audited "$pr_url" && continue
 
   pr_json="$(gh_retry api "repos/$slug/pulls/$number")" || {
     # An unreadable pull request record: cannot even confirm merged_by, so
     # this candidate is neither confirmed as an Approver-identity landing
-    # nor safely skippable forever. Left unaudited rather than guessed at —
+    # nor safely skippable forever. Left unrecorded rather than guessed at —
     # the next cycle's run tries again, exactly as an unreadable candidate
     # anywhere else in this codebase is retried, not given up on.
     continue
@@ -413,7 +462,16 @@ while IFS= read -r number; do
   merged="$(jq -r '.merged // false' <<<"$pr_json" 2>/dev/null)"
   [[ "$merged" == "true" ]] || continue
   merged_by="$(jq -r '.merged_by.login // ""' <<<"$pr_json" 2>/dev/null)"
-  [[ "$merged_by" == "$approver_login" ]] || continue
+  if [[ "$merged_by" != "$approver_login" ]]; then
+    # Nothing armed this merge, so there is no eligibility to have
+    # recomputed — but the read that established who merged it is real, and
+    # recording it once (see "Idempotency" above) is what stops it being
+    # paid again every future cycle for as long as this repository keeps
+    # producing them.
+    emit "not-approver" "$pr_url" "$number" "" "" "" "" "[]" \
+      "merged by $merged_by, not the Approver identity ($approver_login) — nothing for this audit to recompute"
+    continue
+  fi
 
   merged_at="$(jq -r '.merged_at // ""' <<<"$pr_json" 2>/dev/null)"
   sha="$(jq -r '.merge_commit_sha // ""' <<<"$pr_json" 2>/dev/null)"
@@ -470,6 +528,13 @@ while IFS= read -r number; do
 
   eligible=1
   disagreements=()
+  case "$configured_level" in
+    agent-merges-routine|agent-merges-all) ;;
+    *)
+      eligible=0
+      disagreements+=("$slug's configured merge_autonomy level is $configured_level, not agent-merges-routine or agent-merges-all (current configuration; like the routine-sources list, this is not reconstructed as of the moment of merge)")
+      ;;
+  esac
   case "$complexity" in
     low|medium) ;;
     *) eligible=0; disagreements+=("complexity was $complexity, not low or medium") ;;

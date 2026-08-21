@@ -315,29 +315,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   escapes.sh`, run once per cycle for every configured repository, is an
   independent, read-only, post-hoc check that every pull request which
   actually landed under the Approver identity really was eligible — never
-  calling `landing_eligible`, and never sourcing `lib/landing.sh` at all
-  (the protected-path list and the routine-sources resolution are each
-  reimplemented from scratch, so a bug shared between the classifier and its
-  own auditor cannot pass unnoticed by both agreeing). For every merged,
-  `pr_label`-carrying pull request whose `merged_by` is the Approver App's
-  own login, it recomputes the protected-path hit from the merge commit's
-  own file list, the complexity from the pull request's labelled/unlabelled
-  timeline as it stood at `merged_at`, and takes the work source from the
-  fleet log's own `landing-armed` event (the one input GitHub carries no
-  field for at all) — never from what this pipeline recorded about its own
+  calling `landing_eligible`, and never sourcing `lib/landing.sh` or
+  `lib/merge-autonomy.sh` at all (the protected-path list, the
+  routine-sources resolution and the `merge_autonomy` configured-level
+  resolution are each reimplemented from scratch, so a bug shared between
+  the classifier and its own auditor cannot pass unnoticed by both
+  agreeing). For every merged, `pr_label`-carrying pull request whose
+  `merged_by` is the Approver App's own login, it recomputes the
+  repository's own configured `merge_autonomy` level — `landing_eligible`'s
+  own first gate — the protected-path hit from the merge commit's own file
+  list, the complexity from the pull request's labelled/unlabelled timeline
+  as it stood at `merged_at`, and takes the work source from the fleet
+  log's own `landing-armed` event (the one input GitHub carries no field
+  for at all) — never from what this pipeline recorded about its own
   decision. Any input that cannot be reconstructed reports `unverifiable`,
   never `clean`; a disagreement is a first-class `classifier-escape` event,
-  loud rather than a row nobody reads. Each merged pull request is audited
-  at most once, ever. Surfaces as a new `audit`/`audit_reason` column on the
-  autonomous-landings digest's own rows, and as an all-time
-  `counts.escape_audits` scoreboard (checked/clean/escapes/unverifiable) on
-  the dashboard, never windowed like the digest above it — an escape is a
-  permanent fact about one merged pull request. The sweep runs under a
-  120-second budget per repository per cycle and reads its candidates
-  oldest-first, so on a repository whose candidate list costs more than that
-  to walk it audits only as far as one pass reaches: the scoreboard is a
-  floor on what has been checked, not a coverage statement (requirement 8e
-  records where that frontier sits today).
+  loud rather than a row nobody reads. Each merged pull request is looked at
+  most once, ever; one merged by anyone other than the Approver identity is
+  not an audit finding, but that fact too is recorded once (its own
+  `landing-audit-skip` event, kept out of the scoreboard below), so the read
+  that discovers it is never repeated on a later cycle. Surfaces as a new
+  `audit`/`audit_reason` column on the autonomous-landings digest's own
+  rows, and as an all-time `counts.escape_audits` scoreboard
+  (checked/clean/escapes/unverifiable) on the dashboard, never windowed like
+  the digest above it — an escape is a permanent fact about one merged pull
+  request. The sweep runs under a 120-second budget per repository per cycle
+  and reads its candidates oldest-first, so on a repository whose candidate
+  list costs more than that to walk in one pass it converges over as many
+  cycles as it takes rather than stalling at a permanent frontier: the
+  scoreboard is a floor on what has been checked at any given moment, not a
+  final coverage statement (requirement 8e records the size of that backlog
+  as of the day this landed).
 
 - The deterministic eligibility classifier and the arming/enqueue step (D18
   WI-7, requirement 8d; agent-ops#410): at `merge_autonomy: agent-merges-routine`
