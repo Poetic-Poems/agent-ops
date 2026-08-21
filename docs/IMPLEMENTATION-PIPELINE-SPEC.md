@@ -14579,21 +14579,21 @@ pull request, run the ones the change touches and any it could regress.
     re-enters gate 4.5 too, and a control it finds unmet there refuses the
     pull request identically. A pull request whose `complexity:*` label
     already reads `high`, or that carries no standing Approver `APPROVED`
-    review (ordinary in-flight work, not a
-    stranded approval), is never offered at all — cheap, fresh-read
-    exclusions that keep this sweep from re-attempting, and re-logging, work
-    the gates below would refuse identically every cycle. The one gate this
-    sweep answers differently from the original round is the pull request's
-    own `source`: not re-derivable from GitHub (there is no field for it, and
-    it is fixed at claim time regardless), so `landing_retry_source`
-    (`lib/landing.sh`) reads it back from the fleet's own union log's
-    `selection` event for that repository and branch, keeping only the most
-    recent when a branch was reused; a pull request whose source cannot be
-    resolved this cycle is skipped, never guessed at. Every arm or refusal
-    this sweep produces is `landing-armed`/`landing-refused`, the same events
-    requirement 8d's own gates always log, additionally carrying `retry:
-    true` so the fleet log (and any reader of it) can tell a sweep-driven
-    landing apart from the round that first approved it.
+    review (ordinary in-flight work, not a stranded approval), is never
+    offered at all — cheap, fresh-read exclusions that keep this sweep from
+    re-attempting, and re-logging, work the gates below would refuse
+    identically every cycle. The one gate this sweep answers differently
+    from the original round is the pull request's own `source`: not
+    re-derivable from GitHub (there is no field for it, and it is fixed at
+    claim time regardless), so `landing_retry_source` (`lib/landing.sh`)
+    reads it back from the fleet's own union log's `selection` event for
+    that repository and branch, keeping only the most recent when a branch
+    was reused; a pull request whose source cannot be resolved this cycle is
+    skipped, never guessed at. Every arm or refusal this sweep produces is
+    `landing-armed`/`landing-refused`, the same events requirement 8d's own
+    gates always log, additionally carrying `retry: true` so the fleet log
+    (and any reader of it) can tell a sweep-driven landing apart from the
+    round that first approved it.
 
     **Neither this sweep nor this round's own arming step ever arms more of
     a repository's stranded pull requests, between them, than that
