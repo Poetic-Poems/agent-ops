@@ -93,7 +93,7 @@ eval "$routine_sources_block"
 # shellcheck source=lib/landing.sh
 . "$SCRIPT_DIR/lib/landing.sh"
 
-for path in ".github/workflows/ci.yml" "deploy/docker/Dockerfile" "prompts/implementor.md" \
+for path in ".github/workflows/ci.yml" "deploy/docker/Dockerfile" "prompts/implementer.md" \
             "lib/landing.sh" "config.schema.json" "config.json" "agent-cycle.sh" \
             "review-cycle.sh" "CODEOWNERS" \
             "README.md" "scripts/detect-classifier-escapes.sh" "test/landing.test.sh" \
