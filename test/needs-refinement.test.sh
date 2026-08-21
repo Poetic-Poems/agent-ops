@@ -84,14 +84,6 @@ assert_contains() {
 cat >"$tmp_dir/gh" <<'STUB'
 #!/usr/bin/env bash
 d="$(dirname "$0")"
-# `issue view <n> -R <slug> --json assignees --jq ...` serves the logins in
-# $tmp_dir/issue-assignees, one per line; $tmp_dir/view-fail makes it fail —
-# the read refinement_assignee_project has to survive without ever recording.
-if [[ "$1" == "issue" && "$2" == "view" ]]; then
-  [[ -f "$d/view-fail" ]] && exit 1
-  cat "$d/issue-assignees" 2>/dev/null
-  exit 0
-fi
 [[ "$1" == "issue" && "$2" == "edit" ]] || exit 1
 number="$3"; shift 3
 repo=""; action=""; label=""; assignee=""
@@ -268,94 +260,69 @@ assert_eq "a voided item's label is still findable, so it can be taken off" \
   "$(printf 'o/r\t52\tneeds-refinement')" \
   "$(refinement_label_targets "$(blocked_items "$log")" 52 "o/r")"
 
-# --- Requirement 38b: the same projection, for the assignment -------------------
-# agent-ops#203 was labelled correctly and still invisible: a human's
-# Assigned-to-me dashboard has nothing to do with a label. The assignment
-# mirrors the label's lifecycle exactly — applied when the block is recorded,
-# removed when it clears — read from its own field so the Script never removes
-# an assignment it did not make.
+# --- Requirement 38b: the same projection, for `blocked`/`blocked:<reason>` ----
+# agent-ops#203 was labelled correctly and still invisible: a human's filtered
+# issue list has nothing to do with an unfamiliar label. Before agent-ops#639
+# this projected an assignment instead; now it projects two further labels,
+# mirroring the first label's lifecycle exactly — applied when the block is
+# recorded, removed when it clears — read from their own fields so the Script
+# never removes a label it did not apply.
 
-fields="$(refinement_block_fields "$good" "" "octocat")"
-assert_eq "a block with no assignee arg records none" "null" \
-  "$(jq -r '.needs_refinement_assignee // "null"' <<<"$(refinement_block_fields "$good")")"
-assert_eq "a block given one records who it assigned" "octocat" \
-  "$(jq -r '.needs_refinement_assignee' <<<"$fields")"
-assert_eq "label and assignee are independent fields on the same block" \
-  "needs-refinement octocat" \
-  "$(jq -r '"\(.needs_refinement_label) \(.needs_refinement_assignee)"' \
-     <<<"$(refinement_block_fields "$good" needs-refinement octocat)")"
+assert_eq "the taxonomy names needs-refinement's reason label" \
+  "blocked:needs-refinement" "$(refinement_blocked_reason_label needs-refinement)"
+assert_eq "a kind with no reason label of its own gets none" "" \
+  "$(refinement_blocked_reason_label something-else)"
 
-reset_assignee_calls
-assert_eq "assigning the issue succeeds" "0" \
-  "$(refinement_assignee_add "o/r" 52 octocat; echo $?)"
-assert_eq "  ... through one gh call" "assign o/r 52 octocat" "$(assignee_calls)"
+fields="$(refinement_block_fields "$good" "" blocked "blocked:needs-refinement")"
+assert_eq "a block with no blocked-label args records neither" "null null" \
+  "$(jq -r '"\(.blocked_label // "null") \(.blocked_reason_label // "null")"' \
+     <<<"$(refinement_block_fields "$good")")"
+assert_eq "a block given both records which it applied" "blocked blocked:needs-refinement" \
+  "$(jq -r '"\(.blocked_label) \(.blocked_reason_label)"' <<<"$fields")"
+assert_eq "all three labels are independent fields on the same block" \
+  "needs-refinement blocked blocked:needs-refinement" \
+  "$(jq -r '"\(.needs_refinement_label) \(.blocked_label) \(.blocked_reason_label)"' \
+     <<<"$(refinement_block_fields "$good" needs-refinement blocked "blocked:needs-refinement")")"
 
-printf 'octocat\n' >"$tmp_dir/missing-assignees"
-assert_eq "an assignee who is not a collaborator fails rather than silently passing" "1" \
-  "$(refinement_assignee_add "o/r" 52 octocat; echo $?)"
-rm -f "$tmp_dir/missing-assignees"
-
-# --- The projection reads before it writes (requirement 38b) --------------------
-# `gh issue edit --add-assignee` is a no-op-success on an issue already
-# assigned, so `refinement_assignee_project` reads the assignee list first: a
-# pre-existing assignment — the human's own, made for their own reasons — is
-# `present`, untouched and unrecorded, and clearing the block later never
-# takes it off. Only an assignment the projection itself added is `added`,
-# i.e. the caller's to record and the clearing's to remove.
-reset_assignee_calls
-rm -f "$tmp_dir/issue-assignees" "$tmp_dir/view-fail"
-assert_eq "an unassigned issue is assigned and recorded" "added" \
-  "$(refinement_assignee_project "o/r" 52 octocat)"
-assert_eq "  ... through one gh edit call" "assign o/r 52 octocat" "$(assignee_calls)"
-
-reset_assignee_calls
-printf 'octocat\n' >"$tmp_dir/issue-assignees"
-assert_eq "a pre-existing assignment is present, not re-added" "present" \
-  "$(refinement_assignee_project "o/r" 52 octocat)"
-assert_eq "  ... and nothing is edited at all" "" "$(assignee_calls)"
-
-reset_assignee_calls
-printf 'someone-else\n' >"$tmp_dir/issue-assignees"
-assert_eq "someone else's assignment does not mask the add" "added" \
-  "$(refinement_assignee_project "o/r" 52 octocat)"
-assert_eq "  ... which still happens" "assign o/r 52 octocat" "$(assignee_calls)"
-
-reset_assignee_calls
-rm -f "$tmp_dir/issue-assignees"
-printf x >"$tmp_dir/view-fail"
-assert_eq "an unreadable assignee list is applied best-effort but never recorded" \
-  "unrecorded" "$(refinement_assignee_project "o/r" 52 octocat)"
-assert_eq "  ... the best-effort add still reaches the issue" \
-  "assign o/r 52 octocat" "$(assignee_calls)"
-rm -f "$tmp_dir/view-fail"
-
-printf 'octocat\n' >"$tmp_dir/missing-assignees"
-rm -f "$tmp_dir/issue-assignees"
-assert_eq "a non-collaborator fails the projection as it fails the add" "failed" \
-  "$(refinement_assignee_project "o/r" 52 octocat)"
-rm -f "$tmp_dir/missing-assignees"
+reset_calls
+assert_eq "applying the blocked label succeeds" "0" \
+  "$(refinement_label_add "o/r" 52 "$REFINEMENT_BLOCKED_LABEL"; echo $?)"
+assert_eq "  ... and so does the reason label" "0" \
+  "$(refinement_label_add "o/r" 52 "$(refinement_blocked_reason_label needs-refinement)"; echo $?)"
+assert_eq "  ... through two gh calls" \
+  "$(printf 'add o/r 52 blocked\nadd o/r 52 blocked:needs-refinement')" "$(label_calls)"
 
 cat > "$log" <<'EOF'
-{"ts":"2026-07-22T09:00:00Z","cycle":"c0","event":"attempt-failed","stage":"coordinator","repo":"o/r","item":"52","kind":"needs-refinement","detail":"gated on a decision","unblock_condition":"which packaging approach","needs_refinement_label":"needs-refinement","needs_refinement_assignee":"octocat"}
+{"ts":"2026-07-22T09:00:00Z","cycle":"c0","event":"attempt-failed","stage":"coordinator","repo":"o/r","item":"52","kind":"needs-refinement","detail":"gated on a decision","unblock_condition":"which packaging approach","needs_refinement_label":"needs-refinement","blocked_label":"blocked","blocked_reason_label":"blocked:needs-refinement"}
 {"ts":"2026-07-22T09:00:01Z","cycle":"c0","event":"attempt-failed","stage":"coordinator","repo":"o/r","item":"TD26071901","kind":"needs-refinement","detail":"no scope bound","unblock_condition":"a scope bound"}
 EOF
 blocked="$(blocked_items "$log")"
-assert_eq "the assigned issue is found for removal" \
-  "$(printf 'o/r\t52\toctocat')" \
-  "$(refinement_assignee_targets "$blocked" 52)"
-assert_eq "a refinement block that was never assigned has nothing to remove" "" \
-  "$(refinement_assignee_targets "$blocked" TD26071901)"
+assert_eq "the labelled issue's two blocked labels are both found for removal" \
+  "$(printf 'o/r\t52\tblocked\no/r\t52\tblocked:needs-refinement')" \
+  "$(refinement_blocked_label_targets "$blocked" 52)"
+assert_eq "a refinement block that was never blocked-labelled has nothing to remove" "" \
+  "$(refinement_blocked_label_targets "$blocked" TD26071901)"
 assert_eq "a repo-scoped clear matches its own repo" \
-  "$(printf 'o/r\t52\toctocat')" \
-  "$(refinement_assignee_targets "$blocked" 52 "o/r")"
+  "$(printf 'o/r\t52\tblocked\no/r\t52\tblocked:needs-refinement')" \
+  "$(refinement_blocked_label_targets "$blocked" 52 "o/r")"
 assert_eq "and not another repo's identically-numbered issue" "" \
-  "$(refinement_assignee_targets "$blocked" 52 "o/other")"
+  "$(refinement_blocked_label_targets "$blocked" 52 "o/other")"
 
+reset_calls
+while IFS=$'\t' read -r t_repo t_num t_label; do
+  refinement_label_remove "$t_repo" "$t_num" "$t_label"
+done < <(refinement_blocked_label_targets "$blocked" 52 "o/r")
+assert_eq "clearing the block takes both labels off" \
+  "$(printf 'remove o/r 52 blocked\nremove o/r 52 blocked:needs-refinement')" "$(label_calls)"
+
+# --- Requirement 38b's migration: `refinement_assignee_remove` survives ---------
+# alone (agent-ops#639) — the one primitive `scripts/sweep-legacy-refinement-
+# assignees.sh` needs to undo a legacy block's stale assignment. Nothing here
+# adds an assignment any more; this only ever removes one.
 reset_assignee_calls
-while IFS=$'\t' read -r t_repo t_num t_assignee; do
-  refinement_assignee_remove "$t_repo" "$t_num" "$t_assignee"
-done < <(refinement_assignee_targets "$blocked" 52 "o/r")
-assert_eq "clearing the block takes the assignment off" "unassign o/r 52 octocat" "$(assignee_calls)"
+assert_eq "removing a legacy assignment succeeds" "0" \
+  "$(refinement_assignee_remove "o/r" 52 octocat; echo $?)"
+assert_eq "  ... through one gh call" "unassign o/r 52 octocat" "$(assignee_calls)"
 
 # --- Requirement 35a: a refinement block is eligible like any other -------------
 # Deliberately unchanged by the marker. The threshold delay is a feature here:

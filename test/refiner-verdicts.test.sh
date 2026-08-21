@@ -150,18 +150,13 @@ chmod +x "$fake_root/lib/claim.sh"
 
 # --- The gh stub, through the library's own REFINEMENT_GH hook --------------
 # The same stub shape as test/needs-refinement.test.sh: label edits append to
-# $tmp_dir/label-calls, assignee edits to $tmp_dir/assignee-calls, and
-# `issue view --json assignees` serves $tmp_dir/issue-assignees — required by
-# `refinement_assignee_project`, which reads before it writes. Stubbing here
-# rather than overriding `refinement_label_add`/`refinement_assignee_project`
-# keeps the label and assignment projections themselves under test.
+# $tmp_dir/label-calls, assignee edits (only ever `refinement_assignee_remove`
+# now — nothing here adds an assignment any more) to $tmp_dir/assignee-calls.
+# Stubbing here rather than overriding `refinement_label_add` keeps the label
+# projections themselves under test.
 cat >"$tmp_dir/gh" <<'STUB'
 #!/usr/bin/env bash
 d="$(dirname "$0")"
-if [[ "$1" == "issue" && "$2" == "view" ]]; then
-  cat "$d/issue-assignees" 2>/dev/null
-  exit 0
-fi
 [[ "$1" == "issue" && "$2" == "edit" ]] || exit 1
 number="$3"; shift 3
 repo=""; action=""; label=""; assignee=""
@@ -181,7 +176,6 @@ exit 0
 STUB
 chmod +x "$tmp_dir/gh"
 export REFINEMENT_GH="$tmp_dir/gh"
-: > "$tmp_dir/issue-assignees"
 
 # --- Stubs for every dependency whose own correctness is not this test's job -
 #
@@ -428,10 +422,14 @@ assert_eq "decline: missing is promoted to the unblock condition" \
   "a scope bound and acceptance criteria" "$(jq -r '.unblock_condition' <<<"$af_evt")"
 assert_eq "decline: the applied label is recorded on the block" "needs-refinement" \
   "$(jq -r '.needs_refinement_label' <<<"$af_evt")"
-assert_eq "decline: the applied assignee is recorded on the block" "tester" \
-  "$(jq -r '.needs_refinement_assignee' <<<"$af_evt")"
+assert_eq "decline: the applied blocked label is recorded on the block" "blocked" \
+  "$(jq -r '.blocked_label' <<<"$af_evt")"
+assert_eq "decline: the applied reason label is recorded on the block" "blocked:needs-refinement" \
+  "$(jq -r '.blocked_reason_label' <<<"$af_evt")"
 assert_contains "decline: the label reached gh" "gh-label add o/r 55 needs-refinement" "$calls"
-assert_contains "decline: the assignment reached gh" "gh-assignee assign o/r 55 tester" "$calls"
+assert_contains "decline: the blocked label reached gh" "gh-label add o/r 55 blocked" "$calls"
+assert_contains "decline: the reason label reached gh" "gh-label add o/r 55 blocked:needs-refinement" "$calls"
+assert_not_contains "decline: nothing is ever assigned any more" "gh-assignee" "$calls"
 xmn_evt="$(events_named "$calls" refiner-examined | head -n1)"
 assert_eq "decline: refiner-examined outcome is needs-refinement" \
   "needs-refinement" "$(jq -r '.outcome' <<<"$xmn_evt")"

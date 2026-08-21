@@ -5460,44 +5460,47 @@ implements.
       Enabler's escalation protocol: requirement 36a assigns every escalation
       issue to `enabler_assignee` precisely *so that* this exclusion keeps the
       pipeline from ever selecting its own request for human help as if it
-      were work, and requirement 38b assigns `enabler_assignee` to a
-      Co-Ordinator-recorded refinement block for the matching reason — an
-      issue still gated on a decision only a human can make must stay off the
-      candidate list until they act, and the config-time guard next to
-      `enabler_assignee` (Configuration table) exists only because an
-      unassigned escalation would defeat both at once. A human's own,
-      unrelated assignment to themselves is read exactly the same way: an
-      issue somebody has claimed by hand is theirs to work, not the
-      pipeline's, and this rule does not distinguish the two — there is no
-      reliable way to tell "assigned because a human is doing this" from
-      "assigned because this system's own bookkeeping put them there and
-      has not yet taken it off" from the assignee list alone. The rule
-      therefore stays a hard exclusion, and stays permanent: it is not eligible
-      for the Co-Ordinator's `needs_refinement` under requirement 16a, which is
-      scoped to items *reached and evaluated in this cycle's own priority
-      walk* — an assigned issue is dropped before that walk ever sees it, so
-      there is nothing for the Co-Ordinator to report a judgement about.
+      were work, and the config-time guard next to `enabler_assignee`
+      (Configuration table) exists only because an unassigned escalation
+      would defeat it. A human's own, unrelated assignment to themselves is
+      read exactly the same way: an issue somebody has claimed by hand is
+      theirs to work, not the pipeline's, and the rule does not distinguish
+      the two — an assigned issue reaching this exclusion is always either
+      one of those, never the pipeline's own bookkeeping (agent-ops#639: the
+      only bookkeeping assignment this pipeline ever made — requirement
+      38b's, below — was retired in favour of `blocked`/`blocked:<reason>`
+      labels precisely so this exclusion would no longer need to tell the
+      two apart). The rule therefore stays a hard exclusion, and stays
+      permanent: it is not eligible for the Co-Ordinator's `needs_refinement`
+      under requirement 16a, which is scoped to items *reached and evaluated
+      in this cycle's own priority walk* — an assigned issue is dropped
+      before that walk ever sees it, so there is nothing for the
+      Co-Ordinator to report a judgement about.
 
-      What was missing was never the rule — it was visibility into when the
-      rule outlives its own reason. Both projections above are meant to be
-      temporary, self-removing the moment their block clears (requirement 38b),
-      but a removal that fails (an unreadable assignee list, a `gh` call that
-      does not take) previously left an issue silently, permanently
-      unselectable, readable only by a human already suspicious enough to read
-      the filter's own source: agent-ops#338 sat this way for two days.
-      `issues_excluded` (requirement 3j) is the fix, and a *reporting* one
-      deliberately, not a *relaxing* one — narrowing the exclusion would only
-      let the pipeline pick up exactly the escalation and refinement-tracking
-      issues it exists to keep off the list. A live `issues_excluded` entry
-      on the Co-Ordinator's own input whose most recent `issues-excluded`
-      event (requirement 33) is old is now the signal a human needs to
-      notice a stuck removal and clear it by hand — a reading requirement
-      33's own unknown-skips rule protects: a cycle whose gather failed or
-      degraded leaves that event untouched rather than logging a fabricated
-      change, so a transient `gh` hiccup does not refresh the timestamp and
-      hide a genuinely stuck exclusion behind it — see also
-      requirement 36b's own duty to say so directly in a refinement's own
-      comment, when the item being refined is assigned at the time;
+      What was missing was never the rule — it was visibility into when a
+      projection outlives its own reason. Requirement 38b's label pair is
+      meant to be temporary, self-removing the moment its block clears
+      (`release_refinement_label`), but a removal that fails (a `gh` call
+      that does not take) can leave `blocked`/`blocked:needs-refinement` on
+      an issue whose block has already cleared — readable only by a human
+      already suspicious enough to read the filter's own source. Before
+      agent-ops#639 the equivalent failure was on the *assignment*, and sat
+      unnoticed for two days on agent-ops#338 before it was fixed by hand;
+      moving the projection to labels does not remove the possibility of a
+      failed removal, only the invisibility, since a stray `blocked`/
+      `blocked:<reason>` label is exactly as visible on the issue as the one
+      a human applies by hand. `issues_excluded` (requirement 3j) is the
+      general fix for a *stuck exclusion*, whatever put it there, and a
+      *reporting* one deliberately, not a *relaxing* one — narrowing the
+      exclusion would only let the pipeline pick up exactly the escalation
+      and refinement-tracking issues it exists to keep off the list. A live
+      `issues_excluded` entry on the Co-Ordinator's own input whose most
+      recent `issues-excluded` event (requirement 33) is old is now the
+      signal a human needs to notice a stuck removal and clear it by hand —
+      a reading requirement 33's own unknown-skips rule protects: a cycle
+      whose gather failed or degraded leaves that event untouched rather
+      than logging a fabricated change, so a transient `gh` hiccup does not
+      refresh the timestamp and hide a genuinely stuck exclusion behind it;
     - a security finding whose only available fix is one a human must choose
       (e.g. a Dependabot alert with no non-breaking upgrade, needing a major
       version bump that changes the repo's public behaviour) — flag it, don't
@@ -8770,32 +8773,27 @@ implements.
         no actor here may edit the register. Requirement 3h is its carrier.
 
       **The unselectability note** (agent-ops#447). For an issue item, before
-      posting, the Enabler checks the issue's own live assignees — a `gh` read,
-      since the runtime input's `assignee` names the login this system assigns
-      *to* (requirement 36a) and never who a given item is assigned to —
-      because requirement
-      16.4 excludes an assigned issue from the `issues` source regardless of
-      how good the refinement just written for it is: the two gatherers apply
-      that exclusion on different terms (`scripts/gather-issues.sh` deterministically,
-      `scripts/gather-hand-flagged-refinements.sh` not at all, by design — see
-      requirement 16.4's own note on why the exclusion stays permanent), so an
-      item can be *specified* here while remaining *unselectable* there, with
-      nothing about the refinement comment itself saying so. Where the issue
-      is currently assigned, the comment states plainly that it is presently
-      excluded from selection for that reason and what would release it: if
-      the assignment is this block's own projection (requirement 38b — which
-      the runtime input's `assignee` identifies, since that projection assigns
-      exactly that login, making it the ordinary case for a
-      `kind: "needs-refinement"` issue rather than a finding), that it
-      is expected to clear automatically the moment this verdict processes,
-      and if it is not — an assignee the Enabler cannot attribute to this
-      block, most often a human's own — that a human needs to remove it
-      before the issue becomes selectable, however complete the specification
-      above it now is. This is a **note**, never a **verdict**: it changes
-      nothing about the choice between `unblocked`, `still-blocked` and
-      `escalate` below, and never turns a refinement into an escalation on its
-      own — the assignment is ordinary, expected, load-bearing state, not a
-      decision gate.
+      posting, the Enabler checks the issue's own live assignees — a `gh`
+      read, since nothing pre-fetched carries it — because requirement 16.4
+      excludes an assigned issue from the `issues` source regardless of how
+      good the refinement just written for it is: the two gatherers apply
+      that exclusion on different terms (`scripts/gather-issues.sh`
+      deterministically, `scripts/gather-hand-flagged-refinements.sh` not at
+      all, by design — see requirement 16.4's own note on why the exclusion
+      stays permanent), so an item can be *specified* here while remaining
+      *unselectable* there, with nothing about the refinement comment itself
+      saying so. Since agent-ops#639, this block's own bookkeeping is never
+      an assignment — requirement 38b projects `blocked`/
+      `blocked:needs-refinement` labels instead, which the Enabler will
+      already see on the issue and which need no note of their own, since
+      they carry no ambiguity about who applied them. So any assignee found
+      here is unambiguously a human's own, made for their own reasons before
+      this verdict, and the comment states plainly that a human needs to
+      remove it before the issue becomes selectable, however complete the
+      specification above it now is. This is a **note**, never a
+      **verdict**: it changes nothing about the choice between `unblocked`,
+      `still-blocked` and `escalate` below, and never turns a refinement
+      into an escalation on its own.
     - **Escalates**, where a human must decide, answer, or act first — through
       the unchanged protocol of requirement 36a, in a **separate** issue. Never
       the work item's own issue: that protocol ends with "close this issue when
@@ -8805,8 +8803,16 @@ implements.
       close it, since the closure is what returns the item to a later engagement
       and their comments are what let that engagement complete the refinement.
       Where the work item is itself an issue, the Enabler also posts one
-      one-line comment on it linking to the escalation, so the context stays
-      visible where the work lives.
+      comment on it linking to the escalation, so the context stays visible
+      where the work lives — carrying a structured `Blocked-by: #<n>` line
+      naming the escalation issue's own number (agent-ops#639), the same
+      convention requirement 34j already parses out of any issue thread. That
+      line is what makes the link deterministic rather than merely readable:
+      the very next gather sees it, `scripts/gather-issues.sh` excludes the
+      work item as `blocked-by: #<n>` on its own (requirement 3j), and the
+      exclusion — and its clearing, the moment the escalation issue closes —
+      is recorded through the ordinary `issues-excluded` event without this
+      requirement needing a bespoke mechanism of its own.
 
       **`escalation_autonomy` (D18, agent-ops#627).** When the item this
       verdict escalates is a refinement disagreement — `kind:
@@ -9015,39 +9021,76 @@ implements.
     failure is: the pull request is finished and visible, only a notification
     is missing.
 
-38b. **A Co-Ordinator-recorded block gated on a human decision is assigned,
-    not only labelled.** Requirement 34e projects the `needs-refinement` label
-    onto the issue behind a `needs_refinement` report, but a label matches
-    nothing on Assigned-to-me — agent-ops#203 was exactly this shape (labelled
-    correctly, invisible regardless) until fixed by hand. `lib/refinement.sh`'s
-    `refinement_assignee_add`/`refinement_assignee_remove` mirror the label's
-    lifecycle: `log_needs_refinement_items` assigns `enabler_assignee`
-    to the issue alongside the label, recording it as
-    `needs_refinement_assignee` on the block's `attempt-failed` event (mirrored
-    by `refinement_block_fields`'s third argument) so `release_refinement_label`
-    can take the assignment off again — via `refinement_assignee_targets`, read
-    from the block record exactly as `refinement_label_targets` is — the moment
-    the block clears, by the same three paths that already release the label.
-    Best-effort, like the label: a failed assignment is a `warning`, and the
-    block is recorded regardless.
+38b. **A Co-Ordinator-recorded block gated on a human decision is labelled
+    `blocked` and by reason, not only by class.** Requirement 34e projects the
+    `needs-refinement` label onto the issue behind a `needs_refinement`
+    report, but that label alone matches nothing on a human's filtered issue
+    list unless they already know to look for it — agent-ops#203 was exactly
+    this shape (labelled correctly, effectively invisible) until fixed by
+    hand. From 2026-06 to 2026-08 this requirement closed that gap by
+    *assigning* `enabler_assignee` to the same issue, mirroring the label's
+    lifecycle; agent-ops#639 replaced that assignment with two further
+    labels, applied and removed exactly where the assignment used to be:
 
-    The mirror stops one step short of the label's, on purpose. The
-    assignment goes on through `refinement_assignee_project`, which reads the
-    issue's assignees before writing: an assignment already there — the
-    human's own, made for their own reasons before the block existed — is
-    left exactly as found and recorded as nothing, because `gh issue edit
-    --add-assignee` succeeds as a no-op on an assigned issue, and an
-    assignment recorded off the back of that no-op would be *removed* when
-    the block cleared — a false removal from the very list this requirement
-    exists to keep accurate, silently and by the pipeline's hand. The label
-    keeps its unconditional lifecycle and the asymmetry is deliberate:
-    `needs-refinement` is this system's own vocabulary, convergent with block
-    state by design (a hand-applied instance is itself read back as a report,
-    requirement 34g), where an assignment is a general-purpose signal the
-    projection only borrows. An unreadable assignee list assigns best-effort
-    but records nothing, with a `warning` saying so — over-holding an
-    assignment is cosmetic; removing one that may have pre-existed is the
-    defect the read exists to prevent.
+    - `blocked` — the generic hold marker `scripts/gather-issues.sh` already
+      excludes on (requirement 16.4's deterministic half), so the item is
+      unselectable through the same mechanism a human's own hand-applied
+      `blocked` label already uses, not a second one alongside it;
+    - `blocked:<reason>` — naming *why*, derived from the block's own `kind`
+      (and, for a future block class this projection does not cover yet,
+      `stage`): `blocked:needs-refinement` for `kind: "needs-refinement"`,
+      the only kind this projection has ever covered, since every block
+      `record_needs_refinement_block` records — the Co-Ordinator's own report
+      (requirement 16a), the Refiner's decline (requirement 39d), or the
+      Implementer's escape hatch (requirement 9f) — carries that kind.
+      `lib/refinement.sh`'s `refinement_blocked_reason_label` is the whole of
+      this taxonomy today, a one-entry table rather than a placeholder: a
+      future block class that earns its own reason label extends that
+      function's `case`, not this projection's callers.
+
+    Both are fixed, uncofigurable names, like `blocked` itself always has
+    been — there is nothing here for an installation to rename or disable, in
+    contrast to `needs_refinement_label` alongside them. `record_needs_refinement_block`
+    applies both through `refinement_label_add` (the same primitive
+    `needs_refinement_label` uses), recording which it actually managed to
+    apply as `blocked_label`/`blocked_reason_label` on the block's
+    `attempt-failed` event (`refinement_block_fields`'s third and fourth
+    arguments) so `release_refinement_label` can take them off again — via
+    `refinement_blocked_label_targets`, read from the block record exactly as
+    `refinement_label_targets` is — the moment the block clears, by the same
+    three paths that already release `needs_refinement_label`. Best-effort,
+    like that label: a failed application is a `warning`, and the block is
+    recorded regardless.
+
+    **This requirement never assigns anything.** Assignment stays reserved
+    for requirement 36a's own, genuine escalations — a *separate* issue a
+    human must personally act on — which is the only assignment this
+    pipeline makes of any issue, anywhere, since agent-ops#639. That is what
+    closes the ambiguity requirement 16.4's own note describes: before
+    agent-ops#639, an assigned issue reaching that exclusion could be a
+    genuine escalation, a human's own claim, or this requirement's
+    bookkeeping, with no reliable way to tell the three apart from the
+    assignee list alone; now it is always one of the first two.
+
+    **Migration** (agent-ops#639). Every block this requirement projected an
+    assignment onto before that change still carries `needs_refinement_assignee`
+    on its own, already-written `attempt-failed` event — nothing here rewrites
+    history — so `scripts/sweep-legacy-refinement-assignees.sh` finds every
+    still-open block whose event carries that field, removes the stale
+    assignment (`refinement_assignee_remove`, the one function this
+    requirement's old mechanism left behind, kept for exactly this) and
+    applies the `blocked`/`blocked:needs-refinement` pair this requirement
+    would have applied instead, all best-effort and idempotent — safe to
+    re-run, including from a cron job or a future cycle, since every step is
+    a no-op once already done and the matching set only ever shrinks as
+    blocks clear. Run once against every configured repository as part of
+    landing agent-ops#639 (21 assignments cleared by hand on 2026-08-21,
+    ahead of this fix; 14 more had accumulated in `Poetic-Poems/agent-ops`
+    alone by the time this script ran against it). A block recorded *after*
+    agent-ops#639 landed never carries `needs_refinement_assignee` in the
+    first place — `record_needs_refinement_block` never sets it — so the
+    script's matching set can only ever be the pre-existing backlog, never a
+    growing one.
 
 38c. **An idle, approved pull request is nudged, not left silent.** For every
     open, non-draft, `pr_label`-carrying pull request in every configured
@@ -10513,8 +10556,8 @@ What exists, and the requirements each part answers to:
    filesystem-CAS stub (`test/claim.test.sh`); must pass `shellcheck`.
 3h. `lib/refinement.sh` implementing the refinement class: requirement 16a's
    well-formedness bar for a `needs_refinement` entry, requirement 34e's block
-   fields and label projection and requirement 38b's assignment projection
-   beside it (`REFINEMENT_GH` substitutes a stub for tests,
+   fields and label projection and requirement 38b's `blocked`/`blocked:<reason>`
+   label projection beside it (`REFINEMENT_GH` substitutes a stub for tests,
    following `CLAIM_GH`), requirement 35d's per-engagement cap, and requirement
    36b's `item-refined` payload and thrash guard — `refinement_is_disagreement`
    beside it, the same "needs-refinement block with `refined_before` set" shape
@@ -14029,17 +14072,18 @@ pull request, run the ones the change touches and any it could regress.
     an empty blocking timestamp, an argument that is not a single JSON array,
     two concatenated pages, and an array whose elements break the extraction
     are each `unknown`, never `answered`. `test/needs-refinement.test.sh` passes:
-    `refinement_block_fields`'s third argument records `needs_refinement_assignee`
-    independent of the label argument; `refinement_assignee_add`/`_remove` each
-    make one `gh issue edit --add-assignee`/`--remove-assignee` call and fail
-    when the assignee is not a collaborator, the same way the label functions
-    fail when the label does not exist; `refinement_assignee_project` reads
-    the issue's assignees before writing — a pre-existing assignment is
-    `present` (untouched, unrecorded), an absent one is added and `added`,
-    an unreadable list is applied best-effort but `unrecorded`, and a
-    non-collaborator is `failed`; and `refinement_assignee_targets`
-    finds exactly the assigned issue, scoped by repo the same way
-    `refinement_label_targets` is, surviving a void the same way. `test/sweep-human-visibility.test.sh`
+    `refinement_blocked_reason_label` maps `needs-refinement` to
+    `blocked:needs-refinement` and any other kind to nothing;
+    `refinement_block_fields`'s third and fourth arguments record
+    `blocked_label`/`blocked_reason_label` independent of the label argument;
+    `refinement_label_add`/`_remove`, the same primitive `needs_refinement_label`
+    already uses, apply and remove both `blocked` and its reason label; and
+    `refinement_blocked_label_targets` finds both of an issue's blocked
+    labels, scoped by repo the same way `refinement_label_targets` is,
+    surviving a void the same way. `refinement_assignee_remove` — the one
+    survivor of what used to be a pair, kept for
+    `scripts/sweep-legacy-refinement-assignees.sh` alone — still makes one
+    `gh issue edit --remove-assignee` call. `test/sweep-human-visibility.test.sh`
     passes against a stubbed `gh`: a pull request with nothing blocking it and
     no known reviewer yet is both re-requested (from the approver) and, when
     also approved, mergeable, green and idle past `human_nudge_idle_hours`,

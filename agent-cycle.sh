@@ -1891,20 +1891,19 @@ log_recheck_clean_items() {
 # issue that never had it, or leave on an issue after the key changed.
 
 # release_refinement_label ITEM [REPO]
-# Take the projected label, and the projected assignment (requirement 38b),
-# off the issue behind ITEM, if this item's refinement block put them there.
-# Called wherever a block clears — the Co-Ordinator's own re-check, an Enabler
-# `unblocked`, and a `void` from either — because the label's and the
-# assignment's lifecycles mirror the block's and nothing else would ever take
-# them off.
+# Take the projected labels — `needs_refinement_label`, and `blocked`/
+# `blocked:<reason>` (requirement 38b, agent-ops#639) — off the issue behind
+# ITEM, if this item's refinement block put them there. Called wherever a
+# block clears — the Co-Ordinator's own re-check, an Enabler `unblocked`, and
+# a `void` from either — because all three labels' lifecycles mirror the
+# block's and nothing else would ever take them off.
 #
 # Reads the blocked extract this cycle computed *before* the Co-Ordinator ran,
 # which is the correct one: the block being cleared is by definition one that was
-# open when the cycle started. Best-effort throughout — a stale label or
-# assignment is a cosmetic fault on an issue, and no reason to disturb a cycle
-# recording state.
+# open when the cycle started. Best-effort throughout — a stale label is a
+# cosmetic fault on an issue, and no reason to disturb a cycle recording state.
 release_refinement_label() {
-  local item="$1" repo="${2:-}" t_repo t_num t_label t_assignee
+  local item="$1" repo="${2:-}" t_repo t_num t_label
   [[ -n "$item" ]] || return 0
   # A dry run changes nothing in any repository (requirement 12). It still logs
   # the verdicts on this path, as it always has, but a label is an outward act.
@@ -1922,12 +1921,16 @@ release_refinement_label() {
            '{detail: $d}')"
     fi
   done < <(refinement_label_targets "${blocked_json:-[]}" "$item" "$repo")
-  while IFS=$'\t' read -r t_repo t_num t_assignee; do
-    [[ -n "$t_repo" && -n "$t_num" && -n "$t_assignee" ]] || continue
-    refinement_assignee_remove "$t_repo" "$t_num" "$t_assignee" || log_event "warning" \
-      "$(jq -nc --arg d "could not unassign $t_assignee from $t_repo#$t_num — the block is cleared regardless" \
-         '{detail: $d}')"
-  done < <(refinement_assignee_targets "${blocked_json:-[]}" "$item" "$repo")
+  while IFS=$'\t' read -r t_repo t_num t_label; do
+    [[ -n "$t_repo" && -n "$t_num" && -n "$t_label" ]] || continue
+    if refinement_label_remove "$t_repo" "$t_num" "$t_label"; then
+      log_event "own-label-action" "$(label_own_action_fields "$t_repo" "$t_num" "$t_label" "remove")"
+    else
+      log_event "warning" \
+        "$(jq -nc --arg d "could not remove the $t_label label from $t_repo#$t_num — the block is cleared regardless" \
+           '{detail: $d}')"
+    fi
+  done < <(refinement_blocked_label_targets "${blocked_json:-[]}" "$item" "$repo")
 }
 
 # record_needs_refinement_block ENTRY STAGE
@@ -1940,8 +1943,8 @@ release_refinement_label() {
 # The single recorder for every stage that can report this class of block —
 # the Co-Ordinator (requirement 16a), the Implementer's escape hatch
 # (requirement 9f), and the Refiner's own decline (requirement 39d). One
-# definition (requirement 34a): three reporters, one recorder, so the label,
-# the assignment and the block's shape can never drift between them.
+# definition (requirement 34a): three reporters, one recorder, so the labels
+# and the block's shape can never drift between them.
 #
 # Three entries are dropped rather than recorded, each with a warning, and all
 # three refusals are the Script's job rather than the reporting stage's:
@@ -1965,7 +1968,7 @@ release_refinement_label() {
 #     item, and recording one as a block would silently blind selection to an
 #     item the gate already cleared.
 record_needs_refinement_block() {
-  local entry="$1" stage="$2" repo item reason problem label assignee number who
+  local entry="$1" stage="$2" repo item reason problem label blocked_label blocked_reason_label reason_label number who
   who="$(pipeline_actor_label "$stage")"
   if ! problem="$(refinement_entry_problem "$entry")"; then
     log_event "warning" "$(jq -nc --arg d "$who needs_refinement entry dropped — it $problem" \
@@ -1991,11 +1994,12 @@ record_needs_refinement_block() {
     return 1
   fi
 
-  # No label or assignment on a dry run, and — because the event records what
-  # was actually applied — neither recorded either, so nothing later tries to
-  # remove something that was never there.
+  # No label on a dry run, and — because the event records what was actually
+  # applied — none recorded either, so nothing later tries to remove
+  # something that was never there.
   label=""
-  assignee=""
+  blocked_label=""
+  blocked_reason_label=""
   if ! (( DRY_RUN )); then
     number="$(refinement_issue_number "$entry")"
     if [[ -n "$number" ]]; then
@@ -2010,28 +2014,33 @@ record_needs_refinement_block() {
             '{detail: $d}')"
         fi
       fi
-      # Requirement 38b: the same projection the label gets, so a block gated
-      # on a decision the human has not made reaches the human's own
-      # Assigned-to-me dashboard the moment it is recorded, rather than
-      # waiting for the Enabler's own, much later, escalation. Through
-      # `refinement_assignee_project`, not `refinement_assignee_add`: an
-      # assignment the human made themselves before the block existed is
-      # recorded by neither, so clearing the block never removes it.
-      if [[ -n "$enabler_assignee" ]]; then
-        case "$(refinement_assignee_project "$repo" "$number" "$enabler_assignee")" in
-          added) assignee="$enabler_assignee" ;;
-          present) ;;
-          unrecorded)
-            log_event "warning" "$(jq -nc \
-              --arg d "could not read $repo#$number's assignees — $enabler_assignee was assigned best-effort but not recorded on the block, so clearing it will not unassign them" \
-              '{detail: $d}')"
-            ;;
-          *)
-            log_event "warning" "$(jq -nc \
-              --arg d "could not assign $enabler_assignee to $repo#$number — the block is recorded either way" \
-              '{detail: $d}')"
-            ;;
-        esac
+      # Requirement 38b (agent-ops#639): a block gated on a decision the human
+      # has not made gets `blocked` — the generic hold marker
+      # `scripts/gather-issues.sh` already excludes on — plus a reason label
+      # naming why, so it reaches the human's own filtered issue list the
+      # moment it is recorded, rather than waiting for the Enabler's own,
+      # much later, escalation. Fixed, uncofigurable names, unlike the label
+      # above: there is nothing to read back or disable.
+      if refinement_label_add "$repo" "$number" "$REFINEMENT_BLOCKED_LABEL"; then
+        blocked_label="$REFINEMENT_BLOCKED_LABEL"
+        log_event "own-label-action" \
+          "$(label_own_action_fields "$repo" "$number" "$REFINEMENT_BLOCKED_LABEL" "add")"
+      else
+        log_event "warning" "$(jq -nc \
+          --arg d "could not apply the $REFINEMENT_BLOCKED_LABEL label to $repo#$number — the block is recorded either way" \
+          '{detail: $d}')"
+      fi
+      reason_label="$(refinement_blocked_reason_label "$REFINEMENT_BLOCK_KIND")"
+      if [[ -n "$reason_label" ]]; then
+        if refinement_label_add "$repo" "$number" "$reason_label"; then
+          blocked_reason_label="$reason_label"
+          log_event "own-label-action" \
+            "$(label_own_action_fields "$repo" "$number" "$reason_label" "add")"
+        else
+          log_event "warning" "$(jq -nc \
+            --arg d "could not apply the $reason_label label to $repo#$number — the block is recorded either way" \
+            '{detail: $d}')"
+        fi
       fi
       # Requirement 39d: a fresher block supersedes an existing refinement, so
       # a `refined_label` a prior Refiner engagement left must come off too —
@@ -2052,7 +2061,7 @@ record_needs_refinement_block() {
   fi
 
   log_event "attempt-failed" "$(item_event_fields "$stage" "$reason" "$repo" "$item" \
-    "$(refinement_block_fields "$entry" "$label" "$assignee")")"
+    "$(refinement_block_fields "$entry" "$label" "$blocked_label" "$blocked_reason_label")")"
   return 0
 }
 

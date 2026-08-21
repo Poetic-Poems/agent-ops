@@ -394,35 +394,22 @@ pitfall you found while reading. Where it lands depends on the item:
   Co-Ordinator, which pastes it into the work order verbatim.
 
 **Before you post an issue's refinement, check who it is assigned to right
-now** (`gh issue view <n> --json assignees` — the runtime input's own
-`assignee` names *who this system assigns things to*, never who a given item
-is assigned to, so the item's own assignees are a live read, not something
-you already have). A
-specification is not the same thing as selectability: an assigned issue is
-excluded from the `issues` source (requirement 16.4) whatever the refinement
-says, and the two gatherers disagree about whether *finding* an item to refine
-also checks that — `scripts/gather-hand-flagged-refinements.sh`, which is how
-a hand-labelled issue reaches you, applies no assignee filter at all, by
-design, so you can be refining an issue the `issues` source will keep
-excluding the moment you are done. Where the issue is currently assigned, say
-so plainly in the comment you are about to post — after the specification,
-not instead of it:
-
-- If you can tell the assignment is this block's own bookkeeping — note that
-  it is expected, and should clear on its own once this verdict is processed.
-  The runtime input's top-level `assignee` is what to compare against: the
-  Script assigns exactly that login to a Co-Ordinator-recorded refinement
-  block's own issue when it records the block (requirement 38b), so for an
-  item you were handed as `kind: "needs-refinement"` an assignee equal to it
-  is the ordinary case, not a finding. The item's
-  `unblock_condition`/context saying a Co-Ordinator report put it there is
-  the same signal by another route.
-- If you cannot attribute it that way — a different login, or no way to tell
-  — say plainly that a human needs to remove the assignment before this issue
-  becomes selectable again, however complete the specification above it now
-  is. Agent-ops#338 is the failure this note exists to prevent: refined
-  cleanly, left silently assigned, unselectable for two days with nothing
-  anywhere saying why.
+now** (`gh issue view <n> --json assignees`). A specification is not the same
+thing as selectability: an assigned issue is excluded from the `issues`
+source (requirement 16.4) whatever the refinement says, and the two gatherers
+disagree about whether *finding* an item to refine also checks that —
+`scripts/gather-hand-flagged-refinements.sh`, which is how a hand-labelled
+issue reaches you, applies no assignee filter at all, by design, so you can
+be refining an issue the `issues` source will keep excluding the moment you
+are done. Since agent-ops#639, this system's own bookkeeping for a
+needs-refinement block is never an assignment — it is the `blocked` and
+`blocked:needs-refinement` labels you will already see on the issue
+(requirement 38b) — so any assignee found here is a human's own, made for
+their own reasons, and never this block's to explain away. Where the issue is
+currently assigned, say so plainly in the comment you are about to post —
+after the specification, not instead of it — that a human needs to remove the
+assignment before this issue becomes selectable again, however complete the
+specification above it now is.
 
 This is a note appended to the comment, never a reason to change your verdict:
 it does not turn a clean specification into an escalation, and it is not
@@ -443,9 +430,29 @@ later engagement, and their comments are what let that engagement finish the
 refinement instead of asking again.
 
 When the work item *is* an issue, also post one short comment on it linking to
-the escalation issue ("Specification for this is blocked on <link>"). The
-context then stays visible where the work lives, and a human who opens the issue
-is not left wondering why nothing is happening.
+the escalation issue — carrying a literal `Blocked-by: #<n>` line naming the
+escalation's own issue number (`Blocked-by: owner/repo#<n>` if it was filed in
+a different repository), the same structured form requirement 34j already
+parses out of any issue thread (agent-ops#639). Posting it here is what makes
+the dependency deterministic rather than the note it used to be: the very next
+gather sees it, `scripts/gather-issues.sh` excludes the work item as
+`blocked-by: #<n>` on its own, and the exclusion (and its clearing, the moment
+the escalation issue closes) is recorded through the ordinary
+`issues-excluded` event without depending on this projection's own labels or
+the human ever having removed a stray assignment by hand. Prose above the
+line is still worth writing — "Specification for this is blocked on the
+escalation below." — but `dependency_refs` only matches a `Blocked-by:` line
+at the **start** of its own line (an optional `-`/`*` marker aside), so the
+reference itself must sit on a line of its own, e.g.:
+
+```
+Specification for this is blocked on #123.
+
+Blocked-by: #123
+```
+
+The context then stays visible where the work lives, and a human who opens
+the issue is not left wondering why nothing is happening.
 
 **3. Leave it blocked, if the decision is deliberately parked.** Some gates are
 not oversights: an open question with a decide-by date in a roadmap or plan

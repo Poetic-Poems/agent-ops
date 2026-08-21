@@ -586,6 +586,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Requirement 38b no longer assigns a Co-Ordinator-, Refiner- or
+  Implementer-recorded refinement block's issue to `enabler_assignee`
+  (agent-ops#639): it projects `blocked` and `blocked:needs-refinement`
+  labels instead, mirroring the same lifecycle assignment used to. Assignment
+  now means only "a human must personally act" — an actual Enabler escalation
+  (requirement 36a) — never the pipeline's own bookkeeping, so it can no
+  longer be confused with the two. The Enabler's escalation-link comment
+  (requirement 36b, posted on the work item's own issue) now carries a
+  structured `Blocked-by: #<n>` line naming the escalation issue, which
+  requirement 34j's existing parser already excludes the work item on —
+  deterministic, rather than merely readable prose. New
+  `scripts/sweep-legacy-refinement-assignees.sh` clears the assignments the
+  old mechanism left behind on every still-open block that recorded one (21
+  cleared by hand on 2026-08-21 ahead of this fix; 14 more had accumulated in
+  `Poetic-Poems/agent-ops` by the time this landed) — idempotent, safe to
+  re-run against any repository at any time.
 - Every `item-void` a Co-Ordinator, Enabler or Implementer
   writes must now cite evidence in one of two checkable forms — a structured
   `{ref, path, expect, pattern}` shape, or a PR/commit citation naming the
