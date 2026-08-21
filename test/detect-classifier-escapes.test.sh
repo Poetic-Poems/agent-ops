@@ -459,6 +459,54 @@ assert_contains "a landing with no recorded source at all is unverifiable, never
 assert_contains "  ... naming the missing source as the reason" \
   "$line1_3" "source"
 
+# --- A SIGTERM actually stops the sweep, and takes its temp files with it ---
+# `agent-cycle.sh` runs this script under `timeout 120`, which sends one
+# SIGTERM and then waits — there is no `--kill-after` at the call site. So
+# both halves of the signal trap are load-bearing, and only one of them is
+# visible in the temp-file check: a handler that cleans up but falls off its
+# own end returns bash to the candidate loop, and the sweep runs on for the
+# whole candidate list with nothing left to bound it. This pins the exit as
+# well as the cleanup, against a stub whose reads are slow enough that an
+# unbounded run overshoots the budget by several multiples.
+slow_dir="$tmp_dir/slow"
+mkdir -p "$slow_dir/bin"
+cat > "$slow_dir/bin/gh" <<'SLOWSTUB'
+#!/usr/bin/env bash
+if [[ "$*" == *"issues"* ]]; then printf '%s\n' 1 2 3 4 5 6 7 8 9 10 11 12; exit 0; fi
+sleep 1
+printf '{"merged":true,"merged_by":{"login":"a-human"},"merged_at":"2026-01-01T00:00:00Z","merge_commit_sha":"abc","html_url":"x"}'
+SLOWSTUB
+chmod +x "$slow_dir/bin/gh"
+echo '{}' > "$slow_dir/config.json"
+: > "$slow_dir/log.jsonl"
+
+slow_start="$(date +%s)"
+PATH="$slow_dir/bin:$PATH" timeout 3 "$DETECTOR" "$SLUG" "$LOGIN" \
+  "$slow_dir/log.jsonl" --config "$slow_dir/config.json" \
+  > "$slow_dir/out.txt" 2>/dev/null
+slow_elapsed="$(( $(date +%s) - slow_start ))"
+
+assert_eq "a SIGTERM from timeout(1) actually stops the sweep, rather than resuming the loop" \
+  "yes" "$( (( slow_elapsed <= 5 )) && echo yes || echo "no — ran ${slow_elapsed}s under a 3s timeout" )"
+assert_eq "  ... while still delivering the lines it had already emitted" \
+  "yes" "$( [[ -s "$slow_dir/out.txt" ]] && echo yes || echo no )"
+
+# --- ... and the ordinary exit takes every temp file this script owns with
+# it: both scan buffers, the `.raw` intermediate, and `gh_retry`'s shared
+# response buffer. Checked against a TMPDIR of its own rather than /tmp, so
+# the assertion is about this script's own allocations and cannot be swayed
+# by whatever else on the machine happens to be using /tmp. Only the clean
+# exit is pinned here: `lib/github-limit.sh`'s `gh` wrapper allocates two
+# further files per call and has no signal trap of its own, so a run killed
+# mid-read still leaves those two behind — a library-level gap this script
+# cannot close from the outside, and not one this fixture should assert away.
+own_tmp="$tmp_dir/own-tmp"
+mkdir -p "$own_tmp"
+TMPDIR="$own_tmp" "$DETECTOR" "$SLUG" "$LOGIN" "$log_file" \
+  --config "$config_file" >/dev/null 2>&1
+assert_eq "an ordinary exit leaves none of the script's own temp files behind" \
+  "0" "$(find "$own_tmp" -type f 2>/dev/null | wc -l)"
+
 echo
 if (( failures == 0 )); then
   echo "All detect-classifier-escapes assertions passed."

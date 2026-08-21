@@ -223,23 +223,33 @@ fi
 # Same shape as scripts/mine-merge-history.sh's own gh_retry: a dropped
 # connection mid-run must not silently mark a pull request unverifiable that
 # a second attempt would have read fine.
+#
+# The response buffer is the single `retry_buf` allocated beside the other
+# temp files below, truncated between uses, rather than a fresh `mktemp` per
+# call. Every call here happens inside a command substitution, so a `mktemp`
+# taken in this function belongs to a subshell the signal handler below can
+# never clean up after: the handler runs in the parent, and a path the parent
+# never learned is a path it cannot remove. Since the sweep is killed
+# mid-read on any cycle that reaches its `timeout`, that would leak one file
+# per in-flight read, every time — the same defect the trap below exists to
+# close, one level down. Calls are strictly sequential, so one buffer serves
+# them all.
 gh_retry() {
-  local buf rc attempt delay
+  local rc attempt delay
   delay="${ESCAPE_AUDIT_RETRY_DELAY_SECONDS:-5}"
-  buf="$(mktemp)" || return 1
   rc=1
   for attempt in 1 2 3; do
-    if "$GH_BIN" "$@" >"$buf" 2>/dev/null; then
-      cat "$buf"; rm -f "$buf"; return 0
+    if "$GH_BIN" "$@" >"$retry_buf" 2>/dev/null; then
+      cat "$retry_buf"; : >"$retry_buf"; return 0
     else
       rc=$?
     fi
     if (( attempt < 3 )); then
       sleep $(( attempt * delay ))
-      : >"$buf"
+      : >"$retry_buf"
     fi
   done
-  rm -f "$buf"
+  : >"$retry_buf"
   return "$rc"
 }
 
@@ -388,11 +398,28 @@ _escape_audit_candidates() {
 # log -------------------------------------------------------------------------
 audited_file="$(mktemp)"
 armed_file="$(mktemp)"
+# `gh_retry`'s shared response buffer — see its own note above for why it is
+# allocated out here, in the parent, rather than per call inside it.
+retry_buf="$(mktemp)"
 # INT/TERM/HUP alongside EXIT: `agent-cycle.sh` runs this script under
 # `timeout 120`, and on a timeout bash takes the default fatal action for
 # SIGTERM and never reaches an EXIT-only trap, leaking both temp files every
 # time the sweep actually times out — the normal case here, not an edge case.
-trap 'rm -f "$audited_file" "$armed_file"' EXIT INT TERM HUP
+#
+# Each signal handler must *exit*, and that half is not decoration. A trapped
+# signal whose handler falls off its own end returns bash to what it was
+# doing: the candidate loop below resumes, and since `timeout` sends one
+# SIGTERM and then waits (no `--kill-after` at the call site), nothing stops
+# the sweep again — `timeout 120` silently stops bounding anything and the
+# run costs whatever the whole candidate list costs. Exiting through `exit`
+# with the signal's own 128+n, the shape `agent-cycle.sh`'s `on_signal` uses,
+# both keeps the bound real and still lets every line already emitted reach
+# the caller, since this script reports by printing as it goes.
+_escape_audit_cleanup() { rm -f "$audited_file" "$armed_file" "$retry_buf" "$audited_file.raw"; }
+trap _escape_audit_cleanup EXIT
+trap '_escape_audit_cleanup; exit 130' INT
+trap '_escape_audit_cleanup; exit 143' TERM
+trap '_escape_audit_cleanup; exit 129' HUP
 
 read_log() {
   if [[ "$log_source" == "-" ]]; then
