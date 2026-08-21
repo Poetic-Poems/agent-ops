@@ -69,7 +69,7 @@ coord_cycles() {  # <n> [first-hour]
   done
 }
 
-blocked_line='{"ts":"2026-07-22T09:00:00Z","cycle":"c0","event":"attempt-failed","stage":"implementor","repo":"o/r","item":"TD1","detail":"needs repo secrets","unblock_condition":"a human adds SENTRY_DSN"}'
+blocked_line='{"ts":"2026-07-22T09:00:00Z","cycle":"c0","event":"attempt-failed","stage":"implementer","repo":"o/r","item":"TD1","detail":"needs repo secrets","unblock_condition":"a human adds SENTRY_DSN"}'
 
 # --- Nothing to read at all ---
 
@@ -97,7 +97,7 @@ printf '%s\n' "$blocked_line" > "$log"
 coord_cycles 3 >> "$log"
 assert_eq "three coordinator cycles crosses the threshold" "threshold" "$(reason_for TD1)"
 assert_eq "the entry carries the block it was minted from" \
-  "implementor|needs repo secrets|a human adds SENTRY_DSN|2026-07-22T09:00:00Z" \
+  "implementer|needs repo secrets|a human adds SENTRY_DSN|2026-07-22T09:00:00Z" \
   "$(eligible | jq -r '.[0] | [.stage, .detail, .unblock_condition, .blocked_ts] | join("|")')"
 assert_eq "an item with no escalation carries none" "null" \
   "$(eligible | jq -c '.[0].escalation')"
@@ -173,7 +173,7 @@ printf '%s\n' "$blocked_line" > "$log"
 coord_cycles 2 >> "$log"
 cat >> "$log" <<'EOF'
 {"ts":"2026-07-22T13:05:00Z","cycle":"c9","event":"stage-end","stage":"coordinator","exit_code":124}
-{"ts":"2026-07-22T14:05:00Z","cycle":"c8","event":"stage-end","stage":"implementor","exit_code":0}
+{"ts":"2026-07-22T14:05:00Z","cycle":"c8","event":"stage-end","stage":"implementer","exit_code":0}
 {"ts":"2026-07-22T15:05:00Z","cycle":"c2","event":"stage-end","stage":"coordinator","exit_code":0}
 EOF
 assert_eq "a timed-out Co-Ordinator, another stage, and a repeated cycle id do not count" \
@@ -201,13 +201,13 @@ assert_eq "an item that is no longer blocked is not eligible" "[]" "$(eligible)"
 # getting this wrong.
 printf '%s\n' "$blocked_line" > "$log"
 coord_cycles 3 >> "$log"
-printf '%s\n' '{"ts":"2026-07-22T09:30:00Z","cycle":"c0","event":"item-void","stage":"implementor","repo":"o/r","item":"TD1","detail":"already done on main"}' >> "$log"
+printf '%s\n' '{"ts":"2026-07-22T09:30:00Z","cycle":"c0","event":"item-void","stage":"implementer","repo":"o/r","item":"TD1","detail":"already done on main"}' >> "$log"
 assert_eq "a blocked item that is also void is not eligible" "[]" "$(eligible)"
 
 printf '%s\n' "$blocked_line" > "$log"
 coord_cycles 3 >> "$log"
 cat >> "$log" <<'EOF'
-{"ts":"2026-07-22T09:30:00Z","cycle":"c0","event":"item-void","stage":"implementor","repo":"o/r","item":"TD1","detail":"already done on main"}
+{"ts":"2026-07-22T09:30:00Z","cycle":"c0","event":"item-void","stage":"implementer","repo":"o/r","item":"TD1","detail":"already done on main"}
 {"ts":"2026-07-23T09:00:00Z","cycle":"m","event":"unvoided","item":"TD1"}
 EOF
 assert_eq "a human unvoiding it makes it eligible again" "threshold" "$(reason_for TD1)"
@@ -231,10 +231,10 @@ assert_eq "an escalation-failed outcome is not an examination" "threshold" "$(re
 # behind it: the item re-enters through the threshold rather than waiting out a
 # recheck window against an examination of an older state.
 cat > "$log" <<'EOF'
-{"ts":"2026-07-22T09:00:00Z","cycle":"c0","event":"attempt-failed","stage":"implementor","repo":"o/r","item":"TD1","detail":"first block"}
+{"ts":"2026-07-22T09:00:00Z","cycle":"c0","event":"attempt-failed","stage":"implementer","repo":"o/r","item":"TD1","detail":"first block"}
 {"ts":"2026-07-22T09:30:00Z","cycle":"c1","event":"enabler-examined","repo":"o/r","item":"TD1","blocked_ts":"2026-07-22T09:00:00Z","outcome":"unblocked","detail":"the dependency merged"}
 {"ts":"2026-07-22T09:31:00Z","cycle":"c1","event":"unblocked","repo":"o/r","item":"TD1","by":"enabler"}
-{"ts":"2026-07-23T08:00:00Z","cycle":"c5","event":"attempt-failed","stage":"implementor","repo":"o/r","item":"TD1","detail":"blocked again, differently"}
+{"ts":"2026-07-23T08:00:00Z","cycle":"c5","event":"attempt-failed","stage":"implementer","repo":"o/r","item":"TD1","detail":"blocked again, differently"}
 {"ts":"2026-07-23T10:05:00Z","cycle":"c6","event":"stage-end","stage":"coordinator","exit_code":0}
 {"ts":"2026-07-23T11:05:00Z","cycle":"c7","event":"stage-end","stage":"coordinator","exit_code":0}
 {"ts":"2026-07-23T12:05:00Z","cycle":"c8","event":"stage-end","stage":"coordinator","exit_code":0}
@@ -332,8 +332,8 @@ assert_eq "an examination with an unparseable ts is not re-checked" "" "$(reason
 # one repo must not make the other repo's TD1 eligible, or the Enabler would
 # escalate the wrong repository's work to the human.
 cat > "$log" <<'EOF'
-{"ts":"2026-07-22T09:00:00Z","cycle":"c0","event":"attempt-failed","stage":"implementor","repo":"o/r","item":"TD1","detail":"a"}
-{"ts":"2026-07-22T09:00:00Z","cycle":"c0","event":"attempt-failed","stage":"implementor","repo":"o/other","item":"TD1","detail":"b"}
+{"ts":"2026-07-22T09:00:00Z","cycle":"c0","event":"attempt-failed","stage":"implementer","repo":"o/r","item":"TD1","detail":"a"}
+{"ts":"2026-07-22T09:00:00Z","cycle":"c0","event":"attempt-failed","stage":"implementer","repo":"o/other","item":"TD1","detail":"b"}
 {"ts":"2026-07-23T09:00:00Z","cycle":"c4","event":"enabler-examined","repo":"o/r","item":"TD1","outcome":"still-blocked"}
 EOF
 coord_cycles 3 >> "$log"

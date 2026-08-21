@@ -61,12 +61,12 @@ assert_eq "a bare id passes through unchanged" "claude-sonnet-5" \
   "$(resolve_model_id coordinator_model "claude-sonnet-5")"
 assert_eq "a bare id with digits and dashes passes through unchanged" \
   "claude-haiku-4-5-20251001" \
-  "$(resolve_model_id implementor_model_trivial "claude-haiku-4-5-20251001")"
+  "$(resolve_model_id implementer_model_trivial "claude-haiku-4-5-20251001")"
 
 # --- An `anthropic/`-qualified id is accepted and stripped to the bare id
 #     `claude --model` expects. ---
 assert_eq "an anthropic/-qualified id is stripped to its bare id" "claude-sonnet-5" \
-  "$(resolve_model_id implementor_model_default "anthropic/claude-sonnet-5")"
+  "$(resolve_model_id implementer_model_default "anthropic/claude-sonnet-5")"
 
 # --- Empty stays empty: reviewer_model_complex and enabler_model both use an
 #     empty string to switch a stage/escalation off, and that must survive

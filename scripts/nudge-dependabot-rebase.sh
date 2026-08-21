@@ -6,7 +6,7 @@
 # conflicted PR before this system takes it over.
 #
 # This system never force-pushes a Dependabot branch (the "When `source` is
-# `merge-conflicts`" section of prompts/implementor.md explains why: it is
+# `merge-conflicts`" section of prompts/implementer.md explains why: it is
 # the bot's own branch, and Dependabot fights back). So the first time a
 # Dependabot PR is seen `CONFLICTING`, the only move is to ask the bot itself
 # — `@dependabot rebase` — and give it a cycle. Only once that has already

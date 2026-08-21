@@ -71,7 +71,7 @@ assert_docs_only "the whole inert set at once is documentation" \
 # --- Markdown that is not prose. These are the assertions that matter: each
 #     one is a file whose contents change what a node does. ---
 assert_not_docs_only "prompts/coordinator.md is the coordinator's code" prompts/coordinator.md
-assert_not_docs_only "prompts/implementor.md is the implementor's code" prompts/implementor.md
+assert_not_docs_only "prompts/implementer.md is the implementer's code" prompts/implementer.md
 assert_not_docs_only "prompts/reviewer.md is the reviewer's code" prompts/reviewer.md
 assert_not_docs_only "prompts/enabler.md is the enabler's code" prompts/enabler.md
 assert_not_docs_only "prompts/project-reviewer.md is the review pipeline's code" \

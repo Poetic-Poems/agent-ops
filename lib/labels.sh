@@ -93,11 +93,11 @@ labels_catalogue() {
          entry("obsolete"; "cfd3d7";
                "Apply to a still-open, still-diff-carrying draft pull request the pipeline raised to say it is no longer wanted; no pipeline stage ever applies this"),
          entry("complexity:low"; "c2e0c6";
-               "Graded by the Implementor; picks the Reviewer tier"),
+               "Graded by the Implementer; picks the Reviewer tier"),
          entry("complexity:medium"; "fef2c0";
-               "Graded by the Implementor; picks the Reviewer tier"),
+               "Graded by the Implementer; picks the Reviewer tier"),
          entry("complexity:high"; "f9d0c4";
-               "Graded by the Implementor; picks the higher Reviewer tier") ]
+               "Graded by the Implementer; picks the higher Reviewer tier") ]
      elif $role == "review" then
        [ entry($review_pr_label; "5319e7";
                "Raised by the project-review pipeline") ]

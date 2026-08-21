@@ -128,7 +128,7 @@ and never "the run was never quiet".
 ## Per-cycle aggregate
 
 `cycles[].total_cost_usd` (`docs/DASHBOARD-SPEC.md`) is the sum of `cost_usd`
-across the cycle's three rendered stages — Co-Ordinator, Implementor,
+across the cycle's three rendered stages — Co-Ordinator, Implementer,
 Reviewer — treating a stage that never ran (`cost_usd: null`) as `0`. It is
 the cost of the cycle's own attempt at its item, which is what the card
 reporting it is about: spend the cycle incurred outside those three stages is
@@ -161,7 +161,7 @@ recent `log.jsonl` retains. Their fields:
 | `spend_today_usd` | number | US dollars | The same sum, restricted to today (UTC). |
 | `by_day[].usd`, `.n` | number, integer | US dollars, count | Cost and transcript count for one UTC day. |
 | `by_model[].usd`, `.n` | number, integer | US dollars, count | Cost and transcript count for one model id. |
-| `by_actor[].usd`, `.n` | number, integer | US dollars, count | Cost and transcript count for one actor. The actor is the transcript's own filename stem, so the set is open, not enumerated: `coordinator`, `implementor`, `reviewer`, `enabler`, `refiner` and `limit-probe` from a cycle directory, `project-reviewer` normalised from a review's `reviewer-<repo>.out`, and any other stem verbatim — see the dashboard spec's note on actor naming. |
+| `by_actor[].usd`, `.n` | number, integer | US dollars, count | Cost and transcript count for one actor. The actor is the transcript's own filename stem, so the set is open, not enumerated: `coordinator`, `implementer`, `reviewer`, `enabler`, `refiner` and `limit-probe` from a cycle directory, `project-reviewer` normalised from a review's `reviewer-<repo>.out`, and any other stem verbatim — see the dashboard spec's note on actor naming. |
 
 ## Stability policy
 
@@ -190,7 +190,7 @@ any other spec/code disagreement is.
 ## Where it's produced and consumed
 
 - **Produced:** `lib/metering.sh` (`metering_fields`), called from
-  `agent-cycle.sh`'s four stage-end sites (Co-Ordinator, Implementor,
+  `agent-cycle.sh`'s four stage-end sites (Co-Ordinator, Implementer,
   Reviewer, Enabler) and `review-cycle.sh`'s one (the weekly Reviewer), each
   passing its own model id, `.out` path and the gap statistics
   `lib/stage-run.sh` left in `stage_gaps_json` for the run that just ended

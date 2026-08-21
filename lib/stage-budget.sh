@@ -53,11 +53,11 @@
 # The loss function is violently asymmetric: too generous costs the marginal
 # minutes of a session that was going to fail anyway, at roughly a tenth of a
 # dollar a minute and bounded by the lock above it, while too tight throws
-# away everything — on the run that prompted this, $13.79 of Implementor work,
+# away everything — on the run that prompted this, $13.79 of Implementer work,
 # $2.92 of Reviewer, an Enabler engagement, and the review gate itself.
 STAGE_BUDGET_PRIORS='{
   "coordinator":      {"backstop": 20,  "inactivity": 10},
-  "implementor":      {"backstop": 150, "inactivity": 10},
+  "implementer":      {"backstop": 150, "inactivity": 10},
   "reviewer":         {"backstop": 90,  "inactivity": 10},
   "approver":         {"backstop": 30,  "inactivity": 10},
   "enabler":          {"backstop": 30,  "inactivity": 10},
@@ -289,7 +289,7 @@ stage_budget_table() {
       | ([([$b, $ceiling] | min), $floor] | max);
 
     def prior_of($actor; $field):
-      ($priors[$actor][$field] // $priors.implementor[$field]);
+      ($priors[$actor][$field] // $priors.implementer[$field]);
 
     # The two pooled levels above a cell: the same actor across every model,
     # and the same actor and model across every repository. The shipped prior
@@ -404,7 +404,7 @@ stage_budget_resolve() {
   out="$(jq -nc --argjson t "$table" --argjson o "$overrides" \
       --argjson priors "$STAGE_BUDGET_PRIORS" \
       --arg a "$actor" --arg r "$repo" --arg m "$model" '
-    ($priors[$a] // $priors.implementor) as $prior
+    ($priors[$a] // $priors.implementer) as $prior
     | ($t.cells[$a + "|" + $r + "|" + $m] // null) as $cell
     | ($t.actors[$a] // null) as $pooled
     | (if $cell != null then {b: $cell.backstop_min, i: $cell.inactivity_min, src: "cell", basis: $cell.basis}
@@ -419,7 +419,7 @@ stage_budget_resolve() {
       }' 2>/dev/null)" || out=""
   if [[ -z "$out" ]]; then
     out="$(jq -nc --argjson priors "$STAGE_BUDGET_PRIORS" --arg a "$actor" \
-      '($priors[$a] // $priors.implementor) as $p
+      '($priors[$a] // $priors.implementer) as $p
        | {backstop_min: $p.backstop, inactivity_min: $p.inactivity, source: "prior", basis: "prior"}')"
   fi
   printf '%s\n' "$out"
@@ -447,7 +447,7 @@ stage_budget_all_overrides() {
   local cfg="${1:-{\}}"
   jq -nc --argjson c "$cfg" '
     ($c // {}) as $cfg
-    | ["coordinator", "implementor", "reviewer", "approver", "enabler", "refiner"]
+    | ["coordinator", "implementer", "reviewer", "approver", "enabler", "refiner"]
     | map(. as $a
           | {
               key: $a,
@@ -493,7 +493,7 @@ stage_budget_lock_seconds() {
   out="$(jq -nr --argjson t "$table" --argjson o "$overrides" \
       --argjson priors "$STAGE_BUDGET_PRIORS" \
       --argjson slack "$slack" --argjson configured "$configured" '
-    ["coordinator", "implementor", "reviewer", "approver", "enabler", "refiner"]
+    ["coordinator", "implementer", "reviewer", "approver", "enabler", "refiner"]
     | map(. as $a
           | [ ($priors[$a].backstop // 0),
               ($o[$a].backstop // empty),

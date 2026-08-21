@@ -118,7 +118,7 @@ assert_eq "the Co-Ordinator has no repository axis" \
 # The Pullwright requirement: a repository nobody has ever run gets a working
 # answer on cycle one, from the shipped prior, without anyone choosing a
 # number.
-fresh="$(stage_budget_resolve "$t" implementor Some/brand-new claude-sonnet-5 '{}')"
+fresh="$(stage_budget_resolve "$t" implementer Some/brand-new claude-sonnet-5 '{}')"
 assert_eq "an unseen cell answers from the shipped prior" \
   "prior" "$(jq -r '.basis' <<<"$fresh")"
 assert_eq "…with the prior backstop" "150" "$(jq -r '.backstop_min' <<<"$fresh")"
@@ -161,15 +161,15 @@ assert_eq "repeated kills are bounded by the ceiling (2x the prior)" \
 # reduction at all.
 {
   selection 2026-08-05T00:00:00Z d0 Poetic-Poems/poetic
-  run 2026-08-05T00:10:00Z d0 implementor 0 claude-sonnet-5 300000 30
+  run 2026-08-05T00:10:00Z d0 implementer 0 claude-sonnet-5 300000 30
   selection 2026-08-05T01:00:00Z d1 Poetic-Poems/poetic
-  run 2026-08-05T01:10:00Z d1 implementor 0 claude-sonnet-5 300000 30
+  run 2026-08-05T01:10:00Z d1 implementer 0 claude-sonnet-5 300000 30
   selection 2026-08-05T02:00:00Z d2 Poetic-Poems/poetic
-  run 2026-08-05T02:10:00Z d2 implementor 0 claude-sonnet-5 300000 30
+  run 2026-08-05T02:10:00Z d2 implementer 0 claude-sonnet-5 300000 30
 } > "$tmp_dir/clean.jsonl"
 tc="$(table_for "$tmp_dir/clean.jsonl")"
 assert_eq "three clean runs move the backstop not at all" \
-  "150" "$(cell "$tc" "implementor|Poetic-Poems/poetic|claude-sonnet-5" backstop_min)"
+  "150" "$(cell "$tc" "implementer|Poetic-Poems/poetic|claude-sonnet-5" backstop_min)"
 
 # --- 5. A killed run contributes no duration ------------------------------------------
 # Its recorded length is its cap, not its length. Counting it would drag the
@@ -189,23 +189,23 @@ assert_eq "so the percentile is over completed runs only" \
 # records a maximum gap of T, and the next threshold computed from it is k x T.
 {
   selection 2026-08-05T00:00:00Z g1 Poetic-Poems/agent-ops
-  run 2026-08-05T00:10:00Z g1 implementor 0 claude-sonnet-5 600000 900
+  run 2026-08-05T00:10:00Z g1 implementer 0 claude-sonnet-5 600000 900
 } > "$tmp_dir/gap.jsonl"
 tg="$(table_for "$tmp_dir/gap.jsonl")"
 assert_gt "a long silence widens the threshold past its prior" \
-  10 "$(cell "$tg" "implementor|Poetic-Poems/agent-ops|claude-sonnet-5" inactivity_min)"
+  10 "$(cell "$tg" "implementer|Poetic-Poems/agent-ops|claude-sonnet-5" inactivity_min)"
 
 # Short gaps must not tighten it. A watchdog that narrowed itself would
 # reintroduce, from the other side, the failure this design exists to end.
 {
   selection 2026-08-05T00:00:00Z s1 Poetic-Poems/poetic
-  run 2026-08-05T00:10:00Z s1 implementor 0 claude-sonnet-5 600000 2
+  run 2026-08-05T00:10:00Z s1 implementer 0 claude-sonnet-5 600000 2
   selection 2026-08-05T01:00:00Z s2 Poetic-Poems/poetic
-  run 2026-08-05T01:10:00Z s2 implementor 0 claude-sonnet-5 600000 2
+  run 2026-08-05T01:10:00Z s2 implementer 0 claude-sonnet-5 600000 2
 } > "$tmp_dir/short.jsonl"
 ts="$(table_for "$tmp_dir/short.jsonl")"
 assert_eq "consistently short silences never narrow it below the prior" \
-  "10" "$(cell "$ts" "implementor|Poetic-Poems/poetic|claude-sonnet-5" inactivity_min)"
+  "10" "$(cell "$ts" "implementer|Poetic-Poems/poetic|claude-sonnet-5" inactivity_min)"
 
 # And it can never exceed the backstop above it: a watchdog that let a stage
 # past its own outer bound could never fire.
@@ -216,8 +216,8 @@ assert_eq "the threshold is capped at the backstop" "true" \
 # One run is not evidence. The estimate slides from the pooled value towards
 # the cell's own as its run count grows, and says which it is on.
 assert_eq "a cell with one run is marked as shrunk towards the pool" \
-  "shrunk" "$(cell "$tg" "implementor|Poetic-Poems/agent-ops|claude-sonnet-5" basis)"
-one_run="$(cell "$tg" "implementor|Poetic-Poems/agent-ops|claude-sonnet-5" inactivity_min)"
+  "shrunk" "$(cell "$tg" "implementer|Poetic-Poems/agent-ops|claude-sonnet-5" basis)"
+one_run="$(cell "$tg" "implementer|Poetic-Poems/agent-ops|claude-sonnet-5" inactivity_min)"
 # 4 x 900s = 60 min of its own, against a 10-minute prior carrying 20
 # run-equivalents: one run moves it a twenty-first of the way, not all of it.
 assert_eq "…so one long silence does not carry the whole estimate" \
@@ -240,7 +240,7 @@ assert_eq "…and leaves the threshold to the derivation" \
 # It must clear the worst case the cycle could draw, which is why it sums the
 # widest backstop each actor could be given rather than the one it will be.
 # Six implementation actors as of the Approver (requirements 8b/8c):
-# coordinator, implementor, reviewer, enabler, refiner, approver — each
+# coordinator, implementer, reviewer, enabler, refiner, approver — each
 # contributes its widest backstop, plus slack.
 lock_sec="$(stage_budget_lock_seconds "$tk3" '{}' 30 0)"
 assert_eq "the lock clears the summed worst-case backstops plus slack" \
@@ -258,13 +258,13 @@ assert_eq "an empty table still derives a lock, from the priors alone" \
 # never dropped just because it happens to be narrower than the fleet-wide key
 # for a different actor.
 cfg='{"timeout_reviewer": 45,
-      "repos": [{"slug": "a/one", "stage_timeouts": {"implementor": 200}},
+      "repos": [{"slug": "a/one", "stage_timeouts": {"implementer": 200}},
                 {"slug": "a/two", "stage_inactivity": {"reviewer": 7}}]}'
 overrides="$(stage_budget_all_overrides "$cfg")"
 assert_eq "the plain fleet-wide key is picked up" \
   "45" "$(jq -r '.reviewer.backstop' <<<"$overrides")"
 assert_eq "a per-repository stage_timeouts entry is picked up for its actor" \
-  "200" "$(jq -r '.implementor.backstop' <<<"$overrides")"
+  "200" "$(jq -r '.implementer.backstop' <<<"$overrides")"
 assert_eq "a per-repository stage_inactivity entry is picked up for its actor" \
   "7" "$(jq -r '.reviewer.inactivity' <<<"$overrides")"
 assert_eq "an actor nobody configured answers null, not zero" \
@@ -292,7 +292,7 @@ junk="$(table_for "$tmp_dir/junk.jsonl")"
 assert_eq "a malformed log yields a table, not a failure" \
   "object" "$(jq -r 'type' <<<"$junk")"
 assert_eq "and resolving against it still answers" \
-  "150" "$(jq -r '.backstop_min' <<<"$(stage_budget_resolve "$junk" implementor Any/repo m '{}')")"
+  "150" "$(jq -r '.backstop_min' <<<"$(stage_budget_resolve "$junk" implementer Any/repo m '{}')")"
 
 # A stage-end from before any of this existed: no gaps, no kill_reason. Exit
 # 124 was a wall-clock kill and nothing else could produce it, so it is read

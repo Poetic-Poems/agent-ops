@@ -543,7 +543,7 @@ assert_valid "nice at the edge of the range is accepted" \
 assert_rejected "an out-of-range excluded minute is rejected" \
   '.schedule.excluded_minutes = [60]' 'config.schedule.excluded_minutes[0]: 60 is above the maximum 59'
 assert_rejected "a zero timeout is rejected" \
-  '.timeout_implementor = 0' 'config.timeout_implementor: 0 is below the minimum 1'
+  '.timeout_implementer = 0' 'config.timeout_implementer: 0 is below the minimum 1'
 assert_rejected "a zero lock_stale_after is rejected" \
   '.lock_stale_after = 0' 'config.lock_stale_after: 0 must be greater than 0'
 assert_rejected "an empty branch_prefix is rejected" \
@@ -729,13 +729,13 @@ assert_doctor "doctor warns on a per-repo stage_timeouts.approver override, nami
   '.repos[0].stage_timeouts = {"approver": 45}' 0 \
   "Poetic-Poems/poetic's stage_timeouts.approver is set, which pins"
 assert_doctor "doctor warns on a per-repo stage_timeouts override, naming the repo" \
-  '.repos[0].stage_timeouts = {"implementor": 90}' 0 \
-  "Poetic-Poems/poetic's stage_timeouts.implementor is set, which pins"
+  '.repos[0].stage_timeouts = {"implementer": 90}' 0 \
+  "Poetic-Poems/poetic's stage_timeouts.implementer is set, which pins"
 assert_doctor "doctor warns on a per-repo stage_inactivity override, naming the repo" \
   '.repos[0].stage_inactivity = {"reviewer": 5}' 0 \
   "Poetic-Poems/poetic's stage_inactivity.reviewer is set, which pins"
 assert_doctor "a per-repo override wider than every prior widens the reported lock, matching what agent-cycle.sh derives" \
-  '.repos[0].stage_timeouts = {"implementor": 300}' 0 \
+  '.repos[0].stage_timeouts = {"implementer": 300}' 0 \
   "the cycle lock is derived at 530 min"
 assert_doctor "doctor warns when a repo's project_review label collides with the implementation one" \
   '.project_review.repos[0].pr_label = .pr_label' 0 \

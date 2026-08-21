@@ -2,7 +2,7 @@
   "generated_at": "@now",
   "node": "poetic-1",
   "config": {
-    "timeout_coordinator": 15, "timeout_implementor": 90,
+    "timeout_coordinator": 15, "timeout_implementer": 90,
     "timeout_reviewer": 30, "timeout_enabler": 30,
     "lock_stale_after": 4, "dashboard_refresh_seconds": 5,
     "repos": [
@@ -31,12 +31,12 @@
     "by_actor": [
       {"actor": "reviewer",    "usd": 9.0, "n": 1},
       {"actor": "coordinator", "usd": 2.0, "n": 1},
-      {"actor": "implementor", "usd": 1.5, "n": 2}
+      {"actor": "implementer", "usd": 1.5, "n": 2}
     ],
     "cost_rows": [
-      {"day": "@day:0", "model": "claude-sonnet-5-20260101", "actor": "implementor", "usd": 1.0},
+      {"day": "@day:0", "model": "claude-sonnet-5-20260101", "actor": "implementer", "usd": 1.0},
       {"day": "@day:0", "model": "claude-opus-5-20260101",   "actor": "coordinator", "usd": 2.0},
-      {"day": "@day:3", "model": "claude-sonnet-5-20260101", "actor": "implementor", "usd": 0.5},
+      {"day": "@day:3", "model": "claude-sonnet-5-20260101", "actor": "implementer", "usd": 0.5},
       {"day": "@day:40", "model": "claude-opus-5-20260101",  "actor": "reviewer",    "usd": 9.0}
     ]
   },

@@ -107,7 +107,7 @@
 # because it is the one case where this array's churn is not the signal it looks
 # like: the dequeue itself never clears (the timeline event is permanent), so
 # what drops the pull request is gather-dequeued.sh's answered clause noticing
-# the Implementor's marked reply. Until that clause was added, a fix merely
+# the Implementer's marked reply. Until that clause was added, a fix merely
 # re-keyed the entry to the new head SHA — busting this fingerprint on every
 # round while nothing had actually changed, which is precisely the wake-up this
 # file exists to avoid paying for twice.

@@ -12,16 +12,16 @@
 # alone had already asked for this and been silently skipped, so this cannot
 # be enforced by prompt alone (issue #240) — it has to be a fact CI checks.
 #
-# The Implementor stamps an issue-sourced PR body with an invisible marker
+# The Implementer stamps an issue-sourced PR body with an invisible marker
 # naming which issue it claims to close:
 #
 #   <!-- agent-ops:closes-issue item=198 -->
 #
-# (`prompts/implementor.md`'s Procedure step 2). This script fails when that
+# (`prompts/implementer.md`'s Procedure step 2). This script fails when that
 # marker is present without a matching closing keyword for the same number.
 #
 # The marker alone would leave the check anchored to a prompt instruction —
-# an Implementor that forgets the marker entirely produces a PR this check
+# an Implementer that forgets the marker entirely produces a PR this check
 # passes trivially, which is the same silent skip that motivated issue #240
 # in the first place. So the check has a second anchor no model writes: the
 # head branch. The Script names an issue-sourced work order's branch

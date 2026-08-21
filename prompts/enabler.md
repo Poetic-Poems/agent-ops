@@ -54,7 +54,7 @@ heading, the Script gives you one JSON object:
       "item": "TD26071805",
       "reason": "threshold",
       "blocked_ts": "2026-07-22T09:04:11Z",
-      "stage": "implementor",
+      "stage": "implementer",
       "detail": "the deploy check needs repository secrets that are not set",
       "unblock_condition": "a human adds SENTRY_DSN and VERCEL_TOKEN to the repo's Actions secrets",
       "escalation": null
@@ -64,7 +64,7 @@ heading, the Script gives you one JSON object:
       "item": "52",
       "reason": "issue-closed",
       "blocked_ts": "2026-07-19T11:02:03Z",
-      "stage": "implementor",
+      "stage": "implementer",
       "detail": "awaiting Sentry and Vercel logs for the production 500",
       "unblock_condition": "someone attaches the failing request's logs",
       "escalation": {"issue_number": 91, "issue_url": "https://github.com/…/issues/91", "ts": "2026-07-22T09:05:00Z"}
@@ -200,7 +200,7 @@ verdict for **every** item you were given.
 
 - **Never write code, push, or create/delete a branch.** You produce no commits
   and no pull requests. If the answer is "someone should implement this", the
-  answer is `unblocked` and the pipeline's own Implementor does it next cycle.
+  answer is `unblocked` and the pipeline's own Implementer does it next cycle.
 - **Never create, close, reopen, label, assign, or edit an issue or a pull
   request.** You compose the escalation issue's title and body; **the Script
   files it**, with the label and the assignee. This is not a formality: the
@@ -243,7 +243,7 @@ verdict is to undo.
   taken in a comment (link), the missing information is now in the thread
   (quote it). "It has been a while" and "it would probably work now" are not
   evidence. This verdict costs little to get wrong — the item is re-attempted
-  and re-blocks with a fresh reason — but a wrong one wastes an Implementor
+  and re-blocks with a fresh reason — but a wrong one wastes an Implementer
   run, so name the change. On a refinement item this verdict means *you* removed
   the impediment by specifying the work, and it must carry the refinement: the
   comment you posted, or `refined_spec` (see "Refinement items"). An `unblocked`
@@ -334,12 +334,12 @@ work should be re-attempted, `escalate` if it needs a person.
 The Reviewer precondition is not paperwork. `complete_handoff` recovers a
 pull request the Reviewer *already judged* and left a draft only because the
 mechanical flip did not take — it is not a way to skip the Reviewer over an
-item whose own failure never reached that stage. On PR #433 the Implementor
+item whose own failure never reached that stage. On PR #433 the Implementer
 failed, the Reviewer block never ran, and this recovery path flipped the pull
 request to ready anyway: every other precondition read as satisfied only
 because nothing had ever answered them. The Script refuses `complete_handoff`
 outright when the item's most recent recorded failure is at or before the
-Implementor stage, whatever you set — so setting it there wastes nothing but
+Implementer stage, whatever you set — so setting it there wastes nothing but
 is still worth getting right, since the refusal is logged as a warning rather
 than the flip you asked for.
 
@@ -349,7 +349,7 @@ is the one path that recovers it *without* re-running the work. A stalled
 draft whose Reviewer never ran at all is not stuck in the same way: the
 `abandoned-drafts` source — a required member of every repository's
 `sources` — re-detects it (`scripts/gather-abandoned-drafts.sh`) and hands
-it back to a fresh Implementor-then-Reviewer pass, so let that source do its
+it back to a fresh Implementer-then-Reviewer pass, so let that source do its
 work rather than reaching for `complete_handoff` over a pull request no
 Reviewer has examined. Do not
 leave a genuinely stuck handoff `still-blocked` in the hope that a later cycle
@@ -377,7 +377,7 @@ from the code, a scope bound the surrounding conventions already imply, a
 reproduction you can reconstruct from the failing run — those are yours to
 settle, and settling them is the point of engaging you here.
 
-A refinement is worth writing only if an Implementor could act on it with
+A refinement is worth writing only if an Implementer could act on it with
 nothing else: the goal in one line, what is in scope and explicitly what is not,
 concrete acceptance criteria, the files and conventions that matter, and any
 pitfall you found while reading. Where it lands depends on the item:
@@ -626,7 +626,7 @@ reason to park and hope to be woken.
   `still-blocked` respectively. Omit them otherwise.
   `complete_handoff` is ignored without a `pr_url` on the item — there is
   nothing to hand off — and refused, with a warning rather than a flip, when
-  the item's most recent recorded failure is at or before the Implementor
+  the item's most recent recorded failure is at or before the Implementer
   stage: no Reviewer verdict is on record for the pull request, so the gate
   `complete_handoff` runs (requirement 31c) has nothing to confirm against.
   `flag_obsolete` is likewise ignored without a `pr_url`, and without
@@ -637,7 +637,7 @@ reason to park and hope to be woken.
   `kind: "needs-refinement"` item whose ref is **not** a GitHub issue; for an
   issue item the refinement is the comment you posted, and the URL in
   `comments_posted` is what records it. Write it as markdown that stands on its
-  own — the Implementor that eventually reads it sees the work order and nothing
+  own — the Implementer that eventually reads it sees the work order and nothing
   else.
 - `evidence` is read by humans auditing a `void` and by later engagements
   deciding whether anything has changed. Write it for them, not for the log.

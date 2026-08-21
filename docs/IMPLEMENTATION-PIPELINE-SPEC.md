@@ -24,7 +24,7 @@ review and merge.
 cron (hourly)
   └─ agent-cycle.sh                 ← the Script: lock, stand-down checks, repo ordering
        ├─ Co-Ordinator (Haiku)      ← selects ≤ 1 item, emits a work order; nothing else
-       ├─ Implementor (Sonnet/Haiku)← ephemeral clone, feature branch, draft PR
+       ├─ Implementer (Sonnet/Haiku)← ephemeral clone, feature branch, draft PR
        ├─ Reviewer (Sonnet/Opus)    ← corrects the branch, flips the PR to ready
        │     └─ Human               ← reviews and merges (the only gate)
        ├─ Enabler (Opus, rarely)    ← re-examines long-blocked items at the end of a
@@ -42,10 +42,10 @@ cron (hourly)
    whole cycle. It launches every agent; agents never launch other agents.
 3. The **Co-Ordinator** — a headless Claude Code invocation that selects one
    item of work and emits a work order. It does not implement anything.
-4. The **Implementor** — a headless Claude Code invocation that carries out
+4. The **Implementer** — a headless Claude Code invocation that carries out
    the work order and raises a draft pull request.
 5. The **Reviewer** — a headless Claude Code invocation that checks and
-   corrects the Implementor's branch, then marks the pull request ready.
+   corrects the Implementer's branch, then marks the pull request ready.
 5a. The **Approver** — a headless Claude Code invocation, engaged only where
    `merge_autonomy` is above `human` (D18, "## The Landing Gate"), that
    independently judges a pull request the Reviewer has already marked ready
@@ -117,7 +117,7 @@ a node updates by pulling a new image rather than by pulling a branch.
   with no cron daemon and no root; and `shellcheck`, a pinned release binary
   verified by SHA-256 (one pin per architecture, the amd64 one
   byte-identical to `.github/workflows/shellcheck.yml`'s own pin — component
-  10), so an Implementor working inside this image can run
+  10), so an Implementer working inside this image can run
   `scripts/lint-shell.sh` — the gate its own pull request is judged by —
   before pushing.
 - `deploy/docker/entrypoint.sh` runs as `agent` on every container start and is
@@ -515,7 +515,7 @@ merged PR:
   each recommendation as a candidate. A recommendation's **stable ref** is
   `review-<review-date>-R-NN` (e.g. `review-2026-07-20-R03`); that ref goes in
   the branch and PR so a claim (open PR) and a completion (merged PR) are both
-  detectable later. The improvement prompt is the Implementor's brief and the
+  detectable later. The improvement prompt is the Implementer's brief and the
   recommendation's *Intended end state* is its acceptance. This source sits
   **below tech-debt and `issues:medium`** deliberately: the review already
   mirrors its debt-shaped recommendations into the tech-debt register
@@ -618,8 +618,8 @@ and the schema must carry every one of them.
 | `log_retained_bytes` | `2000000` | Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `doctor.log`, `cron.log` and `review-cron.log` (requirement 2.6). `log.jsonl` and `review-log.jsonl` are never rotated regardless of size. `ROTATE_LOGS_RETAINED_BYTES` overrides it for tests. |
 | `log_generations` | `3` | Rotated generations of each log kept beside the live file (`<name>.1` … `<name>.<log_generations>`), floored at one. `ROTATE_LOGS_GENERATIONS` overrides it for tests. |
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
-| `implementor_model_default` | `claude-sonnet-5` | Any change that affects runtime behaviour. |
-| `implementor_model_trivial` | `claude-haiku-4-5-20251001` | Docs-, comment-, or register-only items. The Co-Ordinator classifies each item and records its reasoning in the work order. |
+| `implementer_model_default` | `claude-sonnet-5` | Any change that affects runtime behaviour. |
+| `implementer_model_trivial` | `claude-haiku-4-5-20251001` | Docs-, comment-, or register-only items. The Co-Ordinator classifies each item and records its reasoning in the work order. |
 | `reviewer_model_default` | `claude-sonnet-5` | Reviews of `low`- and `medium`-complexity work (requirement 8a). |
 | `reviewer_model_complex` | `claude-opus-5` | Reviews of `high`-complexity work (requirement 8a). Empty falls back to `reviewer_model_default`, which switches the escalation off. |
 | `approver_model_default` | `claude-sonnet-5` | Standard-tier Approver engagements: work graded `complexity:medium` (requirement 8b). Empty disables the Approver stage. |
@@ -639,13 +639,13 @@ and the schema must carry every one of them.
 | `refinement_policy` | `{"issues":"preferred"}` | Per-source refinement policy (requirement 39a): `required`, `preferred` or `exempt`, read by the Co-Ordinator alongside `refinements` (requirement 3h) to decide whether an unrefined item may be ranked at all. A source absent from this object is `exempt`. Bounded by what requirement 39's candidate gathering reads — the `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`, `dequeued`, `register_hygiene`, `issues` and `tech_debt` arrays every repo's...[continued below](#extended-notes-refinement_policy) |
 | `unvoid_label` | `unvoided` | The label a human applies on GitHub to ask for a void to be reopened (requirement 34f). No stage here ever applies it, so requirement 34c's "only a human may clear a void" is unchanged; what it adds is a way to say so from the issue itself. It must not be `blocked`, for the reason given against `enabler_escalation_label`. Nor `obsolete`: the label a human applied to ask for a voided pull request to be reopened would itself corroborate requirement 34k closing it. |
 | `void_retire_after_days` | 30 d | How old a fully-actioned void must be, in days, before requirement 34n drops it from the extract. `0` disables retirement, which is also the safe fallback for an unparseable value — never retiring costs bytes, wrongly retiring costs nothing observable, so the failure mode this guards is silent growth, not a wrongly-reopened item. |
-| `prompt_overrides` | `{}` | Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementor`/`reviewer`/`enabler`/`refiner`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. `approver` is deliberately absent from the enumeration: the Approver's...[continued below](#extended-notes-prompt_overrides) |
+| `prompt_overrides` | `{}` | Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementer`/`reviewer`/`enabler`/`refiner`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. `approver` is deliberately absent from the enumeration: the Approver's...[continued below](#extended-notes-prompt_overrides) |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. It must not be `obsolete`: the pipeline would then project requirement 34k's human-only corroboration onto every draft it raises, and the void guard would close live drafts on the pipeline's own say-so — `scripts/doctor.sh` fails the config. |
 | `branch_prefix` | `agent/` | Branch name `agent/<item-slug>`, e.g. `agent/td26051201-fix-xyz`. |
 | `max_open_agent_prs` | `8` | Back-pressure: draft PRs, ready PRs still `CHANGES_REQUESTED`, and live claim-registry entries, carrying `pr_label` across all repos — excludes ready PRs whose next action is human-side (requirement 2.2). |
 | `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list (requirement 17a), so alternates turn a lost race into the next-best item instead of a wasted cycle. |
 | `max_chained_cycles` | `3` | Finish-then-continue (requirement 39): the most cycles that may run back-to-back in one lineage — the cron-fired original plus its immediate chained continuations — bounded so a busy fleet still yields the lock periodically. `1` disables chaining. |
-| `claim_ttl_hours` | `6` | Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry — far beyond a whole cycle (120 min Implementor + 60 min Reviewer), so only a dead node's claim ever expires. The branch itself is deleted only if untouched and PR-less. |
+| `claim_ttl_hours` | `6` | Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry — far beyond a whole cycle (120 min Implementer + 60 min Reviewer), so only a dead node's claim ever expires. The branch itself is deleted only if untouched and PR-less. |
 | `abandoned_draft_after_hours` | 4 h | How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case...[continued below](#extended-notes-abandoned_draft_after_hours) |
 | `human_nudge_idle_hours` | 24 h | Hours an approved, mergeable, CI-green pull request this system raised may sit idle before `scripts/sweep-human-visibility.sh` posts a one-time nudge comment naming `enabler_assignee` (requirement 38c). `0` disables the nudge only — the sweep's self-healing review request (requirement 38a) is unconditional. poetic-fiddle #170 sat approved and green for 6.8 days with nothing asking anyone to look; this is the backstop for whatever the live review request itself does not catch. |
 | `merge_queue_dequeue_notice_max_age_hours` | 24 h | Hours a merge-queue-dequeue notice (requirement 38f) may still fire for after `dequeued_at`, so a removal event that predates this feature (or this repository's queue adoption) is not read as fresh news merely because a sweep is only now seeing it. agent-ops#394, tech-debt/TD-PPagop-26081409.md. `0` disables the notice outright (agent-ops#429), guarded explicitly rather than left to the arithmetic threshold this bounds, since a repository with no merge queue should express...[continued below](#extended-notes-merge_queue_dequeue_notice_max_age_hours) |
@@ -656,13 +656,13 @@ and the schema must carry every one of them.
 | `crash_loop_after` | `4` | Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue (requirement 2.7) — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. At four nodes an hourly deterministic failure crosses this within about an hour. `0` (or absent) disables both checks. |
 | `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where requirement 2.7's escalation issues are filed — the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks. |
 | `timeout_coordinator` | *(unset)* | An override for the wall-clock backstop of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case and the intended one: a configured value wins permanently, so setting it turns the self-tuning off for that actor. |
-| `timeout_implementor` | *(unset)* | As `timeout_coordinator`, for the Implementor. The interim raise to 120 this key carried (#203, #209) has gone with the fixed cap it belonged to: the shipped prior is 150 and the derivation moves from there. |
+| `timeout_implementer` | *(unset)* | As `timeout_coordinator`, for the Implementer. The interim raise to 120 this key carried (#203, #209) has gone with the fixed cap it belonged to: the shipped prior is 150 and the derivation moves from there. |
 | `timeout_reviewer` | *(unset)* | As `timeout_coordinator`, for the Reviewer. This is the key #203 was opened about: it was raised 30 → 45 → 60 in two days, and 45 lasted six hours before a complex-model review of a 16-file diff consumed all of it. Complex-model reviews are killed roughly six times as often as default-model ones, so a single fixed number spans two quite different populations — which is why the derivation keys on the model. |
 | `timeout_enabler` | *(unset)* | As `timeout_coordinator`, for the Enabler — which, spanning repositories, has a single `(enabler, *, model)` cell. |
 | `timeout_refiner` | *(unset)* | As `timeout_coordinator`, for the Refiner — which, spanning repositories, has a single `(refiner, *, model)` cell. |
 | `timeout_approver` | *(unset)* | As `timeout_coordinator`, for the Approver. |
 | `inactivity_coordinator` | *(unset)* | An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog for that actor and leaves the backstop as the only cap. |
-| `inactivity_implementor` | *(unset)* | An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog for that actor and leaves the backstop as the only cap. |
+| `inactivity_implementer` | *(unset)* | An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog for that actor and leaves the backstop as the only cap. |
 | `inactivity_reviewer` | *(unset)* | An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog for that actor and leaves the backstop as the only cap. |
 | `inactivity_enabler` | *(unset)* | An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog for that actor and leaves the backstop as the only cap. |
 | `inactivity_refiner` | *(unset)* | An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog for that actor and leaves the backstop as the only cap. |
@@ -713,7 +713,7 @@ A repo entry may also carry `implementation_plan_path` — the path, relative to
 
 A repo entry may also carry `nice` — an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo — the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range.
 
-A repo entry may also carry `stage_timeouts` and `stage_inactivity` — per-actor overrides in minutes, keyed `coordinator`, `implementor`, `reviewer`, `approver` and `enabler`, for that repository alone. They are the most specific level of requirement 4f's precedence, ahead of the plain `timeout_<actor>` / `inactivity_<actor>` key and ahead of the derivation; the Refiner, spanning repositories, has no per-repository form. Configuration is read, never written: requirement 4f's derivation never writes back to `config.json`.
+A repo entry may also carry `stage_timeouts` and `stage_inactivity` — per-actor overrides in minutes, keyed `coordinator`, `implementer`, `reviewer`, `approver` and `enabler`, for that repository alone. They are the most specific level of requirement 4f's precedence, ahead of the plain `timeout_<actor>` / `inactivity_<actor>` key and ahead of the derivation; the Refiner, spanning repositories, has no per-repository form. Configuration is read, never written: requirement 4f's derivation never writes back to `config.json`.
 
 A repo entry may also carry `merge_autonomy` — the per-repository override of the top-level key of the same name (D18, requirement 2.3b), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.
 
@@ -734,8 +734,8 @@ Every optional key sits on the repository's own entry, beside `slug` and `source
     "sources": ["security", "issues:urgent", "implementation-plan", "issues:low"],
     "implementation_plan_path": "docs/IMPLEMENTATION-PLAN.md",
     "nice": -5,
-    "stage_timeouts": { "implementor": 90 },
-    "stage_inactivity": { "implementor": 20 }
+    "stage_timeouts": { "implementer": 90 },
+    "stage_inactivity": { "implementer": 20 }
   }
 ]
 ```
@@ -764,13 +764,13 @@ Per-source refinement policy (requirement 39a): `required`, `preferred` or `exem
 
 ### Extended notes: `prompt_overrides`
 
-Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementor`/`reviewer`/`enabler`/`refiner`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. `approver` is deliberately absent from the enumeration: the Approver's adversarial prompt is the gate the D18 trust ladder rests on, and no installation may extend or replace it (requirement 4a, #469).
+Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementer`/`reviewer`/`enabler`/`refiner`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. `approver` is deliberately absent from the enumeration: the Approver's adversarial prompt is the gate the D18 trust ladder rests on, and no installation may extend or replace it (requirement 4a, #469).
 
 ### Extended notes: `abandoned_draft_after_hours`
 
 How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day.
 
-Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case Implementor-plus-Reviewer cycle to 180 minutes and would otherwise have left this threshold no margin at all.
+Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case Implementer-plus-Reviewer cycle to 180 minutes and would otherwise have left this threshold no margin at all.
 
 ### Extended notes: `merge_queue_dequeue_notice_max_age_hours`
 
@@ -934,7 +934,7 @@ Every other branch **created by this system** (i.e. under `branch_prefix`)
 is entirely at the agents' disposal: the Reviewer may amend, add to, rebase,
 or force-push such a branch as it judges best — always with
 `git push --force-with-lease`, never a bare `--force`, so a peer's own push to
-the same branch (a still-running Implementor, a concurrent finishing-source
+the same branch (a still-running Implementer, a concurrent finishing-source
 cycle on the same PR — requirement 17a's PR-keyed claim narrows but does not
 eliminate the window, issue #360) is refused rather than silently overwritten.
 Agents must not rewrite branches outside `branch_prefix` — those belong to
@@ -978,8 +978,8 @@ implements.
    append, one 8-second-bounded claim release). Polled rather than slept, so
    a cycle that records and exits in one second costs one second.
 1a. **Model id resolution (D12 groundwork).** Every model key read from
-   config — `coordinator_model`, `implementor_model_default`,
-   `implementor_model_trivial`, `reviewer_model_default`,
+   config — `coordinator_model`, `implementer_model_default`,
+   `implementer_model_trivial`, `reviewer_model_default`,
    `reviewer_model_complex`, `enabler_model` — is resolved immediately after
    being read, before the lock and before any stage may launch: a bare id
    (`claude-sonnet-5`) means `anthropic/claude-sonnet-5`; an
@@ -1239,7 +1239,7 @@ implements.
       record's `reset_known` is false, `resume_at` is this system's invented
       time and carries no information about the limit — so before standing
       down, the Script spends one minimal headless invocation of
-      `implementor_model_trivial` (a fixed one-line prompt, 180 s timeout,
+      `implementer_model_trivial` (a fixed one-line prompt, 180 s timeout,
       transcript kept as `limit-probe.out` in the cycle record) and classifies
       it with `limit_probe_verdict` (`lib/limit-detect.sh`, regression-tested
       against canned transcripts): the limit phrase anywhere in the transcript
@@ -1360,7 +1360,7 @@ implements.
       `(N changes-requested + N draft + N unraised claim(s) — plus N waiting
       on human (N raw))`. A changes-requested PR is a human's review
       answered and now the pipeline's turn; a draft is work in flight (the
-      Implementor's own claim marker, requirement 23); an unraised claim is
+      Implementer's own claim marker, requirement 23); an unraised claim is
       a registry entry whose PR does not yet exist; the human-queue count is
       the ready PRs excluded from the trip, and the raw total is what the
       count would have been before that exclusion. Whether the cap stood the
@@ -2146,7 +2146,7 @@ implements.
      2026-08-12 void-extract one — writes no `attempt-failed` for any
      stage, so the union shows only the `cycle-start` / `cycle-end`
      pair. A completed cycle that starts a **selection-path** stage
-     (`coordinator`, `implementor` or `reviewer`) resets the count,
+     (`coordinator`, `implementer` or `reviewer`) resets the count,
      whatever that stage then does — reaching selection is itself proof
      the systemic block is not reproducing right now, and what happens to
      an item once a stage is running already has its own recovery ladder.
@@ -2221,7 +2221,7 @@ implements.
    `pr_label`, head branch under `branch_prefix`, `reviewDecision` of
    `CHANGES_REQUESTED`, and — the load-bearing clause — **no GitHub
    review-thread event has answered the blocking review**: no marked reply
-   whose marker's `actor=` field is `implementor` (a review or general PR
+   whose marker's `actor=` field is `implementer` (a review or general PR
    comment carrying `lib/pipeline-marker.sh`'s invisible marker) and no
    `review_requested` timeline event, either dated after the blocking review
    was submitted. Each entry carries every review body and inline comment in
@@ -2247,7 +2247,7 @@ implements.
      stamped by GitHub itself at the moment they happen, so neither can be
      produced by a rebase; a round is answered only once one of them actually
      occurs after the blocking review.
-   - **Only a marked reply from the Implementor answers a round.** The
+   - **Only a marked reply from the Implementer answers a round.** The
      marker (`lib/pipeline-marker.sh`) records who wrote it — `script`,
      `enabler`, `reviewer` and `refiner` write it too, for reasons unrelated
      to answering a review — and two of those are never an answer:
@@ -2255,10 +2255,10 @@ implements.
      a stall being diagnosed. On PR #269 exactly those two comments closed
      the round under the plain "any marked reply" rule, and the work sat
      stranded until a human was escalated (agent-ops#278). Requiring
-     `actor=implementor` — `prompts/implementor.md`'s own "Answer the review
+     `actor=implementer` — `prompts/implementer.md`'s own "Answer the review
      before you finish" — fails loudly instead of silently: a future actor
      added to the marker (as `refiner` was) leaves the round open rather than
-     closing it by default, and the next Implementor engagement simply finds
+     closing it by default, and the next Implementer engagement simply finds
      the round already answered and finishes it properly. A legacy marked
      comment with no `actor=` field does not answer the round either, for the
      same reason.
@@ -2282,13 +2282,13 @@ implements.
      their own PR. Observed here: the agent's account left a 6.5 KB `COMMENTED`
      review with every actual finding, and the human's second account posted the
      `CHANGES_REQUESTED` whose body reads, in full, "Refer to <link>". Gather
-     only the blocker and the Implementor receives the words "Refer to". The
+     only the blocker and the Implementer receives the words "Refer to". The
      round's start is the most recent answer event *before* the blocking
      review (or the PR's beginning, if none), so a COMMENTED review submitted
      moments before the blocking one is still included.
    - **The ref is `pr-<n>-review-<review-id>`, not `pr-<n>`.** A blocked item
      (requirement 34) stays blocked until cleared, so a bare `pr-57` the
-     Implementor once failed on would still be blocked when the human posted
+     Implementer once failed on would still be blocked when the human posted
      fresh guidance, and that guidance would land on a dead item. Per-round refs
      expire by irrelevance, like the review-dated `review-<date>-R-NN` refs.
    - **Only branches under `branch_prefix`.** The Landing Gate reserves every
@@ -2356,7 +2356,7 @@ implements.
    body verbatim (the original plan).
 
    - **A draft is the claim; a stale draft is an abandoned claim.** Requirement 23
-     has the Implementor open a draft PR the moment it starts, as the visible
+     has the Implementer open a draft PR the moment it starts, as the visible
      claim. A draft that has sat untouched past the threshold is therefore a claim
      whose owner never returned — a stage that timed out, hit a usage limit, or
      died. A genuine push, review or comment resets the clock, so a draft that is
@@ -2376,8 +2376,8 @@ implements.
      activity: a **label edit** is discounted unconditionally (the label set is
      this system's own bookkeeping, never a sign of work in progress), and a
      **comment this system posted itself** — stamped by `agent-cycle.sh`'s own
-     stage-failure comments and by the Implementor's, Enabler's and Reviewer's
-     comment instructions (`prompts/implementor.md`, `prompts/enabler.md`,
+     stage-failure comments and by the Implementer's, Enabler's and Reviewer's
+     comment instructions (`prompts/implementer.md`, `prompts/enabler.md`,
      `prompts/reviewer.md`) — is discounted because it carries the marker. A
      human's comment (or a peer node commenting
      on a human's behalf) carries no marker and always counts; filtering by
@@ -2456,7 +2456,7 @@ implements.
      for PRs otherwise ready for review or merge, where the conflict is the sole
      blocker. And `mergeable` must be `CONFLICTING`, never `UNKNOWN`: GitHub
      computes mergeability asynchronously, so a PR whose base just moved reports
-     `UNKNOWN` for a beat. Treating that as a conflict would send the Implementor
+     `UNKNOWN` for a beat. Treating that as a conflict would send the Implementer
      to rebase a PR that may not conflict; skipping it means the PR is simply
      reconsidered next cycle, once GitHub has settled the answer.
    - **Both listings are bounded, their truncation is noticed, and the head
@@ -2581,12 +2581,12 @@ implements.
      `branch` — Dependabot's own branch is the bot's, never rebased or
      force-pushed by this system, so the Script claims and derives
      `agent/<ref>` for this work order exactly as it does for a non-finishing
-     source (requirement 17a's carve-out below), and the Implementor follows
+     source (requirement 17a's carve-out below), and the Implementer follows
      the ordinary new-item Procedure (branch already claimed, open a draft
      PR) rather than the "branch and PR already exist" shortcut every other
      `merge-conflicts` item uses. It reads the bot PR's diff, recreates the
      same dependency bump on its own branch, and closes the bot's PR
-     referencing the replacement (`prompts/implementor.md`'s "Dependabot
+     referencing the replacement (`prompts/implementer.md`'s "Dependabot
      takeover" section) — the underlying bump is what completes, unlike the
      ordinary rebase case, because there is no other PR left to carry it.
    - **Superseded** (`superseded_by` non-null, either state of
@@ -2628,7 +2628,7 @@ implements.
    most recent `lib/merge-queue.sh` `merge_queue_probe` reports `queued: false`,
    a non-null `dequeued_at`, and a `dequeue_reason` reading, case-insensitively,
    exactly `failed_checks`, **and whose dequeue is still unanswered** — no
-   marked `actor=implementor` reply newer than `dequeued_at`, per the clause
+   marked `actor=implementer` reply newer than `dequeued_at`, per the clause
    below. Each entry carries a head-SHA-scoped ref, the PR number and URL, the
    existing branch, its `base`, the head SHA, the `updatedAt`, the PR's own body
    verbatim, and the probe's `dequeued_at` and `dequeue_reason`. The array is
@@ -2668,7 +2668,7 @@ implements.
      `RemovedFromMergeQueueEvent` is immutable timeline history, so the probe
      returns the same `dequeued_at`/`dequeue_reason` for ever, and
      `isInMergeQueue` returns to `true` only on a *human's* re-queue, which D17
-     reserves to them. Without this clause, the Implementor's own fix push
+     reserves to them. Without this clause, the Implementer's own fix push
      leaves every other clause true and moves only the head SHA — which mints a
      *fresh* ref (below) that no `blocked`, `void` or `claimed` record covers —
      so the pull request is selected again, at rank five, pointed at a
@@ -2731,7 +2731,7 @@ implements.
    - Claimed as a finishing source exactly like requirements 3c, 3e and 3g
      (file claim on the existing branch, no new branch created; requirement
      17a's PR-keyed claim taken alongside it) — the branch and the PR predate
-     the claim, and the Implementor works `prompts/implementor.md`'s "When
+     the claim, and the Implementer works `prompts/implementer.md`'s "When
      `source` is `dequeued`" procedure rather than opening a new one.
    - Fails safe to `[]` (exit 0), with the same stderr discipline as
      requirement 3g. `shellcheck`-clean.
@@ -2764,7 +2764,7 @@ implements.
      consumer repo runs argless `perl scripts/td-check.pl` on every pull
      request (`.github/workflows/tech-debt-register.yml`); a file argument
      now dies rather than checking anything. This pre-fetch runs it to decide
-     candidacy, and the Implementor re-runs it until it exits 0. One
+     candidacy, and the Implementer re-runs it until it exits 0. One
      definition, three consumers (requirement 34a); a model re-deriving the
      rule would be a fourth opinion about what a consistent register looks
      like, and the one that disagreed would be the one nobody noticed.
@@ -3186,7 +3186,7 @@ implements.
    re-check duty and the three Co-Ordinator-derived sources' own exclusion-1
    check both still need it, but trimmed to the fields either duty actually
    reads — `repo`, `item`, `ts`, `detail` and `recheck_clean_ts` where
-   present — dropping `stage`, `cycle`, `event` and an Implementor's
+   present — dropping `stage`, `cycle`, `event` and an Implementer's
    `unblock_condition`, none of which `prompts/coordinator.md` ever reads off
    a `blocked` entry.
 
@@ -3294,7 +3294,7 @@ implements.
      alternative — a fallback deliberately outside the refinement discipline,
      on the grounds that a frozen fleet is worse — is rejected because it is
      not the trade it appears to be: a `"required"` source's unrefined item
-     is one nobody has specified yet, so selecting it hands the Implementor
+     is one nobody has specified yet, so selecting it hands the Implementer
      the generic `acceptance` string above and nothing else, which is the
      outcome requirement 39a exists to prevent, and it buys no liveness the
      guarantee above does not already provide. Nor does it cost that
@@ -3308,7 +3308,7 @@ implements.
      `context` a verbatim paste of the entry's own body and `acceptance` a
      generic instruction naming the source's standard procedure, since no
      model composed a bespoke one; `model`/`model_reason` are
-     `implementor_model_default` and a fixed string naming this as a
+     `implementer_model_default` and a fixed string naming this as a
      mechanical pick. The single winning candidate is fed into requirement
      17a's ordinary claim loop exactly as a model-ranked candidate would be —
      no special-cased race, so a lost claim stands the cycle down the same
@@ -3501,7 +3501,7 @@ implements.
    it was, either the issues band stays un-corroborated (the hole this
    requirement exists to close) or every discussion issue is flagged
    unaccounted forever, rejecting every verdict and driving requirement 3v's
-   fallback to hand an Implementor a discussion thread as work. So requirement
+   fallback to hand an Implementer a discussion thread as work. So requirement
    16a's exclusion list loses that one case: a question or discussion issue is
    reported in `needs_refinement` like any other item nobody has yet said what
    "done" would mean for. It is not company for the other four on that list —
@@ -3693,7 +3693,7 @@ implements.
    log. Capture its final message from the stage's own transcript
    (requirement 4d) and parse the work order from it.
 4a. **Per-installation prompt overrides.** Every stage prompt this Script
-   assembles — the Co-Ordinator's here, the Implementor's (requirement 7), the
+   assembles — the Co-Ordinator's here, the Implementer's (requirement 7), the
    Reviewer's (requirement 8), the Enabler's (requirement 35), and the
    Refiner's (requirement 39) — is built by
    `lib/prompt-overrides.sh`'s `stage_prompt_text`, not a bare
@@ -3796,7 +3796,7 @@ implements.
    such a cycle would otherwise change the assembled prompt without busting
    the fingerprint.
 4c. **An assembled prompt reaches its stage on stdin, never in argv.** Every
-   stage this Script launches — the Co-Ordinator here, the Implementor
+   stage this Script launches — the Co-Ordinator here, the Implementer
    (requirement 7), the Reviewer (requirement 8) and the Enabler
    (requirement 35) — is invoked as `claude -p` with the prompt written to
    the process's standard input, not as a command-line argument. Linux caps a
@@ -3896,7 +3896,7 @@ implements.
    failing to abort early costs the rest of a wall-clock cap, while aborting a
    healthy stage throws away everything it had done. The check is made only on
    an event of the runner's own — a top-level `rate_limit_event`, never a
-   string inside a tool result, since an Implementor working on limit
+   string inside a tool result, since an Implementer working on limit
    detection reads fixtures shaped exactly like one.
    The `rate_limit_info` that stopped the stage becomes the stand-down's
    evidence, and is better evidence than the prose path can produce: it states
@@ -4129,7 +4129,7 @@ implements.
    `gather-register-hygiene.sh`'s problems merge and final candidate build
    (`test/register-hygiene.test.sh`), and `publish-dashboard.sh`'s
    `github_json` build (`test/publish-dashboard.test.sh`).
-   TD-PPagop-26081506 converted the two sites that item's own Implementor
+   TD-PPagop-26081506 converted the two sites that item's own Implementer
    found but left out of scope, both in `publish-dashboard.sh` upstream of
    the `github_json` build: the per-repo `prs_json` fold and the
    merge-queue queue-answers merge (`test/publish-dashboard.test.sh`).
@@ -4316,7 +4316,7 @@ implements.
    clone`, not `gh repo clone`. Both fetch the same objects over the same
    transport, but `gh` first resolves the repository through a GraphQL query,
    which is billed against the API budget — and this step is the last thing a
-   cycle does before the Implementor, with the Co-Ordinator engagement and the
+   cycle does before the Implementer, with the Co-Ordinator engagement and the
    claim already paid for. On 2026-08-12T20:52Z that query is where a cycle
    died: `GraphQL: API rate limit already exceeded`, having spent everything
    and produced nothing. Git's own transport is not rate-limited, so this step
@@ -4327,7 +4327,7 @@ implements.
    diverge, and `CLONE_GIT` substitutes a stub for tests — a seam this needs in
    its own right, because a test that wants the clone to fail can no longer get
    that from a fail-fast `gh` on `PATH`.
-6a. **The pipeline creates its own labels.** Before launching the Implementor,
+6a. **The pipeline creates its own labels.** Before launching the Implementer,
    the Script ensures every label this system applies exists in the selected
    repository, creating only those that are absent: `pr_label`,
    `enabler_escalation_label`, `needs_refinement_label`, `unvoid_label`,
@@ -4370,22 +4370,22 @@ implements.
    customer-zero rule, `docs/ROADMAP.md`): a new installation must not need a
    checklist of `gh label create` commands, and a label a human deletes must
    come back on its own.
-7. **Implementor stage.** Launch the Implementor in the clone (model from
+7. **Implementer stage.** Launch the Implementer in the clone (model from
    the work order, `--dangerously-skip-permissions`, stage timeout), passing
-   the implementor prompt plus the work order, and this cycle's `cycle` id and
-   `node` name — because any comment the Implementor leaves must carry
+   the implementer prompt plus the work order, and this cycle's `cycle` id and
+   `node` name — because any comment the Implementer leaves must carry
    requirement 9d's header and requirement 3e's marker, and a model cannot
    know either on its own.
-8. **Reviewer stage.** If the Implementor reports `complete`, launch the
+8. **Reviewer stage.** If the Implementer reports `complete`, launch the
    Reviewer in the same workspace (model per requirement 8a, same flags,
    stage timeout), passing the reviewer prompt, the work order, the
-   Implementor's summary (PR URL, branch, complexity), and this cycle's
-   `cycle` id and `node` name — the same reason as the Implementor's above.
+   Implementer's summary (PR URL, branch, complexity), and this cycle's
+   `cycle` id and `node` name — the same reason as the Implementer's above.
 8a. **The Reviewer's model follows the item's complexity.** The Script
    resolves an effective complexity for the PR and launches the Reviewer with
    `reviewer_model_complex` when it is `high`, `reviewer_model_default`
    otherwise. Resolution takes the **highest** of two signals, either of which
-   may be absent: the `complexity` field of the Implementor's summary
+   may be absent: the `complexity` field of the Implementer's summary
    (requirement 27) and the PR's `complexity:*` label (requirement 26a), read
    best-effort via `gh pr view --json labels` — an unreadable label simply
    contributes nothing. Taking the maximum is what makes the label's
@@ -4393,7 +4393,7 @@ implements.
    `high` is reviewed as `high` in every later finishing round, however small
    that round's own work was. When *neither* signal exists, the fallback is
    `low` for a work order the Co-Ordinator classified trivial (its `model` is
-   `implementor_model_trivial`, requirement 19 — the classification already
+   `implementer_model_trivial`, requirement 19 — the classification already
    answers the question, so the trivial tier is never asked to self-grade)
    and `medium`, the default tier, otherwise. The Reviewer's `stage-start`
    event carries the resolved `complexity` and the chosen `model`
@@ -4424,7 +4424,7 @@ implements.
    the Reviewer stage completes and folds it through `reviewer_complexity`
    (`lib/cycle-state.sh`) a second time — the same function requirement 8a
    already uses — with requirement 8a's own resolved `complexity` standing in
-   for the Implementor's summary grade. This keeps the raise-never-lower rule
+   for the Implementer's summary grade. This keeps the raise-never-lower rule
    (requirement 26a) in force at the Approver's decision point too: the tier
    can rise on a mid-cycle correction, but never settles below what the round
    was already reviewed at. `low` maps to **Trivial** — no model call, the
@@ -4644,7 +4644,7 @@ implements.
    the clone (requirement 23); and finally an open pull request whose head is
    the branch this cycle claimed (requirement 17a), asked of GitHub directly.
    **The last of those is the one that must exist**, because the first three
-   are all things the Implementor had to remember to do, and a stage that
+   are all things the Implementer had to remember to do, and a stage that
    emitted no parseable final message is exactly a stage that may have
    remembered none of them — whereas the branch was computed and pushed by
    the Script before the stage began. Each lookup coming up empty is an
@@ -4725,7 +4725,7 @@ implements.
    landing during cleanup itself must not re-enter the handler.
    `review-cycle.sh` carries the same discipline as R7a of its own spec.
 9d. **Visible attribution.** Every pull-request or issue comment this system
-   posts — from `agent-cycle.sh` directly, and from the Implementor, Reviewer,
+   posts — from `agent-cycle.sh` directly, and from the Implementer, Reviewer,
    Enabler and Refiner — opens with a leading bold line naming the Actor that
    wrote it and the node it ran on:
 
@@ -4736,7 +4736,7 @@ implements.
    then a blank line, then the comment's own prose. The Actor is whichever
    stage **wrote** the comment, not the one it is about — the Script's own
    stage-failure note carries `**Script**`, with the stage that failed named in
-   the prose (`The Implementor stopped on this PR: …`), spelled from the same
+   the prose (`The Implementer stopped on this PR: …`), spelled from the same
    token→display map below, and no other preamble.
    This exists because requirement 3e's own text already states the reason no
    other signal can: every pipeline write lands under `warwickallen`, the same
@@ -4749,15 +4749,15 @@ implements.
    fails open on an unknown token — prints it raw — so an Actor added later
    degrades gracefully rather than vanishing from a comment. `agent-cycle.sh`
    and `review-cycle.sh` call it directly; a model cannot source shell, so
-   `prompts/implementor.md`, `prompts/reviewer.md`, `prompts/enabler.md` and
+   `prompts/implementer.md`, `prompts/reviewer.md`, `prompts/enabler.md` and
    `prompts/refiner.md` each spell the header's literal form out and instruct
    their stage to open every comment with it, using the node name each receives
-   at invocation verbatim (`## Node` for the Implementor and Reviewer; the
+   at invocation verbatim (`## Node` for the Implementer and Reviewer; the
    runtime input's `node` for the Enabler and the Refiner, each of which
    already received it). Regression-tested by
    `test/comment-identity.test.sh`.
 9e. **Salvage before discard.** Before requirement 9's failure path fires on
-   an unparseable final message — the Co-Ordinator, Implementor and Reviewer
+   an unparseable final message — the Co-Ordinator, Implementer and Reviewer
    stages here, and requirement 37's Enabler engagement — the Script makes
    one bounded resume attempt, provided the failed run actually left a
    session behind to resume: `run_claude_stage` again, `--resume`d onto the
@@ -4803,7 +4803,7 @@ implements.
    wrapped wrong. A discard should cost a retry only when a stage genuinely
    produced nothing usable, not when the parser of the day could not yet see
    what it produced.
-9f. **`needs-refinement` is the Implementor's own escape hatch, and a third
+9f. **`needs-refinement` is the Implementer's own escape hatch, and a third
    state alongside `blocked` and `void` (extending requirement 9b).** A stage
    that ran to completion and reported `{"status": "needs-refinement", …}`
    (requirement 27) found real work whose *specification* — not the world
@@ -4813,7 +4813,7 @@ implements.
    Co-Ordinator's own `needs_refinement` report uses (requirement 34e) and,
    independently, the Refiner's own decline (requirement 39d) — one
    definition (requirement 34a), three reporters, attributed by `stage`
-   (`"coordinator"`, `"implementor"` or `"refiner"`) so a reader can tell
+   (`"coordinator"`, `"implementer"` or `"refiner"`) so a reader can tell
    which one found the gap.
 
    Distinct from `blocked` on purpose, on the same reasoning requirement 9b
@@ -4827,7 +4827,7 @@ implements.
    consequences for a `refined` mark the item might be carrying.
 
    If the item carried a `refined` mark (requirement 39c) when the
-   Implementor selected it, that mark no longer describes the item
+   Implementer selected it, that mark no longer describes the item
    accurately — the specification it named was tried and found wanting — so
    recording the block also removes `refined_label` from the issue, if the
    item has one and carries it, mirroring `release_refinement_label`'s
@@ -4836,7 +4836,7 @@ implements.
    the negative one. Requirement 3h's `refinements_map` independently stops
    naming the item from the moment a fresher `needs-refinement` block exists
    for it (comparing `ts` to `blocked_ts`), which is what stops a
-   Co-Ordinator pasting a specification the Implementor has already found
+   Co-Ordinator pasting a specification the Implementer has already found
    wanting into a future work order, whether or not the label removal itself
    succeeded.
 10. **Usage-limit detection.** Two sources, and the structured one is
@@ -4893,7 +4893,7 @@ implements.
     lock. Tee each stage's stdout/stderr to `state_dir/cycles/<cycle-id>/` for
     debugging.
 12. **Flags.** `--dry-run` (run through step 5 then stop: prints the work
-    order, launches no Implementor), `--once` (one verbose cycle in the
+    order, launches no Implementer), `--once` (one verbose cycle in the
     foreground), `--repo <slug>` (restrict selection, for testing),
     `-h`/`--help` (print the usage text and exit), plus the
     switch's `--disable [<reason>] [--for <duration>] [--until <timestamp>]`,
@@ -4933,7 +4933,7 @@ implements.
     `claude` by running it from a minimal environment (for example with a
     sanitized `PATH` and `HOME`) before relying on scheduled runs.
 39. **Finish-then-continue** (issue #248): a cycle that wins a claim and
-    launches the Implementor may, once it has fully ended, launch another
+    launches the Implementer may, once it has fully ended, launch another
     cycle immediately rather than leave the next one to the next cron
     firing — `lib/chain.sh`. Two conditions, both cheap, both judged from
     what the cycle already gathered ahead of the Co-Ordinator
@@ -5086,7 +5086,7 @@ implements.
     a rebase-and-resolve is finishing, not starting. As with review-feedback, the
     Co-Ordinator must **not** apply requirement 16's claim exclusion to this
     source — the open PR *is* the item, and the pre-fetch (requirement 3g) has
-    already established it is ours and conflicting. The Implementor's job here is
+    already established it is ours and conflicting. The Implementer's job here is
     narrow: rebase onto the base and resolve the conflict, without completing or
     re-doing the underlying item (that is what merges the PR, and remains the
     human's call). A Dependabot takeover candidate (requirement 3s) ranks and is
@@ -5374,7 +5374,7 @@ implements.
 17b. **A refined item is selected on what the refinement says.** Where
     requirement 3h's `refinements` map names an item the Co-Ordinator is putting
     in a work order, an entry carrying a `spec` is pasted into the work order's
-    `context` **verbatim** — it exists nowhere else, and the Implementor starts
+    `context` **verbatim** — it exists nowhere else, and the Implementer starts
     with nothing but the work order, so a summarised refinement is one that was
     written by an expensive model and read by nobody. An entry carrying a
     `comment_url` needs no special handling: the refinement is a comment on the
@@ -5382,7 +5382,7 @@ implements.
     requirement 14a already makes the latest contradicting comment the current
     instruction.
 17a. **The claim.** The Script — never the model — takes an atomic per-item
-    claim before the Implementor starts, walking the ranked candidates in
+    claim before the Implementer starts, walking the ranked candidates in
     order and handing the first successful claim onward (`lib/claim.sh`).
     The primitive is create-only, so GitHub arbitrates every race:
     - *Branch claims* (every source except the four finishing ones —
@@ -5537,7 +5537,7 @@ implements.
       cycle: a supervised run contends with the fleet on equal terms.
 17b. **The orphan-branch sweep.** The gc's only-if-untouched rule (17a)
     leaves one state behind on purpose that is right for the work and wrong
-    for the item: an Implementor that pushed commits and died before its
+    for the item: an Implementer that pushed commits and died before its
     draft PR existed leaves a moved ref with no PR — which nothing recovers
     (`gather-abandoned-drafts.sh` lists PRs, not branches), every later
     claim 422s against, and the Co-Ordinator's exclusion reads as "claimed,
@@ -5606,7 +5606,7 @@ implements.
     outcome is a warning. Skipped on `--dry-run`. One priced residual: a
     live claim whose registry write failed and whose ref is untouched looks
     identical to the empty orphan, so its ref can be deleted mid-run — the
-    Implementor's later push recreates it, and the cost is at worst a
+    Implementer's later push recreates it, and the cost is at worst a
     duplicate PR, priced against an item wedged forever.
 17c. **The post-merge closing-keyword sweep.** Requirement 25a's checks — its
     CI workflow and its script-side gate — stop a *new* pull request from
@@ -5657,7 +5657,7 @@ implements.
       and disastrously, that an already-done item has no blocker.
     - It may **never** clear a void item, and is given no field with which to
       try. It may *create* one, in `voided`, for a candidate it can see
-      conclusively is already done, which saves an entire Implementor run — with
+      conclusively is already done, which saves an entire Implementer run — with
       the `reason` and the `evidence` requirement 34c has always demanded, and
       subject to requirement 34d's guard, which records an unevidenced or
       refuted entry as blocked instead.
@@ -5735,10 +5735,10 @@ implements.
     requirement 20): a human reviewing again,
     or a commit landing on the branch, mints a fresh item id that no block
     covers, so evidence arriving there is never held behind a stale marker.
-19. Chooses the Implementor's model: `implementor_model_trivial` only when
+19. Chooses the Implementer's model: `implementer_model_trivial` only when
     the item can be completed without changing any file that affects runtime
     behaviour (docs, comments, register entries); otherwise
-    `implementor_model_default`. Records the reasoning.
+    `implementer_model_default`. Records the reasoning.
 20. Emits its entire final message as one JSON object: `selected`,
     `unblocked`, `recheck_clean` (entries of `{item, repo}`, for requirement
     18a's mandatory re-check finding the blocker still holds — repo-scoped,
@@ -5773,7 +5773,7 @@ implements.
     `merge-conflicts` entry, `item` is its `ref`, `branch` is the PR's
     **existing** branch, the order also carries `pr_url`, `pr_number` and the PR's
     `base`, and `context` must carry the PR's own `body` verbatim plus the existing
-    branch, base and head SHA, telling the Implementor to rebase onto `base` and
+    branch, base and head SHA, telling the Implementer to rebase onto `base` and
     resolve the conflict — not to re-do or extend the work; `acceptance` is the PR
     mergeable again (no longer `CONFLICTING`) with CI green and the PR left in the
     ready state it was already in, the underlying item deliberately left for its
@@ -5784,7 +5784,7 @@ implements.
     17a's carve-out), since the PR named in `context` is Dependabot's, never
     rebased or force-pushed. `context` still carries the bot PR's `body`, `url`,
     `number`, `branch` (named as Dependabot's own, not to be checked out), `base`
-    and `head_sha` verbatim, telling the Implementor to recreate the same bump on
+    and `head_sha` verbatim, telling the Implementer to recreate the same bump on
     its new branch and close the bot's PR referencing the replacement; `acceptance`
     is a new, mergeable, CI-green PR carrying the same dependency bump, left a
     **draft**, with the bot's PR closed. A `superseded_by` entry never becomes a
@@ -5793,12 +5793,12 @@ implements.
     `abandoned-drafts` entry, `item` is its `ref`, `branch` is the draft PR's
     **existing** branch, the order also carries `pr_url` and `pr_number`, and
     `context` must carry the draft PR's own `body` verbatim (the original plan)
-    plus the existing branch and head SHA, telling the Implementor to read the
+    plus the existing branch and head SHA, telling the Implementer to read the
     existing diff and *finish* the draft rather than restart it; `acceptance` is
     completion to the originating item's standard with the PR left a **draft** for
     the Reviewer to flip to ready. For a `register-hygiene` entry, `item` is its
     `ref`, there is no PR to carry (the Script derives the ordinary
-    `agent/<ref>` claim branch), `model` is always `implementor_model_trivial` —
+    `agent/<ref>` claim branch), `model` is always `implementer_model_trivial` —
     register-only editing, no behaviour change — and `context` must paste the
     entry's `body`, the consistency check's whole output, **verbatim**: each
     line names an id, a problem class and a line number, and that is precisely
@@ -5809,7 +5809,7 @@ implements.
     finding, `item` is the finding's stable `ref` (e.g. `dependabot-alert-42`,
     `code-scanning-alert-17`) and `context` must paste the finding verbatim
     (package/rule, severity, affected location, advisory summary, and the
-    alert URL) so the Implementor can act without re-querying the API. For a
+    alert URL) so the Implementer can act without re-querying the API. For a
     `project-review` recommendation, `item` is its ref
     (`review-<review-date>-R-NN`) and `context` must paste the recommendation's
     improvement prompt (from `04-improvement-prompts.md`) verbatim, together
@@ -5817,7 +5817,7 @@ implements.
     recommendation's *Intended end state*. For an `issues` entry, `item` is the
     issue number and `context` must paste the issue body **and every comment**
     verbatim (each attributed to its author, in order) — not the opening post
-    alone. The Implementor starts with nothing but this work order, so a
+    alone. The Implementer starts with nothing but this work order, so a
     clarification or acceptance criterion left in a comment is lost unless the
     Co-Ordinator carries it across; where the comments changed the ask,
     `acceptance` is set from the current state of the thread, not the original
@@ -5834,12 +5834,12 @@ implements.
       "branch": "agent/td26051201-short-slug",
       "model": "claude-sonnet-5",
       "model_reason": "code change with tests",
-      "context": "everything the Implementor needs: the register entry, issue text, or finding verbatim, file paths, related conventions found while evaluating, why the item is unblocked and in scope",
+      "context": "everything the Implementer needs: the register entry, issue text, or finding verbatim, file paths, related conventions found while evaluating, why the item is unblocked and in scope",
       "acceptance": "what done looks like, concretely"
     }
     ```
 
-### The Implementor
+### The Implementer
 
 21. Operates as a single non-interactive `claude -p` invocation with no
     resumption: once it emits a final message with no further tool calls,
@@ -5869,7 +5869,7 @@ implements.
     first commit. For issues, it
     comments on the issue linking the draft PR; the work order's `context`
     already carries the issue body and its comments (requirement 20), but if
-    the Implementor consults the issue directly it reads the whole thread
+    the Implementer consults the issue directly it reads the whole thread
     (`gh issue view <n> --comments`), never a bare `gh issue view <n>` that
     hides the comments where corrected requirements usually live. For `security`/`code-quality`
     findings, the draft PR body names the alert (its `ref` and URL) so the
@@ -5890,7 +5890,7 @@ implements.
     "Implements #198" and #198 stayed open three days after its own fix
     merged).
 23a. **Pushes at checkpoints, not only at the claim and at the end.** Once the
-    draft PR exists, the Implementor commits and pushes again at each
+    draft PR exists, the Implementer commits and pushes again at each
     meaningful checkpoint — a passing test, a completed file, a finished
     logical unit — rather than holding every later change in the working tree
     until its final message. The clone is ephemeral and gone once the cycle
@@ -5963,7 +5963,7 @@ implements.
     For `security`/`code-quality` findings, no register flip applies — GitHub
     closes a Dependabot or code-scanning alert automatically once the fix
     lands on the default branch and is re-scanned — so the PR body names the
-    alert it resolves (and its URL); the Implementor never dismisses an alert
+    alert it resolves (and its URL); the Implementer never dismisses an alert
     itself (dismissal is a human decision). For a `project-review`
     recommendation, there is likewise no register entry to flip and the
     review folder (a point-in-time record) is left untouched — the PR body
@@ -5983,7 +5983,7 @@ implements.
     - Most are one-line frontmatter corrections, made to match the facts —
       the pull request its `ref:` names, the filename, the `scope:` declared
       in `TECH-DEBT.md` — never the other way round. Where the facts are not
-      recoverable from git history, the Implementor reports `blocked` naming
+      recoverable from git history, the Implementer reports `blocked` naming
       the file and what could not be established.
     - A **STALE FIELD** (a resolution field set on an open item) is judged by
       following the `ref:` and confirming the fix has landed before the
@@ -5996,7 +5996,7 @@ implements.
       under some other item's pull request, which is why the row was never
       flipped. If it did, `status:` is flipped to `resolved` with `resolved:`
       and `ref:` filled from that evidence; if it did not, the row is left
-      exactly as it is and the Implementor's `notes` say why.
+      exactly as it is and the Implementer's `notes` say why.
     - An item file is **never deleted or renamed** once on the default
       branch — the directory is an append-only set and CI enforces it — and
       nothing is touched beyond what the work order's problem lines flag:
@@ -6010,7 +6010,7 @@ implements.
     reads each file against itself, its filename and the declared scope, so
     it exits 0 on a VOIDED STATUS row untouched. Where the work order carries
     one, the item is complete only once that row is flipped or the
-    Implementor has said why the evidence did not hold up.
+    Implementer has said why the evidence did not hold up.
 25a. **The closing keyword requirement 25 asks for is enforced deterministically
     — by CI and by the Script — not by trusting the prompt.**
     `.github/workflows/closing-keyword.yml` runs
@@ -6027,9 +6027,9 @@ implements.
       yields a purely numeric item (`lib/work-gone.sh`) — requires both the
       marker for `N` and the closing keyword for `N` to be *present*. This
       anchor is the one no model writes: a marker-only check passes
-      trivially on the PR whose Implementor forgot the marker, which is the
+      trivially on the PR whose Implementer forgot the marker, which is the
       same silent prompt-skip that motivated issue #240, whereas the branch
-      name was fixed by the Script before the Implementor ever ran.
+      name was fixed by the Script before the Implementer ever ran.
 
     A PR with no marker on any other branch — every non-issue source —
     passes; the check has nothing to say about a PR with nothing to close.
@@ -6057,7 +6057,7 @@ implements.
     pull request and a human. The two are asked for different reasons and
     answered differently:
 
-    - **Right after the Implementor's PR is raised**, this is *feedback*, not
+    - **Right after the Implementer's PR is raised**, this is *feedback*, not
       a gate. A dirty verdict is recorded as a warning and handed to the
       Reviewer as a `## Script findings` entry in its prompt; the cycle
       continues into the review exactly as it would have. What the check
@@ -6102,14 +6102,14 @@ implements.
     with the current default branch. Leaves the PR as a **draft** — the
     Reviewer flips it to ready. For the `review-feedback` and
     `merge-conflicts` sources — the two whose branch and pull request already
-    exist before the Implementor starts — every push to it, including this
+    exist before the Implementer starts — every push to it, including this
     verification step's own rebase-and-push, is preceded by a merge-queue
     membership check (requirement 38f); a queued pull request, or a probe
     that fails, stops the push and reports `blocked` rather than risking a
     silent eviction. `abandoned-drafts`' push is exempt: its pull request is
     always a draft, which GitHub does not allow to be queued.
 26a. **Grades the complexity of the work, ex post, and labels the PR with
-    it.** After implementing, the Implementor grades the PR `low`, `medium`
+    it.** After implementing, the Implementer grades the PR `low`, `medium`
     or `high` against a rubric anchored to observable features of the work,
     never to how difficult it felt — the PR that most needs a strong review
     is the one whose author misunderstood something and didn't notice, and
@@ -6121,7 +6121,7 @@ implements.
       existing or added tests.
     - `high` — the diff touches concurrency/locking, security, state
       replication, CI/workflow machinery, or shared library code; or the
-      Implementor deviated from the work order; or the acceptance criteria
+      Implementer deviated from the work order; or the acceptance criteria
       cannot be verified mechanically.
     It applies the grade to the PR as a `complexity:<grade>` label — creating
     the label in the repo first when absent, best-effort — leaving the PR
@@ -6136,7 +6136,7 @@ implements.
 27. Ends with a single JSON object as its entire final message:
     `{"status": "complete", "pr_url": …, "branch": …, "complexity": "low" | "medium" | "high", "notes": …}`,
     `{"status": "blocked", "reason": …, "unblock_condition": …}`, or
-    `{"status": "void", "reason": …, "evidence": …}`. The Implementor is the
+    `{"status": "void", "reason": …, "evidence": …}`. The Implementer is the
     only component positioned to tell `blocked` from `void` (requirement 9b) —
     it is the one that actually reads the tree — so its prompt must draw the
     distinction explicitly and demand evidence for `void`. Do not leave it to
@@ -6145,14 +6145,14 @@ implements.
 
 ### The Reviewer
 
-28. Operates under the same one-shot constraint as the Implementor
+28. Operates under the same one-shot constraint as the Implementer
     (requirement 21): no resumption, no background notification. It waits
     for slow commands — installs, builds, `gh pr checks --watch` — in the
     foreground within the same session rather than ending its turn early.
 29. Reviews the PR against the work order's item and acceptance notes, and
     against the target repo's own standards and conventions; re-runs the
     repo's checks, and re-runs requirement 24a's preview check rather than
-    trusting the Implementor's — a preview deployment is per head SHA, and any
+    trusting the Implementer's — a preview deployment is per head SHA, and any
     fix this stage pushes mints a new one.
 30. Where it finds a problem it can fix with confidence, it fixes it
     directly on the branch — committing, rebasing onto the current default
@@ -6170,7 +6170,7 @@ implements.
     one case where it does, since that pull request is never a draft during
     the Reviewer's session (requirement 38f).
 30a. **Emits as it goes, not only at the end.** Requirement 23a's counterpart
-    for the Reviewer, and it binds harder here: an Implementor that is killed
+    for the Reviewer, and it binds harder here: an Implementer that is killed
     at least leaves the branch it has been building, whereas a review exists
     only as commits and comments that have reached GitHub. Everything else is
     in an ephemeral clone and in a stage that may not finish. So each fix under
@@ -6281,13 +6281,13 @@ implements.
     review requests, and invisible to the log, which agreed with the Reviewer.
     Three hours later the abandoned-drafts source (requirement 3e) correctly
     re-detected a stalled draft, at a fresh head SHA and so under a fresh ref no
-    block covers, and paid an Implementor and a Reviewer to finish finished
+    block covers, and paid an Implementer and a Reviewer to finish finished
     work — which it would have gone on doing hourly, each round looking
     productive. No component could have noticed: the Reviewer believed it had
     handed off, the Script believed the Reviewer, and only GitHub disagreed.
 31b. **The second half of the handoff: the re-request.** Requirement 31a's flip
     is the whole handoff exactly once per pull request. Every round after the
-    first begins with a PR that is already ready — a review round the Implementor
+    first begins with a PR that is already ready — a review round the Implementer
     has just answered, above all — so `gh pr ready` is truthfully a no-op, and
     nothing is left that puts the pull request in front of the human. Their
     review request was consumed the moment they submitted the review that asked
@@ -6309,7 +6309,7 @@ implements.
       Co-Ordinator's classification would make a mislabelled source an
       unnotified human;
     - blocking, and a re-review already pending from each — `already`. Whoever
-      got there first (normally the Implementor, requirement 26b) did it;
+      got there first (normally the Implementer, requirement 26b) did it;
     - blocking, none pending — `POST …/pulls/<n>/requested_reviewers` for the
       ones not yet asked, then **re-read the pending list**: as with
       `gh pr ready`, the call's exit status is not the answer. `pr-ready` then
@@ -6317,7 +6317,7 @@ implements.
     - it did not take, or GitHub could not be asked — a `warning` naming the PR
       and the reviewers, and `review_requested: "failed"` on the `pr-ready`
       event. **Not** an `attempt-failed`: the pull request is finished, green and
-      visible, and only a notification is missing — the Implementor's own reply
+      visible, and only a notification is missing — the Implementer's own reply
       comment mentions the reviewer, which notifies them too. Recording a
       handback here would put a certified PR in front of the Enabler as a
       problem, which is what requirement 31a exists to avoid.
@@ -6332,7 +6332,7 @@ implements.
     The defect this exists to prevent shipped, and is why requirement 31a's
     lesson needed a second telling. poetic-fiddle #200 was reviewed at 10:18
     with one requested change, answered and pushed at 21:33, and replied to at
-    21:44 with a comment saying so. Every actor did its job; the Implementor
+    21:44 with a comment saying so. Every actor did its job; the Implementer
     prompt has carried "then re-request review from the reviewer" since the
     review-feedback source existed, as best-effort prose that nothing verified.
     It was skipped, the log recorded a clean `pr-ready`, and the human found the
@@ -6355,7 +6355,7 @@ implements.
     `complete_handoff` recovery path (requirement 32b) call, so the gate binds
     on both by construction rather than by each path remembering to run it.
     (PR #433: an Enabler `complete_handoff` flipped a pull request to ready
-    whose Implementor had failed and whose Reviewer had therefore never run
+    whose Implementer had failed and whose Reviewer had therefore never run
     at all — the gate below simply was not part of that path yet.)
     `handoff_complete_review` runs `lib/review-gate.sh`'s `review_gate_verdict`
     (component 20) first:
@@ -6599,7 +6599,7 @@ implements.
 
     **The Script refuses `complete_handoff` outright — logging a `warning`
     naming the reason, never the flip — when the item's most recently recorded
-    failure is at or before the Implementor stage** (agent-ops#440, PR #433):
+    failure is at or before the Implementer stage** (agent-ops#440, PR #433):
     the block a `complete_handoff` recovers must itself be a Reviewer's, or
     nothing has ever confirmed the pull request is safe to hand off, and every
     one of the four preconditions above can read as satisfied only because
@@ -6608,8 +6608,8 @@ implements.
     precondition for asking the gate, not a substitute for it — and reads the
     block's own `stage` field (the same one `handle_stage_failure`/
     `log_reviewer_handback` stamp on every `attempt-failed`, requirement 35a):
-    `"reviewer"` and the recovery proceeds; anything else (`"implementor"`,
-    `"coordinator"`, `""`, …) and it is refused. On PR #433 the Implementor
+    `"reviewer"` and the recovery proceeds; anything else (`"implementer"`,
+    `"coordinator"`, `""`, …) and it is refused. On PR #433 the Implementer
     had failed, the Reviewer block never ran, and a `complete_handoff` still
     flipped the pull request to ready — the gate did not exist on this path at
     all yet, so nothing caught it. A refused `complete_handoff` does not undo
@@ -6617,7 +6617,7 @@ implements.
     impediment the Enabler diagnosed is still cleared, and the stalled pull
     request is left for a Reviewer to actually examine — which is what the
     `abandoned-drafts` source (requirement 3e) does once the draft goes
-    stale, handing it to a fresh Implementor-then-Reviewer pass.
+    stale, handing it to a fresh Implementer-then-Reviewer pass.
 
     **That recovery is structural, not configurational.** The item never
     finds its own way back: the draft's branch *is* the claim the item was
@@ -6626,7 +6626,7 @@ implements.
     precisely the state that requirement's sweep exists to convert *into*
     this one — and the other three finishing sources exclude drafts by
     construction (requirements 3c, 3g, 3z), because a draft is the
-    Implementor's own claim marker rather than work awaiting a human. That
+    Implementer's own claim marker rather than work awaiting a human. That
     is why `abandoned-drafts` is a required member of every repository's
     `sources` (requirement 3e; agent-ops#472's decision): a repository able
     to omit it would leave this draft for a human, along with every other
@@ -6918,7 +6918,7 @@ implements.
     requirement 39a's own read compares against a fresher block's `ts` to
     decide whether the refinement still stands. A
     `stage-start`/`stage-end` pair's `stage` is `coordinator`,
-    `implementor`, `reviewer`, `approver`, `enabler` or `refiner`; the last
+    `implementer`, `reviewer`, `approver`, `enabler` or `refiner`; the last
     two are the ones that may appear on a cycle which selected nothing, since
     both run from the cleanup of requirement 11. An `enabler-examined` carries
     `repo`, `item`, the
@@ -7104,14 +7104,14 @@ implements.
       unattended system will actually perform.
     - The Co-Ordinator may *create* voids (requirement 18) for candidates it
       can see conclusively are already done, and should: that is one cheap read
-      instead of a full Implementor run reaching the same answer. Creating is
+      instead of a full Implementer run reaching the same answer. Creating is
       safe where clearing is not — a wrong unvoid costs a cycle every hour until
       someone notices — but it is not free, and requirement 34d is what makes it
       safe enough to keep.
 34d. **Every `item-void` a stage writes is corroborated before it is made
     permanent.** `void_guard_reason` in `lib/void-guard.sh` is the one
     entry point the Co-Ordinator (requirement 18), the Enabler (requirement
-    36a's `void` row) and the Implementor (requirement 9b) all call before
+    36a's `void` row) and the Implementer (requirement 9b) all call before
     logging `item-void`; none of the three may write it directly. The rule is
     about the three *stages*, and there is exactly one writer outside it: the
     Script's own pre-flight (requirement 34m), which reads its evidence
@@ -7199,7 +7199,7 @@ implements.
         be — restoring the capability an empty-diff-only reading could not
         reach, a draft that still changes files but is simply unwanted — and
         no pipeline stage may ever apply it itself (`lib/labels.sh`'s
-        catalogue comment, `prompts/implementor.md`'s explicit prohibition):
+        catalogue comment, `prompts/implementer.md`'s explicit prohibition):
         a stage that could would be corroborating its own judgement, exactly
         what this requirement exists to stop. The flag is not that stage's
         own judgement doing the same thing under a different name: an
@@ -7284,7 +7284,7 @@ implements.
       `item` — the gatherers put it in `ref` and leave `item` as whatever
       register id the branch or body named, or `null` — so the Co-Ordinator's
       extra test is as silent on this shape as the Enabler's and the
-      Implementor's `repos: []` calls are. Evidence citing neither a PR nor a
+      Implementer's `repos: []` calls are. Evidence citing neither a PR nor a
       commit is untouched by this test — the next one is what governs free
       prose that cites nothing. This is what a citation that merely *exists*
       was missing: the shipped defect that motivated it (below) cited a PR
@@ -7313,7 +7313,7 @@ implements.
       whatever anyone asserts. The candidates tested are the ones the
       Co-Ordinator was given, so a void can never be refused over something it
       could not have seen. A PR the API will not answer for counts as
-      uncorroborated, not as innocent. The Enabler and the Implementor gather
+      uncorroborated, not as innocent. The Enabler and the Implementer gather
       no per-cycle candidate list, so they call the same guard with `repos:
       []`; this one test simply has nothing to run, and every other test above
       applies to them exactly as it does to the Co-Ordinator.
@@ -7351,7 +7351,7 @@ implements.
     entirely. Every test that existed before the citation test passed, because
     none of them had ever asked whether the cited PR was *about the item being
     voided*. Reading more of the repository does not fix this by itself — the
-    Enabler and the Implementor already read more than the Co-Ordinator does,
+    Enabler and the Implementer already read more than the Co-Ordinator does,
     and carried the same gap regardless — only checking the citation does,
     which is why the guard is shared rather than duplicated per stage.
 
@@ -7633,7 +7633,7 @@ implements.
       the recommendation as a candidate at all — the review folder is a
       point-in-time record no stage ever edits to say a recommendation is
       done (requirement 25), so the merged PR's own text naming the ref, put
-      there by the Implementor that closed the recommendation out, is the one
+      there by the Implementer that closed the recommendation out, is the one
       fact anywhere that answers "is this done?", and this reads it instead of
       asking a Co-Ordinator to notice it went stale;
     - **an implementation-plan task** (e.g. `W10-breach-handling`) — the
@@ -7838,7 +7838,7 @@ implements.
     the config may take, `scripts/doctor.sh` fails a config that gives any
     configurable label key the name `obsolete`, case-insensitively as the
     guard reads it: `pr_label` alone is projected onto every draft the
-    Implementor raises, so one configured name would hand this close every
+    Implementer raises, so one configured name would hand this close every
     live draft at once — the same key-level guard the issue-side label keys
     already carry against `blocked`.
 
@@ -7849,7 +7849,7 @@ implements.
 
     **Only a corroborated void — today, that is the three stage writers.**
     `void_json` holds the unresolved `item-void` events of all three stage
-    writers (Co-Ordinator, Enabler, Implementor), and requirement 34d's guard
+    writers (Co-Ordinator, Enabler, Implementer), and requirement 34d's guard
     corroborates every one of them before it is logged (issue #243), so each
     is eligible here. It also holds the Script's own pre-flight voids
     (requirement 34m), and the `stage` gate below excludes them: a pre-flight
@@ -7908,8 +7908,8 @@ implements.
     `td-check.pl`'s internal-consistency rules, never fed back into the
     byte-identical upstream checker) is what makes this a candidate at all
     when `td-check.pl` alone would find the file fine. The repair travels
-    through the ordinary register-hygiene Implementor flow (prompts/
-    implementor.md's "Register hygiene" procedure) exactly as any other
+    through the ordinary register-hygiene Implementer flow (prompts/
+    implementer.md's "Register hygiene" procedure) exactly as any other
     frontmatter drift — flipping `status:` to `resolved` with the void's own
     evidence as `ref:`, or clearing stray resolution fields, whichever the
     facts support — never a write this pipeline makes directly against a
@@ -7923,13 +7923,13 @@ implements.
     those requirements are already deliberate about.
 
 34m. **A freshly claimed item gets the same gone-work check, before the
-    Implementor runs, not inside it.** 34i clears a *blocked* item's void
+    Implementer runs, not inside it.** 34i clears a *blocked* item's void
     without asking anyone, from digests the cycle already gathered; a
     candidate this cycle just won the claim on has never been blocked, but
     the question — is this item's work already done? — is identical, and
     just as often the answer (TD-PPpfid-26072801: merged and register-flipped
     15 minutes before the review window this fixed opened, then re-selected
-    and re-implemented 21 hours later — a full Implementor engagement to
+    and re-implemented 21 hours later — a full Implementer engagement to
     learn what one `gh` read already sitting in the cycle's own gathered
     state would have said). So, immediately after the claim loop of
     requirement 17a wins and before the workspace clone, the Script runs
@@ -7941,7 +7941,7 @@ implements.
     `gather-register-status.sh` read, scoped to the one item, because a
     freshly claimed item was never a member of the blocked set
     `register_status_json` is otherwise scoped to. Every other source is left
-    to the Implementor, exactly as before — this is the three done-signals
+    to the Implementer, exactly as before — this is the three done-signals
     34i already reads deterministically, reused, not a new one invented for
     the occasion.
 
@@ -7964,13 +7964,13 @@ implements.
     repositories' merge mode — a merged branch reads `diverged`, so this
     signal actually catches only a true merge, a fast-forward, or a branch
     carrying nothing of its own; the narrowing is false-negative-only (a
-    missed hit costs an Implementor engagement that discovers the same
+    missed hit costs an Implementer engagement that discovers the same
     thing, never a wrong void).
 
     A hit from either done-signal logs `item-void` (stage `preflight`) with
     the reason `work_gone_clearances` or
     `preflight_branch_merged_reason` gives, releases the claim (requirement
-    17a's release rules) and ends the cycle — no Implementor engagement
+    17a's release rules) and ends the cycle — no Implementer engagement
     spent. Neither needs a corroboration guard of its own (requirement 34d
     exists to catch a model's fabricated citation, and there is no model in
     this path to fabricate one): the evidence is read directly off
@@ -8002,7 +8002,7 @@ implements.
     branch, and `scripts/sweep-orphan-branches.sh` refuses to delete a ref
     with an open pull request) and is kept as defence in depth: it is cheap,
     pure, and the state it names — however it arose — is one this cycle must
-    not spend an Implementor on either way.
+    not spend an Implementer on either way.
 34n. **A void that is both actioned and old retires from the extract.**
     Requirement 34c's only exit from void is a human's hand-appended
     `unvoided` — deliberately, since nothing else may reason its way out of a
@@ -8796,7 +8796,7 @@ implements.
       `ensure_human_reviewer` (requirement 38a, kept continuously rather than
       only at the moment of handoff);
     - where something *is* `CHANGES_REQUESTED`-blocking it, the round has
-      already been answered — a marked reply from the Implementor after the
+      already been answered — a marked reply from the Implementer after the
       blocking review, and only that signal (see below) — and the pull
       request's checks are genuinely green (`_sweep_checks_green`, the same
       test the idle nudge below applies, shared rather than duplicated),
@@ -8875,21 +8875,21 @@ implements.
     3c's candidate rule reads a review-requested timeline event as the round
     having been *answered* (`scripts/gather-review-feedback.sh`, the
     events-not-timestamps fix), it would also drop the pull request out of
-    the Implementor's own review-feedback selection while the human's
+    the Implementer's own review-feedback selection while the human's
     `CHANGES_REQUESTED` sat unanswered — PR #205's silent-starvation failure,
     reintroduced hourly and fleet-wide.
 
     The discriminating judgement is `lib/handoff.sh`'s
     `handoff_round_answered` (requirement 34a) — the same predicate
     requirement 3c's candidate rule uses — called here with the timeline
-    signal omitted: only a marked reply from the Implementor counts as
+    signal omitted: only a marked reply from the Implementer counts as
     `answered`, never a `review_requested` event, because this call's own
     re-request would otherwise read back next cycle as the round having
     answered itself. `unanswered` and `unknown` (a read this script could not
     make, reported as a `warning`) are both left alone; only `answered`
     repeats the re-request. This closes the gap `tech-debt/TD-PPagop-26080804.md`
     recorded: a `ready`-verdict re-request that `agent-cycle.sh` lost to a
-    crash between the Implementor's push and the Reviewer's verdict now heals
+    crash between the Implementer's push and the Reviewer's verdict now heals
     on the sweep's next pass rather than sitting unrequested indefinitely.
 
     The tri-state is asymmetric, and the implementation must fail towards
@@ -9059,13 +9059,13 @@ implements.
       disjoint set gets a fresh ref.
     - **The work order is its own kind, not register-content's.** A
       `human-visibility-<hash>` entry has no `blob_sha`; its `acceptance` is
-      that each named violation no longer holds — or that the Implementor
+      that each named violation no longer holds — or that the Implementer
       reports `blocked` naming a cause outside the repository (a token's
       scopes, an `enabler_assignee` who is not a collaborator, a GitHub
       outage) — never that `td-check.pl` exits 0, which does not apply to it;
       and its `model` is `models.default`, not the `models.trivial` that
       register-only editing always takes. `prompts/coordinator.md` and
-      `prompts/implementor.md` give this source its own section, distinct from
+      `prompts/implementer.md` give this source its own section, distinct from
       `register-hygiene`'s, so the Co-Ordinator does not emit an
       already-satisfied acceptance test, a trivial model tier or a `blob_sha`
       that does not exist for a diagnosis of GitHub's API and permissions.
@@ -9269,13 +9269,13 @@ implements.
       Co-Ordinator's candidate rules, is the thing this system actually
       relies on to keep a queued pull request safe.
 
-    The Implementor and Reviewer prompts are the two places outside this
+    The Implementer and Reviewer prompts are the two places outside this
     script that push to a pull request's branch, and each checks queue
     membership immediately before doing so, using the same
-    `merge_queue_probe` query above (`prompts/implementor.md`'s
+    `merge_queue_probe` query above (`prompts/implementer.md`'s
     "Merge-queue awareness" section, `prompts/reviewer.md`'s section of the
     same name): before any push to a `review-feedback`, `merge-conflicts`,
-    `dequeued` or `abandoned-drafts` branch (requirement 26, Implementor step 6's
+    `dequeued` or `abandoned-drafts` branch (requirement 26, Implementer step 6's
     mergeable re-check), and before any push in the Reviewer's own steps 4
     and 6 (requirements 29, 30, 30a) when the pull request being reviewed is
     not a draft — which is only ever true for the Reviewer's own
@@ -9452,7 +9452,7 @@ implements.
     discipline as a Co-Ordinator's own `needs_refinement` report. The Script
     records this through `record_needs_refinement_block`, attributed
     `stage: "refiner"` — the identical recorder requirement 34e's
-    Co-Ordinator path and requirement 9f's Implementor path use, so the block,
+    Co-Ordinator path and requirement 9f's Implementer path use, so the block,
     its label and assignment projections, and its eligibility for the
     Enabler's own threshold (requirement 35a) never differ by which stage
     reported it.
@@ -9461,7 +9461,7 @@ implements.
     the Enabler's `unblocked` verdict on a refinement item: requirement 39a's
     candidate rule already excludes any item `refinements_map` names, so a
     refined item is structurally never offered to the Refiner again until a
-    fresher `needs-refinement` block (from the Implementor's escape hatch,
+    fresher `needs-refinement` block (from the Implementer's escape hatch,
     requirement 9f, or a further decline here) clears it from that map
     (requirement 39a's third clause reads the same `ts` comparison requirement
     9f describes). There is no path back to a second refinement pass that
@@ -9851,9 +9851,9 @@ document, for a stage whose numbers do not otherwise need to be contiguous
 with the Reviewer's own.
 
 40. **One engagement, judge only, never fix.** The Approver runs in the same
-    ephemeral clone the Implementor and Reviewer already used, with the pull
+    ephemeral clone the Implementer and Reviewer already used, with the pull
     request's branch checked out, and reads: the diff, the work order, the
-    Implementor's summary, the Reviewer's summary, and — on an adjudication
+    Implementer's summary, the Reviewer's summary, and — on an adjudication
     engagement only — the Approver's own prior `REQUEST_CHANGES` review
     bodies on this pull request (requirement 8c). It may edit, commit, or
     push nothing; unlike the Reviewer, which repairs a pull request and then
@@ -9903,7 +9903,7 @@ with the Reviewer's own.
     `approver_model_default`/`approver_model_complex`/`approver_model_critical`
     per requirements 8b/8c, under the `approver` stage-budget key
     (`lib/stage-budget.sh`'s `STAGE_BUDGET_PRIORS`, falling back to the
-    Implementor's own prior — requirement 4e's derivation — for any
+    Implementer's own prior — requirement 4e's derivation — for any
     installation with no history for this stage yet). A stage timeout, a
     non-zero exit, or an unparseable final message ends the engagement with
     no review posted (requirement 43) — never a blocked pull request, since
@@ -9951,8 +9951,8 @@ What exists, and the requirements each part answers to:
    token→display map, failing open on an unknown token; and
    `pipeline_comment_header ACTOR NODE`, the leading visible line every such
    comment opens with. `agent-cycle.sh`'s and `review-cycle.sh`'s own comments
-   call these directly; the Implementor's, Enabler's, Reviewer's and Refiner's
-   comment instructions (`prompts/implementor.md`, `prompts/enabler.md`,
+   call these directly; the Implementer's, Enabler's, Reviewer's and Refiner's
+   comment instructions (`prompts/implementer.md`, `prompts/enabler.md`,
    `prompts/reviewer.md`, `prompts/refiner.md`) spell both the header and the
    marker out literally, via the cycle id and node name each receives at
    invocation. One definition
@@ -10076,7 +10076,7 @@ What exists, and the requirements each part answers to:
    of the latest event that carried it (the one the reduction kept). Its own
    source, `source: "human-visibility"` — not `gather-register-hygiene.sh`'s
    (3i above) — ranked immediately after `merge-conflicts`
-   (config.schema.json); the Co-Ordinator's and Implementor's prompts give it
+   (config.schema.json); the Co-Ordinator's and Implementer's prompts give it
    its own section, distinct from `register-hygiene`'s, because the work
    order the two kinds deserve is not the same one. Called for every repo
    whose `sources` include `human-visibility`, whenever
@@ -10439,7 +10439,7 @@ What exists, and the requirements each part answers to:
    empty map is not the same bytes as an omitted key). Sourced by
    `agent-cycle.sh` only. Unit-tested (`test/repo-order.test.sh`); must
    pass `shellcheck`.
-4. `prompts/coordinator.md`, `prompts/implementor.md`, `prompts/reviewer.md`,
+4. `prompts/coordinator.md`, `prompts/implementer.md`, `prompts/reviewer.md`,
    `prompts/enabler.md` and `prompts/refiner.md` implementing requirements
    14–20, 21–27, 28–32, 36/36b and 39c/39d respectively. Each prompt must
    embed the relevant shared-repo conventions from this document so a stage
@@ -10516,7 +10516,7 @@ What exists, and the requirements each part answers to:
     nothing. Component 9 runs the test suite, which only ever reads the scripts
     it calls; this reads all of them. `deploy/docker/Dockerfile` (component 7)
     installs the same pinned release — the amd64 checksum byte-identical to
-    this workflow's — so an Implementor working inside the node image can run
+    this workflow's — so an Implementer working inside the node image can run
     `scripts/lint-shell.sh` itself before pushing, rather than pushing blind
     and finding out from this workflow (requirement 1b).
 11. `scripts/watch-node.sh` — a read-only wrapper around
@@ -11063,7 +11063,7 @@ What exists, and the requirements each part answers to:
     exception, `dirty` because it is a bug in the caller rather than a
     degraded node. `agent-cycle.sh` calls it at the two points it already
     knows a pull request's body and head branch: right after the
-    Implementor's PR is raised (a dirty verdict there becomes the
+    Implementer's PR is raised (a dirty verdict there becomes the
     `## Script findings` section of the Reviewer's prompt, not a refusal) and
     again at the Reviewer's own `ready` handoff, which is the enforcing one
     (handing back through `log_reviewer_handback` on a dirty verdict, the
@@ -11712,7 +11712,7 @@ pull request, run the ones the change touches and any it could regress.
    rather than to either cap, and carries the runner's own record — reset time
    included — out for the stand-down; an `allowed_warning` does *not* stop it,
    nor does the same status string appearing inside a tool result, which is
-   what an Implementor working on limit detection would be reading.
+   what an Implementer working on limit detection would be reading.
    `test/limit-detect.test.sh` passes: `limit_decide_structured` returns the
    stated reset as a known one, maps a seven-day limit to the weekly class and
    a five-hour one to `other`, falls back exactly as the prose path does when
@@ -11849,7 +11849,7 @@ pull request, run the ones the change touches and any it could regress.
    candidate rule — the `MERGEABLE`-only gate that keeps it from ever
    overlapping requirement 3g's own candidates, the `failed_checks`-only
    allow-list on `dequeue_reason`, the answered clause (only a marked
-   `actor=implementor` reply newer than `dequeued_at` excludes; any other
+   `actor=implementer` reply newer than `dequeued_at` excludes; any other
    actor, an unmarked comment, or an earlier one does not; an unreadable
    reviews or comments response drops the candidate rather than admitting it),
    the `dequeued_at` ordering, and the head-SHA-scoped ref — is
@@ -12101,7 +12101,7 @@ pull request, run the ones the change touches and any it could regress.
    protected preview's own content — while the secret's value never appears
    anywhere in the command's output; a binary body is noted rather than
    dumped, and an oversized one is truncated with a note naming the size.
-   `prompts/implementor.md` and `prompts/reviewer.md` are asserted to invoke
+   `prompts/implementer.md` and `prompts/reviewer.md` are asserted to invoke
    the check with `--fetch` in the same literal form, so the two cannot drift
    (requirement 34a). Against the real API and a
    real protected preview, `scripts/preview-deploy.sh --repo
@@ -12109,14 +12109,14 @@ pull request, run the ones the change touches and any it could regress.
    reports that the deployment built and that the page could not be checked.
 2g. **Every pipeline comment is visibly attributed (requirement 9d).**
    `test/comment-identity.test.sh` passes: `pipeline_actor_label` returns the
-   right display name for each of `script`, `coordinator`, `implementor`,
+   right display name for each of `script`, `coordinator`, `implementer`,
    `reviewer`, `enabler`, `review-script` and `project-reviewer`, and fails
    open — prints the token itself — for one it does not recognise;
    `pipeline_comment_header` renders `**<Display>** · autonomous pipeline ·
    node \`<node>\`` for a known and an unknown actor alike;
    `pipeline_comment_marker` carries both the cycle id and the actor token,
    still prefixed with `PIPELINE_COMMENT_MARKER_PREFIX`; and each of
-   `prompts/implementor.md`, `prompts/enabler.md` and `prompts/reviewer.md`
+   `prompts/implementer.md`, `prompts/enabler.md` and `prompts/reviewer.md`
    contains the literal header form `pipeline_comment_header` produces for its
    own actor token. `prompts/reviewer.md` also contains the literal
    instruction to post an unconditional completion comment (requirement 30b),
@@ -12124,7 +12124,7 @@ pull request, run the ones the change touches and any it could regress.
    `test/abandoned-drafts.test.sh` separately proves an
    older, actor-less marker and a newer, actor-carrying one both still exclude
    a comment from the activity clock, and that all three prompts (now
-   including `prompts/implementor.md`) still carry
+   including `prompts/implementer.md`) still carry
    `PIPELINE_COMMENT_MARKER_PREFIX`.
 3. A second invocation while one holds the lock exits without acting.
 4. A simulated stale lock (fake lock file, old timestamp, dead PID) is taken
@@ -12169,7 +12169,7 @@ pull request, run the ones the change touches and any it could regress.
    the same non-zero `exit_code` and no `stage-start` anywhere between them
    yields a verdict carrying the count, the window, every failing node and
    the `exit_code`; one fewer yields nothing; a completed cycle that reaches
-   a selection-path stage (`coordinator`, `implementor` or `reviewer`)
+   a selection-path stage (`coordinator`, `implementer` or `reviewer`)
    resets the count whatever that stage then exits, as does a clean
    (`exit_code` 0) cycle, while an Enabler or Refiner `stage-start` never
    counts as recovery; an exit-code change restarts the count at
@@ -12194,7 +12194,7 @@ pull request, run the ones the change touches and any it could regress.
 6c. **A review round is answered exactly once.** With a PR carrying an
    unanswered `CHANGES_REQUESTED`, a cycle must select it (`source:
    "review-feedback"`, `item` the round's ref, `branch` the PR's existing
-   branch) and the Implementor must push to that branch without opening
+   branch) and the Implementer must push to that branch without opening
    anything. Then the check that matters: run another cycle and assert the PR
    is **no longer a candidate**, while `gh pr view --json reviewDecision` still
    reports `CHANGES_REQUESTED`. Those two facts are true simultaneously, and
@@ -12222,7 +12222,7 @@ pull request, run the ones the change touches and any it could regress.
    With an open *draft* PR carrying `pr_label` on a `branch_prefix` (or `td/`)
    branch whose `updatedAt` is older than `abandoned_draft_after_hours`, a cycle
    must select it (`source: "abandoned-drafts"`, `item` the head-SHA-scoped ref,
-   `branch` the PR's existing branch), and the Implementor must check out that
+   `branch` the PR's existing branch), and the Implementer must check out that
    branch and push to it without opening a new PR or branch. Assert the freshness
    gate: the same PR with a recent `updatedAt` is **not** a candidate — a draft
    merely being worked, or one a peer node just touched, must never be stolen.
@@ -12234,7 +12234,7 @@ pull request, run the ones the change touches and any it could regress.
    open *non-draft* PR carrying `pr_label` on a `branch_prefix` (or `td/`) branch
    whose `mergeable` is `CONFLICTING`, a cycle must select it (`source:
    "merge-conflicts"`, `item` the head-SHA-scoped ref, `branch` the PR's existing
-   branch), and the Implementor must check out that branch, rebase onto the base
+   branch), and the Implementer must check out that branch, rebase onto the base
    and push without opening a new PR or branch. Assert the guards: a PR whose
    `mergeable` is `UNKNOWN` is **not** a candidate — mergeability is computed
    asynchronously and guessing would rebase a PR that may not conflict; a *draft*
@@ -12250,7 +12250,7 @@ pull request, run the ones the change touches and any it could regress.
    `queued: false`, a non-null `dequeued_at`, and `dequeue_reason` exactly
    `failed_checks`, a cycle must select it (`source: "dequeued"`, `item` the
    head-SHA-scoped ref, `branch` the PR's existing branch), and the
-   Implementor must check out that branch, push a fix without opening a new PR
+   Implementer must check out that branch, push a fix without opening a new PR
    or branch, and never attempt to re-queue it. Assert the guards: a PR whose
    `mergeable` is `CONFLICTING` is **not** a candidate here (that is
    requirement 3g's job, and the two candidate rules must never both admit the
@@ -12258,7 +12258,7 @@ pull request, run the ones the change touches and any it could regress.
    `failed_checks` (including empty/unreadable) is **not** a candidate; a
    currently-queued PR (`queued: true`) is never a candidate; and **a dequeue
    the pipeline has already answered is not a candidate at a moved head** — a
-   marked `actor=implementor` reply newer than `dequeued_at` excludes the PR
+   marked `actor=implementer` reply newer than `dequeued_at` excludes the PR
    even though the probe still reports the same dequeue, which is what stops
    the fixed pull request being re-offered on every cycle until a human
    re-queues it. Assert the clause's own edges too: the same reply *before*
@@ -12275,7 +12275,7 @@ pull request, run the ones the change touches and any it could regress.
    `medium`, and vice versa); an unknown grade contributes nothing rather than
    failing; and with no valid grade at all it falls back to `low` for a
    trivial-classified work order and `medium` otherwise. Driving a cycle
-   end-to-end: the Implementor's PR carries exactly one `complexity:*` label,
+   end-to-end: the Implementer's PR carries exactly one `complexity:*` label,
    its summary carries `complexity`, and the reviewer's `stage-start` event
    records the resolved `complexity` and a `model` equal to
    `reviewer_model_complex` when and only when the grade is `high`.
@@ -12428,8 +12428,8 @@ pull request, run the ones the change touches and any it could regress.
    `1` even though requirement 2.2's own count left it untripped; and an
    already-tripped cycle with nothing left to fold in stays tripped without
    its composition line changing.
-8. **A no-op Implementor is recorded.** Drive one cycle in which the
-   Implementor reports `blocked` without opening a PR: the cycle must exit 0
+8. **A no-op Implementer is recorded.** Drive one cycle in which the
+   Implementer reports `blocked` without opening a PR: the cycle must exit 0
    having logged an `attempt-failed` carrying that item and the stage's own
    reason — not die part-way, and not log nothing. Under `errexit` this is
    where a helper returning "not found" as a non-zero status silently kills
@@ -12553,7 +12553,7 @@ pull request, run the ones the change touches and any it could regress.
    naming no `repo` at all whose URL citation's fetched body does name the
    item is allowed, corroborated by the live test it fell through to rather
    than by the number. Assert it runs with `repos: []` exactly
-   as the Enabler's and the Implementor's calls do, and with `repos`
+   as the Enabler's and the Implementer's calls do, and with `repos`
    populated exactly as the Co-Ordinator's own call is — the candidate
    carrying the synthetic id in `ref` and its `item` as the gatherers leave
    it, so that both call shapes reach the same finishing-source verdict, in
@@ -12568,7 +12568,7 @@ pull request, run the ones the change touches and any it could regress.
    must list the item as blocked rather than void. The negative matters as
    much — assert a well-formed void is still recorded, or the guard has
    quietly abolished a feature requirement 18 depends on to avoid full
-   Implementor runs. `test/enabler-verdicts.test.sh` passes: driving
+   Implementer runs. `test/enabler-verdicts.test.sh` passes: driving
    `maybe_run_enabler` itself with an unevidenced `void` verdict produces the
    same `attempt-failed`, plus an `enabler-examined` event whose `outcome` is
    `void-refused` — the Enabler's own guarded path, not only the
@@ -12778,7 +12778,7 @@ pull request, run the ones the change touches and any it could regress.
    block `stage` is `"reviewer"` and whose `handoff_complete_review` gate is
    clean, takes the PR out of draft and logs `pr-ready` with `handoff: "enabler"`;
    the same verdict on an item with no `pr_url` is ignored without error; on an
-   item whose block `stage` is anything else (`"implementor"`, `"coordinator"`,
+   item whose block `stage` is anything else (`"implementer"`, `"coordinator"`,
    absent) is refused with a `warning` and no `pr-ready`, `handoff_complete_review`
    never called at all (agent-ops#440, PR #433); and on an item whose `stage` is
    `"reviewer"` but whose gate is `dirty` or whose required checks are unreadable
@@ -12795,13 +12795,13 @@ pull request, run the ones the change touches and any it could regress.
    no open PR yields nothing; an unreachable API yields nothing rather than a
    non-zero return, which under `errexit` would kill the cycle ahead of the
    failure it is describing; and an empty repo or branch asks GitHub nothing at
-   all. Then drive an Implementor that exits 0 having pushed a draft PR,
+   all. Then drive an Implementer that exits 0 having pushed a draft PR,
    written no `.git/agent-ops-pr-url` breadcrumb, printed no URL and ended with
    prose instead of a JSON object: the `attempt-failed` must still carry that
    PR's `pr_url`, the PR must still receive the stage-failure comment, and the
    claim must be released as `have-pr` rather than `no-pr`. Assert the URL came
    from the branch and not from the stage — that is the whole point, and a test
-   whose Implementor helpfully left a breadcrumb passes without exercising
+   whose Implementer helpfully left a breadcrumb passes without exercising
    anything.
 8f. **A human can reopen a void from where they actually are (requirement
    34f).** `test/unvoid-label.test.sh` passes: a request clears a void recorded
@@ -12911,7 +12911,7 @@ pull request, run the ones the change touches and any it could regress.
 8j. **A corroborated void closes the GitHub object it names, exactly once
    (requirement 34k).** `test/close-void-github-items.test.sh` passes against
    a stubbed `gh`: an open issue or an open, obsolete pull request named by a
-   void from any of the three writers — Co-Ordinator, Enabler, Implementor,
+   void from any of the three writers — Co-Ordinator, Enabler, Implementer,
    all corroborated by requirement 34d (issue #243) — is closed with a
    comment carrying the void's own evidence; a void carrying no `stage` at
    all is left entirely alone with no API call made, the fail-closed default
@@ -12994,7 +12994,7 @@ pull request, run the ones the change touches and any it could regress.
    runs without it) and runs on every `doctor.sh` invocation, so a ruleset
    drifting back to report-only surfaces on the next run rather than only
    when a human reads the repo settings by hand (TD-PPagop-26080802).
-8n. **A claimed item's gone work is caught before the Implementor runs, not
+8n. **A claimed item's gone work is caught before the Implementer runs, not
    inside it (requirement 34m).** `test/preflight.test.sh` passes:
    `preflight_done_reason` returns the same reason `work_gone_clearances`
    would give the same item as a blocked entry — a closed issue, a finishing
@@ -13058,7 +13058,7 @@ pull request, run the ones the change touches and any it could regress.
 
    What `agent-cycle.sh` then *does* with each verdict is asserted separately,
    by `test/closing-keyword-wiring.test.sh`, against the two blocks lifted
-   verbatim from the script: a `dirty` verdict at the Implementor-side call
+   verbatim from the script: a `dirty` verdict at the Implementer-side call
    carries on into the Reviewer stage holding the fault (never recording the
    item `attempt-failed`, the refusal this gate deliberately does not make)
    and that fault reaches the Reviewer as a `## Script findings` section of
@@ -13606,7 +13606,7 @@ pull request, run the ones the change touches and any it could regress.
     pending list is `failed`, never an assumed
     `skip`. `handoff_round_answered` is asserted
     directly there too, both callers' halves at once: a marked
-    `actor=implementor` reply after the blocking review is `answered`, the
+    `actor=implementer` reply after the blocking review is `answered`, the
     same reply before it is `unanswered`, an unmarked comment and another
     actor's marked comment never answer, and a `review_requested` event
     answers only the caller that passes that signal. Its failure direction is
@@ -13631,7 +13631,7 @@ pull request, run the ones the change touches and any it could regress.
     nudged in the same pass; a `CHANGES_REQUESTED`-blocked pull request whose
     round is unanswered has no review request made for it and is never
     nudged; the same pull request whose round *is* answered — a marked
-    Implementor reply after the blocking review — is re-requested via
+    Implementer reply after the blocking review — is re-requested via
     `confirm_review_requested`, still never nudged (the nudge's own
     `_handoff_pr_approved` gate holds it off regardless, since the same
     reviews fixture is still `CHANGES_REQUESTED`); a reply
@@ -14036,7 +14036,7 @@ pull request, run the ones the change touches and any it could regress.
     review round 2 from a bound private to this sweep's own pass): both call
     into `_landing_stage_attempt` — this sweep, and `run_landing_stage`'s own
     gate 0, run later the same cycle process for whatever repository this
-    round's own Implementor worked in — read and grow one cycle-scoped
+    round's own Implementer worked in — read and grow one cycle-scoped
     `landing_armed_by_repo[SLUG]` map (`agent-cycle.sh`, declared ahead of
     both), rather than a tally private to either. Each, immediately after a
     candidate arms (read off `_landing_stage_attempt`'s own
@@ -14192,7 +14192,7 @@ usage-limit stand-down, where each hourly cycle also spends the 2.1b probe.
 That spend is self-limiting from both ends: while the limit is real the
 probe's answer is the limit message, which serves no tokens and costs
 nothing, and the first answered probe (a fraction of a cent of
-`implementor_model_trivial`) retires the stand-down fleet-wide, so at most
+`implementer_model_trivial`) retires the stand-down fleet-wide, so at most
 one probe per stand-down is ever paid for. Because back-pressure caps open agent PRs
 at `max_open_agent_prs`, sustained spend is bounded by the rate at which the
 human merges — the system cannot run ahead of its only consumer.
@@ -14256,7 +14256,7 @@ requirements above, which state only what is.
   agent — autonomous or interactive — makes its own dedicated clone from the
   default branch before commencing any changes, and never assumes the default
   branch still matches what it cloned when it opens the pull request.
-- **Draft-PR claiming is fused with the review flow**: the Implementor's
+- **Draft-PR claiming is fused with the review flow**: the Implementer's
   draft PR is simultaneously the repos' standard claim marker and the
   Reviewer's input; the Reviewer flipping it to ready is the hand-off to the
   human gate.
@@ -14328,7 +14328,7 @@ requirements above, which state only what is.
   all — not even `mergeable`, which is what `merge-conflicts` rides on — the
   candidate array is fed to the no-op fingerprint verbatim, the same fix
   abandoned-drafts and merge-conflicts each need for their own invisible
-  transitions. The Implementor cannot re-queue what it fixes — no prompt in
+  transitions. The Implementer cannot re-queue what it fixes — no prompt in
   this pipeline enqueues a pull request, at any `merge_autonomy` level, and
   requirement 8d's arming step (the one thing that does, at
   `agent-merges-routine` and above) arms only on the round the Approver
@@ -14342,7 +14342,7 @@ requirements above, which state only what is.
   action that clears the state it is keyed on, a fixed dequeue would otherwise
   stay a candidate for ever, and the head-SHA-scoped ref would mint a fresh,
   unblocked one on every fix push. So candidacy also requires the dequeue to be
-  *unanswered* — no marked `actor=implementor` reply newer than `dequeued_at` —
+  *unanswered* — no marked `actor=implementer` reply newer than `dequeued_at` —
   reusing `lib/handoff.sh`'s predicate rather than a second copy of it, exactly
   as requirement 3c does for a review round it likewise cannot dismiss. This is
   the first finishing source whose condition self-clears neither on a rebase
@@ -14453,7 +14453,7 @@ requirements above, which state only what is.
   and keeping the row. In July 2026, in that format, twelve items across the
   three repos were found flipped to `resolved` with their bodies still in
   place — `## Current Items` advertising a dozen pieces of work already done,
-  to humans and to this pipeline alike. `prompts/implementor.md` had
+  to humans and to this pipeline alike. `prompts/implementer.md` had
   prescribed the removal since it was written; the drift accumulated anyway,
   because resolutions also arrive from humans and from interactive sessions
   that no prompt governs. The per-item format retires that particular
@@ -14472,7 +14472,7 @@ requirements above, which state only what is.
   Three choices carry the design. It is **last in every repo's list**, because a
   deterministic cosmetic repair must never outrank substantive work, and a
   source that cannot be starved (its volume is bounded by CI) loses nothing by
-  waiting. It is worked by the **ordinary Implementor, not a new actor role**:
+  waiting. It is worked by the **ordinary Implementer, not a new actor role**:
   the repair is an edit to the register against a machine-checkable acceptance
   test, which is precisely what that role already does, and a role exists to
   carry a different *kind* of judgement, not a different kind of file. And the
@@ -14504,8 +14504,8 @@ requirements above, which state only what is.
   re-prioritisation nobody asked for dressed as a default. And the band is
   dropped at the work order (requirement 21) because it is a statement about
   when work is picked up, not about what the work is — carrying it downstream
-  would invite an Implementor or Reviewer to treat `Low` as licence to do less.
-- **The Reviewer's model follows the Implementor's ex-post complexity
+  would invite an Implementer or Reviewer to treat `Low` as licence to do less.
+- **The Reviewer's model follows the Implementer's ex-post complexity
   self-assessment** (requirements 26a and 8a), not the Co-Ordinator's ex-ante
   classification. Complexity routinely reveals itself only during
   implementation — an item that read as a register edit turns out to touch
@@ -14531,7 +14531,7 @@ requirements above, which state only what is.
   the most relevant one, but pays for two reviews on exactly the PRs that
   are already expensive, and it adds a stage outcome to the state machine.
   It remains open as a future *addition* to the labelling scheme, warranted
-  only if the log shows the Implementor's grading under-firing.
+  only if the log shows the Implementer's grading under-firing.
 - **Back-pressure on open agent PRs replaces a quota-balance check** as the
   primary throttle, because no supported API exposes a subscription plan's
   remaining quota; usage-limit errors are handled fail-safe via detection
@@ -14596,9 +14596,9 @@ requirements above, which state only what is.
   pre-fetched data, complete over both claim shapes and immune to model size.
 - **Tech-debt handling uses the repos' own claiming workflow directly**
   (both repos today keep identical per-item `tech-debt/` machinery and a
-  `/td` skill, but the Implementor follows the documented workflow rather
+  `/td` skill, but the Implementer follows the documented workflow rather
   than dispatching through the skill, which exists to launch agents — the
-  Implementor already is one).
+  Implementer already is one).
 - **The Co-Ordinator falls through** to the next category or repo when
   candidates fail the suitability bar, instead of giving up after the first
   category that yielded any candidate.
@@ -14994,7 +14994,7 @@ requirements above, which state only what is.
   concurrency, security, state replication, CI/workflow machinery or shared
   library code to grade `high`, never `low` — the same rubric that already
   picks the Reviewer's own tier (requirement 8a). A second, independent
-  fence around the same ground would duplicate a judgement the Implementor
+  fence around the same ground would duplicate a judgement the Implementer
   and Reviewer have already made twice; WI-7's classifier is a genuine
   addition for the tiers this work item does not implement landing for
   (`agent-merges-routine`/`agent-merges-all`), not a prerequisite for this
@@ -15030,14 +15030,14 @@ confident, recurring no-op.
 | A listing that silently comes back at its page size | `gh pr list` defaults to `--limit 30` and says nothing when it truncates, so the back-pressure gate simply counted low — and a gate that counts low opens. Nothing bounds the listing at `max_open_agent_prs`, because a PR waiting in the human's merge queue carries the label but is excluded from the sum. | State the cap (`GITHUB_PR_LIST_LIMIT`) instead of inheriting one, and test for it (`github_pr_list_truncated`). Then decide per call site which direction is dangerous: a work source that misses a candidate has merely not fired, whereas a gate that undercounts has let work past a cap that was already full. |
 | A helper returns non-zero for a legitimately empty result, and the script runs under `set -e` | `[[ -z "$x" ]] && x="$(helper)"` takes the helper's exit status, so the *whole cycle* dies at that line. Here it died two lines before logging the failure it had just detected — nine cycles left nothing behind but a `selection` event and `exit 1`. | A lookup that finds nothing is a normal outcome: return 0 and print nothing. Reserve non-zero for real errors. Assert it at the real call-site shape under `set -e`, not on the function alone — the function looked fine; the *interaction* was the bug. |
 | The writer of an event and the reader of it disagree about the key | `attempt-failed` recorded no `repo`/`item`; the blocked extract grouped by exactly those. Every event collapsed into one anonymous group, so **no failed attempt ever blocked anything** — for months, undetected, because each half reads correctly on its own. | Round-trip the contract in a test: write the event, read it back through the real extract, assert the item is blocked. Any log the system reads back is a contract with itself. |
-| A model's clean "I can't/needn't do this" is treated as a crash | A `{"status":"blocked"}` report went down the failure path and was filed as `"implementor exited 0"`, throwing away the reason and unblock condition — the entire product of a full model run. So the next cycle bought the same discovery. | A verdict is a result. Persist it with the model's own words (requirement 9a), and note *which* verdict it is (requirement 9b). The log is the system's only memory: a finding you don't write down, you pay for again, on a schedule, forever. |
+| A model's clean "I can't/needn't do this" is treated as a crash | A `{"status":"blocked"}` report went down the failure path and was filed as `"implementer exited 0"`, throwing away the reason and unblock condition — the entire product of a full model run. So the next cycle bought the same discovery. | A verdict is a result. Persist it with the model's own words (requirement 9a), and note *which* verdict it is (requirement 9b). The log is the system's only memory: a finding you don't write down, you pay for again, on a schedule, forever. |
 | Done-ness inferred from one channel | "Done" meant *a merged PR references it*. Work that landed as a direct commit — or before the repo required PRs — has no PR, so it reads as outstanding forever, and the item is re-selected every cycle for as long as it exists. | Don't let one provenance channel be the only proof. Cross-reference the curated register (R12a), and let the agent that actually looks at the repo settle it once (requirement 9a). Prefer evidence from the tree over evidence from process metadata. |
 | A rule with two implementations | The dashboard and the Script each computed "blocked". They disagreed, and the dashboard — the very place you would look to spot this bug — showed the wrong answer confidently. | One definition, shared (requirement 34a). If a second consumer needs it, it sources the first, and the shared unit is where the test lives. |
 | Identifiers assumed globally unique | `dependabot-alert-1` exists in *every* repo; date-numbered registers collide across repos too. Keying on the id alone makes one repo's block starve another repo's unrelated work. | Key on the scope plus the id (requirement 34). Ask what an id is unique *within* before using it as a key. |
 | A contract asserted in one document and required by none | This spec's design notes state the review "writes the `R-NN` cross-reference into each mirrored tech-debt entry" — and `docs/REVIEW-PIPELINE-SPEC.md` never asked for it. Both documents were internally consistent; the system between them was not, and the dedup it justified never worked. | When one component's design depends on another's behaviour, make it a numbered requirement *in the document that builds that component*, and cite it from both sides. Prose describing what another component "does" is a wish, not an interface. |
 | A state that can never say "done", read as if it could | `reviewDecision` stays `CHANGES_REQUESTED` after the agent pushes its fix — GitHub won't let a PR's author dismiss a review on their own PR, and the agent *is* the author. So "is there unanswered feedback?" answered from the PR's own state is always yes, forever. The PR is selected, fixed, re-selected, re-fixed, hourly, at Sonnet prices, and every cycle looks like a productive one. | Ask "what would ever change this value?" before keying on it. Where the answer is "nothing we can do", the state cannot be the signal — derive whose turn it is instead (requirement 3c: an answer event — a marked reply or a re-requested review — after the blocking review, the same shape as "a later green run supersedes"). A field that can only ever hold one value is not a condition, it is a constant. |
 | A proxy signal that an unrelated action can forge | "Whose turn is it" was derived by comparing the blocking review's timestamp against the head commit's `committedDate` — a real fix that came in stayed the answer. But a conflict-resolution force-push re-stamps *every* commit's date to push time, with no review of its own having happened, so rebasing a PR to resolve a merge conflict silently read as "answered" and PR #205's unresolved `CHANGES_REQUESTED` dropped out of every selection query for hours (agent-ops#239) — the same family `lib/handoff.sh` had already fixed twice under different names. | Before trusting a timestamp as evidence an actor did X, ask what *else* moves that timestamp. Where anything unrelated can, key on an event the platform stamps only when X itself happens (a review-requested event, a marked reply) rather than a field that merely correlates with it. |
-| The formal signal and the substance in different places | The blocking `CHANGES_REQUESTED` review's body read, in full: "Refer to https://…#pullrequestreview-4718691960". All 6.5 KB of actual findings were in a *separate* `COMMENTED` review, by a *different account* — because the agent's own account raised the PR and therefore cannot request changes on it. A gatherer that read only the blocking review would have handed the Implementor the words "Refer to" and called the brief complete. | Gather the whole round, whoever wrote it, and pass it verbatim. When a platform rule (an author cannot review their own PR) forces a workflow to split across accounts, the split is structural and permanent — design for it rather than discovering it in the one review that mattered. |
+| The formal signal and the substance in different places | The blocking `CHANGES_REQUESTED` review's body read, in full: "Refer to https://…#pullrequestreview-4718691960". All 6.5 KB of actual findings were in a *separate* `COMMENTED` review, by a *different account* — because the agent's own account raised the PR and therefore cannot request changes on it. A gatherer that read only the blocking review would have handed the Implementer the words "Refer to" and called the brief complete. | Gather the whole round, whoever wrote it, and pass it verbatim. When a platform rule (an author cannot review their own PR) forces a workflow to split across accounts, the split is structural and permanent — design for it rather than discovering it in the one review that mattered. |
 | A change-detection digest that tracks churn instead of meaning | The no-op short-circuit (requirement 3b) digested the *run id* of each workflow's latest run. `poetic` schedules `sync-framework.yml` at `0 * * * *` — hourly, the same cadence as the pipeline — so that one workflow busted the fingerprint on every single cycle. The feature was installed, tested, logged, green, and saved nothing; the only symptom was the bill it was built to reduce, unchanged. Found by reading the repo's actual cron lines, not by any test. | Digest the *fact the consumer reads*, not the record it lives in. Requirement 15 asks "is this workflow's latest run a failure" — that is the conclusion, not the id. Before digesting a field, ask what changes it and on what cadence; anything that moves on a timer moves faster than the thing you are trying to detect. Then assert the negative (a green rerun changes nothing), because every positive test still passes on the broken version. |
 | A cost-control feature that makes cost the *only* thing it protects | Skipping a stage to save money is a decision to do nothing, and doing nothing is what a healthy idle pipeline also looks like. Get the skip condition subtly wrong — a source outside the fingerprint, a failed API call digested as "empty" — and the pipeline stops picking up work while reporting perfect health, forever, because nothing that stands down ever fails. | Make the skip's claim narrow enough to be provable ("nothing changed"), never broad enough to be wrong ("there is no work"). Mark unusable samples rather than degrading them to empty. Cap the whole mechanism with a time-based valve (`none_selected_recheck_hours`) so a gap in coverage is a bounded delay rather than an outage, and pay the occasional wasted run for it — the run you skipped wrongly costs more than the one you ran needlessly. |
 | A switch with no way back on | An agent disables the pipeline to edit safely, then dies mid-session — killed, timed out, or just finished and forgetful. The switch stays set. No cycle runs again. Nothing alerts, because "no PRs this week" is exactly what a quiet week looks like, and the operator finds out days later. | Give any deliberate stop an expiry (requirement 2.3), and make indefinite something a human explicitly asks for. Same shape as the stale-lock rule (requirement 1): every mechanism that halts this system needs an answer to "what if whoever set it never comes back?" |
@@ -15053,4 +15053,4 @@ confident, recurring no-op.
 | Detecting a wrong verdict is not the same as recovering from one | Requirement 3t's corroboration gate (above) stops a rejected verdict from arming the fingerprint, so the *next* cycle is never frozen on a stale wrong answer again. But detection alone left the *rejected* cycle itself still standing down empty-handed — and issue #310's own incident showed the same wrong verdict recurring across cycles and nodes, not as a one-off. A gate that only ever un-arms the fingerprint degrades, under a persistent confabulation, into a warning-per-cycle loop with zero selections: visible on the log, but liveness still depending entirely on the model eventually reasoning its way to a different answer. | Give the failure a second, cheaper try before treating it as a stalled cycle (requirement 3v's one retry, quoting the Script's own contradiction back at the model — a pointed correction, not a generic "try again"), and then a recourse that does not depend on the model at all (mechanical fallback selection, scoped to bands the Script can already enumerate without live judgement). The general shape: a machine check that can *detect* a wrong answer is only half the fix if the only recovery it can trigger is "ask the same question again next cycle" — pair detection with an escalating, boundedly-costed retry path, so the system's liveness stops being hostage to the one component it cannot make more reliable by construction. |
 | A machine check proved on one band is not a machine check | Requirement 3t's corroboration gate closed issue #310's freeze by counting one band — tech-debt — and the fix read as complete because that was the band the incident happened in. It was not: a `none-selected` over a non-empty `issues`, `findings`, `review_feedback`, `merge_conflicts`, `abandoned_drafts`, `human_visibility` or `register_hygiene` array passed the gate untouched, so the identical confabulation one band over would have frozen the fleet the identical way, with nothing in the log even able to detect it. The pre-fetch fixed "the model declines to read the source"; the corroboration fixed "the model misdescribes what it was handed" — but only where somebody had already been burned. | State the invariant, not the instance: **every load-bearing negative the model asserts must be corroborated against the Script's own count of what it handed over** (requirement 3x), and then build it as one band-parameterised mechanism rather than one check per band, so adding a band cannot silently add a hole. Expect the generalisation to surface what the single-band version could ignore — here, that `issues` was the one band whose decline routes were *not* exhaustive (a question-or-discussion issue could be skipped silently and requirement 16a explicitly forbade reporting it), which is a real gap the narrow check had simply never had to look at. A check that cannot be generalised without changing a policy is usually telling you the policy is the defect. |
 | A safety justification written as "harmless until X lands," read after X has landed | TD-PPagop-26081507 recorded that the merge-autonomy kill switch's fail-open no-cache case was "harmless: nothing arms an approval or a landing on the flag" — explicitly, deliberately, "until WI-5 lands." WI-5 (this document's own Approver stage, requirements 8b/8c) is the first behaviour-affecting caller of `merge_autonomy_effective_level`, and it landed with that tech-debt item still `open` and its own fix (agent-ops#448) still unmerged: the justification expired the moment this stage started reading the kill switch for a real decision, and nothing forced the two facts to be checked against each other. | A deferred item whose own body names the change that revokes its justification is a dependency, not a footnote — treat "must not arm until X" the same as a numbered `Blocked-by:`, checked at the moment X is about to land, not left to a reader noticing the tech-debt file in passing. Landed here anyway, deliberately, because the exposure is layered — `merge_autonomy`'s product default is `human` fleet-wide, every level above it needs an explicit per-installation opt-in, and the live installation had not yet raised it past Stage 0 — but the register entry stays `open` and this row exists so the next reader does not have to rediscover the ordering risk from source. |
-| A gate written for one caller silently has no caller on the recovery path | Requirement 31c's gate — required checks green, no new security-severity alert — was written and tested against the Reviewer's own `ready` handoff, and every acceptance check for it drove that one path. The Enabler's `complete_handoff` (requirement 32b) flips the identical draft-to-ready action through a different call site, added later, and nobody re-asked whether the gate bound there too — it did not, by omission rather than by decision. PR #433: the Implementor failed, so the Reviewer block never ran at all, and two hours later an Enabler engagement read `complete_handoff`'s own four preconditions ("checks green", "no unanswered concern") as satisfied — vacuously, since nothing had ever checked or raised a concern to answer — and flipped the pull request to ready with a red check list and no Reviewer having ever read the diff. | An irreversible action reachable from more than one call site needs its gate to live *under* every caller, not beside one of them (requirement 34a) — a second path added later inherits nothing a first path's own inline check protected. Where a caller performs a recovery *of* another stage's work (here: finishing a handoff the Reviewer left undone), ask what the recovery is standing in for, and refuse to stand in for a stage that never actually ran — a precondition can read as satisfied for the sole reason that nothing has asked it yet. |
+| A gate written for one caller silently has no caller on the recovery path | Requirement 31c's gate — required checks green, no new security-severity alert — was written and tested against the Reviewer's own `ready` handoff, and every acceptance check for it drove that one path. The Enabler's `complete_handoff` (requirement 32b) flips the identical draft-to-ready action through a different call site, added later, and nobody re-asked whether the gate bound there too — it did not, by omission rather than by decision. PR #433: the Implementer failed, so the Reviewer block never ran at all, and two hours later an Enabler engagement read `complete_handoff`'s own four preconditions ("checks green", "no unanswered concern") as satisfied — vacuously, since nothing had ever checked or raised a concern to answer — and flipped the pull request to ready with a red check list and no Reviewer having ever read the diff. | An irreversible action reachable from more than one call site needs its gate to live *under* every caller, not beside one of them (requirement 34a) — a second path added later inherits nothing a first path's own inline check protected. Where a caller performs a recovery *of* another stage's work (here: finishing a handoff the Reviewer left undone), ask what the recovery is standing in for, and refuse to stand in for a stage that never actually ran — a precondition can read as satisfied for the sole reason that nothing has asked it yet. |

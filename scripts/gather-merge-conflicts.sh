@@ -66,7 +66,7 @@
 # one that matters:
 #   1. Cost, as with gather-findings.sh (requirement 3a): mergeability is a field
 #      on the PR list, not something worth a model turn to reason out.
-#   2. The PR's own body is the brief the Implementor finishes against, and must
+#   2. The PR's own body is the brief the Implementer finishes against, and must
 #      reach it verbatim, not summarised.
 #   3. The candidate rule below has to exist in the fingerprint (requirement 3b)
 #      regardless, and requirement 34a says a rule two components compute gets one
@@ -79,7 +79,7 @@
 # A PR is a candidate iff it is open, **not** a draft, and `mergeable` is
 # exactly `CONFLICTING` (never the transient `UNKNOWN` — GitHub computes
 # mergeability asynchronously, so a PR whose base just moved reads UNKNOWN for
-# a beat; treating that as a conflict would send the Implementor to rebase a
+# a beat; treating that as a conflict would send the Implementer to rebase a
 # PR that may not even conflict), and either:
 #   - **ours**: it carries <pr-label> and its head branch starts with
 #     <branch-prefix> (or `td/`, the tech-debt claim branch) — i.e. this
@@ -155,7 +155,7 @@
 #
 # `pr-<n>-conflict-<head-sha>`, not `pr-<n>-conflict`. An item recorded blocked
 # (requirement 34) stays blocked until something clears it, so a bare
-# `pr-<n>-conflict` that an Implementor once failed to resolve would still be
+# `pr-<n>-conflict` that an Implementer once failed to resolve would still be
 # blocked after fresh commits landed on the branch — and the new state, which
 # might be trivially resolvable, would never be looked at again. Scoping the ref
 # to the head SHA means each distinct conflicted state is its own item that no
@@ -283,7 +283,7 @@ emit() {  # <pr-json> <bot: true|false>
   head_sha="$(jq -r '.headRefOid // ""' <<<"$pr")"
   [[ -n "$head_sha" ]] || return 0
 
-  # The originating item, so the Implementor can find the tech-debt entry, issue,
+  # The originating item, so the Implementer can find the tech-debt entry, issue,
   # or finding this PR came from. Best-effort: a ref in the branch name or body.
   # Absence is normal and must not disqualify the candidate — the PR body and its
   # diff are the brief, not the register entry.

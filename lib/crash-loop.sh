@@ -102,7 +102,7 @@ crash_loop_verdict() {
 # cycle resets the run — exactly like a Co-Ordinator success resets
 # `crash_loop_verdict` — the moment it proves the systemic block is not
 # reproducing right now: either it exits 0, or it starts a selection-path
-# stage (`coordinator`, `implementor` or `reviewer`), regardless of how
+# stage (`coordinator`, `implementer` or `reviewer`), regardless of how
 # that stage then fares. What happens to an item once a stage is running
 # already has its own recovery ladder; this reader's only job is the gap
 # before that ladder can even see a failure.
@@ -137,7 +137,7 @@ crash_loop_preselection_verdict() {
             exit_code: ($end.exit_code // 1),
             had_stage: (any(.[]; .event == "stage-start"
                             and ((.stage // "")
-                                 | . == "coordinator" or . == "implementor"
+                                 | . == "coordinator" or . == "implementer"
                                    or . == "reviewer")))
           }
       )

@@ -82,7 +82,7 @@ prs='[
   {"number": 86, "isDraft": true,  "headRefName": "agent/marker-comment-only",
    "head_committed_at": "2026-07-20T00:00:00Z", "headRefOid": "a7", "reviews": [],
    "comments": [{"createdAt": "2026-07-28T21:00:00Z",
-                 "body": "Autonomous agent (implementor) stopped on this PR: … <!-- agent-ops:pipeline-comment cycle=20260728T210000Z-node-1-99 -->"}]},
+                 "body": "Autonomous agent (implementer) stopped on this PR: … <!-- agent-ops:pipeline-comment cycle=20260728T210000Z-node-1-99 -->"}]},
   {"number": 87, "isDraft": true,  "headRefName": "agent/human-comment-recent",
    "head_committed_at": "2026-07-20T00:00:00Z", "headRefOid": "a8", "reviews": [],
    "comments": [{"createdAt": "2026-07-28T21:00:00Z", "body": "any update on this?"}]},
@@ -97,7 +97,7 @@ prs='[
   {"number": 94, "isDraft": true,  "headRefName": "agent/marker-comment-with-actor",
    "head_committed_at": "2026-07-20T00:00:00Z", "headRefOid": "b6", "reviews": [],
    "comments": [{"createdAt": "2026-07-28T21:00:00Z",
-                 "body": "**Implementor** · autonomous pipeline · node `poetic-1`\n\nStopped on this PR: … <!-- agent-ops:pipeline-comment cycle=20260728T210000Z-node-1-99 actor=implementor -->"}]}
+                 "body": "**Implementer** · autonomous pipeline · node `poetic-1`\n\nStopped on this PR: … <!-- agent-ops:pipeline-comment cycle=20260728T210000Z-node-1-99 actor=implementer -->"}]}
 ]'
 
 # gh's nested collections arrive capped at 100 items, unpaginated, and
@@ -199,7 +199,7 @@ assert_eq "a comment carrying the pipeline's own marker does not reset the clock
 assert_eq "an unmarked comment at the same timestamp as #86's marked one still resets the clock" \
   "true false" "$(is_candidate 86) $(is_candidate 87)"
 
-# #94 carries the newer marker shape — `actor=implementor` added alongside
+# #94 carries the newer marker shape — `actor=implementer` added alongside
 # `cycle=` — and #86 carries the older shape with no `actor=` field at all.
 # Detection matches on PIPELINE_COMMENT_MARKER_PREFIX alone (never the full
 # marker string), so both shapes must exclude their comment from the activity
@@ -240,7 +240,7 @@ assert_eq "a marked review and an unmarked one at the same timestamp differ" \
 # fetch can have: an unreadable date, left as null. The guard is load-bearing —
 # jq sorts null below every string, so without it #92's activity would be null,
 # `null < $cutoff` would hold, and a draft a human pushed to minutes ago would
-# be handed to an Implementor to force-push over.
+# be handed to an Implementer to force-push over.
 assert_eq "comments at gh's 100-item cap: the newest may be missing, so the PR is never judged" \
   "false" "$(is_candidate 90)"
 assert_eq "reviews at the cap are excluded the same way" \
@@ -255,9 +255,9 @@ assert_eq "one under the cap, the data is complete and the draft is judged norma
 # `lib/pipeline-marker.sh` is the single definition (requirement 34a), and the
 # reader — and agent-cycle.sh's and review-cycle.sh's own comments — source it.
 # Five places cannot: the fixtures above, and the comment instructions in
-# prompts/implementor.md, prompts/enabler.md, prompts/reviewer.md and
+# prompts/implementer.md, prompts/enabler.md, prompts/reviewer.md and
 # prompts/refiner.md, which a model reads and types out. Change the prefix
-# without changing those and the Implementor, Enabler and Reviewer go on
+# without changing those and the Implementer, Enabler and Reviewer go on
 # stamping a marker the gatherer no longer recognises — the clock resets
 # TD26072605 removed, back again, with every test still green. The Refiner
 # comments on issues rather than pull requests, so nothing it writes reaches
@@ -268,7 +268,7 @@ assert_eq "one under the cap, the data is complete and the draft is judged norma
 . "$SCRIPT_DIR/lib/pipeline-marker.sh"
 assert_eq "the fixtures above carry the marker prefix the library defines" \
   "$PIPELINE_COMMENT_MARKER_PREFIX" "$marker"
-for prompt in implementor enabler reviewer refiner; do
+for prompt in implementer enabler reviewer refiner; do
   assert_eq "prompts/$prompt.md tells its stage to write that same prefix" "yes" \
     "$(grep -qF -- "$PIPELINE_COMMENT_MARKER_PREFIX" "$SCRIPT_DIR/prompts/$prompt.md" \
        && echo yes || echo no)"
@@ -278,7 +278,7 @@ done
 #
 # `pr-<n>-abandoned-<head-sha[:12]>`, not `pr-<n>-abandoned`. An item recorded
 # blocked (requirement 34) stays blocked until something clears it, so a bare
-# `pr-80-abandoned` that an Implementor once failed on would still be blocked
+# `pr-80-abandoned` that an Implementer once failed on would still be blocked
 # after fresh commits landed — and the new, possibly-finishable state would never
 # be looked at again. Scoping to the head means each distinct abandoned state is
 # its own item that no older block covers, while a draft re-abandoned at the same

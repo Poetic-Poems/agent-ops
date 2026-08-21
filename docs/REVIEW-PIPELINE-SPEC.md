@@ -92,7 +92,7 @@ repositories"); not repeated here. The two target repositories are the same
 conventions (protected `main`, squash-merge so the PR title becomes the commit,
 Conventional Commits, the per-item tech-debt register (`tech-debt/`, with
 `scripts/reserve-tech-debt-id.pl` allocating new IDs) bind the Reviewer-Agent
-exactly as they bind the Implementor.
+exactly as they bind the Implementer.
 
 One repository-specific fact worth noting: `poetic` already stores prior
 reviews under `reviews/project-review-YYYY-MM-DD/`; `poetic-fiddle` does not
@@ -926,7 +926,7 @@ state only what is.
   repos clean, keeps the review out of its own scope, and needs no pull request
   into two protected product repositories to switch the pipeline on.
 - **The review PR is raised ready, not draft.** The review is the deliverable;
-  there is no correctness pass to add (unlike the Implementor→Reviewer
+  there is no correctness pass to add (unlike the Implementer→Reviewer
   hand-off), so a second agent stage would only add cost. The human gate is the
   merge.
 - **"Once a week" is implemented as a daily tick plus a skip-guard**, because a

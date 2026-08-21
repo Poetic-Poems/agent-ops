@@ -341,8 +341,8 @@ cfg_json() { jq -c "$1" <<<"$DEFAULTED_CONFIG"; }
 state_dir="$(expand_home "$(cfg '.state_dir')")"
 workspace_root="$(expand_home "$(cfg '.workspace_root')")"
 coordinator_model="$(resolve_model_id coordinator_model "$(cfg '.coordinator_model')")"
-implementor_model_default="$(resolve_model_id implementor_model_default "$(cfg '.implementor_model_default')")"
-implementor_model_trivial="$(resolve_model_id implementor_model_trivial "$(cfg '.implementor_model_trivial')")"
+implementer_model_default="$(resolve_model_id implementer_model_default "$(cfg '.implementer_model_default')")"
+implementer_model_trivial="$(resolve_model_id implementer_model_trivial "$(cfg '.implementer_model_trivial')")"
 reviewer_model_default="$(resolve_model_id reviewer_model_default "$(cfg '.reviewer_model_default')")"
 # The complexity escalation (requirement 8a): a PR graded `complexity:high` is
 # reviewed on this tier. Empty falls back to the default tier, which switches
@@ -541,10 +541,10 @@ stage_budget_apply() {
   # installation runs on anyway.
   [[ "$stage_backstop_min" =~ ^[0-9]+$ ]] \
     || stage_backstop_min="$(jq -nr --argjson p "$STAGE_BUDGET_PRIORS" --arg a "$actor" \
-         '($p[$a] // $p.implementor).backstop')"
+         '($p[$a] // $p.implementer).backstop')"
   [[ "$stage_inactivity_min" =~ ^[0-9]+$ ]] \
     || stage_inactivity_min="$(jq -nr --argjson p "$STAGE_BUDGET_PRIORS" --arg a "$actor" \
-         '($p[$a] // $p.implementor).inactivity')"
+         '($p[$a] // $p.implementer).inactivity')"
   log_event "stage-start" "$(jq -nc --arg s "$actor" --arg m "$model" \
     --argjson e "$extra" \
     --argjson b "$(jq -nc --argjson x "$budget" \
@@ -670,7 +670,7 @@ log_event() {
 
 # void_obsolete_ctx_json REPO_SLUG [FLAGS_JSON]
 # What every `void_guard_reason` call site (the Co-Ordinator, the Enabler, the
-# Implementor) hands it as CTX_JSON, so the machine `obsolete` alternative
+# Implementer) hands it as CTX_JSON, so the machine `obsolete` alternative
 # (design doc §5.5, issue #413, WI-10) has what it needs without lib/void-
 # guard.sh ever touching config, the kill switch, or the log itself — that
 # file stays self-contained and stubbable with `gh` alone, exactly as its own
@@ -1457,7 +1457,7 @@ exclude_blocked_or_void_items() {  # <candidates-json> <repo> <blocked-json> <vo
 # so what remains of `blocked`'s purpose in the Co-Ordinator's own input is
 # `issues`' live re-check duty and the exclusion-1 check on the three sources
 # it still derives itself — neither reads `stage`, `cycle`, `event`, or an
-# Implementor's `unblock_condition`, so there is nothing lost by leaving them
+# Implementer's `unblock_condition`, so there is nothing lost by leaving them
 # off a list the model pays token cost to read every cycle. Malformed input
 # degrades to the untrimmed array, on the same fail-open terms as
 # exclude_blocked_or_void_items: a parse failure here must not silently empty
@@ -1856,7 +1856,7 @@ release_refinement_label() {
 # `Blocked-by:` dependency this cycle's own gate already resolved.
 #
 # The single recorder for every stage that can report this class of block —
-# the Co-Ordinator (requirement 16a), the Implementor's escape hatch
+# the Co-Ordinator (requirement 16a), the Implementer's escape hatch
 # (requirement 9f), and the Refiner's own decline (requirement 39d). One
 # definition (requirement 34a): three reporters, one recorder, so the label,
 # the assignment and the block's shape can never drift between them.
@@ -2004,7 +2004,7 @@ log_needs_refinement_items() {
 }
 
 # The Co-Ordinator may void a candidate it can see conclusively is already done,
-# rather than paying an Implementor cycle to reach the same verdict. Entries are
+# rather than paying an Implementer cycle to reach the same verdict. Entries are
 # objects (item/repo/reason/evidence), unlike `unblocked`'s bare ids, because a
 # void is terminal and worth recording precisely; an entry naming no item is
 # ignored.
@@ -2172,7 +2172,7 @@ gather_findings() {
 # fingerprint, which costs one Co-Ordinator run and never a missed one.
 # Pre-fetch the PRs waiting on us to answer a human's review (requirement 3c).
 # Same rationale as gather_findings, plus one specific to this source: the
-# review prose must reach the Implementor verbatim, and the candidate rule
+# review prose must reach the Implementer verbatim, and the candidate rule
 # ("is it our turn?") has to exist for the fingerprint anyway, so it gets one
 # definition and both consumers read it (requirement 34a).
 gather_review_feedback() {
@@ -3001,14 +3001,14 @@ run_coordinator_stage_attempt() {  # <attempt-out-file> <prompt> [extra-budget-j
 # text and `acceptance` a generic instruction naming the source's standard
 # procedure, since there is no model here to compose a bespoke one.
 # `model`/`model_reason` are supplied by the caller (ordinarily
-# `implementor_model_default`) since a mechanical pick makes no model
-# judgement to report — cheap to spot on the eventual Implementor work order,
+# `implementer_model_default`) since a mechanical pick makes no model
+# judgement to report — cheap to spot on the eventual Implementer work order,
 # rather than silently reusing whatever the last attempt happened to prefer.
 #
 # `refinement_policy` (requirement 39a) binds this path exactly as it binds
 # the Co-Ordinator, and for the same reason: a `"required"` source's unrefined
 # item is not a lower-ranked candidate, it is one nobody has written a
-# specification for yet, and handing it to an Implementor under a generic
+# specification for yet, and handing it to an Implementer under a generic
 # `acceptance` string is precisely the outcome that policy exists to prevent.
 # A mechanical picker that ignored it could select what no Co-Ordinator
 # engagement was allowed to. So an unrefined item from a `"required"` source
@@ -3453,7 +3453,7 @@ object, nothing else.
   # metrics. It is logged below instead, on the one branch where the cycle
   # really does select nothing.
   fallback_candidate_json="$(fallback_select_candidate "$ordered_repos_json" \
-    "$implementor_model_default" "$refinements_json" "$refinement_policy_json")"
+    "$implementer_model_default" "$refinements_json" "$refinement_policy_json")"
   if [[ -z "$fallback_candidate_json" || "$fallback_candidate_json" == "null" ]]; then
     # Not observed in practice (see fallback_select_candidate's own comment
     # for the guarantee this would defy), but fail closed rather than assume
@@ -3618,7 +3618,7 @@ APPROVER_ESC_BODY
 # and the Reviewer itself already launched at that grade. This re-reads the
 # label now and folds it through the same raise-never-lower comparison
 # `reviewer_complexity` (lib/cycle-state.sh) already applies at requirement
-# 8a, with PRE_REVIEW_COMPLEXITY standing in for the Implementor's own grade:
+# 8a, with PRE_REVIEW_COMPLEXITY standing in for the Implementer's own grade:
 # the Approver's tier can rise on a mid-cycle correction, but never settles
 # below what the round was already reviewed at. Best-effort, the same as
 # requirement 8a's own read: an unreadable label contributes nothing and the
@@ -3763,7 +3763,7 @@ $(approver_prior_refusal_bodies "$pr_url" "$login")
 $(jq . <<<"$work_order_json")
 \`\`\`
 
-## Implementor summary
+## Implementer summary
 
 \`\`\`json
 $(jq . <<<"$impl_status_json")
@@ -4193,7 +4193,7 @@ _landing_stage_attempt() {
 # back to — the cycle-scoped `landing_armed_by_repo[$slug]` (declared ahead
 # of this function, PR #557 review round 2) rather than a tally private to
 # this one pass: `run_landing_stage`'s own gate 0, called later the same
-# cycle for whatever repository this round's own Implementor worked in,
+# cycle for whatever repository this round's own Implementer worked in,
 # reads and grows the identical global, so a repository this sweep already
 # armed candidates for cannot then have that round's own arming step push it
 # one past `merge_budget_per_day` on a live count neither call site's own
@@ -4284,7 +4284,7 @@ declare -A landing_armed_by_repo=()
 lock_acquired=0
 clone_dir=""
 # Finish-then-continue (requirement 39): set true only once this cycle has
-# won a claim and is about to run the Implementor. Initialised here, ahead
+# won a claim and is about to run the Implementer. Initialised here, ahead
 # of the trap, for the same reason lock_acquired is: a cycle that stands
 # down or fails before ever reaching that point still runs cleanup, and an
 # unset variable read under `set -u` inside a trap would abort it part-way.
@@ -4420,7 +4420,7 @@ on_signal() {  # on_signal NAME NUM
   if [[ -n "$stage_pid" ]] && kill -0 "$stage_pid" 2>/dev/null; then
     kill -KILL "-$stage_pid" 2>/dev/null || true
   fi
-  # A stranded Implementor may have opened its draft PR without ever
+  # A stranded Implementer may have opened its draft PR without ever
   # reporting it; the breadcrumb is the same fallback requirement 9 gives the
   # ordinary failure path, and it must be read before the EXIT trap deletes
   # the clone it lives in.
@@ -4871,11 +4871,11 @@ $(jq . <<<"$input")
             # Requirement 31c/32b (agent-ops#440): `complete_handoff` recovers
             # a pull request whose Reviewer ran and left it a draft — never
             # one the Reviewer never reached. An item blocked at the
-            # Implementor or the Co-Ordinator has no Reviewer verdict on
+            # Implementer or the Co-Ordinator has no Reviewer verdict on
             # record at all: nothing has confirmed the diff is even safe to
             # look at, let alone that CI is green, so flipping it to ready
             # would hand a human a pull request no pipeline stage has ever
-            # examined (PR #433: the Implementor failed, the Reviewer block
+            # examined (PR #433: the Implementer failed, the Reviewer block
             # never ran, and an Enabler `complete_handoff` flipped it to ready
             # anyway on four preconditions that were all vacuously true).
             # `claimed_entry.stage` (lib/cycle-state.sh's
@@ -5832,7 +5832,7 @@ if (( resume_epoch > now_epoch )); then
   # evidence about whether the human still means it (#244).
   if [[ "$governing_kind" != "manual" && "$governing_known" != "true" ]] && ! (( DRY_RUN )); then
     probe_out="$cycle_dir/limit-probe.out"
-    run_claude_stage limit-probe 180 "$implementor_model_trivial" \
+    run_claude_stage limit-probe 180 "$implementer_model_trivial" \
       "Reply with the single word: ok" "$probe_out" "$cycle_dir" || true
     probe_verdict="$(limit_probe_verdict "$(cat "$probe_out" 2>/dev/null || true)" \
       "$(cat "$probe_out.stderr" 2>/dev/null || true)")"
@@ -6103,7 +6103,7 @@ fi
 # needs only the human-queue-excluded sum, but the logged reason states the
 # full split: a human-queue PR could fill the raw total without ever counting
 # against the cap; a pipeline-turn ready PR is the human's queue answered and
-# now the agent's to act on; a draft is work in flight (the Implementor's own
+# now the agent's to act on; a draft is work in flight (the Implementer's own
 # claim marker, requirement 23); an unraised claim is a registry entry whose
 # PR does not yet exist. Which of them filled the gate is what a cap-tuning
 # decision needs to know. Recording it here costs nothing; reconstructing it
@@ -6870,7 +6870,7 @@ fi
 # GitHub object, so close-void-github-items.sh above leaves it untouched
 # entirely — this instead re-derives that repo's register-hygiene candidate
 # with the void evidence folded in (gather-register-hygiene.sh's VOIDED STATUS
-# problem class), so the ordinary register-hygiene Implementor flow flips
+# problem class), so the ordinary register-hygiene Implementer flow flips
 # the row exactly as it repairs any other frontmatter drift. Only for repos
 # that actually have a void register item — everywhere else costs nothing
 # beyond the one jq read below. This necessarily re-fetches the register (a
@@ -7621,8 +7621,8 @@ eligible_items_total="$(jq 'length' <<<"$eligible_items_json" 2>&1)" \
 repo_nice_json="$(repo_nice_selection_config "$all_repos_json")"
 selection_config_json="$(jq -nc \
   --arg cm "$coordinator_model" \
-  --arg md "$implementor_model_default" \
-  --arg mt "$implementor_model_trivial" \
+  --arg md "$implementer_model_default" \
+  --arg mt "$implementer_model_trivial" \
   --argjson cmax "$candidates_max" \
   --argjson nice "$repo_nice_json" \
   '{coordinator_model: $cm, models: {default: $md, trivial: $mt}, candidates_max: $cmax}
@@ -7766,8 +7766,8 @@ coordinator_blocked_json="$(coordinator_blocked_view "$blocked_json")"
 coordinator_stdin="$(printf '%s\n' \
   "$ordered_repos_json" "$coordinator_blocked_json" "$refinements_json" "$claimed_json")"
 coordinator_input="$(jq -nc \
-  --arg model_default "$implementor_model_default" \
-  --arg model_trivial "$implementor_model_trivial" \
+  --arg model_default "$implementer_model_default" \
+  --arg model_trivial "$implementer_model_trivial" \
   --argjson cmax "$candidates_max" \
   --argjson policies "$refinement_policy_json" \
   'input as $repos | input as $blocked | input as $refinements | input as $claimed
@@ -8056,7 +8056,7 @@ if ! (( ONCE )) && chain_should_continue "$chain_count" "$max_chained_cycles" "$
 fi
 
 # --- 5c. Pre-flight already-done check (issue #245) ---
-# Deterministic, no LLM, run before the clone and the Implementor engagement
+# Deterministic, no LLM, run before the clone and the Implementer engagement
 # either one is paid for: ask whether the item this cycle just claimed is
 # already done — its register row resolved, its issue closed, its
 # work-order branch already merged, or (for a finishing source, whose item is
@@ -8127,7 +8127,7 @@ fi
 # --- 6a. Labels (requirement 6a) ---
 # Here, rather than at startup for every configured repo: the cycle works one
 # repository, so this is one listing and — after the first cycle against a
-# repository — no writes at all. It precedes the Implementor because that stage
+# repository — no writes at all. It precedes the Implementer because that stage
 # is what raises the pull request `pr_label` has to exist for; `gh pr create
 # --label` on a label that is not there fails the create outright, which would
 # cost the whole cycle's work.
@@ -8144,8 +8144,8 @@ ensure_labels_for() {
 }
 ensure_labels_for "$repo_slug" target
 
-# --- 7. Implementor stage ---
-implementor_prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" implementor "$prompt_overrides_json")
+# --- 7. Implementer stage ---
+implementer_prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" implementer "$prompt_overrides_json")
 
 ## Work order
 
@@ -8161,21 +8161,21 @@ $cycle_id
 
 $node_name
 "
-impl_out="$cycle_dir/implementor.out"
+impl_out="$cycle_dir/implementer.out"
 
-stage_budget_apply implementor "$selected_repo" "$impl_model"
-if run_claude_stage implementor "$(( stage_backstop_min * 60 ))" "$impl_model" "$implementor_prompt" "$impl_out" "$clone_dir" "$(( stage_inactivity_min * 60 ))"; then
+stage_budget_apply implementer "$selected_repo" "$impl_model"
+if run_claude_stage implementer "$(( stage_backstop_min * 60 ))" "$impl_model" "$implementer_prompt" "$impl_out" "$clone_dir" "$(( stage_inactivity_min * 60 ))"; then
   impl_rc=0
 else
   impl_rc=$?
 fi
 log_event "stage-end" "$(jq -nc --argjson rc "$impl_rc" --arg kr "$stage_kill_reason" --argjson m "$(metering_fields "$impl_model" "$impl_out" "$stage_gaps_json")" \
-  '{stage: "implementor", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m')"
+  '{stage: "implementer", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m')"
 # `if`, not `&&`: an empty warning is the common case, and a trailing
 # `&&` whose test fails is a non-zero status at exactly the place
 # `set -e` acts on — the same trap that cost a --once cycle its
 # failure handling at dump_stage_output.
-watchdog_warning="$(stage_watchdog_warning implementor || true)"
+watchdog_warning="$(stage_watchdog_warning implementer || true)"
 if [[ -n "$watchdog_warning" ]]; then
   log_event "warning" "$watchdog_warning"
 fi
@@ -8184,10 +8184,10 @@ fi
 impl_result="$(jq -r '.result // empty' "$impl_out" 2>/dev/null || true)"
 impl_status_json="$(extract_json_result "$impl_result" 2>/dev/null || true)"
 if (( impl_rc == 0 )) && [[ -z "$impl_status_json" ]]; then
-  impl_status_json="$(stage_salvage_result implementor "$impl_out" "$impl_model" "$clone_dir" || true)"
+  impl_status_json="$(stage_salvage_result implementer "$impl_out" "$impl_model" "$clone_dir" || true)"
 fi
 # Requirement 9's fallback chain, cheapest first and least dependent on the
-# stage last. The first three all read something the Implementor had to do:
+# stage last. The first three all read something the Implementer had to do:
 # report the URL, print it where it could be grepped, write the breadcrumb.
 # That is fine for the failures they were written for and useless for the one
 # that matters most — a stage that emitted no parseable final message is a
@@ -8207,7 +8207,7 @@ impl_pr_url="$(jq -r '.pr_url // empty' <<<"$impl_status_json" 2>/dev/null || tr
 
 impl_status="$(jq -r '.status // empty' <<<"$impl_status_json" 2>/dev/null || true)"
 
-# A reported `void` is the Implementor saying the work order describes no work —
+# A reported `void` is the Implementer saying the work order describes no work —
 # the item is already done on default_branch, or its premise is otherwise false.
 # It is terminal (requirement 34c): no agent may clear it, because the only
 # evidence that would ever arrive ("it's already done") is the reason it is void
@@ -8216,42 +8216,42 @@ impl_status="$(jq -r '.status // empty' <<<"$impl_status_json" 2>/dev/null || tr
 # re-selected indefinitely.
 if (( impl_rc == 0 )) && [[ "$impl_status" == "void" ]]; then
   # Requirement 34d, extended by issue #243 from the Co-Ordinator alone to
-  # every stage: the Implementor reads the tree itself (requirement 27b), but
+  # every stage: the Implementer reads the tree itself (requirement 27b), but
   # that does not stop a model citing the wrong artefact from it — see
   # lib/void-guard.sh's own note on issue #243. `repos` is passed as `[]`: the
-  # Implementor gathers no per-cycle candidate list, so `void_guard_reason`'s
+  # Implementer gathers no per-cycle candidate list, so `void_guard_reason`'s
   # PR-diff check (Co-Ordinator only) simply has nothing to test against; the
   # citation check needs nothing from it.
   impl_void_entry="$(jq -nc --arg r "$selected_repo" --arg i "$selected_item" \
     --arg reason "$(jq -r '.reason // "no reason given"' <<<"$impl_status_json")" \
     --argjson x "$impl_status_json" '{repo: $r, item: $i, reason: $reason, evidence: ($x.evidence // "")}')"
   if impl_void_refusal="$(void_guard_reason "$impl_void_entry" '[]' "$(void_obsolete_ctx_json "$selected_repo")")"; then
-    log_item_void "implementor" \
+    log_item_void "implementer" \
       "$(jq -r '.reason // "no reason given"' <<<"$impl_status_json")" \
       "$(jq -c '{evidence: (.evidence // "")}' <<<"$impl_status_json")"
   else
     log_event "warning" "$(jq -nc \
-      --arg d "implementor void refused for ${selected_repo:-<no repo>} $selected_item — $impl_void_refusal; recorded blocked instead" \
+      --arg d "implementer void refused for ${selected_repo:-<no repo>} $selected_item — $impl_void_refusal; recorded blocked instead" \
       '{detail: $d}')"
-    log_attempt_failed "implementor" \
-      "void refused ($impl_void_refusal). The Implementor's stated reason was: $(jq -r '.reason // "no reason given"' <<<"$impl_status_json")" \
+    log_attempt_failed "implementer" \
+      "void refused ($impl_void_refusal). The Implementer's stated reason was: $(jq -r '.reason // "no reason given"' <<<"$impl_status_json")" \
       "$(jq -nc --arg c "Establish from the repository itself whether this item describes any remaining work." \
         '{unblock_condition: $c}')"
   fi
   # A void item has no work, so its claim must not outlive the verdict — the
   # branch (if untouched) and the registry entry both go. A refused void is
   # recorded blocked instead, but the claim releases the same way either way:
-  # the Implementor found no PR to raise for this item.
+  # the Implementer found no PR to raise for this item.
   release_claim no-pr
   exit 0
 fi
 
-# The escape hatch (requirement 9f): the Implementor started this item and
+# The escape hatch (requirement 9f): the Implementer started this item and
 # found the specification it was handed insufficient — not "something in the
 # world is wrong" (that is `blocked`), but "the brief itself does not say
 # enough to build against". Recorded through the same
 # `record_needs_refinement_block` a Co-Ordinator's own `needs_refinement`
-# report uses, attributed to `stage: "implementor"` — which also clears any
+# report uses, attributed to `stage: "implementer"` — which also clears any
 # `refined` mark the item was carrying, since a refinement that led to this is
 # exactly the one requirement 39d says must not stand unexamined.
 if (( impl_rc == 0 )) && [[ "$impl_status" == "needs-refinement" ]]; then
@@ -8260,13 +8260,13 @@ if (( impl_rc == 0 )) && [[ "$impl_status" == "needs-refinement" ]]; then
     --arg missing "$(jq -r '.missing // ""' <<<"$impl_status_json")" \
     --arg evidence "$(jq -r '.evidence // ""' <<<"$impl_status_json")" \
     '{repo: $r, item: $i, source: $s, reason: $reason, missing: $missing, evidence: $evidence}')"
-  record_needs_refinement_block "$impl_nr_entry" "implementor" || true
-  # No PR exists yet on this path — the Implementor stops before step 2's
+  record_needs_refinement_block "$impl_nr_entry" "implementer" || true
+  # No PR exists yet on this path — the Implementer stops before step 2's
   # claim, exactly like `blocked` without one — so the branch releases with it.
   if [[ -n "$impl_pr_url" ]]; then
     gh pr comment "$impl_pr_url" --body "$(pipeline_comment_header script "$node_name")
 
-The Implementor found this item's specification insufficient: $(jq -r '.reason // "no reason given"' <<<"$impl_status_json") Recorded as needing refinement; the pipeline's Refiner will look at it again.
+The Implementer found this item's specification insufficient: $(jq -r '.reason // "no reason given"' <<<"$impl_status_json") Recorded as needing refinement; the pipeline's Refiner will look at it again.
 
 $(pipeline_comment_marker "$cycle_id" script)" >/dev/null 2>&1 || true
     release_claim have-pr
@@ -8276,14 +8276,14 @@ $(pipeline_comment_marker "$cycle_id" script)" >/dev/null 2>&1 || true
   exit 0
 fi
 
-# A reported `blocked` is a verdict, not a stage failure: the Implementor ran to
+# A reported `blocked` is a verdict, not a stage failure: the Implementer ran to
 # completion and found real work it cannot proceed with yet. Record it against
 # the item, carrying the model's own reason and unblock_condition so a later
 # Co-Ordinator can judge whether the impediment has since gone (requirement 34),
 # rather than re-selecting the item and paying for the same discovery every
 # cycle.
 if (( impl_rc == 0 )) && [[ "$impl_status" == "blocked" ]]; then
-  log_attempt_failed "implementor" \
+  log_attempt_failed "implementer" \
     "$(jq -r '.reason // "no reason given"' <<<"$impl_status_json")" \
     "$(jq -c --arg u "$impl_pr_url" \
        '{unblock_condition: (.unblock_condition // "")}
@@ -8291,7 +8291,7 @@ if (( impl_rc == 0 )) && [[ "$impl_status" == "blocked" ]]; then
   if [[ -n "$impl_pr_url" ]]; then
     gh pr comment "$impl_pr_url" --body "$(pipeline_comment_header script "$node_name")
 
-The Implementor stopped on this PR: $(jq -r '.reason // "no reason given"' <<<"$impl_status_json") Recorded blocked; the pipeline's Enabler will re-examine it, and will raise an issue if a human is needed.
+The Implementer stopped on this PR: $(jq -r '.reason // "no reason given"' <<<"$impl_status_json") Recorded blocked; the pipeline's Enabler will re-examine it, and will raise an issue if a human is needed.
 
 $(pipeline_comment_marker "$cycle_id" script)" >/dev/null 2>&1 || true
     release_claim have-pr
@@ -8302,11 +8302,11 @@ $(pipeline_comment_marker "$cycle_id" script)" >/dev/null 2>&1 || true
 fi
 
 if (( impl_rc != 0 )) || [[ -z "$impl_status_json" ]] || [[ "$impl_status" != "complete" ]]; then
-  handle_stage_failure "implementor" "$impl_rc" "$impl_out" "$impl_pr_url"
+  handle_stage_failure "implementer" "$impl_rc" "$impl_out" "$impl_pr_url"
   exit 0
 fi
 
-# Requirement 25a's finding from the Implementor-side gate below, empty when
+# Requirement 25a's finding from the Implementer-side gate below, empty when
 # it found nothing — handed to the Reviewer as a `## Script findings` section
 # rather than acted on here. Declared before the gate can set it, since the
 # prompt that reads it is built unconditionally under `set -u`.
@@ -8360,7 +8360,7 @@ fi
 
 # --- 8. Reviewer stage ---
 # Requirement 8a: the reviewer tier follows the item's complexity — the
-# highest of the Implementor's ex-post grade (its summary's `complexity`) and
+# highest of the Implementer's ex-post grade (its summary's `complexity`) and
 # the PR's raise-never-lower `complexity:*` label, falling back to the
 # Co-Ordinator's own classification when neither says anything: a
 # trivial-tier work order needs no self-grade to be `low`. The label read is
@@ -8373,7 +8373,7 @@ if [[ -n "$impl_pr_url" ]]; then
     --jq '.labels[].name | select(startswith("complexity:")) | sub("^complexity:"; "")' 2>/dev/null || true)
 fi
 impl_trivial=0
-[[ "$impl_model" == "$implementor_model_trivial" ]] && impl_trivial=1
+[[ "$impl_model" == "$implementer_model_trivial" ]] && impl_trivial=1
 rev_complexity="$(reviewer_complexity "$impl_complexity" "$impl_trivial" ${label_grades[@]+"${label_grades[@]}"})"
 rev_model="$reviewer_model_default"
 [[ "$rev_complexity" == "high" ]] && rev_model="$reviewer_model_complex"
@@ -8398,7 +8398,7 @@ reviewer_prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" reviewer "$prom
 $(jq . <<<"$work_order_json")
 \`\`\`
 
-## Implementor summary
+## Implementer summary
 
 \`\`\`json
 $(jq . <<<"$impl_status_json")
@@ -8607,7 +8607,7 @@ if [[ "$rev_status" == "ready" ]]; then
   esac
 
   # Requirement 31b: the draft flip above is the whole handoff exactly once per
-  # pull request. On every later round — a review the Implementor has just
+  # pull request. On every later round — a review the Implementer has just
   # answered, most of all — the PR never left ready, `confirm_pr_ready`
   # truthfully answers `already`, and nothing has put the PR back in front of
   # the human: their review request was consumed when they submitted the review,

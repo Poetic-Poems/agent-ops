@@ -7,7 +7,7 @@
 # every open, ready pull request this system raised, whichever review request
 # `lib/handoff.sh` would ensure at the moment of handoff (requirement 38a) is
 # re-ensured here too, on a cycle that never touches that pull request through
-# any stage — a CHANGES_REQUESTED pull request whose round the Implementor has
+# any stage — a CHANGES_REQUESTED pull request whose round the Implementer has
 # already answered gets requirement 31b's re-request repeated too (the
 # self-heal, tech-debt/TD-PPagop-26080804.md) — and an approved, mergeable,
 # green pull request idle past `human_nudge_idle_hours` gets one nudge comment
@@ -200,7 +200,7 @@ set_reviews() {
 }
 
 # issue_comment AT BODY — a general PR comment (`gh pr comment`), the shape
-# the Implementor's marked reply lands as (issue #, not review #).
+# the Implementer's marked reply lands as (issue #, not review #).
 issue_comment() {
   jq -cn --arg at "$1" --arg body "$2" '{created_at: $at, body: $body}'
 }
@@ -352,7 +352,7 @@ assert_eq "  ... having asked GitHub nothing" "" "$(cat "$tmp_dir/posts")"
 
 # --- Still CHANGES_REQUESTED-blocked, unanswered: left entirely alone -----------
 # The self-heal (see the script's design note; tech-debt/TD-PPagop-26080804.md)
-# only fires on an *answered* round. With no marked Implementor reply at all —
+# only fires on an *answered* round. With no marked Implementer reply at all —
 # the ordinary case, a human still waiting on the pipeline — nothing is
 # requested and nothing is nudged: the blocked PR's next actor is the
 # pipeline, not the human.
@@ -366,15 +366,15 @@ assert_eq "  ... no nudge comment posted" "0" "$(comment_count)"
 
 # --- Self-heal: an answered CHANGES_REQUESTED round is re-requested -------------
 # Requirement 31b's re-request, repeated here for the round the Reviewer's own
-# handoff lost to a crash. Only a marked reply from the Implementor turns this
+# handoff lost to a crash. Only a marked reply from the Implementer turns this
 # on — never a review-requested event, since this call's own request would
 # otherwise read back next cycle as an answer to itself (the queue-inversion
 # and silent-starvation failures the script's design note explains).
-implementor_reply="$(printf 'Addressed the review.\n\n%s cycle=X actor=implementor -->' "$PIPELINE_COMMENT_MARKER_PREFIX")"
+implementer_reply="$(printf 'Addressed the review.\n\n%s cycle=X actor=implementer -->' "$PIPELINE_COMMENT_MARKER_PREFIX")"
 
 reset_stub
 set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
-set_issue_comments "$(issue_comment "2026-08-03T10:05:00Z" "$implementor_reply")"
+set_issue_comments "$(issue_comment "2026-08-03T10:05:00Z" "$implementer_reply")"
 idle_view CHANGES_REQUESTED MERGEABLE yes "2020-01-01T00:00:00Z" no
 out="$(run_sweep)"
 assert_eq "an answered CHANGES_REQUESTED round is re-requested" "human-review-requested" \
@@ -388,7 +388,7 @@ assert_eq "  ... and never nudges a still-CHANGES_REQUESTED pull request" "0" "$
 # this one, and must not self-heal it.
 reset_stub
 set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
-set_issue_comments "$(issue_comment "2020-01-01T00:00:00Z" "$implementor_reply")"
+set_issue_comments "$(issue_comment "2020-01-01T00:00:00Z" "$implementer_reply")"
 idle_view CHANGES_REQUESTED MERGEABLE yes "2020-01-01T00:00:00Z" no
 out="$(run_sweep)"
 assert_eq "a reply predating the blocking review does not self-heal" "" "$out"
@@ -409,7 +409,7 @@ assert_eq "an unmarked comment does not self-heal" "" "$out"
 # even asked (no `/reviews`/`/comments` read, hence no warning either).
 reset_stub
 set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
-set_issue_comments "$(issue_comment "2026-08-03T10:05:00Z" "$implementor_reply")"
+set_issue_comments "$(issue_comment "2026-08-03T10:05:00Z" "$implementer_reply")"
 idle_view CHANGES_REQUESTED MERGEABLE mixed "2020-01-01T00:00:00Z" no
 out="$(run_sweep)"
 assert_eq "an answered round on a red (mixed) rollup makes no request" "" "$out"
@@ -417,7 +417,7 @@ assert_eq "  ... and posts nothing" "" "$(cat "$tmp_dir/posts")"
 
 reset_stub
 set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
-set_issue_comments "$(issue_comment "2026-08-03T10:05:00Z" "$implementor_reply")"
+set_issue_comments "$(issue_comment "2026-08-03T10:05:00Z" "$implementer_reply")"
 idle_view CHANGES_REQUESTED MERGEABLE "" "2020-01-01T00:00:00Z" no
 out="$(run_sweep)"
 assert_eq "an answered round on an empty (not-yet-run) rollup makes no request" "" "$out"
@@ -428,7 +428,7 @@ assert_eq "  ... and posts nothing" "" "$(cat "$tmp_dir/posts")"
 # stricter copy of it.
 reset_stub
 set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
-set_issue_comments "$(issue_comment "2026-08-03T10:05:00Z" "$implementor_reply")"
+set_issue_comments "$(issue_comment "2026-08-03T10:05:00Z" "$implementer_reply")"
 idle_view CHANGES_REQUESTED MERGEABLE skipped "2020-01-01T00:00:00Z" no
 out="$(run_sweep)"
 assert_eq "an answered round on a rollup whose only non-SUCCESS entry is SKIPPED still self-heals" \
@@ -456,7 +456,7 @@ assert_eq "  ... and posts nothing" "" "$(cat "$tmp_dir/posts")"
 reset_stub
 printf '2' > "$tmp_dir/pages"
 set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
-set_issue_comments "$(issue_comment "2026-08-03T10:05:00Z" "$implementor_reply")"
+set_issue_comments "$(issue_comment "2026-08-03T10:05:00Z" "$implementer_reply")"
 idle_view CHANGES_REQUESTED MERGEABLE yes "2020-01-01T00:00:00Z" no
 out="$(run_sweep)"
 assert_eq "a paginated answered round still self-heals" "human-review-requested" \

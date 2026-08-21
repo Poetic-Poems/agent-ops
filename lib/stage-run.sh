@@ -136,7 +136,7 @@ stage_gap_stats() {
 # The `grep` is a pre-filter, not the decision. It runs every poll over the
 # whole stream, which is cheap even at megabytes, and only when it hits does
 # jq confirm the string came from a top-level `rate_limit_event` rather than
-# from inside a tool result — an Implementor working on limit detection would
+# from inside a tool result — an Implementer working on limit detection would
 # otherwise abort itself for reading its own test fixtures.
 stage_rejected_rate_limit() {
   local stream_file="$1" info

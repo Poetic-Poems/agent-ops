@@ -24,7 +24,7 @@ name: Build the node image
 # Note that this is a question about *paths*, not about file extensions.
 # `prompts/*.md` are Markdown documents and are also the operating instructions
 # fed to `claude -p` at each stage — the code of the coordinator, the
-# implementor and the reviewer. The allowlist that draws the line lives in
+# implementer and the reviewer. The allowlist that draws the line lives in
 # scripts/is-docs-only.sh, for the reason scripts/lint-shell.sh gives about its
 # own file set, and is unit-tested there (test/is-docs-only.test.sh).
 #

@@ -35,7 +35,7 @@
 # The inert set is an explicit allowlist of paths, deliberately not a rule
 # about file extensions, and that is the whole point of this file. The
 # `prompts/*.md` are Markdown documents, and they are also the *code* of the
-# coordinator, the implementor and the reviewer — the text fed to `claude -p`
+# coordinator, the implementer and the reviewer — the text fed to `claude -p`
 # at each stage. Judging by extension would let a change to how a node thinks
 # skip the build that deploys it, which is the one failure this must not have.
 # `test/fixtures/*.md` and `.claude/skills/**` are Markdown for the same

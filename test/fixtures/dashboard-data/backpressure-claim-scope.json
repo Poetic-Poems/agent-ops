@@ -3,7 +3,7 @@
   "node": "poetic-1",
   "config": {
     "repos": [{"slug": "Poetic-Poems/agent-ops"}, {"slug": "Poetic-Poems/poetic"}],
-    "timeout_coordinator": 15, "timeout_implementor": 90,
+    "timeout_coordinator": 15, "timeout_implementer": 90,
     "timeout_reviewer": 30, "timeout_enabler": 30,
     "lock_stale_after": 4, "dashboard_refresh_seconds": 5,
     "coordinator_model": "claude-haiku-4-5-20251001"

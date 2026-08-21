@@ -229,7 +229,7 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   independently from the same envelope and are expected to agree.
 
   The **actor** that spent it is the transcript's own filename, and needs no
-  new field: `cycles/<id>/{coordinator,implementor,reviewer,enabler,refiner}.out`
+  new field: `cycles/<id>/{coordinator,implementer,reviewer,enabler,refiner}.out`
   name themselves, and `reviews/<id>/reviewer-<repo>.out` is normalised to
   `project-reviewer` from the directory two levels up — it belongs to the
   weekly pipeline, not to the cycle Reviewer. Any other stem passes through
@@ -502,7 +502,7 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                standdown_cause,             // "raced" | "unreachable" | "pre-claimed"
                                              //   | null — only on an outcome of
                                              //   "stand-down"
-               stages:{ coordinator|implementor|reviewer:
+               stages:{ coordinator|implementer|reviewer:
                         { ran, cost_usd, duration_ms, num_turns, is_error,
                           terminal_reason, model, status, result, stderr,
                           limit_hit, limit_text } },
@@ -969,7 +969,7 @@ cycle recorded on its coordinator `stage-end` — the same invocation id, so the
 two cannot disagree — which is what lets the panel populate from history
 already on disk rather than only from cycles run after it shipped. `selection`
 carries a `model` of its own and it is deliberately never read here: that is
-the *Implementor* model chosen for the item, and reading it would attribute a
+the *Implementer* model chosen for the item, and reading it would attribute a
 Co-Ordinator verdict to whichever model was about to do the work.
 
 The **recent log** is the newest 80 events, one row each: time, the event as a
@@ -1283,7 +1283,7 @@ number's twins elsewhere on the page.
   every denominator by exactly the cycles that stood down cleanly. Two models
   in the same window carry separate rates and separate fallback counts; a
   `selection` is attributed to the Co-Ordinator model and never to the
-  Implementor `model` the event itself carries; the newest rejection names its
+  Implementer `model` the event itself carries; the newest rejection names its
   attempt, its own `unaccounted` refs and count, and what became of the cycle
   it happened on; and a log holding no Co-Ordinator record at all still ships
   the aggregate zeroed with a `null` rate, since the page can only distinguish
@@ -2040,7 +2040,7 @@ number's twins elsewhere on the page.
   the Publisher making an extra call. The fields appear in the order the cycle
   learns them — stage first, then repo/item/title once the Co-Ordinator selects
   — which doubles as a coarse progress read: a header stuck on `coordinator`
-  with no item is a cycle still choosing; one naming an item under `implementor`
+  with no item is a cycle still choosing; one naming an item under `implementer`
   is a cycle at work.
 - **With a fleet, "what is it doing" has one answer per node, so it is asked per
   node.** The readout above was designed when a node and the pipeline were the

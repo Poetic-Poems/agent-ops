@@ -45,7 +45,7 @@ assert_eq() {
 
 assert_eq "script's display name" "Script" "$(pipeline_actor_label script)"
 assert_eq "coordinator's display name" "Co-Ordinator" "$(pipeline_actor_label coordinator)"
-assert_eq "implementor's display name" "Implementor" "$(pipeline_actor_label implementor)"
+assert_eq "implementer's display name" "Implementer" "$(pipeline_actor_label implementer)"
 assert_eq "reviewer's display name" "Reviewer" "$(pipeline_actor_label reviewer)"
 assert_eq "enabler's display name" "Enabler" "$(pipeline_actor_label enabler)"
 assert_eq "refiner's display name" "Refiner" "$(pipeline_actor_label refiner)"
@@ -62,8 +62,8 @@ assert_eq "an unknown token fails open to its own bare form" \
 
 # shellcheck disable=SC2016  # the backticks are literal Markdown, not command substitution
 assert_eq "the header names the actor's display and the node, verbatim" \
-  '**Implementor** · autonomous pipeline · node `poetic-2`' \
-  "$(pipeline_comment_header implementor poetic-2)"
+  '**Implementer** · autonomous pipeline · node `poetic-2`' \
+  "$(pipeline_comment_header implementer poetic-2)"
 # shellcheck disable=SC2016  # the backticks are literal Markdown, not command substitution
 assert_eq "an unknown actor still produces a header, via the fail-open token" \
   '**some-future-actor** · autonomous pipeline · node `poetic-1`' \
@@ -72,11 +72,11 @@ assert_eq "an unknown actor still produces a header, via the fail-open token" \
 # --- pipeline_comment_marker: cycle and actor both travel ---
 
 assert_eq "the marker carries both the cycle id and the actor token" \
-  '<!-- agent-ops:pipeline-comment cycle=20260807T010000Z-poetic-1-123 actor=implementor -->' \
-  "$(pipeline_comment_marker 20260807T010000Z-poetic-1-123 implementor)"
+  '<!-- agent-ops:pipeline-comment cycle=20260807T010000Z-poetic-1-123 actor=implementer -->' \
+  "$(pipeline_comment_marker 20260807T010000Z-poetic-1-123 implementer)"
 assert_eq "every marker still starts with the fixed, greppable prefix" \
   "yes" \
-  "$(pipeline_comment_marker 20260807T010000Z-poetic-1-123 implementor \
+  "$(pipeline_comment_marker 20260807T010000Z-poetic-1-123 implementer \
      | grep -qF -- "$PIPELINE_COMMENT_MARKER_PREFIX" && echo yes || echo no)"
 
 # --- pipeline_reconciles_marker: the Reviewer's own citation line -------------
@@ -91,15 +91,15 @@ assert_eq "every reconciles marker still starts with its own greppable prefix" \
 
 # --- The prompts cannot drift from the header the library produces ---
 #
-# A model reads prose, not shell, so prompts/implementor.md, prompts/enabler.md,
+# A model reads prose, not shell, so prompts/implementer.md, prompts/enabler.md,
 # prompts/reviewer.md and prompts/refiner.md are four of the only places (with
 # the fixtures in test/abandoned-drafts.test.sh) allowed to spell the header's
 # literal form out rather than sourcing it. Each instructs its stage to
 # substitute a real node name for the literal placeholder `<node>`, so that
 # placeholder form — exactly what pipeline_comment_header produces for the actor
 # token `<node>` stands in for — is the string every prompt must still carry.
-declare -A actor_of=( [implementor]=implementor [enabler]=enabler [reviewer]=reviewer [refiner]=refiner )
-for prompt in implementor enabler reviewer refiner; do
+declare -A actor_of=( [implementer]=implementer [enabler]=enabler [reviewer]=reviewer [refiner]=refiner )
+for prompt in implementer enabler reviewer refiner; do
   header="$(pipeline_comment_header "${actor_of[$prompt]}" '<node>')"
   assert_eq "prompts/$prompt.md spells out the literal header its stage must open comments with" "yes" \
     "$(grep -qF -- "$header" "$SCRIPT_DIR/prompts/$prompt.md" && echo yes || echo no)"

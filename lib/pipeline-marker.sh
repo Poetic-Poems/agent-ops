@@ -31,8 +31,8 @@
 # their own PR comments by calling pipeline_comment_marker and
 # pipeline_comment_header, and scripts/gather-abandoned-drafts.sh sources this
 # same file and matches on PIPELINE_COMMENT_MARKER_PREFIX, so that write side
-# and the read side cannot drift apart. The Implementor's, Enabler's,
-# Reviewer's and Refiner's comment instructions (prompts/implementor.md,
+# and the read side cannot drift apart. The Implementer's, Enabler's,
+# Reviewer's and Refiner's comment instructions (prompts/implementer.md,
 # prompts/enabler.md, prompts/reviewer.md, prompts/refiner.md) are the one
 # place the strings have to be spelled out rather than sourced, so
 # test/abandoned-drafts.test.sh and test/comment-identity.test.sh assert all
@@ -62,7 +62,7 @@ pipeline_actor_label() {
   case "$1" in
     script) printf 'Script' ;;
     coordinator) printf 'Co-Ordinator' ;;
-    implementor) printf 'Implementor' ;;
+    implementer) printf 'Implementer' ;;
     reviewer) printf 'Reviewer' ;;
     enabler) printf 'Enabler' ;;
     refiner) printf 'Refiner' ;;

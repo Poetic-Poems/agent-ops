@@ -82,12 +82,12 @@ assert_eq "only open, non-draft, CONFLICTING, ours-by-branch PRs are candidates"
   "[90,95]" "$(candidate_filter)"
 
 # Each exclusion, named, so a future edit that drops one fails loudly:
-# - #91 draft: a draft is the Implementor's own claim marker; a draft's conflict
+# - #91 draft: a draft is the Implementer's own claim marker; a draft's conflict
 #   is abandoned-drafts' to resolve once the draft goes stale, never here.
 # - #92 mergeable: no conflict — nothing to do. Rebasing it would be churn.
 # - #93 UNKNOWN: mergeability is computed asynchronously, so a PR whose base just
 #   moved reads UNKNOWN for a beat. Treating that as a conflict would send the
-#   Implementor to rebase a PR that may not conflict. This is the assertion that
+#   Implementer to rebase a PR that may not conflict. This is the assertion that
 #   keeps the feature from acting on a guess.
 # - #94 human branch: only branches under agent/ (or the tech-debt td/ claim
 #   branch) are ours; the Landing Gate reserves the rest — force-pushing a rebase
@@ -107,7 +107,7 @@ assert_eq "a tech-debt td/ claim branch counts as ours" \
 #
 # `pr-<n>-conflict-<head-sha[:12]>`, not `pr-<n>-conflict`. An item recorded
 # blocked (requirement 34) stays blocked until something clears it, so a bare
-# `pr-90-conflict` that an Implementor once failed to resolve would still be
+# `pr-90-conflict` that an Implementer once failed to resolve would still be
 # blocked after fresh commits landed — and the new, possibly-resolvable state
 # would never be looked at again. Scoping to the head means each distinct
 # conflicted state is its own item that no older block covers, while a resolution

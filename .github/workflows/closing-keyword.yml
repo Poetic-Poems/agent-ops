@@ -1,8 +1,8 @@
 name: Closing keyword check
 
 # Gates requirement 25a: an agent PR that names an issue it closes
-# (`<!-- agent-ops:closes-issue item=N -->`, stamped by the Implementor,
-# `prompts/implementor.md`) must also carry a real GitHub closing keyword for
+# (`<!-- agent-ops:closes-issue item=N -->`, stamped by the Implementer,
+# `prompts/implementer.md`) must also carry a real GitHub closing keyword for
 # that same issue, so the issue actually closes when the PR merges. Prompt
 # instruction alone was already asked for this and silently skipped (PR #206
 # said "Implements #198" instead of "Closes #198", and #198 stayed open for
@@ -12,7 +12,7 @@ name: Closing keyword check
 # presence-enforcing rather than consistency-only: the Script mints
 # `agent/<N>` (a bare issue number) for issue-sourced work orders and for
 # nothing else, so a PR from such a branch must carry both the marker and the
-# keyword for `N` — an Implementor that forgets the marker goes red instead
+# keyword for `N` — an Implementer that forgets the marker goes red instead
 # of passing trivially. A PR without the marker on any other branch —
 # everything that is not issue-sourced — passes.
 #

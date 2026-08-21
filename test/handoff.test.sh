@@ -15,7 +15,7 @@
 # stayed a draft — invisible to the human, who watches for review requests —
 # while the log recorded a successful handoff. Three hours on, the
 # abandoned-drafts source re-detected it as a stalled draft at a fresh head SHA,
-# which is a fresh ref no block covers, and paid an Implementor and a Reviewer to
+# which is a fresh ref no block covers, and paid an Implementer and a Reviewer to
 # finish finished work. On the hour, indefinitely, every cycle looking productive.
 #
 # So the assertions below are all one assertion in different clothes: the word
@@ -154,7 +154,7 @@ assert_eq "a confirming read that fails is a failure" "failed" "$out"
 assert_eq "  ... and exits 1" "1" "$rc"
 
 # --- No URL at all --------------------------------------------------------------
-# Reachable: the Implementor can complete without the Script ever recovering a
+# Reachable: the Implementer can complete without the Script ever recovering a
 # PR URL. An empty string must not become `gh pr view ""`.
 out="$(confirm_pr_ready "")"; rc=$?
 assert_eq "an empty PR url is a failure" "failed" "$out"
@@ -311,7 +311,7 @@ assert_eq "the real call-site shape survives set -e" "0" "$?"
 # --- pr_url_for_branch: naming the PR a failed stage never named (req. 9) -------
 # The other end of the same story. `confirm_pr_ready` above cannot run at all on
 # a pull request nobody can name, and on 2026-08-03 three finished items were
-# blocked for exactly that reason: the Implementor exited 0 with prose instead
+# blocked for exactly that reason: the Implementer exited 0 with prose instead
 # of a JSON object, so no `pr_url` was reported, none was printable from the
 # stage output, and no `.git/agent-ops-pr-url` breadcrumb had been written —
 # every fallback that depends on the stage failed together with the stage. The
@@ -486,7 +486,7 @@ out="$(confirm_review_requested "$URL")"; rc=$?
 assert_eq "a bot's changes-requested is not a human to notify" "none" "$out"
 assert_eq "  ... and asks for nothing" "0" "$(posts)"
 
-# Already pending: the Implementor got there first (requirement 26b). Asking
+# Already pending: the Implementer got there first (requirement 26b). Asking
 # again is a no-op that would nonetheless report `requested` and read in the log
 # as work this cycle did.
 review_n=0
@@ -947,13 +947,13 @@ assert_eq "  ... and exits 0" "0" "$rc2"
 BLOCK_AT="2026-08-03T10:01:00Z"
 marked_reply() {  # <at>
   jq -cn --arg at "$1" \
-    --arg body "Addressed. $PIPELINE_COMMENT_MARKER_PREFIX cycle=X actor=implementor -->" \
+    --arg body "Addressed. $PIPELINE_COMMENT_MARKER_PREFIX cycle=X actor=implementer -->" \
     '{at: $at, body: $body}'
 }
 
 assert_eq "no events at all is unanswered" "unanswered" \
   "$(handoff_round_answered "$BLOCK_AT" '[]' '[]')"
-assert_eq "a marked implementor reply after the blocking review answers it" "answered" \
+assert_eq "a marked implementer reply after the blocking review answers it" "answered" \
   "$(handoff_round_answered "$BLOCK_AT" '[]' "[$(marked_reply 2026-08-03T10:05:00Z)]")"
 assert_eq "the same reply before the blocking review answers a previous round" "unanswered" \
   "$(handoff_round_answered "$BLOCK_AT" '[]' "[$(marked_reply 2026-08-03T09:00:00Z)]")"
@@ -1033,13 +1033,13 @@ assert_eq "the oversized-body fixture really is past MAX_ARG_STRLEN" "1" \
 # correctly, not merely to avoid crashing. Built with the `printf` builtin,
 # not `jq --arg`: an `--arg` carrying the oversized body would hit the very
 # argv cap this section exists to prove the real code no longer does.
-oversized_marked_reply="$(printf '{"at": "2026-08-03T10:05:00Z", "body": "Addressed. %s %s cycle=X actor=implementor -->"}' \
+oversized_marked_reply="$(printf '{"at": "2026-08-03T10:05:00Z", "body": "Addressed. %s %s cycle=X actor=implementer -->"}' \
   "$oversized_body" "$PIPELINE_COMMENT_MARKER_PREFIX")"
 oversized_unmarked_review="$(printf '{"at": "2026-08-03T09:00:00Z", "body": "%s"}' "$oversized_body")"
 
 events="$(handoff_answer_events "[$oversized_unmarked_review]" "[$oversized_marked_reply]" '[]' 2>/dev/null)"; rc=$?
 assert_eq "a review/comment body past the argv cap no longer kills the call" "0" "$rc"
-assert_eq "  ... and still finds only the marked implementor reply" "1" "$(jq 'length' <<<"$events")"
+assert_eq "  ... and still finds only the marked implementer reply" "1" "$(jq 'length' <<<"$events")"
 assert_eq "  ... at its own timestamp" "2026-08-03T10:05:00Z" "$(jq -r '.[0]' <<<"$events")"
 
 assert_eq "handoff_round_answered survives the same oversized bodies, reading the round answered" \

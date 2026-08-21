@@ -6,7 +6,7 @@
 # Given a repo slug, print a JSON array of review-feedback candidates: open,
 # non-draft PRs raised by this system whose latest review round asked for
 # changes that no commit has answered yet. Each candidate carries the review
-# prose verbatim, so the Implementor can act on it without re-querying anything.
+# prose verbatim, so the Implementer can act on it without re-querying anything.
 #
 # Usage: gather-review-feedback.sh <owner/repo> <pr-label> <branch-prefix>
 #
@@ -31,7 +31,7 @@
 # and gather-abandoned-drafts.sh) so that a reader needing "which PR does this
 # candidate target?" has one field name that means the same thing in all three
 # arrays: the PR-level claim agent-cycle.sh takes alongside the item claim
-# (issue #238) reads `pr_number` from here, and `prompts/implementor.md`'s
+# (issue #238) reads `pr_number` from here, and `prompts/implementer.md`'s
 # review-feedback work order already documented carrying `pr_url` before this
 # field existed to satisfy it.
 #
@@ -42,7 +42,7 @@
 #      round means several calls per PR — reviews, inline comments, general
 #      comments, the timeline — and the bodies are long. Paying a model to
 #      paginate that is waste.
-#   2. The prose must reach the Implementor *verbatim*. A model summarising a
+#   2. The prose must reach the Implementer *verbatim*. A model summarising a
 #      review before handing it on is a lossy telephone game about the exact
 #      changes a human asked for.
 #   3. The candidate rule below has to exist in the fingerprint (requirement 3b)
@@ -52,7 +52,7 @@
 # ## The candidate rule
 #
 # A PR is a candidate iff all of:
-#   - it is open and not a draft (a draft is the Implementor's own claim marker,
+#   - it is open and not a draft (a draft is the Implementer's own claim marker,
 #     not something a human has finished reviewing);
 #   - it carries <pr-label> and its head branch starts with <branch-prefix> —
 #     i.e. this system raised it. The Landing Gate is explicit that branches
@@ -98,10 +98,10 @@
 #
 # The fix is to derive "answered" from signals GitHub itself timestamps at the
 # moment they happen, none of which a rebase can produce:
-#   - a **marked reply from the Implementor** — a review or a general PR
+#   - a **marked reply from the Implementer** — a review or a general PR
 #     comment carrying `lib/pipeline-marker.sh`'s invisible marker with
-#     `actor=implementor`, i.e. this system's own answer to the round
-#     (`prompts/implementor.md`'s "Answer the review before you finish").
+#     `actor=implementer`, i.e. this system's own answer to the round
+#     (`prompts/implementer.md`'s "Answer the review before you finish").
 #     `gh pr comment` and `gh pr review --comment` file the same words under
 #     different collections, so both are checked, the same way
 #     gather-abandoned-drafts.sh already does for its own staleness clock.
@@ -137,7 +137,7 @@
 # account can therefore only leave a COMMENTED review, and the human's second
 # account posts the CHANGES_REQUESTED — whose body, in the wild, reads in full:
 # "Refer to https://github.com/…#pullrequestreview-4718691960". Gathering only
-# the blocking review would hand the Implementor the word "Refer to" and nothing
+# the blocking review would hand the Implementer the word "Refer to" and nothing
 # to act on. So the body below is every review and inline comment submitted
 # since the round began, whoever wrote it.
 #
@@ -145,7 +145,7 @@
 #
 # `pr-<n>-review-<review-id>`, not `pr-<n>`. An item that gets recorded blocked
 # (requirement 34) stays blocked until something clears it — so a bare `pr-57`
-# that the Implementor once failed on would still be blocked when the human
+# that the Implementer once failed on would still be blocked when the human
 # posted fresh guidance, and their new review would land on a dead item. Scoping
 # the ref to the review id means each new round is a new item that no old block
 # covers. Same reasoning as the review-dated `review-<date>-R-NN` refs: these
@@ -275,7 +275,7 @@ while IFS= read -r pr; do
   # answer a bot's CHANGES_REQUESTED: the pipeline cannot dismiss a review on
   # its own PR, and handoff never re-requests a bot. Bots are excluded from
   # re-request, not from feedback — their findings still reach the
-  # Implementor; nobody is ever pinged over them. A COMMENTED review never
+  # Implementer; nobody is ever pinged over them. A COMMENTED review never
   # changes anyone's standing position, so it is filtered out *before*
   # picking each reviewer's latest, not after — a reviewer who requested
   # changes and then merely commented is still blocking.
@@ -287,7 +287,7 @@ while IFS= read -r pr; do
   [[ "$blocking" != "null" ]] || continue
   blocking_at="$(jq -r '.at' <<<"$blocking")"
 
-  # General PR conversation comments, where the Implementor's own reply lands
+  # General PR conversation comments, where the Implementer's own reply lands
   # (`gh pr comment`) carrying `lib/pipeline-marker.sh`'s invisible marker.
   # Streamed one object per line, slurped below (see the header note).
   issue_comments="$("$GH" api "repos/$slug/issues/$number/comments" --paginate \
@@ -308,13 +308,13 @@ while IFS= read -r pr; do
   jq -e 'type == "array"' <<<"$rerequests" >/dev/null 2>&1 || rerequests='[]'
 
   # Every answer event in the PR's life, oldest first: a marked review or
-  # general comment whose marker's `actor=` field is `implementor`, or a
+  # general comment whose marker's `actor=` field is `implementer`, or a
   # review-requested event (`handoff_answer_events`, lib/handoff.sh —
   # requirement 34a's one definition). Two different timestamps are read off
   # this one list below — whether the *blocking* round has been answered,
   # and where the *previous* round left off.
   #
-  # `actor=implementor -->` is the exact tail `pipeline_comment_marker`
+  # `actor=implementer -->` is the exact tail `pipeline_comment_marker`
   # (lib/pipeline-marker.sh) prints for that actor — the actor token is
   # always the marker's last field, immediately followed by ` -->` — so a
   # substring match is precise with no regex needed. Any other actor
@@ -368,7 +368,7 @@ while IFS= read -r pr; do
   jq -e 'type == "array"' <<<"$comments" >/dev/null 2>&1 || comments='[]'
   fresh_comments="$(jq -c --arg c "$round_start" '[.[] | select(.at > $c)] | sort_by(.at)' <<<"$comments")"
 
-  # The originating item, so the Implementor can find the tech-debt entry or
+  # The originating item, so the Implementer can find the tech-debt entry or
   # issue this PR came from. Best-effort: a ref in the branch name or PR body.
   # Absence is normal and must not disqualify the candidate — the review text is
   # the brief, not the register entry.
