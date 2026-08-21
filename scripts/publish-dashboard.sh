@@ -1127,19 +1127,19 @@ counts_merged="$(jq -c --slurpfile v "$coord_verdicts_file" \
   '. + {coordinator_verdicts: $v[0]}' <<<"$counts_json" 2>/dev/null)"
 [[ -n "$counts_merged" ]] && counts_json="$counts_merged"
 
-# --- Implementor/Reviewer model selection (issue #529) -----------------------
+# --- Implementer/Reviewer model selection (issue #529) -----------------------
 # Which model each of these two stages was *asked* to run, as a ratio — the
 # dashboard's two "model used" pies. The unit is the stage-end event, not the
-# cycle: a cycle logs at most one Implementor and one Reviewer stage-end, so
+# cycle: a cycle logs at most one Implementer and one Reviewer stage-end, so
 # double-counting is not a risk here the way it is for the Co-Ordinator block
 # above (which can see two verdicts from one cycle's retry).
 #
 # `.model` is `lib/metering.sh`'s own field — the id passed to the `claude`
 # invocation, not read back out of the transcript envelope — deliberately not
 # `counts.cost_rows[]`/`modelUsage`: those are spend attribution, and a single
-# Implementor stage running on Sonnet still emits Haiku `modelUsage` rows for
+# Implementer stage running on Sonnet still emits Haiku `modelUsage` rows for
 # the subagents its own invocation spawns, so a ratio built from them would
-# report Haiku for most Implementor runs, which is the #536 failure this issue
+# report Haiku for most Implementer runs, which is the #536 failure this issue
 # was explicitly asked not to repeat. Every stage-end for these two stages
 # counts once, including a failed run (`exit_code != 0`) or a retry: the
 # question is which model was dispatched, and a failed run still consumed
@@ -1161,7 +1161,7 @@ jq -c --arg cut "$day_cut" '
   | def day_of: ((.ts // "" | tostring)
                  | if test("^[0-9]{4}-[0-9]{2}-[0-9]{2}")
                    then (.[0:4] + .[5:7] + .[8:10]) else null end);
-    ([ $ev[] | select(.event == "stage-end" and (.stage == "implementor" or .stage == "reviewer"))
+    ([ $ev[] | select(.event == "stage-end" and (.stage == "implementer" or .stage == "reviewer"))
              | {day: day_of, stage: .stage, model: (.model // "unknown")} ]
      | map(select(.day != null and .day >= $cut))) as $recs
   | ($recs | group_by([.stage, .model])

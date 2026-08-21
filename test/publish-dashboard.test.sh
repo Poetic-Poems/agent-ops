@@ -608,8 +608,8 @@ assert_eq "the window names its own oldest event" "${v_yest}T02:00:00Z" \
   "$(jq -r '.window_from' <<<"$vdata")"
 assert_eq "and its newest" "${v_today}T06:05:03Z" "$(jq -r '.window_to' <<<"$vdata")"
 
-# --- The Implementor/Reviewer model pies (issue #529) ----------------------------
-# `counts.stage_models`: which model each Implementor/Reviewer stage-end event
+# --- The Implementer/Reviewer model pies (issue #529) ----------------------------
+# `counts.stage_models`: which model each Implementer/Reviewer stage-end event
 # was *asked* to run — the dashboard's "model used" pies. `model` here is
 # `lib/metering.sh`'s field, already present on the event, never re-derived
 # from spend attribution (`cost_rows`/`modelUsage`).
@@ -626,33 +626,33 @@ s_stage_end() {  # s_stage_end <iso-date> <hh:mm:ss> <cycle> <stage> <exit_code>
 {
   # A failed run (exit_code 1) still counts — the question is which model was
   # dispatched, not whether it succeeded.
-  s_stage_end "$s_today" "01:00:00" "${s_today_day}T010000Z-nodeS-1" "implementor" 0 ",\"model\":\"$sonnet\""
-  s_stage_end "$s_today" "02:00:00" "${s_today_day}T020000Z-nodeS-2" "implementor" 1 ",\"model\":\"$opus\""
+  s_stage_end "$s_today" "01:00:00" "${s_today_day}T010000Z-nodeS-1" "implementer" 0 ",\"model\":\"$sonnet\""
+  s_stage_end "$s_today" "02:00:00" "${s_today_day}T020000Z-nodeS-2" "implementer" 1 ",\"model\":\"$opus\""
   # A retry of the same cycle is a second stage-end and counts again, on its
   # own — unlike coordinator_verdicts above, there is no dedup by cycle here:
   # requirement 33a logs one stage-end per engagement, and a retried
-  # Implementor really did run the model twice.
-  s_stage_end "$s_today" "02:30:00" "${s_today_day}T020000Z-nodeS-2" "implementor" 0 ",\"model\":\"$opus\"" ',"retry":true'
+  # Implementer really did run the model twice.
+  s_stage_end "$s_today" "02:30:00" "${s_today_day}T020000Z-nodeS-2" "implementer" 0 ",\"model\":\"$opus\"" ',"retry":true'
   # A stage-end with no readable model — an envelope metering_fields could not
   # parse — falls under "unknown" rather than being dropped.
   s_stage_end "$s_today" "03:00:00" "${s_today_day}T030000Z-nodeS-3" "reviewer" 0
   s_stage_end "$s_today" "04:00:00" "${s_today_day}T040000Z-nodeS-4" "reviewer" 0 ",\"model\":\"$sonnet\""
-  # A Co-Ordinator stage-end must never be counted here — only Implementor and
+  # A Co-Ordinator stage-end must never be counted here — only Implementer and
   # Reviewer are in scope.
   s_stage_end "$s_today" "05:00:00" "${s_today_day}T050000Z-nodeS-5" "coordinator" 0 ",\"model\":\"$sonnet\""
   # Outside COST_SCAN_DAYS: excluded from by_stage/rows, but (being the
   # oldest event in the log) still sets window_from — the window is the whole
   # retained log, not just these two stages' own events.
-  s_stage_end "$s_old" "00:00:00" "${s_old//-/}T000000Z-nodeS-0" "implementor" 0 ",\"model\":\"$sonnet\""
+  s_stage_end "$s_old" "00:00:00" "${s_old//-/}T000000Z-nodeS-0" "implementer" 0 ",\"model\":\"$sonnet\""
 } > "$s/.local/state/poetic-agents/log.jsonl"
 run_publish "$s" NODE_NAME=nodeS
 sdata="$(jq -c '.counts.stage_models' <<<"$(data_of "$s")")"
 
 assert_eq "the aggregate is present" "object" "$(jq -r 'type' <<<"$sdata")"
-assert_eq "every Implementor stage-end counts once, including the failed run and the retry" "3" \
-  "$(jq -r '[.by_stage[] | select(.stage=="implementor") | .n] | add' <<<"$sdata")"
+assert_eq "every Implementer stage-end counts once, including the failed run and the retry" "3" \
+  "$(jq -r '[.by_stage[] | select(.stage=="implementer") | .n] | add' <<<"$sdata")"
 assert_eq "opus alone covers the failed run and its retry" "2" \
-  "$(jq -r '.by_stage[] | select(.stage=="implementor" and .model=="claude-opus-5") | .n' <<<"$sdata")"
+  "$(jq -r '.by_stage[] | select(.stage=="implementer" and .model=="claude-opus-5") | .n' <<<"$sdata")"
 assert_eq "a stage-end with no readable model lands under unknown rather than being dropped" "1" \
   "$(jq -r '.by_stage[] | select(.stage=="reviewer" and .model=="unknown") | .n' <<<"$sdata")"
 assert_eq "the Reviewer total is both its runs, unknown included" "2" \
@@ -660,9 +660,9 @@ assert_eq "the Reviewer total is both its runs, unknown included" "2" \
 assert_eq "the Co-Ordinator's own stage-end is out of scope for this aggregate" "0" \
   "$(jq -r '[.by_stage[] | select(.stage=="coordinator")] | length' <<<"$sdata")"
 assert_eq "a stage-end outside COST_SCAN_DAYS is excluded from by_stage — only the in-window sonnet run counts" "1" \
-  "$(jq -r '.by_stage[] | select(.stage=="implementor" and .model=="claude-sonnet-5") | .n' <<<"$sdata")"
+  "$(jq -r '.by_stage[] | select(.stage=="implementer" and .model=="claude-sonnet-5") | .n' <<<"$sdata")"
 assert_eq "rows carry the same day-summed shape the page re-aggregates client-side" "1" \
-  "$(jq -r --arg d "$s_today_day" '[.rows[] | select(.day==$d and .stage=="implementor" and .model=="claude-opus-5" and .n==2)] | length' <<<"$sdata")"
+  "$(jq -r --arg d "$s_today_day" '[.rows[] | select(.day==$d and .stage=="implementer" and .model=="claude-opus-5" and .n==2)] | length' <<<"$sdata")"
 assert_eq "the out-of-window stage-end is excluded from rows too" "0" \
   "$(jq -r --arg d "${s_old//-/}" '[.rows[] | select(.day==$d)] | length' <<<"$sdata")"
 assert_eq "window_from is the oldest event in the whole retained log, not just these two stages'" \

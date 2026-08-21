@@ -702,10 +702,10 @@ assert_contains "a second cost note names the page's fixed currency (issue #438)
 # drop the rest.
 cost_order="$(printf '%s\n' "$out" \
   | sed -n '/<div class="costgrid">/,/Recent log events/p' \
-  | grep -oE 'Est\. token cost by (day|model|actor)|Model used . (Implementor|Reviewer)|class="costnote"' \
+  | grep -oE 'Est\. token cost by (day|model|actor)|Model used . (Implementer|Reviewer)|class="costnote"' \
   | tr '\n' ' ')"
 assert_eq "the cost blocks flow in reading order — day, model, actor, both cost notes, then the two model-used pies" \
-  'Est. token cost by day Est. token cost by model Est. token cost by actor class="costnote" class="costnote" Model used — Implementor Model used — Reviewer ' \
+  'Est. token cost by day Est. token cost by model Est. token cost by actor class="costnote" class="costnote" Model used — Implementer Model used — Reviewer ' \
   "$cost_order"
 
 # The serialiser indents two spaces per level, so six spaces is a child of the
@@ -802,8 +802,8 @@ assert_not_contains "not twice, one per model it happened to touch" \
 assert_contains "the windowed model chart still credits each model only its own split" \
   'title="1 stage run(s)"' "$out_split"
 
-# --- stage-models.json: the Implementor/Reviewer "model used" pies (#529) --------
-# `counts.stage_models` carries Implementor rows at day 0 (sonnet, opus) and
+# --- stage-models.json: the Implementer/Reviewer "model used" pies (#529) --------
+# `counts.stage_models` carries Implementer rows at day 0 (sonnet, opus) and
 # day 3 (sonnet), and Reviewer rows at day 3 (sonnet) and day 40 (a model-less
 # event, which the Publisher folds into "unknown" rather than dropping). The
 # default render (below, no persisted `costWindow`) reads the Publisher's own
@@ -813,11 +813,11 @@ out="$(render stage-models.json)" || { printf 'FAIL - stage-models.json did not 
 
 assert_contains "the time-frame label now names the model-used charts too" \
   "Time frame (model, actor & model-used charts)" "$out"
-assert_contains "the Implementor pie heading is present" \
-  "Model used — Implementor" "$out"
+assert_contains "the Implementer pie heading is present" \
+  "Model used — Implementer" "$out"
 assert_contains "the Reviewer pie heading is present" \
   "Model used — Reviewer" "$out"
-assert_contains "Lifetime sums the Implementor rows straight off by_stage: 3 sonnet" \
+assert_contains "Lifetime sums the Implementer rows straight off by_stage: 3 sonnet" \
   "75% · 3" "$out"
 assert_contains "and 1 opus" \
   "25% · 1" "$out"
@@ -832,23 +832,23 @@ assert_contains "the caption states failed runs and retries both count" \
 assert_contains "and reports the aggregate's own retained-log window" \
   "These two pies read the retained log directly" "$out"
 
-# A 1-day window drops every row but day 0's: Implementor still has one of
+# A 1-day window drops every row but day 0's: Implementer still has one of
 # each model (50/50), but Reviewer's only row that day was never logged (its
 # sonnet row is day 3, its unknown row day 40) — an empty stage in the
 # selected window renders the .empty panel, not a blank or a zero-slice pie.
 out_1d="$(render stage-models.json '{"dashboard.costWindow":"1"}')" || \
   { printf 'FAIL - stage-models.json (1-day window) did not render:\n%s\n' "$out_1d"; exit 1; }
-assert_contains "a 1-day window re-aggregates the Implementor pie to that day alone" \
+assert_contains "a 1-day window re-aggregates the Implementer pie to that day alone" \
   "50% · 1" "$out_1d"
 assert_contains "a stage with nothing in the selected window renders the empty panel" \
   "No Reviewer runs recorded in this time frame." "$out_1d"
 
 # A 7-day window pulls in day 3 for both stages, so Reviewer now has its
-# sonnet row (day 40's unknown row is still outside it) and Implementor's
+# sonnet row (day 40's unknown row is still outside it) and Implementer's
 # split returns to the lifetime ratio.
 out_7d="$(render stage-models.json '{"dashboard.costWindow":"7"}')" || \
   { printf 'FAIL - stage-models.json (7-day window) did not render:\n%s\n' "$out_7d"; exit 1; }
-assert_contains "a 7-day window includes the day-3 Implementor row alongside day 0's" \
+assert_contains "a 7-day window includes the day-3 Implementer row alongside day 0's" \
   "75% · 3" "$out_7d"
 assert_contains "and gives the Reviewer pie its one (day-3) model, at 100%" \
   "100% · 2" "$out_7d"

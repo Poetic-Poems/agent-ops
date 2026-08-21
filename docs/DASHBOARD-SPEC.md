@@ -493,7 +493,7 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                  bands,  // {source: count}, spec 3x; null pre-3x
                                  unaccounted:[{repo,item,source}],
                                  outcome } },  // what became of that cycle
-             stage_models: {        // which model the Implementor/Reviewer
+             stage_models: {        // which model the Implementer/Reviewer
                window_from, window_to,  //   stages were each *asked* to run
                by_stage: [ {stage, model, n} ],   // (issue #529); the dashboard's
                                       //   two "model used" pies. `model` is
@@ -841,7 +841,7 @@ ships wholesale — so this is rendering only: the Publisher is unchanged;
 deliberately: that panel is what the Co-Ordinator was handed, this one is how
 often its answer about it survived the Script checking that answer);
 the cost charts — by-day, by-model, by-actor, the two cost notes, then the two
-"model used" pies (Implementor and Reviewer, issue #529) and their own note —
+"model used" pies (Implementer and Reviewer, issue #529) and their own note —
 flowed through a CSS multi-column layout in that reading order, letting the
 browser balance the split by height rather than pinning by-day to a column of
 its own, since it runs to sixty rows against five each for by-model/by-actor,
@@ -1344,7 +1344,7 @@ number's twins elsewhere on the page.
   folded into a real band, its `unaccounted` read from the sibling `warning`
   of its cycle since the legacy event carries no figure of its own.
   `counts.stage_models` (issue #529) is asserted from a synthetic log of six
-  `stage-end` events: an Implementor run, a second that failed
+  `stage-end` events: an Implementer run, a second that failed
   (`exit_code != 0`), that same cycle's retry, a Reviewer run with no `model`
   field, a second Reviewer run that has one, and a Co-Ordinator run — the
   failed run and its retry both count (one unit per stage-end, regardless of
@@ -1355,7 +1355,7 @@ number's twins elsewhere on the page.
   therefore setting `window_from` — proving that field spans the *whole*
   retained log, not just these two stages' own events. `rows` carries the same
   day-summed `{day, stage, model, n}` shape the page re-aggregates client-side.
-  A log with no Implementor or Reviewer `stage-end` at all still ships the
+  A log with no Implementer or Reviewer `stage-end` at all still ships the
   aggregate as a real, zeroed object (empty `by_stage`/`rows`) rather than
   omitting the key, the same "empty window, not missing data" contract
   `coordinator_verdicts` keeps.
@@ -1470,16 +1470,16 @@ number's twins elsewhere on the page.
   browser balances each cost block into — that is layout, and layout is what
   this stub does not do; it is covered by the manual check below.
   The model-used pies themselves (issue #529) are asserted from
-  `stage-models.json`, which carries Implementor rows at day 0 (sonnet, opus)
+  `stage-models.json`, which carries Implementer rows at day 0 (sonnet, opus)
   and day 3 (sonnet), and Reviewer rows at day 3 (sonnet) and day 40 (a
   model-less event): the default (Lifetime) render sums the Publisher's own
   `by_stage` totals straight through, including the day-40 row folded into
   "unknown" rather than dropped, with each slice's full model id in `title=`,
   its `shortModel()` label, and its percentage and count in the legend; a
-  1-day window re-aggregates the Implementor pie to that day alone (50/50) and
+  1-day window re-aggregates the Implementer pie to that day alone (50/50) and
   renders the Reviewer panel as `.empty` — its only row that day was never
   logged — rather than a blank or a zero-slice pie; a 7-day window restores the
-  Implementor pie's lifetime ratio and gives Reviewer its one (day-3) model at
+  Implementer pie's lifetime ratio and gives Reviewer its one (day-3) model at
   100%, still excluding the day-40 "unknown" row; and the caption states both
   the aggregate's own retained-log window and that a failed run or a retry each
   count as their own slice. A `finished.json`-shaped fixture predating

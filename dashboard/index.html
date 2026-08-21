@@ -2252,7 +2252,7 @@
     }));
   }
 
-  // ---------- model used — Implementor/Reviewer pies (issue #529) ----------
+  // ---------- model used — Implementer/Reviewer pies (issue #529) ----------
   // `counts.stage_models` (see the Publisher's own comment) is a different
   // measure from `cost_rows` above — a count of stage-end runs by the model
   // they were *asked* to run, not dollars — and its window is bounded by
@@ -2324,7 +2324,7 @@
     }));
     return el("div", {class:"piewrap"}, [pie, legend]);
   }
-  var STAGE_LABEL = {implementor: "Implementor", reviewer: "Reviewer"};
+  var STAGE_LABEL = {implementer: "Implementer", reviewer: "Reviewer"};
   function stageModelPie(stage) {
     var windowed = windowedStageModelBreakdown(stage);
     var slices = (windowed || stageModelLifetimeBreakdown(stage))
@@ -2814,12 +2814,12 @@
     // The two model pies (issue #529), appended after the by-actor chart per
     // the issue's own placement: same two-column flow, same time-frame
     // control, a different measure (stage-end run counts, not spend).
-    costgrid.appendChild(el("div", {}, [ el("h2", {text:"Model used — Implementor"}), el("div", {class:"panel", style:"padding:14px"}, stageModelPie("implementor")) ]));
+    costgrid.appendChild(el("div", {}, [ el("h2", {text:"Model used — Implementer"}), el("div", {class:"panel", style:"padding:14px"}, stageModelPie("implementer")) ]));
     costgrid.appendChild(el("div", {}, [ el("h2", {text:"Model used — Reviewer"}), el("div", {class:"panel", style:"padding:14px"}, stageModelPie("reviewer")) ]));
     var sm = D.counts && D.counts.stage_models;
     if (sm) {
       costgrid.appendChild(el("p", {class:"costnote", text:
-        "Each slice is one Implementor or Reviewer stage-end run of that model, " +
+        "Each slice is one Implementer or Reviewer stage-end run of that model, " +
         "including runs that failed and retries — the question is which model was " +
         "dispatched, not whether the run succeeded. These two pies read the retained " +
         "log directly, which can span less history than the cost charts above: " +
