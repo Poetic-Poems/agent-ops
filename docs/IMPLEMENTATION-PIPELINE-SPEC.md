@@ -645,6 +645,7 @@ and the schema must carry every one of them.
 | `branch_prefix` | `agent/` | Branch name `agent/<item-slug>`, e.g. `agent/td26051201-fix-xyz`. |
 | `max_open_agent_prs` | `8` | Back-pressure: draft PRs, ready PRs still `CHANGES_REQUESTED`, and live claim-registry entries, carrying `pr_label` across all repos — excludes ready PRs whose next action is human-side (requirement 2.2). |
 | `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list (requirement 17a), so alternates turn a lost race into the next-best item instead of a wasted cycle. |
+| `coordinator_prompt_max_bytes` | `350000` | The largest assembled prompt the Script will hand the Co-Ordinator (requirement 4i). The default is derived from the 200000-token window of the Co-Ordinator model this installation runs, less the ~50000 tokens of system prompt and tool definitions the Script neither assembles nor can measure, less a reserve for the verdict itself, at the ~2.35 bytes per token JSON-escaped Markdown actually costs. Stated in bytes because bytes are what the Script can count without a tokenizer....[continued below](#extended-notes-coordinator_prompt_max_bytes) |
 | `max_chained_cycles` | `3` | Finish-then-continue (requirement 39): the most cycles that may run back-to-back in one lineage — the cron-fired original plus its immediate chained continuations — bounded so a busy fleet still yields the lock periodically. `1` disables chaining. |
 | `claim_ttl_hours` | `6` | Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry — far beyond a whole cycle (120 min Implementer + 60 min Reviewer), so only a dead node's claim ever expires. The branch itself is deleted only if untouched and PR-less. |
 | `abandoned_draft_after_hours` | 4 h | How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case...[continued below](#extended-notes-abandoned_draft_after_hours) |
@@ -772,6 +773,10 @@ Per-source refinement policy (requirement 39a): `required`, `preferred` or `exem
 ### Extended notes: `prompt_overrides`
 
 Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementer`/`reviewer`/`enabler`/`refiner`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. `approver` is deliberately absent from the enumeration: the Approver's adversarial prompt is the gate the D18 trust ladder rests on, and no installation may extend or replace it (requirement 4a, #469).
+
+### Extended notes: `coordinator_prompt_max_bytes`
+
+The largest assembled prompt the Script will hand the Co-Ordinator (requirement 4i). The default is derived from the 200000-token window of the Co-Ordinator model this installation runs, less the ~50000 tokens of system prompt and tool definitions the Script neither assembles nor can measure, less a reserve for the verdict itself, at the ~2.35 bytes per token JSON-escaped Markdown actually costs. Stated in bytes because bytes are what the Script can count without a tokenizer. `0` disables the bound.
 
 ### Extended notes: `abandoned_draft_after_hours`
 
@@ -4302,6 +4307,125 @@ implements.
    the sibling of the `claim.sh count` site's own `=~ ^[0-9]+$` — reporting
    through `guard_warn` and falling back to the same literal, so a malformed
    success is treated exactly like a failure rather than trusted.
+
+4i. **The assembled Co-Ordinator prompt is bounded by its model's context
+   window.** Requirement 4g's own text records that moving the fleet-state
+   aggregates off argv "raised the ceiling; it did not stop the set from still
+   climbing toward whatever ceiling came next". The next ceiling arrived on
+   2026-08-21. The assembled prompt reached ~226580 tokens against the
+   Co-Ordinator model's 200000-token window and the API refused it outright:
+   four consecutive cycles, every node, `coordinator exited 1`, with no
+   recovery anywhere in the fleet and no work selected while it lasted. The
+   growth was ordinary — ~212999 tokens three cycles earlier, ~220498 two
+   cycles earlier — one issue comment at a time, past a limit no code in this
+   repository had ever measured itself against. `coordinator_prompt_max_bytes`
+   is that measurement: the largest prompt the Script will assemble, in bytes,
+   because bytes are what it can count without a tokenizer. `0` disables the
+   bound, which is how every release before it behaved.
+
+   **The bound is on the prompt, not on the runtime input.** What the window
+   rejects is the whole message, and the base prompt is over 100 KB of it and
+   grows with every requirement written into `prompts/coordinator.md` — so a
+   budget for the input alone would let prompt growth silently consume the
+   input's headroom and arrive back at this same outage. The Script therefore
+   measures the *rendered* base prompt (requirement 4b's substitution already
+   applied), the fenced scaffolding, and the whole of the runtime input
+   document with an empty `repos` — assembled from the same values requirement
+   4's own build uses, so what is subtracted is exactly what will be spent —
+   and hands what remains to `lib/coordinator-input.sh` as the allowance. The
+   overhead is measured against an *empty* `repos` rather than against the
+   unfitted array on purpose: the two differ by the indentation of the lines
+   the fit removes, so an overhead taken from the fatter array would narrow
+   the allowance as the fit worked, and the ladder's own measurements could
+   not be trusted. Measurement is of the array as `jq .` will render it, not
+   of its compact form, for the same reason: a bound is worth nothing measured
+   in units the window does not charge in.
+
+   **Two bands are trimmed, and only two.** `issues` and `tech_debt` are the
+   arrays that carry a whole document each — an issue's entire thread
+   (requirement 3j), a register item's entire file (requirement 3t) — and are
+   the only two whose size tracks the repository's history rather than the
+   number of open pull requests. That pairing is not new: requirement 2.2a's
+   back-pressure block already singles out exactly those two, for exactly this
+   reason, when it empties them on a restricted cycle. Every other pre-fetched
+   band is left alone, because `prompts/coordinator.md` requires each of their
+   bodies pasted *verbatim* into the work order and together they were 34 KB
+   of the 354 KB that overflowed.
+
+   **Prose is shed; candidacy is not.** The fit walks a ladder of eight
+   rungs — `{newest comments kept, bytes per comment, bytes per body}`,
+   generous first — stopping at the first that fits, so an input a little over
+   the allowance loses a little prose. Every rung leaves the entry's `ref`,
+   `number`, `url`, `title`, `priority`, `labels` and `updated_at` untouched,
+   so a trimmed item is ranked and selected exactly as an untrimmed one is.
+   Every cut names itself: a truncated body or comment ends in
+   `…[Script: elided N of M bytes to fit the context window — read it whole at
+   <url>]`, and dropped comments are counted in `comments_elided` on the entry.
+   `prompts/coordinator.md` obliges a live read of that URL before an entry
+   carrying any such mark may be *selected*, since the work order must paste
+   the document verbatim — one fetch for the one item picked, rather than a
+   thread's worth of tokens for every item considered. A prose-only trim also
+   leaves the gatherer's own entry order alone, so a trimmed cycle differs
+   from an untrimmed one in prose and in nothing else.
+
+   **Dropping entries is the last rung, and it is loud.** Once the tightest
+   tier is applied there is nothing left but entries, and those are capped per
+   band per repo (halving: 64, 32, … 1), keeping the highest `Priority` band
+   first and the freshest thread within a band, the oldest register item
+   first. The count is recorded as `issues_elided`/`tech_debt_elided` on the
+   repo entry the Co-Ordinator reads, and the whole fit is applied *before*
+   `coordinator_eligible_items` — beside requirement 2.2a's own emptying of
+   these two bands, and for its stated reason: requirement 3x's corroboration
+   must measure the set actually offered, or a dropped entry would read as an
+   unaccounted-for decline. A fit that shed anything logs
+   `coordinator-input-fitted` carrying the rung, the byte counts and a
+   human sentence naming what was trimmed — an informational record, not a
+   `warning`, because a fleet whose backlog has outgrown the window will trim
+   on every cycle and a standing warning for the ordinary case is how a log
+   stops being read. A fit that still does not fit at one entry per band logs
+   a `warning` as well, saying so *before* the API refuses the prompt.
+
+   **Every degradation here is toward the unbounded input, never toward an
+   empty one.** A budget of `0`, a non-numeric budget, a stdin document that
+   is not an array, or a `jq` failure at any rung all answer with the input
+   unchanged: a misread bound that stripped a cycle's candidates would be a
+   worse failure than the overflow it exists to catch, because the overflow is
+   visible and starvation is not. `lib/coordinator-input.sh` takes the repo
+   array on stdin at every call site for requirement 4g's reason, and
+   `test/coordinator-input.test.sh` pins that with an array genuinely past
+   `MAX_ARG_STRLEN` — the first draft of its own reporting function bound the
+   array as `--argjson` and that test is what caught it.
+
+   **Requirement 3b's fingerprint is unaffected by what the fit sheds.** The
+   fingerprint hashes the fitted array, because that is what the Co-Ordinator
+   is given, and the shedding is deterministic — but a new comment on an issue
+   whose thread was trimmed away must still buy the next cycle a fresh look.
+   It does, and not by accident: requirement 3b's own sampling already carries
+   each open issue's `updated_at` in the source-state digest, independently of
+   this array and expressly because "a triage action that makes an issue
+   selectable, or stops it being, always moves this digest". The elided bytes
+   are covered by a signal that was never in the elided bytes.
+
+   **A stage the API refuses says which refusal it was.** `coordinator exited
+   1` was every record the fleet kept of the four cycles it lost, and
+   requirement 2.7's escalation sent its reader to `coordinator.out.stderr`,
+   which an API refusal leaves empty — the refusal is a `result` with
+   `is_error: true` in `coordinator.out`. `handle_stage_failure` therefore
+   reads that file: a refusal makes the `attempt-failed` detail "<stage> was
+   refused by the API before it could run: <terminal reason>", and the API's
+   own message travels beside it on the event as `api_message`. What counts as
+   a refusal is `api_error_status` being a number on the record — the API
+   itself saying it declined the request — and expressly not `is_error` alone,
+   which covers every way a stage can end badly including ones that ran first;
+   calling those "refused before it could run" would put a confident falsehood
+   where an honest exit code used to be. `terminal_reason` names which refusal
+   where the runner recorded one, and the status stands in where it did not
+   (`api_error_529`). The split is
+   load-bearing — requirement 2.7 counts consecutive failures carrying the
+   *same* detail, and the message names a token count that moved every cycle,
+   so a detail built from it would have read as four distinct failures and the
+   ladder would never have fired on the outage it was needed for. The
+   escalation's own hint now names `coordinator.out` first.
 
 5. If the work order is `{"selected": false}`, log `none-selected` with the
    Co-Ordinator's reason **and the fingerprint computed in requirement 3b**
@@ -10558,6 +10682,28 @@ What exists, and the requirements each part answers to:
    the row-per-repo shape, in-order numbering, an input reordered from
    `config.json`'s own order, and the empty-array edge case; must pass
    `shellcheck`.
+4i. `lib/coordinator-input.sh` implementing requirement 4i:
+   `coordinator_fit_bands`, given a byte allowance on argv and the cycle's
+   repo array on stdin, walks the eight-rung prose ladder and then the
+   per-band entry caps until the array renders inside that allowance, and
+   prints `{repos, fit}` — the trimmed array and a record of which rung was
+   reached, what it capped, the byte counts before and after, and whether it
+   fitted at all. `coordinator_fit_detail` renders that record as the one
+   human sentence the union log carries. `coordinator_apply_rung` is the
+   single `jq` program both ladders run, so a rung and an entry cap cannot
+   drift apart in what they do to an entry. Sourced by `agent-cycle.sh` only.
+   Unit-tested (`test/coordinator-input.test.sh`) for the untouched
+   already-fits case, the three fail-open degradations, prose shed without
+   candidacy, identity fields preserved, the elision markers and their URLs,
+   newest-comments-kept, entry dropping in the stated keep-order, entry order
+   left alone when nothing is dropped, the unfittable case, the two
+   whole-document bands trimmed and the other bands not, the rendered detail
+   line, and — pinning requirement 4g — an array genuinely past
+   `MAX_ARG_STRLEN` through both the fits and the trims paths.
+   `test/coordinator-input-wiring.test.sh` covers the seam separately, over
+   the `agent-cycle.sh` block lifted verbatim: the allowance arithmetic,
+   measured by reassembling the real prompt around the block's output, and
+   the three events the union log depends on. Both must pass `shellcheck`.
 5. `README.md`: what the system does, every config key, install steps
    (below), how to operate it (`--dry-run`, `--once`, reading the log and
    stage transcripts), and how to uninstall. It presents the container as the
@@ -11806,6 +11952,44 @@ pull request, run the ones the change touches and any it could regress.
    `test/noop-skip.test.sh` passes: a change to the rendered table busts the
    no-op fingerprint, and an input predating the `coordinator_work_sources_
    table` key canonicalises the same as one carrying it empty.
+1ja. **The assembled Co-Ordinator prompt cannot outgrow its model's context
+   window (requirement 4i).** `test/coordinator-input.test.sh` passes:
+   `coordinator_fit_bands` hands an already-fitting array back byte-identical
+   with `applied: false`; a `0`, non-numeric or non-array input changes
+   nothing; an oversized array is trimmed to inside its allowance with every
+   candidate still present, every identity field intact and the gatherer's own
+   entry order undisturbed; each truncated body or comment ends in an elision
+   marker naming its byte counts and its `url`; dropped comments are counted
+   in `comments_elided` and the newest are the ones kept; an allowance no
+   amount of prose-shedding can meet drops entries highest-`Priority`-and-
+   freshest first, counted in `issues_elided`; an allowance one entry cannot
+   meet reports `fits: false` and still returns a usable array; `tech_debt` is
+   trimmed on the same terms and `review_feedback`/`merge_conflicts` are not
+   trimmed at all; and the rendered detail line names the allowance and spells
+   out what the rung capped. Pinning requirement 4g, a repo array genuinely
+   past `MAX_ARG_STRLEN` passes through both the already-fits and the
+   must-trim paths with nothing on stderr and the array whole — the shape that
+   caught this module's own first draft binding it as `--argjson`.
+
+   And `test/coordinator-input-wiring.test.sh` passes, over the block lifted
+   verbatim out of `agent-cycle.sh`: for three shapes of oversized input —
+   long bodies, long threads, many entries — at three configured maxima, the
+   prompt reassembled around the block's own output is inside the maximum;
+   a larger maximum never yields a smaller prompt (which an overhead measured
+   against the unfitted array would have caused); a maximum of `0` leaves the
+   array untouched and logs nothing; a trim logs exactly one
+   `coordinator-input-fitted` carrying the rung, the byte counts and the
+   detail line, and no `warning`; a cycle needing no trim logs nothing; and
+   both shapes of "cannot fit" — a maximum the prompt text alone exceeds, and
+   an allowance the ladder bottoms out inside — each log a `warning` saying
+   which it was. The same test lifts `handle_stage_failure`'s two refusal
+   readers and drives them over the record the fleet actually produced on
+   2026-08-21: the refusal is named `prompt_too_long`, its name carries none
+   of the numbers the crash-loop ladder groups on, the API's message is kept
+   beside it, a refusal the runner did not name falls back to `api_error_<n>`,
+   and a stage that ran and then failed, a clean result, an empty transcript
+   and an unparseable one are none of them called a refusal.
+
 1k. **A stage prompt reaches `claude` on stdin, at a size argv could not
    carry (requirement 4c).** `test/stage-prompt-delivery.test.sh` passes: for
    `run_claude_stage` as sourced from `lib/stage-run.sh` — the one copy both
@@ -15232,6 +15416,7 @@ confident, recurring no-op.
 | One platform fact, two readers, two shapes | The bot filter tech-debt/TD-PPagop-26081403.md added to both readers of "is a human review pending" was written once, in REST's vocabulary — `"type": "Bot"`, `[bot]`-suffixed logins, both real in `requested_reviewers[]` — and applied verbatim to the other reader, `gh pr view --json reviewRequests`, which is GraphQL-backed: `gh`'s exporter (cli/cli `api/export_pr.go`) keys each entry on `__typename`, never `type`, and its `User`/`Team` switch has no default case, so a Bot requested reviewer — Copilot code review, the item's motivating case — is dropped from the array before any filter runs. The gatherer's half of the filter was a silent no-op, and its fixtures, written from the filter rather than from `gh`'s real output, passed for the wrong reason. Harmless here only because the dropped entry leaves `[]`, which reads as "nobody asked" — the answer the item wanted anyway. | The same platform fact read through two channels arrives in two shapes, so a predicate ported between readers must be re-derived per channel, not copied. Capture what each channel actually emits (run the real tool against a live case, or read its exporter's source) before writing either the filter or its fixtures, and fixture the stub from that captured output, never from the predicate under test — a stub written from the implementation proves the code agrees with itself, which is not the property under test. Where the shape makes a branch unreachable today, keep it only as labelled defence and assert the reachable path (here: emptiness) too. Same family as the row above, met from the opposite side: there two cases shared one shape; here one case wears two. |
 | A health check that only compares peers, never ground truth | Diagnosing the outage above meant reaching into a container's stderr, because the dashboard's only "is this node current" signal (`version`, the node's own build) compared nodes against *each other*. All four nodes had adopted the same broken image, so all four agreed, and agreement rendered as four healthy green cards — the same shape a genuinely healthy, fully-rolled fleet produces. The comparison could not distinguish "up to date" from "uniformly broken" because both are "everyone agrees." | Peer agreement proves consistency, not correctness — it cannot catch the whole group being wrong the same way at once. Compare against a reference outside the set being checked (the registry's own published commit, not another node's opinion of it — `lib/image-drift.sh`, #155), the same reasoning `origin/main` serves for `compose.yaml` drift (#131). Ask of any "do these agree" check: what happens when every one of them is wrong in the same way? |
 | A terminal state with a clearing event, but no retirement path for the ordinary case | Requirement 34c gives void exactly one exit — a human's hand-appended `unvoided` — because nothing else may reason its way out of a terminal state. That is correct for a *wrong* void; it says nothing about a *right* one, which is the overwhelming majority, and a right void never earns its one exit. The set grew by one entry for every item ever voided, forever, and on 2026-08-12 it reached 122 entries and 133,615 bytes — past `MAX_ARG_STRLEN` — taking the fleet down the same way the row above already had (issue #309). The fix for *that* row (requirement 4g's stdin delivery) raised the ceiling; it did not stop the set from still climbing toward whatever ceiling came next. | An append-only set bounded only by its one human-authorised exit is bounded in theory and unbounded in practice, because the exit is for the exceptional case, not the ordinary one. Ask, of any state whose *correctness* is what keeps it around: once this verdict has been acted on and nothing more will ever change about it, does anything let it go? If the only answer is "a human clears the wrong ones", that is a correctness escape hatch wearing a retention policy's job — build the second one (requirement 34n) separately, gated on the fact already being acted on rather than on a verdict having been reached. |
+| A limit outside the process, that only the vendor's error message names | Requirement 4g moved the fleet-state aggregates off argv and wrote, in its own text, that doing so "raised the ceiling; it did not stop the set from still climbing toward whatever ceiling came next". The next ceiling was the model's context window. Nothing in this repository had ever measured a prompt against it: `MAX_ARG_STRLEN` at least has a number in a header file, whereas the window is a property of a model id in `config.json`, and the tokens it is spent in are not a unit the Script can count. So the `issues` band grew a comment at a time — ~212999 tokens, ~220498, ~226580 — and on 2026-08-21 the API refused four consecutive cycles on every node (agent-ops#641). The refusal said exactly what was wrong, in `coordinator.out`; the Script recorded `coordinator exited 1` and the escalation sent its reader to `coordinator.out.stderr`, which an API refusal leaves empty. | A limit enforced by something you do not run is still your limit, and the fact that you cannot measure it exactly is an argument for a measured proxy with headroom, not for not measuring. Ask, of any input assembled from history: what refuses this when it gets too big, does anything here know that number, and what does the refusal look like when it comes? Two habits fall out. Bound the whole artefact the limit applies to — requirement 4i budgets the assembled *prompt*, not the runtime input, because budgeting the input alone would let the prompt's own growth eat the headroom silently. And when a vendor hands you a diagnosis, keep it: a stage that exits non-zero having been *told* why must put that reason in the record, and group its crash-loop ladder on the stable half of it, never on the numbers that move every cycle. |
 | A verdict cemented by the very mechanism built to stop paying for it | Requirement 3b's no-op fingerprint exists to skip a Co-Ordinator run that could only repeat its last answer — a claim about *what changed*, deliberately never about whether the answer was *right*. The tech-debt band was still the Co-Ordinator's own live read (issue #310): between 2026-08-10 and 2026-08-12, with ~30 eligible items sitting in the register, it returned `none-selected` with reasons that misdescribed the band ("requires per-item evaluation…", "heavily voided or blocked" — 29 of 30 were neither). Nothing about that answer being *wrong* stopped the fingerprint from matching it: the rule only ever asked "would the inputs look the same," and they did, so the fleet replayed the wrong verdict for free across all of 08-11 — 240 stand-downs, not one Co-Ordinator invocation. | A cost-control skip that trusts a verdict's *fingerprint* has no opinion on the verdict's *content*, and was never designed to — so give the parts of the system that can hold an opinion (the Script, which now pre-filters the band deterministically per requirement 3t) a way to say "this one doesn't count." A `none-selected` whose own stated reason contradicts data the Script itself already computed must not be allowed to arm the short-circuit — omit the fingerprint from that event, the same way an empty one already is, so the very next cycle asks again rather than replaying the wrong answer until the forced recheck. Same family as "a cost-control feature that makes cost the *only* thing it protects" above, sharpened: that row is about a skip condition computed wrong; this one is about a skip condition computed *correctly* over a verdict that was itself wrong, which no fingerprint hygiene alone can catch — it needs a second, independent check of the verdict's content. |
 | Detecting a wrong verdict is not the same as recovering from one | Requirement 3t's corroboration gate (above) stops a rejected verdict from arming the fingerprint, so the *next* cycle is never frozen on a stale wrong answer again. But detection alone left the *rejected* cycle itself still standing down empty-handed — and issue #310's own incident showed the same wrong verdict recurring across cycles and nodes, not as a one-off. A gate that only ever un-arms the fingerprint degrades, under a persistent confabulation, into a warning-per-cycle loop with zero selections: visible on the log, but liveness still depending entirely on the model eventually reasoning its way to a different answer. | Give the failure a second, cheaper try before treating it as a stalled cycle (requirement 3v's one retry, quoting the Script's own contradiction back at the model — a pointed correction, not a generic "try again"), and then a recourse that does not depend on the model at all (mechanical fallback selection, scoped to bands the Script can already enumerate without live judgement). The general shape: a machine check that can *detect* a wrong answer is only half the fix if the only recovery it can trigger is "ask the same question again next cycle" — pair detection with an escalating, boundedly-costed retry path, so the system's liveness stops being hostage to the one component it cannot make more reliable by construction. |
 | A machine check proved on one band is not a machine check | Requirement 3t's corroboration gate closed issue #310's freeze by counting one band — tech-debt — and the fix read as complete because that was the band the incident happened in. It was not: a `none-selected` over a non-empty `issues`, `findings`, `review_feedback`, `merge_conflicts`, `abandoned_drafts`, `human_visibility` or `register_hygiene` array passed the gate untouched, so the identical confabulation one band over would have frozen the fleet the identical way, with nothing in the log even able to detect it. The pre-fetch fixed "the model declines to read the source"; the corroboration fixed "the model misdescribes what it was handed" — but only where somebody had already been burned. | State the invariant, not the instance: **every load-bearing negative the model asserts must be corroborated against the Script's own count of what it handed over** (requirement 3x), and then build it as one band-parameterised mechanism rather than one check per band, so adding a band cannot silently add a hole. Expect the generalisation to surface what the single-band version could ignore — here, that `issues` was the one band whose decline routes were *not* exhaustive (a question-or-discussion issue could be skipped silently and requirement 16a explicitly forbade reporting it), which is a real gap the narrow check had simply never had to look at. A check that cannot be generalised without changing a policy is usually telling you the policy is the defect. |

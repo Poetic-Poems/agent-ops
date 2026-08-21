@@ -185,6 +185,29 @@ heading, the Script gives you one JSON object:
   These are the `issues:<band>` sources' only candidates. An empty array means
   the repo has no issue candidates — do not go looking, and never read it as
   issue data having been withheld.
+- **Some of that text may have been trimmed to fit your context window, and
+  where it has, the entry says so.** The `issues` and `tech_debt` arrays are
+  the only two that carry a whole document each — an issue's entire thread, a
+  register item's entire file — so they are the only two the Script trims, and
+  it trims them only as far as the window requires. Three marks tell you it
+  did:
+  - a `body`, or a comment's `body`, ending in
+    `…[Script: elided N of M bytes to fit the context window — read it whole at
+    <url>]` — the text you have is the *opening* of that document and nothing
+    more;
+  - `comments_elided: N` on an entry — its `comments` array holds only the
+    newest few, and N older ones were dropped;
+  - `issues_elided: N` or `tech_debt_elided: N` on a *repo* entry — the array
+    itself was cut to its highest-priority, freshest N entries, and N more
+    exist that you have not been shown.
+
+  None of these is a judgement about the item and none of them makes it less
+  of a candidate: rank a trimmed entry exactly as you would an untrimmed one.
+  What they change is what you owe before you *select* it — see "Trimmed
+  entries must be read live before you select them" below. And a repo entry
+  carrying `issues_elided` is emphatically not a repo with no more issues: it
+  is one whose backlog has outgrown a single cycle's window, which is a fact
+  worth reporting, never one to reason from.
 - Each entry's `issues_excluded` is the number and reason for every issue the
   Script's own deterministic filter just dropped from `issues` above —
   `{"number": 125, "reason": "assigned" | "blocked-label" | "blocked-by: <ref>"}`
@@ -291,6 +314,9 @@ heading, the Script gives you one JSON object:
   `gh issue view <n> --comments` (or `gh api
   repos/<slug>/issues/<n>/comments`); a bare `gh issue view <n>` or `gh api
   .../issues/<n>` returns only the body and will silently miss the comments.
+  It is also the fetch an entry marked `comments_elided`, or whose `body` ends
+  in an elision marker, needs before you select it: the array gave you the
+  newest of that thread, not all of it.
   Comments routinely carry the parts that decide the work: added acceptance
   criteria, clarifications or corrections to the original ask, scope cuts, a
   "blocked" or "won't do" note, or a maintainer turning a discussion into an
@@ -298,6 +324,19 @@ heading, the Script gives you one JSON object:
   current instruction, and weigh comments when applying the exclusion rules
   below (a comment can block, close, or re-scope an issue that its body alone
   would make look selectable).
+- **Trimmed entries must be read live before you select them.** An entry
+  carrying any of the three elision marks above (see "What you receive") is
+  fully rankable as it stands, and you should rank it without spending a read.
+  Once you have decided to *select* it, you must read the whole of it first —
+  `gh issue view <n> --comments` for an issue, `gh api` (or the entry's `url`)
+  for a register item — because your work order has to paste that document
+  **verbatim**, and the Implementer starts with nothing but your work order.
+  Never paste an elision marker into a `context`, and never write a `context`
+  or an `acceptance` from a truncated body: the missing bytes are exactly
+  where an acceptance criterion or a scope cut tends to live. This costs one
+  read for the one item you actually pick, rather than a thread's worth of
+  context window for every item you merely considered — which is the whole
+  reason the trimming is worth making.
 - **Security and code-quality findings are pre-fetched.** The Dependabot and
   code-scanning alerts arrive in each repo's `findings` array (see "What you
   receive"). Read them there; do not call `gh api .../dependabot/alerts` or
@@ -905,7 +944,8 @@ read to find out.
 - `context` must paste the entry's `body` — the item file, frontmatter and
   all, **verbatim** — plus its `url`. That text is the record: title, filed
   date, and the description of what, why and where. Do not summarise it or
-  invent detail it does not carry.
+  invent detail it does not carry, and if the `body` you were given ends in an
+  elision marker, read the file at its `url` and paste that instead.
 - `acceptance` is drawn from the item's own body (its "suggested fix" or
   description of what done looks like) — the same as for any other source,
   concretely stated, never invented where the item is silent.
@@ -1504,8 +1544,10 @@ logging it as a selection defect rather than a race.
   re-querying the API.
 - For an `issues` entry, `item` is the issue number and `context` must paste
   the issue body **and every comment** verbatim (each attributed to its
-  author, in order) — not just the opening post. The Implementer starts with
-  nothing but this work order, so a clarification or acceptance criterion left
+  author, in order) — not just the opening post, and never a body or comment
+  still carrying an elision marker: read the thread live first (see "Trimmed
+  entries must be read live before you select them"). The Implementer starts
+  with nothing but this work order, so a clarification or acceptance criterion left
   in a comment is lost unless you carry it across. If the comments changed the
   ask, set `acceptance` from the current state of the thread, not the original
   body.

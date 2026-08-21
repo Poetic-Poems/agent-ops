@@ -328,6 +328,7 @@ Keys:
 | `branch_prefix` | `agent/` | Branch naming: `agent/<item-slug>`. |
 | `max_open_agent_prs` | `8` | Back-pressure limit: draft PRs, changes-requested PRs and claims across both repos — not PRs waiting on a human review. |
 | `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list, so a lost race costs the next-best item rather than the cycle. |
+| `coordinator_prompt_max_bytes` | `350000` | The largest assembled prompt the Script will hand the Co-Ordinator. What a context window rejects is the whole prompt, not the runtime input alone, so the Script measures the rendered base prompt, subtracts it, and trims the two bands that carry a whole document each — an issue's entire thread and a tech-debt item's entire file — into what is left. Prose is shed and candidacy is not: every entry stays selectable, and every cut carries a marker naming how many bytes went and...[continued below](#extended-notes-coordinator_prompt_max_bytes) |
 | `max_chained_cycles` | `3` | The most cycles that may run back-to-back in one lineage — the cron-fired original plus its immediate continuations, instead of each waiting for the next cron firing. A productive cycle chains to this cap regardless of remaining work (the remaining-sources gate counts enabled source categories, which back-pressure never empties) — up to `max_chained_cycles − 1` further full Co-Ordinator passes, the accepted price of the drain rate. `1` disables chaining. |
 | `claim_ttl_hours` | `6` | Hours before a dead node's claim-registry entry is swept (`lib/claim.sh gc`); far beyond one full cycle. |
 | `abandoned_draft_after_hours` | `4` | Hours a draft PR this system raised may sit untouched before it counts as abandoned and finishing it becomes selectable work (the `abandoned-drafts` source). Beyond one full cycle, so a draft still being worked never qualifies. Also the staleness threshold `scripts/sweep-orphan-branches.sh` uses. |
@@ -469,6 +470,10 @@ Do not set it to `blocked`, which is a label that excludes an issue from the pip
 ### Extended notes: `refinement_policy`
 
 Per source: `required` (never select unrefined), `preferred` (rank refined items first, but an unrefined one may still be picked), or `exempt` (no refinement dimension — the default for every source not listed). See [Refined items and the Refiner](#refined-items-and-the-refiner). Every source the Refiner's own candidate gathering reads — `issues`, `security`, `code-quality`, `review-feedback`, `abandoned-drafts`, `merge-conflicts`, `dequeued`, `register-hygiene`, `tech-debt`, `project-review` and `implementation-plan` — reaches an engagement; the latter two are read only for a repo whose `sources` lists them and whose policy for them is not itself `exempt`.
+
+### Extended notes: `coordinator_prompt_max_bytes`
+
+The largest assembled prompt the Script will hand the Co-Ordinator. What a context window rejects is the whole prompt, not the runtime input alone, so the Script measures the rendered base prompt, subtracts it, and trims the two bands that carry a whole document each — an issue's entire thread and a tech-debt item's entire file — into what is left. Prose is shed and candidacy is not: every entry stays selectable, and every cut carries a marker naming how many bytes went and the URL to read it whole. Raise it for a Co-Ordinator model with a larger context window; `0` disables the bound, which is how every release before this key behaved.
 
 ### Extended notes: `merge_autonomy`
 
