@@ -17,10 +17,13 @@
 # script will not catch, the same gap grepping the register by hand already
 # has today. A short, generic title matching an unrelated record's title is a
 # false positive that costs nothing — a hit is a prompt to go read the
-# candidate before reserving, never an automatic refusal — but a needle under
-# eight normalized characters is excluded from the containment check anyway
-# (equality-only), since a title that short would swamp the register with
-# noise otherwise ("fix bug" inside almost anything).
+# candidate before reserving, never an automatic refusal — but the
+# containment check is gated symmetrically: it only ever runs between a
+# needle and a candidate title that are *both* at least eight normalized
+# characters, equality-only below that floor on either side. Gating on the
+# needle alone would still let a short existing title ("fix bug") match by
+# containment inside a long, unrelated query — the exact false positive the
+# floor exists to rule out, just from the other direction.
 
 set -euo pipefail
 
@@ -60,7 +63,7 @@ for f in "$dir"/*.md; do
 
   match=0
   [[ "$hay" == "$needle" ]] && match=1
-  if [[ $match -eq 0 && $allow_contains -eq 1 ]]; then
+  if [[ $match -eq 0 && $allow_contains -eq 1 && ${#hay} -ge 8 ]]; then
     [[ "$hay" == *"$needle"* || "$needle" == *"$hay"* ]] && match=1
   fi
   [[ $match -eq 1 ]] || continue

@@ -12241,16 +12241,19 @@ What exists, and the requirements each part answers to:
     requirements 24b/30d/36c/42a: given a working title, normalises it
     (lower-cased, punctuation folded to spaces, runs collapsed) and compares
     it against every `open`/`in-progress` `tech-debt/*.md` record's own
-    `title:`, by equality always and by containment (either direction) once
-    the normalised title reaches eight characters — short of that, containment
-    alone would swamp the register with noise. Prints each match's id and
-    title, tab-separated, one per line, and exits non-zero iff it found any —
-    a hit means the gap is already tracked, so the caller cites the existing
-    id instead of reserving a new one. Reads the working tree at whatever ref
-    is checked out, not a fixed one. Regression-tested in
+    `title:`, by equality always and by containment (either direction) only
+    once *both* the normalised query and the normalised candidate title reach
+    eight characters — short of that floor on either side, containment alone
+    would swamp the register with noise (a short existing title matching by
+    containment inside an unrelated long query is the same false positive as
+    the reverse, so the floor gates both). Prints each match's id and title,
+    tab-separated, one per line, and exits non-zero iff it found any — a hit
+    means the gap is already tracked, so the caller cites the existing id
+    instead of reserving a new one. Reads the working tree at whatever ref is
+    checked out, not a fixed one. Regression-tested in
     `test/find-similar-tech-debt.test.sh` (exact-match, containment,
-    below-the-length-floor, `open`/`in-progress` included, `resolved`/
-    `not-debt` excluded); must pass `shellcheck`.
+    below-the-length-floor on either side, `open`/`in-progress` included,
+    `resolved`/`not-debt` excluded); must pass `shellcheck`.
 23d. `lib/tech-debt-file.sh` implementing the filing half of requirements 36c
     and 42a — the Approver and Enabler must never write to GitHub or a branch
     themselves, so this is what the Script calls in their place once either

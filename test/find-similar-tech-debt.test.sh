@@ -9,13 +9,15 @@
 #
 #   - **An exact normalised-title match against an `open` or `in-progress`
 #     record is found**, printed as `<id>\t<title>`, and the script exits 1.
-#   - **A containment match (either direction) is found too**, once the
-#     normalised needle reaches eight characters.
+#   - **A containment match (either direction) is found too**, once *both*
+#     the normalised needle and the normalised candidate title reach eight
+#     characters.
 #   - **A `resolved` or `not-debt` record with the same title is not
 #     matched** — only `open`/`in-progress` records are live duplicates.
 #   - **A title under the eight-character floor matches only exactly**, never
-#     by containment — short generic titles would otherwise swamp the
-#     register with noise.
+#     by containment, on either side of the comparison — short generic
+#     titles would otherwise swamp the register with noise, whichever side
+#     they're on.
 #   - **An unrelated title finds nothing and exits 0.**
 #   - **An empty `tech-debt/` directory (or none at all) is not an error.**
 #
@@ -102,7 +104,7 @@ assert_eq "resolved/not-debt records ignored: exit 0" "0" "$rc"
 assert_eq "  ... no output" "" "$out"
 
 # --- Below the length floor: exact only, never containment ------------------
-# The floor gates on the *query's* own normalised length, not the candidate
+# The floor gates both the query's own normalised length and the candidate
 # title's — a short query ("fix bug") must not match a longer, unrelated
 # existing title merely because it contains that short phrase.
 repo="$(a_repo)"
@@ -114,6 +116,16 @@ assert_eq "  ... no output" "" "$out"
 item "$repo" TD-PPtest-26082209 open "fix bug"
 out="$(run_find "$repo" "fix bug")"; rc=$?
 assert_eq "short needle: exact match still works, exit 1" "1" "$rc"
+
+# The floor gates the *candidate title's* own normalised length too, not just
+# the query's — a short existing title ("fix bug") must not match a longer,
+# unrelated query merely because the query happens to contain that short
+# phrase.
+repo="$(a_repo)"
+item "$repo" TD-PPtest-26082210 open "fix bug"
+out="$(run_find "$repo" "please fix bug in the retry loop before release")"; rc=$?
+assert_eq "short candidate title: no containment match, exit 0" "0" "$rc"
+assert_eq "  ... no output" "" "$out"
 
 # --- Unrelated title finds nothing -------------------------------------------
 repo="$(a_repo)"
