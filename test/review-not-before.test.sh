@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# test/review-not-before.test.sh — `project_review.defaults.not_before` holds the weekly review
-# off until a date, and nothing else off at all.
+# test/review-not-before.test.sh — `project_review.defaults.not_before` holds the review
+# pipeline off until a date, and nothing else off at all.
 #
 # The requirement it serves (R3.3) is one the switch cannot express. `--disable`
 # is deliberately shared between both pipelines, so using it to hold a review

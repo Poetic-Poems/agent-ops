@@ -2,7 +2,7 @@
 #
 # test/gather-project-review.test.sh — regression test for
 # scripts/gather-project-review.sh (requirement 3y; TD-PPagop-26081307): the
-# source that hands the Refiner the most recent weekly project review's
+# source that hands the Refiner the most recent repository review's
 # recommendations pre-fetched.
 #
 # Behaviours asserted, each of which fails silently if broken:

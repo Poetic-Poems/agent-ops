@@ -133,10 +133,11 @@ assert_eq "a repo entry predating tech_debt matches one carrying it empty" \
 
 # A green workflow running again on a schedule reaches the same conclusion
 # under a new run id, and changes no candidate. `poetic` schedules
-# sync-framework.yml hourly — on the same cadence as this pipeline — so a
-# digest that tracked run ids would bust the fingerprint on every cycle and
-# reduce the entire short-circuit to an expensive no-op, silently and while
-# looking perfectly installed. gather-source-state.sh digests conclusions only;
+# sync-framework.yml hourly, its own cadence, independent of this pipeline's
+# — so a digest that tracked run ids would bust the fingerprint on every
+# cycle whose tick lands after the workflow's latest run and reduce the
+# entire short-circuit to an expensive no-op, silently and while looking
+# perfectly installed. gather-source-state.sh digests conclusions only;
 # this asserts the shape it produces cannot carry a run id back in.
 assert_eq "an hourly scheduled workflow rerunning green does not change the fingerprint" "$base_fp" \
   "$(base_input | noop_fingerprint)"

@@ -137,7 +137,7 @@ make_stage() {  # make_stage <home> <cid> <stage> <cost> <model>
     "$4" "$5" "$4" > "$d/$3.out"
 }
 
-# The weekly project-review pipeline's record: same envelope, a sibling
+# The repository-review pipeline's record: same envelope, a sibling
 # directory, and one transcript per repository reviewed.
 make_review() {  # make_review <home> <review-id> <repo-slug> <cost> <model>
   local d="$1/.local/state/poetic-agents/reviews/$2"
@@ -286,7 +286,7 @@ assert_eq "and by_actor sums the same total regardless of how many models a tran
 #     attributed:false — the Enabler spent on a different item than the one
 #     the cycle itself selected, so inheriting the cycle's facts would lie
 #   project-reviewer, from reviews/ rather than cycles/: attributed:false —
-#     the weekly pipeline logs to review-log.jsonl, never log.jsonl, so its
+#     the review pipeline logs to review-log.jsonl, never log.jsonl, so its
 #     cycle id is never in the union at all
 #   coordinator whose own cycle never logged anything (rotated out, or never
 #     written): attributed:false, same as the two cases above
@@ -1208,7 +1208,7 @@ rm -f "$lock_of_h"
 # --- Cost by actor, and the review pipeline's share of it ------------------------
 # Which agent the money went on is the cut an operator can act on — the model
 # and the day are not things anyone chooses. It is derived from the transcript's
-# own filename, which is also why the weekly project review had to join the scan
+# own filename, which is also why the repository review had to join the scan
 # to make it: its records live in `reviews/`, so while that directory went
 # unread the Project Reviewer was both the most expensive actor per run and the
 # only one invisible, and every total on the page was quietly partial.
