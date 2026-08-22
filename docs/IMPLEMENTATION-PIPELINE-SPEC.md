@@ -14613,6 +14613,58 @@ pull request, run the ones the change touches and any it could regress.
     every refusal path logs `landing-refused` naming a reason, never a
     blocked pull request or a withheld claim.
 
+    The four-level ladder crossed with both landing paths is swept in one
+    conformance test, `test/landing-human-veto-conformance.test.sh`
+    (agent-ops#577, part of D18 #402): with a standing human
+    `CHANGES_REQUESTED` in place throughout, nothing arms in any of eight
+    cases — `human`, `agent-approves`, `agent-merges-routine` and
+    `agent-merges-all`, each crossed with the landing path `landing_arm`
+    would otherwise take (`enqueued` for a base branch with an active merge
+    queue, `auto-merge` for the no-queue fallback). The eight cases are not
+    one shape repeated: `_landing_stage_attempt`'s gate 1 refuses on the
+    effective level *before* gate 4 is ever consulted, so at `human` and
+    `agent-approves` the refusal names the level and
+    `_handoff_blocking_reviewers` is never called at all (pinned directly,
+    by call count); only at `agent-merges-routine` and `agent-merges-all`
+    does the refusal come from the human-veto gate itself, naming the
+    blocking reviewer, in a reason textually distinct from every other
+    refusal class in the same function (gate 4's own App-approval half
+    included). Since the veto refuses upstream of gates 5 and 6 and of
+    `landing_arm` itself at every level it binds, `landing_arm` is never
+    invoked in any of the eight cases regardless of which landing path is
+    configured — proof that neither path offers a way around the veto, not
+    merely two differently-labelled identical runs.
+
+    `test/handoff.test.sh` covers the freshness half directly against
+    `_handoff_blocking_reviewers` itself, against a real (stubbed `gh`)
+    review history rather than a stubbed gate: a reviewer's `DISMISSED`
+    position is excluded from `_handoff_latest_reviews`'s own filter before
+    `group_by`/`last` ever runs, so it never stands in for a clearing
+    `APPROVED` — a `CHANGES_REQUESTED` dismissed and then reasserted still
+    blocks, and a `CHANGES_REQUESTED` merely dismissed (with nothing
+    following) still blocks too, since the dismissal is invisible to the
+    computation rather than read as the reviewer's own last word; only a
+    genuine later `APPROVED` from that reviewer clears it.
+
+    This proves the veto rather than extending it: the formal-review half of
+    "a human change request blocks landing" is what these two files pin, and
+    `_handoff_blocking_reviewers` reads only formal reviews. A human cannot
+    leave a formal `REQUEST_CHANGES` review on this system's own pull
+    requests at all — GitHub refuses that review type from a pull request's
+    own author, and every pipeline write and every human comment on these
+    pull requests land under the same account — so their only instrument is
+    an ordinary comment. `lib/reconciliation-gate.sh` (agent-ops#533, closed
+    via PR #539) closes the adjacent case at the Reviewer's own ready-flip:
+    a pull request carrying an unreconciled non-pipeline comment since it
+    last left draft cannot be flipped Ready in the first place. That gate
+    runs once, at hand-off, and does not reach here: a plain comment posted
+    after a pull request is already Ready, in the window before a later
+    cycle's arming step lands it, is answered by neither mechanism, and this
+    gate's own fresh review-list read still sees nothing standing. That
+    residual gap is real, is not closed by this conformance test, and is
+    tracked separately as agent-ops#672 rather than under #533, which
+    describes the Reviewer's own already-fixed case.
+
     D18 WI-12 (Stage 4, agent-ops#415) is pinned separately, in both files.
     `test/landing.test.sh`: `landing_eligible` reads `eligible`, not
     `ineligible`, for a protected path at `agent-merges-all` (deferred,
