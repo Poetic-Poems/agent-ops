@@ -16,6 +16,11 @@
 #   - **... and opens exactly one pull request** carrying the new
 #     tech-debt/<id>.md, via the branch-then-contents-then-PR sequence, and
 #     prints "<id>\t<pr-url>".
+#   - **... without ever writing inside GIT_DIR** — the reservation script is
+#     extracted to a path outside it and merely *run* from a CWD within it,
+#     observed directly through an instrumented copy on the fixture remote,
+#     and nothing is left behind in its working tree. This is the invariant
+#     IMPLEMENTATION-PIPELINE-SPEC.md's 23d and 42a both assert.
 #   - **A TOKEN, given, is used for every gh call** (git/refs, contents, pr
 #     create) — never the ordinary login.
 #   - **Any step failing (no reserve script on origin/main, the branch-create
@@ -69,9 +74,11 @@ export GIT_AUTHOR_EMAIL="test@example.invalid"
 export GIT_COMMITTER_NAME="Agent-Ops Test"
 export GIT_COMMITTER_EMAIL="test@example.invalid"
 
-# make_remote [broken-reserve-script:0|1] -- a bare "origin" on main, carrying
-# a scoped policy and the real reserve-tech-debt-id.pl (or, if the argument is
-# 1, a deliberately-broken stand-in) at scripts/. Prints the remote's path.
+# make_remote [reserve-script:0|1|probe] -- a bare "origin" on main, carrying
+# a scoped policy and the real reserve-tech-debt-id.pl (or, with 1, a
+# deliberately-broken stand-in; with `probe`, an instrumented stand-in that
+# records the path it was run from and its CWD to $RESERVE_PROBE and prints a
+# fixed id) at scripts/. Prints the remote's path.
 make_remote() {
   local broken="${1:-0}" root remote seed
   root="$(mktemp -d "$tmp_dir/remote-XXXXXX")"
@@ -91,6 +98,17 @@ EOF
   mkdir -p "$seed/scripts"
   if [[ "$broken" == "1" ]]; then
     printf '#!/usr/bin/perl\ndie "should never run this copy\\n";\n' > "$seed/scripts/reserve-tech-debt-id.pl"
+  elif [[ "$broken" == "probe" ]]; then
+    cat > "$seed/scripts/reserve-tech-debt-id.pl" <<'PROBE'
+#!/usr/bin/perl
+# Instrumented stand-in: records where this copy was run from and with what
+# CWD, then prints a well-formed id so the rest of the filing path proceeds.
+use strict; use warnings; use Cwd qw(cwd);
+open my $fh, '>', $ENV{RESERVE_PROBE} or die "no RESERVE_PROBE: $!";
+print $fh "$0\n", cwd(), "\n";
+close $fh;
+print "TD-PPtest-26082201\n";
+PROBE
   else
     cp "$RESERVE_SRC" "$seed/scripts/reserve-tech-debt-id.pl"
   fi
@@ -185,6 +203,15 @@ assert_eq "  ... exactly one pr create" "1" \
   "$(grep -c '^<none> pr create ' "$tmp_dir/calls")"
 assert_eq "  ... branch is td-record/<id>, not td/<id>" "1" \
   "$(grep -c "ref=refs/heads/td-record/$id" "$tmp_dir/calls")"
+# Nothing is left behind in GIT_DIR: its working tree still holds exactly the
+# deliberately-broken checked-out copy a_git_dir put there and nothing else.
+# That the extraction never lands there in the first place -- the invariant
+# IMPLEMENTATION-PIPELINE-SPEC.md's 23d and 42a both assert, which this
+# assertion alone cannot see, since a file written and then removed leaves the
+# same trace as one never written -- is asserted separately below.
+assert_eq "  ... no artefact left behind in GIT_DIR" "scripts/reserve-tech-debt-id.pl" \
+  "$( (cd "$gd" && find . -path ./.git -prune -o -type f -print) \
+      | sed 's|^\./||' | sort | paste -sd' ' - )"
 
 # --- A token is used for every gh call --------------------------------------
 remote="$(make_remote 0)"
@@ -193,6 +220,32 @@ reset_stub
 techdebt_file_debt "o/r" "Another finding" "Body." "while approving PR #7" "app-token-123" "$gd" >/dev/null
 assert_eq "file_debt with token: every call carries it" "0" \
   "$(grep -vc '^app-token-123 ' "$tmp_dir/calls")"
+
+# --- The reservation script is never extracted inside GIT_DIR ---------------
+# 23d/42a assert that GIT_DIR's checked-out branch and working tree are never
+# read or written -- only fetched into and run from. An extraction path inside
+# GIT_DIR would satisfy every other assertion here (the file is removed again
+# straight afterwards), so this is the one case that can see it: an
+# instrumented copy on the fixture remote reports the path it was actually run
+# from, which must be outside GIT_DIR, and its CWD, which must be inside.
+remote="$(make_remote probe)"
+gd="$(a_git_dir "$remote")"
+reset_stub
+export RESERVE_PROBE="$tmp_dir/reserve-probe"
+: > "$RESERVE_PROBE"
+out="$(techdebt_file_debt "o/r" "Probed finding" "Body." "while approving PR #9" "" "$gd")"
+rc=$?
+probe_script="$(sed -n 1p "$RESERVE_PROBE")"
+probe_cwd="$(sed -n 2p "$RESERVE_PROBE")"
+unset RESERVE_PROBE
+# Perl's cwd() reports the physical path, so compare against GIT_DIR's own
+# resolved path rather than the (possibly symlinked) name mktemp handed back.
+gd_phys="$(cd "$gd" && pwd -P)"
+assert_eq "file_debt: instrumented reserve script ran, exit 0" "0" "$rc"
+assert_eq "  ... reserve script ran from outside GIT_DIR" "0" \
+  "$([[ -n "$probe_script" && "$probe_script" == "$gd_phys"/* ]] && echo 1 || echo 0)"
+assert_eq "  ... with a CWD inside GIT_DIR" "1" \
+  "$([[ "$probe_cwd" == "$gd_phys" || "$probe_cwd" == "$gd_phys"/* ]] && echo 1 || echo 0)"
 
 # --- No reserve script on origin/main -> fails cleanly ----------------------
 remote="$(make_remote 0)"

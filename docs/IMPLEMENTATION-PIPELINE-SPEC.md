@@ -12270,7 +12270,8 @@ What exists, and the requirements each part answers to:
       reserves an id by running `scripts/reserve-tech-debt-id.pl`
       **unmodified**, always against `GIT_DIR`'s `origin/main` specifically
       (`git show origin/main:scripts/reserve-tech-debt-id.pl`, extracted
-      fresh and run from a CWD inside `GIT_DIR` — never whatever the
+      fresh to a temporary path outside `GIT_DIR` and run from a CWD inside
+      it — never whatever the
       directory happens to have checked out, which for the Approver's own
       `clone_dir` is the pull request under review and could carry an edited
       copy of the very script this function is about to run with write
@@ -12298,11 +12299,17 @@ What exists, and the requirements each part answers to:
       inherited can never leak into a call asked to run under the ordinary
       login — the Enabler's own case, which holds no App identity of its own.
 
-    Regression-tested against a real fixture git remote (never a stub for the
-    reservation script itself, since it must be reused verbatim) in
-    `test/tech-debt-file.test.sh`: the full success path, a token used for
-    every call, no reserve script on `origin/main`, and each of the three API
-    calls failing in turn, for `techdebt_file_debt`; the dedup hit, the
+    Regression-tested against a real fixture git remote in
+    `test/tech-debt-file.test.sh`: the full success path — running the
+    fixture remote's own verbatim copy of the reservation script, never a
+    stub, since it must be reused unmodified, and leaving no artefact behind
+    in `GIT_DIR` — that the script is extracted to a path outside `GIT_DIR`
+    and merely run from a CWD within it (the one case that does instrument
+    the fixture remote's copy, because an extraction path inside `GIT_DIR` is
+    removed again straight afterwards and so is invisible to every other
+    assertion), a token used for every call, no reserve script on
+    `origin/main`, and each of the three API calls failing in turn, for
+    `techdebt_file_debt`; the dedup hit, the
     ordinary create, and a failed create, for `techdebt_file_issue`. The
     Script's own wiring — that `run_approver_stage` and `maybe_run_enabler`
     actually call these with the right arguments and log the right event — is
@@ -15439,13 +15446,19 @@ pull request, run the ones the change touches and any it could regress.
 8x. **`file_debt`/`file_issue` file what a stage found, and only the Script
     ever writes (requirements 36c, 42a, agent-ops#631).**
     `test/tech-debt-file.test.sh` passes against a real fixture git remote
-    (never a stub, since `scripts/reserve-tech-debt-id.pl` is reused
-    verbatim): `techdebt_file_debt` reserves a real id, opens exactly one
+    (whose own copy of `scripts/reserve-tech-debt-id.pl` runs verbatim, since
+    it is reused unmodified — instrumented in exactly one case, below, which
+    asserts something no other case can see): `techdebt_file_debt` reserves a
+    real id, opens exactly one
     pull request carrying `tech-debt/<id>.md` alone, on a `td-record/<id>`
     branch (never `td/<id>`, the reservation's own lock), reads the
     reservation script from `origin/main` specifically — a deliberately
     broken copy checked out in the fixture's own working tree is never the
-    one that runs — and fails cleanly (no output, no partial write) when the
+    one that runs — extracts it to a path outside `GIT_DIR` and merely runs
+    it from a CWD within, leaving no artefact behind in that working tree
+    (asserted through the instrumented copy, which reports the path it ran
+    from: an extraction inside `GIT_DIR` is removed again immediately and so
+    is invisible to every other assertion) — and fails cleanly (no output, no partial write) when the
     branch-create call, the contents-write call, or the pull-request-create
     call fails; `techdebt_file_issue` returns an existing issue whose body
     already quotes the item reference rather than filing a duplicate, and
@@ -15474,11 +15487,14 @@ pull request, run the ones the change touches and any it could regress.
 8y. **A stage files inline, on its own branch, and the reservation it used
     releases itself once the record lands (agent-ops#631).**
     `test/find-similar-tech-debt.test.sh` passes: an exact-normalised-title
-    match and a containment match (either direction, title at least eight
-    normalised characters) against an `open`/`in-progress` record both print
-    the id and exit non-zero; a `resolved`/`not-debt` record with the same
-    title is not matched; a title under the length floor matches only
-    exactly, never by containment.
+    match and a containment match (either direction, with *both* the
+    normalised query and the normalised candidate title at least eight
+    characters) against an `open`/`in-progress` record both print the id and
+    exit non-zero; a `resolved`/`not-debt` record with the same title is not
+    matched; a title under the length floor matches only exactly, never by
+    containment — on either side of the comparison, so neither a short query
+    inside a long existing title nor a short existing title inside a long
+    query is a hit.
 
     `test/release-td-branch.test.sh` passes: a `tech-debt/<id>.md` newly
     *added* by a push deletes its `td/<id>` branch when one still exists,
