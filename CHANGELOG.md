@@ -512,6 +512,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   now passed as the explicit `NOW` to both `label_filter_own_applications`
   and `label_own_stale_applications`.
 
+- A work order's `acceptance`/`context` can no longer carry a *different*
+  item's refinement content past a claim (requirement 17f, agent-ops#626).
+  Issue #571's work order was assembled carrying issue #529's own refinement
+  comment — a Co-Ordinator engagement composing several candidates' work
+  orders at once produced a response that was syntactically fine and each
+  candidate individually plausible, so nothing detected the cross-item swap
+  until the Implementer, handed nothing but the mismatched work order, found
+  it incoherent and burned the item's one refinement-per-human-touch
+  allowance re-flagging a fault the item never had — stalling #571 for a full
+  human round trip (Enabler escalation #625) over a defect in assembly, not
+  in the item. `refinement_traceability_fault` (`agent-cycle.sh`) now checks
+  every ranked candidate before its claim is attempted: a `spec`-carrying
+  refinement must be present in the candidate's own `context`; a
+  `comment_url`-carrying refinement must name the candidate's own issue and
+  (fetched live) be present in its own `context` or `acceptance`. A candidate
+  that fails either check is skipped without a claim attempt, logged as
+  `claim-skipped` with `cause: "untraceable"`, and never reaches an
+  Implementer. The check is scoped to a model-composed work order: the
+  Script's own fallback pick (requirement 3v) builds `context` in jq from the
+  band entry it names, so it cannot cross-contaminate, and it draws on the
+  item's own record rather than on `refinements`, so checking it would fault
+  every spec-refined mechanical pick and leave that cycle nothing to claim.
+
 - The Co-Ordinator's `refinements` input is scoped to candidacy
   (agent-ops#643). `refinements` is a ledger that is never retired, and an
   entry for an item type with no thread to hold it carries the whole
