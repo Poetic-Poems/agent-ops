@@ -6290,9 +6290,11 @@ fleet_logs "$state_dir" "$peers_dir" log.jsonl > "$union_log" || true
 # peer's label write, already inside the snapshot, as older than it is by the
 # cycle's own runtime. Captured here, immediately after the snapshot and
 # before this cycle's own log lines are appended into `$union_log` (three
-# times, further down): an append after this point would make the horizon
-# track wall clock again through this node's own fresh events, and the fix
-# would evaporate.
+# such appends stand between here and the requirement-39f read-back below,
+# and more after it): an append reordered ahead of this point would make the
+# horizon track wall clock again through this node's own fresh events, and
+# the fix would evaporate. `test/label-marker-horizon-wiring.test.sh` pins
+# that ordering, and pins both read-back calls below being handed the result.
 union_log_horizon="$(log_latest_ts "$union_log")"
 
 # --- 1a1. What each stage is allowed this cycle (requirement 4f) ---
