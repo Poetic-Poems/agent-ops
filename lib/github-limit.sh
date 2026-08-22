@@ -182,21 +182,29 @@ github_limit_snapshot() {
 # network blip for an exhausted budget); a 401 needs pulling back out of that
 # fold rather than adding a fourth case to it, and no caller of the budget
 # check needs to know why the meter was unreadable, only that it was.
+#
+# Always newline-terminated, unlike a bare `printf '%s\t%s'` would be: a
+# caller reads this with `read -r v d < <(github_auth_probe)`, and `read`
+# reports failure — non-zero, though it still populates both variables —
+# for a final line with no trailing newline. Sourced into scripts running
+# under `set -e` (agent-cycle.sh itself foremost), so that "failure" would
+# otherwise abort the whole cycle right there, every time, regardless of
+# what the probe actually found.
 github_auth_probe() {
   local out err rc detail
-  err="$(mktemp)" || { printf 'unreachable\t'; return 0; }
+  err="$(mktemp)" || { printf 'unreachable\t\n'; return 0; }
   out="$(command gh api rate_limit 2>"$err")" && rc=0 || rc=$?
   if (( rc == 0 )) && jq -e 'type == "object" and has("resources")' <<<"$out" >/dev/null 2>&1; then
     rm -f "$err"
-    printf 'ok\t'
+    printf 'ok\t\n'
     return 0
   fi
   detail="$(tr '\n' ' ' < "$err" 2>/dev/null | sed -E 's/[[:space:]]+/ /g; s/[[:space:]]+$//')"
   rm -f "$err"
   if grep -qiE 'HTTP 401|Bad credentials' <<<"$detail"; then
-    printf 'unauthorized\t%s' "$detail"
+    printf 'unauthorized\t%s\n' "$detail"
   else
-    printf 'unreachable\t%s' "$detail"
+    printf 'unreachable\t%s\n' "$detail"
   fi
 }
 

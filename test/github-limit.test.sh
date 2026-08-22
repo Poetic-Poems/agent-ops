@@ -352,6 +352,28 @@ probe_result="$(GH_AUTH_STUB_MODE=unreachable github_auth_probe)"
 assert_eq "a network fault probes as unreachable, not unauthorized" \
   "unreachable" "$(cut -f1 <<<"$probe_result")"
 
+# Every caller reads this with `read -r v d < <(github_auth_probe)`, and
+# `read` fails — non-zero, though it still populates both variables — for a
+# final line with no trailing newline. agent-cycle.sh sources this file and
+# runs under `set -e`, so that "failure" would silently abort the whole
+# cycle right at the read, on every call, regardless of what the probe
+# found — exactly the shape of a real regression this caught (agent-ops#691:
+# the first cut of this function had no trailing newline, and every stood-up
+# cycle died at requirement 2.0b before 2.1's usage-limit check ever ran).
+# Same lesson as the `gh` wrapper's own "returns to its caller instead of
+# aborting it" assertion above, aimed at this function instead.
+for probe_mode in ok unauthorized unreachable; do
+  strict_probe="$(
+    set -e
+    v="" d=""
+    # shellcheck disable=SC2034  # $d is read to consume the field, never used
+    IFS=$'\t' read -r v d < <(GH_AUTH_STUB_MODE="$probe_mode" github_auth_probe)
+    echo "SURVIVED_SET_E:$v"
+  )"
+  assert_eq "github_auth_probe's $probe_mode output survives a read under set -e" \
+    "SURVIVED_SET_E:$probe_mode" "$strict_probe"
+done
+
 echo
 if (( failures == 0 )); then
   echo "All github-limit assertions passed."

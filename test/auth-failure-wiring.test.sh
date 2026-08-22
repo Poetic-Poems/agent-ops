@@ -91,7 +91,13 @@ run_block() {
   : > "$escalation_file"
   : > "$event_file"
   (
-    set -uo pipefail
+    # `-e`, matching agent-cycle.sh's own top-of-file flags exactly (not
+    # this test file's own, looser `set -uo pipefail`): a stubbed helper
+    # that returns non-zero for a benign reason — `read` reading a final
+    # line with no trailing newline is exactly this bug's own shape — would
+    # abort the block silently under `-e` and read here as a false "FELL
+    # THROUGH never happened", the same way it would abort a real cycle.
+    set -euo pipefail
     # shellcheck disable=SC2034  # consumed by $auth_block below, invisible to a static reader
     DRY_RUN=0
     # shellcheck disable=SC2034  # consumed by $auth_block below, invisible to a static reader
@@ -108,7 +114,7 @@ run_block() {
     cycle_id="20260101T000000Z-test-node-1"
 
     # shellcheck disable=SC2317  # called from $auth_block via eval, invisible to a static reader
-    github_auth_probe() { printf '%s\t%s' "$AUTH_MODE" "$AUTH_DETAIL"; }
+    github_auth_probe() { printf '%s\t%s\n' "$AUTH_MODE" "$AUTH_DETAIL"; }
     export AUTH_MODE="$mode" AUTH_DETAIL="$detail"
 
     # Records exactly the argv a real escalation would pass
