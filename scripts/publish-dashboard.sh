@@ -2150,8 +2150,12 @@ fi
 # so staying stuck is correct even indefinitely. A `held`/`frozen` row's
 # `as_of` carries the source event's own timestamp for the page to render an
 # age against; an `ok` row never carries `as_of`, aged back or not — once its
-# count resets to unmeasured it reads identically to a repository gate 5 has
-# never reached at all, which has no age to show either. A repository gate 5
+# count resets to unmeasured its status, consumed and as_of read as a
+# repository gate 5 has never reached at all reads, which has no age to show
+# either. Only `cap` still separates the two: a row with any recorded decision
+# keeps that decision's own cap until its next decision refreshes it, never
+# re-reading config.json, so an operator's edit to `merge_budget_per_day`
+# becomes visible on the next gate-5 decision rather than the next tick. A repository gate 5
 # has never reached — no candidate pull request has reached it yet this
 # fleet's whole retained log — reports `ok` with `consumed: 0` against its
 # configured cap: a real absence of data, not a claim that nothing has
@@ -2242,6 +2246,14 @@ landings_json="$(printf '%s\n' "$ALL_EVENTS" | jq -c -s \
       | [ $repos[] | . as $r
           | (($caps[$r] // null)) as $cfg_cap
           | (([ $latest_budget[] | select((.repo // "") == $r) ] | first)) as $lb
+          # The cap the recorded decision itself carries wins over the one
+          # configured in config.json: the pair merge_budget_decide reasoned
+          # from is read together, so an edit to merge_budget_per_day
+          # becomes visible when that repository next reaches gate 5, rather
+          # than on the next dashboard tick. A cap of 0 must survive the //
+          # below, and does — 0 is not null in jq. A repository with no
+          # recorded decision at all has only the configured cap to fall
+          # back on.
           | (if $lb then ($lb.cap // $cfg_cap) else $cfg_cap end) as $cap
           | ($cap == 0 or $cap == null) as $unlimited
           # A hold is a rolling-24h fact: once the event that recorded it
@@ -2258,7 +2270,7 @@ landings_json="$(printf '%s\n' "$ALL_EVENTS" | jq -c -s \
           # `landing-armed` event a hold or freeze would have read it from —
           # the same reasoning that ages a stale hold back applies verbatim
           # to a stale `ok`: once its event rolls off the window, the count
-          # behind it has rolled off the governor own clock just as surely,
+          # behind it has rolled off the clock the governor itself keeps,
           # so it must reset to unmeasured rather than carrying forward
           # indefinitely under a status that gives no sign of its true age.
           | ($lb != null and $lb.status == "ok" and stale($lb.ts)) as $ok_stale

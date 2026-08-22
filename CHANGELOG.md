@@ -220,11 +220,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   those three events for a repository is its state as of that last decision
   — not a live read, and of unbounded age — with no live read of the freeze
   flag or the waiting backlog on a dashboard tick. A held row ages back to
-  `ok`, its consumption reset to unmeasured, once its own event falls
-  outside the digest window (a hold is a rolling-24h fact); a frozen row
-  never does, since a freeze stands until a human clears it. Every held or
-  frozen row carries the source event's own timestamp (`as_of`) so the page
-  can render its age (`held · as of 2d ago`). An unlimited (`0`) repository,
+  `ok`, and an `ok` row's consumption back to unmeasured, once the event
+  behind it falls outside the digest window — both are rolling-24h facts, so
+  neither is carried forward under a status that gives no sign of its age; a
+  frozen row never ages back, since a freeze stands until a human clears it.
+  A repository's recorded cap does outlive that window, standing until its
+  next gate-5 decision refreshes it rather than being re-read from
+  `config.json` each tick. Every held or frozen row carries the source
+  event's own timestamp (`as_of`) so the page can render its age
+  (`held · as of 2d ago`). An unlimited (`0`) repository,
   which the governor never counts at all, reports the plain count of
   landings this digest's own window saw, rather than always reading
   `0/∞`. A held or frozen repository renders as its own badged row, never

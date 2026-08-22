@@ -987,7 +987,8 @@ Three things it will not hide, each a way a digest could mislead by omission:
   — is that repository's state **as of that last gate-5 decision, not a live
   read**, and of unbounded age: a repository whose backlog is empty, or whose
   candidates all fail eligibility before reaching gate 5, keeps whatever event
-  last fired indefinitely. This is what keeps the freeze's own reason and the
+  last fired indefinitely — what the row then *reports* from that event is
+  bounded by the ageing rule below, but the event itself is never discarded. This is what keeps the freeze's own reason and the
   oldest waiting pull request visible without a live read of the freeze flag
   or `merge_budget_oldest_waiting`: both ride the
   `merge-budget-frozen`/`merge-budget-hold` event that already fires the
@@ -1002,7 +1003,11 @@ Three things it will not hide, each a way a digest could mislead by omission:
   `cap` and `count` are read together, as the coherent pair
   `merge_budget_decide` actually reasoned from, and a superseding-cap edit
   becomes visible only once a fresh decision carries the new value alongside
-  a fresh count measured against it.
+  a fresh count measured against it. The `cap` outlives that pair: once the
+  count beside it ages out of this digest's window (below), the recorded `cap`
+  is the one field of a superseded decision the row still carries, so a
+  repository whose configured cap has moved since its last gate-5 decision
+  keeps reading against the old one until the next decision lands.
 
   `consumed` for an `ok` row is the count `merge_budget_decide` read *before*
   granting the arm that logged it — the landing the arm itself produced is
@@ -1019,16 +1024,18 @@ Three things it will not hide, each a way a digest could mislead by omission:
   longer live as though it still were. A held row is aged back to `ok` on the
   identical rule, because a hold is a rolling-24h fact too, and one nothing
   has refreshed for a full window has already rolled off the governor's own
-  clock; its `consumed` resets to unmeasured with it — an aged hold reads
-  exactly like a repository gate 5 has never reached, rather than carrying its
-  stale count forward under a status now claiming to be healthy. A frozen row
-  is never aged back this way, because a freeze stands until a human clears
-  the fleet flag, not until time passes. Every held or frozen row carries the
+  clock; its `consumed` resets to unmeasured with it — an aged hold's `status`
+  and `consumed` read exactly like a repository gate 5 has never reached,
+  rather than carrying its stale count forward under a status now claiming to
+  be healthy. A frozen row is never aged back this way, because a freeze
+  stands until a human clears the fleet flag, not until time passes. Every held or frozen row carries the
   source event's own timestamp so the page can render its age (`held · as of
   2d ago`) rather than presenting a stale decision as current; an `ok` row
   never carries `as_of`, aged back or not, since once its count resets to
-  unmeasured it is indistinguishable from a repository gate 5 has never
-  reached, which likewise has no age to show.
+  unmeasured its `status`, `consumed` and `as_of` read as a repository gate 5
+  has never reached does, which likewise has no age to show. `cap` is the one
+  field that still separates the two, and only where the configured cap has
+  moved since that aged decision — the persistence rule above.
 
   A held or frozen repository never renders folded into the plain
   `consumed/cap` text an `ok` repository gets, and never folded into the
