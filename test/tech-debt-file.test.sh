@@ -26,6 +26,9 @@
 #   - **Any step failing (no reserve script on origin/main, the branch-create
 #     call, the contents-write call, the PR-create call) fails the whole
 #     call, returns 1, and prints nothing.**
+#   - **A PR-create failure additionally cleans up** — the td-record/<id> and
+#     td/<id> branches it already wrote are deleted (best-effort) rather than
+#     left behind with no pull request ever carrying them (TD-PPagop-26082203).
 #   - **techdebt_file_issue returns an existing issue that already covers
 #     ITEM_REF** rather than filing a duplicate, and creates one when none
 #     exists; a failed create returns 1 and prints nothing.
@@ -151,6 +154,9 @@ if [[ "$1" == "api" && "$2" == "-X" && "$3" == "POST" && "$4" == *"/git/refs" ]]
 fi
 if [[ "$1" == "api" && "$2" == "-X" && "$3" == "PUT" && "$4" == *"/contents/"* ]]; then
   [[ -f "$d/fail-contents" ]] && exit 1
+  exit 0
+fi
+if [[ "$1" == "api" && "$2" == "-X" && "$3" == "DELETE" && "$4" == *"/git/refs/heads/"* ]]; then
   exit 0
 fi
 if [[ "$1" == "pr" && "$2" == "create" ]]; then
@@ -287,7 +293,7 @@ assert_eq "file_debt: contents-write fails -> exit 1" "1" "$rc"
 assert_eq "  ... no output" "" "$out"
 assert_eq "  ... no pr create attempted" "0" "$(grep -c 'pr create' "$tmp_dir/calls")"
 
-# --- pr create fails -> whole call fails ------------------------------------
+# --- pr create fails -> whole call fails, and cleans up the two branches ---
 remote="$(make_remote 0)"
 gd="$(a_git_dir "$remote")"
 reset_stub
@@ -295,6 +301,13 @@ reset_stub
 out="$(techdebt_file_debt "o/r" "T" "B" "P" "" "$gd")"; rc=$?
 assert_eq "file_debt: pr-create fails -> exit 1" "1" "$rc"
 assert_eq "  ... no output" "" "$out"
+id="$(grep -oE 'ref=refs/heads/td-record/[A-Za-z0-9-]+' "$tmp_dir/calls" | head -n1 | sed 's#.*/##')"
+assert_eq "  ... an id was reserved to check cleanup against" "1" \
+  "$([[ -n "$id" ]] && echo 1 || echo 0)"
+assert_eq "  ... td-record/<id> branch deleted" "1" \
+  "$(grep -c "api -X DELETE repos/o/r/git/refs/heads/td-record/$id" "$tmp_dir/calls")"
+assert_eq "  ... td/<id> reservation released" "1" \
+  "$(grep -c "api -X DELETE repos/o/r/git/refs/heads/td/$id" "$tmp_dir/calls")"
 
 # ============================================================================
 # techdebt_file_issue

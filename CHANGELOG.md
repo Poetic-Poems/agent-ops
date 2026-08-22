@@ -471,6 +471,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `techdebt_file_debt` no longer orphans a `td-record/<id>` branch and its
+  `td/<id>` reservation when the filing pull request itself fails to open
+  (TD-PPagop-26082203). It already wrote both the reservation and the record
+  commit purely through the API before calling `gh pr create`; if that call
+  failed, the two branches were left behind with no pull request ever
+  pointing at them — `td-record/` isn't a prefix
+  `scripts/sweep-orphan-branches.sh` sweeps, and a bare `td/<id>` is one it
+  deliberately leaves alone (issue #545), so neither was ever found again.
+  The function now best-effort deletes both before returning.
+
 - A `tailnet` node with no `TS_AUTHKEY` no longer thrashes `dashboard` once
   the sidecar it shares a network namespace with has stopped
   (TD-PPagop-26082303). PR #698 bounded `tailscale`'s own `restart` so it

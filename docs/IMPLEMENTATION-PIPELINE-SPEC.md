@@ -12652,10 +12652,22 @@ What exists, and the requirements each part answers to:
       bare `remote add`, no object transfer beyond the one fetch this needs) —
       the Enabler's own case, which holds no clone of anything. Opens a pull
       request carrying the new file alone (`gh pr create --base main --head
-      td-record/<id>`) and prints `"<id>\t<pr-url>"` on success, nothing on
-      failure. `filed:` in the record's frontmatter is derived from the id's
-      own date component, never the host clock, so the two can never
-      disagree regardless of the container's timezone.
+      td-record/<id>`) and prints `"<id>\t<pr-url>"` on success. If that `gh
+      pr create` call itself fails — the one point after both the branch and
+      the file have already landed — the function best-effort deletes
+      `td-record/<id>` and releases the `td/<id>` reservation (`gh api -X
+      DELETE .../git/refs/heads/<branch>`, for each) before returning:
+      `td-record/` is not a prefix `scripts/sweep-orphan-branches.sh` sweeps
+      at all, and a bare `td/<id>` is one it deliberately leaves alone
+      (component 3n, issue #545), so a pull request that never opens would
+      otherwise leave both invisible to every later pass. Either way prints
+      nothing on failure. A pull request that opens successfully and is
+      later closed without merging is not a failure of this function and is
+      out of its scope — that case releases the same way any abandoned
+      "Claiming an item" claim does (`TECH-DEBT.md`). `filed:` in the
+      record's frontmatter is derived from the id's own date component,
+      never the host clock, so the two can never disagree regardless of the
+      container's timezone.
     - `TOKEN`, given to either function, runs every `gh` call under that
       identity (`GH_TOKEN="$TOKEN"`) — the Approver's own minted App token
       (`approver_token_get`, `lib/approver-token.sh`, requirement 14b), the
@@ -12675,8 +12687,9 @@ What exists, and the requirements each part answers to:
     the fixture remote's copy, because an extraction path inside `GIT_DIR` is
     removed again straight afterwards and so is invisible to every other
     assertion), a token used for every call, no reserve script on
-    `origin/main`, and each of the three API calls failing in turn, for
-    `techdebt_file_debt`; the dedup hit, the
+    `origin/main`, each of the three API calls failing in turn, and a failed
+    `pr create` additionally deleting both `td-record/<id>` and `td/<id>`,
+    for `techdebt_file_debt`; the dedup hit, the
     ordinary create, and a failed create, for `techdebt_file_issue`. The
     Script's own wiring — that `run_approver_stage` and `maybe_run_enabler`
     actually call these with the right arguments and log the right event — is
