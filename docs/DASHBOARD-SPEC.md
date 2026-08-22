@@ -955,15 +955,22 @@ repository, the pull request, its title and state where GitHub was read this
 tick, the work source, the complexity it was armed at, the `enqueued`/
 `auto-merge` method `landing_arm` actually used, and the node that armed it.
 
-Each row is joined to the **`approver-verdict` that authorised it**: the newest
-verdict for that `pr_url` at or before the arm, never a later re-review. That
-qualifier is the whole correctness of the join — an Approver may review the
-same pull request across several cycles (a refuse streak, then an approval, and
-possibly another refusal afterwards on a later push), and only the verdict the
-arming stage could actually have seen explains the landing. A landing whose
-verdict cannot be located still renders, with `unknown` in the tier and verdict
-cells: an unexplained landing is the single most important row this panel can
-carry, so it is never the one dropped for want of a join.
+Each row is joined to the **`landing-audit-record` that justified it**
+(requirement 8x, D18, agent-ops#578) — the one durable record
+`_landing_stage_attempt` assembles and writes at the same moment it arms a
+pull request, rather than a fact this panel re-joins from separate events
+at report time. The join is still by `pr_url`, newest record at or before
+the arm: `_landing_stage_attempt` writes both events from the same function
+call, moments apart, so this never has to reach further than the newest
+match, but it is still a timestamp join, not an in-band reference, since
+`landing-armed` predates `landing-audit-record` and carries no pointer of
+its own to it. A landing with no matching record still renders — its own
+Audit cell reading `missing` rather than the tier/verdict cells quietly
+reading `unknown` — and is called out again in its own summary line naming
+how many landings in the window carry no record: an unexplained landing is
+the single most important row this panel can carry, and now that a durable
+per-landing record exists, "the record could not be found" and "the record
+said so" read as different facts, never the same silent null.
 
 Three things it will not hide, each a way a digest could mislead by omission:
 
