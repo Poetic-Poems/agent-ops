@@ -787,6 +787,15 @@ else
 fi
 
 if ((gh_ready)); then
+  # D18 Stage 3 (agent-ops#575): facts about each repository's forge
+  # configuration, gathered as the ruleset and merge-settings/merge-queue
+  # passes below already walk every repository, and read back afterwards by
+  # the one consolidated autonomy-readiness verdict per repository — so that
+  # verdict costs no API call of its own beyond what each individual check
+  # already made.
+  declare -A ra_ruleset_readable ra_found_pr_rule ra_required_count \
+    ra_require_code_owner ra_dismiss_stale_ok ra_bypass_count ra_merge_path_ok
+
   # What each repository should carry comes from lib/labels.sh's catalogue —
   # the same list the cycle creates from — so this cannot report a different
   # set from the one the pipeline actually maintains (requirement 6a).
@@ -908,9 +917,11 @@ if ((gh_ready)); then
     [[ -n "$slug" ]] || continue
     if ! ruleset_repo_json="$(gh api "repos/$slug/rulesets" 2>/dev/null)"; then
       skip "$slug's default-branch ruleset — repos/$slug/rulesets is not reachable with this token"
+      ra_ruleset_readable[$slug]=0
       continue
     fi
-    required_count="" found_pr_rule=0 require_code_owner=0
+    ra_ruleset_readable[$slug]=1
+    required_count="" found_pr_rule=0 require_code_owner=0 dismiss_stale_ok=1 bypass_count=0
     while IFS= read -r ruleset_id; do
       [[ -n "$ruleset_id" ]] || continue
       ruleset_detail="$(gh api "repos/$slug/rulesets/$ruleset_id" 2>/dev/null)" || continue
@@ -949,8 +960,34 @@ if ((gh_ready)); then
       [[ "$(jq -r '[.rules[]? | select(.type == "pull_request")
                     | .parameters.require_code_owner_review] | any' \
                 <<<"$ruleset_detail" 2>/dev/null)" == "true" ]] && require_code_owner=1
+      # D18 Stage 3 (agent-ops#575): a stale review — one left over from
+      # before the pull request's last push — must not still count once the
+      # code has moved; without dismiss_stale_reviews_on_push a landed
+      # Approver review from an earlier commit stays valid forever. Read off
+      # the same `pull_request` rule and the same active-default-branch pass
+      # as the two checks above, for the same reason: a second walk of the
+      # same rulesets would double the API calls for no new information. Any
+      # active rule reporting it *off* (or unset, GitHub's own default) is
+      # enough to fail this precondition — the union-of-active-rules
+      # reasoning above runs the other way here, since what is wanted is
+      # universal coverage, not any one rule opting in.
+      [[ "$(jq -r '[.rules[]? | select(.type == "pull_request")
+                    | (.parameters.dismiss_stale_reviews_on_push // false)] | all' \
+                <<<"$ruleset_detail" 2>/dev/null)" == "true" ]] || dismiss_stale_ok=0
+      # A ruleset's own bypass_actors (its own field, not a rule parameter)
+      # names identities that can push straight past every rule it declares,
+      # the Approver gate included — a precondition on the ruleset as a
+      # whole, summed across every active default-branch ruleset this
+      # repository carries.
+      this_bypass="$(jq -r '(.bypass_actors // []) | length' <<<"$ruleset_detail" 2>/dev/null)"
+      [[ "$this_bypass" =~ ^[0-9]+$ ]] && bypass_count=$(( bypass_count + this_bypass ))
     done < <(jq -r '.[] | select(.target == "branch" and .enforcement == "active") | .id' \
               <<<"$ruleset_repo_json" 2>/dev/null)
+    ra_found_pr_rule[$slug]=$found_pr_rule
+    ra_required_count[$slug]="$required_count"
+    ra_require_code_owner[$slug]=$require_code_owner
+    ra_dismiss_stale_ok[$slug]=$dismiss_stale_ok
+    ra_bypass_count[$slug]=$bypass_count
     if ((! found_pr_rule)); then
       skip "$slug's default branch has no active ruleset requiring approving reviews — cannot report requirement 38's dependency (branch protection set outside a ruleset is not read here)"
     elif [[ "$required_count" == "0" ]]; then
@@ -981,6 +1018,20 @@ if ((gh_ready)); then
           fail "$slug's merge_autonomy is \"$ma_level\" but its default-branch ruleset still requires code-owner review — the Approver App cannot satisfy that, and no pull request at this level would ever clear the gate (D18 §5.3)"
         else
           ok "$slug's merge_autonomy is \"$ma_level\" and its default-branch ruleset requires no code-owner review — the Approver App can clear the pull_request rule (D18 §5.3)"
+        fi
+        # D18 Stage 3 (agent-ops#575): the two remaining ruleset preconditions
+        # a repository needs before this level's forge configuration is
+        # trustworthy — stale-review dismissal, and no bypass actor able to
+        # skip the gate outright.
+        if ((dismiss_stale_ok)); then
+          ok "$slug's merge_autonomy is \"$ma_level\" and its default-branch ruleset dismisses stale reviews on push — an Approver review cannot outlive the commit it reviewed (D18 Stage 3, agent-ops#575)"
+        else
+          fail "$slug's merge_autonomy is \"$ma_level\" but its default-branch ruleset does not dismiss stale reviews on push — a pull request could land on an Approver review left over from before its last change (D18 Stage 3, agent-ops#575)"
+        fi
+        if (( bypass_count > 0 )); then
+          fail "$slug's merge_autonomy is \"$ma_level\" but its default-branch ruleset names $bypass_count bypass actor(s) — a bypass actor can land a pull request around the Approver gate entirely (D18 Stage 3, agent-ops#575)"
+        else
+          ok "$slug's merge_autonomy is \"$ma_level\" and its default-branch ruleset names no bypass actor — nothing can land around the Approver gate (D18 Stage 3, agent-ops#575)"
         fi
       fi
     fi
@@ -1052,10 +1103,13 @@ if ((gh_ready)); then
 
     if [[ "$aam_queue_json" != "null" ]]; then
       ok "$slug's merge_autonomy is \"$aam_level\" and $aam_default_branch carries an active merge queue — landing_arm enqueues regardless of allow_auto_merge and allow_squash_merge"
+      ra_merge_path_ok[$slug]=1
     elif [[ -n "$aam_off" ]]; then
       fail "$slug's merge_autonomy is \"$aam_level\" with no merge queue on $aam_default_branch and $aam_off disabled — landing_arm's no-queue fallback, gh pr merge --auto --squash, would be refused outright; enable $aam_off on $slug or adopt a merge queue on $aam_default_branch"
+      ra_merge_path_ok[$slug]=0
     elif [[ -n "$aam_unknown" ]]; then
       skip "$slug's merge-settings/merge-queue pairing — $aam_default_branch carries no merge queue and repos/$slug did not report $aam_unknown (this token cannot see $slug's merge settings)"
+      ra_merge_path_ok[$slug]=-1
     else
       # Deliberately claims only what was read. Repository settings are a
       # necessary condition for the fallback call, not a sufficient one —
@@ -1063,6 +1117,130 @@ if ((gh_ready)); then
       # pull request `run_landing_stage` has already established as mergeable
       # — so this states the settings and stops there.
       ok "$slug's merge_autonomy is \"$aam_level\" with no merge queue on $aam_default_branch, but allow_auto_merge and allow_squash_merge are both enabled — no repository setting refuses landing_arm's no-queue fallback"
+      ra_merge_path_ok[$slug]=1
+    fi
+  done < <(cfg '.repos[]?.slug // empty')
+
+  # D18 Stage 3 (agent-ops#575): the Approver App installation's actual
+  # granted permissions, read live rather than assumed from approver_app_id
+  # alone — an installation can be re-scoped through GitHub's own consent
+  # screen at any time, entirely outside config.json. Exactly three
+  # permissions are needed, no more and no less: contents:write (push a
+  # review's own comments and, at agent-merges-routine+, land), metadata:read
+  # (read the repository at all) and pull_requests:write (submit the review).
+  # Fleet-wide, not per-repository — one installation backs every repository
+  # this identity reviews — so this is a single check, gated the same way the
+  # runtime-credential check above is (component 14's ma_above_human, and
+  # only once the credential is present enough to ask; an absent credential
+  # is already warned about there, and asking again here would only fail the
+  # same way a second time).
+  app_permissions_verdict="unknown"
+  if (( ma_above_human )) && approver_token_credential_present; then
+    if perms_json="$(approver_token_installation_permissions "" 2>/dev/null)"; then
+      perms_gap="$(jq -rn --argjson want '{"contents":"write","metadata":"read","pull_requests":"write"}' \
+                   --argjson got "$perms_json" '
+        ($want | keys_unsorted) as $wanted
+        | ($got  | keys_unsorted) as $granted
+        | ([$wanted[] | select(($got[.] // "") != $want[.])
+            | if ($got[.] // "") == "" then "\(.) missing" else "\(.) is \($got[.]), needs \($want[.])" end]
+          + [$granted[] | select(($want[.] // "") == "") | "\(.) granted but not required"]
+          ) as $problems
+        | ($problems | join("; "))
+      ' 2>/dev/null)"
+      if [[ -z "$perms_gap" ]]; then
+        ok "the Approver App installation carries exactly contents:write, metadata:read and pull_requests:write (D18 Stage 3, agent-ops#575)"
+        app_permissions_verdict="ok"
+      else
+        fail "the Approver App installation's live permissions do not match what this fleet needs: $perms_gap — an owner act, only the installer can regrant them (D18 Stage 3, agent-ops#575)"
+        app_permissions_verdict="fail"
+      fi
+    else
+      skip "the Approver App installation's live permissions — GitHub did not answer /app/installations/<id>, or the response could not be read (network failure, or PULLWRIGHT_APPROVER_INSTALLATION_ID/PULLWRIGHT_APPROVER_APP_ID do not name a real installation)"
+    fi
+  fi
+
+  # --- D18 Stage 3 (#575): one consolidated autonomy-readiness verdict per
+  # repository, gathering every forge precondition above into the one
+  # question an operator raising a repository's level actually has: is its
+  # *configured* merge_autonomy something its forge configuration can
+  # actually support right now, and if not, exactly which precondition is
+  # missing and whether only a repository/org admin can fix it (an "owner
+  # act") or this fleet's own config.json is (a "configuration error"). A
+  # repository configured above what its forge supports is a doctor `fail`,
+  # never a `warn`: the pipeline would raise approvals or land pull requests
+  # nobody has verified the forge can actually clear. Below `agent-approves`
+  # (`human`) there is nothing to verify, so the check stays silent there,
+  # the same convention every per-repository pairing check above already
+  # follows. A precondition this run could not evaluate — an unreachable
+  # ruleset, an unreadable merge setting, an unconfirmed installation
+  # permission — is never read as a gap: it is named separately as
+  # "unconfirmed", and only turns the verdict into a `skip` ("readiness could
+  # not be fully confirmed") when nothing else is definitely missing, never a
+  # `fail` for something this run simply could not check.
+  while IFS= read -r slug; do
+    [[ -n "$slug" ]] || continue
+    ra_level="$(merge_autonomy_configured_level "$DEFAULTED_CONFIG" "$slug")"
+    ra_rank="$(merge_autonomy_rank "$ra_level" 2>/dev/null || printf 0)"
+    ra_routine_rank="$(merge_autonomy_rank agent-merges-routine)"
+    [[ "$ra_rank" =~ ^[0-9]+$ ]] || continue
+    (( ra_rank >= 1 )) || continue
+
+    missing=()
+    unconfirmed=()
+    [[ -n "$approver_app_id" ]] || missing+=("approver_app_id is not set (configuration error)")
+    [[ -n "$approver_model_default_cfg" ]] || missing+=("approver_model_default is not set (configuration error)")
+
+    if (( ra_rank >= ra_routine_rank )); then
+      if [[ "${ra_ruleset_readable[$slug]:-0}" != "1" ]]; then
+        unconfirmed+=("its default-branch ruleset was not reachable with this token")
+      elif [[ "${ra_found_pr_rule[$slug]:-0}" != "1" ]]; then
+        missing+=("no active default-branch ruleset requires approving reviews (owner act)")
+      else
+        [[ "${ra_required_count[$slug]}" != "0" ]] \
+          || missing+=("the ruleset requires 0 approving reviews (owner act)")
+        [[ "${ra_require_code_owner[$slug]}" == "0" ]] \
+          || missing+=("the ruleset still requires code-owner review (owner act)")
+        [[ "${ra_dismiss_stale_ok[$slug]}" == "1" ]] \
+          || missing+=("the ruleset does not dismiss stale reviews on push (owner act)")
+        [[ "${ra_bypass_count[$slug]}" == "0" ]] \
+          || missing+=("the ruleset names ${ra_bypass_count[$slug]} bypass actor(s) (owner act)")
+      fi
+
+      case "${ra_merge_path_ok[$slug]:-2}" in
+        1) : ;;
+        0) missing+=("no merge queue and allow_auto_merge/allow_squash_merge are not both enabled (owner act)") ;;
+        -1) unconfirmed+=("allow_auto_merge/allow_squash_merge could not be read with this token") ;;
+        # Every remaining case is an unset entry, and at this rank that can
+        # only mean the merge-path pass above reached one of its own three
+        # skip-and-continue paths — repos/<slug> unreachable, no
+        # default_branch reported, or the merge-queue state unreadable. It
+        # was attempted and could not be read, which is not the same as
+        # never having been looked at, and the skip line above already names
+        # which of the three it was.
+        *) unconfirmed+=("its merge-settings/merge-queue pairing could not be read") ;;
+      esac
+    fi
+
+    # The Approver App's live permissions are a precondition from
+    # agent-approves upward, not just agent-merges-routine upward:
+    # pull_requests:write is what lets the App post a review at all, so a
+    # narrowed installation is exactly as fatal to "agent-approves is
+    # supported" as it is to "agent-merges-routine is supported".
+    case "$app_permissions_verdict" in
+      ok) : ;;
+      fail) missing+=("the Approver App installation's live permissions do not match exactly what this fleet needs (owner act)") ;;
+      *) unconfirmed+=("the Approver App installation's live permissions could not be confirmed") ;;
+    esac
+
+    missing_str="$(printf '%s; ' "${missing[@]}")"; missing_str="${missing_str%; }"
+    unconfirmed_str="$(printf '%s; ' "${unconfirmed[@]}")"; unconfirmed_str="${unconfirmed_str%; }"
+
+    if (( ${#missing[@]} > 0 )); then
+      fail "$slug is configured at \"$ra_level\" but its forge configuration does not support it — missing: $missing_str$( (( ${#unconfirmed[@]} > 0 )) && printf '; also unconfirmed: %s' "$unconfirmed_str" ) (D18 Stage 3, agent-ops#575)"
+    elif (( ${#unconfirmed[@]} > 0 )); then
+      skip "$slug's autonomy readiness at \"$ra_level\" could not be fully confirmed — unconfirmed: $unconfirmed_str (D18 Stage 3, agent-ops#575)"
+    else
+      ok "$slug's autonomy readiness: \"$ra_level\" is fully supported by its forge configuration (D18 Stage 3, agent-ops#575)"
     fi
   done < <(cfg '.repos[]?.slug // empty')
 

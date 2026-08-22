@@ -290,6 +290,50 @@ approver_token_get() {
   printf '%s' "$token"
 }
 
+# approver_token_installation_permissions [NOW_EPOCH]
+# Print the Pullwright Approver installation's actual granted permissions —
+# the live `.permissions` object from `GET /app/installations/<id>`
+# (`{"contents":"write","metadata":"read","pull_requests":"write",...}`) — or
+# return non-zero, printing nothing, on the same "gate unreadable" terms as
+# `approver_token_get` (2 no credential, 1 mint/request failed).
+#
+# D18 Stage 3 (agent-ops#575): an installation's granted permissions are
+# whatever the organisation owner last approved through GitHub's own consent
+# screen, entirely outside config.json, and can be narrowed or widened there
+# at any time with nothing in this repository the wiser. `scripts/doctor.sh`
+# reads this rather than assuming the three permissions the Approver needs
+# (`contents: write`, `metadata: read`, `pull_requests: write`) from
+# `approver_app_id` alone.
+#
+# JWT-signed, the same as `approver_token_identity_login` and for the same
+# reason: an installation *access token* can act as the installation but
+# cannot ask GitHub what it is itself entitled to — only the App's own JWT
+# can read `/app/installations/<id>`. Not cached: this is a doctor-only,
+# operator-invoked read, never a per-cycle one.
+approver_token_installation_permissions() {
+  local now="${1:-$(date +%s)}"
+  local app_id="${PULLWRIGHT_APPROVER_APP_ID:-}"
+  local installation_id="${PULLWRIGHT_APPROVER_INSTALLATION_ID:-}"
+  local key_path="${PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH:-}"
+  local curl_bin="${APPROVER_TOKEN_CURL:-curl}"
+
+  approver_token_credential_present || return 2
+
+  local jwt
+  jwt="$(_approver_token_jwt "$app_id" "$now" "$key_path")" || return 1
+
+  local response status body
+  response="$(printf 'header = "Authorization: Bearer %s"\n' "$jwt" \
+    | "$curl_bin" --config - -sS --max-time 30 -w $'\n%{http_code}' \
+      -H "Accept: application/vnd.github+json" \
+      "https://api.github.com/app/installations/$installation_id" 2>/dev/null)" || return 1
+  status="${response##*$'\n'}"
+  body="${response%$'\n'*}"
+  [[ "$status" == "200" ]] || return 1
+  jq -e '(.permissions // empty) != {}' <<<"$body" >/dev/null 2>&1 || return 1
+  jq -c '.permissions' <<<"$body"
+}
+
 # approver_token_identity_login [NOW_EPOCH]
 # Print the Pullwright Approver's own GitHub login — "<app-slug>[bot]", the
 # form every review or comment it submits carries as its `user.login` — or

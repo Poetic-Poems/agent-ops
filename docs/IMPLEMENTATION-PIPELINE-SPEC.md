@@ -793,7 +793,7 @@ Hours a merge-queue-dequeue notice (requirement 38f) may still fire for after `d
 
 ### Extended notes: `merge_autonomy`
 
-The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id` or no `approver_model_default`, a level of `agent-merges-routine` or above while the repository's own default-branch ruleset still requires code-owner review (§5.3), and a level of `agent-merges-routine` or above with no active merge queue on the default branch while either `allow_auto_merge` or `allow_squash_merge` is off (agent-ops#532) — `landing_arm`'s no-queue fallback, `gh pr merge --auto --squash`, is a call GitHub refuses outright unless both are enabled. At `agent-approves` and above the Approver stage (requirements 8b/8c, "### The Approver") reviews and posts a real GitHub review; a human still lands every pull request at `agent-approves`. At `agent-merges-routine`/`agent-merges-all` the arming step (requirement 8d, `lib/landing.sh`) lands an eligible pull request itself. The fleet-wide kill switch (requirement 2.3b) forces the effective level to `human` everywhere independent of this key.
+The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id` or no `approver_model_default`, a level of `agent-merges-routine` or above while the repository's own default-branch ruleset still requires code-owner review (§5.3), and a level of `agent-merges-routine` or above with no active merge queue on the default branch while either `allow_auto_merge` or `allow_squash_merge` is off (agent-ops#532) — `landing_arm`'s no-queue fallback, `gh pr merge --auto --squash`, is a call GitHub refuses outright unless both are enabled. D18 Stage 3 (agent-ops#575) adds three more: `agent-merges-routine` or above while the default-branch ruleset does not dismiss stale reviews on push, or names any bypass actor (the ruleset's own `bypass_actors`, summed across every active default-branch ruleset), and an Approver App installation whose live granted permissions are not exactly `contents: write`, `metadata: read` and `pull_requests: write` (`lib/approver-token.sh`'s `approver_token_installation_permissions`, a JWT-signed read of the installation itself). Every one of these is gathered into a single autonomy-readiness verdict per repository — printed at `agent-approves` and above, `fail` where the forge configuration does not support the configured level, `skip` where a precondition could not be read — naming each unmet precondition as an owner act (a ruleset, repository or App-installation setting) or a configuration error (`approver_app_id`/`approver_model_default`). At `agent-approves` and above the Approver stage (requirements 8b/8c, "### The Approver") reviews and posts a real GitHub review; a human still lands every pull request at `agent-approves`. At `agent-merges-routine`/`agent-merges-all` the arming step (requirement 8d, `lib/landing.sh`) lands an eligible pull request itself. The fleet-wide kill switch (requirement 2.3b) forces the effective level to `human` everywhere independent of this key.
 
 ### Extended notes: `merge_budget_per_day`
 
@@ -11252,6 +11252,76 @@ What exists, and the requirements each part answers to:
     the network-gated checks are actually exercised while nothing on `PATH`
     ever reaches a real network.
 
+    **D18 Stage 3 (agent-ops#575): one consolidated per-repository
+    autonomy-readiness verdict.** Stage 3 widens `agent-merges-routine` to
+    every repository, and each one needs a bundle of forge preconditions
+    before its configured level is actually load-bearing: a merge queue or
+    `allow_auto_merge`/`allow_squash_merge` (already validated above), a
+    ruleset whose `required_approving_review_count` is at least 1 with
+    code-owner review off (already validated above), `dismiss_stale_reviews_on_push`
+    on, no `bypass_actors` on the ruleset, and the Approver App installation
+    carrying exactly `contents: write`, `metadata: read` and
+    `pull_requests: write` — no more, no less. The last three are new here;
+    the rest were already individually checked and are gathered rather than
+    reimplemented. Read off the same per-repository ruleset pass requirement
+    38's dependency and the D18 §5.3 pairing already make (one API read, five
+    facts): any active `pull_request` rule on the default branch not
+    reporting `dismiss_stale_reviews_on_push: true` is a `fail` naming the
+    repository and level, `ok` otherwise; a ruleset's own `bypass_actors`
+    (summed across every active default-branch ruleset) being non-empty is a
+    `fail` naming the count, `ok` at zero. Both are silent below
+    `agent-merges-routine`, the same convention every pairing check in this
+    component already follows. The App installation's live permissions are a
+    single fleet-wide check (one installation backs every repository this
+    identity reviews), read via `lib/approver-token.sh`'s
+    `approver_token_installation_permissions` — a JWT-signed
+    `GET /app/installations/<id>`, since an installation token cannot ask
+    what it is itself entitled to — and diffed against the exact three
+    required permissions: any difference (missing, narrower, or a permission
+    granted beyond the three) is a `fail` naming the gap, `ok` on an exact
+    match. Gated on `ma_above_human` and `approver_token_credential_present`,
+    the same as the runtime-credential-presence check already in this
+    component — an absent credential is already warned about there, and
+    silent here rather than repeating it.
+
+    These join every existing per-repository and fleet-wide check above
+    (approver_app_id/approver_model_default, the ruleset's approving-review
+    count and code-owner requirement, the merge-path pairing, the App
+    installation's permissions) in one consolidated verdict per repository,
+    printed once its configured `merge_autonomy` is `agent-approves` or
+    above (silent at `human`, the same convention every pairing check here
+    follows) — but not every joined fact is consulted at every printed
+    level. `approver_app_id`/`approver_model_default` and the App
+    installation's own permissions apply from `agent-approves` upward:
+    `pull_requests: write` is what lets the App post a review at all, so a
+    narrowed installation is exactly as fatal to "`agent-approves` is
+    supported" as to any higher level. The ruleset's approving-review count,
+    its code-owner requirement, `dismiss_stale_reviews_on_push`,
+    `bypass_actors`, and the merge-path pairing apply only from
+    `agent-merges-routine` upward, where the pipeline actually lands pull
+    requests rather than only approving them. Every unmet precondition is
+    named and tagged **owner act** (a ruleset parameter, a repository merge
+    setting, or the App installation's own granted permissions — something
+    only a repository/organisation admin can change) or **configuration
+    error** (`approver_app_id`/`approver_model_default` — this fleet's own
+    `config.json`). A repository whose forge configuration does not support
+    its configured level is a doctor **`fail`, never a `warn`**, from
+    `agent-approves` upward — the pipeline would otherwise raise approvals
+    or land pull requests nobody has verified the forge can actually clear.
+    A precondition this run could not evaluate — an unreachable ruleset, an
+    unreadable merge setting, an unconfirmed installation permission — is
+    never read as a gap: it is named separately as unconfirmed, and only
+    turns the verdict into a `skip` ("readiness could not be fully
+    confirmed") when nothing else is definitely missing, never a `fail` for
+    something this run simply could not check — the same
+    offline-safe/unreachable-safe degradation every GitHub-gated check in
+    this component already gives.
+    `test/doctor.test.sh` covers the three new checks and the consolidated
+    verdict (satisfied, unsatisfied naming owner acts and configuration
+    errors together, and unconfirmed — acceptance check 8w); `test/approver-token.test.sh` covers
+    `approver_token_installation_permissions` directly, against the same
+    stubbed `curl` and real-JWT-signing seam its sibling functions use.
+
     A third flag, `--unattended` (requirement 2.6a), is what
     `deploy/docker/crontab.tmpl`'s own hourly line runs unprompted: the whole
     Configuration and GitHub sections, skipping only the two checks that
@@ -15122,6 +15192,47 @@ pull request, run the ones the change touches and any it could regress.
     `CHANGES_REQUESTED` verdict its `divergence` criterion `met`, naming the
     sample the zero is backed by. `lib/verdict-fate.sh` and
     `scripts/verdict-fate-report.sh` pass `shellcheck`.
+
+8w. **A repository's autonomy readiness is one verdict, and it never fails for
+    what it could not read (component 14, agent-ops#575).**
+    `test/doctor.test.sh` passes, over the same single-target-repo fixture and
+    `gh`/`rulesets` stubs acceptance check 38g uses. The three new
+    preconditions first: at `agent-merges-routine`, a default-branch ruleset
+    whose `pull_request` rule reports `dismiss_stale_reviews_on_push: false` is
+    a `fail` and `true` an `ok`, both naming the repository and level; a
+    ruleset carrying any `bypass_actors` entry is a `fail` naming the count,
+    an empty one an `ok`; and both stay silent below the routine tier. The
+    Approver App installation's live granted permissions are an `ok` at
+    exactly `contents: write`, `metadata: read` and `pull_requests: write`, a
+    `fail` naming the gap where one is narrower (`contents is read, needs
+    write`) or where a fourth is granted (`issues granted but not required`),
+    a `skip` where the installation endpoint does not answer, and silent both
+    with no credential in this environment and with nothing configured above
+    `human` — exercised through `lib/approver-token.sh`'s real JWT signing
+    against a throwaway RSA key and a stubbed `APPROVER_TOKEN_CURL`, so the
+    check itself runs for real while no real network is reachable. The
+    consolidated verdict then prints once per repository at `agent-approves`
+    and above, and not at all at `human` — but which facts it consults
+    depends on the printed level. At `agent-approves`, over `ma_approves_config`
+    paired with `stub_perm 200 '{"permissions":{"contents":"write","metadata":"read"}}'`
+    (a live installation narrowed off `pull_requests: write`), the verdict is a
+    `fail` naming `the Approver App installation's live permissions do not
+    match exactly what this fleet needs (owner act)`, never an `ok` claiming
+    "is fully supported by its forge configuration" while the App cannot post
+    a review at all — the ruleset and merge-path facts play no part at this
+    level, since `landing_arm` is unreachable below `agent-merges-routine`
+    regardless of the ruleset or merge settings. From `agent-merges-routine`
+    upward those two join `approver_app_id`/`approver_model_default` and the
+    App installation's permissions in the one verdict: `ok` where every
+    applicable precondition is satisfied; `fail`, never `warn`, where any is
+    not, naming each as an owner act (`no active default-branch ruleset
+    requires approving reviews (owner act)`, `no merge queue and
+    allow_auto_merge/allow_squash_merge are not both enabled (owner act)`) or
+    a configuration error (`approver_model_default is not set (configuration
+    error)`); and `skip`, with `doctor.sh` still exiting 0, where the only
+    gaps are ones this run could not read — an unreachable `rulesets`
+    endpoint, and an unreadable merge-queue state, which is named as unread
+    rather than as never looked at.
 
 ## Host provisioning (human steps)
 

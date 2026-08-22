@@ -11,8 +11,18 @@
 # stubbed by prepending a directory to PATH. These assertions therefore run
 # *without* --offline: --offline is what test/config-schema.test.sh already
 # covers, and skipping every network-gated check here would leave the checks
-# themselves untested. No real network call is possible regardless, because
-# gh and claude never resolve to anything but the stubs below.
+# themselves untested. No real network call is possible through `gh` or
+# `claude`, because neither ever resolves to anything but the stubs below.
+#
+# lib/approver-token.sh's live installation-permissions read (D18 Stage 3,
+# agent-ops#575) is the one exception: it calls `curl` directly, stubbed the
+# same way test/approver-token.test.sh stubs it, through APPROVER_TOKEN_CURL
+# — never left to resolve to a real `curl`. Every invocation below also
+# explicitly clears PULLWRIGHT_APPROVER_APP_ID/_INSTALLATION_ID/
+# _PRIVATE_KEY_PATH (`env -u`) before setting any of its own: a node this
+# suite runs on may carry the fleet's own real Approver credentials in its
+# environment, and without the clear this check would sign a real JWT and
+# call the real GitHub API using them.
 #
 # The renderer-failure and missing-template cases use the real
 # deploy/docker/render-crontab.sh rather than a stub: a config whose
@@ -230,7 +240,7 @@ run_doctor() {
     if [[ "$1" == "--" ]]; then shift; extra_args=( "$@" ); break; fi
     env_pairs+=( "$1" ); shift
   done
-  out="$(env PATH="$stub_bin:$PATH" "${env_pairs[@]}" \
+  out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" "${env_pairs[@]}" \
     bash "$DOCTOR" --config "$base_config" "${extra_args[@]}" 2>&1)"
   rc=$?
 }
@@ -261,7 +271,7 @@ assert_eq "and doctor.sh exits 1" "1" "$rc"
 # but not push to loses the review the same way a target repo loses an item.
 review_config="$tmp/review-config.json"
 jq --arg slug "$slug" '.repos = [] | .project_review.repos = [{slug: $slug}]' "$base_config" > "$review_config"
-out="$(env PATH="$stub_bin:$PATH" STUB_REPO_JSON='{"permissions":{"push":false},"archived":false}' \
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" STUB_REPO_JSON='{"permissions":{"push":false},"archived":false}' \
   bash "$DOCTOR" --config "$review_config" 2>&1)"
 rc=$?
 assert_contains "project_review.repos names a repo the token cannot push to" \
@@ -274,17 +284,17 @@ assert_eq "and doctor.sh exits 1" "1" "$rc"
 # than `skip` (it cannot be asked, which is not evidence it cannot push).
 state_repo_config="$tmp/state-repo-config.json"
 jq --arg slug "$slug" '.repos = [] | .project_review.repos = [] | .state_repo = $slug' "$base_config" > "$state_repo_config"
-out="$(env PATH="$stub_bin:$PATH" STUB_REPO_JSON='{"archived":false}' \
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" STUB_REPO_JSON='{"archived":false}' \
   bash "$DOCTOR" --config "$state_repo_config" 2>&1)"
 assert_contains "state_repo with no visible .permissions is a skip, not a fail" \
   "[skip] $slug's write permission is not visible to this token" "$out"
 
-out="$(env PATH="$stub_bin:$PATH" STUB_REPO_JSON='{"permissions":{"push":true},"archived":false}' \
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" STUB_REPO_JSON='{"permissions":{"push":true},"archived":false}' \
   bash "$DOCTOR" --config "$state_repo_config" 2>&1)"
 assert_contains "state_repo writable is reported with its own wording" \
   "[ ok ] $slug is readable and writable — the fleet's shared state can replicate" "$out"
 
-out="$(env PATH="$stub_bin:$PATH" STUB_REPO_JSON='{"permissions":{"push":false},"archived":false}' \
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" STUB_REPO_JSON='{"permissions":{"push":false},"archived":false}' \
   bash "$DOCTOR" --config "$state_repo_config" 2>&1)"
 assert_contains "state_repo unwritable is reported with its own wording" \
   "[fail] $slug is readable but not writable with this token" "$out"
@@ -417,7 +427,7 @@ assert_eq "and requiring 0 approving reviews is a warn, not a failure" "0" "$rc"
 ma_config="$tmp/ma-config.json"
 
 jq '.merge_autonomy = "agent-merges-routine" | .approver_app_id = "123456" | .approver_model_default = "claude-sonnet-5"' "$base_config" > "$ma_config"
-out="$(env PATH="$stub_bin:$PATH" \
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   STUB_RULESETS_JSON="[$noise_ruleset_38,{\"id\":3,\"target\":\"branch\",\"enforcement\":\"active\"}]" \
   STUB_RULESET_DETAIL_JSON='{"name":"default","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1,"require_code_owner_review":true}}]}' \
   bash "$DOCTOR" --config "$ma_config" 2>&1)"
@@ -426,7 +436,7 @@ assert_contains "agent-merges-routine with code-owner review still required fail
   "[fail] $slug's merge_autonomy is \"agent-merges-routine\" but its default-branch ruleset still requires code-owner review" "$out"
 assert_eq "and doctor.sh exits 1" "1" "$rc"
 
-out="$(env PATH="$stub_bin:$PATH" \
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   STUB_RULESETS_JSON="[$noise_ruleset_38,{\"id\":3,\"target\":\"branch\",\"enforcement\":\"active\"}]" \
   STUB_RULESET_DETAIL_JSON='{"name":"default","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1,"require_code_owner_review":false}}]}' \
   bash "$DOCTOR" --config "$ma_config" 2>&1)"
@@ -435,7 +445,7 @@ assert_not_contains "agent-merges-routine with code-owner review off does not fa
 assert_contains "and positively confirms the pairing, naming the repo and level" \
   "[ ok ] $slug's merge_autonomy is \"agent-merges-routine\" and its default-branch ruleset requires no code-owner review" "$out"
 
-out="$(env PATH="$stub_bin:$PATH" \
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   STUB_RULESETS_JSON="[$noise_ruleset_38,{\"id\":3,\"target\":\"branch\",\"enforcement\":\"active\"}]" \
   STUB_RULESET_DETAIL_JSON='{"name":"default","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1,"require_code_owner_review":true}}]}' \
   bash "$DOCTOR" --config "$base_config" 2>&1)"
@@ -446,7 +456,7 @@ assert_not_contains "and stays silent below the routine tier rather than narrate
 
 ma_approves_config="$tmp/ma-approves-config.json"
 jq '.merge_autonomy = "agent-approves" | .approver_app_id = "123456" | .approver_model_default = "claude-sonnet-5"' "$base_config" > "$ma_approves_config"
-out="$(env PATH="$stub_bin:$PATH" \
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   STUB_RULESETS_JSON="[$noise_ruleset_38,{\"id\":3,\"target\":\"branch\",\"enforcement\":\"active\"}]" \
   STUB_RULESET_DETAIL_JSON='{"name":"default","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1,"require_code_owner_review":true}}]}' \
   bash "$DOCTOR" --config "$ma_approves_config" 2>&1)"
@@ -455,6 +465,128 @@ assert_not_contains "agent-approves (below the routine tier) is unaffected by co
 assert_not_contains "and earns no code-owner ok line either" \
   "requires no code-owner review" "$out"
 
+# --- D18 Stage 3 (agent-ops#575): stale-review dismissal and bypass-actor
+#     checks, added alongside the code-owner one above — same ruleset pass,
+#     same fixture shape, only dismiss_stale_reviews_on_push/bypass_actors
+#     vary. ----------------------------------------------------------------
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
+  STUB_RULESETS_JSON="[$noise_ruleset_38,{\"id\":3,\"target\":\"branch\",\"enforcement\":\"active\"}]" \
+  STUB_RULESET_DETAIL_JSON='{"name":"default","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1,"require_code_owner_review":false,"dismiss_stale_reviews_on_push":false}}]}' \
+  bash "$DOCTOR" --config "$ma_config" 2>&1)"
+rc=$?
+assert_contains "agent-merges-routine with stale reviews not dismissed on push fails" \
+  "[fail] $slug's merge_autonomy is \"agent-merges-routine\" but its default-branch ruleset does not dismiss stale reviews on push" "$out"
+assert_eq "and doctor.sh exits 1" "1" "$rc"
+
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
+  STUB_RULESETS_JSON="[$noise_ruleset_38,{\"id\":3,\"target\":\"branch\",\"enforcement\":\"active\"}]" \
+  STUB_RULESET_DETAIL_JSON='{"name":"default","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1,"require_code_owner_review":false,"dismiss_stale_reviews_on_push":true}}]}' \
+  bash "$DOCTOR" --config "$ma_config" 2>&1)"
+assert_not_contains "agent-merges-routine with stale reviews dismissed on push does not fail" \
+  "does not dismiss stale reviews" "$out"
+assert_contains "and positively confirms it, naming the repo and level" \
+  "[ ok ] $slug's merge_autonomy is \"agent-merges-routine\" and its default-branch ruleset dismisses stale reviews on push" "$out"
+
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
+  STUB_RULESETS_JSON="[$noise_ruleset_38,{\"id\":3,\"target\":\"branch\",\"enforcement\":\"active\"}]" \
+  STUB_RULESET_DETAIL_JSON='{"name":"default","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1,"require_code_owner_review":false,"dismiss_stale_reviews_on_push":true}}],"bypass_actors":[{"actor_id":1,"actor_type":"Team","bypass_mode":"always"}]}' \
+  bash "$DOCTOR" --config "$ma_config" 2>&1)"
+rc=$?
+assert_contains "agent-merges-routine with a bypass actor named fails, naming the count" \
+  "[fail] $slug's merge_autonomy is \"agent-merges-routine\" but its default-branch ruleset names 1 bypass actor(s)" "$out"
+assert_eq "and doctor.sh exits 1" "1" "$rc"
+
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
+  STUB_RULESETS_JSON="[$noise_ruleset_38,{\"id\":3,\"target\":\"branch\",\"enforcement\":\"active\"}]" \
+  STUB_RULESET_DETAIL_JSON='{"name":"default","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1,"require_code_owner_review":false,"dismiss_stale_reviews_on_push":true}}],"bypass_actors":[]}' \
+  bash "$DOCTOR" --config "$ma_config" 2>&1)"
+assert_not_contains "no bypass actor at all does not fail" \
+  "bypass actor(s)" "$out"
+assert_contains "and positively confirms none, naming the repo and level" \
+  "[ ok ] $slug's merge_autonomy is \"agent-merges-routine\" and its default-branch ruleset names no bypass actor" "$out"
+
+# --- D18 Stage 3 (agent-ops#575): the Approver App installation's live
+#     granted permissions (lib/approver-token.sh's
+#     approver_token_installation_permissions), stubbed through
+#     APPROVER_TOKEN_CURL exactly as test/approver-token.test.sh stubs the
+#     same wrapper — a real throwaway RSA key so JWT signing is exercised for
+#     real rather than faked, and a stub curl answering the one GET this
+#     check makes. ----------------------------------------------------------
+perm_key="$tmp/approver-perm-key.pem"
+openssl genrsa -out "$perm_key" 2048 >/dev/null 2>&1
+perm_curl="$tmp/perm-curl"
+cat > "$perm_curl" <<'STUB'
+#!/usr/bin/env bash
+d="$(dirname "$0")"
+cat >/dev/null 2>&1
+[[ -f "$d/perm_curl_fail" ]] && exit 1
+status="$(cat "$d/perm_curl_status" 2>/dev/null || echo 200)"
+body="$(cat "$d/perm_curl_body" 2>/dev/null || echo '{}')"
+printf '%s\n%s' "$body" "$status"
+STUB
+chmod +x "$perm_curl"
+stub_perm() {
+  local status="${1:-200}" body="$2"
+  printf '%s' "$status" > "$tmp/perm_curl_status"
+  printf '%s' "$body" > "$tmp/perm_curl_body"
+  rm -f "$tmp/perm_curl_fail"
+}
+
+stub_perm 200 '{"permissions":{"contents":"write","metadata":"read","pull_requests":"write"}}'
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
+  PULLWRIGHT_APPROVER_APP_ID=123456 PULLWRIGHT_APPROVER_INSTALLATION_ID=153689775 \
+  PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$perm_key" APPROVER_TOKEN_CURL="$perm_curl" \
+  bash "$DOCTOR" --config "$ma_approves_config" 2>&1)"
+rc=$?
+assert_contains "the exact three permissions live is ok" \
+  "[ ok ] the Approver App installation carries exactly contents:write, metadata:read and pull_requests:write" "$out"
+assert_eq "and doctor.sh does not fail for it" "0" "$rc"
+
+stub_perm 200 '{"permissions":{"contents":"read","metadata":"read","pull_requests":"write"}}'
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
+  PULLWRIGHT_APPROVER_APP_ID=123456 PULLWRIGHT_APPROVER_INSTALLATION_ID=153689775 \
+  PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$perm_key" APPROVER_TOKEN_CURL="$perm_curl" \
+  bash "$DOCTOR" --config "$ma_approves_config" 2>&1)"
+rc=$?
+assert_contains "a narrower live contents permission fails, naming the gap" \
+  "[fail] the Approver App installation's live permissions do not match what this fleet needs: contents is read, needs write" "$out"
+assert_eq "and doctor.sh exits 1" "1" "$rc"
+
+stub_perm 200 '{"permissions":{"contents":"write","metadata":"read","pull_requests":"write","issues":"write"}}'
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
+  PULLWRIGHT_APPROVER_APP_ID=123456 PULLWRIGHT_APPROVER_INSTALLATION_ID=153689775 \
+  PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$perm_key" APPROVER_TOKEN_CURL="$perm_curl" \
+  bash "$DOCTOR" --config "$ma_approves_config" 2>&1)"
+assert_contains "a permission granted beyond the three required fails too, naming it" \
+  "issues granted but not required" "$out"
+
+touch "$tmp/perm_curl_fail"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
+  PULLWRIGHT_APPROVER_APP_ID=123456 PULLWRIGHT_APPROVER_INSTALLATION_ID=153689775 \
+  PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$perm_key" APPROVER_TOKEN_CURL="$perm_curl" \
+  bash "$DOCTOR" --config "$ma_approves_config" 2>&1)"
+rc=$?
+assert_contains "an unreachable installation endpoint is a skip, never a fail — it degrades gracefully" \
+  "[skip] the Approver App installation's live permissions" "$out"
+assert_eq "and doctor.sh does not exit non-zero for it" "0" "$rc"
+rm -f "$tmp/perm_curl_fail"
+
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
+  bash "$DOCTOR" --config "$ma_approves_config" 2>&1)"
+assert_not_contains "with no credential present in this environment, the fleet-wide permissions check stays silent (already warned about separately)" \
+  "the Approver App installation carries exactly" "$out"
+assert_not_contains "  ... and never prints its own skip line either" \
+  "[skip] the Approver App installation's live permissions" "$out"
+assert_contains "  ... but the consolidated verdict at agent-approves still names it unconfirmed — the App's own live permissions are exactly what agent-approves needs, credential or no" \
+  "$slug's autonomy readiness at \"agent-approves\" could not be fully confirmed — unconfirmed: the Approver App installation's live permissions could not be confirmed" "$out"
+
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
+  PULLWRIGHT_APPROVER_APP_ID=123456 PULLWRIGHT_APPROVER_INSTALLATION_ID=153689775 \
+  PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$perm_key" APPROVER_TOKEN_CURL="$perm_curl" \
+  bash "$DOCTOR" --config "$base_config" 2>&1)"
+assert_not_contains "at human (nothing above human configured), the permissions check stays silent too" \
+  "the Approver App installation" "$out"
+
 # --- D18 WI-5 (requirement 8b): merge_autonomy above human needs
 #     approver_model_default too, the same pairing approver_app_id already
 #     gets — the Approver stage reads it empty as "disabled", so a level
@@ -462,13 +594,13 @@ assert_not_contains "and earns no code-owner ok line either" \
 #     at all, and doctor is where an operator can still see that. -----------
 ma_no_model_config="$tmp/ma-no-model-config.json"
 jq '.merge_autonomy = "agent-approves" | .approver_app_id = "123456"' "$base_config" > "$ma_no_model_config"
-out="$(env PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$ma_no_model_config" 2>&1)"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$ma_no_model_config" 2>&1)"
 rc=$?
 assert_contains "agent-approves with no approver_model_default fails, naming the level" \
   '[fail] merge_autonomy is "agent-approves" with no approver_model_default configured' "$out"
 assert_eq "and doctor.sh exits 1" "1" "$rc"
 
-out="$(env PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$ma_approves_config" 2>&1)"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$ma_approves_config" 2>&1)"
 assert_not_contains "agent-approves with approver_model_default set does not fail on this pairing" \
   "no approver_model_default configured" "$out"
 assert_contains "  ... and positively confirms the level, same as it did before this pairing existed" \
@@ -482,14 +614,14 @@ assert_not_contains "merge_autonomy at the default (human) needs no approver_mod
 #     Enabler enabled to run its adjudication pass against ------------------
 ea_no_enabler_config="$tmp/ea-no-enabler-config.json"
 jq '.escalation_autonomy = "adjudicate-first"' "$base_config" > "$ea_no_enabler_config"
-out="$(env PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$ea_no_enabler_config" 2>&1)"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$ea_no_enabler_config" 2>&1)"
 assert_contains "adjudicate-first with the Enabler disabled warns, naming the key" \
   '[warn] escalation_autonomy is "adjudicate-first" but enabler_model is empty' "$out"
 
 ea_enabled_config="$tmp/ea-enabled-config.json"
 jq '.escalation_autonomy = "adjudicate-first" | .enabler_model = "claude-opus-5"
     | .enabler_assignee = "octocat"' "$base_config" > "$ea_enabled_config"
-out="$(env PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$ea_enabled_config" 2>&1)"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$ea_enabled_config" 2>&1)"
 assert_not_contains "adjudicate-first with the Enabler enabled does not warn on this pairing" \
   "enabler_model is empty" "$out"
 assert_contains "  ... and positively confirms the level" \
@@ -513,8 +645,19 @@ aam_auto_off_json='{"permissions":{"push":true},"archived":false,"allow_auto_mer
 aam_squash_off_json='{"permissions":{"push":true},"archived":false,"allow_auto_merge":true,"allow_squash_merge":false,"default_branch":"main"}'
 aam_both_off_json='{"permissions":{"push":true},"archived":false,"allow_auto_merge":false,"allow_squash_merge":false,"default_branch":"main"}'
 
-out="$(env PATH="$stub_bin:$PATH" \
+# D18 Stage 3 (agent-ops#575): the consolidated autonomy-readiness verdict
+# runs against this same $ma_config (agent-merges-routine) too, so any case
+# below asserting doctor.sh exits 0 also needs a ruleset that satisfies that
+# verdict's *other* preconditions — otherwise a repository this suite never
+# gives any ruleset at all would report its own "no active default-branch
+# ruleset requires approving reviews" as a missing precondition, which is not
+# what these cases test.
+aam_ready_rulesets_json='[{"id":9,"target":"branch","enforcement":"active"}]'
+aam_ready_ruleset_detail_json='{"name":"ready","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1,"require_code_owner_review":false,"dismiss_stale_reviews_on_push":true}}]}'
+
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   STUB_REPO_JSON="$aam_ok_json" STUB_MERGE_QUEUE_JSON='null' \
+  STUB_RULESETS_JSON="$aam_ready_rulesets_json" STUB_RULESET_DETAIL_JSON="$aam_ready_ruleset_detail_json" \
   bash "$DOCTOR" --config "$ma_config" 2>&1)"
 rc=$?
 assert_contains "no merge queue but both merge settings enabled is ok" \
@@ -522,7 +665,7 @@ assert_contains "no merge queue but both merge settings enabled is ok" \
   "$out"
 assert_eq "and doctor.sh exits 0" "0" "$rc"
 
-out="$(env PATH="$stub_bin:$PATH" \
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   STUB_REPO_JSON="$aam_auto_off_json" STUB_MERGE_QUEUE_JSON='null' \
   bash "$DOCTOR" --config "$ma_config" 2>&1)"
 rc=$?
@@ -534,7 +677,7 @@ assert_eq "and doctor.sh exits 1" "1" "$rc"
 # The gap this pairing would otherwise leave open: `--auto --squash` needs
 # `allow_squash_merge` just as much as `allow_auto_merge`, so a repository
 # that merges by rebase or merge commit must not collect a green all-clear.
-out="$(env PATH="$stub_bin:$PATH" \
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   STUB_REPO_JSON="$aam_squash_off_json" STUB_MERGE_QUEUE_JSON='null' \
   bash "$DOCTOR" --config "$ma_config" 2>&1)"
 rc=$?
@@ -545,15 +688,16 @@ assert_eq "  ... and doctor.sh exits 1" "1" "$rc"
 assert_not_contains "  ... and never collects the pass line as well" \
   "no repository setting refuses" "$out"
 
-out="$(env PATH="$stub_bin:$PATH" \
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   STUB_REPO_JSON="$aam_both_off_json" STUB_MERGE_QUEUE_JSON='null' \
   bash "$DOCTOR" --config "$ma_config" 2>&1)"
 assert_contains "both disabled names both in the one failure" \
   "[fail] $slug's merge_autonomy is \"agent-merges-routine\" with no merge queue on main and allow_auto_merge and allow_squash_merge disabled — landing_arm's no-queue fallback, gh pr merge --auto --squash, would be refused outright; enable allow_auto_merge and allow_squash_merge on $slug or adopt a merge queue on main" \
   "$out"
 
-out="$(env PATH="$stub_bin:$PATH" \
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   STUB_REPO_JSON="$aam_both_off_json" STUB_MERGE_QUEUE_JSON="$aam_queue_json" \
+  STUB_RULESETS_JSON="$aam_ready_rulesets_json" STUB_RULESET_DETAIL_JSON="$aam_ready_ruleset_detail_json" \
   bash "$DOCTOR" --config "$ma_config" 2>&1)"
 rc=$?
 assert_contains "an active merge queue is ok regardless of either setting" \
@@ -561,7 +705,7 @@ assert_contains "an active merge queue is ok regardless of either setting" \
   "$out"
 assert_eq "  ... even with both off" "0" "$rc"
 
-out="$(env PATH="$stub_bin:$PATH" \
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   STUB_REPO_JSON="$aam_both_off_json" STUB_MERGE_QUEUE_JSON='null' \
   bash "$DOCTOR" --config "$base_config" 2>&1)"
 assert_not_contains "below the routine tier the pairing stays silent" \
@@ -573,7 +717,7 @@ assert_not_contains "  ... nor a failure" \
 assert_contains "  ... and unrelated checks keep running for this repo" \
   "[ ok ] $slug is writable — the token can push claim branches" "$out"
 
-out="$(env PATH="$stub_bin:$PATH" \
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   STUB_REPO_FAIL=1 \
   bash "$DOCTOR" --config "$ma_config" 2>&1)"
 assert_contains "an unreachable repos/\$slug is a skip, never an ok or a fail" \
@@ -584,7 +728,7 @@ assert_not_contains "  ... never read as a pass" \
 assert_not_contains "  ... never read as a failure either" \
   "would be refused outright" "$out"
 
-out="$(env PATH="$stub_bin:$PATH" \
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   STUB_REPO_JSON="$aam_ok_json" STUB_MERGE_QUEUE_FAIL=1 \
   bash "$DOCTOR" --config "$ma_config" 2>&1)"
 assert_contains "an unreadable merge-queue state is also a skip" \
@@ -599,8 +743,9 @@ assert_contains "an unreadable merge-queue state is also a skip" \
 # not `false`, and reading it as `false` would fail an installation for a
 # setting it never got to see.
 aam_absent_json='{"permissions":{"push":true},"archived":false,"default_branch":"main"}'
-out="$(env PATH="$stub_bin:$PATH" \
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   STUB_REPO_JSON="$aam_absent_json" STUB_MERGE_QUEUE_JSON='null' \
+  STUB_RULESETS_JSON="$aam_ready_rulesets_json" STUB_RULESET_DETAIL_JSON="$aam_ready_ruleset_detail_json" \
   bash "$DOCTOR" --config "$ma_config" 2>&1)"
 rc=$?
 assert_contains "both absent is a skip naming both, never read as disabled" \
@@ -615,7 +760,7 @@ assert_eq "  ... and doctor.sh does not exit non-zero for it" "0" "$rc"
 # One absent sibling alone is still just a skip, and names only the key that
 # was actually missing.
 aam_squash_absent_json='{"permissions":{"push":true},"archived":false,"allow_auto_merge":true,"default_branch":"main"}'
-out="$(env PATH="$stub_bin:$PATH" \
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   STUB_REPO_JSON="$aam_squash_absent_json" STUB_MERGE_QUEUE_JSON='null' \
   bash "$DOCTOR" --config "$ma_config" 2>&1)"
 assert_contains "a readable allow_auto_merge with an unreadable sibling is a skip" \
@@ -628,7 +773,7 @@ assert_not_contains "  ... and does not claim the fallback is accepted" \
 # the absent case is considered, so an unreadable sibling can never mask a
 # setting doctor did read as off.
 aam_off_and_absent_json='{"permissions":{"push":true},"archived":false,"allow_auto_merge":false,"default_branch":"main"}'
-out="$(env PATH="$stub_bin:$PATH" \
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   STUB_REPO_JSON="$aam_off_and_absent_json" STUB_MERGE_QUEUE_JSON='null' \
   bash "$DOCTOR" --config "$ma_config" 2>&1)"
 rc=$?
@@ -641,12 +786,135 @@ assert_not_contains "  ... never downgraded to the unreadable skip" \
 
 # An active queue makes both settings irrelevant, so absent ones are still a
 # plain `ok` there rather than the skip above.
-out="$(env PATH="$stub_bin:$PATH" \
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   STUB_REPO_JSON="$aam_absent_json" STUB_MERGE_QUEUE_JSON="$aam_queue_json" \
   bash "$DOCTOR" --config "$ma_config" 2>&1)"
 assert_contains "absent merge settings with an active queue are still ok" \
   "[ ok ] $slug's merge_autonomy is \"agent-merges-routine\" and main carries an active merge queue — landing_arm enqueues regardless of allow_auto_merge and allow_squash_merge" \
   "$out"
+
+# --- D18 Stage 3 (agent-ops#575): the one consolidated autonomy-readiness
+#     verdict per repository, gathering every precondition above (merge path,
+#     ruleset approval/code-owner/stale-dismissal/bypass-actor, App
+#     installation permissions, approver_app_id/approver_model_default) into
+#     the one question an operator actually has: is $slug's *configured*
+#     merge_autonomy something its forge configuration can support right now.
+# Every precondition satisfied — forge ruleset ready, merge settings both
+# enabled, and the live App installation carrying exactly the three
+# permissions this fleet needs — earns the one positive verdict line, never a
+# `fail`, acceptance check 2's own contrapositive.
+stub_perm 200 '{"permissions":{"contents":"write","metadata":"read","pull_requests":"write"}}'
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
+  PULLWRIGHT_APPROVER_APP_ID=123456 PULLWRIGHT_APPROVER_INSTALLATION_ID=153689775 \
+  PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$perm_key" APPROVER_TOKEN_CURL="$perm_curl" \
+  STUB_REPO_JSON="$aam_ok_json" STUB_MERGE_QUEUE_JSON='null' \
+  STUB_RULESETS_JSON="$aam_ready_rulesets_json" STUB_RULESET_DETAIL_JSON="$aam_ready_ruleset_detail_json" \
+  bash "$DOCTOR" --config "$ma_config" 2>&1)"
+rc=$?
+assert_contains "every precondition satisfied earns one ok verdict" \
+  "[ ok ] $slug's autonomy readiness: \"agent-merges-routine\" is fully supported by its forge configuration" "$out"
+assert_eq "and doctor.sh does not exit non-zero for it" "0" "$rc"
+
+# Nothing satisfied — no ruleset, no merge path, no App permissions readable
+# — is a `fail`, never a `warn` (acceptance check 2), naming every missing
+# precondition and its owner-act/configuration-error tag in the one line.
+touch "$tmp/perm_curl_fail"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
+  PULLWRIGHT_APPROVER_APP_ID=123456 PULLWRIGHT_APPROVER_INSTALLATION_ID=153689775 \
+  PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$perm_key" APPROVER_TOKEN_CURL="$perm_curl" \
+  STUB_REPO_JSON="$aam_both_off_json" STUB_MERGE_QUEUE_JSON='null' \
+  bash "$DOCTOR" --config "$ma_config" 2>&1)"
+rc=$?
+assert_contains "nothing satisfied is a fail, never a warn, naming the repo and level" \
+  "[fail] $slug is configured at \"agent-merges-routine\" but its forge configuration does not support it — missing:" "$out"
+assert_contains "  ... naming the merge-path gap as an owner act" \
+  "no merge queue and allow_auto_merge/allow_squash_merge are not both enabled (owner act)" "$out"
+assert_contains "  ... naming the missing ruleset as an owner act" \
+  "no active default-branch ruleset requires approving reviews (owner act)" "$out"
+assert_not_contains "  ... and never reported as a warn instead" \
+  "[warn] $slug is configured at \"agent-merges-routine\" but its forge configuration" "$out"
+assert_eq "  ... and doctor.sh exits 1" "1" "$rc"
+rm -f "$tmp/perm_curl_fail"
+
+# A missing configuration key (approver_model_default) is named too, tagged
+# distinctly from the forge-side owner acts above.
+ma_config_no_model="$tmp/ma-config-no-model.json"
+jq 'del(.approver_model_default)' "$ma_config" > "$ma_config_no_model"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
+  STUB_REPO_JSON="$aam_ok_json" STUB_MERGE_QUEUE_JSON='null' \
+  STUB_RULESETS_JSON="$aam_ready_rulesets_json" STUB_RULESET_DETAIL_JSON="$aam_ready_ruleset_detail_json" \
+  bash "$DOCTOR" --config "$ma_config_no_model" 2>&1)"
+assert_contains "a missing config key is named as a configuration error, not an owner act" \
+  "approver_model_default is not set (configuration error)" "$out"
+
+# A precondition this run could not check at all (the ruleset endpoint
+# unreachable) is named as unconfirmed and never turns the verdict into a
+# `fail` by itself — acceptance check 7's "degrade gracefully" applied to the
+# one consolidated verdict, not just the individual checks that feed it.
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
+  STUB_REPO_JSON="$aam_ok_json" STUB_MERGE_QUEUE_JSON='null' STUB_RULESETS_FAIL=1 \
+  bash "$DOCTOR" --config "$ma_config" 2>&1)"
+rc=$?
+assert_contains "an unreachable ruleset endpoint is reported unconfirmed, not failed" \
+  "$slug's autonomy readiness at \"agent-merges-routine\" could not be fully confirmed" "$out"
+assert_not_contains "  ... never as a fail for something this run could not check" \
+  "[fail] $slug is configured at \"agent-merges-routine\" but its forge configuration" "$out"
+assert_eq "  ... and doctor.sh does not exit non-zero for it" "0" "$rc"
+
+# The merge-path pass has three skip-and-continue paths of its own that leave
+# no verdict behind at all (repos/<slug> unreachable, no default_branch
+# reported, the merge-queue state unreadable — the live case on
+# Poetic-Poems/agent-ops as of 2026-08-22). The consolidated verdict must name
+# those as could-not-be-read rather than as never-looked-at: at this rank the
+# pass always runs, so an unset entry can only mean a failed read.
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
+  STUB_REPO_JSON="$aam_ok_json" STUB_MERGE_QUEUE_FAIL=1 \
+  STUB_RULESETS_JSON="$aam_ready_rulesets_json" STUB_RULESET_DETAIL_JSON="$aam_ready_ruleset_detail_json" \
+  bash "$DOCTOR" --config "$ma_config" 2>&1)"
+rc=$?
+assert_contains "an unreadable merge-queue state leaves the verdict unconfirmed, naming it as unread" \
+  "$slug's autonomy readiness at \"agent-merges-routine\" could not be fully confirmed — unconfirmed: its merge-settings/merge-queue pairing could not be read" "$out"
+assert_not_contains "  ... never as a fail for something this run could not check" \
+  "[fail] $slug is configured at \"agent-merges-routine\" but its forge configuration" "$out"
+assert_eq "  ... and doctor.sh does not exit non-zero for it" "0" "$rc"
+
+# Below agent-approves (human), the verdict is silent — there is nothing to
+# verify at the level every repository starts at.
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
+  bash "$DOCTOR" --config "$base_config" 2>&1)"
+assert_not_contains "at human, the consolidated verdict prints nothing at all" \
+  "autonomy readiness" "$out"
+
+# At agent-approves (below the routine tier, over $ma_approves_config), the
+# ruleset and merge-path facts play no part — landing_arm is unreachable at
+# this level regardless of either — but the App installation's live
+# permissions still do, since pull_requests:write is the whole of what
+# agent-approves consists of: the App cannot post any review without it. A
+# live installation narrowed off pull_requests:write must not earn the "is
+# fully supported by its forge configuration" line.
+stub_perm 200 '{"permissions":{"contents":"write","metadata":"read"}}'
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
+  PULLWRIGHT_APPROVER_APP_ID=123456 PULLWRIGHT_APPROVER_INSTALLATION_ID=153689775 \
+  PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$perm_key" APPROVER_TOKEN_CURL="$perm_curl" \
+  bash "$DOCTOR" --config "$ma_approves_config" 2>&1)"
+rc=$?
+assert_contains "agent-approves with a narrowed App installation fails, naming the gap as an owner act" \
+  "[fail] $slug is configured at \"agent-approves\" but its forge configuration does not support it — missing: the Approver App installation's live permissions do not match exactly what this fleet needs (owner act)" "$out"
+assert_not_contains "  ... and never the false all-clear that it is fully supported" \
+  "[ ok ] $slug's autonomy readiness: \"agent-approves\" is fully supported by its forge configuration" "$out"
+assert_eq "  ... and doctor.sh exits 1" "1" "$rc"
+
+# The exact three permissions live earns the positive verdict at agent-approves
+# too, exactly as it does at agent-merges-routine above.
+stub_perm 200 '{"permissions":{"contents":"write","metadata":"read","pull_requests":"write"}}'
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
+  PULLWRIGHT_APPROVER_APP_ID=123456 PULLWRIGHT_APPROVER_INSTALLATION_ID=153689775 \
+  PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$perm_key" APPROVER_TOKEN_CURL="$perm_curl" \
+  bash "$DOCTOR" --config "$ma_approves_config" 2>&1)"
+rc=$?
+assert_contains "agent-approves with the exact three permissions live earns the ok verdict" \
+  "[ ok ] $slug's autonomy readiness: \"agent-approves\" is fully supported by its forge configuration" "$out"
+assert_eq "  ... and doctor.sh does not exit non-zero for it" "0" "$rc"
 
 # --- D18 WI-7 (requirement 8d): merge_autonomy_routine_sources naming a
 #     source this repository's own sources list never gathers ---------------
@@ -662,7 +930,7 @@ rs_ok_config="$tmp/rs-ok-config.json"
 jq --arg slug "$slug" \
   '.repos = [{slug: $slug, sources: ["security", "abandoned-drafts", "tech-debt", "register-hygiene"]}]' \
   "$base_config" > "$rs_ok_config"
-out="$(env PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$rs_ok_config" 2>&1)"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$rs_ok_config" 2>&1)"
 assert_not_contains "a repo whose sources cover the default routine list gets no warning" \
   "merge_autonomy_routine_sources names" "$out"
 assert_contains "  ... and a positive ok instead" \
@@ -673,7 +941,7 @@ jq --arg slug "$slug" \
   '.repos = [{slug: $slug, sources: ["security", "abandoned-drafts", "code-quality"],
               merge_autonomy_routine_sources: ["code-quality", "tech-debt"]}]' \
   "$base_config" > "$rs_override_config"
-out="$(env PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$rs_override_config" 2>&1)"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$rs_override_config" 2>&1)"
 assert_contains "a repo-level override is checked against that repo's own sources, naming only the missing entry" \
   "[warn] $slug's merge_autonomy_routine_sources names [tech-debt], which its own sources list never gathers" \
   "$out"
@@ -691,14 +959,14 @@ jq --arg slug "$slug" \
   '.repos = [{slug: $slug, sources: ["security", "abandoned-drafts", "issues:low", "tech-debt"],
               merge_autonomy_routine_sources: ["issues:low", "tech-debt"]}]' \
   "$base_config" > "$rs_banded_config"
-out="$(env PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$rs_banded_config" 2>&1)"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$rs_banded_config" 2>&1)"
 assert_contains "a banded issues:<band> token warns even though the repo's own sources list gathers it" \
   "[warn] $slug's merge_autonomy_routine_sources names [issues:low], a banded issues:<band> token — every issues:<band> work order's own source collapses to the plain word \"issues\" before landing_eligible's comparison ever runs (lib/landing.sh's own header), so this entry can never match a work order; list \"issues\" itself if this repository should land issues work routinely (D18 WI-7)" \
   "$out"
 assert_not_contains "  ... the 'never gathers' warning does not also fire — the repo does gather issues:low" \
   "which its own sources list never gathers" "$out"
 
-out="$(env PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$rs_ok_config" 2>&1)"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$rs_ok_config" 2>&1)"
 assert_not_contains "an unbanded routine list never triggers the banded-token warning" \
   "banded issues:<band> token" "$out"
 
@@ -714,7 +982,7 @@ jq --arg slug "$slug" \
   '.repos = [{slug: $slug, sources: ["security", "abandoned-drafts", "issues:low", "tech-debt"],
               merge_autonomy_routine_sources: ["issues", "tech-debt"]}]' \
   "$base_config" > "$rs_plain_config"
-out="$(env PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$rs_plain_config" 2>&1)"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$rs_plain_config" 2>&1)"
 assert_contains "a bare 'issues' routine entry is gathered, because the repo's sources carry issues:low" \
   "[ ok ] $slug's merge_autonomy_routine_sources are all sources it actually gathers" "$out"
 assert_not_contains "  ... so the 'never gathers' warning does not fire on the normalised token" \
@@ -729,7 +997,7 @@ jq --arg slug "$slug" \
   '.repos = [{slug: $slug, sources: ["security", "tech-debt"],
               merge_autonomy_routine_sources: ["issues", "tech-debt"]}]' \
   "$base_config" > "$rs_noissues_config"
-out="$(env PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$rs_noissues_config" 2>&1)"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$rs_noissues_config" 2>&1)"
 assert_contains "a bare 'issues' entry still warns where the repository gathers no issues source at all" \
   "[warn] $slug's merge_autonomy_routine_sources names [issues], which its own sources list never gathers" \
   "$out"
@@ -744,7 +1012,7 @@ jq --arg slug "$slug" \
   '.merge_autonomy = "agent-merges-all" | .approver_app_id = "123456" | .approver_model_default = "claude-sonnet-5"
    | .repos = [{slug: $slug, sources: ["security", "abandoned-drafts"]}]' \
   "$base_config" > "$lc_config"
-out="$(env PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$lc_config" 2>&1)"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$lc_config" 2>&1)"
 assert_contains "the shipped default landing_cool_off_hours is reported ok" \
   "[ ok ] landing_cool_off_hours is 24h" "$out"
 assert_not_contains "  ... and agent-merges-all with the default cool-off in force draws no warning" \
@@ -752,7 +1020,7 @@ assert_not_contains "  ... and agent-merges-all with the default cool-off in for
 
 lc_zero_config="$tmp/lc-zero-config.json"
 jq '.landing_cool_off_hours = 0' "$lc_config" > "$lc_zero_config"
-out="$(env PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$lc_zero_config" 2>&1)"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$lc_zero_config" 2>&1)"
 assert_contains "landing_cool_off_hours 0 is reported ok, as a value (the sanity check is separate)" \
   "[ ok ] landing_cool_off_hours is 0h (no wait)" "$out"
 assert_contains "  ... but agent-merges-all with it at 0 draws a warning naming both facts" \
@@ -763,7 +1031,7 @@ lc_repo_override_config="$tmp/lc-repo-override-config.json"
 jq --arg slug "$slug" \
   '.repos = [{slug: $slug, sources: ["security", "abandoned-drafts"], landing_cool_off_hours: 0}]' \
   "$lc_config" > "$lc_repo_override_config"
-out="$(env PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$lc_repo_override_config" 2>&1)"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$lc_repo_override_config" 2>&1)"
 assert_contains "a repo-level override is reported under its own label" \
   "[ ok ] $slug's landing_cool_off_hours override is 0h (no wait)" "$out"
 assert_contains "  ... and still warns, resolved through the repo's own override" \
@@ -771,7 +1039,7 @@ assert_contains "  ... and still warns, resolved through the repo's own override
 
 lc_routine_config="$tmp/lc-routine-config.json"
 jq '.merge_autonomy = "agent-merges-routine" | .landing_cool_off_hours = 0' "$lc_config" > "$lc_routine_config"
-out="$(env PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$lc_routine_config" 2>&1)"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$lc_routine_config" 2>&1)"
 assert_not_contains "below agent-merges-all, landing_cool_off_hours 0 draws no warning — the control does not bind there" \
   "landing_cool_off_hours 0 —" "$out"
 
@@ -798,7 +1066,7 @@ run_kill_doctor() {
   # Each case owns its cache: a live fetch in one would otherwise hand the
   # next a cached copy and change which branch it exercises.
   rm -rf "$tmp/kill-state-dir/fleet-cache"
-  out="$(env PATH="$stub_bin:$PATH" \
+  out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
     STUB_REPO_JSON='{"permissions":{"push":true},"archived":false}' \
     "$@" bash "$DOCTOR" --config "$kill_config" 2>&1)"
   rc=$?
@@ -837,14 +1105,14 @@ assert_eq "and doctor.sh still exits 0" "0" "$rc"
 
 approver_env_config="$tmp/approver-env-config.json"
 jq '.approver_app_id = "123456"' "$base_config" > "$approver_env_config"
-out="$(env PATH="$stub_bin:$PATH" PULLWRIGHT_APPROVER_APP_ID=999999 \
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" PULLWRIGHT_APPROVER_APP_ID=999999 \
   bash "$DOCTOR" --config "$approver_env_config" 2>&1)"
 rc=$?
 assert_contains "an env App id differing from the configured one fails, naming both ids" \
   '[fail] PULLWRIGHT_APPROVER_APP_ID is "999999" but approver_app_id is "123456"' "$out"
 assert_eq "and doctor.sh exits 1" "1" "$rc"
 
-out="$(env PATH="$stub_bin:$PATH" PULLWRIGHT_APPROVER_APP_ID=123456 \
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" PULLWRIGHT_APPROVER_APP_ID=123456 \
   bash "$DOCTOR" --config "$approver_env_config" 2>&1)"
 assert_contains "matching env and config App ids earn a positive ok" \
   "[ ok ] PULLWRIGHT_APPROVER_APP_ID matches approver_app_id" "$out"
@@ -858,14 +1126,14 @@ assert_not_contains "with no env App id and none configured, doctor says nothing
 # the Approver stage simply skips this pull request's App review rather than
 # blocking it — but the operator who raised the level is waiting on
 # approvals that never come.
-out="$(env PATH="$stub_bin:$PATH" \
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   bash "$DOCTOR" --config "$ma_approves_config" 2>&1)"
 assert_contains "a level above human with no runtime credential in this environment warns" \
   "[warn] merge_autonomy is above human but the Approver's runtime credential is not present in this environment" "$out"
 
 approver_key="$tmp/approver-key.pem"
 printf 'not-really-a-key\n' > "$approver_key"
-out="$(env PATH="$stub_bin:$PATH" \
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   PULLWRIGHT_APPROVER_APP_ID=123456 \
   PULLWRIGHT_APPROVER_INSTALLATION_ID=42 \
   PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$approver_key" \
@@ -937,7 +1205,7 @@ jq '.schedule.heartbeat_minutes = 11
     | .schedule.state_sync_push_minutes = 13
     | .schedule.state_sync_fetch_minutes = 17
     | .schedule.log_rotation_minute = 42' "$base_config" > "$custom_schedule_config"
-out="$(env PATH="$stub_bin:$PATH" CYCLE_MINUTE=1 bash "$DOCTOR" --config "$custom_schedule_config" 2>&1)"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" CYCLE_MINUTE=1 bash "$DOCTOR" --config "$custom_schedule_config" 2>&1)"
 rc=$?
 assert_contains "a custom heartbeat interval is reported, not the fallback default" \
   "heartbeat every 11 min" "$out"
@@ -949,7 +1217,7 @@ assert_eq "a clean render against a custom schedule does not fail the run" "0" "
 # every minute of the hour leaves it nothing to hash the node's name onto.
 all_excluded_config="$tmp/all-excluded-config.json"
 jq '.schedule.excluded_minutes = [range(0;60)]' "$base_config" > "$all_excluded_config"
-out="$(env PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$all_excluded_config" 2>&1)"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$all_excluded_config" 2>&1)"
 rc=$?
 assert_contains "a renderer that exits non-zero is a doctor.sh failure" \
   "[fail] deploy/docker/render-crontab.sh failed" "$out"
@@ -965,7 +1233,7 @@ cp "$SCRIPT_DIR/lib/config-schema.sh" "$SCRIPT_DIR/lib/model-id.sh" "$SCRIPT_DIR
   "$no_tmpl_app/lib/"
 cp "$SCRIPT_DIR/config.schema.json" "$no_tmpl_app/"
 cp "$SCRIPT_DIR/deploy/docker/render-crontab.sh" "$no_tmpl_app/deploy/docker/"
-out="$(env PATH="$stub_bin:$PATH" bash "$no_tmpl_app/scripts/doctor.sh" --config "$base_config" 2>&1)"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$no_tmpl_app/scripts/doctor.sh" --config "$base_config" 2>&1)"
 rc=$?
 assert_contains "a missing crontab.tmpl is a skip, not a failure" \
   "[skip] deploy/docker/crontab.tmpl is missing" "$out"
@@ -978,13 +1246,13 @@ assert_not_contains "no repo carries a non-zero nice, so the section prints no l
 
 niced_config="$tmp/niced-config.json"
 jq '.repos[0].nice = -5' "$base_config" > "$niced_config"
-out="$(env PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$niced_config" 2>&1)"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$niced_config" 2>&1)"
 assert_contains "a non-zero nice gets its own line, naming the repo and the weighting" \
   "[ ok ] $slug: nice -5 — effective age ×3.05, earlier attention" "$out"
 
 # --- --offline still runs the crontab and nice checks, and skips the rest --
 
-out="$(env PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$niced_config" --offline 2>&1)"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$niced_config" --offline 2>&1)"
 assert_contains "--offline still renders the crontab" "cycle at minute" "$out"
 assert_contains "--offline still reports the background timer minutes" \
   "state sync push every 5 min, fetch every 7 min, log rotation at :19" "$out"
@@ -1009,7 +1277,7 @@ mkdir -p "$unattended_state_dir"
 unattended_config="$tmp/unattended-config.json"
 jq --arg sd "$unattended_state_dir" '.state_dir = $sd' "$niced_config" > "$unattended_config"
 
-out="$(env PATH="$stub_bin:$PATH" \
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   STUB_REPO_JSON='{"permissions":{"push":true},"archived":false}' \
   bash "$DOCTOR" --config "$unattended_config" --unattended 2>&1)"
 assert_contains "--unattended still renders the crontab" "cycle at minute" "$out"
@@ -1035,7 +1303,7 @@ assert_eq "its timestamp is a real UTC instant" "1" \
   "$(jq -r '.timestamp' "$status_file" 2>/dev/null | grep -Ecq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'; echo $((1 - $?)))"
 
 rm -f "$status_file"
-out_plain="$(env PATH="$stub_bin:$PATH" \
+out_plain="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   STUB_REPO_JSON='{"permissions":{"push":true},"archived":false}' \
   bash "$DOCTOR" --config "$unattended_config" 2>&1)"
 assert_eq "an ordinary run (no --unattended) does not write the status file" "0" \
@@ -1055,7 +1323,7 @@ doctor_tmpdir="$tmp/doctor-tmpdir"
 mkdir -p "$doctor_tmpdir"
 
 run_doctor_tmp() {  # run_doctor_tmp [doctor.sh args...]
-  out="$(env PATH="$stub_bin:$PATH" TMPDIR="$doctor_tmpdir" bash "$DOCTOR" "$@" 2>&1)"
+  out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" TMPDIR="$doctor_tmpdir" bash "$DOCTOR" "$@" 2>&1)"
   rc=$?
 }
 assert_empty_tmpdir() {
