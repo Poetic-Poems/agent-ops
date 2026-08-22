@@ -950,7 +950,7 @@ assert_contains "a landed pull request shows the title joined from GitHub" \
   "tidy the hygiene ledger" "$out"
 assert_contains "  ... and the Approver tier that authorised it" \
   "complex" "$out"
-# The join is by pr_url against the newest landing-audit-record at or before
+# The join is by pr_url against the earliest landing-audit-record at or after
 # the arm (requirement 8x, agent-ops#578). A landing with no matching record
 # is the most important row here, so it must render, its own Record cell
 # reading "missing" rather than be dropped for want of a join.

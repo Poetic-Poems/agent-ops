@@ -207,10 +207,14 @@ _landing_is_protected() {
 # established at all (bad arguments, `gh` erroring, a listing that reached
 # LANDING_PR_FILES_LIMIT and so may be hiding more). Reads the changed-file
 # list fresh from GitHub — `gh api repos/SLUG/pulls/N/files`, never the
-# ephemeral clone, whose branch may have moved since it was checked out —
-# and exit 2 is a refusal to arm at every call site, never a pass: an
+# ephemeral clone, whose branch may have moved since it was checked out.
+# At the gate-4.5 call site this guards, exit 2 is a refusal to arm: an
 # unreadable or truncated list must never read as "nothing protected was
-# touched".
+# touched". The other call site — `_landing_stage_attempt`'s own
+# `landing-audit-record` write (requirement 8x) — runs after the arm has
+# already happened, so exit 2 there instead maps to a bare `unknown`
+# protected-path verdict in the record and proceeds; there is nothing left
+# to refuse.
 landing_protected_paths_hit() {
   local slug="$1" number="${2:-}" gh_bin="${LANDING_GH:-gh}"
   [[ -n "$slug" && "$number" =~ ^[0-9]+$ ]] || return 2

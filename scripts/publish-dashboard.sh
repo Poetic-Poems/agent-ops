@@ -2103,19 +2103,26 @@ fi
 #              from "the fleet is idle because the governor closed hours ago"
 #              without a live read of the freeze flag on this tick.
 #
-# The join is by `pr_url` and is deliberately last-write-wins over audit
-# records *at or before* the arm: `_landing_stage_attempt` writes both events
-# from the same function call, moments apart, so this never has to reach
-# further than the newest match — but it is still a join, by timestamp, not
-# an in-band reference, since a `landing-armed` event predates
-# `landing-audit-record` (requirement 8x) and carries no pointer of its own
-# to it. A `landing-armed` with no matching record — an event from before
-# requirement 8x shipped, or a write this process died between the two
-# log_event calls for — is `anomaly: true`: reported, never silently dropped
-# nor rendered with nulls as though the join had simply come up empty. This
-# is the one property WI-8 existed to promise and, before requirement 8x, could
-# not always keep: every landing this digest shows is either fully explained
-# or flagged as unexplained, never quietly incomplete.
+# The join is by `pr_url` and is deliberately first-write-wins over audit
+# records *at or after* the arm: `_landing_stage_attempt` writes
+# `landing-armed` first and `landing-audit-record` second, moments apart from
+# the same function call, so this never has to reach further than the
+# earliest match at or after the arm's own ts — but it is still a join, by
+# timestamp, not an in-band reference, since `landing-armed` carries no
+# pointer of its own to the record that follows it. A `landing-armed` with no
+# matching record at all — an event from before requirement 8x shipped, or a
+# write this process died between the two log_event calls for — is
+# `anomaly: true`: reported, never silently dropped nor rendered with nulls
+# as though the join had simply come up empty. This is the one property WI-8
+# existed to promise and, before requirement 8x, could not always keep: every
+# landing this digest shows is either fully explained or flagged as
+# unexplained, never quietly incomplete. A pre-8x `landing-armed` can still
+# have its tier/verdict explained, even though it stays `anomaly: true`
+# forever (it genuinely has no audit record) — the older `approver-verdict`
+# join this panel used before requirement 8x lives on purely as that
+# fallback, so "the record could not be found" and "the record said so" stay
+# distinguishable without also going back to reading every landing's
+# tier/verdict as `unknown` for events this old.
 # Both inputs travel by file, not argv: `github_json` carries every open pull
 # request the fleet knows about and is exactly the kind of value requirement
 # 4g's MAX_ARG_STRLEN rule exists for (see the note above the assemble call).
@@ -2196,15 +2203,24 @@ landings_json="$(printf '%s\n' "$ALL_EVENTS" | jq -c -s \
   # itself).
   def stale($t): ($t // "" | length) == 0
       or (try ($t | fromdateiso8601) catch 0) < $from_s;
-  # Every landing-audit-record (requirement 8x, agent-ops#578), newest last,
-  # so a lookup can take the last one at or before a given arm. Not
+  # Every landing-audit-record (requirement 8x, agent-ops#578), oldest last,
+  # so a lookup can take the earliest one at or after a given arm. Not
   # restricted to the window: the record that justified a landing early in
-  # the window may predate the window itself. This supersedes the older
-  # approver-verdict join this panel used before requirement 8x: the audit
-  # record itself already carries, in its own `approver` field, the
-  # tier/verdict/adjudication a separate `$verdicts` join used to reconstruct.
+  # the window may predate the window itself. The audit record itself
+  # already carries, in its own `approver` field, the tier/verdict/
+  # adjudication the older `$verdicts` join below used to reconstruct — this
+  # is the primary source for both now, with `$verdicts` kept only as a
+  # fallback for a `landing-armed` event that predates requirement 8x and so
+  # can never have a matching record at all (see `audit_record_for` below).
   ([ .[] | select(.event == "landing-audit-record") ]
     | sort_by(.ts // "")) as $audit_records
+  # Every verdict, newest last, so a lookup can take the last one at or
+  # before a given arm — kept only as the pre-8x fallback described above;
+  # `approver-verdict` genuinely precedes the arm it authorised, unlike
+  # `landing-audit-record`, so "at or before" is correct here even though it
+  # is wrong for `audit_record_for`.
+  | ([ .[] | select(.event == "approver-verdict") ]
+    | sort_by(.ts // "")) as $verdicts
   | ([ .[] | select(.event == "landing-armed") | select(in_window) ]
       | sort_by(.ts // "") | reverse) as $armed
   | ([ .[] | select(.event == "landing-refused") | select(in_window) ]
@@ -2229,10 +2245,26 @@ landings_json="$(printf '%s\n' "$ALL_EVENTS" | jq -c -s \
     + [ .[] | select(.event == "merge-budget-hold") | . + {status: "held"} ]
     + [ .[] | select(.event == "merge-budget-frozen") | . + {status: "frozen"} ]
     | sort_by(.ts // "") | group_by(.repo // "") | map(last) ) as $latest_budget
-  # The audit record at or before a given arm — see the comment above
-  # $audit_records for why "at or before", unlike audit_for below.
+  # The audit record at or after a given arm: `_landing_stage_attempt` always
+  # writes `landing-armed` first and `landing-audit-record` second, moments
+  # apart from the same function call (agent-cycle.sh:4563 and :4613), so the
+  # record this arm produced is never the newest match at-or-before its own
+  # ts — it is the *earliest* one at-or-after it. $audit_records is sorted
+  # ascending, so `first` here is that earliest match, never the latest.
+  # This is also why a retried landing still pairs up correctly with no
+  # extra bookkeeping: an earlier arm and its own record always land before
+  # the next arm for the same pr_url even happens, so that record is already
+  # consumed by the time a later arm goes looking.
   | def audit_record_for($url; $at):
-      ([ $audit_records[] | select((.pr_url // "") == $url) | select((.ts // "") <= $at) ] | last);
+      ([ $audit_records[] | select((.pr_url // "") == $url) | select((.ts // "") >= $at) ] | first);
+  # The pre-8x fallback (see the comment above $verdicts): only reached when
+  # audit_record_for above found nothing, which is the one case an
+  # approver-verdict join can still explain — a `landing-armed` this old
+  # never gets a `landing-audit-record` no matter how the join runs, so
+  # falling back is not a second attempt at the same fact, it is the only
+  # source left for it.
+  def verdict_for($url; $at):
+      ([ $verdicts[] | select((.pr_url // "") == $url) | select((.ts // "") <= $at) ] | last);
   # Every classifier-escape/landing-audit event, newest last, joined by
   # pr_url alone — never at-or-before, unlike audit_record_for above, since
   # an audit only ever happens after the landing it covers, so there is no
@@ -2249,7 +2281,9 @@ landings_json="$(printf '%s\n' "$ALL_EVENTS" | jq -c -s \
     window_hours: $hours,
     generated_at: $now,
     armed: [ $armed[] | (.pr_url // "") as $u | (.ts // "") as $at
-      | (audit_record_for($u; $at)) as $ar | ($prs[$u] // null) as $pr
+      | (audit_record_for($u; $at)) as $ar
+      | (if $ar == null then verdict_for($u; $at) else null end) as $v
+      | ($prs[$u] // null) as $pr
       | { ts: $at,
           repo: (.repo // ""),
           pr_url: $u,
@@ -2262,9 +2296,9 @@ landings_json="$(printf '%s\n' "$ALL_EVENTS" | jq -c -s \
           complexity: (.complexity // ""),
           method: (.method // ""),
           node: (.node // ""),
-          tier: ($ar.approver.tier // null),
-          verdict: ($ar.approver.verdict // null),
-          adjudication: ($ar.approver.adjudication // null),
+          tier: ($ar.approver.tier // $v.tier // null),
+          verdict: ($ar.approver.verdict // $v.verdict // null),
+          adjudication: ($ar.approver.adjudication // $v.adjudication // null),
           anomaly: ($ar == null) } + audit_for($u) ],
     refused: [ $refused[] | { ts: (.ts // ""), repo: (.repo // ""),
                               pr_url: (.pr_url // ""), reason: (.reason // "") } ],

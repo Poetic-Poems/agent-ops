@@ -283,10 +283,22 @@ mkdir -p "$home_dir/.local/state/poetic-agents/cycles"
 
 pr1="https://github.com/Poetic-Poems/agent-ops/pull/901"
 pr2="https://github.com/Poetic-Poems/agent-ops/pull/902"
+pr3="https://github.com/Poetic-Poems/agent-ops/pull/903"
 {
-  printf '{"ts":"2026-08-22T01:00:00Z","cycle":"c1","node":"node-1","event":"landing-audit-record","pr_url":"%s","repo":"Poetic-Poems/agent-ops","number":901,"head_sha":"sha1","source":"tech-debt","complexity":"medium","autonomy":{"level":"agent-merges-routine","source":"top-level-default"},"protected_path":{"verdict":"clear","paths":[]},"approver":{"tier":"complex","model":"claude-sonnet-5","verdict":"approve","adjudication":false,"history":[]},"gates":[],"budget":{"decision":"arm","cap":8,"count":1,"anomaly":false,"waiting_backlog":null},"mechanism":"enqueued"}\n' "$pr1"
-  printf '{"ts":"2026-08-22T01:00:01Z","cycle":"c1","node":"node-1","event":"landing-armed","pr_url":"%s","repo":"Poetic-Poems/agent-ops","source":"tech-debt","complexity":"medium","method":"enqueued"}\n' "$pr1"
+  # pr1 — the real write order `_landing_stage_attempt` produces: `landing-armed`
+  # first, `landing-audit-record` one second later (the gh round-trip between
+  # the two writes). The digest join must find this record despite it landing
+  # in a later second than the arm.
+  printf '{"ts":"2026-08-22T01:00:00Z","cycle":"c1","node":"node-1","event":"landing-armed","pr_url":"%s","repo":"Poetic-Poems/agent-ops","source":"tech-debt","complexity":"medium","method":"enqueued"}\n' "$pr1"
+  printf '{"ts":"2026-08-22T01:00:01Z","cycle":"c1","node":"node-1","event":"landing-audit-record","pr_url":"%s","repo":"Poetic-Poems/agent-ops","number":901,"head_sha":"sha1","source":"tech-debt","complexity":"medium","autonomy":{"level":"agent-merges-routine","source":"top-level-default"},"protected_path":{"verdict":"clear","paths":[]},"approver":{"tier":"complex","model":"claude-sonnet-5","verdict":"approve","adjudication":false,"history":[]},"gates":[],"budget":{"decision":"arm","cap":8,"count":1,"anomaly":false,"waiting_backlog":null},"mechanism":"enqueued"}\n' "$pr1"
+  # pr2 — no audit record and no approver-verdict either: genuinely
+  # unexplained, tier/verdict stay null and it renders as an anomaly.
   printf '{"ts":"2026-08-22T02:00:00Z","cycle":"c2","node":"node-1","event":"landing-armed","pr_url":"%s","repo":"Poetic-Poems/agent-ops","source":"register-hygiene","complexity":"low","method":"auto-merge"}\n' "$pr2"
+  # pr3 — a pre-8x `landing-armed`: no audit record will ever match it, but an
+  # `approver-verdict` from before the arm is on record, so the fallback join
+  # should still populate tier/verdict while anomaly stays true.
+  printf '{"ts":"2026-08-22T02:59:00Z","cycle":"c3","node":"node-1","event":"approver-verdict","pr_url":"%s","repo":"Poetic-Poems/agent-ops","tier":"critical","model":"claude-sonnet-5","verdict":"approve","refuse_streak":0,"adjudication":false,"posted":true}\n' "$pr3"
+  printf '{"ts":"2026-08-22T03:00:00Z","cycle":"c3","node":"node-1","event":"landing-armed","pr_url":"%s","repo":"Poetic-Poems/agent-ops","source":"tech-debt","complexity":"low","method":"auto-merge"}\n' "$pr3"
 } > "$home_dir/.local/state/poetic-agents/log.jsonl"
 
 env HOME="$home_dir" "$PUBLISH" --no-github >/dev/null 2>&1
@@ -301,17 +313,24 @@ assert_eq "data.js payload is valid JSON" "0" "$?"
 landings="$(jq -c '.landings' <<<"$data")"
 row1="$(jq -c --arg u "$pr1" '.armed[] | select(.pr_url == $u)' <<<"$landings")"
 row2="$(jq -c --arg u "$pr2" '.armed[] | select(.pr_url == $u)' <<<"$landings")"
+row3="$(jq -c --arg u "$pr3" '.armed[] | select(.pr_url == $u)' <<<"$landings")"
 
-assert_eq "the landing with a matching audit record renders its own tier" \
+assert_eq "the landing with a matching audit record written one second after the arm still renders its own tier" \
   '"complex"' "$(jq -c '.tier' <<<"$row1")"
 assert_eq "  ... and verdict" '"approve"' "$(jq -c '.verdict' <<<"$row1")"
 assert_eq "  ... and is not an anomaly" "false" "$(jq -c '.anomaly' <<<"$row1")"
 
-assert_eq "the landing with no matching audit record carries a null tier" \
+assert_eq "the landing with no matching audit record and no approver-verdict carries a null tier" \
   "null" "$(jq -c '.tier' <<<"$row2")"
 assert_eq "  ... a null verdict" "null" "$(jq -c '.verdict' <<<"$row2")"
 assert_eq "  ... and is reported as an anomaly, never a silent null" \
   "true" "$(jq -c '.anomaly' <<<"$row2")"
+
+assert_eq "a pre-8x landing with no audit record but a prior approver-verdict falls back to it for tier" \
+  '"critical"' "$(jq -c '.tier' <<<"$row3")"
+assert_eq "  ... and verdict" '"approve"' "$(jq -c '.verdict' <<<"$row3")"
+assert_eq "  ... but still renders as an anomaly, since it genuinely has no audit record" \
+  "true" "$(jq -c '.anomaly' <<<"$row3")"
 
 echo
 if (( failures > 0 )); then
