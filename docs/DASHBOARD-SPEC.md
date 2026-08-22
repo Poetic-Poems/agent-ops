@@ -974,13 +974,33 @@ Three things it will not hide, each a way a digest could mislead by omission:
   qualifying, so an engaged switch groups on its own rather than folding into
   (or being indistinguishable from) the full-sentence group a level simply
   never raised forms.
-- **The merge budget**, per repository: `merge_budget_per_day`'s effective cap
-  against what the window consumed, so a repository approaching its governor is
-  visible before it starts holding work back. An unlimited repository (`0`)
-  reads as `∞`, never as a cap of zero. The caps are derived from
-  `config.json` here rather than by calling `merge_budget_effective_cap`, whose
-  own resolution also consults the freeze flag over the network — a read a
-  dashboard tick has no business making.
+- **The merge budget** (D18 issue #574), per repository: `merge_budget_per_day`'s
+  effective cap against consumption, its status (`ok`/`held`/`frozen`), and,
+  when held or frozen, the oldest waiting pull request and its age. An
+  unlimited repository (`0`) reads as `∞`, never as a cap of zero. Consumption
+  is sourced from the same rolling-24h count `lib/merge-budget.sh` itself
+  reads, never a private one recomputed here: `landing-armed`, `merge-budget-
+  hold` and `merge-budget-frozen` each now carry the `cap`/`count`
+  `merge_budget_decide` read at that decision, so the single latest of the
+  three for a repository — across the whole retained log, not only this
+  digest's own window, the same reasoning the verdict join below already uses
+  — is that repository's current state. This is what keeps the freeze's own
+  reason and the oldest waiting pull request visible without a live read of
+  the freeze flag or `merge_budget_oldest_waiting`: both ride the
+  `merge-budget-frozen`/`merge-budget-hold` event that already fires the
+  moment `lib/merge-budget.sh` establishes them, rather than a second network
+  call this dashboard tick has no business making. A repository this tick has
+  never seen a budget decision for falls back to `config.json`'s configured
+  cap, reported `ok` with nothing yet consumed — a real absence of data, not a
+  claim that nothing has landed.
+
+  A held or frozen repository never renders folded into the plain
+  `consumed/cap` text an `ok` repository gets, and never folded into the
+  refusals count above either — a budget hold is not an eligibility refusal,
+  even though both mean a pull request did not land that cycle. Each earns its
+  own row, badged `held` or `frozen`; a `frozen` row also states why, in the
+  same words `merge_budget_apply_decision` logged at the moment it froze the
+  repository.
 - **Its own failure.** A payload the Publisher could not assemble sets `armed`
   to `null` and renders as "could not be assembled this tick", explicitly
   distinguished from a quiet night. An empty array is a real and reportable

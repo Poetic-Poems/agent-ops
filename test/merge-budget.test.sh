@@ -460,6 +460,9 @@ assert_eq "an anomaly logs hold, frozen and escalated — three events" \
   "3" "$(wc -l < "$log_calls" | tr -d ' ')"
 assert_eq "in that order" "merge-budget-hold	merge-budget-frozen	merge-budget-freeze-escalated" \
   "$(cut -f1 "$log_calls" | paste -sd$'\t')"
+frozen_payload="$(grep '^merge-budget-frozen	' "$log_calls" | cut -f2-)"
+assert_eq "the frozen event carries a deterministic reason a dashboard tick can show without a live read of the freeze flag (D18 issue #574)" \
+  "counting anomaly: 3 landed > 1 cap" "$(jq -r '.reason' <<<"$frozen_payload")"
 assert_eq "and the repo is now genuinely frozen" "disabled" \
   "$(merge_budget_freeze_state "acme/state-repo" "$fs" "acme/widgets" | jq -r '.state')"
 assert_eq "the escalation issue is filed against the repo itself, never a fleet-wide escalation repo" \
@@ -471,6 +474,14 @@ after="$(wc -l < "$issue_calls" | tr -d ' ')"
 assert_eq "a second anomaly on an already-frozen repo does not re-freeze or re-file — dedup holds" \
   "$before" "$after"
 merge_budget_freeze_clear "acme/state-repo" "$fs" "acme/widgets" >/dev/null
+
+: > "$log_calls"
+anomaly_with_backlog_json='{"decision":"hold","cap":1,"count":2,"anomaly":true,"waiting_backlog":{"number":21,"url":"https://github.com/acme/gizmos/pull/21","created_at":"2026-08-14T00:00:00Z"}}'
+merge_budget_apply_decision "$anomaly_with_backlog_json" "acme/gizmos" "acme/state-repo" "escalation" "octocat"
+frozen_backlog_payload="$(grep '^merge-budget-frozen	' "$log_calls" | cut -f2-)"
+assert_eq "the frozen event also carries the same waiting_backlog the paired hold event just logged, so a frozen row still names what it is holding without a second read" \
+  "21" "$(jq -r '.waiting_backlog.number' <<<"$frozen_backlog_payload")"
+merge_budget_freeze_clear "acme/state-repo" "$fs" "acme/gizmos" >/dev/null
 
 echo
 if (( failures == 0 )); then

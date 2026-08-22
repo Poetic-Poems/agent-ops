@@ -2093,9 +2093,13 @@ fi
 #              two landings and forty refusals is a classifier holding the
 #              line; the same two landings with no refusals is a gate that
 #              may not be running at all, and those must not look alike.
-#   budget   — per repository, `merge_budget_per_day`'s cap against what the
-#              window actually consumed, so an operator can see a repository
-#              approaching its governor before it starts holding work.
+#   budget   — per repository, `merge_budget_per_day`'s effective cap against
+#              the rolling-24h count `lib/merge-budget.sh` itself last read,
+#              its status (`ok`/`held`/`frozen`), and — held or frozen — the
+#              oldest waiting pull request and (`frozen` only) why, so an
+#              operator can tell "the fleet is idle because there is no work"
+#              from "the fleet is idle because the governor closed hours ago"
+#              without a live read of the freeze flag on this tick.
 #
 # The join is by `pr_url` and is deliberately last-write-wins over verdicts
 # *at or before* the arm: an Approver may review the same pull request across
@@ -2107,11 +2111,29 @@ fi
 # Both inputs travel by file, not argv: `github_json` carries every open pull
 # request the fleet knows about and is exactly the kind of value requirement
 # 4g's MAX_ARG_STRLEN rule exists for (see the note above the assemble call).
-# The caps are derived here rather than by sourcing lib/merge-budget.sh, whose
-# `merge_budget_effective_cap` also consults the freeze flag over the network —
-# a read this script has no business making on a dashboard tick. The precedence
-# is the same one that file documents: the repository's own entry, else the
-# top-level key, else the shipped default of 8.
+# The configured caps below are a fallback only, for a repository this tick
+# has never yet seen a `merge_budget_decide` result for — they are not derived
+# by sourcing lib/merge-budget.sh, whose `merge_budget_effective_cap` also
+# consults the freeze flag over the network, a read this script has no
+# business making on a dashboard tick. The precedence is the same one that
+# file documents: the repository's own entry, else the top-level key, else
+# the shipped default of 8.
+#
+# The per-repository `budget` block itself (D18 issue #574) is sourced from
+# the event log, never recomputed: `landing-armed` (an `arm`), `merge-budget-
+# hold` (a `hold`) and `merge-budget-frozen` (a `hold` that was also an
+# anomaly) each carry the `cap`/`count` `merge_budget_decide` actually read at
+# that decision — the same rolling-24h count `lib/merge-budget.sh` itself
+# counts, never a private one — so the *single latest* of the three for a
+# repository, across the whole log rather than only this digest's own window
+# (the same "not restricted to the window" reasoning `$verdicts` above already
+# uses), is that repository's current cap, consumption and status: `ok` (the
+# last thing gate 5 did for it was arm), `held` (exhausted, but no anomaly) or
+# `frozen` (an anomaly froze it to `agent-approves`). A repository gate 5 has
+# never reached — no candidate pull request has reached it yet this fleet's
+# whole retained log — reports `ok` with `consumed: 0` against its configured
+# cap: a real absence of data, not a claim that nothing has landed, but the
+# same one merge_budget_decide itself makes before its first read.
 printf '%s' "$github_json" > "$work_tmp/landing-github.json"
 jq -c '(.merge_budget_per_day // 8) as $top
   | [ (.repos // [])[] | {key: .slug, value: ((.merge_budget_per_day // $top))} ]
@@ -2140,6 +2162,13 @@ landings_json="$(printf '%s\n' "$ALL_EVENTS" | jq -c -s \
       | sort_by(.ts // "") | reverse) as $refused
   | (($ghf[0].prs // []) | map({key: (.url // ""), value: .}) | from_entries) as $prs
   | ($cfgf[0] // {}) as $caps
+  # The budget state per repository, latest wins, over the whole retained
+  # log — see the comment above this jq call for why unbounded is correct
+  # here even though $armed/$refused stay window-bound.
+  | ( [ .[] | select(.event == "landing-armed") | select(has("cap")) | . + {status: "ok"} ]
+    + [ .[] | select(.event == "merge-budget-hold") | . + {status: "held"} ]
+    + [ .[] | select(.event == "merge-budget-frozen") | . + {status: "frozen"} ]
+    | sort_by(.ts // "") | group_by(.repo // "") | map(last) ) as $latest_budget
   | def verdict_for($url; $at):
       ([ $verdicts[] | select((.pr_url // "") == $url) | select((.ts // "") <= $at) ] | last);
   {
@@ -2164,16 +2193,21 @@ landings_json="$(printf '%s\n' "$ALL_EVENTS" | jq -c -s \
           adjudication: ($v.adjudication // null) } ],
     refused: [ $refused[] | { ts: (.ts // ""), repo: (.repo // ""),
                               pr_url: (.pr_url // ""), reason: (.reason // "") } ],
-    budget: ( ($armed | group_by(.repo // "")
-        | map({ repo: (.[0].repo // ""), consumed: length })) as $used
-      | ([ ($used[] | .repo), ($caps | keys[]) ] | unique | map(select(. != ""))) as $repos
+    budget: ( ([ ($latest_budget[] | .repo // ""), ($caps | keys[]) ] | unique
+                | map(select(. != ""))) as $repos
       | [ $repos[] | . as $r
-          | (($caps[$r] // null)) as $cap
-          | (([ $used[] | select(.repo == $r) | .consumed ] | first) // 0) as $c
-          | { repo: $r, cap: $cap, consumed: $c,
+          | (($caps[$r] // null)) as $cfg_cap
+          | (([ $latest_budget[] | select((.repo // "") == $r) ] | first)) as $lb
+          | (if $lb then ($lb.cap // $cfg_cap) else $cfg_cap end) as $cap
+          | (if $lb then $lb.count else null end) as $c
+          | (if $lb then $lb.status else "ok" end) as $status
+          | (if $lb and $status == "frozen" then ($lb.reason // null) else null end) as $reason
+          | (if $lb then ($lb.waiting_backlog // null) else null end) as $backlog
+          | { repo: $r, cap: $cap, consumed: ($c // 0),
               unlimited: ($cap == 0 or $cap == null),
               remaining: (if ($cap == 0 or $cap == null) then null
-                          else ([ ($cap - $c), 0 ] | max) end) } ] )
+                          else ([ ($cap - ($c // 0)), 0 ] | max) end),
+              status: $status, reason: $reason, oldest_waiting: $backlog } ] )
   }' 2>/dev/null)"
 if ! jq -e 'type == "object"' <<<"$landings_json" >/dev/null 2>&1; then
   # Same fail-visible-not-fail-silent rule the rest of this script follows: an

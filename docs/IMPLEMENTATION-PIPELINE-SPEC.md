@@ -6986,11 +6986,20 @@ implements.
     and the decision is not `arm` — from `run_landing_stage`'s own round and
     from the requirement 8u landing-retry sweep alike, since both enter that
     gate through the same function — carrying `repo`, `cap` and `count`
-    throughout, plus `waiting_backlog` on `merge-budget-hold`, `fleet_flag`
-    (the write outcome) on `merge-budget-frozen`, and
+    throughout, plus `waiting_backlog` on `merge-budget-hold`; `fleet_flag`
+    (the write outcome), `reason` (a short, deterministic rendering of the
+    anomaly, D18 issue #574) and the same `waiting_backlog` the paired
+    `merge-budget-hold` event just carried, on `merge-budget-frozen`; and
     `issue_number`/`issue_url` on
     `merge-budget-freeze-escalated`, on the same terms
-    `crash-loop-escalated`/`approver-escalated` already carry theirs.
+    `crash-loop-escalated`/`approver-escalated` already carry theirs. `reason`
+    and `waiting_backlog` on `merge-budget-frozen` (D18 issue #574) exist so a
+    dashboard tick can show why a repository is frozen and what it is holding
+    without a live read of the freeze flag or `merge_budget_oldest_waiting` —
+    both network reads a dashboard tick has no business making
+    (`docs/DASHBOARD-SPEC.md`'s own budget note) — sourced instead from the
+    event that already fires the moment `merge_budget_apply_decision`
+    establishes them, the only place either fact is ever established.
     `enabler-adjudication` (requirement 36b, `escalation_autonomy:
     "adjudicate-first"`, agent-ops#627) is logged once per adjudication pass
     `run_enabler_adjudication` runs, carrying `repo`, `item`, `verdict`
@@ -7172,7 +7181,13 @@ implements.
     `landing-armed` (requirement 8d, D18 WI-7) is written once per successful
     arm, carrying `pr_url`, `repo`, `source`, `complexity` and `method` —
     `enqueued` or `auto-merge`, `landing_arm`'s own report of which write it
-    made — plus `retry: true` when the arm came from the landing-retry sweep
+    made — plus `cap` and `count` (D18 issue #574), gate 5's own
+    `merge_budget_decide` result at the moment this arm was granted, paid for
+    already and never a second read; this is the only trace an `arm` decision
+    leaves of the cap/count `merge_budget_decide` saw, so a dashboard tick can
+    read a repository's current consumption from the single latest of this
+    event and `merge-budget-hold`/`merge-budget-frozen` — plus `retry: true`
+    when the arm came from the landing-retry sweep
     rather than the round that first approved the pull request (requirement
     8u); the field is absent, never `false`, on that original round. A
     `landing-refused` carries `pr_url`, `repo` and `reason` — a plain

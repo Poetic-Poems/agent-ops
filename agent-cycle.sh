@@ -4436,9 +4436,21 @@ _landing_stage_attempt() {
 
   local retry_bool="false"
   [[ -z "$retry" ]] || retry_bool="true"
+  # `cap`/`count` (D18 issue #574) are gate 5's own `budget_json`, already
+  # paid for above — never a second read. This is the only place an `arm`
+  # decision leaves any trace of the cap/count `merge_budget_decide` saw, so
+  # a dashboard tick can source a repository's current consumption from the
+  # same rolling-24h count `lib/merge-budget.sh` uses (never a private
+  # counter) without a live read of its own: the latest of this event and
+  # `merge-budget-hold`/`merge-budget-frozen` for a repository is that
+  # repository's last-known budget state.
+  local budget_cap budget_count
+  budget_cap="$(jq -r '.cap' <<<"$budget_json")"
+  budget_count="$(jq -c '.count' <<<"$budget_json")"
   log_event "landing-armed" "$(jq -nc --arg u "$pr_url" --arg r "$slug" --arg src "$source" \
     --arg c "$complexity" --arg m "$method" --argjson retry "$retry_bool" \
-    '{pr_url: $u, repo: $r, source: $src, complexity: $c, method: $m} + (if $retry then {retry: true} else {} end)')"
+    --argjson cap "$budget_cap" --argjson count "$budget_count" \
+    '{pr_url: $u, repo: $r, source: $src, complexity: $c, method: $m, cap: $cap, count: $count} + (if $retry then {retry: true} else {} end)')"
   _landing_stage_attempt_armed=1
 }
 
