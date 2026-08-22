@@ -6284,12 +6284,15 @@ acquire_lock() {
 peers_dir="$(fleet_peers_dir "$workspace_root")"
 union_log="$cycle_dir/.fleet-log.jsonl"
 fleet_logs "$state_dir" "$peers_dir" log.jsonl > "$union_log" || true
-# The snapshot's own horizon (requirement 39f, #670): how far forward the
-# fleet's shared memory reaches as of this snapshot, not wall clock — the own-
-# label grace window has to be measured against that, or a long cycle reads a
-# peer's label write, already inside the snapshot, as older than it is by the
-# cycle's own runtime. Captured here, immediately after the snapshot and
-# before this cycle's own log lines are appended into `$union_log` (three
+# The snapshot's own horizon (requirement 39f, #670): the newest `.ts` the
+# union above reaches, not wall clock — in practice this cycle's own
+# `cycle-start` event, already in this node's log by the time `fleet_logs`
+# unions it in, unless a peer's fetched log carries something newer. The
+# own-label grace window has to be measured against that, or a long cycle
+# reads a peer's label write, already inside the snapshot, as older than it
+# is by the cycle's own runtime. Captured here, immediately after the
+# snapshot and before this cycle's own log lines are appended into
+# `$union_log` (three
 # such appends stand between here and the requirement-39f read-back below,
 # and more after it): an append reordered ahead of this point would make the
 # horizon track wall clock again through this node's own fresh events, and

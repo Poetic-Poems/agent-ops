@@ -10430,13 +10430,21 @@ implements.
       #598 cycled indefinitely on exactly this). A deferred candidate is
       excluded from *both* directions: not reported as a hand-flag, and not
       offered up for the stale-removal retry below, since it is not proven to
-      be this system's own write either. The accepted cost: because the
-      snapshot horizon lags wall clock by however far state-sync itself lags,
-      a genuine human hand-flag is recognised once *some* later cycle's own
-      horizon passes `labelled_at` plus the grace period — typically the next
-      cycle or the one after, since every node's own snapshot is at least as
-      fresh as that node's previous cycle — rather than at a fixed 30
-      wall-clock minutes after the human's click.
+      be this system's own write either. What the horizon is worth stating
+      exactly, because it is not the state-sync fetch time: `union_log` is
+      `fleet_logs`' union of this node's *own* log and the peers' (`lib/fleet.sh`),
+      and this cycle has already logged its `cycle-start` event into its own
+      log before the snapshot is taken — so the newest `.ts` across the union
+      is this cycle's own start, and only exceeds it where a peer's fetched
+      log happens to carry something newer. That is the quantity the grace
+      period should be measured against: it removes this cycle's own runtime
+      between its start and the read-back — the 36 minutes that made
+      agent-ops#598 cycle — while leaving state-sync's own propagation lag
+      covered by `LABEL_OWN_GRACE_SECONDS` itself, exactly as #526 sized it.
+      The accepted cost is that one cycle's runtime: a genuine human hand-flag
+      is recognised by the first cycle that *starts* at least the grace period
+      after `labelled_at`, rather than by the first read-back that *runs* that
+      long after it.
     - **not-ours**: everything else — the pre-#526 fail-safe default, and
       still the answer for an unreadable log, a malformed argument, or a
       missing `labelled_at`.

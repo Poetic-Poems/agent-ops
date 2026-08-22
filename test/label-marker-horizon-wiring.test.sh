@@ -60,8 +60,11 @@ assert_eq() {
 # appends that go on to mutate it.
 first_line_matching() { grep -n -m1 -- "$1" "$CYCLE" | cut -d: -f1; }
 
+# shellcheck disable=SC2016  # grep patterns: the `$` is agent-cycle.sh's own
+# variable reference, matched literally, not one to expand here.
 snapshot_line="$(first_line_matching 'fleet_logs .* > "\$union_log"')"
 horizon_line="$(first_line_matching '^union_log_horizon=')"
+# shellcheck disable=SC2016  # ditto — agent-cycle.sh's `$union_log`, literal.
 append_line="$(first_line_matching '>> "\$union_log"')"
 
 assert_eq "the union-log snapshot is still where this test expects to find it" \
@@ -90,6 +93,7 @@ joined="$(sed -e ':a' -e '/\\$/N; s/\\\n//; ta' "$CYCLE")"
 call_passes_horizon() {
   local fn="$1" call
   call="$(grep -m1 -- "$fn \"" <<<"$joined")"
+  # shellcheck disable=SC2016  # the literal text sought in agent-cycle.sh.
   [[ "$call" == *'"$union_log_horizon"'* ]] && echo yes || echo no
 }
 
