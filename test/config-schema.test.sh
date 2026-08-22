@@ -88,12 +88,26 @@ assert_rejected() {
 # doctor.sh against an already-built fixture and grades the result; shared by
 # assert_doctor and assert_doctor_shipped below, which differ only in how
 # they build the fixture the check runs against.
+#
+# Clears the three Approver runtime-credential variables from doctor.sh's own
+# environment before running it, the same way DOCTOR_NEUTRAL_MUTATION clears
+# their config.json counterparts before a fixture's own mutation runs: on a
+# host where these are set for real (the deployed container, where doctor.sh
+# ordinarily runs), lib/approver-token.sh's own reconciliation
+# (scripts/doctor.sh, requirement 14b) compares a fixture's constructed
+# approver_app_id against that real value rather than an absent one, and a
+# fixture that never mentions the Approver's runtime credential must not
+# silently inherit it (TD-PPagop-26082201). A fixture that wants one of these
+# variables set has to say so itself, by setting it before calling
+# assert_doctor/assert_doctor_shipped.
 _assert_doctor_check() {
   local desc="$1" expected_exit="$2" expect="$3" fixture="$4" out status
   # Not --quiet: several of the rules below are asserted through the `ok` line
   # they print, and a check that passes silently cannot be told from one that
   # never ran.
-  out="$(bash "$SCRIPT_DIR/scripts/doctor.sh" --offline --config "$fixture" 2>&1)"
+  out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID \
+    -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH \
+    bash "$SCRIPT_DIR/scripts/doctor.sh" --offline --config "$fixture" 2>&1)"
   status=$?
   if (( status != expected_exit )); then
     printf 'FAIL - %s\n     expected exit %s, got %s\n     output: %s\n' \
