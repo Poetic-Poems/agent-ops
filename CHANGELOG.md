@@ -504,15 +504,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   defined for exactly the population that never gets voided. All four entries
   in the extract already past the age gate are of that shape.
 
-- `techdebt_file_debt` no longer orphans a `td-record/<id>` branch and its
-  `td/<id>` reservation when the filing pull request itself fails to open
-  (TD-PPagop-26082203). It already wrote both the reservation and the record
-  commit purely through the API before calling `gh pr create`; if that call
-  failed, the two branches were left behind with no pull request ever
-  pointing at them — `td-record/` isn't a prefix
+- `techdebt_file_debt` no longer orphans a `td-record/<id>` branch or its
+  `td/<id>` reservation when a filing stops part way through
+  (TD-PPagop-26082203). It reserves the id, then writes the branch and the
+  record commit purely through the API, then calls `gh pr create`; if any of
+  those steps failed, whatever it had already written was left behind with
+  no pull request ever pointing at it — `td-record/` isn't a prefix
   `scripts/sweep-orphan-branches.sh` sweeps, and a bare `td/<id>` is one it
   deliberately leaves alone (issue #545), so neither was ever found again.
-  The function now best-effort deletes both before returning.
+  Every failure past the reservation now best-effort deletes the record
+  branch and then releases the reservation before returning.
 
 - A `tailnet` node with no `TS_AUTHKEY` no longer thrashes `dashboard` once
   the sidecar it shares a network namespace with has stopped
