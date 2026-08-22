@@ -681,8 +681,8 @@ see "Dependabot takeover" above.)*
    - Project-review recommendation: there is no ledger to flip and you do not
      edit the review folder. The PR body naming the ref (`review-<date>-R-NN`)
      is the record — its merge is what marks the recommendation done, and the
-     next weekly review re-evaluates the code and simply omits anything now
-     fixed. Deliver exactly what the improvement prompt and `acceptance`
+     next repository review re-evaluates the code and simply omits anything
+     now fixed. Deliver exactly what the improvement prompt and `acceptance`
      describe; if the prompt turns out to depend on a decision only a human
      can make, report `"status": "blocked"` rather than guessing.
    - Human visibility: there is no ledger to flip and no issue to comment
