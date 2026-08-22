@@ -6284,6 +6284,21 @@ acquire_lock() {
 peers_dir="$(fleet_peers_dir "$workspace_root")"
 union_log="$cycle_dir/.fleet-log.jsonl"
 fleet_logs "$state_dir" "$peers_dir" log.jsonl > "$union_log" || true
+# The snapshot's own horizon (requirement 39f, #670): the newest `.ts` the
+# union above reaches, not wall clock — in practice this cycle's own
+# `cycle-start` event, already in this node's log by the time `fleet_logs`
+# unions it in, unless a peer's fetched log carries something newer. The
+# own-label grace window has to be measured against that, or a long cycle
+# reads a peer's label write, already inside the snapshot, as older than it
+# is by the cycle's own runtime. Captured here, immediately after the
+# snapshot and before this cycle's own log lines are appended into
+# `$union_log` (three
+# such appends stand between here and the requirement-39f read-back below,
+# and more after it): an append reordered ahead of this point would make the
+# horizon track wall clock again through this node's own fresh events, and
+# the fix would evaporate. `test/label-marker-horizon-wiring.test.sh` pins
+# that ordering, and pins both read-back calls below being handed the result.
+union_log_horizon="$(log_latest_ts "$union_log")"
 
 # --- 1a1. What each stage is allowed this cycle (requirement 4f) ---
 # Derived, not stored and not configured: one fold over the union above gives
@@ -7317,7 +7332,7 @@ fi
 if [[ -n "$needs_refinement_label" ]]; then
   refinement_own_actions_json="$(label_own_actions_map "$needs_refinement_label" "$union_log")"
   hand_flagged_not_ours_json="$(label_filter_own_applications "$hand_flagged_refinements_json" \
-    "$refinement_own_actions_json")"
+    "$refinement_own_actions_json" "$union_log_horizon")"
   hand_flag_new_json="$(refinement_hand_flag_new "$hand_flagged_not_ours_json" "$(blocked_items "$union_log")")"
   hand_flag_new_n="$(jq 'length' <<<"$hand_flag_new_json" 2>&1)" \
     || { guard_warn "hand_flag_new_n" "$hand_flag_new_n"; hand_flag_new_n=0; }
@@ -7356,7 +7371,7 @@ if [[ -n "$needs_refinement_label" ]]; then
   # between.
   if ! (( DRY_RUN )); then
     hand_flag_stale_json="$(label_own_stale_applications "$hand_flagged_refinements_json" \
-      "$refinement_own_actions_json" "$(blocked_items "$union_log")")"
+      "$refinement_own_actions_json" "$(blocked_items "$union_log")" "$union_log_horizon")"
     while IFS=$'\t' read -r stale_repo stale_number; do
       [[ -n "$stale_repo" && -n "$stale_number" ]] || continue
       if refinement_label_remove "$stale_repo" "$stale_number" "$needs_refinement_label"; then

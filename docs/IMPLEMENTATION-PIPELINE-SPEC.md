@@ -10407,15 +10407,44 @@ implements.
       read as a human's later touch (#526's own measured skew: 13s ahead on
       one node, 5+s behind on another — the direction that used to fail).
     - **deferred**: no recorded `add` explains the label, but `labelled_at`
-      is newer than `LABEL_OWN_GRACE_SECONDS` (1800s) ago. An
+      is newer than `LABEL_OWN_GRACE_SECONDS` (1800s) *before the union-log
+      snapshot's own horizon* — not wall clock (agent-ops#670). `NOW` for
+      this comparison is `lib/label-marker.sh`'s `log_latest_ts`, the newest
+      `.ts` across `union_log` — captured once, in `agent-cycle.sh`,
+      immediately after `union_log` is materialised and before that cycle
+      appends any of its own events into it — passed as the explicit third
+      (`label_filter_own_applications`) or fourth
+      (`label_own_stale_applications`) argument as `union_log_horizon`; both
+      functions still default `NOW` to `date -u` when it is omitted or empty,
+      which only the empty-union-log case and the test suite now rely on.
+      Measuring against the snapshot's own horizon, rather than wall clock
+      read back however much later in the cycle the read-back runs, is what
+      makes the grace period mean what its own name says: an
       `own-label-action` a peer node just wrote is not necessarily in this
       node's union log yet — state-sync fetches peer logs on a periodic
       cadence, not synchronously, and #526 measured roughly 12 minutes of
       staleness against a ~6–7 minute fetch cadence — so absence this recent
-      does not yet mean a human. A deferred candidate is excluded from
-      *both* directions: not reported as a hand-flag, and not offered up for
-      the stale-removal retry below, since it is not proven to be this
-      system's own write either.
+      does not yet mean a human, and a cycle long enough to run past the
+      grace period's own 1800s must not turn that absence into "not-ours" by
+      the mere passage of its own wall-clock runtime (#670: agent-ops#597 and
+      #598 cycled indefinitely on exactly this). A deferred candidate is
+      excluded from *both* directions: not reported as a hand-flag, and not
+      offered up for the stale-removal retry below, since it is not proven to
+      be this system's own write either. What the horizon is worth stating
+      exactly, because it is not the state-sync fetch time: `union_log` is
+      `fleet_logs`' union of this node's *own* log and the peers' (`lib/fleet.sh`),
+      and this cycle has already logged its `cycle-start` event into its own
+      log before the snapshot is taken — so the newest `.ts` across the union
+      is this cycle's own start, and only exceeds it where a peer's fetched
+      log happens to carry something newer. That is the quantity the grace
+      period should be measured against: it removes this cycle's own runtime
+      between its start and the read-back — the 36 minutes that made
+      agent-ops#598 cycle — while leaving state-sync's own propagation lag
+      covered by `LABEL_OWN_GRACE_SECONDS` itself, exactly as #526 sized it.
+      The accepted cost is that one cycle's runtime: a genuine human hand-flag
+      is recognised by the first cycle that *starts* at least the grace period
+      after `labelled_at`, rather than by the first read-back that *runs* that
+      long after it.
     - **not-ours**: everything else — the pre-#526 fail-safe default, and
       still the answer for an unreadable log, a malformed argument, or a
       missing `labelled_at`.
@@ -14700,6 +14729,41 @@ pull request, run the ones the change touches and any it could regress.
     the deferred case at the call site: a candidate labelled inside the grace
     window with no own record earns no fresh block and is not offered back
     for a stale-removal retry either.
+
+    **`log_latest_ts` and the snapshot horizon (agent-ops#670).**
+    `test/label-marker.test.sh` also passes: `log_latest_ts` prints the
+    newest `.ts` across a mixed log stream, skips a line that fails to
+    parse rather than failing on it, and prints nothing for an empty,
+    missing, or unreadable stream. A replay of the agent-ops#598 trace pins
+    the fix directly: an own-actions map without the peer's record,
+    `labelled_at` `2026-08-21T07:41:25Z`, `NOW` fixed at the snapshot
+    horizon `2026-08-21T07:36:00Z` — *before* `labelled_at`, exactly the
+    negative-age case a snapshot taken earlier in the cycle than a peer's
+    later write produces — classifies **deferred**, not **not-ours**; the
+    same candidate with `NOW` fixed at `2026-08-21T08:12:36Z` (wall clock at
+    the moment the read-back actually ran in that incident) reproduces the
+    pre-fix **not-ours** misattribution, pinning the regression the fix
+    closes rather than only the fix itself. A negative `labelled_at` age
+    (label applied after `NOW`) always classifies **deferred**, never
+    **not-ours**, pinned so an `abs()` "simplification" of `own_class`'s
+    `($now_epoch - $at_epoch) < $grace` test cannot silently regress it.
+    `label_own_stale_applications` given the same fixed horizon excludes a
+    candidate whose `labelled_at` falls after it from the stale-removal set,
+    the other half of the same fix. The call-site wiring in `agent-cycle.sh`
+    is pinned separately, by `test/label-marker-horizon-wiring.test.sh`:
+    `union_log_horizon` is assigned after the `fleet_logs` snapshot that
+    materialises `union_log` and textually before the first `>> "$union_log"`
+    append later in the cycle, and both read-back calls
+    (`label_filter_own_applications`, `label_own_stale_applications`) are
+    handed it rather than falling back to the `date -u` default. That file
+    asserts against the text of `agent-cycle.sh` rather than against a block
+    lifted out of it, because the capture's *position* is the thing under
+    test and lifting the block would lift the ordering with it. Every fixture
+    above stays green through either break — they drive
+    `label_filter_own_applications`/`label_own_stale_applications` directly
+    rather than through the cycle script — so an append reordered ahead of the
+    capture would otherwise make the horizon track wall clock again through
+    this node's own fresh events and silently undo the fix.
 39g. **Priority triage bands correctly and never lowers a band
     (requirement 39g).** `test/refiner-priority-triage.test.sh` passes:
     `refiner_candidate_items` admits an already-refined `issues` entry only
@@ -16877,3 +16941,4 @@ confident, recurring no-op.
 | A safety justification written as "harmless until X lands," read after X has landed | TD-PPagop-26081507 recorded that the merge-autonomy kill switch's fail-open no-cache case was "harmless: nothing arms an approval or a landing on the flag" — explicitly, deliberately, "until WI-5 lands." WI-5 (this document's own Approver stage, requirements 8b/8c) is the first behaviour-affecting caller of `merge_autonomy_effective_level`, and it landed with that tech-debt item still `open` and its own fix (agent-ops#448) still unmerged: the justification expired the moment this stage started reading the kill switch for a real decision, and nothing forced the two facts to be checked against each other. | A deferred item whose own body names the change that revokes its justification is a dependency, not a footnote — treat "must not arm until X" the same as a numbered `Blocked-by:`, checked at the moment X is about to land, not left to a reader noticing the tech-debt file in passing. Landed here anyway, deliberately, because the exposure is layered — `merge_autonomy`'s product default is `human` fleet-wide, every level above it needs an explicit per-installation opt-in, and the live installation had not yet raised it past Stage 0 — but the register entry stays `open` and this row exists so the next reader does not have to rediscover the ordering risk from source. |
 | A gate written for one caller silently has no caller on the recovery path | Requirement 31c's gate — required checks green, no new security-severity alert — was written and tested against the Reviewer's own `ready` handoff, and every acceptance check for it drove that one path. The Enabler's `complete_handoff` (requirement 32b) flips the identical draft-to-ready action through a different call site, added later, and nobody re-asked whether the gate bound there too — it did not, by omission rather than by decision. PR #433: the Implementer failed, so the Reviewer block never ran at all, and two hours later an Enabler engagement read `complete_handoff`'s own four preconditions ("checks green", "no unanswered concern") as satisfied — vacuously, since nothing had ever checked or raised a concern to answer — and flipped the pull request to ready with a red check list and no Reviewer having ever read the diff. | An irreversible action reachable from more than one call site needs its gate to live *under* every caller, not beside one of them (requirement 34a) — a second path added later inherits nothing a first path's own inline check protected. Where a caller performs a recovery *of* another stage's work (here: finishing a handoff the Reviewer left undone), ask what the recovery is standing in for, and refuse to stand in for a stage that never actually ran — a precondition can read as satisfied for the sole reason that nothing has asked it yet. |
 | An escalation route that needs the very thing whose absence it reports | Requirement 2.0b escalates a rejected GitHub credential through `create_escalation_issue`, which reads and writes GitHub under the same `GH_TOKEN` the probe has just established GitHub rejects — so `gh issue list` and `gh issue create` both answer `HTTP 401: Bad credentials`, and the filing 0b's text describes fails every cycle for as long as the token stays dead. The `warning`-and-retry fallback that is a genuine exception for requirement 1c's freeze and requirement 2.7's crash loop — whose triggers leave GitHub reachable — is 0b's *expected* path, so the spend stops but nobody outside the node is told (TD-PPagop-26082304). | Before writing "and it escalates", ask what the escalation route itself depends on, and whether the condition being escalated breaks it. Where the answer is yes, the alarm needs a carrier the fault cannot take down — for a GitHub-credential fault, one that is credential-independent of `GH_TOKEN`. Keep the doomed attempt (it costs one call, and it is right if the fault is ever narrower than assumed), but record in the requirement that its failure is the norm, so no later reader mistakes "escalates" for "reaches someone".
+| A "snapshot" horizon captured too late is wall clock wearing a disguise | Requirement 39f's own-label grace period (agent-ops#670) is supposed to measure how stale `union_log` is, not how long the cycle has been running — but `union_log` is not immutable after it is snapshotted: the cycle appends its own fresh local log lines into it at least three times before the requirement-39f read-back runs. Computing the horizon as "the newest `.ts` in `$union_log`" *at read-back time*, instead of once right after the snapshot, would silently reintroduce almost the same bug the fix exists to close: this node's own events, appended in between, advance the horizon in step with wall clock, so a long cycle would again read a peer's label write — still absent from the snapshot proper — as older than it really is. | Capture a derived "as-of" value once, immediately next to the read whose staleness it is meant to describe, into a variable — not a function re-derived from state the rest of the cycle goes on to mutate. `union_log_horizon="$(log_latest_ts "$union_log")"` sits on the very next line after `union_log` is materialised, textually before any `>> "$union_log"` append, so nothing downstream can move it forward by coincidence. |

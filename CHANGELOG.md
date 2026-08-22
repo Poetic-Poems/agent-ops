@@ -486,6 +486,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   variable set. Merging this deploys nothing — each node needs its
   `compose.yaml` re-fetched and `docker compose up -d`.
 
+- The own-label grace period (requirement 39f) is now measured against the
+  union-log snapshot's own horizon, not wall clock (agent-ops#670). A long
+  cycle used to read a peer node's `own-label-action` record, already
+  present in the snapshot it took at cycle start, against `date -u` read
+  back however much later that cycle's requirement-39f read-back actually
+  ran — so once the cycle ran longer than `LABEL_OWN_GRACE_SECONDS` (1800s),
+  the peer's own write misattributed to a human, restarting a
+  `needs-refinement` block nobody asked for. Two items, agent-ops#597/#602
+  and #598, cycled indefinitely on exactly this before a human intervened
+  by hand each time. `lib/label-marker.sh`'s new `log_latest_ts` extract —
+  the newest `.ts` across `union_log`, captured once immediately after the
+  snapshot and before that cycle appends any of its own events into it — is
+  now passed as the explicit `NOW` to both `label_filter_own_applications`
+  and `label_own_stale_applications`.
+
 - The Co-Ordinator's `refinements` input is scoped to candidacy
   (agent-ops#643). `refinements` is a ledger that is never retired, and an
   entry for an item type with no thread to hold it carries the whole
