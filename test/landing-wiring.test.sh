@@ -340,6 +340,12 @@ assert_eq "  ... logs exactly one event" "1" "$(count events)"
 assert_eq "  ... a landing-armed" '"enqueued"' "$(jq -c '.method' <<<"$(event_of landing-armed)")"
 assert_eq "  ... naming the source" '"tech-debt"' "$(jq -c '.source' <<<"$(event_of landing-armed)")"
 assert_eq "  ... and the complexity it was armed at" '"medium"' "$(jq -c '.complexity' <<<"$(event_of landing-armed)")"
+# D18 issue #574: the arm is the only outcome of gate 5 that would otherwise
+# leave no trace of the cap and count `merge_budget_decide` read, and the
+# dashboard's budget row sources a repository's consumption from exactly these
+# two fields — so they must be that decision's own values, never a second read.
+assert_eq "  ... and the cap/count gate 5's own merge_budget_decide read (D18 issue #574)" \
+  "8 8" "$(jq -r '"\(.cap) \(.count)"' <<<"$(event_of landing-armed)")"
 assert_eq "  ... and marks _landing_stage_attempt_armed for its caller" "1" "$(armed_flag)"
 assert_eq "  ... gate 0's own call site reads an empty landing_armed_by_repo as 0" \
   "0" "$(budget_decide_args | awk '{print $NF}')"

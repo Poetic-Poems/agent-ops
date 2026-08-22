@@ -207,6 +207,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   union — carries all four as `null` and `attributed:false`, never dropping
   the row itself.
 
+- The dashboard's autonomous-landing digest reports the merge budget's own
+  state per repository (issue #574, D18 §5.4): the effective cap, what the
+  governor's rolling-24-hour count last read against it, the repository's
+  status (`ok`/`held`/`frozen`), and — held or frozen — the oldest pull
+  request the cap is making wait, with a `frozen` row also naming why. The
+  numbers come from the governor itself rather than a counter the dashboard
+  keeps of its own: `landing-armed` now carries the `cap`/`count`
+  `merge_budget_decide` read at the moment it granted that arm, and
+  `merge-budget-frozen` carries the freeze's `reason` and the same
+  `waiting_backlog` its paired `merge-budget-hold` logs, so the latest of
+  those three events for a repository is its current budget state — with no
+  live read of the freeze flag or the waiting backlog on a dashboard tick. A
+  held or frozen repository renders as its own badged row, never folded into
+  the quiet `consumed/cap` line an unheld repository gets and never counted
+  as an eligibility refusal: "the fleet is idle because the governor closed"
+  and "the fleet is idle because there is no work" no longer read alike.
+
 - An hourly, unattended `scripts/doctor.sh --unattended` pass (agent-ops#543),
   on its own `deploy/docker/crontab.tmpl` line: the same Configuration and
   GitHub checks an operator runs by hand, run unprompted, so a configuration

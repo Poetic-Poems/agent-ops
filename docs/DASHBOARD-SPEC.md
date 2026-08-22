@@ -979,8 +979,8 @@ Three things it will not hide, each a way a digest could mislead by omission:
   when held or frozen, the oldest waiting pull request and its age. An
   unlimited repository (`0`) reads as `∞`, never as a cap of zero. Consumption
   is sourced from the same rolling-24h count `lib/merge-budget.sh` itself
-  reads, never a private one recomputed here: `landing-armed`, `merge-budget-
-  hold` and `merge-budget-frozen` each now carry the `cap`/`count`
+  reads, never a private one recomputed here: `landing-armed`,
+  `merge-budget-hold` and `merge-budget-frozen` each carry the `cap`/`count`
   `merge_budget_decide` read at that decision, so the single latest of the
   three for a repository — across the whole retained log, not only this
   digest's own window, the same reasoning the verdict join below already uses
