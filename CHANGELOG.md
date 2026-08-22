@@ -482,6 +482,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   than ending. `dashboard` now carries `restart: on-failure:5` too, so it
   settles on the same schedule as the dependency it cannot run without.
 
+- `lib/issue-priority.sh`'s cache-directory ownership record now tracks every
+  directory this process has created, not only the most recent
+  (TD-PPagop-26082202). `ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH` held a single
+  path, so a process that made the library create a second directory in the
+  same run — by repointing `ISSUE_PRIORITY_CACHE_DIR` and re-sourcing, or
+  unsetting it and re-sourcing — orphaned the first one permanently:
+  `issue_priority_cache_cleanup` only ever knew about the most recent record.
+  `ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS`, an array, replaces it, and cleanup
+  now removes every directory this process owns while still leaving a
+  caller-supplied directory untouched.
+
 - A `tailnet` node with no `TS_AUTHKEY` no longer registers a fresh Tailscale
   node key once a minute forever (agent-ops#644). The profile's documented
   precondition was enforced by nothing, so `tailscaled` started anyway, asked
