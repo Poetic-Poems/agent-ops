@@ -109,11 +109,14 @@ the pipeline knows to answer:
   already clicked. If the queue itself dequeues a PR after a checks failure —
   a state GitHub otherwise gives you no way to notice — you get a one-time
   notice comment instead, immediately, not held for the idle threshold above.
-- **A GitHub issue the pipeline reports as needing your decision is assigned to
-  you**, not only labelled — the same pattern that already resolves an Enabler
+- **A GitHub issue the pipeline reports as needing your decision is labelled
+  `blocked` and `blocked:needs-refinement`**, not just the ordinary
+  `needs-refinement` label — the same pattern that already resolves an Enabler
   escalation in 1–2 hours, extended to the Co-Ordinator's own `needs_refinement`
-  reports so a genuinely human-blocked issue never sits invisible on your
-  Assigned-to-me the way #203 briefly did.
+  reports so a genuinely human-blocked issue never sits invisible the way #203
+  briefly did. Assignment stays reserved for an actual Enabler escalation — a
+  separate issue you personally need to act on and close — so Assigned-to-me
+  never fills up with the pipeline's own bookkeeping.
 
 ## Issue priority
 
@@ -1405,13 +1408,16 @@ Now the Co-Ordinator reports such an item — or the Refiner declines one it was
 given, or an Implementer gets partway into one and finds the brief itself
 insufficient — and the Script records it as blocked with what is missing.
 Nothing else changes about that cycle. If the item is a GitHub issue it also
-picks up the `needs-refinement` label — and is assigned to you, so it shows up
-on Assigned-to-me and not only in a label filter — so you can see the same
-thing the pipeline can. If the item had already been marked `refined`, that
-label comes off too: the specification it named did not hold up.
+picks up three labels — `needs-refinement`, `blocked` and
+`blocked:needs-refinement` — so you can see the same thing the pipeline can
+from a filtered issue list, and the item drops off the pipeline's own
+candidate list the same way any other `blocked` issue does. If the item had
+already been marked `refined`, that label comes off too: the specification it
+named did not hold up.
 
 ```bash
 gh issue list -R Poetic-Poems/poetic --label needs-refinement
+gh issue list -R Poetic-Poems/poetic --label blocked:needs-refinement
 ```
 
 After the usual few cycles — during which you, or the pipeline's own re-check,

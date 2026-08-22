@@ -2,9 +2,9 @@
 #
 # lib/refinement.sh — under-specification as a class of block: what the
 # Co-Ordinator must produce to report one, what the Script records, which items
-# the label and the assignment are projected onto, how a human's own
-# hand-applied label is read back, and how many refinements one Enabler
-# engagement takes on (requirements 16a, 34e, 34g, 35d, 36b, 38b).
+# the labels are projected onto, how a human's own hand-applied label is read
+# back, and how many refinements one Enabler engagement takes on (requirements
+# 16a, 34e, 34g, 35d, 36b, 38b).
 #
 # ## The gap this closes
 #
@@ -17,14 +17,20 @@
 # was starving. The failure has this system's signature shape: nothing looks
 # broken.
 #
-# A label alone turned out to be half the fix: agent-ops#203 was exactly this
-# shape and labelled correctly, yet sat invisible because nothing assigned it
-# — a human's Assigned-to-me dashboard is what they actually watch, and a
-# label matches nothing there. Requirement 38b closes that second half: the
-# same projection the label gets (applied when the block is recorded, removed
-# when it clears) now also assigns `enabler_assignee`, so a Co-Ordinator's
-# `needs_refinement` report reaches the human's own dashboard the moment it is
-# recorded, not only once the Enabler later escalates it.
+# A label alone turned out to be half the fix, the first time round:
+# agent-ops#203 was exactly this shape and labelled correctly, yet sat
+# invisible because nothing else made it findable. Requirement 38b closed that
+# second half by *assigning* the issue to `enabler_assignee` alongside the
+# label — until agent-ops#639: assignment as bookkeeping meant "on hold" and
+# "a human must personally act" were the same signal on GitHub, so the
+# projection could never be told apart from a genuine escalation
+# (requirement 36a) or a human's own claim, and stale ones went uncorrected —
+# 21 of them, by 2026-08-21. `blocked` plus a reason label
+# (`blocked:needs-refinement` today, the only kind this projection covers) is
+# the second half now: two labels, applied and removed exactly where the
+# assignment used to be, that reach the same Assigned-to-me visibility problem
+# without occupying the one signal requirement 36a's genuine escalations still
+# need for themselves.
 #
 # ## Why a block rather than a new state
 #
@@ -109,6 +115,33 @@
 # selects on it.
 REFINEMENT_BLOCK_KIND="needs-refinement"
 
+# The generic hold marker (requirement 38b, agent-ops#639): fixed and
+# unconfigurable, the same as `scripts/gather-issues.sh`'s own hardcoded
+# `blocked` exclusion check, so the two can never drift apart by a renamed
+# config key.
+# shellcheck disable=SC2034  # read by agent-cycle.sh and scripts/sweep-legacy-refinement-assignees.sh, which source this file
+REFINEMENT_BLOCKED_LABEL="blocked"
+
+# refinement_blocked_reason_label KIND
+# Print the `blocked:<reason>` label a block of KIND earns (requirement 38b's
+# taxonomy, agent-ops#639), or nothing for a KIND with no reason label of its
+# own. `needs-refinement` is the only kind this projection covers today —
+# every block requirement 38b projects onto an issue is one the Co-Ordinator,
+# the Refiner or the Implementer reported through `record_needs_refinement_block`,
+# and all three mark it `kind: "needs-refinement"` — so this is a one-entry
+# table, not a placeholder: a future block class that earns its own reason
+# label extends the `case` here, not the caller.
+#
+# Fixed and unconfigurable, like `REFINEMENT_BLOCKED_LABEL` above: an
+# installation cannot rename `blocked:needs-refinement` any more than it can
+# rename `blocked` itself.
+refinement_blocked_reason_label() {
+  case "$1" in
+    "$REFINEMENT_BLOCK_KIND") printf 'blocked:needs-refinement' ;;
+    *) printf '' ;;
+  esac
+}
+
 # refinement_entry_problem ENTRY_JSON
 # Decide whether one `needs_refinement` entry may be recorded as a block.
 #
@@ -153,33 +186,36 @@ refinement_issue_number() {
          then ((.item // "") | tostring) else empty end' <<<"$1" 2>/dev/null || true
 }
 
-# refinement_block_fields ENTRY_JSON [LABEL] [ASSIGNEE]
+# refinement_block_fields ENTRY_JSON [LABEL] [BLOCKED_LABEL] [BLOCKED_REASON_LABEL]
 # Print the extra fields the `attempt-failed` event carries for this block
 # (requirement 34e): the `kind` marker, the entry's `missing` promoted to
 # `unblock_condition` — it is exactly what a later Co-Ordinator or the Enabler
 # reads to judge whether the item has since become selectable — the `evidence`
 # and the reporting `source`, plus `needs_refinement_label` when the Script
-# actually managed to apply the label, and `needs_refinement_assignee` when it
-# actually managed to assign the issue (requirement 38b).
+# actually managed to apply the label, and `blocked_label`/`blocked_reason_label`
+# when it actually managed to apply each of those (requirement 38b,
+# agent-ops#639).
 #
-# The label and the assignee are recorded on the event, not assumed from
-# config, because they are what a later cycle removes: a label or an
-# assignment the Script did not apply is one it must not claim to have
-# removed, and config may have changed in between.
+# All three labels are recorded on the event, not assumed from config or from
+# the fixed literals above, because they are what a later cycle removes: a
+# label the Script did not apply is one it must not claim to have removed, and
+# `needs_refinement_label` in particular is configurable — it may have changed
+# in between.
 #
 # `$lbl`, not `$label`: `label` is a jq keyword, and a program that fails to
 # compile here would silently record a block with no fields at all — the same
 # trap `maybe_run_enabler` documents at its own jq call.
 refinement_block_fields() {
-  local entry="$1" label="${2:-}" assignee="${3:-}"
+  local entry="$1" label="${2:-}" blocked_label="${3:-}" blocked_reason_label="${4:-}"
   jq -nc --argjson e "$entry" --arg kind "$REFINEMENT_BLOCK_KIND" \
-    --arg lbl "$label" --arg asn "$assignee" '
+    --arg lbl "$label" --arg bl "$blocked_label" --arg brl "$blocked_reason_label" '
     {kind: $kind,
      unblock_condition: ($e.missing // ""),
      evidence: ($e.evidence // ""),
      source: ($e.source // "")}
     + (if $lbl == "" then {} else {needs_refinement_label: $lbl} end)
-    + (if $asn == "" then {} else {needs_refinement_assignee: $asn} end)' \
+    + (if $bl == "" then {} else {blocked_label: $bl} end)
+    + (if $brl == "" then {} else {blocked_reason_label: $brl} end)' \
     2>/dev/null || printf '{}'
 }
 
@@ -208,23 +244,106 @@ refinement_label_targets() {
     | unique | .[]' <<<"$blocked" 2>/dev/null || true
 }
 
-# refinement_assignee_targets BLOCKED_JSON ITEM [REPO]
-# Print, one per line as `<repo>\t<number>\t<assignee>`, every open refinement
-# block for ITEM whose event records a projected assignment (requirement 38b).
-# Same shape and the same reasoning as `refinement_label_targets` — read that
-# comment for why REPO empty matches every repo.
-refinement_assignee_targets() {
-  local blocked="$1" item="$2" repo="${3:-}"
-  jq -r --arg it "$item" --arg repo "$repo" --arg kind "$REFINEMENT_BLOCK_KIND" '
+# refinement_blocked_label_targets BLOCKED_JSON ITEM [REPO]
+# Print, one per line as `<repo>\t<number>\t<label>`, every `blocked`/
+# `blocked:<reason>` label an open refinement block for ITEM carries
+# (requirement 38b, agent-ops#639). Same shape and the same reasoning as
+# `refinement_label_targets` — read that comment for why REPO empty matches
+# every repo — extended to two possible label fields per block rather than
+# one, since a block projects both `blocked_label` and `blocked_reason_label`
+# together.
+#
+# A *legacy* block — one recorded before agent-ops#639, whose event carries
+# `needs_refinement_assignee` and neither blocked-label field — yields only
+# the reason label, never the generic `blocked`. `blocked:<reason>` is safe
+# regardless: no human reaches for that compound name on their own, so
+# `scripts/sweep-legacy-refinement-assignees.sh` can only ever have applied
+# it, unconditionally, exactly as the fresh path does. `blocked` is not: it
+# is a human's own, hand-applied control (`lib/labels.sh`'s own catalogue),
+# and the sweep — like the fresh path — projects it through
+# `refinement_label_project`'s read-before-write rather than an unconditional
+# add. But unlike the fresh path, the sweep has no event of its own to record
+# which of `added`/`present` actually happened: it does not rewrite the
+# block's original `attempt-failed` event (nothing rewrites history), so a
+# legacy block's `blocked_label` field can never be filled the way a fresh
+# block's is. Treating every legacy block as carrying the generic `blocked`
+# regardless — the way this once read — would let `release_refinement_label`
+# remove a `blocked` a human applied for their own reasons on any issue that
+# happens to also carry a still-open pre-agent-ops#639 block: the exact
+# defect `refinement_label_project` exists to prevent, reappearing on the one
+# path that cannot prove its own history. So a legacy block's `blocked` is
+# left alone here — over-held rather than guessed at, the same trade-off
+# `refinement_label_project` already makes for an unreadable label list — and
+# comes off only by a human's own hand. A legacy block whose issue the sweep
+# has not reached yet costs one `gh` call that finds nothing to remove, and a
+# warning: the same best-effort contract every other removal on this path
+# already has.
+refinement_blocked_label_targets() {
+  local blocked="$1" item="$2" repo="${3:-}" reason_label
+  reason_label="$(refinement_blocked_reason_label "$REFINEMENT_BLOCK_KIND")"
+  jq -r --arg it "$item" --arg repo "$repo" --arg kind "$REFINEMENT_BLOCK_KIND" \
+     --arg reason "$reason_label" '
     [ .[]?
       | select((.kind // "") == $kind)
       | select($it != "" and (((.item // "") | tostring) == $it))
       | select((.repo // "") != "")
       | select($repo == "" or (.repo // "") == $repo)
-      | select((.needs_refinement_assignee // "") != "")
       | select(((.item // "") | tostring) | test("^[0-9]+$"))
-      | "\(.repo)\t\(.item)\t\(.needs_refinement_assignee)" ]
+      | . as $e
+      | ( if (($e.blocked_label // "") == "" and ($e.blocked_reason_label // "") == ""
+              and ($e.needs_refinement_assignee // "") != "")
+          then [$reason]
+          else [$e.blocked_label, $e.blocked_reason_label] end
+          | map(select((. // "") != ""))
+          | .[]
+          | "\($e.repo)\t\($e.item)\t\(.)" ) ]
     | unique | .[]' <<<"$blocked" 2>/dev/null || true
+}
+
+# refinement_blocked_label_stale BLOCKED_JSON [LOG_FILE]
+# Print, one per line as `<repo>\t<item>\t<label>`, every `blocked`/
+# `blocked:<reason>` label whose own-label-action history's most recent
+# action for that repo+item+label is `add` — a removal either never attempted
+# or attempted and silently failed (`release_refinement_label`, which
+# tolerates the failure by design) — where the item is not currently in
+# BLOCKED_JSON, i.e. its block has since cleared. Reads LOG_FILE, or stdin if
+# it is omitted or "-", the same convention `lib/cycle-state.sh`'s
+# `blocked_items` uses.
+#
+# Unlike `needs_refinement_label`'s stale-retry (`label_own_stale_applications`,
+# requirement 39f), no live GitHub read or own/human attribution heuristic is
+# needed here: `blocked`/`blocked:<reason>` are never applied by this pipeline
+# except through `refinement_label_project`'s read-before-write (the generic
+# label) or `record_needs_refinement_block`'s unconditional add (the fixed
+# reason label) — never by a human's own hand, which is exactly what
+# `refinement_label_project` exists to keep true for `blocked` too — so a
+# logged `own-label-action add` with no later `remove` is proof enough on its
+# own that a removal is ours to retry, with no `labelled_at` comparison
+# required.
+refinement_blocked_label_stale() {
+  local blocked="${1:-[]}" src="${2:--}" log_json docs
+  [[ -n "$blocked" ]] || blocked='[]'
+  if [[ "$src" == "-" ]]; then
+    log_json="$(jq -c -R 'fromjson? // empty' 2>/dev/null | jq -sc '.' 2>/dev/null || true)"
+  elif [[ -s "$src" ]]; then
+    log_json="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null | jq -sc '.' 2>/dev/null || true)"
+  fi
+  [[ -n "$log_json" ]] || log_json='[]'
+  docs="$log_json"$'\n'"$blocked"
+  jq -nr '
+    input as $log | input as $b |
+    ($b | map((((.repo // "") | tostring)) + "|" + (((.item // "") | tostring)))) as $open |
+    [ $log[]?
+      | select((.event // "") == "own-label-action")
+      | select((.label // "") == "blocked" or ((.label // "") | startswith("blocked:")))
+      | select((.repo // "") != "" and ((.item // "") | tostring) != "") ]
+    | group_by([(.repo // ""), ((.item // "") | tostring), (.label // "")])
+    | map(sort_by(.ts) | last)
+    | map(select((.action // "") == "add"))
+    | map(select( ((((.repo // "") | tostring) + "|" + ((.item // "") | tostring)) as $k
+                  | ($open | index($k)) == null) ))
+    | .[]
+    | "\(.repo)\t\(.item)\t\(.label)"' <<<"$docs" 2>/dev/null || true
 }
 
 # refinement_label_add REPO NUMBER LABEL
@@ -245,89 +364,76 @@ refinement_label_remove() {
   "$gh_bin" issue edit "$number" -R "$repo" --remove-label "$label" >/dev/null 2>&1
 }
 
-# refinement_assignee_add REPO NUMBER ASSIGNEE
-# refinement_assignee_remove REPO NUMBER ASSIGNEE
-# Assign `enabler_assignee` to the issue behind a Co-Ordinator-recorded block,
-# or take the assignment off again — the other half of requirement 38b's
-# guarantee that "gated on a decision the human has not made" is never left as
-# invisible as agent-ops#203 was (labelled, unassigned, absent from
-# Assigned-to-me) before it was fixed by hand. Same failure contract as the
-# label functions above: a repo where the assignee is not a valid collaborator
-# is the practical failure mode, and the caller records the block regardless —
-# losing the projection costs a human's dashboard, losing the block would cost
-# the item its escape path.
-refinement_assignee_add() {
-  local repo="$1" number="$2" assignee="$3" gh_bin="${REFINEMENT_GH:-gh}"
-  [[ -n "$repo" && -n "$number" && -n "$assignee" ]] || return 1
-  "$gh_bin" issue edit "$number" -R "$repo" --add-assignee "$assignee" >/dev/null 2>&1
-}
-
-refinement_assignee_remove() {
-  local repo="$1" number="$2" assignee="$3" gh_bin="${REFINEMENT_GH:-gh}"
-  [[ -n "$repo" && -n "$number" && -n "$assignee" ]] || return 1
-  "$gh_bin" issue edit "$number" -R "$repo" --remove-assignee "$assignee" >/dev/null 2>&1
-}
-
-# refinement_assignee_project REPO NUMBER ASSIGNEE
-# Put ASSIGNEE on the issue iff they are not already there, and say whether
-# the resulting assignment is this projection's to remove later. This — not
-# `refinement_assignee_add` — is what `log_needs_refinement_items` calls,
-# because `gh issue edit --add-assignee` succeeds as a no-op on an issue
-# already assigned: an unconditional add-and-record would later let
-# `release_refinement_label` take an assignment off that a human had made for
-# their own reasons before the block ever existed. Requirement 38b's whole
-# purpose is that Assigned-to-me is the list the human actually watches, and
-# a false *removal* from it costs more than any stale label does.
+# refinement_label_project REPO NUMBER LABEL
+# Put LABEL on the issue iff it is not already there, and say whether the
+# resulting label is this projection's to remove later. Mirrors the deleted
+# `refinement_assignee_project`'s read-before-write contract (agent-ops#651):
+# `gh issue edit --add-label` succeeds as a no-op on an issue that already
+# carries the label, so an unconditional add-and-record would later let
+# `release_refinement_label` remove a label a human applied for their own
+# reasons before this block ever existed — precisely the defect the deleted
+# assignee projection's read existed to prevent, needed here for `blocked`
+# because `lib/labels.sh`'s own catalogue still documents it as the human's
+# own, hand-applied control (a repository without the label offers no way to
+# say "not this one"), so a pipeline-projected `blocked` and a human's own can
+# land on the same issue. `blocked:<reason>` does not need this: no human
+# reaches for that compound name on their own, so its lifecycle stays
+# unconditional, the same as `needs_refinement_label`'s.
 #
-# The label deliberately keeps its unconditional lifecycle, and the asymmetry
-# is a decision, not an oversight: `needs-refinement` is this system's own
-# vocabulary — a hand-applied instance is itself read back as a report
-# (requirement 34g), so label and block state are convergent by design and
-# taking the label off a clearing block is correct whoever applied it. An
-# assignment is a general-purpose signal that predates and outlives this
-# mechanism; a pre-existing one is the human's own statement about the issue,
-# and not this projection's to withdraw.
-#
-# Prints one word:
-#   added       ASSIGNEE was absent and is now on the issue — record them as
-#               `needs_refinement_assignee`, so the block's clearing takes
-#               the assignment off again.
-#   present     ASSIGNEE was already on the issue. Nothing is touched and
+# Prints one word, exactly the shape `refinement_assignee_project` used:
+#   added       LABEL was absent and is now on the issue — record it, so the
+#               block's clearing takes it off again.
+#   present     LABEL was already on the issue. Nothing is touched and
 #               nothing must be recorded.
-#   unrecorded  the assignee list could not be read, so the add was attempted
-#               best-effort but must not be recorded — over-holding an
-#               assignment is a cosmetic fault on an issue the human was
-#               genuinely wanted on; removing one that may have pre-existed
-#               is the defect this function exists to prevent.
-#   failed      the list was readable, ASSIGNEE was absent, and the add would
-#               not take (not a collaborator on that repo is the practical
-#               case) — same contract as `refinement_label_add`: the caller
-#               records the block regardless.
+#   unrecorded  the issue's labels could not be read, so the add was
+#               attempted best-effort but must not be recorded — over-holding
+#               a label is cosmetic; removing one that may have pre-existed is
+#               the defect this function exists to prevent.
+#   failed      the list was readable, LABEL was absent, and the add would not
+#               take (a repo where the label was never created is the
+#               practical case) — same contract as `refinement_label_add`: the
+#               caller records the block regardless.
 #
-# Exit status is 0 for `added` and `present` (the projection is healthy),
-# 1 for `unrecorded` and `failed`.
-refinement_assignee_project() {
-  local repo="$1" number="$2" assignee="$3" gh_bin="${REFINEMENT_GH:-gh}" existing
-  if [[ -z "$repo" || -z "$number" || -z "$assignee" ]]; then
+# Exit status is 0 for `added` and `present` (the projection is healthy), 1
+# for `unrecorded` and `failed`.
+refinement_label_project() {
+  local repo="$1" number="$2" label="$3" gh_bin="${REFINEMENT_GH:-gh}" existing
+  if [[ -z "$repo" || -z "$number" || -z "$label" ]]; then
     printf 'failed'
     return 1
   fi
-  if ! existing="$("$gh_bin" issue view "$number" -R "$repo" --json assignees \
-                     --jq '.assignees[].login' 2>/dev/null)"; then
-    refinement_assignee_add "$repo" "$number" "$assignee" || true
+  if ! existing="$("$gh_bin" issue view "$number" -R "$repo" --json labels \
+                     --jq '.labels[].name' 2>/dev/null)"; then
+    refinement_label_add "$repo" "$number" "$label" || true
     printf 'unrecorded'
     return 1
   fi
-  if grep -qxF "$assignee" <<<"$existing"; then
+  if grep -qxF "$label" <<<"$existing"; then
     printf 'present'
     return 0
   fi
-  if refinement_assignee_add "$repo" "$number" "$assignee"; then
+  if refinement_label_add "$repo" "$number" "$label"; then
     printf 'added'
     return 0
   fi
   printf 'failed'
   return 1
+}
+
+# refinement_assignee_remove REPO NUMBER ASSIGNEE
+# Take an assignment off an issue. The only surviving half of what used to be
+# a pair (`refinement_assignee_add`/`refinement_assignee_project` are gone,
+# agent-ops#639): requirement 38b no longer assigns anything, so nothing here
+# adds an assignment any more — this is now purely
+# `scripts/sweep-legacy-refinement-assignees.sh`'s primitive, for undoing the
+# stale assignments the old projection left behind on issues whose block is
+# still open. Same failure contract as the label functions above: a repo
+# where the assignee is not a valid collaborator, or is simply not currently
+# assigned, is the practical no-op case, and the caller carries on regardless.
+refinement_assignee_remove() {
+  local repo="$1" number="$2" assignee="$3" gh_bin="${REFINEMENT_GH:-gh}"
+  [[ -n "$repo" && -n "$number" && -n "$assignee" ]] || return 1
+  "$gh_bin" issue edit "$number" -R "$repo" --remove-assignee "$assignee" >/dev/null 2>&1
 }
 
 # refinement_engagement_set ELIGIBLE_JSON MAX
@@ -571,7 +677,7 @@ refinement_hand_flag_cleared() {
 # finding items nobody has specified yet, before any of that machinery would
 # otherwise engage — and it deliberately reuses `refinement_entry_problem`,
 # `refinement_block_fields`, `refinement_label_add`/`_remove` and
-# `refinement_assignee_project` rather than duplicating them: a Refiner decline
+# `refinement_blocked_reason_label` rather than duplicating them: a Refiner decline
 # is recorded exactly the way a Co-Ordinator's `needs_refinement` report is
 # (requirement 39d), because it is the same kind of block reaching the same
 # escape hatch, just reported by a different stage.

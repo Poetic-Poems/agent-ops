@@ -38,10 +38,16 @@
 # them — but a name it does not set (the empty value that switches a projection
 # off) yields nothing to create.
 #
-# `blocked` is the exception that proves the interface: it is not configurable,
-# is applied only by a human, and is read by scripts/gather-issues.sh as an
-# exclusion. Creating it is how an installation gets the control at all — a
-# repository without the label offers the human no way to say "not this one".
+# `blocked` is the exception that proves the interface: it is not
+# configurable, and is read by scripts/gather-issues.sh as an exclusion.
+# Originally applied only by a human; since agent-ops#639 the Script projects
+# it too, onto the issue behind a needs-refinement block (requirement 38b),
+# alongside `blocked:needs-refinement` naming why — a fixed pair, also not
+# configurable, that replaced assigning `enabler_assignee` to that same issue.
+# Creating both is how an installation gets the human-hand-applied control at
+# all — a repository without the label offers the human no way to say "not
+# this one" — and is what lets the Script's own projection reach a repository
+# it has not otherwise ensured labels in yet.
 # `obsolete` is the same kind of exception, for the same reason: it is not
 # configurable, and no pipeline stage may ever apply it — lib/void-guard.sh's
 # `void_finishing_pr_reason` reads it as a human's own corroboration that a
@@ -89,7 +95,9 @@ labels_catalogue() {
          entry(.unvoid_label; "0e8a16";
                "Apply to ask the pipeline to reconsider an item it voided"),
          entry("blocked"; "d93f0b";
-               "Apply to keep the pipeline from selecting this issue"),
+               "Keeps the pipeline from selecting this issue; hand-applied or Script-projected (38b)"),
+         entry("blocked:needs-refinement"; "fbca04";
+               "Projected alongside `blocked`: too under-specified to work on, say what done looks like (38b)"),
          entry("obsolete"; "cfd3d7";
                "Apply to a still-open, still-diff-carrying draft pull request the pipeline raised to say it is no longer wanted; no pipeline stage ever applies this"),
          entry("complexity:low"; "c2e0c6";
