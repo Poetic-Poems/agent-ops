@@ -2562,6 +2562,30 @@
         el("span", {class:"sub", text: fdetail})
       ]));
     }
+    // The merge-autonomy kill switch (D18 issue #576, WI-2): narrower than
+    // the fleet switch above — cycles keep running, only landing is forced
+    // back to `human` fleet-wide — so it earns its own banner rather than
+    // being folded into that one, which would misreport "every node stands
+    // down" for a switch that never stops a cycle. `mak.state` is
+    // lib/toggle.sh's own vocabulary; only `"disabled"`/`"expired"` name an
+    // actual kill — `"enabled"` (clear) renders nothing.
+    var mak = ff.merge_autonomy_kill;
+    if (mak && mak.state && mak.state !== "enabled") {
+      var makRec = mak.record || {};
+      var makDetail;
+      if (makRec.kind === "fail-closed") {
+        makDetail = makRec.reason || "state repo unreachable and no cached copy of the kill switch";
+      } else {
+        makDetail = makRec.reason ? ("“" + makRec.reason + "”") : "no reason recorded";
+        if (makRec.actor || makRec.by) makDetail += " — set by " + (makRec.actor || makRec.by);
+        if (makRec.disabled_at) makDetail += " at " + makRec.disabled_at;
+        makDetail += " — `agent-cycle.sh --restore-merge-autonomy` clears it";
+      }
+      banners.appendChild(el("div", {class:"banner amber"}, [
+        el("span", {text: "⏸ Merge-autonomy kill switch is engaged — every repo's effective level is forced to human."}),
+        el("span", {class:"sub", text: makDetail})
+      ]));
+    }
     if (st.limit && st.limit.active) {
       banners.appendChild(el("div", {class:"banner amber"}, [
         el("span", {text: "⏸ Usage limit reached."}),

@@ -63,6 +63,12 @@ TEMPLATE="$SCRIPT_DIR/dashboard/index.html"
 . "$SCRIPT_DIR/lib/stage-budget.sh"
 # shellcheck source=lib/merge-queue.sh
 . "$SCRIPT_DIR/lib/merge-queue.sh"
+# shellcheck source=lib/merge-autonomy.sh
+# Only `merge_autonomy_kill_state` (D18 issue #576) is used here — the same
+# reader scripts/doctor.sh already sources it through — so this file never
+# also needs lib/merge-budget.sh, which merge_autonomy_effective_level alone
+# (never called from this script) would require.
+. "$SCRIPT_DIR/lib/merge-autonomy.sh"
 
 MAX_CYCLES=40        # recent substantive cycles shown in detail (with
                      # transcripts); no-op ticks aggregate instead (#271)
@@ -1475,11 +1481,37 @@ fleet_nodes_json="$(jq -sc 'sort_by([(.self | not), .node])' "$nodes_rows" 2>/de
 # The fleet flags, from the local cache lib/toggle.sh keeps (the GitHub tick
 # below refreshes it; requirement 2.3a). Read as files so a --no-github tick
 # costs no API call and a standby node still shows them.
+#
+# The merge-autonomy kill switch (D18 issue #576) is a fourth flag in the
+# same cache, but it cannot be read the same bare way: `disabled`/`limit`
+# fail open on an unreadable record (lib/toggle.sh's own header), so a raw
+# `null` reads correctly as "not set" either way. The kill switch fails
+# *closed* (lib/merge-autonomy.sh) — `merge_autonomy_kill_state` is the only
+# reader that already draws that distinction, so this local-only value runs
+# the raw cache through the *pure* half of that same function
+# (`_toggle_eval`, no network) rather than reimplementing its record shape.
+# It never calls `merge_autonomy_kill_state` itself here: that function
+# always attempts a live fetch the first time this process asks it
+# (`fleet_flag_fetch_status`'s own memo is empty on a cache miss), which a
+# --no-github tick must not do — see the WITH_GITHUB block below for the
+# live read this falls back from. No cached copy at all reads as "enabled"
+# here, deliberately: this is a display default for "nothing confirms a
+# kill", not the live gate's own fail-closed reasoning, which only applies
+# once a fetch has actually been attempted and found the repo unreachable.
+ma_kill_cache="$(fleet_cache_file "$state_dir" "$MERGE_AUTONOMY_KILL_FLAG")"
+if [[ -s "$ma_kill_cache" ]]; then
+  ma_kill_json="$(_toggle_eval "$(cat "$ma_kill_cache")" present 2>/dev/null)"
+else
+  ma_kill_json='{"state":"enabled"}'
+fi
+[[ -n "$ma_kill_json" ]] || ma_kill_json='{"state":"enabled"}'
+
 fleet_flags_json="$(jq -nc \
   --argjson d "$(jq -c '.' "$(fleet_cache_file "$state_dir" disabled)" 2>/dev/null || echo null)" \
   --argjson l "$(jq -c '.' "$(fleet_cache_file "$state_dir" limit)" 2>/dev/null || echo null)" \
-  '{disabled: $d, limit: $l}' 2>/dev/null)"
-[[ -z "$fleet_flags_json" ]] && fleet_flags_json='{"disabled":null,"limit":null}'
+  --argjson mak "$ma_kill_json" \
+  '{disabled: $d, limit: $l, merge_autonomy_kill: $mak}' 2>/dev/null)"
+[[ -z "$fleet_flags_json" ]] && fleet_flags_json='{"disabled":null,"limit":null,"merge_autonomy_kill":{"state":"enabled"}}'
 
 # --- Live GitHub (best-effort) -----------------------------------------------
 # The check roll-up and the index entry, written once and used by both the
@@ -1858,11 +1890,20 @@ if (( WITH_GITHUB )); then
   # what was just fetched, not last tick's copy.
   fleet_flag_fetch "$state_repo" "$state_dir" disabled >/dev/null || true
   fleet_flag_fetch "$state_repo" "$state_dir" limit    >/dev/null || true
+  # The kill switch's own reader, not fleet_flag_fetch (D18 issue #576): with
+  # GitHub actually reachable this tick, `merge_autonomy_kill_state` gives the
+  # accurate answer — including the fail-closed distinction the local-only
+  # value above cannot make (its own header explains why) — and this is the
+  # one place in the whole publisher allowed to call it, since only here is a
+  # live fetch (its own first call in this process) an acceptable cost.
+  ma_kill_json="$(merge_autonomy_kill_state "$state_repo" "$state_dir" 2>/dev/null)"
+  [[ -n "$ma_kill_json" ]] || ma_kill_json='{"state":"enabled"}'
   fleet_flags_json="$(jq -nc \
     --argjson d "$(jq -c '.' "$(fleet_cache_file "$state_dir" disabled)" 2>/dev/null || echo null)" \
     --argjson l "$(jq -c '.' "$(fleet_cache_file "$state_dir" limit)" 2>/dev/null || echo null)" \
-    '{disabled: $d, limit: $l}' 2>/dev/null)"
-  [[ -z "$fleet_flags_json" ]] && fleet_flags_json='{"disabled":null,"limit":null}'
+    --argjson mak "$ma_kill_json" \
+    '{disabled: $d, limit: $l, merge_autonomy_kill: $mak}' 2>/dev/null)"
+  [[ -z "$fleet_flags_json" ]] && fleet_flags_json='{"disabled":null,"limit":null,"merge_autonomy_kill":{"state":"enabled"}}'
 
   # The live claim registry (implementation spec 17a): what the fleet holds
   # right now, per repo. Carried forward through gh_cache on --no-github ticks

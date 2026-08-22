@@ -8,6 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- D18's fleet-wide `merge_autonomy` kill switch (WI-2, agent-ops#405) is now
+  exercised end to end against the landing path (agent-ops#576): gate 1 of
+  `_landing_stage_attempt` (`agent-cycle.sh`) asks `merge_autonomy_kill_state`
+  a second, independent, `FRESH` time whenever the effective level does not
+  qualify, and `landing_autonomy_refusal_reason` (`lib/landing.sh`) tags the
+  refusal `kill-switch:` when the switch is the actual cause — distinguishable
+  in the `landing-refused` log, and in `scripts/publish-dashboard.sh`'s
+  landings digest, from a repository that has simply never had its level
+  raised, which keeps the plain "effective level is …" wording. One test case
+  per `merge_autonomy` rung (`test/landing-kill-switch-wiring.test.sh`) proves
+  the collapse to `human` through the real landing path with nothing armed.
+  The dashboard now also surfaces the switch's own position — sourced the
+  same way `scripts/doctor.sh` already does — as its own banner, separate
+  from the fleet-wide disable banner since cycles keep running while only
+  landing collapses to `human`.
+
 - `scripts/run-tests.sh`: run the `test/` suite the way CI runs it — the
   working tree copied into a throwaway `docker run` container from the image,
   with nothing of the host or of any running node reaching it. The suite will

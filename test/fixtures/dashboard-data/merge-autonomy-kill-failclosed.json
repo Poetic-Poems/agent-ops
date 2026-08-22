@@ -1,0 +1,67 @@
+{
+  "generated_at": "@now",
+  "node": "poetic-1",
+  "config": {
+    "timeout_coordinator": 15,
+    "timeout_implementer": 90,
+    "timeout_reviewer": 30,
+    "timeout_enabler": 30,
+    "lock_stale_after": 4,
+    "dashboard_refresh_seconds": 5
+  },
+  "status": {
+    "switch": {
+      "disabled": false
+    },
+    "limit": {
+      "active": false
+    },
+    "running": false,
+    "lock": null,
+    "current": null,
+    "last_cycle": null
+  },
+  "counts": {
+    "spend_today_usd": 0,
+    "spend_total_usd": 0,
+    "failures_shown": 0,
+    "cycles_shown": 0,
+    "prs_reached_ready": 0,
+    "by_day": [],
+    "by_model": [],
+    "by_actor": []
+  },
+  "cycles": [],
+  "blocked": [],
+  "void": [],
+  "fleet": {
+    "flags": {
+      "disabled": null,
+      "limit": null,
+      "merge_autonomy_kill": {
+        "state": "disabled",
+        "record": {
+          "reason": "state repo unreachable and no cached copy of the kill switch — failing closed to human until a fetch succeeds (TD-PPagop-26081507)",
+          "expires_at": null,
+          "by": "",
+          "disabled_at": "",
+          "kind": "fail-closed"
+        }
+      }
+    },
+    "nodes": [],
+    "claims": []
+  },
+  "github": {
+    "ok": true,
+    "fetched_at": "@ago:1m",
+    "prs": [],
+    "pr_index": {},
+    "inputs": {}
+  },
+  "log_tail": [],
+  "cron_tail": [
+    "30 * * * *  /app/agent-cycle.sh"
+  ],
+  "max_open_agent_prs": 3
+}

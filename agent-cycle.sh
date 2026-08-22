@@ -4189,7 +4189,12 @@ run_landing_stage() {
 #   1. `merge_autonomy_effective_level`, called with `fresh` (issue #513) so
 #      the kill switch bypasses this process's own memo — must still be
 #      `agent-merges-routine` or `agent-merges-all` (the kill switch or a
-#      budget freeze may have moved since the Approver ran).
+#      budget freeze may have moved since the Approver ran). A refusal here
+#      names its actual cause (`landing_autonomy_refusal_reason`, D18 issue
+#      #576) — the fleet-wide kill switch, distinguishable in the
+#      `landing-refused` log from a repository that simply never had its
+#      level raised — rather than always blaming "the level", which a human
+#      reading the log has no reason to suspect they set correctly.
 #   2. `landing_eligible` (lib/landing.sh) — complexity, source and the
 #      protected-paths classifier.
 #   3. `review_gate_verdict` — must read `clean`; `dirty` and `unknown`
@@ -4267,7 +4272,7 @@ _landing_stage_attempt() {
   case "$level" in
     agent-merges-routine|agent-merges-all) ;;
     *)
-      _landing_refuse "$pr_url" "$slug" "merge_autonomy effective level is $level, not agent-merges-routine or agent-merges-all" "$retry"
+      _landing_refuse "$pr_url" "$slug" "$(landing_autonomy_refusal_reason "$state_repo" "$state_dir" "$level" fresh)" "$retry"
       return 0
       ;;
   esac

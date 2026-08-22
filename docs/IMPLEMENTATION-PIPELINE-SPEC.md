@@ -4769,7 +4769,20 @@ implements.
       with `FRESH` (issue #513) so the kill switch bypasses this process's
       own memo — must still be `agent-merges-routine` or
       `agent-merges-all`. The kill switch or a WI-6 budget freeze may have
-      moved since the Approver stage ran.
+      moved since the Approver stage ran. A refusal here names its actual
+      cause (`landing_autonomy_refusal_reason`, `lib/landing.sh`, D18 issue
+      #576, exercised end to end — one case per `merge_autonomy` rung — by
+      `test/landing-kill-switch-wiring.test.sh`): a second, independent read
+      of `merge_autonomy_kill_state` (also `FRESH`, since gate 1's own LEVEL
+      read already carries it) tells the fleet-wide kill switch apart from a
+      repository that simply has not had its level raised, since LEVEL alone
+      is the *collapsed* answer and does not itself say why it collapsed. The
+      `kill-switch:` tag this branch alone prefixes onto its `reason`
+      (`landing-refused`, requirement 33) is what lets
+      `scripts/publish-dashboard.sh`'s landings digest (`byReason`,
+      `dashboard/index.html`) group it apart from every other refusal class,
+      including the plain "effective level is …" wording this gate emits
+      when the level was simply never raised.
    2. `landing_eligible` (`lib/landing.sh`) — the deterministic classifier:
       `complexity:low`/`medium`, a `source` in this repository's own
       `merge_autonomy_routine_sources`, and `landing_protected_paths_hit`
@@ -7172,7 +7185,17 @@ implements.
     time), an unreadable merge budget or App login, an already-queued or
     unreadable merge-queue probe, an unreadable token mint, or `landing_arm`
     itself refusing) — and, on the same terms as `landing-armed` above, `retry:
-    true` when the refusal came from the landing-retry sweep.
+    true` when the refusal came from the landing-retry sweep. Gate 1's own
+    refusal (`landing_autonomy_refusal_reason`, `lib/landing.sh`, D18 issue
+    #576) is the one `reason` carrying a `kill-switch:` tag ahead of its
+    text, and only when a second, independent read of
+    `merge_autonomy_kill_state` confirms the fleet-wide kill switch is the
+    actual cause of LEVEL not qualifying — never when a repository has
+    simply not had its level raised, which keeps the plain "effective level
+    is …" wording instead. This is what a human — or
+    `scripts/publish-dashboard.sh`'s landings digest, which groups
+    `landing-refused` reasons by the text before the first `:` — reads to
+    tell the two refusal classes apart.
     `landing_arm`'s own refusal names which of its steps failed —
     the pull request read, the merge-queue read, the enqueue mutation (a
     transport failure or a partial write reporting no queue entry), or the

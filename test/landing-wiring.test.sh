@@ -172,6 +172,24 @@ log_event() { printf '%s\t%s\n' "$1" "$2" >>"$T/events"; }
 # discipline test/approver-wiring.test.sh already pins for run_approver_stage.
 merge_autonomy_effective_level() { printf '%s\n' "$*" >>"$T/mal_calls"; printf '%s' "$LEVEL"; }
 
+# The real `landing_autonomy_refusal_reason` (lib/landing.sh, D18 issue #576)
+# reads this directly when gate 1 refuses, to tell a fleet-wide kill switch
+# apart from a level simply never raised — stubbed here since
+# lib/merge-autonomy.sh's own network-backed `merge_autonomy_kill_state` has
+# no place in a stage-wiring test; test/merge-autonomy.test.sh already covers
+# it directly, and test/landing-kill-switch-wiring.test.sh exercises the real
+# collapse end to end. Defaults to "enabled" (not engaged) so every gate-1
+# case above keeps the plain "effective level is …" wording unless a case
+# opts into KILL_STATE=disabled.
+merge_autonomy_kill_state() {
+  printf '%s\n' "$*" >>"$T/kill_state_calls"
+  if [[ "${KILL_STATE:-enabled}" == "enabled" ]]; then
+    printf '{"state":"enabled"}'
+  else
+    printf '{"state":"disabled","record":{"reason":"drill","by":"test-operator","expires_at":null,"disabled_at":"2026-08-22T00:00:00Z","kind":"manual"}}'
+  fi
+}
+
 landing_eligible() {
   printf '%s\n' "$*" >>"$T/eligible_args"
   printf '%s' "$ELIGIBLE"
@@ -284,14 +302,14 @@ run_case() {
   : >"$tmp_dir/reached"; : >"$tmp_dir/eligible_args"; : >"$tmp_dir/standing_args"
   : >"$tmp_dir/mal_calls"; : >"$tmp_dir/budget_decide_args"; rm -f "$tmp_dir/armed_flag"
   rm -f "$tmp_dir/armed_by_repo_flag"
-  : >"$tmp_dir/pp_ctl_args"; : >"$tmp_dir/retry_tier_args"
+  : >"$tmp_dir/pp_ctl_args"; : >"$tmp_dir/retry_tier_args"; : >"$tmp_dir/kill_state_calls"
   rm -rf "${tmp_dir:?}/state"
   env -i PATH="$PATH" HOME="$HOME" \
     T="$tmp_dir" SCRIPT_DIR="$SCRIPT_DIR" PR_URL="$URL" COMPLEXITY="medium" \
     VERDICT="approve" ADJUDICATING="0" LEVEL="agent-merges-routine" \
     ELIGIBLE="eligible" GATE_WORD="clean" GATE_REASON="" GATE_RC="0" \
     STANDING="APPROVED" BUDGET="arm" QUEUED="false" ARM_METHOD="enqueued" \
-    PP_CTL="ok" APPROVER_STAGE_TIER="critical" \
+    PP_CTL="ok" APPROVER_STAGE_TIER="critical" KILL_STATE="enabled" \
     "$@" \
     bash "$tmp_dir/harness.sh" >"$tmp_dir/stdout" 2>"$tmp_dir/stderr"
   printf '%s' "$?"
@@ -309,6 +327,7 @@ armed_flag() { cat "$tmp_dir/armed_flag" 2>/dev/null || true; }
 armed_by_repo_flag() { cat "$tmp_dir/armed_by_repo_flag" 2>/dev/null || true; }
 pp_ctl_args() { cat "$tmp_dir/pp_ctl_args" 2>/dev/null || true; }
 retry_tier_args() { cat "$tmp_dir/retry_tier_args" 2>/dev/null || true; }
+kill_state_calls() { cat "$tmp_dir/kill_state_calls" 2>/dev/null || true; }
 
 # --- The happy path: one landing-armed, naming the method --------------------
 
@@ -372,8 +391,28 @@ for level in human agent-approves; do
   assert_eq "at $level nothing is armed" "0" "$(count arms)"
   assert_contains "  ... and the refusal names the level" \
     "effective level is $level" "$(refusal)"
+  assert_eq "  ... never mentions the kill switch (it is clear)" "" \
+    "$(refusal | grep -o 'kill switch' || true)"
   assert_eq "  ... returning 0" "0" "$rc"
 done
+
+# --- Gate 1, the kill switch (D18 issue #576): distinguishable in the log
+# from a level that was simply never raised. The kill switch collapsing an
+# arbitrary configured rung to `human` in the first place is
+# merge_autonomy_effective_level's own job (test/merge-autonomy.test.sh,
+# including the per-repo-override case at :174-179) — not repeated here.
+# What is new here is that gate 1's own refusal, run through the real
+# landing path, names the switch rather than the generic wording above.
+
+rc="$(run_case LEVEL="human" KILL_STATE="disabled")"
+assert_eq "with the switch engaged, nothing is armed" "0" "$(count arms)"
+assert_contains "  ... and the refusal names the kill switch" \
+  "merge_autonomy kill switch is engaged" "$(refusal)"
+assert_eq "  ... never falling back to the generic 'effective level is' wording" "" \
+  "$(refusal | grep -o 'effective level is' || true)"
+assert_eq "  ... returning 0" "0" "$rc"
+assert_contains "  ... and asks merge_autonomy_kill_state for a FRESH read too (issue #513)" \
+  "fresh" "$(kill_state_calls)"
 
 rc="$(run_case LEVEL="agent-merges-all")"
 assert_eq "agent-merges-all arms on the same terms" "1" "$(count arms)"
