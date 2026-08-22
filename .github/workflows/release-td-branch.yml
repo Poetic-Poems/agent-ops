@@ -1,0 +1,40 @@
+name: Release tech-debt reservation branch
+
+# The other half of scripts/sweep-orphan-branches.sh's deliberate blind spot
+# (issue #545): a td/<id> branch whose only commit is
+# scripts/reserve-tech-debt-id.pl's own reservation commit is the ID lock, not
+# orphaned work, and that sweep leaves it alone forever — correctly, since it
+# cannot tell from the branch alone whether <id> has since been filed on some
+# other branch ("Filing alongside other work", TECH-DEBT.md). This workflow is
+# triggered by the one event that actually answers that question: a push to
+# main that adds a new tech-debt/<id>.md. When one lands, the reservation it
+# came from has done its job, and the td/<id> branch it locked is retired
+# here rather than by a human running "Filing an item"'s own manual fallback
+# (agent-ops#631).
+#
+# Ordinary "Claiming an item" work never reaches this workflow in practice:
+# that workflow does its work *on* td/<id> and merges it as its own pull
+# request, so GitHub's repository-level "delete branch on merge" setting
+# already retires the branch the moment that pull request lands — by the time
+# this workflow's push event fires, refs/heads/td/<id> is already gone, and
+# scripts/release-td-branch.sh reports that as "absent", not an error.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Release any td/<id> branch a new tech-debt record just retired
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+        run: scripts/release-td-branch.sh "$GITHUB_REPOSITORY" "$BEFORE_SHA" "$AFTER_SHA"

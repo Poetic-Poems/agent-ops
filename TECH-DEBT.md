@@ -48,6 +48,42 @@ rather than let a permanent record change quietly), and no old-format
 3. If the item is referenced elsewhere (code comments, docs), note those
    references in the body so whoever resolves it removes them too.
 
+## Filing alongside other work
+
+A stage already committing to its own branch — an Implementer or Reviewer
+mid-pull-request, or a weekly project review batching several findings —
+sometimes notices debt it has no reason to stop and fix. Filing it should not
+cost a second round trip: reserve the ID as above, but skip "Filing an item"
+step 2's `td/<id>` checkout, and add `tech-debt/<id>.md` straight onto the
+branch already in hand, riding along in the pull request that branch already
+carries (or is about to).
+
+1. Before reserving, search the register for an existing record about the
+   same gap: `scripts/find-similar-tech-debt.sh "<working title>"` prints any
+   `open`/`in-progress` record whose title is a close match, and exits
+   non-zero if it found one. A hit means the gap is already tracked — cite
+   the existing id instead of filing a second record for it.
+2. Reserve the ID with `scripts/reserve-tech-debt-id.pl`, exactly as "Filing
+   an item" step 1 describes — it still pushes `td/<id>` as a reservation
+   lock, and this is now the *only* purpose that branch ever serves: nothing
+   is checked out or committed to it.
+3. Add `tech-debt/<id>.md` on the current branch, with the same frontmatter
+   "Filing an item" step 2 describes, plus a line in the body naming where it
+   was noticed — the pull request or review that surfaced it, e.g. "Noticed
+   while working PR #618" — so a later reader has the same provenance a
+   `review:` line gives a review-sourced item. Commit it alongside whatever
+   else that branch already carries, and push.
+4. The `td/<id>` branch releases itself once `tech-debt/<id>.md` reaches
+   `main` via any pull request: `.github/workflows/release-td-branch.yml`
+   deletes it the moment it sees a new record land, whichever branch actually
+   carried the filing commit. If that workflow cannot run — its own delete
+   call failed, or the record was filed some other way it does not recognise
+   — delete the branch by hand instead: `git push origin --delete td/<id>`,
+   the fallback "Claiming an item" has always needed for an abandoned claim.
+
+This is the same reservation lock "Claiming an item" and "Filing an item"
+both use; only where the filing commit lands changes.
+
 ## Claiming an item
 
 This repository is worked by concurrent agents: a claim must be checked and

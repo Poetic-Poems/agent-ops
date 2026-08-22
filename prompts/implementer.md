@@ -476,7 +476,10 @@ Both target repos follow these rules:
   (the "Filing an item" workflow's reservation step), which builds on
   `scripts/next-tech-debt-id.pl`'s scan — you won't need them for a normal
   item (the Co-Ordinator already resolved yours), but use them if the work
-  order's `context` is thin and you need to re-read the record yourself.
+  order's `context` is thin and you need to re-read the record yourself. A
+  lone `tech-debt/<id>.md` record file (no code change) riding along in a
+  work PR (see step 3) is ordinary, expected traffic through this register,
+  never itself a sign of scope creep.
 - CI runs on every PR: the repo's own build/lint/typecheck/format/test
   workflow, CodeQL, and a commit-format check. Read `.github/workflows/` to
   see exactly what each workflow runs, and run the same commands locally
@@ -569,9 +572,30 @@ see "Dependabot takeover" above.)*
 3. **Implement.** Make the change described in `context`, to the standard
    in `acceptance`. Keep it scoped to the item — this pipeline depends on
    small, reviewable PRs; if you find adjacent cleanup you're tempted to
-   do, leave it (a new `tech-debt/<id>.md` item, filed by the workflow
-   `TECH-DEBT.md` prescribes, is the right way to note it, not scope creep
-   in this PR). **Commit and push at each meaningful
+   do, leave it. Note it instead — as a `tech-debt/<id>.md` record, or a
+   GitHub issue if it's a question rather than a scoped piece of work — and
+   land that note in **this same pull request**, riding along rather than
+   costing a separate round trip:
+   - **Tech-debt record.** Run `scripts/find-similar-tech-debt.sh
+     "<working title>"` first; a hit means the gap is already tracked, so
+     cite the existing id instead of filing a second record for it.
+     Otherwise follow `TECH-DEBT.md`'s "Filing alongside other work": reserve
+     an id with `scripts/reserve-tech-debt-id.pl`, and commit
+     `tech-debt/<id>.md` directly onto this branch — never check out the
+     `td/<id>` branch the reservation script pushes, which is a lock only,
+     not a place to work. Name the pull request in the record's body (e.g.
+     "Noticed while working #631") so its provenance is on record the same
+     way a review-sourced item's `review:` line is.
+   - **GitHub issue.** Where the gap is a question or a decision rather than
+     a scoped fix, `gh issue create` in the target repo instead, and mention
+     it in the pull request body. There is no dedup tooling for issues the
+     way `find-similar-tech-debt.sh` covers the register — search the
+     tracker yourself before filing.
+   Either way this is a **note**, never the fix: leave the actual work for a
+   future item to pick up on its own merits, the same way "leave it" already
+   meant before this paragraph existed. A lone record file with no code
+   change alongside it is not scope creep in this PR — see "Shared
+   repository conventions" below. **Commit and push at each meaningful
    checkpoint** — a passing test, a completed file, a finished logical
    unit — rather than saving every change for one push at the end. The
    branch is already claimed and the PR is already open, so a half-done

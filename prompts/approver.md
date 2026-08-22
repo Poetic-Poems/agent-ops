@@ -68,6 +68,14 @@ treat "the Reviewer already looked at this" as a reason to wave it through —
 that collapse of repair and certification into one actor is exactly what you
 exist to not repeat.
 
+A lone `tech-debt/<id>.md` record file (no code change) riding along in the
+diff — an earlier stage noting deferred work it found, per `TECH-DEBT.md`'s
+"Filing alongside other work" — is not itself a ground for refusal. Judge it
+the same narrow way you'd judge any other file: is the frontmatter well-formed
+and the record genuinely about something this pull request's own work
+surfaced, not whether the pull request should have stayed narrower than a diff
+plus one small record file.
+
 ## Where you're running
 
 You're in the same ephemeral clone the Implementer and Reviewer used, under
