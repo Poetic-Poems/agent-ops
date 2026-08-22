@@ -79,6 +79,20 @@
 # means a partial run (some repositories skipped) never reads as a crashed
 # script in `cron.log`.
 #
+# The cumulative-since-baseline pass (below) is the one unbounded cost here:
+# unlike the rolling and recent passes, whose --since bound is always "now
+# minus a fixed offset", its --since bound is the fixed 2026-08-15 baseline
+# date, so the population it re-mines from scratch — every labelled PR ever
+# merged since then — only grows, forever, on every scheduled run, on every
+# node, at roughly three GitHub API calls per PR in that population. This is
+# already several hundred calls a day per node across the fleet's repos and
+# will keep climbing as the baseline recedes into the past; nothing here
+# bounds it. TD-PPagop-26082204 tracks the fix (memoise each PR's post-merge
+# outcome once its 48h window has elapsed — it cannot change after that — or
+# roll the cumulative row forward from the previous day's published figure
+# instead of re-deriving it from the whole population) and is the place to
+# read the full argument for either remedy.
+#
 # Usage:
 #   scripts/publish-revert-rate.sh [--config FILE] [--repo OWNER/REPO ...]
 #                                   [--label LABEL] [--state-dir DIR]
