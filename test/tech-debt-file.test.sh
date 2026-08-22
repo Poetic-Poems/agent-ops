@@ -26,9 +26,11 @@
 #   - **Any step failing (no reserve script on origin/main, the branch-create
 #     call, the contents-write call, the PR-create call) fails the whole
 #     call, returns 1, and prints nothing.**
-#   - **A PR-create failure additionally cleans up** — the td-record/<id> and
-#     td/<id> branches it already wrote are deleted (best-effort) rather than
-#     left behind with no pull request ever carrying them (TD-PPagop-26082203).
+#   - **Any failure after the id is reserved additionally cleans up** — the
+#     td/<id> reservation, and the td-record/<id> branch where the
+#     branch-create call got that far, are deleted (best-effort) rather than
+#     left behind with no pull request ever carrying them, which no sweep
+#     would ever find again (TD-PPagop-26082203).
 #   - **techdebt_file_issue returns an existing issue that already covers
 #     ITEM_REF** rather than filing a duplicate, and creates one when none
 #     exists; a failed create returns 1 and prints nothing.
@@ -186,6 +188,32 @@ reset_stub() {
   echo '[]' > "$tmp_dir/issue-list-response"
 }
 
+# reserved_id -- the id the real reserve script handed this call, read back
+# off the branch-create attempt rather than guessed: the fixture runs the
+# genuine reserve-tech-debt-id.pl, so the id depends on the day and on what
+# the fixture register already holds. Recorded whether or not that call
+# succeeded, which is what makes it usable on every failure path below.
+reserved_id() {
+  grep -oE 'ref=refs/heads/td-record/[A-Za-z0-9-]+' "$tmp_dir/calls" \
+    | head -n1 | sed 's#.*/##'
+}
+
+# assert_cleanup ID PREFIX -- both branches this filing could have created
+# were deleted before the function returned, the record branch and the
+# reservation alike (TD-PPagop-26082203). The record-branch DELETE is
+# asserted even where the branch-create call itself failed: the function
+# cannot tell a call that failed before writing the ref from one that wrote
+# it and failed to report so, and the redundant DELETE is a harmless 404.
+assert_cleanup() {
+  local id="$1" prefix="$2"
+  assert_eq "${prefix}an id was reserved to check cleanup against" "1" \
+    "$([[ -n "$id" ]] && echo 1 || echo 0)"
+  assert_eq "${prefix}td-record/<id> branch deleted" "1" \
+    "$(grep -c "api -X DELETE repos/o/r/git/refs/heads/td-record/$id" "$tmp_dir/calls")"
+  assert_eq "${prefix}td/<id> reservation released" "1" \
+    "$(grep -c "api -X DELETE repos/o/r/git/refs/heads/td/$id" "$tmp_dir/calls")"
+}
+
 # ============================================================================
 # techdebt_file_debt
 # ============================================================================
@@ -272,7 +300,7 @@ assert_eq "file_debt: no reserve script on origin/main -> exit 1" "1" "$rc"
 assert_eq "  ... no output" "" "$out"
 assert_eq "  ... no gh calls made" "" "$(cat "$tmp_dir/calls")"
 
-# --- git/refs POST fails -> whole call fails --------------------------------
+# --- git/refs POST fails -> whole call fails, and releases the reservation --
 remote="$(make_remote 0)"
 gd="$(a_git_dir "$remote")"
 reset_stub
@@ -282,8 +310,9 @@ assert_eq "file_debt: branch-create fails -> exit 1" "1" "$rc"
 assert_eq "  ... no output" "" "$out"
 assert_eq "  ... no contents PUT attempted" "0" \
   "$(grep -c 'contents/' "$tmp_dir/calls")"
+assert_cleanup "$(reserved_id)" "  ... "
 
-# --- contents PUT fails -> whole call fails ---------------------------------
+# --- contents PUT fails -> whole call fails, and cleans up both branches ----
 remote="$(make_remote 0)"
 gd="$(a_git_dir "$remote")"
 reset_stub
@@ -292,8 +321,9 @@ out="$(techdebt_file_debt "o/r" "T" "B" "P" "" "$gd")"; rc=$?
 assert_eq "file_debt: contents-write fails -> exit 1" "1" "$rc"
 assert_eq "  ... no output" "" "$out"
 assert_eq "  ... no pr create attempted" "0" "$(grep -c 'pr create' "$tmp_dir/calls")"
+assert_cleanup "$(reserved_id)" "  ... "
 
-# --- pr create fails -> whole call fails, and cleans up the two branches ---
+# --- pr create fails -> whole call fails, and cleans up both branches -------
 remote="$(make_remote 0)"
 gd="$(a_git_dir "$remote")"
 reset_stub
@@ -301,13 +331,7 @@ reset_stub
 out="$(techdebt_file_debt "o/r" "T" "B" "P" "" "$gd")"; rc=$?
 assert_eq "file_debt: pr-create fails -> exit 1" "1" "$rc"
 assert_eq "  ... no output" "" "$out"
-id="$(grep -oE 'ref=refs/heads/td-record/[A-Za-z0-9-]+' "$tmp_dir/calls" | head -n1 | sed 's#.*/##')"
-assert_eq "  ... an id was reserved to check cleanup against" "1" \
-  "$([[ -n "$id" ]] && echo 1 || echo 0)"
-assert_eq "  ... td-record/<id> branch deleted" "1" \
-  "$(grep -c "api -X DELETE repos/o/r/git/refs/heads/td-record/$id" "$tmp_dir/calls")"
-assert_eq "  ... td/<id> reservation released" "1" \
-  "$(grep -c "api -X DELETE repos/o/r/git/refs/heads/td/$id" "$tmp_dir/calls")"
+assert_cleanup "$(reserved_id)" "  ... "
 
 # ============================================================================
 # techdebt_file_issue
