@@ -261,13 +261,13 @@
       }
     },
     "log_retained_bytes": {
-      "description": "Size at which scripts/rotate-logs.sh rotates dashboard.log, state-sync.log, doctor.log, cron.log and review-cron.log. log.jsonl and review-log.jsonl are never rotated regardless of size.",
+      "description": "Size at which scripts/rotate-logs.sh rotates dashboard.log, state-sync.log, doctor.log, revert-rate.log, cron.log and review-cron.log. log.jsonl, review-log.jsonl and revert-rate.jsonl are never rotated regardless of size.",
       "type": "integer",
       "minimum": 1,
       "default": 2000000,
       "x-docs": {
-        "readme": "Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `doctor.log`, `cron.log` and `review-cron.log`. `log.jsonl` and `review-log.jsonl` are never rotated.",
-        "spec": "Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `doctor.log`, `cron.log` and `review-cron.log` (requirement 2.6). `log.jsonl` and `review-log.jsonl` are never rotated regardless of size. `ROTATE_LOGS_RETAINED_BYTES` overrides it for tests."
+        "readme": "Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `doctor.log`, `revert-rate.log`, `cron.log` and `review-cron.log`. `log.jsonl`, `review-log.jsonl` and `revert-rate.jsonl` are never rotated.",
+        "spec": "Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `doctor.log`, `revert-rate.log`, `cron.log` and `review-cron.log` (requirement 2.6). `log.jsonl`, `review-log.jsonl` and `revert-rate.jsonl` are never rotated regardless of size. `ROTATE_LOGS_RETAINED_BYTES` overrides it for tests."
       }
     },
     "log_generations": {

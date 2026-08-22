@@ -172,17 +172,19 @@ a node updates by pulling a new image rather than by pulling a branch.
   push`, which publishes this node's state and heartbeat to its own branch,
   and a `state-sync.sh fetch`, which materialises every peer's for the union
   readers; one log-rotation line (requirement 2.6), `rotate-logs.sh`,
-  which bounds the five logs those schedules append to; and one
+  which bounds the six logs those schedules append to; one
   unattended-doctor line (requirement 2.6a), `doctor.sh --unattended`, which
   runs the same configuration and GitHub checks an operator would run by
-  hand, once an hour, with nobody watching. Every cadence named
-  above — the heartbeat and both fleet lines' intervals, the
-  log-rotation minute, and the doctor pass's own offset — comes from
-  `config.json`'s `schedule` (`heartbeat_minutes`,
+  hand, once an hour, with nobody watching; and one revert-rate line
+  (requirement 2.6b), `publish-revert-rate.sh`, which runs the merged-PR
+  miner over a bounded window once a day, with nobody watching either. Every
+  cadence named above — the heartbeat and both fleet lines' intervals, the
+  log-rotation minute, and the doctor and revert-rate passes' own offsets —
+  comes from `config.json`'s `schedule` (`heartbeat_minutes`,
   `state_sync_push_minutes`, `state_sync_fetch_minutes`, `log_rotation_minute`,
-  `doctor_offset_minutes`;
-  see Configuration), baked at 5, 5, 7, 19 and 44 in the checked-in config. The
-  same redirections into `state_dir` apply, so the dashboard's log-derived
+  `doctor_offset_minutes`, `revert_rate_hour`, `revert_rate_offset_minutes`;
+  see Configuration), baked at 5, 5, 7, 19, 44, 2 and 51 in the checked-in
+  config. The same redirections into `state_dir` apply, so the dashboard's log-derived
   views work identically. It deliberately omits the laptop's personal
   `update-main-branches.sh` entry: that refreshes interactive checkouts, and
   a node has none.
@@ -615,7 +617,7 @@ and the schema must carry every one of them.
 | `cycles_retained` | `200` | Cycle directories kept in the replicated mirror — about eight days of hourly cycles. Bounds a repository that is force-pushed after every cycle. The node's own `state_dir` is bounded by `state_local_cycles_retained` instead. |
 | `state_local_cycles_retained` | `1000` | Cycle and review directories the node's *own* `state_dir` keeps — about six weeks of hourly cycles; the same push that replicates prunes to it (requirement 2.5). Deliberately far above `cycles_retained`, so the local machine is always the longer record, with a floor of one protecting the cycle being recorded. `STATE_SYNC_LOCAL_RETAINED` overrides it for tests. |
 | `state_local_streams_retained` | `50` | Cycle and review directories whose stage event streams (`<stage>.stream.jsonl`, requirement 4d) are kept; the push that replicates prunes to it (requirement 2.5). Far below `state_local_cycles_retained` because a stream is a different order of size from the record holding it — a cycle directory without them is kilobytes, one Reviewer stream megabytes — so streams go early and their records stay. Streams never reach the state repository. `STATE_SYNC_STREAMS_RETAINED` overrides it for tests. |
-| `log_retained_bytes` | `2000000` | Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `doctor.log`, `cron.log` and `review-cron.log` (requirement 2.6). `log.jsonl` and `review-log.jsonl` are never rotated regardless of size. `ROTATE_LOGS_RETAINED_BYTES` overrides it for tests. |
+| `log_retained_bytes` | `2000000` | Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `doctor.log`, `revert-rate.log`, `cron.log` and `review-cron.log` (requirement 2.6). `log.jsonl`, `review-log.jsonl` and `revert-rate.jsonl` are never rotated regardless of size. `ROTATE_LOGS_RETAINED_BYTES` overrides it for tests. |
 | `log_generations` | `3` | Rotated generations of each log kept beside the live file (`<name>.1` … `<name>.<log_generations>`), floored at one. `ROTATE_LOGS_GENERATIONS` overrides it for tests. |
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
 | `implementer_model_default` | `claude-sonnet-5` | Any change that affects runtime behaviour. |
@@ -1986,16 +1988,25 @@ implements.
    single-node operation behaves exactly as it did before the fleet existed.
 
    **What replicates.** Everything under `state_dir` except the live locks
-   (`lock.json`, `review-lock.json`), the dashboard's own machinery
-   (`dashboard/`, `dashboard.log`, `dashboard-server.log`,
-   `.dashboard-github.json`, `.image-drift-cache.json`), `state-sync.log`,
-   and the stage event streams (`*.stream.jsonl`, requirement 4d).
+   (`lock.json`, `review-lock.json`, `dashboard.lck`), the dashboard's own
+   machinery (`dashboard/`, `dashboard.log`, `dashboard-server.log`,
+   `.dashboard-github.json`, `.dashboard-claims.json`,
+   `.image-drift-cache.json`), `state-sync.log`, the unattended doctor
+   pass's own local artefacts (`doctor.log`, `.doctor-status.json` —
+   requirement 2.6a), the revert-rate publishing tick's own local text
+   output (`revert-rate.log` — requirement 2.6b, its structured sibling
+   `revert-rate.jsonl` excepted, below), and the stage event streams
+   (`*.stream.jsonl`, requirement 4d).
    The exclusions are not tidiness: a copied `lock.json` is a lock no process
    holds — peers read logs, never locks; the
    dashboard is generated from the state beside it, so copying it would be
    copying a derivative of what is already being copied; a copied
    `.image-drift-cache.json` would answer for a registry query nobody on the
-   peer ran. The streams are excluded on size as much as on relevance: what
+   peer ran; `doctor.log`/`revert-rate.log` are each a local pass's own text
+   output, superseded for a reader by the structured sibling that pass also
+   writes (`.doctor-status.json` locally, `revert-rate.jsonl` fleet-wide —
+   the asymmetry is exactly why one is excluded and the other is not). The
+   streams are excluded on size as much as on relevance: what
    a peer reads of a stage is its result envelope, which replicates as
    `<stage>.out` exactly as before, while the stream beside it is every
    message and every tool result — kilobytes against megabytes — and the
@@ -2003,7 +2014,8 @@ implements.
    exclusion covers both transfers, the general one and the cycle
    directories' own filter, and deletes any stream a node published before
    the rule existed. `log.jsonl`,
-   `review-log.jsonl`, `cycles/`, `reviews/`, `disabled.json` and the cron logs
+   `review-log.jsonl`, `revert-rate.jsonl`, `cycles/`, `reviews/`,
+   `disabled.json` and the cron logs
    do replicate — they are what makes a spare node warm rather than merely
    installed. Git stores no empty directories, so a cycle that stood down
    before its first stage replicates as its `log.jsonl` entry alone.
@@ -2089,28 +2101,33 @@ implements.
 2.6. **Log rotation.** Requirement 2.5 bounds the *records* in `state_dir` —
    `cycles/` and `reviews/` are pruned on every push — but its logs are
    appended to forever otherwise. `scripts/rotate-logs.sh`, on its own
-   crontab line independent of the pipelines, bounds five of them:
-   `dashboard.log`, `state-sync.log`, `doctor.log`, `cron.log` and
-   `review-cron.log`. Each
+   crontab line independent of the pipelines, bounds six of them:
+   `dashboard.log`, `state-sync.log`, `doctor.log`, `revert-rate.log`,
+   `cron.log` and `review-cron.log`. Each
    is renamed to `<name>.1` (an existing `.1` first shifts to `.2`, and so
    on) once it reaches `log_retained_bytes`, keeping the newest
    `log_generations` generations; a fresh, empty file replaces it
    immediately, so nothing is ever left missing. A plain rename is enough —
    every writer here reopens the file by name on each append (`>>"$log"` per
    cron invocation), so no process holds a descriptor across the rotation
-   and `copytruncate` is not needed. `log.jsonl` and `review-log.jsonl` are
-   never rotated: the union readers (blocked/void extraction, the no-op
-   fingerprint, the usage-limit cooldown) scan them whole, and dropping
+   and `copytruncate` is not needed. `log.jsonl`, `review-log.jsonl` and
+   `revert-rate.jsonl` (requirement 2.6b) are never rotated: the union
+   readers (blocked/void extraction, the no-op fingerprint, the usage-limit
+   cooldown, the revert-rate dashboard panel) scan them whole, and dropping
    their head would silently change what the Co-Ordinator believes has been
-   tried. Because `cron.log` is published to the node's state branch
+   tried, or which node's revert-rate row is newest. Because `cron.log` is
+   published to the node's state branch
    (requirement 2.5) and its tail is rendered on the dashboard (the
    `DASHBOARD-SPEC.md` cron panel), `scripts/publish-dashboard.sh` reads
    `cron.log.1` too whenever the live file alone is shorter than the tail
    window, so a rotation never empties the panel. `doctor.log` (requirement
-   2.6a) is bounded here on size alone, like `dashboard.log` and
-   `state-sync.log`: it is local to the node and excluded from the state
-   branch, and the dashboard reads the structured `.doctor-status.json`
-   beside it, not this file, so nothing needs its tail kept across a
+   2.6a) and `revert-rate.log` (requirement 2.6b) are bounded here on size
+   alone, like `dashboard.log` and
+   `state-sync.log`: both are local to the node and excluded from the state
+   branch, and the dashboard reads their structured siblings
+   (`.doctor-status.json`, `revert-rate.jsonl`)
+   instead, not either text file, so nothing needs either one's tail kept
+   across a
    rotation. `.doctor-status.json` itself is not in this rotation set at
    all — each unattended pass overwrites it in place (`mv -f` over the
    previous run), so it never grows.
