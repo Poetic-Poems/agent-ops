@@ -98,7 +98,7 @@ limit_parse_human_reset() {
 # requirement 2.1b, not the exit either. Every limit clears on its own at the
 # plan's rollover, and this system has no way to learn when that is when the
 # message does not say; so while an estimated stand-down is in force, every
-# hourly cycle asks the API directly (see `limit_probe_verdict` and the 2.1b
+# cycle asks the API directly (see `limit_probe_verdict` and the 2.1b
 # block in agent-cycle.sh) and retires the stand-down the moment the account
 # answers. What this constant bounds is how long the *record* can outlive the
 # limit when every probe comes back inconclusive — a node whose probes cannot
@@ -324,7 +324,7 @@ limit_describe() {
     printf 'until %s' "$resume_at"
     return 0
   fi
-  printf 'with no stated reset; each hourly cycle probes whether it has lifted — %s is only the estimated upper bound' "$resume_at"
+  printf 'with no stated reset; each cycle probes whether it has lifted — %s is only the estimated upper bound' "$resume_at"
   if [[ "$class" == "weekly" || "$class" == "monthly" ]]; then
     printf "%s" "; it clears at the plan's rollover — the next probe notices on its own — or sooner if you raise the cap; 'agent-cycle.sh --clear-limit' remains the manual override"
   fi

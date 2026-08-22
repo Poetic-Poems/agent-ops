@@ -796,7 +796,7 @@ is a container: Docker and the `.env` above are the whole of it.
    ```
    Then restart WSL: `wsl --shutdown` (from Windows).
 
-   *Alternative (Windows Task Scheduler):* Create a task running `wsl.exe -u wallen -e $HOME/Code/Poetic-Poems/agent-ops/agent-cycle.sh` hourly.
+   *Alternative (Windows Task Scheduler):* Create a task running `wsl.exe -u wallen -e $HOME/Code/Poetic-Poems/agent-ops/agent-cycle.sh` on the node's configured cadence (`schedule.cycle_interval_minutes`).
 
 4. **Labels: nothing to do.** The pipeline creates the labels it uses — the PR
    label, the Enabler's escalation label, `needs-refinement`, `unvoided`, the

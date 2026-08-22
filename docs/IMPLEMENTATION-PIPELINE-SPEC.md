@@ -5948,12 +5948,12 @@ implements.
 
     What this replaces is a silent skip, and the silence was the defect. An item
     nobody had specified was re-read and re-skipped by every cycle for as long as
-    it existed: the pipeline paid to rediscover the same non-answer hourly, the
-    item never became selectable by any route, and the one person who could have
-    written the missing criteria was never told it existed. The pipeline looked
-    healthy throughout, which is this system's signature failure mode
-    (requirement 3b, requirement 34d) in its purest form — an item that starves
-    while every component behaves exactly as specified.
+    it existed: the pipeline paid to rediscover the same non-answer cycle after
+    cycle, the item never became selectable by any route, and the one person
+    who could have written the missing criteria was never told it existed.
+    The pipeline looked healthy throughout, which is this system's signature
+    failure mode (requirement 3b, requirement 34d) in its purest form — an item
+    that starves while every component behaves exactly as specified.
 17. From the remaining candidates, ranks the qualifying items best-first and
     returns up to `candidates_max` of them, each a stand-alone unit of work,
     clearly scoped, and adequately refined; the ranking preserves the

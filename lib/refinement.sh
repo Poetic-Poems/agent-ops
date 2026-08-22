@@ -13,9 +13,9 @@
 # gated on a decision only a human can make. Both skips were silent. The item
 # was re-read and re-skipped every cycle, for as long as it existed, with
 # nothing recorded and nobody told — the pipeline paying to rediscover the same
-# non-answer hourly, and the one person who could fix it never learning the item
-# was starving. The failure has this system's signature shape: nothing looks
-# broken.
+# non-answer cycle after cycle, and the one person who could fix it never
+# learning the item was starving. The failure has this system's signature
+# shape: nothing looks broken.
 #
 # A label alone turned out to be half the fix, the first time round:
 # agent-ops#203 was exactly this shape and labelled correctly, yet sat
