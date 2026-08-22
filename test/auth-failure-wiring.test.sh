@@ -92,14 +92,22 @@ run_block() {
   : > "$event_file"
   (
     set -uo pipefail
+    # shellcheck disable=SC2034  # consumed by $auth_block below, invisible to a static reader
     DRY_RUN=0
+    # shellcheck disable=SC2034  # consumed by $auth_block below, invisible to a static reader
     crash_loop_repo="acme/agent-ops"
+    # shellcheck disable=SC2034  # consumed by $auth_block below, invisible to a static reader
     enabler_assignee="ops-bot"
+    # shellcheck disable=SC2034  # consumed by $auth_block below, invisible to a static reader
     enabler_escalation_label="autonomous-agent-escalation"
+    # shellcheck disable=SC2034  # consumed by $auth_block below, invisible to a static reader
     cycle_dir="$tmp_dir"
+    # shellcheck disable=SC2034  # consumed by $auth_block below, invisible to a static reader
     node_name="test-node"
+    # shellcheck disable=SC2034  # consumed by $auth_block below, invisible to a static reader
     cycle_id="20260101T000000Z-test-node-1"
 
+    # shellcheck disable=SC2317  # called from $auth_block via eval, invisible to a static reader
     github_auth_probe() { printf '%s\t%s' "$AUTH_MODE" "$AUTH_DETAIL"; }
     export AUTH_MODE="$mode" AUTH_DETAIL="$detail"
 
@@ -107,6 +115,7 @@ run_block() {
     # (repo, item, label, title, body_file), plus the body file's own
     # contents, so the assertions below can check both the routing and the
     # message a human would actually read.
+    # shellcheck disable=SC2317  # called from $auth_block via eval, invisible to a static reader
     create_escalation_issue() {
       { printf 'repo=%s\nitem=%s\nlabel=%s\ntitle=%s\n' "$1" "$2" "$3" "$4"
         echo "---body---"
@@ -117,14 +126,15 @@ run_block() {
     }
     export ESCALATION_FILE="$escalation_file"
 
+    # shellcheck disable=SC2317  # called from $auth_block via eval, invisible to a static reader
     log_event() {
       printf '%s\t%s\n' "$1" "${2:-{\}}" >> "$EVENT_FILE"
     }
     export EVENT_FILE="$event_file"
 
     eval "$auth_block"
-    echo "FELL THROUGH"
-  ) >> "$event_file"
+    printf 'FELL THROUGH\n' >> "$EVENT_FILE"
+  )
   printf '%s' "$?"
 }
 
