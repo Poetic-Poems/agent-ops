@@ -26,10 +26,15 @@
 #              by #115 (next day, "fix: ..."), the rest clean. n=10 exactly
 #              at min-samples; reverts=1, follow_up_fixes=1, rate=0.2.
 #   #119-#120  merged 2026-08-30, 2026-08-31 (the last 48h): excluded from
-#              the rolling figure (still counted in cumulative).
+#              the rolling figure (still counted in cumulative). #119 is
+#              followed up by #120 ("fix: ...", next day) sharing a file and
+#              *not* cross-referencing it — the file-overlap detection path,
+#              exercised here entirely inside the 48h-exclusion population so
+#              the rolling figure's subtraction argument is tested on it too,
+#              not only on the reference-based #110/#111 and #114/#115 pairs.
 #
-# cumulative-since-baseline: #106-#120 = 15 PRs, reverts=1, follow_up_fixes=1,
-# rate = 2/15 = 0.133.
+# cumulative-since-baseline: #106-#120 = 15 PRs, reverts=1, follow_up_fixes=2
+# (#114/#115 by reference, #119/#120 by file overlap), rate = 3/15 = 0.2.
 #
 # Run directly:
 #
@@ -95,19 +100,25 @@ cat > "$STUB_DIR/hits-o_r.json" <<'EOF'
   {"number": 117, "title": "Add o", "created_at": "2026-08-26T00:00:00Z", "pull_request": {"merged_at": "2026-08-26T00:00:00Z"}},
   {"number": 118, "title": "Add p", "created_at": "2026-08-27T00:00:00Z", "pull_request": {"merged_at": "2026-08-27T00:00:00Z"}},
   {"number": 119, "title": "Add q", "created_at": "2026-08-30T00:00:00Z", "pull_request": {"merged_at": "2026-08-30T00:00:00Z"}},
-  {"number": 120, "title": "Add r", "created_at": "2026-08-31T00:00:00Z", "pull_request": {"merged_at": "2026-08-31T00:00:00Z"}}
+  {"number": 120, "title": "fix: correct q", "created_at": "2026-08-31T00:00:00Z", "pull_request": {"merged_at": "2026-08-31T00:00:00Z"}}
 ]
 EOF
 
-# Every PR is reviewless and file-overlap-free (distinct files each) — the
-# only outcome signal this fixture exercises is the cross-reference one,
-# which is population-independent (a live GitHub timeline read), so it is
-# unaffected by which of the three --since bounds a given mining pass used.
+# Every PR is reviewless and file-overlap-free (distinct files each), except
+# #119/#120 (see below) — so the reference-based pairs (#110/#111, #114/#115)
+# exercise a population-independent outcome signal (a live GitHub timeline
+# read), unaffected by which of the three --since bounds a given mining pass
+# used, and #119/#120 exercises the file-overlap path instead.
 for n in 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120; do
   printf '[]\n' > "$STUB_DIR/reviews-$n.json"
   printf '[{"filename": "file-%s.txt"}]\n' "$n" > "$STUB_DIR/files-$n.json"
   printf '[]\n' > "$STUB_DIR/timeline-$n.json"
 done
+# #119 and #120 share a file and neither cross-references the other — #120
+# ("fix: correct q") is detected as #119's follow-up by file overlap alone,
+# entirely inside the last-48h population the rolling figure excludes.
+printf '[{"filename": "shared-q.txt"}]\n' > "$STUB_DIR/files-119.json"
+printf '[{"filename": "shared-q.txt"}]\n' > "$STUB_DIR/files-120.json"
 cat > "$STUB_DIR/timeline-110.json" <<'EOF'
 [{"event": "cross-referenced",
   "source": {"issue": {"number": 111, "title": "Revert \"Add j (soon reverted)\"",
@@ -198,13 +209,13 @@ assert_eq "rolling: rate = 2/10 = 0.2" "0.2" "$(jq -r '.rolling.rate' <<<"$row_a
 
 assert_eq "cumulative: since is the baseline date" "2026-08-15T00:00:00Z" "$(jq -r '.cumulative.since' <<<"$row_a")"
 assert_eq "cumulative: n = 15 (#106..#120)" "15" "$(jq -r '.cumulative.n' <<<"$row_a")"
-assert_eq "cumulative: 1 revert, 1 follow-up (same two corrections)" "1" "$(jq -r '.cumulative.reverts' <<<"$row_a")"
-assert_eq "  ..." "1" "$(jq -r '.cumulative.follow_up_fixes' <<<"$row_a")"
-assert_eq "cumulative: rate = 2/15 = 0.133" "0.133" "$(jq -r '.cumulative.rate' <<<"$row_a")"
+assert_eq "cumulative: 1 revert (#110 by #111)" "1" "$(jq -r '.cumulative.reverts' <<<"$row_a")"
+assert_eq "cumulative: 2 follow-ups (#114 by reference, #119 by file overlap)" "2" "$(jq -r '.cumulative.follow_up_fixes' <<<"$row_a")"
+assert_eq "cumulative: rate = 3/15 = 0.2" "0.2" "$(jq -r '.cumulative.rate' <<<"$row_a")"
 
 assert_eq "baseline: n = 50" "50" "$(jq -r '.baseline.n' <<<"$row_a")"
 assert_eq "baseline: rate = 10/50 = 0.2" "0.2" "$(jq -r '.baseline.rate' <<<"$row_a")"
-assert_eq "above_baseline: 0.133 is not above 0.2" "false" "$(jq -r '.above_baseline' <<<"$row_a")"
+assert_eq "above_baseline: 0.2 is not above 0.2" "false" "$(jq -r '.above_baseline' <<<"$row_a")"
 
 # --- Appending: a second run adds a second line, never overwrites ----------
 "$PUBLISH" --config "$cfg_a" --state-dir "$state_a" --now "$NOW" >/dev/null 2>&1
