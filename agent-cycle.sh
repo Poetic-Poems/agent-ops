@@ -123,6 +123,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/escalation-autonomy.sh"
 # shellcheck source=lib/issue-priority.sh
 . "$SCRIPT_DIR/lib/issue-priority.sh"
+# shellcheck source=lib/tech-debt-file.sh
+. "$SCRIPT_DIR/lib/tech-debt-file.sh"
 # shellcheck source=lib/label-marker.sh
 . "$SCRIPT_DIR/lib/label-marker.sh"
 # shellcheck source=lib/prompt-overrides.sh
@@ -3858,6 +3860,8 @@ run_approver_stage() {
   local token review_body prior_section adj_bool
   local number="" protected_rc=0 protected_hit=0 critical_reason=""
   local posted_review="" posted_bool="false"
+  local ap_file_debt ap_fd_title ap_fd_body ap_fd_result ap_fd_id ap_fd_pr_url
+  local ap_file_issue ap_fi_title ap_fi_body ap_fi_body_file ap_fi_result ap_fi_number ap_fi_url
   approver_last_post_ok=""
 
   # `fresh` (issue #513, PR #506 review follow-up): this stage posts a real
@@ -4040,6 +4044,71 @@ $node_name
     verdict="$(jq -r '.verdict // empty' <<<"$status_json")"
     reasons_json="$(jq -c '[.reasons[]? | select(type == "string")]' <<<"$status_json" 2>/dev/null)"
     [[ "$reasons_json" != "null" && -n "$reasons_json" ]] || reasons_json='[]'
+
+    # file_debt/file_issue (agent-ops#631): orthogonal to `verdict` — the
+    # Approver's own posture ("What you must never do") never writes to
+    # GitHub itself, so lib/tech-debt-file.sh is what actually files it,
+    # here, under the Approver's own App token — the same identity
+    # approver_post_or_warn already posts its review under — never the
+    # ordinary pipeline login. `clone_dir` is reused as-is for the tech-debt
+    # id reservation: it is still on disk at this point in the cycle (torn
+    # down only in the EXIT trap, well after this stage returns), and
+    # techdebt_file_debt never reads or writes its checked-out branch or
+    # working tree, only `origin/main` — safe regardless of what this pull
+    # request's own branch happens to be checked out to.
+    ap_file_debt="$(jq -c '.file_debt // empty' <<<"$status_json" 2>/dev/null || true)"
+    if [[ -n "$ap_file_debt" && "$ap_file_debt" != "null" ]]; then
+      ap_fd_title="$(jq -r '.title // ""' <<<"$ap_file_debt" 2>/dev/null || true)"
+      ap_fd_body="$(jq -r '.body // ""' <<<"$ap_file_debt" 2>/dev/null || true)"
+      if [[ -z "$ap_fd_title" || -z "$ap_fd_body" ]]; then
+        log_event "warning" "$(jq -nc --arg u "$pr_url" \
+          --arg d "approver set file_debt for $pr_url, but it carries no title or body — ignored" \
+          '{detail: $d, pr_url: $u}')"
+      elif ap_fd_result="$(techdebt_file_debt "$selected_repo" "$ap_fd_title" "$ap_fd_body" \
+             "while the Approver was judging $pr_url" "$token" "$clone_dir")" \
+             && [[ -n "$ap_fd_result" ]]; then
+        IFS=$'\t' read -r ap_fd_id ap_fd_pr_url <<<"$ap_fd_result"
+        log_event "tech-debt-filed" "$(jq -nc --arg u "$pr_url" --arg r "$selected_repo" \
+          --arg id "$ap_fd_id" --arg fu "$ap_fd_pr_url" \
+          '{pr_url: $u, repo: $r, by: "approver", id: $id, filed_pr_url: $fu}')"
+      else
+        log_event "warning" "$(jq -nc --arg u "$pr_url" \
+          --arg d "approver: could not file the tech-debt record for $pr_url (see tech-debt-file.err)" \
+          '{detail: $d, pr_url: $u}')"
+      fi
+    fi
+
+    ap_file_issue="$(jq -c '.file_issue // empty' <<<"$status_json" 2>/dev/null || true)"
+    if [[ -n "$ap_file_issue" && "$ap_file_issue" != "null" ]]; then
+      ap_fi_title="$(jq -r '.title // ""' <<<"$ap_file_issue" 2>/dev/null || true)"
+      ap_fi_body="$(jq -r '.body // ""' <<<"$ap_file_issue" 2>/dev/null || true)"
+      if [[ -z "$ap_fi_title" || -z "$ap_fi_body" ]]; then
+        log_event "warning" "$(jq -nc --arg u "$pr_url" \
+          --arg d "approver set file_issue for $pr_url, but it carries no title or body — ignored" \
+          '{detail: $d, pr_url: $u}')"
+      else
+        # The pull request's own URL is appended, not merely hoped for in
+        # the model's own prose, because techdebt_file_issue's dedup guard
+        # searches the issue body for exactly this string on every later
+        # call — the Approver runs once per Reviewer round, so a repeated
+        # observation across rounds on the same pull request must not spawn
+        # a fresh issue each time.
+        ap_fi_body_file="$cycle_dir/approver-file-issue.md"
+        printf '%s\n\n---\nNoticed by the autonomous pipeline while approving %s.\n' \
+          "$ap_fi_body" "$pr_url" > "$ap_fi_body_file"
+        if ap_fi_result="$(techdebt_file_issue "$selected_repo" "$pr_url" "$ap_fi_title" \
+               "$ap_fi_body_file" "$token")" && [[ -n "$ap_fi_result" ]]; then
+          IFS=$'\t' read -r ap_fi_number ap_fi_url <<<"$ap_fi_result"
+          log_event "issue-filed" "$(jq -nc --arg u "$pr_url" --arg r "$selected_repo" \
+            --argjson n "$ap_fi_number" --arg iu "$ap_fi_url" \
+            '{pr_url: $u, repo: $r, by: "approver", issue_number: $n, issue_url: $iu}')"
+        else
+          log_event "warning" "$(jq -nc --arg u "$pr_url" \
+            --arg d "approver: could not file the issue for $pr_url (see tech-debt-file.err)" \
+            '{detail: $d, pr_url: $u}')"
+        fi
+      fi
+    fi
   fi
 
   review_body="$(jq -r 'if length == 0 then "(no reasons given)" else map("- " + .) | join("\n") end' <<<"$reasons_json")"
@@ -5572,6 +5641,67 @@ $(jq . <<<"$input")
         outcome="unknown-verdict"
         ;;
     esac
+
+    # file_debt/file_issue (agent-ops#631): orthogonal to `verdict` -- any of
+    # the four arms above may carry either, since deferred work the Enabler
+    # notices while examining an item is independent of what it decided
+    # about the item itself. The Enabler never writes to GitHub or a branch
+    # (prompts/enabler.md, "What you must never do"), so lib/tech-debt-file.sh
+    # is what actually files it, here, under the ordinary pipeline login --
+    # the Enabler carries no App identity of its own the way the Approver
+    # does, so every call omits TOKEN.
+    e_file_debt="$(jq -c '.file_debt // empty' <<<"$ex" 2>/dev/null || true)"
+    if [[ -n "$e_file_debt" && "$e_file_debt" != "null" ]]; then
+      fd_title="$(jq -r '.title // ""' <<<"$e_file_debt" 2>/dev/null || true)"
+      fd_body="$(jq -r '.body // ""' <<<"$e_file_debt" 2>/dev/null || true)"
+      if [[ -z "$fd_title" || -z "$fd_body" ]]; then
+        log_event "warning" "$(jq -nc \
+          --arg d "enabler set file_debt for $e_repo $e_item, but it carries no title or body — ignored" \
+          '{detail: $d}')"
+      elif fd_result="$(techdebt_file_debt "$e_repo" "$fd_title" "$fd_body" \
+             "during an Enabler engagement on $e_item (cycle $cycle_id)")" \
+             && [[ -n "$fd_result" ]]; then
+        IFS=$'\t' read -r fd_id fd_pr_url <<<"$fd_result"
+        log_event "tech-debt-filed" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" \
+          --arg id "$fd_id" --arg u "$fd_pr_url" \
+          '{repo: $r, item: $i, by: "enabler", id: $id, pr_url: $u}')"
+      else
+        log_event "warning" "$(jq -nc \
+          --arg d "enabler: could not file the tech-debt record for $e_repo $e_item (see tech-debt-file.err)" \
+          '{detail: $d}')"
+      fi
+    fi
+
+    e_file_issue="$(jq -c '.file_issue // empty' <<<"$ex" 2>/dev/null || true)"
+    if [[ -n "$e_file_issue" && "$e_file_issue" != "null" ]]; then
+      fi_title="$(jq -r '.title // ""' <<<"$e_file_issue" 2>/dev/null || true)"
+      fi_body="$(jq -r '.body // ""' <<<"$e_file_issue" 2>/dev/null || true)"
+      if [[ -z "$fi_title" || -z "$fi_body" ]]; then
+        log_event "warning" "$(jq -nc \
+          --arg d "enabler set file_issue for $e_repo $e_item, but it carries no title or body — ignored" \
+          '{detail: $d}')"
+      else
+        # The item ref is appended, not merely hoped for in the model's own
+        # prose, because techdebt_file_issue's dedup guard searches the
+        # issue body for exactly this string on every later call.
+        fi_body_file="$cycle_dir/enabler-file-issue-$j.md"
+        # shellcheck disable=SC2016 # the backtick around %s is literal Markdown, not code
+        printf '%s\n\n---\nNoticed by the autonomous pipeline while examining `%s` in %s.\n' \
+          "$fi_body" "$e_item" "$e_repo" > "$fi_body_file"
+        if fi_result="$(techdebt_file_issue "$e_repo" "$e_item" "$fi_title" "$fi_body_file")" \
+             && [[ -n "$fi_result" ]]; then
+          IFS=$'\t' read -r fi_number fi_url <<<"$fi_result"
+          log_event "issue-filed" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" \
+            --argjson n "$fi_number" --arg u "$fi_url" \
+            '{repo: $r, item: $i, by: "enabler", issue_number: $n, issue_url: $u}')"
+        else
+          log_event "warning" "$(jq -nc \
+            --arg d "enabler: could not file the issue for $e_repo $e_item (see tech-debt-file.err)" \
+            '{detail: $d}')"
+        fi
+      fi
+    fi
+
     # Written for every verdict, including the ones that changed nothing: this
     # marker is what stops the same item being re-examined next cycle, and what
     # the recheck window is measured from (requirement 35a).

@@ -1,0 +1,240 @@
+#!/usr/bin/env bash
+#
+# test/approver-tech-debt-file-wiring.test.sh — regression test for the
+# file_debt/file_issue handling `run_approver_stage` adds in agent-cycle.sh
+# (agent-ops#631): the Approver's final JSON may carry either field, asking
+# the Script to file a tech-debt record (its own small pull request) or a
+# plain GitHub issue on its behalf — the Approver itself must never write to
+# GitHub or a branch (prompts/approver.md, "What you must never do").
+#
+# This file complements test/approver-wiring.test.sh (the tier/streak/verdict
+# wiring itself, untouched by this feature) and test/tech-debt-file.test.sh
+# (lib/tech-debt-file.sh's own filing logic). What this file proves is
+# narrower: that `run_approver_stage` calls `techdebt_file_debt`/
+# `techdebt_file_issue` with the Approver's own App token and its still-alive
+# `clone_dir`, logs the right event on success, and warns instead of silently
+# dropping a malformed or failed request — same lift-and-assemble technique
+# test/approver-wiring.test.sh uses, with `techdebt_file_debt`/
+# `techdebt_file_issue` stubbed as simple recorders rather than wired for
+# real.
+#
+# No test framework is used (none exists elsewhere in this repo). Run
+# directly:
+#
+#   ./test/approver-tech-debt-file-wiring.test.sh
+#
+# Exit status is 0 iff every assertion passed.
+#
+# shellcheck disable=SC2016
+# This file assembles a harness script whose `$`-expressions must reach the
+# assembled file unexpanded; the single-quoted here-doc below is deliberate.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CYCLE="$SCRIPT_DIR/agent-cycle.sh"
+
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
+
+failures=0
+
+assert_eq() {
+  local desc="$1" expected="$2" actual="$3"
+  if [[ "$expected" == "$actual" ]]; then
+    printf 'ok   - %s\n' "$desc"
+  else
+    printf 'FAIL - %s\n     expected: %s\n     actual:   %s\n' "$desc" "$expected" "$actual"
+    failures=$(( failures + 1 ))
+  fi
+}
+
+assert_contains() {
+  local desc="$1" needle="$2" haystack="$3"
+  if [[ "$haystack" == *"$needle"* ]]; then
+    printf 'ok   - %s\n' "$desc"
+  else
+    printf 'FAIL - %s\n     expected to contain: %s\n     actual:             %s\n' \
+      "$desc" "$needle" "$haystack"
+    failures=$(( failures + 1 ))
+  fi
+}
+
+extract() {  # <function name>
+  awk -v fn="^$1\\\\(\\\\) \\\\{" '$0 ~ fn { on = 1 } on { print } on && /^\}$/ { exit }' "$CYCLE"
+}
+
+block="$(extract run_approver_stage)"
+post_block="$(extract approver_post_or_warn)"
+complexity_block="$(extract approver_stage_complexity)"
+if [[ -z "$block" || "$block" != *"file_debt"* || "$block" != *"file_issue"* ]]; then
+  echo "FAIL - run_approver_stage no longer mentions file_debt/file_issue (agent-ops#631 wiring removed, or extraction failed)?" >&2
+  exit 1
+fi
+if [[ -z "$post_block" || "$post_block" != *"approver_post_review"* ]]; then
+  echo "FAIL - could not extract approver_post_or_warn from agent-cycle.sh — has it moved?" >&2
+  exit 1
+fi
+if [[ -z "$complexity_block" || "$complexity_block" != *"reviewer_complexity"* ]]; then
+  echo "FAIL - could not extract approver_stage_complexity from agent-cycle.sh — has it moved?" >&2
+  exit 1
+fi
+
+cat >"$tmp_dir/harness.sh" <<'HARNESS'
+set -euo pipefail
+
+. "$SCRIPT_DIR/lib/approver.sh"
+. "$SCRIPT_DIR/lib/cycle-state.sh"
+
+selected_repo="Poetic-Poems/agent-ops"
+state_repo="Poetic-Poems/agent-ops"
+state_dir="$T/state"
+DEFAULTED_CONFIG='{}'
+PROMPTS_DIR="$SCRIPT_DIR/prompts"
+prompt_overrides_json='{}'
+cycle_dir="$T/cycle"
+clone_dir="$T/clone"
+cycle_id="20260822T000000Z-test-1"
+node_name="test-node"
+work_order_json='{"item":"631"}'
+impl_status_json='{"status":"complete"}'
+rev_status_json='{"status":"ready"}'
+stage_backstop_min=30
+stage_inactivity_min=10
+stage_kill_reason=""
+stage_gaps_json='[]'
+ONCE=0
+approver_model_default="model-default"
+approver_model_complex="model-complex"
+approver_model_critical="model-critical"
+mkdir -p "$cycle_dir" "$clone_dir" "$state_dir"
+
+merge_autonomy_effective_level() { printf '%s' "agent-approves"; }
+approver_token_credential_present() { return 0; }
+approver_token_identity_login() { printf 'pullwright-approver[bot]'; }
+approver_refuse_streak() { printf '0'; }
+approver_token_get() { printf 'a-minted-token'; }
+landing_protected_paths_hit() { return 1; }
+stage_prompt_text() { printf 'THE APPROVER PROMPT'; }
+stage_budget_apply() { :; }
+stage_watchdog_warning() { printf ''; }
+metering_fields() { printf '{}'; }
+dump_stage_output() { :; }
+stage_salvage_result() { return 1; }
+extract_json_result() { [[ -n "${1// /}" ]] || return 1; jq -c . <<<"$1"; }
+gh() { return 0; }
+log_event() { printf '%s\t%s\n' "$1" "$2" >>"$T/events"; }
+approver_post_review() {
+  printf 'url=%s\tevent=%s\ttoken=%s\n' "$1" "$2" "$4" >>"$T/posts"
+  return 0
+}
+approver_escalate() { printf 'url=%s\n' "$1" >>"$T/escalations"; }
+run_claude_stage() {
+  jq -nc --arg r "$VERDICT" '{result: $r}' >"$5"
+  return 0
+}
+
+# techdebt_file_debt/techdebt_file_issue: recorders, following exactly the
+# same role test/enabler-tech-debt-file-wiring.test.sh's own stubs play.
+techdebt_file_debt() {
+  printf 'techdebt_file_debt %s\n' "$*" >>"$T/fd_calls"
+  [[ "${FD_RC:-0}" -eq 0 ]] || return 1
+  printf 'TD-PPtest-99999902\thttps://github.com/Poetic-Poems/agent-ops/pull/701'
+}
+techdebt_file_issue() {
+  printf 'techdebt_file_issue %s\n' "$*" >>"$T/fi_calls"
+  [[ "${FI_RC:-0}" -eq 0 ]] || return 1
+  printf '88\thttps://github.com/Poetic-Poems/agent-ops/issues/88'
+}
+HARNESS
+
+{
+  printf '%s\n' "$post_block"
+  printf '%s\n' "$complexity_block"
+  printf '%s\n' "$block"
+  printf 'resolved="$(approver_stage_complexity "$PR_URL" "$COMPLEXITY" 0)"\n'
+  printf 'run_approver_stage "$PR_URL" "$resolved"\n'
+} >>"$tmp_dir/harness.sh"
+
+URL="https://github.com/Poetic-Poems/agent-ops/pull/463"
+
+# run_case VERDICT_JSON [FD_RC] [FI_RC]
+run_case() {
+  local verdict="$1" fd_rc="${2:-0}" fi_rc="${3:-0}"
+  : >"$tmp_dir/events"; : >"$tmp_dir/posts"; : >"$tmp_dir/escalations"
+  : >"$tmp_dir/fd_calls"; : >"$tmp_dir/fi_calls"
+  rm -rf "${tmp_dir:?}/cycle" "${tmp_dir:?}/clone" "${tmp_dir:?}/state"
+  env -i PATH="$PATH" HOME="$HOME" \
+    T="$tmp_dir" SCRIPT_DIR="$SCRIPT_DIR" PR_URL="$URL" COMPLEXITY="medium" \
+    VERDICT="$verdict" FD_RC="$fd_rc" FI_RC="$fi_rc" \
+    bash "$tmp_dir/harness.sh" >"$tmp_dir/stdout" 2>"$tmp_dir/stderr"
+  printf '%s' "$?"
+}
+
+fd_calls() { cat "$tmp_dir/fd_calls" 2>/dev/null || true; }
+fi_calls() { cat "$tmp_dir/fi_calls" 2>/dev/null || true; }
+count() { local f="$tmp_dir/$1"; [[ -s "$f" ]] && wc -l <"$f" | tr -d ' ' || printf '0'; }
+warnings() { grep $'^warning\t' "$tmp_dir/events" 2>/dev/null | cut -f2- || true; }
+
+# --- file_debt: success --------------------------------------------------
+verdict='{"verdict":"approve","reasons":["fine"],"file_debt":{"title":"A gap the Approver noticed","body":"The body."}}'
+rc="$(run_case "$verdict")"
+assert_eq "file_debt success: stage still returns 0" "0" "$rc"
+assert_eq "  ... techdebt_file_debt called once" "1" "$(count fd_calls)"
+assert_contains "  ... with the repo" "Poetic-Poems/agent-ops" "$(fd_calls)"
+assert_contains "  ... the title and body" "A gap the Approver noticed The body." "$(fd_calls)"
+assert_contains "  ... and the Approver's own App token, not the ordinary login" \
+  "a-minted-token" "$(fd_calls)"
+assert_contains "  ... a tech-debt-filed event, crediting the approver" \
+  '"by":"approver"' "$(grep '^tech-debt-filed' "$tmp_dir/events" || true)"
+assert_eq "  ... no warning" "0" "$(warnings | grep -c .)"
+
+# --- file_debt: missing title/body -> warning, no call --------------------
+verdict='{"verdict":"approve","reasons":["fine"],"file_debt":{"title":"","body":""}}'
+run_case "$verdict" >/dev/null
+assert_eq "file_debt missing fields: no call made" "0" "$(count fd_calls)"
+assert_eq "  ... a warning was logged" "1" "$(warnings | grep -c .)"
+
+# --- file_debt: the call itself fails -> warning ---------------------------
+verdict='{"verdict":"approve","reasons":["fine"],"file_debt":{"title":"T","body":"B"}}'
+run_case "$verdict" 1 >/dev/null
+assert_eq "file_debt call fails: still attempted" "1" "$(count fd_calls)"
+assert_eq "  ... no tech-debt-filed event" "0" "$(grep -c '^tech-debt-filed' "$tmp_dir/events" || true)"
+assert_eq "  ... a warning was logged instead" "1" "$(warnings | grep -c .)"
+
+# --- file_issue: success ----------------------------------------------------
+verdict='{"verdict":"refuse","reasons":["needs a fix"],"file_issue":{"title":"A question","body":"Body of it."}}'
+run_case "$verdict" >/dev/null
+assert_eq "file_issue success: techdebt_file_issue called once" "1" "$(count fi_calls)"
+assert_contains "  ... with the pull request's own URL as the item ref" "$URL" "$(fi_calls)"
+assert_contains "  ... and the Approver's own App token" "a-minted-token" "$(fi_calls)"
+assert_contains "  ... an issue-filed event, crediting the approver" \
+  '"by":"approver"' "$(grep '^issue-filed' "$tmp_dir/events" || true)"
+
+# --- file_issue: missing body -> warning, no call --------------------------
+verdict='{"verdict":"approve","reasons":["fine"],"file_issue":{"title":"Q","body":""}}'
+run_case "$verdict" >/dev/null
+assert_eq "file_issue missing body: no call made" "0" "$(count fi_calls)"
+assert_eq "  ... a warning was logged" "1" "$(warnings | grep -c .)"
+
+# --- Neither field set -> no filing calls, no extra warnings ---------------
+verdict='{"verdict":"approve","reasons":["fine"]}'
+run_case "$verdict" >/dev/null
+assert_eq "neither field: no techdebt_file_debt call" "0" "$(count fd_calls)"
+assert_eq "  ... no techdebt_file_issue call" "0" "$(count fi_calls)"
+assert_eq "  ... no warning" "0" "$(warnings | grep -c .)"
+
+# --- Orthogonal to verdict: a `refuse` verdict still files -----------------
+verdict='{"verdict":"refuse","reasons":["a real defect"],"file_debt":{"title":"T2","body":"B2"}}'
+run_case "$verdict" >/dev/null
+assert_contains "refuse verdict still posts REQUEST_CHANGES" "event=REQUEST_CHANGES" "$(cat "$tmp_dir/posts")"
+assert_eq "  ... and file_debt still files, independent of the verdict" "1" "$(count fd_calls)"
+
+echo
+if [[ "$failures" -eq 0 ]]; then
+  echo "All tests passed."
+  exit 0
+else
+  echo "$failures test(s) failed."
+  exit 1
+fi
