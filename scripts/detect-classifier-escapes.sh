@@ -55,21 +55,31 @@
 #     from the one place it is genuinely recorded: the fleet log's own
 #     `landing-armed` event for this `pr_url`, which itself only ever holds
 #     the value the round that armed the landing was given — never a value
-#     `landing_eligible` derived.
-#   - **The `merge_autonomy` level** — SLUG's own configured level (repo
-#     override, else the top-level key, else `human` — a byte-for-byte copy
-#     of `merge_autonomy_configured_level`, lib/merge-autonomy.sh, declared
-#     fresh here rather than sourced, for the same reason as the
-#     protected-path list), never the *effective* level
-#     `landing_eligible`'s own caller resolves: this recomputation has no way
-#     to reconstruct a since-cleared fleet-wide kill switch or a since-lifted
-#     merge-budget freeze, so like the routine-sources list below, a landing
-#     is judged against what SLUG's configuration says today, not whatever
-#     was in force the moment it merged. A pull request merged under the
-#     Approver identity while today's configured level sits below
-#     `agent-merges-routine` disagrees with this input exactly as it would
-#     disagree over complexity or source — `landing_eligible`'s own first
-#     gate, and the one this recomputation must not silently skip.
+#     `landing_eligible` derived. The same event is the carrier for the
+#     effective level below, and for the same reason; note that neither
+#     read-back makes the audit circular, because the log never decides *what
+#     gets audited* — the candidate set comes from GitHub's own `merged_by`
+#     (above) — and neither field is a verdict `landing_eligible` reached,
+#     only an input it was handed.
+#   - **The `merge_autonomy` level** — the *effective* level the landing was
+#     actually armed under, read back from the same `landing-armed` event the
+#     source comes from: `agent-cycle.sh`'s arming step records it there at
+#     the moment gate 1 resolves it, kill switch and per-repo merge-budget
+#     freeze already folded in. Never SLUG's configured level as it stands
+#     today. This script runs post hoc with no state-repo access, so today's
+#     `config.json` cannot tell it what was in force at a past merge: an
+#     operator's later dial-down of the key — the exact move D18 staging
+#     makes, and the direction an incident would move it — would manufacture
+#     a first-class `escape` out of a landing that was correct when it
+#     happened, driving the Stage 2 "zero classifier escapes" exit criterion
+#     non-zero on an action with nothing wrong with it, while in the other
+#     direction a since-cleared kill switch or since-lifted freeze would read
+#     a level that actually forbade landing as one that permitted it. A
+#     recorded level below `agent-merges-routine` is therefore an
+#     authoritative gate-1 failure rather than an artefact of when the sweep
+#     happened to arrive; a `landing-armed` event carrying no level at all
+#     (armed before the field existed) reports `unverifiable`, exactly as a
+#     missing source already does — never `clean`, and never `escape`.
 #   - **The routine-sources list** — SLUG's own `merge_autonomy_routine_sources`
 #     (repo override, else the top-level key, else the shipped default),
 #     resolved fresh from CONFIG_FILE by a copy of the precedence
@@ -85,7 +95,8 @@
 # Any input that cannot be reconstructed reports `unverifiable`, never
 # `clean` — an unreadable merge commit's file list, a merge with zero or
 # more than one `complexity:*` label standing at merge time, or a pull
-# request with no matching `landing-armed` event to read a source from. An
+# request with no matching `landing-armed` event to read a source from, or
+# one whose `landing-armed` event records no effective level. An
 # `unverifiable` landing is exactly as far from "cleared" as an `escape` is:
 # neither is silently folded into the other.
 #
@@ -295,29 +306,6 @@ _escape_audit_routine_sources() {
   printf '["register-hygiene","tech-debt"]'
 }
 
-# --- The reimplemented merge_autonomy configured-level resolution -----------
-# Deliberately not sourced from lib/merge-autonomy.sh's
-# merge_autonomy_configured_level — same reasoning as the protected-path list
-# above, and pinned against it the same way in
-# test/detect-classifier-escapes.test.sh. Configured, not effective: this
-# recomputation has no state-repo access to reconstruct a since-cleared kill
-# switch or a since-lifted merge-budget freeze, so — like the routine-sources
-# resolution above — it judges a landing against what SLUG's configuration
-# says today, never what was in force the moment it merged.
-_escape_audit_configured_level() {
-  local config_json="$1" repo_slug="$2" repo_level top_level
-  repo_level="$(jq -r --arg slug "$repo_slug" \
-    '(.repos // [])[] | select(.slug == $slug) | .merge_autonomy // empty' \
-    <<<"$config_json" 2>/dev/null | head -1)"
-  if [[ -n "$repo_level" && "$repo_level" != "null" ]]; then
-    printf '%s' "$repo_level"
-    return 0
-  fi
-  top_level="$(jq -r '.merge_autonomy // "human"' <<<"$config_json" 2>/dev/null)"
-  [[ -n "$top_level" && "$top_level" != "null" ]] || top_level="human"
-  printf '%s' "$top_level"
-}
-
 # --- The merge commit's own file list ---------------------------------------
 # repos/SLUG/commits/SHA, never repos/SLUG/pulls/N/files (landing_protected_
 # paths_hit's own read) — a genuinely different GitHub resource. Two distinct
@@ -436,7 +424,7 @@ jq -c --arg r "$slug" \
   "$audited_file.raw" 2>/dev/null | sort -u > "$audited_file" || true
 
 jq -c --arg r "$slug" \
-  'select((.repo // "") == $r and .event == "landing-armed") | {pr_url: (.pr_url // ""), source: (.source // "")}' \
+  'select((.repo // "") == $r and .event == "landing-armed") | {pr_url: (.pr_url // ""), source: (.source // ""), level: (.level // "")}' \
   "$audited_file.raw" 2>/dev/null > "$armed_file" || true
 rm -f "$audited_file.raw"
 
@@ -450,9 +438,17 @@ recorded_source_for() {
   jq -r --arg u "$url" 'select(.pr_url == $u) | .source' "$armed_file" 2>/dev/null | tail -1
 }
 
+# The effective merge_autonomy level this landing was armed under, as the
+# arming step itself recorded it — see the header. Empty for a landing armed
+# before `agent-cycle.sh` began writing the field, which is `unverifiable`,
+# never a level guessed from current configuration.
+recorded_level_for() {
+  local url="$1"
+  jq -r --arg u "$url" 'select(.pr_url == $u) | .level' "$armed_file" 2>/dev/null | tail -1
+}
+
 config_json="$(cat "$CONFIG_FILE" 2>/dev/null || printf '{}')"
 routine_json="$(_escape_audit_routine_sources "$config_json" "$slug")"
-configured_level="$(_escape_audit_configured_level "$config_json" "$slug")"
 
 emit() {
   local outcome="$1" pr_url="$2" number="$3" sha="$4" source="$5" complexity="$6" \
@@ -510,6 +506,11 @@ while IFS= read -r number; do
     reasons+=("no landing-armed event in the fleet log records this pull request's work source")
   fi
 
+  armed_level="$(recorded_level_for "$pr_url")"
+  if [[ -z "$armed_level" ]]; then
+    reasons+=("no landing-armed event in the fleet log records the effective merge_autonomy level this landing was armed under")
+  fi
+
   complexity=""
   if [[ -z "$sha" ]]; then
     reasons+=("the merge carries no merge_commit_sha")
@@ -555,11 +556,11 @@ while IFS= read -r number; do
 
   eligible=1
   disagreements=()
-  case "$configured_level" in
+  case "$armed_level" in
     agent-merges-routine|agent-merges-all) ;;
     *)
       eligible=0
-      disagreements+=("$slug's configured merge_autonomy level is $configured_level, not agent-merges-routine or agent-merges-all (current configuration; like the routine-sources list, this is not reconstructed as of the moment of merge)")
+      disagreements+=("the effective merge_autonomy level recorded at arming was $armed_level, not agent-merges-routine or agent-merges-all")
       ;;
   esac
   case "$complexity" in

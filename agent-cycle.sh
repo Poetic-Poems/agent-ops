@@ -4447,10 +4447,25 @@ _landing_stage_attempt() {
   local budget_cap budget_count
   budget_cap="$(jq -r '.cap' <<<"$budget_json")"
   budget_count="$(jq -c '.count' <<<"$budget_json")"
+  # `level` is the *effective* level gate 1 above actually judged this arm
+  # against — kill switch and per-repo merge-budget freeze already folded in
+  # by `merge_autonomy_effective_level`. It is written down here because this
+  # is the only moment anything knows it: requirement 8e's audit
+  # (`scripts/detect-classifier-escapes.sh`) runs post hoc with no state-repo
+  # access, so it can no more reconstruct the level in force at this instant
+  # than it can the work source recorded beside it. Left unrecorded, that
+  # audit had to read today's `config.json` instead, which breaks its own
+  # governing invariant in both directions: an operator's later dial-down —
+  # the exact move D18 staging makes, and the direction an incident would
+  # move it — manufactures a `classifier-escape` out of a landing that was
+  # correct when it happened, driving the Stage 2 "zero classifier escapes"
+  # exit criterion non-zero on an action with nothing wrong with it; and a
+  # since-cleared kill switch or since-lifted freeze reads a level that
+  # actually forbade landing as one that permitted it. One field closes both.
   log_event "landing-armed" "$(jq -nc --arg u "$pr_url" --arg r "$slug" --arg src "$source" \
-    --arg c "$complexity" --arg m "$method" --argjson retry "$retry_bool" \
+    --arg c "$complexity" --arg m "$method" --arg lvl "$level" --argjson retry "$retry_bool" \
     --argjson cap "$budget_cap" --argjson count "$budget_count" \
-    '{pr_url: $u, repo: $r, source: $src, complexity: $c, method: $m, cap: $cap, count: $count} + (if $retry then {retry: true} else {} end)')"
+    '{pr_url: $u, repo: $r, source: $src, complexity: $c, method: $m, level: $lvl, cap: $cap, count: $count} + (if $retry then {retry: true} else {} end)')"
   _landing_stage_attempt_armed=1
 }
 

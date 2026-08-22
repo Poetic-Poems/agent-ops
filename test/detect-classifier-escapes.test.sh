@@ -22,9 +22,11 @@
 #     (PATH-prepended, the same technique test/mine-merge-history.test.sh
 #     uses): a merged pull request whose merge commit touches a protected
 #     path is an injected known escape, and must be caught, as are the other
-#     two ways recomputation can disagree with a landing that happened — a
-#     complexity above `medium`, and a source outside the repository's
-#     routine list; one whose three recomputed inputs all agree is clean;
+#     three ways recomputation can disagree with a landing that happened — a
+#     complexity above `medium`, a source outside the repository's routine
+#     list, and an effective `merge_autonomy` level recorded at arming that
+#     sits below `agent-merges-routine`; one whose four inputs all agree is
+#     clean;
 #     each of the ways an input can fail to reconstruct is unverifiable,
 #     never clean; a pull request merged by anyone other than the passed-in
 #     Approver login is not audited at all; and a pull request already
@@ -88,18 +90,12 @@ routine_sources_block="$(extract _escape_audit_routine_sources "$DETECTOR")"
 [[ -n "$routine_sources_block" ]] || { echo "FAIL - could not extract _escape_audit_routine_sources from $DETECTOR — has it moved?" >&2; exit 1; }
 eval "$routine_sources_block"
 
-configured_level_block="$(extract _escape_audit_configured_level "$DETECTOR")"
-[[ -n "$configured_level_block" ]] || { echo "FAIL - could not extract _escape_audit_configured_level from $DETECTOR — has it moved?" >&2; exit 1; }
-eval "$configured_level_block"
-
 # shellcheck source=lib/github-limit.sh
 . "$SCRIPT_DIR/lib/github-limit.sh"
 # shellcheck source=lib/merge-queue.sh
 . "$SCRIPT_DIR/lib/merge-queue.sh"
 # shellcheck source=lib/landing.sh
 . "$SCRIPT_DIR/lib/landing.sh"
-# shellcheck source=lib/merge-autonomy.sh
-. "$SCRIPT_DIR/lib/merge-autonomy.sh"
 
 for path in ".github/workflows/ci.yml" "deploy/docker/Dockerfile" "prompts/implementer.md" \
             "lib/landing.sh" "config.schema.json" "config.json" "agent-cycle.sh" \
@@ -120,17 +116,6 @@ for cfg in '{"repos":[]}' \
   landing_out="$(_landing_routine_sources "$cfg" "acme/widgets")"
   escape_out="$(_escape_audit_routine_sources "$cfg" "acme/widgets")"
   assert_eq "routine-sources resolution for config '$cfg' matches lib/landing.sh's own" \
-    "$landing_out" "$escape_out"
-done
-
-for cfg in '{"repos":[]}' \
-           '{"repos":[{"slug":"acme/widgets","merge_autonomy":"agent-merges-all"}]}' \
-           '{"merge_autonomy":"agent-approves"}' \
-           '{"merge_autonomy":"agent-merges-routine","repos":[{"slug":"acme/widgets","merge_autonomy":"human"}]}' \
-           '{}'; do
-  landing_out="$(merge_autonomy_configured_level "$cfg" "acme/widgets")"
-  escape_out="$(_escape_audit_configured_level "$cfg" "acme/widgets")"
-  assert_eq "configured-level resolution for config '$cfg' matches lib/merge-autonomy.sh's own" \
     "$landing_out" "$escape_out"
 done
 
@@ -207,11 +192,13 @@ export STUB_DIR PATH="$tmp_dir/bin:$PATH"
 export ESCAPE_AUDIT_RETRY_DELAY_SECONDS=0
 
 config_file="$tmp_dir/config.json"
-# agent-merges-routine: the level every fixture below except #8 is written
-# against, so #2/#6/#7 exercise the other three eligibility inputs without
-# also tripping the level check — #8 is the one fixture that deliberately
-# reads a different, insufficient level.
-echo '{"merge_autonomy":"agent-merges-routine","repos":[]}' > "$config_file"
+# The level is no longer read from configuration at all — it comes off each
+# pull request's own `landing-armed` event (see the fixture log below) — so
+# this file's `merge_autonomy` is deliberately set to a level that would
+# forbid landing outright. Every fixture below still resolves the level it
+# was armed under, which is exactly the point: were the detector to fall back
+# to current configuration, the whole battery would report `escape`.
+echo '{"merge_autonomy":"human","repos":[]}' > "$config_file"
 
 SLUG="acme/widgets"
 LOGIN="pullwright-approver[bot]"
@@ -232,9 +219,12 @@ LOGIN="pullwright-approver[bot]"
 #       merged it.
 #   #8  merged by the Approver, no protected path, complexity:low, source
 #       register-hygiene — every input the other checks look at agrees, but
-#       the repository's own configured merge_autonomy level (set separately
-#       for this fixture, below) is below agent-merges-routine — the fourth
-#       way recomputation can disagree, and the one none of #1/#6/#7 cover.
+#       the effective merge_autonomy level its own landing-armed event
+#       recorded is below agent-merges-routine — the fourth way recomputation
+#       can disagree, and the one none of #1/#6/#7 cover.
+#   #9  merged by the Approver, every other input agreeing, but its
+#       landing-armed event predates the `level` field — unverifiable, never
+#       clean and never an escape.
 #   #6  merged by the Approver, no protected path, source register-hygiene,
 #       but complexity:high standing at merge — an escape the protected-path
 #       check alone would have called clean.
@@ -306,12 +296,12 @@ EOF
 
 log_file="$tmp_dir/log.jsonl"
 cat > "$log_file" <<EOF
-{"event":"landing-armed","repo":"$SLUG","pr_url":"https://github.com/$SLUG/pull/1","source":"tech-debt","complexity":"low"}
-{"event":"landing-armed","repo":"$SLUG","pr_url":"https://github.com/$SLUG/pull/2","source":"register-hygiene","complexity":"medium"}
-{"event":"landing-armed","repo":"$SLUG","pr_url":"https://github.com/$SLUG/pull/3","source":"tech-debt","complexity":"low"}
-{"event":"landing-armed","repo":"$SLUG","pr_url":"https://github.com/$SLUG/pull/4","source":"tech-debt","complexity":"low"}
-{"event":"landing-armed","repo":"$SLUG","pr_url":"https://github.com/$SLUG/pull/6","source":"register-hygiene","complexity":"low"}
-{"event":"landing-armed","repo":"$SLUG","pr_url":"https://github.com/$SLUG/pull/7","source":"issues","complexity":"low"}
+{"event":"landing-armed","repo":"$SLUG","pr_url":"https://github.com/$SLUG/pull/1","source":"tech-debt","complexity":"low","level":"agent-merges-routine"}
+{"event":"landing-armed","repo":"$SLUG","pr_url":"https://github.com/$SLUG/pull/2","source":"register-hygiene","complexity":"medium","level":"agent-merges-routine"}
+{"event":"landing-armed","repo":"$SLUG","pr_url":"https://github.com/$SLUG/pull/3","source":"tech-debt","complexity":"low","level":"agent-merges-routine"}
+{"event":"landing-armed","repo":"$SLUG","pr_url":"https://github.com/$SLUG/pull/4","source":"tech-debt","complexity":"low","level":"agent-merges-routine"}
+{"event":"landing-armed","repo":"$SLUG","pr_url":"https://github.com/$SLUG/pull/6","source":"register-hygiene","complexity":"low","level":"agent-merges-routine"}
+{"event":"landing-armed","repo":"$SLUG","pr_url":"https://github.com/$SLUG/pull/7","source":"issues","complexity":"low","level":"agent-merges-all"}
 EOF
 
 out="$("$DETECTOR" "$SLUG" "$LOGIN" "$log_file" --config "$config_file")"
@@ -380,7 +370,7 @@ cat > "$STUB_DIR_TRUNC/events-1.json" <<'EOF'
 [{"event": "labeled", "label": {"name": "complexity:low"}, "created_at": "2026-08-20T09:00:00Z"}]
 EOF
 log_file_trunc="$tmp_dir/log-trunc.jsonl"
-echo "{\"event\":\"landing-armed\",\"repo\":\"$SLUG\",\"pr_url\":\"https://github.com/$SLUG/pull/1\",\"source\":\"tech-debt\",\"complexity\":\"low\"}" \
+echo "{\"event\":\"landing-armed\",\"repo\":\"$SLUG\",\"pr_url\":\"https://github.com/$SLUG/pull/1\",\"source\":\"tech-debt\",\"complexity\":\"low\",\"level\":\"agent-merges-routine\"}" \
   > "$log_file_trunc"
 
 out_trunc="$(STUB_DIR="$STUB_DIR_TRUNC" ESCAPE_AUDIT_MERGE_FILES_LIMIT=2 \
@@ -390,10 +380,10 @@ assert_contains "a merge commit whose file list reaches the truncation cap is un
 assert_contains "  ... naming the cap as the reason" \
   "$out_trunc" "capped at the 2-file limit"
 
-# --- Fixture #8: every other input agrees, but the repository's own
-# configured merge_autonomy level is below agent-merges-routine — isolated
-# under its own STUB_DIR/config so the main battery above can stay pinned to
-# agent-merges-routine ------------------------------------------------------
+# --- Fixture #8: every other input agrees, but the effective merge_autonomy
+# level recorded on its own landing-armed event is below agent-merges-routine
+# — isolated under its own STUB_DIR so the main battery above can stay armed
+# at a sufficient level -----------------------------------------------------
 STUB_DIR_LEVEL="$tmp_dir/fixtures-level"
 mkdir -p "$STUB_DIR_LEVEL"
 cat > "$STUB_DIR_LEVEL/issues.json" <<EOF
@@ -407,17 +397,37 @@ cat > "$STUB_DIR_LEVEL/events-8.json" <<'EOF'
 [{"event": "labeled", "label": {"name": "complexity:low"}, "created_at": "2026-08-20T09:00:00Z"}]
 EOF
 log_file_level="$tmp_dir/log-level.jsonl"
-echo "{\"event\":\"landing-armed\",\"repo\":\"$SLUG\",\"pr_url\":\"https://github.com/$SLUG/pull/8\",\"source\":\"register-hygiene\",\"complexity\":\"low\"}" \
+echo "{\"event\":\"landing-armed\",\"repo\":\"$SLUG\",\"pr_url\":\"https://github.com/$SLUG/pull/8\",\"source\":\"register-hygiene\",\"complexity\":\"low\",\"level\":\"agent-approves\"}" \
   > "$log_file_level"
-config_file_level="$tmp_dir/config-level.json"
-echo '{"merge_autonomy":"agent-approves","repos":[]}' > "$config_file_level"
 
 out_level="$(STUB_DIR="$STUB_DIR_LEVEL" \
-  "$DETECTOR" "$SLUG" "$LOGIN" "$log_file_level" --config "$config_file_level")"
-assert_contains "a landing whose repository's configured merge_autonomy level is below agent-merges-routine is an escape" \
+  "$DETECTOR" "$SLUG" "$LOGIN" "$log_file_level" --config "$config_file")"
+assert_contains "a landing armed at a merge_autonomy level below agent-merges-routine is an escape" \
   "$out_level" '"outcome":"escape"'
-assert_contains "  ... naming the configured level it recomputed" \
-  "$out_level" "configured merge_autonomy level is agent-approves"
+assert_contains "  ... naming the level recorded at arming, not one resolved from today's config" \
+  "$out_level" "level recorded at arming was agent-approves"
+
+# --- Fixture #9: the same landing, but armed before `landing-armed` carried
+# a level at all. The level is then an input that cannot be reconstructed —
+# this script has no state-repo access and current configuration is not
+# evidence of what was in force at a past merge — so it is unverifiable, and
+# in particular is never allowed to become an escape. This is the direction
+# that matters: `config.json` here reads `human`, so a detector that fell
+# back to it would report a first-class classifier escape against a landing
+# nothing is known to be wrong with, and drive the D18 Stage 2 "zero
+# classifier escapes" exit criterion non-zero on an operator's dial-down.
+log_file_nolevel="$tmp_dir/log-nolevel.jsonl"
+echo "{\"event\":\"landing-armed\",\"repo\":\"$SLUG\",\"pr_url\":\"https://github.com/$SLUG/pull/8\",\"source\":\"register-hygiene\",\"complexity\":\"low\"}" \
+  > "$log_file_nolevel"
+
+out_nolevel="$(STUB_DIR="$STUB_DIR_LEVEL" \
+  "$DETECTOR" "$SLUG" "$LOGIN" "$log_file_nolevel" --config "$config_file")"
+assert_contains "a landing whose landing-armed event records no level at all is unverifiable" \
+  "$out_nolevel" '"outcome":"unverifiable"'
+assert_eq "  ... and never an escape, however low today's configured level sits" \
+  "" "$(grep '"outcome":"escape"' <<<"$out_nolevel")"
+assert_contains "  ... naming the unrecorded level as the reason" \
+  "$out_nolevel" "records the effective merge_autonomy level"
 
 # --- Idempotency: an already-audited pull request costs no gh call at all --
 log_file2="$tmp_dir/log2.jsonl"
