@@ -51,6 +51,20 @@
 #   working checkout — safe regardless of what GIT_DIR happens to be
 #   checked out to.
 #
+#   Invariant: td-record/<id> and its td/<id> reservation survive this
+#   function's own return only alongside the filing pull request that makes
+#   them reachable. Both branch-create and contents-write can only fail
+#   before td-record/<id> carries the record commit, so a failure there
+#   leaves nothing behind that a filed pull request would otherwise have
+#   pointed at. If `gh pr create` itself then fails — the one point after
+#   both writes have already landed — this function deletes td-record/<id>
+#   and releases td/<id> before returning 1, rather than leaving either
+#   behind unreachable from any pull request, open or closed
+#   (agent-ops TD-PPagop-26082203). A pull request that opens successfully
+#   and is later closed without merging is not a failure of this function
+#   and is out of its scope — see TECH-DEBT.md's "Claiming an item" for the
+#   general abandoned-claim cleanup that covers that case instead.
+#
 # TOKEN, given to either function, files under that identity
 # (GH_TOKEN="$TOKEN") rather than the ordinary pipeline login — the
 # Approver's own posture never writes to GitHub under the pipeline's own
@@ -190,9 +204,24 @@ techdebt_file_debt() {
               2>>"$errlog" || true)"
   rm -f "$pr_body_file"
 
+  if [[ -z "$pr_url" ]]; then
+    # The record commit already landed on td-record/<id> and the id is
+    # already locked on td/<id>, but no pull request will ever carry either
+    # one — undo both rather than leave them orphaned and invisible to
+    # every sweep (see this function's own header comment). Best-effort:
+    # a failure here is logged, never compounds into a second error, since
+    # scripts/sweep-orphan-branches.sh's periodic pass and TECH-DEBT.md's
+    # manual fallback are both still there behind it.
+    _techdebt_gh "$token" api -X DELETE "repos/$repo/git/refs/heads/$branch" \
+      >/dev/null 2>>"$errlog" || true
+    _techdebt_gh "$token" api -X DELETE "repos/$repo/git/refs/heads/td/$id" \
+      >/dev/null 2>>"$errlog" || true
+    (( made_dir )) && rm -rf "$git_dir"
+    return 1
+  fi
+
   (( made_dir )) && rm -rf "$git_dir"
 
-  [[ -n "$pr_url" ]] || return 1
   printf '%s\t%s' "$id" "$pr_url"
 }
 
