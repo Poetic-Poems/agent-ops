@@ -625,6 +625,88 @@ out="$(_handoff_pr_approved o/r 111)"; rc=$?
 assert_eq "unreadable reviews is a failure, never a guessed answer" "" "$out"
 assert_eq "  ... and exits 1" "1" "$rc"
 
+# --- _handoff_blocking_reviewers: the CHANGES_REQUESTED half, directly ---------
+# (agent-ops#577, part of D18 #402). `test/landing-wiring.test.sh` and
+# `test/landing-human-veto-conformance.test.sh` both exercise this function only
+# through a stub — proof that `_landing_stage_attempt` calls it and honours what
+# it says, never proof of what it actually computes from a real review history.
+# That belongs here, beside `_handoff_pr_approved`'s own direct coverage above,
+# since both share `_handoff_latest_reviews`.
+#
+# The case that matters most: a standing human `CHANGES_REQUESTED` must survive
+# an intervening `DISMISSED` position, not merely a `COMMENTED` one. GitHub
+# reports a dismissed review as its own list entry with `state: "DISMISSED"` —
+# distinct from the `APPROVED`/`CHANGES_REQUESTED` position it once was — so
+# `_handoff_latest_reviews`'s `select(.state == "APPROVED" or .state ==
+# "CHANGES_REQUESTED")` drops it before `group_by(.login) | map(last)` ever
+# runs, exactly as it drops a `COMMENTED` one. If a reviewer's original
+# `CHANGES_REQUESTED` is later dismissed (a branch-protection dismissal on
+# push, or a maintainer's own dismissal) and they stand their ground with a
+# fresh `CHANGES_REQUESTED`, the landing gate must see the fresh one, not read
+# the dismissal as having cleared the veto.
+
+review_n=0
+reset_review_stub works
+set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
+out="$(_handoff_blocking_reviewers o/r 111)"; rc=$?
+assert_eq "a standing CHANGES_REQUESTED blocks, naming the reviewer" "Warwick-Allen" "$out"
+assert_eq "  ... and exits 0" "0" "$rc"
+
+review_n=0
+reset_review_stub works
+set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)" "$(review octocat CHANGES_REQUESTED)"
+out="$(_handoff_blocking_reviewers o/r 111)"
+assert_eq "two standing CHANGES_REQUESTED reviewers are both named, one per line" \
+  "$(printf 'Warwick-Allen\noctocat')" "$out"
+
+review_n=0
+reset_review_stub works
+set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)" "$(review Warwick-Allen DISMISSED)" \
+  "$(review Warwick-Allen CHANGES_REQUESTED)"
+out="$(_handoff_blocking_reviewers o/r 111)"; rc=$?
+assert_eq "a stale-review dismissal on push does not silently clear a later standing CHANGES_REQUESTED" \
+  "Warwick-Allen" "$out"
+assert_eq "  ... and exits 0" "0" "$rc"
+
+review_n=0
+reset_review_stub works
+set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)" "$(review Warwick-Allen DISMISSED)"
+out="$(_handoff_blocking_reviewers o/r 111)"
+assert_eq "a dismissal on its own never clears the veto either — it is excluded from the filter entirely, leaving the CHANGES_REQUESTED it dismissed as the reviewer's only visible position" \
+  "Warwick-Allen" "$out"
+
+review_n=0
+reset_review_stub works
+set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)" "$(review Warwick-Allen APPROVED)"
+out="$(_handoff_blocking_reviewers o/r 111)"
+assert_eq "only a genuine later APPROVED clears the veto, never a dismissal standing in for one" "" "$out"
+
+review_n=0
+reset_review_stub works
+set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)" "$(review Warwick-Allen COMMENTED)"
+out="$(_handoff_blocking_reviewers o/r 111)"
+assert_eq "a later comment does not withdraw a request for changes either" "Warwick-Allen" "$out"
+
+review_n=0
+reset_review_stub works
+set_reviews "$(review 'copilot-pull-request-reviewer[bot]' CHANGES_REQUESTED Bot)"
+out="$(_handoff_blocking_reviewers o/r 111)"
+assert_eq "a bot's changes-requested is not a human veto" "" "$out"
+
+review_n=0
+reset_review_stub works
+set_reviews "$(review Warwick-Allen APPROVED)"
+out="$(_handoff_blocking_reviewers o/r 111)"
+assert_eq "nothing blocking prints nothing" "" "$out"
+
+review_n=0
+reset_review_stub works
+set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
+printf '/reviews' >"$tmp_dir/api-fail"
+out="$(_handoff_blocking_reviewers o/r 111)"; rc=$?
+assert_eq "unreadable reviews is a failure, never a guessed 'nothing blocking'" "" "$out"
+assert_eq "  ... and exits 1" "1" "$rc"
+
 # --- ensure_human_reviewer: the case confirm_review_requested has nobody for ---
 # (requirement 38a). poetic-fiddle #170: approved, green, idle 6.8 days, nobody
 # ever asked again once the review that approved it consumed the request that
