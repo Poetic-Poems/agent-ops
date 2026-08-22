@@ -4320,6 +4320,35 @@ run_landing_stage() {
 # the *first* attempt (RETRY empty) runs strictly after the `pr-ready` log
 # and the claim release, and nothing here can affect either; a retry attempt
 # runs long after both, against a pull request already sitting `pr-ready`.
+#
+# A successful arm also logs `landing-audit-record` (requirement 8x, D18,
+# agent-ops#578) — one durable record of everything that justified landing
+# this pull request without a human act anywhere in the chain, assembled
+# here rather than reconstructed later by joining separate events at report
+# time (the WI-8 digest's own former failure mode: a landing whose verdict
+# could not be found rendered with nulls rather than saying so). It carries
+# the pull request's own number and head SHA (the Approver's standing
+# review's own `commit_id`, already in hand from gate 4 — never a fresh read
+# for a fact this cheap to reuse), the effective `merge_autonomy` level and
+# whether SLUG's own `repos[]` entry or the top-level key produced it
+# (`merge_autonomy_resolution_source`, lib/merge-autonomy.sh — reached only
+# once gate 1 has already confirmed the kill switch is clear and no budget
+# freeze binds, so no fresher read is needed), the protected-path verdict and
+# the protected paths it hit (`landing_protected_paths_hit`, read fresh once
+# more here — the same "never more than one function call old" discipline gate
+# 4.5's own `landing_protected_path_controls_ok` already applies to the same
+# primitive, rather than trust gate 2's now-discarded read), the Approver's
+# tier/model/verdict/adjudication and this pull request's full adjudication
+# history (`landing_approver_adjudication_history`, lib/landing.sh — the
+# fleet log's own record of every `approver-verdict` event this pull request
+# ever received, not only the one that authorised this landing), every
+# deterministic gate this function itself just passed and its evidence, the
+# `merge_budget_decide` object gate 5 already computed and would otherwise
+# discard the moment `decision == "arm"` was confirmed, and the landing
+# mechanism `landing_arm` actually used. `scripts/publish-dashboard.sh`'s
+# WI-8 digest reads this record instead of re-joining `approver-verdict`
+# events against `landing-armed`, and reports a `landing-armed` with no
+# matching record as an anomaly in its own right.
 _landing_stage_attempt() {
   local slug="$1" pr_url="$2" complexity="$3" source="$4" default_branch="${5:-main}" retry="${6:-}" already_armed="${7:-0}"
   local number level
@@ -4535,6 +4564,73 @@ _landing_stage_attempt() {
     --arg c "$complexity" --arg m "$method" --arg lvl "$level" --argjson retry "$retry_bool" \
     --argjson cap "$budget_cap" --argjson count "$budget_count" \
     '{pr_url: $u, repo: $r, source: $src, complexity: $c, method: $m, level: $lvl, cap: $cap, count: $count} + (if $retry then {retry: true} else {} end)')"
+
+  # requirement 8x (D18, agent-ops#578) — see this function's own header for
+  # what each field is and why it costs no extra read beyond the one line
+  # below actually needs.
+  local autonomy_source
+  autonomy_source="$(merge_autonomy_resolution_source "$DEFAULTED_CONFIG" "$slug")"
+
+  local pp_hit_rc=0 pp_hit_paths="" pp_verdict pp_paths_json
+  pp_hit_paths="$(landing_protected_paths_hit "$slug" "$number")" || pp_hit_rc=$?
+  case "$pp_hit_rc" in
+    0) pp_verdict="hit" ;;
+    1) pp_verdict="clear" ;;
+    *) pp_verdict="unknown" ;;
+  esac
+  if [[ "$pp_hit_rc" == "0" ]]; then
+    pp_paths_json="$(jq -R -s 'split("\n") | map(select(length > 0))' <<<"$pp_hit_paths")"
+  else
+    pp_paths_json='[]'
+  fi
+
+  local approver_history_json approver_latest_json
+  if [[ -n "$retry" ]]; then
+    approver_history_json="$(landing_approver_adjudication_history "$pr_url" "$union_log")"
+  else
+    approver_history_json="$(landing_approver_adjudication_history "$pr_url" "${log_file:-}")"
+  fi
+  [[ -n "$approver_history_json" ]] || approver_history_json='[]'
+  approver_latest_json="$(jq -c 'if length > 0 then .[-1] else {} end' <<<"$approver_history_json" 2>/dev/null)"
+  [[ -n "$approver_latest_json" ]] || approver_latest_json='{}'
+
+  local gates_json
+  gates_json="$(jq -nc \
+    --arg level "$level" --arg elig "$elig" --arg gate_word "$gate_word" \
+    --arg standing "$standing" --arg pp_ctl "${pp_ctl:-n/a}" \
+    --arg budget_decision "$budget_decision" --arg queued "$queued" \
+    '[
+      {gate: "autonomy-level", verdict: $level},
+      {gate: "eligibility", verdict: $elig},
+      {gate: "review-gate", verdict: $gate_word},
+      {gate: "approver-standing-review", verdict: $standing},
+      {gate: "human-veto", verdict: "clear"},
+      {gate: "protected-path-controls", verdict: $pp_ctl},
+      {gate: "merge-budget", verdict: $budget_decision},
+      {gate: "merge-queue", verdict: (if $queued == "false" then "clear" else $queued end)}
+    ]')"
+
+  log_event "landing-audit-record" "$(jq -nc \
+    --arg u "$pr_url" --arg r "$slug" --argjson n "$number" --arg sha "${review_commit:-}" \
+    --arg src "$source" --arg c "$complexity" --arg level "$level" --arg asrc "$autonomy_source" \
+    --arg ppv "$pp_verdict" --argjson pp_paths "$pp_paths_json" \
+    --argjson approver_latest "$approver_latest_json" --argjson approver_hist "$approver_history_json" \
+    --argjson gates "$gates_json" --argjson budget "$budget_json" \
+    --arg m "$method" --argjson retry "$retry_bool" \
+    '{
+      pr_url: $u, repo: $r, number: $n, head_sha: (if $sha == "" then null else $sha end),
+      source: $src, complexity: $c,
+      autonomy: {level: $level, source: $asrc},
+      protected_path: {verdict: $ppv, paths: $pp_paths},
+      approver: {tier: ($approver_latest.tier // null), model: ($approver_latest.model // null),
+                 verdict: ($approver_latest.verdict // null),
+                 adjudication: ($approver_latest.adjudication // false),
+                 history: $approver_hist},
+      gates: $gates,
+      budget: $budget,
+      mechanism: $m
+    } + (if $retry then {retry: true} else {} end)')"
+
   _landing_stage_attempt_armed=1
 }
 

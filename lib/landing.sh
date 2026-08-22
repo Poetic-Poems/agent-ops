@@ -207,10 +207,14 @@ _landing_is_protected() {
 # established at all (bad arguments, `gh` erroring, a listing that reached
 # LANDING_PR_FILES_LIMIT and so may be hiding more). Reads the changed-file
 # list fresh from GitHub — `gh api repos/SLUG/pulls/N/files`, never the
-# ephemeral clone, whose branch may have moved since it was checked out —
-# and exit 2 is a refusal to arm at every call site, never a pass: an
+# ephemeral clone, whose branch may have moved since it was checked out.
+# At the gate-4.5 call site this guards, exit 2 is a refusal to arm: an
 # unreadable or truncated list must never read as "nothing protected was
-# touched".
+# touched". The other call site — `_landing_stage_attempt`'s own
+# `landing-audit-record` write (requirement 8x) — runs after the arm has
+# already happened, so exit 2 there instead maps to a bare `unknown`
+# protected-path verdict in the record and proceeds; there is nothing left
+# to refuse.
 landing_protected_paths_hit() {
   local slug="$1" number="${2:-}" gh_bin="${LANDING_GH:-gh}"
   [[ -n "$slug" && "$number" =~ ^[0-9]+$ ]] || return 2
@@ -783,5 +787,48 @@ landing_retry_tier() {
     out="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null \
       | jq -rs --arg u "$pr_url" "$jq_prog" 2>/dev/null || true)"
   fi
+  printf '%s' "$out"
+}
+
+# landing_approver_adjudication_history PR_URL [LOG_FILE]
+# Every `approver-verdict` event for PR_URL, oldest first — a compact JSON
+# array of `{ts, tier, model, verdict, adjudication, refuse_streak, posted}` —
+# the D18 landing audit record's own "adjudication history" field
+# (requirement 8x, agent-ops#578): a pull request a refuse streak sent
+# through more than one Approver engagement carries every one of them here,
+# not only the round that finally approved it. The record's own `approver`
+# object is this array's *last* entry, exactly as `landing_retry_tier` reads
+# the newest matching event's `tier` alone — never a separate in-process
+# fact, so the same read serves both the round that first approves a pull
+# request and a later 2.1e landing-retry re-arm without the two ever risking
+# disagreement.
+#
+# LOG_FILE follows `landing_retry_tier`'s own convention: `$log_file` on the
+# round that first approves a pull request (this process's own just-written
+# `approver-verdict` event is already there — `log_event` appends
+# synchronously, before `_landing_stage_attempt` ever runs) or `$union_log`
+# on a re-arm (the approving round belongs to an earlier cycle, possibly a
+# peer node's — the same reasoning `landing_retry_tier` already applies to
+# TIER alone), or stdin if omitted or "-", matching every reader in
+# lib/cycle-state.sh. Malformed lines are skipped, not fatal. Always prints a
+# JSON array, `[]` rather than empty output, so a caller can `--argjson` it
+# straight into the audit record with no fallback of its own.
+landing_approver_adjudication_history() {
+  local pr_url="$1" src="${2:--}" out=""
+  # shellcheck disable=SC2016  # $pr_url is jq's own --arg variable, not the shell's.
+  local jq_prog='
+    [ .[] | select(.event == "approver-verdict" and (.pr_url // "") == $u)
+      | {ts: (.ts // ""), tier: (.tier // null), model: (.model // null),
+         verdict: (.verdict // null), adjudication: (.adjudication // false),
+         refuse_streak: (.refuse_streak // null), posted: (.posted // null)} ]
+    | sort_by(.ts)'
+  if [[ "$src" == "-" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' 2>/dev/null \
+      | jq -cs --arg u "$pr_url" "$jq_prog" 2>/dev/null || true)"
+  elif [[ -s "$src" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null \
+      | jq -cs --arg u "$pr_url" "$jq_prog" 2>/dev/null || true)"
+  fi
+  [[ -n "$out" ]] || out='[]'
   printf '%s' "$out"
 }

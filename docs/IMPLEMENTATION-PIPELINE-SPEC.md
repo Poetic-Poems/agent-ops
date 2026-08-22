@@ -16009,6 +16009,74 @@ pull request, run the ones the change touches and any it could regress.
     release rule, rather than only inside `prompts/project-reviewer.md`
     (which now cross-references it instead of restating it).
 
+8x. **One durable audit record justifies every autonomous landing, and a
+    landing with none is an anomaly, not a null (D18, agent-ops#578).**
+    `_landing_stage_attempt` (agent-cycle.sh) logs `landing-audit-record`
+    once, in the same call that logs `landing-armed`, on every successful
+    arm — assembled at the moment of arming, never reconstructed later by
+    joining separate events at report time. It carries the pull request's
+    own number and head SHA (the Approver's standing review's own
+    `commit_id`, already read at gate 4 — never a fresh read for a fact this
+    cheap to reuse), the effective `merge_autonomy` level and whether SLUG's
+    own `repos[]` entry or the top-level key produced it
+    (`merge_autonomy_resolution_source`, lib/merge-autonomy.sh), the work
+    `source` and `complexity` label, the protected-path verdict
+    (`clear`/`hit`/`unknown`) and, on a `hit`, the protected paths it hit —
+    every changed file the classifier judged protected, never the full
+    changed-file list, and an empty array on a `clear` or `unknown` verdict
+    (a fresh `landing_protected_paths_hit` read, the same "never more than one
+    function call old" discipline gate 4.5's own
+    `landing_protected_path_controls_ok` already applies to the same
+    primitive, rather than trust gate 2's now-discarded read), the
+    Approver's tier/model/verdict/adjudication and this pull request's full
+    adjudication history (`landing_approver_adjudication_history`,
+    lib/landing.sh — every `approver-verdict` event this pull request ever
+    received, not only the one that authorised this landing, read from
+    `$log_file` on the round that first approves a pull request or
+    `$union_log` on a 2.1e landing-retry re-arm), every deterministic gate
+    this function itself just passed with its own evidence, the
+    `merge_budget_decide` object gate 5 already computed
+    (`cap`/`count`/`anomaly`/`waiting_backlog`) and would otherwise discard
+    the moment `decision == "arm"` was confirmed, and the landing mechanism
+    (`enqueued`/`auto-merge`) `landing_arm` actually used. Written to
+    `log.jsonl` via the ordinary `log_event`, so it inherits that file's own
+    analytics retention (requirement 2.6 — `log.jsonl` is one of the two
+    logs `scripts/rotate-logs.sh` never rotates) rather than the transcript
+    rotation `state_dir/cycles/<id>/*.out` is subject to.
+
+    `scripts/publish-dashboard.sh`'s WI-8 autonomous-landing digest joins
+    each armed row to this record by `pr_url` **and the arming cycle**,
+    taking the earliest `landing-audit-record` at or after the arm — never
+    the newest at or before, since `_landing_stage_attempt` always writes
+    `landing-armed` first and `landing-audit-record` second, moments apart
+    from the same call. The cycle carries the whole weight of pairing a
+    *second* arm of the same pull request with the right record: on
+    timestamps alone, an arm whose record write never completed would
+    adopt the next cycle's record for the same `pr_url` and render
+    `anomaly: false`, hiding exactly the unexplained landing this panel
+    exists to surface. `anomaly: true` marks a `landing-armed` with no
+    matching record — reported, never rendered with the silent nulls the
+    digest used to fall back to. The older `approver-verdict`-by-timestamp
+    join is retained as the fallback for a `landing-armed` from before
+    requirement 8x shipped, which can never have a matching audit record.
+    `dashboard/index.html`'s landings panel adds a Record column
+    (`ok`/`missing`) — its own column, beside requirement 8e's `Audit` one
+    rather than folded into it — and a summary line naming how many
+    landings in the window carry no audit record.
+
+    `test/landing-wiring.test.sh`'s happy path asserts the audit record is
+    logged alongside `landing-armed`, naming the pull request number, head
+    SHA, autonomy level/source, protected-path verdict, empty adjudication
+    history (nothing seeded), a passing gate's own evidence, the budget
+    object, and the mechanism. `test/landing-audit-record.test.sh` pins the
+    record's full shape — every field, a protected-path hit, and a
+    non-empty adjudication history across a refuse streak — and proves
+    `publish-dashboard.sh`'s own digest-assembly `jq` reads it correctly
+    from a raw synthetic `log.jsonl`: a landing with a matching record
+    renders its tier/verdict, and one without is `anomaly: true`.
+    `test/dashboard-render.test.sh` asserts the rendered panel shows
+    "missing" for an anomalous landing rather than a bare "unknown".
+
 ## Host provisioning (human steps)
 
 All of this is in place on the current host; it is needed again only when

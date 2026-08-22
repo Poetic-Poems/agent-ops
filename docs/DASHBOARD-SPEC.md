@@ -955,15 +955,34 @@ repository, the pull request, its title and state where GitHub was read this
 tick, the work source, the complexity it was armed at, the `enqueued`/
 `auto-merge` method `landing_arm` actually used, and the node that armed it.
 
-Each row is joined to the **`approver-verdict` that authorised it**: the newest
-verdict for that `pr_url` at or before the arm, never a later re-review. That
-qualifier is the whole correctness of the join — an Approver may review the
-same pull request across several cycles (a refuse streak, then an approval, and
-possibly another refusal afterwards on a later push), and only the verdict the
-arming stage could actually have seen explains the landing. A landing whose
-verdict cannot be located still renders, with `unknown` in the tier and verdict
-cells: an unexplained landing is the single most important row this panel can
-carry, so it is never the one dropped for want of a join.
+Each row is joined to the **`landing-audit-record` that justified it**
+(requirement 8x, D18, agent-ops#578) — the one durable record
+`_landing_stage_attempt` assembles and writes at the same moment it arms a
+pull request, rather than a fact this panel re-joins from separate events
+at report time. The join is by `pr_url` and the arming cycle, earliest
+record at or after the arm: `_landing_stage_attempt` writes
+`landing-armed` first and `landing-audit-record` second, moments apart
+from the same function call, so this never has to reach further than the
+earliest match at or after the arm's own timestamp. `landing-armed`
+carries no pointer of its own to the record that follows it, so the cycle
+every event is stamped with stands in for one: an arm and the record
+written by its own call always agree on it, which is what makes a *second*
+arm of the same pull request unambiguous — an arm whose record write never
+completed reads as unexplained rather than borrowing the record a later
+cycle wrote. A landing with no matching record still renders — its own
+Record cell reading `missing`, beside (not in place of) the
+classifier-escape audit's own column, rather than the tier/verdict cells
+quietly reading `unknown` alone — and is called out again in its own
+summary line naming how many landings in the window carry no record: an
+unexplained landing is the single most important row this panel can carry,
+and now that a durable per-landing record exists, "the record could not be
+found" and "the record said so" read as different facts, never the same
+silent null. A `landing-armed` from before requirement 8x shipped can
+never have a matching record — the write it would join to did not yet
+exist — so its Record cell stays `missing` permanently; its tier and
+verdict still render where locatable, from the older `approver-verdict`
+join this panel used before requirement 8x, kept on purely as that
+fallback.
 
 Three things it will not hide, each a way a digest could mislead by omission:
 
@@ -988,9 +1007,9 @@ Three things it will not hide, each a way a digest could mislead by omission:
   `merge-budget-hold` and `merge-budget-frozen` each carry the `cap`/`count`
   `merge_budget_decide` read at that decision, so the single latest of the
   three for a repository — across the whole retained log, not only this
-  digest's own window, the same reasoning the verdict join below already uses
-  — is that repository's state **as of that last gate-5 decision, not a live
-  read**, and of unbounded age: a repository whose backlog is empty, or whose
+  digest's own window, the same reasoning the audit-record join above
+  already uses — is that repository's state **as of that last gate-5
+  decision, not a live read**, and of unbounded age: a repository whose backlog is empty, or whose
   candidates all fail eligibility before reaching gate 5, keeps whatever event
   last fired indefinitely — what the row then *reports* from that event is
   bounded by the ageing rule below, but the event itself is never discarded. This is what keeps the freeze's own reason and the

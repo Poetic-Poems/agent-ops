@@ -2085,10 +2085,12 @@ fi
 # landing armed on any node appears on every node's dashboard. Three parts:
 #
 #   armed    — one row per `landing-armed` inside the window, joined to the
-#              `approver-verdict` that authorised it (its tier and verdict are
-#              the audit's whole point: "which model tier passed this, and did
-#              it approve or merely not refuse") and, where GitHub has been
-#              read this tick, to the pull request's own title and state.
+#              `landing-audit-record` (requirement 8x, agent-ops#578) that
+#              `_landing_stage_attempt` wrote at the same moment it armed —
+#              its tier and verdict are the audit's whole point: "which model
+#              tier passed this, and did it approve or merely not refuse" —
+#              and, where GitHub has been read this tick, to the pull
+#              request's own title and state.
 #   refused  — the counterpart the digest would lie by omitting. A day with
 #              two landings and forty refusals is a classifier holding the
 #              line; the same two landings with no refusals is a gate that
@@ -2101,13 +2103,28 @@ fi
 #              from "the fleet is idle because the governor closed hours ago"
 #              without a live read of the freeze flag on this tick.
 #
-# The join is by `pr_url` and is deliberately last-write-wins over verdicts
-# *at or before* the arm: an Approver may review the same pull request across
-# several cycles (a refuse streak, then an approval), and the verdict that
-# authorised the landing is the newest one the arming stage could have seen,
-# never a later re-review. A landing whose verdict cannot be found still
-# appears, with nulls — an unexplained landing is precisely what an audit
-# must show, not drop.
+# The join is by `pr_url` and the arming cycle, and is deliberately
+# first-write-wins over that cycle's audit records *at or after* the arm:
+# `_landing_stage_attempt` writes `landing-armed` first and
+# `landing-audit-record` second, moments apart from the same function call,
+# so this never has to reach further than the earliest match at or after the
+# arm's own ts. `landing-armed` carries no pointer of its own to the record
+# that follows it, so the cycle `log_event` stamps on both stands in for one
+# — which is what keeps a *second* arm of the same pull request from being
+# answered by the wrong cycle's record. A `landing-armed` with no
+# matching record at all — an event from before requirement 8x shipped, or a
+# write this process died between the two log_event calls for — is
+# `anomaly: true`: reported, never silently dropped nor rendered with nulls
+# as though the join had simply come up empty. This is the one property WI-8
+# existed to promise and, before requirement 8x, could not always keep: every
+# landing this digest shows is either fully explained or flagged as
+# unexplained, never quietly incomplete. A pre-8x `landing-armed` can still
+# have its tier/verdict explained, even though it stays `anomaly: true`
+# forever (it genuinely has no audit record) — the older `approver-verdict`
+# join this panel used before requirement 8x lives on purely as that
+# fallback, so "the record could not be found" and "the record said so" stay
+# distinguishable without also going back to reading every landing's
+# tier/verdict as `unknown` for events this old.
 # Both inputs travel by file, not argv: `github_json` carries every open pull
 # request the fleet knows about and is exactly the kind of value requirement
 # 4g's MAX_ARG_STRLEN rule exists for (see the note above the assemble call).
@@ -2126,8 +2143,8 @@ fi
 # that decision — the same rolling-24h count `lib/merge-budget.sh` itself
 # counts, never a private one — so the *single latest* of the three for a
 # repository, across the whole log rather than only this digest's own window
-# (the same "not restricted to the window" reasoning `$verdicts` above already
-# uses), is that repository's state *as of that last gate-5 decision* — not a
+# (the same "not restricted to the window" reasoning `$audit_records` above
+# already uses), is that repository's state *as of that last gate-5 decision* — not a
 # live read, and unbounded in age: a repository whose backlog is empty, or
 # whose candidates all fail eligibility before reaching gate 5, keeps
 # whatever event last fired indefinitely. `ok` means the last thing gate 5
@@ -2188,10 +2205,23 @@ landings_json="$(printf '%s\n' "$ALL_EVENTS" | jq -c -s \
   # itself).
   def stale($t): ($t // "" | length) == 0
       or (try ($t | fromdateiso8601) catch 0) < $from_s;
+  # Every landing-audit-record (requirement 8x, agent-ops#578), oldest last,
+  # so a lookup can take the earliest one at or after a given arm. Not
+  # restricted to the window: the record that justified a landing early in
+  # the window may predate the window itself. The audit record itself
+  # already carries, in its own `approver` field, the tier/verdict/
+  # adjudication the older `$verdicts` join below used to reconstruct — this
+  # is the primary source for both now, with `$verdicts` kept only as a
+  # fallback for a `landing-armed` event that predates requirement 8x and so
+  # can never have a matching record at all (see `audit_record_for` below).
+  ([ .[] | select(.event == "landing-audit-record") ]
+    | sort_by(.ts // "")) as $audit_records
   # Every verdict, newest last, so a lookup can take the last one at or
-  # before a given arm. Not restricted to the window: the verdict that
-  # authorised a landing early in the window may predate the window itself.
-  ([ .[] | select(.event == "approver-verdict") ]
+  # before a given arm — kept only as the pre-8x fallback described above;
+  # `approver-verdict` genuinely precedes the arm it authorised, unlike
+  # `landing-audit-record`, so "at or before" is correct here even though it
+  # is wrong for `audit_record_for`.
+  | ([ .[] | select(.event == "approver-verdict") ]
     | sort_by(.ts // "")) as $verdicts
   | ([ .[] | select(.event == "landing-armed") | select(in_window) ]
       | sort_by(.ts // "") | reverse) as $armed
@@ -2217,11 +2247,44 @@ landings_json="$(printf '%s\n' "$ALL_EVENTS" | jq -c -s \
     + [ .[] | select(.event == "merge-budget-hold") | . + {status: "held"} ]
     + [ .[] | select(.event == "merge-budget-frozen") | . + {status: "frozen"} ]
     | sort_by(.ts // "") | group_by(.repo // "") | map(last) ) as $latest_budget
-  | def verdict_for($url; $at):
+  # The audit record at or after a given arm, from the cycle that armed it:
+  # `_landing_stage_attempt` always writes `landing-armed` first and
+  # `landing-audit-record` second, moments apart from the same function call
+  # (agent-cycle.sh:4563 and :4613), so the record this arm produced is never
+  # the newest match at-or-before its own ts — it is the *earliest* one
+  # at-or-after it. $audit_records is sorted ascending, so `first` here is
+  # that earliest match, never the latest.
+  #
+  # The cycle is part of the key, and carries the whole weight of pairing a
+  # *second* arm of the same pull request with the right record. `log_event`
+  # stamps every event with the cycle that wrote it (agent-cycle.sh:669), and
+  # both writes come from one call inside one cycle, so an arm and its own
+  # record always agree on it. On timestamps alone an arm this process died
+  # between the two writes for would adopt the record the *next* cycle wrote
+  # for the same pr_url — nothing consumes a record, so every arm before it
+  # matches — and render `anomaly: false`, hiding precisely the unexplained
+  # landing this panel exists to surface. An arm or record carrying no cycle
+  # at all falls back to the timestamp join alone rather than being excluded
+  # outright: nothing in the write path produces one, but log.jsonl is never
+  # rotated (requirement 2.6) and this join must not start dropping rows if
+  # one ever appears.
+  | def audit_record_for($url; $at; $cyc):
+      ([ $audit_records[]
+         | select((.pr_url // "") == $url)
+         | select((.ts // "") >= $at)
+         | select($cyc == "" or (.cycle // "") == "" or (.cycle // "") == $cyc) ]
+        | first);
+  # The pre-8x fallback (see the comment above $verdicts): only reached when
+  # audit_record_for above found nothing, which is the one case an
+  # approver-verdict join can still explain — a `landing-armed` this old
+  # never gets a `landing-audit-record` no matter how the join runs, so
+  # falling back is not a second attempt at the same fact, it is the only
+  # source left for it.
+  def verdict_for($url; $at):
       ([ $verdicts[] | select((.pr_url // "") == $url) | select((.ts // "") <= $at) ] | last);
   # Every classifier-escape/landing-audit event, newest last, joined by
-  # pr_url alone — never at-or-before, unlike verdict_for above, since an
-  # audit only ever happens after the landing it covers, so there is no
+  # pr_url alone — never at-or-before, unlike audit_record_for above, since
+  # an audit only ever happens after the landing it covers, so there is no
   # "which one could the arm have seen" question to answer. A pull request
   # with no audit yet reads audit: null, never folded into clean or escape
   # (requirement 8e).
@@ -2235,7 +2298,10 @@ landings_json="$(printf '%s\n' "$ALL_EVENTS" | jq -c -s \
     window_hours: $hours,
     generated_at: $now,
     armed: [ $armed[] | (.pr_url // "") as $u | (.ts // "") as $at
-      | (verdict_for($u; $at)) as $v | ($prs[$u] // null) as $pr
+      | (.cycle // "") as $cyc
+      | (audit_record_for($u; $at; $cyc)) as $ar
+      | (if $ar == null then verdict_for($u; $at) else null end) as $v
+      | ($prs[$u] // null) as $pr
       | { ts: $at,
           repo: (.repo // ""),
           pr_url: $u,
@@ -2248,9 +2314,10 @@ landings_json="$(printf '%s\n' "$ALL_EVENTS" | jq -c -s \
           complexity: (.complexity // ""),
           method: (.method // ""),
           node: (.node // ""),
-          tier: ($v.tier // null),
-          verdict: ($v.verdict // null),
-          adjudication: ($v.adjudication // null) } + audit_for($u) ],
+          tier: ($ar.approver.tier // $v.tier // null),
+          verdict: ($ar.approver.verdict // $v.verdict // null),
+          adjudication: ($ar.approver.adjudication // $v.adjudication // null),
+          anomaly: ($ar == null) } + audit_for($u) ],
     refused: [ $refused[] | { ts: (.ts // ""), repo: (.repo // ""),
                               pr_url: (.pr_url // ""), reason: (.reason // "") } ],
     budget: ( ([ ($latest_budget[] | .repo // ""), ($caps | keys[]) ] | unique

@@ -1470,10 +1470,14 @@
   //    beside none may be a gate that is not running. A digest that printed
   //    only successes could not tell those apart, and the second is the one
   //    worth waking up for.
-  //  - A landing whose authorising verdict could not be found still appears,
-  //    with "unknown" in the tier and verdict cells. An unexplained landing
-  //    is the single most important row this table can carry, so it must
-  //    never be the one dropped for want of a join.
+  //  - A landing with no matching landing-audit-record (requirement 8x,
+  //    agent-ops#578) still appears, its own Record cell reading "missing"
+  //    rather than the tier/verdict cells quietly reading "unknown". An
+  //    unexplained landing is the single most important row this table can
+  //    carry, so it must never be the one dropped for want of a join — and,
+  //    now that a durable per-landing record exists, "the record could not
+  //    be found" and "the record said so" must read as different facts, not
+  //    the same "unknown".
   //  - A payload the Publisher could not assemble says so, rather than
   //    rendering as a quiet day. `armed === null` is that state; an empty
   //    array is a real, and reportable, nothing.
@@ -1501,6 +1505,10 @@
         var tier = a.tier || "unknown";
         var audit = a.audit || "pending";
         var auditClass = audit === "escape" ? "b-red" : audit === "clean" ? "b-green" : "b-amber";
+        var recordBadge = a.anomaly
+          ? el("span", {class:"badge b-red", text:"missing",
+              title:"No landing-audit-record matches this landing-armed event — an unexplained landing, not merely an unjoined one."})
+          : el("span", {class:"badge b-green", text:"ok"});
         return el("tr", {}, [
           el("td", {class:"muted", text: fmtAgo(a.ts)}),
           el("td", {class:"mono", text: (a.repo || "?").split("/")[1] || a.repo || "?"}),
@@ -1512,10 +1520,27 @@
           el("td", {}, el("span", {class: "badge " + (verdict === "approve" ? "b-green" : "b-amber"), text: verdict})),
           el("td", {class:"mono", text: a.method || "?"}),
           el("td", {}, nodeTag(a.node)),
-          el("td", {title: a.audit_reason || ""}, el("span", {class: "badge " + auditClass, text: audit}))
+          el("td", {title: a.audit_reason || ""}, el("span", {class: "badge " + auditClass, text: audit})),
+          el("td", {}, recordBadge)
         ]);
       });
-      body.push(tableOf(["Landed","Repo","PR","Title","Source","Complexity","Tier","Verdict","Method","Node","Audit"], rows));
+      body.push(tableOf(["Landed","Repo","PR","Title","Source","Complexity","Tier","Verdict","Method","Node","Audit","Record"], rows));
+
+      // A landing with no matching audit record is the anomaly WI-8 exists to
+      // surface, not a join to quietly paper over with "unknown" — named here
+      // as its own line, the same way a stalled refusal count already is
+      // below, so it reads even to someone skimming past the table itself.
+      // Distinct from the classifier-escape "Audit" column beside it
+      // (requirement 8e, agent-ops#572): that column judges whether a
+      // landing *should* have happened, recomputed post hoc; this one judges
+      // whether the record explaining *why it was allowed* exists at all.
+      var anomalies = armed.filter(function (a) { return a.anomaly; });
+      if (anomalies.length) {
+        body.push(el("div", {class:"panel", text:
+          anomalies.length + " landing" + (anomalies.length === 1 ? "" : "s") +
+          " in this window " + (anomalies.length === 1 ? "has" : "have") +
+          " no matching audit record — treat as unexplained."}));
+      }
     }
 
     // The classifier-escape audit's own scoreboard (requirement 8e,

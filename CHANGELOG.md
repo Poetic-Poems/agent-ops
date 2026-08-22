@@ -23,6 +23,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   freeze and requirement 2.7's crash loop already use, filed in
   `crash_loop_repo`.
 
+- A durable **landing audit record** (requirement 8x, D18, agent-ops#578):
+  `_landing_stage_attempt` (`agent-cycle.sh`) now logs `landing-audit-record`
+  once, alongside `landing-armed`, at the exact moment it arms a pull
+  request — the pull request's own number and head SHA, the effective
+  `merge_autonomy` level and whether it came from a repository's own
+  override or the top-level key (`merge_autonomy_resolution_source`,
+  `lib/merge-autonomy.sh`), the work source and complexity label, the
+  protected-path verdict and the protected paths it hit, the Approver's
+  tier/model/verdict/adjudication and this pull request's full adjudication
+  history (`landing_approver_adjudication_history`, `lib/landing.sh`), every
+  deterministic gate this attempt passed with its own evidence, the merge
+  budget's decision object, and the landing mechanism. What justified an
+  autonomous landing was previously spread across a cycle record, a
+  dashboard digest row, a GitHub review and a log line, joined by whoever
+  asked; now it is assembled once, at arming time, and never reconstructed.
+  `scripts/publish-dashboard.sh`'s WI-8 autonomous-landing digest reads this
+  record instead of re-joining `approver-verdict` events against
+  `landing-armed` by timestamp, and reports a landing with no matching
+  record as its own anomaly rather than rendering silent nulls — the older
+  verdict join lives on only to explain the tier and verdict of a
+  `landing-armed` from before this record existed, which stays an anomaly
+  either way;
+  `dashboard/index.html`'s landings panel gained a Record column
+  (`ok`/`missing`) and a summary line for any such anomaly.
+
 - Any pipeline stage can now log deferred work it notices — a
   `tech-debt/<id>.md` record or a plain GitHub issue — riding along in the PR
   or output it is already producing, instead of losing the finding to a
