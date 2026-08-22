@@ -491,7 +491,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `issue_priority_cache_cleanup` only ever knew about the most recent record.
   `ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS`, an array, replaces it, and cleanup
   now removes every directory this process owns while still leaving a
-  caller-supplied directory untouched.
+  caller-supplied directory untouched. Because bash cannot export an array, a
+  parent process exporting `ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS` necessarily
+  exports it as a scalar, and the source-time branch that creates a fresh
+  directory now resets the array rather than appending to it whenever the
+  inherited `ISSUE_PRIORITY_CACHE_DIR_OWNER_PID` does not match this
+  process's own `$$` — appending would have silently upgraded the inherited
+  scalar into element 0 of this process's own array, reopening agent-ops#552
+  against the array form: a child process could be talked into folding a
+  parent-supplied path into its own ownership record and `rm -rf`-ing it on
+  cleanup.
 
 - A `tailnet` node with no `TS_AUTHKEY` no longer registers a fresh Tailscale
   node key once a minute forever (agent-ops#644). The profile's documented

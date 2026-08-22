@@ -111,7 +111,20 @@ elif [[ "$_issue_priority_own_record" == "0" && -n "${ISSUE_PRIORITY_CACHE_DIR:-
 else
   ISSUE_PRIORITY_CACHE_DIR="$(mktemp -d 2>/dev/null || true)"
   ISSUE_PRIORITY_CACHE_DIR_OWNED=1
-  ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS+=("$ISSUE_PRIORITY_CACHE_DIR")
+  if [[ "${ISSUE_PRIORITY_CACHE_DIR_OWNER_PID:-}" == "$$" ]]; then
+    ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS+=("$ISSUE_PRIORITY_CACHE_DIR")
+  else
+    # The existing record, if any, was not stamped by this process — either
+    # there is no record yet, or it was inherited from a parent's exported
+    # environment (agent-ops#552). Appending onto an inherited array (or an
+    # inherited *scalar*, which `+=(…)` silently upgrades to an array with
+    # the scalar as element 0 — the shape a same-process `export` actually
+    # produces, since bash cannot export an array) would fold a foreign path
+    # into our own ownership record, and `issue_priority_cache_cleanup`
+    # would later `rm -rf` it as if this process had created it. Reset
+    # instead: this process's own record starts here.
+    ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS=("$ISSUE_PRIORITY_CACHE_DIR")
+  fi
   ISSUE_PRIORITY_CACHE_DIR_OWNER_PID="$$"
 fi
 unset _issue_priority_own_record _path

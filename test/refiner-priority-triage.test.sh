@@ -632,6 +632,28 @@ assert_eq "an inherited ownership record from a different process is not trusted
   "0 survives" "$child_result"
 rm -rf "$precious_dir"
 
+# The array-valued twin of the case just above (agent-ops#552's reopened
+# case, PR #703 review): bash cannot export an array, so a parent that
+# exports ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS necessarily exports it as a
+# plain scalar. With ISSUE_PRIORITY_CACHE_DIR itself unset, the child takes
+# the fresh-mktemp branch rather than the caller-supplied one exercised
+# above — and a naive `+=(...)` append there would silently upgrade the
+# inherited scalar into element 0 of the child's own array, so cleanup would
+# rm -rf the victim path alongside the directory the child actually created.
+victim_dir="$(mktemp -d "$tmp_dir/victim.XXXXXX")"
+touch "$victim_dir/keepme"
+# shellcheck disable=SC2016  # the child bash -c's own $SCRIPT_DIR/etc, not this shell's.
+child_result="$(env SCRIPT_DIR="$SCRIPT_DIR" VICTIM_DIR="$victim_dir" \
+    ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS="$victim_dir" \
+    ISSUE_PRIORITY_CACHE_DIR_OWNED=1 \
+    ISSUE_PRIORITY_CACHE_DIR_OWNER_PID="$parent_pid" \
+    bash -c '. "$SCRIPT_DIR/lib/issue-priority.sh"
+             issue_priority_cache_cleanup
+             [[ -d "$VICTIM_DIR" ]] && printf survives || printf deleted')"
+assert_eq "an inherited OWNED_PATHS scalar from a different process is not folded into a child's own record" \
+  "survives" "$child_result"
+rm -rf "$victim_dir"
+
 # A caller that supplies its own path keeps it after the same call — it is
 # that caller's directory to manage, not this library's.
 caller_dir="$(mktemp -d "$tmp_dir/cache-caller.XXXXXX")"

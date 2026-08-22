@@ -10668,26 +10668,41 @@ implements.
     path; ownership is a property of the directory, not of the most recent
     source, so a process that sources the library more than once — a second
     file sourcing it, or a test re-sourcing it — still recognises, on a
-    later source, the directory it created on an earlier one, and does not
-    read its own output as caller-supplied (`ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH`
-    records the path this file created for itself, and is what a re-source
-    compares `ISSUE_PRIORITY_CACHE_DIR` against; agent-ops#541). The record
-    is trusted only from the process that created it:
+    later source, a directory it created on an earlier one, and does not
+    read its own output as caller-supplied (`ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS`,
+    an array, records every path this file created for itself in this
+    process — a process that repoints `ISSUE_PRIORITY_CACHE_DIR` and
+    re-sources, or unsets it and re-sources, can make the library create more
+    than one directory in a single run, and the array tracks all of them
+    rather than only the most recent (TD-PPagop-26082202) — and is what a
+    re-source compares `ISSUE_PRIORITY_CACHE_DIR` against; agent-ops#541). The
+    record is trusted only from the process that created it:
     `ISSUE_PRIORITY_CACHE_DIR_OWNER_PID` stamps that process's own `$$`,
     and a re-source compares it against the current `$$` before treating an
     inherited `ISSUE_PRIORITY_CACHE_DIR_OWNED=1` as its own — an exported
     record a child process merely inherited, with a different `$$`, is
     never trusted, so that child never `rm -rf`s a directory it did not
-    create (agent-ops#552). A same-process record is
+    create (agent-ops#552). The same check governs how the source-time branch
+    that creates a fresh directory populates the array: it appends only when
+    `ISSUE_PRIORITY_CACHE_DIR_OWNER_PID` already matches this process's own
+    `$$` (a genuine same-process re-source extending its own history);
+    otherwise it resets the array to hold only the directory just created.
+    Bash cannot export an array, so a parent process that exports
+    `ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS` necessarily exports it as a plain
+    scalar — and appending onto that inherited scalar would silently upgrade
+    it into element 0 of the child's own array, folding a foreign path into a
+    record `issue_priority_cache_cleanup` later trusts as its own to
+    `rm -rf`, reopening agent-ops#552 against the array form specifically.
+    A same-process record is
     additionally trusted only while the directory it names still exists:
     `issue_priority_cache_cleanup`'s own record-clearing does not reach a
     caller that invokes it through a command substitution, so a source-time
     check independent of that clearing treats a same-process record naming a
     missing directory as "create a fresh one", never as "still ours"
-    (agent-ops#552). `issue_priority_cache_cleanup` removes only the
-    directory this process created — keyed on the owned path itself, not on
-    whatever `ISSUE_PRIORITY_CACHE_DIR` currently names, so a directory this
-    file made is still found and removed even after a caller has since
+    (agent-ops#552). `issue_priority_cache_cleanup` removes every
+    directory this process created — keyed on the owned paths themselves, not
+    on whatever `ISSUE_PRIORITY_CACHE_DIR` currently names, so a directory
+    this file made is still found and removed even after a caller has since
     repointed `ISSUE_PRIORITY_CACHE_DIR` at its own path (agent-ops#552) —
     leaving a caller-supplied one for that caller to manage, and is
     idempotent — a no-op, returning 0, when called again or when no
@@ -14811,11 +14826,28 @@ pull request, run the ones the change touches and any it could regress.
     `ISSUE_PRIORITY_CACHE_DIR` still set to the directory the first source
     created, still marks it owned rather than reading it as caller-supplied,
     creates no second directory, and cleanup still removes it
-    (agent-ops#541). An ownership record exported to a `bash -c` child
-    process — `ISSUE_PRIORITY_CACHE_DIR`, `…_OWNED=1` and `…_OWNED_PATH` all
+    (agent-ops#541). Repointing `ISSUE_PRIORITY_CACHE_DIR` to a caller's own
+    directory and re-sourcing, then unsetting it and re-sourcing again, makes
+    the library create a second directory in the same process; both are
+    tracked in `ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS`, and a single
+    `issue_priority_cache_cleanup` call removes both while leaving the
+    caller's own directory, sitting between them, untouched
+    (TD-PPagop-26082202). An ownership record exported to a `bash -c` child
+    process — `ISSUE_PRIORITY_CACHE_DIR`, `…_OWNED=1` and `…_OWNED_PATHS` all
     inherited, but stamped with the parent's own `$$` rather than the
     child's — is not trusted: the child marks the directory unowned, and its
-    own `issue_priority_cache_cleanup` call leaves the directory in place. A
+    own `issue_priority_cache_cleanup` call leaves the directory in place. The
+    array form of that same inherited-record check is asserted independently,
+    since bash cannot export an array and a parent can therefore only ever
+    export `ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS` as a scalar: with
+    `ISSUE_PRIORITY_CACHE_DIR` itself left unset so the child takes the
+    fresh-directory branch rather than the caller-supplied one, a `bash -c`
+    child that inherits `…_OWNED_PATHS` as a scalar naming a victim directory,
+    `…_OWNED=1` and the parent's own (foreign) `…_OWNER_PID` resets its own
+    array to hold only the directory it just created, rather than appending
+    onto the inherited scalar and folding the victim path into a record its
+    own `issue_priority_cache_cleanup` call would then `rm -rf` — the victim
+    directory still exists once that call returns (agent-ops#552). A
     source that follows a cleanup does not trust the record cleanup left
     behind: it creates a fresh directory, marks it owned, and field-id
     caching works again in that process. A cleanup reached through a command
