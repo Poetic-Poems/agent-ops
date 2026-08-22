@@ -28,6 +28,18 @@
 # (state_dir/.doctor-status.json) to the dashboard, not through this exit
 # status.
 #
+# 29 2 is schedule.revert_rate_offset_minutes
+# past the node's own base minute (mod 60), the same jitter the doctor line
+# above uses, but daily rather than hourly — one node's own
+# `scripts/publish-revert-rate.sh` pass (agent-ops#579) runs the merged-PR
+# miner over a bounded window and appends this repository's rolling-window,
+# cumulative-since-baseline and stored-baseline revert-or-follow-up rates to
+# `revert-rate.jsonl`, replicated fleet-wide like `log.jsonl` (never rotated,
+# never excluded from the state branch). It ends `|| true` for the identical
+# reason the doctor line does: nothing on this image reads a cron job's exit
+# status, and a routine `not-met` reading against the stored baseline is not a
+# crashed script.
+#
 # Everything not a placeholder is documented in the baked crontab, which is
 # also the fallback whenever this template cannot be rendered.
 
@@ -37,6 +49,7 @@ LOGDIR=/home/agent/.local/state/poetic-agents
 38,53 * * * *  /app/agent-cycle.sh  >> $LOGDIR/cron.log        2>&1
 7 3 * * *  /app/review-cycle.sh >> $LOGDIR/review-cron.log 2>&1
 22 * * * *  /app/scripts/doctor.sh --unattended >> $LOGDIR/doctor.log 2>&1 || true
+29 2 * * *  /app/scripts/publish-revert-rate.sh >> $LOGDIR/revert-rate.log 2>&1 || true
 
 */5 * * * *  /app/scripts/state-sync.sh push  >> $LOGDIR/state-sync.log 2>&1
 */7 * * * *  /app/scripts/state-sync.sh fetch >> $LOGDIR/state-sync.log 2>&1
