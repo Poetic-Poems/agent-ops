@@ -1,0 +1,104 @@
+{
+  "generated_at": "@now",
+  "node": "poetic-1",
+  "config": {
+    "timeout_coordinator": 15,
+    "timeout_implementer": 90,
+    "timeout_reviewer": 30,
+    "timeout_enabler": 30,
+    "lock_stale_after": 4,
+    "dashboard_refresh_seconds": 5
+  },
+  "status": {
+    "switch": {
+      "disabled": false
+    },
+    "limit": {
+      "active": false
+    },
+    "running": false,
+    "lock": null,
+    "current": null,
+    "last_cycle": null
+  },
+  "counts": {
+    "spend_today_usd": 0,
+    "spend_total_usd": 0,
+    "failures_shown": 0,
+    "cycles_shown": 0,
+    "prs_reached_ready": 0,
+    "by_day": [],
+    "by_model": [],
+    "by_actor": []
+  },
+  "cycles": [],
+  "blocked": [],
+  "void": [],
+  "github": {
+    "ok": true,
+    "fetched_at": "@ago:1m",
+    "prs": [],
+    "pr_index": {},
+    "inputs": {}
+  },
+  "log_tail": [],
+  "cron_tail": [
+    "30 * * * *  /app/agent-cycle.sh"
+  ],
+  "max_open_agent_prs": 3,
+  "landings": {
+    "window_hours": 24,
+    "generated_at": "@now",
+    "armed": [],
+    "refused": [
+      {
+        "ts": "@ago:2h",
+        "repo": "Poetic-Poems/poetic-fiddle",
+        "pr_url": "https://github.com/Poetic-Poems/poetic-fiddle/pull/700",
+        "reason": "ineligible:complexity is high, not low or medium"
+      }
+    ],
+    "budget": [
+      {
+        "repo": "Poetic-Poems/agent-ops",
+        "cap": 8,
+        "consumed": 8,
+        "unlimited": false,
+        "remaining": 0,
+        "status": "held",
+        "reason": null,
+        "oldest_waiting": {
+          "number": 612,
+          "url": "https://github.com/Poetic-Poems/agent-ops/pull/612",
+          "created_at": "@ago:3h"
+        },
+        "as_of": "@ago:5h"
+      },
+      {
+        "repo": "Poetic-Poems/poetic",
+        "cap": 1,
+        "consumed": 3,
+        "unlimited": false,
+        "remaining": 0,
+        "status": "frozen",
+        "reason": "counting anomaly: 3 landed > 1 cap",
+        "oldest_waiting": {
+          "number": 88,
+          "url": "https://github.com/Poetic-Poems/poetic/pull/88",
+          "created_at": "@ago:6h"
+        },
+        "as_of": "@ago:2d"
+      },
+      {
+        "repo": "Poetic-Poems/poetic-fiddle",
+        "cap": 5,
+        "consumed": 1,
+        "unlimited": false,
+        "remaining": 4,
+        "status": "ok",
+        "reason": null,
+        "oldest_waiting": null
+      }
+    ]
+  }
+}

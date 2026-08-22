@@ -974,13 +974,76 @@ Three things it will not hide, each a way a digest could mislead by omission:
   qualifying, so an engaged switch groups on its own rather than folding into
   (or being indistinguishable from) the full-sentence group a level simply
   never raised forms.
-- **The merge budget**, per repository: `merge_budget_per_day`'s effective cap
-  against what the window consumed, so a repository approaching its governor is
-  visible before it starts holding work back. An unlimited repository (`0`)
-  reads as `∞`, never as a cap of zero. The caps are derived from
-  `config.json` here rather than by calling `merge_budget_effective_cap`, whose
-  own resolution also consults the freeze flag over the network — a read a
-  dashboard tick has no business making.
+- **The merge budget** (D18 issue #574), per repository: `merge_budget_per_day`'s
+  effective cap against consumption, its status (`ok`/`held`/`frozen`), and,
+  when held or frozen, the oldest waiting pull request and its age. An
+  unlimited repository (`0`) reads as `∞`, never as a cap of zero. Consumption
+  is sourced from the same rolling-24h count `lib/merge-budget.sh` itself
+  reads, never a private one recomputed here: `landing-armed`,
+  `merge-budget-hold` and `merge-budget-frozen` each carry the `cap`/`count`
+  `merge_budget_decide` read at that decision, so the single latest of the
+  three for a repository — across the whole retained log, not only this
+  digest's own window, the same reasoning the verdict join below already uses
+  — is that repository's state **as of that last gate-5 decision, not a live
+  read**, and of unbounded age: a repository whose backlog is empty, or whose
+  candidates all fail eligibility before reaching gate 5, keeps whatever event
+  last fired indefinitely — what the row then *reports* from that event is
+  bounded by the ageing rule below, but the event itself is never discarded. This is what keeps the freeze's own reason and the
+  oldest waiting pull request visible without a live read of the freeze flag
+  or `merge_budget_oldest_waiting`: both ride the
+  `merge-budget-frozen`/`merge-budget-hold` event that already fires the
+  moment `lib/merge-budget.sh` establishes them, rather than a second network
+  call this dashboard tick has no business making. A repository this tick has
+  never seen a budget decision for falls back to `config.json`'s configured
+  cap, reported `ok` with nothing yet consumed — a real absence of data, not a
+  claim that nothing has landed. A repository that *has* a recorded decision
+  keeps that decision's own `cap` — never re-read from `config.json` — until
+  its next gate-5 decision refreshes it, even if an operator edits
+  `merge_budget_per_day` for that repository in the meantime: the recorded
+  `cap` and `count` are read together, as the coherent pair
+  `merge_budget_decide` actually reasoned from, and a superseding-cap edit
+  becomes visible only once a fresh decision carries the new value alongside
+  a fresh count measured against it. The `cap` outlives that pair: once the
+  count beside it ages out of this digest's window (below), the recorded `cap`
+  is the one field of a superseded decision the row still carries, so a
+  repository whose configured cap has moved since its last gate-5 decision
+  keeps reading against the old one until the next decision lands.
+
+  `consumed` for an `ok` row is the count `merge_budget_decide` read *before*
+  granting the arm that logged it — the landing the arm itself produced is
+  never in it, so a repository that just spent its last permitted landing this
+  window reads, for example, 7/8, not 8/8. An unlimited repository never has a
+  `count` to read at all: `merge_budget_decide` short-circuits a zero cap
+  before counting, so its row instead counts this digest's own `landing-armed`
+  events inside the window — the same plain count the `armed`/`refused` rows
+  above already give, and what this panel counted before the per-repository
+  `budget` block existed. An `ok` row is aged back to unmeasured the same way
+  a held row is: once its own event falls outside this digest's window, the
+  count it carries has already rolled off the governor's own rolling-24h
+  clock, so `consumed` resets to `0` rather than presenting a count that is no
+  longer live as though it still were. A held row is aged back to `ok` on the
+  identical rule, because a hold is a rolling-24h fact too, and one nothing
+  has refreshed for a full window has already rolled off the governor's own
+  clock; its `consumed` resets to unmeasured with it — an aged hold's `status`
+  and `consumed` read exactly like a repository gate 5 has never reached,
+  rather than carrying its stale count forward under a status now claiming to
+  be healthy. A frozen row is never aged back this way, because a freeze
+  stands until a human clears the fleet flag, not until time passes. Every held or frozen row carries the
+  source event's own timestamp so the page can render its age (`held · as of
+  2d ago`) rather than presenting a stale decision as current; an `ok` row
+  never carries `as_of`, aged back or not, since once its count resets to
+  unmeasured its `status`, `consumed` and `as_of` read as a repository gate 5
+  has never reached does, which likewise has no age to show. `cap` is the one
+  field that still separates the two, and only where the configured cap has
+  moved since that aged decision — the persistence rule above.
+
+  A held or frozen repository never renders folded into the plain
+  `consumed/cap` text an `ok` repository gets, and never folded into the
+  refusals count above either — a budget hold is not an eligibility refusal,
+  even though both mean a pull request did not land that cycle. Each earns its
+  own row, badged `held` or `frozen`; a `frozen` row also states why, in the
+  same words `merge_budget_apply_decision` logged at the moment it froze the
+  repository.
 - **Its own failure.** A payload the Publisher could not assemble sets `armed`
   to `null` and renders as "could not be assembled this tick", explicitly
   distinguished from a quiet night. An empty array is a real and reportable

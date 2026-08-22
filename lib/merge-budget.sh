@@ -363,6 +363,17 @@ merge_budget_freeze_clear() {
 # sourced library), so the same dedup is inlined here rather than skipped:
 # an escalation a human has not yet closed must not be re-filed every time
 # the arming step reconsiders this repository.
+#
+# `merge-budget-frozen` also carries `reason` (a short, deterministic
+# rendering of the same anomaly `merge_budget_freeze_set`'s own flag body
+# already states in full) and `waiting_backlog` (the same value just logged
+# on `merge-budget-hold`, one call above this one in the same case): D18
+# issue #574 wants a dashboard tick to be able to show *why* a repository is
+# frozen and what it is holding without a live read of the freeze flag or
+# `merge_budget_oldest_waiting` — both are network reads a dashboard tick has
+# no business making (`docs/DASHBOARD-SPEC.md`'s own budget note) — so both
+# ride the event that already fires the moment the freeze is set, the only
+# place this fact is ever established.
 merge_budget_apply_decision() {
   local decision_json="$1" slug="$2" state_repo="$3" escalation_label="$4" assignee="$5"
   local decision cap count anomaly backlog
@@ -403,7 +414,8 @@ merge_budget_apply_decision() {
   outcome="$(merge_budget_freeze_set "$state_repo" "$slug" "$cap" "$count")"
   log_event "merge-budget-frozen" "$(jq -nc --arg s "$slug" --argjson cap "$cap" \
     --argjson count "$count" --arg o "$outcome" \
-    '{repo: $s, cap: $cap, count: $count, fleet_flag: $o}')"
+    --arg reason "counting anomaly: $count landed > $cap cap" --argjson bl "$backlog" \
+    '{repo: $s, cap: $cap, count: $count, fleet_flag: $o, reason: $reason, waiting_backlog: $bl}')"
 
   if [[ -n "$existing" ]]; then
     return 0

@@ -1510,15 +1510,52 @@
       body.push(tableOf(["Landed","Repo","PR","Title","Source","Complexity","Tier","Verdict","Method","Node"], rows));
     }
 
-    // The budget line, per repository that has either a cap or a landing.
+    // The budget line, per repository that has either a cap or a landing —
+    // sourced from lib/merge-budget.sh's own rolling-24h count (D18 issue
+    // #574), never a private one. A held or frozen repository is not folded
+    // into the same quiet "consumed/cap" text a healthy one gets: it earns
+    // its own row with a badge and, for a freeze, why — so a fleet that has
+    // been idle for hours because the governor closed it does not read the
+    // same as a fleet with nothing left to do. Neither status is a live
+    // read — both are the state as of the last gate-5 decision that produced
+    // them — so a held/frozen row also carries `as_of`'s age; a stale `held`
+    // has already been aged back to `ok` by the Publisher, but a `frozen` one
+    // has not, since a freeze stands until a human clears it regardless of
+    // how long ago it tripped.
     if (budget.length) {
-      var bparts = budget.map(function (b) {
+      var bparts = [];
+      var flaggedRepos = [];
+      budget.forEach(function (b) {
         var name = (b.repo || "?").split("/")[1] || b.repo || "?";
-        if (b.unlimited) return name + " " + b.consumed + "/∞";
-        return name + " " + b.consumed + "/" + b.cap +
-          (b.remaining === 0 ? " (cap reached)" : "");
+        var base = b.unlimited ? (name + " " + b.consumed + "/∞") : (name + " " + b.consumed + "/" + b.cap);
+        var w = b.oldest_waiting;
+        var waitingText = w ? "oldest waiting #" + w.number + ", " + fmtAgo(w.created_at) : null;
+        // `as_of` is the source event's own timestamp — the age of a held or
+        // frozen row's own decision, not of this tick, since neither status is
+        // a live read (scripts/publish-dashboard.sh's own comment on `budget`).
+        var asOfText = b.as_of ? "as of " + fmtAgo(b.as_of) : null;
+        if (b.status === "frozen") {
+          flaggedRepos.push(el("div", {class:"panel"}, [
+            el("span", {class:"badge b-red", text:"frozen"}),
+            el("span", {class:"mono", text:" " + base}),
+            el("span", {class:"muted", text:" — " + [b.reason || "counting anomaly", asOfText, waitingText]
+              .filter(Boolean).join(" · ")})
+          ]));
+        } else if (b.status === "held") {
+          var heldExtra = [asOfText, waitingText].filter(Boolean).join(" · ");
+          flaggedRepos.push(el("div", {class:"panel"}, [
+            el("span", {class:"badge b-amber", text:"held"}),
+            el("span", {class:"mono", text:" " + base}),
+            heldExtra ? el("span", {class:"muted", text:" — " + heldExtra}) : null
+          ]));
+        } else {
+          bparts.push(base);
+        }
       });
-      body.push(el("div", {class:"panel muted", text: "Merge budget, last " + hours + " h: " + bparts.join(" · ")}));
+      if (bparts.length) {
+        body.push(el("div", {class:"panel muted", text: "Merge budget, last " + hours + " h: " + bparts.join(" · ")}));
+      }
+      flaggedRepos.forEach(function (row) { body.push(row); });
     }
 
     // Refusals: the count always, and the reasons grouped, because "what the
