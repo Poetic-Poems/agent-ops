@@ -1422,6 +1422,16 @@ Carry that across:
   to you, say so in `needs_refinement` — but expect that to be settled by a
   human rather than by another refinement, because the pipeline refines an
   item once between human touches.
+- **The Script checks this before claiming, per candidate — it does not just
+  trust your account.** A candidate whose recorded `spec` or refinement
+  comment is not actually present, verbatim, in that candidate's own
+  `context`/`acceptance` is skipped without a claim attempt, exactly like one
+  a peer already claimed; your next-ranked candidate gets the slot instead
+  (agent-ops#626). This is not a hint to write less, or to write it
+  differently — it exists because composing several candidates' work orders
+  in one engagement has, at least once, produced a candidate whose fields
+  actually held a *different* item's refinement content instead of its own.
+  Keep each candidate's own text with its own item.
 
 ## Per-source refinement policy
 

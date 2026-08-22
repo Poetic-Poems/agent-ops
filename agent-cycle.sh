@@ -1554,6 +1554,84 @@ coordinator_refinements_view() {  # <refinements-json> <ordered-repos-json>
                       else . end))' <<<"$docs" 2>/dev/null || printf '%s' "$refinements"
 }
 
+# Requirement 17f (issue #626): requirement 17b already obliges the
+# Co-Ordinator to paste a refined item's own recorded refinement — a `spec`
+# verbatim, or (for an issue) the comment its own `comment_url` names,
+# already folded into requirement 20's whole-thread paste — into that same
+# item's work order. Trusting that the model actually did so, for every
+# candidate it names in a work order composed alongside others in the same
+# engagement, is exactly what let issue #571's work order carry issue #529's
+# own refinement content instead of its own: the response was syntactically
+# fine and each candidate individually plausible, so nothing detected the
+# cross-item swap until an Implementer, handed nothing but the mismatched
+# work order, could not reconcile the two and burned a needs-refinement
+# report on a fault the item never had.
+#
+# This closes that gap the only way that does not depend on the model
+# getting it right a second time: re-derive the item's own refinement from
+# `refinements-json` — keyed on this candidate's own `repo`/`item`, never on
+# anything the candidate itself claims — and confirm it is genuinely
+# present, verbatim, in the candidate's own `context` or `acceptance`. A
+# `spec` entry costs nothing to check (it is already in hand); a
+# `comment_url` entry costs one `gh api` read of the actual comment, because
+# the pre-fetched `comments` array a repo's `issues` entry carries has no
+# per-comment id to join it back against. A `comment_url` whose own embedded
+# issue number disagrees with `item` is a fault before any fetch is
+# attempted — the one case cheap enough to catch even a corrupted ledger
+# entry, not only a model that ignored a correct one. A network failure
+# fetching the real comment fails open, the same direction every other
+# degraded `gh` read in this pipeline already fails, because it is a fact
+# about GitHub's availability, not about the work order.
+#
+# Prints a non-empty, human-readable fault description when the candidate
+# fails either check; prints nothing when there is nothing to check (no
+# refinement on record for this item) or when the check passes. Never exits
+# non-zero: a candidate this cannot evaluate is not, by itself, a fault.
+refinement_traceability_fault() {  # <candidate-json> <refinements-json>
+  local cand="$1" refinements="${2:-{\}}" repo item entry spec comment_url \
+    url_issue comment_id body
+  jq -e 'type == "object"' <<<"$refinements" >/dev/null 2>&1 || refinements='{}'
+  repo="$(jq -r '.repo // ""' <<<"$cand" 2>/dev/null || true)"
+  item="$(jq -r '.item // ""' <<<"$cand" 2>/dev/null || true)"
+  [[ -n "$repo" && -n "$item" ]] || return 0
+  entry="$(jq -c --arg r "$repo" --arg i "$item" \
+    '((.[$r] // {})[$i]) // {}' <<<"$refinements" 2>/dev/null || printf '{}')"
+
+  spec="$(jq -r '.spec // ""' <<<"$entry" 2>/dev/null || true)"
+  if [[ -n "$spec" ]]; then
+    if jq -e --arg spec "$spec" '((.context // "") | contains($spec)) | not' \
+        <<<"$cand" >/dev/null 2>&1; then
+      printf '%s %s: recorded refinement spec is not present, verbatim, in this work order'\''s context — requirement 17b requires it, and a cross-item swap cannot satisfy this by accident' \
+        "$repo" "$item"
+      return 0
+    fi
+  fi
+
+  comment_url="$(jq -r '.comment_url // ""' <<<"$entry" 2>/dev/null || true)"
+  [[ -n "$comment_url" ]] || return 0
+
+  url_issue="$(printf '%s' "$comment_url" \
+    | sed -n 's|.*/issues/\([0-9][0-9]*\)#issuecomment-.*|\1|p')"
+  if [[ -n "$url_issue" && "$url_issue" != "$item" ]]; then
+    printf '%s %s: recorded refinement comment_url (%s) names issue #%s, not #%s — its own record disagrees with the item it is attached to' \
+      "$repo" "$item" "$comment_url" "$url_issue" "$item"
+    return 0
+  fi
+
+  comment_id="$(printf '%s' "$comment_url" \
+    | sed -n 's|.*#issuecomment-\([0-9][0-9]*\)$|\1|p')"
+  [[ -n "$comment_id" ]] || return 0
+  body="$(gh api "repos/$repo/issues/comments/$comment_id" --jq '.body // ""' 2>/dev/null || true)"
+  [[ -n "$body" ]] || return 0
+
+  if jq -e --arg body "$body" \
+      '((((.context // "") | contains($body)) or ((.acceptance // "") | contains($body))) | not)' \
+      <<<"$cand" >/dev/null 2>&1; then
+    printf '%s %s: recorded refinement comment (%s) is not present, verbatim, in this work order'\''s context or acceptance — requirement 17b/20 both require it, and a cross-item swap cannot satisfy this by accident' \
+      "$repo" "$item" "$comment_url"
+  fi
+}
+
 # Requirement 3u/issue #320: the same deterministic-code-not-model-judgement
 # exclusion as exclude_blocked_or_void_items above, purpose-built for the one
 # pre-fetched band that function cannot be reused for as-is. Requirement 3t
@@ -8804,6 +8882,16 @@ for (( ci = 0; ci < n_cand; ci++ )); do
   c_db="$(jq -r '.default_branch // "main"' <<<"$cand")"
   c_takeover="$(jq -r '.takeover // false' <<<"$cand")"
   [[ -n "$c_repo" && -n "$c_item" ]] || continue
+  # Requirement 17f (issue #626): checked before the pre-claimed check below,
+  # cheaper and unrelated to it — a candidate that fails traceability is
+  # never safe to hand to an Implementer regardless of whether it is also
+  # already claimed elsewhere.
+  c_trace_fault="$(refinement_traceability_fault "$cand" "$refinements_json")"
+  if [[ -n "$c_trace_fault" ]]; then
+    log_event "claim-skipped" "$(jq -nc --arg r "$c_repo" --arg i "$c_item" --arg s "$c_source" --arg d "$c_trace_fault" \
+      '{repo: $r, item: $i, source: $s, cause: "untraceable", detail: $d}')"
+    continue
+  fi
   if candidate_preclaimed "$c_repo" "$c_item" "$claims_at_gather_json"; then
     claim_skips=$(( claim_skips + 1 ))
     log_event "claim-skipped" "$(jq -nc --arg r "$c_repo" --arg i "$c_item" --arg s "$c_source" \

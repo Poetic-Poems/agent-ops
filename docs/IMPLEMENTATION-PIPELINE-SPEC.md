@@ -5980,6 +5980,44 @@ implements.
     item's own issue, which requirement 20 already pastes in full, and
     requirement 14a already makes the latest contradicting comment the current
     instruction.
+17f. **The Script verifies traceability before claiming, rather than trusting
+    the model's own account (agent-ops#626).** A work order composed alongside
+    others in the same Co-Ordinator engagement can carry one candidate's
+    `context`/`acceptance` while actually holding another item's refinement
+    content — the response is syntactically fine and each candidate
+    individually plausible, so nothing catches the cross-item swap until an
+    Implementer, handed nothing but the mismatched work order, finds it
+    incoherent and burns the item's one refinement-per-human-touch allowance
+    re-flagging a fault the item never had. `refinement_traceability_fault`
+    (`agent-cycle.sh`) closes this the only way that does not depend on the
+    model getting it right a second time: for each ranked candidate, in claim
+    order, before requirement 17a's claim is attempted, it re-derives the
+    item's own recorded refinement from `refinements` — keyed on that
+    candidate's own `repo`/`item`, never on anything the candidate itself
+    claims — and confirms it is genuinely present, verbatim, in that
+    candidate's own `context` or `acceptance`:
+    - A `spec` entry (requirement 17b) costs no extra read: the text is
+      already in `refinements`, so its presence in `context` is checked
+      directly.
+    - A `comment_url` entry (requirement 17b) is checked in two stages. First,
+      free: the issue number embedded in the URL itself must equal the
+      candidate's own `item` — a comment_url naming a different issue is a
+      fault regardless of what the work order says, and catches a corrupted
+      `refinements` entry as readily as a model that ignored a correct one.
+      Second, one `gh api repos/<repo>/issues/comments/<id>` read of the
+      actual comment (the pre-fetched `comments` array on a repo's `issues`
+      entry carries no per-comment id to join against, so this is the only
+      way to know the comment's real text) — a fault if that text is present
+      in neither `context` nor `acceptance`.
+    A candidate that fails either check is skipped without a claim attempt —
+    logged as `claim-skipped` with `cause: "untraceable"` and a `detail`
+    naming what disagreed — exactly as a pre-claimed candidate is skipped, so
+    a peer's later ranked candidate still gets a chance this cycle. An item
+    with no `refinements` entry at all costs nothing: the check returns
+    immediately with no `gh` call. A `gh` read that fails (network, rate
+    limit) fails open — a fact about GitHub's availability, not about the
+    work order, the same direction every other degraded `gh` read in this
+    pipeline already fails.
 17a. **The claim.** The Script — never the model — takes an atomic per-item
     claim before the Implementer starts, walking the ranked candidates in
     order and handing the first successful claim onward (`lib/claim.sh`).
@@ -13893,6 +13931,21 @@ pull request, run the ones the change touches and any it could regress.
    `1` even though requirement 2.2's own count left it untripped; and an
    already-tripped cycle with nothing left to fold in stays tripped without
    its composition line changing.
+7g. **A candidate whose refinement does not trace back to it is skipped,
+   never claimed (requirement 17f, agent-ops#626).**
+   `test/refinement-traceability.test.sh` passes, against
+   `refinement_traceability_fault` lifted verbatim from `agent-cycle.sh`: a
+   candidate whose recorded `spec` is absent from its own `context`, or
+   whose recorded `comment_url` names a different issue than the candidate's
+   own `item`, is faulted with no `gh` call at all; a candidate whose
+   `comment_url`'s own issue number matches but whose actual comment body
+   (fetched live) is present in neither `context` nor `acceptance` — the
+   #571/#529 shape — is faulted after exactly one `gh` call; a candidate
+   carrying its own comment or spec verbatim, in either field, passes; an
+   item with no `refinements` entry, or one recorded under a different repo,
+   is not checked and costs no `gh` call; and an unreachable GitHub, or a
+   malformed `refinements` document, fails open rather than faulting the
+   candidate.
 8. **A no-op Implementer is recorded.** Drive one cycle in which the
    Implementer reports `blocked` without opening a PR: the cycle must exit 0
    having logged an `attempt-failed` carrying that item and the stage's own
