@@ -274,6 +274,22 @@ file and carries placeholders only; `.env` itself is never committed.
   `docker compose up -d` there; no image roll delivers them, which is the
   general hazard `lib/compose-drift.sh` and `scripts/check-node-compose.sh`
   exist for.
+- **`tailscale`** (profile `tailnet`) — the sidecar whose network namespace
+  `dashboard` shares. Refuses to start when `TS_AUTHKEY` is empty: its
+  `entrypoint` checks the variable itself, before the image's own
+  `containerboot` ever runs, logs one line to stderr and exits 1 rather than
+  letting `tailscaled` start, ask for an interactive login it cannot
+  complete, and exit 0 having already generated and registered a fresh node
+  key against the tailnet — the failure mode behind issue #644's 1,421
+  ephemeral nodes. `TS_AUTHKEY` is therefore required at every start of this
+  service, not only the first, even where the `tailscale-state` volume
+  already holds the node's identity. Its `restart: on-failure:5` is bounded,
+  where every other service in the file is `unless-stopped`, so a credential
+  that cannot fix itself on retry stops the container instead of restarting
+  it forever; the accepted cost is that Docker does not re-apply an
+  `on-failure` policy when the daemon restarts, so this sidecar and the
+  `dashboard` behind it may need a `docker compose up -d` after a host reboot
+  that the rest of the stack does not.
 - **`dashboard`** (profile `tailnet`) — `scripts/serve-dashboard.sh` sharing the
   `tailscale` sidecar's network namespace (`network_mode: service:tailscale`).
   That shared namespace is what lets Tailscale Serve reach a server bound to
@@ -12773,6 +12789,18 @@ pull request, run the ones the change touches and any it could regress.
    not reach exits 2; a node not running a CI-stamped image at all is not a
    failure; and no `compose.yaml` in the stack directory, or a scheduler
    that cannot be exec'd into, is exit 2, never a clean pass.
+1c-v. **The tailnet sidecar refuses to start without `TS_AUTHKEY`, and does
+   not retry forever over one.** On a live node with the `tailnet` profile
+   selected and `TS_AUTHKEY` unset, `docker compose up -d tailscale` exits
+   with the container in a failed state and `docker compose logs tailscale`
+   carries a single line naming the missing variable and the active profile,
+   never reaching `tailscaled` — no new node key is registered against the
+   tailnet. `docker compose ps` shows it `Exited` after five attempts rather
+   than restarting indefinitely, because the `tailscale` service's own
+   `restart: on-failure:5` bounds it where the rest of the file is
+   `unless-stopped`.
+   With `TS_AUTHKEY` set, the same `up -d` starts the sidecar normally and
+   `docker compose exec tailscale tailscale status` succeeds.
 1d. **State replicates per node, and comes back as peers.**
    `test/state-sync.test.sh`
    passes: a push carries the logs, cycles, reviews and switch but not the

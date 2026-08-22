@@ -181,7 +181,37 @@ services:
     image: tailscale/tailscale:latest
     profiles: [tailnet]
     hostname: ${NODE_NAME:-agent-ops}
-    restart: unless-stopped
+    # Bounded, unlike every other service in this file: `unless-stopped`
+    # restarts on any exit code, so a container that refuses to start over a
+    # credential no restart can fix would retry forever. `on-failure:5` still
+    # gives a genuine transient failure a few attempts, then leaves the
+    # container stopped with its error in `docker compose logs tailscale`.
+    # The cost is documented and accepted: Docker's own restart-policy
+    # reference says `on-failure` "doesn't restart the container if the daemon
+    # restarts", where `unless-stopped` does — so after a host reboot this
+    # sidecar, and the `dashboard` sharing its namespace, may need a
+    # `docker compose up -d` that the rest of the stack does not.
+    restart: on-failure:5
+    # /usr/local/bin/containerboot is the image's own default command: the
+    # tailscale/tailscale image sets `CMD`, not `ENTRYPOINT`, and an
+    # `entrypoint:` here clears that CMD — hence naming the binary explicitly
+    # below rather than falling through to it. Guarded here rather than left to
+    # tailscaled's own behaviour: without TS_AUTHKEY, tailscaled starts
+    # anyway, asks for an interactive login it has no way to complete, and
+    # exits 0 — but only after it has already generated and registered a
+    # brand new node key against the tailnet. Every restart of that silent
+    # loop did the same, leaving 1,421 ephemeral nodes behind on one node
+    # over nine days before anyone noticed (issue #644). Checking first means
+    # a missing credential never reaches tailscaled at all.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        if [ -z "$$TS_AUTHKEY" ]; then
+          echo "tailscale: ERROR: TS_AUTHKEY is empty but the 'tailnet' profile is active (this file's own header comment: \"needs TS_AUTHKEY\") -- set TS_AUTHKEY in this node's .env or drop 'tailnet' from COMPOSE_PROFILES. Refusing to start." >&2
+          exit 1
+        fi
+        exec /usr/local/bin/containerboot
     environment:
       TS_AUTHKEY: ${TS_AUTHKEY:-}
       TS_HOSTNAME: ${NODE_NAME:-agent-ops}
