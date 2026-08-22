@@ -170,6 +170,35 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   all: a `manual` limit record renders in the operator's voice ("set by …
   (manual)", never probed, `--clear-limit` lifts it early) rather than the
   detector's estimated-retry phrasing.
+- **`fleet-cache/merge-autonomy-kill.json`** — the D18 merge-autonomy kill
+  switch's own cached copy (D18 issue #576, `lib/merge-autonomy.sh`'s
+  `MERGE_AUTONOMY_KILL_FLAG`). Narrower than the `disabled`/`limit` flags
+  above and read differently from them for it: those two fail *open* on an
+  unreadable record, so their raw cached bytes (`null` when clear) are the
+  whole story; the kill switch fails *closed* (an unreachable state repo with
+  no cache reads as engaged, `lib/merge-autonomy.sh`'s own header), a
+  distinction only `merge_autonomy_kill_state` draws. This Publisher never
+  calls that function outside its own GitHub tick — it always attempts a live
+  fetch the first time a process asks it, which a `--no-github` tick or a
+  standby node must not pay for — so the `--no-github`/local-only value runs
+  the raw cache through `_toggle_eval` instead (the pure half of the same
+  machinery, no network), defaulting to `{"state":"enabled"}` when no cache
+  exists at all: a display default for "nothing confirms a kill", never the
+  live gate's own fail-closed reasoning, which only applies once a fetch has
+  actually found the repo unreachable. The live GitHub tick calls
+  `merge_autonomy_kill_state` for real and overwrites this value with its
+  accurate answer, fail-closed synthesis included. Surfaced as
+  `fleet.flags.merge_autonomy_kill` — `{state, record?}`, `lib/toggle.sh`'s
+  own vocabulary — and rendered as its own banner, deliberately not folded
+  into the fleet-switch banner above: cycles keep running while the kill
+  switch is engaged, only landing collapses to `human` fleet-wide, so "every
+  node stands down" would misreport it. A `record.kind` of `"fail-closed"`
+  (the marker `merge_autonomy_kill_state` writes and nothing else does) omits
+  the `--restore-merge-autonomy` advice a genuine `manual` kill's banner
+  carries, since no command fixes a state-repo outage. `scripts/doctor.sh`
+  reads the same function directly (its own "the merge-autonomy kill switch
+  is …" line) — this is the same position, on the dashboard instead of a
+  one-shot pass.
 - **`disabled.json`** — the switch (requirement 2.3), read through
   `lib/toggle.sh`: the same code the pipelines gate on, so the dashboard cannot
   disagree with them about whether cycles are meant to be running (requirement
@@ -622,7 +651,10 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                  stage, repo, item, source, title } } ],
                                             // what THAT node is doing; null
                                             //   until it has run a cycle
-             flags:  { disabled, limit },               // cached fleet flags (2.3a)
+             flags:  { disabled, limit,                 // cached fleet flags (2.3a)
+                       merge_autonomy_kill: { state, record? } },
+                                            // D18 issue #576; {state:"enabled"}
+                                            //   when clear
              claims: [ { repo, key, kind, node, cycle, item, source, ts, sha } ] },
   log_tail:  [ … ],                    // recent events, newest first, fleet-wide
                                        //   minus review-gate-checks-read: pure
@@ -759,7 +791,7 @@ or whose state has gone stale) + a static **documentation nav** (`Docs:`
 followed by six links — README, the three pipeline specs, the metering
 schema, the roadmap — each opening the file at `blob/main/<path>` on GitHub
 in a new tab; no data behind it, so it renders identically on every load) +
-disabled / fleet-switch / usage-limit
+disabled / fleet-switch / merge-autonomy-kill-switch / usage-limit
 / fleet-limit / failing-checks / dequeued-pr / gh-down / stale-peer /
 doctor-fail / doctor-warn banners
 (the switch first: when it is set, every other quiet signal on the page
@@ -933,7 +965,15 @@ Three things it will not hide, each a way a digest could mislead by omission:
 - **Refusals**, counted and grouped by reason class over the same window. Two
   landings beside forty refusals is a classifier holding the line; two beside
   none may be a gate that is not running at all. A panel showing only successes
-  could not tell those apart, and the second is the one worth waking for.
+  could not tell those apart, and the second is the one worth waking for. The
+  class is the `reason` text before its first `:` (`byReason`,
+  `dashboard/index.html`) — `landing_autonomy_refusal_reason`
+  (`lib/landing.sh`, D18 issue #576) is what prefixes a `kill-switch:` tag onto
+  a refusal only when a second, independent read of the fleet-wide kill
+  switch confirms it is the actual cause of the effective level not
+  qualifying, so an engaged switch groups on its own rather than folding into
+  (or being indistinguishable from) the full-sentence group a level simply
+  never raised forms.
 - **The merge budget**, per repository: `merge_budget_per_day`'s effective cap
   against what the window consumed, so a repository approaching its governor is
   visible before it starts holding work back. An unlimited repository (`0`)
@@ -1444,7 +1484,17 @@ number's twins elsewhere on the page.
   `--this-node` disable beside it still badges; with the flag cleared, the
   surviving mirror raises this node's own banner and badge, both naming it as
   a leftover of a fleet-wide disable since cleared rather than as a
-  node-scoped decision. A cycle whose
+  node-scoped decision. The merge-autonomy kill switch (D18 issue #576,
+  `fleet.flags.merge_autonomy_kill`) is asserted from three further fixtures:
+  a `state: "disabled"`, `record.kind: "manual"` one raises its own banner
+  naming the reason, who set it and the `--restore-merge-autonomy` command
+  that clears it, while never claiming every node stands down (the fleet
+  switch's own wording) or badging any node disabled; a `record.kind:
+  "fail-closed"` one still raises the banner but explains the state repo
+  could not be confirmed clear rather than naming an operator, and omits the
+  clear command a cause no command fixes has no business offering; and a
+  fixture carrying no `merge_autonomy_kill` flag at all — every `data.js`
+  from before this field existed — raises no such banner. A cycle whose
   `selection` carried `race_losses` (implementation spec 17d, #248) shows a
   blue **recovered race ×N** badge beside its title in the cycle history —
   informational, not a warning, since losing a claim race and then winning a

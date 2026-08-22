@@ -198,6 +198,12 @@
         "repo": "Poetic-Poems/agent-ops",
         "pr_url": "https://github.com/Poetic-Poems/agent-ops/pull/604",
         "reason": "unknown:could not establish changed-file list"
+      },
+      {
+        "ts": "@ago:7h",
+        "repo": "Poetic-Poems/agent-ops",
+        "pr_url": "https://github.com/Poetic-Poems/agent-ops/pull/605",
+        "reason": "kill-switch:merge_autonomy kill switch is engaged fleet-wide — effective level forced to human regardless of the configured level, until an operator clears it"
       }
     ],
     "budget": [

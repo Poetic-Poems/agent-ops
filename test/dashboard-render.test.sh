@@ -900,6 +900,41 @@ assert_contains "and its re-enable advice names --this-node" \
 assert_not_contains "never the bare --enable, which clears the fleet switch instead" \
   "needs \`agent-cycle.sh --enable\`" "$out"
 
+# --- The merge-autonomy kill switch banner (D18 issue #576) -----------------
+# Narrower than the fleet switch above: cycles keep running, only landing is
+# forced back to `human` fleet-wide, so it must never be folded into "every
+# node stands down" and must render even when neither the fleet switch nor
+# any node's own switch is set.
+
+out="$(render merge-autonomy-kill.json)" || \
+  { printf 'FAIL - merge-autonomy-kill.json did not render:\n%s\n' "$out"; exit 1; }
+assert_contains "an engaged kill switch raises its own banner" \
+  "Merge-autonomy kill switch is engaged" "$out"
+assert_contains "  ... naming the reason" \
+  '“the App is misbehaving”' "$out"
+assert_contains "  ... and who set it" \
+  "set by warwickallen" "$out"
+assert_contains "  ... and the command that clears it" \
+  "agent-cycle.sh --restore-merge-autonomy" "$out"
+assert_not_contains "  ... never claiming every node stands down (that is the fleet switch's banner)" \
+  "Fleet switch is set" "$out"
+assert_not_contains "  ... nor the pipeline-wide switch banner" \
+  "This node is disabled" "$out"
+
+out="$(render merge-autonomy-kill-failclosed.json)" || \
+  { printf 'FAIL - merge-autonomy-kill-failclosed.json did not render:\n%s\n' "$out"; exit 1; }
+assert_contains "a fail-closed synthesis (state repo unreachable, no cache) still raises the banner" \
+  "Merge-autonomy kill switch is engaged" "$out"
+assert_contains "  ... explaining it could not be confirmed clear, not naming an operator" \
+  "state repo unreachable and no cached copy of the kill switch" "$out"
+assert_not_contains "  ... and never offers the clear command for a cause no command can fix" \
+  "agent-cycle.sh --restore-merge-autonomy" "$out"
+
+out="$(render landings-quiet.json)" || \
+  { printf 'FAIL - landings-quiet.json did not render:\n%s\n' "$out"; exit 1; }
+assert_not_contains "a fixture with no merge_autonomy_kill flag at all raises no banner" \
+  "Merge-autonomy kill switch is engaged" "$out"
+
 # --- The autonomous-landing digest (D18 WI-8, agent-ops#411) ----------------
 # Risk 6 of the autonomy investigation accepts unattended merges on the
 # stated condition that this panel is the asynchronous audit replacing the
@@ -927,6 +962,14 @@ assert_contains "refusals in the same window are reported, grouped by reason" \
   "refused in the same window" "$out"
 assert_contains "  ... naming each refusal class and its count" \
   "ineligible ×2" "$out"
+# D18 issue #576: a kill-switch refusal groups under its own tag, distinct
+# from an ordinary ineligible/unknown refusal (acceptance criterion 4) —
+# `kill-switch:` is the tag `landing_autonomy_refusal_reason`
+# (lib/landing.sh) prefixes onto the reason so this grouping (byReason,
+# dashboard/index.html) picks it out cleanly rather than folding it into a
+# one-off full-sentence group.
+assert_contains "  ... and a kill-switch refusal groups under its own tag" \
+  "kill-switch ×1" "$out"
 assert_contains "the merge budget shows consumed against the cap" \
   "agent-ops 2/8" "$out"
 assert_contains "  ... and an unlimited repository reads as unlimited, never as 0" \

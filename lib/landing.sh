@@ -267,6 +267,46 @@ _landing_routine_sources() {
   printf '["register-hygiene","tech-debt"]'
 }
 
+# landing_autonomy_refusal_reason STATE_REPO STATE_DIR LEVEL [FRESH]
+# The `landing-refused` reason text for gate 1 of `_landing_stage_attempt`
+# (agent-cycle.sh) when LEVEL is not `agent-merges-routine`/`agent-merges-all`
+# — D18 WI-2's fleet-wide kill switch (lib/merge-autonomy.sh) is one possible
+# cause of that, a repository simply never raised past `human`/
+# `agent-approves` is the other, and issue #576's own acceptance criterion 2
+# is that a human reading the log can tell which. Gate 1 already has LEVEL in
+# hand (`merge_autonomy_effective_level`'s own collapsed answer, which does
+# not say *why* it collapsed) by the time it calls this — the extra
+# `merge_autonomy_kill_state` read below is what recovers the "why", asked
+# again rather than threaded through because `merge_autonomy_effective_level`
+# returns one word, not a cause.
+#
+# FRESH (issue #513's own discipline, applied here for the same reason gate
+# 1's own LEVEL read already carries it: an operator's mid-cycle kill must be
+# visible in the very refusal it causes, not the next cycle's) is threaded
+# straight through to `merge_autonomy_kill_state`.
+#
+# Named the same "ineligible:$reason" convention `landing_eligible` below and
+# `_landing_arm_failure_reason` both, so every refusal this file's callers can
+# produce reads the same way in the fleet log: this is never a pass, no
+# caller need treat it as anything other than the reason a refusal names. The
+# kill-switch branch carries its own `kill-switch:` tag ahead of the colon —
+# scripts/publish-dashboard.sh's landings digest groups `landing-refused`
+# reasons by the text before the first `:` (dashboard/index.html's
+# `byReason`), so this is also what makes the switch its own, single-word
+# group there rather than folding into (or being confused with) the
+# full-sentence group the plain "effective level is …" wording below forms
+# (acceptance criterion 4).
+landing_autonomy_refusal_reason() {
+  local state_repo="$1" state_dir="$2" level="$3" fresh="${4:-}"
+  local kill_state
+  kill_state="$(jq -r '.state' <<<"$(merge_autonomy_kill_state "$state_repo" "$state_dir" "$fresh")" 2>/dev/null)"
+  if [[ "$kill_state" != "enabled" ]]; then
+    printf 'kill-switch:merge_autonomy kill switch is engaged fleet-wide — effective level forced to human regardless of the configured level, until an operator clears it'
+    return 0
+  fi
+  printf 'merge_autonomy effective level is %s, not agent-merges-routine or agent-merges-all' "${level:-empty}"
+}
+
 # landing_eligible CONFIG_JSON SLUG NUMBER COMPLEXITY SOURCE LEVEL
 # Print `eligible`, `ineligible:<reason>` or `unknown:<reason>`. LEVEL is
 # the caller's own already-resolved `merge_autonomy_effective_level` — this
