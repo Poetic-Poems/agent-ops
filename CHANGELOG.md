@@ -76,6 +76,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (previously always `unavailable`, agent-ops#571) now consumes this join
   rather than a placeholder.
 
+- `docs/reviews/2026-08-14-autonomy-investigation.md` §6.1, a dated
+  verification record for the Stage 1 exit check (agent-ops#518): what the
+  App-approval mechanism has actually demonstrated (the ruleset amendment
+  applied; six pull requests merged on the App's review alone; token
+  authority to call `enqueuePullRequest` established only negatively) and
+  what it has not (no enqueue under the App token has ever succeeded, and no
+  merge has ever been performed by the App — every merge to date is a human
+  account). Corrects a premise conflated earlier in the issue's own thread:
+  "merged with only the App's approval" and "merged by the App" are
+  different facts.
+
 - `scripts/autonomy-stage-report.sh` (D18, agent-ops#571): a read-only
   operator report answering "has this repository met its current D18
   rollout-stage exit criteria?" — its `merge_autonomy` level, the stage
