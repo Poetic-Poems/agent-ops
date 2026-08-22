@@ -266,9 +266,10 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   new field: `cycles/<id>/{coordinator,implementer,reviewer,enabler,refiner}.out`
   name themselves, and `reviews/<id>/reviewer-<repo>.out` is normalised to
   `project-reviewer` from the directory two levels up — it belongs to the
-  weekly pipeline, not to the cycle Reviewer. Any other stem passes through
-  verbatim, on the same fail-open rule as the source labels below.
-- **`reviews/<review-id>/reviewer-<repo>.out`** — the weekly project-review
+  repository-review pipeline, not to the cycle Reviewer. Any other stem
+  passes through verbatim, on the same fail-open rule as the source labels
+  below.
+- **`reviews/<review-id>/reviewer-<repo>.out`** — the repository-review
   pipeline's envelopes, read by the cost scan on exactly the same terms as a
   cycle's. It is one Claude account paying for both pipelines, so a roll-up
   that skipped this directory was not a per-pipeline figure but a wrong total —
@@ -1314,12 +1315,12 @@ number's twins elsewhere on the page.
   is running — editing a running bash script shifts byte offsets and corrupts
   the live process. Use `agent-cycle.sh --disable '<why>'` before editing and
   `--enable` after: that is what the switch of requirement 2.3 is for, and it
-  also stops the *next* hourly tick from starting mid-edit, which waiting for
+  also stops the *next* cycle tick from starting mid-edit, which waiting for
   the lock to clear does not. `--status` reports both the switch and whether a
   cycle is still running, because disabling stops the next cycle, not the one
   already in flight.)
 - **Heartbeat** — an optional `*/5 * * * *` crontab entry keeps in-flight
-  state, the lock, and GitHub current between hourly cycles. cron can't fire
+  state, the lock, and GitHub current between cycles. cron can't fire
   more than once a minute, so the entry runs `publish-dashboard-launcher.sh`
   rather than the Publisher directly: the launcher self-loops on 5-second
   boundaries for ~295s (leaving a ~5s gap so consecutive cron runs don't
@@ -2063,8 +2064,8 @@ number's twins elsewhere on the page.
   cron fired; the model is nearly a restatement of the actor, since
   `config.json` pins one model per role. What an operator can actually decide is
   which agent does what — whether the Reviewer needs Opus on complex work,
-  whether the Enabler is earning its cycles, what a weekly project review really
-  costs against an hour of implementation. None of that is legible from the
+  whether the Enabler is earning its cycles, what a repository review really
+  costs against an implementation cycle. None of that is legible from the
   other two charts, and all of it was already on disk: the actor is the
   transcript's own filename, so this cut needed no new field, no new log event
   and no extra API call.
@@ -2106,7 +2107,7 @@ number's twins elsewhere on the page.
   cheap path when a reader never touches the toggle.
 
   Adding it exposed that the roll-ups were **not totals**. The scan read
-  `cycles/` and not `reviews/`, so the weekly Project Reviewer — the most
+  `cycles/` and not `reviews/`, so the Project Reviewer — the most
   expensive actor per run — contributed nothing to spend-today, spend-total,
   by-day or by-model. That is a worse fault than a missing chart: the numbers
   were not per-pipeline, they were simply short, and nothing on the page said
