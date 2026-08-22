@@ -90,6 +90,7 @@ state="$active_home/.local/state/poetic-agents"
 
 printf '{"ts":"2026-07-20T00:00:00Z","event":"cycle-start"}\n' > "$state/log.jsonl"
 printf '{"ts":"2026-07-20T00:00:00Z","event":"review-start"}\n' > "$state/review-log.jsonl"
+printf '{"ts":"2026-08-21T02:00:00Z","node":"active-node","event":"revert-rate","repo":"o/r"}\n' > "$state/revert-rate.jsonl"
 printf '{"reason":"testing"}\n' > "$state/disabled.json"
 printf 'cron says hello\n' > "$state/cron.log"
 mkdir -p "$state/cycles/20260720T010000Z-1" "$state/reviews/20260720T020000Z-1"
@@ -116,6 +117,11 @@ printf '{"ok":false}\n' > "$state/.image-drift-cache.json"
 # this node, like the caches above, so neither should replicate.
 printf 'doctor noise\n' > "$state/doctor.log"
 printf '{"verdict":"ok"}\n' > "$state/.doctor-status.json"
+# The daily revert-rate publishing pass's own text output (agent-ops#579):
+# local to this node, like doctor.log above — its structured sibling,
+# revert-rate.jsonl (set up above, beside log.jsonl), is fleet-wide data and
+# must replicate instead.
+printf 'revert-rate noise\n' > "$state/revert-rate.log"
 mkdir -p "$state/dashboard"
 printf '<html>\n' > "$state/dashboard/index.html"
 
@@ -127,6 +133,7 @@ pushed="$tmp_dir/pushed"
 git clone --quiet --branch nodes/active-node "$remote" "$pushed"
 assert_eq "the log replicates" "1" "$(test -f "$pushed/log.jsonl" && echo 1 || echo 0)"
 assert_eq "the review log replicates" "1" "$(test -f "$pushed/review-log.jsonl" && echo 1 || echo 0)"
+assert_eq "the revert-rate log replicates" "1" "$(test -f "$pushed/revert-rate.jsonl" && echo 1 || echo 0)"
 assert_eq "the switch replicates" "1" "$(test -f "$pushed/disabled.json" && echo 1 || echo 0)"
 assert_eq "cycle transcripts replicate" "1" \
   "$(test -f "$pushed/cycles/20260720T010000Z-1/coordinator.out" && echo 1 || echo 0)"
@@ -140,6 +147,7 @@ assert_eq "the GitHub cache does not replicate" "0" "$(test -e "$pushed/.dashboa
 assert_eq "the image-drift cache does not replicate" "0" "$(test -e "$pushed/.image-drift-cache.json" && echo 1 || echo 0)"
 assert_eq "the doctor log does not replicate" "0" "$(test -e "$pushed/doctor.log" && echo 1 || echo 0)"
 assert_eq "the doctor status cache does not replicate" "0" "$(test -e "$pushed/.doctor-status.json" && echo 1 || echo 0)"
+assert_eq "the revert-rate publish log does not replicate" "0" "$(test -e "$pushed/revert-rate.log" && echo 1 || echo 0)"
 assert_eq "the generated dashboard does not replicate" "0" "$(test -e "$pushed/dashboard" && echo 1 || echo 0)"
 # Both transfers are covered: the cycle directories go through their own rsync
 # with its own filter, so an exclusion that held only for the general transfer

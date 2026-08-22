@@ -28,6 +28,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   #618 and previously unfileable because it could not land in that pull
   request.
 
+- D18's Stage 2 exit criterion ("revert rate ≤ baseline") is now measured
+  continuously rather than only by hand (agent-ops#579): a new daily
+  `scripts/publish-revert-rate.sh`, on its own crontab line
+  (`schedule.revert_rate_hour`/`revert_rate_offset_minutes`), runs
+  `scripts/mine-merge-history.sh` — which gains a `--since ISO8601` flag to
+  bound the mined population — over three bounded windows per repository and
+  appends a rolling-window (14 days, excluding the last 48 hours, floored at
+  10 samples), cumulative-since-baseline, and stored-baseline
+  revert-or-follow-up rate to `revert-rate.jsonl` in `state_dir`, replicated
+  fleet-wide exactly like `log.jsonl`. The Stage 0 baseline figures
+  (`docs/reviews/2026-08-15-merge-autonomy-baseline.md`) are copied into
+  `config.json`'s new `revert_rate_baseline` as a fixed reference rather than
+  re-derived at runtime. The dashboard gains a "Revert rate by repository"
+  panel beneath Autonomous landings, showing all three figures per
+  configured repository and badging whether the cumulative rate sits at or
+  below the stored baseline.
+
 - D18's fleet-wide `merge_autonomy` kill switch (WI-2, agent-ops#405) is now
   exercised end to end against the landing path (agent-ops#576): gate 1 of
   `_landing_stage_attempt` (`agent-cycle.sh`) asks `merge_autonomy_kill_state`

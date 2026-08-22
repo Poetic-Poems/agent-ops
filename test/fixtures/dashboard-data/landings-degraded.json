@@ -149,5 +149,6 @@
     "armed": null,
     "refused": null,
     "budget": null
-  }
+  },
+  "revert_rate": null
 }

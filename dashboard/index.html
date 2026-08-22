@@ -1601,6 +1601,61 @@
     return el("div", {}, body);
   }
 
+  // Revert rate by repository (D18 issue #579): scripts/publish-revert-
+  // rate.sh's own three figures per repository — rolling window (the day-of
+  // operational signal), cumulative-since-baseline (what Stage 2's own exit
+  // criterion reads), and the stored Stage 0 baseline itself — joined
+  // against config.repos in publish-dashboard.sh so a repository whose
+  // publishing tick has never once succeeded still gets a row (`{repo}`
+  // alone) rather than silently vanishing.
+  function revertRateCell(block) {
+    if (!block || block.n == null) return el("span", {class:"muted", text:"no data"});
+    if (block.rate == null) {
+      var why = block.insufficient_samples ?
+        "n=" + block.n + " (below the floor of " + block.min_samples + ")" : "n=" + block.n;
+      return el("span", {class:"muted", text: why});
+    }
+    return el("span", {class:"mono", text: (Math.round(block.rate * 1000) / 10) + "% (n=" + block.n + ")"});
+  }
+  function revertRatePanel() {
+    var rows = D.revert_rate;
+    if (rows == null) {
+      return el("div", {class:"panel"}, el("div", {class:"empty",
+        text:"The revert-rate digest could not be assembled this tick. See cron.log."}));
+    }
+    if (!rows.length) {
+      return el("div", {class:"panel"}, el("div", {class:"empty", text:"No repositories configured."}));
+    }
+    var trs = rows.map(function (row) {
+      var repoShort = (row.repo || "?").split("/")[1] || row.repo || "?";
+      var above = row.above_baseline;
+      var badge = above == null ? el("span", {class:"muted", text:"—"})
+        : above ? el("span", {class:"badge b-red", text:"above baseline"})
+        : el("span", {class:"badge b-green", text:"at/below baseline"});
+      if (!row.rolling) {
+        return el("tr", {}, [
+          el("td", {class:"mono", text: repoShort}),
+          el("td", {class:"muted", colspan:"3", text:"no revert-rate publish yet"}),
+          el("td", {}, badge)
+        ]);
+      }
+      return el("tr", {}, [
+        el("td", {class:"mono", text: repoShort}),
+        el("td", {}, [revertRateCell(row.rolling),
+          el("div", {class:"muted", style:"font-size:11px"},
+            "last " + (row.window_days || 14) + "d, excl. last 48h"
+            + (row.rolling.since ?
+                 " (" + fmtTime(row.rolling.since) + " – " + fmtTime(row.rolling.excludes_merged_after) + ")" : ""))]),
+        el("td", {}, [revertRateCell(row.cumulative),
+          row.cumulative && row.cumulative.since ?
+            el("div", {class:"muted", style:"font-size:11px"}, "since " + fmtTime(row.cumulative.since)) : null]),
+        el("td", {}, revertRateCell(row.baseline)),
+        el("td", {}, badge)
+      ]);
+    });
+    return tableOf(["Repo", "Rolling window", "Cumulative since baseline", "Baseline", "vs baseline"], trs);
+  }
+
   // ---------- cycles panel ----------
   function cyclesPanel(cycles) {
     var body = cyclesTable(cycles);
@@ -2857,6 +2912,13 @@
     // requests, because it is the same question one step later: these are the
     // pull requests that stopped being anybody's to merge.
     app.appendChild(sectionOf("Autonomous landings (last " + (((D.landings || {}).window_hours) || 24) + " h)", landingsPanel()));
+
+    // ---------- revert rate by repository ----------
+    // Directly under the landings it audits: D18's Stage 2 exit criterion
+    // ("revert rate ≤ baseline") is a fact this panel makes checkable at a
+    // glance, on the day it stops holding, rather than only at a promotion
+    // review.
+    app.appendChild(sectionOf("Revert rate by repository", revertRatePanel()));
 
     // ---------- live claims ----------
     if (fleetVisible()) app.appendChild(sectionOf("Live claims", claimsPanel()));

@@ -989,6 +989,30 @@ assert_contains "a clean-audited landing badges its own outcome" \
 assert_contains "the all-time scoreboard reports checked/clean/escapes/unverifiable" \
   "Classifier-escape audit (all-time): 2 landings checked, 1 clean, 0 unverifiable, 1 escape." "$out"
 
+# D18 issue #579: the revert-rate panel — rolling, cumulative and stored
+# baseline figures, per repository, joined against config.repos so a
+# repository with no publish yet still gets a row.
+assert_contains "the revert-rate section renders" \
+  "Revert rate by repository" "$out"
+assert_contains "a repository's rolling-window rate reads as a percentage with its sample size" \
+  "25% (n=12)" "$out"
+assert_contains "  ... and states its own window bounds beneath it" \
+  "last 14d, excl. last 48h" "$out"
+# The two instants themselves, not just the cadence: a row a node stopped
+# publishing weeks ago reads identically to a fresh one otherwise. Asserted on
+# the bracket rather than the formatted dates, which `fmtTime` renders in the
+# reader's own locale and zone.
+assert_contains "  ... including the window's own concrete bounds" \
+  "last 14d, excl. last 48h (" "$out"
+assert_contains "the cumulative-since-baseline rate reads the same way" \
+  "37.5% (n=40)" "$out"
+assert_contains "the stored baseline rate reads the same way too" \
+  "88.3% (n=120)" "$out"
+assert_contains "a cumulative rate below the stored baseline is badged at/below baseline" \
+  "at/below baseline" "$out"
+assert_contains "a repository with no revert-rate publish yet still gets a row" \
+  "no revert-rate publish yet" "$out"
+
 # A quiet window is a real, reportable nothing — and still accounts for the
 # budget, so "nothing landed" and "nothing could land" stay distinguishable.
 out="$(render landings-quiet.json)" || { printf 'FAIL - landings-quiet.json did not render:\n%s\n' "$out"; exit 1; }
@@ -1037,6 +1061,8 @@ assert_contains "an unassembled digest says it could not be assembled" \
   "could not be assembled this tick" "$out"
 assert_not_contains "  ... and never reads as a quiet night instead" \
   "Nothing landed autonomously" "$out"
+assert_contains "an unassembled revert-rate digest says so too, distinctly from its own panel" \
+  "The revert-rate digest could not be assembled this tick" "$out"
 
 # --- doctor-*.json: the unattended pass's own status.doctor (agent-ops#543) --
 # status.doctor is THIS node's own most recent hourly `doctor.sh --unattended`

@@ -2346,6 +2346,25 @@ counts_with_escapes="$(jq -c --argjson e "$escape_audits_json" '. + {escape_audi
   <<<"$counts_json" 2>/dev/null)"
 [[ -n "$counts_with_escapes" ]] && counts_json="$counts_with_escapes"
 
+# --- Revert rate by repository (D18 issue #579) -----------------------------
+#
+# scripts/publish-revert-rate.sh appends one row per repository, per node,
+# per day to revert-rate.jsonl (never rotated, replicated fleet-wide exactly
+# like log.jsonl — see that script's own header). This reads the fleet-wide
+# union and keeps the newest row per repository (by its own `ts`, across
+# every node — union-with-most-recent-event-wins, the same rule the blocked
+# and void extractions use over log.jsonl), joined against config.repos so a
+# repository whose publishing tick has never once succeeded still gets a row
+# — `{repo}` alone, no other keys — rather than silently vanishing from the
+# panel.
+revert_rate_repos_json="$(jq -c '[.repos[].slug]' <<<"$DEFAULTED_CONFIG" 2>/dev/null || printf '[]')"
+revert_rate_json="$(fleet_logs "$state_dir" "$peers_dir" revert-rate.jsonl \
+  | jq -c -R 'fromjson? // empty' | jq -s -c --argjson repos "$revert_rate_repos_json" '
+      (group_by(.repo) | map(max_by(.ts))) as $latest
+      | [ $repos[] as $slug | (($latest[] | select(.repo == $slug)) // {repo: $slug}) ]
+    ' 2>/dev/null)"
+jq -e 'type == "array"' <<<"$revert_rate_json" >/dev/null 2>&1 || revert_rate_json='null'
+
 # --- Assemble ----------------------------------------------------------------
 # --- The stage budgets, as the page needs them (requirement 4f) -----------------
 # Two things the page cannot work out for itself. `lock_stale_after` is no
@@ -2393,6 +2412,7 @@ printf '%s' "$log_tail_json" > "$work_tmp/logtail.json"
 # still ride argv.
 printf '%s' "$counts_json"  > "$work_tmp/counts.json"
 printf '%s' "$landings_json" > "$work_tmp/landings.json"
+printf '%s' "$revert_rate_json" > "$work_tmp/revert-rate.json"
 printf '%s' "$blocked_json" > "$work_tmp/blocked.json"
 printf '%s' "$void_json"    > "$work_tmp/void.json"
 data_json="$(jq -n \
@@ -2406,6 +2426,7 @@ data_json="$(jq -n \
   --slurpfile blocked "$work_tmp/blocked.json" \
   --slurpfile void "$work_tmp/void.json" \
   --slurpfile landings "$work_tmp/landings.json" \
+  --slurpfile rr "$work_tmp/revert-rate.json" \
   --slurpfile gh "$work_tmp/github.json" \
   --slurpfile lt "$work_tmp/logtail.json" \
   --argjson cron_tail "$cron_tail_json" \
@@ -2415,6 +2436,7 @@ data_json="$(jq -n \
   '{generated_at: $generated_at, node: $self_node, config: $config, status: $status,
     counts: $counts[0], cycles: $cyc[0], noop_ticks: $noop, blocked: $blocked[0],
     void: $void[0], github: $gh[0], log_tail: $lt[0], landings: $landings[0],
+    revert_rate: $rr[0],
     cron_tail: $cron_tail, max_open_agent_prs: ($max_prs|tonumber),
     fleet: {nodes: $fleet_nodes, flags: $fleet_flags, claims: ($gh[0].claims // [])}}')"
 

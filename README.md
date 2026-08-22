@@ -387,7 +387,7 @@ Keys:
 | `cycles_retained` | `200` | Cycle directories kept in the replicated copy (~8 days of hourly cycles). Your own `state_dir` is not pruned. |
 | `state_local_cycles_retained` | `1000` | Cycle and review directories the node's own `state_dir` keeps; the same push that replicates prunes to it. Deliberately far above `cycles_retained`, so the local machine is always the longer record. |
 | `state_local_streams_retained` | `50` | Cycle and review directories whose stage event streams (`<stage>.stream.jsonl`) are kept. Streams are large and local-only — never replicated — so they are bounded well below `state_local_cycles_retained`; the records themselves are untouched. |
-| `log_retained_bytes` | `2000000` | Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `doctor.log`, `cron.log` and `review-cron.log`. `log.jsonl` and `review-log.jsonl` are never rotated. |
+| `log_retained_bytes` | `2000000` | Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `doctor.log`, `revert-rate.log`, `cron.log` and `review-cron.log`. `log.jsonl`, `review-log.jsonl` and `revert-rate.jsonl` are never rotated. |
 | `log_generations` | `3` | Rotated generations kept beside each live log (`<name>.1` … `<name>.<log_generations>`). |
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
 | `implementer_model_default` | `claude-sonnet-5` | For code changes. |
@@ -464,6 +464,9 @@ Keys:
 | `schedule.state_sync_fetch_minutes` | `7` | Interval, in minutes, of the containerised node's `state-sync.sh fetch` line. |
 | `schedule.log_rotation_minute` | `19` | The minute past every hour the containerised node's `rotate-logs.sh` line runs. |
 | `schedule.doctor_offset_minutes` | `44` | Minutes past `CYCLE_MINUTE` (mod 60) the hourly unattended `doctor.sh` pass's minute is set to (agent-ops#543), on the same per-node jitter `review_offset_minutes` uses. |
+| `schedule.revert_rate_hour` | `2` | The hour the containerised node's daily revert-rate publishing tick (`scripts/publish-revert-rate.sh`, agent-ops#579) fires. |
+| `schedule.revert_rate_offset_minutes` | `51` | Minutes past `CYCLE_MINUTE` (mod 60) the daily revert-rate publishing tick's minute is set to (agent-ops#579), on the same per-node jitter `doctor_offset_minutes` uses. |
+| `revert_rate_baseline` | `{"source": "docs/reviews/2026-08-15-merge-autonomy-baseline.md", "generated": "2026-08-15", "repos": [{"slug": "Poetic-Poems/poetic", "count": 84, "reverts": 0, "follow_up_fixes": 31}, {"slug": "Poetic-Poems/poetic-fiddle", "count": 119, "reverts": 0, "follow_up_fixes": 44}, {"slug": "Poetic-Poems/agent-ops", "count": 120, "reverts": 0, "follow_up_fixes": 106}]}` | The D18 Stage 0 merge-autonomy baseline, copied once from `docs/reviews/2026-08-15-merge-autonomy-baseline.md` rather than re-derived — `scripts/publish-revert-rate.sh` compares every window's rate against it. A fresh install ships no baseline until Stage 0 records one. |
 <!-- config-table:end -->
 
 Every `*_model` key above, plus `project_review.defaults.model` (or a repo's

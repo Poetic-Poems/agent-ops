@@ -304,7 +304,7 @@ assert_defaults "a key the config already sets is left exactly as written" \
   '.crash_loop_after = 4' '.crash_loop_after == 4'
 assert_defaults "a nested object absent as a whole is synthesised from its own leaves' defaults" \
   'del(.schedule)' \
-  '.schedule == {cycle_hours: "*", cycle_interval_minutes: 15, excluded_minutes: [], review_hour: 3, review_offset_minutes: 29, heartbeat_minutes: 5, state_sync_push_minutes: 5, state_sync_fetch_minutes: 7, log_rotation_minute: 19, doctor_offset_minutes: 44}'
+  '.schedule == {cycle_hours: "*", cycle_interval_minutes: 15, excluded_minutes: [], review_hour: 3, review_offset_minutes: 29, heartbeat_minutes: 5, state_sync_push_minutes: 5, state_sync_fetch_minutes: 7, log_rotation_minute: 19, doctor_offset_minutes: 44, revert_rate_hour: 2, revert_rate_offset_minutes: 51}'
 assert_defaults "one leaf missing from a present nested object is filled without disturbing its siblings" \
   '.schedule = {review_hour: 9}' \
   '.schedule.review_hour == 9 and .schedule.cycle_hours == "*" and .schedule.log_rotation_minute == 19'

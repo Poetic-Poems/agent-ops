@@ -97,5 +97,14 @@
         "min_days_between_reviews": 6
       }
     ]
+  },
+  "revert_rate_baseline": {
+    "source": "docs/reviews/2026-08-15-merge-autonomy-baseline.md",
+    "generated": "2026-08-15",
+    "repos": [
+      {"slug": "Poetic-Poems/poetic", "count": 84, "reverts": 0, "follow_up_fixes": 31},
+      {"slug": "Poetic-Poems/poetic-fiddle", "count": 119, "reverts": 0, "follow_up_fixes": 44},
+      {"slug": "Poetic-Poems/agent-ops", "count": 120, "reverts": 0, "follow_up_fixes": 106}
+    ]
   }
 }

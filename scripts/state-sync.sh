@@ -146,9 +146,9 @@ peers_dir="$(fleet_peers_dir "$workspace_root")"
 #                   before.
 #   .git            the mirror's own repository, which lives at the same root.
 #
-# Everything else — log.jsonl, review-log.jsonl, cycles/, reviews/,
-# disabled.json, the cron logs — is the node's contribution to the fleet's
-# memory and is published.
+# Everything else — log.jsonl, review-log.jsonl, revert-rate.jsonl, cycles/,
+# reviews/, disabled.json, the cron logs — is the node's contribution to the
+# fleet's memory and is published.
 #
 # The stream exclusion has to be stated twice, once here and once in the
 # cycles filter file below, because the cycle directories are transferred by a
@@ -168,6 +168,13 @@ EXCLUDES=(
   # either from a peer, so neither travels.
   --exclude=doctor.log
   --exclude=.doctor-status.json
+  # revert-rate.log (scripts/publish-revert-rate.sh, agent-ops#579): the
+  # daily pass's own text output, local to this node on the same reasoning
+  # as doctor.log above. Its structured sibling, revert-rate.jsonl, is
+  # deliberately absent from this list — every node's own rows are the
+  # fleet-wide data the revert-rate dashboard panel unions, the same as
+  # log.jsonl, so it must travel.
+  --exclude=revert-rate.log
   --exclude=.dashboard-github.json
   --exclude=.dashboard-claims.json
   --exclude=.image-drift-cache.json

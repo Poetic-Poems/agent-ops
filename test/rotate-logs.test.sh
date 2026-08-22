@@ -5,12 +5,13 @@
 #
 # What matters here:
 #
-#   what rotates      dashboard.log, state-sync.log, doctor.log, cron.log
-#                     and review-cron.log, and only once they cross the
-#                     threshold — a log still under it is left byte-identical.
-#   what never does   log.jsonl and review-log.jsonl are the fleet's memory
-#                     (the union readers scan them whole); no size, however
-#                     large, may rotate them.
+#   what rotates      dashboard.log, state-sync.log, doctor.log,
+#                     revert-rate.log, cron.log and review-cron.log, and only
+#                     once they cross the threshold — a log still under it is
+#                     left byte-identical.
+#   what never does   log.jsonl, review-log.jsonl and revert-rate.jsonl are
+#                     the fleet's memory (the union readers scan them whole);
+#                     no size, however large, may rotate them.
 #   how generations   a rotation renames the live file to `.1`; a second
 #   stack             rotation shifts a stale `.1` to `.2` rather than
 #                     clobbering it, and a generation beyond
@@ -104,6 +105,13 @@ run_rotate "$d" ROTATE_LOGS_RETAINED_BYTES=1000 ROTATE_LOGS_GENERATIONS=3
 assert_eq "the oversized doctor.log is renamed to .1" "2000" "$(stat -c%s "$d/doctor.log.1" 2>/dev/null || stat -f%z "$d/doctor.log.1")"
 assert_eq "and the live file reappears immediately, empty" "0" "$(stat -c%s "$d/doctor.log" 2>/dev/null || stat -f%z "$d/doctor.log")"
 
+# --- revert-rate.log rotates like every other diagnostic log (agent-ops#579) -
+d="$(new_home revertrate)"
+make_log "$d/revert-rate.log" 2000
+run_rotate "$d" ROTATE_LOGS_RETAINED_BYTES=1000 ROTATE_LOGS_GENERATIONS=3
+assert_eq "the oversized revert-rate.log is renamed to .1" "2000" "$(stat -c%s "$d/revert-rate.log.1" 2>/dev/null || stat -f%z "$d/revert-rate.log.1")"
+assert_eq "  ... and the live file reappears immediately, empty" "0" "$(stat -c%s "$d/revert-rate.log" 2>/dev/null || stat -f%z "$d/revert-rate.log")"
+
 # --- A second rotation shifts .1 to .2, dropping what falls off the end ----
 d="$(new_home stack)"
 make_log "$d/dashboard.log" 2000
@@ -114,15 +122,18 @@ assert_eq "the stale .1 shifts to .2" "first generation" "$(cat "$d/dashboard.lo
 assert_eq "the newly rotated file becomes .1" "2000" "$(stat -c%s "$d/dashboard.log.1" 2>/dev/null || stat -f%z "$d/dashboard.log.1")"
 assert_file_absent "and .3 never appears (log_generations=2)" "$d/dashboard.log.3"
 
-# --- log.jsonl and review-log.jsonl are never rotated -----------------------
+# --- log.jsonl, review-log.jsonl and revert-rate.jsonl are never rotated ---
 d="$(new_home memory)"
 make_log "$d/log.jsonl" 5000
 make_log "$d/review-log.jsonl" 5000
+make_log "$d/revert-rate.jsonl" 5000
 run_rotate "$d" ROTATE_LOGS_RETAINED_BYTES=1000 ROTATE_LOGS_GENERATIONS=3
 assert_eq "log.jsonl keeps its full size" "5000" "$(stat -c%s "$d/log.jsonl" 2>/dev/null || stat -f%z "$d/log.jsonl")"
 assert_eq "review-log.jsonl keeps its full size" "5000" "$(stat -c%s "$d/review-log.jsonl" 2>/dev/null || stat -f%z "$d/review-log.jsonl")"
+assert_eq "revert-rate.jsonl keeps its full size" "5000" "$(stat -c%s "$d/revert-rate.jsonl" 2>/dev/null || stat -f%z "$d/revert-rate.jsonl")"
 assert_file_absent "log.jsonl gets no .1" "$d/log.jsonl.1"
 assert_file_absent "review-log.jsonl gets no .1" "$d/review-log.jsonl.1"
+assert_file_absent "revert-rate.jsonl gets no .1" "$d/revert-rate.jsonl.1"
 
 # --- The one-off cleanup ----------------------------------------------------
 d="$(new_home oneoff)"

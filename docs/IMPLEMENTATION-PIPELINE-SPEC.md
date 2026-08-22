@@ -172,17 +172,19 @@ a node updates by pulling a new image rather than by pulling a branch.
   push`, which publishes this node's state and heartbeat to its own branch,
   and a `state-sync.sh fetch`, which materialises every peer's for the union
   readers; one log-rotation line (requirement 2.6), `rotate-logs.sh`,
-  which bounds the five logs those schedules append to; and one
+  which bounds the six logs those schedules append to; one
   unattended-doctor line (requirement 2.6a), `doctor.sh --unattended`, which
   runs the same configuration and GitHub checks an operator would run by
-  hand, once an hour, with nobody watching. Every cadence named
-  above — the heartbeat and both fleet lines' intervals, the
-  log-rotation minute, and the doctor pass's own offset — comes from
-  `config.json`'s `schedule` (`heartbeat_minutes`,
+  hand, once an hour, with nobody watching; and one revert-rate line
+  (requirement 2.6b), `publish-revert-rate.sh`, which runs the merged-PR
+  miner over a bounded window once a day, with nobody watching either. Every
+  cadence named above — the heartbeat and both fleet lines' intervals, the
+  log-rotation minute, and the doctor and revert-rate passes' own offsets —
+  comes from `config.json`'s `schedule` (`heartbeat_minutes`,
   `state_sync_push_minutes`, `state_sync_fetch_minutes`, `log_rotation_minute`,
-  `doctor_offset_minutes`;
-  see Configuration), baked at 5, 5, 7, 19 and 44 in the checked-in config. The
-  same redirections into `state_dir` apply, so the dashboard's log-derived
+  `doctor_offset_minutes`, `revert_rate_hour`, `revert_rate_offset_minutes`;
+  see Configuration), baked at 5, 5, 7, 19, 44, 2 and 51 in the checked-in
+  config. The same redirections into `state_dir` apply, so the dashboard's log-derived
   views work identically. It deliberately omits the laptop's personal
   `update-main-branches.sh` entry: that refreshes interactive checkouts, and
   a node has none.
@@ -615,7 +617,7 @@ and the schema must carry every one of them.
 | `cycles_retained` | `200` | Cycle directories kept in the replicated mirror — about eight days of hourly cycles. Bounds a repository that is force-pushed after every cycle. The node's own `state_dir` is bounded by `state_local_cycles_retained` instead. |
 | `state_local_cycles_retained` | `1000` | Cycle and review directories the node's *own* `state_dir` keeps — about six weeks of hourly cycles; the same push that replicates prunes to it (requirement 2.5). Deliberately far above `cycles_retained`, so the local machine is always the longer record, with a floor of one protecting the cycle being recorded. `STATE_SYNC_LOCAL_RETAINED` overrides it for tests. |
 | `state_local_streams_retained` | `50` | Cycle and review directories whose stage event streams (`<stage>.stream.jsonl`, requirement 4d) are kept; the push that replicates prunes to it (requirement 2.5). Far below `state_local_cycles_retained` because a stream is a different order of size from the record holding it — a cycle directory without them is kilobytes, one Reviewer stream megabytes — so streams go early and their records stay. Streams never reach the state repository. `STATE_SYNC_STREAMS_RETAINED` overrides it for tests. |
-| `log_retained_bytes` | `2000000` | Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `doctor.log`, `cron.log` and `review-cron.log` (requirement 2.6). `log.jsonl` and `review-log.jsonl` are never rotated regardless of size. `ROTATE_LOGS_RETAINED_BYTES` overrides it for tests. |
+| `log_retained_bytes` | `2000000` | Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `doctor.log`, `revert-rate.log`, `cron.log` and `review-cron.log` (requirement 2.6). `log.jsonl`, `review-log.jsonl` and `revert-rate.jsonl` are never rotated regardless of size. `ROTATE_LOGS_RETAINED_BYTES` overrides it for tests. |
 | `log_generations` | `3` | Rotated generations of each log kept beside the live file (`<name>.1` … `<name>.<log_generations>`), floored at one. `ROTATE_LOGS_GENERATIONS` overrides it for tests. |
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
 | `implementer_model_default` | `claude-sonnet-5` | Any change that affects runtime behaviour. |
@@ -692,6 +694,9 @@ and the schema must carry every one of them.
 | `schedule.state_sync_fetch_minutes` | `7` | Interval, in minutes, of `state-sync.sh fetch` (requirement 2.5). |
 | `schedule.log_rotation_minute` | `19` | The minute past every hour `rotate-logs.sh` runs (requirement 2.6). |
 | `schedule.doctor_offset_minutes` | `44` | Minutes past `CYCLE_MINUTE` (mod 60) the hourly `doctor.sh --unattended` pass's minute is set to, jittering it across the fleet the same way `review_offset_minutes` jitters the review tick. |
+| `schedule.revert_rate_hour` | `2` | The hour the daily revert-rate publishing tick fires. |
+| `schedule.revert_rate_offset_minutes` | `51` | Minutes past `CYCLE_MINUTE` (mod 60) the daily revert-rate publishing tick's minute is set to, jittering it across the fleet the same way `doctor_offset_minutes` jitters the unattended doctor pass. |
+| `revert_rate_baseline` | `{"source": "docs/reviews/2026-08-15-merge-autonomy-baseline.md", "generated": "2026-08-15", "repos": [{"slug": "Poetic-Poems/poetic", "count": 84, "reverts": 0, "follow_up_fixes": 31}, {"slug": "Poetic-Poems/poetic-fiddle", "count": 119, "reverts": 0, "follow_up_fixes": 44}, {"slug": "Poetic-Poems/agent-ops", "count": 120, "reverts": 0, "follow_up_fixes": 106}]}` | The D18 Stage 0 merge-autonomy baseline (docs/reviews/2026-08-15-merge-autonomy-baseline.md §6), copied here once as a fixed reference rather than re-derived at runtime (issue #579): `scripts/publish-revert-rate.sh` compares every window's revert-or-follow-up rate against these figures. A repository absent from `repos` reports its baseline comparison `unavailable` rather than failing. |
 <!-- config-table:end -->
 
 Model IDs are pinned in config (one place to update); do not use floating
@@ -1983,16 +1988,25 @@ implements.
    single-node operation behaves exactly as it did before the fleet existed.
 
    **What replicates.** Everything under `state_dir` except the live locks
-   (`lock.json`, `review-lock.json`), the dashboard's own machinery
-   (`dashboard/`, `dashboard.log`, `dashboard-server.log`,
-   `.dashboard-github.json`, `.image-drift-cache.json`), `state-sync.log`,
-   and the stage event streams (`*.stream.jsonl`, requirement 4d).
+   (`lock.json`, `review-lock.json`, `dashboard.lck`), the dashboard's own
+   machinery (`dashboard/`, `dashboard.log`, `dashboard-server.log`,
+   `.dashboard-github.json`, `.dashboard-claims.json`,
+   `.image-drift-cache.json`), `state-sync.log`, the unattended doctor
+   pass's own local artefacts (`doctor.log`, `.doctor-status.json` —
+   requirement 2.6a), the revert-rate publishing tick's own local text
+   output (`revert-rate.log` — requirement 2.6b, its structured sibling
+   `revert-rate.jsonl` excepted, below), and the stage event streams
+   (`*.stream.jsonl`, requirement 4d).
    The exclusions are not tidiness: a copied `lock.json` is a lock no process
    holds — peers read logs, never locks; the
    dashboard is generated from the state beside it, so copying it would be
    copying a derivative of what is already being copied; a copied
    `.image-drift-cache.json` would answer for a registry query nobody on the
-   peer ran. The streams are excluded on size as much as on relevance: what
+   peer ran; `doctor.log`/`revert-rate.log` are each a local pass's own text
+   output, superseded for a reader by the structured sibling that pass also
+   writes (`.doctor-status.json` locally, `revert-rate.jsonl` fleet-wide —
+   the asymmetry is exactly why one is excluded and the other is not). The
+   streams are excluded on size as much as on relevance: what
    a peer reads of a stage is its result envelope, which replicates as
    `<stage>.out` exactly as before, while the stream beside it is every
    message and every tool result — kilobytes against megabytes — and the
@@ -2000,7 +2014,8 @@ implements.
    exclusion covers both transfers, the general one and the cycle
    directories' own filter, and deletes any stream a node published before
    the rule existed. `log.jsonl`,
-   `review-log.jsonl`, `cycles/`, `reviews/`, `disabled.json` and the cron logs
+   `review-log.jsonl`, `revert-rate.jsonl`, `cycles/`, `reviews/`,
+   `disabled.json` and the cron logs
    do replicate — they are what makes a spare node warm rather than merely
    installed. Git stores no empty directories, so a cycle that stood down
    before its first stage replicates as its `log.jsonl` entry alone.
@@ -2086,28 +2101,33 @@ implements.
 2.6. **Log rotation.** Requirement 2.5 bounds the *records* in `state_dir` —
    `cycles/` and `reviews/` are pruned on every push — but its logs are
    appended to forever otherwise. `scripts/rotate-logs.sh`, on its own
-   crontab line independent of the pipelines, bounds five of them:
-   `dashboard.log`, `state-sync.log`, `doctor.log`, `cron.log` and
-   `review-cron.log`. Each
+   crontab line independent of the pipelines, bounds six of them:
+   `dashboard.log`, `state-sync.log`, `doctor.log`, `revert-rate.log`,
+   `cron.log` and `review-cron.log`. Each
    is renamed to `<name>.1` (an existing `.1` first shifts to `.2`, and so
    on) once it reaches `log_retained_bytes`, keeping the newest
    `log_generations` generations; a fresh, empty file replaces it
    immediately, so nothing is ever left missing. A plain rename is enough —
    every writer here reopens the file by name on each append (`>>"$log"` per
    cron invocation), so no process holds a descriptor across the rotation
-   and `copytruncate` is not needed. `log.jsonl` and `review-log.jsonl` are
-   never rotated: the union readers (blocked/void extraction, the no-op
-   fingerprint, the usage-limit cooldown) scan them whole, and dropping
+   and `copytruncate` is not needed. `log.jsonl`, `review-log.jsonl` and
+   `revert-rate.jsonl` (requirement 2.6b) are never rotated: the union
+   readers (blocked/void extraction, the no-op fingerprint, the usage-limit
+   cooldown, the revert-rate dashboard panel) scan them whole, and dropping
    their head would silently change what the Co-Ordinator believes has been
-   tried. Because `cron.log` is published to the node's state branch
+   tried, or which node's revert-rate row is newest. Because `cron.log` is
+   published to the node's state branch
    (requirement 2.5) and its tail is rendered on the dashboard (the
    `DASHBOARD-SPEC.md` cron panel), `scripts/publish-dashboard.sh` reads
    `cron.log.1` too whenever the live file alone is shorter than the tail
    window, so a rotation never empties the panel. `doctor.log` (requirement
-   2.6a) is bounded here on size alone, like `dashboard.log` and
-   `state-sync.log`: it is local to the node and excluded from the state
-   branch, and the dashboard reads the structured `.doctor-status.json`
-   beside it, not this file, so nothing needs its tail kept across a
+   2.6a) and `revert-rate.log` (requirement 2.6b) are bounded here on size
+   alone, like `dashboard.log` and
+   `state-sync.log`: both are local to the node and excluded from the state
+   branch, and the dashboard reads their structured siblings
+   (`.doctor-status.json`, `revert-rate.jsonl`)
+   instead, not either text file, so nothing needs either one's tail kept
+   across a
    rotation. `.doctor-status.json` itself is not in this rotation set at
    all — each unattended pass overwrites it in place (`mv -f` over the
    previous run), so it never grows.
@@ -2150,6 +2170,73 @@ implements.
    `dashboard.log`; `.doctor-status.json` is excluded from the state branch
    (requirement 2.5) alongside the dashboard's own local caches, since
    nothing but this node's own Publisher ever reads it.
+2.6b. **The revert-rate publishing tick** (D18 issue #579, a WI of umbrella
+   #402). `scripts/publish-revert-rate.sh`, on its own daily crontab line,
+   runs `scripts/mine-merge-history.sh` unprompted so Stage 2's exit
+   criterion ("revert rate ≤ baseline") is measured continuously rather than
+   only when a promotion review remembers to run the miner by hand — the
+   Stage 0 baseline it exists to compare against was itself produced once,
+   on 2026-08-15, and had not run again until this component. `scripts/mine-merge-
+   history.sh` gained a `--since ISO8601` flag for this caller alone: it
+   bounds the mined population to pull requests merged at or after that
+   instant, both as the REST `since` query parameter (which narrows the
+   pages fetched, on GitHub's own "last updated after" semantics) and as an
+   exact `merged_at` filter afterwards (which is what actually bounds the
+   population) — without it, a caller meant to run daily would re-mine each
+   configured repository's entire merge history on every tick.
+
+   Per repository, three `--since`-bounded mining passes compute three
+   figures: **rolling** — merged pull requests in the last
+   `--window-days` (14 default) excluding the last 48 hours (whose own
+   48-hour post-merge observation window has not yet elapsed), floored at
+   `--min-samples` (10) before a rate is published at all — computed as the
+   arithmetic difference between a 14-day-bounded pass and a 48-hour-bounded
+   pass, which is exact rather than approximate: any pull request an outcome
+   check could classify as a revert or follow-up of one merged within the
+   last 48 hours must itself have merged within the last 48 hours too (it
+   merges after the original, and no later than "now"), so every partner a
+   14-day pass could find for such a pull request is already present in the
+   48-hour pass, and the two passes agree on its classification — the
+   subtraction removes exactly the still-unsettled population, nothing more
+   and nothing less; **cumulative-since-baseline** — every merged pull
+   request since `revert_rate_baseline.generated`, unfiltered, which is what
+   this criterion itself compares against the baseline (both all-population
+   aggregates, measured the same way); and **baseline** — the stored Stage 0
+   figures (`revert_rate_baseline` — see Configuration), copied in once
+   rather than re-derived at runtime the way `scripts/autonomy-stage-
+   report.sh` (component 22, issue #571, out of this component's scope)
+   still does for its own one-off comparison by scanning `docs/reviews/` —
+   nothing here reads that directory. A repository absent from
+   `revert_rate_baseline.repos`, or the whole key absent, publishes its
+   rolling figure unaffected and reads baseline (and, absent the whole key,
+   cumulative too) `null` throughout, rather than failing the run.
+
+   Every mining pass reads GitHub through `scripts/mine-merge-history.sh`'s
+   own `lib/github-limit.sh` wrapper and `gh_retry`, so the fleet-wide rate
+   limit and a transient network failure are both handled there, not
+   reimplemented here: a repository whose passes still fail after those
+   retries is skipped for the run (no row published for it, logged why on
+   stderr) rather than a fabricated figure, and the run itself exits
+   non-zero — the crontab line's own `|| true` keeps a partial run from
+   reading as a crashed script in `cron.log`, the same reasoning 2.6a's
+   `doctor.sh --unattended` line uses.
+
+   One JSON line per repository is appended to `revert-rate.jsonl` in
+   `state_dir` — envelope `{ts, node, event, repo, window_days, rolling,
+   cumulative, baseline, above_baseline}`, `above_baseline` comparing
+   cumulative against baseline (`null` when either is unavailable). Unlike
+   `.doctor-status.json`, this file is fleet-wide data, on the identical
+   terms as `log.jsonl`: never rotated (requirement 2.6), not excluded from
+   the state branch (requirement 2.5), read back through `lib/fleet.sh`'s
+   `fleet_logs` union rather than verbatim off one node's own copy. The
+   crontab line's own minute is `schedule.revert_rate_offset_minutes` past
+   the node's base cycle minute (mod 60, 51 by default), at
+   `schedule.revert_rate_hour` (2 by default) — the same per-node jitter
+   2.6a's doctor line uses, but daily rather than hourly, keeping this
+   node's several scheduled passes off the same GitHub-API minute.
+   `scripts/publish-dashboard.sh` reads the union and surfaces it as
+   `revert_rate` (`docs/DASHBOARD-SPEC.md`, "Revert rate by repository"),
+   reduced to the newest row per repository across every node.
 2.7. **Crash-loop escalation.** A Co-Ordinator failure pins no repo/item
    (requirement 33's fields are set only after selection), so the entire
    blocked → Enabler → escalation ladder that covers item failures never

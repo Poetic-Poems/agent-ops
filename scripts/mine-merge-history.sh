@@ -6,13 +6,30 @@
 # Usage:
 #   scripts/mine-merge-history.sh [--config FILE] [--repo OWNER/REPO ...]
 #                                  [--label LABEL] [--out-dir DIR]
+#                                  [--since ISO8601]
 #
 # With no flags, reads the repo list from config.json's `repos[].slug` and the
 # pull-request label from config.json's `pr_label` (both next to this script),
 # and writes a dated Markdown baseline to docs/reviews/. One or more --repo
 # overrides the config-file repo list entirely (each still filtered by
 # --label, default "autonomous-agent"); --config points at a different
-# config file; --out-dir changes where the baseline is written.
+# config file; --out-dir changes where the baseline is written; --since bounds
+# the mined population to pull requests merged at or after that instant —
+# scripts/publish-revert-rate.sh (D18, issue #579) is the caller that needs
+# this: a rolling window or a since-baseline window over a fast-moving repo is
+# a small fraction of its full merge history, and mining the whole history on
+# every scheduled run would multiply this script's own ~2000-call cost by the
+# fleet's cadence for no benefit — a window a caller already knows it wants
+# should cost only what that window holds (roughly `n_recent × 3` GitHub API
+# calls per repository instead of the full history's).
+#
+# `--since` is applied twice: once as the REST `since` query parameter on the
+# merged-PR listing (GitHub's own semantics — "last updated after this
+# instant" — which narrows the pages fetched but is not exact, since a PR
+# merged long ago that later received a comment or a label also updated after
+# `--since`), and again as an exact `merged_at >= --since` filter on the
+# parsed listing, which is what actually bounds the mined population. The
+# first is the cost saving; the second is the correctness.
 #
 # For each repo, over every merged pull request carrying the label, this
 # reports: the count; every formal human review, tallied by
@@ -108,10 +125,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_FILE="$SCRIPT_DIR/config.json"
 OUT_DIR="$SCRIPT_DIR/docs/reviews"
 LABEL=""
+SINCE=""
 declare -a REPOS=()
 
 usage() {
-  echo "usage: mine-merge-history.sh [--config FILE] [--repo OWNER/REPO ...] [--label LABEL] [--out-dir DIR]" >&2
+  echo "usage: mine-merge-history.sh [--config FILE] [--repo OWNER/REPO ...] [--label LABEL] [--out-dir DIR] [--since ISO8601]" >&2
   exit 64
 }
 
@@ -121,10 +139,16 @@ while [[ $# -gt 0 ]]; do
     --repo) REPOS+=("$2"); shift 2 ;;
     --label) LABEL="$2"; shift 2 ;;
     --out-dir) OUT_DIR="$2"; shift 2 ;;
+    --since) SINCE="$2"; shift 2 ;;
     -h|--help) usage ;;
     *) usage ;;
   esac
 done
+
+if [[ -n "$SINCE" ]]; then
+  jq -n --arg s "$SINCE" '$s | fromdateiso8601' >/dev/null 2>&1 \
+    || { echo "mine-merge-history: --since is not a valid ISO 8601 instant: $SINCE" >&2; exit 64; }
+fi
 
 if [[ ${#REPOS[@]} -eq 0 ]]; then
   [[ -f "$CONFIG_FILE" ]] || { echo "mine-merge-history: config file not found: $CONFIG_FILE" >&2; exit 1; }
@@ -181,14 +205,18 @@ gh_retry() {
 #    xrefs: [{number, title, merged_at}, ...],   // referencing PRs, merged
 #    files: ["path", ...]}
 mine_repo() {
-  local slug="$1" label="$2"
-  local listing prs
+  local slug="$1" label="$2" since="${3:-}"
+  local listing prs since_qs
+  since_qs=""
+  [[ -z "$since" ]] || since_qs="&since=$since"
   listing="$(gh_retry api --paginate \
-    "repos/$slug/issues?labels=$label&state=closed&per_page=100" \
+    "repos/$slug/issues?labels=$label&state=closed&per_page=100$since_qs" \
     --jq '.[] | select(.pull_request != null) | select(.pull_request.merged_at != null)
               | {number, title, created_at, merged_at: .pull_request.merged_at}')" \
     || { echo "mine-merge-history: $slug: merged-PR listing failed" >&2; return 1; }
-  prs="$(jq -s -c 'sort_by(.merged_at)' <<<"$listing")" \
+  prs="$(jq -s -c --arg since "$since" \
+    'sort_by(.merged_at) | if $since == "" then . else map(select(.merged_at >= $since)) end' \
+    <<<"$listing")" \
     || { echo "mine-merge-history: $slug: merged-PR listing did not parse" >&2; return 1; }
 
   local out='[]' pr n reviews timeline files ready_at xrefs entry
@@ -375,7 +403,7 @@ declare -A REPO_STATS=()
 rc=0
 for slug in "${REPOS[@]}"; do
   echo "mine-merge-history: mining $slug ..." >&2
-  enriched="$(mine_repo "$slug" "$LABEL")" || { rc=1; continue; }
+  enriched="$(mine_repo "$slug" "$LABEL" "$SINCE")" || { rc=1; continue; }
   jq -e 'type == "array"' <<<"$enriched" >/dev/null 2>&1 || { echo "mine-merge-history: $slug: enriched data did not parse" >&2; rc=1; continue; }
   stats="$(jq -c "$AGGREGATE_JQ" <<<"$enriched")" || { echo "mine-merge-history: $slug: aggregation failed" >&2; rc=1; continue; }
   REPO_STATS["$slug"]="$stats"
@@ -389,7 +417,11 @@ fi
 {
   printf '# Merge-Autonomy Baseline — %s\n\n' "$date_str"
   # shellcheck disable=SC2016  # the backticks are literal Markdown, not command substitution
-  printf 'Stage 0 baseline (D18, docs/reviews/2026-08-14-autonomy-investigation.md §3, §6), produced by `scripts/mine-merge-history.sh`. Every merged pull request in each repo below carrying the `%s` label, read from the GitHub REST API as of this run.\n\n' "$LABEL"
+  if [[ -n "$SINCE" ]]; then
+    printf 'Produced by `scripts/mine-merge-history.sh`. Every merged pull request in each repo below carrying the `%s` label and merged at or after `%s`, read from the GitHub REST API as of this run — a bounded window, not the Stage 0 baseline.\n\n' "$LABEL" "$SINCE"
+  else
+    printf 'Stage 0 baseline (D18, docs/reviews/2026-08-14-autonomy-investigation.md §3, §6), produced by `scripts/mine-merge-history.sh`. Every merged pull request in each repo below carrying the `%s` label, read from the GitHub REST API as of this run.\n\n' "$LABEL"
+  fi
   printf '## Fleet summary\n\n'
   printf '| Repo | Merged PRs | Open→merge median/p90 (h) | Ready→merge median/p90 (h) | Reverts | Follow-up fixes (reference / file overlap) |\n|---|---|---|---|---|---|\n'
   fleet_count=0
@@ -431,8 +463,8 @@ fi
     [[ -n "${REPO_STATS[$slug]:-}" ]] || continue
     raw="$(jq -c --arg slug "$slug" --argjson stats "${REPO_STATS[$slug]}" '. + {($slug): $stats}' <<<"$raw")"
   done
-  jq -nc --arg label "$LABEL" --arg date "$date_str" --argjson repos "$raw" \
-    '{generated: $date, label: $label, repos: $repos}'
+  jq -nc --arg label "$LABEL" --arg date "$date_str" --arg since "$SINCE" --argjson repos "$raw" \
+    '{generated: $date, label: $label, since: (if $since == "" then null else $since end), repos: $repos}'
   printf '\n```\n'
 } > "$body_file"
 

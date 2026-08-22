@@ -2237,6 +2237,39 @@ assert_eq "a freeze twice the digest window's own age is never aged back" \
 assert_eq "  ... carrying as_of even well outside the window" \
   "$mb_ancient" "$(budget_row acme/frozenold | jq -r '.as_of')"
 
+# --- Revert rate by repository (D18 issue #579) -----------------------------
+# revert_rate is a fleet-wide union over revert-rate.jsonl (never rotated,
+# replicated exactly like log.jsonl — lib/fleet.sh's fleet_logs), reduced to
+# the newest row per repository across every node, and joined against
+# config.repos so a repository with no publish yet still gets a bare
+# `{repo}` row rather than vanishing. This repo's own config.json names
+# Poetic-Poems/poetic, Poetic-Poems/poetic-fiddle and Poetic-Poems/agent-ops
+# — the same three real repositories --no-github already lets this whole
+# suite run against.
+rr="$(new_home nodeRevertRate)"
+rr_old="$(date -u -d '-2 days' +%Y-%m-%dT%H:%M:%SZ)"
+rr_new="$(date -u -d '-1 hours' +%Y-%m-%dT%H:%M:%SZ)"
+{
+  printf '{"ts":"%s","node":"node-a","event":"revert-rate","repo":"Poetic-Poems/agent-ops","window_days":14,"rolling":{"n":5,"reverts":1,"follow_up_fixes":0,"rate":null,"insufficient_samples":true,"min_samples":10},"cumulative":{"n":10,"reverts":1,"follow_up_fixes":0,"rate":0.1},"baseline":{"n":120,"reverts":0,"follow_up_fixes":106,"rate":0.883},"above_baseline":false}\n' "$rr_old"
+  printf '{"ts":"%s","node":"node-b","event":"revert-rate","repo":"Poetic-Poems/agent-ops","window_days":14,"rolling":{"n":12,"reverts":0,"follow_up_fixes":3,"rate":0.25,"insufficient_samples":false,"min_samples":10},"cumulative":{"n":40,"reverts":0,"follow_up_fixes":15,"rate":0.375},"baseline":{"n":120,"reverts":0,"follow_up_fixes":106,"rate":0.883},"above_baseline":false}\n' "$rr_new"
+} > "$rr/.local/state/poetic-agents/revert-rate.jsonl"
+
+run_publish "$rr"
+rrdata="$(data_of "$rr")"
+rr_row() { jq -c --arg r "$1" '.revert_rate[] | select(.repo == $r)' <<<"$rrdata"; }
+
+assert_eq "one row per configured repository" "3" "$(jq '.revert_rate | length' <<<"$rrdata")"
+assert_eq "the newest row per repository wins, across nodes, by its own ts" \
+  "node-b" "$(rr_row "Poetic-Poems/agent-ops" | jq -r '.node')"
+assert_eq "  ... carrying that row's own rolling n" \
+  "12" "$(rr_row "Poetic-Poems/agent-ops" | jq -r '.rolling.n')"
+assert_eq "  ... not the older row's" \
+  "5" "$(jq -r --arg r "Poetic-Poems/agent-ops" 'select(.repo == $r and .node == "node-a") | .rolling.n' "$rr/.local/state/poetic-agents/revert-rate.jsonl")"
+assert_eq "a repository with no revert-rate row yet still appears" \
+  "1" "$(jq -c '[.revert_rate[] | select(.repo == "Poetic-Poems/poetic")] | length' <<<"$rrdata")"
+assert_eq "  ... with nothing but its own slug" \
+  "true" "$(rr_row "Poetic-Poems/poetic" | jq 'keys == ["repo"]')"
+
 # ---------------------------------------------------------------------------------
 if (( failures > 0 )); then
   printf '\n%d assertion(s) failed\n' "$failures"

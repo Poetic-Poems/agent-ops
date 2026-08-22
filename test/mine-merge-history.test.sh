@@ -244,6 +244,31 @@ assert_eq "  ... and the baseline is byte-for-byte identical" "$content" "$conte
 assert_contains "  ... and the retry announced itself on stderr" \
   "$(cat "$tmp_dir/run3.err")" "transient gh failure"
 
+# --- --since bounds the mined population to merged_at >= that instant ------
+#
+# 2026-08-11T12:00:00Z sits between #11 (merged 01:00Z the same day) and #12
+# (merged 2026-08-12T00:00Z): only #12 and #14 qualify. #12's only outcome
+# partner in the unbounded run was #14 (boilerplate-only overlap, so #12
+# stays clean) and #11's revert-by-#13 falls out of the window entirely —
+# proving the precise merged_at filter runs after the REST `since` narrowing,
+# not merely the REST parameter's own looser "updated after" semantics.
+since_out_dir="$tmp_dir/out-since"
+"$MINER" --repo o/r --label lbl --out-dir "$since_out_dir" --since "2026-08-11T12:00:00Z" \
+  >/dev/null 2>"$tmp_dir/since.err"
+since_rc=$?
+assert_eq "--since: a bounded run exits 0" "0" "$since_rc"
+since_content="$(cat "$since_out_dir/${date_str}-merge-autonomy-baseline.md")"
+since_raw="$(awk '/```json/{flag=1;next}/```/{flag=0}flag' "$since_out_dir/${date_str}-merge-autonomy-baseline.md")"
+assert_eq "--since: only PRs merged at/after the bound are counted" "2" \
+  "$(jq -r '.repos["o/r"].count' <<<"$since_raw")"
+assert_eq "--since: the bound itself is recorded in the raw JSON" "2026-08-11T12:00:00Z" \
+  "$(jq -r '.since' <<<"$since_raw")"
+assert_contains "--since: the report says it is a bounded window, not the Stage 0 baseline" \
+  "$since_content" "not the Stage 0 baseline"
+assert_eq "--since: an invalid instant is rejected before any network call" "64" \
+  "$("$MINER" --repo o/r --label lbl --out-dir "$tmp_dir/out-badsince" --since "not-a-date" \
+      >/dev/null 2>&1; echo $?)"
+
 # --- Fails loud, not silently, on an unreadable repo ------------------------
 cat > "$tmp_dir/bin/gh" <<'STUB'
 #!/usr/bin/env bash
