@@ -30,7 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `merge_autonomy` level and whether it came from a repository's own
   override or the top-level key (`merge_autonomy_resolution_source`,
   `lib/merge-autonomy.sh`), the work source and complexity label, the
-  protected-path verdict and the paths examined, the Approver's
+  protected-path verdict and the protected paths it hit, the Approver's
   tier/model/verdict/adjudication and this pull request's full adjudication
   history (`landing_approver_adjudication_history`, `lib/landing.sh`), every
   deterministic gate this attempt passed with its own evidence, the merge
@@ -42,7 +42,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   record instead of re-joining `approver-verdict` events against
   `landing-armed` by timestamp, and reports a landing with no matching
   record as its own anomaly rather than rendering silent nulls;
-  `dashboard/index.html`'s landings panel gained an Audit column
+  `dashboard/index.html`'s landings panel gained a Record column
   (`ok`/`missing`) and a summary line for any such anomaly.
 
 - Any pipeline stage can now log deferred work it notices — a

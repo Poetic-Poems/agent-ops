@@ -15942,8 +15942,10 @@ pull request, run the ones the change touches and any it could regress.
     own `repos[]` entry or the top-level key produced it
     (`merge_autonomy_resolution_source`, lib/merge-autonomy.sh), the work
     `source` and `complexity` label, the protected-path verdict
-    (`clear`/`hit`/`unknown`) and the paths examined (a fresh
-    `landing_protected_paths_hit` read, the same "never more than one
+    (`clear`/`hit`/`unknown`) and, on a `hit`, the protected paths it hit —
+    every changed file the classifier judged protected, never the full
+    changed-file list, and an empty array on a `clear` or `unknown` verdict
+    (a fresh `landing_protected_paths_hit` read, the same "never more than one
     function call old" discipline gate 4.5's own
     `landing_protected_path_controls_ok` already applies to the same
     primitive, rather than trust gate 2's now-discarded read), the
@@ -15969,9 +15971,10 @@ pull request, run the ones the change touches and any it could regress.
     `adjudication` come from the newest `landing-audit-record` at or before
     the arm, and `anomaly: true` marks a `landing-armed` with no matching
     record — reported, never rendered with the silent nulls the digest used
-    to fall back to. `dashboard/index.html`'s landings panel adds an Audit
-    column (`ok`/`missing`) and a summary line naming how many landings in
-    the window carry no audit record.
+    to fall back to. `dashboard/index.html`'s landings panel adds a Record
+    column (`ok`/`missing`) — its own column, beside requirement 8e's
+    `Audit` one rather than folded into it — and a summary line naming how
+    many landings in the window carry no audit record.
 
     `test/landing-wiring.test.sh`'s happy path asserts the audit record is
     logged alongside `landing-armed`, naming the pull request number, head

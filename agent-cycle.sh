@@ -4334,8 +4334,8 @@ run_landing_stage() {
 # (`merge_autonomy_resolution_source`, lib/merge-autonomy.sh — reached only
 # once gate 1 has already confirmed the kill switch is clear and no budget
 # freeze binds, so no fresher read is needed), the protected-path verdict and
-# the paths examined (`landing_protected_paths_hit`, read fresh once more
-# here — the same "never more than one function call old" discipline gate
+# the protected paths it hit (`landing_protected_paths_hit`, read fresh once
+# more here — the same "never more than one function call old" discipline gate
 # 4.5's own `landing_protected_path_controls_ok` already applies to the same
 # primitive, rather than trust gate 2's now-discarded read), the Approver's
 # tier/model/verdict/adjudication and this pull request's full adjudication

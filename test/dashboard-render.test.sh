@@ -952,7 +952,7 @@ assert_contains "  ... and the Approver tier that authorised it" \
   "complex" "$out"
 # The join is by pr_url against the newest landing-audit-record at or before
 # the arm (requirement 8x, agent-ops#578). A landing with no matching record
-# is the most important row here, so it must render, its own Audit cell
+# is the most important row here, so it must render, its own Record cell
 # reading "missing" rather than be dropped for want of a join.
 assert_contains "a landing with no matching audit record still appears, marked missing" \
   "missing" "$out"

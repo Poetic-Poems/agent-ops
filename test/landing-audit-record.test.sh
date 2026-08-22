@@ -225,7 +225,7 @@ assert_eq "a protected-path hit still arms (below agent-merges-all it would not,
   "0" "$rc"
 audit="$(event_of landing-audit-record)"
 assert_eq "the protected-path verdict is hit" '"hit"' "$(jq -c '.protected_path.verdict' <<<"$audit")"
-assert_eq "  ... naming every path examined, not merely that one was" \
+assert_eq "  ... naming every protected path it hit, not merely that one was hit" \
   '["lib/landing.sh","prompts/approver.md"]' "$(jq -c '.protected_path.paths' <<<"$audit")"
 
 # --- An unreadable protected-path re-read is "unknown", never a silent clear ---

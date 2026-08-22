@@ -965,8 +965,9 @@ call, moments apart, so this never has to reach further than the newest
 match, but it is still a timestamp join, not an in-band reference, since
 `landing-armed` predates `landing-audit-record` and carries no pointer of
 its own to it. A landing with no matching record still renders — its own
-Audit cell reading `missing` rather than the tier/verdict cells quietly
-reading `unknown` — and is called out again in its own summary line naming
+Record cell reading `missing`, beside (not in place of) the classifier-escape
+audit's own column, rather than the tier/verdict cells quietly reading
+`unknown` alone — and is called out again in its own summary line naming
 how many landings in the window carry no record: an unexplained landing is
 the single most important row this panel can carry, and now that a durable
 per-landing record exists, "the record could not be found" and "the record
@@ -995,9 +996,9 @@ Three things it will not hide, each a way a digest could mislead by omission:
   `merge-budget-hold` and `merge-budget-frozen` each carry the `cap`/`count`
   `merge_budget_decide` read at that decision, so the single latest of the
   three for a repository — across the whole retained log, not only this
-  digest's own window, the same reasoning the verdict join below already uses
-  — is that repository's state **as of that last gate-5 decision, not a live
-  read**, and of unbounded age: a repository whose backlog is empty, or whose
+  digest's own window, the same reasoning the audit-record join above
+  already uses — is that repository's state **as of that last gate-5
+  decision, not a live read**, and of unbounded age: a repository whose backlog is empty, or whose
   candidates all fail eligibility before reaching gate 5, keeps whatever event
   last fired indefinitely — what the row then *reports* from that event is
   bounded by the ageing rule below, but the event itself is never discarded. This is what keeps the freeze's own reason and the
