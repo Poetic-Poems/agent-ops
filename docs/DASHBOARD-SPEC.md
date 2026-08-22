@@ -959,25 +959,30 @@ Each row is joined to the **`landing-audit-record` that justified it**
 (requirement 8x, D18, agent-ops#578) — the one durable record
 `_landing_stage_attempt` assembles and writes at the same moment it arms a
 pull request, rather than a fact this panel re-joins from separate events
-at report time. The join is still by `pr_url`, earliest record at or after
-the arm: `_landing_stage_attempt` writes `landing-armed` first and
-`landing-audit-record` second, moments apart from the same function call, so
-this never has to reach further than the earliest match at or after the
-arm's own timestamp, but it is still a timestamp join, not an in-band
-reference, since `landing-armed` predates `landing-audit-record` and carries
-no pointer of its own to it. A landing with no matching record still
-renders — its own Record cell reading `missing`, beside (not in place of)
-the classifier-escape audit's own column, rather than the tier/verdict cells
-quietly reading `unknown` alone — and is called out again in its own summary
-line naming how many landings in the window carry no record: an unexplained
-landing is the single most important row this panel can carry, and now that
-a durable per-landing record exists, "the record could not be found" and
-"the record said so" read as different facts, never the same silent null. A
-`landing-armed` from before requirement 8x shipped can never have a matching
-record — the write it would join to did not yet exist — so its Record cell
-stays `missing` permanently; its tier and verdict still render where
-locatable, from the older `approver-verdict` join this panel used before
-requirement 8x, kept on purely as that fallback.
+at report time. The join is by `pr_url` and the arming cycle, earliest
+record at or after the arm: `_landing_stage_attempt` writes
+`landing-armed` first and `landing-audit-record` second, moments apart
+from the same function call, so this never has to reach further than the
+earliest match at or after the arm's own timestamp. `landing-armed`
+carries no pointer of its own to the record that follows it, so the cycle
+every event is stamped with stands in for one: an arm and the record
+written by its own call always agree on it, which is what makes a *second*
+arm of the same pull request unambiguous — an arm whose record write never
+completed reads as unexplained rather than borrowing the record a later
+cycle wrote. A landing with no matching record still renders — its own
+Record cell reading `missing`, beside (not in place of) the
+classifier-escape audit's own column, rather than the tier/verdict cells
+quietly reading `unknown` alone — and is called out again in its own
+summary line naming how many landings in the window carry no record: an
+unexplained landing is the single most important row this panel can carry,
+and now that a durable per-landing record exists, "the record could not be
+found" and "the record said so" read as different facts, never the same
+silent null. A `landing-armed` from before requirement 8x shipped can
+never have a matching record — the write it would join to did not yet
+exist — so its Record cell stays `missing` permanently; its tier and
+verdict still render where locatable, from the older `approver-verdict`
+join this panel used before requirement 8x, kept on purely as that
+fallback.
 
 Three things it will not hide, each a way a digest could mislead by omission:
 

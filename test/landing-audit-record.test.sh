@@ -284,6 +284,7 @@ mkdir -p "$home_dir/.local/state/poetic-agents/cycles"
 pr1="https://github.com/Poetic-Poems/agent-ops/pull/901"
 pr2="https://github.com/Poetic-Poems/agent-ops/pull/902"
 pr3="https://github.com/Poetic-Poems/agent-ops/pull/903"
+pr4="https://github.com/Poetic-Poems/agent-ops/pull/904"
 {
   # pr1 — the real write order `_landing_stage_attempt` produces: `landing-armed`
   # first, `landing-audit-record` one second later (the gh round-trip between
@@ -299,6 +300,15 @@ pr3="https://github.com/Poetic-Poems/agent-ops/pull/903"
   # should still populate tier/verdict while anomaly stays true.
   printf '{"ts":"2026-08-22T02:59:00Z","cycle":"c3","node":"node-1","event":"approver-verdict","pr_url":"%s","repo":"Poetic-Poems/agent-ops","tier":"critical","model":"claude-sonnet-5","verdict":"approve","refuse_streak":0,"adjudication":false,"posted":true}\n' "$pr3"
   printf '{"ts":"2026-08-22T03:00:00Z","cycle":"c3","node":"node-1","event":"landing-armed","pr_url":"%s","repo":"Poetic-Poems/agent-ops","source":"tech-debt","complexity":"low","method":"auto-merge"}\n' "$pr3"
+  # pr4 — the same pull request armed twice: cycle c4 died between the two
+  # log_event calls and so left no record at all, and cycle c5 retried it and
+  # recorded one properly. On timestamps alone the c4 arm would adopt c5's
+  # record — it is the earliest at-or-after c4's own ts — and render
+  # anomaly:false, hiding the one landing here that genuinely has no record.
+  # The cycle is part of the join key precisely so that it cannot.
+  printf '{"ts":"2026-08-22T04:00:00Z","cycle":"c4","node":"node-1","event":"landing-armed","pr_url":"%s","repo":"Poetic-Poems/agent-ops","source":"tech-debt","complexity":"high","method":"auto-merge"}\n' "$pr4"
+  printf '{"ts":"2026-08-22T05:00:00Z","cycle":"c5","node":"node-1","event":"landing-armed","pr_url":"%s","repo":"Poetic-Poems/agent-ops","source":"tech-debt","complexity":"high","method":"auto-merge","retry":true}\n' "$pr4"
+  printf '{"ts":"2026-08-22T05:00:01Z","cycle":"c5","node":"node-1","event":"landing-audit-record","pr_url":"%s","repo":"Poetic-Poems/agent-ops","number":904,"head_sha":"sha4","source":"tech-debt","complexity":"high","autonomy":{"level":"agent-merges-routine","source":"top-level-default"},"protected_path":{"verdict":"clear","paths":[]},"approver":{"tier":"critical","model":"claude-sonnet-5","verdict":"approve","adjudication":false,"history":[]},"gates":[],"budget":{"decision":"arm","cap":8,"count":2,"anomaly":false,"waiting_backlog":null},"mechanism":"auto-merge","retry":true}\n' "$pr4"
 } > "$home_dir/.local/state/poetic-agents/log.jsonl"
 
 env HOME="$home_dir" "$PUBLISH" --no-github >/dev/null 2>&1
@@ -314,6 +324,9 @@ landings="$(jq -c '.landings' <<<"$data")"
 row1="$(jq -c --arg u "$pr1" '.armed[] | select(.pr_url == $u)' <<<"$landings")"
 row2="$(jq -c --arg u "$pr2" '.armed[] | select(.pr_url == $u)' <<<"$landings")"
 row3="$(jq -c --arg u "$pr3" '.armed[] | select(.pr_url == $u)' <<<"$landings")"
+# pr4 has two arms; take each by its own ts rather than by pr_url alone.
+row4_died="$(jq -c --arg u "$pr4" '.armed[] | select(.pr_url == $u and .ts == "2026-08-22T04:00:00Z")' <<<"$landings")"
+row4_retry="$(jq -c --arg u "$pr4" '.armed[] | select(.pr_url == $u and .ts == "2026-08-22T05:00:00Z")' <<<"$landings")"
 
 assert_eq "the landing with a matching audit record written one second after the arm still renders its own tier" \
   '"complex"' "$(jq -c '.tier' <<<"$row1")"
@@ -331,6 +344,15 @@ assert_eq "a pre-8x landing with no audit record but a prior approver-verdict fa
 assert_eq "  ... and verdict" '"approve"' "$(jq -c '.verdict' <<<"$row3")"
 assert_eq "  ... but still renders as an anomaly, since it genuinely has no audit record" \
   "true" "$(jq -c '.anomaly' <<<"$row3")"
+
+assert_eq "an arm whose own record write died is an anomaly, never answered by a later cycle's record for the same pull request" \
+  "true" "$(jq -c '.anomaly' <<<"$row4_died")"
+assert_eq "  ... so it does not borrow that record's tier either" \
+  "null" "$(jq -c '.tier' <<<"$row4_died")"
+assert_eq "the retry that did record one is not an anomaly" \
+  "false" "$(jq -c '.anomaly' <<<"$row4_retry")"
+assert_eq "  ... and renders its own record's tier" \
+  '"critical"' "$(jq -c '.tier' <<<"$row4_retry")"
 
 echo
 if (( failures > 0 )); then

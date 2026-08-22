@@ -41,7 +41,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `scripts/publish-dashboard.sh`'s WI-8 autonomous-landing digest reads this
   record instead of re-joining `approver-verdict` events against
   `landing-armed` by timestamp, and reports a landing with no matching
-  record as its own anomaly rather than rendering silent nulls;
+  record as its own anomaly rather than rendering silent nulls — the older
+  verdict join lives on only to explain the tier and verdict of a
+  `landing-armed` from before this record existed, which stays an anomaly
+  either way;
   `dashboard/index.html`'s landings panel gained a Record column
   (`ok`/`missing`) and a summary line for any such anomaly.
 

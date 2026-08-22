@@ -2103,13 +2103,15 @@ fi
 #              from "the fleet is idle because the governor closed hours ago"
 #              without a live read of the freeze flag on this tick.
 #
-# The join is by `pr_url` and is deliberately first-write-wins over audit
-# records *at or after* the arm: `_landing_stage_attempt` writes
-# `landing-armed` first and `landing-audit-record` second, moments apart from
-# the same function call, so this never has to reach further than the
-# earliest match at or after the arm's own ts — but it is still a join, by
-# timestamp, not an in-band reference, since `landing-armed` carries no
-# pointer of its own to the record that follows it. A `landing-armed` with no
+# The join is by `pr_url` and the arming cycle, and is deliberately
+# first-write-wins over that cycle's audit records *at or after* the arm:
+# `_landing_stage_attempt` writes `landing-armed` first and
+# `landing-audit-record` second, moments apart from the same function call,
+# so this never has to reach further than the earliest match at or after the
+# arm's own ts. `landing-armed` carries no pointer of its own to the record
+# that follows it, so the cycle `log_event` stamps on both stands in for one
+# — which is what keeps a *second* arm of the same pull request from being
+# answered by the wrong cycle's record. A `landing-armed` with no
 # matching record at all — an event from before requirement 8x shipped, or a
 # write this process died between the two log_event calls for — is
 # `anomaly: true`: reported, never silently dropped nor rendered with nulls
@@ -2245,18 +2247,33 @@ landings_json="$(printf '%s\n' "$ALL_EVENTS" | jq -c -s \
     + [ .[] | select(.event == "merge-budget-hold") | . + {status: "held"} ]
     + [ .[] | select(.event == "merge-budget-frozen") | . + {status: "frozen"} ]
     | sort_by(.ts // "") | group_by(.repo // "") | map(last) ) as $latest_budget
-  # The audit record at or after a given arm: `_landing_stage_attempt` always
-  # writes `landing-armed` first and `landing-audit-record` second, moments
-  # apart from the same function call (agent-cycle.sh:4563 and :4613), so the
-  # record this arm produced is never the newest match at-or-before its own
-  # ts — it is the *earliest* one at-or-after it. $audit_records is sorted
-  # ascending, so `first` here is that earliest match, never the latest.
-  # This is also why a retried landing still pairs up correctly with no
-  # extra bookkeeping: an earlier arm and its own record always land before
-  # the next arm for the same pr_url even happens, so that record is already
-  # consumed by the time a later arm goes looking.
-  | def audit_record_for($url; $at):
-      ([ $audit_records[] | select((.pr_url // "") == $url) | select((.ts // "") >= $at) ] | first);
+  # The audit record at or after a given arm, from the cycle that armed it:
+  # `_landing_stage_attempt` always writes `landing-armed` first and
+  # `landing-audit-record` second, moments apart from the same function call
+  # (agent-cycle.sh:4563 and :4613), so the record this arm produced is never
+  # the newest match at-or-before its own ts — it is the *earliest* one
+  # at-or-after it. $audit_records is sorted ascending, so `first` here is
+  # that earliest match, never the latest.
+  #
+  # The cycle is part of the key, and carries the whole weight of pairing a
+  # *second* arm of the same pull request with the right record. `log_event`
+  # stamps every event with the cycle that wrote it (agent-cycle.sh:669), and
+  # both writes come from one call inside one cycle, so an arm and its own
+  # record always agree on it. On timestamps alone an arm this process died
+  # between the two writes for would adopt the record the *next* cycle wrote
+  # for the same pr_url — nothing consumes a record, so every arm before it
+  # matches — and render `anomaly: false`, hiding precisely the unexplained
+  # landing this panel exists to surface. An arm or record carrying no cycle
+  # at all falls back to the timestamp join alone rather than being excluded
+  # outright: nothing in the write path produces one, but log.jsonl is never
+  # rotated (requirement 2.6) and this join must not start dropping rows if
+  # one ever appears.
+  | def audit_record_for($url; $at; $cyc):
+      ([ $audit_records[]
+         | select((.pr_url // "") == $url)
+         | select((.ts // "") >= $at)
+         | select($cyc == "" or (.cycle // "") == "" or (.cycle // "") == $cyc) ]
+        | first);
   # The pre-8x fallback (see the comment above $verdicts): only reached when
   # audit_record_for above found nothing, which is the one case an
   # approver-verdict join can still explain — a `landing-armed` this old
@@ -2281,7 +2298,8 @@ landings_json="$(printf '%s\n' "$ALL_EVENTS" | jq -c -s \
     window_hours: $hours,
     generated_at: $now,
     armed: [ $armed[] | (.pr_url // "") as $u | (.ts // "") as $at
-      | (audit_record_for($u; $at)) as $ar
+      | (.cycle // "") as $cyc
+      | (audit_record_for($u; $at; $cyc)) as $ar
       | (if $ar == null then verdict_for($u; $at) else null end) as $v
       | ($prs[$u] // null) as $pr
       | { ts: $at,
