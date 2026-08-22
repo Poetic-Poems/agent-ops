@@ -2153,6 +2153,73 @@ implements.
    `dashboard.log`; `.doctor-status.json` is excluded from the state branch
    (requirement 2.5) alongside the dashboard's own local caches, since
    nothing but this node's own Publisher ever reads it.
+2.6b. **The revert-rate publishing tick** (D18 issue #579, a WI of umbrella
+   #402). `scripts/publish-revert-rate.sh`, on its own daily crontab line,
+   runs `scripts/mine-merge-history.sh` unprompted so Stage 2's exit
+   criterion ("revert rate ≤ baseline") is measured continuously rather than
+   only when a promotion review remembers to run the miner by hand — the
+   Stage 0 baseline it exists to compare against was itself produced once,
+   in July, and had not run again until this component. `scripts/mine-merge-
+   history.sh` gained a `--since ISO8601` flag for this caller alone: it
+   bounds the mined population to pull requests merged at or after that
+   instant, both as the REST `since` query parameter (which narrows the
+   pages fetched, on GitHub's own "last updated after" semantics) and as an
+   exact `merged_at` filter afterwards (which is what actually bounds the
+   population) — without it, a caller meant to run daily would re-mine each
+   configured repository's entire merge history on every tick.
+
+   Per repository, three `--since`-bounded mining passes compute three
+   figures: **rolling** — merged pull requests in the last
+   `--window-days` (14 default) excluding the last 48 hours (whose own
+   48-hour post-merge observation window has not yet elapsed), floored at
+   `--min-samples` (10) before a rate is published at all — computed as the
+   arithmetic difference between a 14-day-bounded pass and a 48-hour-bounded
+   pass, which is exact rather than approximate: any pull request an outcome
+   check could classify as a revert or follow-up of one merged within the
+   last 48 hours must itself have merged within the last 48 hours too (it
+   merges after the original, and no later than "now"), so every partner a
+   14-day pass could find for such a pull request is already present in the
+   48-hour pass, and the two passes agree on its classification — the
+   subtraction removes exactly the still-unsettled population, nothing more
+   and nothing less; **cumulative-since-baseline** — every merged pull
+   request since `revert_rate_baseline.generated`, unfiltered, which is what
+   this criterion itself compares against the baseline (both all-population
+   aggregates, measured the same way); and **baseline** — the stored Stage 0
+   figures (`revert_rate_baseline` — see Configuration), copied in once
+   rather than re-derived at runtime the way `scripts/autonomy-stage-
+   report.sh` (component 22, issue #571, out of this component's scope)
+   still does for its own one-off comparison by scanning `docs/reviews/` —
+   nothing here reads that directory. A repository absent from
+   `revert_rate_baseline.repos`, or the whole key absent, publishes its
+   rolling figure unaffected and reads baseline (and, absent the whole key,
+   cumulative too) `null` throughout, rather than failing the run.
+
+   Every mining pass reads GitHub through `scripts/mine-merge-history.sh`'s
+   own `lib/github-limit.sh` wrapper and `gh_retry`, so the fleet-wide rate
+   limit and a transient network failure are both handled there, not
+   reimplemented here: a repository whose passes still fail after those
+   retries is skipped for the run (no row published for it, logged why on
+   stderr) rather than a fabricated figure, and the run itself exits
+   non-zero — the crontab line's own `|| true` keeps a partial run from
+   reading as a crashed script in `cron.log`, the same reasoning 2.6a's
+   `doctor.sh --unattended` line uses.
+
+   One JSON line per repository is appended to `revert-rate.jsonl` in
+   `state_dir` — envelope `{ts, node, event, repo, window_days, rolling,
+   cumulative, baseline, above_baseline}`, `above_baseline` comparing
+   cumulative against baseline (`null` when either is unavailable). Unlike
+   `.doctor-status.json`, this file is fleet-wide data, on the identical
+   terms as `log.jsonl`: never rotated (requirement 2.6), not excluded from
+   the state branch (requirement 2.5), read back through `lib/fleet.sh`'s
+   `fleet_logs` union rather than verbatim off one node's own copy. The
+   crontab line's own minute is `schedule.revert_rate_offset_minutes` past
+   the node's base cycle minute (mod 60, 51 by default), at
+   `schedule.revert_rate_hour` (2 by default) — the same per-node jitter
+   2.6a's doctor line uses, but daily rather than hourly, keeping this
+   node's several scheduled passes off the same GitHub-API minute.
+   `scripts/publish-dashboard.sh` reads the union and surfaces it as
+   `revert_rate` (`docs/DASHBOARD-SPEC.md`, "Revert rate by repository"),
+   reduced to the newest row per repository across every node.
 2.7. **Crash-loop escalation.** A Co-Ordinator failure pins no repo/item
    (requirement 33's fields are set only after selection), so the entire
    blocked → Enabler → escalation ladder that covers item failures never

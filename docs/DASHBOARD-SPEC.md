@@ -156,6 +156,11 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   a row whose event predates the announcement, and a shipped prior the fallback
   after that. A stage none of those names (the review pipeline's) is one the
   rule makes no claim about.
+- **`revert-rate.jsonl`** (D18 issue #579) — the fleet's own union, on the
+  identical terms as `log.jsonl`/`review-log.jsonl`: this node's own file
+  unioned with every fetched peer's, never rotated, reduced to the newest row
+  per repository (by `ts`) rather than every row ever appended. See "Revert
+  rate by repository" below.
 - **`fleet-cache/{disabled,limit}.json`** — the fleet flags' cached copies
   (requirement 2.3a), maintained by `lib/toggle.sh` and refreshed by this
   Publisher's own GitHub tick. Read as plain files, so a `--no-github` tick and
@@ -1069,6 +1074,54 @@ request, and letting it age out of a 24 h window would recreate the exact
 not assemble sets every field to `null`, the same "outage, not a quiet night"
 distinction `armed` above makes.
 
+The **Revert rate by repository** panel (D18 issue #579) is the continuous
+half of Stage 2's exit criterion ("revert rate ≤ baseline"):
+`scripts/mine-merge-history.sh` produced that criterion's Stage 0 baseline
+once, by hand, in July, and nothing measured it again until this panel — a
+regression is now a reportable fact on the day it happens, not only at a
+promotion review. It renders `revert_rate`, which the Publisher assembles the
+same way `landings` is: a fleet-wide union read over `revert-rate.jsonl`
+(never rotated, replicated exactly like `log.jsonl` — `scripts/publish-
+revert-rate.sh`'s own daily tick appends one row per repository, per node),
+reduced to the newest row per repository across every node by that row's own
+`ts` (union-with-most-recent-event-wins, the same rule the blocked and void
+extractions use over `log.jsonl`), then joined against `config.repos` so a
+repository whose publishing tick has never once succeeded still gets a row —
+`{repo}` alone, no other keys — rather than silently vanishing from the
+table. A join failure (the whole read could not be assembled) sets
+`revert_rate` to `null`, rendered "could not be assembled this tick" and
+explicitly distinguished from every repository simply having no data yet, on
+the same "its own failure" principle the landings panel above uses.
+
+Each row states three figures, per repository:
+
+- **Rolling window** — the day-of operational signal: every merged, labelled
+  pull request in the last `window_days` (14 by default) whose own 48-hour
+  post-merge observation window has already elapsed, i.e. excluding anything
+  merged in the last 48 hours, floored at `min_samples` (10) before a rate
+  renders at all. Below the floor, the row states the sample size and that it
+  is under the floor instead of a rate a reader would over-read from a
+  handful of pull requests. The window's own bounds (`since` .. now minus 48
+  hours) render beneath the figure, in muted text, so a reader never has to
+  hold the cadence in their head to know what "now" the rate is current as
+  of.
+- **Cumulative since baseline** — every merged, labelled pull request since
+  `revert_rate_baseline.generated`, unfiltered. This is the figure Stage 2's
+  own exit criterion reads: an all-population aggregate compared against the
+  all-population baseline it was measured the same way. Its own `since` date
+  renders beneath it, same as the rolling window's bounds.
+- **Baseline** — the stored Stage 0 figures themselves
+  (`config.json`'s `revert_rate_baseline`, copied in once from `docs/reviews/
+  2026-08-15-merge-autonomy-baseline.md` rather than re-derived at runtime).
+
+A `vs baseline` badge compares cumulative against baseline — the two measured
+the same way — green `at/below baseline` or red `above baseline`; a
+repository absent from `revert_rate_baseline.repos` (or missing the whole
+`revert_rate_baseline` block) renders neither figure nor badge as a rate,
+reading `no data` rather than a comparison against nothing. All three figures
+render as a percentage with the sample size that produced it (`25% (n=12)`),
+never a bare percentage a reader cannot judge the weight of.
+
 The **Doctor** panel (agent-ops#543) renders `status.doctor`: the most recent
 hourly `scripts/doctor.sh --unattended` pass on *this* node, read from
 `state_dir/.doctor-status.json` rather than recomputed — its GitHub section is
@@ -1332,6 +1385,15 @@ number's twins elsewhere on the page.
   (`{timestamp, verdict, fails[], warns[], skips}`). This Publisher reads
   that file verbatim into `status.doctor`; `null` until the first hourly
   pass has run. Local to this node only — nothing replicates it to peers.
+- `scripts/publish-revert-rate.sh` (D18 issue #579,
+  `docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement 2.6b) — not read live by
+  this Publisher either, on the identical reasoning as `doctor.sh
+  --unattended` above: it shells out to `scripts/mine-merge-history.sh`
+  (several GitHub calls per bounded window per repository), too much for a
+  5-minute heartbeat, so it runs on its own daily `crontab.tmpl` line and
+  appends to `<state_dir>/revert-rate.jsonl` instead — fleet-wide data, unlike
+  `.doctor-status.json`, so this Publisher reads it through the same union
+  `fleet_logs` gives `log.jsonl`, not verbatim off this node's own file.
 - `scripts/publish-dashboard-launcher.sh` — the sub-minute heartbeat driver
   (cron runs it every 5 min; it self-loops on 5-second boundaries).
 - `dashboard/index.html` — the page (committed source; copied beside the

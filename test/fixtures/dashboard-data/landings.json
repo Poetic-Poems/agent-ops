@@ -241,5 +241,42 @@
         "remaining": null
       }
     ]
-  }
+  },
+  "revert_rate": [
+    {
+      "ts": "@ago:2h",
+      "node": "node-1",
+      "event": "revert-rate",
+      "repo": "Poetic-Poems/agent-ops",
+      "window_days": 14,
+      "rolling": {
+        "since": "2026-08-08T00:00:00Z",
+        "excludes_merged_after": "2026-08-20T00:00:00Z",
+        "min_samples": 10,
+        "n": 12,
+        "reverts": 0,
+        "follow_up_fixes": 3,
+        "insufficient_samples": false,
+        "rate": 0.25
+      },
+      "cumulative": {
+        "since": "2026-08-15T00:00:00Z",
+        "n": 40,
+        "reverts": 0,
+        "follow_up_fixes": 15,
+        "rate": 0.375
+      },
+      "baseline": {
+        "generated": "2026-08-15",
+        "n": 120,
+        "reverts": 0,
+        "follow_up_fixes": 106,
+        "rate": 0.883
+      },
+      "above_baseline": false
+    },
+    {
+      "repo": "Poetic-Poems/poetic"
+    }
+  ]
 }
