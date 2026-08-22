@@ -6251,6 +6251,22 @@ implements.
     exports for the stages, and `test/preview-deploy.test.sh` asserts the export
     and both prompts' use of it against each other, so the path cannot drift
     between the three (requirement 34a).
+24b. **Filing deferred work inline, instead of losing it to scope creep or a
+    separate round trip (agent-ops#631).** Adjacent cleanup the Implementer is
+    tempted to do but must keep out of this pull request (requirement 24's own
+    scope discipline) is *noted*, not silently dropped: a `tech-debt/<id>.md`
+    record or a GitHub issue, riding along on this same branch rather than
+    waiting for a future cycle to notice and re-derive it. `TECH-DEBT.md`'s
+    "Filing alongside other work" is the mechanism —
+    `scripts/find-similar-tech-debt.sh` first, to avoid filing a duplicate
+    of an already-tracked gap, then `scripts/reserve-tech-debt-id.pl` and a
+    commit of `tech-debt/<id>.md` directly onto the current branch, never the
+    reservation's own `td/<id>` branch. A lone record file with no
+    accompanying code change is ordinary traffic through this register, not
+    scope creep, and requirement 26a's complexity grading treats it
+    accordingly (register-entry-only stays `low`). This is a **note**, never
+    the fix: the actual work for a filed record is left for a future item to
+    pick up on its own merits.
 25. Updates the originating record: the tech-debt record marked `resolved` —
     its `status:` frontmatter flipped (with `resolved:` and `ref:` filled in)
     and its body left in place, the file never deleted or renamed; issues
@@ -6546,6 +6562,20 @@ implements.
     `ready` verdict, refuses the hand-off for any standing comment it finds
     uncited, and — unlike the Reviewer's own read above — also puts the pull
     request back in draft when it does.
+30d. **Filing deferred work inline, and the scope carve-out that goes with it
+    (agent-ops#631).** Like the Implementer (requirement 24b), the Reviewer
+    may notice genuine deferred work that does not belong in this pull
+    request — a design gap in code the diff merely touches, something worth a
+    human's attention that isn't itself a defect to fix under requirement 30.
+    Rather than lose it to a step-32 comment nothing later sweeps for unfiled
+    debt, it is filed the same way: `TECH-DEBT.md`'s "Filing alongside other
+    work", `scripts/find-similar-tech-debt.sh` first, then a `tech-debt/<id>.md`
+    record (or a `gh issue create`, for a question rather than a scoped fix)
+    committed directly onto the pull request's own branch — riding along
+    whether the Implementer or the Reviewer is the one who added it. A lone
+    record file with no accompanying code change is, for both stages, never
+    itself grounds to flag a defect, correct the `complexity:*` label upward,
+    or read the diff as having grown beyond its scope.
 31. Confirms CI is passing (`gh pr checks`) and the PR is mergeable, then
     marks it ready for review (`gh pr ready`), and where a human's review is
     what blocks it, requests a fresh one from them (requirement 31b). It never
@@ -9039,6 +9069,39 @@ implements.
     that reason exists only because a human acted on an escalation about this
     very item (requirement 35a), so the refinement it authorises is the first
     since they did.
+36c. **`file_debt`/`file_issue` (agent-ops#631): filing what the Enabler
+    noticed, without it writing anything itself.** Orthogonal to `verdict` —
+    an item's `examined` entry may carry either, both, or neither alongside
+    `unblocked`, `still-blocked`, `escalate` or `void` alike, since what it
+    names is deferred work the engagement noticed, not what it decided about
+    the item in front of it. Each is `{title, body}`; a field present with
+    either empty is a `warning` and nothing is filed. The Script — never the
+    model, which carries no GitHub-writing power under "What you must never
+    do" — performs the filing via `lib/tech-debt-file.sh`, under the ordinary
+    pipeline login (the Enabler holds no App identity of its own the way the
+    Approver does, requirement 42a):
+
+    - `file_debt` reserves a tech-debt id (`scripts/reserve-tech-debt-id.pl`,
+      run against a throwaway git context this call creates and tears down,
+      since the Enabler holds no clone of any repo — requirement 36) and
+      opens a small pull request carrying `tech-debt/<id>.md` alone, following
+      `TECH-DEBT.md`'s "Filing alongside other work" except that the filing
+      lands in its own pull request rather than riding along on a branch the
+      Enabler does not hold. Logs `tech-debt-filed` (`repo`, `item`,
+      `by: "enabler"`, `id`, `pr_url`) on success; a `warning` naming
+      `tech-debt-file.err` on failure.
+    - `file_issue` reuses the same duplicate-guard shape requirement 36a's own
+      escalation issue does — an open issue already quoting the item
+      reference *is* the record — but carries no label and no assignee: unlike
+      an escalation this is not addressed at a specific human, and is
+      legitimate autonomous work for the `issues` source to pick up later, not
+      a request that source must exclude. Logs `issue-filed` (`repo`, `item`,
+      `by: "enabler"`, `issue_number`, `issue_url`) on success; a `warning` on
+      failure.
+
+    Neither call changes `verdict` or the item's `enabler-examined` outcome —
+    a failed filing attempt costs a `warning`, never a reason to treat the
+    item itself as unresolved.
 37. **Failure containment.** The Enabler must never change a cycle's outcome.
     A timeout, a non-zero exit, or an unparseable final message produces the
     stage's `stage-end`, a `warning`, and **no state events at all**: no
@@ -10410,6 +10473,42 @@ with the Reviewer's own.
     `approver_token_get`, `lib/approver-token.sh`, requirement 14b) —
     requirement 8c's own restatement of D18's cardinal rule, that the model
     never holds approve or merge rights, applied at this stage specifically.
+42a. **`file_debt`/`file_issue` (agent-ops#631): filing what the Approver
+    noticed, without it writing anything itself.** Orthogonal to `verdict` —
+    either, both, or neither may accompany any verdict this requirement or
+    requirement 43 allows, since what it names is deferred work the diff read
+    turned up, not what was decided about the pull request itself. Each is
+    `{title, body}`; present with either empty, it is a `warning` and nothing
+    is filed. Filing is a Script-issued call
+    (`techdebt_file_debt`/`techdebt_file_issue`, `lib/tech-debt-file.sh`),
+    never a write the model performs, and every `gh` call it makes runs under
+    the same App token requirement 42 already mints for posting the review
+    rather than under the ordinary pipeline login. The one write that does
+    not is the reservation's own `git push` (below): it goes through git's
+    credential helper, which `deploy/docker/entrypoint.sh` points at the
+    ordinary login (`gh auth setup-git`, requirement 6), so the `td/<id>`
+    reservation branch is pushed under that login whichever stage asked for
+    the filing — a lock branch, carrying no record and no review:
+
+    - `file_debt` reserves a tech-debt id
+      (`scripts/reserve-tech-debt-id.pl`, run against the pull request's own
+      `clone_dir` — alive and unmodified at this point in the cycle, and
+      untouched by the reservation itself, which only ever fetches and pushes
+      refs) and opens a small pull request carrying `tech-debt/<id>.md` alone,
+      following `TECH-DEBT.md`'s "Filing alongside other work" except that the
+      filing lands in its own pull request, never the one under review. Logs
+      `tech-debt-filed` (`pr_url`, `repo`, `by: "approver"`, `id`,
+      `filed_pr_url`) on success; a `warning` naming `tech-debt-file.err` on
+      failure.
+    - `file_issue` reuses the pull request's own URL as the duplicate-guard
+      key: an open issue already quoting it *is* the record. No label, no
+      assignee — legitimate autonomous work for the `issues` source to pick
+      up later, not a request that source must exclude. Logs `issue-filed`
+      (`pr_url`, `repo`, `by: "approver"`, `issue_number`, `issue_url`) on
+      success; a `warning` on failure.
+
+    Neither call changes `verdict` or whether a review is posted — a failed
+    filing attempt costs a `warning`, never a withheld or altered review.
 43. **Ends with a single JSON object:**
     `{"verdict": "approve" | "refuse", "reasons": […]}` on a Standard or High
     engagement, `{"verdict": "land" | "refuse" | "escalate", "reasons": […]}`
@@ -12153,6 +12252,117 @@ What exists, and the requirements each part answers to:
     no benefit — but shares `lib/verdict-fate.sh`'s join and classification
     logic unchanged, so a change to the classification rules changes both
     call sites at once, deliberately.
+23c. `scripts/find-similar-tech-debt.sh` implementing the dedup half of
+    requirements 24b/30d/36c/42a: given a working title, normalises it
+    (lower-cased, punctuation folded to spaces, runs collapsed) and compares
+    it against every `open`/`in-progress` `tech-debt/*.md` record's own
+    `title:`, by equality always and by containment (either direction) only
+    once *both* the normalised query and the normalised candidate title reach
+    eight characters — short of that floor on either side, containment alone
+    would swamp the register with noise (a short existing title matching by
+    containment inside an unrelated long query is the same false positive as
+    the reverse, so the floor gates both). Prints each match's id and title,
+    tab-separated, one per line, and exits non-zero iff it found any — a hit
+    means the gap is already tracked, so the caller cites the existing id
+    instead of reserving a new one. Reads the working tree at whatever ref is
+    checked out, not a fixed one. Regression-tested in
+    `test/find-similar-tech-debt.test.sh` (exact-match, containment,
+    below-the-length-floor on either side, `open`/`in-progress` included,
+    `resolved`/`not-debt` excluded); must pass `shellcheck`.
+23d. `lib/tech-debt-file.sh` implementing the filing half of requirements 36c
+    and 42a — the Approver and Enabler must never write to GitHub or a branch
+    themselves, so this is what the Script calls in their place once either
+    stage's final JSON carries `file_debt`/`file_issue`:
+
+    - `techdebt_file_issue REPO ITEM_REF TITLE BODY_FILE [TOKEN]` — the same
+      duplicate-guard shape `create_escalation_issue` (component 2) already
+      uses (an open issue whose body already quotes `ITEM_REF` is returned
+      rather than filing a second one), but with no label and no assignee:
+      this is not an escalation addressed at a specific human, and is
+      legitimate autonomous work for the `issues` source to pick up later.
+      Prints `"<number>\t<url>"` on success, nothing on failure.
+    - `techdebt_file_debt REPO TITLE BODY PROVENANCE [TOKEN] [GIT_DIR]` —
+      reserves an id by running `scripts/reserve-tech-debt-id.pl`
+      **unmodified**, always against `GIT_DIR`'s `origin/main` specifically
+      (`git show origin/main:scripts/reserve-tech-debt-id.pl`, extracted
+      fresh to a temporary path outside `GIT_DIR` and run from a CWD inside
+      it — never whatever the
+      directory happens to have checked out, which for the Approver's own
+      `clone_dir` is the pull request under review and could carry an edited
+      copy of the very script this function is about to run with write
+      credentials), then writes the new branch and its one file purely
+      through the API — `POST .../git/refs` from `origin/main`'s own SHA,
+      then `PUT .../contents/tech-debt/<id>.md` — the same no-clone primitive
+      `lib/claim.sh`'s `do_claim_branch`/`registry_put` (component 3e) already
+      use for a one-off write with no working checkout, so `GIT_DIR`'s own
+      checked-out branch and working tree are never read or written. Omitting
+      `GIT_DIR` creates and tears down a throwaway one (`git init` plus a
+      bare `remote add`, no object transfer beyond the one fetch this needs) —
+      the Enabler's own case, which holds no clone of anything. Opens a pull
+      request carrying the new file alone (`gh pr create --base main --head
+      td-record/<id>`) and prints `"<id>\t<pr-url>"` on success, nothing on
+      failure. `filed:` in the record's frontmatter is derived from the id's
+      own date component, never the host clock, so the two can never
+      disagree regardless of the container's timezone.
+    - `TOKEN`, given to either function, runs every `gh` call under that
+      identity (`GH_TOKEN="$TOKEN"`) — the Approver's own minted App token
+      (`approver_token_get`, `lib/approver-token.sh`, requirement 14b), the
+      same one `approver_post_review` (component 14c) already posts its
+      review under. Omitted, every call runs under the
+      ordinary pipeline login, explicitly (`env -u GH_TOKEN`) rather than
+      merely left alone, so a `GH_TOKEN` this process happens to have
+      inherited can never leak into a call asked to run under the ordinary
+      login — the Enabler's own case, which holds no App identity of its own.
+
+    Regression-tested against a real fixture git remote in
+    `test/tech-debt-file.test.sh`: the full success path — running the
+    fixture remote's own verbatim copy of the reservation script, never a
+    stub, since it must be reused unmodified, and leaving no artefact behind
+    in `GIT_DIR` — that the script is extracted to a path outside `GIT_DIR`
+    and merely run from a CWD within it (the one case that does instrument
+    the fixture remote's copy, because an extraction path inside `GIT_DIR` is
+    removed again straight afterwards and so is invisible to every other
+    assertion), a token used for every call, no reserve script on
+    `origin/main`, and each of the three API calls failing in turn, for
+    `techdebt_file_debt`; the dedup hit, the
+    ordinary create, and a failed create, for `techdebt_file_issue`. The
+    Script's own wiring — that `run_approver_stage` and `maybe_run_enabler`
+    actually call these with the right arguments and log the right event — is
+    covered separately, by `test/approver-tech-debt-file-wiring.test.sh` and
+    `test/enabler-tech-debt-file-wiring.test.sh`, lifting each block out of
+    `agent-cycle.sh` the same way `test/approver-wiring.test.sh` and
+    `test/enabler-verdicts.test.sh` already do for the rest of either stage's
+    own wiring. Must pass `shellcheck`.
+23e. `.github/workflows/release-td-branch.yml` and
+    `scripts/release-td-branch.sh` implement "Filing alongside other work"'s
+    release rule (`TECH-DEBT.md`): once a `tech-debt/<id>.md` record lands on
+    `main` via *any* pull request, the `td/<id>` reservation branch
+    `scripts/reserve-tech-debt-id.pl` locked has done its job and is deleted.
+    This is the other half of `scripts/sweep-orphan-branches.sh`'s own
+    deliberate blind spot (issue #545, component 3n): a `td/<id>` branch whose
+    sole commit ahead is the reservation itself is the lock, not orphaned
+    work, and that sweep leaves it alone forever because it cannot tell
+    whether `<id>` has since been filed on some other branch without reading
+    the whole register on every pass — this workflow is triggered by the one
+    event that actually answers that question. The workflow runs on every
+    push to `main`, diffing `before`..`after` for `tech-debt/*.md` files
+    *added* (never modified/renamed — the register is append-only and CI
+    already enforces that) by that push; for each, `release-td-branch.sh`
+    best-effort deletes `refs/heads/td/<id>` on the same repository if it
+    still exists, reporting `"absent"` rather than an error when it is
+    already gone — the ordinary case for "Claiming an item"'s own branch,
+    which GitHub's repository-level delete-on-merge setting already retires
+    once *its* pull request lands, before this workflow's push event ever
+    fires. Always exits 0: a branch this script fails to delete must not fail
+    the push to `main` it is reacting to, and both
+    `scripts/sweep-orphan-branches.sh`'s own periodic pass and "Filing an
+    item"'s manual fallback (`git push origin --delete td/<id>`) still stand
+    behind it. Regression-tested in `test/release-td-branch.test.sh` (existing
+    branch deleted, already-absent branch reported not an error, a failing
+    delete call reported as a warning without failing the run, modified/
+    unrelated/malformed files ignored, two records in one push each getting
+    their own line, an all-zero before-SHA treated as a no-op that calls `gh`
+    not at all); must pass `shellcheck`.
 
 ## Acceptance checks
 
@@ -15248,6 +15458,76 @@ pull request, run the ones the change touches and any it could regress.
     gaps are ones this run could not read — an unreachable `rulesets`
     endpoint, and an unreadable merge-queue state, which is named as unread
     rather than as never looked at.
+8x. **`file_debt`/`file_issue` file what a stage found, and only the Script
+    ever writes (requirements 36c, 42a, agent-ops#631).**
+    `test/tech-debt-file.test.sh` passes against a real fixture git remote
+    (whose own copy of `scripts/reserve-tech-debt-id.pl` runs verbatim, since
+    it is reused unmodified — instrumented in exactly one case, below, which
+    asserts something no other case can see): `techdebt_file_debt` reserves a
+    real id, opens exactly one
+    pull request carrying `tech-debt/<id>.md` alone, on a `td-record/<id>`
+    branch (never `td/<id>`, the reservation's own lock), reads the
+    reservation script from `origin/main` specifically — a deliberately
+    broken copy checked out in the fixture's own working tree is never the
+    one that runs — extracts it to a path outside `GIT_DIR` and merely runs
+    it from a CWD within, leaving no artefact behind in that working tree
+    (asserted through the instrumented copy, which reports the path it ran
+    from: an extraction inside `GIT_DIR` is removed again immediately and so
+    is invisible to every other assertion) — and fails cleanly (no output, no partial write) when the
+    branch-create call, the contents-write call, or the pull-request-create
+    call fails; `techdebt_file_issue` returns an existing issue whose body
+    already quotes the item reference rather than filing a duplicate, and
+    fails cleanly when creation fails. A `TOKEN` argument reaches every `gh`
+    call for either function; its absence explicitly unsets `GH_TOKEN`
+    (`env -u GH_TOKEN`) rather than merely omitting an override, so a value
+    this process happened to inherit cannot leak into a call meant to run
+    under the ordinary login.
+
+    `test/approver-tech-debt-file-wiring.test.sh` and
+    `test/enabler-tech-debt-file-wiring.test.sh` pass, each lifting its own
+    stage's block out of `agent-cycle.sh` verbatim (the same technique
+    acceptance checks 8s–8w already rely on for the rest of the Approver's
+    wiring, and `test/enabler-verdicts.test.sh` for the Enabler's) with
+    `techdebt_file_debt`/`techdebt_file_issue` stubbed as recorders: a
+    well-formed `file_debt`/`file_issue` on either stage's final JSON calls
+    the matching function with the repo, title, body and (Approver only) the
+    same App token `approver_post_review` already posts the review under,
+    logs `tech-debt-filed`/`issue-filed` naming `by: "approver"`/
+    `by: "enabler"` on success, and logs a `warning` — never a changed
+    `verdict` — when the field is missing a title or body, or when the
+    filing call itself fails. Neither field is gated by which verdict
+    accompanies it: an Enabler `unblocked` and an Approver `refuse` each still
+    file alongside their own ordinary handling, proving the two are
+    independent rather than one silently suppressing the other.
+8y. **A stage files inline, on its own branch, and the reservation it used
+    releases itself once the record lands (agent-ops#631).**
+    `test/find-similar-tech-debt.test.sh` passes: an exact-normalised-title
+    match and a containment match (either direction, with *both* the
+    normalised query and the normalised candidate title at least eight
+    characters) against an `open`/`in-progress` record both print the id and
+    exit non-zero; a `resolved`/`not-debt` record with the same title is not
+    matched; a title under the length floor matches only exactly, never by
+    containment — on either side of the comparison, so neither a short query
+    inside a long existing title nor a short existing title inside a long
+    query is a hit.
+
+    `test/release-td-branch.test.sh` passes: a `tech-debt/<id>.md` newly
+    *added* by a push deletes its `td/<id>` branch when one still exists,
+    reports `"absent"` (not a failure) when it is already gone, reports
+    `"warning"` and still exits 0 when the delete call itself fails, ignores
+    a modified (not added) tech-debt file and anything outside `tech-debt/`
+    or not matching the id pattern, handles two records added by the same
+    push independently, and treats an all-zero before-SHA as a no-op that
+    calls `gh` not at all.
+
+    Requirements 24b and 30d are covered by
+    `prompts/implementer.md`/`prompts/reviewer.md` naming
+    `scripts/find-similar-tech-debt.sh` and `TECH-DEBT.md`'s "Filing
+    alongside other work" explicitly (read, not executed — an Implementer or
+    Reviewer engagement is a live model session this suite does not drive),
+    and by `TECH-DEBT.md` itself documenting the variant generally, with the
+    release rule, rather than only inside `prompts/project-reviewer.md`
+    (which now cross-references it instead of restating it).
 
 ## Host provisioning (human steps)
 

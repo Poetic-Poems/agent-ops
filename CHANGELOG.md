@@ -8,6 +8,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Any pipeline stage can now log deferred work it notices — a
+  `tech-debt/<id>.md` record or a plain GitHub issue — riding along in the PR
+  or output it is already producing, instead of losing the finding to a
+  review body or deferring it to a separate round trip (agent-ops#631).
+  `TECH-DEBT.md` documents the reserve-then-file-on-current-branch variant
+  ("Filing alongside other work") as generally available, with a dedup
+  helper (`scripts/find-similar-tech-debt.sh`) and an automatic release of
+  the `td/<id>` reservation branch once its record lands on `main` via any
+  pull request (`.github/workflows/release-td-branch.yml`,
+  `scripts/release-td-branch.sh`) — manual branch deletion is now a
+  fallback, not the only path. The Implementer and Reviewer may file inline
+  on their own branch; the Approver and Enabler, which must never write to
+  GitHub themselves, gain structured `file_debt`/`file_issue` output fields
+  the Script fulfils on their behalf (`lib/tech-debt-file.sh`), under the
+  Approver's own App token where one applies. The first record filed under
+  this workflow is `tech-debt/TD-PPagop-26082202.md` — the single-slot
+  ownership record `lib/issue-priority.sh` was already carrying, found on PR
+  #618 and previously unfileable because it could not land in that pull
+  request.
+
 - D18's fleet-wide `merge_autonomy` kill switch (WI-2, agent-ops#405) is now
   exercised end to end against the landing path (agent-ops#576): gate 1 of
   `_landing_stage_attempt` (`agent-cycle.sh`) asks `merge_autonomy_kill_state`

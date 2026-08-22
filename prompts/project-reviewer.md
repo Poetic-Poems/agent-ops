@@ -131,19 +131,20 @@ Both target repos follow these rules:
    subagents, as the skill describes; keep each subagent on the lowest-cost
    model tier likely to do its slice correctly.
 2. **Update the tech-debt register in place.** Where the review surfaces debt,
-   record it in the existing register — but not via `TECH-DEBT.md`'s "Filing
-   an item" workflow's single-item shape, where the `td/<id>` branch is both
-   the reservation and the filing branch. This review files every item it
-   surfaces in **one** pull request (step 4), so reservation and filing are
-   two separate steps: for each item, reserve an ID with
-   `scripts/reserve-tech-debt-id.pl`, but do **not** check out or commit to
-   the `td/<id>` branch it creates — that branch is the reservation only, a
-   lock against a concurrent filing minting the same ID. Instead add the
-   record as a new `tech-debt/<id>.md` item file (frontmatter plus body) on
-   **this review's own branch**. Keep the list of every id you reserve —
-   step 4's pull request body must name all of them and the command to
-   delete their `td/<id>` branches, since nothing else releases a
-   reservation once that pull request merges.
+   record it via `TECH-DEBT.md`'s "Filing alongside other work" variant, not
+   its "Filing an item" single-item shape where the `td/<id>` branch is both
+   the reservation and the filing branch: this review files every item it
+   surfaces in **one** pull request (step 4), so for each item, reserve an ID
+   with `scripts/reserve-tech-debt-id.pl` (after checking
+   `scripts/find-similar-tech-debt.sh` for an existing record covering the
+   same gap), but do **not** check out or commit to the `td/<id>` branch it
+   creates — add the record as a new `tech-debt/<id>.md` item file
+   (frontmatter plus body) on **this review's own branch** instead. Keep the
+   list of every id you reserve — step 4's pull request body must name all
+   of them, since `.github/workflows/release-td-branch.yml` releases each
+   `td/<id>` reservation automatically once this pull request merges and the
+   record lands on `main`; naming them is a courtesy for a human scanning the
+   pull request, not the release mechanism itself.
    Mark items the review finds already resolved with a frontmatter status
    flip rather than deleting their history — item files are never deleted
    or renamed. Do not create a competing tech-debt file.
@@ -189,10 +190,12 @@ Both target repos follow these rules:
        (`reviews/project-review-<review_date>/README.md`); note that the
        recommendations feed the implementation pipeline's `tech-debt` source
        and the `project-remediation` skill. Where step 2 reserved any
-       `td/<id>` ids, list every one of them and the command to delete them
-       (`git push origin --delete td/<id1> td/<id2> …`) so the human who
-       merges this pull request is the one who releases the reservations —
-       nothing else does.
+       `td/<id>` ids, list every one of them —
+       `.github/workflows/release-td-branch.yml` releases each reservation
+       automatically once this pull request merges and its record lands on
+       `main`, but naming them here still gives a human a fallback
+       (`git push origin --delete td/<id1> td/<id2> …`) if that workflow
+       cannot run.
      - Label it `pr_label`.
    - **Immediately** after the PR exists, record its URL where the Script can
      find it even if this session ends before your final message does:

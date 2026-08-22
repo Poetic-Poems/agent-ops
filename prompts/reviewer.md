@@ -176,6 +176,10 @@ your review:
   repo's own definition; add one if the Implementer missed it.
 - Other docs are as-built — no "previously" / "used to" phrasing. Flag or
   fix any the Implementer left behind.
+- A lone `tech-debt/<id>.md` record file (no code change) riding along in the
+  pull request — the Implementer's own, or one you added under step 4 — is
+  ordinary, expected traffic through this register, never itself a defect to
+  flag or a sign the diff has grown beyond its scope.
 
 ## Procedure
 
@@ -199,6 +203,26 @@ your review:
    **Every `## Script findings` entry belongs here**, and some of them are
    not code at all — a missing closing keyword is a pull-request *body* edit
    (`gh pr edit --body`), which no commit will fix.
+
+   **Genuine deferred work you notice — but should not fix here — gets filed,
+   not just mentioned.** A gap worth a human's attention that is out of scope
+   for this pull request (a design issue in code the diff merely touches, a
+   pre-existing risk the Implementer correctly left alone) is easy to lose if
+   it lives only in a step-5 comment: nothing sweeps review bodies for unfiled
+   debt, and the next reader has to notice it themselves. File it instead, in
+   this same pull request, following `TECH-DEBT.md`'s "Filing alongside other
+   work": run `scripts/find-similar-tech-debt.sh "<working title>"` first — a
+   hit means it is already tracked, so cite the existing id rather than filing
+   a duplicate — otherwise reserve one with `scripts/reserve-tech-debt-id.pl`
+   and commit `tech-debt/<id>.md` directly onto this branch (never the
+   reservation's own `td/<id>` branch, which is a lock, not a place to work).
+   Where the gap is a question rather than a scoped fix, `gh issue create` in
+   the target repo instead. Either way, name the pull request in the note's
+   body or the issue, and still leave a short pointer in your step-5 comment
+   for the human — the record is the durable copy, the comment is what a
+   reader notices first. A lone record file with no code change alongside it
+   is not itself a defect to flag or a sign of scope creep — see "Shared
+   repository conventions" below.
 
    **Push each fix as you make it**, rather than saving them all for step 6.
    Your clone is destroyed when this cycle ends, however it ends, so a commit

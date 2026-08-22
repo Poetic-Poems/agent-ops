@@ -356,6 +356,34 @@ leave a genuinely stuck handoff `still-blocked` in the hope that a later cycle
 notices — set `complete_handoff` when the five preconditions hold, and leave
 this item's own `unblocked` verdict to do the rest otherwise.
 
+### `file_debt`/`file_issue`: filing what you found, without writing it yourself
+
+Set `file_debt` (a tech-debt record) or `file_issue` (a plain GitHub issue) —
+either, both, or neither, alongside any verdict on any item — when examining
+one turns up genuine deferred work outside what the verdict itself covers
+(agent-ops#631): a gap in the code you read while establishing a `void`, a
+question the thread never settled that isn't itself grounds for `escalate`.
+This is orthogonal to `verdict`: it names something you noticed, not what you
+decided about the item in front of you, so it may accompany `unblocked`,
+`still-blocked`, `escalate` or `void` alike.
+
+```json
+"file_debt": {"title": "one line naming the gap", "body": "what, why it matters, where, a suggested fix — the same shape TECH-DEBT.md's \"Filing an item\" asks a body to have"}
+"file_issue": {"title": "one line naming the question", "body": "the question or decision, and why it needs a human rather than a scoped fix"}
+```
+
+Use `file_debt` for a gap with a knowable fix a future Implementer could act
+on; `file_issue` for a question or a decision that isn't a scoped piece of
+work — and is not itself worth the weight of `escalate`'s own protocol, which
+is for items that cannot proceed without a specific human act, not for
+"someone should look at this eventually." You never file either yourself —
+"What you must never do" above still holds, including never creating an
+issue or a pull request. Setting the field is the whole of your
+contribution: the Script reads it from your `examined` entry and performs the
+filing, under the ordinary pipeline login — you carry no App identity of
+your own the way the Approver does. Omit both fields on any item where
+nothing turned up worth a permanent record — most items will have neither.
+
 ## Refinement items
 
 An item with `kind: "needs-refinement"` is not stuck behind an obstacle. The
@@ -625,7 +653,9 @@ reason to park and hope to be woken.
       "issue": {
         "title": "escalate only: specific, human-readable subject",
         "body": "escalate only: the four sections and footer above, as markdown"
-      }
+      },
+      "file_debt": {"title": "optional, any verdict: a gap worth a tech-debt record", "body": "…"},
+      "file_issue": {"title": "optional, any verdict: a question worth a plain issue", "body": "…"}
     }
   ],
   "notes": "optional: anything about the engagement itself the transcript should carry"
@@ -651,6 +681,13 @@ reason to park and hope to be woken.
   `evidence` in the structured shape "`flag_obsolete`: the first touch of the
   machine `obsolete` alternative" above requires — logged as a warning rather
   than recorded, in either case.
+- `file_debt`/`file_issue` belong to no particular verdict — set either, both,
+  or neither alongside any of the four (see "`file_debt`/`file_issue`" above).
+  Each needs both `title` and `body`; missing either is logged as a warning
+  and nothing is filed. A filing attempt that itself fails (the register's
+  reservation script could not run, the GitHub write was refused) is likewise
+  a warning, never a reason to change `verdict` — the item's own outcome and
+  whether something else got filed are independent.
 - `refined_spec` belongs only to an `unblocked` verdict on a
   `kind: "needs-refinement"` item whose ref is **not** a GitHub issue; for an
   issue item the refinement is the comment you posted, and the URL in
