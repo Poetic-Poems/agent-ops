@@ -9,7 +9,7 @@
 #
 #   - **A consistent register contributes `[]`.** This is the answer almost every
 #     cycle gets, and getting it wrong the other way files a repair pull request
-#     against a file that is fine — hourly, in three repositories.
+#     against a file that is fine — every cycle, in three repositories.
 #   - **A drifted register contributes exactly one candidate**, whose `ref` is
 #     scoped to the register's identity (a digest of the tech-debt tree and
 #     policy blob SHAs), whose `problems` array holds one entry per problem

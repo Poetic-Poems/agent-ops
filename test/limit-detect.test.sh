@@ -252,7 +252,7 @@ assert_eq "an unstated reset offers --clear-limit as the way to resume sooner" \
   "yes" "$(contains "$guess_note" "--clear-limit")"
 assert_eq "no limit is ever described as needing a human before it can clear" \
   "no" "$(contains "$guess_note" "needs human")"
-assert_eq "an unstated reset says the hourly probe is watching for the lift" \
+assert_eq "an unstated reset says the cycle's probe is watching for the lift" \
   "yes" "$(contains "$guess_note" "probe")"
 
 # --- limit_probe_verdict: the three answers a probe can give ---------------

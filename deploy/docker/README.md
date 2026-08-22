@@ -369,7 +369,7 @@ each other's work — so promoting or demoting a node is one variable and one
 
 1. Set `ROLE=active` (or `standby`) in the node's `.env`.
 2. `docker compose up -d`.
-3. Watch the next hourly tick: an active node runs a cycle; a standby logs
+3. Watch the next cycle tick: an active node runs a cycle; a standby logs
    `skipped — this node is standby`. Either way its heartbeat keeps
    publishing.
 
@@ -537,7 +537,7 @@ fleet across the hour](#spreading-the-fleet-across-the-hour).
 | `agent-cycle: ERROR: GIT_USER_NAME and/or GIT_USER_EMAIL is unset` in the cron log | No git identity in `.env` — checked by the cycle itself, not the container, so this only appears once an active node's next tick tries to do real work | Add both to `.env` and `docker compose up -d` to pick them up; the next tick will use them |
 | `cannot clone …agent-ops-state` | The token cannot read the private state repo | Widen the token's repository access |
 | `gh auth status` says the token is invalid, but the same token works on the host; `git clone` resets; `claude` hangs | The bridge MTU exceeds the host's egress MTU — full-sized packets vanish, so every TLS handshake fails while DNS and plain HTTP still work | Set `DOCKER_MTU` in `.env` to the host's egress MTU and `docker compose up -d` |
-| The hourly line only ever says `skipped — this node is standby` | Working as intended on a standby | Set `ROLE=active` on any node that should spend — several may be |
+| The cycle line only ever says `skipped — this node is standby` | Working as intended on a standby | Set `ROLE=active` on any node that should spend — several may be |
 | A cycle logs `claim-lost` and moves on | A peer node won that item's claim | Working as intended — the next candidate (or the next cycle) picks different work |
 | A cycle died mid-run around an image update | Something recreated the scheduler while a cycle was running, and that kills the whole process group. watchtower no longer does this — the pre-update hook defers its roll — so the culprit is a manual `docker compose up -d`, `restart`, or `down`, none of which consult the hook | Nothing to repair: the lock is taken over as stale next hour and the claim GC releases anything it held, though an orphaned clone under `workspace_root` and any branch already pushed are left behind. Run `--status` and wait for a running cycle to finish before any manual recreate |
 | A node has stopped taking new images, and `docker compose logs watchtower` shows `deferring this update` every poll | The pre-update hook is doing its job — a cycle really is in flight — or a lock is being held by a live process that is itself wedged. If the message says `written by container`, the deferring container is honouring a lock it cannot liveness-check (the dashboard reading the scheduler's, or a lock left by a crashed cycle): that clears when the writer releases it, the next cycle takes it over (within the hour), or it goes stale | None of these needs a fix: the hook stops honouring a lock once it passes `lock_stale_after` (4h for a cycle, 6h for a review), so the roll lands by then at the latest. To roll now, `--disable 'reason'`, wait for `--status` to read idle, `docker compose pull && up -d`, then `--enable` |

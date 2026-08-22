@@ -245,9 +245,13 @@ Pullwright organisation and carries its licence.
       vendored skill's own name. Each of those is a breaking change for an
       existing installation (a config key renamed, a label relabelled on live
       pull requests), so each travels with its migration note; the prose
-      rename does not wait on them. The cadence is configurable and the scope
-      is a repository; the product still calls itself the hourly pipeline and
-      the weekly project review. *[fleet]*
+      rename does not wait on them. **Done:** the prose sweep (#590) — spec
+      titles, documentation, prompts and code comments no longer present
+      "hourly" or "weekly" as identity, and the review pipeline is the
+      repository-review pipeline throughout. **Remaining:** every
+      cadence-derived timing's actual behaviour still assumes an hour rather
+      than reading the configured interval (#591), and the identifiers still
+      carry the old names (#592). *[fleet]*
 - [ ] First-class non-interactive auth: Anthropic API key, Bedrock, and
       Vertex as the primary path; subscription OAuth documented as the
       supported self-hosted alternative (D4). *[interactive]*

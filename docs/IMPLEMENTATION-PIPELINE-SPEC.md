@@ -1,8 +1,8 @@
-# Hourly Autonomous Implementation Pipeline — as-built specification
+# Autonomous Implementation Pipeline — as-built specification
 
 ## About this document
 
-This is the as-built requirements specification for the hourly implementation
+This is the as-built requirements specification for the implementation
 pipeline: the numbered requirements the system satisfies, the components that
 satisfy them, the acceptance checks that prove it, and the reasoning behind
 them. It describes the system as it exists, and it must keep doing so — any
@@ -13,15 +13,16 @@ silent, follow the conventions of the two target repositories (their
 
 ## What it is
 
-A pipeline that, once an hour, picks **at most one** well-scoped item of
-pending work from one of two GitHub repositories, implements it on a feature
-branch in an ephemeral clone, reviews and corrects the result, and leaves a
-mergeable pull request for a human to approve. It runs unattended on the
-host machine (WSL2 Ubuntu). The only human involvement is final pull-request
-review and merge.
+A pipeline that, on a configured cadence
+(`schedule.cycle_interval_minutes`), picks **at most one** well-scoped item
+of pending work from one of two GitHub repositories, implements it on a
+feature branch in an ephemeral clone, reviews and corrects the result, and
+leaves a mergeable pull request for a human to approve. It runs unattended
+on the host machine (WSL2 Ubuntu). The only human involvement is final
+pull-request review and merge.
 
 ```
-cron (hourly)
+cron (schedule.cycle_interval_minutes)
   └─ agent-cycle.sh                 ← the Script: lock, stand-down checks, repo ordering
        ├─ Co-Ordinator (Haiku)      ← selects ≤ 1 item, emits a work order; nothing else
        ├─ Implementer (Sonnet/Haiku)← ephemeral clone, feature branch, draft PR
@@ -85,8 +86,9 @@ cron (hourly)
 - The standalone `claude` CLI is installed and resolvable from cron's
   minimal environment.
 - `cron` is running (started by WSL's `[boot]` command) with the crontab
-  entries installed: the hourly cycle, the daily review tick, and the
-  dashboard heartbeat (see `README.md`, "Installation").
+  entries installed: the implementation cycle
+  (`schedule.cycle_interval_minutes`), the review tick, and the dashboard
+  heartbeat (see `README.md`, "Installation").
 - Headless `claude -p` invocations authenticate with the user's existing
   Claude subscription login; `gh` uses its existing token. No new keys.
 
@@ -207,7 +209,8 @@ a node updates by pulling a new image rather than by pulling a branch.
   faster interval raises the fleet's pickup responsiveness without raising
   its idle spend. The review runs at `schedule.review_offset_minutes` past
   the node's *base* minute (mod 60, not the interval list — the review
-  stays hourly), at `schedule.review_hour`, keeping one node's two heavy
+  keeps a single fixed daily slot at `schedule.review_hour`, independent of
+  the cycle's own interval), keeping one node's two heavy
   pipelines maximally apart. Why: every active node spends one Claude
   account and pushes to the same repositories; the claims (17a) make
   simultaneous firing *correct*, the offsets make it *cheap*. Excluding
@@ -529,7 +532,7 @@ occupies four separate ranks rather than one:
   `organization_members_only`, and a token that cannot see it must degrade to
   today's behaviour rather than to an unranked pile.
 
-The `project-review` source draws on the weekly project-review pipeline's own
+The `project-review` source draws on the review pipeline's own
 output (see `docs/REVIEW-PIPELINE-SPEC.md`), which lands in each repo via a
 merged PR:
 
@@ -640,8 +643,8 @@ and the schema must carry every one of them.
 | `state_dir` | `~/.local/state/poetic-agents` | Lock, shared log, per-cycle stage transcripts. |
 | `workspace_root` | `~/.cache/poetic-agents/workspaces` | Ephemeral clones live and die here, including the state repository's mirror. |
 | `state_repo` | `Poetic-Poems/agent-ops-state` | The private repository through which `state_dir` replicates between nodes (requirement 2.5). Its `main` carries the small shared surface: the claim registry (requirement 17a) and the fleet flags `fleet/disabled.json` and `fleet/limit.json` (requirements 2.3a and 2.1). Unset means a single-node operation: every mode of `scripts/state-sync.sh` becomes a no-op, and the fleet-flag reads and writes quietly do nothing. |
-| `cycles_retained` | `200` | Cycle directories kept in the replicated mirror — about eight days of hourly cycles. Bounds a repository that is force-pushed after every cycle. The node's own `state_dir` is bounded by `state_local_cycles_retained` instead. |
-| `state_local_cycles_retained` | `1000` | Cycle and review directories the node's *own* `state_dir` keeps — about six weeks of hourly cycles; the same push that replicates prunes to it (requirement 2.5). Deliberately far above `cycles_retained`, so the local machine is always the longer record, with a floor of one protecting the cycle being recorded. `STATE_SYNC_LOCAL_RETAINED` overrides it for tests. |
+| `cycles_retained` | `200` | Cycle directories kept in the replicated mirror — bounds disk use at whatever cadence `schedule.cycle_interval_minutes` sets (about eight days' worth at the historical hourly default). Bounds a repository that is force-pushed after every cycle. The node's own `state_dir` is bounded by `state_local_cycles_retained` instead. |
+| `state_local_cycles_retained` | `1000` | Cycle and review directories the node's *own* `state_dir` keeps — bounds disk use at whatever cadence `schedule.cycle_interval_minutes` sets (about six weeks' worth at the historical hourly default); the same push that replicates prunes to it (requirement 2.5). Deliberately far above `cycles_retained`, so the local machine is always the longer record, with a floor of one protecting the cycle being recorded. `STATE_SYNC_LOCAL_RETAINED` overrides it for tests. |
 | `state_local_streams_retained` | `50` | Cycle and review directories whose stage event streams (`<stage>.stream.jsonl`, requirement 4d) are kept; the push that replicates prunes to it (requirement 2.5). Far below `state_local_cycles_retained` because a stream is a different order of size from the record holding it — a cycle directory without them is kilobytes, one Reviewer stream megabytes — so streams go early and their records stay. Streams never reach the state repository. `STATE_SYNC_STREAMS_RETAINED` overrides it for tests. |
 | `log_retained_bytes` | `2000000` | Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `doctor.log`, `revert-rate.log`, `cron.log` and `review-cron.log` (requirement 2.6). `log.jsonl`, `review-log.jsonl` and `revert-rate.jsonl` are never rotated regardless of size. `ROTATE_LOGS_RETAINED_BYTES` overrides it for tests. |
 | `log_generations` | `3` | Rotated generations of each log kept beside the live file (`<name>.1` … `<name>.<log_generations>`), floored at one. `ROTATE_LOGS_GENERATIONS` overrides it for tests. |
@@ -684,7 +687,7 @@ and the schema must carry every one of them.
 | `merge_autonomy_routine_sources` | `["register-hygiene", "tech-debt"]` | D18 WI-7 (requirement 8d, `lib/landing.sh`'s `landing_eligible`): which work sources may be armed automatically at `agent-merges-routine` and above, fleet-wide default; a `repos[]` entry's own `merge_autonomy_routine_sources` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). An eligible pull request also needs `complexity:low`/`medium` and, below `agent-merges-all`, `landing_protected_paths_hit` to report no protected path touched...[continued below](#extended-notes-merge_autonomy_routine_sources) |
 | `landing_cool_off_hours` | 24 h | D18 WI-12 (Stage 4, §7 risk 1, `lib/landing.sh`'s `landing_protected_path_controls_ok`/`landing_cool_off_effective_hours`/`landing_cool_off_remaining_hours`): the wait between the Approver's own approval of a protected-path pull request and the arming step (requirement 8d) landing it, fleet-wide default; a `repos[]` entry's own `landing_cool_off_hours` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). Binds only at...[continued below](#extended-notes-landing_cool_off_hours) |
 | `approver_app_id` | *(unset)* | The Approver GitHub App's id for this installation (§5.3) — required for any `merge_autonomy` level above `human`, and reconciled by `scripts/doctor.sh` against the `PULLWRIGHT_APPROVER_APP_ID` environment the token wrapper (requirement 14b) mints from: a set pair that differs is a doctor `fail`. Deliberately one fleet-wide scalar string with no per-repo override — see the Design decisions entry on this key's shape. |
-| `crash_loop_after` | `4` | Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue (requirement 2.7) — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. At four nodes an hourly deterministic failure crosses this within about an hour. `0` (or absent) disables both checks. |
+| `crash_loop_after` | `4` | Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue (requirement 2.7) — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. At four nodes each hitting the same deterministic failure once per cycle, this crosses within about one `schedule.cycle_interval_minutes` interval. `0` (or absent) disables both checks. |
 | `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where requirement 2.7's escalation issues are filed — the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks. |
 | `timeout_coordinator` | *(unset)* | An override for the wall-clock backstop of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case and the intended one: a configured value wins permanently, so setting it turns the self-tuning off for that actor. |
 | `timeout_implementer` | *(unset)* | As `timeout_coordinator`, for the Implementer. The interim raise to 120 this key carried (#203, #209) has gone with the fixed cap it belonged to: the shipped prior is 150 and the derivation moves from there. |
@@ -1665,9 +1668,9 @@ implements.
    editing the files the next tick will source; a cycle firing mid-edit runs
    half of one revision and half of another, and the resulting failure gets
    attributed to whatever the agent happened to be writing. That is also why
-   the switch is shared rather than per-pipeline: the weekly review runs out of
-   the same tree and sources the same `lib/`, so a switch that stood down only
-   the implementation pipeline would leave the hazard in place.
+   the switch is shared rather than per-pipeline: the review pipeline runs out
+   of the same tree and sources the same `lib/`, so a switch that stood down
+   only the implementation pipeline would leave the hazard in place.
 
    Four details decide whether this helps or becomes its own outage:
    - **A disable expires** after `disable_default_ttl` unless it explicitly
@@ -1827,8 +1830,8 @@ implements.
 
    An expired fleet disable is cleared by whichever cycle sees it first — the
    delete is sha-guarded and idempotent, so a lost race means a peer got
-   there, and there is no singleton chore (requirement 2.5). The weekly
-   review honours the fleet switch but never sets or clears it, mirroring
+   there, and there is no singleton chore (requirement 2.5). The review
+   pipeline honours the fleet switch but never sets or clears it, mirroring
    its relationship to the local one (`docs/REVIEW-PIPELINE-SPEC.md`, R2a).
 2.3b. **The merge-autonomy kill switch** (D18,
    `docs/reviews/2026-08-14-autonomy-investigation.md` §6; `lib/merge-autonomy.sh`).
@@ -2024,9 +2027,10 @@ implements.
    the log and the cycle directory: a standby tick must leave no trace in
    `state_dir` at all. That is stricter than the switch, which logs its
    stand-down, and deliberately so — a standby's `state_dir` holds no work of
-   its own, so an hourly event written there is noise in a stream that is
-   otherwise a record of cycles, and an hourly empty cycle directory is
-   indistinguishable from a cycle that died before it logged anything.
+   its own, so an event written there on every tick is noise in a stream
+   that is otherwise a record of cycles, and an empty cycle directory on
+   every tick is indistinguishable from a cycle that died before it logged
+   anything.
 
    Bypassed by `--dry-run` and `--once`, which are a human asking for a cycle
    rather than an unattended one, and by `--disable`/`--enable`/`--status`,
@@ -2423,7 +2427,7 @@ implements.
      after the fix is pushed, and nothing about the PR's own state ever says
      "answered". Deriving whose turn it is from review-thread events is the
      only thing that does. Without it every PR the agent fixed would stay a
-     candidate forever — selected, re-fixed, re-selected, hourly, each cycle
+     candidate forever — selected, re-fixed, re-selected, each cycle
      looking like a productive one and each paying a Sonnet run to redo work
      already pushed. Same shape as requirement 15's "a later green run
      supersedes".
@@ -5954,12 +5958,12 @@ implements.
 
     What this replaces is a silent skip, and the silence was the defect. An item
     nobody had specified was re-read and re-skipped by every cycle for as long as
-    it existed: the pipeline paid to rediscover the same non-answer hourly, the
-    item never became selectable by any route, and the one person who could have
-    written the missing criteria was never told it existed. The pipeline looked
-    healthy throughout, which is this system's signature failure mode
-    (requirement 3b, requirement 34d) in its purest form — an item that starves
-    while every component behaves exactly as specified.
+    it existed: the pipeline paid to rediscover the same non-answer cycle after
+    cycle, the item never became selectable by any route, and the one person
+    who could have written the missing criteria was never told it existed.
+    The pipeline looked healthy throughout, which is this system's signature
+    failure mode (requirement 3b, requirement 34d) in its purest form — an item
+    that starves while every component behaves exactly as specified.
 17. From the remaining candidates, ranks the qualifying items best-first and
     returns up to `candidates_max` of them, each a stand-alone unit of work,
     clearly scoped, and adequately refined; the ranking preserves the
@@ -8094,9 +8098,9 @@ implements.
     - **A re-report of an item that is already blocked** is logged as a
       `warning` and dropped. Requirement 35a measures the Enabler threshold from
       the *latest* `attempt-failed`, so a Co-Ordinator that re-reported the same
-      item every cycle would push that clock forward hourly and the item would
-      never become eligible — the identical silent starvation this path exists
-      to end, wearing an event trail that looks like progress.
+      item every cycle would push that clock forward cycle after cycle and the
+      item would never become eligible — the identical silent starvation this
+      path exists to end, wearing an event trail that looks like progress.
     - **A `source: "issues"` entry whose own `reason`/`missing`/`evidence` cites
       a `Blocked-by:` reference this cycle's dependency gate already resolved**
       (`dependency_refusal_reason`, `lib/dependency-gate.sh`; requirement 16's
@@ -16026,7 +16030,8 @@ standing the system up on a new machine.
    `[boot]` / `command = "service cron start"` (requires sudo), then restart
    WSL (`wsl --shutdown` from Windows). Alternative if preferred: a Windows
    Task Scheduler job running
-   `wsl.exe -u wallen -e $HOME/Code/Poetic-Poems/agent-ops/agent-cycle.sh` hourly.
+   `wsl.exe -u wallen -e $HOME/Code/Poetic-Poems/agent-ops/agent-cycle.sh` on
+   the node's configured cadence (`schedule.cycle_interval_minutes`).
    Either way, cycles only run while the machine is awake — a missed cycle
    simply waits for the next tick, which is harmless.
 3. Create the label in both repos:
@@ -16067,7 +16072,7 @@ rubric of requirement 26a confines to the minority of PRs whose contents
 warrant it; the reviewer `stage-start` events carry the grade, so a creep
 toward `high` that would erode this bound is auditable in the log. Stand-down
 cycles cost nothing but a few `gh` calls — except under an *estimated*
-usage-limit stand-down, where each hourly cycle also spends the 2.1b probe.
+usage-limit stand-down, where each cycle also spends the 2.1b probe.
 That spend is self-limiting from both ends: while the limit is real the
 probe's answer is the limit message, which serves no tokens and costs
 nothing, and the first answered probe (a fraction of a cent of

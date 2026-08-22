@@ -779,7 +779,7 @@ costs_file="$work_tmp/costs.json"
 # the peers' replicated transcripts too (bounded — a peer's branch carries at
 # most cycles_retained cycles). Missing dirs are fine; find just skips them.
 #
-# `reviews/` is scanned alongside `cycles/`: the weekly project-review pipeline
+# `reviews/` is scanned alongside `cycles/`: the repository-review pipeline
 # is the same account spending the same tokens, and while its transcripts went
 # unread every figure on this page was quietly a partial total — the Project
 # Reviewer is the single most expensive actor per run and was the only one
