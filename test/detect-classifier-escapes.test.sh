@@ -429,6 +429,68 @@ assert_eq "  ... and never an escape, however low today's configured level sits"
 assert_contains "  ... naming the unrecorded level as the reason" \
   "$out_nolevel" "records the effective merge_autonomy level"
 
+# --- Fixture #10: a protected-path hit recorded at agent-merges-all, with
+# every other input agreeing — the sanctioned case PR #621's review found
+# missing: `landing_eligible` (lib/landing.sh) does not refuse this, it
+# defers to the WI-12 compensating controls (`landing_protected_path_controls_ok`,
+# gate 4.5 of the arming step) that only `_landing_stage_attempt` can check.
+# This detector has no post-hoc way to recompute those controls, so it must
+# report `unverifiable`, never `escape` — the fixture #7 armed at
+# agent-merges-all exercises only the source check and does not cover a
+# protected-path hit at that level, so this is a distinct case from it.
+STUB_DIR_ALL="$tmp_dir/fixtures-all"
+mkdir -p "$STUB_DIR_ALL"
+cat > "$STUB_DIR_ALL/issues.json" <<EOF
+[{"number": 10, "pull_request": {"merged_at": "2026-08-20T10:00:00Z"}}]
+EOF
+pr_json 10 "$LOGIN" > "$STUB_DIR_ALL/pr-10.json"
+cat > "$STUB_DIR_ALL/commit-sha10.json" <<'EOF'
+{"files": [{"filename": "lib/landing.sh"}]}
+EOF
+cat > "$STUB_DIR_ALL/events-10.json" <<'EOF'
+[{"event": "labeled", "label": {"name": "complexity:low"}, "created_at": "2026-08-20T09:00:00Z"}]
+EOF
+log_file_all="$tmp_dir/log-all.jsonl"
+echo "{\"event\":\"landing-armed\",\"repo\":\"$SLUG\",\"pr_url\":\"https://github.com/$SLUG/pull/10\",\"source\":\"register-hygiene\",\"complexity\":\"low\",\"level\":\"agent-merges-all\"}" \
+  > "$log_file_all"
+
+out_all="$(STUB_DIR="$STUB_DIR_ALL" \
+  "$DETECTOR" "$SLUG" "$LOGIN" "$log_file_all" --config "$config_file")"
+assert_contains "a protected-path hit recorded at agent-merges-all is unverifiable, never escape" \
+  "$out_all" '"outcome":"unverifiable"'
+assert_eq "  ... and never a classifier-escape, since landing_eligible itself defers this case" \
+  "" "$(grep '"outcome":"escape"' <<<"$out_all")"
+assert_contains "  ... naming the deferred compensating controls as the reason" \
+  "$out_all" "WI-12 compensating controls"
+
+# --- Fixture #11: the same protected-path hit at agent-merges-all, but this
+# time complexity:high also stood at merge — a disagreement wholly
+# independent of the protected-path hit's own unrecomputability, and one
+# that must still surface as a classifier-escape rather than being masked by
+# it -------------------------------------------------------------------------
+STUB_DIR_ALL2="$tmp_dir/fixtures-all2"
+mkdir -p "$STUB_DIR_ALL2"
+cat > "$STUB_DIR_ALL2/issues.json" <<EOF
+[{"number": 11, "pull_request": {"merged_at": "2026-08-20T10:00:00Z"}}]
+EOF
+pr_json 11 "$LOGIN" > "$STUB_DIR_ALL2/pr-11.json"
+cat > "$STUB_DIR_ALL2/commit-sha11.json" <<'EOF'
+{"files": [{"filename": "lib/landing.sh"}]}
+EOF
+cat > "$STUB_DIR_ALL2/events-11.json" <<'EOF'
+[{"event": "labeled", "label": {"name": "complexity:high"}, "created_at": "2026-08-20T09:00:00Z"}]
+EOF
+log_file_all2="$tmp_dir/log-all2.jsonl"
+echo "{\"event\":\"landing-armed\",\"repo\":\"$SLUG\",\"pr_url\":\"https://github.com/$SLUG/pull/11\",\"source\":\"register-hygiene\",\"complexity\":\"low\",\"level\":\"agent-merges-all\"}" \
+  > "$log_file_all2"
+
+out_all2="$(STUB_DIR="$STUB_DIR_ALL2" \
+  "$DETECTOR" "$SLUG" "$LOGIN" "$log_file_all2" --config "$config_file")"
+assert_contains "a genuinely reconstructable disagreement (complexity:high) still escapes, even alongside an unrecomputable agent-merges-all protected-path hit" \
+  "$out_all2" '"outcome":"escape"'
+assert_contains "  ... naming the complexity disagreement, not the protected path" \
+  "$out_all2" "complexity was high"
+
 # --- Idempotency: an already-audited pull request costs no gh call at all --
 log_file2="$tmp_dir/log2.jsonl"
 cat "$log_file" > "$log_file2"

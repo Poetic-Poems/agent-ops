@@ -5028,13 +5028,29 @@ implements.
    field existed) — reports `outcome: "unverifiable"`, never
    `"clean"`: an audit that cannot answer must never be read as an audit
    that passed, and in particular an unrecorded level is never allowed to
-   become an escape. Otherwise, recomputed eligibility (recorded effective
-   level `agent-merges-routine`/`agent-merges-all`, complexity `low`/`medium`,
-   source in the routine list, no protected path touched) either agrees with
-   the fact that the pull request landed (`outcome: "clean"`) or disagrees
-   (a `classifier-escape` event — the loud one, a first-class event of its
-   own rather than a value nested inside a routine one, per the issue's own
-   "make it loud rather than a row nobody reads"). Every outcome is logged
+   become an escape. Otherwise, recomputed eligibility agrees with the fact
+   that the pull request landed (`outcome: "clean"`) when the recorded
+   effective level is `agent-merges-routine`/`agent-merges-all`, complexity
+   is `low`/`medium`, the source is in the routine list, and no protected
+   path was touched. A protected-path hit is level-dependent, the same way
+   requirement 8d's own gate 2 is: below `agent-merges-all` it disagrees
+   unconditionally, exactly like any other mismatched input; at
+   `agent-merges-all`, `landing_eligible` itself reports `eligible` and
+   defers the decision to gate 4.5's compensating controls
+   (`landing_protected_path_controls_ok`) — facts (the approving tier, the
+   standing review's own `submitted_at`/`commit_id`) this post-hoc detector
+   has no way to recompute, so recording it as a disagreement would
+   manufacture a first-class escape out of every sanctioned
+   `agent-merges-all` protected-path landing. That case reports
+   `outcome: "unverifiable"` instead, never `"clean"` and never `"escape"`,
+   unless some other, genuinely reconstructable input already disagrees on
+   its own — an out-of-range level, an out-of-range complexity, or a source
+   outside the routine list — in which case that disagreement alone is
+   still a `classifier-escape` regardless of the protected-path hit's own
+   unverifiability. Any other disagreement is a `classifier-escape` event —
+   the loud one, a first-class event of its own rather than a value nested
+   inside a routine one, per the issue's own "make it loud rather than a row
+   nobody reads". Every outcome is logged
    under the single-writer rule (requirement 33): the detector itself only
    prints one JSON object per newly-seen pull request to stdout, and
    `agent-cycle.sh`'s own loop — the same "sweep prints, the Script logs"

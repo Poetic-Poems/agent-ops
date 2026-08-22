@@ -328,7 +328,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   own `landing-armed` event, the two inputs nothing can reconstruct after
   the fact — the arming step now records that effective level (kill switch
   and per-repo merge-budget freeze already folded in) on the event, since
-  the moment it resolves it is the only moment anything knows it. Any input
+  the moment it resolves it is the only moment anything knows it. The
+  protected-path hit is itself level-dependent, matching `landing_eligible`'s
+  own gate: below `agent-merges-all` it disagrees unconditionally, but at
+  `agent-merges-all` the classifier defers it to the WI-12 compensating
+  controls (`landing_protected_path_controls_ok`) — facts this post-hoc
+  detector cannot recompute — so that case reports `unverifiable`, never
+  `escape`, unless some other, genuinely reconstructable input already
+  disagrees on its own. Any input
   that cannot be reconstructed reports `unverifiable`,
   never `clean`; a disagreement is a first-class `classifier-escape` event,
   loud rather than a row nobody reads. Each merged pull request is looked at

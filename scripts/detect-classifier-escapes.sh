@@ -43,7 +43,20 @@
 #     endpoint `landing_protected_paths_hit` reads: a different GitHub
 #     resource entirely, so a bug specific to either read is caught by the
 #     other disagreeing. Checked against a prefix list declared fresh in this
-#     file (see above).
+#     file (see above). `landing_eligible` (`lib/landing.sh`) is level-
+#     dependent here, and this recomputation must be too: below
+#     `agent-merges-all` a hit refuses unconditionally, so this detector
+#     treats it as a disagreement there exactly as before; at
+#     `agent-merges-all` `landing_eligible` itself reports `eligible` and
+#     defers to the D18 WI-12 compensating controls
+#     (`landing_protected_path_controls_ok`) gate 4.5 of the arming step
+#     (requirement 8d) actually checks — facts (the approving tier, the
+#     standing review's own `submitted_at`/`commit_id`) this post-hoc
+#     detector has no way to recompute. Recording that case as a
+#     disagreement would manufacture a first-class `escape` out of every
+#     sanctioned `agent-merges-all` protected-path landing, so it is treated
+#     as an unreconstructable input instead: it can only ever push the
+#     outcome to `unverifiable`, never `escape` and never `clean`.
 #   - **Complexity** — not the `complexity:*` label GitHub shows *today*
 #     (labels change), but whichever one the pull request actually carried
 #     *at the moment it merged*, replayed from its own labelled/unlabelled
@@ -96,9 +109,16 @@
 # `clean` — an unreadable merge commit's file list, a merge with zero or
 # more than one `complexity:*` label standing at merge time, or a pull
 # request with no matching `landing-armed` event to read a source from, or
-# one whose `landing-armed` event records no effective level. An
-# `unverifiable` landing is exactly as far from "cleared" as an `escape` is:
-# neither is silently folded into the other.
+# one whose `landing-armed` event records no effective level. A protected-
+# path hit recorded at `agent-merges-all` is the same shape: `landing_eligible`
+# defers that case to compensating controls this detector cannot recompute
+# post hoc, so it reports `unverifiable` there too, never `escape` — unless
+# some other, genuinely reconstructable input already disagrees on its own
+# (a level below `agent-merges-routine`, a complexity outside `low`/`medium`,
+# a source outside the routine list), in which case that disagreement alone
+# is enough to call it an `escape` regardless. An `unverifiable` landing is
+# exactly as far from "cleared" as an `escape` is: neither is silently
+# folded into the other.
 #
 # ## Idempotency
 #
@@ -554,34 +574,48 @@ while IFS= read -r number; do
     continue
   fi
 
-  eligible=1
   disagreements=()
+  unverifiable_reasons=()
   case "$armed_level" in
     agent-merges-routine|agent-merges-all) ;;
     *)
-      eligible=0
       disagreements+=("the effective merge_autonomy level recorded at arming was $armed_level, not agent-merges-routine or agent-merges-all")
       ;;
   esac
   case "$complexity" in
     low|medium) ;;
-    *) eligible=0; disagreements+=("complexity was $complexity, not low or medium") ;;
+    *) disagreements+=("complexity was $complexity, not low or medium") ;;
   esac
   if ! jq -e --arg s "$source" 'index($s) != null' <<<"$routine_json" >/dev/null 2>&1; then
-    eligible=0
     disagreements+=("source $source is not in $slug's routine list $routine_json")
   fi
   if [[ "$hit" == "true" ]]; then
-    eligible=0
-    disagreements+=("touched protected path(s): $(jq -r 'join(", ")' <<<"$paths_json")")
+    if [[ "$armed_level" == "agent-merges-all" ]]; then
+      # landing_eligible (lib/landing.sh) does not refuse a protected-path
+      # hit at agent-merges-all — it reports `eligible` and defers to
+      # landing_protected_path_controls_ok (D18 WI-12's compensating
+      # controls), a gate that needs facts (the approving tier, the standing
+      # review's own submitted_at and commit_id) this detector has no
+      # post-hoc way to recompute. Recording this as a disagreement would
+      # manufacture a first-class escape out of every sanctioned
+      # agent-merges-all protected-path landing; it is an unreconstructable
+      # input, not a disagreement, so it can only ever push the outcome to
+      # `unverifiable`, never `escape` and never `clean`.
+      unverifiable_reasons+=("touched protected path(s) at agent-merges-all: $(jq -r 'join(", ")' <<<"$paths_json") — landing_eligible defers this to the WI-12 compensating controls (landing_protected_path_controls_ok), which this detector cannot recompute post hoc")
+    else
+      disagreements+=("touched protected path(s): $(jq -r 'join(", ")' <<<"$paths_json")")
+    fi
   fi
 
-  if (( eligible )); then
-    emit "clean" "$pr_url" "$number" "$sha" "$source" "$complexity" "$hit" "$paths_json" \
-      "recomputed eligibility agrees: this landing should have been eligible"
-  else
+  if (( ${#disagreements[@]} > 0 )); then
     reason="$(IFS='; '; echo "${disagreements[*]}")"
     emit "escape" "$pr_url" "$number" "$sha" "$source" "$complexity" "$hit" "$paths_json" \
       "landed under the Approver identity but recomputed eligibility disagrees: $reason"
+  elif (( ${#unverifiable_reasons[@]} > 0 )); then
+    reason="$(IFS='; '; echo "${unverifiable_reasons[*]}")"
+    emit "unverifiable" "$pr_url" "$number" "$sha" "$source" "$complexity" "$hit" "$paths_json" "$reason"
+  else
+    emit "clean" "$pr_url" "$number" "$sha" "$source" "$complexity" "$hit" "$paths_json" \
+      "recomputed eligibility agrees: this landing should have been eligible"
   fi
 done < <(_escape_audit_candidates "$slug")
