@@ -15979,8 +15979,10 @@ pull request, run the ones the change touches and any it could regress.
     matching record — reported, never rendered with the silent nulls the
     digest used to fall back to. The older `approver-verdict`-by-timestamp
     join is retained as the fallback for a `landing-armed` from before
-    requirement 8x shipped, which can never have a matching audit record.
-    `dashboard/index.html`'s landings panel adds a Record column
+    requirement 8x shipped, which can never have a matching audit record:
+    it explains that row's tier and verdict where one is locatable, and
+    never clears its `anomaly: true`, which the missing record alone
+    decides. `dashboard/index.html`'s landings panel adds a Record column
     (`ok`/`missing`) — its own column, beside requirement 8e's `Audit` one
     rather than folded into it — and a summary line naming how many
     landings in the window carry no audit record.
