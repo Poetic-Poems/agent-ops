@@ -1077,8 +1077,8 @@ distinction `armed` above makes.
 The **Revert rate by repository** panel (D18 issue #579) is the continuous
 half of Stage 2's exit criterion ("revert rate ≤ baseline"):
 `scripts/mine-merge-history.sh` produced that criterion's Stage 0 baseline
-once, by hand, in July, and nothing measured it again until this panel — a
-regression is now a reportable fact on the day it happens, not only at a
+once, by hand, on 2026-08-15, and nothing measured it again until this panel —
+a regression is now a reportable fact on the day it happens, not only at a
 promotion review. It renders `revert_rate`, which the Publisher assembles the
 same way `landings` is: a fleet-wide union read over `revert-rate.jsonl`
 (never rotated, replicated exactly like `log.jsonl` — `scripts/publish-

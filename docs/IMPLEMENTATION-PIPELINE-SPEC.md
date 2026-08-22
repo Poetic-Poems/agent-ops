@@ -2176,7 +2176,7 @@ implements.
    criterion ("revert rate ≤ baseline") is measured continuously rather than
    only when a promotion review remembers to run the miner by hand — the
    Stage 0 baseline it exists to compare against was itself produced once,
-   in July, and had not run again until this component. `scripts/mine-merge-
+   on 2026-08-15, and had not run again until this component. `scripts/mine-merge-
    history.sh` gained a `--since ISO8601` flag for this caller alone: it
    bounds the mined population to pull requests merged at or after that
    instant, both as the REST `since` query parameter (which narrows the
