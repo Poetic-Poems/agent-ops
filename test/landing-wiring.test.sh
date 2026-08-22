@@ -346,6 +346,11 @@ assert_eq "  ... and the complexity it was armed at" '"medium"' "$(jq -c '.compl
 # two fields — so they must be that decision's own values, never a second read.
 assert_eq "  ... and the cap/count gate 5's own merge_budget_decide read (D18 issue #574)" \
   "8 8" "$(jq -r '"\(.cap) \(.count)"' <<<"$(event_of landing-armed)")"
+# The *effective* level gate 1 judged this arm against, recorded because
+# requirement 8e's post-hoc audit has no other way to learn it — see the
+# comment on the log_event call itself.
+assert_eq "  ... and the effective merge_autonomy level it was armed under" \
+  '"agent-merges-routine"' "$(jq -c '.level' <<<"$(event_of landing-armed)")"
 assert_eq "  ... and marks _landing_stage_attempt_armed for its caller" "1" "$(armed_flag)"
 assert_eq "  ... gate 0's own call site reads an empty landing_armed_by_repo as 0" \
   "0" "$(budget_decide_args | awk '{print $NF}')"

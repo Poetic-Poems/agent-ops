@@ -1491,9 +1491,16 @@
       body.push(el("div", {class:"panel"}, el("div", {class:"empty",
         text:"Nothing landed autonomously in the last " + hours + " h."})));
     } else {
+      // Audit column (requirement 8e, agent-ops#572): the classifier-escape
+      // detector's own outcome for this landing, joined by pr_url. `null`
+      // (no audit event yet — this pull request has not been reached, or
+      // genuinely cannot be) reads "pending", never blank and never folded
+      // into a false "clean".
       var rows = armed.map(function (a) {
         var verdict = a.verdict || "unknown";
         var tier = a.tier || "unknown";
+        var audit = a.audit || "pending";
+        var auditClass = audit === "escape" ? "b-red" : audit === "clean" ? "b-green" : "b-amber";
         return el("tr", {}, [
           el("td", {class:"muted", text: fmtAgo(a.ts)}),
           el("td", {class:"mono", text: (a.repo || "?").split("/")[1] || a.repo || "?"}),
@@ -1504,10 +1511,27 @@
           el("td", {class:"mono", text: tier}),
           el("td", {}, el("span", {class: "badge " + (verdict === "approve" ? "b-green" : "b-amber"), text: verdict})),
           el("td", {class:"mono", text: a.method || "?"}),
-          el("td", {}, nodeTag(a.node))
+          el("td", {}, nodeTag(a.node)),
+          el("td", {title: a.audit_reason || ""}, el("span", {class: "badge " + auditClass, text: audit}))
         ]);
       });
-      body.push(tableOf(["Landed","Repo","PR","Title","Source","Complexity","Tier","Verdict","Method","Node"], rows));
+      body.push(tableOf(["Landed","Repo","PR","Title","Source","Complexity","Tier","Verdict","Method","Node","Audit"], rows));
+    }
+
+    // The classifier-escape audit's own scoreboard (requirement 8e,
+    // agent-ops#572) — all-time, not scoped to this window, since an escape
+    // is a permanent fact about one merged pull request. `null` fields mean
+    // the roll-up itself could not be assembled this tick, distinguished
+    // from a real, reportable zero the same way `armed === null` is above.
+    var ea = (D.counts && D.counts.escape_audits) || null;
+    if (!ea || ea.checked == null) {
+      body.push(el("div", {class:"panel muted", text:
+        "Classifier-escape audit: could not be assembled this tick."}));
+    } else {
+      var eaText = "Classifier-escape audit (all-time): " + ea.checked + " landing" +
+        (ea.checked === 1 ? "" : "s") + " checked, " + ea.clean + " clean, " +
+        ea.unverifiable + " unverifiable, " + ea.escapes + " escape" + (ea.escapes === 1 ? "" : "s") + ".";
+      body.push(el("div", {class: "panel " + (ea.escapes > 0 ? "" : "muted"), text: eaText}));
     }
 
     // The budget line, per repository that has either a cap or a landing —

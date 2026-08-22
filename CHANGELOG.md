@@ -330,6 +330,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `dequeued` source to diagnose and fix before a human re-queues, rather than
   blindly re-running the same failing merge group every cycle.
 
+- The classifier-escape audit (requirement 8e, D18 Stage 2 exit criterion
+  "zero classifier escapes"; agent-ops#572): `scripts/detect-classifier-
+  escapes.sh`, run once per cycle for every configured repository, is an
+  independent, read-only, post-hoc check that every pull request which
+  actually landed under the Approver identity really was eligible — never
+  calling `landing_eligible`, and never sourcing `lib/landing.sh` at all
+  (the protected-path list and the routine-sources resolution are each
+  reimplemented from scratch, so a bug shared between the classifier and
+  its own auditor cannot pass unnoticed by both agreeing). For every
+  merged, `pr_label`-carrying pull request whose `merged_by` is the
+  Approver App's own login, it recomputes the protected-path hit from the
+  merge commit's own file list and the complexity from the pull request's
+  labelled/unlabelled timeline as it stood at `merged_at`, and reads back
+  the work source and the effective `merge_autonomy` level the landing was
+  armed under — `landing_eligible`'s own first gate — from the fleet log's
+  own `landing-armed` event, the two inputs nothing can reconstruct after
+  the fact — the arming step now records that effective level (kill switch
+  and per-repo merge-budget freeze already folded in) on the event, since
+  the moment it resolves it is the only moment anything knows it. The
+  protected-path hit is itself level-dependent, matching `landing_eligible`'s
+  own gate: below `agent-merges-all` it disagrees unconditionally, but at
+  `agent-merges-all` the classifier defers it to the WI-12 compensating
+  controls (`landing_protected_path_controls_ok`) — facts this post-hoc
+  detector cannot recompute — so that case reports `unverifiable`, never
+  `escape`, unless some other, genuinely reconstructable input already
+  disagrees on its own. Any input
+  that cannot be reconstructed reports `unverifiable`,
+  never `clean`; a disagreement is a first-class `classifier-escape` event,
+  loud rather than a row nobody reads. Each merged pull request is looked at
+  most once, ever; one merged by anyone other than the Approver identity is
+  not an audit finding, but that fact too is recorded once (its own
+  `landing-audit-skip` event, kept out of the scoreboard below), so the read
+  that discovers it is never repeated on a later cycle. Surfaces as a new
+  `audit`/`audit_reason` column on the autonomous-landings digest's own
+  rows, and as an all-time `counts.escape_audits` scoreboard
+  (checked/clean/escapes/unverifiable) on the dashboard, never windowed like
+  the digest above it — an escape is a permanent fact about one merged pull
+  request. A landing armed before `landing-armed` carried a level reports
+  `unverifiable` for that input rather than being judged against today's
+  configuration — an operator dialling `merge_autonomy` back must never
+  retroactively manufacture a classifier escape out of a landing that was
+  correct when it happened. The sweep runs under a 120-second budget per repository per cycle
+  and reads its candidates oldest-first, so on a repository whose candidate
+  list costs more than that to walk in one pass it converges over as many
+  cycles as it takes rather than stalling at a permanent frontier: the
+  scoreboard is a floor on what has been checked at any given moment, not a
+  final coverage statement (requirement 8e records the size of that backlog
+  as of the day this landed).
+
 - The deterministic eligibility classifier and the arming/enqueue step (D18
   WI-7, requirement 8d; agent-ops#410): at `merge_autonomy: agent-merges-routine`
   or `agent-merges-all`, once the Approver's own engagement reaches an

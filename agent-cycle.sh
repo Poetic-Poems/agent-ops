@@ -4516,10 +4516,25 @@ _landing_stage_attempt() {
   local budget_cap budget_count
   budget_cap="$(jq -r '.cap' <<<"$budget_json")"
   budget_count="$(jq -c '.count' <<<"$budget_json")"
+  # `level` is the *effective* level gate 1 above actually judged this arm
+  # against — kill switch and per-repo merge-budget freeze already folded in
+  # by `merge_autonomy_effective_level`. It is written down here because this
+  # is the only moment anything knows it: requirement 8e's audit
+  # (`scripts/detect-classifier-escapes.sh`) runs post hoc with no state-repo
+  # access, so it can no more reconstruct the level in force at this instant
+  # than it can the work source recorded beside it. Left unrecorded, that
+  # audit had to read today's `config.json` instead, which breaks its own
+  # governing invariant in both directions: an operator's later dial-down —
+  # the exact move D18 staging makes, and the direction an incident would
+  # move it — manufactures a `classifier-escape` out of a landing that was
+  # correct when it happened, driving the Stage 2 "zero classifier escapes"
+  # exit criterion non-zero on an action with nothing wrong with it; and a
+  # since-cleared kill switch or since-lifted freeze reads a level that
+  # actually forbade landing as one that permitted it. One field closes both.
   log_event "landing-armed" "$(jq -nc --arg u "$pr_url" --arg r "$slug" --arg src "$source" \
-    --arg c "$complexity" --arg m "$method" --argjson retry "$retry_bool" \
+    --arg c "$complexity" --arg m "$method" --arg lvl "$level" --argjson retry "$retry_bool" \
     --argjson cap "$budget_cap" --argjson count "$budget_count" \
-    '{pr_url: $u, repo: $r, source: $src, complexity: $c, method: $m, cap: $cap, count: $count} + (if $retry then {retry: true} else {} end)')"
+    '{pr_url: $u, repo: $r, source: $src, complexity: $c, method: $m, level: $lvl, cap: $cap, count: $count} + (if $retry then {retry: true} else {} end)')"
   _landing_stage_attempt_armed=1
 }
 
@@ -6681,6 +6696,58 @@ if ! (( DRY_RUN )); then
       _landing_retry_sweep_repo "$sweep_slug" "$retry_login"
     done < <(jq -r '.repos[].slug' "$CONFIG_FILE" 2>/dev/null || true)
   fi
+fi
+
+# 2.1f Classifier-escape audit (D18 Stage 2 exit criterion "zero classifier
+# escapes"; agent-ops#572) — nothing above re-checks the *outcome* of a
+# landing, only the decision that produced it: `scripts/detect-classifier-
+# escapes.sh` is the independent, read-only audit, deliberately reimplementing
+# `lib/landing.sh`'s protected-path list and never calling `landing_eligible`
+# (its own header explains why), rather than being sourced or trusted the
+# way `_landing_retry_sweep_repo` above reuses the real gates verbatim — an
+# audit that shared the code it exists to check could not catch a bug in
+# that shared code. Same sweep shape as `scripts/sweep-human-visibility.sh`
+# (above): stdout is one JSON object per newly-audited pull request, this
+# loop is what actually appends anything to the log — a standalone script
+# never may, per requirement 33's single-writer rule. Fleet-wide regardless
+# of `--repo`, and safe on `--dry-run`: it never arms or lands anything,
+# only reads GitHub's own merged-PR record and the fleet log. Run every
+# cycle rather than gated on `merge_autonomy`: idempotent against its own
+# prior findings (LOG_FILE) for any pull request this repository has already
+# produced a `classifier-escape`/`landing-audit`/`landing-audit-skip` event
+# for, regardless of who merged it — a repository sitting below
+# `agent-merges-routine`, where a merge under the Approver identity is rare
+# or never happens, still pays the one `repos/SLUG/pulls/N` read each such
+# pull request needs to learn who merged it, but only once: that fact is
+# recorded (as `outcome: "not-approver"`, logged below as
+# `landing-audit-skip`) exactly like an audited landing is, so it is never
+# paid again on a later cycle. `timeout 120` bounds what a single cycle
+# spends on this either way, and while a repository with a large backlog of
+# never-yet-recorded pull requests may need several cycles to work through
+# it, each cycle's budget goes further than the last rather than being
+# pinned at a permanent frontier — see the script's own "Idempotency"
+# section for what oldest-first candidate order buys and for the size of
+# that backlog on this repository as of 2026-08-22. The same
+# unreadable-login skip the retry sweep above uses applies here too — with
+# no Approver identity to test `merged_by` against, nothing below could
+# tell an autonomous landing apart from a human's own merge.
+if escape_login="$(approver_token_identity_login "")" && [[ -n "$escape_login" ]]; then
+  while IFS= read -r escape_slug; do
+    [[ -n "$escape_slug" ]] || continue
+    escape_log_lines_before="$(wc -l < "$log_file" 2>&1)" \
+      || { guard_warn "escape_log_lines_before" "$escape_log_lines_before"; escape_log_lines_before=0; }
+    while IFS= read -r escape_action; do
+      [[ -n "$escape_action" ]] || continue
+      case "$(jq -r '.outcome // ""' <<<"$escape_action" 2>/dev/null || true)" in
+        escape) log_event "classifier-escape" "$(jq -c 'del(.outcome)' <<<"$escape_action")" ;;
+        clean|unverifiable) log_event "landing-audit" "$(jq -c '.' <<<"$escape_action")" ;;
+        not-approver) log_event "landing-audit-skip" "$(jq -c '.' <<<"$escape_action")" ;;
+      esac
+    done < <(timeout 120 "$SCRIPT_DIR/scripts/detect-classifier-escapes.sh" \
+               "$escape_slug" "$escape_login" "$union_log" --config "$CONFIG_FILE" \
+               2>>"$cycle_dir/classifier-escape-audit.err" || true)
+    tail -n "+$(( escape_log_lines_before + 1 ))" "$log_file" >> "$union_log" 2>/dev/null || true
+  done < <(jq -r '.repos[].slug' "$CONFIG_FILE" 2>/dev/null || true)
 fi
 
 # 2.2 Back-pressure — across ALL configured repos, regardless of --repo.

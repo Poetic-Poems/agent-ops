@@ -2219,6 +2219,18 @@ landings_json="$(printf '%s\n' "$ALL_EVENTS" | jq -c -s \
     | sort_by(.ts // "") | group_by(.repo // "") | map(last) ) as $latest_budget
   | def verdict_for($url; $at):
       ([ $verdicts[] | select((.pr_url // "") == $url) | select((.ts // "") <= $at) ] | last);
+  # Every classifier-escape/landing-audit event, newest last, joined by
+  # pr_url alone — never at-or-before, unlike verdict_for above, since an
+  # audit only ever happens after the landing it covers, so there is no
+  # "which one could the arm have seen" question to answer. A pull request
+  # with no audit yet reads audit: null, never folded into clean or escape
+  # (requirement 8e).
+  ([ .[] | select(.event == "classifier-escape" or .event == "landing-audit") ]
+    | sort_by(.ts // "")) as $audits
+  | def audit_for($url):
+      ([ $audits[] | select((.pr_url // "") == $url) ] | last) as $a
+      | if $a == null then {audit: null, audit_reason: null}
+        else {audit: ($a.outcome // "escape"), audit_reason: ($a.reason // null)} end;
   {
     window_hours: $hours,
     generated_at: $now,
@@ -2238,7 +2250,7 @@ landings_json="$(printf '%s\n' "$ALL_EVENTS" | jq -c -s \
           node: (.node // ""),
           tier: ($v.tier // null),
           verdict: ($v.verdict // null),
-          adjudication: ($v.adjudication // null) } ],
+          adjudication: ($v.adjudication // null) } + audit_for($u) ],
     refused: [ $refused[] | { ts: (.ts // ""), repo: (.repo // ""),
                               pr_url: (.pr_url // ""), reason: (.reason // "") } ],
     budget: ( ([ ($latest_budget[] | .repo // ""), ($caps | keys[]) ] | unique
@@ -2301,6 +2313,38 @@ if ! jq -e 'type == "object"' <<<"$landings_json" >/dev/null 2>&1; then
   landings_json="$(jq -nc --arg now "$now_iso" \
     '{window_hours: null, generated_at: $now, armed: null, refused: null, budget: null}')"
 fi
+
+# --- Classifier-escape audit roll-up (requirement 8e, agent-ops#572) --------
+# `counts.escape_audits`, never windowed like `landings_json` above — an
+# escape is a permanent fact about one merged pull request, and letting it
+# age out of a 24h/30-day window would recreate exactly the "row nobody
+# reads" the detector exists to prevent. Folded from the fleet-wide event
+# union, the same `classifier-escape`/`landing-audit` events already joined
+# into `landings_json.armed` above by `audit_for`, so the two can never
+# disagree about which pull requests carry which outcome.
+escape_audits_json="$(printf '%s\n' "$ALL_EVENTS" | jq -c -s '
+  ([ .[] | select(.event == "classifier-escape") | . + {outcome: "escape"} ]
+    + [ .[] | select(.event == "landing-audit") ]) as $all
+  | ($all | group_by(.pr_url // "") | map(sort_by(.ts // "") | last)) as $latest
+  | { checked: ($latest | length),
+      clean: ([ $latest[] | select(.outcome == "clean") ] | length),
+      escapes: ([ $latest[] | select(.outcome == "escape") ] | length),
+      unverifiable: ([ $latest[] | select(.outcome == "unverifiable") ] | length),
+      escape_list: ([ $latest[] | select(.outcome == "escape")
+          | {ts: (.ts // ""), repo: (.repo // ""), pr_url: (.pr_url // ""),
+             reason: (.reason // "")} ] | sort_by(.ts) | reverse),
+      unverifiable_list: ([ $latest[] | select(.outcome == "unverifiable")
+          | {ts: (.ts // ""), repo: (.repo // ""), pr_url: (.pr_url // ""),
+             reason: (.reason // "")} ] | sort_by(.ts) | reverse) }
+' 2>/dev/null)"
+if ! jq -e 'type == "object"' <<<"$escape_audits_json" >/dev/null 2>&1; then
+  # Same explicit-failure discipline as landings_json's own degrade path:
+  # a payload this could not assemble must never render as "zero escapes".
+  escape_audits_json='{"checked":null,"clean":null,"escapes":null,"unverifiable":null,"escape_list":null,"unverifiable_list":null}'
+fi
+counts_with_escapes="$(jq -c --argjson e "$escape_audits_json" '. + {escape_audits: $e}' \
+  <<<"$counts_json" 2>/dev/null)"
+[[ -n "$counts_with_escapes" ]] && counts_json="$counts_with_escapes"
 
 # --- Assemble ----------------------------------------------------------------
 # --- The stage budgets, as the page needs them (requirement 4f) -----------------
