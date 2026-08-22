@@ -281,9 +281,15 @@ file and carries placeholders only; `.env` itself is never committed.
   letting `tailscaled` start, ask for an interactive login it cannot
   complete, and exit 0 having already generated and registered a fresh node
   key against the tailnet — the failure mode behind issue #644's 1,421
-  ephemeral nodes. Its own `restart: on-failure:5` is bounded, unlike the
-  shared block's `unless-stopped`, so a credential that cannot fix itself on
-  retry stops the container instead of restarting it forever.
+  ephemeral nodes. `TS_AUTHKEY` is therefore required at every start of this
+  service, not only the first, even where the `tailscale-state` volume
+  already holds the node's identity. Its `restart: on-failure:5` is bounded,
+  where every other service in the file is `unless-stopped`, so a credential
+  that cannot fix itself on retry stops the container instead of restarting
+  it forever; the accepted cost is that Docker does not re-apply an
+  `on-failure` policy when the daemon restarts, so this sidecar and the
+  `dashboard` behind it may need a `docker compose up -d` after a host reboot
+  that the rest of the stack does not.
 - **`dashboard`** (profile `tailnet`) — `scripts/serve-dashboard.sh` sharing the
   `tailscale` sidecar's network namespace (`network_mode: service:tailscale`).
   That shared namespace is what lets Tailscale Serve reach a server bound to
@@ -12791,7 +12797,8 @@ pull request, run the ones the change touches and any it could regress.
    never reaching `tailscaled` — no new node key is registered against the
    tailnet. `docker compose ps` shows it `Exited` after five attempts rather
    than restarting indefinitely, because the `tailscale` service's own
-   `restart: on-failure:5` overrides the shared block's `unless-stopped`.
+   `restart: on-failure:5` bounds it where the rest of the file is
+   `unless-stopped`.
    With `TS_AUTHKEY` set, the same `up -d` starts the sidecar normally and
    `docker compose exec tailscale tailscale status` succeeds.
 1d. **State replicates per node, and comes back as peers.**

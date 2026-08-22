@@ -456,6 +456,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A `tailnet` node with no `TS_AUTHKEY` no longer registers a fresh Tailscale
+  node key once a minute forever (agent-ops#644). The profile's documented
+  precondition was enforced by nothing, so `tailscaled` started anyway, asked
+  for an interactive login it had no way to complete and exited 0 — having
+  already generated and registered a new node key — and `restart:
+  unless-stopped` did it again, 1,421 times over nine days on one node. The
+  `tailscale` service's `entrypoint` now checks `TS_AUTHKEY` before handing
+  control to the image's `containerboot`, logging one line to stderr and
+  exiting 1 when it is empty, and that service alone carries `restart:
+  on-failure:5` so the failure stops rather than loops. `TS_AUTHKEY` is now
+  required at every start of the sidecar, not only its first: a node whose
+  identity already lives in the `tailscale-state` volume must still keep the
+  variable set. Merging this deploys nothing — each node needs its
+  `compose.yaml` re-fetched and `docker compose up -d`.
+
 - The Co-Ordinator's `refinements` input is scoped to candidacy
   (agent-ops#643). `refinements` is a ledger that is never retired, and an
   entry for an item type with no thread to hold it carries the whole
