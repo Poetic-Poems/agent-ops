@@ -27,6 +27,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ownership record `lib/issue-priority.sh` was already carrying, found on PR
   #618 and previously unfileable because it could not land in that pull
   request.
+
 - D18's Stage 2 exit criterion ("revert rate ≤ baseline") is now measured
   continuously rather than only by hand (agent-ops#579): a new daily
   `scripts/publish-revert-rate.sh`, on its own crontab line
