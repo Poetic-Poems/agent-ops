@@ -5990,12 +5990,12 @@ implements.
     incoherent and burns the item's one refinement-per-human-touch allowance
     re-flagging a fault the item never had. `refinement_traceability_fault`
     (`agent-cycle.sh`) closes this the only way that does not depend on the
-    model getting it right a second time: for each ranked candidate, in claim
-    order, before requirement 17a's claim is attempted, it re-derives the
-    item's own recorded refinement from `refinements` — keyed on that
-    candidate's own `repo`/`item`, never on anything the candidate itself
-    claims — and confirms it is genuinely present, verbatim, in that
-    candidate's own `context` or `acceptance`:
+    model getting it right a second time: for each ranked candidate of a
+    model-composed work order, in claim order, before requirement 17a's claim
+    is attempted, it re-derives the item's own recorded refinement from
+    `refinements` — keyed on that candidate's own `repo`/`item`, never on
+    anything the candidate itself claims — and confirms it is genuinely
+    present, verbatim, in that candidate's own `context` or `acceptance`:
     - A `spec` entry (requirement 17b) costs no extra read: the text is
       already in `refinements`, so its presence in `context` is checked
       directly.
@@ -6018,6 +6018,16 @@ implements.
     limit) fails open — a fact about GitHub's availability, not about the
     work order, the same direction every other degraded `gh` read in this
     pipeline already fails.
+
+    A fallback selection (requirement 3v) is not checked. `context` there is
+    composed by `fallback_select_candidate` in jq, out of the very band entry
+    the candidate names, so one item's refinement cannot reach another item's
+    work order; and that composition draws on the item's own record rather
+    than on `refinements`, so a spec-refined item picked mechanically carries
+    no verbatim spec and would fault every time. The fallback's candidate
+    list is one candidate long, so that fault would leave the cycle with
+    nothing to claim — disarming the path requirement 3v exists to provide
+    precisely when the model will not select.
 17a. **The claim.** The Script — never the model — takes an atomic per-item
     claim before the Implementer starts, walking the ranked candidates in
     order and handing the first successful claim onward (`lib/claim.sh`).
@@ -13945,7 +13955,10 @@ pull request, run the ones the change touches and any it could regress.
    item with no `refinements` entry, or one recorded under a different repo,
    is not checked and costs no `gh` call; and an unreachable GitHub, or a
    malformed `refinements` document, fails open rather than faulting the
-   candidate.
+   candidate. The same test pins the scoping: a candidate
+   `fallback_select_candidate` itself picks for a spec-refined item does not
+   satisfy the verbatim check, and the claim loop's own call site guards the
+   check with `selected_by_fallback` so that candidate is never faulted.
 8. **A no-op Implementer is recorded.** Drive one cycle in which the
    Implementer reports `blocked` without opening a PR: the cycle must exit 0
    having logged an `attempt-failed` carrying that item and the stage's own

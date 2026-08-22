@@ -8886,7 +8886,20 @@ for (( ci = 0; ci < n_cand; ci++ )); do
   # cheaper and unrelated to it — a candidate that fails traceability is
   # never safe to hand to an Implementer regardless of whether it is also
   # already claimed elsewhere.
-  c_trace_fault="$(refinement_traceability_fault "$cand" "$refinements_json")"
+  #
+  # Scoped to a model-composed work order, which is the only kind that can
+  # carry another item's refinement at all: a fallback pick (requirement 3v)
+  # is built by `fallback_select_candidate` out of the very band entry it
+  # names, in jq, so a cross-item swap is not a shape it can take. It also
+  # composes `context` from that entry's own record and never from
+  # `refinements`, so a spec-refined item picked mechanically would fail the
+  # verbatim check every single time — and, the fallback's own candidate list
+  # being one candidate long, faulting it would leave the cycle with nothing
+  # to claim, disarming the one path that exists to keep the fleet moving
+  # when the model will not select.
+  c_trace_fault=""
+  (( selected_by_fallback )) \
+    || c_trace_fault="$(refinement_traceability_fault "$cand" "$refinements_json")"
   if [[ -n "$c_trace_fault" ]]; then
     log_event "claim-skipped" "$(jq -nc --arg r "$c_repo" --arg i "$c_item" --arg s "$c_source" --arg d "$c_trace_fault" \
       '{repo: $r, item: $i, source: $s, cause: "untraceable", detail: $d}')"

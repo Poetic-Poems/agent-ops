@@ -74,6 +74,7 @@ GH_RC=0
 # Counted via a file, not a variable: every call site below invokes this
 # function through `$( … )`, which forks a subshell — a plain variable
 # increment inside `gh` would be lost the moment that subshell exits.
+# shellcheck disable=SC2317  # reached only from the lifted refinement_traceability_fault block.
 gh() {
   printf 'x' >>"$GH_CALLS_FILE"
   [[ "$GH_RC" == "0" ]] || return "$GH_RC"
@@ -182,6 +183,38 @@ assert_empty "a malformed refinements document is treated as empty" \
   "$(refinement_traceability_fault "$cand_swapped" 'not json')"
 assert_empty "a candidate missing repo/item is skipped" \
   "$(refinement_traceability_fault '{"context":"x"}' "$refinements")"
+
+# --- The Script's own fallback pick is out of scope, and must stay so ---------
+# `fallback_select_candidate` (requirement 3v) builds its one candidate in jq
+# out of the very band entry it names, so it cannot cross-contaminate — but it
+# composes `context` from that entry's own record and never from
+# `refinements`, so a spec-refined item picked mechanically fails the verbatim
+# check every time. Its candidate list is one candidate long, so faulting it
+# would leave the cycle nothing to claim and disarm the only path that keeps
+# the fleet moving when the model will not select. Both halves are asserted:
+# that the fault is real (so the scoping is load-bearing, not decorative), and
+# that the claim loop's own call site is guarded by `selected_by_fallback`.
+
+fb_block="$(extract_block '^fallback_select_candidate\(\) \{' "^\}$" "$AGENT_CYCLE")"
+if [[ -z "$fb_block" || "$fb_block" != *'jq'* ]]; then
+  echo "FAIL - could not extract fallback_select_candidate from agent-cycle.sh — has it moved?" >&2
+  exit 1
+fi
+eval "$fb_block"
+
+fb_repos='[{"slug": "o/r", "default_branch": "main", "sources": ["tech-debt"],
+  "tech_debt": [{"ref": "TD1", "title": "a debt item", "body": "the tech-debt record body as filed"}]}]'
+fb_cand="$(fallback_select_candidate "$fb_repos" "a-model" "$refinements_spec" '{"tech-debt": "required"}')"
+assert_eq "the fallback really does pick the spec-refined item" "TD1"   "$(jq -r '.item // ""' <<<"$fb_cand")"
+assert_nonempty "…and its script-built context does not satisfy the verbatim spec check"   "$(refinement_traceability_fault "$fb_cand" "$refinements_spec")"
+
+claim_loop="$(extract_block '^  c_trace_fault=' '^  if \[\[ -n ' "$AGENT_CYCLE")"
+if [[ "$claim_loop" == *'selected_by_fallback'* ]]; then
+  printf 'ok   - %s\n' "the claim loop guards the check with selected_by_fallback, so a fallback pick is never faulted"
+else
+  printf 'FAIL - %s\n' "the claim loop calls refinement_traceability_fault unguarded — a fallback pick would be skipped and the cycle would claim nothing"
+  failures=$(( failures + 1 ))
+fi
 
 printf '\n%s\n' "$( (( failures == 0 )) && echo "All assertions passed." || echo "$failures assertion(s) failed." )"
 exit $(( failures > 0 ))

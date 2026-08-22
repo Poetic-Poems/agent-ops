@@ -529,7 +529,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (fetched live) be present in its own `context` or `acceptance`. A candidate
   that fails either check is skipped without a claim attempt, logged as
   `claim-skipped` with `cause: "untraceable"`, and never reaches an
-  Implementer.
+  Implementer. The check is scoped to a model-composed work order: the
+  Script's own fallback pick (requirement 3v) builds `context` in jq from the
+  band entry it names, so it cannot cross-contaminate, and it draws on the
+  item's own record rather than on `refinements`, so checking it would fault
+  every spec-refined mechanical pick and leave that cycle nothing to claim.
 
 - The Co-Ordinator's `refinements` input is scoped to candidacy
   (agent-ops#643). `refinements` is a ledger that is never retired, and an
