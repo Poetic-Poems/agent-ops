@@ -281,6 +281,66 @@ assert_eq "a label applied longer ago than the grace window, with no own record,
 assert_eq "  ... and is not offered for stale removal either, since it was never proven ours" "0" \
   "$(jq 'length' <<<"$(label_own_stale_applications "$old_candidates" '{}' '[]' "$fixed_now")")"
 
+# --- log_latest_ts and the snapshot horizon (#670) ---------------------------
+# The grace period above is only ever exercised with a hand-picked $fixed_now.
+# In production that value is `union_log_horizon` — `log_latest_ts`'s own read
+# of `$union_log`, captured once right after the snapshot is taken, before the
+# cycle appends any of its own events into it — never wall clock. This section
+# tests the extract itself, then replays agent-ops#598's own trace through it.
+
+horizon_log="$tmp_dir/horizon.jsonl"
+cat > "$horizon_log" <<'EOF'
+{"ts":"2026-08-21T07:10:00Z","event":"stage-end","stage":"coordinator"}
+{"ts":"2026-08-21T07:36:00Z","event":"stage-end","stage":"reviewer"}
+{"ts":"2026-08-21T07:20:00Z","event":"warning","detail":"unrelated"}
+EOF
+assert_eq "log_latest_ts prints the newest ts across a mixed stream" \
+  "2026-08-21T07:36:00Z" "$(log_latest_ts "$horizon_log")"
+printf '%s\n' 'not json at all' >> "$horizon_log"
+assert_eq "an unparseable trailing line is skipped, not fatal" \
+  "2026-08-21T07:36:00Z" "$(log_latest_ts "$horizon_log")"
+assert_eq "a missing log yields empty output" "" "$(log_latest_ts "$tmp_dir/nonexistent.jsonl")"
+: > "$tmp_dir/empty.jsonl"
+assert_eq "an empty log yields empty output" "" "$(log_latest_ts "$tmp_dir/empty.jsonl")"
+assert_eq "reads stdin when no file is given, same as the map extracts above" \
+  "2026-08-21T07:36:00Z" "$(log_latest_ts < "$horizon_log")"
+
+# The agent-ops#598 replay: ockham-2's cycle snapshots `union_log` before
+# poetic-1 — a peer node, mid its own concurrent cycle — applies the label and
+# logs its own `own-label-action`, so the snapshot's own-actions map has no
+# record of it at all. Measured against the snapshot's own horizon, the
+# absence is exactly what "deferred" describes; measured against wall clock
+# read back once the cycle has run long enough to clear the grace window, the
+# identical absence reads as "not-ours" — the misattribution #670 closes.
+replay_horizon="$(log_latest_ts "$tmp_dir/nonexistent.jsonl")"
+[[ -z "$replay_horizon" ]] || assert_eq "sanity: nonexistent log has no horizon" "" "$replay_horizon"
+replay_horizon="2026-08-21T07:36:00Z"
+replay_own_map='{}'
+replay_candidates='[{"repo":"o/r","number":598,"label":"needs-refinement","state":"open","labelled_at":"2026-08-21T07:41:25Z","by":"poetic-1"}]'
+
+assert_eq "#598 replay: measured against the snapshot's own horizon, the peer's write is deferred, not a hand-flag" "0" \
+  "$(jq 'length' <<<"$(label_filter_own_applications "$replay_candidates" "$replay_own_map" "$replay_horizon")")"
+assert_eq "  ... and it is not offered up for stale removal either" "0" \
+  "$(jq 'length' <<<"$(label_own_stale_applications "$replay_candidates" "$replay_own_map" '[]' "$replay_horizon")")"
+assert_eq "  ... but the identical candidate against wall clock 36 minutes later reproduces the pre-#670 misattribution" "598" \
+  "$(jq -r '.[0].number' <<<"$(label_filter_own_applications "$replay_candidates" "$replay_own_map" "2026-08-21T08:12:36Z")")"
+
+# A negative age (labelled_at after NOW) must always classify deferred, never
+# not-ours — pinned with a gap well past the grace window's own magnitude, so
+# an `abs()` "simplification" of `own_class`'s `($now_epoch - $at_epoch) <
+# $grace` test (which would read a 2-hour *future* label as a 2-hour-old one,
+# and drop it as not-ours) cannot silently regress it.
+future_now="2026-08-17T09:00:00Z"
+future_labelled_at="2026-08-17T11:00:00Z"
+if label_is_own_application '{}' "o/r" "70" "$future_labelled_at" "$future_now"; then
+  assert_eq "a labelled_at two hours after NOW is still not reported as ours" "no" "yes"
+else
+  assert_eq "a labelled_at two hours after NOW is still not reported as ours" "no" "no"
+fi
+future_candidates='[{"repo":"o/r","number":70,"label":"needs-refinement","state":"open","labelled_at":"'"$future_labelled_at"'","by":"warwick"}]'
+assert_eq "  ... and label_filter_own_applications drops it as deferred rather than keeping it as not-ours" "0" \
+  "$(jq 'length' <<<"$(label_filter_own_applications "$future_candidates" '{}' "$future_now")")"
+
 # --- The argv cap (requirement 4g) -------------------------------------------
 # The own-actions map and the blocked extract both grow with the fleet's
 # history, and past MAX_ARG_STRLEN (131072 bytes, the kernel's per-entry argv

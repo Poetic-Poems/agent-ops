@@ -170,15 +170,51 @@ label_own_actions_map() {
   printf '%s' "$out"
 }
 
+# log_latest_ts [LOG_FILE]
+# Print the newest `.ts` across LOG_FILE, or stdin if it is omitted or "-" —
+# the log stream's own horizon: how far forward the fleet's shared memory
+# reaches as of this snapshot, not wall clock (#670). `agent-cycle.sh` calls
+# this once, immediately after `union_log` is materialised and before that
+# cycle's own events are appended into it, and passes the result as the
+# explicit `NOW` to `label_filter_own_applications` and
+# `label_own_stale_applications` below — measuring the own-label grace period
+# against how stale the snapshot actually is, rather than against however
+# long this cycle has been running by the time the read-back gets to it.
+# ISO 8601 UTC timestamps (`Z`-suffixed, as every `ts` in this fleet's logs
+# is) sort correctly as plain strings, so no epoch conversion is needed here.
+# Same fail-safe contract as every other extract in this file and in
+# `lib/cycle-state.sh`: an unparseable line is skipped, not fatal, and an
+# empty, missing, or unreadable stream yields empty output — which is exactly
+# the value that makes `label_filter_own_applications`/
+# `label_own_stale_applications` fall back to wall clock on their own, the
+# same as before this function existed (a brand-new fleet's union log has no
+# own records to defer against anyway).
+log_latest_ts() {
+  local src="${1:--}" out=""
+  if [[ "$src" == "-" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' 2>/dev/null \
+      | jq -rs 'map(.ts // empty) | if length == 0 then empty else max end' 2>/dev/null || true)"
+  elif [[ -s "$src" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null \
+      | jq -rs 'map(.ts // empty) | if length == 0 then empty else max end' 2>/dev/null || true)"
+  fi
+  printf '%s' "$out"
+}
+
 # label_filter_own_applications CANDIDATES_JSON OWN_ACTIONS_JSON [NOW]
 # Print CANDIDATES_JSON — the `{repo, number, labelled_at, …}` array
 # `scripts/gather-hand-flagged-refinements.sh` produces — with every entry
 # dropped that `own_class` (above) classifies as "ours" or "deferred",
 # keeping only "not-ours": a label old enough, or with no own record near
 # enough, that a human's own hand remains the explanation. NOW is compared
-# against `labelled_at` for the grace test and defaults to `date -u` — pass
-# it explicitly (as the tests do) to keep a grace-period assertion
-# deterministic; nothing in this file reads the clock itself otherwise.
+# against `labelled_at` for the grace test and defaults to `date -u` when
+# omitted or empty — but the caller that matters, `agent-cycle.sh`'s
+# requirement-39f read-back, always passes `log_latest_ts`'s own
+# `union_log_horizon` (#670) rather than relying on that default: the grace
+# period has to be measured against how stale the union-log snapshot is, not
+# against wall clock read back however much later in the cycle this runs.
+# Tests pass a fixed value for the same reason the caller does — determinism
+# — not because the default is otherwise the right choice in production.
 #
 # This is the read-back half requirement 39f describes, and the one place the
 # attribution is decided: `label_is_own_application` and
@@ -243,8 +279,11 @@ label_filter_own_applications() {
 # safe to retry removing (#526's requirement 3 — deferred is a third state,
 # not a synonym for "kept" that would otherwise fall into this set as a
 # false stale-retry candidate). NOW defaults to `date -u`, same as that
-# function; pass it explicitly to keep a grace-period assertion
-# deterministic.
+# function, and the same caller passes the same `union_log_horizon` here too
+# (#670) — not optional: this function and `label_filter_own_applications`
+# share `_label_own_class_jq_def` precisely so they cannot disagree about a
+# candidate's class, and passing the horizon to one but not the other would
+# reintroduce exactly that disagreement.
 #
 # BLOCKED_JSON is `lib/cycle-state.sh`'s `blocked_items` extract, and the test
 # against it is what separates a stuck label from a working one: while a block
