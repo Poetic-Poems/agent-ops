@@ -2137,6 +2137,11 @@ mb_ancient="$(date -u -d '-48 hours' +%Y-%m-%dT%H:%M:%SZ)"
   # read 2, the plain count of landings this window, not 0.
   printf '{"ts":"%s","event":"landing-armed","repo":"acme/unlimited","cap":0,"count":null,"pr_url":"https://github.com/acme/unlimited/pull/1"}\n' "$mb_fresh"
   printf '{"ts":"%s","event":"landing-armed","repo":"acme/unlimited","cap":0,"count":null,"pr_url":"https://github.com/acme/unlimited/pull/2"}\n' "$mb_now"
+  # An ok row whose own landing-armed event has aged out of the digest
+  # window: the count it read has already rolled off the governor's rolling
+  # 24h clock exactly like a stale hold's, so it must reset to unmeasured
+  # rather than carrying a 5-day-old count forward as though it were current.
+  printf '{"ts":"%s","event":"landing-armed","repo":"acme/okstale","cap":8,"count":7,"pr_url":"https://github.com/acme/okstale/pull/3"}\n' "$mb_stale"
   # A hold whose own event has aged out of the digest window: the count it
   # read has already rolled off the governor's rolling 24h clock, so it must
   # read back as ok with nothing measured, not as a still-currently-held
@@ -2159,6 +2164,15 @@ assert_eq "an unlimited repository's consumed counts this window's own landing-a
   "2" "$(budget_row acme/unlimited | jq -r '.consumed')"
 assert_eq "  ... and still reads unlimited" "true" \
   "$(budget_row acme/unlimited | jq -r '.unlimited')"
+
+assert_eq "an ok row whose event has aged out of the digest window stays ok" \
+  "ok" "$(budget_row acme/okstale | jq -r '.status')"
+assert_eq "  ... with its stale count reset to unmeasured, not carried forward" \
+  "0" "$(budget_row acme/okstale | jq -r '.consumed')"
+assert_eq "  ... and remaining reset to the full cap" \
+  "8" "$(budget_row acme/okstale | jq -r '.remaining')"
+assert_eq "  ... and no as_of, since it now reads like gate 5 was never reached" \
+  "null" "$(budget_row acme/okstale | jq -r '.as_of')"
 
 assert_eq "a hold whose event has aged out of the digest window reads back as ok" \
   "ok" "$(budget_row acme/heldstale | jq -r '.status')"

@@ -995,7 +995,14 @@ Three things it will not hide, each a way a digest could mislead by omission:
   call this dashboard tick has no business making. A repository this tick has
   never seen a budget decision for falls back to `config.json`'s configured
   cap, reported `ok` with nothing yet consumed — a real absence of data, not a
-  claim that nothing has landed.
+  claim that nothing has landed. A repository that *has* a recorded decision
+  keeps that decision's own `cap` — never re-read from `config.json` — until
+  its next gate-5 decision refreshes it, even if an operator edits
+  `merge_budget_per_day` for that repository in the meantime: the recorded
+  `cap` and `count` are read together, as the coherent pair
+  `merge_budget_decide` actually reasoned from, and a superseding-cap edit
+  becomes visible only once a fresh decision carries the new value alongside
+  a fresh count measured against it.
 
   `consumed` for an `ok` row is the count `merge_budget_decide` read *before*
   granting the arm that logged it — the landing the arm itself produced is
@@ -1005,16 +1012,23 @@ Three things it will not hide, each a way a digest could mislead by omission:
   before counting, so its row instead counts this digest's own `landing-armed`
   events inside the window — the same plain count the `armed`/`refused` rows
   above already give, and what this panel counted before the per-repository
-  `budget` block existed. A held row is aged back to `ok` once its own event
-  falls outside this digest's window, because a hold is a rolling-24h fact and
-  one nothing has refreshed for a full window has already rolled off the
-  governor's own clock; its `consumed` resets to unmeasured with it — an aged
-  hold reads exactly like a repository gate 5 has never reached, rather than
-  carrying its stale count forward under a status now claiming to be healthy.
-  A frozen row is never aged back this way, because a freeze stands until a
-  human clears the fleet flag, not until time passes. Every held or frozen row
-  carries the source event's own timestamp so the page can render its age
-  (`held · as of 2d ago`) rather than presenting a stale decision as current.
+  `budget` block existed. An `ok` row is aged back to unmeasured the same way
+  a held row is: once its own event falls outside this digest's window, the
+  count it carries has already rolled off the governor's own rolling-24h
+  clock, so `consumed` resets to `0` rather than presenting a count that is no
+  longer live as though it still were. A held row is aged back to `ok` on the
+  identical rule, because a hold is a rolling-24h fact too, and one nothing
+  has refreshed for a full window has already rolled off the governor's own
+  clock; its `consumed` resets to unmeasured with it — an aged hold reads
+  exactly like a repository gate 5 has never reached, rather than carrying its
+  stale count forward under a status now claiming to be healthy. A frozen row
+  is never aged back this way, because a freeze stands until a human clears
+  the fleet flag, not until time passes. Every held or frozen row carries the
+  source event's own timestamp so the page can render its age (`held · as of
+  2d ago`) rather than presenting a stale decision as current; an `ok` row
+  never carries `as_of`, aged back or not, since once its count resets to
+  unmeasured it is indistinguishable from a repository gate 5 has never
+  reached, which likewise has no age to show.
 
   A held or frozen repository never renders folded into the plain
   `consumed/cap` text an `ok` repository gets, and never folded into the
