@@ -1516,7 +1516,12 @@
     // into the same quiet "consumed/cap" text a healthy one gets: it earns
     // its own row with a badge and, for a freeze, why — so a fleet that has
     // been idle for hours because the governor closed it does not read the
-    // same as a fleet with nothing left to do.
+    // same as a fleet with nothing left to do. Neither status is a live
+    // read — both are the state as of the last gate-5 decision that produced
+    // them — so a held/frozen row also carries `as_of`'s age; a stale `held`
+    // has already been aged back to `ok` by the Publisher, but a `frozen` one
+    // has not, since a freeze stands until a human clears it regardless of
+    // how long ago it tripped.
     if (budget.length) {
       var bparts = [];
       var flaggedRepos = [];
@@ -1525,21 +1530,26 @@
         var base = b.unlimited ? (name + " " + b.consumed + "/∞") : (name + " " + b.consumed + "/" + b.cap);
         var w = b.oldest_waiting;
         var waitingText = w ? "oldest waiting #" + w.number + ", " + fmtAgo(w.created_at) : null;
+        // `as_of` is the source event's own timestamp — the age of a held or
+        // frozen row's own decision, not of this tick, since neither status is
+        // a live read (scripts/publish-dashboard.sh's own comment on `budget`).
+        var asOfText = b.as_of ? "as of " + fmtAgo(b.as_of) : null;
         if (b.status === "frozen") {
           flaggedRepos.push(el("div", {class:"panel"}, [
             el("span", {class:"badge b-red", text:"frozen"}),
             el("span", {class:"mono", text:" " + base}),
-            el("span", {class:"muted", text:" — " + (b.reason || "counting anomaly")
-              + (waitingText ? " · " + waitingText : "")})
+            el("span", {class:"muted", text:" — " + [b.reason || "counting anomaly", asOfText, waitingText]
+              .filter(Boolean).join(" · ")})
           ]));
         } else if (b.status === "held") {
+          var heldExtra = [asOfText, waitingText].filter(Boolean).join(" · ");
           flaggedRepos.push(el("div", {class:"panel"}, [
             el("span", {class:"badge b-amber", text:"held"}),
             el("span", {class:"mono", text:" " + base}),
-            waitingText ? el("span", {class:"muted", text:" — " + waitingText}) : null
+            heldExtra ? el("span", {class:"muted", text:" — " + heldExtra}) : null
           ]));
         } else {
-          bparts.push(base + (b.remaining === 0 ? " (cap reached)" : ""));
+          bparts.push(base);
         }
       });
       if (bparts.length) {

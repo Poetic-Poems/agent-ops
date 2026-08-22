@@ -2119,6 +2119,64 @@ assert_eq "its warns array reaches the page" "1" \
 assert_eq "and its timestamp" "2026-08-18T09:00:00Z" \
   "$(jq -r '.status.doctor.timestamp' <<<"$ddata")"
 
+# --- The merge-budget row (D18 issue #574, PR #671 review) ------------------
+# landings.budget is sourced from the event log's own landing-armed/
+# merge-budget-hold/merge-budget-frozen entries, never recomputed, so its
+# correctness lives entirely in the digest's own jq — exercised here against
+# real timestamps rather than the hand-built fixtures test/dashboard-render.
+# test.sh renders, which only ever prove index.html draws whatever budget
+# array it is handed.
+mb="$(new_home nodeBudget)"
+mb_now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+mb_fresh="$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)"
+mb_stale="$(date -u -d '-30 hours' +%Y-%m-%dT%H:%M:%SZ)"
+mb_ancient="$(date -u -d '-48 hours' +%Y-%m-%dT%H:%M:%SZ)"
+{
+  # An unlimited (cap 0) repository: merge_budget_decide never counts a zero
+  # cap, so both landing-armed events carry count:null. consumed must still
+  # read 2, the plain count of landings this window, not 0.
+  printf '{"ts":"%s","event":"landing-armed","repo":"acme/unlimited","cap":0,"count":null,"pr_url":"https://github.com/acme/unlimited/pull/1"}\n' "$mb_fresh"
+  printf '{"ts":"%s","event":"landing-armed","repo":"acme/unlimited","cap":0,"count":null,"pr_url":"https://github.com/acme/unlimited/pull/2"}\n' "$mb_now"
+  # A hold whose own event has aged out of the digest window: the count it
+  # read has already rolled off the governor's rolling 24h clock, so it must
+  # read back as ok with nothing measured, not as a still-currently-held
+  # repository sitting at its old cap.
+  printf '{"ts":"%s","event":"merge-budget-hold","repo":"acme/heldstale","cap":8,"count":8,"waiting_backlog":{"number":99,"url":"https://github.com/acme/heldstale/pull/99","created_at":"%s"}}\n' "$mb_stale" "$mb_stale"
+  # A hold whose own event is still inside the window: stays held, and
+  # carries as_of for the page to render its age.
+  printf '{"ts":"%s","event":"merge-budget-hold","repo":"acme/heldfresh","cap":8,"count":8,"waiting_backlog":null}\n' "$mb_fresh"
+  # A freeze twice the window's own age: a freeze is never aged back by time
+  # alone, only by a human clearing the fleet flag, so it must still read
+  # frozen.
+  printf '{"ts":"%s","event":"merge-budget-frozen","repo":"acme/frozenold","cap":1,"count":3,"reason":"counting anomaly: 3 landed > 1 cap","waiting_backlog":null}\n' "$mb_ancient"
+} > "$mb/.local/state/poetic-agents/log.jsonl"
+
+run_publish "$mb"
+mbdata="$(data_of "$mb")"
+budget_row() { jq -c --arg r "$1" '.landings.budget[] | select(.repo == $r)' <<<"$mbdata"; }
+
+assert_eq "an unlimited repository's consumed counts this window's own landing-armed events, not merge_budget_decide's null count" \
+  "2" "$(budget_row acme/unlimited | jq -r '.consumed')"
+assert_eq "  ... and still reads unlimited" "true" \
+  "$(budget_row acme/unlimited | jq -r '.unlimited')"
+
+assert_eq "a hold whose event has aged out of the digest window reads back as ok" \
+  "ok" "$(budget_row acme/heldstale | jq -r '.status')"
+assert_eq "  ... with its stale count reset to unmeasured, not carried forward" \
+  "0" "$(budget_row acme/heldstale | jq -r '.consumed')"
+assert_eq "  ... and remaining reset to the full cap" \
+  "8" "$(budget_row acme/heldstale | jq -r '.remaining')"
+
+assert_eq "a hold whose event is still inside the digest window stays held" \
+  "held" "$(budget_row acme/heldfresh | jq -r '.status')"
+assert_eq "  ... and carries as_of so the page can render its own age" \
+  "$mb_fresh" "$(budget_row acme/heldfresh | jq -r '.as_of')"
+
+assert_eq "a freeze twice the digest window's own age is never aged back" \
+  "frozen" "$(budget_row acme/frozenold | jq -r '.status')"
+assert_eq "  ... carrying as_of even well outside the window" \
+  "$mb_ancient" "$(budget_row acme/frozenold | jq -r '.as_of')"
+
 # ---------------------------------------------------------------------------------
 if (( failures > 0 )); then
   printf '\n%d assertion(s) failed\n' "$failures"

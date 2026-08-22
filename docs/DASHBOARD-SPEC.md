@@ -984,15 +984,37 @@ Three things it will not hide, each a way a digest could mislead by omission:
   `merge_budget_decide` read at that decision, so the single latest of the
   three for a repository — across the whole retained log, not only this
   digest's own window, the same reasoning the verdict join below already uses
-  — is that repository's current state. This is what keeps the freeze's own
-  reason and the oldest waiting pull request visible without a live read of
-  the freeze flag or `merge_budget_oldest_waiting`: both ride the
+  — is that repository's state **as of that last gate-5 decision, not a live
+  read**, and of unbounded age: a repository whose backlog is empty, or whose
+  candidates all fail eligibility before reaching gate 5, keeps whatever event
+  last fired indefinitely. This is what keeps the freeze's own reason and the
+  oldest waiting pull request visible without a live read of the freeze flag
+  or `merge_budget_oldest_waiting`: both ride the
   `merge-budget-frozen`/`merge-budget-hold` event that already fires the
   moment `lib/merge-budget.sh` establishes them, rather than a second network
   call this dashboard tick has no business making. A repository this tick has
   never seen a budget decision for falls back to `config.json`'s configured
   cap, reported `ok` with nothing yet consumed — a real absence of data, not a
   claim that nothing has landed.
+
+  `consumed` for an `ok` row is the count `merge_budget_decide` read *before*
+  granting the arm that logged it — the landing the arm itself produced is
+  never in it, so a repository that just spent its last permitted landing this
+  window reads, for example, 7/8, not 8/8. An unlimited repository never has a
+  `count` to read at all: `merge_budget_decide` short-circuits a zero cap
+  before counting, so its row instead counts this digest's own `landing-armed`
+  events inside the window — the same plain count the `armed`/`refused` rows
+  above already give, and what this panel counted before the per-repository
+  `budget` block existed. A held row is aged back to `ok` once its own event
+  falls outside this digest's window, because a hold is a rolling-24h fact and
+  one nothing has refreshed for a full window has already rolled off the
+  governor's own clock; its `consumed` resets to unmeasured with it — an aged
+  hold reads exactly like a repository gate 5 has never reached, rather than
+  carrying its stale count forward under a status now claiming to be healthy.
+  A frozen row is never aged back this way, because a freeze stands until a
+  human clears the fleet flag, not until time passes. Every held or frozen row
+  carries the source event's own timestamp so the page can render its age
+  (`held · as of 2d ago`) rather than presenting a stale decision as current.
 
   A held or frozen repository never renders folded into the plain
   `consumed/cap` text an `ok` repository gets, and never folded into the

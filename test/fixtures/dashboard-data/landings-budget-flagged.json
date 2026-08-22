@@ -71,7 +71,8 @@
           "number": 612,
           "url": "https://github.com/Poetic-Poems/agent-ops/pull/612",
           "created_at": "@ago:3h"
-        }
+        },
+        "as_of": "@ago:5h"
       },
       {
         "repo": "Poetic-Poems/poetic",
@@ -85,7 +86,8 @@
           "number": 88,
           "url": "https://github.com/Poetic-Poems/poetic/pull/88",
           "created_at": "@ago:6h"
-        }
+        },
+        "as_of": "@ago:2d"
       },
       {
         "repo": "Poetic-Poems/poetic-fiddle",

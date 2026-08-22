@@ -217,12 +217,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `merge_budget_decide` read at the moment it granted that arm, and
   `merge-budget-frozen` carries the freeze's `reason` and the same
   `waiting_backlog` its paired `merge-budget-hold` logs, so the latest of
-  those three events for a repository is its current budget state — with no
-  live read of the freeze flag or the waiting backlog on a dashboard tick. A
-  held or frozen repository renders as its own badged row, never folded into
-  the quiet `consumed/cap` line an unheld repository gets and never counted
-  as an eligibility refusal: "the fleet is idle because the governor closed"
-  and "the fleet is idle because there is no work" no longer read alike.
+  those three events for a repository is its state as of that last decision
+  — not a live read, and of unbounded age — with no live read of the freeze
+  flag or the waiting backlog on a dashboard tick. A held row ages back to
+  `ok`, its consumption reset to unmeasured, once its own event falls
+  outside the digest window (a hold is a rolling-24h fact); a frozen row
+  never does, since a freeze stands until a human clears it. Every held or
+  frozen row carries the source event's own timestamp (`as_of`) so the page
+  can render its age (`held · as of 2d ago`). An unlimited (`0`) repository,
+  which the governor never counts at all, reports the plain count of
+  landings this digest's own window saw, rather than always reading
+  `0/∞`. A held or frozen repository renders as its own badged row, never
+  folded into the quiet `consumed/cap` line an unheld repository gets and
+  never counted as an eligibility refusal: "the fleet is idle because the
+  governor closed" and "the fleet is idle because there is no work" no
+  longer read alike.
 
 - An hourly, unattended `scripts/doctor.sh --unattended` pass (agent-ops#543),
   on its own `deploy/docker/crontab.tmpl` line: the same Configuration and

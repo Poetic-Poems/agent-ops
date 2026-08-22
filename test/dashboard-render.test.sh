@@ -999,12 +999,16 @@ assert_contains "  ... showing consumed against cap the same as any other repo" 
   "agent-ops 8/8" "$out"
 assert_contains "  ... and the oldest pull request the cap is making wait, with its age" \
   "oldest waiting #612, 3h ago" "$out"
+assert_contains "  ... and its own as_of age, since a held row is not a live read" \
+  "as of 5h ago" "$out"
 assert_contains "a frozen repository gets its own badge" \
   "frozen" "$out"
 assert_contains "  ... naming why, from the event log rather than a live read of the freeze flag" \
   "counting anomaly: 3 landed > 1 cap" "$out"
 assert_contains "  ... and its own oldest waiting pull request" \
   "oldest waiting #88, 6h ago" "$out"
+assert_contains "  ... and its own as_of age, twice the digest window and still shown, since a freeze is never aged back by time alone" \
+  "as of 2d ago" "$out"
 assert_contains "a repository merely refused on eligibility keeps the plain ok reading" \
   "poetic-fiddle 1/5" "$out"
 assert_contains "  ... and is the only repo left in the joined ok line — the held and frozen repos were pulled out of it into their own rows, not merely relabelled inline" \
