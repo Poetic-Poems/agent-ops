@@ -1,8 +1,8 @@
-# Hourly Autonomous Implementation Pipeline — as-built specification
+# Autonomous Implementation Pipeline — as-built specification
 
 ## About this document
 
-This is the as-built requirements specification for the hourly implementation
+This is the as-built requirements specification for the implementation
 pipeline: the numbered requirements the system satisfies, the components that
 satisfy them, the acceptance checks that prove it, and the reasoning behind
 them. It describes the system as it exists, and it must keep doing so — any
@@ -13,15 +13,16 @@ silent, follow the conventions of the two target repositories (their
 
 ## What it is
 
-A pipeline that, once an hour, picks **at most one** well-scoped item of
-pending work from one of two GitHub repositories, implements it on a feature
-branch in an ephemeral clone, reviews and corrects the result, and leaves a
-mergeable pull request for a human to approve. It runs unattended on the
-host machine (WSL2 Ubuntu). The only human involvement is final pull-request
-review and merge.
+A pipeline that, on a configured cadence
+(`schedule.cycle_interval_minutes`), picks **at most one** well-scoped item
+of pending work from one of two GitHub repositories, implements it on a
+feature branch in an ephemeral clone, reviews and corrects the result, and
+leaves a mergeable pull request for a human to approve. It runs unattended
+on the host machine (WSL2 Ubuntu). The only human involvement is final
+pull-request review and merge.
 
 ```
-cron (hourly)
+cron (schedule.cycle_interval_minutes)
   └─ agent-cycle.sh                 ← the Script: lock, stand-down checks, repo ordering
        ├─ Co-Ordinator (Haiku)      ← selects ≤ 1 item, emits a work order; nothing else
        ├─ Implementer (Sonnet/Haiku)← ephemeral clone, feature branch, draft PR

@@ -1590,7 +1590,7 @@ Create the review PR label in both repos (once):
 ```bash
 gh api -X POST repos/Poetic-Poems/poetic/labels \
   -f name='project-review' -f color='5319e7' \
-  -f description='PR raised by the weekly project-review pipeline'
+  -f description='Raised by the project-review pipeline'
 # ...and the same for Poetic-Poems/poetic-fiddle
 ```
 

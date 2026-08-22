@@ -1,7 +1,7 @@
 # agent-ops
 
-Operations tooling for the Poetic autonomous agent pipelines: the hourly
-implementation cycle (`agent-cycle.sh`), the weekly project-review cycle
+Operations tooling for the Poetic autonomous agent pipelines: the
+implementation cycle (`agent-cycle.sh`), the repository-review cycle
 (`review-cycle.sh`), and the local dashboard (`dashboard/`). `README.md`
 explains what the pipelines do and how to configure, install, pause, and
 monitor them; `docs/*-SPEC.md` are the as-built requirement specifications
@@ -12,11 +12,12 @@ to their agents.
 
 Each component has an as-built requirements specification in `docs/`:
 
-- `docs/IMPLEMENTATION-PIPELINE-SPEC.md` — the hourly implementation
+- `docs/IMPLEMENTATION-PIPELINE-SPEC.md` — the implementation
   pipeline (`agent-cycle.sh`, `lib/`, `scripts/`, and the five stage
   prompts).
-- `docs/REVIEW-PIPELINE-SPEC.md` — the weekly project-review pipeline
-  (`review-cycle.sh`, `prompts/project-reviewer.md`, the vendored skill).
+- `docs/REVIEW-PIPELINE-SPEC.md` — the repository-review pipeline: it reviews
+  one repository per run (`review-cycle.sh`, `prompts/project-reviewer.md`,
+  the vendored skill).
 - `docs/DASHBOARD-SPEC.md` — the monitoring dashboard
   (`scripts/publish-dashboard.sh`, `dashboard/index.html`).
 

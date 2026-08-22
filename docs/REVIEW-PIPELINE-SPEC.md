@@ -1,10 +1,11 @@
-# Weekly Project-Review Pipeline — as-built specification
+# Repository-Review Pipeline — as-built specification
 
 ## About this document
 
-This is the as-built requirements specification for the weekly
-project-review pipeline. It is a companion to
-`docs/IMPLEMENTATION-PIPELINE-SPEC.md` (the hourly implementation pipeline)
+This is the as-built requirements specification for the repository-review
+pipeline — named for what each run does: one repository, on its own, with
+its own clone, branch, report set and pull request. It is a companion to
+`docs/IMPLEMENTATION-PIPELINE-SPEC.md` (the implementation pipeline)
 and `docs/DASHBOARD-SPEC.md` (the monitoring dashboard), and like them it
 describes the system as it exists — any change to this pipeline lands
 together with the edit that keeps this document accurate (see `CLAUDE.md`,
@@ -24,24 +25,27 @@ them.
 
 ## What it is
 
-A second, independent pipeline that runs alongside the hourly implementation
-pipeline. Once a week, for each target repository, it produces a full project
-review — via the vendored `project-review` skill — against a fresh ephemeral
-clone, and leaves **one** mergeable pull request carrying the review reports
-and an updated tech-debt register. A human merges it. The review's new
-tech-debt entries and improvement prompts then feed the hourly
-implementation pipeline (and/or the `project-remediation` skill). The only
-human involvement is merging the review pull request.
+A second, independent pipeline that runs alongside the implementation
+pipeline, on its own configured cadence
+(`project_review.defaults.min_days_between_reviews`). For each run it takes
+one target repository and produces a full project review — via the vendored
+`project-review` skill — against a fresh ephemeral clone, and leaves **one**
+mergeable pull request carrying the review reports and an updated tech-debt
+register. A human merges it. The review's new tech-debt entries and
+improvement prompts then feed the implementation pipeline (and/or the
+`project-remediation` skill). The only human involvement is merging the
+review pull request.
 
 ```
-cron (weekly; a daily tick with a skip-guard is recommended — see R4)
+cron (project_review.defaults.min_days_between_reviews; a daily tick with a
+       skip-guard is recommended — see R4)
   └─ review-cycle.sh                  ← the Review Script: lock, stand-down, per-repo skip-guard
        └─ for each target repo, sequentially:
             ├─ ephemeral clone            ← fresh from GitHub, under workspace_root
             ├─ inject the vendored skill  ← into the clone, git-excluded (never committed)
             └─ Reviewer-Agent (Sonnet)    ← runs the skill, raises ONE review PR (ready)
                   └─ Human                ← reviews and merges (the only gate)
-                        └─ feeds → hourly implementation pipeline / project-remediation
+                        └─ feeds → implementation pipeline / project-remediation
 ```
 
 ## Relationship to the existing pipelines
@@ -867,7 +871,7 @@ All of this is in place on the current host; it is needed again only when
 standing the pipeline up on a new machine.
 
 1. Create the review label in both repos:
-   `gh api -X POST repos/Poetic-Poems/<repo>/labels -f name='project-review' -f color='5319e7' -f description='PR raised by the weekly project-review pipeline'`
+   `gh api -X POST repos/Poetic-Poems/<repo>/labels -f name='project-review' -f color='5319e7' -f description='Raised by the project-review pipeline'`
    (for `poetic` and `poetic-fiddle`).
 2. Install the cron entry. **Recommended — a daily tick guarded by
    `min_days_between_reviews`**, which is robust to a machine that sleeps:
