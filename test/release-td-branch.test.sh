@@ -71,12 +71,7 @@ d="$(dirname "$0")"
 printf '%s\n' "$*" >> "$d/calls"
 
 if [[ "$1" == "api" && "$2" == *"/compare/"* ]]; then
-  jqfilter="" prev=""
-  for a in "$@"; do
-    [[ "$prev" == "--jq" ]] && jqfilter="$a"
-    prev="$a"
-  done
-  jq -c "$jqfilter" <<<"$(cat "$d/added.json" 2>/dev/null || echo '{"files":[]}')" 2>/dev/null
+  cat "$d/added.json" 2>/dev/null || echo '{"files":[]}'
   exit 0
 fi
 

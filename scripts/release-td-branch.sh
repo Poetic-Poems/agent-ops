@@ -59,8 +59,12 @@ if [[ "$before" =~ ^0+$ ]]; then
   exit 0
 fi
 
-added="$("$GH" api "repos/$slug/compare/$before...$after" \
-  --jq '[.files[]? | select(.status == "added") | .filename] | .[]' 2>/dev/null || true)"
+# Piped through a local `jq -r` rather than `gh api --jq`, deliberately: a
+# jq filter over `.filename` (a string) risks JSON-quoted output rather than
+# raw text depending on how the caller's own `--jq` flag behaves, and this
+# script's own regex match below must see the raw path either way.
+added="$("$GH" api "repos/$slug/compare/$before...$after" 2>/dev/null \
+  | jq -r '[.files[]? | select(.status == "added") | .filename] | .[]' 2>/dev/null || true)"
 
 [[ -n "$added" ]] || exit 0
 
