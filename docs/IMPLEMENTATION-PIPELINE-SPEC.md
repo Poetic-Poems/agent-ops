@@ -793,7 +793,7 @@ Hours a merge-queue-dequeue notice (requirement 38f) may still fire for after `d
 
 ### Extended notes: `merge_autonomy`
 
-The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id` or no `approver_model_default`, a level of `agent-merges-routine` or above while the repository's own default-branch ruleset still requires code-owner review (§5.3), and a level of `agent-merges-routine` or above with no active merge queue on the default branch while either `allow_auto_merge` or `allow_squash_merge` is off (agent-ops#532) — `landing_arm`'s no-queue fallback, `gh pr merge --auto --squash`, is a call GitHub refuses outright unless both are enabled. At `agent-approves` and above the Approver stage (requirements 8b/8c, "### The Approver") reviews and posts a real GitHub review; a human still lands every pull request at `agent-approves`. At `agent-merges-routine`/`agent-merges-all` the arming step (requirement 8d, `lib/landing.sh`) lands an eligible pull request itself. The fleet-wide kill switch (requirement 2.3b) forces the effective level to `human` everywhere independent of this key.
+The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id` or no `approver_model_default`, a level of `agent-merges-routine` or above while the repository's own default-branch ruleset still requires code-owner review (§5.3), and a level of `agent-merges-routine` or above with no active merge queue on the default branch while either `allow_auto_merge` or `allow_squash_merge` is off (agent-ops#532) — `landing_arm`'s no-queue fallback, `gh pr merge --auto --squash`, is a call GitHub refuses outright unless both are enabled. D18 Stage 3 (agent-ops#575) adds three more: `agent-merges-routine` or above while the default-branch ruleset does not dismiss stale reviews on push, or names any bypass actor (the ruleset's own `bypass_actors`, summed across every active default-branch ruleset), and an Approver App installation whose live granted permissions are not exactly `contents: write`, `metadata: read` and `pull_requests: write` (`lib/approver-token.sh`'s `approver_token_installation_permissions`, a JWT-signed read of the installation itself). Every one of these is gathered into a single autonomy-readiness verdict per repository — printed at `agent-approves` and above, `fail` where the forge configuration does not support the configured level, `skip` where a precondition could not be read — naming each unmet precondition as an owner act (a ruleset, repository or App-installation setting) or a configuration error (`approver_app_id`/`approver_model_default`). At `agent-approves` and above the Approver stage (requirements 8b/8c, "### The Approver") reviews and posts a real GitHub review; a human still lands every pull request at `agent-approves`. At `agent-merges-routine`/`agent-merges-all` the arming step (requirement 8d, `lib/landing.sh`) lands an eligible pull request itself. The fleet-wide kill switch (requirement 2.3b) forces the effective level to `human` everywhere independent of this key.
 
 ### Extended notes: `merge_budget_per_day`
 
@@ -11308,7 +11308,7 @@ What exists, and the requirements each part answers to:
     GitHub-gated check in this component already gives.
     `test/doctor.test.sh` covers the three new checks and the consolidated
     verdict (satisfied, unsatisfied naming owner acts and configuration
-    errors together, and unconfirmed); `test/approver-token.test.sh` covers
+    errors together, and unconfirmed — acceptance check 8w); `test/approver-token.test.sh` covers
     `approver_token_installation_permissions` directly, against the same
     stubbed `curl` and real-JWT-signing seam its sibling functions use.
 
@@ -15182,6 +15182,35 @@ pull request, run the ones the change touches and any it could regress.
     `CHANGES_REQUESTED` verdict its `divergence` criterion `met`, naming the
     sample the zero is backed by. `lib/verdict-fate.sh` and
     `scripts/verdict-fate-report.sh` pass `shellcheck`.
+
+8w. **A repository's autonomy readiness is one verdict, and it never fails for
+    what it could not read (component 14, agent-ops#575).**
+    `test/doctor.test.sh` passes, over the same single-target-repo fixture and
+    `gh`/`rulesets` stubs acceptance check 38g uses. The three new
+    preconditions first: at `agent-merges-routine`, a default-branch ruleset
+    whose `pull_request` rule reports `dismiss_stale_reviews_on_push: false` is
+    a `fail` and `true` an `ok`, both naming the repository and level; a
+    ruleset carrying any `bypass_actors` entry is a `fail` naming the count,
+    an empty one an `ok`; and both stay silent below the routine tier. The
+    Approver App installation's live granted permissions are an `ok` at
+    exactly `contents: write`, `metadata: read` and `pull_requests: write`, a
+    `fail` naming the gap where one is narrower (`contents is read, needs
+    write`) or where a fourth is granted (`issues granted but not required`),
+    a `skip` where the installation endpoint does not answer, and silent both
+    with no credential in this environment and with nothing configured above
+    `human` — exercised through `lib/approver-token.sh`'s real JWT signing
+    against a throwaway RSA key and a stubbed `APPROVER_TOKEN_CURL`, so the
+    check itself runs for real while no real network is reachable. The
+    consolidated verdict then prints once per repository at `agent-approves`
+    and above, and not at all at `human`: `ok` where every precondition is
+    satisfied; `fail`, never `warn`, where any is not, naming each as an owner
+    act (`no active default-branch ruleset requires approving reviews (owner
+    act)`, `no merge queue and allow_auto_merge/allow_squash_merge are not
+    both enabled (owner act)`) or a configuration error (`approver_model_default
+    is not set (configuration error)`); and `skip`, with `doctor.sh` still
+    exiting 0, where the only gaps are ones this run could not read — an
+    unreachable `rulesets` endpoint, and an unreadable merge-queue state,
+    which is named as unread rather than as never looked at.
 
 ## Host provisioning (human steps)
 

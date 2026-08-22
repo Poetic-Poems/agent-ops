@@ -1210,7 +1210,14 @@ if ((gh_ready)); then
         1) : ;;
         0) missing+=("no merge queue and allow_auto_merge/allow_squash_merge are not both enabled (owner act)") ;;
         -1) unconfirmed+=("allow_auto_merge/allow_squash_merge could not be read with this token") ;;
-        *) unconfirmed+=("its merge-settings/merge-queue pairing was not evaluated") ;;
+        # Every remaining case is an unset entry, and at this rank that can
+        # only mean the merge-path pass above reached one of its own three
+        # skip-and-continue paths — repos/<slug> unreachable, no
+        # default_branch reported, or the merge-queue state unreadable. It
+        # was attempted and could not be read, which is not the same as
+        # never having been looked at, and the skip line above already names
+        # which of the three it was.
+        *) unconfirmed+=("its merge-settings/merge-queue pairing could not be read") ;;
       esac
 
       case "$app_permissions_verdict" in

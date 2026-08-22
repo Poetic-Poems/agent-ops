@@ -24,6 +24,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   from the fleet-wide disable banner since cycles keep running while only
   landing collapses to `human`.
 
+- A per-repository **autonomy-readiness verdict** in `scripts/doctor.sh`
+  (agent-ops#575, D18 Stage 3 prerequisite): one line per repository saying
+  whether its *configured* `merge_autonomy` is something the forge
+  configuration can actually support right now, naming every unmet
+  precondition and tagging each as an **owner act** (a ruleset, repository or
+  App-installation setting only an admin can change) or a **configuration
+  error** (this fleet's own `config.json`). Configured above what the forge
+  supports is a `fail`, never a `warn`; a precondition this run could not read
+  is named separately as unconfirmed and downgrades the verdict to a `skip`
+  rather than failing for something nobody got to check. Three of the
+  preconditions are new checks — the default-branch ruleset's
+  `dismiss_stale_reviews_on_push`, its own `bypass_actors`, and the Approver
+  App installation's **live** granted permissions, diffed against exactly
+  `contents: write`, `metadata: read` and `pull_requests: write` rather than
+  assumed from `approver_app_id`. The rest (the ruleset's approving-review
+  count and code-owner requirement, the merge-queue/`allow_auto_merge`/
+  `allow_squash_merge` path, `approver_app_id`/`approver_model_default`) were
+  already checked singly and are gathered rather than reimplemented, so the
+  verdict costs no API call beyond what those checks already made. Reading a
+  repository's ruleset by hand was previously the only way to answer this,
+  which is how agent-ops#518 came to be filed against conditions that did not
+  yet exist.
+
+- `approver_token_installation_permissions` in `lib/approver-token.sh`: the
+  Approver App installation's live `.permissions` object, from a JWT-signed
+  `GET /app/installations/<id>` — an installation *access* token can act as
+  the installation but cannot ask GitHub what it is itself entitled to. Read
+  by the readiness verdict above; an installation's granted permissions are
+  whatever the organisation owner last approved through GitHub's own consent
+  screen, entirely outside `config.json`, and can be narrowed there at any
+  time with nothing in this repository the wiser.
+
 - `scripts/run-tests.sh`: run the `test/` suite the way CI runs it — the
   working tree copied into a throwaway `docker run` container from the image,
   with nothing of the host or of any running node reaching it. The suite will

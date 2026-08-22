@@ -857,6 +857,23 @@ assert_not_contains "  ... never as a fail for something this run could not chec
   "[fail] $slug is configured at \"agent-merges-routine\" but its forge configuration" "$out"
 assert_eq "  ... and doctor.sh does not exit non-zero for it" "0" "$rc"
 
+# The merge-path pass has three skip-and-continue paths of its own that leave
+# no verdict behind at all (repos/<slug> unreachable, no default_branch
+# reported, the merge-queue state unreadable — the live case on
+# Poetic-Poems/agent-ops as of 2026-08-22). The consolidated verdict must name
+# those as could-not-be-read rather than as never-looked-at: at this rank the
+# pass always runs, so an unset entry can only mean a failed read.
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
+  STUB_REPO_JSON="$aam_ok_json" STUB_MERGE_QUEUE_FAIL=1 \
+  STUB_RULESETS_JSON="$aam_ready_rulesets_json" STUB_RULESET_DETAIL_JSON="$aam_ready_ruleset_detail_json" \
+  bash "$DOCTOR" --config "$ma_config" 2>&1)"
+rc=$?
+assert_contains "an unreadable merge-queue state leaves the verdict unconfirmed, naming it as unread" \
+  "$slug's autonomy readiness at \"agent-merges-routine\" could not be fully confirmed — unconfirmed: its merge-settings/merge-queue pairing could not be read" "$out"
+assert_not_contains "  ... never as a fail for something this run could not check" \
+  "[fail] $slug is configured at \"agent-merges-routine\" but its forge configuration" "$out"
+assert_eq "  ... and doctor.sh does not exit non-zero for it" "0" "$rc"
+
 # Below agent-approves (human), the verdict is silent — there is nothing to
 # verify at the level every repository starts at.
 out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
