@@ -6257,10 +6257,10 @@ implements.
     scope discipline) is *noted*, not silently dropped: a `tech-debt/<id>.md`
     record or a GitHub issue, riding along on this same branch rather than
     waiting for a future cycle to notice and re-derive it. `TECH-DEBT.md`'s
-    "Filing alongside other work" is the mechanism — `scripts/
-    find-similar-tech-debt.sh` first, to avoid filing a duplicate of an
-    already-tracked gap, then `scripts/reserve-tech-debt-id.pl` and a commit
-    of `tech-debt/<id>.md` directly onto the current branch, never the
+    "Filing alongside other work" is the mechanism —
+    `scripts/find-similar-tech-debt.sh` first, to avoid filing a duplicate
+    of an already-tracked gap, then `scripts/reserve-tech-debt-id.pl` and a
+    commit of `tech-debt/<id>.md` directly onto the current branch, never the
     reservation's own `td/<id>` branch. A lone record file with no
     accompanying code change is ordinary traffic through this register, not
     scope creep, and requirement 26a's complexity grading treats it
@@ -10464,10 +10464,16 @@ with the Reviewer's own.
     requirement 43 allows, since what it names is deferred work the diff read
     turned up, not what was decided about the pull request itself. Each is
     `{title, body}`; present with either empty, it is a `warning` and nothing
-    is filed. Filing is a Script-issued call under the same App token
-    requirement 42 already mints for posting the review
-    (`techdebt_file_debt`/`techdebt_file_issue`, `lib/tech-debt-file.sh`) —
-    never the ordinary pipeline login, and never a write the model performs:
+    is filed. Filing is a Script-issued call
+    (`techdebt_file_debt`/`techdebt_file_issue`, `lib/tech-debt-file.sh`),
+    never a write the model performs, and every `gh` call it makes runs under
+    the same App token requirement 42 already mints for posting the review
+    rather than under the ordinary pipeline login. The one write that does
+    not is the reservation's own `git push` (below): it goes through git's
+    credential helper, which `deploy/docker/entrypoint.sh` points at the
+    ordinary login (`gh auth setup-git`, requirement 6), so the `td/<id>`
+    reservation branch is pushed under that login whichever stage asked for
+    the filing — a lock branch, carrying no record and no review:
 
     - `file_debt` reserves a tech-debt id
       (`scripts/reserve-tech-debt-id.pl`, run against the pull request's own
@@ -12323,10 +12329,10 @@ What exists, and the requirements each part answers to:
     which GitHub's repository-level delete-on-merge setting already retires
     once *its* pull request lands, before this workflow's push event ever
     fires. Always exits 0: a branch this script fails to delete must not fail
-    the push to `main` it is reacting to, and both `scripts/
-    sweep-orphan-branches.sh`'s own periodic pass and "Filing an item"'s
-    manual fallback (`git push origin --delete td/<id>`) still stand behind
-    it. Regression-tested in `test/release-td-branch.test.sh` (existing
+    the push to `main` it is reacting to, and both
+    `scripts/sweep-orphan-branches.sh`'s own periodic pass and "Filing an
+    item"'s manual fallback (`git push origin --delete td/<id>`) still stand
+    behind it. Regression-tested in `test/release-td-branch.test.sh` (existing
     branch deleted, already-absent branch reported not an error, a failing
     delete call reported as a warning without failing the run, modified/
     unrelated/malformed files ignored, two records in one push each getting

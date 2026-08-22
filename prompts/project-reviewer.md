@@ -190,10 +190,10 @@ Both target repos follow these rules:
        (`reviews/project-review-<review_date>/README.md`); note that the
        recommendations feed the implementation pipeline's `tech-debt` source
        and the `project-remediation` skill. Where step 2 reserved any
-       `td/<id>` ids, list every one of them — `.github/workflows/
-       release-td-branch.yml` releases each reservation automatically once
-       this pull request merges and its record lands on `main`, but naming
-       them here still gives a human a fallback
+       `td/<id>` ids, list every one of them —
+       `.github/workflows/release-td-branch.yml` releases each reservation
+       automatically once this pull request merges and its record lands on
+       `main`, but naming them here still gives a human a fallback
        (`git push origin --delete td/<id1> td/<id2> …`) if that workflow
        cannot run.
      - Label it `pr_label`.

@@ -5096,6 +5096,8 @@ maybe_run_enabler() {
   local e_rereview_state e_rereview_who e_human_reviewer_state e_human_reviewer_who
   local issue_title issue_body_file created number url missing
   local e_adjudication e_adj_verdict e_adj_evidence e_adjudicated e_refined_adj
+  local e_file_debt fd_title fd_body fd_result fd_id fd_pr_url
+  local e_file_issue fi_title fi_body fi_body_file fi_result fi_number fi_url
 
   # --- Guards (requirement 35). Every one of them declining is normal. ---
   # The lock is the log's single-writer guarantee, and this stage writes events.

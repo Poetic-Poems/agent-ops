@@ -65,8 +65,9 @@ carries (or is about to).
    the existing id instead of filing a second record for it.
 2. Reserve the ID with `scripts/reserve-tech-debt-id.pl`, exactly as "Filing
    an item" step 1 describes — it still pushes `td/<id>` as a reservation
-   lock, and this is now the *only* purpose that branch ever serves: nothing
-   is checked out or committed to it.
+   lock, but in *this* workflow that lock is the branch's only purpose:
+   unlike "Filing an item" step 2 and "Claiming an item" step 3, which both
+   commit on it, nothing here is ever checked out or committed to it.
 3. Add `tech-debt/<id>.md` on the current branch, with the same frontmatter
    "Filing an item" step 2 describes, plus a line in the body naming where it
    was noticed — the pull request or review that surfaced it, e.g. "Noticed
