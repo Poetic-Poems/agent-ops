@@ -6388,6 +6388,67 @@ if (( github_min_core_budget > 0 || github_min_graphql_budget > 0 )); then
   fi
 fi
 
+# 2.0b GitHub credential check (requirement 2.0b, agent-ops#691). The same
+# free `/rate_limit` call classifies a 401 apart from every other failure:
+# GitHub read the request and rejected the credentials outright, which is
+# permanent — no wait and no retry ever clears an expired or revoked token,
+# unlike 2.0's `exhausted` or 2.1's cooldown below. Checked here, ahead of
+# the Co-Ordinator (step 4), because that stage is what a dead token wastes:
+# on 2026-08-22 a node whose fine-grained PAT had expired ran a full
+# Co-Ordinator engagement every cycle for ~3 hours ($1.05 across five
+# cycles) before a human noticed, every claim failing with `cause:
+# "unreachable"` and the cycle reporting "this is an outage, not
+# contention" — the one classification that sends nobody looking at the
+# token.
+#
+# Deliberately unconditional, unlike 2.0: a dead token is worth catching
+# even on a node that has turned `github_min_core_budget` /
+# `github_min_graphql_budget` off, and the call costs nothing either way
+# (same free `/rate_limit` endpoint).
+#
+# Not routed through `escalation_autonomy` (D18, agent-ops#627): that ladder
+# decides whether one specific kind of escalation — an Enabler
+# refinement-disagreement (requirement 36b) — is adjudicated once before
+# reaching a human. Its `adjudicate-first` path is itself a model engagement
+# against GitHub, which a dead token defeats exactly as it defeats the
+# Co-Ordinator; routing through it here would reintroduce the spend this
+# check exists to avoid. This follows 1c's and 2.7's own precedent instead —
+# an operational fact about the node, not a per-item disagreement — and
+# escalates unconditionally through the same `create_escalation_issue`,
+# deduplicated the same way (an open issue already naming this node's item
+# ref is found, not re-filed).
+IFS=$'\t' read -r gh_auth_verdict gh_auth_detail < <(github_auth_probe)
+if [[ "$gh_auth_verdict" == "unauthorized" ]]; then
+  gh_auth_reason="GitHub authentication failed (HTTP 401) — GH_TOKEN is invalid or expired"
+  if ! (( DRY_RUN )) && [[ -n "$crash_loop_repo" && -n "$enabler_assignee" ]]; then
+    auth_body="$cycle_dir/auth-failure-issue.md"
+    # shellcheck disable=SC2016  # the backticks are the issue body's Markdown, not expansions
+    {
+      printf '## GitHub rejected this node'"'"'s credentials\n\n'
+      printf -- '- node: `%s`\n- cycle: `%s`\n- GitHub'"'"'s own response:\n\n```\n%s\n```\n\n' \
+        "$node_name" "$cycle_id" "$gh_auth_detail"
+      printf 'Every cycle stands down the moment it makes this same free `/rate_limit` check, before any model runs. Nothing clears this automatically — replace `GH_TOKEN` on this node and the next cycle proceeds normally.\n\n'
+      printf -- '---\nItem: `auth-failure:%s` · raised by the Script · cycle `%s` · node `%s`\n' \
+        "$node_name" "$cycle_id" "$node_name"
+    } > "$auth_body"
+    if auth_created="$(create_escalation_issue "$crash_loop_repo" "auth-failure:$node_name" \
+         "$enabler_escalation_label" \
+         "GitHub credentials rejected on node $node_name (HTTP 401)" \
+         "$auth_body")" && [[ -n "$auth_created" ]]; then
+      log_event "auth-failure-escalated" "$(jq -nc \
+        --argjson n "${auth_created%%$'\t'*}" --arg u "${auth_created#*$'\t'}" \
+        '{issue_number: $n, issue_url: $u}')"
+    else
+      log_event "warning" "$(jq -nc \
+        --arg d "GitHub credentials rejected (401) but the escalation issue could not be filed — will retry next cycle" \
+        '{detail: $d}')"
+    fi
+  fi
+  log_event "stand-down" "$(jq -nc --arg r "$gh_auth_reason" --arg d "$gh_auth_detail" \
+    '{reason: $r, cause: "unauthorized", detail: $d}')"
+  exit 0
+fi
+
 # 2.1 Usage-limit cooldown (fleet-wide: every node shares one Claude account,
 # so a limit any node hit stands this one down too). Two carriers of the same
 # signal, and the later resume wins: the log union is as fresh as the last

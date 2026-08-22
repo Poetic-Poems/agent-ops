@@ -8,6 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A rejected GitHub credential is now caught before the Co-Ordinator ever
+  runs, instead of being spent on and misreported as an outage (agent-ops#691).
+  `github_auth_probe` (`lib/github-limit.sh`) reuses the same free
+  `/rate_limit` call requirement 2.0's budget check already makes, but
+  classifies an HTTP 401 apart from every other failure. A new,
+  unconditional stand-down check (requirement 2.0b) runs it ahead of the
+  Co-Ordinator: an expired or revoked `GH_TOKEN` now stands the cycle down
+  immediately with `GitHub authentication failed (HTTP 401) — GH_TOKEN is
+  invalid or expired`, rather than costing a full Co-Ordinator engagement
+  every cycle only to have every claim fail with the misleading "this is an
+  outage, not contention". It also escalates — once, deduplicated — through
+  the same `create_escalation_issue` route requirement 1c's usage-limit
+  freeze and requirement 2.7's crash loop already use, filed in
+  `crash_loop_repo`.
+
 - Any pipeline stage can now log deferred work it notices — a
   `tech-debt/<id>.md` record or a plain GitHub issue — riding along in the PR
   or output it is already producing, instead of losing the finding to a

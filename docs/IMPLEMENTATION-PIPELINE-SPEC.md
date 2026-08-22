@@ -1231,6 +1231,48 @@ implements.
       unaffected. stdout is buffered and emitted once the call is finished
       with, so a retried `gh api --paginate` cannot emit its early pages twice.
 
+   0b. *GitHub credential check* (agent-ops#691): the same free `/rate_limit`
+      call classifies an HTTP 401 apart from every other failure —
+      `github_auth_probe` (`lib/github-limit.sh`) prints `unauthorized` rather
+      than folding it into 2.0's `unknown`. Unlike 0 and 0a, a 401 is
+      permanent: GitHub read the request and rejected the credentials
+      outright, so no wait and no retry ever clears it, and it is checked
+      unconditionally — not gated behind `github_min_core_budget` /
+      `github_min_graphql_budget`, because a dead token is worth catching
+      even on a node that has turned the budget floor off, and the call
+      costs nothing either way.
+
+      On 2026-08-22 a node's fine-grained PAT expired mid-day, and for the
+      next ~3 hours every cycle ran a full Co-Ordinator engagement ($0.21,
+      ~66 s, ~51k tokens) before every claim failed with `cause:
+      "unreachable"` and the cycle stood down reporting "GitHub could not be
+      reached for any candidate — this is an outage, not contention" — five
+      cycles, $1.05, for a token that was never going to start working again
+      on its own, misclassified in the one way that sends nobody looking at
+      it. This check exists to stop paying for that discovery: it runs ahead
+      of the Co-Ordinator (step 4), so an `unauthorized` verdict stands the
+      cycle down for
+      `GitHub authentication failed (HTTP 401) — GH_TOKEN is invalid or
+      expired` before any model runs, and escalates through
+      `create_escalation_issue` in `crash_loop_repo` — labelled
+      `enabler_escalation_label`, assigned `enabler_assignee`, item ref
+      `auth-failure:<node>` — the same duplicate-guarded route 1c's
+      usage-limit freeze and requirement 2.7's crash loop already use, so a
+      cycle that finds an open issue already naming this node does not file
+      a second one. A failed filing logs a `warning` and retries next cycle,
+      same as 1c.
+
+      Deliberately **not** routed through `escalation_autonomy` (D18,
+      agent-ops#627): that ladder decides whether one specific escalation —
+      an Enabler refinement-disagreement (requirement 36b) — is adjudicated
+      once before reaching a human, and its `adjudicate-first` path is itself
+      a model engagement against GitHub. Routing a dead-credential escalation
+      through it would spend exactly what this check exists to avoid, and
+      there is no refinement disagreement here to adjudicate. Skipped
+      entirely on `--dry-run` and when `crash_loop_repo` or
+      `enabler_assignee` is unset, the same as 1c's freeze escalation — the
+      stand-down itself is unconditional, only the filing is gated.
+
    1. *Usage-limit cooldown*: the same signal arrives on two carriers, and
       the **later** `resume_at` wins. The log union's most recent `limit-hit`
       is as fresh as the last state-sync fetch; `fleet/limit.json` on the
@@ -11253,12 +11295,14 @@ What exists, and the requirements each part answers to:
 3a. The shared library (`lib/cycle-state.sh`, `lib/limit-detect.sh`,
    `lib/github-limit.sh` (requirement 2.0's `github_limit_snapshot`,
    `github_limit_verdict` and `github_limit_describe`; requirement 2.0a's `gh`
-   wrapper, `github_limit_kind` and the pure `github_limit_wait_plan`; and the
-   `GITHUB_PR_LIST_LIMIT` listing bound with `github_pr_list_truncated`, whose
-   callers — the back-pressure gate, the four PR-listing gatherers, and the
-   void guard's supersession corroboration (requirement 3s) — must agree on
-   what a truncated page is even though they treat one differently. Sourced by
-   both cycle scripts, `lib/claim.sh`, `lib/void-guard.sh` and every
+   wrapper, `github_limit_kind` and the pure `github_limit_wait_plan`;
+   requirement 2.0b's `github_auth_probe`, the same free call classifying a
+   401 apart from every other failure; and the `GITHUB_PR_LIST_LIMIT` listing
+   bound with `github_pr_list_truncated`, whose callers — the back-pressure
+   gate, the four PR-listing gatherers, and the void guard's supersession
+   corroboration (requirement 3s) — must agree on what a truncated page is
+   even though they treat one differently. Sourced by both cycle scripts,
+   `lib/claim.sh`, `lib/void-guard.sh` and every
    `scripts/gather-*`/`scripts/sweep-*` that calls GitHub. Unit-tested,
    `test/github-limit.test.sh`),
    `lib/repo-clone.sh` (requirement 6's `clone_repo`, the one clone both
@@ -13196,6 +13240,21 @@ pull request, run the ones the change touches and any it could regress.
    exercised against a stub `gh`: a rate-limited call is retried once and its
    stdout emitted exactly once, a non-rate-limit failure is returned
    unretried, and `gh`'s own stderr reaches the caller either way.
+2l. **A rejected credential is classified apart from an outage, and stands
+   the cycle down before the Co-Ordinator ever runs (requirement 2.0b,
+   agent-ops#691).** `test/github-limit.test.sh` passes: `github_auth_probe`
+   returns `ok` for a working token, `unauthorized` — carrying GitHub's own
+   response as `detail` — for an HTTP 401, and `unreachable` for every other
+   failure, never conflating the two. `test/auth-failure-wiring.test.sh`
+   passes against the block lifted verbatim from `agent-cycle.sh`: an
+   `unauthorized` verdict exits 0 without falling through to the rest of the
+   cycle (so no Co-Ordinator engagement follows it), the logged stand-down
+   reason states `GitHub authentication failed (HTTP 401) — GH_TOKEN is
+   invalid or expired` rather than 2.0's or the claim loop's own "outage, not
+   contention" wording, and exactly one escalation is filed through
+   `create_escalation_issue` in `crash_loop_repo`, labelled, assigned, and
+   keyed `auth-failure:<node>`; `ok` and `unreachable` verdicts fall through
+   untouched, filing nothing.
 2c. `scripts/gather-merge-conflicts.sh Poetic-Poems/does-not-exist autonomous-agent agent/`
    prints `[]` and exits 0 — a missing repo, a disabled feature, or an API error
    never aborts the cycle. Its candidate rule, including the `bot`,
@@ -16761,6 +16820,18 @@ requirements above, which state only what is.
   what a reader tracing the pipeline's actual sequence finds first, and they
   point at "### The Approver" by name.
 
+- **The GitHub credential check (0b) escalates unconditionally, never through
+  `escalation_autonomy`.** That ladder decides whether one specific
+  escalation — an Enabler refinement-disagreement (requirement 36b) — is
+  adjudicated once before reaching a human, and its `adjudicate-first` path
+  is itself a model engagement against GitHub. A rejected credential defeats
+  that engagement the same way it defeats the Co-Ordinator, so routing
+  through it would reintroduce the exact spend 0b exists to avoid, over a
+  disagreement that does not exist here — there is nothing to adjudicate
+  between. 0b instead follows 1c's and requirement 2.7's own precedent: an
+  operational fact about the node, escalated straight through
+  `create_escalation_issue`, deduplicated the same way.
+
 The choices above (platform, models, permissions, system location) were
 confirmed by the repo owner on 2026-07-13; no open questions remain.
 
@@ -16805,3 +16876,4 @@ confident, recurring no-op.
 | A machine check proved on one band is not a machine check | Requirement 3t's corroboration gate closed issue #310's freeze by counting one band — tech-debt — and the fix read as complete because that was the band the incident happened in. It was not: a `none-selected` over a non-empty `issues`, `findings`, `review_feedback`, `merge_conflicts`, `abandoned_drafts`, `human_visibility` or `register_hygiene` array passed the gate untouched, so the identical confabulation one band over would have frozen the fleet the identical way, with nothing in the log even able to detect it. The pre-fetch fixed "the model declines to read the source"; the corroboration fixed "the model misdescribes what it was handed" — but only where somebody had already been burned. | State the invariant, not the instance: **every load-bearing negative the model asserts must be corroborated against the Script's own count of what it handed over** (requirement 3x), and then build it as one band-parameterised mechanism rather than one check per band, so adding a band cannot silently add a hole. Expect the generalisation to surface what the single-band version could ignore — here, that `issues` was the one band whose decline routes were *not* exhaustive (a question-or-discussion issue could be skipped silently and requirement 16a explicitly forbade reporting it), which is a real gap the narrow check had simply never had to look at. A check that cannot be generalised without changing a policy is usually telling you the policy is the defect. |
 | A safety justification written as "harmless until X lands," read after X has landed | TD-PPagop-26081507 recorded that the merge-autonomy kill switch's fail-open no-cache case was "harmless: nothing arms an approval or a landing on the flag" — explicitly, deliberately, "until WI-5 lands." WI-5 (this document's own Approver stage, requirements 8b/8c) is the first behaviour-affecting caller of `merge_autonomy_effective_level`, and it landed with that tech-debt item still `open` and its own fix (agent-ops#448) still unmerged: the justification expired the moment this stage started reading the kill switch for a real decision, and nothing forced the two facts to be checked against each other. | A deferred item whose own body names the change that revokes its justification is a dependency, not a footnote — treat "must not arm until X" the same as a numbered `Blocked-by:`, checked at the moment X is about to land, not left to a reader noticing the tech-debt file in passing. Landed here anyway, deliberately, because the exposure is layered — `merge_autonomy`'s product default is `human` fleet-wide, every level above it needs an explicit per-installation opt-in, and the live installation had not yet raised it past Stage 0 — but the register entry stays `open` and this row exists so the next reader does not have to rediscover the ordering risk from source. |
 | A gate written for one caller silently has no caller on the recovery path | Requirement 31c's gate — required checks green, no new security-severity alert — was written and tested against the Reviewer's own `ready` handoff, and every acceptance check for it drove that one path. The Enabler's `complete_handoff` (requirement 32b) flips the identical draft-to-ready action through a different call site, added later, and nobody re-asked whether the gate bound there too — it did not, by omission rather than by decision. PR #433: the Implementer failed, so the Reviewer block never ran at all, and two hours later an Enabler engagement read `complete_handoff`'s own four preconditions ("checks green", "no unanswered concern") as satisfied — vacuously, since nothing had ever checked or raised a concern to answer — and flipped the pull request to ready with a red check list and no Reviewer having ever read the diff. | An irreversible action reachable from more than one call site needs its gate to live *under* every caller, not beside one of them (requirement 34a) — a second path added later inherits nothing a first path's own inline check protected. Where a caller performs a recovery *of* another stage's work (here: finishing a handoff the Reviewer left undone), ask what the recovery is standing in for, and refuse to stand in for a stage that never actually ran — a precondition can read as satisfied for the sole reason that nothing has asked it yet. |
+| An escalation route that needs the very thing whose absence it reports | Requirement 2.0b escalates a rejected GitHub credential through `create_escalation_issue`, which reads and writes GitHub under the same `GH_TOKEN` the probe has just established GitHub rejects — so `gh issue list` and `gh issue create` both answer `HTTP 401: Bad credentials`, and the filing 0b's text describes fails every cycle for as long as the token stays dead. The `warning`-and-retry fallback that is a genuine exception for requirement 1c's freeze and requirement 2.7's crash loop — whose triggers leave GitHub reachable — is 0b's *expected* path, so the spend stops but nobody outside the node is told (TD-PPagop-26082304). | Before writing "and it escalates", ask what the escalation route itself depends on, and whether the condition being escalated breaks it. Where the answer is yes, the alarm needs a carrier the fault cannot take down — for a GitHub-credential fault, one that is credential-independent of `GH_TOKEN`. Keep the doomed attempt (it costs one call, and it is right if the fault is ever narrower than assumed), but record in the requirement that its failure is the norm, so no later reader mistakes "escalates" for "reaches someone".
