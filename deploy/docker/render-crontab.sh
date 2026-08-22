@@ -68,6 +68,8 @@ excluded_minutes="$(cfg_json '.schedule.excluded_minutes')"
 review_hour="$(cfg '.schedule.review_hour')"
 review_offset="$(cfg '.schedule.review_offset_minutes')"
 doctor_offset="$(cfg '.schedule.doctor_offset_minutes')"
+revert_rate_hour="$(cfg '.schedule.revert_rate_hour')"
+revert_rate_offset="$(cfg '.schedule.revert_rate_offset_minutes')"
 cycle_hours="$(cfg '.schedule.cycle_hours')"
 cycle_interval="$(cfg '.schedule.cycle_interval_minutes')"
 heartbeat_minutes="$(cfg '.schedule.heartbeat_minutes')"
@@ -125,6 +127,10 @@ review_minute=$(( (cycle_minute + review_offset) % 60 ))
 # base minute, mod 60 — so a fleet of nodes does not all hit GitHub's API in
 # the same minute.
 doctor_minute=$(( (cycle_minute + doctor_offset) % 60 ))
+# The daily revert-rate publishing tick (agent-ops#579): jittered the same
+# way, past schedule.revert_rate_hour rather than hourly, since it is a
+# once-a-day publish, not an hourly check.
+revert_rate_minute=$(( (cycle_minute + revert_rate_offset) % 60 ))
 
 # The implementation cycle fires every schedule.cycle_interval_minutes past
 # cycle_minute within an allowed hour (issue #248, "faster heartbeat"):
@@ -158,6 +164,8 @@ if ! sed \
       -e "s#@STATE_SYNC_FETCH_MINUTES@#$fetch_minutes#g" \
       -e "s#@LOG_ROTATION_MINUTE@#$rotation_minute#g" \
       -e "s#@DOCTOR_MINUTE@#$doctor_minute#g" \
+      -e "s#@REVERT_RATE_MINUTE@#$revert_rate_minute#g" \
+      -e "s#@REVERT_RATE_HOUR@#$revert_rate_hour#g" \
       "$tmpl" > "$tmp"; then
   rm -f "$tmp"
   say "ERROR: rendering $tmpl failed — the baked schedule stays"
@@ -169,5 +177,5 @@ if grep -q '@[A-Z_]\{1,\}@' "$tmp"; then
   exit 1
 fi
 mv -f "$tmp" "$out"
-say "node $node: cycle at minute(s) $cycle_minutes past $cycle_hours (every ${cycle_interval}m), review at $review_minute past $review_hour:00, unattended doctor at :$doctor_minute hourly"
+say "node $node: cycle at minute(s) $cycle_minutes past $cycle_hours (every ${cycle_interval}m), review at $review_minute past $review_hour:00, unattended doctor at :$doctor_minute hourly, revert-rate publish at $revert_rate_minute past $revert_rate_hour:00"
 exit 0
