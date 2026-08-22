@@ -62,15 +62,17 @@
 # #541 — a second library sourcing this one, or a test re-sourcing it), and
 # on that second source `ISSUE_PRIORITY_CACHE_DIR` is already non-empty
 # because the first source filled it in, not because a caller supplied it.
-# `ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH` records the path this file created
-# for itself, so a re-source can tell "the directory I made last time" apart
-# from "a directory some caller handed me" — the two cases a bare `-n
-# "$ISSUE_PRIORITY_CACHE_DIR"` check cannot distinguish.
+# `ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS` is an array recording every path
+# this file created for itself, so a re-source can tell "the directory I made
+# last time" apart from "a directory some caller handed me" — the two cases a
+# bare `-n "$ISSUE_PRIORITY_CACHE_DIR"` check cannot distinguish. When a
+# process creates a second directory (by repointing and re-sourcing), both are
+# tracked in the array so cleanup removes all of them.
 #
 # Trusting an inherited record from the environment, rather than always
 # recomputing ownership from scratch (the pre-#548 behaviour), opened a gap:
 # nothing stopped a process that exports its own `ISSUE_PRIORITY_CACHE_DIR`,
-# `…_OWNED=1` and `…_OWNED_PATH` from talking a child process into treating
+# `…_OWNED=1` and `…_OWNED_PATHS` from talking a child process into treating
 # the parent's own directory as the child's to `rm -rf` (agent-ops#552).
 # `ISSUE_PRIORITY_CACHE_DIR_OWNER_PID` closes it: the record additionally
 # carries the `$$` of the process that created it, and only a source running
@@ -93,10 +95,13 @@
 # "create a fresh one", never as "still ours".
 _issue_priority_own_record=0
 if [[ "${ISSUE_PRIORITY_CACHE_DIR_OWNED:-0}" == "1" && \
-      -n "${ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH:-}" && \
-      "$ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH" == "${ISSUE_PRIORITY_CACHE_DIR:-}" && \
       "${ISSUE_PRIORITY_CACHE_DIR_OWNER_PID:-}" == "$$" ]]; then
-  _issue_priority_own_record=1
+  for _path in "${ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS[@]:-}"; do
+    if [[ "$_path" == "${ISSUE_PRIORITY_CACHE_DIR:-}" ]]; then
+      _issue_priority_own_record=1
+      break
+    fi
+  done
 fi
 if [[ "$_issue_priority_own_record" == "1" && -d "${ISSUE_PRIORITY_CACHE_DIR:-}" ]]; then
   : # re-source, same process, same directory it created earlier, and that
@@ -106,22 +111,23 @@ elif [[ "$_issue_priority_own_record" == "0" && -n "${ISSUE_PRIORITY_CACHE_DIR:-
 else
   ISSUE_PRIORITY_CACHE_DIR="$(mktemp -d 2>/dev/null || true)"
   ISSUE_PRIORITY_CACHE_DIR_OWNED=1
-  ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH="$ISSUE_PRIORITY_CACHE_DIR"
+  ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS+=("$ISSUE_PRIORITY_CACHE_DIR")
   ISSUE_PRIORITY_CACHE_DIR_OWNER_PID="$$"
 fi
-unset _issue_priority_own_record
+unset _issue_priority_own_record _path
 
 # issue_priority_cache_cleanup
-# Remove the directory this same process created for itself
-# (ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH, guarded by
+# Remove all directories this same process created for itself
+# (ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS, guarded by
 # ISSUE_PRIORITY_CACHE_DIR_OWNER_PID matching the current `$$`) — a
 # caller-supplied path is that caller's to remove, never this function's.
-# Keyed on the *owned* path rather than on the current
+# Keyed on the *owned* paths rather than on the current
 # ISSUE_PRIORITY_CACHE_DIR, so a caller that has since pointed
-# ISSUE_PRIORITY_CACHE_DIR at its own directory does not orphan the one this
-# file made earlier (agent-ops#552's mirror case): that caller's directory is
-# left untouched either way, since only the owned path is ever removed.
-# Also clears the ownership record — ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH and
+# ISSUE_PRIORITY_CACHE_DIR at its own directory does not orphan the ones this
+# file made earlier (agent-ops#552's mirror case, and also when the library
+# created multiple directories due to re-sourcing): that caller's directory is
+# left untouched either way, since only the owned paths are ever removed.
+# Also clears the ownership record — ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS and
 # …_OWNER_PID always, and ISSUE_PRIORITY_CACHE_DIR/…_OWNED too when the
 # caller never repointed them — so a later source in this same process finds
 # no stale record and creates a fresh directory rather than trusting a path
@@ -136,14 +142,23 @@ unset _issue_priority_own_record
 # no ill effect. Always returns 0: a missing cache directory is never a
 # failure worth reporting.
 issue_priority_cache_cleanup() {
-  local owned_path="${ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH:-}"
-  if [[ "${ISSUE_PRIORITY_CACHE_DIR_OWNER_PID:-}" == "$$" && -n "$owned_path" ]]; then
-    rm -rf "$owned_path" 2>/dev/null || true
-    if [[ "${ISSUE_PRIORITY_CACHE_DIR:-}" == "$owned_path" ]]; then
-      ISSUE_PRIORITY_CACHE_DIR=""
-      ISSUE_PRIORITY_CACHE_DIR_OWNED=0
+  local owned_path
+  if [[ "${ISSUE_PRIORITY_CACHE_DIR_OWNER_PID:-}" == "$$" ]]; then
+    for owned_path in "${ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS[@]:-}"; do
+      if [[ -n "$owned_path" ]]; then
+        rm -rf "$owned_path" 2>/dev/null || true
+      fi
+    done
+    if [[ -n "${ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS[0]:-}" ]]; then
+      for owned_path in "${ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS[@]}"; do
+        if [[ "${ISSUE_PRIORITY_CACHE_DIR:-}" == "$owned_path" ]]; then
+          ISSUE_PRIORITY_CACHE_DIR=""
+          ISSUE_PRIORITY_CACHE_DIR_OWNED=0
+          break
+        fi
+      done
     fi
-    ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH=""
+    ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS=()
     ISSUE_PRIORITY_CACHE_DIR_OWNER_PID=""
   fi
   return 0
