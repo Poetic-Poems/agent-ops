@@ -30,6 +30,13 @@
 #   - **A gatherer that finds nothing still leaves a valid `[]`**, the ordinary
 #     answer almost every cycle gets, rather than an absent key or a partial
 #     assignment.
+#   - **A repo with void residue of this shape but no live violation is walked
+#     anyway** (agent-ops#646), so requirement 34n's liveness rule gets the
+#     `.ok` marker it needs to retire that residue — while still contributing
+#     no candidate, since the gatherer handed an empty slice returns one. The
+#     opt-in gate still applies to it, and an unreadable reduction still walks
+#     nobody: `[]` handed to the gatherer on violations we failed to read
+#     would certify an emptiness nothing established.
 #
 # The block is lifted verbatim out of agent-cycle.sh, the same way
 # test/finish-then-continue.test.sh lifts the chain block, so the assertions are
@@ -65,13 +72,17 @@ assert_eq() {
 }
 
 # --- Extraction ---------------------------------------------------------------
-# From the `human_visibility_json` initialiser through the `fi` that closes the
-# block, inclusive — the span requirement 38e's own comments sit above.
+# From the `human_visibility_json` initialiser through the `done < <(…)` that
+# closes the walk, inclusive — the span requirement 38e's own comments sit
+# above. The terminator was a bare `fi` until agent-ops#646: the walk had been
+# wrapped in an `if` on the violation count, which the widened repo list
+# replaced with the list itself being empty. `|| true)` ends the process
+# substitution feeding the loop and appears nowhere else in the block.
 extract_hv_block() {
   awk '
     /^human_visibility_json="\$\(human_visibility_violations / { on = 1 }
-    on          { print }
-    on && /^fi$/ { exit }
+    on                   { print }
+    on && /\|\| true\)$/ { exit }
   ' "$1"
 }
 
@@ -82,18 +93,23 @@ if [[ -z "$block" ]]; then
 fi
 
 # --- Assembly -----------------------------------------------------------------
-# run_block VIOLATIONS_JSON REPOS_JSON GATHER_RESULT_JSON
+# run_block VIOLATIONS_JSON REPOS_JSON GATHER_RESULT_JSON [VOID_JSON]
 # Runs an assembled script that stubs the block's two callees, sets the globals
 # it reads, executes it under the same `set -euo pipefail` agent-cycle.sh runs
 # under, and prints the resulting `ordered_repos_json` followed by a `--` line
 # and one line per slug the gatherer was called with (in call order).
+# VOID_JSON defaults to `[]` — the ordinary cycle, with no residue of this
+# shape to widen the walk with.
 # shellcheck disable=SC2016  # The harness's own `$1`/`$2`/`$ordered_repos_json`, written out literally for it to expand, not this shell's.
 run_block() {
-  local violations="$1" repos="$2" gathered="$3" harness="$tmp_dir/harness.sh"
+  local violations="$1" repos="$2" gathered="$3" void="${4:-[]}" harness="$tmp_dir/harness.sh"
   : > "$tmp_dir/calls"
   {
     printf '%s\n' 'set -euo pipefail'
+    printf '. %q\n' "$SCRIPT_DIR/lib/void-liveness.sh"
+    printf '%s\n' 'guard_warn() { :; }'
     printf 'union_log=%q\n' "$tmp_dir/union.jsonl"
+    printf 'void_json=%q\n' "$void"
     printf 'ordered_repos_json=%q\n' "$repos"
     printf '%s\n' 'human_visibility_violations() { printf "%s" '"$(printf '%q' "$violations")"'; }'
     printf '%s\n' 'gather_human_visibility_hygiene() {'
@@ -152,6 +168,46 @@ calls_out="$(sed -n '/^--$/,$p' <<<"$out" | tail -n +2)"
 assert_eq "no violations leaves every repo's array empty" \
   "[][]" "$(hv_of "$repos_out" o/gated-in)$(hv_of "$repos_out" o/gated-out)"
 assert_eq "  ... and calls the gatherer for no repo at all" "" "$calls_out"
+
+# --- The widened walk (agent-ops#646) -----------------------------------------
+# A repo whose violations have all cleared is the state in which its
+# `human-visibility-<hash>` void residue should retire — and the state the
+# unwidened walk skipped, leaving no `.ok` marker for the liveness rule to
+# read and the residue stuck for ever.
+
+HV_VOID='[{"repo":"o/gated-in","item":"human-visibility-1a2b3c4d5e6f","ts":"2026-07-01T00:00:00Z"}]'
+
+out="$(run_block '[]' "$REPOS" "$CANDIDATE" "$HV_VOID")"
+repos_out="$(sed '/^--$/,$d' <<<"$out")"
+calls_out="$(sed -n '/^--$/,$p' <<<"$out" | tail -n +2)"
+
+assert_eq "a repo with void residue but no live violation is walked anyway" \
+  "o/gated-in" "$calls_out"
+assert_eq "  ... handed an empty slice, since it has no violation of its own" \
+  "[]" "$(head -1 "$tmp_dir/slices")"
+assert_eq "  ... and contributes no candidate: the real gatherer returns [] on []" \
+  "[]" "$(hv_of "$(sed '/^--$/,$d' <<<"$(run_block '[]' "$REPOS" '[]' "$HV_VOID")")" o/gated-in)"
+
+# The opt-in gate is not weakened by the widening: residue in a repo that
+# never asked for this source still costs no live re-check.
+HV_VOID_OUT='[{"repo":"o/gated-out","item":"human-visibility-1a2b3c4d5e6f","ts":"2026-07-01T00:00:00Z"}]'
+out="$(run_block '[]' "$REPOS" "$CANDIDATE" "$HV_VOID_OUT")"
+calls_out="$(sed -n '/^--$/,$p' <<<"$out" | tail -n +2)"
+assert_eq "residue in a repo whose sources omit human-visibility is still gated out" \
+  "" "$calls_out"
+
+# A void naming a shape this rule does not own must not widen the walk either.
+out="$(run_block '[]' "$REPOS" "$CANDIDATE" \
+       '[{"repo":"o/gated-in","item":"register-hygiene-1a2b3c4d5e6f","ts":"2026-07-01T00:00:00Z"}]')"
+calls_out="$(sed -n '/^--$/,$p' <<<"$out" | tail -n +2)"
+assert_eq "a void of another shape does not widen the walk" "" "$calls_out"
+
+# The gate that stops a marker certifying an emptiness nothing established:
+# an unreadable reduction walks nobody, residue or no residue.
+out="$(run_block 'not valid json' "$REPOS" "$CANDIDATE" "$HV_VOID")"
+calls_out="$(sed -n '/^--$/,$p' <<<"$out" | tail -n +2)"
+assert_eq "an unreadable violation reduction walks no repo, residue notwithstanding" \
+  "" "$calls_out"
 
 if (( failures )); then
   printf '\n%d assertion(s) failed\n' "$failures" >&2

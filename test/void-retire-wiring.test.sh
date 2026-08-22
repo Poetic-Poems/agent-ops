@@ -38,6 +38,18 @@
 #     rewritten by back-pressure; either would make `void_config_actioned`
 #     retire on a narrowing that means nothing of the sort.
 #
+# The `human-visibility` shape (agent-ops#646) is wired the same way: its
+# gather writes a marker on the same condition as the four beside it, and the
+# liveness pass reads it back the same way, both asserted below. The walk that
+# calls that gather was also widened — to cover a repo carrying unretired void
+# residue of this shape but no live violation, the state in which the residue
+# *should* retire and the one that produced no marker at all — and that
+# widening is asserted where the rest of the walk's behaviour already is, in
+# `test/human-visibility-wiring.test.sh`. What stays here is the one thing
+# that file cannot see: the residue list is built from `void_json` on stdin,
+# never in argv, since the extract is precisely the unbounded aggregate
+# requirement 4g moved off the command line.
+#
 # Both blocks are lifted verbatim out of agent-cycle.sh, the way
 # test/human-visibility-wiring.test.sh lifts its own, so the assertions are
 # about the shipped code rather than a copy of its logic.
@@ -163,6 +175,63 @@ assert_eq "  ... and two separate markers" \
   "present|present" \
   "$(marker_of "$tmp_dir/cycle/register-hygiene-prefetch-o_r.ok")|$(marker_of "$tmp_dir/cycle/register-hygiene-void-o_r.ok")"
 
+# --- Half one-and-a-half: gather_human_visibility_hygiene's marker ------------
+#
+# The same succeed/fail pairing as above, against the shape whose gatherer
+# signals failure by printing nothing rather than by exit code: the marker must
+# follow the array it certifies, and an empty array from a *completed* run is a
+# real answer that must earn one.
+
+hv_fn="$(extract_block '^gather_human_visibility_hygiene\(\) \{' '^\}$' "$SCRIPT_DIR/agent-cycle.sh")"
+if [[ -z "$hv_fn" ]]; then
+  echo "FAIL - could not extract gather_human_visibility_hygiene from agent-cycle.sh — has it moved?" >&2
+  exit 1
+fi
+
+cat > "$fake_root/scripts/gather-human-visibility-hygiene.sh" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+case "$(cat "$STUB_STATE/hv-mode" 2>/dev/null || echo ok-empty)" in
+  ok-found) printf '%s' '[{"source":"human-visibility","ref":"human-visibility-abcabcabcabc"}]' ;;
+  # A completed run with nothing left to report: the answer the widened walk
+  # exists to obtain, and the one the marker must certify.
+  ok-empty) printf '%s' '[]' ;;
+  # Every failure path in the real script: nothing on stdout, diagnosis on
+  # stderr. `[]` is what the caller substitutes, and it must earn no marker.
+  fail)     echo "gather-human-visibility-hygiene: could not reach GitHub" >&2 ;;
+esac
+exit 0
+STUB
+chmod +x "$fake_root/scripts/gather-human-visibility-hygiene.sh"
+
+run_hv_pass() {
+  local harness="$tmp_dir/hv-harness.sh"
+  rm -rf "$tmp_dir/hvcycle" "$tmp_dir/stub"
+  mkdir -p "$tmp_dir/hvcycle" "$tmp_dir/stub"
+  printf '%s' "$1" > "$tmp_dir/stub/hv-mode"
+  {
+    printf '%s\n' 'set -euo pipefail'
+    printf 'SCRIPT_DIR=%q\n' "$fake_root"
+    printf 'cycle_dir=%q\n' "$tmp_dir/hvcycle"
+    printf '%s\n' 'pr_label=autonomous-agent'
+    printf '%s\n' "$hv_fn"
+    printf '%s\n' 'gather_human_visibility_hygiene o/r "[]" >/dev/null'
+  } > "$harness"
+  STUB_STATE="$tmp_dir/stub" bash "$harness" 2>/dev/null
+}
+
+run_hv_pass ok-found
+assert_eq "human-visibility: a completed gather tees its array"   '[{"source":"human-visibility","ref":"human-visibility-abcabcabcabc"}]'   "$(file_or "$tmp_dir/hvcycle/human-visibility-hygiene-o_r.json")"
+assert_eq "  ... and writes the marker beside it"   "present" "$(marker_of "$tmp_dir/hvcycle/human-visibility-hygiene-o_r.ok")"
+
+run_hv_pass ok-empty
+assert_eq "human-visibility: a completed gather with nothing to report tees []"   "[]" "$(file_or "$tmp_dir/hvcycle/human-visibility-hygiene-o_r.json")"
+assert_eq "  ... and still earns a marker — an empty answer is an answer"   "present" "$(marker_of "$tmp_dir/hvcycle/human-visibility-hygiene-o_r.ok")"
+
+run_hv_pass fail
+assert_eq "human-visibility: a failed gather tees nothing"   "ABSENT" "$(file_or "$tmp_dir/hvcycle/human-visibility-hygiene-o_r.json")"
+assert_eq "  ... and writes no marker, so liveness decides nothing"   "absent" "$(marker_of "$tmp_dir/hvcycle/human-visibility-hygiene-o_r.ok")"
+
 # --- Half two: which files the liveness pass reads back -----------------------
 #
 # The block under test builds `void_liveness_gather_json` from the cycle dir.
@@ -215,6 +284,30 @@ assert_eq "a repo with no prefetch files decides nothing, whatever the void pass
 assert_eq "  ... and offers no ids to decide it with" \
   "[]" "$(jq -c '."o/r"."register-hygiene".ids' <<<"$out")"
 
+# The human-visibility shape's own read-back (agent-ops#646). Its tee carries
+# candidate objects, so the ids come off `.ref` exactly as the four beside it.
+rm -rf "$lv_cycle"; mkdir -p "$lv_cycle"
+printf '%s\n' '[{"source":"human-visibility","ref":"human-visibility-abcabcabcabc"}]' \
+  > "$lv_cycle/human-visibility-hygiene-o_r.json"
+: > "$lv_cycle/human-visibility-hygiene-o_r.ok"
+out="$(run_liveness_block "$lv_cycle" '[{"repo":"o/r","item":"human-visibility-abcabcabcabc"}]')"
+
+assert_eq "the liveness pass reads the human-visibility marker" \
+  "true" "$(jq -r '."o/r"."human-visibility".ok' <<<"$out")"
+assert_eq "  ... and takes its ids from the tee's .ref" \
+  '["human-visibility-abcabcabcabc"]' \
+  "$(jq -c '."o/r"."human-visibility".ids' <<<"$out")"
+
+# The marker's absence is the whole point of the widened walk: without it the
+# shape is ungathered, and a still-stuck void stays stuck rather than retiring
+# on a gather that never ran.
+rm -f "$lv_cycle/human-visibility-hygiene-o_r.ok"
+out="$(run_liveness_block "$lv_cycle" '[{"repo":"o/r","item":"human-visibility-abcabcabcabc"}]')"
+assert_eq "a repo whose human-visibility gather never ran decides nothing" \
+  "false" "$(jq -r '."o/r"."human-visibility".ok' <<<"$out")"
+assert_eq "  ... and offers no ids to decide it with" \
+  "[]" "$(jq -c '."o/r"."human-visibility".ids' <<<"$out")"
+
 # --- Half three: which arguments the two rules are wired to -------------------
 #
 # Source-text assertions, because both failures are invisible at runtime until
@@ -236,6 +329,7 @@ done <<'PATTERNS'
 1	the repo walk calls gather_register_hygiene with purpose prefetch	gather_register_hygiene "$slug" "$default_branch" prefetch
 1	requirement 34l's pass calls it with purpose void	gather_register_hygiene "$vr_slug" "$vr_branch" void
 0	neither pass is left calling it without a purpose	gather_register_hygiene "$slug" "$default_branch")
+0	the human-visibility walk's repo list never puts void_json in argv	--argjson void "$void_json"
 PATTERNS
 
 if (( failures )); then
