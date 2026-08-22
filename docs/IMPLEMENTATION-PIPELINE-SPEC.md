@@ -86,8 +86,9 @@ cron (schedule.cycle_interval_minutes)
 - The standalone `claude` CLI is installed and resolvable from cron's
   minimal environment.
 - `cron` is running (started by WSL's `[boot]` command) with the crontab
-  entries installed: the hourly cycle, the daily review tick, and the
-  dashboard heartbeat (see `README.md`, "Installation").
+  entries installed: the implementation cycle
+  (`schedule.cycle_interval_minutes`), the review tick, and the dashboard
+  heartbeat (see `README.md`, "Installation").
 - Headless `claude -p` invocations authenticate with the user's existing
   Claude subscription login; `gh` uses its existing token. No new keys.
 
@@ -208,7 +209,8 @@ a node updates by pulling a new image rather than by pulling a branch.
   faster interval raises the fleet's pickup responsiveness without raising
   its idle spend. The review runs at `schedule.review_offset_minutes` past
   the node's *base* minute (mod 60, not the interval list — the review
-  stays hourly), at `schedule.review_hour`, keeping one node's two heavy
+  keeps a single fixed daily slot at `schedule.review_hour`, independent of
+  the cycle's own interval), keeping one node's two heavy
   pipelines maximally apart. Why: every active node spends one Claude
   account and pushes to the same repositories; the claims (17a) make
   simultaneous firing *correct*, the offsets make it *cheap*. Excluding
@@ -1818,8 +1820,8 @@ implements.
 
    An expired fleet disable is cleared by whichever cycle sees it first — the
    delete is sha-guarded and idempotent, so a lost race means a peer got
-   there, and there is no singleton chore (requirement 2.5). The weekly
-   review honours the fleet switch but never sets or clears it, mirroring
+   there, and there is no singleton chore (requirement 2.5). The review
+   pipeline honours the fleet switch but never sets or clears it, mirroring
    its relationship to the local one (`docs/REVIEW-PIPELINE-SPEC.md`, R2a).
 2.3b. **The merge-autonomy kill switch** (D18,
    `docs/reviews/2026-08-14-autonomy-investigation.md` §6; `lib/merge-autonomy.sh`).
@@ -2015,9 +2017,10 @@ implements.
    the log and the cycle directory: a standby tick must leave no trace in
    `state_dir` at all. That is stricter than the switch, which logs its
    stand-down, and deliberately so — a standby's `state_dir` holds no work of
-   its own, so an hourly event written there is noise in a stream that is
-   otherwise a record of cycles, and an hourly empty cycle directory is
-   indistinguishable from a cycle that died before it logged anything.
+   its own, so an event written there on every tick is noise in a stream
+   that is otherwise a record of cycles, and an empty cycle directory on
+   every tick is indistinguishable from a cycle that died before it logged
+   anything.
 
    Bypassed by `--dry-run` and `--once`, which are a human asking for a cycle
    rather than an unattended one, and by `--disable`/`--enable`/`--status`,
@@ -2414,7 +2417,7 @@ implements.
      after the fix is pushed, and nothing about the PR's own state ever says
      "answered". Deriving whose turn it is from review-thread events is the
      only thing that does. Without it every PR the agent fixed would stay a
-     candidate forever — selected, re-fixed, re-selected, hourly, each cycle
+     candidate forever — selected, re-fixed, re-selected, each cycle
      looking like a productive one and each paying a Sonnet run to redo work
      already pushed. Same shape as requirement 15's "a later green run
      supersedes".
@@ -15948,7 +15951,8 @@ standing the system up on a new machine.
    `[boot]` / `command = "service cron start"` (requires sudo), then restart
    WSL (`wsl --shutdown` from Windows). Alternative if preferred: a Windows
    Task Scheduler job running
-   `wsl.exe -u wallen -e $HOME/Code/Poetic-Poems/agent-ops/agent-cycle.sh` hourly.
+   `wsl.exe -u wallen -e $HOME/Code/Poetic-Poems/agent-ops/agent-cycle.sh` on
+   the node's configured cadence (`schedule.cycle_interval_minutes`).
    Either way, cycles only run while the machine is awake — a missed cycle
    simply waits for the next tick, which is harmless.
 3. Create the label in both repos:
@@ -15989,7 +15993,7 @@ rubric of requirement 26a confines to the minority of PRs whose contents
 warrant it; the reviewer `stage-start` events carry the grade, so a creep
 toward `high` that would erode this bound is auditable in the log. Stand-down
 cycles cost nothing but a few `gh` calls — except under an *estimated*
-usage-limit stand-down, where each hourly cycle also spends the 2.1b probe.
+usage-limit stand-down, where each cycle also spends the 2.1b probe.
 That spend is self-limiting from both ends: while the limit is real the
 probe's answer is the limit message, which serves no tokens and costs
 nothing, and the first answered probe (a fraction of a cent of

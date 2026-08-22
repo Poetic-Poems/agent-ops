@@ -20,7 +20,7 @@
 #     the single-firing-per-hour shape every release before it carried;
 #   - the review minute is still (cycle + review_offset_minutes) mod 60, at
 #     review_hour, using only the node's first/base minute — the review tick
-#     stays hourly regardless of the cycle's interval;
+#     keeps a single fixed daily slot regardless of the cycle's interval;
 #   - poetic's own config.json reproduces today's schedule exactly: the hash
 #     spread over 1..59 (minute 0 excluded), firing every 15 minutes from
 #     there, review 29 minutes past the base minute at hour 3;
