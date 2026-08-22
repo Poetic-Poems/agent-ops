@@ -13,14 +13,20 @@
 # not interchangeable:
 #
 #   dashboard.log, state-sync.log,  pure diagnostics, excluded from the
-#   doctor.log                     state branch (scripts/state-sync.sh) —
+#   doctor.log, revert-rate.log    state branch (scripts/state-sync.sh) —
 #                                   safe to rotate on size alone. doctor.log
 #                                   is the hourly `doctor.sh --unattended`
 #                                   pass's own text output (agent-ops#543);
 #                                   the dashboard reads the structured
 #                                   .doctor-status.json beside it, not this
 #                                   file, so rotating it costs nothing an
-#                                   operator watches for.
+#                                   operator watches for. revert-rate.log is
+#                                   the daily `publish-revert-rate.sh` pass's
+#                                   own text output (agent-ops#579), the same
+#                                   role doctor.log plays for `doctor.sh
+#                                   --unattended`: the dashboard reads the
+#                                   structured revert-rate.jsonl beside it,
+#                                   not this file.
 #   cron.log, review-cron.log       published to the node's state branch, so
 #                                   bounding them here also bounds the
 #                                   mirror. scripts/publish-dashboard.sh
@@ -29,13 +35,14 @@
 #                                   generation too when the live file is
 #                                   short — rotating here never has to keep
 #                                   a tail of its own.
-#   log.jsonl, review-log.jsonl     NEVER rotated. This is the fleet's
-#                                   memory: the union readers (blocked/void
+#   log.jsonl, review-log.jsonl,    NEVER rotated. This is the fleet's
+#   revert-rate.jsonl               memory: the union readers (blocked/void
 #                                   extraction, the no-op fingerprint, the
-#                                   limit cooldown) scan it whole, and
-#                                   dropping its head would silently change
-#                                   what the Co-Ordinator believes has been
-#                                   tried.
+#                                   limit cooldown, the revert-rate panel)
+#                                   scan it whole, and dropping its head
+#                                   would silently change what the
+#                                   Co-Ordinator believes has been tried, or
+#                                   which node's revert-rate row is newest.
 #
 # Plain rename is enough: every writer here reopens the file by name on each
 # append (`>>"$log"` per cron invocation), so nothing holds a stale
@@ -58,8 +65,8 @@ usage() {
 usage: rotate-logs.sh
 
 Rotate the diagnostic and cron logs in state_dir once they exceed
-log_retained_bytes, keeping log_generations of history. log.jsonl and
-review-log.jsonl are never touched.
+log_retained_bytes, keeping log_generations of history. log.jsonl,
+review-log.jsonl and revert-rate.jsonl are never touched.
 
 Environment:
   ROTATE_LOGS_RETAINED_BYTES   override log_retained_bytes (tests use a
@@ -91,9 +98,9 @@ retained_bytes="${ROTATE_LOGS_RETAINED_BYTES:-$(cfg '.log_retained_bytes')}"
 generations="${ROTATE_LOGS_GENERATIONS:-$(cfg '.log_generations')}"
 (( generations >= 1 )) || generations=1
 
-# The logs this script owns. log.jsonl and review-log.jsonl are deliberately
-# absent — see the file header.
-LOGS=(dashboard.log state-sync.log doctor.log cron.log review-cron.log)
+# The logs this script owns. log.jsonl, review-log.jsonl and
+# revert-rate.jsonl are deliberately absent — see the file header.
+LOGS=(dashboard.log state-sync.log doctor.log revert-rate.log cron.log review-cron.log)
 
 file_size() {
   stat -c%s -- "$1" 2>/dev/null || stat -f%z -- "$1" 2>/dev/null || echo 0
