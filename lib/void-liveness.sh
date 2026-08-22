@@ -9,8 +9,9 @@
 # already act on. Every other shape a cycle can void —
 # `dependabot-alert-<n>`/`code-scanning-alert-<n>`, `register-hygiene-<hash>`,
 # `failed-run-<workflow>`, and `pr-<n>-conflict-<head-sha>` (later joined by
-# its sibling shape `pr-<n>-superseded-<head-sha>`, TD-PPagop-26081304, and by
-# `pr-<n>-dequeued-<head-sha>`, TD-PPagop-26081409) — had
+# its sibling shape `pr-<n>-superseded-<head-sha>`, TD-PPagop-26081304, by
+# `pr-<n>-dequeued-<head-sha>`, TD-PPagop-26081409, and by
+# `human-visibility-<hash>`, agent-ops#646) — had
 # no actioned signal at all, so a void of one of those shapes never retired and
 # the extract kept the same unbounded growth curve requirement 34n exists to
 # stop, underneath the part it does bound.
@@ -21,7 +22,7 @@
 # still has, a workflow still failing, a PR still conflicted or dequeued — is
 # doing live suppression work every cycle, and retiring it on age alone
 # re-exposes the item to be rediscovered void all over again (the exact churn
-# requirement 34k exists to stop). The actioned analogue these five shapes
+# requirement 34k exists to stop). The actioned analogue these six shapes
 # have is liveness:
 # the source that mints the id no longer yields it, this cycle, and the
 # source's own gather succeeded — "unknown is not gone" (requirement 34i)
@@ -71,6 +72,18 @@ VOID_LIVENESS_ALERT_RE='^(dependabot|code-scanning)-alert-[0-9]+$'
 # 12-hex-character digest of the register's tree and policy blob SHAs.
 VOID_LIVENESS_REGISTER_HYGIENE_RE='^register-hygiene-[0-9a-f]{12}$'
 
+# scripts/gather-human-visibility-hygiene.sh's own ref (agent-ops#646):
+# `human-visibility-` plus a 12-hex-character sha256 of the surviving
+# violations' own `pr_url|detail` pairs. The same digest-over-a-set shape as
+# the register-hygiene ref above, and it retires the same way, but note what
+# makes an id absent here: the digest is scoped to *this* violation set, so a
+# set that has merely changed mints a different ref rather than dropping this
+# one, and the void of the old ref is dead weight from that moment on. That is
+# the same reasoning the register-hygiene shape rests on — neither ref is ever
+# re-offered once its set has moved — and it is why the absent-from-the-gather
+# test is sound for both despite the ref never repeating.
+VOID_LIVENESS_HUMAN_VISIBILITY_RE='^human-visibility-[0-9a-f]{12}$'
+
 # Requirement 19's `failed-runs` item id: `failed-run-` plus the workflow
 # file's basename, without extension — free-form beyond that (a workflow
 # filename may carry dots, underscores or hyphens).
@@ -104,18 +117,20 @@ VOID_LIVENESS_DEQUEUED_RE='^pr-[0-9]+-dequeued-[0-9a-f]{6,40}$'
 # void_liveness_actioned VOID_JSON GATHER_JSON
 # Print, as a JSON array of `{repo, item, by}`, the pairs from VOID_JSON that
 # requirement 34n's liveness rule counts as actioned: an entry whose item
-# matches one of the five shapes above, whose repo carries a GATHER_JSON entry
+# matches one of the six shapes above, whose repo carries a GATHER_JSON entry
 # for that shape with `ok: true`, and whose item is absent from that shape's
 # `ids`.
 #
 # GATHER_JSON is keyed repo -> shape -> `{ok, ids}`, shape one of "alert",
-# "register-hygiene", "failed-run", "merge-conflict", "dequeued":
+# "register-hygiene", "failed-run", "merge-conflict", "dequeued",
+# "human-visibility":
 #
 #   {"owner/repo": {"alert": {"ok": true, "ids": ["dependabot-alert-3"]},
 #                    "register-hygiene": {"ok": true, "ids": []},
 #                    "failed-run": {"ok": false, "ids": []},
 #                    "merge-conflict": {"ok": true, "ids": ["pr-9-conflict-1a2b3c4d5e6f"]},
-#                    "dequeued": {"ok": true, "ids": []}}}
+#                    "dequeued": {"ok": true, "ids": []},
+#                    "human-visibility": {"ok": true, "ids": []}}}
 #
 # `ids` is this cycle's own gather for that repo+shape — the same array (or
 # the same source) the Co-Ordinator itself was handed, before any claim
@@ -143,7 +158,8 @@ void_liveness_actioned() {
     --arg rh_re "$VOID_LIVENESS_REGISTER_HYGIENE_RE" \
     --arg fr_re "$VOID_LIVENESS_FAILED_RUN_RE" \
     --arg mc_re "$VOID_LIVENESS_MERGE_CONFLICT_RE" \
-    --arg dq_re "$VOID_LIVENESS_DEQUEUED_RE" '
+    --arg dq_re "$VOID_LIVENESS_DEQUEUED_RE" \
+    --arg hv_re "$VOID_LIVENESS_HUMAN_VISIBILITY_RE" '
     input as $void | input as $gather
     | def shape_of($item):
         if ($item | test($alert_re)) then "alert"
@@ -151,6 +167,7 @@ void_liveness_actioned() {
         elif ($item | test($fr_re)) then "failed-run"
         elif ($item | test($mc_re)) then "merge-conflict"
         elif ($item | test($dq_re)) then "dequeued"
+        elif ($item | test($hv_re)) then "human-visibility"
         else null end;
     [ $void[]
       | . as $e
@@ -186,6 +203,12 @@ void_liveness_actioned() {
 #
 # All three inputs travel on stdin, never in argv (requirement 4g): VOID_JSON
 # is unbounded. Fails safe to `[]` on any malformed input.
+#
+# Known gap, tech-debt/TD-PPagop-26082309.md: the review half can only ever
+# answer for a ref some merged pull request *names*, and a voided review ref
+# is voided precisely because the work landed under a commit that named no
+# ref — so this signal is defined for the population that never gets voided,
+# and every such entry stays in the extract for ever.
 # shellcheck disable=SC2016  # jq's $void/$review/$plan/$e, not the shell's.
 void_review_plan_actioned() {
   local void_json="${1:-[]}" review_json="${2:-{\}}" plan_json="${3:-{\}}" out=""
@@ -237,9 +260,14 @@ void_review_plan_actioned() {
 # Deliberately scoped to the shapes whose id *form* names the source that
 # mints them. A bare issue number or a `pr-<n>-…` shaped neither `-conflict-`
 # nor `-superseded-` is offered by several sources (`issues:<band>`,
-# `review-feedback`, `abandoned-drafts`, `human-visibility`), so no such
+# `review-feedback`, `abandoned-drafts`), so no such
 # inverse exists and no `source-dropped` verdict can be read off the id —
-# those keep the closed-object signal they already had. The `repo-dropped`
+# those keep the closed-object signal they already had. `human-visibility` is
+# not among them, though it was named here until agent-ops#646: it mints
+# exactly one id shape, its own `human-visibility-<hash>` ref (the `hv_cands`
+# arm of agent-cycle.sh's candidate build passes `.ref` through, never a pull
+# request number), so the inverse is as well defined for it as for the five
+# above and the shape belongs in the map. The `repo-dropped`
 # half needs no map at all and so applies to
 # every shape: nothing in a repo the config does not name can be offered by
 # any source.
@@ -261,6 +289,7 @@ void_config_actioned() {
     --arg fr_re "$VOID_LIVENESS_FAILED_RUN_RE" \
     --arg mc_re "$VOID_LIVENESS_MERGE_CONFLICT_RE" \
     --arg dq_re "$VOID_LIVENESS_DEQUEUED_RE" \
+    --arg hv_re "$VOID_LIVENESS_HUMAN_VISIBILITY_RE" \
     --arg review_re "$WORK_GONE_REVIEW_RE" \
     --arg register_re "$WORK_GONE_REGISTER_RE" \
     --arg plan_re "$WORK_GONE_PLAN_RE" '
@@ -271,6 +300,7 @@ void_config_actioned() {
         elif ($item | test($fr_re)) then ["failed-runs"]
         elif ($item | test($mc_re)) then ["merge-conflicts"]
         elif ($item | test($dq_re)) then ["dequeued"]
+        elif ($item | test($hv_re)) then ["human-visibility"]
         elif ($item | test($review_re)) then ["project-review"]
         elif ($item | test($register_re)) then ["tech-debt"]
         elif ($item | test($plan_re)) then ["implementation-plan"]

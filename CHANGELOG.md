@@ -471,6 +471,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A `human-visibility-<hash>` void now retires like every other shape the
+  cycle gathers as structured data, instead of sitting in the void extract
+  for ever (agent-ops#646). Requirement 34n's liveness rule knew five shapes;
+  this sixth one — the content digest
+  `scripts/gather-human-visibility-hygiene.sh` mints over its surviving
+  violations — was in none of them, is not a GitHub object 34k can close and
+  is not a register row 34l can resolve, so nothing could ever mark it
+  actioned. Four such entries had accumulated in a 135-entry, 156,454-byte
+  extract, three of them describing pull requests merged days earlier.
+  `lib/void-liveness.sh` now carries the shape in both of its maps —
+  `void_liveness_actioned`'s (as `liveness-human-visibility`) and
+  `void_config_actioned`'s source inverse, where `human-visibility` had been
+  listed among the sources no `source-dropped` verdict can be read off
+  despite minting exactly one id shape of its own.
+  `gather_human_visibility_hygiene` writes the `.ok` marker the rule reads
+  back, and the walk that calls it
+  now also covers a repo carrying unretired residue of this shape
+  but no live violation — the state in which such a void *should* retire, and
+  the one that previously produced no marker at all. Costs no additional
+  `gh` call: with no violations handed to it that gatherer re-verifies
+  nothing and prints the `[]` the rule was missing.
+
+  The same measurement showed the extract's remaining stall is not a defect
+  but the age gate: 131 of the 135 entries were younger than
+  `void_retire_after_days`, and 91 already carried `void-object-closed`, so
+  requirements 34k and 34l are actioning items and the extract simply has the
+  8–10 August void burst to age out. The one shape that is stuck for a
+  structural reason is filed rather than fixed here —
+  `tech-debt/TD-PPagop-26082309.md`, a voided `review-<date>-R-NN` ref, whose
+  `review-merged` signal needs a merged pull request naming the ref and so is
+  defined for exactly the population that never gets voided. All four entries
+  in the extract already past the age gate are of that shape.
+
 - A `tailnet` node with no `TS_AUTHKEY` no longer thrashes `dashboard` once
   the sidecar it shares a network namespace with has stopped
   (TD-PPagop-26082303). PR #698 bounded `tailscale`'s own `restart` so it
