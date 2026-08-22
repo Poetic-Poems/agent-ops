@@ -998,6 +998,12 @@ assert_contains "a repository's rolling-window rate reads as a percentage with i
   "25% (n=12)" "$out"
 assert_contains "  ... and states its own window bounds beneath it" \
   "last 14d, excl. last 48h" "$out"
+# The two instants themselves, not just the cadence: a row a node stopped
+# publishing weeks ago reads identically to a fresh one otherwise. Asserted on
+# the bracket rather than the formatted dates, which `fmtTime` renders in the
+# reader's own locale and zone.
+assert_contains "  ... including the window's own concrete bounds" \
+  "last 14d, excl. last 48h (" "$out"
 assert_contains "the cumulative-since-baseline rate reads the same way" \
   "37.5% (n=40)" "$out"
 assert_contains "the stored baseline rate reads the same way too" \

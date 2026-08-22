@@ -1101,10 +1101,12 @@ Each row states three figures, per repository:
   merged in the last 48 hours, floored at `min_samples` (10) before a rate
   renders at all. Below the floor, the row states the sample size and that it
   is under the floor instead of a rate a reader would over-read from a
-  handful of pull requests. The window's own bounds (`since` .. now minus 48
-  hours) render beneath the figure, in muted text, so a reader never has to
-  hold the cadence in their head to know what "now" the rate is current as
-  of.
+  handful of pull requests. The window's cadence and its own two instants
+  (`rolling.since` .. `rolling.excludes_merged_after`) both render beneath the
+  figure, in muted text, so a reader never has to hold the cadence in their
+  head, and a row a node stopped publishing weeks ago does not read as
+  current: the second instant is the "now" the rate is actually current as
+  of, minus the 48 hours it excludes.
 - **Cumulative since baseline** — every merged, labelled pull request since
   `revert_rate_baseline.generated`, unfiltered. This is the figure Stage 2's
   own exit criterion reads: an all-population aggregate compared against the

@@ -1643,7 +1643,9 @@
         el("td", {class:"mono", text: repoShort}),
         el("td", {}, [revertRateCell(row.rolling),
           el("div", {class:"muted", style:"font-size:11px"},
-            "last " + (row.window_days || 14) + "d, excl. last 48h")]),
+            "last " + (row.window_days || 14) + "d, excl. last 48h"
+            + (row.rolling.since ?
+                 " (" + fmtTime(row.rolling.since) + " – " + fmtTime(row.rolling.excludes_merged_after) + ")" : ""))]),
         el("td", {}, [revertRateCell(row.cumulative),
           row.cumulative && row.cumulative.since ?
             el("div", {class:"muted", style:"font-size:11px"}, "since " + fmtTime(row.cumulative.since)) : null]),
