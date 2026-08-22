@@ -520,7 +520,7 @@ occupies four separate ranks rather than one:
   `organization_members_only`, and a token that cannot see it must degrade to
   today's behaviour rather than to an unranked pile.
 
-The `project-review` source draws on the weekly project-review pipeline's own
+The `project-review` source draws on the review pipeline's own
 output (see `docs/REVIEW-PIPELINE-SPEC.md`), which lands in each repo via a
 merged PR:
 
@@ -1656,9 +1656,9 @@ implements.
    editing the files the next tick will source; a cycle firing mid-edit runs
    half of one revision and half of another, and the resulting failure gets
    attributed to whatever the agent happened to be writing. That is also why
-   the switch is shared rather than per-pipeline: the weekly review runs out of
-   the same tree and sources the same `lib/`, so a switch that stood down only
-   the implementation pipeline would leave the hazard in place.
+   the switch is shared rather than per-pipeline: the review pipeline runs out
+   of the same tree and sources the same `lib/`, so a switch that stood down
+   only the implementation pipeline would leave the hazard in place.
 
    Four details decide whether this helps or becomes its own outage:
    - **A disable expires** after `disable_default_ttl` unless it explicitly
@@ -8085,9 +8085,9 @@ implements.
     - **A re-report of an item that is already blocked** is logged as a
       `warning` and dropped. Requirement 35a measures the Enabler threshold from
       the *latest* `attempt-failed`, so a Co-Ordinator that re-reported the same
-      item every cycle would push that clock forward hourly and the item would
-      never become eligible — the identical silent starvation this path exists
-      to end, wearing an event trail that looks like progress.
+      item every cycle would push that clock forward cycle after cycle and the
+      item would never become eligible — the identical silent starvation this
+      path exists to end, wearing an event trail that looks like progress.
     - **A `source: "issues"` entry whose own `reason`/`missing`/`evidence` cites
       a `Blocked-by:` reference this cycle's dependency gate already resolved**
       (`dependency_refusal_reason`, `lib/dependency-gate.sh`; requirement 16's

@@ -72,7 +72,8 @@ cron (project_review.defaults.min_days_between_reviews; a daily tick with a
 
 1. The **Review Cronjob** — the crontab entry that fires the Review Script.
 2. The **Review Script** (`review-cycle.sh`) — a bash script that orchestrates
-   one weekly run across the target repositories. It launches the
+   one run across the target repositories, on its own configured cadence
+   (`project_review.defaults.min_days_between_reviews`). It launches the
    Reviewer-Agent; agents never launch the Script.
 3. The **Reviewer-Agent** — a headless Claude Code invocation that runs the
    `project-review` skill against one ephemeral clone and raises one review
@@ -225,7 +226,7 @@ review** (not draft — the review *is* the deliverable, and there is no second
 review stage to flip it). The PR is labelled with the repository's own
 resolved `project_review` pr_label (its override, or
 `project_review.defaults.pr_label`, requirement 342), titled in
-Conventional Commits form (e.g. `docs(review): weekly project review 2026-07-20`),
+Conventional Commits form (e.g. `docs(review): repository review 2026-07-20`),
 and its body summarises the verdict and links the review index. A human
 approves and merges it, at every `merge_autonomy` level: `review-cycle.sh`
 engages no Approver stage, so the implementation pipeline's trust ladder
@@ -239,7 +240,7 @@ The point of the pipeline is the *loop*, not the report. When a review PR
 merges, its updated tech-debt register and its `04-improvement-prompts.md`
 land on `main`, where:
 
-- the **hourly implementation pipeline's** Co-Ordinator picks up the new
+- the **implementation pipeline's** Co-Ordinator picks up the new
   tech-debt items on its next cycle (its `tech-debt` work source reads
   exactly that register); and/or
 - the human runs the **`project-remediation`** skill (the review's
@@ -333,7 +334,7 @@ R3. **Stand-down checks.** Each logs its reason and exits 0:
       skip-guard below, once the cycle is under way — an override can hold
       one repository off *longer* than this value, but cannot escape it
       while it is in force. This exists because R2a's switch is deliberately
-      **shared** with the implementation pipeline: holding the weekly review
+      **shared** with the implementation pipeline: holding the review pipeline
       off until a date while cycles carry on is a thing the switch cannot
       say. A value `date -d` cannot parse stands the pipeline down rather
       than running through it — the operator evidently meant to hold
@@ -369,14 +370,15 @@ R2a. **The switch.** Before the lock, read the shared switch
    the agent-ops working tree is editing files the next cron tick will source —
    and this script runs out of that same tree and sources that same `lib/`. An
    agent that stood down only the implementation pipeline before editing
-   `lib/limit-detect.sh` would have left the weekly review free to fire into a
-   half-written file.
+   `lib/limit-detect.sh` would have left the review pipeline free to fire into
+   a half-written file.
 
    This pipeline **honours the switch but never sets it**: `agent-cycle.sh
    --disable/--enable/--status` is the single entry point, so there is one
    writer and one record. Reject those flags here with a pointer rather than
    implementing a second way to write the same file. Leave an *expired* switch
-   for `agent-cycle.sh` to clear and log, too: this pipeline runs weekly, so
+   for `agent-cycle.sh` to clear and log, too: this pipeline runs on its own
+   configured cadence (`project_review.defaults.min_days_between_reviews`), so
    letting it clear one would mean the `enabled` event explaining why cycles
    resumed could land days after they did.
 
@@ -667,7 +669,7 @@ R12a. **Cross-reference every mirrored recommendation.** Where a tech-debt
    filed, not when it is resolved.
 
    This is not book-keeping. A recommendation and its mirrored register entry
-   are two channels onto one piece of work, and the hourly implementation
+   are two channels onto one piece of work, and the implementation
    pipeline's Co-Ordinator can tell only by finding this cross-reference
    (`docs/IMPLEMENTATION-PIPELINE-SPEC.md`, requirement 16). Absent
    it, that Co-Ordinator has one remaining test for whether a recommendation
@@ -692,7 +694,7 @@ R13. **Raise one pull request.** Create the branch
    pull request, **ready for review** (not draft),
    labelled with this repository's own resolved `project_review` pr_label,
    with a Conventional-Commits title
-   (`docs(review): weekly project review <date>` — it becomes the squash commit
+   (`docs(review): repository review <date>` — it becomes the squash commit
    on `main`) and a body that summarises the verdict, links the review
    index, and — where R12 reserved any ids — lists every `td/<id>` it
    reserved and the command to release them once this pull request merges
@@ -759,7 +761,7 @@ What exists, and the requirements each part answers to:
 3. `.claude/skills/project-review/` — the vendored skill (pinned; re-sync
    from upstream deliberately).
 4. `config.json` — the `project_review` block.
-5. `README.md` — a "Weekly project review" section: what it does and why (the
+5. `README.md` — a "Repository review" section: what it does and why (the
    loop it closes), every `project_review.*` config key, how to install the
    cron entry,
    how to operate it (`--dry-run`, `--once`, `--repo`, reading
@@ -881,7 +883,7 @@ standing the pipeline up on a new machine.
    The skip-guard (R4) ensures this actually reviews each repo only about once a
    week. *Strict weekly alternative* (simpler, but a missed Monday tick skips
    the whole week): `30 3 * * 1 …` (Mondays 03:30). Schedule it at a different
-   minute from the hourly implementation cycle to avoid both firing at once
+   minute from the implementation cycle's own tick to avoid both firing at once
    (the review defers to a running cycle anyway, per R3). The crontab
    environment must also set `AGENT_OPS_ROLE=active` on the node that is to run
    the reviews (R2b); without it every tick stands down.

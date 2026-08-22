@@ -158,8 +158,8 @@ issues="$(api_json '[]' \
 #
 # This is not hypothetical tidiness. `poetic` schedules sync-framework.yml at
 # `0 * * * *` — hourly, an external cadence independent of this pipeline's own
-# (`schedule.cycle_interval_minutes`; this installation's cycle line is
-# `38,53 * * * *`). Digesting run ids made that one workflow bust the
+# (`schedule.cycle_interval_minutes`, rendered per node into its own cycle
+# minutes, never `0`). Digesting run ids made that one workflow bust the
 # fingerprint on every cycle whose tick landed after its latest run, which
 # quietly reduced the whole short-circuit to a no-op that still paid for a
 # Co-Ordinator: the feature would have looked installed, logged nothing
