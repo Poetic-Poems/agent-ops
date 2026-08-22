@@ -15965,16 +15965,25 @@ pull request, run the ones the change touches and any it could regress.
     logs `scripts/rotate-logs.sh` never rotates) rather than the transcript
     rotation `state_dir/cycles/<id>/*.out` is subject to.
 
-    `scripts/publish-dashboard.sh`'s WI-8 autonomous-landing digest reads
-    this record instead of re-joining `approver-verdict` events against
-    `landing-armed` by timestamp: each armed row's `tier`/`verdict`/
-    `adjudication` come from the newest `landing-audit-record` at or before
-    the arm, and `anomaly: true` marks a `landing-armed` with no matching
-    record — reported, never rendered with the silent nulls the digest used
-    to fall back to. `dashboard/index.html`'s landings panel adds a Record
-    column (`ok`/`missing`) — its own column, beside requirement 8e's
-    `Audit` one rather than folded into it — and a summary line naming how
-    many landings in the window carry no audit record.
+    `scripts/publish-dashboard.sh`'s WI-8 autonomous-landing digest joins
+    each armed row to this record by `pr_url` **and the arming cycle**,
+    taking the earliest `landing-audit-record` at or after the arm — never
+    the newest at or before, since `_landing_stage_attempt` always writes
+    `landing-armed` first and `landing-audit-record` second, moments apart
+    from the same call. The cycle carries the whole weight of pairing a
+    *second* arm of the same pull request with the right record: on
+    timestamps alone, an arm whose record write never completed would
+    adopt the next cycle's record for the same `pr_url` and render
+    `anomaly: false`, hiding exactly the unexplained landing this panel
+    exists to surface. `anomaly: true` marks a `landing-armed` with no
+    matching record — reported, never rendered with the silent nulls the
+    digest used to fall back to. The older `approver-verdict`-by-timestamp
+    join is retained as the fallback for a `landing-armed` from before
+    requirement 8x shipped, which can never have a matching audit record.
+    `dashboard/index.html`'s landings panel adds a Record column
+    (`ok`/`missing`) — its own column, beside requirement 8e's `Audit` one
+    rather than folded into it — and a summary line naming how many
+    landings in the window carry no audit record.
 
     `test/landing-wiring.test.sh`'s happy path asserts the audit record is
     logged alongside `landing-armed`, naming the pull request number, head
