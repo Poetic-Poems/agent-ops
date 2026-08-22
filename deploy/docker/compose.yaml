@@ -234,6 +234,18 @@ services:
     <<: *agent-ops
     profiles: [tailnet]
     command: ["/app/scripts/serve-dashboard.sh", "8787"]
+    # Bounded like the sidecar it shares a namespace with, overriding the
+    # anchor's `unless-stopped`: this container cannot start at all without
+    # `tailscale`'s namespace to join, so once the sidecar has given up
+    # (`restart: on-failure:5` above) every further attempt here fails the
+    # same way for the same unfixable reason. Left at `unless-stopped` this
+    # retried at Docker's capped backoff forever after the sidecar had
+    # already stopped — a container thrashing where none of the loop issue
+    # #644 was fixing had moved, just to a different service
+    # (TD-PPagop-26082303). `on-failure:5` is not this container's own
+    # transient-error budget; it exists only so this container settles on
+    # the same schedule as the dependency it cannot run without.
+    restart: on-failure:5
     # No `ports` and no `networks` are possible here, by construction: this
     # container has no network stack of its own. It reaches the tailnet, and is
     # reached, only through the sidecar above.

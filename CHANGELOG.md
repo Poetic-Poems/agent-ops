@@ -471,6 +471,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A `tailnet` node with no `TS_AUTHKEY` no longer thrashes `dashboard` once
+  the sidecar it shares a network namespace with has stopped
+  (TD-PPagop-26082303). PR #698 bounded `tailscale`'s own `restart` so it
+  settles after five attempts instead of retrying forever, but left
+  `dashboard` on the shared `unless-stopped` policy; since it cannot join the
+  network namespace of a container that is not running, it retried
+  indefinitely at Docker's capped backoff once `tailscale` had already given
+  up — the loop issue #644 was fixing moved to a different container rather
+  than ending. `dashboard` now carries `restart: on-failure:5` too, so it
+  settles on the same schedule as the dependency it cannot run without.
+
 - A `tailnet` node with no `TS_AUTHKEY` no longer registers a fresh Tailscale
   node key once a minute forever (agent-ops#644). The profile's documented
   precondition was enforced by nothing, so `tailscaled` started anyway, asked

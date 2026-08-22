@@ -296,6 +296,16 @@ file and carries placeholders only; `.env` itself is never committed.
   `127.0.0.1` while nothing on any network can, so containerisation costs the
   dashboard's privacy model nothing. The sidecar's `ts-serve.json` proxies
   `https://<node>.<tailnet>` to `http://127.0.0.1:8787` and allows no Funnel.
+  Its own `restart: on-failure:5` bounds it the same as the sidecar, overriding
+  the anchor's `unless-stopped`: joining a network namespace whose owning
+  container is not running is refused outright, so once `tailscale` has given
+  up over a missing `TS_AUTHKEY` and stopped, `dashboard` cannot start either,
+  for the same unfixable reason, on every retry. Left unbounded this container
+  thrashed at Docker's capped backoff indefinitely once the sidecar had already
+  stopped — the loop issue #644 was fixing had moved to a different service
+  rather than ending (TD-PPagop-26082303). The limit here is not this
+  container's own transient-error budget; it exists only to keep `dashboard`
+  settling on the same schedule as the dependency it cannot run without.
 - **`dashboard-local`** (profile `local`) — the same server on a node with no
   tailnet, readable on that host's loopback and nowhere else (`DASHBOARD-SPEC`).
   It gets there in two moves: the server is told to bind `0.0.0.0` *inside the
@@ -12834,16 +12844,21 @@ pull request, run the ones the change touches and any it could regress.
    failure; and no `compose.yaml` in the stack directory, or a scheduler
    that cannot be exec'd into, is exit 2, never a clean pass.
 1c-v. **The tailnet sidecar refuses to start without `TS_AUTHKEY`, and does
-   not retry forever over one.** On a live node with the `tailnet` profile
-   selected and `TS_AUTHKEY` unset, `docker compose up -d tailscale` exits
-   with the container in a failed state and `docker compose logs tailscale`
-   carries a single line naming the missing variable and the active profile,
-   never reaching `tailscaled` — no new node key is registered against the
-   tailnet. `docker compose ps` shows it `Exited` after five attempts rather
-   than restarting indefinitely, because the `tailscale` service's own
+   not retry forever over one — and neither does the dashboard sharing its
+   namespace.** On a live node with the `tailnet` profile selected and
+   `TS_AUTHKEY` unset, `docker compose up -d` exits with both `tailscale` and
+   `dashboard` in a failed state and `docker compose logs tailscale` carries a
+   single line naming the missing variable and the active profile, never
+   reaching `tailscaled` — no new node key is registered against the tailnet.
+   `docker compose ps` shows both `Exited` after five attempts apiece rather
+   than restarting indefinitely: the `tailscale` service's own
    `restart: on-failure:5` bounds it where the rest of the file is
-   `unless-stopped`.
-   With `TS_AUTHKEY` set, the same `up -d` starts the sidecar normally and
+   `unless-stopped`, and `dashboard` carries the same bound because it cannot
+   join a network namespace whose container is not running, so it fails on
+   every attempt for as long as `tailscale` stays stopped
+   (TD-PPagop-26082303). `docker events` over that window shows five restart
+   attempts per container, not an unbounded stream.
+   With `TS_AUTHKEY` set, the same `up -d` starts both containers normally and
    `docker compose exec tailscale tailscale status` succeeds.
 1d. **State replicates per node, and comes back as peers.**
    `test/state-sync.test.sh`
