@@ -11290,15 +11290,25 @@ What exists, and the requirements each part answers to:
     installation's permissions) in one consolidated verdict per repository,
     printed once its configured `merge_autonomy` is `agent-approves` or
     above (silent at `human`, the same convention every pairing check here
-    follows): every unmet precondition is named and tagged **owner act** (a
-    ruleset parameter, a repository merge setting, or the App installation's
-    own granted permissions — something only a repository/organisation admin
-    can change) or **configuration error** (`approver_app_id`/
-    `approver_model_default` — this fleet's own `config.json`). A repository
-    configured at `agent-merges-routine` or above whose forge configuration
-    does not support it is a doctor **`fail`, never a `warn`** — the pipeline
-    would otherwise raise approvals or land pull requests nobody has
-    verified the forge can actually clear. A precondition this run could not
+    follows) — but not every joined fact is consulted at every printed
+    level. `approver_app_id`/`approver_model_default` and the App
+    installation's own permissions apply from `agent-approves` upward:
+    `pull_requests: write` is what lets the App post a review at all, so a
+    narrowed installation is exactly as fatal to "`agent-approves` is
+    supported" as to any higher level. The ruleset's approving-review count,
+    its code-owner requirement, `dismiss_stale_reviews_on_push`,
+    `bypass_actors`, and the merge-path pairing apply only from
+    `agent-merges-routine` upward, where the pipeline actually lands pull
+    requests rather than only approving them. Every unmet precondition is
+    named and tagged **owner act** (a ruleset parameter, a repository merge
+    setting, or the App installation's own granted permissions — something
+    only a repository/organisation admin can change) or **configuration
+    error** (`approver_app_id`/`approver_model_default` — this fleet's own
+    `config.json`). A repository whose forge configuration does not support
+    its configured level is a doctor **`fail`, never a `warn`**, from
+    `agent-approves` upward — the pipeline would otherwise raise approvals
+    or land pull requests nobody has verified the forge can actually clear.
+    A precondition this run could not
     evaluate — an unreachable ruleset, an unreadable merge setting, an
     unconfirmed installation permission — is never read as a gap: it is
     named separately as unconfirmed, and only turns the verdict into a
@@ -15202,15 +15212,27 @@ pull request, run the ones the change touches and any it could regress.
     against a throwaway RSA key and a stubbed `APPROVER_TOKEN_CURL`, so the
     check itself runs for real while no real network is reachable. The
     consolidated verdict then prints once per repository at `agent-approves`
-    and above, and not at all at `human`: `ok` where every precondition is
-    satisfied; `fail`, never `warn`, where any is not, naming each as an owner
-    act (`no active default-branch ruleset requires approving reviews (owner
-    act)`, `no merge queue and allow_auto_merge/allow_squash_merge are not
-    both enabled (owner act)`) or a configuration error (`approver_model_default
-    is not set (configuration error)`); and `skip`, with `doctor.sh` still
-    exiting 0, where the only gaps are ones this run could not read — an
-    unreachable `rulesets` endpoint, and an unreadable merge-queue state,
-    which is named as unread rather than as never looked at.
+    and above, and not at all at `human` — but which facts it consults
+    depends on the printed level. At `agent-approves`, over `ma_approves_config`
+    paired with `stub_perm 200 '{"permissions":{"contents":"write","metadata":"read"}}'`
+    (a live installation narrowed off `pull_requests: write`), the verdict is a
+    `fail` naming `the Approver App installation's live permissions do not
+    match exactly what this fleet needs (owner act)`, never an `ok` claiming
+    "is fully supported by its forge configuration" while the App cannot post
+    a review at all — the ruleset and merge-path facts play no part at this
+    level, since `landing_arm` is unreachable below `agent-merges-routine`
+    regardless of the ruleset or merge settings. From `agent-merges-routine`
+    upward those two join `approver_app_id`/`approver_model_default` and the
+    App installation's permissions in the one verdict: `ok` where every
+    applicable precondition is satisfied; `fail`, never `warn`, where any is
+    not, naming each as an owner act (`no active default-branch ruleset
+    requires approving reviews (owner act)`, `no merge queue and
+    allow_auto_merge/allow_squash_merge are not both enabled (owner act)`) or
+    a configuration error (`approver_model_default is not set (configuration
+    error)`); and `skip`, with `doctor.sh` still exiting 0, where the only
+    gaps are ones this run could not read — an unreachable `rulesets`
+    endpoint, and an unreadable merge-queue state, which is named as unread
+    rather than as never looked at.
 
 ## Host provisioning (human steps)
 

@@ -1219,13 +1219,18 @@ if ((gh_ready)); then
         # which of the three it was.
         *) unconfirmed+=("its merge-settings/merge-queue pairing could not be read") ;;
       esac
-
-      case "$app_permissions_verdict" in
-        ok) : ;;
-        fail) missing+=("the Approver App installation's live permissions do not match exactly what this fleet needs (owner act)") ;;
-        *) unconfirmed+=("the Approver App installation's live permissions could not be confirmed") ;;
-      esac
     fi
+
+    # The Approver App's live permissions are a precondition from
+    # agent-approves upward, not just agent-merges-routine upward:
+    # pull_requests:write is what lets the App post a review at all, so a
+    # narrowed installation is exactly as fatal to "agent-approves is
+    # supported" as it is to "agent-merges-routine is supported".
+    case "$app_permissions_verdict" in
+      ok) : ;;
+      fail) missing+=("the Approver App installation's live permissions do not match exactly what this fleet needs (owner act)") ;;
+      *) unconfirmed+=("the Approver App installation's live permissions could not be confirmed") ;;
+    esac
 
     missing_str="$(printf '%s; ' "${missing[@]}")"; missing_str="${missing_str%; }"
     unconfirmed_str="$(printf '%s; ' "${unconfirmed[@]}")"; unconfirmed_str="${unconfirmed_str%; }"

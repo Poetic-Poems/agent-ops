@@ -573,8 +573,12 @@ rm -f "$tmp/perm_curl_fail"
 
 out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   bash "$DOCTOR" --config "$ma_approves_config" 2>&1)"
-assert_not_contains "with no credential present in this environment, the permissions check stays silent (already warned about separately)" \
-  "the Approver App installation" "$out"
+assert_not_contains "with no credential present in this environment, the fleet-wide permissions check stays silent (already warned about separately)" \
+  "the Approver App installation carries exactly" "$out"
+assert_not_contains "  ... and never prints its own skip line either" \
+  "[skip] the Approver App installation's live permissions" "$out"
+assert_contains "  ... but the consolidated verdict at agent-approves still names it unconfirmed — the App's own live permissions are exactly what agent-approves needs, credential or no" \
+  "$slug's autonomy readiness at \"agent-approves\" could not be fully confirmed — unconfirmed: the Approver App installation's live permissions could not be confirmed" "$out"
 
 out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   PULLWRIGHT_APPROVER_APP_ID=123456 PULLWRIGHT_APPROVER_INSTALLATION_ID=153689775 \
@@ -880,6 +884,37 @@ out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID 
   bash "$DOCTOR" --config "$base_config" 2>&1)"
 assert_not_contains "at human, the consolidated verdict prints nothing at all" \
   "autonomy readiness" "$out"
+
+# At agent-approves (below the routine tier, over $ma_approves_config), the
+# ruleset and merge-path facts play no part — landing_arm is unreachable at
+# this level regardless of either — but the App installation's live
+# permissions still do, since pull_requests:write is the whole of what
+# agent-approves consists of: the App cannot post any review without it. A
+# live installation narrowed off pull_requests:write must not earn the "is
+# fully supported by its forge configuration" line.
+stub_perm 200 '{"permissions":{"contents":"write","metadata":"read"}}'
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
+  PULLWRIGHT_APPROVER_APP_ID=123456 PULLWRIGHT_APPROVER_INSTALLATION_ID=153689775 \
+  PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$perm_key" APPROVER_TOKEN_CURL="$perm_curl" \
+  bash "$DOCTOR" --config "$ma_approves_config" 2>&1)"
+rc=$?
+assert_contains "agent-approves with a narrowed App installation fails, naming the gap as an owner act" \
+  "[fail] $slug is configured at \"agent-approves\" but its forge configuration does not support it — missing: the Approver App installation's live permissions do not match exactly what this fleet needs (owner act)" "$out"
+assert_not_contains "  ... and never the false all-clear that it is fully supported" \
+  "[ ok ] $slug's autonomy readiness: \"agent-approves\" is fully supported by its forge configuration" "$out"
+assert_eq "  ... and doctor.sh exits 1" "1" "$rc"
+
+# The exact three permissions live earns the positive verdict at agent-approves
+# too, exactly as it does at agent-merges-routine above.
+stub_perm 200 '{"permissions":{"contents":"write","metadata":"read","pull_requests":"write"}}'
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
+  PULLWRIGHT_APPROVER_APP_ID=123456 PULLWRIGHT_APPROVER_INSTALLATION_ID=153689775 \
+  PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$perm_key" APPROVER_TOKEN_CURL="$perm_curl" \
+  bash "$DOCTOR" --config "$ma_approves_config" 2>&1)"
+rc=$?
+assert_contains "agent-approves with the exact three permissions live earns the ok verdict" \
+  "[ ok ] $slug's autonomy readiness: \"agent-approves\" is fully supported by its forge configuration" "$out"
+assert_eq "  ... and doctor.sh does not exit non-zero for it" "0" "$rc"
 
 # --- D18 WI-7 (requirement 8d): merge_autonomy_routine_sources naming a
 #     source this repository's own sources list never gathers ---------------
