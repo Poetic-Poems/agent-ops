@@ -786,3 +786,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   own `config.json` outside this fleet must migrate its `review` block to the
   new shape before upgrading; see `docs/REVIEW-PIPELINE-SPEC.md`'s
   Configuration section for the resolution rule and an example.
+- `docs/ROADMAP.md`'s D18 row now documents that `landing_arm`'s no-queue
+  fallback (`gh pr merge --auto --squash`) merges as soon as every
+  **required** check is green, without waiting for a non-required check
+  still running, and that an adopter who wants a check to hold a merge
+  must mark it required (TD-PPagop-26082101, closed `not-debt`:
+  documentation only, no behaviour change).
