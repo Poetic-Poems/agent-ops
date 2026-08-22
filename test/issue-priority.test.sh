@@ -188,6 +188,63 @@ assert_eq "an unreadable issues endpoint marks the sample not-ok" \
 assert_eq "and still prints a valid object rather than aborting the cycle" \
   "0" "$(jq -e . >/dev/null 2>&1 <<<"$state_broken"; echo $?)"
 
+# --- Multiple directories created and cleaned up ---
+#
+# When a process re-sources the library after repointing ISSUE_PRIORITY_CACHE_DIR,
+# all library-created directories should be tracked and removed by cleanup.
+# This tests the fix for TD-PPagop-26082202.
+(
+  unset ISSUE_PRIORITY_CACHE_DIR ISSUE_PRIORITY_CACHE_DIR_OWNED ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS ISSUE_PRIORITY_CACHE_DIR_OWNER_PID
+
+  # Source library (creates first library-owned directory)
+  . "$SCRIPT_DIR/lib/issue-priority.sh"
+  dir_a="$ISSUE_PRIORITY_CACHE_DIR"
+  [[ -d "$dir_a" ]] || { echo "FAIL - first source did not create directory" >&2; exit 1; }
+
+  # Repoint to caller-supplied directory and re-source (does NOT create a new directory)
+  ISSUE_PRIORITY_CACHE_DIR="$(mktemp -d)"
+  dir_b="$ISSUE_PRIORITY_CACHE_DIR"
+  [[ -d "$dir_b" ]] || { echo "FAIL - caller did not create directory" >&2; exit 1; }
+  . "$SCRIPT_DIR/lib/issue-priority.sh"
+  # After re-source, ISSUE_PRIORITY_CACHE_DIR should still be dir_b (caller-supplied, no new dir created)
+  [[ "$ISSUE_PRIORITY_CACHE_DIR" == "$dir_b" ]] || {
+    echo "FAIL - after repointing, expected ISSUE_PRIORITY_CACHE_DIR=$dir_b but got $ISSUE_PRIORITY_CACHE_DIR" >&2
+    exit 1
+  }
+
+  # Unset and re-source (creates second library-owned directory)
+  unset ISSUE_PRIORITY_CACHE_DIR
+  . "$SCRIPT_DIR/lib/issue-priority.sh"
+  dir_c="$ISSUE_PRIORITY_CACHE_DIR"
+  [[ -d "$dir_c" ]] || { echo "FAIL - third source did not create directory" >&2; exit 1; }
+
+  # Verify we track multiple library-owned paths (A and C)
+  [[ ${#ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS[@]} -ge 2 ]] || {
+    echo "FAIL - array should have at least 2 entries, has ${#ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS[@]}" >&2
+    exit 1
+  }
+
+  # Cleanup
+  issue_priority_cache_cleanup
+
+  # Verify all library-created directories are gone
+  if [[ -d "$dir_a" ]]; then
+    echo "FAIL - first library-created directory not cleaned: $dir_a" >&2
+    exit 1
+  fi
+  if [[ -d "$dir_c" ]]; then
+    echo "FAIL - second library-created directory not cleaned: $dir_c" >&2
+    exit 1
+  fi
+  # Verify caller's directory still exists (not owned by library)
+  if [[ ! -d "$dir_b" ]]; then
+    echo "FAIL - caller-supplied directory was cleaned: $dir_b" >&2
+    exit 1
+  fi
+  rm -rf "$dir_b"
+)
+assert_eq "multiple library-created directories are all tracked and cleaned" "0" "$?"
+
 if (( failures )); then
   printf '\n%d assertion(s) failed\n' "$failures"
   exit 1
