@@ -33,6 +33,16 @@
 #     reset happens to be seconds away, is a short wait, and the right answer
 #     is to take it and retry rather than degrade a work source to `[]`.
 #
+# A third failure shares the same free call but not its shape: on 2026-08-22 a
+# node's `GH_TOKEN` expired mid-day, and every cycle for the next ~3 hours ran
+# a full Co-Ordinator engagement before every claim failed with `cause:
+# "unreachable"` — five cycles, $1.05, for a token that was never going to
+# start working again on its own (agent-ops#691). `github_limit_verdict`'s own
+# `unknown` folds a 401 in with a network blip on purpose (neither is evidence
+# about the *budget*), so pulling it back out needed a probe of its own —
+# `github_auth_probe`, checked ahead of the budget verdict for the same
+# "before it spends anything" reason.
+#
 # ## Why the budget check is free
 #
 # `GET /rate_limit` is exempt from the limits it reports — a call to it does
@@ -148,6 +158,46 @@ github_limit_snapshot() {
   out="$(command gh api rate_limit 2>/dev/null)" || return 1
   jq -e 'type == "object" and has("resources")' <<<"$out" >/dev/null 2>&1 || return 1
   printf '%s' "$out"
+}
+
+# github_auth_probe
+# The same free `/rate_limit` call `github_limit_snapshot` makes, but kept
+# for what it says about the *credentials* rather than the budget: prints
+# "<verdict>\t<detail>" —
+#
+#   - ok            a real `/rate_limit` document came back. The token works.
+#   - unauthorized  GitHub answered HTTP 401 — it read the request and
+#                   rejected the credentials outright. `detail` is its own
+#                   response, trimmed to one line. Persistent: unlike a rate
+#                   limit or a network blip, no wait and no retry clears an
+#                   expired or revoked token, and every call this process
+#                   makes from here on fails the same way.
+#   - unreachable   the call failed for any other reason (DNS, a timeout, a
+#                   transient 5xx). Says nothing about the credentials — the
+#                   same "no evidence" reading `github_limit_snapshot`'s
+#                   plain failure already gets.
+#
+# Separate from `github_limit_verdict` because that verdict's `unknown` folds
+# every failure together on purpose (requirement 2.0 must never mistake a
+# network blip for an exhausted budget); a 401 needs pulling back out of that
+# fold rather than adding a fourth case to it, and no caller of the budget
+# check needs to know why the meter was unreadable, only that it was.
+github_auth_probe() {
+  local out err rc detail
+  err="$(mktemp)" || { printf 'unreachable\t'; return 0; }
+  out="$(command gh api rate_limit 2>"$err")" && rc=0 || rc=$?
+  if (( rc == 0 )) && jq -e 'type == "object" and has("resources")' <<<"$out" >/dev/null 2>&1; then
+    rm -f "$err"
+    printf 'ok\t'
+    return 0
+  fi
+  detail="$(tr '\n' ' ' < "$err" 2>/dev/null | sed -E 's/[[:space:]]+/ /g; s/[[:space:]]+$//')"
+  rm -f "$err"
+  if grep -qiE 'HTTP 401|Bad credentials' <<<"$detail"; then
+    printf 'unauthorized\t%s' "$detail"
+  else
+    printf 'unreachable\t%s' "$detail"
+  fi
 }
 
 # github_limit_remaining SNAPSHOT RESOURCE

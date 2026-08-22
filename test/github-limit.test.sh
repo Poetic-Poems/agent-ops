@@ -305,6 +305,53 @@ strict_probe="$(
 assert_eq "a failing call under set -e returns to its caller instead of aborting it" \
   "STRICT_MODE_SURVIVED:" "$strict_probe"
 
+# --- github_auth_probe (requirement 2.0b, agent-ops#691) ---
+#
+# The live incident this guards: a node's `GH_TOKEN` expired, and every cycle
+# for ~3 hours ran a full Co-Ordinator engagement before every claim failed
+# with `cause: "unreachable"` — a 401 folded into the same bucket as a network
+# blip. `github_auth_probe` has to pull it back out, on the same free call, so
+# a caller can tell "this will never clear itself" from "try again later".
+auth_stub_bin="$tmp_dir/auth-bin"
+mkdir -p "$auth_stub_bin"
+cat > "$auth_stub_bin/gh" <<'STUB'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "api" && "${2:-}" == "rate_limit" ]]; then
+  case "${GH_AUTH_STUB_MODE:-ok}" in
+    ok)
+      printf '{"resources":{"core":{"remaining":100,"reset":0},"graphql":{"remaining":100,"reset":0}}}\n'
+      exit 0 ;;
+    unauthorized)
+      echo 'gh: Bad credentials (HTTP 401)' >&2
+      exit 1 ;;
+    unreachable)
+      echo 'gh: Could not resolve host: api.github.com' >&2
+      exit 1 ;;
+  esac
+fi
+echo "unexpected call: $*" >&2
+exit 1
+STUB
+chmod +x "$auth_stub_bin/gh"
+# Prepended ahead of the wrapper-test stub above, whose own `api rate_limit`
+# branch (line ~204) answers unconditionally and would otherwise shadow this
+# one for every mode.
+export PATH="$auth_stub_bin:$PATH"
+
+probe_result="$(GH_AUTH_STUB_MODE=ok github_auth_probe)"
+assert_eq "working credentials probe as ok" "ok" "$(cut -f1 <<<"$probe_result")"
+assert_eq "…with no detail carried" "" "$(cut -f2 <<<"$probe_result")"
+
+probe_result="$(GH_AUTH_STUB_MODE=unauthorized github_auth_probe)"
+assert_eq "a 401 probes as unauthorized, not unreachable" \
+  "unauthorized" "$(cut -f1 <<<"$probe_result")"
+assert_eq "…and carries GitHub's own response as detail" \
+  "yes" "$(if [[ "$(cut -f2 <<<"$probe_result")" == *"Bad credentials (HTTP 401)"* ]]; then echo yes; else echo no; fi)"
+
+probe_result="$(GH_AUTH_STUB_MODE=unreachable github_auth_probe)"
+assert_eq "a network fault probes as unreachable, not unauthorized" \
+  "unreachable" "$(cut -f1 <<<"$probe_result")"
+
 echo
 if (( failures == 0 )); then
   echo "All github-limit assertions passed."
