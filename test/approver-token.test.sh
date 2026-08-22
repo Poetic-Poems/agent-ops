@@ -359,6 +359,46 @@ out="$(approver_token_identity_login "$now")"; rc=$?
 assert_eq "identity login: no credential configured is gate-unreadable" "" "$out"
 assert_eq "  ... exit 2, the same code approver_token_get uses for it" "2" "$rc"
 
+# --- approver_token_installation_permissions (D18 Stage 3, agent-ops#575) ----
+# The one call in this file that reads what the installation is actually
+# entitled to, rather than what it can mint or who it is — scripts/doctor.sh's
+# autonomy-readiness verdict is the sole caller.
+setup_env
+stub_curl 200 '{"id":153689775,"permissions":{"contents":"write","metadata":"read","pull_requests":"write"}}'
+out="$(approver_token_installation_permissions "$now")"; rc=$?
+assert_eq "installation permissions: exit 0" "0" "$rc"
+assert_eq "  ... prints exactly the live .permissions object" \
+  '{"contents":"write","metadata":"read","pull_requests":"write"}' "$out"
+assert_eq "  ... the Authorization header is absent from curl's argv" "" \
+  "$(grep -i 'authorization' "$tmp_dir/curl_argv" || true)"
+
+stub_curl 404 '{"message":"Not Found"}'
+out="$(approver_token_installation_permissions "$now")"; rc=$?
+assert_eq "installation permissions: a non-200 is a failure" "" "$out"
+assert_eq "  ... and exits non-zero" "1" "$rc"
+
+stub_curl 200 '{"id":153689775}'
+out="$(approver_token_installation_permissions "$now")"; rc=$?
+assert_eq "installation permissions: a body with no permissions is a failure" "" "$out"
+assert_eq "  ... and exits non-zero" "1" "$rc"
+
+stub_curl 200 '{"id":153689775,"permissions":{}}'
+out="$(approver_token_installation_permissions "$now")"; rc=$?
+assert_eq "installation permissions: an empty permissions object is a failure too" "" "$out"
+assert_eq "  ... and exits non-zero" "1" "$rc"
+
+setup_env
+touch "$tmp_dir/curl_fail"
+out="$(approver_token_installation_permissions "$now")"; rc=$?
+assert_eq "installation permissions: an unreachable API is a failure" "" "$out"
+assert_eq "  ... and exits non-zero" "1" "$rc"
+rm -f "$tmp_dir/curl_fail"
+
+clear_env
+out="$(approver_token_installation_permissions "$now")"; rc=$?
+assert_eq "installation permissions: no credential configured is gate-unreadable" "" "$out"
+assert_eq "  ... exit 2, the same code approver_token_get uses for it" "2" "$rc"
+
 clear_env
 
 printf '\n'

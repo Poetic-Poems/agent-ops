@@ -11252,6 +11252,66 @@ What exists, and the requirements each part answers to:
     the network-gated checks are actually exercised while nothing on `PATH`
     ever reaches a real network.
 
+    **D18 Stage 3 (agent-ops#575): one consolidated per-repository
+    autonomy-readiness verdict.** Stage 3 widens `agent-merges-routine` to
+    every repository, and each one needs a bundle of forge preconditions
+    before its configured level is actually load-bearing: a merge queue or
+    `allow_auto_merge`/`allow_squash_merge` (already validated above), a
+    ruleset whose `required_approving_review_count` is at least 1 with
+    code-owner review off (already validated above), `dismiss_stale_reviews_on_push`
+    on, no `bypass_actors` on the ruleset, and the Approver App installation
+    carrying exactly `contents: write`, `metadata: read` and
+    `pull_requests: write` — no more, no less. The last three are new here;
+    the rest were already individually checked and are gathered rather than
+    reimplemented. Read off the same per-repository ruleset pass requirement
+    38's dependency and the D18 §5.3 pairing already make (one API read, five
+    facts): any active `pull_request` rule on the default branch not
+    reporting `dismiss_stale_reviews_on_push: true` is a `fail` naming the
+    repository and level, `ok` otherwise; a ruleset's own `bypass_actors`
+    (summed across every active default-branch ruleset) being non-empty is a
+    `fail` naming the count, `ok` at zero. Both are silent below
+    `agent-merges-routine`, the same convention every pairing check in this
+    component already follows. The App installation's live permissions are a
+    single fleet-wide check (one installation backs every repository this
+    identity reviews), read via `lib/approver-token.sh`'s
+    `approver_token_installation_permissions` — a JWT-signed
+    `GET /app/installations/<id>`, since an installation token cannot ask
+    what it is itself entitled to — and diffed against the exact three
+    required permissions: any difference (missing, narrower, or a permission
+    granted beyond the three) is a `fail` naming the gap, `ok` on an exact
+    match. Gated on `ma_above_human` and `approver_token_credential_present`,
+    the same as the runtime-credential-presence check already in this
+    component — an absent credential is already warned about there, and
+    silent here rather than repeating it.
+
+    These join every existing per-repository and fleet-wide check above
+    (approver_app_id/approver_model_default, the ruleset's approving-review
+    count and code-owner requirement, the merge-path pairing, the App
+    installation's permissions) in one consolidated verdict per repository,
+    printed once its configured `merge_autonomy` is `agent-approves` or
+    above (silent at `human`, the same convention every pairing check here
+    follows): every unmet precondition is named and tagged **owner act** (a
+    ruleset parameter, a repository merge setting, or the App installation's
+    own granted permissions — something only a repository/organisation admin
+    can change) or **configuration error** (`approver_app_id`/
+    `approver_model_default` — this fleet's own `config.json`). A repository
+    configured at `agent-merges-routine` or above whose forge configuration
+    does not support it is a doctor **`fail`, never a `warn`** — the pipeline
+    would otherwise raise approvals or land pull requests nobody has
+    verified the forge can actually clear. A precondition this run could not
+    evaluate — an unreachable ruleset, an unreadable merge setting, an
+    unconfirmed installation permission — is never read as a gap: it is
+    named separately as unconfirmed, and only turns the verdict into a
+    `skip` ("readiness could not be fully confirmed") when nothing else is
+    definitely missing, never a `fail` for something this run simply could
+    not check — the same offline-safe/unreachable-safe degradation every
+    GitHub-gated check in this component already gives.
+    `test/doctor.test.sh` covers the three new checks and the consolidated
+    verdict (satisfied, unsatisfied naming owner acts and configuration
+    errors together, and unconfirmed); `test/approver-token.test.sh` covers
+    `approver_token_installation_permissions` directly, against the same
+    stubbed `curl` and real-JWT-signing seam its sibling functions use.
+
     A third flag, `--unattended` (requirement 2.6a), is what
     `deploy/docker/crontab.tmpl`'s own hourly line runs unprompted: the whole
     Configuration and GitHub sections, skipping only the two checks that

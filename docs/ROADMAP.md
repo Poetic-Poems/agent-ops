@@ -651,7 +651,14 @@ induced outage rather than only over a quiet afternoon.
       cool-off. Each promotion is a one-line IaC config PR the owner merges;
       exit criteria, prerequisites, and the work-item breakdown are in
       umbrella #402 and the investigation report. *[fleet]* with owner-only
-      acts flagged (App creation, ruleset changes, stage promotions).
+      acts flagged (App creation, ruleset changes, stage promotions). This
+      item's Phase 2 placement is deliberately overtaken: per #628, all D18
+      prerequisite and preparation work proceeds now, ahead of the Phase 1
+      exit gate — WI-1..WI-11 already landed during Phase 1 and Stage 2 was
+      entered 2026-08-18 under a recorded waiver — and only the promotion
+      acts themselves (raising a repository to a higher rung) stay gated by
+      umbrella #402's own evidence bars, which is the ladder's own gating
+      rather than a phase boundary.
 - [ ] Event-driven dispatch: GitHub webhooks, or a lightweight poller on the
       state repo, wake an idle node when a source-relevant event lands,
       instead of leaving it to wait for the next cron firing. Staged behind
