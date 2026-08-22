@@ -15381,7 +15381,8 @@ pull request, run the ones the change touches and any it could regress.
     `lib/landing.sh`'s own `_landing_is_protected`/`_landing_routine_sources`,
     over the same battery of inputs, so neither can drift apart
     unnoticed despite neither being sourced; against a stubbed `gh`, a merged
-    pull request whose merge commit touches a protected path (an injected
+    pull request armed below `agent-merges-all` whose merge commit touches a
+    protected path (an injected
     known escape) is reported `classifier-escape` even though it carries a
     `landing-armed` event recording `complexity: low` — the detector's own
     recomputation, not the recorded value, is what disagreed — as are the
@@ -15389,7 +15390,14 @@ pull request, run the ones the change touches and any it could regress.
     `medium` standing at merge, a source outside the repository's routine
     list, and a landing whose own `landing-armed` event records an effective
     `merge_autonomy` level below `agent-merges-routine` even though every
-    other input agrees; a
+    other input agrees; the same protected-path hit recorded at
+    `agent-merges-all`, with every other input agreeing, is instead
+    `outcome: "unverifiable"` and never `classifier-escape`, naming the WI-12
+    compensating controls it defers to — while a complexity above `medium`
+    standing alongside that same unrecomputable hit still reports
+    `classifier-escape`, naming the complexity rather than the protected
+    path, so an independently reconstructable disagreement is never masked by
+    one that is not; a
     merged pull request whose recomputed level, complexity, source and
     protected-path check all agree with its having landed is `outcome:
     "clean"`; a merge commit GitHub reports with no `files` array (too large

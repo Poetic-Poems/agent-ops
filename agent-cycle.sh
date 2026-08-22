@@ -6602,7 +6602,7 @@ fi
 if escape_login="$(approver_token_identity_login "")" && [[ -n "$escape_login" ]]; then
   while IFS= read -r escape_slug; do
     [[ -n "$escape_slug" ]] || continue
-    escape_log_lines_before="$(wc -l < "$log_file" 2>/dev/null)" \
+    escape_log_lines_before="$(wc -l < "$log_file" 2>&1)" \
       || { guard_warn "escape_log_lines_before" "$escape_log_lines_before"; escape_log_lines_before=0; }
     while IFS= read -r escape_action; do
       [[ -n "$escape_action" ]] || continue
