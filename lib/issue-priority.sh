@@ -149,15 +149,13 @@ issue_priority_cache_cleanup() {
         rm -rf "$owned_path" 2>/dev/null || true
       fi
     done
-    if [[ -n "${ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS[0]:-}" ]]; then
-      for owned_path in "${ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS[@]}"; do
-        if [[ "${ISSUE_PRIORITY_CACHE_DIR:-}" == "$owned_path" ]]; then
-          ISSUE_PRIORITY_CACHE_DIR=""
-          ISSUE_PRIORITY_CACHE_DIR_OWNED=0
-          break
-        fi
-      done
-    fi
+    for owned_path in "${ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS[@]:-}"; do
+      if [[ -n "$owned_path" && "${ISSUE_PRIORITY_CACHE_DIR:-}" == "$owned_path" ]]; then
+        ISSUE_PRIORITY_CACHE_DIR=""
+        ISSUE_PRIORITY_CACHE_DIR_OWNED=0
+        break
+      fi
+    done
     ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS=()
     ISSUE_PRIORITY_CACHE_DIR_OWNER_PID=""
   fi
