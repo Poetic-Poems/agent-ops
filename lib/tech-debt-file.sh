@@ -142,9 +142,10 @@ techdebt_file_debt() {
     return 1
   fi
 
-  reserve_script="$git_dir/.techdebt-reserve.pl"
+  reserve_script="$(mktemp)"
   if ! git -C "$git_dir" show origin/main:scripts/reserve-tech-debt-id.pl \
         > "$reserve_script" 2>>"$errlog"; then
+    rm -f "$reserve_script"
     (( made_dir )) && rm -rf "$git_dir"
     return 1
   fi
