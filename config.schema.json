@@ -1241,6 +1241,28 @@
             "readme": "Minutes past `CYCLE_MINUTE` (mod 60) the hourly unattended `doctor.sh` pass's minute is set to (agent-ops#543), on the same per-node jitter `review_offset_minutes` uses.",
             "spec": "Minutes past `CYCLE_MINUTE` (mod 60) the hourly `doctor.sh --unattended` pass's minute is set to, jittering it across the fleet the same way `review_offset_minutes` jitters the review tick."
           }
+        },
+        "revert_rate_hour": {
+          "description": "The hour the daily revert-rate publishing tick (scripts/publish-revert-rate.sh) fires.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 23,
+          "default": 2,
+          "x-docs": {
+            "readme": "The hour the containerised node's daily revert-rate publishing tick (`scripts/publish-revert-rate.sh`, agent-ops#579) fires.",
+            "spec": "The hour the daily revert-rate publishing tick fires."
+          }
+        },
+        "revert_rate_offset_minutes": {
+          "description": "Minutes past the node's cycle minute (mod 60) the daily revert-rate publishing tick's minute is set to, jittering it across the fleet the same way doctor_offset_minutes jitters the unattended doctor pass.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 59,
+          "default": 51,
+          "x-docs": {
+            "readme": "Minutes past `CYCLE_MINUTE` (mod 60) the daily revert-rate publishing tick's minute is set to (agent-ops#579), on the same per-node jitter `doctor_offset_minutes` uses.",
+            "spec": "Minutes past `CYCLE_MINUTE` (mod 60) the daily revert-rate publishing tick's minute is set to, jittering it across the fleet the same way `doctor_offset_minutes` jitters the unattended doctor pass."
+          }
         }
       }
     },
@@ -1393,6 +1415,61 @@
             "value": "`[{\"slug\": \"Poetic-Poems/poetic\"}, {\"slug\": \"Poetic-Poems/poetic-fiddle\"}]`"
           }
         }
+      }
+    },
+    "revert_rate_baseline": {
+      "description": "The D18 Stage 0 merge-autonomy baseline (docs/reviews/2026-08-15-merge-autonomy-baseline.md), copied here once as a fixed reference rather than re-derived at runtime: scripts/publish-revert-rate.sh compares every window's revert-or-follow-up rate against these figures. Absent or empty, a repository with no entry here reports its baseline comparison unavailable rather than failing.",
+      "type": "object",
+      "additionalProperties": false,
+      "default": {},
+      "properties": {
+        "source": {
+          "description": "The docs/reviews/*-merge-autonomy-baseline.md this was copied from.",
+          "type": "string"
+        },
+        "generated": {
+          "description": "The baseline file's own generation date (its filename's date) — the earliest merged_at scripts/publish-revert-rate.sh's cumulative-since-baseline window starts from.",
+          "type": "string"
+        },
+        "repos": {
+          "description": "One entry per repository the baseline covers, each the miner's own post_merge {count, reverts, follow_up_fixes} at generation time.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "slug",
+              "count",
+              "reverts",
+              "follow_up_fixes"
+            ],
+            "properties": {
+              "slug": {
+                "description": "The repository, as `owner/name`.",
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "reverts": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "follow_up_fixes": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      },
+      "x-docs": {
+        "readme": "The D18 Stage 0 merge-autonomy baseline, copied once from `docs/reviews/2026-08-15-merge-autonomy-baseline.md` rather than re-derived — `scripts/publish-revert-rate.sh` compares every window's rate against it. A fresh install ships no baseline until Stage 0 records one.",
+        "spec": "The D18 Stage 0 merge-autonomy baseline (docs/reviews/2026-08-15-merge-autonomy-baseline.md §6), copied here once as a fixed reference rather than re-derived at runtime (issue #579): `scripts/publish-revert-rate.sh` compares every window's revert-or-follow-up rate against these figures. A repository absent from `repos` reports its baseline comparison `unavailable` rather than failing.",
+        "value": "`{\"source\": \"docs/reviews/2026-08-15-merge-autonomy-baseline.md\", \"generated\": \"2026-08-15\", \"repos\": [{\"slug\": \"Poetic-Poems/poetic\", \"count\": 84, \"reverts\": 0, \"follow_up_fixes\": 31}, {\"slug\": \"Poetic-Poems/poetic-fiddle\", \"count\": 119, \"reverts\": 0, \"follow_up_fixes\": 44}, {\"slug\": \"Poetic-Poems/agent-ops\", \"count\": 120, \"reverts\": 0, \"follow_up_fixes\": 106}]}`"
       }
     }
   },

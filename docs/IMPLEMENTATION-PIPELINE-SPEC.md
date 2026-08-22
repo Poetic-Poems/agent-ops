@@ -692,6 +692,9 @@ and the schema must carry every one of them.
 | `schedule.state_sync_fetch_minutes` | `7` | Interval, in minutes, of `state-sync.sh fetch` (requirement 2.5). |
 | `schedule.log_rotation_minute` | `19` | The minute past every hour `rotate-logs.sh` runs (requirement 2.6). |
 | `schedule.doctor_offset_minutes` | `44` | Minutes past `CYCLE_MINUTE` (mod 60) the hourly `doctor.sh --unattended` pass's minute is set to, jittering it across the fleet the same way `review_offset_minutes` jitters the review tick. |
+| `schedule.revert_rate_hour` | `2` | The hour the daily revert-rate publishing tick fires. |
+| `schedule.revert_rate_offset_minutes` | `51` | Minutes past `CYCLE_MINUTE` (mod 60) the daily revert-rate publishing tick's minute is set to, jittering it across the fleet the same way `doctor_offset_minutes` jitters the unattended doctor pass. |
+| `revert_rate_baseline` | `{"source": "docs/reviews/2026-08-15-merge-autonomy-baseline.md", "generated": "2026-08-15", "repos": [{"slug": "Poetic-Poems/poetic", "count": 84, "reverts": 0, "follow_up_fixes": 31}, {"slug": "Poetic-Poems/poetic-fiddle", "count": 119, "reverts": 0, "follow_up_fixes": 44}, {"slug": "Poetic-Poems/agent-ops", "count": 120, "reverts": 0, "follow_up_fixes": 106}]}` | The D18 Stage 0 merge-autonomy baseline (docs/reviews/2026-08-15-merge-autonomy-baseline.md §6), copied here once as a fixed reference rather than re-derived at runtime (issue #579): `scripts/publish-revert-rate.sh` compares every window's revert-or-follow-up rate against these figures. A repository absent from `repos` reports its baseline comparison `unavailable` rather than failing. |
 <!-- config-table:end -->
 
 Model IDs are pinned in config (one place to update); do not use floating
