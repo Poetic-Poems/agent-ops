@@ -2211,14 +2211,10 @@ read as a broken branch rather than a broken invocation.
   those failures mentions `jq`.
 
 - **Through `docker exec` into a running node** — the obvious fix for the
-  first, and a worse trap, because that container is *configured*.
-  `PULLWRIGHT_APPROVER_APP_ID` and its two companions are set there from the
-  stack's `.env`, and `scripts/doctor.sh` reconciles those against
-  `approver_app_id` (see `lib/approver-token.sh`). So every fixture in
-  `test/config-schema.test.sh` that builds "no Approver configured" by deleting
-  the config key instead builds "an Approver in the environment that the config
-  does not declare", which is a different case with the opposite verdict. Three
-  assertions invert. `docker run`, never `docker exec`.
+  first, and its own trap: that container's `/app` is whatever commit it was
+  last built from, not the working tree in front of you, so a fix made here is
+  invisible to a suite run there. `docker run` copies the current working tree
+  in fresh; `docker exec` never does. `docker run`, never `docker exec`.
 
 `AGENT_OPS_TEST_IMAGE` picks the image, for testing against a locally built one
 rather than `ghcr.io`'s latest:

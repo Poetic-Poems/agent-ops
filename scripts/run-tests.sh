@@ -15,16 +15,10 @@
 #     say the thing the assertion was about.
 #
 #   - **Through `docker exec` into a running node.** The obvious fix for the
-#     first problem, and a worse trap, because that container is *configured*:
-#     `PULLWRIGHT_APPROVER_APP_ID` and its two companions are set there from the
-#     stack's `.env`. `scripts/doctor.sh` reconciles those against
-#     `approver_app_id` (see `lib/approver-token.sh`), so every fixture in
-#     `test/config-schema.test.sh` that builds "no Approver configured" by
-#     deleting the config key instead builds "an Approver in the environment
-#     that the config does not declare" — a different case, with the opposite
-#     verdict. Three assertions invert, and they invert on a pristine `main`,
-#     which is exactly the signal a test suite is supposed to give only when
-#     something is wrong.
+#     first problem, and its own trap: that container's `/app` is whatever
+#     commit it was last built from, not the working tree in front of you, so
+#     a fix made here is invisible to a suite run there — a broken branch and
+#     a stale container look identical from the failures alone.
 #
 # So: `docker run`, never `docker exec`; the image, never the host; the working
 # tree, never `/app`'s copy of it (the point is to test the change in front of
