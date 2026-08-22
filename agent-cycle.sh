@@ -3714,9 +3714,17 @@ review_gate_escalate_unreadable_streak() {
 # `approver-verdict` and no review on the pull request and has nothing to
 # connect them. Always returns 0 — the caller's own path is unchanged either
 # way.
+#
+# Reports the write's own success through `approver_last_post_ok` (`1`/`0`),
+# reset on every call — the one fact `run_approver_stage` needs to decide
+# whether this round's verdict actually reached GitHub before logging it
+# (requirement 8c's `posted` field, agent-ops#573): a verdict a human never
+# saw a review for cannot have diverged from, or agreed with, anything.
 approver_post_or_warn() {
   local pr_url="$1" event="$2" body="$3" token="$4"
+  approver_last_post_ok=1
   if ! approver_post_review "$pr_url" "$event" "$body" "$token"; then
+    approver_last_post_ok=0
     log_event "warning" "$(jq -nc --arg u "$pr_url" --arg e "$event" \
       --arg d "the Approver's $event review of $pr_url could not be posted — GitHub refused the write, so the pull request carries no App review this round" \
       '{detail: $d, pr_url: $u, event: $e}')"
@@ -3842,13 +3850,15 @@ approver_stage_complexity() {
 # return.
 run_approver_stage() {
   local pr_url="$1" complexity="$2"
-  local level login streak tier model mode="" adjudicating=0
+  local level login streak tier model="" mode="" adjudicating=0
   local prompt out rc status_json verdict="" reasons_json="[]"
   approver_stage_verdict=""
   approver_stage_adjudicating=0
   approver_stage_tier=""
   local token review_body prior_section adj_bool
   local number="" protected_rc=0 protected_hit=0 critical_reason=""
+  local posted_review="" posted_bool="false"
+  approver_last_post_ok=""
 
   # `fresh` (issue #513, PR #506 review follow-up): this stage posts a real
   # App review under the level it reads, so an operator's mid-cycle kill must
@@ -4037,9 +4047,11 @@ $node_name
   if (( adjudicating )); then
     case "$verdict" in
       land)
+        posted_review="APPROVE"
         approver_post_or_warn "$pr_url" APPROVE "$review_body" "$token"
         ;;
       refuse)
+        posted_review="REQUEST_CHANGES"
         approver_post_or_warn "$pr_url" REQUEST_CHANGES "$review_body" "$token"
         approver_escalate "$pr_url" "$reasons_json"
         ;;
@@ -4054,9 +4066,11 @@ $node_name
   else
     case "$verdict" in
       approve)
+        posted_review="APPROVE"
         approver_post_or_warn "$pr_url" APPROVE "$review_body" "$token"
         ;;
       refuse)
+        posted_review="REQUEST_CHANGES"
         approver_post_or_warn "$pr_url" REQUEST_CHANGES "$review_body" "$token"
         ;;
       *)
@@ -4067,11 +4081,20 @@ $node_name
     esac
   fi
 
+  # `posted` (agent-ops#573): true only when a review was actually attempted
+  # (`posted_review` non-empty — an escalate-only or unrecognised verdict
+  # attempts none) *and* `approver_post_or_warn` reported success. A verdict a
+  # human never saw a review for cannot be compared against their eventual
+  # action, so the divergence report (`lib/verdict-fate.sh`) drops it rather
+  # than reading a failed write as either agreement or divergence.
+  [[ -n "$posted_review" && "$approver_last_post_ok" == "1" ]] && posted_bool="true"
+
   adj_bool="false"
   (( adjudicating )) && adj_bool="true"
-  log_event "approver-verdict" "$(jq -nc --arg u "$pr_url" --arg t "$tier" \
-    --arg v "${verdict:-none}" --argjson s "$streak" --argjson adj "$adj_bool" --arg cr "$critical_reason" \
-    '{pr_url: $u, tier: $t, verdict: $v, refuse_streak: $s, adjudication: $adj}
+  log_event "approver-verdict" "$(jq -nc --arg u "$pr_url" --arg r "$selected_repo" --arg t "$tier" \
+    --arg m "$model" --arg v "${verdict:-none}" --argjson s "$streak" --argjson adj "$adj_bool" \
+    --argjson posted "$posted_bool" --arg cr "$critical_reason" \
+    '{pr_url: $u, repo: $r, tier: $t, model: $m, verdict: $v, refuse_streak: $s, adjudication: $adj, posted: $posted}
      + (if $cr == "" then {} else {critical_reason: $cr} end)')"
   approver_stage_verdict="$verdict"
   approver_stage_adjudicating="$adjudicating"

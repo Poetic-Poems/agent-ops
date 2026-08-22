@@ -300,6 +300,9 @@ assert_contains "  ... under the Approver's own minted token" "token=a-minted-to
 assert_eq "  ... logged as the trivial tier" '"trivial"' "$(jq -c '.tier' <<<"$(verdict_event)")"
 assert_eq "  ... with an approve verdict" '"approve"' "$(jq -c '.verdict' <<<"$(verdict_event)")"
 assert_eq "  ... and not an adjudication" 'false' "$(jq -c '.adjudication' <<<"$(verdict_event)")"
+assert_eq "  ... carrying the repo (agent-ops#573)" '"Poetic-Poems/agent-ops"' "$(jq -c '.repo' <<<"$(verdict_event)")"
+assert_eq "  ... with no model — the trivial tier never launches one" '""' "$(jq -c '.model' <<<"$(verdict_event)")"
+assert_eq "  ... and posted:true — the review really reached GitHub" 'true' "$(jq -c '.posted' <<<"$(verdict_event)")"
 
 # --- Standard and High tiers pick their own model (requirement 8b) ------------
 
@@ -307,12 +310,15 @@ run_case agent-approves medium 0 '{"verdict":"approve","reasons":["read it, foun
 assert_eq "complexity:medium launches approver_model_default" "model-default" "$(launches)"
 assert_contains "  ... and posts an APPROVE" "event=APPROVE" "$(posts)"
 assert_eq "  ... logged as the standard tier" '"standard"' "$(jq -c '.tier' <<<"$(verdict_event)")"
+assert_eq "  ... carrying the model it launched (agent-ops#573)" '"model-default"' "$(jq -c '.model' <<<"$(verdict_event)")"
+assert_eq "  ... and posted:true" 'true' "$(jq -c '.posted' <<<"$(verdict_event)")"
 assert_eq "  ... its prompt assembled with no overrides despite the poisoned config (requirement 4a)" \
   "{}" "$(cat "$tmp_dir/prompt_override_args")"
 
 run_case agent-approves high 0 '{"verdict":"approve","reasons":["read it, found nothing"]}' >/dev/null
 assert_eq "complexity:high launches approver_model_complex" "model-complex" "$(launches)"
 assert_eq "  ... logged as the high tier" '"high"' "$(jq -c '.tier' <<<"$(verdict_event)")"
+assert_eq "  ... carrying the model it launched" '"model-complex"' "$(jq -c '.model' <<<"$(verdict_event)")"
 
 # --- Refuse-wins: the reasons become the review body (requirement 8c) ---------
 
@@ -322,6 +328,7 @@ assert_contains "a refusal posts REQUEST_CHANGES" "event=REQUEST_CHANGES" "$(pos
 assert_contains "  ... carrying the first reason" "- lib/foo.sh:42 drops the lock" "$(posts)"
 assert_contains "  ... and the second" "- no test covers it" "$(posts)"
 assert_eq "  ... and raises no escalation on its own" "0" "$(count escalations)"
+assert_eq "  ... and is itself logged as posted:true (agent-ops#573)" 'true' "$(jq -c '.posted' <<<"$(verdict_event)")"
 
 # --- A streak of two routes to Critical, whatever the grade (requirement 8c) --
 
@@ -337,14 +344,20 @@ assert_eq "  ... an escalate verdict posts no review" "0" "$(count posts)"
 assert_eq "  ... and raises the escalation instead" "1" "$(count escalations)"
 assert_contains "  ... carrying the adjudication's own reasons" \
   "a genuine design call" "$(escalations)"
+assert_eq "  ... still carries the model an escalate verdict actually launched (agent-ops#573)" \
+  '"model-critical"' "$(jq -c '.model' <<<"$(verdict_event)")"
+assert_eq "  ... but posted:false — an escalate verdict reaches no GitHub review" \
+  'false' "$(jq -c '.posted' <<<"$(verdict_event)")"
 
 run_case agent-approves high 2 '{"verdict":"land","reasons":["both refusals are answered"]}' >/dev/null
 assert_contains 'an adjudication land posts an APPROVE' "event=APPROVE" "$(posts)"
 assert_eq "  ... and raises no escalation" "0" "$(count escalations)"
+assert_eq "  ... and is logged as posted:true" 'true' "$(jq -c '.posted' <<<"$(verdict_event)")"
 
 run_case agent-approves high 2 '{"verdict":"refuse","reasons":["the same defect, moved"]}' >/dev/null
 assert_contains 'an adjudication refuse posts REQUEST_CHANGES' "event=REQUEST_CHANGES" "$(posts)"
 assert_eq "  ... and also escalates" "1" "$(count escalations)"
+assert_eq "  ... and is logged as posted:true" 'true' "$(jq -c '.posted' <<<"$(verdict_event)")"
 
 rc="$(run_case agent-approves medium 2 '')"
 assert_eq "an unparseable adjudication verdict still returns 0" "0" "$rc"
@@ -380,11 +393,15 @@ assert_eq "an unrecognised verdict returns 0" "0" "$rc"
 assert_eq "  ... and posts no review either way" "0" "$(count posts)"
 assert_contains "  ... warning which verdict it could not read" \
   "unrecognised verdict" "$(warnings)"
+assert_eq "  ... and its own approver-verdict event is posted:false (agent-ops#573)" \
+  'false' "$(jq -c '.posted' <<<"$(verdict_event)")"
 
 rc="$(run_case agent-approves medium 0 '{"verdict":"approve","reasons":["fine"]}' POST_RC=1)"
 assert_eq "a review GitHub refused still returns 0" "0" "$rc"
 assert_contains "  ... and is logged as a warning rather than passing silently" \
   "could not be posted" "$(warnings)"
+assert_eq "  ... and the approver-verdict event records posted:false despite an approve verdict (agent-ops#573)" \
+  'false' "$(jq -c '.posted' <<<"$(verdict_event)")"
 
 # --- The tier is resolved after the Reviewer, not before it (requirement 8b, --
 # --- agent-ops#470) ------------------------------------------------------------

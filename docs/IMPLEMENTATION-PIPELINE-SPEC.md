@@ -7123,20 +7123,35 @@ implements.
     recurred; a failed run with no session to resume at all writes no
     `salvage` event, because no attempt was made. An `approver-verdict`
     (requirements 8b/8c) is written once per Approver engagement that reached
-    a verdict, carrying the `pr_url`, the `tier` it was judged at, the
-    `verdict` itself, the `refuse_streak` that tier was chosen against, and
-    `adjudication` — `true` where the streak, not the complexity grade, chose
-    the tier. A `critical_reason` field (`protected-path` or `refuse-streak`;
-    absent when `tier` is not `critical`) distinguishes D18 WI-12's two causes
-    of the critical tier — a protected-path hit and a two-refusal streak can
-    both route here, and requirement 8d's own gate 4.5 needs to know it was
-    genuinely the critical tier that ran, not merely that an adjudication
-    happened to land on the same model. It records what the Approver decided,
-    never that GitHub accepted the review: a review the API refused is a
-    `warning` naming the pull
-    request and the event (`approver_post_or_warn`), so an operator finding an
-    `approver-verdict` with no review on the pull request has the write's own
-    failure logged beside it rather than having to infer it. An
+    a verdict, carrying the `pr_url`, the `repo` it belongs to, the `tier` it
+    was judged at, the `model` that reached it (empty on the deterministic
+    Trivial tier, which never launches one), the `verdict` itself, the
+    `refuse_streak` that tier was chosen against, `adjudication` — `true`
+    where the streak, not the complexity grade, chose the tier — and
+    `posted` — `true` only once `approver_post_or_warn` reports the GitHub
+    write it describes actually succeeded, `false` for a write GitHub
+    refused *and* for a verdict that attempted none at all (an adjudication
+    `escalate`, or an unrecognised verdict). `posted` is the field
+    agent-ops#573's divergence record (component 22a) reads to exclude a
+    verdict a human never saw a review for: it cannot have diverged from, or
+    agreed with, an action taken in response to a review that was never
+    actually posted. A `critical_reason` field (`protected-path` or
+    `refuse-streak`; absent when `tier` is not `critical`) distinguishes D18
+    WI-12's two causes of the critical tier — a protected-path hit and a
+    two-refusal streak can both route here, and requirement 8d's own gate
+    4.5 needs to know it was genuinely the critical tier that ran, not
+    merely that an adjudication happened to land on the same model. The
+    event otherwise records what the Approver decided, never that GitHub
+    accepted the review on its own: a review the API refused is *also* a
+    `warning` naming the pull request and the event (`approver_post_or_warn`),
+    so an operator finding an `approver-verdict` with no review on the pull
+    request has the write's own failure logged beside it rather than having
+    to infer it, and `posted: false` says the same thing to a machine
+    reader. An `approver-verdict` event logged before agent-ops#573 carries
+    none of `repo`/`model`/`posted` — every reader of them (component 22a)
+    treats an absent `posted` as `true` (the best available assumption for
+    history it cannot re-observe) and derives `repo` from `pr_url` rather
+    than trusting the field, so old and new events read the same way. An
     `approver-escalated` (requirement 8c) carries the same `pr_url` plus the
     `issue_number` and `issue_url` of the escalation an unsettled adjudication
     raised; a filing that failed is a `warning` instead, since
@@ -11868,11 +11883,23 @@ What exists, and the requirements each part answers to:
     exit criteria (agent-ops#402: "Stage 3 … Same metrics per repo"), so a
     repository at that level is reported once, against "Stage 2/3".
 
-    Two exit criteria have no detector yet — classifier escapes
-    (agent-ops#572) and the Stage 1 divergence between an Approver verdict and
-    the human's eventual action (agent-ops#573) — and are always reported
-    `unavailable`, never a guessed `0`; building either detector is out of
-    this component's scope. "Elapsed time at the current level" is read off
+    One exit criterion has no detector yet — classifier escapes
+    (agent-ops#572) — and is always reported `unavailable`, never a guessed
+    `0`; building that detector is out of this component's scope. The Stage 1
+    `divergence` criterion (agent-ops#573) is real: it calls component 22a
+    (`lib/verdict-fate.sh`) to join this repository's `approver-verdict`
+    events against each named pull request's live GitHub state, and reports
+    `met` (a sample-backed zero), `not-met (criterion: divergence)` (at least
+    one divergent pull request) or `unavailable` (no settled comparison yet,
+    fewer than five — `lib/verdict-fate.sh`'s own `insufficient-sample` — or
+    at least one pull request this run could not read from GitHub, even once
+    the readable rest alone would clear the sample bar and read clean:
+    a zero divergence rate over a partial read is not a confirmed zero
+    (agent-ops#661)) off that join — never a rate stated on too small or too
+    incomplete a sample, and always naming any pull request it could not read
+    from GitHub this run, so a `met` is never mistaken for a zero over pull
+    requests nobody looked at.
+    "Elapsed time at the current level" is read off
     `lib/fleet.sh`'s union event log rather than this repository's own git
     history, because the deployed image never carries `.git` (`.dockerignore`)
     and this report has to behave identically there and in a checkout: the
@@ -11901,13 +11928,123 @@ What exists, and the requirements each part answers to:
     `--peers-dir` and `--now` all override their `config.json`-derived
     defaults, the last existing so a test run can fix "elapsed since" against
     a stable clock. Regression-tested
-    (`test/autonomy-stage-report.test.sh`) against three repositories, one
-    per verdict: every criterion met; a real failure on a measurable
-    criterion outranking an unrelated unavailable one (`not-met`, never
-    `insufficient-evidence`); and every measurable criterion met while one
-    remains permanently unavailable (`insufficient-evidence`, never `met`,
-    proving a criterion is never reported satisfied from missing data); must
-    pass `shellcheck`.
+    (`test/autonomy-stage-report.test.sh`) against five repositories: every
+    criterion met; a real failure on a measurable criterion outranking an
+    unrelated unavailable one (`not-met`, never `insufficient-evidence`);
+    every measurable criterion met while one remains permanently unavailable
+    (`insufficient-evidence`, never `met`, proving a criterion is never
+    reported satisfied from missing data); a real, sample-backed `met`
+    verdict on the `divergence` criterion (component 22a), proving the join
+    is exercised end to end and not merely its unavailable fallback; and a
+    partial read of that same join — a settled sample of pull requests
+    clearing the minimum bar alongside one unreadable pull request —
+    reporting `divergence` `unavailable`, never `met`, proving a zero over an
+    incomplete read is never mistaken for a confirmed zero; must pass
+    `shellcheck`.
+22a. `lib/verdict-fate.sh` and `scripts/verdict-fate-report.sh` implement the
+    D18 Approver-verdict/human-action divergence record (agent-ops#573, a WI
+    of umbrella #402) — the pairing component 22's own `divergence` criterion
+    consumes rather than recomputes.
+
+    `lib/verdict-fate.sh` is pure — every function reads only its
+    arguments, so it is directly unit-tested (`test/verdict-fate.test.sh`)
+    without a live GitHub read:
+
+    - `verdict_fate_posted_review VERDICT ADJUDICATION` maps the Approver's
+      own verdict vocabulary (requirement 8c: `approve`/`refuse` ordinarily,
+      `land`/`refuse`/`escalate` under adjudication) onto the two GitHub
+      review events the Script ever actually posts — `APPROVE` or
+      `REQUEST_CHANGES` — printing empty for a verdict that reaches neither
+      (an adjudication `escalate`, or an unrecognised verdict). Fixed
+      application logic, not a runtime fact, so it is safe to recompute for
+      an `approver-verdict` event logged before this component existed.
+    - `verdict_fate_latest_per_pr EVENTS_JSON [REPO_PREFIX]` reduces the
+      event log's `approver-verdict` entries to one per pull request — the
+      single latest by `ts` — "one entry per pull request the Approver ruled
+      on" (agent-ops#573's own acceptance): a pull request refused, fixed
+      and later approved is judged on that later approval alone, and a
+      verdict whose review never reached GitHub (`posted: false`, or an
+      escalate/unrecognised verdict with no mapped review at all) is
+      excluded — nothing to compare a human's action against. An event
+      logged before this component existed carries no `posted` field at all
+      and defaults to `true`, the best available assumption for history this
+      component cannot re-observe; `repo` is likewise always derived from
+      `pr_url` rather than read off the event's own field (requirement 33),
+      so such an event, which carries no `repo` field at all, still reports
+      one. REPO_PREFIX, when given, restricts to pull requests under that
+      `owner/repo`, matched by exact prefix — the same no-substring
+      discipline component 22's own `agent_approved_prs` criterion already
+      applies, so a same-prefix decoy repository is never counted. Each entry
+      also carries `first_approve_ts` — the earliest `ts` among that pull
+      request's own surviving `APPROVE` verdicts, empty when it has none —
+      which is not necessarily the latest verdict's own `ts`: a pull request
+      approved, sent a standing human `CHANGES_REQUESTED`, and re-approved
+      once `review-feedback` brings it back round carries a later `ts` than
+      that `CHANGES_REQUESTED`, but its *first* approval does not, and
+      `verdict_fate_classify` must test the standing-request window against
+      the latter, never the former, or the divergence goes silently
+      unrecorded (agent-ops#661).
+    - `verdict_fate_classify POSTED_REVIEW ARMED PR_STATE REVIEWS_JSON
+      FIRST_APPROVE_TS` compares the posted review against the pull
+      request's live GitHub state and prints `{fate, comparison}`. `fate` is
+      one of `landed-by-script` (merged, and a `landing-armed` event exists
+      for this pull request — the same join component 22's own
+      `autonomous_landings` criterion already performs), `landed-by-human`
+      (merged, no such event), `closed-unmerged`, `still-open`, or
+      `changes-requested-after-approval` — a human review of state
+      `CHANGES_REQUESTED`, not from a bot, submitted after
+      `FIRST_APPROVE_TS` (`verdict_fate_latest_per_pr`'s own field: the
+      *earliest* posted `APPROVE` for this pull request, not the latest
+      verdict's own `ts`), standing on an `APPROVE`. That fifth fate is never
+      collapsed into `closed-unmerged` even once the pull request is later
+      fixed and lands anyway — agent-ops#573's own stated "sharp edge": a
+      standing human override of an agent approval is the signal Stage 1/2
+      exist to observe, and it must never be silently dropped, including
+      across a re-approval agent-ops#661 fixed this against. `comparison` is
+      `agreement`, `divergence` or `pending` (still open, no standing
+      request) — symmetric by posted review: an `APPROVE` diverges on
+      `closed-unmerged` or the fifth fate and agrees on either landed fate; a
+      `REQUEST_CHANGES` diverges if the pull request landed anyway (a human
+      override of the refusal) and agrees on `closed-unmerged`.
+    - `verdict_fate_summarize ENTRIES_JSON MIN_SAMPLE` counts
+      agreement/divergence/pending and computes `sample` (agreement plus
+      divergence — `pending` has no eventual action yet to compare against,
+      so it is excluded from both the count and the rate) and `rate`
+      (divergence over sample, `null` at `sample: 0`). `status` is
+      `insufficient-sample` below `MIN_SAMPLE`, `divergence` when any exists,
+      `clean` otherwise — never a rate stated on too few pull requests to
+      mean anything (agent-ops#573's own acceptance).
+
+    `scripts/verdict-fate-report.sh` is the I/O wrapper and, like component
+    22, a read-only operator report: argless-runnable against `config.json`,
+    it fetches each candidate pull request's live state and reviews (one
+    `gh api` read of each per pull request — `state`+`merged` folded into
+    `verdict_fate_classify`'s three-value vocabulary, and the reviews list in
+    the same shape `lib/approver.sh`'s `approver_refuse_streak` already
+    reads: `{login, state, submitted_at, bot}`, `bot` by `user.type ==
+    "Bot"` or a `[bot]`-suffixed login), joins them through
+    `lib/verdict-fate.sh`, and prints, per repository, its D18 level and
+    stage label alongside agreement/divergence/pending/sample/rate — as
+    Markdown followed by a machine-readable JSON block, on stdout. `--since`
+    restricts to pull requests whose latest verdict landed on or after a
+    given timestamp (default: every verdict `log.jsonl` still holds — safe
+    because that file is never rotated, requirement 2.6); `--min-sample`
+    (default 5) is `verdict_fate_summarize`'s own threshold. Itself adds no
+    event and touches no pipeline behaviour. Regression-tested
+    (`test/verdict-fate-report.test.sh`) against one repository exercising
+    every fate the issue's own vocabulary names, plus a same-prefix decoy
+    repository excluded and a superseded verdict (an early refusal, a later
+    approval on the same pull request) contributing only its later entry;
+    must pass `shellcheck`.
+
+    Component 22's own `divergence` criterion duplicates
+    `scripts/verdict-fate-report.sh`'s two `gh api` read helpers rather than
+    shelling out to it — both already hold the fleet event log and the
+    rate-limit-aware `gh` wrapper in-process, and a second `gh` subprocess
+    per pull request would double the calls one Stage-1 evaluation makes for
+    no benefit — but shares `lib/verdict-fate.sh`'s join and classification
+    logic unchanged, so a change to the classification rules changes both
+    call sites at once, deliberately.
 
 ## Acceptance checks
 
@@ -14534,6 +14671,13 @@ pull request, run the ones the change touches and any it could regress.
     launched, logged as the high tier), confirming the raise reaches the same
     round's Approver rather than only the next one; a `gh pr view` reporting
     no change, or an unreadable label, leaves `rev_complexity` unchanged.
+    Every `approver-verdict` the stage logs carries the `repo` it ran for, the
+    `model` that reached the verdict — empty on the deterministic Trivial
+    tier, which launches none — and `posted` (requirement 33): `true` where
+    the review reached GitHub, `false` both for a write GitHub refused
+    despite an `approve` verdict and for a verdict that attempted no write at
+    all (an adjudication `escalate`, or a verdict the Script does not
+    recognise).
     `scripts/doctor.sh` fails a `merge_autonomy`
     above `human` configured with `approver_model_default` empty, the same
     shape its existing `approver_app_id` pairing check already fails on
@@ -14891,8 +15035,9 @@ pull request, run the ones the change touches and any it could regress.
     exists and `merge_autonomy` is configured; a repository at
     `agent-approves` (Stage 1) short of its 15-agent-approved-pull-request
     bar verdicts `not-met (criterion: agent_approved_prs)` even though its
-    other criterion (App-verdict/human-action divergence, agent-ops#573) is
-    simultaneously `unavailable` — a real failure outranks a merely-missing
+    other criterion (App-verdict/human-action divergence, component 22a) is
+    simultaneously `unavailable`, both its pull requests being unreadable
+    from GitHub in that fixture — a real failure outranks a merely-missing
     measurement; a `pr_url` counted toward one repository's agent-approved
     count is never credited to a same-prefixed sibling repository (an exact
     `owner/repo/pull/` match, not a substring one). A repository at
@@ -14902,8 +15047,58 @@ pull request, run the ones the change touches and any it could regress.
     (agent-ops#572) — no criterion is ever reported satisfied from missing
     data. The revert-rate criterion reads the *earliest* dated
     `docs/reviews/*-merge-autonomy-baseline.md` as the Stage 0 baseline, not
-    a later, worse one placed beside it in the fixture.
+    a later, worse one placed beside it in the fixture. A fifth repository,
+    at `agent-approves` with six agent-approved pull requests — five reading
+    clean and one 404ing from the stub — verdicts `divergence: unavailable`,
+    never `met`, even though the five it could read alone clear the minimum
+    sample and carry no divergence between them: a partial read never
+    certifies a zero (agent-ops#661), and its `measured` string still names
+    both the settled sample and the pull request left unread.
     `scripts/autonomy-stage-report.sh` passes `shellcheck`.
+8w. **The Approver's verdict is paired with the pull request's eventual fate,
+    and a divergence is never silently dropped (component 22a).**
+    `test/verdict-fate.test.sh` passes: `verdict_fate_posted_review` maps the
+    Approver's own verdict vocabulary onto the two GitHub review events the
+    Script posts and prints empty for a verdict that reaches neither;
+    `verdict_fate_latest_per_pr` collapses a pull request carrying several
+    `approver-verdict` events to its single latest by `ts`, excludes a
+    verdict whose review never reached GitHub (`posted: false`, or no mapped
+    review at all) while reading an event predating that field as `true`,
+    matches a repository by exact prefix so a same-prefix decoy is never
+    counted, derives `repo` from `pr_url` even for an event carrying no `repo`
+    field at all, and carries a pull request with two `APPROVE` verdicts'
+    `first_approve_ts` as the earlier one, not the later verdict's own `ts`;
+    `verdict_fate_classify` returns each fate and comparison the record's own
+    vocabulary names, with a human `CHANGES_REQUESTED` submitted after
+    `FIRST_APPROVE_TS` scoring `changes-requested-after-approval`/`divergence`
+    even once the pull request later lands anyway, a bot's own
+    `CHANGES_REQUESTED` never counting as a human's, and one submitted before
+    `FIRST_APPROVE_TS` not counting as "after" it; `verdict_fate_summarize`
+    excludes `pending` from both the sample and the rate, and reports
+    `insufficient-sample` rather than state a rate below the stated minimum.
+    The two are also exercised *together*, on the sequence that defeats
+    either read alone: fed `verdict_fate_latest_per_pr`'s own entry for a
+    pull request approved, sent a human `CHANGES_REQUESTED`, and re-approved,
+    `verdict_fate_classify` still scores
+    `changes-requested-after-approval`/`divergence`, and the same call handed
+    that entry's latest `ts` instead of its `first_approve_ts` is asserted to
+    lose it — the composition, not either half, is where agent-ops#661's
+    defect lived.
+    `test/verdict-fate-report.test.sh` passes: against a stubbed `gh`,
+    `scripts/verdict-fate-report.sh` exits 0 with a silent stderr, prints one
+    entry per pull request the Approver ruled on across every fate, counts a
+    superseded verdict once and as its later one, excludes a same-prefix
+    decoy repository, and honours `--min-sample` and `--since`; one of those
+    pull requests carries a human `CHANGES_REQUESTED` between two `APPROVE`
+    verdicts, so it records as a divergence only while the wrapper threads
+    `first_approve_ts` through to `verdict_fate_classify` — the end-to-end
+    guard that a caller cannot quietly drop the window (agent-ops#661).
+    `test/autonomy-stage-report.test.sh`'s fourth repository proves component
+    22 consumes that join rather than the `unavailable` placeholder it used
+    to report: five approved-and-landed pull requests carrying no human
+    `CHANGES_REQUESTED` verdict its `divergence` criterion `met`, naming the
+    sample the zero is backed by. `lib/verdict-fate.sh` and
+    `scripts/verdict-fate-report.sh` pass `shellcheck`.
 
 ## Host provisioning (human steps)
 
