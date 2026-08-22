@@ -11308,14 +11308,14 @@ What exists, and the requirements each part answers to:
     its configured level is a doctor **`fail`, never a `warn`**, from
     `agent-approves` upward — the pipeline would otherwise raise approvals
     or land pull requests nobody has verified the forge can actually clear.
-    A precondition this run could not
-    evaluate — an unreachable ruleset, an unreadable merge setting, an
-    unconfirmed installation permission — is never read as a gap: it is
-    named separately as unconfirmed, and only turns the verdict into a
-    `skip` ("readiness could not be fully confirmed") when nothing else is
-    definitely missing, never a `fail` for something this run simply could
-    not check — the same offline-safe/unreachable-safe degradation every
-    GitHub-gated check in this component already gives.
+    A precondition this run could not evaluate — an unreachable ruleset, an
+    unreadable merge setting, an unconfirmed installation permission — is
+    never read as a gap: it is named separately as unconfirmed, and only
+    turns the verdict into a `skip` ("readiness could not be fully
+    confirmed") when nothing else is definitely missing, never a `fail` for
+    something this run simply could not check — the same
+    offline-safe/unreachable-safe degradation every GitHub-gated check in
+    this component already gives.
     `test/doctor.test.sh` covers the three new checks and the consolidated
     verdict (satisfied, unsatisfied naming owner acts and configuration
     errors together, and unconfirmed — acceptance check 8w); `test/approver-token.test.sh` covers
