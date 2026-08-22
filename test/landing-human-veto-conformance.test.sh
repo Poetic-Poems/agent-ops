@@ -169,6 +169,13 @@ declare -A landing_armed_by_repo=()
 # --- Stubs: everything that reaches outside this process ----------------------
 log_event() { printf '%s\t%s\n' "$1" "$2" >>"$T/events"; }
 
+# gate 1's own landing_autonomy_refusal_reason (lib/landing.sh, D18 issue
+# #576) reads this directly whenever LEVEL does not qualify, to tell the
+# fleet-wide kill switch apart from a level simply never raised — clear here
+# throughout, since this file's own axis is the human veto, not the switch;
+# test/landing-kill-switch-wiring.test.sh is the switch's own end-to-end
+# proof, and test/landing-wiring.test.sh already pins the two wordings apart.
+merge_autonomy_kill_state() { printf '{"state":"enabled"}'; }
 merge_autonomy_effective_level() { printf '%s\n' "$*" >>"$T/mal_calls"; printf '%s' "$LEVEL"; }
 landing_eligible() { printf '%s' "eligible"; }
 review_gate_verdict() { printf '%s' "clean"; return 0; }
