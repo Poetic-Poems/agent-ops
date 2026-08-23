@@ -117,6 +117,7 @@ prompt_overrides_json='{}'
 all_repos_json='[{"slug": "o/r", "sources": ["issues"]}]'
 implementer_model_default="claude-sonnet-5"
 implementer_model_trivial="claude-haiku-4-5-20251001"
+pr_label="autonomous-agent"
 candidates_max=3
 refinement_policy_json='{}'
 # shellcheck disable=SC2034  # Read by the lifted fit block, which assigns coordinator_refinements_json from it.
@@ -182,11 +183,12 @@ run_fit() {  # <max-bytes> <repos-json>  -> assembled prompt size on stdout
   coordinator_input="$(jq -nc \
     --arg model_default "$implementer_model_default" \
     --arg model_trivial "$implementer_model_trivial" \
+    --arg label "$pr_label" \
     --argjson cmax "$candidates_max" \
     --argjson policies "$refinement_policy_json" \
     'input as $repos | input as $blocked | input as $refinements | input as $claimed
      | {repos: $repos, blocked: $blocked, refinements: $refinements, claimed: $claimed,
-        models: {default: $model_default, trivial: $model_trivial},
+        models: {default: $model_default, trivial: $model_trivial}, pr_label: $label,
         candidates_max: $cmax, refinement_policy: $policies}' <<<"$coordinator_stdin")"
   eval "$assembly_block"
   # shellcheck disable=SC2154  # Assigned by the assembly block just eval'd — it is what the block is for.

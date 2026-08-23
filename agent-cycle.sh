@@ -8510,11 +8510,12 @@ if (( coordinator_prompt_max_bytes > 0 )); then
     --argjson blocked "$(coordinator_blocked_view "$blocked_json")" \
     --arg model_default "$implementer_model_default" \
     --arg model_trivial "$implementer_model_trivial" \
+    --arg label "$pr_label" \
     --argjson cmax "$candidates_max" \
     --argjson policies "$refinement_policy_json" \
     'input as $refinements | input as $claimed
      | {repos: [], blocked: $blocked, refinements: $refinements, claimed: $claimed,
-        models: {default: $model_default, trivial: $model_trivial},
+        models: {default: $model_default, trivial: $model_trivial}, pr_label: $label,
         candidates_max: $cmax, refinement_policy: $policies}' \
     <<<"$coordinator_refinements_json"$'\n'"$claimed_json" 2>/dev/null)" \
     || coordinator_fit_overhead_json='{"repos":[]}'
@@ -8768,11 +8769,12 @@ coordinator_stdin="$(printf '%s\n' \
 coordinator_input="$(jq -nc \
   --arg model_default "$implementer_model_default" \
   --arg model_trivial "$implementer_model_trivial" \
+  --arg label "$pr_label" \
   --argjson cmax "$candidates_max" \
   --argjson policies "$refinement_policy_json" \
   'input as $repos | input as $blocked | input as $refinements | input as $claimed
    | {repos: $repos, blocked: $blocked, refinements: $refinements, claimed: $claimed,
-      models: {default: $model_default, trivial: $model_trivial},
+      models: {default: $model_default, trivial: $model_trivial}, pr_label: $label,
       candidates_max: $cmax, refinement_policy: $policies}' <<<"$coordinator_stdin")"
 
 # --- 4. Co-Ordinator stage ---
