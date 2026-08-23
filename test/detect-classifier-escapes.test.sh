@@ -221,6 +221,21 @@ for cfg in '{"repos":[]}' \
     "$landing_out" "$escape_out"
 done
 
+# ... and both against config.schema.json's own declared default, for the same
+# reason as the protected-paths pin above: agent-cycle.sh hands landing_eligible
+# $DEFAULTED_CONFIG, where config_defaults has already written the schema
+# default into the top-level key, so lib/landing.sh's shipped literal is never
+# reached in production, while scripts/detect-classifier-escapes.sh reads the
+# raw --config file and does fall through to its own literal when the key is
+# absent. Pinning the two literals to each other alone would let an edit to
+# the schema default move the gate without moving its auditor.
+schema_default="$(jq -c '.properties.merge_autonomy_routine_complexity.default' \
+  "$SCRIPT_DIR/config.schema.json")"
+assert_eq "the shipped routine-complexity fallback matches config.schema.json's declared default" \
+  "$schema_default" "$(_landing_routine_complexity '{}' "acme/widgets")"
+assert_eq "  ... and so does the detector's own" \
+  "$schema_default" "$(_escape_audit_routine_complexity '{}' "acme/widgets")"
+
 # =============================================================================
 # Part 2: the script itself, subprocess, against a stubbed gh.
 # =============================================================================
