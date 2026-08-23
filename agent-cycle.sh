@@ -4033,10 +4033,11 @@ run_approver_stage() {
   # already committed to engaging (every check above has passed), so it
   # never costs a `gh` call at `merge_autonomy: human`, where the stage
   # already returned. Its own exit 2 (the changed-file list unreadable or
-  # truncated) routes *to* the critical tier, not away from it — the
-  # opposite fail-closed polarity from `landing_eligible`'s own exit-2
-  # handling, since here fail-closed means the more expensive tier, never
-  # the cheaper one.
+  # truncated, or a protected-paths list it cannot evaluate against a path
+  # at all — TD-PPagop-26082320) routes *to* the critical tier, not away
+  # from it — the opposite fail-closed polarity from `landing_eligible`'s
+  # own exit-2 handling, since here fail-closed means the more expensive
+  # tier, never the cheaper one.
   if [[ "$pr_url" =~ /pull/([0-9]+)$ ]]; then
     number="${BASH_REMATCH[1]}"
     landing_protected_paths_hit "$DEFAULTED_CONFIG" "$selected_repo" "$number" >/dev/null 2>&1 || protected_rc=$?

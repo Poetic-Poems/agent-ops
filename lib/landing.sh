@@ -387,13 +387,15 @@ landing_autonomy_refusal_reason() {
 #     below.
 #
 # `unknown` is returned only for `landing_protected_paths_hit`'s own exit 2
-# (the changed-file list could not be read or was truncated) — every other
-# refusal above is a deterministic `ineligible`, since COMPLEXITY, SOURCE
-# and LEVEL are all already in the caller's hand, nothing further to ask
-# GitHub. Both words carry the same instruction to every call site: **never
-# a pass** — `unknown` is treated as `ineligible` everywhere this is read,
-# the distinction exists only so a log can say whether the diff was
-# genuinely disqualified or merely unreadable.
+# (the changed-file list could not be read or was truncated, or the
+# configured protected-paths list could not be evaluated against a path at
+# all — TD-PPagop-26082320) — every other refusal above is a deterministic
+# `ineligible`, since COMPLEXITY, SOURCE and LEVEL are all already in the
+# caller's hand, nothing further to ask GitHub. Both words carry the same
+# instruction to every call site: **never a pass** — `unknown` is treated
+# as `ineligible` everywhere this is read, the distinction exists only so a
+# log can say whether the diff was genuinely disqualified or merely
+# unreadable.
 landing_eligible() {
   local config_json="$1" slug="$2" number="$3" complexity="$4" source="$5" level="$6"
 
