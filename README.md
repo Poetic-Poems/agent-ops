@@ -2219,7 +2219,16 @@ non-zero on the first failed assertion. Run the suite the way CI runs it:
 ```bash
 ./scripts/run-tests.sh                      # every test/*.test.sh
 ./scripts/run-tests.sh cycle-state doctor   # only those whose name matches
+./scripts/run-tests.sh --list                # just the selected names, one per line
 ```
+
+`--list` needs no Docker and starts no container — it applies the same filter
+to the host's own `test/*.test.sh` and prints the matching basenames, so a
+caller bound by a hard per-invocation ceiling (the Reviewer stage's own
+Bash-tool wall; see `prompts/reviewer.md`) can list the suite once, split it
+into groups that each finish comfortably inside that ceiling, and run
+`./scripts/run-tests.sh <group's names...>` once per group instead of one
+unbounded call over the whole thing.
 
 That copies the working tree into a throwaway container built from the image
 and runs the suite there. It takes a few minutes, and it is worth them: the

@@ -123,6 +123,23 @@ to be woken up when they finish; that's what step 6 below already relies
 on. If something is genuinely too slow to wait out, that's a `blocked`
 outcome, not a reason to end the turn early.
 
+**The Bash tool that runs your commands enforces a hard 10-minute ceiling on
+every single invocation, and a command it kills there returns no output at
+all — not even what had already completed.** A command still running at that
+mark gets `SIGTERM` (exit 143), and the only thing you see is the exit code:
+whatever it had already printed, and whatever partial work it had already
+done, is gone. There is no partial credit for retrying the same too-long
+command a second or third time — each attempt costs the same 10 minutes and
+returns the same nothing. This happened for real in agent-ops#734: a Reviewer
+finished a complete review pass in 13 minutes, then lost 30 of its 90-minute
+budget to three identical `SIGTERM`s retrying one unbatched test-suite
+invocation, then spent the rest of the budget re-batching by hand and still
+ran out before producing a final message — so the whole review, the 13
+minutes of findings included, was recorded as a failed attempt with nothing
+to show for it. Anything that might run long has to be split into pieces that
+each finish comfortably inside this wall *before* you run it, not discovered
+by hitting it — step 3 below is where this matters most.
+
 **Never end your turn with a background task still pending.** If your tools
 include a way to run something detached — a backgrounded shell command, an
 agent launched to run in the background — the promise that you'll be
@@ -192,6 +209,23 @@ your review:
 3. **Re-run the repo's checks** locally (lint, typecheck, format, tests,
    build — whatever `.github/workflows/` runs), not just what the
    Implementer claims to have run.
+
+   **When the repo under review is this one** (agent-ops), `test/*.test.sh`
+   is 140-odd files and too large to trust to a single invocation — see "Long-
+   running commands" above. Run it through `scripts/run-tests.sh`, never a
+   hand-rolled loop, and never as one unbatched call over the whole suite:
+   list what you've selected first (`scripts/run-tests.sh --list [filter...]`
+   — no Docker, returns instantly), split that list into groups sized to
+   finish well inside the 10-minute wall (a few dozen files is a reasonable
+   place to start), and call `scripts/run-tests.sh <group's names...>` once
+   per group, reading each group's own `PASS`/`FAIL` lines before moving to
+   the next. A group that comes close to the wall is a signal to shrink the
+   *next* group, never to retry the one that just ran at the same size.
+
+   Post the findings from steps 1–2 before you start this step, per step 5's
+   "as you go" rule below — a test run that eats the rest of your budget must
+   not also be what decides whether the review itself survives to reach
+   GitHub.
 4. **Fix what you're confident about**, directly on the branch: wrong
    assertions, missed edge cases, lint/format failures, a missing
    `CHANGELOG.md` entry, a non-conforming commit message, an unresolved
