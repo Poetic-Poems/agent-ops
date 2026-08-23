@@ -527,6 +527,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- D18 arming now works at all: the changed-file read behind the protected-path
+  gate had been failing on every single call since Stage 2 was entered, so the
+  pipeline has never autonomously landed a pull request (agent-ops#718).
+  `landing_protected_paths_hit` (`lib/landing.sh`) asked for
+  `repos/…/pulls/N/files` with `-F per_page=100` and no `--method GET`, and
+  `gh api` sends a request carrying `-f`/`-F` fields as a POST unless told
+  otherwise — a 404 on that path. The gate did exactly what it should with an
+  unreadable list and refused to arm, so nothing looked broken: 72 of the 115
+  `landing-refused` events across the fleet between 2026-08-17 and 2026-08-23
+  read `unknown:could not establish …'s changed-file list`, and no
+  `landing-armed` event exists in any node's log. The read is now an explicit
+  GET; the stubbed `gh` in `test/landing.test.sh` models `gh api`'s own method
+  selection, so a field-carrying request that forgets `--method GET` now 404s
+  in the test suite exactly as it did in production; and
+  `docs/IMPLEMENTATION-PIPELINE-SPEC.md`'s Gotchas table carries the trap — a
+  fail-closed gate that fails every time is indistinguishable from a working
+  one.
 - The D18 stage report's "zero classifier escapes" criterion now measures
   something. It was hard-coded `unavailable` with the reason "no
   classifier-escape detector yet (agent-ops#572)" — true when the report

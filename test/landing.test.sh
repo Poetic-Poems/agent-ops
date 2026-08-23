@@ -11,8 +11,11 @@
 #     to human review — `config.json`, `agent-cycle.sh`, `review-cycle.sh` —
 #     each pinned singly as well), a nested or suffixed near-miss is not
 #     protected, an all-clear set exits 1 with nothing printed, an unreadable
-#     or truncated changed-file listing exits 2 (never a pass), and bad
-#     arguments are rejected before any gh call.
+#     or truncated changed-file listing exits 2 (never a pass), bad
+#     arguments are rejected before any gh call, and the read reaches GitHub
+#     as an explicit GET (agent-ops#718 — the stubbed `gh` models `gh api`'s
+#     own method selection, so a field-carrying request that forgets
+#     `--method GET` 404s here exactly as it did in production).
 #   - landing_eligible: LEVEL below agent-merges-routine, COMPLEXITY above
 #     medium, and a SOURCE outside the routine list are each `ineligible`
 #     with no gh call at all; a repo-level merge_autonomy_routine_sources
@@ -98,15 +101,47 @@ set -uo pipefail
 args=("$@")
 f="$GH_FIXTURES"
 
-# --- gh api repos/SLUG/pulls/NUMBER/files --paginate -F per_page=100 --jq ... ---
-if [[ "${args[0]:-}" == "api" && "${args[1]:-}" == repos/*/pulls/*/files ]]; then
+# --- Which method would the real `gh api` use, and against which path? -------
+# Modelled rather than assumed, because the one time these differed cost five
+# days of held-shut arming (agent-ops#718): `gh api` sends a request carrying
+# `-f`/`-F` fields as a **POST** unless `--method`/`-X` says otherwise, and a
+# POST to a read-only REST path is a 404, not a listing. A stub that dispatches
+# on the path shape alone models the endpoint but not that rule, so it answers
+# happily to a call the real `gh` refuses. `api_path` is the first operand that
+# is not a flag or a flag's value — the same thing the real one treats as the
+# endpoint.
+api_method="" api_fields=0 api_path=""
+if [[ "${args[0]:-}" == "api" ]]; then
+  _i=1
+  while (( _i < ${#args[@]} )); do
+    case "${args[$_i]}" in
+      --method|-X)         _i=$((_i+1)); api_method="${args[$_i]:-}" ;;
+      -f|-F|--field|--raw-field) _i=$((_i+1)); api_fields=1 ;;
+      --jq|-q|--template|-t|--hostname|-H|--header) _i=$((_i+1)) ;;
+      -*)                  : ;;
+      *)                   [[ -n "$api_path" ]] || api_path="${args[$_i]}" ;;
+    esac
+    _i=$((_i+1))
+  done
+  if [[ -z "$api_method" ]]; then
+    if (( api_fields )); then api_method="POST"; else api_method="GET"; fi
+  fi
+fi
+
+# --- gh api --method GET repos/SLUG/pulls/NUMBER/files --paginate -F per_page=100 --jq ... ---
+if [[ "${args[0]:-}" == "api" && "$api_path" == repos/*/pulls/*/files ]]; then
+  if [[ "$api_method" != "GET" ]]; then
+    # Verbatim shape of what the real `gh` prints for this mistake.
+    echo "gh: Not Found (HTTP 404)" >&2
+    exit 1
+  fi
   [[ -f "$f/files-fail" ]] && exit 1
   cat "$f/files.txt" 2>/dev/null
   exit 0
 fi
 
 # --- gh api repos/SLUG/pulls/NUMBER/reviews --paginate --jq ... ---
-if [[ "${args[0]:-}" == "api" && "${args[1]:-}" == repos/*/pulls/*/reviews ]]; then
+if [[ "${args[0]:-}" == "api" && "$api_path" == repos/*/pulls/*/reviews ]]; then
   [[ -f "$f/reviews-fail" ]] && exit 1
   jqfilter="" prev=""
   for a in "${args[@]}"; do
@@ -118,8 +153,8 @@ if [[ "${args[0]:-}" == "api" && "${args[1]:-}" == repos/*/pulls/*/reviews ]]; t
 fi
 
 # --- gh api repos/SLUG/pulls/NUMBER --jq '{id,base}' ---
-if [[ "${args[0]:-}" == "api" && "${args[1]:-}" == repos/*/pulls/* \
-      && "${args[1]:-}" != */files && "${args[1]:-}" != */reviews ]]; then
+if [[ "${args[0]:-}" == "api" && "$api_path" == repos/*/pulls/* \
+      && "$api_path" != */files && "$api_path" != */reviews ]]; then
   [[ -f "$f/pr-fail" ]] && exit 1
   cat "$f/pr.json" 2>/dev/null
   exit 0
@@ -128,7 +163,7 @@ fi
 # --- gh api graphql ... (merge_queue_for_branch's read, or landing_arm's
 #     enqueuePullRequest write) — distinguished by the query text, since
 #     both reach this same sub-command. ---
-if [[ "${args[0]:-}" == "api" && "${args[1]:-}" == "graphql" ]]; then
+if [[ "${args[0]:-}" == "api" && "$api_path" == "graphql" ]]; then
   query="" jqfilter=""
   i=2
   while (( i < ${#args[@]} )); do
@@ -258,6 +293,22 @@ out="$(landing_protected_paths_hit "" 12)"; rc=$?
 assert_eq "an empty slug is rejected before calling gh" "2" "$rc"
 out="$(landing_protected_paths_hit acme/widgets abc)"; rc=$?
 assert_eq "a non-numeric number is rejected before calling gh" "2" "$rc"
+
+# The read must be an explicit GET (agent-ops#718). Two assertions, because
+# either alone rots: the first pins that the stub really does refuse a
+# field-carrying request that is not one — otherwise the guard could be
+# deleted and nothing would notice — and the second pins that the caller
+# sends one, which is the regression itself. Before the fix the second
+# assertion failed with exactly the `unknown` refusal the fleet logged 72
+# times.
+files "src/app.py"
+out="$("$stub_bin/gh" api "repos/acme/widgets/pulls/12/files" --paginate -F per_page=100 \
+  --jq '.[].filename' 2>&1)"; rc=$?
+assert_eq "the stub refuses a field-carrying request that is not an explicit GET" "1" "$rc"
+assert_contains "  ... reporting it the way the real gh does" "HTTP 404" "$out"
+
+out="$(landing_protected_paths_hit acme/widgets 12)"; rc=$?
+assert_eq "the changed-file read is sent as a GET, so an ordinary listing is readable" "1" "$rc"
 
 # --- landing_eligible ---------------------------------------------------------
 

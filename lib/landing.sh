@@ -215,12 +215,21 @@ _landing_is_protected() {
 # already happened, so exit 2 there instead maps to a bare `unknown`
 # protected-path verdict in the record and proceeds; there is nothing left
 # to refuse.
+#
+# `--method GET` is not decoration, and `_review_gate_open_alerts`
+# (lib/review-gate.sh) carries the same warning for the same reason: `gh api`
+# switches a request carrying `-f`/`-F` fields to POST unless told otherwise,
+# and `POST /repos/…/pulls/N/files` is a 404. Without it this read failed on
+# every call, every call site treated the exit 2 as the refusal it is meant to
+# be, and D18 arming was held shut for five days while the logs said only
+# `unknown:could not establish …'s changed-file list` (agent-ops#718).
 landing_protected_paths_hit() {
   local slug="$1" number="${2:-}" gh_bin="${LANDING_GH:-gh}"
   [[ -n "$slug" && "$number" =~ ^[0-9]+$ ]] || return 2
 
   local raw count
-  raw="$("$gh_bin" api "repos/$slug/pulls/$number/files" --paginate -F per_page=100 \
+  raw="$("$gh_bin" api --method GET "repos/$slug/pulls/$number/files" \
+    --paginate -F per_page=100 \
     --jq '.[].filename' 2>/dev/null)" || return 2
 
   if [[ -z "$raw" ]]; then
