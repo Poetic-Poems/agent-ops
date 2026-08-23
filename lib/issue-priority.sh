@@ -446,7 +446,7 @@ issue_priority_apply() {
   # mutation with "Type mismatch on variable $optionId and argument
   # singleSelectOptionId (String! / ID)" — silently, since the call below
   # discards stderr and the caller only ever sees `mutation-failed`. That
-  # cost the fleet every Priority write it attempted (PR_REF).
+  # cost the fleet every Priority write it attempted (agent-ops#737).
   # shellcheck disable=SC2016  # GraphQL's own $issueId/$fieldId/$optionId.
   if "$gh_bin" api graphql \
       -f query='mutation($issueId:ID!,$fieldId:ID!,$optionId:ID!){

@@ -542,7 +542,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - The Refiner's Priority ratchet now writes at all: every `setIssueFieldValue`
   mutation it has ever sent was rejected before reaching the resolver, so no
-  issue in any repository has been banded by the pipeline (PR_REF).
+  issue in any repository has been banded by the pipeline (agent-ops#737).
   `issue_priority_apply` (`lib/issue-priority.sh`) declared the mutation's
   `$optionId` variable as `String!` while GitHub types the
   `singleSelectOptionId` argument as `ID`, and GraphQL rejects that pairing

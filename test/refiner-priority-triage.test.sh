@@ -727,7 +727,7 @@ ISSUE_PRIORITY_CACHE_DIR_OWNED="$saved_owned"
 
 unset ISSUE_PRIORITY_GH
 
-# --- (B2) The mutation's declared variable types (PR_REF) -----------------
+# --- (B2) The mutation's declared variable types (agent-ops#737) ----------
 # Asserted against the source rather than through the stub above, because the
 # stub matches on `*setIssueFieldValue*` and never parses the query: a
 # declaration GitHub rejects outright looks identical to a correct one from
