@@ -532,7 +532,7 @@
       }
     },
     "labels_ensure_interval_hours": {
-      "description": "How often, at most, the pipeline re-lists a repository's labels to create any that are absent. Ensuring runs once per repository the cycle gathers data for, not only the one it selects to work; this bounds how often that costs a listing once a repository already has every label. 0 ensures on every cycle regardless. Whole hours only: `labels_ensure_stamped` (lib/labels.sh) gates its rate limit on an integer regex, and a fractional value would silently fall through it and disable rate limiting entirely.",
+      "description": "How often, at most, the pipeline re-lists a repository's labels to create any that are absent. Ensuring runs once per repository the cycle gathers data for, not only the one it selects to work; this bounds how often that costs a listing once a repository already has every label. 0 ensures on every cycle regardless. Whole hours only: a fractional value is rejected at configuration time, and `labels_ensure_stamped` (lib/labels.sh) reads the integer part of whatever reaches it, so a value it cannot parse as whole hours shortens the interval rather than silently removing the rate limit.",
       "type": "integer",
       "minimum": 0,
       "default": 24,

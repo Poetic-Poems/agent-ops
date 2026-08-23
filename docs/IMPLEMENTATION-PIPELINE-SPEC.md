@@ -4767,7 +4767,16 @@ implements.
    steady state stays a single listing per repository per interval and zero
    writes, while a label a human deletes still comes back within one
    interval — periodic rather than once-forever is what keeps that promise
-   true regardless of whether the repository is ever selected again.
+   true regardless of whether the repository is ever selected again. The
+   interval is read as **whole hours, from the value's integer part**, and
+   `config.schema.json` types it `integer` so a fractional one is refused at
+   configuration time. Both halves are load-bearing on their own: `24.0`
+   satisfies that type (JSON Schema counts a zero fraction as an integer, and
+   the value reaches the stamp check as the literal that was configured), so
+   the check truncates rather than requiring whole digits — a decimal it read
+   as non-numeric would disable the rate limit outright and list every
+   repository every cycle, which is the failure this interval exists to
+   prevent, arrived at silently.
 
    The selected repository gets one further, **unconditional** listing on top
    of the above: immediately before the Implementer stage, `agent-cycle.sh`

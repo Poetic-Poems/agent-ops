@@ -330,6 +330,39 @@ rm -rf "$stamp_root"
 reset_stub
 assert_eq "an empty state dir is refused rather than guessed at" "1" \
   "$(labels_ensure_stamped "" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 24 >/dev/null 2>&1; echo $?)"
+rm -rf "$stamp_root"
+
+# `24.0` is a schema-valid `integer` (JSON Schema counts a zero fraction as
+# one) and jq hands the literal it read straight through, so a decimal can
+# reach the interval argument. It must still rate-limit: reading it as
+# non-numeric would disable the stamp check entirely and ensure on every
+# cycle for every repository — the opposite of what the operator configured,
+# with nothing to say so.
+reset_stub
+out="$(labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 24.0)"
+assert_eq "a decimal interval ensures on the first call" "created" "$(cut -f1 <<<"$out")"
+: > "$tmp/log"
+out="$(labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 24.0)"
+assert_eq "  ... and still rate-limits the second, rather than falling through" "" "$out"
+assert_eq "  ... listing nothing at all on the skipped call" "0" \
+  "$(grep -c '^api repos/Owner/repo/labels --paginate' "$tmp/log")"
+touch -d "-25 hours" "$stamp_file"
+: > "$tmp/log"
+out="$(labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 24.0)"
+assert_eq "  ... and re-lists once its whole-hour interval has elapsed" "1" \
+  "$(grep -c '^api repos/Owner/repo/labels --paginate' "$tmp/log")"
+rm -rf "$stamp_root"
+
+# A fraction below one hour truncates to 0 — "ensure every call". Shortening
+# the interval is the safe direction to round: it over-lists, where reading it
+# as non-numeric would have removed the limit outright.
+reset_stub
+labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 0.5 >/dev/null
+: > "$tmp/log"
+out="$(labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 0.5)"
+assert_eq "an interval under an hour truncates to 0 and ensures every call" "1" \
+  "$(grep -c '^api repos/Owner/repo/labels --paginate' "$tmp/log")"
+rm -rf "$stamp_root"
 
 echo
 if (( failures == 0 )); then

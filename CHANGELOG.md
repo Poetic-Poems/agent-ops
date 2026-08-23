@@ -553,7 +553,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   applies itself, were simply absent from that repository in the meantime.
   `labels_ensure_stamped` (`lib/labels.sh`) rate-limits the new per-repository
   ensure via a stamp file under `state_dir` (`labels_ensure_interval_hours`,
-  default 24h, new config key), shared by `agent-cycle.sh`'s gather loop and
+  default 24h, new config key — whole hours, a fractional value being refused
+  at configuration time), shared by `agent-cycle.sh`'s gather loop and
   `review-cycle.sh`'s own per-repository ensure. `refinement_label_add`
   additionally self-heals a failed projection once, through the new
   `labels_ensure_one` primitive.

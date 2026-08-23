@@ -247,7 +247,9 @@ labels_ensure_role() {
 # actually paid for.
 #
 # INTERVAL_HOURS <= 0, or unset/non-numeric, disables the stamp check
-# entirely: every call ensures. Prints labels_ensure_role's own report
+# entirely: every call ensures. It is read as whole hours, from the value's
+# integer part — see the truncation below for why a decimal reaches here at
+# all. Prints labels_ensure_role's own report
 # (nothing, on a skipped call) and returns its exit status (0 on a skipped
 # call — a rate-limited repeat is success, not a failure to check).
 labels_ensure_stamped() {
@@ -257,12 +259,21 @@ labels_ensure_stamped() {
 
   local stamp_dir="$state_dir/labels-ensured" safe="${repo//\//_}"
   local stamp_file="$stamp_dir/$safe.$role"
-  if [[ "$interval_hours" =~ ^[0-9]+$ ]] && (( interval_hours > 0 )) \
+  # Compared as whole hours, taken from the value's integer part. `24.0` is a
+  # schema-valid `integer` — JSON Schema counts a zero fraction as one, and jq
+  # preserves the literal it read — so the interval can arrive here as a
+  # decimal string, which an integer-only test would reject outright and so
+  # disable the rate limit rather than apply it: the opposite of what the
+  # operator asked for, silently. Truncating first means a fraction can only
+  # ever shorten the interval (`0.5` -> `0`, ensure on every call), never
+  # remove it.
+  local whole_hours="${interval_hours%%.*}"
+  if [[ "$whole_hours" =~ ^[0-9]+$ ]] && (( whole_hours > 0 )) \
        && [[ -f "$stamp_file" ]]; then
     local mtime age
     mtime="$(stat -c %Y "$stamp_file" 2>/dev/null || echo 0)"
     age=$(( $(date +%s) - mtime ))
-    (( age < interval_hours * 3600 )) && return 0
+    (( age < whole_hours * 3600 )) && return 0
   fi
 
   local report rc=0
