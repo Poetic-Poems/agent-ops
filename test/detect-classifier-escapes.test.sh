@@ -24,7 +24,11 @@
 #     literals against each other — is the pair production actually rests on:
 #     lib/landing.sh is called with `$DEFAULTED_CONFIG` and takes the
 #     top-level branch, while the detector is handed the raw `--config` file
-#     and takes its own literal.
+#     and takes its own literal. The routine-sources fallbacks get the same
+#     schema-default pin, plus scripts/doctor.sh's own two hand-copied
+#     literals (extracted from the script text, since neither is a standalone
+#     function this file can lift and eval) — closing the same gap for
+#     `merge_autonomy_routine_sources` that its sibling key already had.
 #   - The script itself, invoked as a subprocess against a stubbed `gh`
 #     (PATH-prepended, the same technique test/mine-merge-history.test.sh
 #     uses): a merged pull request whose merge commit touches a protected
@@ -157,6 +161,30 @@ assert_eq "the shipped protected-paths fallback matches config.schema.json's dec
   "$schema_default" "$(_landing_protected_paths '{}' "acme/widgets")"
 assert_eq "  ... and so does the detector's own" \
   "$schema_default" "$(_escape_audit_protected_paths '{}' "acme/widgets")"
+
+# ... and the same pin for merge_autonomy_routine_sources: lib/landing.sh's
+# fallback is fed $DEFAULTED_CONFIG (already schema-defaulted, so this branch
+# is never reached in production), while the detector is handed the raw
+# --config file, where the key is absent — so its fallback is the one that
+# actually decides. scripts/doctor.sh carries its own two copies, checked
+# against the raw script text below since neither is a standalone function
+# this file can extract and eval.
+schema_routine_default="$(jq -c '.properties.merge_autonomy_routine_sources.default' \
+  "$SCRIPT_DIR/config.schema.json")"
+assert_eq "the shipped routine-sources fallback matches config.schema.json's declared default" \
+  "$schema_routine_default" "$(_landing_routine_sources '{}' "acme/widgets")"
+assert_eq "  ... and so does the detector's own" \
+  "$schema_routine_default" "$(_escape_audit_routine_sources '{}' "acme/widgets")"
+
+# shellcheck disable=SC2016  # literal source text to match, not meant to expand
+mapfile -t rs_doctor_literals < <(grep -A1 '\$r\.merge_autonomy_routine_sources // \.merge_autonomy_routine_sources' \
+  "$SCRIPT_DIR/scripts/doctor.sh" | grep -oE '\[[^]]*\]')
+assert_eq "scripts/doctor.sh carries exactly two routine-sources fallback literals" \
+  "2" "${#rs_doctor_literals[@]}"
+assert_eq "  ... and its first fallback matches config.schema.json's declared default" \
+  "$schema_routine_default" "${rs_doctor_literals[0]:-}"
+assert_eq "  ... and its second fallback matches config.schema.json's declared default" \
+  "$schema_routine_default" "${rs_doctor_literals[1]:-}"
 
 # =============================================================================
 # Part 2: the script itself, subprocess, against a stubbed gh.
