@@ -313,6 +313,11 @@ _escape_audit_protected_paths() {
   printf '%s' '[".github/*","deploy/*","prompts/*","lib/*","config.schema.json","config.json","agent-cycle.sh","review-cycle.sh","CODEOWNERS"]'
 }
 
+# Exit 0 on a match, 1 on none, 5 — jq -e's own code for a raising program —
+# when an entry in PROTECTED_JSON is not a string `endswith`/`==` can compare
+# at all (TD-PPagop-26082320); see _landing_is_protected's own comment for why
+# this is unreachable through a schema-validated config.json but still must
+# not read as "no match" to the caller below.
 _escape_audit_is_protected() {
   local protected_json="$1" path="$2"
   jq -e --arg p "$path" '
@@ -558,11 +563,20 @@ while IFS= read -r number; do
       hit="" paths_json='[]'
     else
       declare -a protected=()
+      protected_unreadable=""
       while IFS= read -r path; do
         [[ -n "$path" ]] || continue
-        _escape_audit_is_protected "$protected_json" "$path" && protected+=("$path")
+        _escape_audit_is_protected "$protected_json" "$path"; is_protected_rc=$?
+        case "$is_protected_rc" in
+          0) protected+=("$path") ;;
+          1) ;;
+          *) protected_unreadable=1; break ;;
+        esac
       done <<<"$files_out"
-      if (( ${#protected[@]} > 0 )); then
+      if [[ -n "$protected_unreadable" ]]; then
+        reasons+=("the protected-path list could not be evaluated against the merge's changed files (a non-string entry in merge_autonomy_protected_paths)")
+        hit="" paths_json='[]'
+      elif (( ${#protected[@]} > 0 )); then
         hit="true"
         paths_json="$(printf '%s\n' "${protected[@]}" | jq -R . | jq -s -c .)"
       else
