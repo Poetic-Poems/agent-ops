@@ -9559,7 +9559,10 @@ implements.
       `spec`/`comment_url` unchanged, since the pass confirmed it rather than
       writing a new one — and no escalation issue is filed. `inadequate`, a
       missing adjudication prompt, a stage failure, or an unparseable verdict
-      all escalate exactly as `always-escalate` already does: "cannot settle"
+      all escalate, with the pass's own `evidence` appended to `issue.body`
+      under an `## Adjudication attempted` heading (agent-ops#681) before the
+      issue is filed, so the human starts from why an adjudicator's answer is
+      missing rather than only the pre-adjudication verdict: "cannot settle"
       is not read as "nothing wrong" (the same rule requirement 8c's own
       adjudication path applies to its own unreadable verdicts). The default,
       `always-escalate`, is byte-for-byte today's behaviour — no adjudication

@@ -652,7 +652,7 @@ run_enabler_adjudication() {
   printf '{"verdict":"inadequate","evidence":"the spec never names a concrete acceptance criterion"}'
 }
 # shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
-create_escalation_issue() { printf '43\thttps://github.com/acme/widgets/issues/43'; return 0; }
+create_escalation_issue() { record "issue_body: $(cat "$5")"; printf '43\thttps://github.com/acme/widgets/issues/43'; return 0; }
 calls="$(run_case "adjudicate-first: inadequate" "$eligible_disagreement" "$examined")"
 
 assert_eq "adjudicate-first, inadequate: exactly one enabler-adjudication event" "1" \
@@ -669,6 +669,14 @@ assert_eq "adjudicate-first, inadequate: names the filed issue" "43" "$(jq -r '.
 xmn_evt="$(events_named "$calls" enabler-examined | head -n1)"
 assert_eq "adjudicate-first, inadequate: enabler-examined outcome is escalate" \
   "escalate" "$(jq -r '.outcome' <<<"$xmn_evt")"
+
+# agent-ops#681: the adjudicator's own finding must reach the escalation body,
+# not just the log — the same body the Enabler wrote, with the adjudication's
+# evidence folded in underneath.
+assert_contains "agent-ops#681: the escalation body still opens with the Enabler's own draft" \
+  "issue_body: …draft escalation…" "$calls"
+assert_contains "agent-ops#681: ...and the adjudication's own evidence is folded into the filed body" \
+  "the spec never names a concrete acceptance criterion" "$calls"
 
 # The bound (requirement 36b, "bounded, not a loop"): a second disagreement
 # over the same item, with an adjudication already on the record and no human

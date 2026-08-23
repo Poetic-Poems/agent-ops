@@ -5873,6 +5873,7 @@ $(jq . <<<"$input")
         # exist to adjudicate; an escalate verdict that already carried
         # nothing filable is unaffected by the setting.
         e_adjudicated=0
+        e_adjudication=""
         if [[ -n "$issue_title" && -s "$issue_body_file" ]] \
              && refinement_is_disagreement "$claimed_entry" \
              && [[ "$(escalation_autonomy_configured_level "$DEFAULTED_CONFIG" "$e_repo")" == "adjudicate-first" ]] \
@@ -5916,6 +5917,17 @@ $(jq . <<<"$input")
         fi
 
         if (( ! e_adjudicated )); then
+          if [[ -n "$e_adjudication" ]]; then
+            # agent-ops#681: the adjudication pass ran and did not settle the
+            # disagreement (an `inadequate` verdict, or a stage failure whose
+            # own evidence says why no adjudicator answer exists) — fold that
+            # evidence into the escalation body, exactly as the `adequate`
+            # branch above threads it into the `unblocked` event's own
+            # reason, so the human starts from why an adjudication answer is
+            # missing rather than only the pre-adjudication verdict.
+            printf '\n\n## Adjudication attempted\n\nAdjudication was attempted and returned: %s\n' \
+              "${e_adj_evidence:-no evidence given}" >> "$issue_body_file"
+          fi
           if [[ -z "$issue_title" || ! -s "$issue_body_file" ]]; then
             log_event "warning" "$(jq -nc \
               --arg d "enabler: escalate verdict for $e_repo $e_item carried no issue title or body — nothing filed" \
