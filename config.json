@@ -85,12 +85,12 @@
     "repos": [
       {
         "slug": "Poetic-Poems/poetic",
-        "not_before": "2026-08-24T12:00:00Z"
+        "not_before": "2026-09-01T12:00:00Z"
       },
       {
         "slug": "Poetic-Poems/poetic-fiddle",
         "min_days_between_reviews": 15,
-        "not_before": "2026-08-27T12:00:00Z"
+        "not_before": "2026-09-15T12:00:00Z"
       },
       {
         "slug": "Poetic-Poems/agent-ops",
