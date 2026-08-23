@@ -177,8 +177,8 @@ _handoff_draft_flag() {
 # `failed` is deliberately also the answer when the API cannot be reached. The
 # alternative — assume the Reviewer was right and log `pr-ready` — is exactly
 # the silent strand above, and the cost of being wrong the other way is one
-# blocked item that the Enabler re-examines (requirement 32a), not a human
-# interruption. Fail towards the state something else will look at.
+# blocked item that the Enabler re-examines (requirement 32a), not an
+# escalation. Fail towards the state something else will look at.
 confirm_pr_ready() {
   local url="${1:-}" gh_bin="${HANDOFF_GH:-gh}" flag
 
@@ -462,10 +462,10 @@ _handoff_pr_author() {
 #
 # It does not clear the block, and must not appear to. Re-requesting review
 # leaves `reviewDecision` at `CHANGES_REQUESTED` and `mergeable_state` at
-# `blocked` — verified against GitHub on #200, before and after — so the human
-# gate holds exactly as "The Landing Gate" describes it, and the PR still needs an
-# approving review from a code owner that this system cannot give itself. All
-# this does is put the PR back in the queue the human actually reads.
+# `blocked` — verified against GitHub on #200, before and after — so "The
+# Landing Gate" holds unchanged, and the PR still needs an approving review
+# from a code owner that this system cannot give itself. All this does is put
+# the PR back in the queue the human actually reads.
 #
 # Nor does it fail the handoff when it fails. The PR is finished, green and
 # visible; what is missing is a notification, and the Implementer's own reply
@@ -848,8 +848,9 @@ _handoff_complete_review_json() {
 #     `revert` so a caller can tell "the refusal took, the pull request is a
 #     draft again" from "the refusal was recorded but the pull request is
 #     still sitting ready" (`revert: "failed"`), which is worth a warning of
-#     its own since a human could otherwise merge a `CHANGES_REQUESTED` pull
-#     request that reads as ready.
+#     its own since whatever lands next — a human, or the Script itself at a
+#     higher `merge_autonomy` rung — could otherwise merge a
+#     `CHANGES_REQUESTED` pull request that reads as ready.
 #   - Neither gate found anything, but the flip itself did not take —
 #     `handoff` is `failed`. This is the one `safe: false` shape that still
 #     names a stage: `handoff` carries `"failed"` so a caller can tell "this

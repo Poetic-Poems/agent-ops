@@ -302,7 +302,8 @@ do_count() {  # <target-slug> [<counted-prs>] -> number of live registry entries
   # It is dropped only for the PR numbers the caller passes — a comma-separated
   # list, bounded by GITHUB_PR_LIST_LIMIT, of the PRs already inside the
   # caller's own sum. That distinction matters: a conflicted or dequeued PR
-  # sits in the human's queue and is deliberately *not* in that sum
+  # sits in whichever queue requirement 2.2's merge_autonomy-aware exclusion
+  # currently parks it in and is deliberately *not* in that sum
   # (agent-ops#246), so its claim is the only record that the work is in
   # flight and must keep counting. Passing nothing keeps every item claim,
   # which is both the old behaviour and the fail-closed reading.

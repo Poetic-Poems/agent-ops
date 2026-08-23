@@ -292,7 +292,7 @@ Pullwright organisation and carries its licence.
       lifecycle** — one durable record per work item, accumulating instants
       that already exist as scattered facts (`first-seen`, refinement,
       `selection`, stage starts and ends, `pr-raised`, checks green, review
-      verdict, `pr-ready`, human merge, item closed); the **rework record**
+      verdict, `pr-ready`, landing, item closed); the **rework record**
       that exists nowhere (D23) — one entry per repetition, carrying its class
       (review round-trip, human change request after an agent flipped the pull
       request to ready, check failure on a raised pull request, merge
@@ -507,7 +507,7 @@ induced outage rather than only over a quiet afternoon.
 - [ ] State the constraint (D21). The analytics surface leads with one
       sentence — what is limiting throughput right now, over what share of the
       window, and what to do about it — computed from the time account above:
-      the human merge gate, the back-pressure cap, model capacity, node count,
+      the landing gate, the back-pressure cap, model capacity, node count,
       cron latency, or the pipeline's own defect rate. Everything else on the
       page exists to justify or refute that sentence. It is also the honest
       business case for levers the product already has: an installation whose
@@ -523,7 +523,7 @@ induced outage rather than only over a quiet afternoon.
       landed after N further passes, voided, abandoned; first-pass yield; cost
       and wall-clock per landed item; and each actor's own measure — the
       Reviewer's findings raised against findings that led to a change, and
-      against defects that reached the human or a revert past it; the
+      against defects that reached the landing gate or a revert past it; the
       Co-Ordinator's corroboration rate, today's panel folded in, alongside
       whether the items it picked went on to land; the Enabler's and Refiner's
       unblock and refinement success. Every row states its stratum and its
