@@ -1003,10 +1003,14 @@ resolution, `lib/merge-autonomy.sh`):
   - `merge_autonomy_effective_level` is `agent-merges-routine` or
     `agent-merges-all` at the moment of decision (never the raw configured
     value — the kill switch and a WI-6 budget freeze both bind here);
-  - its resolved `complexity` is `low` or `medium` — `high` never arms,
-    regardless of source or path, the first half of a deliberate belt and
-    braces (requirement 26a already forces `high` onto anything touching
-    concurrency, security, CI/workflow machinery or shared library code);
+  - its resolved `complexity` is a member of
+    `merge_autonomy_routine_complexity` (config, D18 Stage 3,
+    agent-ops#725, default `low`/`medium`) for this repository — an empty
+    or unrecognised complexity never arms, the first half of a deliberate
+    belt and braces. Requirement 26a already forces `high` onto anything
+    touching concurrency, security, CI/workflow machinery or shared
+    library code, so widening this list to admit `high` routes exactly
+    that class of diff through automatic landing;
   - its work order's `source` is a member of `merge_autonomy_routine_sources`
     (config, default `register-hygiene`/`tech-debt`) for this repository;
   - below `agent-merges-all`, its diff touches none of
@@ -16386,15 +16390,20 @@ pull request, run the ones the change touches and any it could regress.
     own independent reimplementation (`test/detect-classifier-escapes.test.sh`,
     D18 Stage 3, agent-ops#724) so the two can never silently diverge on what
     counts as protected, including on that same non-string-entry verdict;
-    `landing_eligible` reads `ineligible` for a level
-    below `agent-merges-routine`, for `complexity:high` regardless of source or
-    path, for a source outside the repository's own
+    `landing_eligible` reads `ineligible` for a level below `agent-merges-routine`,
+    for a complexity outside the repository's own
+    `merge_autonomy_routine_complexity` — `complexity:high` under the
+    default `["low", "medium"]` list, regardless of source or path — and for
+    an empty complexity, for a source outside the repository's own
     `merge_autonomy_routine_sources` (a repo-level override taking
     precedence over the top-level list, the same precedence
     `merge_autonomy` itself uses) and for an empty source, `unknown` on an
     unreadable protected-path read or an unevaluable protected-paths list,
     and `eligible` only once every condition
-    clears — with pinned cases confirming the `source` comparison is exact
+    clears — with a repo-level `merge_autonomy_routine_complexity` override
+    admitting `complexity:high` for that repository alone while a repository
+    without one still refuses it, and a top-level override admitting it
+    fleet-wide (D18 Stage 3, agent-ops#725) — with pinned cases confirming the `source` comparison is exact
     string equality, never expanded against the four `issues:<band>` ranks:
     a plain `issues` routine-list entry matches a real issues work order's
     own `"issues"` source, and an `issues:low` entry (a schema error, since
@@ -16811,14 +16820,16 @@ pull request, run the ones the change touches and any it could regress.
 8x. **The classifier-escape audit recomputes independently, never trusts
     what it is auditing, and never confuses "cannot tell" with "clean"
     (requirement 8e, agent-ops#572).** `test/detect-classifier-escapes.test.sh`
-    pins the reimplemented protected-path matching, protected-path resolution
-    and routine-sources resolution in `scripts/detect-classifier-escapes.sh`
+    pins the reimplemented protected-path matching, protected-path resolution,
+    routine-sources resolution and routine-complexity resolution in
+    `scripts/detect-classifier-escapes.sh`
     byte-for-byte identical to `lib/landing.sh`'s own
-    `_landing_is_protected`/`_landing_protected_paths`/`_landing_routine_sources`
-    (D18 Stage 3, agent-ops#724, both resolving `merge_autonomy_protected_paths`
+    `_landing_is_protected`/`_landing_protected_paths`/`_landing_routine_sources`/`_landing_routine_complexity`
+    (D18 Stage 3, agent-ops#724 and agent-ops#725, each pair resolving its own
+    key — `merge_autonomy_protected_paths`, `merge_autonomy_routine_complexity` —
     the same repo-override-else-top-level-else-default way), over the same
-    battery of inputs, so neither can drift apart
-    unnoticed despite neither being sourced; it pins both protected-path
+    battery of inputs, so none of them can drift apart
+    unnoticed despite none being sourced; it pins both protected-path
     fallbacks against `config.schema.json`'s own declared
     `merge_autonomy_protected_paths` default as well, since that is the pair
     production rests on — the gate is called with the defaulted config and
@@ -16829,15 +16840,17 @@ pull request, run the ones the change touches and any it could regress.
     known escape) is reported `classifier-escape` even though it carries a
     `landing-armed` event recording `complexity: low` — the detector's own
     recomputation, not the recorded value, is what disagreed — as are the
-    other three ways the recomputation can disagree: a complexity above
-    `medium` standing at merge, a source outside the repository's routine
+    other three ways the recomputation can disagree: a complexity outside the
+    repository's own `merge_autonomy_routine_complexity` standing at merge, a
+    source outside the repository's routine
     list, and a landing whose own `landing-armed` event records an effective
     `merge_autonomy` level below `agent-merges-routine` even though every
     other input agrees; the same protected-path hit recorded at
     `agent-merges-all`, with every other input agreeing, is instead
     `outcome: "unverifiable"` and never `classifier-escape`, naming the WI-12
-    compensating controls it defers to — while a complexity above `medium`
-    standing alongside that same unrecomputable hit still reports
+    compensating controls it defers to — while a complexity outside that same
+    routine-complexity list standing alongside that same unrecomputable hit
+    still reports
     `classifier-escape`, naming the complexity rather than the protected
     path, so an independently reconstructable disagreement is never masked by
     one that is not; a

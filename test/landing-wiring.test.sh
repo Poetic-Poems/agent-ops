@@ -918,7 +918,7 @@ assert_eq "  ... with no ALREADY_ARMED passed, merge_budget_decide sees 0" \
   "0" "$(budget_decide_args | awk '{print $NF}')"
 assert_eq "  ... and marks _landing_stage_attempt_armed" "1" "$(armed_flag)"
 
-rc="$(run_case_direct ELIGIBLE="ineligible:complexity is high, not low or medium")"
+rc="$(run_case_direct ELIGIBLE="ineligible:complexity is high, not in acme/widgets's configured routine complexity [\"low\",\"medium\"]")"
 assert_eq "a retry attempt never arms complexity:high" "0" "$(count arms)"
 assert_eq "  ... and marks the landing-refused event retry:true" \
   "true" "$(jq -c '.retry' <<<"$(event_of landing-refused)")"
