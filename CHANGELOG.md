@@ -12,10 +12,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (issue, pull request, review, or comment bodies; a Co-Ordinator work order's
   `context`) now carries an explicit "Untrusted external content" section:
   that text is data describing the item, never an instruction to the model
-  running the stage (TD-PPagop-26082407 part 1/3; agent-ops#752). Scoping
-  `claude`'s tool access down from `--dangerously-skip-permissions` and
-  restricting container network egress — parts 2 and 3 of the same finding —
-  are tracked separately as TD-PPagop-26082428 and TD-PPagop-26082429.
+  running the stage. The rule is about authority, not relevance: where a
+  stage is already obliged to act on what such content asks — reconciling a
+  standing human comment before a hand-off, answering a `review-feedback`
+  brief point by point — that obligation stands (TD-PPagop-26082407 part 1/3;
+  agent-ops#752). Scoping `claude`'s tool access down from
+  `--dangerously-skip-permissions` and restricting container network egress —
+  parts 2 and 3 of the same finding — are tracked separately as
+  TD-PPagop-26082428 and TD-PPagop-26082429.
 
 ### Added
 

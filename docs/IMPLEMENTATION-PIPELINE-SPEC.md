@@ -6630,15 +6630,25 @@ implements.
     downstream stage that receives such a work order, or reads GitHub content
     directly — the Implementer (requirement 21 onward), the Reviewer, the
     Enabler, the Enabler's adjudication mode, the Refiner, the Approver —
-    carries its own copy of the same framing in its own "What you receive at
-    invocation" section. All three public repositories this pipeline acts on
+    carries its own copy of the same framing in an "Untrusted external
+    content" section of its own, immediately following its "What you receive
+    at invocation" heading. All three public repositories this pipeline acts on
     accept issues, pull requests and comments from any GitHub account, so a
     crafted body reaches a stage moments after it is posted; this requirement
     is what stands between that content and being read as an instruction,
     since nothing about `run_claude_stage` (requirement 4d) or the model
     invoked changes because of it. It is a prompt-level control only — it
     stops nothing a stage still chooses to do once it has (mis)read a
-    directive as legitimate — and it does not by itself close
+    directive as legitimate — and it is scoped to *authority*, not to
+    relevance: where a requirement already obliges a stage to act on what
+    such content asks — requirement 30c's reconciliation of every standing
+    human comment, or a `review-feedback` work order's `context`, which is
+    the reviewer's own brief for the Implementer and the Reviewer to answer
+    point by point — that obligation stands, and each prompt's own copy of
+    the framing says so. What the content is denied is standing over how the
+    stage operates: its instructions, the actions it may take, the
+    credentials the session holds, and the gates it must not route around.
+    The framing does not by itself close
     TD-PPagop-26082407: tool-access scoping and network-egress restriction,
     the finding's other two technical controls, remain open as
     TD-PPagop-26082428 and TD-PPagop-26082429.
