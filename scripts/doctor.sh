@@ -1159,6 +1159,29 @@ if ((gh_ready)); then
     fi
   fi
 
+  # The same installation's *repository selection* (D18 Stage 3,
+  # agent-ops#721). Permissions say what the App may do; the selection says
+  # where it may do it, and an installation scoped to `selected` can leave a
+  # configured repository out with nothing in config.json the wiser — a
+  # readiness verdict that checked only the permissions would report "fully
+  # supported" over an App that cannot see the repository at all. Read once,
+  # fleet-wide, like the permissions above; `all` is the whole-account
+  # selection, in which case every repository is covered by construction.
+  # Unreadable is left as the empty string and reported per repository as
+  # unconfirmed, never as "not covered": a repository the App genuinely
+  # cannot see is a `fail` and an owner act, and no network failure should
+  # ever be able to mint one of those.
+  app_repos_list=""
+  app_repos_readable=0
+  if (( ma_above_human )) && approver_token_credential_present; then
+    if app_repos_list="$(approver_token_installation_repositories "" 2>/dev/null)"; then
+      app_repos_readable=1
+    else
+      app_repos_list=""
+      skip "which repositories the Approver App installation covers — GitHub did not answer /installation/repositories, or the listing came back incomplete (D18 Stage 3, agent-ops#721)"
+    fi
+  fi
+
   # --- D18 Stage 3 (#575): one consolidated autonomy-readiness verdict per
   # repository, gathering every forge precondition above into the one
   # question an operator raising a repository's level actually has: is its
@@ -1231,6 +1254,19 @@ if ((gh_ready)); then
       fail) missing+=("the Approver App installation's live permissions do not match exactly what this fleet needs (owner act)") ;;
       *) unconfirmed+=("the Approver App installation's live permissions could not be confirmed") ;;
     esac
+
+    # And that those permissions reach *this* repository (agent-ops#721). The
+    # comparison is on the full `owner/name`, case-insensitively, because that
+    # is what GitHub returns and what config.json carries; `all` short-circuits
+    # it, being the whole-account selection.
+    if (( app_repos_readable )); then
+      if [[ "$app_repos_list" != "all" ]] \
+         && ! grep -qixF -- "$slug" <<<"$app_repos_list"; then
+        missing+=("the Approver App installation does not cover $slug — add it to the installation's repository selection (owner act)")
+      fi
+    elif (( ma_above_human )) && approver_token_credential_present; then
+      unconfirmed+=("which repositories the Approver App installation covers could not be read")
+    fi
 
     missing_str="$(printf '%s; ' "${missing[@]}")"; missing_str="${missing_str%; }"
     unconfirmed_str="$(printf '%s; ' "${unconfirmed[@]}")"; unconfirmed_str="${unconfirmed_str%; }"

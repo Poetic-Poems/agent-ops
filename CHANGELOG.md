@@ -8,6 +8,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `scripts/doctor.sh`'s D18 autonomy-readiness verdict now checks that the
+  Approver App installation can actually see each configured repository, not
+  only that its permissions are right (agent-ops#721). The installation is
+  `repository_selection: "selected"`, so a repository can sit at
+  `agent-approves` or above and simply not be in the selection — and the
+  verdict would have read "fully supported by its forge configuration" over an
+  App that could neither review nor land there. A repository the installation
+  does not cover is now a `fail` naming the owner act that fixes it, from
+  `agent-approves` upward — the same rung the permissions check binds at,
+  since posting a review is what needs the App to see the repository at all.
+  `lib/approver-token.sh` gains `approver_token_installation_repositories`,
+  an installation-token-signed `GET /installation/repositories`: the JWT read
+  behind the permissions check reports `repository_selection` but never the
+  list, so the two questions need the two identities. A `repository_selection`
+  of `all` covers everything by construction, and a listing that could not be
+  read whole — a page shorter than its own `total_count`, a non-200, an
+  unreachable API — reports `unconfirmed` for every repository rather than
+  "does not cover", so no read failure can mint a `fail` that reads as an
+  owner act.
 - `pr_label` now reaches the Implementer, so an installation can change the
   label its implementation pipeline puts on the pull requests it raises
   without forking `prompts/implementer.md` (agent-ops#654). The

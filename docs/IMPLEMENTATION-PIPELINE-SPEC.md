@@ -827,7 +827,7 @@ Hours a merge-queue-dequeue notice (requirement 38f) may still fire for after `d
 
 ### Extended notes: `merge_autonomy`
 
-The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id` or no `approver_model_default`, a level of `agent-merges-routine` or above while the repository's own default-branch ruleset still requires code-owner review (§5.3), and a level of `agent-merges-routine` or above with no active merge queue on the default branch while either `allow_auto_merge` or `allow_squash_merge` is off (agent-ops#532) — `landing_arm`'s no-queue fallback, `gh pr merge --auto --squash`, is a call GitHub refuses outright unless both are enabled. D18 Stage 3 (agent-ops#575) adds three more: `agent-merges-routine` or above while the default-branch ruleset does not dismiss stale reviews on push, or names any bypass actor (the ruleset's own `bypass_actors`, summed across every active default-branch ruleset), and an Approver App installation whose live granted permissions are not exactly `contents: write`, `metadata: read` and `pull_requests: write` (`lib/approver-token.sh`'s `approver_token_installation_permissions`, a JWT-signed read of the installation itself). Every one of these is gathered into a single autonomy-readiness verdict per repository — printed at `agent-approves` and above, `fail` where the forge configuration does not support the configured level, `skip` where a precondition could not be read — naming each unmet precondition as an owner act (a ruleset, repository or App-installation setting) or a configuration error (`approver_app_id`/`approver_model_default`). At `agent-approves` and above the Approver stage (requirements 8b/8c, "### The Approver") reviews and posts a real GitHub review; a human still lands every pull request at `agent-approves`. At `agent-merges-routine`/`agent-merges-all` the arming step (requirement 8d, `lib/landing.sh`) lands an eligible pull request itself. The fleet-wide kill switch (requirement 2.3b) forces the effective level to `human` everywhere independent of this key.
+The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id` or no `approver_model_default`, a level of `agent-merges-routine` or above while the repository's own default-branch ruleset still requires code-owner review (§5.3), and a level of `agent-merges-routine` or above with no active merge queue on the default branch while either `allow_auto_merge` or `allow_squash_merge` is off (agent-ops#532) — `landing_arm`'s no-queue fallback, `gh pr merge --auto --squash`, is a call GitHub refuses outright unless both are enabled. D18 Stage 3 (agent-ops#575, #721) adds four more: `agent-merges-routine` or above while the default-branch ruleset does not dismiss stale reviews on push, or names any bypass actor (the ruleset's own `bypass_actors`, summed across every active default-branch ruleset), an Approver App installation whose live granted permissions are not exactly `contents: write`, `metadata: read` and `pull_requests: write` (`lib/approver-token.sh`'s `approver_token_installation_permissions`, a JWT-signed read of the installation itself), and a repository that installation does not cover at all — permissions say what the App may do, its repository selection says where (`approver_token_installation_repositories`, an installation-token-signed read; `all` covers everything, and a listing that could not be read whole is unconfirmed rather than uncovered). Every one of these is gathered into a single autonomy-readiness verdict per repository — printed at `agent-approves` and above, `fail` where the forge configuration does not support the configured level, `skip` where a precondition could not be read — naming each unmet precondition as an owner act (a ruleset, repository or App-installation setting) or a configuration error (`approver_app_id`/`approver_model_default`). At `agent-approves` and above the Approver stage (requirements 8b/8c, "### The Approver") reviews and posts a real GitHub review; a human still lands every pull request at `agent-approves`. At `agent-merges-routine`/`agent-merges-all` the arming step (requirement 8d, `lib/landing.sh`) lands an eligible pull request itself. The fleet-wide kill switch (requirement 2.3b) forces the effective level to `human` everywhere independent of this key.
 
 ### Extended notes: `merge_budget_per_day`
 
@@ -11855,10 +11855,30 @@ What exists, and the requirements each part answers to:
     component — an absent credential is already warned about there, and
     silent here rather than repeating it.
 
+    The same installation's **repository selection** is read beside its
+    permissions (agent-ops#721), and for the same reason: both live on
+    GitHub's own consent screen, outside `config.json`, and can be narrowed at
+    any time. Permissions say what the App may do; the selection says where,
+    and a configured repository the installation does not cover is one the App
+    can neither review nor land in however right its permissions look — so it
+    is a `fail` from `agent-approves` upward, naming the repository and the
+    owner act that fixes it (adding it to the installation's selection), never
+    the "fully supported" line. Read once, fleet-wide, via
+    `lib/approver-token.sh`'s `approver_token_installation_repositories` — an
+    installation-token-signed `GET /installation/repositories`, since the JWT
+    read above reports `repository_selection` but never the list, so the two
+    questions need the two identities. A `repository_selection` of `all`
+    covers every repository by construction. A listing that could not be read
+    whole — a page shorter than its own `total_count`, a non-200, an
+    unreachable API — is `unconfirmed` for every repository, never "does not
+    cover": that verdict is a `fail` and an owner act, and no read failure may
+    mint one.
+
     These join every existing per-repository and fleet-wide check above
     (approver_app_id/approver_model_default, the ruleset's approving-review
     count and code-owner requirement, the merge-path pairing, the App
-    installation's permissions) in one consolidated verdict per repository,
+    installation's permissions and its repository selection) in one
+    consolidated verdict per repository,
     printed once its configured `merge_autonomy` is `agent-approves` or
     above (silent at `human`, the same convention every pairing check here
     follows) — but not every joined fact is consulted at every printed
