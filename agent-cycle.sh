@@ -142,6 +142,30 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 # shellcheck source=lib/chain.sh
 . "$SCRIPT_DIR/lib/chain.sh"
 
+# lib/refinement.sh's self-heal hook (requirement 6a, agent-ops#687), installed
+# here because this is the one file that sources both it and lib/labels.sh: a
+# label projection whose add failed retries once through this, and without it
+# `refinement_label_add` has nothing to retry through and the self-heal never
+# happens at all. Here rather than beside the projections themselves so it is
+# in place before `cleanup`'s trap can run the Refiner — that path projects
+# `refined_label` on every ending of the cycle, including one that exits before
+# the gather loop's own ensure has run.
+#
+# The catalogue lookup is what makes a label created this way indistinguishable
+# from one the eager per-gathered-repository ensure would have made; a name the
+# `target` catalogue does not carry falls through to labels_ensure_one's own
+# neutral defaults rather than not being created.
+refinement_label_ensure_one() {
+  local repo="$1" name="$2" c_name c_colour c_description
+  while IFS=$'\t' read -r c_name c_colour c_description; do
+    [[ "$c_name" == "$name" ]] || continue
+    labels_ensure_one "$repo" "$name" "$c_colour" "$c_description" >/dev/null
+    return $?
+  done < <(labels_catalogue "$CONFIG_FILE" "$SCHEMA_FILE" target)
+  labels_ensure_one "$repo" "$name" >/dev/null
+}
+REFINEMENT_LABEL_ENSURE=refinement_label_ensure_one
+
 usage() {
   cat <<'EOF'
 usage: agent-cycle.sh [--dry-run] [--once] [--repo <slug>]

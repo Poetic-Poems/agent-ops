@@ -6,7 +6,11 @@
 # correct (test/labels.test.sh covers that) but whether the loop calls it with
 # the right arguments, for every repository it gathers — not only the one the
 # Co-Ordinator later selects — and logs `labels-ensured` only when there is
-# something to report.
+# something to report. Alongside it, that agent-cycle.sh actually installs the
+# `REFINEMENT_LABEL_ENSURE` hook lib/refinement.sh's self-heal retries through,
+# which is a wiring question of exactly the same kind: the retry is
+# unreachable in the shipped pipeline unless some file sets the variable, and
+# lib/refinement.sh's own tests can only prove the retry works when it is set.
 #
 # This is the fix for the gap the issue calls out: the Co-Ordinator's own
 # `needs_refinement`/`blocked` projection and the Refiner's `refined_label`
@@ -102,6 +106,45 @@ assert_eq "every gathered repository gets its own call — a second, different s
   "$(grep '^/state ' "$call_log")"
 assert_eq "  ... and a failed create is logged too, not only created" "1" \
   "$(grep '^EVENT labels-ensured' "$call_log" | grep -c 'obsolete')"
+
+# --- The self-heal hook agent-cycle.sh installs (requirement 6a, #687) ------
+# lib/refinement.sh calls "$REFINEMENT_LABEL_ENSURE" REPO LABEL when an add
+# fails; nothing retries at all unless a caller sets it. Lift both the
+# assignment and the function it names, so this pins the wiring rather than the
+# intention.
+hook_name="$(awk -F= '/^REFINEMENT_LABEL_ENSURE=/ { print $2; exit }' "$AGENT_CYCLE")"
+assert_eq "agent-cycle.sh sets REFINEMENT_LABEL_ENSURE" "refinement_label_ensure_one" "$hook_name"
+
+hook_block="$(awk -v fn="$hook_name" '
+  $0 == fn "() {" { on = 1 }
+  on              { print }
+  on && /^\}$/    { exit }
+' "$AGENT_CYCLE")"
+if [[ -z "$hook_block" ]]; then
+  echo "FAIL - agent-cycle.sh names $hook_name but does not define it" >&2
+  exit 1
+fi
+
+# Stubs: the catalogue carries one label, and labels_ensure_one records argv.
+# shellcheck disable=SC2317  # invoked only by the eval'd hook_block
+labels_catalogue() { printf 'refined\t0e8a16\tThe Refiner has written this a specification\n'; }
+# shellcheck disable=SC2317  # invoked only by the eval'd hook_block
+labels_ensure_one() { printf '%s\n' "$*" >> "$call_log"; printf 'created'; }
+# Read only by the eval'd hook_block, invisible to shellcheck.
+# shellcheck disable=SC2034
+CONFIG_FILE=/cfg.json SCHEMA_FILE=/schema.json
+eval "$hook_block"
+
+: > "$call_log"
+"$hook_name" "o/r" refined
+assert_eq "a catalogue label is created with the catalogue's own colour and description" \
+  "o/r refined 0e8a16 The Refiner has written this a specification" \
+  "$(cat "$call_log")"
+
+: > "$call_log"
+"$hook_name" "o/r" some-other-label
+assert_eq "a label the catalogue does not carry still gets created, on the neutral defaults" \
+  "o/r some-other-label" "$(cat "$call_log")"
 
 echo
 if (( failures == 0 )); then
