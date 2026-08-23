@@ -527,7 +527,7 @@ assert_eq "cleanup removes the default cache directory, oversized fixtures inclu
 # ownership from scratch each time read that as caller-supplied. Cleanup
 # then declined to remove the very directory this library made, reopening
 # #510's leak with no visible symptom.
-unset ISSUE_PRIORITY_CACHE_DIR ISSUE_PRIORITY_CACHE_DIR_OWNED ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH
+unset ISSUE_PRIORITY_CACHE_DIR ISSUE_PRIORITY_CACHE_DIR_OWNED ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS
 . "$SCRIPT_DIR/lib/issue-priority.sh"
 resourced_dir="$ISSUE_PRIORITY_CACHE_DIR"
 . "$SCRIPT_DIR/lib/issue-priority.sh"
@@ -576,7 +576,7 @@ issue_priority_cache_cleanup
 # cleanup directly and the record really is empty by the time it re-sources
 # (agent-ops#552 review, PR #618).
 unset ISSUE_PRIORITY_CACHE_DIR ISSUE_PRIORITY_CACHE_DIR_OWNED \
-      ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH ISSUE_PRIORITY_CACHE_DIR_OWNER_PID
+      ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS ISSUE_PRIORITY_CACHE_DIR_OWNER_PID
 . "$SCRIPT_DIR/lib/issue-priority.sh"
 subshell_dir="$ISSUE_PRIORITY_CACHE_DIR"
 assert_eq "cleanup-via-subshell: the directory exists before cleanup" "true" \
@@ -588,7 +588,7 @@ assert_eq "  ... and removes the directory from disk" "false" \
 assert_eq "  ... but the parent's own record is untouched by the subshell" "1" \
   "$ISSUE_PRIORITY_CACHE_DIR_OWNED"
 assert_eq "  ... still naming the now-removed directory" "$subshell_dir" \
-  "$ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH"
+  "${ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS[0]:-}"
 . "$SCRIPT_DIR/lib/issue-priority.sh"
 resubshell_dir="$ISSUE_PRIORITY_CACHE_DIR"
 assert_eq "  ... a re-source does not trust that stale record" "true" \
@@ -623,7 +623,6 @@ touch "$precious_dir/keepme"
 child_result="$(env SCRIPT_DIR="$SCRIPT_DIR" PRECIOUS_DIR="$precious_dir" \
     ISSUE_PRIORITY_CACHE_DIR="$precious_dir" \
     ISSUE_PRIORITY_CACHE_DIR_OWNED=1 \
-    ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH="$precious_dir" \
     ISSUE_PRIORITY_CACHE_DIR_OWNER_PID="$parent_pid" \
     bash -c '. "$SCRIPT_DIR/lib/issue-priority.sh"
              printf "%s " "$ISSUE_PRIORITY_CACHE_DIR_OWNED"
@@ -632,6 +631,28 @@ child_result="$(env SCRIPT_DIR="$SCRIPT_DIR" PRECIOUS_DIR="$precious_dir" \
 assert_eq "an inherited ownership record from a different process is not trusted" \
   "0 survives" "$child_result"
 rm -rf "$precious_dir"
+
+# The array-valued twin of the case just above (agent-ops#552's reopened
+# case, PR #703 review): bash cannot export an array, so a parent that
+# exports ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS necessarily exports it as a
+# plain scalar. With ISSUE_PRIORITY_CACHE_DIR itself unset, the child takes
+# the fresh-mktemp branch rather than the caller-supplied one exercised
+# above — and a naive `+=(...)` append there would silently upgrade the
+# inherited scalar into element 0 of the child's own array, so cleanup would
+# rm -rf the victim path alongside the directory the child actually created.
+victim_dir="$(mktemp -d "$tmp_dir/victim.XXXXXX")"
+touch "$victim_dir/keepme"
+# shellcheck disable=SC2016  # the child bash -c's own $SCRIPT_DIR/etc, not this shell's.
+child_result="$(env SCRIPT_DIR="$SCRIPT_DIR" VICTIM_DIR="$victim_dir" \
+    ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS="$victim_dir" \
+    ISSUE_PRIORITY_CACHE_DIR_OWNED=1 \
+    ISSUE_PRIORITY_CACHE_DIR_OWNER_PID="$parent_pid" \
+    bash -c '. "$SCRIPT_DIR/lib/issue-priority.sh"
+             issue_priority_cache_cleanup
+             [[ -d "$VICTIM_DIR" ]] && printf survives || printf deleted')"
+assert_eq "an inherited OWNED_PATHS scalar from a different process is not folded into a child's own record" \
+  "survives" "$child_result"
+rm -rf "$victim_dir"
 
 # A caller that supplies its own path keeps it after the same call — it is
 # that caller's directory to manage, not this library's.
@@ -652,7 +673,7 @@ rm -rf "$caller_dir"
 # still finds and removes that directory even after a caller has moved
 # ISSUE_PRIORITY_CACHE_DIR elsewhere.
 unset ISSUE_PRIORITY_CACHE_DIR ISSUE_PRIORITY_CACHE_DIR_OWNED \
-      ISSUE_PRIORITY_CACHE_DIR_OWNED_PATH ISSUE_PRIORITY_CACHE_DIR_OWNER_PID
+      ISSUE_PRIORITY_CACHE_DIR_OWNED_PATHS ISSUE_PRIORITY_CACHE_DIR_OWNER_PID
 . "$SCRIPT_DIR/lib/issue-priority.sh"
 mine_dir="$ISSUE_PRIORITY_CACHE_DIR"
 assert_eq "mirror case: a library-created directory exists before the caller repoints it" "true" \
