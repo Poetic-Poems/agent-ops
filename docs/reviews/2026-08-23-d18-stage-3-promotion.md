@@ -57,21 +57,30 @@ Notes on each choice:
   (#554).
 - **poetic and poetic-fiddle each name their own protected paths**, rather than
   inheriting agent-ops's nine (agent-ops#724, which made the key configurable
-  per repository). Neither repository runs this pipeline, so
-  none of agent-ops's own gate-bearing paths (`deploy/`, `prompts/`, `lib/`,
-  `agent-cycle.sh`, `review-cycle.sh`, `config.schema.json`, `config.json`) mean
-  anything there — both repositories' `lib/` and `scripts/` (poetic-fiddle's own
-  `supabase/`, too) are ordinary product code. What actually gates a routine
-  landing in either repository is its own CI workflows (`.github/*`, including
-  `release.yml` and, for poetic-fiddle, `check-poetic-release.yml`, `td-tooling-
-  drift.yml` and the other drift-detection workflows) and the compliance
-  scripts those workflows invoke (`scripts/*` — `td-check.pl` and its own
-  tooling in both, `check-supabase-auth-drift.mjs` and `check-workflow-wiring.mjs`
-  in poetic-fiddle), plus `CODEOWNERS`, kept for the same reason agent-ops keeps
-  it on its own list. `supabase/migrations` is deliberately left off: a
-  malformed migration is an ordinary product bug the review pipeline already
-  catches, not a self-modifying gate-weakening risk the way editing `.github/*`
-  or `scripts/*` is.
+  per repository). Neither repository runs this pipeline, so most of agent-ops's
+  own gate-bearing paths (`deploy/`, `prompts/`, `lib/`, `agent-cycle.sh`,
+  `review-cycle.sh`, `config.schema.json`, `config.json`) name nothing that
+  exists there: as at 2026-08-23, poetic's tree carries no `lib/` at all and
+  poetic-fiddle's is `src/lib/`, which a root-anchored `lib/*` prefix never
+  matched in the first place. Only `.github/*` and `CODEOWNERS` bite today, and
+  the override keeps both — so, against the inherited default, this edit is
+  purely additive, and cannot narrow either repository's routine class.
+
+  What it adds is the gap that matters. What actually gates a routine landing in
+  either repository is its own CI workflows (`.github/*`, including `release.yml`
+  and, for poetic-fiddle, `check-poetic-release.yml`, `td-tooling-drift.yml`,
+  `required-checks-drift.yml` and `supabase-auth-drift.yml`) and the compliance
+  scripts those workflows invoke (`scripts/*` — `td-check.pl` and its own tooling
+  in both, `check-supabase-auth-drift.mjs` and `check-workflow-wiring.mjs` in
+  poetic-fiddle) — and `scripts/*` is unprotected under the inherited list. That
+  is the unsafe direction, not the safe one, and naming it here is what closes
+  it. `CODEOWNERS` is kept for the same reason agent-ops keeps it on its own
+  list. `supabase/migrations` is deliberately left off: a malformed migration is
+  an ordinary product bug the review pipeline already catches, not a
+  self-modifying gate-weakening risk the way editing `.github/*` or `scripts/*`
+  is. Both lists are reasoned from each repository's layout as it stands, not
+  confirmed with the owner; confirming them is part of the promotion decision,
+  not a precondition this document can satisfy on its own.
 - **`merge_budget_per_day: 8`** is the schema default, and again explicit. It is
   a third of agent-ops's 24 because these repositories currently raise a third
   of a pull request a day between them (§4), so the cap is nowhere near binding
