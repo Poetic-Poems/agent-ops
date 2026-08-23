@@ -4732,14 +4732,18 @@ implements.
    Refiner's `refined_label` projection (requirement 39c) reach a fresh
    repository the moment either first fires there, rather than failing
    silently until some later cycle happens to select work in it
-   (agent-ops#687). `review-cycle.sh` reaches the same rate-limited helper
-   (`labels_ensure_stamped`, `lib/labels.sh`) for each repository's own
-   resolved `project_review` pr_label (its override, or
+   (agent-ops#687). `review-cycle.sh` calls the plain, unstamped
+   `labels_ensure_role` (`lib/labels.sh`) for each repository's own resolved
+   `project_review` pr_label (its override, or
    `project_review.defaults.pr_label`, requirement 342) in each repository it
-   is about to review, and `create_escalation_issue` calls the plain,
-   unstamped `labels_ensure_role` for `enabler_escalation_label` in the
-   repository an escalation is filed in, which is often one no cycle
-   otherwise touches. A label whose configured name is empty is switched off
+   is about to review — the same shape as the selected repository's own
+   unconditional listing below, not the rate-limited helper, because a
+   repository is selected for review at most once per
+   `min_days_between_reviews` days, longer than any interval a stamp there
+   could bound (`docs/REVIEW-PIPELINE-SPEC.md` R5.0b) — and
+   `create_escalation_issue` calls that same unstamped helper for
+   `enabler_escalation_label` in the repository an escalation is filed in,
+   which is often one no cycle otherwise touches. A label whose configured name is empty is switched off
    and is not created. And no configurable label may carry a reserved *name*:
    `scripts/doctor.sh` fails a config that sets any label key to `obsolete`,
    or an issue-side key to `blocked`, because a stage projecting a

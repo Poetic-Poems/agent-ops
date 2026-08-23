@@ -810,19 +810,31 @@ if ((gh_ready)); then
   # happened yet: on a fresh installation, or one still inside its first
   # interval, that is simply "no cycle has reached this repository yet"; only
   # once a full interval has elapsed does a still-missing label mean the token
-  # cannot create labels, which nothing else would tell you.
+  # cannot create labels, which nothing else would tell you. ROLE "review" is
+  # the exception and says so: the review pipeline ensures its own repository's
+  # `pr_label` unconditionally, immediately before the review it is about to
+  # run (`docs/REVIEW-PIPELINE-SPEC.md` R5.0b), so there is no interval to
+  # quote there — the next review of that repository is the whole answer.
   # REVIEW_PR_LABEL (optional) is this repository's own resolved
   # project_review pr_label (requirement 342) — only ROLE "review" needs it;
   # see lib/labels.sh's labels_catalogue for why it can no longer be derived
   # from the config alone.
   check_repo_labels() {
     local slug="$1" role="$2" review_pr_label="${3:-}" repo_labels label
-    local interval_hours within
-    interval_hours="$(cfg '.labels_ensure_interval_hours')"
-    if [[ "$interval_hours" =~ ^[0-9]+$ ]] && (( interval_hours == 0 )); then
-      within="on its next gather (the rate limit is disabled)"
+    local interval_hours whole_hours creates
+    if [[ "$role" == "review" ]]; then
+      creates="the next review of this repo creates it (lib/labels.sh), which is not rate-limited"
     else
-      within="within $interval_hours hours"
+      interval_hours="$(cfg '.labels_ensure_interval_hours')"
+      # Truncated to whole hours exactly as `labels_ensure_stamped` reads it
+      # (lib/labels.sh), so a schema-valid `24.0` — or a `0.0` that disables
+      # the rate limit — is described here the way it will actually behave.
+      whole_hours="${interval_hours%%.*}"
+      if [[ "$whole_hours" =~ ^[0-9]+$ ]] && (( whole_hours == 0 )); then
+        creates="the next cycle that gathers this repo creates it (lib/labels.sh), on that cycle — the rate limit is disabled"
+      else
+        creates="the next cycle that gathers this repo creates it (lib/labels.sh), within $interval_hours hours"
+      fi
     fi
     if ! repo_labels="$(gh api "repos/$slug/labels" --paginate --jq '.[].name' 2>/dev/null)"; then
       return 1
@@ -830,7 +842,7 @@ if ((gh_ready)); then
     while IFS=$'\t' read -r label _ _; do
       [[ -n "$label" ]] || continue
       grep -qixF -- "$label" <<<"$repo_labels" \
-        || warn "$slug has no \"$label\" label — the next cycle that gathers this repo creates it (lib/labels.sh), $within; if it is still absent after that has passed, this token may not create labels"
+        || warn "$slug has no \"$label\" label — $creates; if it is still absent after that has passed, this token may not create labels"
     done < <(labels_catalogue "$config_file" "$schema_file" "$role" "$review_pr_label")
     return 0
   }
