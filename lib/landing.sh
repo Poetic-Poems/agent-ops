@@ -108,9 +108,8 @@
 # carries the `merge_autonomy` level, `merge_autonomy_routine_sources` and
 # `merge_autonomy_routine_complexity` that `landing_eligible` reads — so a
 # pull request editing one of them is precisely the self-modifying case risk
-# register item 1 names, and the
-# "adding one line is cheap, forgetting one is not" argument above applies
-# to them unchanged.
+# register item 1 names, and the "adding one line is cheap, forgetting one
+# is not" argument above applies to them unchanged.
 # Protected paths refuse arming at every level below `agent-merges-all`
 # unconditionally. At `agent-merges-all` a hit is deliberately relaxed to
 # `eligible` by `landing_eligible` itself, and the decision deferred to

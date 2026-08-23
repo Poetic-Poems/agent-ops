@@ -123,21 +123,24 @@ _assert_doctor_check() {
 }
 
 # DOCTOR_NEUTRAL_MUTATION clears every merge_autonomy(-adjacent) key —
-# top-level and per-repo merge_autonomy and merge_autonomy_routine_sources,
-# and the four approver_* keys — back to its schema default before an
-# assert_doctor fixture's own mutation is applied on top. Without this, a
-# fixture whose mutation never mentions these keys still silently inherits
-# whatever config.json currently says about them, so a routine change to
-# one (a merge-autonomy Stage promotion, an Approver key rotation) can flip
-# an assertion that was never about that key at all (TD-PPagop-26081801,
-# recurring as agent-ops#546 and agent-ops#560). A fixture that wants one of
-# these keys set now has to say so itself, in its own mutation.
+# top-level and per-repo merge_autonomy, merge_autonomy_routine_sources and
+# merge_autonomy_routine_complexity, and the four approver_* keys — back to
+# its schema default before an assert_doctor fixture's own mutation is
+# applied on top. Without this, a fixture whose mutation never mentions
+# these keys still silently inherits whatever config.json currently says
+# about them, so a routine change to one (a merge-autonomy Stage promotion,
+# an Approver key rotation) can flip an assertion that was never about that
+# key at all (TD-PPagop-26081801, recurring as agent-ops#546 and
+# agent-ops#560). A fixture that wants one of these keys set now has to say
+# so itself, in its own mutation.
 # shellcheck disable=SC2016  # a jq program, not meant to expand
 DOCTOR_NEUTRAL_MUTATION='
   del(.merge_autonomy, .merge_autonomy_routine_sources,
+      .merge_autonomy_routine_complexity,
       .approver_app_id, .approver_model_default,
       .approver_model_complex, .approver_model_critical)
-  | .repos = [ .repos[]? | del(.merge_autonomy, .merge_autonomy_routine_sources) ]
+  | .repos = [ .repos[]? | del(.merge_autonomy, .merge_autonomy_routine_sources,
+                               .merge_autonomy_routine_complexity) ]
 '
 
 # assert_doctor DESC JQ_MUTATION EXPECTED_EXIT SUBSTRING

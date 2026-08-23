@@ -132,10 +132,9 @@
 # some other, genuinely reconstructable input already disagrees on its own
 # (a level below `agent-merges-routine`, a complexity outside the routine
 # complexity list, a source outside the routine list), in which case that
-# disagreement alone
-# is enough to call it an `escape` regardless. An `unverifiable` landing is
-# exactly as far from "cleared" as an `escape` is: neither is silently
-# folded into the other.
+# disagreement alone is enough to call it an `escape` regardless. An
+# `unverifiable` landing is exactly as far from "cleared" as an `escape` is:
+# neither is silently folded into the other.
 #
 # ## Idempotency
 #

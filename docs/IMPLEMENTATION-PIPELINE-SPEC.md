@@ -5269,8 +5269,8 @@ implements.
       shared library code — so this key's ceiling and that rule's floor meet
       at the same diffs, and the protected-path gate below stays in force
       regardless of this key (risk register item 1's belt and braces).
-      Protected paths refuse arming at every level
-      below `agent-merges-all` unconditionally. At `agent-merges-all` a hit
+      Protected paths refuse arming at every level below
+      `agent-merges-all` unconditionally. At `agent-merges-all` a hit
       is deliberately reported `eligible` instead (D18 WI-12, Stage 4,
       agent-ops#415) — this classifier alone cannot see the two
       compensating controls §7 risk 1 requires, so it defers rather than
@@ -5540,8 +5540,8 @@ implements.
    effective level is `agent-merges-routine`/`agent-merges-all`, complexity
    is in the routine complexity list, the source is in the routine list, and
    no protected path was touched. A protected-path hit is level-dependent,
-   the same way requirement 8d's own gate 2 is: below `agent-merges-all` it disagrees
-   unconditionally, exactly like any other mismatched input; at
+   the same way requirement 8d's own gate 2 is: below `agent-merges-all`
+   it disagrees unconditionally, exactly like any other mismatched input; at
    `agent-merges-all`, `landing_eligible` itself reports `eligible` and
    defers the decision to gate 4.5's compensating controls
    (`landing_protected_path_controls_ok`) — facts (the approving tier, the
