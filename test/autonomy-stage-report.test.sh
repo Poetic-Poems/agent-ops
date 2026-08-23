@@ -99,7 +99,9 @@ cat > "$tmp_dir/config.json" <<'EOF'
     {"slug": "o/approves-repo", "sources": ["abandoned-drafts"], "merge_autonomy": "agent-approves"},
     {"slug": "o/routine-repo", "sources": ["abandoned-drafts"], "merge_autonomy": "agent-merges-routine"},
     {"slug": "o/divergence-repo", "sources": ["abandoned-drafts"], "merge_autonomy": "agent-approves"},
-    {"slug": "o/partial-repo", "sources": ["abandoned-drafts"], "merge_autonomy": "agent-approves"}
+    {"slug": "o/partial-repo", "sources": ["abandoned-drafts"], "merge_autonomy": "agent-approves"},
+    {"slug": "o/audited-repo", "sources": ["abandoned-drafts"], "merge_autonomy": "agent-merges-routine"},
+    {"slug": "o/escape-repo", "sources": ["abandoned-drafts"], "merge_autonomy": "agent-merges-routine"}
   ],
   "state_dir": "/unused",
   "workspace_root": "/unused",
@@ -137,6 +139,19 @@ EOF
   for i in $(seq 1 6); do
     printf '{"ts":"2026-08-%02dT00:00:00Z","node":"n","event":"approver-verdict","pr_url":"https://github.com/o/partial-repo/pull/%d","repo":"o/partial-repo","tier":"medium","model":"claude-sonnet-5","verdict":"approve","refuse_streak":0,"adjudication":false,"posted":true}\n' "$i" "$i"
   done
+  # o/audited-repo and o/escape-repo (requirement 8e's audit, agent-ops#572):
+  # the classifier-escape bar is read off the audit's own events, so both
+  # outcomes are fixtured — two landings the audit recomputed and agreed with
+  # (`landing-audit`, `outcome: "clean"`), and one it disagreed with
+  # (`classifier-escape`, which carries no `outcome` field at all: agent-cycle.sh
+  # deletes it when it logs the event). The `unverifiable` audit on
+  # o/audited-repo must be named separately and never counted as clean.
+  for i in 1 2; do
+    printf '{"ts":"2026-08-1%dT00:00:00Z","node":"n","event":"landing-audit","repo":"o/audited-repo","pr_url":"https://github.com/o/audited-repo/pull/%d","outcome":"clean","number":%d,"reason":"recomputed eligible"}\n' "$i" "$i" "$i"
+  done
+  printf '{"ts":"2026-08-13T00:00:00Z","node":"n","event":"landing-audit","repo":"o/audited-repo","pr_url":"https://github.com/o/audited-repo/pull/3","outcome":"unverifiable","number":3,"reason":"changed-file list unreadable"}\n'
+  printf '{"ts":"2026-08-14T00:00:00Z","node":"n","event":"landing-audit","repo":"o/escape-repo","pr_url":"https://github.com/o/escape-repo/pull/1","outcome":"clean","number":1,"reason":"recomputed eligible"}\n'
+  printf '{"ts":"2026-08-15T00:00:00Z","node":"n","event":"classifier-escape","repo":"o/escape-repo","pr_url":"https://github.com/o/escape-repo/pull/2","number":2,"reason":"complexity recomputed high, landed as medium"}\n'
 } > "$tmp_dir/state/log.jsonl"
 
 # Two baseline files; the earlier one (2026-08-01) must be the one read as
@@ -193,6 +208,11 @@ while [[ $# -gt 0 ]]; do
 done
 case "$path" in
   repos/o/routine-repo/issues\?labels=*) body="$(cat "$STUB_DIR/routine-hits.json")" ;;
+  # The two audit-fixture repositories have no merged pull requests of their
+  # own: this scenario is about the classifier-escape criterion alone, and an
+  # empty listing keeps every other criterion honestly unmeasurable.
+  repos/o/audited-repo/issues\?labels=*) body='[]' ;;
+  repos/o/escape-repo/issues\?labels=*) body='[]' ;;
   repos/*/pulls/*/reviews\?*) body='[]' ;;
   repos/*/pulls/*/files\?*) body='[]' ;;
   repos/*/issues/*/timeline\?*) body='[]' ;;
@@ -216,7 +236,7 @@ export PATH="$tmp_dir/bin:$PATH"
 
 out="$("$REPORT" --config "$tmp_dir/config.json" \
   --repo o/human-repo --repo o/approves-repo --repo o/routine-repo --repo o/divergence-repo \
-  --repo o/partial-repo \
+  --repo o/partial-repo --repo o/audited-repo --repo o/escape-repo \
   --label agent-test-label \
   --reviews-dir "$tmp_dir/reviews" \
   --state-dir "$tmp_dir/state" --peers-dir "$tmp_dir/peers" \
@@ -226,7 +246,7 @@ assert_eq "a clean run exits 0" "0" "$rc"
 assert_eq "  ... and stderr is silent" "" "$(cat "$tmp_dir/run.err")"
 
 raw_json="$(awk '/```json/{flag=1;next}/```/{flag=0}flag' <<<"$out")"
-assert_eq "raw JSON parses" "5" "$(jq -r '.repos | length' <<<"$raw_json")"
+assert_eq "raw JSON parses" "7" "$(jq -r '.repos | length' <<<"$raw_json")"
 
 # --- Scenario 1: o/human-repo (Stage 0) — meets both its bars --------------
 human="$(jq -c '.repos[] | select(.slug == "o/human-repo")' <<<"$raw_json")"
@@ -260,8 +280,11 @@ assert_eq "routine-repo: current revert rate (0) against the *earliest* baseline
   "met" "$(jq -r '.criteria[] | select(.id == "revert_rate") | .status' <<<"$routine")"
 assert_contains "  ... measured against the earlier baseline's rate" \
   "$(jq -r '.criteria[] | select(.id == "revert_rate") | .measured' <<<"$routine")" "0.2"
-assert_eq "routine-repo: classifier_escapes always unavailable (agent-ops#572)" \
+assert_eq "routine-repo: classifier_escapes unavailable — landings, but none audited yet" \
   "unavailable" "$(jq -r '.criteria[] | select(.id == "classifier_escapes") | .status' <<<"$routine")"
+assert_contains "  ... and says so, rather than reporting a zero nobody measured" \
+  "$(jq -r '.criteria[] | select(.id == "classifier_escapes") | .measured' <<<"$routine")" \
+  "no autonomous landing has been audited yet"
 assert_eq "routine-repo: every measurable bar met, but the verdict is still insufficient-evidence, never met" \
   "insufficient-evidence" "$(jq -r '.verdict' <<<"$routine")"
 
@@ -274,6 +297,30 @@ assert_eq "divergence-repo: divergence criterion reads met, backed by a real sam
   "met" "$(jq -r '.criteria[] | select(.id == "divergence") | .status' <<<"$divergence")"
 assert_contains "  ... and states the sample it is backed by" \
   "$(jq -r '.criteria[] | select(.id == "divergence") | .measured' <<<"$divergence")" "5 agreement, 0 divergence"
+
+# --- Scenario 6: o/audited-repo (Stage 2/3) — the classifier-escape bar read
+#     off requirement 8e's audit: a zero that is backed by landings actually
+#     audited, with an unverifiable one named rather than counted -------------
+audited="$(jq -c '.repos[] | select(.slug == "o/audited-repo")' <<<"$raw_json")"
+assert_eq "audited-repo: classifier_escapes met — a zero backed by audits, not by silence" \
+  "met" "$(jq -r '.criteria[] | select(.id == "classifier_escapes") | .status' <<<"$audited")"
+assert_contains "  ... counting only the audits that agreed" \
+  "$(jq -r '.criteria[] | select(.id == "classifier_escapes") | .measured' <<<"$audited")" \
+  "0 escapes across 2 audited autonomous landing(s)"
+assert_contains "  ... and naming the one it could not recompute rather than folding it in" \
+  "$(jq -r '.criteria[] | select(.id == "classifier_escapes") | .measured' <<<"$audited")" \
+  "1 further landing(s) the audit could not recompute"
+
+# --- Scenario 7: o/escape-repo (Stage 2/3) — one escape fails the bar outright,
+#     however many clean audits stand beside it ------------------------------
+escape="$(jq -c '.repos[] | select(.slug == "o/escape-repo")' <<<"$raw_json")"
+assert_eq "escape-repo: one classifier escape fails the bar" \
+  "not-met" "$(jq -r '.criteria[] | select(.id == "classifier_escapes") | .status' <<<"$escape")"
+assert_contains "  ... and names the pull request that escaped" \
+  "$(jq -r '.criteria[] | select(.id == "classifier_escapes") | .measured' <<<"$escape")" \
+  "https://github.com/o/escape-repo/pull/2"
+assert_contains "  ... and the verdict carries it" \
+  "$(jq -r '.verdict' <<<"$escape")" "classifier_escapes"
 
 # --- Scenario 5: o/partial-repo (Stage 1) — a partial read never certifies
 #     a zero (agent-ops#661) ---------------------------------------------------

@@ -12567,9 +12567,22 @@ What exists, and the requirements each part answers to:
     exit criteria (agent-ops#402: "Stage 3 … Same metrics per repo"), so a
     repository at that level is reported once, against "Stage 2/3".
 
-    One exit criterion has no detector yet — classifier escapes
-    (agent-ops#572) — and is always reported `unavailable`, never a guessed
-    `0`; building that detector is out of this component's scope. The Stage 1
+    The Stage 2/3 `classifier_escapes` criterion is measured off requirement
+    8e's own audit events rather than asserted: a `classifier-escape` event
+    for the repository fails the bar outright and names the pull request that
+    escaped, however many clean audits stand beside it; a `landing-audit`
+    event carrying `outcome: "clean"` is a landing the audit recomputed and
+    agreed with, and only those count toward the zero. A repository whose
+    audit has recomputed nothing yet — every repository until its first
+    autonomous landing — reports `unavailable`, never a guessed `0`: the
+    audit reads landings, so zero escapes out of zero audits is an absence of
+    evidence rather than evidence of absence. An audit that could not be
+    recomputed at all (`outcome: "unverifiable"`) is counted and named
+    separately, never folded into the clean tally. Both event shapes carry
+    the detector's own `repo` field, which is what is matched, with the
+    `pr_url` prefix checked too and anchored rather than substring-matched,
+    so `Poetic-Poems/poetic` is never credited with a
+    `Poetic-Poems/poetic-fiddle` pull request. The Stage 1
     `divergence` criterion (agent-ops#573) is real: it calls component 22a
     (`lib/verdict-fate.sh`) to join this repository's `approver-verdict`
     events against each named pull request's live GitHub state, and reports
@@ -12612,12 +12625,15 @@ What exists, and the requirements each part answers to:
     `--peers-dir` and `--now` all override their `config.json`-derived
     defaults, the last existing so a test run can fix "elapsed since" against
     a stable clock. Regression-tested
-    (`test/autonomy-stage-report.test.sh`) against five repositories: every
+    (`test/autonomy-stage-report.test.sh`) against seven repositories: every
     criterion met; a real failure on a measurable criterion outranking an
     unrelated unavailable one (`not-met`, never `insufficient-evidence`);
-    every measurable criterion met while one remains permanently unavailable
-    (`insufficient-evidence`, never `met`, proving a criterion is never
-    reported satisfied from missing data); a real, sample-backed `met`
+    every measurable criterion met while one is unavailable for want of
+    evidence (`insufficient-evidence`, never `met`, proving a criterion is
+    never reported satisfied from missing data); a `classifier_escapes` zero
+    backed by real audits reading `met` while an unverifiable audit beside it
+    is named rather than counted, and a single `classifier-escape` event
+    failing the bar and reaching the verdict; a real, sample-backed `met`
     verdict on the `divergence` criterion (component 22a), proving the join
     is exercised end to end and not merely its unavailable fallback; and a
     partial read of that same join — a settled sample of pull requests

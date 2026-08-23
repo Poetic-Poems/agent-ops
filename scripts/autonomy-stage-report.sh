@@ -34,11 +34,17 @@
 #
 # ## What is unavailable, and why that is not zero
 #
-# One of the ladder's measures still has no detector: classifier escapes
-# (agent-ops#572, still open), always reported `unavailable`, never a guessed
-# `0` — a `0` a human could mistake for "checked, and clean" is worse than an
-# honest gap (acceptance 3). That detector is not built here; it is #572's
-# own scope.
+# No criterion is ever reported `met` from missing data — a `0` a human could
+# mistake for "checked, and clean" is worse than an honest gap (acceptance 3).
+# The classifier-escape bar is the one that most invites the mistake: it is
+# measured off the independent post-hoc audit (requirement 8e,
+# `scripts/detect-classifier-escapes.sh`, agent-ops#572, which landed after
+# this report did), and before a repository's first autonomous landing that
+# audit has had nothing to recompute. Zero escapes out of zero audits is
+# `unavailable`, never `met`; only a landing the audit actually read and
+# agreed with counts as evidence, and an audit that could not be recomputed
+# at all (`outcome: "unverifiable"`) is named separately rather than folded
+# into the clean tally.
 #
 # The Stage 1 `divergence` criterion (agent-ops#573) is real: it calls
 # `lib/verdict-fate.sh` to join the `approver-verdict` events
@@ -302,6 +308,63 @@ crit_agent_approved_prs() {
     '{id:$id, desc:$desc, status:$status, measured:$measured}'
 }
 
+# _escape_audit_urls SLUG EVENT [OUTCOME]
+# The distinct pull-request URLs SLUG's own EVENT events name, space-separated
+# — optionally only those carrying OUTCOME. Both of requirement 8e's event
+# shapes carry the detector's own `repo` field, so that is what is matched;
+# the `pr_url` prefix is checked too, for a peer log that recorded one and not
+# the other. The prefix is anchored (`startswith`), never `contains`, for the
+# same reason crit_agent_approved_prs anchors its own: "Poetic-Poems/poetic"
+# would otherwise be credited with every "Poetic-Poems/poetic-fiddle" pull
+# request.
+_escape_audit_urls() {
+  local slug="$1" event="$2" outcome="${3:-}"
+  jq -r --arg slug "$slug" --arg prefix "https://github.com/${slug,,}/pull/" \
+    --arg ev "$event" --arg oc "$outcome" \
+    '[.[] | select(.event == $ev)
+          | select(((.repo // "") == $slug)
+                   or (((.pr_url // "") | ascii_downcase) | startswith($prefix)))
+          | select($oc == "" or (.outcome // "") == $oc)
+          | (.pr_url // "")]
+     | map(select(. != "")) | unique | join(" ")' <<<"$EVENTS"
+}
+
+# crit_classifier_escapes SLUG DESC
+# The Stage 2/3 "zero classifier escapes" bar, read off requirement 8e's
+# audit events rather than asserted: `classifier-escape` is a landing the
+# audit recomputed as ineligible, `landing-audit` with `outcome: "clean"` is
+# one it recomputed and agreed with, and `outcome: "unverifiable"` is one it
+# could not recompute at all (a deleted branch, an unreadable diff).
+#
+# One escape is enough to fail the bar. Zero escapes is `met` only once at
+# least one landing has been audited clean — see the header: the audit reads
+# landings, so a repository that has never landed anything autonomously has
+# nothing to be clean about, and its zero is an absence of evidence rather
+# than evidence of absence.
+crit_classifier_escapes() {
+  local slug="$1" desc="$2" escapes clean unverifiable status measured urls
+  urls="$(_escape_audit_urls "$slug" classifier-escape)"
+  escapes="$(printf '%s' "$urls" | wc -w | tr -d ' ')"
+  clean="$(_escape_audit_urls "$slug" landing-audit clean | wc -w | tr -d ' ')"
+  unverifiable="$(_escape_audit_urls "$slug" landing-audit unverifiable | wc -w | tr -d ' ')"
+
+  if (( escapes > 0 )); then
+    status="not-met"
+    measured="$escapes classifier escape(s) found by the post-hoc audit: $urls"
+  elif (( clean > 0 )); then
+    status="met"
+    measured="0 escapes across $clean audited autonomous landing(s)"
+    (( unverifiable > 0 )) && measured="$measured ($unverifiable further landing(s) the audit could not recompute)"
+  else
+    status="unavailable"
+    measured="no autonomous landing has been audited yet"
+    (( unverifiable > 0 )) && measured="$measured ($unverifiable landing(s) the audit could not recompute)"
+  fi
+
+  jq -nc --arg id "classifier_escapes" --arg desc "$desc" --arg status "$status" --arg measured "$measured" \
+    '{id:$id, desc:$desc, status:$status, measured:$measured}'
+}
+
 crit_unavailable() {  # <id> <desc> <reason>
   local id="$1" desc="$2" reason="$3"
   jq -nc --arg id "$id" --arg desc "$desc" --arg reason "$reason" \
@@ -555,7 +618,7 @@ evaluate_repo() {
         results="$(jq -c --argjson r "$(crit_autonomous_landings "$slug" "$desc" "$threshold" "$elapsed_thr")" '. + [$r]' <<<"$results")"
         ;;
       classifier_escapes)
-        results="$(jq -c --argjson r "$(crit_unavailable "classifier_escapes" "$desc" "no classifier-escape detector yet (agent-ops#572)")" '. + [$r]' <<<"$results")"
+        results="$(jq -c --argjson r "$(crit_classifier_escapes "$slug" "$desc")" '. + [$r]' <<<"$results")"
         ;;
       revert_rate)
         results="$(jq -c --argjson r "$(crit_revert_rate "$slug" "$desc")" '. + [$r]' <<<"$results")"
