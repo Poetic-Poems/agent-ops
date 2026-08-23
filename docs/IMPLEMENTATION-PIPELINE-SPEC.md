@@ -672,7 +672,7 @@ and the schema must carry every one of them.
 | `unvoid_label` | `unvoided` | The label a human applies on GitHub to ask for a void to be reopened (requirement 34f). No stage here ever applies it, so requirement 34c's "only a human may clear a void" is unchanged; what it adds is a way to say so from the issue itself. It must not be `blocked`, for the reason given against `enabler_escalation_label`. Nor `obsolete`: the label a human applied to ask for a voided pull request to be reopened would itself corroborate requirement 34k closing it. |
 | `void_retire_after_days` | 30 d | How old a fully-actioned void must be, in days, before requirement 34n drops it from the extract. `0` disables retirement, which is also the safe fallback for an unparseable value — never retiring costs bytes, wrongly retiring costs nothing observable, so the failure mode this guards is silent growth, not a wrongly-reopened item. |
 | `prompt_overrides` | `{}` | Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementer`/`reviewer`/`enabler`/`refiner`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. `approver` is deliberately absent from the enumeration: the Approver's...[continued below](#extended-notes-prompt_overrides) |
-| `pr_label` | `autonomous-agent` | Applied to every PR this system raises. It must not be `obsolete`: the pipeline would then project requirement 34k's human-only corroboration onto every draft it raises, and the void guard would close live drafts on the pipeline's own say-so — `scripts/doctor.sh` fails the config. |
+| `pr_label` | `autonomous-agent` | Applied to every PR this system raises. It must not be `obsolete`: the pipeline would then project requirement 34k's human-only corroboration onto every draft it raises, and the void guard would close live drafts on the pipeline's own say-so — `scripts/doctor.sh` fails the config. Threaded through the Co-Ordinator's runtime input (requirement 4) into every work order's own `pr_label` field, which the Implementer labels its pull request with (requirement 23). |
 | `branch_prefix` | `agent/` | Branch name `agent/<item-slug>`, e.g. `agent/td26051201-fix-xyz`. |
 | `max_open_agent_prs` | `8` | Back-pressure: draft PRs, ready PRs still `CHANGES_REQUESTED`, and live claim-registry entries, carrying `pr_label` across all repos — excludes ready PRs whose next action is human-side (requirement 2.2). |
 | `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list (requirement 17a), so alternates turn a lost race into the next-best item instead of a wasted cycle. |
@@ -3503,7 +3503,11 @@ implements.
      generic instruction naming the source's standard procedure, since no
      model composed a bespoke one; `model`/`model_reason` are
      `implementer_model_default` and a fixed string naming this as a
-     mechanical pick. The single winning candidate is fed into requirement
+     mechanical pick, and `pr_label` is `config.json`'s own key — the same
+     value the Co-Ordinator copies from its runtime input into every
+     candidate (requirement 20), without which the Implementer
+     (requirement 23) would raise a pull request carrying no label for any
+     gatherer, or the back-pressure count, to find it by. The single winning candidate is fed into requirement
      17a's ordinary claim loop exactly as a model-ranked candidate would be —
      no special-cased race, so a lost claim stands the cycle down the same
      way any exhausted candidate list would.
@@ -6479,6 +6483,7 @@ implements.
       "selected": true,
       "repo": "Poetic-Poems/poetic-fiddle",
       "default_branch": "main",
+      "pr_label": "autonomous-agent",
       "source": "tech-debt",
       "item": "TD26051201",
       "title": "one-line description",
@@ -6505,14 +6510,16 @@ implements.
     already created on origin by the Script as the item's claim (requirement
     17a) — and never creates, renames, or deletes a branch of its own.
 23. **Makes the claim visible before implementing.** The branch is the
-    lock, but humans read PRs, not refs: opens a draft PR immediately, labelled
-    `pr_label`, with a Conventional-Commits title (it will become the squash
-    commit on `main`) and a body giving the item reference and planned
-    approach. Immediately records the PR's URL at `.git/agent-ops-pr-url` in
-    the clone — `.git/` is never part of the tracked tree, so this can't
-    leak into a commit — so the Script can still identify the PR even if
-    this stage never reaches a parseable final message (requirement 9). That
-    breadcrumb is a courtesy, not the guarantee: it is one more step in this
+    lock, but humans read PRs, not refs: opens a draft PR immediately,
+    labelled with the work order's `pr_label` (requirement 20's Co-Ordinator
+    copies it verbatim from `config.json`'s own `pr_label` key), with a
+    Conventional-Commits title (it will become the squash commit on `main`)
+    and a body giving the item reference and planned approach. Immediately
+    records the PR's URL at `.git/agent-ops-pr-url` in the clone — `.git/` is
+    never part of the tracked tree, so this can't leak into a commit — so the
+    Script can still identify the PR even if this stage never reaches a
+    parseable final message (requirement 9). That breadcrumb is a courtesy,
+    not the guarantee: it is one more step in this
     stage's procedure, and requirement 9's fourth lookup is what covers the
     stage that performed none of them. For
     tech-debt items this follows the repo's claiming workflow exactly —

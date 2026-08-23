@@ -3258,6 +3258,12 @@ run_coordinator_stage_attempt() {  # <attempt-out-file> <prompt> [extra-budget-j
 # `implementer_model_default`) since a mechanical pick makes no model
 # judgement to report — cheap to spot on the eventual Implementer work order,
 # rather than silently reusing whatever the last attempt happened to prefer.
+# `pr_label` is supplied by the caller for the same reason the Co-Ordinator is
+# handed it on its runtime input and copies it into every candidate
+# (requirement 20): the Implementer labels its draft pull request with the
+# work order's own field, and a candidate built here without one would raise
+# the unlabelled pull request that no gatherer — nor the back-pressure count —
+# can find again.
 #
 # `refinement_policy` (requirement 39a) binds this path exactly as it binds
 # the Co-Ordinator, and for the same reason: a `"required"` source's unrefined
@@ -3281,11 +3287,11 @@ run_coordinator_stage_attempt() {  # <attempt-out-file> <prompt> [extra-budget-j
 # Prints the single winning candidate object, or `null` if every reachable
 # band was empty (never observed in practice, per the guarantee above, but
 # handled rather than assumed).
-fallback_select_candidate() {  # <ordered-repos-json> <default-model> <refinements-json> <refinement-policy-json>
-  local repos="$1" model="$2" refinements="${3:-{\}}" policy="${4:-{\}}"
+fallback_select_candidate() {  # <ordered-repos-json> <default-model> <refinements-json> <refinement-policy-json> <pr-label>
+  local repos="$1" model="$2" refinements="${3:-{\}}" policy="${4:-{\}}" label="${5:-}"
   jq -e 'type == "object"' <<<"$refinements" >/dev/null 2>&1 || refinements='{}'
   jq -e 'type == "object"' <<<"$policy" >/dev/null 2>&1 || policy='{}'
-  jq -c --arg model "$model" --argjson refinements "$refinements" --argjson policy "$policy" \
+  jq -c --arg model "$model" --arg label "$label" --argjson refinements "$refinements" --argjson policy "$policy" \
     --arg model_reason "script-fallback: deterministic band-priority pick after two rejected corroboration verdicts; no model judgement applied" '
     def policy_of($src): (($policy // {})[$src] // "exempt");
     def is_refined($r; $item): ((($refinements // {})[$r] // {})[($item | tostring)] // null) != null;
@@ -3305,7 +3311,7 @@ fallback_select_candidate() {  # <ordered-repos-json> <default-model> <refinemen
     def mk($r; $db; $src; $item; $title; $ctx; $acc; $extra):
       if policy_of($src) == "required" and (is_refined($r; $item) | not) then empty
       else
-        {repo: $r, default_branch: $db, source: $src, item: $item, title: $title,
+        {repo: $r, default_branch: $db, pr_label: $label, source: $src, item: $item, title: $title,
          model: $model, model_reason: $model_reason, context: $ctx, acceptance: $acc,
          _rank: (if policy_of($src) == "preferred" and (is_refined($r; $item) | not)
                  then 1 else 0 end)} + $extra
@@ -3707,7 +3713,7 @@ object, nothing else.
   # metrics. It is logged below instead, on the one branch where the cycle
   # really does select nothing.
   fallback_candidate_json="$(fallback_select_candidate "$ordered_repos_json" \
-    "$implementer_model_default" "$refinements_json" "$refinement_policy_json")"
+    "$implementer_model_default" "$refinements_json" "$refinement_policy_json" "$pr_label")"
   if [[ -z "$fallback_candidate_json" || "$fallback_candidate_json" == "null" ]]; then
     # Not observed in practice (see fallback_select_candidate's own comment
     # for the guarantee this would defy), but fail closed rather than assume
@@ -8563,11 +8569,12 @@ if (( coordinator_prompt_max_bytes > 0 )); then
     --argjson blocked "$(coordinator_blocked_view "$blocked_json")" \
     --arg model_default "$implementer_model_default" \
     --arg model_trivial "$implementer_model_trivial" \
+    --arg label "$pr_label" \
     --argjson cmax "$candidates_max" \
     --argjson policies "$refinement_policy_json" \
     'input as $refinements | input as $claimed
      | {repos: [], blocked: $blocked, refinements: $refinements, claimed: $claimed,
-        models: {default: $model_default, trivial: $model_trivial},
+        models: {default: $model_default, trivial: $model_trivial}, pr_label: $label,
         candidates_max: $cmax, refinement_policy: $policies}' \
     <<<"$coordinator_refinements_json"$'\n'"$claimed_json" 2>/dev/null)" \
     || coordinator_fit_overhead_json='{"repos":[]}'
@@ -8821,11 +8828,12 @@ coordinator_stdin="$(printf '%s\n' \
 coordinator_input="$(jq -nc \
   --arg model_default "$implementer_model_default" \
   --arg model_trivial "$implementer_model_trivial" \
+  --arg label "$pr_label" \
   --argjson cmax "$candidates_max" \
   --argjson policies "$refinement_policy_json" \
   'input as $repos | input as $blocked | input as $refinements | input as $claimed
    | {repos: $repos, blocked: $blocked, refinements: $refinements, claimed: $claimed,
-      models: {default: $model_default, trivial: $model_trivial},
+      models: {default: $model_default, trivial: $model_trivial}, pr_label: $label,
       candidates_max: $cmax, refinement_policy: $policies}' <<<"$coordinator_stdin")"
 
 # --- 4. Co-Ordinator stage ---

@@ -77,7 +77,7 @@ log_needs_refinement_items_fn="$(extract_fn 'log_needs_refinement_items() {' "$S
 log_voided_items_fn="$(extract_fn 'log_voided_items() {' "$SCRIPT_DIR/agent-cycle.sh")"
 extract_json_result_fn="$(extract_fn 'extract_json_result() {' "$SCRIPT_DIR/agent-cycle.sh")"
 run_coordinator_stage_attempt_fn="$(extract_fn 'run_coordinator_stage_attempt() {  # <attempt-out-file> <prompt> [extra-budget-json]' "$SCRIPT_DIR/agent-cycle.sh")"
-fallback_select_candidate_fn="$(extract_fn 'fallback_select_candidate() {  # <ordered-repos-json> <default-model> <refinements-json> <refinement-policy-json>' "$SCRIPT_DIR/agent-cycle.sh")"
+fallback_select_candidate_fn="$(extract_fn 'fallback_select_candidate() {  # <ordered-repos-json> <default-model> <refinements-json> <refinement-policy-json> <pr-label>' "$SCRIPT_DIR/agent-cycle.sh")"
 coordinator_corroborate_retry_or_fallback_fn="$(extract_fn 'coordinator_corroborate_retry_or_fallback() {' "$SCRIPT_DIR/agent-cycle.sh")"
 
 for pair in \
@@ -197,6 +197,8 @@ coordinator_prompt="stub base prompt"
 refinement_policy_json='{}'
 # shellcheck disable=SC2034  # read by the eval'd fallback_select_candidate call
 refinements_json='{}'
+# shellcheck disable=SC2034  # read by the eval'd fallback_select_candidate call
+pr_label="autonomous-agent"
 # shellcheck disable=SC2034
 noop_fingerprint_value="fp-abc123"
 
@@ -286,11 +288,17 @@ sec_pick="$(fallback_select_candidate "$repos_with_security" "claude-fallback-mo
 assert_eq "security outranks tech-debt in the same repo" "security" "$(jq -r '.source' <<<"$sec_pick")"
 assert_eq "security pick names the finding's own ref" "dependabot-alert-1" "$(jq -r '.item' <<<"$sec_pick")"
 
-td_pick="$(fallback_select_candidate "$repos_tech_debt_only" "claude-fallback-model")"
+td_pick="$(fallback_select_candidate "$repos_tech_debt_only" "claude-fallback-model" '{}' '{}' "house-label")"
 assert_eq "tech-debt is the fallback when no higher band has anything" "tech-debt" "$(jq -r '.source' <<<"$td_pick")"
 assert_eq "tech-debt pick is the first eligible ref (id order)" "TD1" "$(jq -r '.item' <<<"$td_pick")"
 assert_eq "a mechanical pick names its own model" "claude-fallback-model" "$(jq -r '.model' <<<"$td_pick")"
 assert_contains "a mechanical pick's context pastes the item's own body" "TD1 body" "$(jq -r '.context' <<<"$td_pick")"
+# Requirement 3v/20: the Implementer labels its draft with the work order's own
+# `pr_label`, so a mechanical pick must carry the configured one exactly as a
+# model-composed candidate does — a candidate without it raises a pull request
+# no gatherer, and no back-pressure count, can find again.
+assert_eq "a mechanical pick carries the configured pr_label" "house-label" \
+  "$(jq -r '.pr_label' <<<"$td_pick")"
 
 empty_repos='[{"slug":"acme/widgets","default_branch":"main",
   "sources":["security","issues:urgent","review-feedback","merge-conflicts","human-visibility","abandoned-drafts","issues:high","tech-debt","issues:medium","issues:low","code-quality","register-hygiene"],"findings":[],"review_feedback":[],"merge_conflicts":[],"abandoned_drafts":[],"human_visibility":[],"issues":[],"tech_debt":[],"register_hygiene":[]}]'

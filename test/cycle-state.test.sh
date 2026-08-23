@@ -1011,6 +1011,7 @@ fi
   claimed_json='[]'
   implementer_model_default="claude-sonnet-5"
   implementer_model_trivial="claude-haiku-4-5-20251001"
+  pr_label="autonomous-agent"
   candidates_max=3
   refinement_policy_json='{}'
 }

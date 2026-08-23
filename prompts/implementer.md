@@ -22,6 +22,7 @@ order verbatim:
   "selected": true,
   "repo": "Poetic-Poems/poetic-fiddle",
   "default_branch": "main",
+  "pr_label": "autonomous-agent",
   "source": "tech-debt",
   "item": "TD26051201",
   "title": "one-line description",
@@ -515,7 +516,7 @@ see "Dependabot takeover" above.)*
      a placeholder to fix later.
    - Body states the item reference (`item` from the work order) and your
      planned approach, briefly.
-   - Label it `pr_label` (`autonomous-agent`).
+   - Label it `pr_label` (received in the work order).
    - **Tech-debt items:** the work order's branch is `td/<ID>` — the same
      claim branch the repo's own "Claiming an item" workflow in
      `TECH-DEBT.md` prescribes, already pushed on your behalf. Complete

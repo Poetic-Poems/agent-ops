@@ -90,7 +90,8 @@ heading, the Script gives you one JSON object:
     {"repo": "org/repo-a", "item": "TD26071805", "age_hours": 2},
     {"repo": "org/repo-a", "item": "pr-57-review-4718691960", "age_hours": 0, "pr_number": 57}
   ],
-  "models": {"default": "claude-sonnet-5", "trivial": "claude-haiku-4-5-20251001"}
+  "models": {"default": "claude-sonnet-5", "trivial": "claude-haiku-4-5-20251001"},
+  "pr_label": "autonomous-agent"
 }
 ```
 
@@ -303,6 +304,9 @@ heading, the Script gives you one JSON object:
   verbatim for the work order's `model` field (see "Choosing the
   Implementer's model" below) — don't hardcode a model ID of your own, since
   `config.json` is the one place that value is meant to be updated.
+- `pr_label` is `config.json`'s own `pr_label` key, resolved for this cycle.
+  Copy it verbatim into every candidate's `pr_label` field — don't hardcode a
+  label of your own, for the same reason as `models`.
 
 ## Tools and constraints
 
@@ -1513,6 +1517,7 @@ logging it as a selection defect rather than a race.
     {
       "repo": "org/repo-a",
       "default_branch": "main",
+      "pr_label": "autonomous-agent",
       "source": "tech-debt",
       "item": "TD26051201",
       "title": "one-line description",
@@ -1525,6 +1530,9 @@ logging it as a selection defect rather than a race.
 }
 ```
 
+- `pr_label` is the runtime input's own `pr_label` value (see "What you
+  receive at invocation" above), copied verbatim into every candidate — the
+  Implementer labels its pull request with it instead of a literal.
 - `source` is one of `"security"`, `"review-feedback"`, `"merge-conflicts"`,
   `"dequeued"`, `"human-visibility"`, `"abandoned-drafts"`, `"failed-runs"`, `"tech-debt"`,
   `"issues"`, `"implementation-plan"`, `"project-review"`, `"code-quality"`,

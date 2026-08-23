@@ -574,11 +574,11 @@
     },
     "pr_label": {
       "$ref": "#/$defs/label",
-      "description": "Applied to every pull request the implementation pipeline raises, and the label by which every gatherer, and the back-pressure limit, finds them again. It must not be empty: `gh pr list --label ''` matches every open pull request, so an empty value would hand the pipeline other people's work as its own. Nor `obsolete`: every draft the pipeline raises would then carry the human-only mark that corroborates closing it (requirement 34k).",
+      "description": "Applied to every pull request the implementation pipeline raises, and the label by which every gatherer, and the back-pressure limit, finds them again. It must not be empty: `gh pr list --label ''` matches every open pull request, so an empty value would hand the pipeline other people's work as its own. Nor `obsolete`: every draft the pipeline raises would then carry the human-only mark that corroborates closing it (requirement 34k). Threaded through the Co-Ordinator's runtime input into every work order's own `pr_label` field, which the Implementer labels its pull request with rather than a literal.",
       "minLength": 1,
       "x-docs": {
-        "readme": "Applied to every PR this system raises. Do not name it `obsolete`, which is reserved for a human to mark one of these PRs as unwanted.",
-        "spec": "Applied to every PR this system raises. It must not be `obsolete`: the pipeline would then project requirement 34k's human-only corroboration onto every draft it raises, and the void guard would close live drafts on the pipeline's own say-so — `scripts/doctor.sh` fails the config.",
+        "readme": "Applied to every PR this system raises. Do not name it `obsolete`, which is reserved for a human to mark one of these PRs as unwanted. Threaded through every work order's own `pr_label` field, which the Implementer labels its pull request with.",
+        "spec": "Applied to every PR this system raises. It must not be `obsolete`: the pipeline would then project requirement 34k's human-only corroboration onto every draft it raises, and the void guard would close live drafts on the pipeline's own say-so — `scripts/doctor.sh` fails the config. Threaded through the Co-Ordinator's runtime input (requirement 4) into every work order's own `pr_label` field, which the Implementer labels its pull request with (requirement 23).",
         "value": "`autonomous-agent`"
       }
     },
