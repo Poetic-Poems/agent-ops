@@ -97,6 +97,33 @@ merge_autonomy_configured_level() {
   printf '%s' "$top_level"
 }
 
+# merge_autonomy_resolution_source CONFIG_JSON SLUG
+# Which of `merge_autonomy_configured_level`'s two inputs actually produced
+# SLUG's configured level: `repo-override` when SLUG's own `repos[]` entry
+# sets `merge_autonomy`, `top-level-default` otherwise (including the
+# hard-coded `human` fallback nobody configured at all). Pure config
+# resolution, mirroring `merge_autonomy_configured_level`'s own precedence
+# exactly rather than threaded out of that function — every existing caller
+# of the level wants only the level, and the one caller that also wants the
+# source (the D18 landing audit record, requirement 8x, agent-ops#578) reads
+# it here instead, at gate 1 of `_landing_stage_attempt`. Read only once that
+# gate has already confirmed the effective level is `agent-merges-routine` or
+# `agent-merges-all` — at that point the kill switch is known clear and no
+# budget freeze can be binding (both cap at `agent-approves` or below), so
+# the configured/effective split is the only source distinction left to draw;
+# this function does not itself re-check either flag.
+merge_autonomy_resolution_source() {
+  local config_json="$1" slug="$2" repo_level
+  repo_level="$(jq -r --arg slug "$slug" \
+    '(.repos // [])[] | select(.slug == $slug) | .merge_autonomy // empty' \
+    <<<"$config_json" 2>/dev/null | head -1)"
+  if [[ -n "$repo_level" && "$repo_level" != "null" ]]; then
+    printf 'repo-override'
+  else
+    printf 'top-level-default'
+  fi
+}
+
 # merge_autonomy_kill_state STATE_REPO STATE_DIR [FRESH]
 # The kill switch, in toggle_state's own vocabulary
 # (`{"state":"enabled"}` / `{"state":"disabled","record":{...}}`) — "enabled"

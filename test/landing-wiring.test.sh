@@ -134,6 +134,13 @@ source "$SCRIPT_DIR/lib/landing.sh"
 # overriding lib/merge-queue.sh's own definition.
 # shellcheck source=lib/merge-queue.sh
 source "$SCRIPT_DIR/lib/merge-queue.sh"
+# `merge_autonomy_resolution_source` (requirement 8x, agent-ops#578) — the
+# real, small pure config resolution the landing audit record's `autonomy`
+# field reads; `merge_autonomy_effective_level`/`merge_autonomy_kill_state`
+# from this same file are stubbed below, overriding lib/merge-autonomy.sh's
+# own definitions.
+# shellcheck source=lib/merge-autonomy.sh
+source "$SCRIPT_DIR/lib/merge-autonomy.sh"
 
 # --- Cycle globals the block reads -------------------------------------------
 selected_repo="Poetic-Poems/agent-ops"
@@ -149,8 +156,17 @@ approver_stage_verdict="$VERDICT"
 approver_stage_adjudicating="$ADJUDICATING"
 approver_stage_tier="${APPROVER_STAGE_TIER:-critical}"
 union_log="$T/union.jsonl"
+# `log_file` (requirement 8x, agent-ops#578) — the landing audit record's
+# `approver.history` field reads this on the round that first approves a
+# pull request, exactly as production's own `log_event` already appends
+# every event to it; `log_event` is stubbed above to append to `$T/events`
+# instead, so this file starts (and, unless a case seeds it, stays) empty,
+# reading as "no prior approver-verdict for this pull request" — the
+# ordinary case for a pull request approved once and landed.
+log_file="$T/state/log.jsonl"
 mkdir -p "$state_dir"
 : > "$union_log"
+: > "$log_file"
 
 # The cycle-scoped tally `run_landing_stage`'s own gate 0 now reads and grows
 # (PR #557 review round 2 of TD-PPagop-26081701) — declared here exactly as
@@ -267,6 +283,18 @@ landing_arm() {
   printf '%s' "${ARM_METHOD-enqueued}"
 }
 
+# The landing audit record's own second, independent read of the
+# protected-path classifier (requirement 8x, agent-ops#578) — stubbed
+# exactly like every other gate helper here rather than left to the real
+# `gh`-backed function, which this harness never wants reaching outside the
+# process. Defaults to "no hit" (exit 1, nothing printed), the neutral case
+# every existing happy-path assertion in this file already assumes.
+landing_protected_paths_hit() {
+  printf '%s\n' "$*" >>"$T/pp_hit_args"
+  [[ "${PP_HIT_RC:-1}" == "0" ]] || return "${PP_HIT_RC:-1}"
+  printf '%s' "${PP_HIT_PATHS:-}"
+}
+
 HARNESS
 
 {
@@ -303,6 +331,7 @@ run_case() {
   : >"$tmp_dir/mal_calls"; : >"$tmp_dir/budget_decide_args"; rm -f "$tmp_dir/armed_flag"
   rm -f "$tmp_dir/armed_by_repo_flag"
   : >"$tmp_dir/pp_ctl_args"; : >"$tmp_dir/retry_tier_args"; : >"$tmp_dir/kill_state_calls"
+  : >"$tmp_dir/pp_hit_args"
   rm -rf "${tmp_dir:?}/state"
   env -i PATH="$PATH" HOME="$HOME" \
     T="$tmp_dir" SCRIPT_DIR="$SCRIPT_DIR" PR_URL="$URL" COMPLEXITY="medium" \
@@ -336,7 +365,7 @@ assert_eq "an eligible, fully-cleared PR returns 0" "0" "$rc"
 assert_eq "  ... arms exactly once" "1" "$(count arms)"
 assert_contains "  ... under the Approver's own minted token" "token=a-minted-token" "$(arms)"
 assert_contains "  ... naming the pull request's own number" "number=512" "$(arms)"
-assert_eq "  ... logs exactly one event" "1" "$(count events)"
+assert_eq "  ... logs exactly two events" "2" "$(count events)"
 assert_eq "  ... a landing-armed" '"enqueued"' "$(jq -c '.method' <<<"$(event_of landing-armed)")"
 assert_eq "  ... naming the source" '"tech-debt"' "$(jq -c '.source' <<<"$(event_of landing-armed)")"
 assert_eq "  ... and the complexity it was armed at" '"medium"' "$(jq -c '.complexity' <<<"$(event_of landing-armed)")"
@@ -356,6 +385,30 @@ assert_eq "  ... gate 0's own call site reads an empty landing_armed_by_repo as 
   "0" "$(budget_decide_args | awk '{print $NF}')"
 assert_eq "  ... and grows landing_armed_by_repo[selected_repo] to 1 after arming" \
   "1" "$(armed_by_repo_flag)"
+
+# --- ... alongside one landing-audit-record (requirement 8x, agent-ops#578) --
+# Deep field-by-field coverage lives in test/landing-audit-record.test.sh;
+# this is the wiring proof that the same successful arm that logs
+# landing-armed also logs its audit record, from the same in-hand facts.
+
+audit="$(event_of landing-audit-record)"
+assert_eq "  ... naming the pull request's own number" "512" "$(jq -c '.number' <<<"$audit")"
+assert_eq "  ... and its head SHA, from the Approver's own standing review" \
+  '"sha-approved-head"' "$(jq -c '.head_sha' <<<"$audit")"
+assert_eq "  ... the effective autonomy level" \
+  '"agent-merges-routine"' "$(jq -c '.autonomy.level' <<<"$audit")"
+assert_eq "  ... and its resolution source (DEFAULTED_CONFIG names no repo override)" \
+  '"top-level-default"' "$(jq -c '.autonomy.source' <<<"$audit")"
+assert_eq "  ... a clear protected-path verdict, with no paths (PP_HIT_RC defaults to 1)" \
+  '"clear"' "$(jq -c '.protected_path.verdict' <<<"$audit")"
+assert_eq "  ... and an empty adjudication history (nothing seeded in log_file)" \
+  "[]" "$(jq -c '.approver.history' <<<"$audit")"
+assert_eq "  ... every gate this attempt cleared, named with its own evidence" \
+  '"clean"' "$(jq -c '.gates[] | select(.gate == "review-gate") | .verdict' <<<"$audit")"
+assert_eq "  ... the budget object gate 5 already computed, not discarded" \
+  '"arm"' "$(jq -c '.budget.decision' <<<"$audit")"
+assert_eq "  ... and the same mechanism landing-armed itself names" \
+  '"enqueued"' "$(jq -c '.mechanism' <<<"$audit")"
 
 # --- The cycle-scoped tally: gate 0 discounts what the 2.1e sweep already
 # armed earlier this same cycle, not just its own count (PR #557 review
@@ -700,6 +753,9 @@ run_case_direct() {
       }
       approver_token_get() { printf "a-minted-token"; }
       landing_arm() { printf "slug=%s\tnumber=%s\ttoken=%s\n" "$1" "$2" "$3" >>"$T/arms"; printf "%s" "${ARM_METHOD-enqueued}"; }
+      merge_autonomy_resolution_source() { printf "top-level-default"; }
+      landing_protected_paths_hit() { return "${PP_HIT_RC:-1}"; }
+      log_file="$T/state/log.jsonl"; : > "$log_file"
       '"$refuse_block"'
       '"$stage_block"'
       _landing_stage_attempt "$selected_repo" "$PR_URL" "$COMPLEXITY" "$selected_source" "$gate_default_branch" "retry" "$ALREADY_ARMED"

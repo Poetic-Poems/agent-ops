@@ -178,7 +178,8 @@
         "verdict": "approve",
         "adjudication": true,
         "audit": "escape",
-        "audit_reason": "landed under the Approver identity but recomputed eligibility disagrees: touched protected path(s): lib/landing.sh"
+        "audit_reason": "landed under the Approver identity but recomputed eligibility disagrees: touched protected path(s): lib/landing.sh",
+        "anomaly": false
       },
       {
         "ts": "@ago:9h",
@@ -196,7 +197,8 @@
         "verdict": null,
         "adjudication": null,
         "audit": "clean",
-        "audit_reason": "recomputed eligibility agrees: this landing should have been eligible"
+        "audit_reason": "recomputed eligibility agrees: this landing should have been eligible",
+        "anomaly": true
       }
     ],
     "refused": [
