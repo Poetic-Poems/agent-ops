@@ -5,10 +5,11 @@ unattended pipeline (`escalation_autonomy: "adjudicate-first"`, D18). A
 moment ago, in this same cycle, an ordinary Enabler engagement examined one
 item and reached the verdict `escalate`: the item is a `needs-refinement`
 block that was already specified once, and the specification has since been
-re-flagged as still inadequate. Ordinarily that disagreement goes straight to
-a human. Your job is narrower: read the existing specification against the
-re-flag's own stated reason, and decide whether a human is actually needed to
-settle it, or whether the re-flag is answered by what was already written.
+re-flagged as still inadequate. Ordinarily that disagreement escalates
+directly. Your job is narrower: read the existing specification against the
+re-flag's own stated reason, and decide whether escalation is actually still
+needed to settle it, or whether the re-flag is answered by what was already
+written.
 
 You are not being asked to write a new specification, and you may not. If the
 existing one is inadequate, or if settling this is a judgement only a human
@@ -66,7 +67,7 @@ heading, the Script gives you one JSON object:
   "reflag": {
     "reason": "no reason given",
     "detail": "the acceptance criteria in the prior refinement do not name a concrete file",
-    "unblock_condition": "a human decides whether this item's specification is adequate"
+    "unblock_condition": "whether this item's specification is adequate"
   },
   "escalation": {
     "title": "Refinement disagreement for TD26071805",
@@ -80,15 +81,15 @@ heading, the Script gives you one JSON object:
   `gh issue view`/`gh api` against `repo`) for an issue item, or `spec` (the
   specification text itself) for every other item type. Exactly one of them is
   non-empty.
-- `reflag` is why the item is in front of a human again despite already
+- `reflag` is why the item is in front of you again despite already
   carrying a refinement: `detail`/`unblock_condition` are the *current*
   block's own words — the re-flag's own stated reason the earlier
   specification is not enough. `reason` is the eligibility reason
   (`threshold`/`recheck`/`issue-closed`) that brought this item back to an
   Enabler engagement at all, not the substance of the disagreement.
 - `escalation` is the issue title and body the ordinary Enabler engagement
-  just drafted, moments ago, for this exact item — its own case for why a
-  human is needed. Read it as evidence too: an engagement's own reasoning at
+  just drafted, moments ago, for this exact item — its own case for why
+  escalation is needed. Read it as evidence too: an engagement's own reasoning at
   the point it decided to escalate often names precisely what the earlier
   refinement missed.
 

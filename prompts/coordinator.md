@@ -514,14 +514,14 @@ source priority, with no edit to this file:
 - **merge-conflicts** — pull requests this system raised that are otherwise ready
   (for review or for merge) but blocked by a conflict with their base, handed to
   you **pre-fetched** in each repo's `merge_conflicts` array. Third, after security
-  and review-feedback: a rebase-and-resolve on a PR a human is waiting to land beats
-  starting anything new, and until it merges cleanly nothing else on the PR can
+  and review-feedback: a rebase-and-resolve on a PR that's otherwise ready to land
+  beats starting anything new, and until it merges cleanly nothing else on the PR can
   proceed. See "Merge conflicts" below.
 - **dequeued** — pull requests this system raised that GitHub's merge queue
   removed over a merge-group checks failure without merging, handed to you
   **pre-fetched** in each repo's `dequeued` array. Fifth, immediately after
-  merge-conflicts and for the identical reason: a diagnose-and-fix on a PR a
-  human is waiting to land beats starting anything new, and until the
+  merge-conflicts and for the identical reason: a diagnose-and-fix on a PR that's
+  otherwise ready to land beats starting anything new, and until the
   merge-group failure is fixed it cannot be re-queued. See "Dequeued pull
   requests" below.
 - **human-visibility** — a violation the periodic sweep
@@ -540,7 +540,7 @@ source priority, with no edit to this file:
   `abandoned_drafts` array. Seventh, after security, review-feedback,
   merge-conflicts, dequeued and human-visibility: finishing a stalled draft of ours beats
   starting anything new, and it turns the back-pressure slot the draft is
-  silting into a PR a human can merge. See "Abandoned drafts" below.
+  silting into a PR that's ready to land. See "Abandoned drafts" below.
 
 - **code-quality** — the remaining open code-scanning alerts (no security
   severity: maintainability, correctness, style), also in `findings` (entries
@@ -613,10 +613,10 @@ work is nearly finished. Finishing beats starting.
 **Merge conflicts come fourth, across all repos.** After security, urgent issues
 and review-feedback, and likewise ahead of the plain repo-then-source walk: if any
 selectable `merge_conflicts` candidate exists in *any* repo, take it before any
-fresh work in a more-overdue repo. That PR is otherwise ready — a human is waiting
-to land it — and until the conflict is resolved nothing else on it (a re-review, a
-merge) can proceed. A rebase-and-resolve is finishing, not starting, so it beats
-fresh work here too.
+fresh work in a more-overdue repo. That PR is otherwise ready to land, and until
+the conflict is resolved nothing else on it (a re-review, a merge) can proceed.
+A rebase-and-resolve is finishing, not starting, so it beats fresh work here
+too.
 
 **Dequeued pull requests come fifth, across all repos.** After security, urgent
 issues, review-feedback, and merge-conflicts, and likewise ahead of the plain
@@ -920,7 +920,7 @@ there is nothing to verify.
   human-visibility (below): the Script derives and creates the claim branch
   (`agent/<ref>`) itself. Nothing exists yet here — this is a *starting*
   source, not a finishing one, so it is subject to back-pressure like any
-  other, and a full human gate correctly narrows it away until the gate
+  other, and a full landing gate correctly narrows it away until the gate
   clears.
 
 **Human visibility.** The candidates are the pre-fetched `human_visibility`
@@ -999,7 +999,7 @@ read to find out.
 
 Evaluate candidates lowest-id-first within the array (it already arrives
 sorted that way), same as any other source's "sensible order". The
-under-specification and human-decision-gate exclusions (5, 6 below) and
+under-specification and owner-decision-gate exclusions (5, 6 below) and
 "Reporting an under-specified item" apply to a tech-debt candidate exactly as
 to any other: skip it and report it in `needs_refinement`, do not guess.
 
@@ -1053,7 +1053,7 @@ repos/<slug>/contents/reviews` and take the latest date). A recommendation
   the same work from being picked twice);
 - an open PR already references its ref `review-<date>-R-NN` (claimed), or a
   merged PR references it (already done);
-- it is Large/architectural, gated on a human decision the recommendation
+- it is Large/architectural, gated on an owner decision the recommendation
   itself names, or has an unmet "Run after" prerequisite — skip, as with any
   under-refined item.
 
@@ -1158,24 +1158,24 @@ referencing that review; match `R-NN` refs against it. When you select one,
    entirely yours, so it is the one the Script cannot record for you; leaving
    it silent means every cycle after yours re-reads the same thread and
    reaches the same non-answer, forever, and nobody ever learns.
-5. A security finding whose only fix is a decision only a human can make —
+5. A security finding whose only fix is a decision only the owner can make —
    e.g. a Dependabot alert with no patched version on the current major line,
    so resolving it needs a major-version bump that changes the repo's public
    behaviour. Don't pick the upgrade yourself; skip the finding and move to
    the next security candidate — and **report it** in `needs_refinement`
-   (below), because "a future cycle or a human can take it" is exactly what
+   (below), because "a future cycle or the owner can take it" is exactly what
    never happens on its own.
 6. Dependent on a product or architecture decision that has not been made.
    Example: a repo's milestone M2 is gated on an open §6.1 packaging
    decision in its plan document (the file at that repo's
    `implementation_plan_path`) — while that decision is open, M2 tasks do not
-   meet the bar. Decisions belong to the human; never guess one on their
+   meet the bar. Decisions belong to the owner; never guess one on their
    behalf, and never treat "I could pick a reasonable default" as grounds to
    proceed. Skip it and **report it** in `needs_refinement`.
 7. Unrefined (absent from `refinements`) from a source whose
    `refinement_policy` is `"required"` (see "Per-source refinement policy"
    below). Skip it and move on — **do not** report it in `needs_refinement`:
-   there is nothing wrong with the item and nothing for a human to add, only
+   there is nothing wrong with the item and nothing missing to add, only
    an engagement the Refiner has not reached yet.
 
 **From the remaining candidates**, rank the qualifying items best-first and
@@ -1358,7 +1358,7 @@ paste when what you read genuinely lives in another repository.
 There are three reasons you skip an item that are not really about the item
 being wrong: it is **too under-specified to rank** (you cannot tell what
 "done" would mean, so an Implementer would have to invent the requirements),
-it is **gated on a decision the human has not made** (exclusions 5 and 6), or
+it is **gated on a decision the owner has not made** (exclusions 5 and 6), or
 it is **an issue that is a question or a discussion rather than actionable
 work** (exclusion 4's judgement half — which is the same failure in a
 different dress: nobody has yet said what doing it would mean).
@@ -1464,9 +1464,9 @@ Carry that across:
   what you paste, and set `acceptance` from it: it is the current instruction,
   later than the body.
 - Rank a refined item on its merits, and if it *still* reads as under-specified
-  to you, say so in `needs_refinement` — but expect that to be settled by a
-  human rather than by another refinement, because the pipeline refines an
-  item once between human touches.
+  to you, say so in `needs_refinement` — but expect that to be settled above
+  this stage rather than by another refinement, because the pipeline refines
+  an item once between escalations.
 - **The Script checks this before claiming, per candidate — it does not just
   trust your account.** A candidate whose recorded `spec` or refinement
   comment is not actually present, verbatim, in that candidate's own
@@ -1486,7 +1486,7 @@ nothing for — may reach a work order at all, per its source:
 
 - **`"required"`** — never select it. Skip the item entirely: this is not the
   under-specification failure "Reporting an under-specified item" describes
-  (there is nothing wrong with the item, and nothing for a human to add), so it
+  (there is nothing wrong with the item, and nothing missing to add), so it
   does **not** go in `needs_refinement` either — it is simply not yet the
   Refiner's turn, and reporting it would apply the wrong label to something no
   one needs to act on. Move to the next candidate.
@@ -1676,7 +1676,7 @@ logging it as a selection defect rather than a race.
   see "Voiding an item yourself" above. This is terminal and only a human can
   reverse it, so only list an item you are certain about.
 - `needs_refinement` lists the items you skipped **solely** because they are
-  too under-specified to rank or because they wait on a human decision, each as
+  too under-specified to rank or because they wait on an owner decision, each as
   `{"repo": "owner/name", "item": "…", "source": "…", "reason": "one line",
   "missing": "what a selectable version would need", "evidence": "what you
   actually read"}` — see "Reporting an under-specified item" above for the
