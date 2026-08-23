@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `pr_label` now reaches the Implementer, so an installation can change the
+  label its implementation pipeline puts on the pull requests it raises
+  without forking `prompts/implementer.md` (agent-ops#654). The
+  Co-Ordinator's runtime input carries the configured value, its work order
+  carries it on to the Implementer as `pr_label` — as does a mechanical
+  fallback pick (requirement 3v), which composes its own work order — and
+  the Implementer labels its draft with that field instead of the literal
+  `autonomous-agent` the prompt used to name. Nothing changes for an
+  installation that has not set `pr_label`: it still defaults to
+  `autonomous-agent`, which every gatherer and the back-pressure limit
+  already find pull requests by.
+
 - A rejected GitHub credential is now caught before the Co-Ordinator ever
   runs, instead of being spent on and misreported as an outage (agent-ops#691).
   `github_auth_probe` (`lib/github-limit.sh`) reuses the same free

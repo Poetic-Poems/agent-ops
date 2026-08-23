@@ -3499,7 +3499,11 @@ implements.
      generic instruction naming the source's standard procedure, since no
      model composed a bespoke one; `model`/`model_reason` are
      `implementer_model_default` and a fixed string naming this as a
-     mechanical pick. The single winning candidate is fed into requirement
+     mechanical pick, and `pr_label` is `config.json`'s own key — the same
+     value the Co-Ordinator copies from its runtime input into every
+     candidate (requirement 20), without which the Implementer
+     (requirement 23) would raise a pull request carrying no label for any
+     gatherer, or the back-pressure count, to find it by. The single winning candidate is fed into requirement
      17a's ordinary claim loop exactly as a model-ranked candidate would be —
      no special-cased race, so a lost claim stands the cycle down the same
      way any exhausted candidate list would.
