@@ -17,9 +17,10 @@ A pipeline that, on a configured cadence
 (`schedule.cycle_interval_minutes`), picks **at most one** well-scoped item
 of pending work from one of two GitHub repositories, implements it on a
 feature branch in an ephemeral clone, reviews and corrects the result, and
-leaves a mergeable pull request for a human to approve. It runs unattended
-on the host machine (WSL2 Ubuntu). The only human involvement is final
-pull-request review and merge.
+leaves a mergeable pull request for approval and landing at the repository's
+configured `merge_autonomy` level (see "## The Landing Gate"). It runs
+unattended on the host machine (WSL2 Ubuntu); human involvement narrows to
+whatever that level still requires.
 
 ```
 cron (schedule.cycle_interval_minutes)
@@ -27,7 +28,7 @@ cron (schedule.cycle_interval_minutes)
        ├─ Co-Ordinator (Haiku)      ← selects ≤ 1 item, emits a work order; nothing else
        ├─ Implementer (Sonnet/Haiku)← ephemeral clone, feature branch, draft PR
        ├─ Reviewer (Sonnet/Opus)    ← corrects the branch, flips the PR to ready
-       │     └─ Human               ← reviews and merges (the only gate)
+       │     └─ Human Reviewer      ← approves/merges per `merge_autonomy` (D18)
        ├─ Enabler (Opus, rarely)    ← re-examines long-blocked items at the end of a
        │                              cycle: unblocks, voids, or raises an issue
        │                              assigned to the Human saying what to do
@@ -62,9 +63,12 @@ cron (schedule.cycle_interval_minutes)
    the end of a cycle, that re-examines items recorded as blocked which the
    pipeline has not cleared by itself. It unblocks, voids, or leaves them
    blocked with a fresher condition; where an item was never specified well
-   enough to select, it specifies it (requirement 36b); and where only a human
-   can move an item, it composes a GitHub issue that the Script files, assigned
-   to that human. It writes no code and raises no pull request.
+   enough to select, it specifies it (requirement 36b); and where an item
+   cannot be moved without escalating, it composes a GitHub issue that the
+   Script files, assigned to a human — directly, or, for a
+   refinement-disagreement item (requirement 36b), after a bounded
+   adjudication pass per `escalation_autonomy`. It writes no code and raises
+   no pull request.
 8. The **Refiner** — a headless Claude Code invocation, engaged from the same
    end-of-cycle cleanup as the Enabler and immediately after it, that writes
    the specification an under-specified item lacks *before* the item has to be
@@ -6180,15 +6184,16 @@ implements.
     issues and review-feedback, and likewise outranking the plain
     repo-then-source walk: any
     selectable `merge_conflicts` candidate in any repo is taken before any fresh
-    work in a more-overdue repo. The PR is otherwise ready — a human is waiting to
-    land it — and until the conflict is resolved nothing else on it can proceed, so
+    work in a more-overdue repo. The PR is otherwise ready to land, and until the
+    conflict is resolved nothing else on it can proceed, so
     a rebase-and-resolve is finishing, not starting. As with review-feedback, the
     Co-Ordinator must **not** apply requirement 16's claim exclusion to this
     source — the open PR *is* the item, and the pre-fetch (requirement 3g) has
     already established it is ours and conflicting. The Implementer's job here is
     narrow: rebase onto the base and resolve the conflict, without completing or
-    re-doing the underlying item (that is what merges the PR, and remains the
-    human's call). A Dependabot takeover candidate (requirement 3s) ranks and is
+    re-doing the underlying item (that is what merges the PR, and remains this
+    repository's own landing decision — see "The Landing Gate" — not the
+    Implementer's to make). A Dependabot takeover candidate (requirement 3s) ranks and is
     exempted from requirement 16's claim exclusion here identically, even though
     it is, unlike every other `merge_conflicts` candidate, genuinely new work — a
     fresh PR on a fresh branch, not a finish of an existing one, and it does raise
@@ -10002,8 +10007,9 @@ implements.
       **verdict**: it changes nothing about the choice between `unblocked`,
       `still-blocked` and `escalate` below, and never turns a refinement
       into an escalation on its own.
-    - **Escalates**, where a human must decide, answer, or act first — through
-      the unchanged protocol of requirement 36a, in a **separate** issue. Never
+    - **Escalates**, where this stage cannot settle it — a decision, answer, or
+      action is needed first — through the unchanged protocol of requirement
+      36a, in a **separate** issue. Never
       the work item's own issue: that protocol ends with "close this issue when
       you are done", which on the item's own issue asks the human to close the
       work itself and removes it from the `issues` source. The ask is phrased so
@@ -17240,8 +17246,10 @@ probe's answer is the limit message, which serves no tokens and costs
 nothing, and the first answered probe (a fraction of a cent of
 `implementer_model_trivial`) retires the stand-down fleet-wide, so at most
 one probe per stand-down is ever paid for. Because back-pressure caps open agent PRs
-at `max_open_agent_prs`, sustained spend is bounded by the rate at which the
-human merges — the system cannot run ahead of its only consumer.
+at `max_open_agent_prs`, sustained spend is bounded by the rate at which pull
+requests land — a human's own merge click at `merge_autonomy: human`, the
+landing gate itself from `agent-merges-routine` up — the system cannot run
+ahead of its only consumer.
 
 The Approver (requirements 8b/8c) costs nothing at the product default
 (`merge_autonomy: human`): the stage is never engaged. Where an installation
@@ -17315,7 +17323,7 @@ requirements above, which state only what is.
   stalled drafts. It ranks seventh, after security, urgent issues, review-feedback,
   merge-conflicts and dequeued, and ahead of
   all fresh work (requirement 15c): finishing beats starting, and it turns a slot
-  silted with a dead draft into a PR a human can merge; under back-pressure it is
+  silted with a dead draft into a landable PR; under back-pressure it is
   one of the four
   finishing sources the cycle narrows to (requirement 2.2a). Four choices make it
   safe: the draft/label/branch filter keeps it to *our* stalled work (never a
@@ -17330,13 +17338,13 @@ requirements above, which state only what is.
   pipeline (requirement 3b).
 - **A merge conflict on an otherwise-ready PR is itself a work source.** A PR this
   system raised can go green, be reviewed, even be approved, and then conflict when
-  the base advances underneath it — leaving a finished PR a human cannot merge and
+  the base advances underneath it — leaving a finished PR nothing can merge and
   a back-pressure slot nothing will clear. The `merge-conflicts` source
   (requirement 3g) treats such a PR — open, non-draft, ours, `mergeable`
   definitively `CONFLICTING` — as selectable work: the pipeline rebases and
   resolves its own conflicts. It ranks fourth, after security, urgent issues and
   review-feedback,
-  and ahead of all fresh work (requirement 15d): a human is waiting to land it and
+  and ahead of all fresh work (requirement 15d): it is otherwise ready to land and
   nothing else on it can proceed first; under back-pressure it is one of the four
   finishing sources the cycle narrows to (requirement 2.2a). It deliberately does
   *not* complete the underlying item — that is the eventual merge's job — so it
@@ -17359,7 +17367,7 @@ requirements above, which state only what is.
   a textual conflict would leave if requirement 3g did not exist. The
   `dequeued` source (requirement 3z) closes it the same way: selectable work,
   ranked fifth, immediately after `merge-conflicts` and for the identical
-  reason (a human is waiting to land it, and nothing else on it can proceed
+  reason (it is otherwise ready to land, and nothing else on it can proceed
   until it is fixed); under back-pressure it is one of the four finishing
   sources the cycle narrows to, alongside `merge-conflicts`. Two choices keep
   it safe and non-overlapping: `mergeable` must be `MERGEABLE`, never
@@ -17976,8 +17984,10 @@ requirements above, which state only what is.
   the false clear) stopped confirming the disagreement locally too. The
   asymmetry argument that justifies the read side's fail-open 404 does not
   carry over: there, the cost of getting it wrong is a node running a cycle
-  a human still gates, recoverable at the next fetch; here the report is
-  simply false, in the one direction this switch exists never to be. So the
+  whose landing is still bounded by `merge_autonomy_effective_level`'s own
+  (separately fail-closed) read, recoverable at the next fetch; here the
+  report is simply false, in the one direction this switch exists never to
+  be. So the
   clear side has no mode to opt into — the unconditional accept is gone
   outright.
   `fleet_flag_delete` reuses `fleet_repo_visible` (extracted for exactly
@@ -18135,7 +18145,7 @@ confident, recurring no-op.
 | Trap | What it looks like when it bites | Build it this way instead |
 |---|---|---|
 | A `--json` field that is cheap to type and expensive to fetch | `gh pr list --json commits` cost 31 GraphQL points a call against a repository with **three** open pull requests, because `gh` asks for `commits(last: 100)` in each of the `--limit` slots and GitHub charges for nodes requested, not returned. Two gatherers × three repos × two nodes × four cycles an hour was most of the 5,000-point hourly budget, and the fleet exhausted it on 2026-08-12 — after which every work source read as empty and the pipeline looked idle rather than blocked. | Ask for the scalar (`headRefOid`, not `commits[-1].oid`) and fetch the rest from REST per candidate, where the budget is thousands. Measure a call's real cost — bracket it with `gh api rate_limit`, which is itself exempt — rather than assuming that a listing of three items costs three items' worth. |
-| A listing that silently comes back at its page size | `gh pr list` defaults to `--limit 30` and says nothing when it truncates, so the back-pressure gate simply counted low — and a gate that counts low opens. Nothing bounds the listing at `max_open_agent_prs`, because a PR waiting in the human's merge queue carries the label but is excluded from the sum. | State the cap (`GITHUB_PR_LIST_LIMIT`) instead of inheriting one, and test for it (`github_pr_list_truncated`). Then decide per call site which direction is dangerous: a work source that misses a candidate has merely not fired, whereas a gate that undercounts has let work past a cap that was already full. |
+| A listing that silently comes back at its page size | `gh pr list` defaults to `--limit 30` and says nothing when it truncates, so the back-pressure gate simply counted low — and a gate that counts low opens. Nothing bounds the listing at `max_open_agent_prs`, because a PR waiting to be merged carries the label but is excluded from the sum. | State the cap (`GITHUB_PR_LIST_LIMIT`) instead of inheriting one, and test for it (`github_pr_list_truncated`). Then decide per call site which direction is dangerous: a work source that misses a candidate has merely not fired, whereas a gate that undercounts has let work past a cap that was already full. |
 | A helper returns non-zero for a legitimately empty result, and the script runs under `set -e` | `[[ -z "$x" ]] && x="$(helper)"` takes the helper's exit status, so the *whole cycle* dies at that line. Here it died two lines before logging the failure it had just detected — nine cycles left nothing behind but a `selection` event and `exit 1`. | A lookup that finds nothing is a normal outcome: return 0 and print nothing. Reserve non-zero for real errors. Assert it at the real call-site shape under `set -e`, not on the function alone — the function looked fine; the *interaction* was the bug. |
 | The writer of an event and the reader of it disagree about the key | `attempt-failed` recorded no `repo`/`item`; the blocked extract grouped by exactly those. Every event collapsed into one anonymous group, so **no failed attempt ever blocked anything** — for months, undetected, because each half reads correctly on its own. | Round-trip the contract in a test: write the event, read it back through the real extract, assert the item is blocked. Any log the system reads back is a contract with itself. |
 | A model's clean "I can't/needn't do this" is treated as a crash | A `{"status":"blocked"}` report went down the failure path and was filed as `"implementer exited 0"`, throwing away the reason and unblock condition — the entire product of a full model run. So the next cycle bought the same discovery. | A verdict is a result. Persist it with the model's own words (requirement 9a), and note *which* verdict it is (requirement 9b). The log is the system's only memory: a finding you don't write down, you pay for again, on a schedule, forever. |
