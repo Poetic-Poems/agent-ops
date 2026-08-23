@@ -971,7 +971,7 @@ state only what is.
   into two protected product repositories to switch the pipeline on.
 - **The review PR is raised ready, not draft.** The review is the deliverable;
   there is no correctness pass to add (unlike the Implementer→Reviewer
-  hand-off), so a second agent stage would only add cost. The human gate is the
+  hand-off), so a second agent stage would only add cost. The landing gate is the
   merge.
 - **"Once a week" is implemented as a daily tick plus a skip-guard**, because a
   strict weekly cron on a machine that sleeps can miss its one tick and lose a

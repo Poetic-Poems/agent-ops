@@ -3403,7 +3403,7 @@ run_coordinator_stage_attempt() {  # <attempt-out-file> <prompt> [extra-budget-j
 # tech-debt-only gate could never reject during a restricted cycle and this
 # function was never reached — but a gate that now counts the finishing
 # sources can, and a fallback blind to `sources` would answer it by starting
-# fresh work through a full human gate. The one place the list is coarser
+# fresh work through a full landing gate. The one place the list is coarser
 # than the array is `findings`, whose two kinds are separate source tokens
 # (`security`, `code-quality`) and are matched as such here.
 #
@@ -3907,7 +3907,7 @@ object, nothing else.
 }
 
 # A Reviewer verdict that did not end in a pull request the human can see
-# (requirement 32a): `needs-human`/`blocked`, an unparseable status, or a
+# (requirement 32a): `blocked`, an unparseable status, or a
 # `ready` the handoff could not be made true.
 #
 # It is recorded exactly as any other failed attempt — an `attempt-failed`
@@ -9075,7 +9075,7 @@ refiner_allowed=1
 
 # --- 2.2a Back-pressure, decided (requirement 2.2a) ---
 # Deferred from step 2.2 until the sources were gathered. Back-pressure's stated
-# purpose is to throttle new work and stop the human gate silting up — and the
+# purpose is to throttle new work and stop the landing gate silting up — and the
 # four *finishing* sources do neither: `review-feedback` answers a review the
 # human has already written, `merge-conflicts` rebases a ready PR the human is
 # waiting to merge, `dequeued` fixes the merge-group checks failure that got a

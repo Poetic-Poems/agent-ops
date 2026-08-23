@@ -257,7 +257,7 @@ Two things to know:
 - **It only applies to `agent/` and `td/` branches** — the ones the system is
   allowed to push to. `/td` raises its PRs on `td/<id>` and the implementation
   cycle on `agent/<item>`, so both qualify; labelling a PR on any other branch (e.g.
-  `feature/…`) does nothing, because the human gate reserves those and the
+  `feature/…`) does nothing, because the landing gate reserves those and the
   gatherers skip them even when labelled.
 - **Labelling grants write access.** A labelled PR is one the fleet may push to —
   including a `--force-with-lease` rebase to clear a conflict — and it counts

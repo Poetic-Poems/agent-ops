@@ -1520,7 +1520,7 @@ implements.
       claim-registry entries for those repos** (requirement 17a — work a
       node has claimed but not yet surfaced as a PR; an item-keyed entry is
       dropped the moment its PR exists), is ≥ `max_open_agent_prs`, stand
-      down. This is the primary throttle on both spend and on the human gate
+      down. This is the primary throttle on both spend and on the landing gate
       silting up. The count is approximate by design: N nodes can pass it
       simultaneously, so the stated bound is `max_open_agent_prs +
       (nodes − 1)`, transient.
@@ -3604,7 +3604,7 @@ implements.
      tech-debt-only gate could never reject during a restricted cycle, and
      this function was unreachable); under a gate that also counts the
      finishing sources it can, and a fallback blind to `sources` would answer
-     a back-pressured cycle by starting fresh work through a full human gate.
+     a back-pressured cycle by starting fresh work through a full landing gate.
      `eligible_items_total > 0` is what let
      the gate reject a verdict at all, and every band that set counts has a
      rank in this walk, so there is always something to fall to — the one
@@ -7793,9 +7793,11 @@ implements.
 32. Ends with a single JSON object:
     `{"status": "ready" | "blocked", "pr_url": …, "fixes_applied": […], "comments_left": n, "ci": "passing" | …}`,
     plus `reason` — one line naming what is wrong — on `blocked`, which becomes
-    the block's own `detail` under requirement 32a. `needs-human` is accepted as
-    a synonym for `blocked` for one release, on the precedent of requirement
-    20's shape migration; the prompt emits `blocked`.
+    the block's own `detail` under requirement 32a. `blocked` is the only
+    spelling that means anything; requirement 32a's `!= ready` fall-through
+    already routes every other ending — an unparseable status included — down
+    the same `attempt-failed` path, so no synonym was ever needed to provide
+    tolerance for one.
 
     Additive to a `ready` verdict, absent or empty on the overwhelming
     majority of rounds: `"open_questions": [{"question": …,
@@ -10091,8 +10093,10 @@ implements.
     **The thrash guard.** An item is refined at most once between human touches.
     Where `refined_before` is set, a second refinement is not the answer: two
     models disagreeing about whether a specification is adequate is a
-    disagreement only a human can settle, and a third pass settles it only by
-    coincidence. The prompt says so, and the Script enforces it — an `unblocked`
+    disagreement that escalates instead — adjudicated first at
+    `adjudicate-first`, reaching a person directly at `always-escalate` — and a
+    third pass from the Enabler settles it only by coincidence. The prompt says
+    so, and the Script enforces it — an `unblocked`
     verdict on a refinement item whose `refined_before` is set is **refused**,
     logged as a `warning`, and recorded with the outcome `refinement-refused`,
     leaving the item blocked. Mechanical for requirement 34d's reason: "do not
@@ -10171,17 +10175,29 @@ implements.
     item stays blocked and the log is the only place a stage that routinely
     omits items would ever become visible.
 
-38. **Human-visibility.** Work genuinely waiting on the human must be visible
-    to the human — on `github.com/pulls/review-requested` for a pull request,
-    on Assigned-to-me for a genuine Enabler escalation (requirement 36a), on a
-    filtered issue list (`blocked`/`blocked:needs-refinement` — requirement
-    38b) for a Co-Ordinator-, Refiner- or Implementer-recorded refinement
-    block — not merely recorded in the pipeline's own log. A 2026-08-07
-    pipeline-flow review found neither guarantee held: no currently-open pull
-    request carried a live review request (every prior request had been
-    consumed by a submitted review), and the one genuine human-decision block
-    in this repository (#203) was unassigned, so it never appeared on
-    Assigned-to-me either.
+38. **Human-visibility.** Whatever the configured escalation ladder leaves for
+    the human — every item `escalation_autonomy`/`merge_autonomy` did not
+    settle earlier, not a fixed universal — must be visible to them — on
+    `github.com/pulls/review-requested` for a pull request, on Assigned-to-me
+    for a genuine Enabler escalation (requirement 36a), on a filtered issue
+    list (`blocked`/`blocked:needs-refinement` — requirement 38b) for a
+    Co-Ordinator-, Refiner- or Implementer-recorded refinement block — not
+    merely recorded in the pipeline's own log. A 2026-08-07 pipeline-flow
+    review found neither guarantee held: no currently-open pull request
+    carried a live review request (every prior request had been consumed by a
+    submitted review), and the one genuine human-decision block in this
+    repository (#203) was unassigned, so it never appeared on Assigned-to-me
+    either.
+
+    Today this membership test is still, in practice, every item the ladder
+    leaves over: `run_enabler_adjudication` (D18, agent-ops#627) runs inline,
+    in the same cycle as the `escalate` verdict that triggers it, so no item
+    is ever durably parked awaiting adjudication and there is no non-person
+    waiting state for this requirement to cover. #668's landing gate is what
+    would first change that — it holds a pull request across cycles on an
+    unresolved open question, with its own adjudication explicitly not
+    same-cycle — and is the point at which this membership test would
+    genuinely need widening; revisit it there, not before.
 
 38a. **A ready pull request's live review request is kept, not only made
     once.** `lib/handoff.sh`'s `ensure_human_reviewer(pr_url, assignee)`
@@ -14987,7 +15003,7 @@ pull request, run the ones the change touches and any it could regress.
    show the review pending. Assert the negative too, because it is the whole
    point of the requirement's bound: `reviewDecision` must still read
    `CHANGES_REQUESTED` and the PR must still be un-mergeable afterwards. A
-   re-request that cleared the block would have moved the human gate, not
+   re-request that cleared the block would have moved the landing gate, not
    rung it.
 8d-ii. **A `ready` verdict is confirmed against GitHub, not trusted, before any
    handoff mechanism runs (requirement 31c).** `test/review-gate.test.sh`
@@ -15150,8 +15166,8 @@ pull request, run the ones the change touches and any it could regress.
    forward the round-start bound: it is a trailing positional argument, so
    dropping it silently disarms the gate rather than failing.
 8e. **A pull request nobody could hand off reaches the Enabler, not the human
-   (requirement 32a).** Drive a cycle whose Reviewer answers `blocked` (and again
-   with the legacy `needs-human`): the cycle must log an `attempt-failed` for the
+   (requirement 32a).** Drive a cycle whose Reviewer answers `blocked`: the
+   cycle must log an `attempt-failed` for the
    item carrying the PR's `pr_url`, so that the next cycle lists it blocked and,
    after `enabler_after_coordinator_cycles`, eligible — with the `pr_url` present
    in the Enabler's runtime input. Assert the PR is *not* commented on with
@@ -17289,7 +17305,7 @@ requirements above, which state only what is.
 - **Draft-PR claiming is fused with the review flow**: the Implementer's
   draft PR is simultaneously the repos' standard claim marker and the
   Reviewer's input; the Reviewer flipping it to ready is the hand-off to the
-  human gate.
+  landing gate.
 - **An abandoned draft PR is itself a work source.** Draft-PR claiming (above)
   has a failure mode: a stage that dies mid-implementation leaves its draft PR
   behind as a claim nobody will ever finish, silting a back-pressure slot until a
@@ -17645,7 +17661,7 @@ requirements above, which state only what is.
   The mechanism turns on a constraint that looks like an obstacle and is
   actually the design: GitHub will not let a PR's author approve or dismiss a
   review on it, and this system is the author. So the agent *cannot* clear
-  `CHANGES_REQUESTED` — which both preserves the human gate for free (there is
+  `CHANGES_REQUESTED` — which both preserves the landing gate for free (there is
   no route by which an agent marks its own work accepted) and means the PR's
   own state can never tell us the feedback was answered. Whose turn it is has
   to be derived, and the derivation is events GitHub itself stamps when they
