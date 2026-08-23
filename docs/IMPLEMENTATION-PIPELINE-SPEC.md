@@ -948,7 +948,14 @@ resolution, `lib/merge-autonomy.sh`):
   round's own in-process verdict, since a write GitHub itself refused still
   reports success to the stage that requested it (requirement 8b's own "a
   missing review, never a stranded PR"); no human `CHANGES_REQUESTED`
-  stands; the merge budget (below) says `arm`, not `hold` or `refuse`; and
+  stands, and no unreconciled human comment stands either — a plain comment
+  posted after the pull request was already Ready, which a formal review
+  cannot be, since GitHub refuses a `REQUEST_CHANGES` review from a pull
+  request's own author and every pipeline write and human comment here land
+  under the same account (agent-ops#672, closing the residual window left
+  after `lib/reconciliation-gate.sh` closed the same gap at the Reviewer's
+  own ready-flip, agent-ops#533); the merge budget (below) says `arm`, not
+  `hold` or `refuse`; and
   the pull request is not already in the merge queue, nor was it ever queued
   and removed without being re-queued since — a dequeue this stage never
   reverses itself, whether a maintainer's own deliberate removal or a
@@ -5064,6 +5071,30 @@ implements.
       actually calls — the same one reviews-list read, plus the standing
       review's own `submitted_at` and `commit_id`, at no extra cost — since
       gate 4.5 needs both and it is never worth a second fetch.
+
+      Neither of the two reads above sees a plain comment: a human cannot
+      leave a formal `REQUEST_CHANGES` review on this system's own pull
+      requests at all (GitHub refuses that review type from a pull request's
+      own author, and every pipeline write and every human comment here land
+      under the same account), so an ordinary comment is their only
+      instrument, and `_handoff_blocking_reviewers` reads only formal
+      reviews. `lib/reconciliation-gate.sh`'s `reconciliation_gate`
+      (requirement 31c, agent-ops#533) already closes that gap at the
+      Reviewer's own ready-flip — a pull request carrying an unreconciled
+      comment since it last left draft cannot be flipped Ready in the first
+      place — but that gate runs once, at hand-off, and does not reach here:
+      a plain comment posted after the pull request is already Ready, in the
+      window before a later cycle's arming step lands it, was answered by
+      neither mechanism (agent-ops#672). Gate 4 closes that residual window
+      by calling `reconciliation_gate` itself a second time, unbounded (no
+      `NOT_AFTER`) — this stage never flips the pull request out of draft the
+      way the Reviewer's own call must guard against, so the real current
+      "last left draft, and stayed left" anchor is exactly the read this gate
+      needs. `dirty` refuses arming, naming the unreconciled comment(s) as
+      the reason; `unknown` (the timeline or the comment list could not be
+      read) logs a `warning` and lets the rest of this gate sequence decide,
+      the same "could not ask is not a failure" contract the Reviewer's own
+      reconciliation read already keeps.
    4.5. D18 WI-12 (Stage 4, agent-ops#415): only at `agent-merges-all`, and
       only for a pull request `landing_protected_path_controls_ok`
       (`lib/landing.sh`) itself re-confirms still touches a protected path —
@@ -15804,24 +15835,36 @@ pull request, run the ones the change touches and any it could regress.
     computation rather than read as the reviewer's own last word; only a
     genuine later `APPROVED` from that reviewer clears it.
 
-    This proves the veto rather than extending it: the formal-review half of
-    "a human change request blocks landing" is what these two files pin, and
-    `_handoff_blocking_reviewers` reads only formal reviews. A human cannot
-    leave a formal `REQUEST_CHANGES` review on this system's own pull
-    requests at all — GitHub refuses that review type from a pull request's
-    own author, and every pipeline write and every human comment on these
-    pull requests land under the same account — so their only instrument is
-    an ordinary comment. `lib/reconciliation-gate.sh` (agent-ops#533, closed
-    via PR #539) closes the adjacent case at the Reviewer's own ready-flip:
-    a pull request carrying an unreconciled non-pipeline comment since it
-    last left draft cannot be flipped Ready in the first place. That gate
-    runs once, at hand-off, and does not reach here: a plain comment posted
-    after a pull request is already Ready, in the window before a later
-    cycle's arming step lands it, is answered by neither mechanism, and this
-    gate's own fresh review-list read still sees nothing standing. That
-    residual gap is real, is not closed by this conformance test, and is
-    tracked separately as agent-ops#672 rather than under #533, which
-    describes the Reviewer's own already-fixed case.
+    These two files pin the formal-review half of "a human change request
+    blocks landing" — `_handoff_blocking_reviewers` reads only formal
+    reviews, and a human cannot leave a formal `REQUEST_CHANGES` review on
+    this system's own pull requests at all: GitHub refuses that review type
+    from a pull request's own author, and every pipeline write and every
+    human comment on these pull requests land under the same account, so
+    their only instrument is an ordinary comment. `lib/reconciliation-gate.sh`
+    (agent-ops#533, closed via PR #539) closes that case at the Reviewer's
+    own ready-flip: a pull request carrying an unreconciled non-pipeline
+    comment since it last left draft cannot be flipped Ready in the first
+    place. That gate runs once, at hand-off, and on its own does not reach a
+    comment posted after a pull request is already Ready, in the window
+    before a later cycle's arming step lands it — gate 4's fresh
+    formal-review read alone still sees nothing standing against a plain
+    comment. Gate 4 (`_landing_stage_attempt`, `agent-cycle.sh`) closes that
+    residual window itself (agent-ops#672) by calling `reconciliation_gate`
+    a second time, unbounded, immediately after `_handoff_blocking_reviewers`
+    — unbounded because, unlike the Reviewer's own call, this stage never
+    flips the pull request out of draft, so the raw "most recent
+    `ready_for_review` event, not since undone" already is the anchor this
+    read needs. A `dirty` verdict refuses arming, naming the unreconciled
+    comment(s); an `unknown` verdict (the timeline or comment list could not
+    be read) logs a `warning` and lets the rest of the gate sequence decide,
+    rather than refusing on a node fact rather than a pull request one.
+    `test/landing-wiring.test.sh` pins this directly: a case with a `dirty`
+    `reconciliation_gate` stub refuses arming with the unreconciled comment
+    named in `landing-refused` and never calls `landing_arm`, a case with
+    `unknown` logs the `warning` and still arms once every other gate
+    clears, and the happy path confirms `reconciliation_gate` is called
+    exactly once per attempt, unbounded.
 
     D18 WI-12 (Stage 4, agent-ops#415) is pinned separately, in both files.
     `test/landing.test.sh`: `landing_eligible` reads `eligible`, not
