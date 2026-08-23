@@ -299,9 +299,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `log.jsonl` is rotated independently of `COST_SCAN_DAYS`.
 
 - `counts.cost_rows[]` entries now carry `repo`, `item`, `source`, `outcome`
-  and `attributed` (issue #593, D21) — the money's spend total already said,
-  which the item dimension left "what did we spend on work that never landed"
-  unanswerable to ask. Joined by `cycle` against the same fleet-wide event
+  and `attributed` (issue #593, D21) — previously the total spend was visible
+  but the item dimension left this question unanswerable: what was spent on
+  work that never landed. Joined by `cycle` against the same fleet-wide event
   union `cycles[]` renders from, not against `cycles[]` itself: the union is
   bounded by `log_retained_bytes`, independent of `cycles[]`'s own
   `MAX_CYCLES` cap, so the join reaches back over the whole `COST_SCAN_DAYS`
