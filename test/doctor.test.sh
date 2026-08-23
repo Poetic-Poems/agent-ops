@@ -515,10 +515,31 @@ assert_contains "and positively confirms none, naming the repo and level" \
 perm_key="$tmp/approver-perm-key.pem"
 openssl genrsa -out "$perm_key" 2048 >/dev/null 2>&1
 perm_curl="$tmp/perm-curl"
+perm_cache="$tmp/approver-token-cache"
+mkdir -p "$perm_cache"
+# Dispatches on the URL, because two different reads reach it now: the JWT-
+# signed permissions read (`/app/installations/<id>`) and, behind an
+# installation token it must first mint (`…/access_tokens`), the repository
+# selection (`/installation/repositories`, agent-ops#721). A stub answering
+# one canned body to all three would fail the mint and report the selection
+# unreadable in every existing case.
 cat > "$perm_curl" <<'STUB'
 #!/usr/bin/env bash
 d="$(dirname "$0")"
 cat >/dev/null 2>&1
+url=""
+for a in "$@"; do case "$a" in https://*) url="$a" ;; esac; done
+case "$url" in
+  */access_tokens)
+    printf '{"token":"ghs_doctor_stub","expires_at":"2099-01-01T00:00:00Z"}\n201'
+    exit 0 ;;
+  */installation/repositories*)
+    [[ -f "$d/repos_curl_fail" ]] && exit 1
+    status="$(cat "$d/repos_curl_status" 2>/dev/null || echo 200)"
+    body="$(cat "$d/repos_curl_body" 2>/dev/null || echo '{}')"
+    printf '%s\n%s' "$body" "$status"
+    exit 0 ;;
+esac
 [[ -f "$d/perm_curl_fail" ]] && exit 1
 status="$(cat "$d/perm_curl_status" 2>/dev/null || echo 200)"
 body="$(cat "$d/perm_curl_body" 2>/dev/null || echo '{}')"
@@ -531,11 +552,21 @@ stub_perm() {
   printf '%s' "$body" > "$tmp/perm_curl_body"
   rm -f "$tmp/perm_curl_fail"
 }
+# The installation's repository selection: covering $slug by default, so every
+# case written before agent-ops#721 keeps the verdict it was written for.
+stub_repos() {
+  local status="${1:-200}" body="$2"
+  printf '%s' "$status" > "$tmp/repos_curl_status"
+  printf '%s' "$body" > "$tmp/repos_curl_body"
+  rm -f "$tmp/repos_curl_fail" "$perm_cache"/* 2>/dev/null || true
+}
+stub_repos 200 "$(printf '{"total_count":1,"repository_selection":"selected","repositories":[{"full_name":"%s"}]}' "$slug")"
 
 stub_perm 200 '{"permissions":{"contents":"write","metadata":"read","pull_requests":"write"}}'
 out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   PULLWRIGHT_APPROVER_APP_ID=123456 PULLWRIGHT_APPROVER_INSTALLATION_ID=153689775 \
   PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$perm_key" APPROVER_TOKEN_CURL="$perm_curl" \
+  APPROVER_TOKEN_CACHE_DIR="$perm_cache" \
   bash "$DOCTOR" --config "$ma_approves_config" 2>&1)"
 rc=$?
 assert_contains "the exact three permissions live is ok" \
@@ -546,6 +577,7 @@ stub_perm 200 '{"permissions":{"contents":"read","metadata":"read","pull_request
 out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   PULLWRIGHT_APPROVER_APP_ID=123456 PULLWRIGHT_APPROVER_INSTALLATION_ID=153689775 \
   PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$perm_key" APPROVER_TOKEN_CURL="$perm_curl" \
+  APPROVER_TOKEN_CACHE_DIR="$perm_cache" \
   bash "$DOCTOR" --config "$ma_approves_config" 2>&1)"
 rc=$?
 assert_contains "a narrower live contents permission fails, naming the gap" \
@@ -556,6 +588,7 @@ stub_perm 200 '{"permissions":{"contents":"write","metadata":"read","pull_reques
 out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   PULLWRIGHT_APPROVER_APP_ID=123456 PULLWRIGHT_APPROVER_INSTALLATION_ID=153689775 \
   PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$perm_key" APPROVER_TOKEN_CURL="$perm_curl" \
+  APPROVER_TOKEN_CACHE_DIR="$perm_cache" \
   bash "$DOCTOR" --config "$ma_approves_config" 2>&1)"
 assert_contains "a permission granted beyond the three required fails too, naming it" \
   "issues granted but not required" "$out"
@@ -564,6 +597,7 @@ touch "$tmp/perm_curl_fail"
 out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   PULLWRIGHT_APPROVER_APP_ID=123456 PULLWRIGHT_APPROVER_INSTALLATION_ID=153689775 \
   PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$perm_key" APPROVER_TOKEN_CURL="$perm_curl" \
+  APPROVER_TOKEN_CACHE_DIR="$perm_cache" \
   bash "$DOCTOR" --config "$ma_approves_config" 2>&1)"
 rc=$?
 assert_contains "an unreachable installation endpoint is a skip, never a fail — it degrades gracefully" \
@@ -583,6 +617,7 @@ assert_contains "  ... but the consolidated verdict at agent-approves still name
 out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   PULLWRIGHT_APPROVER_APP_ID=123456 PULLWRIGHT_APPROVER_INSTALLATION_ID=153689775 \
   PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$perm_key" APPROVER_TOKEN_CURL="$perm_curl" \
+  APPROVER_TOKEN_CACHE_DIR="$perm_cache" \
   bash "$DOCTOR" --config "$base_config" 2>&1)"
 assert_not_contains "at human (nothing above human configured), the permissions check stays silent too" \
   "the Approver App installation" "$out"
@@ -807,6 +842,7 @@ stub_perm 200 '{"permissions":{"contents":"write","metadata":"read","pull_reques
 out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   PULLWRIGHT_APPROVER_APP_ID=123456 PULLWRIGHT_APPROVER_INSTALLATION_ID=153689775 \
   PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$perm_key" APPROVER_TOKEN_CURL="$perm_curl" \
+  APPROVER_TOKEN_CACHE_DIR="$perm_cache" \
   STUB_REPO_JSON="$aam_ok_json" STUB_MERGE_QUEUE_JSON='null' \
   STUB_RULESETS_JSON="$aam_ready_rulesets_json" STUB_RULESET_DETAIL_JSON="$aam_ready_ruleset_detail_json" \
   bash "$DOCTOR" --config "$ma_config" 2>&1)"
@@ -822,6 +858,7 @@ touch "$tmp/perm_curl_fail"
 out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   PULLWRIGHT_APPROVER_APP_ID=123456 PULLWRIGHT_APPROVER_INSTALLATION_ID=153689775 \
   PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$perm_key" APPROVER_TOKEN_CURL="$perm_curl" \
+  APPROVER_TOKEN_CACHE_DIR="$perm_cache" \
   STUB_REPO_JSON="$aam_both_off_json" STUB_MERGE_QUEUE_JSON='null' \
   bash "$DOCTOR" --config "$ma_config" 2>&1)"
 rc=$?
@@ -896,6 +933,7 @@ stub_perm 200 '{"permissions":{"contents":"write","metadata":"read"}}'
 out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   PULLWRIGHT_APPROVER_APP_ID=123456 PULLWRIGHT_APPROVER_INSTALLATION_ID=153689775 \
   PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$perm_key" APPROVER_TOKEN_CURL="$perm_curl" \
+  APPROVER_TOKEN_CACHE_DIR="$perm_cache" \
   bash "$DOCTOR" --config "$ma_approves_config" 2>&1)"
 rc=$?
 assert_contains "agent-approves with a narrowed App installation fails, naming the gap as an owner act" \
@@ -910,11 +948,61 @@ stub_perm 200 '{"permissions":{"contents":"write","metadata":"read","pull_reques
 out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   PULLWRIGHT_APPROVER_APP_ID=123456 PULLWRIGHT_APPROVER_INSTALLATION_ID=153689775 \
   PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$perm_key" APPROVER_TOKEN_CURL="$perm_curl" \
+  APPROVER_TOKEN_CACHE_DIR="$perm_cache" \
   bash "$DOCTOR" --config "$ma_approves_config" 2>&1)"
 rc=$?
 assert_contains "agent-approves with the exact three permissions live earns the ok verdict" \
   "[ ok ] $slug's autonomy readiness: \"agent-approves\" is fully supported by its forge configuration" "$out"
 assert_eq "  ... and doctor.sh does not exit non-zero for it" "0" "$rc"
+
+# --- D18 Stage 3 (agent-ops#721): the installation's repository *selection*,
+#     not just its permissions. Permissions say what the App may do; the
+#     selection says where — and a repository left out of a `selected`
+#     installation is one the App can neither review nor land in, however
+#     right its permissions look.
+stub_perm 200 '{"permissions":{"contents":"write","metadata":"read","pull_requests":"write"}}'
+stub_repos 200 '{"total_count":1,"repository_selection":"selected","repositories":[{"full_name":"acme-org/some-other-repo"}]}'
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
+  PULLWRIGHT_APPROVER_APP_ID=123456 PULLWRIGHT_APPROVER_INSTALLATION_ID=153689775 \
+  PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$perm_key" APPROVER_TOKEN_CURL="$perm_curl" \
+  APPROVER_TOKEN_CACHE_DIR="$perm_cache" \
+  bash "$DOCTOR" --config "$ma_approves_config" 2>&1)"
+rc=$?
+assert_contains "a repository outside the installation's selection fails, naming it an owner act" \
+  "the Approver App installation does not cover $slug — add it to the installation's repository selection (owner act)" "$out"
+assert_not_contains "  ... and never the false all-clear that it is fully supported" \
+  "[ ok ] $slug's autonomy readiness: \"agent-approves\" is fully supported by its forge configuration" "$out"
+assert_eq "  ... and doctor.sh exits 1" "1" "$rc"
+
+# An installation granted every repository in the account covers this one by
+# construction — no listing to search.
+stub_repos 200 '{"total_count":0,"repository_selection":"all","repositories":[]}'
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
+  PULLWRIGHT_APPROVER_APP_ID=123456 PULLWRIGHT_APPROVER_INSTALLATION_ID=153689775 \
+  PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$perm_key" APPROVER_TOKEN_CURL="$perm_curl" \
+  APPROVER_TOKEN_CACHE_DIR="$perm_cache" \
+  bash "$DOCTOR" --config "$ma_approves_config" 2>&1)"
+assert_contains "a whole-account installation covers every configured repository" \
+  "[ ok ] $slug's autonomy readiness: \"agent-approves\" is fully supported by its forge configuration" "$out"
+
+# A listing that could not be read whole — here a page shorter than its own
+# total_count — is unconfirmed, never the "does not cover" that would be a
+# fail and an owner act. A dropped page must not be able to mint one of those.
+stub_repos 200 '{"total_count":9,"repository_selection":"selected","repositories":[{"full_name":"acme-org/other"}]}'
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
+  PULLWRIGHT_APPROVER_APP_ID=123456 PULLWRIGHT_APPROVER_INSTALLATION_ID=153689775 \
+  PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$perm_key" APPROVER_TOKEN_CURL="$perm_curl" \
+  APPROVER_TOKEN_CACHE_DIR="$perm_cache" \
+  bash "$DOCTOR" --config "$ma_approves_config" 2>&1)"
+rc=$?
+assert_contains "a truncated listing reports unconfirmed, never a missing repository" \
+  "which repositories the Approver App installation covers could not be read" "$out"
+assert_not_contains "  ... and never claims the App cannot see it" \
+  "the Approver App installation does not cover" "$out"
+assert_eq "  ... and doctor.sh does not fail for something it could not check" "0" "$rc"
+
+# Restore the covering selection for every case below.
+stub_repos 200 "$(printf '{"total_count":1,"repository_selection":"selected","repositories":[{"full_name":"%s"}]}' "$slug")"
 
 # --- D18 WI-7 (requirement 8d): merge_autonomy_routine_sources naming a
 #     source this repository's own sources list never gathers ---------------

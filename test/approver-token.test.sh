@@ -324,6 +324,53 @@ assert_eq "unparsable expires_at: still exit 0" "0" "$rc"
 assert_eq "  ... the minted token on stdout" "ghs_oddexpiry" "$out"
 assert_eq "  ... nothing was cached" "" "$(ls -A "$cache_dir")"
 
+# --- approver_token_installation_repositories (D18 Stage 3, agent-ops#721) ---
+# Where the installation may act, as opposed to what it may do. Two reads deep
+# — an installation token, then the listing it alone can make — so the cache is
+# seeded first and every assertion below counts exactly the listing call.
+setup_env
+rm -f "$cache_dir"/*
+stub_curl 201 '{"token":"ghs_repos000","expires_at":"2026-08-14T14:00:00Z"}'
+approver_token_get "$now" >/dev/null 2>&1
+
+stub_curl 200 '{"total_count":2,"repository_selection":"selected","repositories":[{"full_name":"o/a"},{"full_name":"o/b"}]}'
+out="$(approver_token_installation_repositories "$now")"; rc=$?
+assert_eq "installation repositories: exit 0" "0" "$rc"
+assert_eq "  ... one owner/name per line" "$(printf 'o/a\no/b')" "$out"
+assert_eq "  ... one live call: the installation token came from the cache" "1" "$(call_count)"
+assert_eq "  ... the Authorization header is absent from curl's argv" "" \
+  "$(grep -i 'authorization' "$tmp_dir/curl_argv" || true)"
+
+stub_curl 200 '{"total_count":0,"repository_selection":"all","repositories":[]}'
+out="$(approver_token_installation_repositories "$now")"; rc=$?
+assert_eq "installation repositories: a whole-account installation says so" "all" "$out"
+assert_eq "  ... and exits 0" "0" "$rc"
+
+# The one that matters most: a page shorter than its own total_count is an
+# error, not a short list. A caller turns non-zero into "unconfirmed", where a
+# silently short list would have read as "the App cannot see this repository".
+stub_curl 200 '{"total_count":9,"repository_selection":"selected","repositories":[{"full_name":"o/a"}]}'
+out="$(approver_token_installation_repositories "$now")"; rc=$?
+assert_eq "installation repositories: a truncated listing prints nothing" "" "$out"
+assert_eq "  ... and exits non-zero rather than reporting a short list" "1" "$rc"
+
+stub_curl 404 '{"message":"Not Found"}'
+out="$(approver_token_installation_repositories "$now")"; rc=$?
+assert_eq "installation repositories: a non-200 is a failure" "" "$out"
+assert_eq "  ... and exits non-zero" "1" "$rc"
+
+setup_env
+touch "$tmp_dir/curl_fail"
+out="$(approver_token_installation_repositories "$now")"; rc=$?
+assert_eq "installation repositories: an unreachable API is a failure" "" "$out"
+assert_eq "  ... and exits non-zero" "1" "$rc"
+rm -f "$tmp_dir/curl_fail"
+
+clear_env
+out="$(approver_token_installation_repositories "$now")"; rc=$?
+assert_eq "installation repositories: no credential configured is gate-unreadable" "" "$out"
+assert_eq "  ... exit 2, the same code approver_token_get uses for it" "2" "$rc"
+
 # --- approver_token_identity_login (D18 WI-5) ---------------------------------
 # The one call in this file that authenticates as the App itself rather than
 # an installation — lib/approver.sh's refuse-streak counting needs the App's

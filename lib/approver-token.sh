@@ -334,6 +334,61 @@ approver_token_installation_permissions() {
   jq -c '.permissions' <<<"$body"
 }
 
+# approver_token_installation_repositories [NOW_EPOCH]
+# Print the repositories the Pullwright Approver installation can actually
+# act on — one `owner/name` per line — or the single word `all` when the
+# installation was granted every repository in the account. Returns non-zero,
+# printing nothing, on the same "gate unreadable" terms as
+# `approver_token_get` (2 no credential, 1 request failed).
+#
+# D18 Stage 3 (agent-ops#721): an installation's *repository selection*, like
+# its permissions above, lives entirely on GitHub's own consent screen and can
+# be narrowed at any time with nothing in this repository the wiser — and
+# `scripts/doctor.sh`'s autonomy-readiness verdict was checking the
+# permissions without ever checking that they applied to the repository in
+# front of it. A repository configured at `agent-approves` or above that the
+# App cannot see is a verdict of "fully supported" over an App that can
+# neither review nor land there.
+#
+# Installation-token-signed, not JWT-signed, and that is the whole reason this
+# is a separate function from `approver_token_installation_permissions`:
+# `/app/installations/<id>` (the JWT read) reports `repository_selection` but
+# never the list, and `/installation/repositories` — which does — is readable
+# only *as* the installation. The two questions need the two identities.
+#
+# A listing this call could not read whole is an error, never a short list:
+# `total_count` is compared against what came back, and a page that dropped
+# repositories returns 1. The caller turns a non-zero into "unconfirmed", so a
+# truncated read reports "could not be checked" — never the "the App cannot
+# see this repository" that a silently short list would produce, which
+# `scripts/doctor.sh` reports as a `fail` and an owner act.
+approver_token_installation_repositories() {
+  local now="${1:-$(date +%s)}"
+  local curl_bin="${APPROVER_TOKEN_CURL:-curl}"
+  local token response status body
+
+  approver_token_credential_present || return 2
+  token="$(approver_token_get "$now")" || return 1
+  [[ -n "$token" ]] || return 1
+
+  response="$(printf 'header = "Authorization: Bearer %s"\n' "$token" \
+    | "$curl_bin" --config - -sS --max-time 30 -w $'\n%{http_code}' \
+      -H "Accept: application/vnd.github+json" \
+      "https://api.github.com/installation/repositories?per_page=100" 2>/dev/null)" || return 1
+  status="${response##*$'\n'}"
+  body="${response%$'\n'*}"
+  [[ "$status" == "200" ]] || return 1
+
+  if [[ "$(jq -r '.repository_selection // ""' <<<"$body" 2>/dev/null)" == "all" ]]; then
+    printf 'all\n'
+    return 0
+  fi
+
+  jq -e 'has("repositories") and ((.repositories | length) >= (.total_count // 0))' \
+    <<<"$body" >/dev/null 2>&1 || return 1
+  jq -r '.repositories[].full_name' <<<"$body" 2>/dev/null || return 1
+}
+
 # approver_token_identity_login [NOW_EPOCH]
 # Print the Pullwright Approver's own GitHub login — "<app-slug>[bot]", the
 # form every review or comment it submits carries as its `user.login` — or
