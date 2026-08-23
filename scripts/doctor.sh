@@ -817,15 +817,20 @@ if ((gh_ready)); then
   # from the config alone.
   check_repo_labels() {
     local slug="$1" role="$2" review_pr_label="${3:-}" repo_labels label
-    local interval_hours
+    local interval_hours within
     interval_hours="$(cfg '.labels_ensure_interval_hours')"
+    if [[ "$interval_hours" =~ ^[0-9]+$ ]] && (( interval_hours == 0 )); then
+      within="on its next gather (the rate limit is disabled)"
+    else
+      within="within $interval_hours hours"
+    fi
     if ! repo_labels="$(gh api "repos/$slug/labels" --paginate --jq '.[].name' 2>/dev/null)"; then
       return 1
     fi
     while IFS=$'\t' read -r label _ _; do
       [[ -n "$label" ]] || continue
       grep -qixF -- "$label" <<<"$repo_labels" \
-        || warn "$slug has no \"$label\" label — the next cycle that gathers this repo creates it (lib/labels.sh), within $interval_hours hours; if it is still absent after that has passed, this token may not create labels"
+        || warn "$slug has no \"$label\" label — the next cycle that gathers this repo creates it (lib/labels.sh), $within; if it is still absent after that has passed, this token may not create labels"
     done < <(labels_catalogue "$config_file" "$schema_file" "$role" "$review_pr_label")
     return 0
   }

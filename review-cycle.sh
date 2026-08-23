@@ -156,7 +156,6 @@ cfg_json() { jq -c "$1" <<<"$DEFAULTED_CONFIG"; }
 
 state_dir="$(expand_home "$(cfg '.state_dir')")"
 workspace_root="$(expand_home "$(cfg '.workspace_root')")"
-labels_ensure_interval_hours="$(cfg '.labels_ensure_interval_hours')"
 # Every per-repository tunable (model, pr_label, branch_prefix,
 # min_days_between_reviews, not_before, timeout_review, inactivity_review) is
 # resolved once here, against project_review.defaults and each repository's
@@ -886,13 +885,19 @@ review_one() {
   # the same point as the identity above and for the same reason: this repo is
   # now certainly going to be worked (R4's skip-guard and the claim are both
   # behind us), so nothing is spent on a repo this cycle will not touch.
-  # Rate-limited by the same stamped helper agent-cycle.sh's own gather loop
-  # uses (`labels_ensure_interval_hours`, requirement 6a, agent-ops#687), so
-  # the two pipelines share one stamp mechanism rather than growing a second.
-  # See lib/labels.sh; never fatal.
+  # Unconditional and unstamped — the same shape as agent-cycle.sh's own
+  # step 6a listing for its selected repository (requirement 6a,
+  # agent-ops#687), and for the same reason: a repository is selected for
+  # review at most once per min_days_between_reviews days, which in every
+  # configuration this pipeline ships with is longer than
+  # labels_ensure_interval_hours, so a rate-limited stamp here would always
+  # have gone stale between one review and the next and never actually save a
+  # listing — while opening a real gap in a configuration where it has not,
+  # letting a pr_label deleted after the stamp cost a whole review before
+  # `gh pr create --label` finally noticed. See lib/labels.sh; never fatal.
   local labels_report
-  labels_report="$(labels_ensure_stamped "$state_dir" "$CONFIG_FILE" "$SCHEMA_FILE" \
-    "$slug" review "$labels_ensure_interval_hours" "$pr_label" 2>/dev/null || true)"
+  labels_report="$(labels_ensure_role "$CONFIG_FILE" "$SCHEMA_FILE" \
+    "$slug" review "$pr_label" 2>/dev/null || true)"
   if [[ -n "$labels_report" ]]; then
     log_event "labels-ensured" "$(jq -nc --arg repo "$slug" --arg report "$labels_report" '
       {repo: $repo, role: "review"}
