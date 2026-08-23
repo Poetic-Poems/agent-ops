@@ -271,6 +271,66 @@ assert_eq "an empty repository slug is refused rather than guessed at" "1" \
 assert_eq "an empty name is refused rather than guessed at" "1" \
   "$(labels_ensure_one "Owner/repo" "" >/dev/null 2>&1; echo $?)"
 
+# --- labels_ensure_stamped: rate-limited by a per-(repo, role) stamp file ---
+config
+stamp_root="$tmp/state"
+stamp_file="$stamp_root/labels-ensured/Owner_repo.escalation"
+rm -rf "$stamp_root"
+reset_stub
+out="$(labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 24)"
+assert_eq "a first call with no stamp ensures the catalogue" "created" "$(cut -f1 <<<"$out")"
+assert_eq "  ... and leaves a stamp behind" "1" \
+  "$([[ -f "$stamp_file" ]] && echo 1 || echo 0)"
+
+: > "$tmp/log"
+out="$(labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 24)"
+assert_eq "a second call within the interval ensures nothing" "" "$out"
+assert_eq "  ... issuing no gh call at all" "" "$(cat "$tmp/log")"
+
+touch -d "-25 hours" "$stamp_file"
+: > "$tmp/log"
+out="$(labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 24)"
+assert_eq "a call past the interval re-lists (the label is already there, so nothing to create)" \
+  "" "$out"
+assert_eq "  ... but it does list" "1" \
+  "$(grep -c '^api repos/Owner/repo/labels --paginate' "$tmp/log")"
+assert_eq "  ... and refreshes the stamp" "1" \
+  "$(( $(date +%s) - $(stat -c %Y "$stamp_file") < 60 ? 1 : 0 ))"
+
+rm -rf "$stamp_root"
+reset_stub
+out="$(labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 0)"
+assert_eq "an interval of 0 always ensures, stamp or no stamp" "created" "$(cut -f1 <<<"$out")"
+rm -rf "$stamp_root"
+touch_dummy="$stamp_root/labels-ensured"
+mkdir -p "$touch_dummy" && touch "$touch_dummy/Owner_repo.escalation"
+out="$(labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 0)"
+assert_eq "  ... even with a stamp from moments ago" "" "$out"
+rm -rf "$stamp_root"
+
+reset_stub
+export GH_LIST_FAILS=1
+out="$(labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 24)"
+rc=$?
+assert_eq "a repository that cannot be listed leaves no stamp" "0" \
+  "$([[ -f "$stamp_file" ]] && echo 1 || echo 0)"
+assert_eq "  ... and reports the same failure labels_ensure_role would" "1" "$rc"
+unset GH_LIST_FAILS
+rm -rf "$stamp_root"
+
+reset_stub enabler-escalation
+labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 24 >/dev/null
+: > "$tmp/log"
+out="$(labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/other" escalation 24)"
+assert_eq "a different repository is not covered by this one's stamp" "" "$out"
+assert_eq "  ... it still lists, on its own account" "1" \
+  "$(grep -c 'repos/Owner/other/labels --paginate' "$tmp/log")"
+rm -rf "$stamp_root"
+
+reset_stub
+assert_eq "an empty state dir is refused rather than guessed at" "1" \
+  "$(labels_ensure_stamped "" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 24 >/dev/null 2>&1; echo $?)"
+
 echo
 if (( failures == 0 )); then
   echo "All labels assertions passed."

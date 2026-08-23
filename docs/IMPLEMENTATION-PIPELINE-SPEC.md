@@ -670,6 +670,7 @@ and the schema must carry every one of them.
 | `refiner_max_per_engagement` | `5` | How many unrefined items one Refiner engagement takes on (requirement 39b), chosen oldest-seen first so every node in the fleet reduces to the same set. `0` removes the class from engagements entirely. |
 | `refinement_policy` | `{"issues":"preferred"}` | Per-source refinement policy (requirement 39a): `required`, `preferred` or `exempt`, read by the Co-Ordinator alongside `refinements` (requirement 3h) to decide whether an unrefined item may be ranked at all. A source absent from this object is `exempt`. Bounded by what requirement 39's candidate gathering reads — the `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`, `dequeued`, `register_hygiene`, `issues` and `tech_debt` arrays every repo's...[continued below](#extended-notes-refinement_policy) |
 | `unvoid_label` | `unvoided` | The label a human applies on GitHub to ask for a void to be reopened (requirement 34f). No stage here ever applies it, so requirement 34c's "only a human may clear a void" is unchanged; what it adds is a way to say so from the issue itself. It must not be `blocked`, for the reason given against `enabler_escalation_label`. Nor `obsolete`: the label a human applied to ask for a voided pull request to be reopened would itself corroborate requirement 34k closing it. |
+| `labels_ensure_interval_hours` | `24` | How often, at most, the Script re-lists a repository's labels to create any absent ones (requirement 6a), keyed per repository via a stamp file under `state_dir` rather than a single fleet-wide clock — so one repository's interval elapsing says nothing about another's. `0` disables the stamp check, so it ensures on every cycle regardless. |
 | `void_retire_after_days` | 30 d | How old a fully-actioned void must be, in days, before requirement 34n drops it from the extract. `0` disables retirement, which is also the safe fallback for an unparseable value — never retiring costs bytes, wrongly retiring costs nothing observable, so the failure mode this guards is silent growth, not a wrongly-reopened item. |
 | `prompt_overrides` | `{}` | Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementer`/`reviewer`/`enabler`/`refiner`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. `approver` is deliberately absent from the enumeration: the Approver's...[continued below](#extended-notes-prompt_overrides) |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. It must not be `obsolete`: the pipeline would then project requirement 34k's human-only corroboration onto every draft it raises, and the void guard would close live drafts on the pipeline's own say-so — `scripts/doctor.sh` fails the config. Threaded through the Co-Ordinator's runtime input (requirement 4) into every work order's own `pr_label` field, which the Implementer labels its pull request with (requirement 23). |
@@ -4712,49 +4713,82 @@ implements.
    diverge, and `CLONE_GIT` substitutes a stub for tests — a seam this needs in
    its own right, because a test that wants the clone to fail can no longer get
    that from a fail-fast `gh` on `PATH`.
-6a. **The pipeline creates its own labels.** Before launching the Implementer,
-   the Script ensures every label this system applies exists in the selected
-   repository, creating only those that are absent: `pr_label`,
-   `enabler_escalation_label`, `needs_refinement_label`, `unvoid_label`,
-   `complexity:low|medium|high`, `blocked` and `obsolete` — the last two being
-   human-only controls no pipeline stage ever applies itself: `blocked`
-   excludes an issue from selection (requirement 16.4), and `obsolete`
-   corroborates closing a still-open, still-diff-carrying `pr-<n>-abandoned-…`/
-   `pr-<n>-review-…` draft (requirements 34d, 34k; TD-PPagop-26081308) — a
-   repository without either label does not offer the human either control at
-   all. `review-cycle.sh` does the same for
-   each repository's own resolved `project_review` pr_label (its override, or
+6a. **The pipeline creates its own labels.** As it gathers each repository's
+   data — not only, and not first, at the one it later selects to work — the
+   Script ensures every label this system applies exists there, creating
+   only those that are absent: `pr_label`, `enabler_escalation_label`,
+   `needs_refinement_label`, `refined_label`, `unvoid_label`,
+   `complexity:low|medium|high`, `blocked`, `blocked:needs-refinement` and
+   `obsolete` — `blocked` and `obsolete` being human-only controls no
+   pipeline stage ever applies itself: `blocked` excludes an issue from
+   selection (requirement 16.4), and `obsolete` corroborates closing a
+   still-open, still-diff-carrying `pr-<n>-abandoned-…`/`pr-<n>-review-…`
+   draft (requirements 34d, 34k; TD-PPagop-26081308) — a repository without
+   either label does not offer the human either control at all, and
+   ensuring against every gathered repository rather than only a selected
+   one is what gives that control to a repository no cycle has chosen to
+   work in yet. It is also what lets the Co-Ordinator's own
+   `needs_refinement`/`blocked` projection (requirement 34e) and the
+   Refiner's `refined_label` projection (requirement 39c) reach a fresh
+   repository the moment either first fires there, rather than failing
+   silently until some later cycle happens to select work in it
+   (agent-ops#687). `review-cycle.sh` reaches the same rate-limited helper
+   (`labels_ensure_stamped`, `lib/labels.sh`) for each repository's own
+   resolved `project_review` pr_label (its override, or
    `project_review.defaults.pr_label`, requirement 342) in each repository it
-   is about to review, and
-   `create_escalation_issue` for `enabler_escalation_label` in the repository
-   an escalation is filed in, which is often one no cycle otherwise touches.
-   A label whose configured name is empty is switched off and is not created.
-   And no configurable label may carry a reserved *name*: `scripts/doctor.sh`
-   fails a config that sets any label key to `obsolete`, or an issue-side key
-   to `blocked`, because a stage projecting a configured label under a
-   reserved name would apply the human-only control itself — requirement 34k's
-   corroboration, in `pr_label`'s case, onto every draft the pipeline raises.
+   is about to review, and `create_escalation_issue` calls the plain,
+   unstamped `labels_ensure_role` for `enabler_escalation_label` in the
+   repository an escalation is filed in, which is often one no cycle
+   otherwise touches. A label whose configured name is empty is switched off
+   and is not created. And no configurable label may carry a reserved *name*:
+   `scripts/doctor.sh` fails a config that sets any label key to `obsolete`,
+   or an issue-side key to `blocked`, because a stage projecting a
+   configured label under a reserved name would apply the human-only control
+   itself — requirement 34k's corroboration, in `pr_label`'s case, onto
+   every draft the pipeline raises.
 
-   Three properties are load-bearing. It **only ever creates**: an existing
+   Four properties are load-bearing. It **only ever creates**: an existing
    label keeps whatever colour and description it has, because operators
    recolour labels and a pipeline that reasserted its own idea of them every
    cycle would undo that work on a schedule. It is **never fatal**: a
    repository whose labels cannot be listed, or a token that may not create
    them, is reported and nothing more — the tolerances the callers already
-   carry (`refinement_label_add`'s swallowed error, requirement 36a's retry
+   carry (`refinement_label_add`'s own retry below, requirement 36a's retry
    without the label) stay exactly where they are, so this makes the common
-   case work without becoming a new way to lose a cycle. And it is **per
-   worked repository, not per configured repository**: a cycle works one repo,
-   so the steady state is a single listing and no writes at all.
+   case work without becoming a new way to lose a cycle. It is **per
+   gathered repository, not per selected one**: every repository a cycle
+   gathers data for gets this, whether or not the Co-Ordinator goes on to
+   select work there — the property this replaces, "per worked repository,
+   not per configured repository", is exactly what left gaps 1–3 above
+   unreachable until a repository's first selection. And it is
+   **rate-limited, not once-forever**: a per-`(repository, role)` stamp file
+   under `state_dir` (`labels_ensure_interval_hours`, default 24h) bounds how
+   often the listing runs once a repository already has every label, so the
+   steady state stays a single listing per repository per interval and zero
+   writes, while a label a human deletes still comes back within one
+   interval — periodic rather than once-forever is what keeps that promise
+   true regardless of whether the repository is ever selected again.
 
-   Why it exists: every one of these labels was previously something a human
-   had to create by hand in every target repository, and nothing said so when
-   they had not — the projection simply did not happen and the item was
-   handled anyway, so the signal the label exists to give was silently absent.
-   That is a product bug rather than an installation's own problem (the
-   customer-zero rule, `docs/ROADMAP.md`): a new installation must not need a
-   checklist of `gh label create` commands, and a label a human deletes must
-   come back on its own.
+   `refinement_label_add` (requirement 34e) self-heals the one failure mode
+   this cannot pre-empt — the ensure above ran, but this repository's stamp
+   had not yet been written, or the projection is racing a repository this
+   cycle is gathering right now: a failed add retries, once, through
+   `labels_ensure_one` (`lib/labels.sh`) via an injectable
+   `REFINEMENT_LABEL_ENSURE` hook, memoised per `(repo, label)` per process
+   so a token that genuinely cannot create labels is billed once per cycle,
+   not once per projection.
+
+   Why it exists: every one of these labels was previously something a
+   human had to create by hand in every target repository, and nothing said
+   so when they had not — the projection simply did not happen and the item
+   was handled anyway, so the signal the label exists to give was silently
+   absent, worse still for a repository the pipeline had not yet selected
+   work in, which got no ensure at all until it did. That is a product bug
+   rather than an installation's own problem (the customer-zero rule,
+   `docs/ROADMAP.md`): a new installation must not need a checklist of `gh
+   label create` commands, and a label a human deletes must come back on its
+   own — in every repository it configures, not only the one currently being
+   worked.
 7. **Implementer stage.** Launch the Implementer in the clone (model from
    the work order, `--dangerously-skip-permissions`, stage timeout), passing
    the implementer prompt plus the work order, and this cycle's `cycle` id and
@@ -7641,9 +7675,10 @@ implements.
     well or badly. `exit_code` is 124 for both kills and so cannot tell them
     apart, and they are different findings. A `labels-ensured` carries the `repo`, its `role`,
     and the labels `created` and `failed` (requirement 6a) — it is written
-    only when there was something to report, so it appears on a repository's
-    first cycle and then not again unless a label is deleted or the token
-    cannot create one. A `claim-lost` names the repo, item and branch of
+    only when there was something to report, so it appears the first cycle a
+    repository is gathered and then not again until a full
+    `labels_ensure_interval_hours` has elapsed, unless a label is deleted or
+    the token cannot create one. A `claim-lost` names the repo, item and branch of
     the candidate the Script failed to claim, plus a `cause` — `held` when a
     peer node won it, `pr-held` when a peer holds the pull request it targets
     under some other item ref (and then also `pr_claim_key`, the `pr-<number>`

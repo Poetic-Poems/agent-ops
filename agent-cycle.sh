@@ -386,6 +386,7 @@ refinement_after_coordinator_cycles="$(cfg '.refinement_after_coordinator_cycles
 [[ -n "$refinement_after_coordinator_cycles" && "$refinement_after_coordinator_cycles" != "null" ]] \
   || refinement_after_coordinator_cycles="$enabler_after_coordinator_cycles"
 enabler_recheck_hours="$(cfg '.enabler_recheck_hours')"
+labels_ensure_interval_hours="$(cfg '.labels_ensure_interval_hours')"
 enabler_escalation_label="$(cfg '.enabler_escalation_label')"
 # The assignment is what does the work — it both puts the issue in front of the
 # human configured to receive them and excludes it from the `issues` source
@@ -7432,6 +7433,23 @@ while IFS=$'\t' read -r _ slug default_branch; do
   # would silently drop the repo from the Co-Ordinator's whole input.
   ordered_repos_json="$(jq -nc 'input as $arr | input as $e | $arr + [$e]' \
     <<<"$ordered_repos_json"$'\n'"$entry")"
+  # --- Labels (requirement 6a, agent-ops#687) ---
+  # Every repository this cycle gathers data for, not only the one it later
+  # selects to work: the Co-Ordinator's block-label projection and the
+  # Refiner's own can both reach a repository step 6a below never touches, so
+  # ensuring only there left both silently unable to create anything the first
+  # time either ran against a fresh repository. Rate-limited by a stamp under
+  # `state_dir` (`labels_ensure_interval_hours`, default 24h) so the steady
+  # state stays one listing per repository per interval and zero writes.
+  gathered_labels_report="$(labels_ensure_stamped "$state_dir" "$CONFIG_FILE" "$SCHEMA_FILE" \
+    "$slug" target "$labels_ensure_interval_hours" 2>/dev/null || true)"
+  if [[ -n "$gathered_labels_report" ]]; then
+    log_event "labels-ensured" "$(jq -nc --arg repo "$slug" --arg report "$gathered_labels_report" '
+      {repo: $repo, role: "target"}
+      + ($report | split("\n") | map(select(length > 0) | split("\t"))
+         | {created: [.[] | select(.[0] == "created") | .[1]],
+            failed:  [.[] | select(.[0] == "failed")  | .[1]]})')"
+  fi
   # Kept in a separate array, never folded into the entry above: this is the
   # Script's own bookkeeping, and every byte added to `ordered_repos_json` is a
   # byte the Co-Ordinator pays to read. A cost-control feature that grows the
@@ -9304,24 +9322,13 @@ if ! clone_repo "$repo_slug" "$clone_dir" 2>"$cycle_dir/clone.err"; then
 fi
 
 # --- 6a. Labels (requirement 6a) ---
-# Here, rather than at startup for every configured repo: the cycle works one
-# repository, so this is one listing and — after the first cycle against a
-# repository — no writes at all. It precedes the Implementer because that stage
-# is what raises the pull request `pr_label` has to exist for; `gh pr create
-# --label` on a label that is not there fails the create outright, which would
-# cost the whole cycle's work.
-ensure_labels_for() {
-  local slug="$1" role="$2" report
-  report="$(labels_ensure_role "$CONFIG_FILE" "$SCHEMA_FILE" "$slug" "$role" 2>/dev/null || true)"
-  [[ -n "$report" ]] || return 0
-  log_event "labels-ensured" "$(jq -nc --arg repo "$slug" --arg role "$role" \
-    --arg report "$report" '
-    {repo: $repo, role: $role}
-    + ($report | split("\n") | map(select(length > 0) | split("\t"))
-       | {created: [.[] | select(.[0] == "created") | .[1]],
-          failed:  [.[] | select(.[0] == "failed")  | .[1]]})')"
-}
-ensure_labels_for "$repo_slug" target
+# Nothing to do here any more: "--- Labels (requirement 6a, agent-ops#687) ---"
+# in the repo-gathering loop above already ensured the `target` catalogue for
+# every repository this cycle gathered data for, `$repo_slug` among them —
+# selection can only ever choose a repository this cycle gathered, so by the
+# time the Implementer is about to raise `pr_label`'s pull request, the label
+# it needs is already there (or the ensure was itself rate-limited by a still
+# fresh stamp, in which case a prior cycle already put it there).
 
 # --- 7. Implementer stage ---
 implementer_prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" implementer "$prompt_overrides_json")

@@ -471,9 +471,13 @@ R5. **Per non-skipped repo** (processed **sequentially**, so a failure of one
       are never gated on this.
    0b. *Labels.* At the same point, and for the same reason it is that point —
       this repo is now certainly going to be worked — ensure its own resolved
-      `project_review` pr_label exists in it, creating it only if absent
-      (`lib/labels.sh`; `docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement
-      6a). `gh pr create --label` on a label that does not exist fails the
+      `project_review` pr_label exists in it, creating it only if absent, via
+      the same rate-limited `labels_ensure_stamped` the implementation
+      pipeline's own per-gathered-repository ensure uses (`lib/labels.sh`;
+      `docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement 6a): a per-`(repo,
+      role)` stamp under `state_dir`, `labels_ensure_interval_hours` (default
+      24h) apart, so a repository already labelled costs a stat, not a
+      listing. `gh pr create --label` on a label that does not exist fails the
       create outright, and here that would discard a review costing up to
       `timeout_review` minutes. Never fatal: a repository whose labels cannot be listed, or a
       token that may not create them, logs `labels-ensured` with what failed
