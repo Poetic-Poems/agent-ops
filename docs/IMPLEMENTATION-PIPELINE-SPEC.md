@@ -16061,7 +16061,12 @@ pull request, run the ones the change touches and any it could regress.
     (D18 Stage 3, agent-ops#724, both resolving `merge_autonomy_protected_paths`
     the same repo-override-else-top-level-else-default way), over the same
     battery of inputs, so neither can drift apart
-    unnoticed despite neither being sourced; against a stubbed `gh`, a merged
+    unnoticed despite neither being sourced; it pins both protected-path
+    fallbacks against `config.schema.json`'s own declared
+    `merge_autonomy_protected_paths` default as well, since that is the pair
+    production rests on — the gate is called with the defaulted config and
+    resolves the schema's copy, the detector with the raw `--config` file and
+    resolves its own literal; against a stubbed `gh`, a merged
     pull request armed below `agent-merges-all` whose merge commit touches a
     protected path (an injected
     known escape) is reported `classifier-escape` even though it carries a

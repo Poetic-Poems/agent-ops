@@ -7,7 +7,7 @@ agent-ops#580, which asks that the Stage 3 promotion be spelled out — the exac
 validated against the schema and the doctor *before* it is a decision rather
 than after. Stage 2's own promotion (PR #560) needed a companion vocabulary fix
 (#559) and a doctor warning (#554) discovered after the fact; Stage 3 touches
-three repositories and four config edits.
+three repositories and six config edits.
 
 The stage table is umbrella #402's (2026-08-18 amendment); the ladder's design
 is `docs/reviews/2026-08-14-autonomy-investigation.md` §5–§6. Promotion remains
