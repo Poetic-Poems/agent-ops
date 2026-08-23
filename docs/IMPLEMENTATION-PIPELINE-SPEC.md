@@ -17200,7 +17200,7 @@ standing the system up on a new machine.
    `gh api -X POST repos/Poetic-Poems/<repo>/labels -f name='autonomous-agent' -f color='ededed' -f description='PR raised by the autonomous agent system'`.
    If your `gh` version already supports `gh label create`, that form also works; the API form above is the most compatible fallback.
 3c. Create the Enabler's escalation label in both repos, the same way:
-   `gh api -X POST repos/Poetic-Poems/<repo>/labels -f name='enabler-escalation' -f color='b60205' -f description='The autonomous pipeline is blocked and needs a human to act'`
+   `gh api -X POST repos/Poetic-Poems/<repo>/labels -f name='enabler-escalation' -f color='b60205' -f description='Raised by the Enabler: a blocked item that escalates'`
    (`enabler_escalation_label`, requirement 36a). Without it an escalation is
    still raised — the create is retried unlabelled — but it arrives with only
    the assignment to distinguish it, so the human's filter and the duplicate
