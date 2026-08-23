@@ -727,6 +727,29 @@ ISSUE_PRIORITY_CACHE_DIR_OWNED="$saved_owned"
 
 unset ISSUE_PRIORITY_GH
 
+# --- (B2) The mutation's declared variable types (agent-ops#737) ----------
+# Asserted against the source rather than through the stub above, because the
+# stub matches on `*setIssueFieldValue*` and never parses the query: a
+# declaration GitHub rejects outright looks identical to a correct one from
+# in here. That is precisely how `$optionId:String!` shipped and then failed
+# every single write in the fleet for three days — GitHub types
+# `singleSelectOptionId` as `ID`, so the whole mutation was rejected with a
+# variableMismatch before it reached the resolver, and the error went to the
+# `>/dev/null 2>&1` on the call.
+#
+# All three of the mutation's variables name object ids, so all three are
+# `ID!`; a `String!` on any of them is the bug this guards.
+mutation_line="$(grep -n "mutation(\$issueId" "$repo_root/lib/issue-priority.sh" \
+  | head -1 | cut -d: -f2-)"
+assert_contains "the setIssueFieldValue mutation declares \$issueId as ID!" \
+  "\$issueId:ID!" "$mutation_line"
+assert_contains "  ... and \$fieldId as ID!" \
+  "\$fieldId:ID!" "$mutation_line"
+assert_contains "  ... and \$optionId as ID!, which GitHub's schema requires" \
+  "\$optionId:ID!" "$mutation_line"
+assert_not_contains "  ... and declares no variable String!, which GitHub rejects" \
+  'String!' "$mutation_line"
+
 # ============================================================================
 # (C) The wiring — maybe_run_refiner (agent-cycle.sh), requirement 39g
 # ============================================================================

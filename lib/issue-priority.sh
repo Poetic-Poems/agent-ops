@@ -441,9 +441,15 @@ issue_priority_apply() {
     return 0
   fi
 
+  # All three are `ID!`. `singleSelectOptionId` is typed `ID` by the schema,
+  # and declaring the variable `String!` made every write fail the whole
+  # mutation with "Type mismatch on variable $optionId and argument
+  # singleSelectOptionId (String! / ID)" — silently, since the call below
+  # discards stderr and the caller only ever sees `mutation-failed`. That
+  # cost the fleet every Priority write it attempted (agent-ops#737).
   # shellcheck disable=SC2016  # GraphQL's own $issueId/$fieldId/$optionId.
   if "$gh_bin" api graphql \
-      -f query='mutation($issueId:ID!,$fieldId:ID!,$optionId:String!){
+      -f query='mutation($issueId:ID!,$fieldId:ID!,$optionId:ID!){
         setIssueFieldValue(input:{issueId:$issueId, issueFields:[{fieldId:$fieldId, singleSelectOptionId:$optionId}]}){
           clientMutationId
         }
