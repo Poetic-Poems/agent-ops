@@ -176,6 +176,7 @@ assert_eq "the shipped routine-sources fallback matches config.schema.json's dec
 assert_eq "  ... and so does the detector's own" \
   "$schema_routine_default" "$(_escape_audit_routine_sources '{}' "acme/widgets")"
 
+# shellcheck disable=SC2016  # literal source text to match, not meant to expand
 mapfile -t rs_doctor_literals < <(grep -A1 '\$r\.merge_autonomy_routine_sources // \.merge_autonomy_routine_sources' \
   "$SCRIPT_DIR/scripts/doctor.sh" | grep -oE '\[[^]]*\]')
 assert_eq "scripts/doctor.sh carries exactly two routine-sources fallback literals" \
