@@ -48,13 +48,13 @@ file this swept.
 | `prompts/` (8 files) | 234 | Every hit in every file read in context | 38 |
 | `docs/IMPLEMENTATION-PIPELINE-SPEC.md` | 569 | Every hit read in context, in four overlapping-free line-range passes, cross-checked against `agent-cycle.sh`'s real branching for escalation-gating claims | ~21 |
 | `lib/` (33 files) | 282 | Every hit in every file read in context | 10 |
-| `scripts/` (19 files) | 216 | Every hit in every file read in context | 1 |
+| `scripts/` (19 files) | 216 | Every hit in every file read in context | 1 (keeping the `merge_autonomy: human` rung per Edge 3) |
 | `agent-cycle.sh` | 196 | Every hit read in context, in two line-range passes | 6 |
 | `config.schema.json` | 47 | Every hit read; edited via the schema `description`/`x-docs`, never a generated table cell; `scripts/render-config-table.sh` re-run after | 2 keys (3 fields) |
 | `README.md` | 41 | Every hit outside the generated config-table regions read in context | 1 (plus the table regions, regenerated) |
-| `docs/ROADMAP.md` | 20 | Every hit read in context | 5 (2 of which keep the `merge_autonomy: human` rung per Edge 3, reworded to "the landing gate at `human`" rather than flattened) |
+| `docs/ROADMAP.md` | 20 | Every hit read in context | 5 (3 of which keep the `merge_autonomy: human` rung per Edge 3, reworded to "the landing gate at `human`" rather than flattened) |
 | `docs/DASHBOARD-SPEC.md` | 22 | Every hit read in context | 1 |
-| `dashboard/index.html` | 18 | Every hit read in context | 4 |
+| `dashboard/index.html` | 18 | Every hit read in context | 4 (1 of which keeps the `merge_autonomy: human` rung per Edge 3) |
 | `docs/REVIEW-PIPELINE-SPEC.md` | 12 | Every hit read in context; cross-checked that `review-cycle.sh` does not read `merge_autonomy`/`escalation_autonomy` at all | 1 (the one generic "the human gate" phrase site; every other hit confirmed unconditionally correct as-is, since this pipeline has no config-selectable destination yet) |
 | `test/` (64 files) | 617 | Every hit skimmed; assertions on strings this sweep changed were grepped for specifically (below) and synced; everything else is a fixture reconstructing history or an internal test comment, Band C by the issue's own rule | 2 assertions synced |
 | `tech-debt/` (33 records) | 128 | Not read line-by-line: every record is either `resolved` (Band C by definition — it describes the system as it was when filed) or, where `open`/`in-progress`, checked for a live quote of "the human gate"/"needs a human" as current doctrine (none found) | 0 |
@@ -66,8 +66,8 @@ file this swept.
 | Pattern | Representative sites | Rewording |
 |---|---|---|
 | "needs a human" / "only a human can settle this" as an escalation destination | `prompts/enabler.md`, `prompts/enabler-adjudicate.md`, `prompts/refiner.md`, `prompts/coordinator.md`, `lib/escalation-autonomy.sh:59`, `agent-cycle.sh:5553,5834`, spec's requirement-36b thrash guard and "Escalates" bullet | "escalates" / "this stage cannot settle it" / "settled above this stage", naming `escalation_autonomy`'s two destinations where the sentence needs to say where it goes |
-| "the human gate" naming the mechanism generically | `prompts/*.md` (3 sites), `agent-cycle.sh` (2), `docs/IMPLEMENTATION-PIPELINE-SPEC.md` (5), `README.md`, `scripts/publish-dashboard.sh`, `docs/REVIEW-PIPELINE-SPEC.md`, `dashboard/index.html`, `test/coordinator-retry-fallback.test.sh` — 14 sites total | "the landing gate" (#412's own term) |
-| "the human gate" naming a specific `merge_autonomy: human` rung | `docs/ROADMAP.md` (D18's own row, the D23 escape-ladder row, twice) | "the landing gate at `human`" — the rung is the entire content of those sentences, so it is kept, not flattened |
+| "the human gate" naming the mechanism generically | `prompts/*.md` (3 sites), `agent-cycle.sh` (2), `docs/IMPLEMENTATION-PIPELINE-SPEC.md` (5), `README.md`, `docs/REVIEW-PIPELINE-SPEC.md`, `test/coordinator-retry-fallback.test.sh` — 13 sites total | "the landing gate" (#412's own term) |
+| "the human gate" naming a specific `merge_autonomy: human` rung | `docs/ROADMAP.md` (D18's own row, the D23 row, the End state's escape-ladder bullet), `scripts/publish-dashboard.sh` and `dashboard/index.html` (D18 WI-8's risk-6 condition: what autonomous landing replaces is the *synchronous* rung, not the gate, which the Script still arms) — 5 sites total | "the landing gate at `human`" — the rung is the entire content of those sentences, so it is kept, not flattened |
 | "a human is waiting to land it" / "a human can merge" / "the human's merge click", asserted unconditionally for a landing decision that is actually `merge_autonomy`-gated | `lib/handoff.sh`, `lib/merge-queue.sh`, `lib/work-gone.sh`, `lib/claim.sh`, `lib/github-limit.sh`, `docs/IMPLEMENTATION-PIPELINE-SPEC.md` (requirement 15d, the cost-profile passage, the abandoned-drafts/merge-conflicts/dequeued design decisions, the Gotchas table), `README.md`'s pipeline overview and architecture diagram, `dashboard/index.html` | Names `merge_autonomy`'s ladder ("a human's click at `merge_autonomy: human`, or the Script's own arming step at `agent-merges-routine` and above") or drops the actor for a landing-state fact ("otherwise ready to land", "a landable PR") |
 | The refinement-block "past one refinement, on a human" framing | `docs/DASHBOARD-SPEC.md`, `dashboard/index.html` (tooltip + comment) | "past one refinement, on escalation — `escalation_autonomy` deciding whether that reaches a human straightaway or is adjudicated first" |
 | `enabler-escalation` label description | `lib/labels.sh` (both `labels_catalogue` entries), the manual-setup example in `docs/IMPLEMENTATION-PIPELINE-SPEC.md`, and the label as it already existed on every repository this fleet has created it in (`agent-ops`, `poetic`, `poetic-fiddle`) | "Raised by the Enabler: a blocked item that escalates" |
@@ -90,7 +90,7 @@ file this swept.
 
 1. **Requirement 38's scope.** Kept; only its opening sentence restated, naming #668 as the revisit trigger. No `human-visibility` identifier renamed.
 2. **Requirement 32's `needs-human` synonym.** Deleted from the spec, the prompt, and the `agent-cycle.sh` comment; no compatibility window needed since no behaviour ever depended on it.
-3. **"The human gate".** Replaced with "the landing gate" at twelve generic-mechanism sites; kept as "the landing gate at `human`" at the two sites naming a specific rung (`docs/ROADMAP.md`).
+3. **"The human gate".** Replaced with "the landing gate" at thirteen generic-mechanism sites; kept as "the landing gate at `human`" at the five sites naming a specific rung (`docs/ROADMAP.md` ×3, `scripts/publish-dashboard.sh`, `dashboard/index.html`).
 4. **The escalation issue's body (#681).** Not touched — confirmed no prose in this sweep asserts the adjudicator's finding reaches the escalation body; #681 is still open at the time of this pull request.
 5. **A glossary.** Not created — the Band A/B distinction lives in requirement 36a/36b context and in `README.md`'s escalation section, not a second document.
 

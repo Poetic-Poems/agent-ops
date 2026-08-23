@@ -2075,7 +2075,8 @@ fi
 # --- The autonomous-landing digest (D18 WI-8, agent-ops#411) -----------------
 # Risk 6 of the autonomy investigation ("overnight merges with nobody
 # watching") is accepted deliberately, on the stated condition that this
-# replaces the synchronous landing gate with an asynchronous audit: the queue
+# replaces the synchronous landing gate at `human` with an asynchronous audit:
+# the queue
 # re-tests, `failed-runs` turns post-merge breakage back into selectable work,
 # and this section is where a human sees, once a day, everything the Script
 # landed without them. It is permanent, not rollout scaffolding — at

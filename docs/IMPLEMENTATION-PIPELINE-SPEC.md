@@ -9967,6 +9967,21 @@ implements.
     rather than against the closure. That loop is the reason the ask must be
     executable without further investigation: an escalation a reader has to
     interpret has failed even where its verdict was right.
+
+    **Which escalations configuration routes, and which it does not.** An
+    `escalate` verdict reached here is a person's at every setting of
+    `escalation_autonomy`: the acts it names — a credential or secret, an
+    account/settings/permissions change, a product or architecture decision,
+    an external service, information that exists only in someone's head — are
+    owner-only, and the ladder has no rung that could settle one. The single
+    exception is requirement 36b's **refinement disagreement**, and it is the
+    only escalation the key gates: at `adjudicate-first` one bounded
+    adjudication pass runs first, and a person is reached only where that pass
+    declines to settle it. `agent-cycle.sh` branches on exactly that
+    distinction (`refinement_is_disagreement`), so prose describing an
+    ordinary escalation may name the person, and prose describing a
+    refinement disagreement may not — it names the condition, and the key
+    that chooses the destination.
 36b. **The refinement duty.** For an item carrying `kind: "needs-refinement"`
     (requirement 34e) the Enabler reads the item and its whole context and then:
 
@@ -17247,9 +17262,9 @@ nothing, and the first answered probe (a fraction of a cent of
 `implementer_model_trivial`) retires the stand-down fleet-wide, so at most
 one probe per stand-down is ever paid for. Because back-pressure caps open agent PRs
 at `max_open_agent_prs`, sustained spend is bounded by the rate at which pull
-requests land — a human's own merge click at `merge_autonomy: human`, the
-landing gate itself from `agent-merges-routine` up — the system cannot run
-ahead of its only consumer.
+requests land — a human's own merge click at `merge_autonomy: human` and
+`agent-approves`, the arming step (requirement 8d) from `agent-merges-routine`
+up — the system cannot run ahead of its only consumer.
 
 The Approver (requirements 8b/8c) costs nothing at the product default
 (`merge_autonomy: human`): the stage is never engaged. Where an installation
