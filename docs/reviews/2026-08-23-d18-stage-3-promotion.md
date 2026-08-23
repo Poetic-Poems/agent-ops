@@ -15,7 +15,7 @@ a deliberate owner act, one config pull request at a time.
 
 ## 1. The diff
 
-Against `config.json` as at `main` on 2026-08-23. Four edits, three
+Against `config.json` as at `main` on 2026-08-23. Six edits, three
 repositories.
 
 ```diff
@@ -23,6 +23,7 @@ repositories.
        "slug": "Poetic-Poems/poetic",
 +      "merge_autonomy": "agent-merges-routine",
 +      "merge_autonomy_routine_sources": ["register-hygiene", "tech-debt"],
++      "merge_autonomy_protected_paths": [".github/*", "scripts/*", "CODEOWNERS"],
 +      "merge_budget_per_day": 8,
        "sources": ["security", "issues:urgent", …]
      },
@@ -30,6 +31,7 @@ repositories.
        "slug": "Poetic-Poems/poetic-fiddle",
 +      "merge_autonomy": "agent-merges-routine",
 +      "merge_autonomy_routine_sources": ["register-hygiene", "tech-debt"],
++      "merge_autonomy_protected_paths": [".github/*", "scripts/*", "CODEOWNERS"],
 +      "merge_budget_per_day": 8,
        "sources": ["security", "issues:urgent", …],
        "nice": 6,
@@ -53,6 +55,23 @@ Notes on each choice:
   inheriting one. Both repositories gather both sources today, so neither edit
   trips the doctor's "names a source this repository never gathers" warning
   (#554).
+- **poetic and poetic-fiddle each name their own protected paths**, rather than
+  inheriting agent-ops's nine (agent-ops#724, which made the key configurable
+  per repository). Neither repository runs this pipeline, so
+  none of agent-ops's own gate-bearing paths (`deploy/`, `prompts/`, `lib/`,
+  `agent-cycle.sh`, `review-cycle.sh`, `config.schema.json`, `config.json`) mean
+  anything there — both repositories' `lib/` and `scripts/` (poetic-fiddle's own
+  `supabase/`, too) are ordinary product code. What actually gates a routine
+  landing in either repository is its own CI workflows (`.github/*`, including
+  `release.yml` and, for poetic-fiddle, `check-poetic-release.yml`, `td-tooling-
+  drift.yml` and the other drift-detection workflows) and the compliance
+  scripts those workflows invoke (`scripts/*` — `td-check.pl` and its own
+  tooling in both, `check-supabase-auth-drift.mjs` and `check-workflow-wiring.mjs`
+  in poetic-fiddle), plus `CODEOWNERS`, kept for the same reason agent-ops keeps
+  it on its own list. `supabase/migrations` is deliberately left off: a
+  malformed migration is an ordinary product bug the review pipeline already
+  catches, not a self-modifying gate-weakening risk the way editing `.github/*`
+  or `scripts/*` is.
 - **`merge_budget_per_day: 8`** is the schema default, and again explicit. It is
   a third of agent-ops's 24 because these repositories currently raise a third
   of a pull request a day between them (§4), so the cap is nowhere near binding
@@ -63,7 +82,9 @@ Notes on each choice:
   further stage; #402 does not ask for that, and the Approver's own
   refuse-by-default posture applies to a security-sourced pull request like any
   other, so the widening is written whole here and the narrowing left as an
-  explicit owner choice rather than a silent one.
+  explicit owner choice rather than a silent one. agent-ops's own
+  `merge_autonomy_protected_paths` is left unset in this diff — its schema
+  default is already agent-ops's nine paths, so there is nothing to override.
 
 **The other half of #402's Stage 3 row — "+ `complexity:high`" for agent-ops —
 is not in this diff, because it cannot be**: the ceiling is hard-coded
@@ -153,12 +174,6 @@ that would move it.
 
 ## 3. Known consequences, accepted or tracked
 
-- **The protected-path list is agent-ops's own, applied to every repository**
-  (`.github/*`, `deploy/*`, `prompts/*`, `lib/*`, `config.json`,
-  `config.schema.json`, `agent-cycle.sh`, `review-cycle.sh`, `CODEOWNERS`). In
-  poetic, `lib/*` is ordinary product code, so the routine class there is
-  narrower than intended — the safe direction, but it suppresses some of the
-  very landings Stage 3 needs for evidence. agent-ops#724.
 - **`complexity:high` is not configurable.** agent-ops#725, above.
 - **A Stage 3 landing inherits every open landing-path defect**, of which two
   matter at fleet scale: the Approver's own `CHANGES_REQUESTED` cannot be
