@@ -28,8 +28,20 @@
 #   ./scripts/run-tests.sh                      # every test/*.test.sh
 #   ./scripts/run-tests.sh cycle-state doctor   # only those whose name matches
 #   AGENT_OPS_TEST_IMAGE=agent-ops:dev ./scripts/run-tests.sh
+#   ./scripts/run-tests.sh --list                     # just the selected names, one per line
+#   ./scripts/run-tests.sh --list doctor               # --list honours the same filters
 #
-# Exit status is 0 only if every test selected passed.
+# --list needs no Docker and starts no container: it applies the filter to the
+# host's own `test/*.test.sh` and prints the matching basenames, so a caller
+# that must keep any single invocation below a wall (the Reviewer stage's own
+# 10-minute Bash-tool ceiling — prompts/reviewer.md) can list the suite once,
+# split that list into groups sized to clear the wall, and run
+# `./scripts/run-tests.sh <group's names...>` once per group instead of one
+# unbounded call over the whole suite.
+#
+# Exit status is 0 only if every test selected passed. (--list's exit status
+# reports only whether it could list — 0 for a non-empty match, 2 for none —
+# never a verdict on the tests themselves, which it does not run.)
 
 set -uo pipefail
 
@@ -41,15 +53,43 @@ usage() {
   exit "${1:-0}"
 }
 
+list_only=0
 filters=()
 for arg in "$@"; do
   case "$arg" in
     -h|--help) usage 0 ;;
+    --list)    list_only=1 ;;
     --image)   printf 'run-tests: --image takes its value as AGENT_OPS_TEST_IMAGE=… instead\n' >&2; exit 2 ;;
     -*)        printf 'run-tests: unknown option %s\n' "$arg" >&2; usage 2 ;;
     *)         filters+=("$arg") ;;
   esac
 done
+
+# Applied identically to the container's own loop below — a basename matches
+# iff no filter was given, or at least one filter is a substring of it — so
+# what --list prints is exactly what a docker run of the same arguments would
+# select. Keep the two in sync if either changes.
+if [[ "$list_only" -eq 1 ]]; then
+  shopt -s nullglob
+  selected=()
+  for t in "$SCRIPT_DIR"/test/*.test.sh; do
+    name="$(basename "$t")"
+    if [[ ${#filters[@]} -gt 0 ]]; then
+      keep=""
+      for f in "${filters[@]}"; do
+        [[ "$name" == *"$f"* ]] && keep=1
+      done
+      [[ -n "$keep" ]] || continue
+    fi
+    selected+=("$name")
+  done
+  if [[ ${#selected[@]} -eq 0 ]]; then
+    printf 'run-tests: no test matched\n' >&2
+    exit 2
+  fi
+  printf '%s\n' "${selected[@]}"
+  exit 0
+fi
 
 command -v docker >/dev/null 2>&1 || {
   printf 'run-tests: docker is required — it is what makes this run the same suite CI runs\n' >&2

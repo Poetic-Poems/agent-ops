@@ -560,6 +560,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   described this behaviour, and the code now does it.
   `TD-PPagop-26082322` records the swallowed stderr that hid it.
 
+- The Reviewer stage no longer burns its budget retrying a test run it cannot
+  finish (agent-ops#734). Its own Bash tool kills any single command still
+  running at 10 minutes and returns nothing for it — not even the output of
+  whatever had already passed — and re-running `test/*.test.sh` (140 files) as
+  one invocation risked exactly that wall. On PR #729 a Reviewer lost 30 of
+  its 90-minute budget to three identical 10-minute kills against that one
+  unbatched run, then spent the rest re-batching by hand and still did not
+  finish before its final message came due, discarding a review whose
+  findings had already been complete after the first 13 minutes.
+  `scripts/run-tests.sh` gains `--list`: no Docker, no container, just the
+  selected basenames printed one per line, so a caller can list the suite
+  once and split it into groups sized to clear the ceiling before running any
+  of them. `prompts/reviewer.md` now documents the ceiling explicitly and
+  directs the Reviewer to batch this repo's own suite through `--list` rather
+  than one unbatched call or a hand-rolled loop, and to post its diff findings
+  before starting the test run so a batch that exhausts the remaining budget
+  costs only the test evidence, not the review itself (requirement 29a,
+  `docs/IMPLEMENTATION-PIPELINE-SPEC.md`'s Gotchas table).
 - D18 arming now works at all: the changed-file read behind the protected-path
   gate had been failing on every single call since Stage 2 was entered, so the
   pipeline has never autonomously landed a pull request (agent-ops#718).
