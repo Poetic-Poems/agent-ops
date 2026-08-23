@@ -51,6 +51,19 @@
 #   working checkout — safe regardless of what GIT_DIR happens to be
 #   checked out to.
 #
+#   Invariant: td-record/<id> and its td/<id> reservation survive this
+#   function's own return only alongside the filing pull request that makes
+#   them reachable. Every failure after the id is reserved — the base-sha
+#   lookup, the branch-create call, the contents-write call, and `gh pr
+#   create` itself — deletes td-record/<id> and releases td/<id> before
+#   returning 1 (_techdebt_unfile), rather than leaving either behind
+#   unreachable from any pull request, open or closed
+#   (agent-ops TD-PPagop-26082203). A pull request that opens successfully
+#   and is later closed without merging is not a failure of this function
+#   and is out of its scope — TECH-DEBT.md's "Filing an item" releases that
+#   reservation by deleting the branch, the same way an abandoned claim
+#   does.
+#
 # TOKEN, given to either function, files under that identity
 # (GH_TOKEN="$TOKEN") rather than the ordinary pipeline login — the
 # Approver's own posture never writes to GitHub under the pipeline's own
@@ -118,6 +131,32 @@ techdebt_file_issue() {
   printf '%s\t%s' "$number" "$url"
 }
 
+# _techdebt_unfile TOKEN REPO ID ERRLOG
+# Undo whatever a half-finished techdebt_file_debt has already written to
+# GitHub: the td-record/<ID> branch, where the branch-create call got that
+# far, and the td/<ID> reservation reserve-tech-debt-id.pl pushed before it.
+# Nothing else ever will — td-record/ is not a prefix
+# scripts/sweep-orphan-branches.sh sweeps at all, and a bare td/<ID>
+# carrying only its reservation commit is one it deliberately leaves alone
+# (issue #545) — so a branch left behind here is left for good
+# (agent-ops TD-PPagop-26082203).
+#
+# The record branch goes first and the reservation last, never the other way
+# round: releasing the id while td-record/<ID> still existed would let a
+# later reservation hand that id out again and then fail its own
+# branch-create against the ref this call left behind.
+#
+# Best-effort throughout — a DELETE that fails is logged and swallowed, so
+# cleaning up after one failure can never raise a second, and a branch that
+# outlives it is still recoverable by hand (TECH-DEBT.md).
+_techdebt_unfile() {
+  local token="$1" repo="$2" id="$3" errlog="$4"
+  _techdebt_gh "$token" api -X DELETE "repos/$repo/git/refs/heads/td-record/$id" \
+    >/dev/null 2>>"$errlog" || true
+  _techdebt_gh "$token" api -X DELETE "repos/$repo/git/refs/heads/td/$id" \
+    >/dev/null 2>>"$errlog" || true
+}
+
 # techdebt_file_debt REPO TITLE BODY PROVENANCE [TOKEN] [GIT_DIR]
 techdebt_file_debt() {
   local repo="$1" title="$2" body="$3" provenance="$4" token="${5:-}" git_dir="${6:-}"
@@ -159,6 +198,7 @@ techdebt_file_debt() {
 
   base_sha="$(git -C "$git_dir" rev-parse origin/main 2>/dev/null || true)"
   if [[ -z "$base_sha" ]]; then
+    _techdebt_unfile "$token" "$repo" "$id" "$errlog"
     (( made_dir )) && rm -rf "$git_dir"
     return 1
   fi
@@ -169,6 +209,7 @@ techdebt_file_debt() {
 
   if ! _techdebt_gh "$token" api -X POST "repos/$repo/git/refs" \
         -f "ref=refs/heads/$branch" -f "sha=$base_sha" >/dev/null 2>>"$errlog"; then
+    _techdebt_unfile "$token" "$repo" "$id" "$errlog"
     (( made_dir )) && rm -rf "$git_dir"
     return 1
   fi
@@ -177,6 +218,7 @@ techdebt_file_debt() {
         -f "message=chore(tech-debt): file $id" \
         -f "content=$(base64 -w0 <<<"$content")" \
         -f "branch=$branch" >/dev/null 2>>"$errlog"; then
+    _techdebt_unfile "$token" "$repo" "$id" "$errlog"
     (( made_dir )) && rm -rf "$git_dir"
     return 1
   fi
@@ -190,9 +232,17 @@ techdebt_file_debt() {
               2>>"$errlog" || true)"
   rm -f "$pr_body_file"
 
+  if [[ -z "$pr_url" ]]; then
+    # The one failure point past which both writes have already landed: the
+    # record commit is on td-record/<id> and the id is locked on td/<id>,
+    # but no pull request will ever carry either one.
+    _techdebt_unfile "$token" "$repo" "$id" "$errlog"
+    (( made_dir )) && rm -rf "$git_dir"
+    return 1
+  fi
+
   (( made_dir )) && rm -rf "$git_dir"
 
-  [[ -n "$pr_url" ]] || return 1
   printf '%s\t%s' "$id" "$pr_url"
 }
 

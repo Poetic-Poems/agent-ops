@@ -12736,9 +12736,27 @@ What exists, and the requirements each part answers to:
       the Enabler's own case, which holds no clone of anything. Opens a pull
       request carrying the new file alone (`gh pr create --base main --head
       td-record/<id>`) and prints `"<id>\t<pr-url>"` on success, nothing on
-      failure. `filed:` in the record's frontmatter is derived from the id's
-      own date component, never the host clock, so the two can never
-      disagree regardless of the container's timezone.
+      failure. Any failure after the id has been reserved — the base-SHA
+      lookup, the branch-create call, the contents-write call, or `gh pr
+      create` itself — best-effort deletes `td-record/<id>` and then
+      releases the `td/<id>` reservation (`gh api -X DELETE
+      .../git/refs/heads/<branch>`, for each; a `DELETE` that fails is
+      logged and swallowed rather than raising a second failure) before
+      returning. Neither branch is swept: `td-record/` is not a prefix
+      `scripts/sweep-orphan-branches.sh` looks at at all, and a bare
+      `td/<id>` carrying only its reservation commit is one it deliberately
+      leaves alone (component 3n, issue #545), so a filing that stops part
+      way would otherwise leave whatever it had already written invisible to
+      every later pass. The record branch is deleted before the reservation
+      and never after it, so a failure between the two can never release an
+      id whose `td-record/<id>` still exists — which a later reservation
+      would hand out again and then fail its own branch-create against. A
+      pull request that opens successfully and is later closed without
+      merging is not a failure of this function and is out of its scope —
+      that case releases the same way any abandoned "Claiming an item" claim
+      does (`TECH-DEBT.md`). `filed:` in the record's frontmatter is derived
+      from the id's own date component, never the host clock, so the two can
+      never disagree regardless of the container's timezone.
     - `TOKEN`, given to either function, runs every `gh` call under that
       identity (`GH_TOKEN="$TOKEN"`) — the Approver's own minted App token
       (`approver_token_get`, `lib/approver-token.sh`, requirement 14b), the
@@ -12758,8 +12776,9 @@ What exists, and the requirements each part answers to:
     the fixture remote's copy, because an extraction path inside `GIT_DIR` is
     removed again straight afterwards and so is invisible to every other
     assertion), a token used for every call, no reserve script on
-    `origin/main`, and each of the three API calls failing in turn, for
-    `techdebt_file_debt`; the dedup hit, the
+    `origin/main`, each of the three API calls failing in turn, and each of
+    those three failures additionally deleting both `td-record/<id>` and
+    `td/<id>`, for `techdebt_file_debt`; the dedup hit, the
     ordinary create, and a failed create, for `techdebt_file_issue`. The
     Script's own wiring — that `run_approver_stage` and `maybe_run_enabler`
     actually call these with the right arguments and log the right event — is
@@ -16054,9 +16073,13 @@ pull request, run the ones the change touches and any it could regress.
     it from a CWD within, leaving no artefact behind in that working tree
     (asserted through the instrumented copy, which reports the path it ran
     from: an extraction inside `GIT_DIR` is removed again immediately and so
-    is invisible to every other assertion) — and fails cleanly (no output, no partial write) when the
-    branch-create call, the contents-write call, or the pull-request-create
-    call fails; `techdebt_file_issue` returns an existing issue whose body
+    is invisible to every other assertion) — and fails cleanly (no output,
+    no partial write) when the branch-create call, the contents-write call,
+    or the pull-request-create call fails, each of those three failures
+    additionally deleting `td-record/<id>` and then releasing the `td/<id>`
+    reservation, in that order, rather than leaving either behind for a
+    sweep that looks at neither (TD-PPagop-26082203);
+    `techdebt_file_issue` returns an existing issue whose body
     already quotes the item reference rather than filing a duplicate, and
     fails cleanly when creation fails. A `TOKEN` argument reaches every `gh`
     call for either function; its absence explicitly unsets `GH_TOKEN`
