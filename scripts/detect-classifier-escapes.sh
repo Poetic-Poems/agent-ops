@@ -110,6 +110,16 @@
 #     deliberate widening or narrowing of this key is judged by today's list.
 #     That is a real, accepted limitation of a post-hoc audit over a
 #     forward-only log, not an oversight.
+#   - **The routine-complexity list** — SLUG's own
+#     `merge_autonomy_routine_complexity` (D18 Stage 3, agent-ops#725; repo
+#     override, else the top-level key, else the shipped default `["low",
+#     "medium"]`), resolved fresh from CONFIG_FILE by a copy of the
+#     precedence `lib/landing.sh`'s own `_landing_routine_complexity` uses,
+#     declared here rather than sourced, for the same reason as the
+#     routine-sources list above — and with the same current-configuration
+#     limitation: a landing audited long after this key was deliberately
+#     widened or narrowed is judged by today's list, not the one in force
+#     when it landed.
 #
 # Any input that cannot be reconstructed reports `unverifiable`, never
 # `clean` — an unreadable merge commit's file list, a merge with zero or
@@ -120,8 +130,9 @@
 # defers that case to compensating controls this detector cannot recompute
 # post hoc, so it reports `unverifiable` there too, never `escape` — unless
 # some other, genuinely reconstructable input already disagrees on its own
-# (a level below `agent-merges-routine`, a complexity outside `low`/`medium`,
-# a source outside the routine list), in which case that disagreement alone
+# (a level below `agent-merges-routine`, a complexity outside the routine
+# complexity list, a source outside the routine list), in which case that
+# disagreement alone
 # is enough to call it an `escape` regardless. An `unverifiable` landing is
 # exactly as far from "cleared" as an `escape` is: neither is silently
 # folded into the other.
@@ -346,6 +357,28 @@ _escape_audit_routine_sources() {
   printf '["register-hygiene","tech-debt"]'
 }
 
+# --- The reimplemented routine-complexity resolution -------------------------
+# Deliberately not sourced from lib/landing.sh's _landing_routine_complexity —
+# same reasoning as the routine-sources resolution above (D18 Stage 3,
+# agent-ops#725), and pinned against it the same way in
+# test/detect-classifier-escapes.test.sh.
+_escape_audit_routine_complexity() {
+  local config_json="$1" repo_slug="$2" repo_list top_list
+  repo_list="$(jq -c --arg slug "$repo_slug" \
+    '(.repos // [])[] | select(.slug == $slug) | .merge_autonomy_routine_complexity // empty' \
+    <<<"$config_json" 2>/dev/null | head -1)"
+  if [[ -n "$repo_list" ]] && jq -e 'type == "array"' <<<"$repo_list" >/dev/null 2>&1; then
+    printf '%s' "$repo_list"
+    return 0
+  fi
+  top_list="$(jq -c '.merge_autonomy_routine_complexity // empty' <<<"$config_json" 2>/dev/null)"
+  if [[ -n "$top_list" ]] && jq -e 'type == "array"' <<<"$top_list" >/dev/null 2>&1; then
+    printf '%s' "$top_list"
+    return 0
+  fi
+  printf '["low","medium"]'
+}
+
 # --- The merge commit's own file list ---------------------------------------
 # repos/SLUG/commits/SHA, never repos/SLUG/pulls/N/files (landing_protected_
 # paths_hit's own read) — a genuinely different GitHub resource. Two distinct
@@ -490,6 +523,7 @@ recorded_level_for() {
 config_json="$(cat "$CONFIG_FILE" 2>/dev/null || printf '{}')"
 routine_json="$(_escape_audit_routine_sources "$config_json" "$slug")"
 protected_json="$(_escape_audit_protected_paths "$config_json" "$slug")"
+routine_complexity_json="$(_escape_audit_routine_complexity "$config_json" "$slug")"
 
 emit() {
   local outcome="$1" pr_url="$2" number="$3" sha="$4" source="$5" complexity="$6" \
@@ -612,10 +646,9 @@ while IFS= read -r number; do
       disagreements+=("the effective merge_autonomy level recorded at arming was $armed_level, not agent-merges-routine or agent-merges-all")
       ;;
   esac
-  case "$complexity" in
-    low|medium) ;;
-    *) disagreements+=("complexity was $complexity, not low or medium") ;;
-  esac
+  if ! jq -e --arg c "$complexity" 'index($c) != null' <<<"$routine_complexity_json" >/dev/null 2>&1; then
+    disagreements+=("complexity was $complexity, not in $slug's routine complexity list $routine_complexity_json")
+  fi
   if ! jq -e --arg s "$source" 'index($s) != null' <<<"$routine_json" >/dev/null 2>&1; then
     disagreements+=("source $source is not in $slug's routine list $routine_json")
   fi

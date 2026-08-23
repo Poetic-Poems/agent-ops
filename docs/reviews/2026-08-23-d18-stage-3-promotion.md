@@ -44,6 +44,7 @@ repositories.
 +      "merge_autonomy_routine_sources": ["security", "issues", "review-feedback",
 +        "merge-conflicts", "dequeued", "human-visibility", "abandoned-drafts",
 +        "failed-runs", "tech-debt", "code-quality", "register-hygiene"],
++      "merge_autonomy_routine_complexity": ["low", "medium", "high"],
        "merge_budget_per_day": 24,
 ```
 
@@ -94,11 +95,17 @@ Notes on each choice:
   explicit owner choice rather than a silent one. agent-ops's own
   `merge_autonomy_protected_paths` is left unset in this diff — its schema
   default is already agent-ops's nine paths, so there is nothing to override.
-
-**The other half of #402's Stage 3 row — "+ `complexity:high`" for agent-ops —
-is not in this diff, because it cannot be**: the ceiling is hard-coded
-`low|medium` in `landing_eligible`. That is agent-ops#725, and until it lands,
-Stage 3 for agent-ops is the sources half only.
+- **agent-ops also widens `merge_autonomy_routine_complexity` to
+  `["low", "medium", "high"]`** — the other half of #402's Stage 3 row for
+  agent-ops, "+ `complexity:high`". agent-ops#725 made the ceiling
+  configurable; poetic and poetic-fiddle are left at the schema default
+  (`["low", "medium"]`, so their entries carry no explicit key) since #402's
+  Stage 3 row widens complexity for agent-ops alone. Requirement 26a already
+  forces `complexity:high` onto anything touching concurrency/locking,
+  security, CI/workflow machinery or shared library code, so this widening
+  routes exactly that class of agent-ops diff through automatic landing; the
+  protected-path gate (belt and braces, risk register item 1) stays in force
+  regardless.
 
 ## 2. Preconditions
 
@@ -183,7 +190,6 @@ that would move it.
 
 ## 3. Known consequences, accepted or tracked
 
-- **`complexity:high` is not configurable.** agent-ops#725, above.
 - **A Stage 3 landing inherits every open landing-path defect**, of which two
   matter at fleet scale: the Approver's own `CHANGES_REQUESTED` cannot be
   cleared from inside the pipeline (#682, and its live escalation #712), and
@@ -230,7 +236,8 @@ Land in this order; each step is independently revertible.
 3. Let Stage 2's bars accrue on agent-ops. Re-run
    `scripts/autonomy-stage-report.sh`; it prints the verdict this document
    would otherwise be guessing at.
-4. The agent-ops half of §1's diff (widen sources).
+4. The agent-ops half of §1's diff (widen sources, and the complexity
+   ceiling to `["low", "medium", "high"]`).
 5. The poetic / poetic-fiddle half, per repository, as each clears Stage 1.
 
 **Rollback** is per repository and is a one-line config revert — `merge_autonomy`

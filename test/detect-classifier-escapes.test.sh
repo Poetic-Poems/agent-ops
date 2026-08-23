@@ -7,37 +7,40 @@
 #
 # Two halves:
 #
-#   - The reimplemented protected-path matching, protected-path resolution
-#     and routine-sources resolution (`_escape_audit_is_protected`/
-#     `_escape_audit_protected_paths`/`_escape_audit_routine_sources`, lifted
-#     verbatim out of the script the same way test/landing-retry-sweep.test.sh
-#     lifts `_landing_retry_sweep_repo` out of agent-cycle.sh) are pinned
-#     byte-for-byte identical to lib/landing.sh's own
-#     `_landing_is_protected`/`_landing_protected_paths`/`_landing_routine_sources`,
-#     over the same battery of inputs — so the two can drift apart in the
-#     same PR without it drifting *silently*, even though the detector
-#     deliberately never sources lib/landing.sh at all (the issue's own
-#     Refiner comment: "read there for the exact logic this detector must
-#     reproduce independently (not call into)"). Both protected-path
-#     fallbacks are additionally pinned to config.schema.json's own declared
-#     `merge_autonomy_protected_paths` default, because that — not the two
-#     literals against each other — is the pair production actually rests on:
-#     lib/landing.sh is called with `$DEFAULTED_CONFIG` and takes the
-#     top-level branch, while the detector is handed the raw `--config` file
-#     and takes its own literal. The routine-sources fallbacks get the same
-#     schema-default pin, plus scripts/doctor.sh's own two hand-copied
-#     literals (extracted from the script text, since neither is a standalone
-#     function this file can lift and eval) — closing the same gap for
-#     `merge_autonomy_routine_sources` that its sibling key already had.
+#   - The reimplemented protected-path matching, protected-path resolution,
+#     routine-sources resolution and routine-complexity resolution
+#     (`_escape_audit_is_protected`/`_escape_audit_protected_paths`/
+#     `_escape_audit_routine_sources`/`_escape_audit_routine_complexity`,
+#     lifted verbatim out of the script the same way
+#     test/landing-retry-sweep.test.sh lifts `_landing_retry_sweep_repo` out
+#     of agent-cycle.sh) are pinned byte-for-byte identical to
+#     lib/landing.sh's own `_landing_is_protected`/`_landing_protected_paths`/
+#     `_landing_routine_sources`/`_landing_routine_complexity`, over the same
+#     battery of inputs — so the two can drift apart in the same PR without it
+#     drifting *silently*, even though the detector deliberately never sources
+#     lib/landing.sh at all (the issue's own Refiner comment: "read there for
+#     the exact logic this detector must reproduce independently (not call
+#     into)"). Both protected-path fallbacks are additionally pinned to
+#     config.schema.json's own declared `merge_autonomy_protected_paths`
+#     default, because that — not the two literals against each other — is
+#     the pair production actually rests on: lib/landing.sh is called with
+#     `$DEFAULTED_CONFIG` and takes the top-level branch, while the detector
+#     is handed the raw `--config` file and takes its own literal. The
+#     routine-sources fallbacks get the same schema-default pin, plus
+#     scripts/doctor.sh's own two hand-copied literals (extracted from the
+#     script text, since neither is a standalone function this file can lift
+#     and eval) — closing the same gap for `merge_autonomy_routine_sources`
+#     that its sibling key already had.
 #   - The script itself, invoked as a subprocess against a stubbed `gh`
 #     (PATH-prepended, the same technique test/mine-merge-history.test.sh
 #     uses): a merged pull request whose merge commit touches a protected
 #     path is an injected known escape, and must be caught, as are the other
 #     three ways recomputation can disagree with a landing that happened — a
-#     complexity above `medium`, a source outside the repository's routine
-#     list, and an effective `merge_autonomy` level recorded at arming that
-#     sits below `agent-merges-routine`; one whose four inputs all agree is
-#     clean;
+#     complexity outside the repository's routine-complexity list (default
+#     `low`/`medium`; D18 Stage 3, agent-ops#725), a source outside the
+#     repository's routine list, and an effective `merge_autonomy` level
+#     recorded at arming that sits below `agent-merges-routine`; one whose
+#     four inputs all agree is clean;
 #     each of the ways an input can fail to reconstruct is unverifiable,
 #     never clean; a pull request merged by anyone other than the passed-in
 #     Approver login is not audited at all; and a pull request already
@@ -104,6 +107,10 @@ eval "$protected_paths_block"
 routine_sources_block="$(extract _escape_audit_routine_sources "$DETECTOR")"
 [[ -n "$routine_sources_block" ]] || { echo "FAIL - could not extract _escape_audit_routine_sources from $DETECTOR — has it moved?" >&2; exit 1; }
 eval "$routine_sources_block"
+
+routine_complexity_block="$(extract _escape_audit_routine_complexity "$DETECTOR")"
+[[ -n "$routine_complexity_block" ]] || { echo "FAIL - could not extract _escape_audit_routine_complexity from $DETECTOR — has it moved?" >&2; exit 1; }
+eval "$routine_complexity_block"
 
 # shellcheck source=lib/github-limit.sh
 . "$SCRIPT_DIR/lib/github-limit.sh"
@@ -203,6 +210,16 @@ assert_eq "  ... and its first fallback matches config.schema.json's declared de
   "$schema_routine_default" "${rs_doctor_literals[0]:-}"
 assert_eq "  ... and its second fallback matches config.schema.json's declared default" \
   "$schema_routine_default" "${rs_doctor_literals[1]:-}"
+
+for cfg in '{"repos":[]}' \
+           '{"repos":[{"slug":"acme/widgets","merge_autonomy_routine_complexity":["low","medium","high"]}]}' \
+           '{"merge_autonomy_routine_complexity":["low"]}' \
+           '{}'; do
+  landing_out="$(_landing_routine_complexity "$cfg" "acme/widgets")"
+  escape_out="$(_escape_audit_routine_complexity "$cfg" "acme/widgets")"
+  assert_eq "routine-complexity resolution for config '$cfg' matches lib/landing.sh's own" \
+    "$landing_out" "$escape_out"
+done
 
 # =============================================================================
 # Part 2: the script itself, subprocess, against a stubbed gh.

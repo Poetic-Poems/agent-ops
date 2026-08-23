@@ -70,6 +70,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   resolves the same configured list, from its own independent
   reimplementation, so the post-hoc audit can never disagree with the gate
   about what counts as protected.
+- The `agent-merges-routine`/`agent-merges-all` complexity ceiling is now
+  configurable, `merge_autonomy_routine_complexity` (default
+  `["low", "medium"]`, a `repos[]` entry may override it per repository, the
+  same precedence `merge_autonomy_routine_sources` uses), rather than
+  hard-coded `low`/`medium` in `landing_eligible` (D18 Stage 3, agent-ops#725).
+  `scripts/detect-classifier-escapes.sh` reads the same effective list when
+  recomputing whether a landed pull request was actually eligible. Widening
+  it to admit `high` is a bigger step than it looks: requirement 26a already
+  forces that grade onto anything touching concurrency/locking, security,
+  CI/workflow machinery or shared library code, so admitting `high` here
+  routes exactly that class of diff through automatic landing — the
+  protected-path gate stays in force regardless.
 - `scripts/doctor.sh`'s D18 autonomy-readiness verdict now checks that the
   Approver App installation can actually see each configured repository, not
   only that its permissions are right (agent-ops#721). The installation is
