@@ -9346,13 +9346,30 @@ if ! clone_repo "$repo_slug" "$clone_dir" 2>"$cycle_dir/clone.err"; then
 fi
 
 # --- 6a. Labels (requirement 6a) ---
-# Nothing to do here any more: "--- Labels (requirement 6a, agent-ops#687) ---"
-# in the repo-gathering loop above already ensured the `target` catalogue for
-# every repository this cycle gathered data for, `$repo_slug` among them —
-# selection can only ever choose a repository this cycle gathered, so by the
-# time the Implementer is about to raise `pr_label`'s pull request, the label
-# it needs is already there (or the ensure was itself rate-limited by a still
-# fresh stamp, in which case a prior cycle already put it there).
+# The gather loop above ("Labels (requirement 6a, agent-ops#687)") already
+# ensured $repo_slug's `target` catalogue this cycle, but only if its stamp
+# had gone stale — a fresh stamp skips the listing there entirely, and a
+# fresh stamp only guarantees the label existed at the *last* listing, not
+# now. A stamp this fresh is exactly the state in which nothing else is
+# still looking, so `pr_label` deleted since then would go unnoticed for up
+# to `labels_ensure_interval_hours` (24h default) — and the Implementer is
+# one `gh pr create --label` away from losing its whole run to that gap. So
+# the selected repository still gets its own unconditional, unstamped
+# listing here, immediately before the stage that needs the label to
+# exist — one extra listing per cycle, the same cost main paid before
+# agent-ops#687, for the one repository where a miss is most expensive.
+ensure_labels_for() {
+  local slug="$1" role="$2" report
+  report="$(labels_ensure_role "$CONFIG_FILE" "$SCHEMA_FILE" "$slug" "$role" 2>/dev/null || true)"
+  [[ -n "$report" ]] || return 0
+  log_event "labels-ensured" "$(jq -nc --arg repo "$slug" --arg role "$role" \
+    --arg report "$report" '
+    {repo: $repo, role: $role}
+    + ($report | split("\n") | map(select(length > 0) | split("\t"))
+       | {created: [.[] | select(.[0] == "created") | .[1]],
+          failed:  [.[] | select(.[0] == "failed")  | .[1]]})')"
+}
+ensure_labels_for "$repo_slug" target
 
 # --- 7. Implementer stage ---
 implementer_prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" implementer "$prompt_overrides_json")

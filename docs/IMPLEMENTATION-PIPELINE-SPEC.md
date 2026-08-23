@@ -4769,6 +4769,20 @@ implements.
    interval — periodic rather than once-forever is what keeps that promise
    true regardless of whether the repository is ever selected again.
 
+   The selected repository gets one further, **unconditional** listing on top
+   of the above: immediately before the Implementer stage, `agent-cycle.sh`
+   calls the plain, unstamped `labels_ensure_role` again for `$repo_slug`,
+   whatever the gathered-repository ensure's own stamp said. That stamp only
+   guarantees `pr_label` existed at the gather loop's listing, not at this
+   later point in the same cycle — and a stamp fresh enough to have skipped
+   the gather loop's listing entirely is exactly the state in which nothing
+   else in the cycle is still checking. The Implementer is one
+   `gh pr create --label` on a missing label away from losing its whole run,
+   which is what this second, unrate-limited listing exists to prevent —
+   costing one extra listing per cycle, the same price `main` always paid for
+   the selected repository before agent-ops#687 introduced the gathered-
+   repository ensure above.
+
    `refinement_label_add` (requirement 34e) self-heals the one failure mode
    this cannot pre-empt — the ensure above ran, but this repository's stamp
    had not yet been written, or the projection is racing a repository this

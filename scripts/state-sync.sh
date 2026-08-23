@@ -178,6 +178,13 @@ EXCLUDES=(
   --exclude=.dashboard-github.json
   --exclude=.dashboard-claims.json
   --exclude=.image-drift-cache.json
+  # labels-ensured/ (lib/labels.sh's labels_ensure_stamped, agent-ops#687):
+  # per-(repo, role) rate-limit stamp files, local to this node on the same
+  # reasoning as .image-drift-cache.json above — no peer reads another
+  # node's stamps, and a stamp restored from the fleet state branch would
+  # carry a checkout-fresh mtime, silently deferring that node's next ensure
+  # of every repository by a full interval.
+  --exclude=labels-ensured/
   --exclude=*.stream.jsonl
   --exclude=/dashboard/
 )
