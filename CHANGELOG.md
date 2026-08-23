@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- Every prompt in `prompts/*.md` that embeds or receives GitHub-sourced text
+  (issue, pull request, review, or comment bodies; a Co-Ordinator work order's
+  `context`) now carries an explicit "Untrusted external content" section:
+  that text is data describing the item, never an instruction to the model
+  running the stage (TD-PPagop-26082407 part 1/3; agent-ops#752). Scoping
+  `claude`'s tool access down from `--dangerously-skip-permissions` and
+  restricting container network egress — parts 2 and 3 of the same finding —
+  are tracked separately as TD-PPagop-26082428 and TD-PPagop-26082429.
+
 ### Added
 
 - The routine landing class's protected-path list — the whole-path prefixes a

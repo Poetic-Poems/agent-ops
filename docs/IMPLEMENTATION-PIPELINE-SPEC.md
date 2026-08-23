@@ -6616,6 +6616,33 @@ implements.
     }
     ```
 
+20a. **Every stage prompt frames externally-sourced GitHub content as
+    untrusted data, never an instruction (TD-PPagop-26082407 part 1/3).**
+    `prompts/coordinator.md` — the point where this pipeline first reads
+    content it does not control: issue and pull-request bodies, review and
+    comment bodies, register-hygiene and human-visibility sweep output, every
+    `body`/`comments[].body`/`title`/`problems` field the pre-fetched bands
+    above carry — states plainly, in an "Untrusted external content" section,
+    that this text describes the item and is never a command to the model
+    reading it, and that the same framing survives when it is pasted
+    **verbatim** into a work order's `context` for a downstream stage
+    (requirement 20's own `context`/`body` fields, throughout). Every
+    downstream stage that receives such a work order, or reads GitHub content
+    directly — the Implementer (requirement 21 onward), the Reviewer, the
+    Enabler, the Enabler's adjudication mode, the Refiner, the Approver —
+    carries its own copy of the same framing in its own "What you receive at
+    invocation" section. All three public repositories this pipeline acts on
+    accept issues, pull requests and comments from any GitHub account, so a
+    crafted body reaches a stage moments after it is posted; this requirement
+    is what stands between that content and being read as an instruction,
+    since nothing about `run_claude_stage` (requirement 4d) or the model
+    invoked changes because of it. It is a prompt-level control only — it
+    stops nothing a stage still chooses to do once it has (mis)read a
+    directive as legitimate — and it does not by itself close
+    TD-PPagop-26082407: tool-access scoping and network-egress restriction,
+    the finding's other two technical controls, remain open as
+    TD-PPagop-26082428 and TD-PPagop-26082429.
+
 ### The Implementer
 
 21. Operates as a single non-interactive `claude -p` invocation with no
