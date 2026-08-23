@@ -561,7 +561,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   decide, and rides in the landing audit record (requirement 8x) as its own
   `comment-reconciliation` gate, so a landing armed over a question that could
   not be put is never recorded as one where it came back clear.
-
+- An `adjudicate-first` escalation now carries the adjudicator's own finding,
+  not just the Enabler's pre-adjudication verdict (agent-ops#681). Where
+  `run_enabler_adjudication` returned `inadequate` — or any other reason the
+  pass could not settle the disagreement — the Script filed the escalation
+  issue with the body the Enabler wrote *before* adjudication ran; the
+  adjudication's own `evidence` reached the `enabler-adjudication` log event
+  and nowhere else, leaving the human to start the escalation with no idea
+  why an adjudicator's answer was missing, even though the `adequate` branch
+  already threaded the same evidence into its own `unblocked` event's reason.
+  The escalate branch in `agent-cycle.sh` now appends the evidence under an
+  `## Adjudication attempted` heading to the issue body before filing,
+  whenever the pass actually ran.
 - The Refiner's Priority ratchet now writes at all: every `setIssueFieldValue`
   mutation it has ever sent was rejected before reaching the resolver, so no
   issue in any repository has been banded by the pipeline (agent-ops#737).
