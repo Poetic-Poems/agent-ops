@@ -591,13 +591,13 @@ The D18 merge-autonomy trust ladder: `human` (today's behaviour — a human appr
 
 D18 WI-7: which work sources may be armed automatically at `agent-merges-routine` and above — a pull request also needs a `complexity:*` grade in `merge_autonomy_routine_complexity`, and — below `agent-merges-all` — to touch no protected path; at `agent-merges-all` a protected-path hit is deferred to the critical-tier and `landing_cool_off_hours` controls rather than refused. A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Takes `landingSourceToken`s, not the `sourceToken`s `repos[].sources` takes: issue work is the plain `issues` here, never `issues:<band>`, because banding is spent at gathering time and a finished work order carries the bare word.
 
-### Extended notes: `merge_autonomy_routine_complexity`
-
-D18 Stage 3: which `complexity:*` grades may be armed automatically at `agent-merges-routine` and above — a pull request also needs a `source` in `merge_autonomy_routine_sources`, and — below `agent-merges-all` — to touch no protected path. A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Widening past the default to include `high` is a bigger step than it looks: requirement 26a already forces `high` onto the riskiest class of diff (concurrency/locking, security, CI/workflow machinery, shared library code), so admitting it here routes exactly that class through automatic landing, with the protected-path list as the remaining belt-and-braces control.
-
 ### Extended notes: `merge_autonomy_protected_paths`
 
 D18 Stage 3: the whole-path prefixes a routine-tier landing must touch none of — below `agent-merges-all` a hit refuses outright; at `agent-merges-all` it is deferred to the critical-tier and `landing_cool_off_hours` controls instead. An entry ending `/*` matches a whole-path prefix; any other entry matches an exact path. A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Defaults to agent-ops's own gate paths, which govern nothing outside agent-ops itself.
+
+### Extended notes: `merge_autonomy_routine_complexity`
+
+D18 Stage 3: which `complexity:*` grades may be armed automatically at `agent-merges-routine` and above — a pull request also needs a `source` in `merge_autonomy_routine_sources`, and — below `agent-merges-all` — to touch no protected path. A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Widening past the default to include `high` is a bigger step than it looks: requirement 26a already forces `high` onto the riskiest class of diff (concurrency/locking, security, CI/workflow machinery, shared library code), so admitting it here routes exactly that class through automatic landing, with the protected-path list as the remaining belt-and-braces control.
 
 ### Extended notes: `landing_cool_off_hours`
 
