@@ -7,17 +7,24 @@
 #
 # Two halves:
 #
-#   - The reimplemented protected-path list and routine-sources resolution
-#     (`_escape_audit_is_protected`/`_escape_audit_routine_sources`, lifted
+#   - The reimplemented protected-path matching, protected-path resolution
+#     and routine-sources resolution (`_escape_audit_is_protected`/
+#     `_escape_audit_protected_paths`/`_escape_audit_routine_sources`, lifted
 #     verbatim out of the script the same way test/landing-retry-sweep.test.sh
 #     lifts `_landing_retry_sweep_repo` out of agent-cycle.sh) are pinned
 #     byte-for-byte identical to lib/landing.sh's own
-#     `_landing_is_protected`/`_landing_routine_sources`, over the same
-#     battery of inputs — so the two can drift apart in the same PR without
-#     it drifting *silently*, even though the detector deliberately never
-#     sources lib/landing.sh at all (the issue's own Refiner comment: "read
-#     there for the exact logic this detector must reproduce independently
-#     (not call into)").
+#     `_landing_is_protected`/`_landing_protected_paths`/`_landing_routine_sources`,
+#     over the same battery of inputs — so the two can drift apart in the
+#     same PR without it drifting *silently*, even though the detector
+#     deliberately never sources lib/landing.sh at all (the issue's own
+#     Refiner comment: "read there for the exact logic this detector must
+#     reproduce independently (not call into)"). Both protected-path
+#     fallbacks are additionally pinned to config.schema.json's own declared
+#     `merge_autonomy_protected_paths` default, because that — not the two
+#     literals against each other — is the pair production actually rests on:
+#     lib/landing.sh is called with `$DEFAULTED_CONFIG` and takes the
+#     top-level branch, while the detector is handed the raw `--config` file
+#     and takes its own literal.
 #   - The script itself, invoked as a subprocess against a stubbed `gh`
 #     (PATH-prepended, the same technique test/mine-merge-history.test.sh
 #     uses): a merged pull request whose merge commit touches a protected
@@ -86,6 +93,10 @@ is_protected_block="$(extract _escape_audit_is_protected "$DETECTOR")"
 [[ -n "$is_protected_block" ]] || { echo "FAIL - could not extract _escape_audit_is_protected from $DETECTOR — has it moved?" >&2; exit 1; }
 eval "$is_protected_block"
 
+protected_paths_block="$(extract _escape_audit_protected_paths "$DETECTOR")"
+[[ -n "$protected_paths_block" ]] || { echo "FAIL - could not extract _escape_audit_protected_paths from $DETECTOR — has it moved?" >&2; exit 1; }
+eval "$protected_paths_block"
+
 routine_sources_block="$(extract _escape_audit_routine_sources "$DETECTOR")"
 [[ -n "$routine_sources_block" ]] || { echo "FAIL - could not extract _escape_audit_routine_sources from $DETECTOR — has it moved?" >&2; exit 1; }
 eval "$routine_sources_block"
@@ -97,14 +108,15 @@ eval "$routine_sources_block"
 # shellcheck source=lib/landing.sh
 . "$SCRIPT_DIR/lib/landing.sh"
 
+default_protected='[".github/*","deploy/*","prompts/*","lib/*","config.schema.json","config.json","agent-cycle.sh","review-cycle.sh","CODEOWNERS"]'
 for path in ".github/workflows/ci.yml" "deploy/docker/Dockerfile" "prompts/implementer.md" \
             "lib/landing.sh" "config.schema.json" "config.json" "agent-cycle.sh" \
             "review-cycle.sh" "CODEOWNERS" \
             "README.md" "scripts/detect-classifier-escapes.sh" "test/landing.test.sh" \
             "libfoo.sh" "deploying.txt" ".github" "githubby/file.txt"; do
   landing_rc=0; escape_rc=0
-  _landing_is_protected "$path" || landing_rc=$?
-  _escape_audit_is_protected "$path" || escape_rc=$?
+  _landing_is_protected "$default_protected" "$path" || landing_rc=$?
+  _escape_audit_is_protected "$default_protected" "$path" || escape_rc=$?
   assert_eq "protected-path verdict for '$path' matches lib/landing.sh's own" \
     "$landing_rc" "$escape_rc"
 done
@@ -118,6 +130,33 @@ for cfg in '{"repos":[]}' \
   assert_eq "routine-sources resolution for config '$cfg' matches lib/landing.sh's own" \
     "$landing_out" "$escape_out"
 done
+
+for cfg in '{"repos":[]}' \
+           '{"repos":[{"slug":"acme/widgets","merge_autonomy_protected_paths":["scripts/*"]}]}' \
+           '{"merge_autonomy_protected_paths":["lib/*","CODEOWNERS"]}' \
+           '{}'; do
+  landing_out="$(_landing_protected_paths "$cfg" "acme/widgets")"
+  escape_out="$(_escape_audit_protected_paths "$cfg" "acme/widgets")"
+  assert_eq "protected-paths resolution for config '$cfg' matches lib/landing.sh's own" \
+    "$landing_out" "$escape_out"
+done
+
+# ... and both against config.schema.json's own declared default, which is the
+# pair that actually has to agree in production: agent-cycle.sh calls
+# lib/landing.sh with $DEFAULTED_CONFIG, where config_defaults has already
+# written the schema default into the top-level key, so the literal in
+# lib/landing.sh is never reached there; the detector is handed the raw
+# --config file, where the key is absent, so it does reach its own. Pinning
+# the two literals to each other alone would let an edit to the schema default
+# leave the gate protecting one list and the audit recomputing another —
+# manufactured escapes, which is the whole thing requirement 8e exists to rule
+# out.
+schema_default="$(jq -c '.properties.merge_autonomy_protected_paths.default' \
+  "$SCRIPT_DIR/config.schema.json")"
+assert_eq "the shipped protected-paths fallback matches config.schema.json's declared default" \
+  "$schema_default" "$(_landing_protected_paths '{}' "acme/widgets")"
+assert_eq "  ... and so does the detector's own" \
+  "$schema_default" "$(_escape_audit_protected_paths '{}' "acme/widgets")"
 
 # =============================================================================
 # Part 2: the script itself, subprocess, against a stubbed gh.

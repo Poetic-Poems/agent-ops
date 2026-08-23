@@ -4039,7 +4039,7 @@ run_approver_stage() {
   # the cheaper one.
   if [[ "$pr_url" =~ /pull/([0-9]+)$ ]]; then
     number="${BASH_REMATCH[1]}"
-    landing_protected_paths_hit "$selected_repo" "$number" >/dev/null 2>&1 || protected_rc=$?
+    landing_protected_paths_hit "$DEFAULTED_CONFIG" "$selected_repo" "$number" >/dev/null 2>&1 || protected_rc=$?
   else
     protected_rc=2
   fi
@@ -4691,7 +4691,7 @@ _landing_stage_attempt() {
   autonomy_source="$(merge_autonomy_resolution_source "$DEFAULTED_CONFIG" "$slug")"
 
   local pp_hit_rc=0 pp_hit_paths="" pp_verdict pp_paths_json
-  pp_hit_paths="$(landing_protected_paths_hit "$slug" "$number")" || pp_hit_rc=$?
+  pp_hit_paths="$(landing_protected_paths_hit "$DEFAULTED_CONFIG" "$slug" "$number")" || pp_hit_rc=$?
   case "$pp_hit_rc" in
     0) pp_verdict="hit" ;;
     1) pp_verdict="clear" ;;

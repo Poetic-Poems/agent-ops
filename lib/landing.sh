@@ -67,11 +67,15 @@
 # `landing_eligible` already refuses anything above `complexity:medium`) —
 # belt and braces against the deadliest class this design names: a pull
 # request that edits the gate it is riding through the gate it just
-# weakened. Nine whole-path prefixes, an explicit anchored `case` in the
-# shape `scripts/is-docs-only.sh` uses (allowlist there, denylist here) —
-# never an extension rule, and that file's own argument holds here
-# unchanged: adding one line to a protected-paths list is cheap, forgetting
-# one is not.
+# weakened. `merge_autonomy_protected_paths` (config, D18 Stage 3,
+# agent-ops#724) names the list — a `repos[]` entry's own value overrides the
+# top-level one, the same precedence `merge_autonomy_routine_sources` uses —
+# matched the same way `scripts/is-docs-only.sh` matches its own allowlist
+# (denylist here): an entry ending `/*` is a whole-path prefix, any other
+# entry an exact path, never an extension rule. That file's own argument
+# holds here unchanged: adding one line to a protected-paths list is cheap,
+# forgetting one is not. Every installation defaults to agent-ops's own nine
+# whole-path prefixes below, unless it names its own:
 #
 #   .github/     workflow definitions and branch-protection-adjacent config
 #   deploy/      the node image and its compose/runbook
@@ -90,6 +94,10 @@
 # `lib/landing.sh` is self-protecting through the `lib/` prefix already —
 # no separate entry names this file, because one already covers it and a
 # redundant second entry is one more place to forget to update together.
+# That reasoning is specific to agent-ops's own default list; a repository
+# that overrides `merge_autonomy_protected_paths` takes over the job of
+# covering whatever gates *its* own routine-tier landings — nothing here
+# checks that an override actually does.
 #
 # The last three were left off when this list was first written, raised as
 # an explicit question on this file's own pull request rather than decided
@@ -182,26 +190,47 @@
 # `github_pr_list_truncated` already apply to `gh pr list`.
 LANDING_PR_FILES_LIMIT="${LANDING_PR_FILES_LIMIT:-3000}"
 
-# _landing_is_protected PATH
-# True iff PATH falls under one of the nine protected prefixes — see the
-# header for the list and why each is there. Whole-path prefixes only,
-# anchored, never an extension rule.
-_landing_is_protected() {
-  case "$1" in
-    .github/*) return 0 ;;
-    deploy/*) return 0 ;;
-    prompts/*) return 0 ;;
-    lib/*) return 0 ;;
-    config.schema.json) return 0 ;;
-    config.json) return 0 ;;
-    agent-cycle.sh) return 0 ;;
-    review-cycle.sh) return 0 ;;
-    CODEOWNERS) return 0 ;;
-    *) return 1 ;;
-  esac
+# _landing_protected_paths CONFIG_JSON SLUG
+# The protected-path list SLUG is governed by: its own `repos[]` entry's
+# `merge_autonomy_protected_paths` when present, else the top-level key, else
+# the schema default — agent-ops's own nine paths (see the header). Prints a
+# compact JSON array; never fails, on the same "a missing or malformed key is
+# not evidence of an empty list" reasoning `_landing_routine_sources` above
+# already documents.
+_landing_protected_paths() {
+  local config_json="$1" slug="$2" repo_list
+  repo_list="$(jq -c --arg slug "$slug" \
+    '(.repos // [])[] | select(.slug == $slug) | .merge_autonomy_protected_paths // empty' \
+    <<<"$config_json" 2>/dev/null | head -1)"
+  if [[ -n "$repo_list" ]] && jq -e 'type == "array"' <<<"$repo_list" >/dev/null 2>&1; then
+    printf '%s' "$repo_list"
+    return 0
+  fi
+  local top_list
+  top_list="$(jq -c '.merge_autonomy_protected_paths // empty' <<<"$config_json" 2>/dev/null)"
+  if [[ -n "$top_list" ]] && jq -e 'type == "array"' <<<"$top_list" >/dev/null 2>&1; then
+    printf '%s' "$top_list"
+    return 0
+  fi
+  printf '%s' '[".github/*","deploy/*","prompts/*","lib/*","config.schema.json","config.json","agent-cycle.sh","review-cycle.sh","CODEOWNERS"]'
 }
 
-# landing_protected_paths_hit SLUG NUMBER
+# _landing_is_protected PROTECTED_JSON PATH
+# True iff PATH matches one of PROTECTED_JSON's entries — see the header for
+# the default list and why each entry is there. An entry ending `/*` matches
+# as a whole-path prefix (`lib/*` matches `lib/landing.sh`, never
+# `libfoo.sh`); any other entry matches only that exact path — never an
+# extension rule, and never a shell glob, so an entry containing a `?` or a
+# `[...]` in a future override matches itself literally rather than as a
+# pattern.
+_landing_is_protected() {
+  local protected_json="$1" path="$2"
+  jq -e --arg p "$path" '
+    any(.[]; . as $entry | if $entry | endswith("/*") then ($p | startswith($entry[:-1])) else $entry == $p end)
+  ' <<<"$protected_json" >/dev/null 2>&1
+}
+
+# landing_protected_paths_hit CONFIG_JSON SLUG NUMBER
 # Print the offending paths, one per line. Exit 0 when at least one changed
 # path is protected, 1 when none is, 2 when the answer could not be
 # established at all (bad arguments, `gh` erroring, a listing that reached
@@ -224,8 +253,11 @@ _landing_is_protected() {
 # be, and D18 arming was held shut for five days while the logs said only
 # `unknown:could not establish …'s changed-file list` (agent-ops#718).
 landing_protected_paths_hit() {
-  local slug="$1" number="${2:-}" gh_bin="${LANDING_GH:-gh}"
+  local config_json="$1" slug="$2" number="${3:-}" gh_bin="${LANDING_GH:-gh}"
   [[ -n "$slug" && "$number" =~ ^[0-9]+$ ]] || return 2
+
+  local protected_json
+  protected_json="$(_landing_protected_paths "$config_json" "$slug")"
 
   local raw count
   raw="$("$gh_bin" api --method GET "repos/$slug/pulls/$number/files" \
@@ -242,7 +274,7 @@ landing_protected_paths_hit() {
   local hit=0 path
   while IFS= read -r path; do
     [[ -n "$path" ]] || continue
-    if _landing_is_protected "$path"; then
+    if _landing_is_protected "$protected_json" "$path"; then
       printf '%s\n' "$path"
       hit=1
     fi
@@ -387,7 +419,7 @@ landing_eligible() {
   fi
 
   local hit_paths hit_rc
-  hit_paths="$(landing_protected_paths_hit "$slug" "$number")"; hit_rc=$?
+  hit_paths="$(landing_protected_paths_hit "$config_json" "$slug" "$number")"; hit_rc=$?
   case "$hit_rc" in
     0)
       # D18 WI-12 (Stage 4, agent-ops#415): a protected path stays ineligible
@@ -503,7 +535,7 @@ landing_protected_path_controls_ok() {
   local config_json="$1" slug="$2" number="$3" tier="${4:-}" submitted_at="${5:-}" review_commit="${6:-}" now_iso="${7:-}"
   local gh_bin="${LANDING_GH:-gh}"
   local hit_rc=0
-  landing_protected_paths_hit "$slug" "$number" >/dev/null 2>&1 || hit_rc=$?
+  landing_protected_paths_hit "$config_json" "$slug" "$number" >/dev/null 2>&1 || hit_rc=$?
   case "$hit_rc" in
     1)
       printf 'ok'

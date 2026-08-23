@@ -8,6 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- The routine landing class's protected-path list — the whole-path prefixes a
+  routine-tier landing must touch none of before it can land unattended — is
+  now a config key, `merge_autonomy_protected_paths`, with a per-repository
+  `repos[]` override on the same precedence `merge_autonomy_routine_sources`
+  uses (agent-ops#724, D18 Stage 3 preparation). It defaults to agent-ops's
+  own nine paths byte-for-byte, so nothing changes for any repository until
+  it names its own list — a repository whose gate code lives elsewhere (a
+  product `lib/` that is ordinary code, a release script under `scripts/`)
+  can now declare the paths that actually gate *its* release rather than
+  inherit a list written for agent-ops. `scripts/detect-classifier-escapes.sh`
+  resolves the same configured list, from its own independent
+  reimplementation, so the post-hoc audit can never disagree with the gate
+  about what counts as protected.
 - `scripts/doctor.sh`'s D18 autonomy-readiness verdict now checks that the
   Approver App installation can actually see each configured repository, not
   only that its permissions are right (agent-ops#721). The installation is
