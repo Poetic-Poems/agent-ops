@@ -4422,10 +4422,15 @@ run_landing_stage() {
 #      itself the way the Reviewer's own call must guard against — the real
 #      current "last left draft, and stayed left" anchor is exactly the one
 #      this arming read needs, not one bounded away from a flip of its own.
-#      `dirty` refuses arming, naming the unreconciled comment(s); `unknown`
-#      (the timeline or comment list could not be read) warns and lets the
-#      other checks decide, the same "could not ask is not a failure" the
-#      Reviewer's own reconciliation read already applies.
+#      `dirty` refuses arming, naming the unreconciled comment(s); anything
+#      else that is not `clean` — `unknown`, where the timeline or comment
+#      list could not be read, and the empty word a call that never ran at
+#      all leaves behind — warns and lets the other checks decide, the same
+#      "could not ask is not a failure" the Reviewer's own reconciliation
+#      read already applies. Either way the verdict itself rides in the
+#      landing audit record (requirement 8x) as its own
+#      `comment-reconciliation` gate, so a landing armed over a read that
+#      could not be made is never recorded as one where it came back clear.
 #   4.5. D18 WI-12 (Stage 4, agent-ops#415): only at `agent-merges-all`, and
 #      only for a pull request `landing_protected_path_controls_ok`
 #      (lib/landing.sh) itself confirms still touches a protected path —
@@ -4595,8 +4600,16 @@ _landing_stage_attempt() {
     _landing_refuse "$pr_url" "$slug" "$rc_reason" "$retry"
     return 0
   fi
-  if [[ "$rc_word" == "unknown" ]]; then
-    log_event "warning" "$(jq -nc --arg u "$pr_url" --arg d "$rc_reason" \
+  # Anything that is not `clean` is treated as `unknown`, not as a pass: the
+  # empty word a call that never executed at all leaves behind (`|| true`
+  # swallows a `command not found` exactly as it swallows the exit 1 a `dirty`
+  # verdict reports, and both arrive here as a bare string) would otherwise
+  # clear this gate silently, logging nothing and recording nothing — a veto
+  # check reading "clear" on the one path where it did not run is the failure
+  # this gate exists to prevent, not a case to fall through.
+  if [[ "$rc_word" != "clean" ]]; then
+    log_event "warning" "$(jq -nc --arg u "$pr_url" \
+      --arg d "${rc_reason:-reconciliation_gate answered ${rc_word:-nothing at all}}" \
       '{detail: ("could not confirm every human comment on " + $u + " since it last left draft is reconciled: " + $d), pr_url: $u}')"
   fi
 
@@ -4761,6 +4774,7 @@ _landing_stage_attempt() {
   gates_json="$(jq -nc \
     --arg level "$level" --arg elig "$elig" --arg gate_word "$gate_word" \
     --arg standing "$standing" --arg pp_ctl "${pp_ctl:-n/a}" \
+    --arg rc_word "${rc_word:-}" \
     --arg budget_decision "$budget_decision" --arg queued "$queued" \
     '[
       {gate: "autonomy-level", verdict: $level},
@@ -4768,6 +4782,8 @@ _landing_stage_attempt() {
       {gate: "review-gate", verdict: $gate_word},
       {gate: "approver-standing-review", verdict: $standing},
       {gate: "human-veto", verdict: "clear"},
+      {gate: "comment-reconciliation",
+       verdict: (if $rc_word == "" then "unknown" else $rc_word end)},
       {gate: "protected-path-controls", verdict: $pp_ctl},
       {gate: "merge-budget", verdict: $budget_decision},
       {gate: "merge-queue", verdict: (if $queued == "false" then "clear" else $queued end)}

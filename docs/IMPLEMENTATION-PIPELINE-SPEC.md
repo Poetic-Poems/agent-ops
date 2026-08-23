@@ -5091,10 +5091,19 @@ implements.
       way the Reviewer's own call must guard against, so the real current
       "last left draft, and stayed left" anchor is exactly the read this gate
       needs. `dirty` refuses arming, naming the unreconciled comment(s) as
-      the reason; `unknown` (the timeline or the comment list could not be
-      read) logs a `warning` and lets the rest of this gate sequence decide,
-      the same "could not ask is not a failure" contract the Reviewer's own
-      reconciliation read already keeps.
+      the reason; any other answer that is not `clean` — `unknown`, where the
+      timeline or the comment list could not be read, and the empty word left
+      behind by a call that did not execute at all — logs a `warning` and
+      lets the rest of this gate sequence decide, the same "could not ask is
+      not a failure" contract the Reviewer's own reconciliation read already
+      keeps. Only the exact word `clean` passes silently: a veto check that
+      reads as clear on the one path where it never ran is the failure this
+      gate exists to prevent, so an unrecognised answer is treated as
+      `unknown` rather than fallen through. The verdict rides in the landing
+      audit record (requirement 8x) as its own `comment-reconciliation` gate
+      entry, carrying the word the read actually returned, so a landing armed
+      over a question that could not be put is never recorded as one where it
+      came back clear.
    4.5. D18 WI-12 (Stage 4, agent-ops#415): only at `agent-merges-all`, and
       only for a pull request `landing_protected_path_controls_ok`
       (`lib/landing.sh`) itself re-confirms still touches a protected path —

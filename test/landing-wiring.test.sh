@@ -253,14 +253,19 @@ _handoff_blocking_reviewers() {
 # `handoff_complete_review` does. `RC_WORD`/`RC_REASON` default to `clean`,
 # so every case in this file that does not opt in stays exactly as it read
 # before this gate existed.
+#
+# `${RC_WORD-clean}`, not `${RC_WORD:-clean}`: an explicitly empty `RC_WORD`
+# has to reach the caller as the empty answer a call that never executed at
+# all leaves behind — the case the gate must not read as a pass — while an
+# unset one still defaults.
 reconciliation_gate() {
   printf '%s\n' "$*" >>"$T/reconciliation_args"
   if [[ -n "${RC_REASON:-}" ]]; then
-    printf '%s\t%s' "${RC_WORD:-clean}" "$RC_REASON"
+    printf '%s\t%s' "${RC_WORD-clean}" "$RC_REASON"
   else
-    printf '%s' "${RC_WORD:-clean}"
+    printf '%s' "${RC_WORD-clean}"
   fi
-  [[ "${RC_WORD:-clean}" != "dirty" ]]
+  [[ "${RC_WORD-clean}" != "dirty" ]]
 }
 
 landing_protected_path_controls_ok() {
@@ -652,6 +657,17 @@ assert_eq "an unreadable reconciliation read does not itself block arming" "1" "
 assert_eq "  ... returning 0" "0" "$rc"
 assert_contains "  ... but logs a warning naming what could not be read" \
   "could not read $URL's comments" "$(jq -r '.detail' <<<"$(event_of warning)")"
+
+# An answer that is neither word at all — what a call that never executed
+# leaves behind, since the `|| true` guarding it swallows a failure to run
+# exactly as it swallows the exit 1 a `dirty` verdict reports — is read as
+# `unknown`, never as a pass. A veto check that logs and records nothing on
+# the one path where it did not run is the failure this gate exists to
+# prevent.
+rc="$(run_case RC_WORD="")"
+assert_eq "  ... returning 0" "0" "$rc"
+assert_contains "an answer that is no word at all still logs the warning" \
+  "answered nothing at all" "$(jq -r '.detail' <<<"$(event_of warning)")"
 
 # --- Gate 5: the merge budget ------------------------------------------------
 

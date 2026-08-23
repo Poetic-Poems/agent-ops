@@ -138,6 +138,11 @@ landing_approver_standing_review_at() {
     "${REVIEW_COMMIT:-sha-approved-head}"
 }
 _handoff_blocking_reviewers() { return 0; }
+# agent-ops#672: gate 4's second veto read. Stubbed here rather than left to
+# resolve to nothing — agent-cycle.sh sources `lib/reconciliation-gate.sh`
+# and this harness must model that, or the gate whose verdict the record now
+# carries would silently not run in the very test that pins the record.
+reconciliation_gate() { printf '%s' "${RC_WORD-clean}"; [[ "${RC_WORD-clean}" != "dirty" ]]; }
 landing_protected_path_controls_ok() { printf '%s' "${PP_CTL:-ok}"; }
 landing_retry_tier() { printf '%s' "${RETRY_TIER:-critical}"; }
 merge_budget_decide() {
@@ -210,6 +215,8 @@ assert_eq "  ... the Approver's own standing review" \
   '"APPROVED"' "$(jq -c '.gates[] | select(.gate == "approver-standing-review") | .verdict' <<<"$audit")"
 assert_eq "  ... and the merge-queue probe" \
   '"clear"' "$(jq -c '.gates[] | select(.gate == "merge-queue") | .verdict' <<<"$audit")"
+assert_eq "  ... and gate 4's own comment-reconciliation read (agent-ops#672)" \
+  '"clean"' "$(jq -c '.gates[] | select(.gate == "comment-reconciliation") | .verdict' <<<"$audit")"
 assert_eq "  ... the budget object gate 5 already computed, not discarded" \
   '"arm"' "$(jq -c '.budget.decision' <<<"$audit")"
 assert_eq "  ... including its own cap" "8" "$(jq -c '.budget.cap' <<<"$audit")"
@@ -235,6 +242,23 @@ assert_eq "an unreadable changed-file list still arms (the arm itself already cl
 audit="$(event_of landing-audit-record)"
 assert_eq "the protected-path verdict is unknown, never read as clear" \
   '"unknown"' "$(jq -c '.protected_path.verdict' <<<"$audit")"
+
+# --- An unreadable comment-reconciliation read is recorded as itself -------
+# (agent-ops#672). That read is fail-open — it lets the rest of the gate
+# sequence decide, rather than refusing on a node fact — so the record is the
+# only place the distinction survives: a landing armed while the question
+# could not be put must not read, afterwards, like one where it came back
+# clear. The empty answer a call that never executed leaves behind reads as
+# `unknown` for the same reason.
+
+for word in unknown ""; do
+  rc="$(run_case RC_WORD="$word")"
+  assert_eq "an ${word:-absent} comment-reconciliation answer still arms (it is fail-open by design)" \
+    "0" "$rc"
+  audit="$(event_of landing-audit-record)"
+  assert_eq "  ... and the record carries unknown, never a silent clean" \
+    '"unknown"' "$(jq -c '.gates[] | select(.gate == "comment-reconciliation") | .verdict' <<<"$audit")"
+done
 
 # --- Adjudication history: every approver-verdict for this pull request, ---
 # --- not only the one that authorised this landing -------------------------
