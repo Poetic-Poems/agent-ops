@@ -600,6 +600,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   before starting the test run so a batch that exhausts the remaining budget
   costs only the test evidence, not the review itself (requirement 29a,
   `docs/IMPLEMENTATION-PIPELINE-SPEC.md`'s Gotchas table).
+- The protected-path classifier no longer fails open on a malformed
+  `merge_autonomy_protected_paths` (TD-PPagop-26082320). `_landing_is_protected`
+  (`lib/landing.sh`) and its deliberate twin `_escape_audit_is_protected`
+  (`scripts/detect-classifier-escapes.sh`) compare each changed path against
+  the configured list with a jq program that raises — `jq -e`'s own exit 5 —
+  rather than returning false, when an entry is not a string; the caller
+  could not tell that apart from "no match" (exit 1), so a list like
+  `[123, "lib/*"]` would have read as "nothing protected was touched" for
+  every path in the diff. `landing_protected_paths_hit` now returns its own
+  "could not be established" exit 2 for the raising case, exactly as it
+  already does for an unreadable or truncated changed-file listing, and
+  `landing_eligible` reads that as `unknown`, never `eligible`. Not reachable
+  through a schema-validated `config.json` — `config.schema.json` already
+  constrains every `merge_autonomy_protected_paths` entry to a non-empty
+  string — but `scripts/detect-classifier-escapes.sh` reads its own `--config`
+  file with no such gate, so this closes a latent contract defect rather than
+  a live hole.
 - D18 arming now works at all: the changed-file read behind the protected-path
   gate had been failing on every single call since Stage 2 was entered, so the
   pipeline has never autonomously landed a pull request (agent-ops#718).

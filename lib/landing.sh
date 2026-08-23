@@ -216,13 +216,20 @@ _landing_protected_paths() {
 }
 
 # _landing_is_protected PROTECTED_JSON PATH
-# True iff PATH matches one of PROTECTED_JSON's entries — see the header for
-# the default list and why each entry is there. An entry ending `/*` matches
-# as a whole-path prefix (`lib/*` matches `lib/landing.sh`, never
+# Exit 0 iff PATH matches one of PROTECTED_JSON's entries — see the header
+# for the default list and why each entry is there. An entry ending `/*`
+# matches as a whole-path prefix (`lib/*` matches `lib/landing.sh`, never
 # `libfoo.sh`); any other entry matches only that exact path — never an
 # extension rule, and never a shell glob, so an entry containing a `?` or a
 # `[...]` in a future override matches itself literally rather than as a
-# pattern.
+# pattern. Exit 1 when nothing matches. Exit 5 — `jq -e`'s own code for a
+# program that raised rather than merely returned false — when PROTECTED_JSON
+# holds an entry `endswith`/`==` cannot compare against a string at all (a
+# number, an object, a bool): `config.schema.json` constrains every
+# `merge_autonomy_protected_paths` entry to a non-empty string, so this is
+# unreachable through a schema-validated config, but the caller must still
+# tell it apart from "no match" (TD-PPagop-26082320) rather than reading a
+# malformed list as "nothing here is protected".
 _landing_is_protected() {
   local protected_json="$1" path="$2"
   jq -e --arg p "$path" '
@@ -234,12 +241,15 @@ _landing_is_protected() {
 # Print the offending paths, one per line. Exit 0 when at least one changed
 # path is protected, 1 when none is, 2 when the answer could not be
 # established at all (bad arguments, `gh` erroring, a listing that reached
-# LANDING_PR_FILES_LIMIT and so may be hiding more). Reads the changed-file
-# list fresh from GitHub — `gh api repos/SLUG/pulls/N/files`, never the
-# ephemeral clone, whose branch may have moved since it was checked out.
-# At the gate-4.5 call site this guards, exit 2 is a refusal to arm: an
-# unreadable or truncated list must never read as "nothing protected was
-# touched". The other call site — `_landing_stage_attempt`'s own
+# LANDING_PR_FILES_LIMIT and so may be hiding more, or `_landing_is_protected`
+# raising — TD-PPagop-26082320 — because CONFIG_JSON's protected-paths list
+# holds a non-string entry `_landing_is_protected` cannot compare at all).
+# Reads the changed-file list fresh from GitHub — `gh api
+# repos/SLUG/pulls/N/files`, never the ephemeral clone, whose branch may have
+# moved since it was checked out. At the gate-4.5 call site this guards,
+# exit 2 is a refusal to arm: an unreadable or truncated list, or a protected-
+# paths list this cannot even evaluate, must never read as "nothing protected
+# was touched". The other call site — `_landing_stage_attempt`'s own
 # `landing-audit-record` write (requirement 8x) — runs after the arm has
 # already happened, so exit 2 there instead maps to a bare `unknown`
 # protected-path verdict in the record and proceeds; there is nothing left
@@ -271,13 +281,15 @@ landing_protected_paths_hit() {
   fi
   github_pr_list_truncated "$count" "$LANDING_PR_FILES_LIMIT" && return 2
 
-  local hit=0 path
+  local hit=0 path is_protected_rc
   while IFS= read -r path; do
     [[ -n "$path" ]] || continue
-    if _landing_is_protected "$protected_json" "$path"; then
-      printf '%s\n' "$path"
-      hit=1
-    fi
+    _landing_is_protected "$protected_json" "$path"; is_protected_rc=$?
+    case "$is_protected_rc" in
+      0) printf '%s\n' "$path"; hit=1 ;;
+      1) ;;
+      *) return 2 ;;
+    esac
   done <<<"$raw"
   (( hit )) && return 0
   return 1
@@ -375,13 +387,15 @@ landing_autonomy_refusal_reason() {
 #     below.
 #
 # `unknown` is returned only for `landing_protected_paths_hit`'s own exit 2
-# (the changed-file list could not be read or was truncated) — every other
-# refusal above is a deterministic `ineligible`, since COMPLEXITY, SOURCE
-# and LEVEL are all already in the caller's hand, nothing further to ask
-# GitHub. Both words carry the same instruction to every call site: **never
-# a pass** — `unknown` is treated as `ineligible` everywhere this is read,
-# the distinction exists only so a log can say whether the diff was
-# genuinely disqualified or merely unreadable.
+# (the changed-file list could not be read or was truncated, or the
+# configured protected-paths list could not be evaluated against a path at
+# all — TD-PPagop-26082320) — every other refusal above is a deterministic
+# `ineligible`, since COMPLEXITY, SOURCE and LEVEL are all already in the
+# caller's hand, nothing further to ask GitHub. Both words carry the same
+# instruction to every call site: **never a pass** — `unknown` is treated
+# as `ineligible` everywhere this is read, the distinction exists only so a
+# log can say whether the diff was genuinely disqualified or merely
+# unreadable.
 landing_eligible() {
   local config_json="$1" slug="$2" number="$3" complexity="$4" source="$5" level="$6"
 

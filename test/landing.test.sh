@@ -11,21 +11,24 @@
 #     to human review — `config.json`, `agent-cycle.sh`, `review-cycle.sh` —
 #     each pinned singly as well), a nested or suffixed near-miss is not
 #     protected, an all-clear set exits 1 with nothing printed, an unreadable
-#     or truncated changed-file listing exits 2 (never a pass), bad
-#     arguments are rejected before any gh call, and the read reaches GitHub
-#     as an explicit GET (agent-ops#718 — the stubbed `gh` models `gh api`'s
-#     own method selection, so a field-carrying request that forgets
+#     or truncated changed-file listing exits 2 (never a pass), a
+#     protected-paths list holding a non-string entry also exits 2 rather
+#     than reading as "no match" (TD-PPagop-26082320), bad arguments are
+#     rejected before any gh call, and the read reaches GitHub as an
+#     explicit GET (agent-ops#718 — the stubbed `gh` models `gh api`'s own
+#     method selection, so a field-carrying request that forgets
 #     `--method GET` 404s here exactly as it did in production).
 #   - landing_eligible: LEVEL below agent-merges-routine, COMPLEXITY above
 #     medium, and a SOURCE outside the routine list are each `ineligible`
 #     with no gh call at all; a repo-level merge_autonomy_routine_sources
 #     override widens what that one repository accepts; a protected path
-#     is `ineligible`; an unreadable changed-file list is `unknown`, never
-#     a pass; the plain-string SOURCE comparison this file's own header
-#     documents is pinned directly — a plain `issues` entry in the routine
-#     list matches the word a real issues work order always carries, and an
-#     `issues:low` entry (a schema error since agent-ops#558) still does
-#     not, because the comparison folds no bands.
+#     is `ineligible`; an unreadable changed-file list, or a protected-paths
+#     list that cannot be evaluated at all (TD-PPagop-26082320), is
+#     `unknown`, never a pass; the plain-string SOURCE comparison this
+#     file's own header documents is pinned directly — a plain `issues`
+#     entry in the routine list matches the word a real issues work order
+#     always carries, and an `issues:low` entry (a schema error since
+#     agent-ops#558) still does not, because the comparison folds no bands.
 #   - landing_arm: a base branch with an active merge queue enqueues via
 #     the enqueuePullRequest mutation; one without falls back to
 #     `gh pr merge --auto --squash`; both write under GH_TOKEN for that one
@@ -325,6 +328,27 @@ assert_eq "a repo with no override of its own falls through to the top-level lis
 assert_eq "  ... exit 0" "0" "$rc"
 files "src/app.py"
 
+# TD-PPagop-26082320: a protected-paths list holding a non-string entry makes
+# _landing_is_protected's own jq program raise (jq -e exit 5) rather than
+# simply return false, for every changed path checked against it. Before the
+# fix that read as "no protected path touched" (exit 1) — a fail-open on the
+# gate the header calls "the deadliest landing class"; now it must read as
+# "could not be established" (exit 2), the same refusal an unreadable
+# changed-file list already gets, never a silent pass. Not reachable through
+# a schema-validated config.json (config.schema.json's own `items` are
+# constrained to non-empty strings) — this pins the helper's own contract
+# directly, independent of that guard.
+malformed_cfg='{"merge_autonomy_protected_paths":[123,"lib/*"]}'
+files "lib/x.sh"
+out="$(landing_protected_paths_hit "$malformed_cfg" acme/widgets 12)"; rc=$?
+assert_eq "a non-string entry in the protected-paths list: exit 2, never a silent 'no match'" "2" "$rc"
+assert_eq "  ... and nothing printed" "" "$out"
+
+files "src/app.py"
+out="$(landing_protected_paths_hit "$malformed_cfg" acme/widgets 12)"; rc=$?
+assert_eq "  ... exit 2 even when no changed path would otherwise have matched" "2" "$rc"
+files "src/app.py"
+
 # --- landing_eligible ---------------------------------------------------------
 
 files "src/app.py"
@@ -376,6 +400,16 @@ out="$(landing_eligible "$base_cfg" acme/widgets 12 medium tech-debt agent-merge
 assert_eq "an unreadable changed-file list is unknown, never a pass" \
   "unknown:could not establish acme/widgets#12's changed-file list" "$out"
 rm -f "$fixtures/files-fail"
+
+# TD-PPagop-26082320: landing_protected_paths_hit's own exit 2 for a
+# protected-paths list it cannot evaluate at all must read as `unknown` here
+# too — the same refusal an unreadable changed-file list gets, never
+# `eligible` by the classifier's own vocabulary silently going quiet on a
+# malformed merge_autonomy_protected_paths.
+malformed_cfg='{"merge_autonomy_protected_paths":[123,"lib/*"]}'
+out="$(landing_eligible "$malformed_cfg" acme/widgets 12 medium tech-debt agent-merges-routine)"
+assert_eq "a non-string entry in the protected-paths list is unknown, never eligible" \
+  "unknown:could not establish acme/widgets#12's changed-file list" "$out"
 
 override_cfg='{"repos":[{"slug":"acme/widgets","merge_autonomy_routine_sources":["register-hygiene"]}],"merge_autonomy_routine_sources":["tech-debt","register-hygiene"]}'
 out="$(landing_eligible "$override_cfg" acme/widgets 12 medium tech-debt agent-merges-routine)"

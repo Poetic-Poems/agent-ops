@@ -125,6 +125,24 @@ for path in ".github/workflows/ci.yml" "deploy/docker/Dockerfile" "prompts/imple
     "$landing_rc" "$escape_rc"
 done
 
+# TD-PPagop-26082320: a protected-paths list holding a non-string entry makes
+# the jq program inside both helpers raise (`jq -e`'s own exit 5) rather than
+# simply return false, for every path checked against it — not reachable
+# through a schema-validated config.json (its `items` are constrained to
+# non-empty strings), but this detector's own --config read carries no such
+# gate, so it must see the same third answer lib/landing.sh's caller now
+# does, not silently read "not protected".
+malformed_protected='[123,"lib/*"]'
+for path in "lib/landing.sh" "README.md"; do
+  landing_rc=0; escape_rc=0
+  _landing_is_protected "$malformed_protected" "$path" || landing_rc=$?
+  _escape_audit_is_protected "$malformed_protected" "$path" || escape_rc=$?
+  assert_eq "a non-string protected-paths entry: verdict for '$path' matches lib/landing.sh's own" \
+    "$landing_rc" "$escape_rc"
+  assert_eq "  ... and is jq -e's own 'raised' exit code, not 'no match'" \
+    "5" "$landing_rc"
+done
+
 for cfg in '{"repos":[]}' \
            '{"repos":[{"slug":"acme/widgets","merge_autonomy_routine_sources":["issues"]}]}' \
            '{"merge_autonomy_routine_sources":["register-hygiene"]}' \
@@ -495,6 +513,41 @@ assert_eq "  ... and never an escape, however low today's configured level sits"
   "" "$(grep '"outcome":"escape"' <<<"$out_nolevel")"
 assert_contains "  ... naming the unrecorded level as the reason" \
   "$out_nolevel" "records the effective merge_autonomy level"
+
+# --- TD-PPagop-26082320: a merge_autonomy_protected_paths list holding a
+# non-string entry makes _escape_audit_is_protected raise for every changed
+# file checked against it — this cannot read as "nothing protected was
+# touched" (the old, silently-fail-open behaviour), so it must land as
+# unverifiable, isolated under its own malformed --config so the main
+# battery's own well-formed list is untouched. ------------------------------
+STUB_DIR_BADLIST="$tmp_dir/fixtures-badlist"
+mkdir -p "$STUB_DIR_BADLIST"
+cat > "$STUB_DIR_BADLIST/issues.json" <<EOF
+[{"number": 12, "pull_request": {"merged_at": "2026-08-20T10:00:00Z"}}]
+EOF
+pr_json 12 "$LOGIN" > "$STUB_DIR_BADLIST/pr-12.json"
+cat > "$STUB_DIR_BADLIST/commit-sha12.json" <<'EOF'
+{"files": [{"filename": "scripts/foo.sh"}]}
+EOF
+cat > "$STUB_DIR_BADLIST/events-12.json" <<'EOF'
+[{"event": "labeled", "label": {"name": "complexity:low"}, "created_at": "2026-08-20T09:00:00Z"}]
+EOF
+log_file_badlist="$tmp_dir/log-badlist.jsonl"
+echo "{\"event\":\"landing-armed\",\"repo\":\"$SLUG\",\"pr_url\":\"https://github.com/$SLUG/pull/12\",\"source\":\"tech-debt\",\"complexity\":\"low\",\"level\":\"agent-merges-routine\"}" \
+  > "$log_file_badlist"
+
+config_file_badlist="$tmp_dir/config-badlist.json"
+echo '{"merge_autonomy":"human","repos":[],"merge_autonomy_protected_paths":[123,"lib/*"]}' \
+  > "$config_file_badlist"
+
+out_badlist="$(STUB_DIR="$STUB_DIR_BADLIST" \
+  "$DETECTOR" "$SLUG" "$LOGIN" "$log_file_badlist" --config "$config_file_badlist")"
+assert_contains "a protected-paths list with a non-string entry is unverifiable, never clean" \
+  "$out_badlist" '"outcome":"unverifiable"'
+assert_eq "  ... and never an escape either — a raising list must never look like a disagreement" \
+  "" "$(grep '"outcome":"escape"' <<<"$out_badlist")"
+assert_contains "  ... naming the unevaluable protected-paths list as the reason" \
+  "$out_badlist" "protected-path list could not be evaluated"
 
 # --- Fixture #10: a protected-path hit recorded at agent-merges-all, with
 # every other input agreeing — the sanctioned case PR #621's review found

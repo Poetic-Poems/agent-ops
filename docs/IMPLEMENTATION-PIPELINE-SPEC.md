@@ -4910,21 +4910,23 @@ implements.
    Script asks `landing_protected_paths_hit` (`lib/landing.sh`, the one
    protected-path classifier requirement 8d's gate 2 already reads) whether
    this pull request's diff touches a protected path. A hit — or that
-   classifier's own exit 2, an unreadable or truncated changed-file list,
-   which routes *to* Critical rather than away from it, the opposite
-   fail-closed polarity from gate 2's own exit-2 handling — routes to
-   Critical regardless of `complexity`, including `complexity:low`, which
-   alone would have short-circuited to the deterministic Trivial approval
-   with no model call at all: a one-line docs-graded change to `lib/` or
-   `prompts/` gets the same critical-tier scrutiny as a genuine security
-   fix, because both are self-modifying changes to the gate itself. This
-   read costs one changed-file lookup per Approver engagement, and never
-   runs at `merge_autonomy: human`, where the stage has already returned.
-   The `approver-verdict` event's own `tier` field reads `critical` for
-   either cause; a `critical_reason` field (`protected-path` or
-   `refuse-streak`) distinguishes which one, since requirement 8d's own
-   gate 4.5 needs to know it was specifically the critical tier that ran,
-   not merely that an adjudication happened to land on the same model.
+   classifier's own exit 2, an unreadable or truncated changed-file list or
+   a `merge_autonomy_protected_paths` list it cannot evaluate against a
+   path at all, which routes *to* Critical rather than away from it, the
+   opposite fail-closed polarity from gate 2's own exit-2 handling —
+   routes to Critical regardless of `complexity`, including
+   `complexity:low`, which alone would have short-circuited to the
+   deterministic Trivial approval with no model call at all: a one-line
+   docs-graded change to `lib/` or `prompts/` gets the same critical-tier
+   scrutiny as a genuine security fix, because both are self-modifying
+   changes to the gate itself. This read costs one changed-file lookup per
+   Approver engagement, and never runs at `merge_autonomy: human`, where
+   the stage has already returned. The `approver-verdict` event's own
+   `tier` field reads `critical` for either cause; a `critical_reason`
+   field (`protected-path` or `refuse-streak`) distinguishes which one,
+   since requirement 8d's own gate 4.5 needs to know it was specifically
+   the critical tier that ran, not merely that an adjudication happened to
+   land on the same model.
 
    `approver_model_default` empty disables the whole stage (the same
    convention `enabler_model` empty already uses for the Enabler) — every
@@ -5038,7 +5040,11 @@ implements.
       `lib/` prefix already). Reads the changed-file list fresh from GitHub
       (`gh api repos/SLUG/pulls/N/files`), bounded and truncation-checked
       the way `lib/github-limit.sh`'s `GITHUB_PR_LIST_LIMIT` bounds a `gh pr
-      list` — a truncated or unreadable list is `unknown`, never a pass.
+      list` — a truncated or unreadable list is `unknown`, never a pass, and
+      so is a `merge_autonomy_protected_paths` list `_landing_is_protected`
+      cannot even evaluate against a path (a non-string entry, which raises
+      rather than returns false; TD-PPagop-26082320) — never read as "no
+      protected path touched" merely because the comparison itself failed.
       `unknown` is treated as `ineligible` at this and every other call
       site; an empty or unrecognised `source` is `ineligible`, never
       eligible by omission. Protected paths refuse arming at every level
@@ -15760,18 +15766,26 @@ pull request, run the ones the change touches and any it could regress.
     `config.json`, `agent-cycle.sh`, `review-cycle.sh`, `CODEOWNERS`) and
     exits 0 when any is touched, 1 when none is, and 2 —
     never trusted as a pass — on an unreadable or page-capped changed-file
-    listing; a repo-level `merge_autonomy_protected_paths` override (the
+    listing or on a `merge_autonomy_protected_paths` entry
+    `_landing_is_protected`'s own jq program cannot compare against a path at
+    all (a non-string entry, which makes `jq -e` raise — its own exit 5 —
+    rather than merely return false; TD-PPagop-26082320, not reachable
+    through a schema-validated `config.json`, whose `items` are constrained
+    to non-empty strings, but still a contract the helper itself must hold);
+    a repo-level `merge_autonomy_protected_paths` override (the
     same precedence `merge_autonomy_routine_sources` uses) wins over the
     top-level list, pinned against `scripts/detect-classifier-escapes.sh`'s
     own independent reimplementation (`test/detect-classifier-escapes.test.sh`,
     D18 Stage 3, agent-ops#724) so the two can never silently diverge on what
-    counts as protected; `landing_eligible` reads `ineligible` for a level
+    counts as protected, including on that same non-string-entry verdict;
+    `landing_eligible` reads `ineligible` for a level
     below `agent-merges-routine`, for `complexity:high` regardless of source or
     path, for a source outside the repository's own
     `merge_autonomy_routine_sources` (a repo-level override taking
     precedence over the top-level list, the same precedence
     `merge_autonomy` itself uses) and for an empty source, `unknown` on an
-    unreadable protected-path read, and `eligible` only once every condition
+    unreadable protected-path read or an unevaluable protected-paths list,
+    and `eligible` only once every condition
     clears — with pinned cases confirming the `source` comparison is exact
     string equality, never expanded against the four `issues:<band>` ranks:
     a plain `issues` routine-list entry matches a real issues work order's
