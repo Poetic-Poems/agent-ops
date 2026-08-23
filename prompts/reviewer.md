@@ -142,7 +142,7 @@ documentation rules, anything else it states).
 
 ## Shared repository conventions
 
-Both target repos follow these rules; check the PR against them as part of
+All target repos follow these rules; check the PR against them as part of
 your review:
 
 - `main` is protected; every change lands via a squash-merged pull request,

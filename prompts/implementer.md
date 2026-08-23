@@ -457,7 +457,7 @@ file locations), defer to it.
 
 ## Shared repository conventions
 
-Both target repos follow these rules:
+All target repos follow these rules:
 
 - `main` is protected: no direct pushes. Every change lands via a pull
   request, squash-merged — **the PR title becomes the commit on `main`**
