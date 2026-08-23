@@ -6506,15 +6506,16 @@ implements.
     already created on origin by the Script as the item's claim (requirement
     17a) — and never creates, renames, or deletes a branch of its own.
 23. **Makes the claim visible before implementing.** The branch is the
-    lock, but humans read PRs, not refs: opens a draft PR immediately, labelled
-    with the work order's `pr_label` (requirement 20's Co-Ordinator copies it
-    verbatim from `config.json`'s own `pr_label` key), with a Conventional-Commits
-    title (it will become the squash commit on `main`) and a body giving the
-    item reference and planned approach. Immediately records the PR's URL at
-    `.git/agent-ops-pr-url` in the clone — `.git/` is never part of the tracked tree, so this can't
-    leak into a commit — so the Script can still identify the PR even if
-    this stage never reaches a parseable final message (requirement 9). That
-    breadcrumb is a courtesy, not the guarantee: it is one more step in this
+    lock, but humans read PRs, not refs: opens a draft PR immediately,
+    labelled with the work order's `pr_label` (requirement 20's Co-Ordinator
+    copies it verbatim from `config.json`'s own `pr_label` key), with a
+    Conventional-Commits title (it will become the squash commit on `main`)
+    and a body giving the item reference and planned approach. Immediately
+    records the PR's URL at `.git/agent-ops-pr-url` in the clone — `.git/` is
+    never part of the tracked tree, so this can't leak into a commit — so the
+    Script can still identify the PR even if this stage never reaches a
+    parseable final message (requirement 9). That breadcrumb is a courtesy,
+    not the guarantee: it is one more step in this
     stage's procedure, and requirement 9's fourth lookup is what covers the
     stage that performed none of them. For
     tech-debt items this follows the repo's claiming workflow exactly —
