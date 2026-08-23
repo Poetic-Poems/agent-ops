@@ -344,6 +344,13 @@ control, not scaffolding.
 | 3 | `agent-merges-routine`, fleet-wide | agent-ops widens to all sources + `complexity:high`; poetic/poetic-fiddle enter narrow (queues there first — poetic#175/poetic-fiddle#318, owner act; WI-10 void corroboration landed) | Per-repo downgrade | Same metrics per repo, ≥30 merges each |
 | 4 | `agent-merges-all` | WI-12 protected-path controls (critical tier + ~24 h cool-off between approval and arming for gate code); WI-9 end-state doctrine complete | Kill switch | Zero human merges in 30 days at baseline revert rate, no unactioned escalations |
 
+**Stage 3's own promotion is written out in advance** — the exact `config.json`
+diff for each of the three repositories, the preconditions each edit assumes,
+the order, the rollback, and a schema/doctor validation of the proposed
+configuration — in `docs/reviews/2026-08-23-d18-stage-3-promotion.md`
+(agent-ops#580). That document is preparation, not a promotion: no repository's
+level changes in it.
+
 The dequeue hole TD-PPagop-26081409 deserves its sentence: it was deferred *on
 the reasoning that under D17 the product never enqueues*. The moment the
 Script becomes the enqueuer, a dequeue is the pipeline's own problem, and the
