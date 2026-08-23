@@ -91,7 +91,7 @@ file this swept.
 1. **Requirement 38's scope.** Kept; only its opening sentence restated, naming #668 as the revisit trigger. No `human-visibility` identifier renamed.
 2. **Requirement 32's `needs-human` synonym.** Deleted from the spec, the prompt, and the `agent-cycle.sh` comment; no compatibility window needed since no behaviour ever depended on it.
 3. **"The human gate".** Replaced with "the landing gate" at thirteen generic-mechanism sites; kept as "the landing gate at `human`" at the five sites naming a specific rung (`docs/ROADMAP.md` ×3, `scripts/publish-dashboard.sh`, `dashboard/index.html`).
-4. **The escalation issue's body (#681).** Not touched — confirmed no prose in this sweep asserts the adjudicator's finding reaches the escalation body; #681 is still open at the time of this pull request.
+4. **The escalation issue's body (#681).** Not touched by this sweep, which asserts nothing about it either way. #681 landed separately while this pull request was open (#747, `d83dd40`): the adjudication pass's own evidence is now appended to the escalation body under an `## Adjudication attempted` heading, so the prose Edge 4 forbade until it landed is both true and already written — in #747's own spec note, not here.
 5. **A glossary.** Not created — the Band A/B distinction lives in requirement 36a/36b context and in `README.md`'s escalation section, not a second document.
 
 ## Slice 2 (folded into this pull request)
