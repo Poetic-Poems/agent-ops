@@ -471,6 +471,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The D18 stage report's "zero classifier escapes" criterion now measures
+  something. It was hard-coded `unavailable` with the reason "no
+  classifier-escape detector yet (agent-ops#572)" — true when the report
+  landed, and stale from the moment the detector did (requirement 8e,
+  `scripts/detect-classifier-escapes.sh`), which `agent-cycle.sh` has been
+  running every cycle since. Because a criterion is never reported `met` from
+  missing data, that left Stage 2's exit unsignable-off from the report even
+  once landings started. `crit_classifier_escapes`
+  (`scripts/autonomy-stage-report.sh`) now reads the audit's own events: a
+  `classifier-escape` fails the bar and names the pull request; a
+  `landing-audit` with `outcome: "clean"` is evidence toward the zero; an
+  `unverifiable` audit is named separately rather than counted; and a
+  repository whose audit has recomputed nothing yet still reports
+  `unavailable`, because zero escapes out of zero audits is an absence of
+  evidence, not evidence of absence.
+
 - A `human-visibility-<hash>` void now retires like every other shape the
   cycle gathers as structured data, instead of sitting in the void extract
   for ever (agent-ops#646). Requirement 34n's liveness rule knew five shapes;
