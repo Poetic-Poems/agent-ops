@@ -825,7 +825,7 @@ if ((gh_ready)); then
     while IFS=$'\t' read -r label _ _; do
       [[ -n "$label" ]] || continue
       grep -qixF -- "$label" <<<"$repo_labels" \
-        || warn "$slug has no \"$label\" label — the next cycle that gathers this repo creates it (lib/labels.sh), within $interval_hours hour(s); if it is still absent after that has passed, this token may not create labels"
+        || warn "$slug has no \"$label\" label — the next cycle that gathers this repo creates it (lib/labels.sh), within $interval_hours hours; if it is still absent after that has passed, this token may not create labels"
     done < <(labels_catalogue "$config_file" "$schema_file" "$role" "$review_pr_label")
     return 0
   }
