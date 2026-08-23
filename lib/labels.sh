@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
-# lib/labels.sh — the pipeline creates its own labels in the repositories it
-# works, rather than requiring a human to create them first.
+# lib/labels.sh — the pipeline creates its own labels at the point of use, in
+# every repository it gathers data for, rather than requiring a human to
+# create them first or only reaching a repository once it is selected to work.
 #
 # Every label this system applies is one an operator had to create by hand, in
 # every target repository, before it would do anything. Nothing failed loudly
@@ -11,16 +12,20 @@
 # label exists to be — silently does not appear. Poetic's own installation had
 # drifted exactly that way by August 2026: three of its repositories were
 # missing between one and four of the labels the pipeline projects onto their
-# items, and no cycle had ever said so.
+# items, and no cycle had ever said so — worse in a repository the pipeline
+# had not yet selected work in, which got no ensure at all until it did
+# (agent-ops#687).
 #
 # That is a product bug rather than a Poetic quirk (the customer-zero rule in
 # docs/ROADMAP.md): a new installation should not need a checklist of `gh label
 # create` commands to be functional, and a label a human deletes should come
-# back on its own. So the Script ensures its labels exist in a repository at
-# the point it is about to work it — one cheap listing, and a create only for
-# what is genuinely absent.
+# back on its own. So the Script ensures its labels exist in every repository
+# it gathers data for, not only the one it goes on to work — one cheap listing
+# per repository per `labels_ensure_interval_hours` (default 24h, a per-repo
+# stamp file under `state_dir`), and a create only for what is genuinely
+# absent.
 #
-# Two properties are deliberate:
+# Three properties are deliberate:
 #
 #   - **It only ever creates.** A label that already exists is left exactly as
 #     it is, whatever its colour or description. Operators recolour and
@@ -30,6 +35,16 @@
 #     without permission to create, yields a report and nothing else. The
 #     tolerances the callers already carry stay exactly where they are: this
 #     makes the common case work, it does not become a new thing that breaks.
+#   - **It is periodic, not once-forever.** A repository already fully
+#     labelled costs a stat against its stamp file, not a listing — but the
+#     check repeats every interval rather than stopping after the first
+#     success, which is what keeps "a label a human deletes comes back on its
+#     own" true for as long as the repository is configured.
+#
+# `labels_ensure_one` is the single-label primitive `refinement_label_add`
+# (lib/refinement.sh) self-heals through when a projection's add fails: the
+# ensure above is periodic, not synchronous with every write, so a projection
+# can still race a repository whose stamp has not been refreshed yet.
 #
 # Sourced by agent-cycle.sh and review-cycle.sh.
 
@@ -117,6 +132,32 @@ labels_catalogue() {
   ' <<<"$defaulted" 2>/dev/null || true
 }
 
+# _labels_create_one GH_BIN REPO NAME COLOUR DESCRIPTION
+# Internal: attempt one create, and on refusal re-list to tell a peer node's
+# race (created moments ago, not a failure) apart from a genuine failure.
+# Prints `created`, `present` or `failed` and returns 0 for the first two.
+# Shared by labels_ensure's batch loop and labels_ensure_one's single-name
+# path so this create-then-recheck logic lives in exactly one place.
+_labels_create_one() {
+  local gh_bin="$1" repo="$2" name="$3" colour="$4" description="$5"
+  if "$gh_bin" api -X POST "repos/$repo/labels" \
+       -f "name=$name" -f "color=$colour" -f "description=$description" \
+       >/dev/null 2>&1; then
+    printf 'created'
+    return 0
+  elif "$gh_bin" api "repos/$repo/labels" --paginate --jq '.[].name' 2>/dev/null \
+       | grep -qixF -- "$name"; then
+    # Another node created it between the listing above and this attempt.
+    # Several nodes run the same cycle against the same repositories, so this
+    # race is ordinary rather than exceptional, and it is not a failure.
+    printf 'present'
+    return 0
+  else
+    printf 'failed'
+    return 1
+  fi
+}
+
 # labels_ensure REPO < CATALOGUE
 # Create, in REPO, every label on stdin that is not there already. Prints one
 # `created<TAB>name` line per label it made and one `failed<TAB>name` per label
@@ -142,22 +183,40 @@ labels_ensure() {
     # case-sensitive comparison here would try to create a duplicate and be
     # refused — reported as a failure that is really a success.
     grep -qixF -- "$name" <<<"$existing" && continue
-    if "$gh_bin" api -X POST "repos/$repo/labels" \
-         -f "name=$name" -f "color=$colour" -f "description=$description" \
-         >/dev/null 2>&1; then
-      printf 'created\t%s\n' "$name"
-    elif "$gh_bin" api "repos/$repo/labels" --paginate --jq '.[].name' 2>/dev/null \
-         | grep -qixF -- "$name"; then
-      # Another node created it between the listing above and this attempt.
-      # Several nodes run the same cycle against the same repositories, so this
-      # race is ordinary rather than exceptional, and it is not a failure.
-      :
-    else
-      printf 'failed\t%s\n' "$name"
-    fi
+    case "$(_labels_create_one "$gh_bin" "$repo" "$name" "$colour" "$description")" in
+      created) printf 'created\t%s\n' "$name" ;;
+      failed)  printf 'failed\t%s\n' "$name" ;;
+    esac
   done
 
   return 0
+}
+
+# labels_ensure_one REPO NAME [COLOUR] [DESCRIPTION]
+# Create NAME in REPO iff it is not already there. Prints `created`, `present`
+# or `failed` — no trailing name, since the caller names exactly one label
+# already — on labels_ensure's own three properties: create-only, never
+# fatal to the caller (a repository this cannot list still returns 1
+# advisory, same as labels_ensure), and race-tolerant.
+#
+# COLOUR/DESCRIPTION default to a neutral grey and no description, for a
+# caller that just wants *a* label to exist. When NAME is a catalogue member,
+# pass its catalogue colour/description (from labels_catalogue) instead, so a
+# label created lazily this way is indistinguishable from one the ordinary
+# eager `labels_ensure_role` path would have created.
+labels_ensure_one() {
+  local repo="$1" name="$2" colour="${3:-ededed}" description="${4:-}" \
+    gh_bin="${LABELS_GH:-gh}"
+  [[ -n "$repo" && -n "$name" ]] || return 1
+
+  local existing
+  existing="$("$gh_bin" api "repos/$repo/labels" --paginate --jq '.[].name' 2>/dev/null)" \
+    || { printf 'failed'; return 1; }
+  if grep -qixF -- "$name" <<<"$existing"; then
+    printf 'present'
+    return 0
+  fi
+  _labels_create_one "$gh_bin" "$repo" "$name" "$colour" "$description"
 }
 
 # labels_ensure_role CONFIG_FILE SCHEMA_FILE REPO ROLE [REVIEW_PR_LABEL]
@@ -167,4 +226,64 @@ labels_ensure() {
 labels_ensure_role() {
   local config_file="$1" schema_file="$2" repo="$3" role="$4" review_pr_label="${5:-}"
   labels_catalogue "$config_file" "$schema_file" "$role" "$review_pr_label" | labels_ensure "$repo"
+}
+
+# labels_ensure_stamped STATE_DIR CONFIG_FILE SCHEMA_FILE REPO ROLE \
+#                       INTERVAL_HOURS [REVIEW_PR_LABEL]
+# The rate-limited wrapper around labels_ensure_role (requirement 6a,
+# agent-ops#687): ensures ROLE's catalogue in REPO at most once per
+# INTERVAL_HOURS, so a repository this system has already labelled costs
+# nothing beyond a stat(2) once the first listing has run. Keyed per
+# (REPO, ROLE) via its own stamp file under STATE_DIR/labels-ensured/, so one
+# repository's — or one role's — interval elapsing says nothing about
+# another's. Deliberately periodic rather than once-forever: requirement 6a's
+# own promise is that a label a human deletes comes back on its own, and that
+# only stays true if the check repeats.
+#
+# The stamp is touched only after a listing actually succeeds: a repository
+# whose labels could not be listed (labels_ensure_role's own advisory
+# failure, propagated here) leaves no stamp, so the very next cycle tries
+# again rather than waiting out a whole interval on a failure this never
+# actually paid for.
+#
+# INTERVAL_HOURS <= 0, or unset/non-numeric, disables the stamp check
+# entirely: every call ensures. It is read as whole hours, from the value's
+# integer part — see the truncation below for why a decimal reaches here at
+# all. Prints labels_ensure_role's own report
+# (nothing, on a skipped call) and returns its exit status (0 on a skipped
+# call — a rate-limited repeat is success, not a failure to check).
+labels_ensure_stamped() {
+  local state_dir="$1" config_file="$2" schema_file="$3" repo="$4" role="$5" \
+    interval_hours="${6:-24}" review_pr_label="${7:-}"
+  [[ -n "$state_dir" && -n "$repo" && -n "$role" ]] || return 1
+
+  local stamp_dir="$state_dir/labels-ensured" safe="${repo//\//_}"
+  local stamp_file="$stamp_dir/$safe.$role"
+  # Compared as whole hours, taken from the value's integer part. `24.0` is a
+  # schema-valid `integer` — JSON Schema counts a zero fraction as one, and jq
+  # preserves the literal it read — so the interval can arrive here as a
+  # decimal string, which an integer-only test would reject outright and so
+  # disable the rate limit rather than apply it: the opposite of what the
+  # operator asked for, silently. Truncating first means a fraction can only
+  # ever shorten the interval (`0.5` -> `0`, ensure on every call), never
+  # remove it.
+  local whole_hours="${interval_hours%%.*}"
+  if [[ "$whole_hours" =~ ^[0-9]+$ ]] && (( whole_hours > 0 )) \
+       && [[ -f "$stamp_file" ]]; then
+    local mtime age
+    mtime="$(stat -c %Y "$stamp_file" 2>/dev/null || echo 0)"
+    age=$(( $(date +%s) - mtime ))
+    (( age < whole_hours * 3600 )) && return 0
+  fi
+
+  local report rc=0
+  report="$(labels_ensure_role "$config_file" "$schema_file" "$repo" "$role" "$review_pr_label")" \
+    || rc=$?
+  if (( rc == 0 )); then
+    mkdir -p "$stamp_dir" 2>/dev/null \
+      && : > "$stamp_file.tmp.$$" 2>/dev/null \
+      && mv "$stamp_file.tmp.$$" "$stamp_file" 2>/dev/null
+  fi
+  printf '%s' "$report"
+  return "$rc"
 }

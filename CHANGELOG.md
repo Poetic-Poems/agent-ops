@@ -560,6 +560,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `unavailable`, because zero escapes out of zero audits is an absence of
   evidence, not evidence of absence.
 
+- The pipeline's own labels are now created in every configured repository it
+  gathers data for, not only the one a cycle happens to select for work
+  (requirement 6a, agent-ops#687). A repository the Co-Ordinator had not yet
+  selected work in got no ensure at all, so its own `needs_refinement`/
+  `blocked` block projection and the Refiner's `refined_label` projection
+  silently failed there until some later cycle selected it — and `blocked`,
+  `obsolete` and `unvoid_label`, the human-only controls no stage ever
+  applies itself, were simply absent from that repository in the meantime.
+  `labels_ensure_stamped` (`lib/labels.sh`) rate-limits the new
+  per-gathered-repository ensure via a stamp file under `state_dir`
+  (`labels_ensure_interval_hours`, default 24h, new config key — whole hours,
+  a fractional value being refused at configuration time), used by
+  `agent-cycle.sh`'s gather loop; the same repository's own selected-work
+  listing in `agent-cycle.sh`'s step 6a, and `review-cycle.sh`'s
+  per-repository ensure, both call the unstamped `labels_ensure_role`
+  directly instead, immediately before the point that needs the label to
+  exist. `refinement_label_add` additionally self-heals a failed projection
+  once, through the new `labels_ensure_one` primitive.
+
 - A `human-visibility-<hash>` void now retires like every other shape the
   cycle gathers as structured data, instead of sitting in the void extract
   for ever (agent-ops#646). Requirement 34n's liveness rule knew five shapes;

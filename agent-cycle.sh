@@ -142,6 +142,30 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 # shellcheck source=lib/chain.sh
 . "$SCRIPT_DIR/lib/chain.sh"
 
+# lib/refinement.sh's self-heal hook (requirement 6a, agent-ops#687), installed
+# here because this is the one file that sources both it and lib/labels.sh: a
+# label projection whose add failed retries once through this, and without it
+# `refinement_label_add` has nothing to retry through and the self-heal never
+# happens at all. Here rather than beside the projections themselves so it is
+# in place before `cleanup`'s trap can run the Refiner — that path projects
+# `refined_label` on every ending of the cycle, including one that exits before
+# the gather loop's own ensure has run.
+#
+# The catalogue lookup is what makes a label created this way indistinguishable
+# from one the eager per-gathered-repository ensure would have made; a name the
+# `target` catalogue does not carry falls through to labels_ensure_one's own
+# neutral defaults rather than not being created.
+refinement_label_ensure_one() {
+  local repo="$1" name="$2" c_name c_colour c_description
+  while IFS=$'\t' read -r c_name c_colour c_description; do
+    [[ "$c_name" == "$name" ]] || continue
+    labels_ensure_one "$repo" "$name" "$c_colour" "$c_description" >/dev/null
+    return $?
+  done < <(labels_catalogue "$CONFIG_FILE" "$SCHEMA_FILE" target)
+  labels_ensure_one "$repo" "$name" >/dev/null
+}
+REFINEMENT_LABEL_ENSURE=refinement_label_ensure_one
+
 usage() {
   cat <<'EOF'
 usage: agent-cycle.sh [--dry-run] [--once] [--repo <slug>]
@@ -386,6 +410,7 @@ refinement_after_coordinator_cycles="$(cfg '.refinement_after_coordinator_cycles
 [[ -n "$refinement_after_coordinator_cycles" && "$refinement_after_coordinator_cycles" != "null" ]] \
   || refinement_after_coordinator_cycles="$enabler_after_coordinator_cycles"
 enabler_recheck_hours="$(cfg '.enabler_recheck_hours')"
+labels_ensure_interval_hours="$(cfg '.labels_ensure_interval_hours')"
 enabler_escalation_label="$(cfg '.enabler_escalation_label')"
 # The assignment is what does the work — it both puts the issue in front of the
 # human configured to receive them and excludes it from the `issues` source
@@ -7432,6 +7457,23 @@ while IFS=$'\t' read -r _ slug default_branch; do
   # would silently drop the repo from the Co-Ordinator's whole input.
   ordered_repos_json="$(jq -nc 'input as $arr | input as $e | $arr + [$e]' \
     <<<"$ordered_repos_json"$'\n'"$entry")"
+  # --- Labels (requirement 6a, agent-ops#687) ---
+  # Every repository this cycle gathers data for, not only the one it later
+  # selects to work: the Co-Ordinator's block-label projection and the
+  # Refiner's own can both reach a repository step 6a below never touches, so
+  # ensuring only there left both silently unable to create anything the first
+  # time either ran against a fresh repository. Rate-limited by a stamp under
+  # `state_dir` (`labels_ensure_interval_hours`, default 24h) so the steady
+  # state stays one listing per repository per interval and zero writes.
+  gathered_labels_report="$(labels_ensure_stamped "$state_dir" "$CONFIG_FILE" "$SCHEMA_FILE" \
+    "$slug" target "$labels_ensure_interval_hours" 2>/dev/null || true)"
+  if [[ -n "$gathered_labels_report" ]]; then
+    log_event "labels-ensured" "$(jq -nc --arg repo "$slug" --arg report "$gathered_labels_report" '
+      {repo: $repo, role: "target"}
+      + ($report | split("\n") | map(select(length > 0) | split("\t"))
+         | {created: [.[] | select(.[0] == "created") | .[1]],
+            failed:  [.[] | select(.[0] == "failed")  | .[1]]})')"
+  fi
   # Kept in a separate array, never folded into the entry above: this is the
   # Script's own bookkeeping, and every byte added to `ordered_repos_json` is a
   # byte the Co-Ordinator pays to read. A cost-control feature that grows the
@@ -9304,12 +9346,18 @@ if ! clone_repo "$repo_slug" "$clone_dir" 2>"$cycle_dir/clone.err"; then
 fi
 
 # --- 6a. Labels (requirement 6a) ---
-# Here, rather than at startup for every configured repo: the cycle works one
-# repository, so this is one listing and — after the first cycle against a
-# repository — no writes at all. It precedes the Implementer because that stage
-# is what raises the pull request `pr_label` has to exist for; `gh pr create
-# --label` on a label that is not there fails the create outright, which would
-# cost the whole cycle's work.
+# The gather loop above ("Labels (requirement 6a, agent-ops#687)") already
+# ensured $repo_slug's `target` catalogue this cycle, but only if its stamp
+# had gone stale — a fresh stamp skips the listing there entirely, and a
+# fresh stamp only guarantees the label existed at the *last* listing, not
+# now. A stamp this fresh is exactly the state in which nothing else is
+# still looking, so `pr_label` deleted since then would go unnoticed for up
+# to `labels_ensure_interval_hours` (24h default) — and the Implementer is
+# one `gh pr create --label` away from losing its whole run to that gap. So
+# the selected repository still gets its own unconditional, unstamped
+# listing here, immediately before the stage that needs the label to
+# exist — one extra listing per cycle, the same cost main paid before
+# agent-ops#687, for the one repository where a miss is most expensive.
 ensure_labels_for() {
   local slug="$1" role="$2" report
   report="$(labels_ensure_role "$CONFIG_FILE" "$SCHEMA_FILE" "$slug" "$role" 2>/dev/null || true)"

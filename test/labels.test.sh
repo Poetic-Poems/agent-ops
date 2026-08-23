@@ -79,6 +79,14 @@ if [[ "$1" == "api" && "$2" == "-X" && "$3" == "POST" ]]; then
 fi
 if [[ "$1" == "api" && "$2" == repos/*/labels ]]; then
   [[ -n "${GH_LIST_FAILS:-}" ]] && { echo "gh: HTTP 404" >&2; exit 1; }
+  # A one-shot empty listing, for simulating a peer node's create landing
+  # between our own listing and our own create attempt: the first listing
+  # this stub serves comes back empty regardless of $GH_LABELS, and every
+  # listing after that serves the file as normal.
+  if [[ -n "${GH_LIST_EMPTY_ONCE:-}" && ! -f "$GH_LIST_EMPTY_ONCE.used" ]]; then
+    touch "$GH_LIST_EMPTY_ONCE.used"
+    exit 0
+  fi
   cat "$GH_LABELS"
   exit 0
 fi
@@ -91,8 +99,9 @@ export LABELS_GH="$tmp/gh"
 reset_stub() {
   : > "$tmp/labels"
   : > "$tmp/log"
+  rm -f "$tmp/list-empty-once.used"
   export GH_LABELS="$tmp/labels" GH_LOG="$tmp/log"
-  unset GH_REFUSE_CREATE GH_LIST_FAILS
+  unset GH_REFUSE_CREATE GH_LIST_FAILS GH_LIST_EMPTY_ONCE
   [[ $# -eq 0 ]] || printf '%s\n' "$@" > "$tmp/labels"
 }
 
@@ -211,6 +220,149 @@ assert_eq "a guarded call survives a total failure under set -e" \
 reset_stub
 assert_eq "an empty repository slug is refused rather than guessed at" "1" \
   "$(labels_ensure "" </dev/null >/dev/null 2>&1; echo $?)"
+
+# --- labels_ensure_one: the single-name path Part 1 mints its self-heal from ---
+reset_stub
+out="$(labels_ensure_one "Owner/repo" needs-refinement fbca04 "a description")"
+rc=$?
+assert_eq "an absent catalogue label is created with the caller's colour/description" \
+  "created" "$out"
+assert_eq "  ... through exactly one create" "1" "$(grep -c '^api -X POST' "$tmp/log")"
+assert_eq "  ... with that colour and description" \
+  "api -X POST repos/Owner/repo/labels -f name=needs-refinement -f color=fbca04 -f description=a description" \
+  "$(grep '^api -X POST' "$tmp/log")"
+assert_eq "  ... and reports success" "0" "$rc"
+
+reset_stub needs-refinement
+out="$(labels_ensure_one "Owner/repo" needs-refinement)"
+assert_eq "a label that already exists is reported present without a POST" "present" "$out"
+assert_eq "  ... no create is issued" "0" "$(grep -c '^api -X POST' "$tmp/log")"
+
+reset_stub Needs-Refinement
+out="$(labels_ensure_one "Owner/repo" needs-refinement)"
+assert_eq "a differently-cased existing label is present too" "present" "$out"
+assert_eq "  ... no create is issued" "0" "$(grep -c '^api -X POST' "$tmp/log")"
+
+reset_stub
+out="$(labels_ensure_one "Owner/repo" needs-refinement)"
+assert_eq "with no colour/description given, it still creates (a neutral default)" \
+  "created" "$out"
+
+reset_stub needs-refinement
+export GH_LIST_EMPTY_ONCE="$tmp/list-empty-once"
+out="$(labels_ensure_one "Owner/repo" needs-refinement)"
+rc=$?
+assert_eq "a POST refused because a peer node just created it is present, not failed" \
+  "present" "$out"
+assert_eq "  ... reported as a success" "0" "$rc"
+unset GH_LIST_EMPTY_ONCE
+
+reset_stub
+export GH_LIST_FAILS=1
+out="$(labels_ensure_one "Owner/repo" needs-refinement)"
+rc=$?
+assert_eq "a repository whose labels cannot be listed reports failed" "failed" "$out"
+assert_eq "  ... and returns 1" "1" "$rc"
+unset GH_LIST_FAILS
+
+reset_stub
+assert_eq "an empty repository slug is refused rather than guessed at" "1" \
+  "$(labels_ensure_one "" needs-refinement >/dev/null 2>&1; echo $?)"
+assert_eq "an empty name is refused rather than guessed at" "1" \
+  "$(labels_ensure_one "Owner/repo" "" >/dev/null 2>&1; echo $?)"
+
+# --- labels_ensure_stamped: rate-limited by a per-(repo, role) stamp file ---
+config
+stamp_root="$tmp/state"
+stamp_file="$stamp_root/labels-ensured/Owner_repo.escalation"
+rm -rf "$stamp_root"
+reset_stub
+out="$(labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 24)"
+assert_eq "a first call with no stamp ensures the catalogue" "created" "$(cut -f1 <<<"$out")"
+assert_eq "  ... and leaves a stamp behind" "1" \
+  "$([[ -f "$stamp_file" ]] && echo 1 || echo 0)"
+
+: > "$tmp/log"
+out="$(labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 24)"
+assert_eq "a second call within the interval ensures nothing" "" "$out"
+assert_eq "  ... issuing no gh call at all" "" "$(cat "$tmp/log")"
+
+touch -d "-25 hours" "$stamp_file"
+: > "$tmp/log"
+out="$(labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 24)"
+assert_eq "a call past the interval re-lists (the label is already there, so nothing to create)" \
+  "" "$out"
+assert_eq "  ... but it does list" "1" \
+  "$(grep -c '^api repos/Owner/repo/labels --paginate' "$tmp/log")"
+assert_eq "  ... and refreshes the stamp" "1" \
+  "$(( $(date +%s) - $(stat -c %Y "$stamp_file") < 60 ? 1 : 0 ))"
+
+rm -rf "$stamp_root"
+reset_stub
+out="$(labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 0)"
+assert_eq "an interval of 0 always ensures, stamp or no stamp" "created" "$(cut -f1 <<<"$out")"
+rm -rf "$stamp_root"
+touch_dummy="$stamp_root/labels-ensured"
+mkdir -p "$touch_dummy" && touch "$touch_dummy/Owner_repo.escalation"
+out="$(labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 0)"
+assert_eq "  ... even with a stamp from moments ago" "" "$out"
+rm -rf "$stamp_root"
+
+reset_stub
+export GH_LIST_FAILS=1
+out="$(labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 24)"
+rc=$?
+assert_eq "a repository that cannot be listed leaves no stamp" "0" \
+  "$([[ -f "$stamp_file" ]] && echo 1 || echo 0)"
+assert_eq "  ... and reports the same failure labels_ensure_role would" "1" "$rc"
+unset GH_LIST_FAILS
+rm -rf "$stamp_root"
+
+reset_stub enabler-escalation
+labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 24 >/dev/null
+: > "$tmp/log"
+out="$(labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/other" escalation 24)"
+assert_eq "a different repository is not covered by this one's stamp" "" "$out"
+assert_eq "  ... it still lists, on its own account" "1" \
+  "$(grep -c 'repos/Owner/other/labels --paginate' "$tmp/log")"
+rm -rf "$stamp_root"
+
+reset_stub
+assert_eq "an empty state dir is refused rather than guessed at" "1" \
+  "$(labels_ensure_stamped "" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 24 >/dev/null 2>&1; echo $?)"
+rm -rf "$stamp_root"
+
+# `24.0` is a schema-valid `integer` (JSON Schema counts a zero fraction as
+# one) and jq hands the literal it read straight through, so a decimal can
+# reach the interval argument. It must still rate-limit: reading it as
+# non-numeric would disable the stamp check entirely and ensure on every
+# cycle for every repository — the opposite of what the operator configured,
+# with nothing to say so.
+reset_stub
+out="$(labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 24.0)"
+assert_eq "a decimal interval ensures on the first call" "created" "$(cut -f1 <<<"$out")"
+: > "$tmp/log"
+out="$(labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 24.0)"
+assert_eq "  ... and still rate-limits the second, rather than falling through" "" "$out"
+assert_eq "  ... listing nothing at all on the skipped call" "0" \
+  "$(grep -c '^api repos/Owner/repo/labels --paginate' "$tmp/log")"
+touch -d "-25 hours" "$stamp_file"
+: > "$tmp/log"
+out="$(labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 24.0)"
+assert_eq "  ... and re-lists once its whole-hour interval has elapsed" "1" \
+  "$(grep -c '^api repos/Owner/repo/labels --paginate' "$tmp/log")"
+rm -rf "$stamp_root"
+
+# A fraction below one hour truncates to 0 — "ensure every call". Shortening
+# the interval is the safe direction to round: it over-lists, where reading it
+# as non-numeric would have removed the limit outright.
+reset_stub
+labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 0.5 >/dev/null
+: > "$tmp/log"
+out="$(labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 0.5)"
+assert_eq "an interval under an hour truncates to 0 and ensures every call" "1" \
+  "$(grep -c '^api repos/Owner/repo/labels --paginate' "$tmp/log")"
+rm -rf "$stamp_root"
 
 echo
 if (( failures == 0 )); then

@@ -107,7 +107,19 @@
 # because agent-cycle.sh runs under `set -euo pipefail`.
 #
 # Environment:
-#   REFINEMENT_GH  override `gh` (tests stub it).
+#   REFINEMENT_GH           override `gh` (tests stub it).
+#   REFINEMENT_LABEL_ENSURE name of a function called as `NAME REPO LABEL`
+#                           exactly once per (REPO, LABEL) per process, the
+#                           first time `refinement_label_add` sees the add
+#                           itself fail — the common case being a repository
+#                           where the label was never created (agent-ops#687).
+#                           Unset by default, a no-op: agent-cycle.sh, which
+#                           sources both this file and lib/labels.sh, sets it
+#                           to a function that resolves REPO+LABEL against
+#                           the catalogue and calls labels_ensure_one. The
+#                           per-pair memoisation means a token that may not
+#                           create labels costs one ensure attempt per
+#                           process, not one per projection.
 
 # The marker that distinguishes a refinement block from every other
 # `attempt-failed` (requirement 33's event vocabulary). One constant, because
@@ -346,15 +358,42 @@ refinement_blocked_label_stale() {
     | "\(.repo)\t\(.item)\t\(.label)"' <<<"$docs" 2>/dev/null || true
 }
 
+# Memoised per (repo, label): a token that cannot create labels must cost one
+# ensure attempt per process — i.e. per cycle — not one per projection.
+declare -p _REFINEMENT_LABEL_ENSURE_ATTEMPTED >/dev/null 2>&1 \
+  || declare -gA _REFINEMENT_LABEL_ENSURE_ATTEMPTED=()
+
+# _refinement_label_ensure_once REPO LABEL
+# Call $REFINEMENT_LABEL_ENSURE, if set, exactly once for this (REPO, LABEL)
+# pair in this process. Returns 1 — meaning "nothing to retry after" — when
+# the hook is unset or already tried for this pair; the caller treats that
+# the same as a failed ensure, and neither case blocks its own retry of the
+# add, which costs nothing beyond the one already-failed attempt.
+_refinement_label_ensure_once() {
+  local repo="$1" label="$2"
+  local key="$repo|$label"
+  [[ -n "${REFINEMENT_LABEL_ENSURE:-}" ]] || return 1
+  [[ -z "${_REFINEMENT_LABEL_ENSURE_ATTEMPTED[$key]:-}" ]] || return 1
+  _REFINEMENT_LABEL_ENSURE_ATTEMPTED[$key]=1
+  "$REFINEMENT_LABEL_ENSURE" "$repo" "$label" >/dev/null 2>&1
+}
+
 # refinement_label_add REPO NUMBER LABEL
 # refinement_label_remove REPO NUMBER LABEL
 # Project the label onto an issue, or take it off again. Return non-zero when
 # `gh` would not do it — a repo where the label was never created is the common
 # case, and the caller records the block regardless: losing the projection costs
 # a human's filter, losing the block would cost the item its escape path.
+#
+# `refinement_label_add` self-heals the common case (agent-ops#687): a failed
+# add retries, once, through `$REFINEMENT_LABEL_ENSURE` (see "Environment"
+# above) before giving up — costing nothing in the steady state, since it only
+# runs after a failure, and never fatal, same as the ensure it calls.
 refinement_label_add() {
   local repo="$1" number="$2" label="$3" gh_bin="${REFINEMENT_GH:-gh}"
   [[ -n "$repo" && -n "$number" && -n "$label" ]] || return 1
+  "$gh_bin" issue edit "$number" -R "$repo" --add-label "$label" >/dev/null 2>&1 && return 0
+  _refinement_label_ensure_once "$repo" "$label" || return 1
   "$gh_bin" issue edit "$number" -R "$repo" --add-label "$label" >/dev/null 2>&1
 }
 

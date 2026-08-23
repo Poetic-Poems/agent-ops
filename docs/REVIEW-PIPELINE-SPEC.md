@@ -471,13 +471,24 @@ R5. **Per non-skipped repo** (processed **sequentially**, so a failure of one
       are never gated on this.
    0b. *Labels.* At the same point, and for the same reason it is that point —
       this repo is now certainly going to be worked — ensure its own resolved
-      `project_review` pr_label exists in it, creating it only if absent
-      (`lib/labels.sh`; `docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement
-      6a). `gh pr create --label` on a label that does not exist fails the
-      create outright, and here that would discard a review costing up to
-      `timeout_review` minutes. Never fatal: a repository whose labels cannot be listed, or a
-      token that may not create them, logs `labels-ensured` with what failed
-      and the review proceeds.
+      `project_review` pr_label exists in it, creating it only if absent, via
+      `labels_ensure_role` (`lib/labels.sh`), unconditionally and unstamped:
+      the same shape `docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement 6a
+      uses for its own selected repository, immediately before the stage that
+      needs the label to exist, rather than the rate-limited
+      `labels_ensure_stamped` requirement 6a's per-gathered-repository ensure
+      uses. A repository is selected for review at most once per
+      `min_days_between_reviews` days (R4), longer in every shipped
+      configuration than `labels_ensure_interval_hours` (default 24h), so a
+      stamp here would always have gone stale between one review of a
+      repository and the next — costing the same listing a stamp would have
+      saved, while leaving open the gap a shorter `min_days_between_reviews`
+      or a longer `labels_ensure_interval_hours` would create: a `pr_label`
+      deleted after a stamp was written going unnoticed until `gh pr create
+      --label` fails the create outright, discarding a review that cost up to
+      `timeout_review` minutes. Never fatal: a repository whose labels cannot
+      be listed, or a token that may not create them, logs `labels-ensured`
+      with what failed and the review proceeds.
    1. *Workspace.* Create `workspace_root/<review-id>-<repo-slug-safe>/` and
       clone the repo fresh from GitHub — the multi-agent ways-of-working rule
       shared by all Poetic repositories: every agent works in its own

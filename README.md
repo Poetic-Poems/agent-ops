@@ -402,15 +402,16 @@ Keys:
 | `enabler_after_coordinator_cycles` | `3` | How many cycles that actually ran a Co-Ordinator must pass, after an item is blocked, before the Enabler looks at it. Counting cycles rather than hours means a fleet that spent the night stood down on a usage limit has not "waited". |
 | `refinement_after_coordinator_cycles` | *(same as `enabler_after_coordinator_cycles`)* | The same wait, but for an item the pipeline recorded as too under-specified to work on (an issue picks up the `needs-refinement` label) rather than one blocked by something in the world. Left unset it waits exactly as long as any other block; set it separately once fleet behaviour tells you refinement items should age faster or slower. |
 | `enabler_recheck_hours` | `72` | Hours before the Enabler re-examines an item it has already examined. This is the bound on how long new evidence — a diagnosis posted into the very thread whose absence blocked the item — can sit unread. `0` switches re-examination off. |
-| `enabler_escalation_label` | `enabler-escalation` | Label applied to every issue the Enabler raises, for your filters and for its own duplicate check. The pipeline creates it in each target repo it works, so there is nothing to set up; without it the issue is still raised, just unlabelled. |
+| `enabler_escalation_label` | `enabler-escalation` | Label applied to every issue the Enabler raises, for your filters and for its own duplicate check. The pipeline creates it in every repository it gathers data for, not only the one it happens to work, at most once per `labels_ensure_interval_hours` — so there is nothing to set up; without it the issue is still raised, just unlabelled. |
 | `escalation_autonomy` | `always-escalate` | The D18 escalation-autonomy ladder: `always-escalate` (today's behaviour — every refinement-disagreement escalation goes straight to a human) or `adjudicate-first` (one bounded Enabler adjudication pass runs first; it either confirms the earlier refinement or escalates anyway). One such pass per item: a second disagreement over the same item comes to you regardless, until you act on it. A `repos[]` entry may override this per repository — see...[continued below](#extended-notes-escalation_autonomy) |
-| `needs_refinement_label` | `needs-refinement` | Label put on an **issue** while the pipeline has it recorded as too under-specified to work on, and taken off again when that clears — see [Items nobody has specified](#items-nobody-has-specified). You can also apply it yourself to flag one directly; the pipeline reads that back the same way. The pipeline creates it in each target repo it works, so there is nothing to set up; without it the item is still recorded and still reaches the Enabler, you just do not see it in the...[continued below](#extended-notes-needs_refinement_label) |
+| `needs_refinement_label` | `needs-refinement` | Label put on an **issue** while the pipeline has it recorded as too under-specified to work on, and taken off again when that clears — see [Items nobody has specified](#items-nobody-has-specified). You can also apply it yourself to flag one directly; the pipeline reads that back the same way. The pipeline creates it in every repository it gathers data for, not only the one it happens to work, at most once per `labels_ensure_interval_hours` — so there is nothing to set up...[continued below](#extended-notes-needs_refinement_label) |
 | `refinement_max_per_engagement` | `3` | How many under-specified items one Enabler engagement will take on. Ordinary blocked items are never displaced by them, and items over the cap simply wait for a later engagement. `0` switches the refinement work off while still recording it. |
 | `refiner_model` | `claude-sonnet-5` | The Refiner: writes a specification for an item nobody has scoped yet and marks it `refined`, before it would otherwise have to be blocked and wait for the Enabler — see [Refined items and the Refiner](#refined-items-and-the-refiner). Engaged every cycle there is unrefined work to do, so how often it runs and how good it has to be pull against each other: what it writes is the brief an Implementer works from. Leave it empty to switch the stage off. |
-| `refined_label` | `refined` | Label put on an **issue** once the Refiner has written it a specification — see [Refined items and the Refiner](#refined-items-and-the-refiner). Purely informational: nothing reads it back, so removing it by hand does nothing. The pipeline creates it in each target repo it works, so there is nothing to set up. Leave it empty to switch the labelling off; the item is still recorded as refined and the Co-Ordinator still reads that record. Do not set it to `blocked`, which is a...[continued below](#extended-notes-refined_label) |
+| `refined_label` | `refined` | Label put on an **issue** once the Refiner has written it a specification — see [Refined items and the Refiner](#refined-items-and-the-refiner). Purely informational: nothing reads it back, so removing it by hand does nothing. The pipeline creates it in every repository it gathers data for, not only the one it happens to work, at most once per `labels_ensure_interval_hours` — so there is nothing to set up. Leave it empty to switch the labelling off; the item is still recorded...[continued below](#extended-notes-refined_label) |
 | `refiner_max_per_engagement` | `5` | How many unrefined items one Refiner engagement will write specifications for. Items over the cap simply wait for a later engagement. `0` switches proactive refinement off. |
 | `refinement_policy` | `{"issues":"preferred"}` | Per source: `required` (never select unrefined), `preferred` (rank refined items first, but an unrefined one may still be picked), or `exempt` (no refinement dimension — the default for every source not listed). See [Refined items and the Refiner](#refined-items-and-the-refiner). Every source the Refiner's own candidate gathering reads — `issues`, `security`, `code-quality`, `review-feedback`, `abandoned-drafts`, `merge-conflicts`, `dequeued`, `register-hygiene`, `tech-debt`...[continued below](#extended-notes-refinement_policy) |
-| `unvoid_label` | `unvoided` | The label you apply on GitHub to ask for a voided item to be reopened — see [Blocked and void items](#blocked-and-void-items). No stage ever applies it, so "only a human may clear a void" still holds; this is just a way to say so from the issue itself. The pipeline creates it in each target repo it works, so there is nothing to set up; `scripts/doctor.sh` warns while a repo has not got it yet. Do not set it to `blocked` or `obsolete`. |
+| `unvoid_label` | `unvoided` | The label you apply on GitHub to ask for a voided item to be reopened — see [Blocked and void items](#blocked-and-void-items). No stage ever applies it, so "only a human may clear a void" still holds; this is just a way to say so from the issue itself. The pipeline creates it in every repository it gathers data for, not only the one it happens to work, at most once per `labels_ensure_interval_hours`; `scripts/doctor.sh` warns while a repo has not got it yet. Do not set it to...[continued below](#extended-notes-unvoid_label) |
+| `labels_ensure_interval_hours` | `24` | How often, in hours, the pipeline re-lists a repository's labels to create any that are missing (installation step 4, below). Every repository the cycle gathers data for gets this, not only the one it works, so a label you delete comes back within this interval rather than only the next time that repository happens to be selected. `0` re-lists on every cycle. |
 | `void_retire_after_days` | `30` days | Days a voided item sits fully actioned — its issue or pull request closed, or its tech-debt register row flipped to `resolved`/`not-debt` — before the pipeline stops carrying it in the void extract. This does not touch whether the item is void (still forever, still only a human's `unvoided` label undoes it, see [Blocked and void items](#blocked-and-void-items)); it only stops an old, settled verdict from being handed to the Co-Ordinator and the dashboard's data forever. `0` disables retirement. |
 | `prompt_overrides` | `{}` | Add house rules to a stage's operating prompt, or replace it outright, without forking `prompts/`. The Approver's prompt takes no override — it is the trust gate the merge-autonomy ladder rests on. See [Prompt overrides](#prompt-overrides). |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. Do not name it `obsolete`, which is reserved for a human to mark one of these PRs as unwanted. Threaded through every work order's own `pr_label` field, which the Implementer labels its pull request with. |
@@ -546,7 +547,7 @@ The D18 escalation-autonomy ladder: `always-escalate` (today's behaviour — eve
 
 Label put on an **issue** while the pipeline has it recorded as too under-specified to work on, and taken off again when that clears — see [Items nobody has specified](#items-nobody-has-specified). You can also apply it yourself to flag one directly; the pipeline reads that back the same way.
 
-The pipeline creates it in each target repo it works, so there is nothing to set up; without it the item is still recorded and still reaches the Enabler, you just do not see it in the issue list — and a label you apply yourself does nothing.
+The pipeline creates it in every repository it gathers data for, not only the one it happens to work, at most once per `labels_ensure_interval_hours` — so there is nothing to set up; without it the item is still recorded and still reaches the Enabler, you just do not see it in the issue list, and a label you apply yourself does nothing.
 
 Leave it empty to switch the labelling off in both directions.
 
@@ -556,7 +557,7 @@ Do not set it to `blocked`, which is a label that excludes an issue from the pip
 
 Label put on an **issue** once the Refiner has written it a specification — see [Refined items and the Refiner](#refined-items-and-the-refiner). Purely informational: nothing reads it back, so removing it by hand does nothing.
 
-The pipeline creates it in each target repo it works, so there is nothing to set up.
+The pipeline creates it in every repository it gathers data for, not only the one it happens to work, at most once per `labels_ensure_interval_hours` — so there is nothing to set up.
 
 Leave it empty to switch the labelling off; the item is still recorded as refined and the Co-Ordinator still reads that record.
 
@@ -565,6 +566,10 @@ Do not set it to `blocked`, which is a label that excludes an issue from the pip
 ### Extended notes: `refinement_policy`
 
 Per source: `required` (never select unrefined), `preferred` (rank refined items first, but an unrefined one may still be picked), or `exempt` (no refinement dimension — the default for every source not listed). See [Refined items and the Refiner](#refined-items-and-the-refiner). Every source the Refiner's own candidate gathering reads — `issues`, `security`, `code-quality`, `review-feedback`, `abandoned-drafts`, `merge-conflicts`, `dequeued`, `register-hygiene`, `tech-debt`, `project-review` and `implementation-plan` — reaches an engagement; the latter two are read only for a repo whose `sources` lists them and whose policy for them is not itself `exempt`.
+
+### Extended notes: `unvoid_label`
+
+The label you apply on GitHub to ask for a voided item to be reopened — see [Blocked and void items](#blocked-and-void-items). No stage ever applies it, so "only a human may clear a void" still holds; this is just a way to say so from the issue itself. The pipeline creates it in every repository it gathers data for, not only the one it happens to work, at most once per `labels_ensure_interval_hours`; `scripts/doctor.sh` warns while a repo has not got it yet. Do not set it to `blocked` or `obsolete`.
 
 ### Extended notes: `coordinator_prompt_max_bytes`
 
@@ -799,14 +804,17 @@ is a container: Docker and the `.env` above are the whole of it.
    *Alternative (Windows Task Scheduler):* Create a task running `wsl.exe -u wallen -e $HOME/Code/Poetic-Poems/agent-ops/agent-cycle.sh` on the node's configured cadence (`schedule.cycle_interval_minutes`).
 
 4. **Labels: nothing to do.** The pipeline creates the labels it uses — the PR
-   label, the Enabler's escalation label, `needs-refinement`, `unvoided`, the
-   `complexity:*` grades, `blocked`, and `obsolete` — in each repository the
-   first time it works it, and puts back any you later delete. It only ever
+   label, the Enabler's escalation label, `needs-refinement`, `refined`,
+   `unvoided`, the `complexity:*` grades, `blocked`, `blocked:needs-refinement`,
+   and `obsolete` — in every repository it gathers data for, not only the one
+   it happens to work, at most once per `labels_ensure_interval_hours` (default
+   24h), and puts back any you later delete within that interval. It only ever
    *creates*: a label you have recoloured or re-described keeps your version.
 
    All the token needs is permission to create them. If one is still missing
-   after a cycle has run against that repository, that permission is what to
-   check — `./scripts/doctor.sh` names each absent label and says so.
+   after `labels_ensure_interval_hours` has passed since a cycle last gathered
+   that repository, that permission is what to check — `./scripts/doctor.sh`
+   names each absent label and says so.
 
 5. **Enable the security work sources on both repos.** The `security` and `code-quality` sources read GitHub's own Dependabot alerts and code-scanning (CodeQL) alerts, so those features must be turned on for the alerts to exist:
    - In each repo's **Settings → Code security**, enable **Dependabot alerts** and **Code scanning** (a default CodeQL setup is fine). Free for public repos; private repos need GitHub Advanced Security.
@@ -1257,8 +1265,10 @@ To tell the pipeline it really is unwanted, **label the pull request
 gh pr edit 205 -R Poetic-Poems/poetic --add-label obsolete
 ```
 
-The pipeline creates the label in each target repo it works, so there is
-nothing to set up; `scripts/doctor.sh` warns while a repo has not got it yet.
+The pipeline creates the label in every repository it gathers data for, not
+only the one it happens to work, at most once per `labels_ensure_interval_hours`
+(default 24h), so there is nothing to set up; `scripts/doctor.sh` warns while a
+repo has not got it yet.
 The next time the pipeline records this item as void — typically the Enabler,
 re-examining the escalation this draft raised — the label corroborates the
 void despite the diff, and the pull request is closed with a comment naming

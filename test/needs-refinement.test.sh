@@ -220,6 +220,74 @@ assert_eq "a label the repo does not have fails rather than silently passing" "1
   "$(refinement_label_add "o/r" 52 needs-refinement; echo $?)"
 rm -f "$tmp_dir/missing-labels"
 
+# --- agent-ops#687 Part 1: self-healing through $REFINEMENT_LABEL_ENSURE --------
+# A failed add is the common case above; here the hook that agent-cycle.sh
+# would set (a function resolving REPO+LABEL against the catalogue and
+# calling labels_ensure_one) actually creates the label, and the retried add
+# lands — the exact case this system used to just fail on.
+ensure_calls="$tmp_dir/ensure-calls"
+# shellcheck disable=SC2317  # invoked only indirectly, as "$REFINEMENT_LABEL_ENSURE"
+fake_ensure() {  # REPO LABEL — "creates" the label by clearing it from missing-labels
+  printf '%s %s\n' "$1" "$2" >> "$ensure_calls"
+  sed -i "/^$2\$/d" "$tmp_dir/missing-labels" 2>/dev/null || true
+}
+export REFINEMENT_LABEL_ENSURE=fake_ensure
+
+rm -f "$ensure_calls"
+printf 'needs-refinement\n' > "$tmp_dir/missing-labels"
+reset_calls
+assert_eq "a failed add self-heals through the ensure hook and succeeds" "0" \
+  "$(refinement_label_add "o/r" 52 needs-refinement; echo $?)"
+assert_eq "  ... through exactly one ensure attempt" "o/r needs-refinement" \
+  "$(cat "$ensure_calls")"
+assert_eq "  ... and the retried add lands" "add o/r 52 needs-refinement" "$(label_calls)"
+rm -f "$tmp_dir/missing-labels"
+
+# A token that genuinely cannot create labels: the ensure hook is tried exactly
+# once per (repo, label) per process, not once per projection — a second
+# projection (a different issue) of the same pair costs no further ensure
+# attempt, so a stuck token is not billed for every issue it fails to label.
+# (Called directly, not through $(...): the memoisation lives in an associative
+# array in *this* shell, and a command substitution would run it in a subshell
+# whose writes to that array never reach back here.)
+rm -f "$ensure_calls"
+# shellcheck disable=SC2317  # invoked only indirectly, as "$REFINEMENT_LABEL_ENSURE"
+fake_ensure_stuck() { printf '%s %s\n' "$1" "$2" >> "$ensure_calls"; }  # never clears the label
+export REFINEMENT_LABEL_ENSURE=fake_ensure_stuck
+printf 'stuck-label\n' > "$tmp_dir/missing-labels"
+reset_calls
+refinement_label_add "o/r" 52 stuck-label; rc1=$?
+refinement_label_add "o/r" 53 stuck-label; rc2=$?
+assert_eq "a genuinely uncreatable label still fails after the retry" "1" "$rc1"
+assert_eq "a second projection of the same (repo, label) triggers no further ensure" "1" "$rc2"
+assert_eq "  ... exactly one ensure attempt total" "o/r stuck-label" "$(cat "$ensure_calls")"
+rm -f "$tmp_dir/missing-labels" "$ensure_calls"
+unset REFINEMENT_LABEL_ENSURE
+unset -f fake_ensure_stuck
+
+# refinement_label_project's own two add paths flow through refinement_label_add,
+# so both self-heal for free: the ordinary "added" success path —
+export REFINEMENT_LABEL_ENSURE=fake_ensure
+rm -f "$tmp_dir/issue-labels" "$tmp_dir/view-fail" "$ensure_calls"
+printf 'project-label\n' > "$tmp_dir/missing-labels"
+reset_calls
+assert_eq "refinement_label_project's add path self-heals and still reports added" \
+  "added" "$(refinement_label_project "o/r" 60 project-label)"
+rm -f "$tmp_dir/missing-labels"
+
+# — and the read-failure path, which adds best-effort regardless of whether the
+# self-heal makes it land, and must still report unrecorded either way (the read
+# failed, so nothing here is safe to record, self-heal or not).
+printf 'project-label2\n' > "$tmp_dir/missing-labels"
+printf x > "$tmp_dir/view-fail"
+reset_calls
+assert_eq "refinement_label_project's unrecorded path self-heals but still reports unrecorded" \
+  "unrecorded" "$(refinement_label_project "o/r" 61 project-label2)"
+rm -f "$tmp_dir/view-fail" "$tmp_dir/missing-labels" "$ensure_calls"
+
+unset REFINEMENT_LABEL_ENSURE
+unset -f fake_ensure
+
 # --- Requirement 34e: the label comes off when the block clears -----------------
 # Removal is driven from the block record, not from config, so the Script can
 # only ever remove a label it recorded applying. `blocked_items` is the extract
