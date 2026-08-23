@@ -540,6 +540,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The Refiner's Priority ratchet now writes at all: every `setIssueFieldValue`
+  mutation it has ever sent was rejected before reaching the resolver, so no
+  issue in any repository has been banded by the pipeline (PR_REF).
+  `issue_priority_apply` (`lib/issue-priority.sh`) declared the mutation's
+  `$optionId` variable as `String!` while GitHub types the
+  `singleSelectOptionId` argument as `ID`, and GraphQL rejects that pairing
+  outright — `Type mismatch on variable $optionId and argument
+  singleSelectOptionId (String! / ID)`. The call discards stderr, so the
+  caller saw only a bare `mutation-failed`: `ockham-container`'s retained
+  `log.jsonl` carries 14 `refiner: could not set Priority …` warnings between
+  2026-08-20 and 2026-08-23 and **not one** `issue-prioritised` event. The
+  variable is now `ID!`, matching the two id variables either side of it. The
+  suite could not have caught this — the stubbed `gh` in
+  `test/refiner-priority-triage.test.sh` matches on `*setIssueFieldValue*` and
+  never parses the query, so a declaration GitHub rejects looks identical to a
+  correct one — so section (B2) of that test now asserts the declared types
+  against the source directly. Requirement 39g is unchanged: the spec always
+  described this behaviour, and the code now does it.
+  `TD-PPagop-26082322` records the swallowed stderr that hid it.
+
 - D18 arming now works at all: the changed-file read behind the protected-path
   gate had been failing on every single call since Stage 2 was entered, so the
   pipeline has never autonomously landed a pull request (agent-ops#718).
