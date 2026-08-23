@@ -131,6 +131,15 @@
               "$ref": "#/$defs/landingSourceToken"
             }
           },
+          "merge_autonomy_protected_paths": {
+            "description": "Override for the top-level merge_autonomy_protected_paths key, for this repository only. Absent means this repository follows the top-level key.",
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
           "landing_cool_off_hours": {
             "description": "Override for the top-level landing_cool_off_hours key, for this repository only. Absent means this repository follows the top-level key.",
             "type": "number",
@@ -168,6 +177,7 @@
           "A repo entry may also carry `merge_autonomy` — the per-repo override of the top-level key of the same name, on the same precedence: this entry wins when present, the top-level key otherwise. Omit it and the repository follows the fleet-wide default.",
           "A repo entry may also carry `merge_budget_per_day` — the per-repo override of the top-level key of the same name, on the same precedence. Omit it and the repository follows the fleet-wide default.",
           "A repo entry may also carry `merge_autonomy_routine_sources` — the per-repo override of the top-level key of the same name, on the same precedence. Omit it and the repository follows the fleet-wide default.",
+          "A repo entry may also carry `merge_autonomy_protected_paths` — the per-repo override of the top-level key of the same name, on the same precedence. Omit it and the repository follows the fleet-wide default (today's nine agent-ops paths) — a repository whose own gate code lives elsewhere should name its own list rather than inherit agent-ops's.",
           "A repo entry may also carry `landing_cool_off_hours` — the per-repo override of the top-level key of the same name, on the same precedence. Omit it and the repository follows the fleet-wide default.",
           "A repo entry may also carry `escalation_autonomy` — the per-repo override of the top-level key of the same name, on the same precedence. Omit it and the repository follows the fleet-wide default.",
           "Every optional key goes on the repo's own entry, beside `slug` and `sources`:",
@@ -186,6 +196,7 @@
           "A repo entry may also carry `merge_autonomy` \u2014 the per-repository override of the top-level key of the same name (D18, requirement 2.3b), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
           "A repo entry may also carry `merge_budget_per_day` \u2014 the per-repository override of the top-level key of the same name (D18, requirement 2.3c), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
           "A repo entry may also carry `merge_autonomy_routine_sources` \u2014 the per-repository override of the top-level key of the same name (D18 WI-7, requirement 8d), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
+          "A repo entry may also carry `merge_autonomy_protected_paths` \u2014 the per-repository override of the top-level key of the same name (D18 Stage 3, agent-ops#724), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise. The top-level default is agent-ops's own nine gate paths, which govern nothing outside agent-ops itself \u2014 a repository landing routine-tier pull requests should declare the paths that actually gate *its* release rather than inherit agent-ops's.",
           "A repo entry may also carry `landing_cool_off_hours` \u2014 the per-repository override of the top-level key of the same name (D18 WI-12, agent-ops#415), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
           "A repo entry may also carry `escalation_autonomy` \u2014 the per-repository override of the top-level key of the same name (D18, agent-ops#627), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
           "Every optional key sits on the repository's own entry, beside `slug` and `sources`:",
@@ -721,6 +732,24 @@
         "readme": "D18 WI-7: which work sources may be armed automatically at `agent-merges-routine` and above — a pull request also needs `complexity:low`/`medium`, and — below `agent-merges-all` — to touch no protected path; at `agent-merges-all` a protected-path hit is deferred to the critical-tier and `landing_cool_off_hours` controls rather than refused. A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Takes `landingSourceToken`s, not the `sourceToken`s `repos[].sources` takes: issue work is the plain `issues` here, never `issues:<band>`, because banding is spent at gathering time and a finished work order carries the bare word.",
         "spec": "D18 WI-7 (requirement 8d, `lib/landing.sh`'s `landing_eligible`): which work sources may be armed automatically at `agent-merges-routine` and above, fleet-wide default; a `repos[]` entry's own `merge_autonomy_routine_sources` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). An eligible pull request also needs `complexity:low`/`medium` and, below `agent-merges-all`, `landing_protected_paths_hit` to report no protected path touched; at `agent-merges-all` a hit is deferred to requirement 8d's own gate 4.5 (D18 WI-12) rather than refused. Matched against a pull request's own `source` by exact string equality, over the `landingSourceToken` vocabulary rather than `repos[].sources`' `sourceToken` one: `scripts/gather-issues.sh` collapses all four bands to `\"source\": \"issues\"`, so `issues` is the only spelling that can match an issue work order, and the four banded spellings are rejected by the schema outright (agent-ops#558). Until that fix the two were one shared enum, which offered only the spellings landing can never match — and `scripts/doctor.sh`'s banded-token warning (agent-ops#519) named a remedy, `issues`, that the same enum refused. `scripts/doctor.sh` warns when a repository's own effective list names a source that repository's `sources` never gathers, reading a bare `issues` as satisfied by any `issues:<band>` the repository gathers.",
         "value": "`[\"register-hygiene\", \"tech-debt\"]`"
+      }
+    },
+    "merge_autonomy_protected_paths": {
+      "description": "D18 Stage 3 (agent-ops#724): the whole-path prefixes a routine-tier landing must touch none of — below `agent-merges-all`, a hit refuses outright; at `agent-merges-all` it is instead deferred to D18 WI-12's own compensating controls (`lib/landing.sh`'s `landing_eligible`/`_landing_is_protected`). Each entry is matched as an exact path (`config.json`) or, ending `/*`, as a whole-path prefix (`lib/*` matches `lib/landing.sh`, never `libfoo.sh`) — never an extension rule. A `repos[]` entry's own `merge_autonomy_protected_paths` overrides this key for that repository alone, on the same precedence `merge_autonomy_routine_sources` uses. Defaults to agent-ops's own nine paths byte-for-byte (`.github/*`, `deploy/*`, `prompts/*`, `lib/*`, `config.schema.json`, `config.json`, `agent-cycle.sh`, `review-cycle.sh`, `CODEOWNERS`) — the paths that gate *this* repository's own behaviour, applied fleet-wide only because no other repository has yet named its own; a repository whose gate code lives elsewhere (a product `lib/` that is ordinary code, a release script under `scripts/`) should override it rather than inherit a list that means something different there. `scripts/detect-classifier-escapes.sh`'s independent post-hoc audit resolves the same key the same way, from its own reimplementation, so the two can never silently diverge on what counts as protected.",
+      "type": "array",
+      "uniqueItems": true,
+      "default": [
+        ".github/*", "deploy/*", "prompts/*", "lib/*", "config.schema.json",
+        "config.json", "agent-cycle.sh", "review-cycle.sh", "CODEOWNERS"
+      ],
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "x-docs": {
+        "readme": "D18 Stage 3: the whole-path prefixes a routine-tier landing must touch none of — below `agent-merges-all` a hit refuses outright; at `agent-merges-all` it is deferred to the critical-tier and `landing_cool_off_hours` controls instead. An entry ending `/*` matches a whole-path prefix; any other entry matches an exact path. A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Defaults to agent-ops's own gate paths, which govern nothing outside agent-ops itself.",
+        "spec": "D18 Stage 3 (agent-ops#724, `lib/landing.sh`'s `landing_eligible`/`_landing_is_protected`): the whole-path prefixes a routine-tier landing must touch none of, fleet-wide default; a `repos[]` entry's own `merge_autonomy_protected_paths` overrides it for that repository, the same precedence `merge_autonomy_routine_sources` uses (requirement 4f). Below `agent-merges-all` a hit is an outright `ineligible`; at `agent-merges-all` it is deferred to requirement 8d's own gate 4.5 (D18 WI-12) rather than refused. An entry ending `/*` matches as a whole-path prefix (`lib/*` matches `lib/landing.sh`, never `libfoo.sh`); any other entry matches only that exact path. Defaults to agent-ops's own nine paths byte-for-byte, so nothing changes for any repository until it names its own list. `scripts/detect-classifier-escapes.sh` resolves this same key, via its own reimplementation (never sourced from `lib/landing.sh`, by design — see that script's header), and `test/detect-classifier-escapes.test.sh` pins the two identical over a battery of configs and paths, so a change to one that is not mirrored in the other fails CI rather than drifting silently.",
+        "value": "`[\".github/*\", \"deploy/*\", \"prompts/*\", \"lib/*\", \"config.schema.json\", \"config.json\", \"agent-cycle.sh\", \"review-cycle.sh\", \"CODEOWNERS\"]`"
       }
     },
     "landing_cool_off_hours": {

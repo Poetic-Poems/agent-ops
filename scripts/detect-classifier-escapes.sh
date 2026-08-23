@@ -42,8 +42,14 @@
 #     (`gh api repos/SLUG/commits/SHA`), never the pull request's changed-file
 #     endpoint `landing_protected_paths_hit` reads: a different GitHub
 #     resource entirely, so a bug specific to either read is caught by the
-#     other disagreeing. Checked against a prefix list declared fresh in this
-#     file (see above). `landing_eligible` (`lib/landing.sh`) is level-
+#     other disagreeing. Checked against SLUG's own `merge_autonomy_protected_paths`
+#     (repo override, else the top-level key, else the shipped default),
+#     resolved fresh from CONFIG_FILE by a copy of the matching logic
+#     `lib/landing.sh`'s own `_landing_protected_paths`/`_landing_is_protected`
+#     use, declared here rather than sourced (see above) — the same
+#     "necessarily read from *current* configuration" caveat the
+#     routine-sources list below already carries applies here too. `landing_eligible`
+#     (`lib/landing.sh`) is level-
 #     dependent here, and this recomputation must be too: below
 #     `agent-merges-all` a hit refuses unconditionally, so this detector
 #     treats it as a disagreement there exactly as before; at
@@ -284,25 +290,34 @@ gh_retry() {
   return "$rc"
 }
 
-# --- The reimplemented protected-path list ----------------------------------
+# --- The reimplemented protected-path resolution and list -------------------
 # Deliberately not sourced from lib/landing.sh — see this file's own header.
-# Kept byte-for-byte in step with _landing_is_protected (lib/landing.sh),
-# and test/detect-classifier-escapes.test.sh pins the two identical over the
-# same battery of paths so a change to one that is not mirrored in the other
-# fails CI rather than drifting silently.
+# Kept byte-for-byte in step with _landing_protected_paths/_landing_is_protected
+# (lib/landing.sh), and test/detect-classifier-escapes.test.sh pins the two
+# identical over the same battery of configs and paths so a change to one
+# that is not mirrored in the other fails CI rather than drifting silently.
+_escape_audit_protected_paths() {
+  local config_json="$1" repo_slug="$2" repo_list top_list
+  repo_list="$(jq -c --arg slug "$repo_slug" \
+    '(.repos // [])[] | select(.slug == $slug) | .merge_autonomy_protected_paths // empty' \
+    <<<"$config_json" 2>/dev/null | head -1)"
+  if [[ -n "$repo_list" ]] && jq -e 'type == "array"' <<<"$repo_list" >/dev/null 2>&1; then
+    printf '%s' "$repo_list"
+    return 0
+  fi
+  top_list="$(jq -c '.merge_autonomy_protected_paths // empty' <<<"$config_json" 2>/dev/null)"
+  if [[ -n "$top_list" ]] && jq -e 'type == "array"' <<<"$top_list" >/dev/null 2>&1; then
+    printf '%s' "$top_list"
+    return 0
+  fi
+  printf '%s' '[".github/*","deploy/*","prompts/*","lib/*","config.schema.json","config.json","agent-cycle.sh","review-cycle.sh","CODEOWNERS"]'
+}
+
 _escape_audit_is_protected() {
-  case "$1" in
-    .github/*) return 0 ;;
-    deploy/*) return 0 ;;
-    prompts/*) return 0 ;;
-    lib/*) return 0 ;;
-    config.schema.json) return 0 ;;
-    config.json) return 0 ;;
-    agent-cycle.sh) return 0 ;;
-    review-cycle.sh) return 0 ;;
-    CODEOWNERS) return 0 ;;
-    *) return 1 ;;
-  esac
+  local protected_json="$1" path="$2"
+  jq -e --arg p "$path" '
+    any(.[]; . as $entry | if $entry | endswith("/*") then ($p | startswith($entry[:-1])) else $entry == $p end)
+  ' <<<"$protected_json" >/dev/null 2>&1
 }
 
 # --- The reimplemented routine-sources resolution ---------------------------
@@ -469,6 +484,7 @@ recorded_level_for() {
 
 config_json="$(cat "$CONFIG_FILE" 2>/dev/null || printf '{}')"
 routine_json="$(_escape_audit_routine_sources "$config_json" "$slug")"
+protected_json="$(_escape_audit_protected_paths "$config_json" "$slug")"
 
 emit() {
   local outcome="$1" pr_url="$2" number="$3" sha="$4" source="$5" complexity="$6" \
@@ -544,7 +560,7 @@ while IFS= read -r number; do
       declare -a protected=()
       while IFS= read -r path; do
         [[ -n "$path" ]] || continue
-        _escape_audit_is_protected "$path" && protected+=("$path")
+        _escape_audit_is_protected "$protected_json" "$path" && protected+=("$path")
       done <<<"$files_out"
       if (( ${#protected[@]} > 0 )); then
         hit="true"

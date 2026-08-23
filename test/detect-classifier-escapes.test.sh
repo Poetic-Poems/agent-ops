@@ -7,17 +7,18 @@
 #
 # Two halves:
 #
-#   - The reimplemented protected-path list and routine-sources resolution
-#     (`_escape_audit_is_protected`/`_escape_audit_routine_sources`, lifted
+#   - The reimplemented protected-path matching, protected-path resolution
+#     and routine-sources resolution (`_escape_audit_is_protected`/
+#     `_escape_audit_protected_paths`/`_escape_audit_routine_sources`, lifted
 #     verbatim out of the script the same way test/landing-retry-sweep.test.sh
 #     lifts `_landing_retry_sweep_repo` out of agent-cycle.sh) are pinned
 #     byte-for-byte identical to lib/landing.sh's own
-#     `_landing_is_protected`/`_landing_routine_sources`, over the same
-#     battery of inputs — so the two can drift apart in the same PR without
-#     it drifting *silently*, even though the detector deliberately never
-#     sources lib/landing.sh at all (the issue's own Refiner comment: "read
-#     there for the exact logic this detector must reproduce independently
-#     (not call into)").
+#     `_landing_is_protected`/`_landing_protected_paths`/`_landing_routine_sources`,
+#     over the same battery of inputs — so the two can drift apart in the
+#     same PR without it drifting *silently*, even though the detector
+#     deliberately never sources lib/landing.sh at all (the issue's own
+#     Refiner comment: "read there for the exact logic this detector must
+#     reproduce independently (not call into)").
 #   - The script itself, invoked as a subprocess against a stubbed `gh`
 #     (PATH-prepended, the same technique test/mine-merge-history.test.sh
 #     uses): a merged pull request whose merge commit touches a protected
@@ -86,6 +87,10 @@ is_protected_block="$(extract _escape_audit_is_protected "$DETECTOR")"
 [[ -n "$is_protected_block" ]] || { echo "FAIL - could not extract _escape_audit_is_protected from $DETECTOR — has it moved?" >&2; exit 1; }
 eval "$is_protected_block"
 
+protected_paths_block="$(extract _escape_audit_protected_paths "$DETECTOR")"
+[[ -n "$protected_paths_block" ]] || { echo "FAIL - could not extract _escape_audit_protected_paths from $DETECTOR — has it moved?" >&2; exit 1; }
+eval "$protected_paths_block"
+
 routine_sources_block="$(extract _escape_audit_routine_sources "$DETECTOR")"
 [[ -n "$routine_sources_block" ]] || { echo "FAIL - could not extract _escape_audit_routine_sources from $DETECTOR — has it moved?" >&2; exit 1; }
 eval "$routine_sources_block"
@@ -97,14 +102,15 @@ eval "$routine_sources_block"
 # shellcheck source=lib/landing.sh
 . "$SCRIPT_DIR/lib/landing.sh"
 
+default_protected='[".github/*","deploy/*","prompts/*","lib/*","config.schema.json","config.json","agent-cycle.sh","review-cycle.sh","CODEOWNERS"]'
 for path in ".github/workflows/ci.yml" "deploy/docker/Dockerfile" "prompts/implementer.md" \
             "lib/landing.sh" "config.schema.json" "config.json" "agent-cycle.sh" \
             "review-cycle.sh" "CODEOWNERS" \
             "README.md" "scripts/detect-classifier-escapes.sh" "test/landing.test.sh" \
             "libfoo.sh" "deploying.txt" ".github" "githubby/file.txt"; do
   landing_rc=0; escape_rc=0
-  _landing_is_protected "$path" || landing_rc=$?
-  _escape_audit_is_protected "$path" || escape_rc=$?
+  _landing_is_protected "$default_protected" "$path" || landing_rc=$?
+  _escape_audit_is_protected "$default_protected" "$path" || escape_rc=$?
   assert_eq "protected-path verdict for '$path' matches lib/landing.sh's own" \
     "$landing_rc" "$escape_rc"
 done
@@ -116,6 +122,16 @@ for cfg in '{"repos":[]}' \
   landing_out="$(_landing_routine_sources "$cfg" "acme/widgets")"
   escape_out="$(_escape_audit_routine_sources "$cfg" "acme/widgets")"
   assert_eq "routine-sources resolution for config '$cfg' matches lib/landing.sh's own" \
+    "$landing_out" "$escape_out"
+done
+
+for cfg in '{"repos":[]}' \
+           '{"repos":[{"slug":"acme/widgets","merge_autonomy_protected_paths":["scripts/*"]}]}' \
+           '{"merge_autonomy_protected_paths":["lib/*","CODEOWNERS"]}' \
+           '{}'; do
+  landing_out="$(_landing_protected_paths "$cfg" "acme/widgets")"
+  escape_out="$(_escape_audit_protected_paths "$cfg" "acme/widgets")"
+  assert_eq "protected-paths resolution for config '$cfg' matches lib/landing.sh's own" \
     "$landing_out" "$escape_out"
 done
 

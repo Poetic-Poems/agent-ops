@@ -236,18 +236,18 @@ echo '{"data":{"enqueuePullRequest":{"mergeQueueEntry":{"id":"MQE_fake"}}}}' > "
 # --- landing_protected_paths_hit ---------------------------------------------
 
 files "src/app.py" "lib/merge-budget.sh" "README.md"
-out="$(landing_protected_paths_hit acme/widgets 12)"; rc=$?
+out="$(landing_protected_paths_hit '{}' acme/widgets 12)"; rc=$?
 assert_eq "a protected path is reported" "lib/merge-budget.sh" "$out"
 assert_eq "  ... exit 0" "0" "$rc"
 
 files "src/app.py" "README.md" "docs/notes.md"
-out="$(landing_protected_paths_hit acme/widgets 12)"; rc=$?
+out="$(landing_protected_paths_hit '{}' acme/widgets 12)"; rc=$?
 assert_eq "no protected path: nothing printed" "" "$out"
 assert_eq "  ... exit 1" "1" "$rc"
 
 files "config.schema.json" "CODEOWNERS" "lib/x.sh" ".github/workflows/y.yml" "deploy/z" "prompts/p.md" \
       "config.json" "agent-cycle.sh" "review-cycle.sh"
-out="$(landing_protected_paths_hit acme/widgets 12)"; rc=$?
+out="$(landing_protected_paths_hit '{}' acme/widgets 12)"; rc=$?
 assert_eq "every protected prefix is recognised, one per line" \
   "config.schema.json
 CODEOWNERS
@@ -265,7 +265,7 @@ assert_eq "  ... exit 0" "0" "$rc"
 # assertion above with a diff to read.
 for protected in config.json agent-cycle.sh review-cycle.sh; do
   files "src/app.py" "$protected" "README.md"
-  out="$(landing_protected_paths_hit acme/widgets 12)"; rc=$?
+  out="$(landing_protected_paths_hit '{}' acme/widgets 12)"; rc=$?
   assert_eq "$protected is protected" "$protected" "$out"
   assert_eq "  ... exit 0" "0" "$rc"
 done
@@ -274,24 +274,24 @@ done
 # file nested under a directory, nor a longer name that merely starts the
 # same way.
 files "src/app.py" "docs/config.json" "tools/agent-cycle.sh" "config.json.bak" "review-cycle.sh.orig"
-out="$(landing_protected_paths_hit acme/widgets 12)"; rc=$?
+out="$(landing_protected_paths_hit '{}' acme/widgets 12)"; rc=$?
 assert_eq "a nested or suffixed near-miss is not protected" "" "$out"
 assert_eq "  ... exit 1" "1" "$rc"
 
 : > "$fixtures/files-fail"
-out="$(landing_protected_paths_hit acme/widgets 12)"; rc=$?
+out="$(landing_protected_paths_hit '{}' acme/widgets 12)"; rc=$?
 assert_eq "an unreadable changed-file list: exit 2, nothing printed" "2" "$rc"
 assert_eq "  ... nothing printed" "" "$out"
 rm -f "$fixtures/files-fail"
 
 files a b c
-out="$(LANDING_PR_FILES_LIMIT=3 landing_protected_paths_hit acme/widgets 12)"; rc=$?
+out="$(LANDING_PR_FILES_LIMIT=3 landing_protected_paths_hit '{}' acme/widgets 12)"; rc=$?
 assert_eq "a listing at the page cap reads unreadable (exit 2), never trusted as complete" "2" "$rc"
 files "src/app.py"
 
-out="$(landing_protected_paths_hit "" 12)"; rc=$?
+out="$(landing_protected_paths_hit '{}' "" 12)"; rc=$?
 assert_eq "an empty slug is rejected before calling gh" "2" "$rc"
-out="$(landing_protected_paths_hit acme/widgets abc)"; rc=$?
+out="$(landing_protected_paths_hit '{}' acme/widgets abc)"; rc=$?
 assert_eq "a non-numeric number is rejected before calling gh" "2" "$rc"
 
 # The read must be an explicit GET (agent-ops#718). Two assertions, because
@@ -307,8 +307,23 @@ out="$("$stub_bin/gh" api "repos/acme/widgets/pulls/12/files" --paginate -F per_
 assert_eq "the stub refuses a field-carrying request that is not an explicit GET" "1" "$rc"
 assert_contains "  ... reporting it the way the real gh does" "HTTP 404" "$out"
 
-out="$(landing_protected_paths_hit acme/widgets 12)"; rc=$?
+out="$(landing_protected_paths_hit '{}' acme/widgets 12)"; rc=$?
 assert_eq "the changed-file read is sent as a GET, so an ordinary listing is readable" "1" "$rc"
+
+# D18 Stage 3 (agent-ops#724): merge_autonomy_protected_paths is per
+# repository, on the same repo-override-else-top-level-else-default
+# precedence merge_autonomy_routine_sources already uses. Nothing above
+# changes without an override, since every call above resolved the default
+# from an empty config.
+override_cfg='{"repos":[{"slug":"acme/widgets","merge_autonomy_protected_paths":["scripts/*"]}],"merge_autonomy_protected_paths":["lib/*"]}'
+files "src/app.py" "lib/x.sh" "scripts/y.sh"
+out="$(landing_protected_paths_hit "$override_cfg" acme/widgets 12)"; rc=$?
+assert_eq "a repo-level protected-paths override wins over the top-level list" "scripts/y.sh" "$out"
+assert_eq "  ... exit 0" "0" "$rc"
+out="$(landing_protected_paths_hit "$override_cfg" acme/gizmos 12)"; rc=$?
+assert_eq "a repo with no override of its own falls through to the top-level list" "lib/x.sh" "$out"
+assert_eq "  ... exit 0" "0" "$rc"
+files "src/app.py"
 
 # --- landing_eligible ---------------------------------------------------------
 
