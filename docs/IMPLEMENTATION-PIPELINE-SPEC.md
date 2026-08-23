@@ -16073,9 +16073,13 @@ pull request, run the ones the change touches and any it could regress.
     it from a CWD within, leaving no artefact behind in that working tree
     (asserted through the instrumented copy, which reports the path it ran
     from: an extraction inside `GIT_DIR` is removed again immediately and so
-    is invisible to every other assertion) — and fails cleanly (no output, no partial write) when the
-    branch-create call, the contents-write call, or the pull-request-create
-    call fails; `techdebt_file_issue` returns an existing issue whose body
+    is invisible to every other assertion) — and fails cleanly (no output,
+    no partial write) when the branch-create call, the contents-write call,
+    or the pull-request-create call fails, each of those three failures
+    additionally deleting `td-record/<id>` and then releasing the `td/<id>`
+    reservation, in that order, rather than leaving either behind for a
+    sweep that looks at neither (TD-PPagop-26082203);
+    `techdebt_file_issue` returns an existing issue whose body
     already quotes the item reference rather than filing a duplicate, and
     fails cleanly when creation fails. A `TOKEN` argument reaches every `gh`
     call for either function; its absence explicitly unsets `GH_TOKEN`
