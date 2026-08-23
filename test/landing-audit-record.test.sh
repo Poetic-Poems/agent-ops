@@ -285,30 +285,51 @@ pr1="https://github.com/Poetic-Poems/agent-ops/pull/901"
 pr2="https://github.com/Poetic-Poems/agent-ops/pull/902"
 pr3="https://github.com/Poetic-Poems/agent-ops/pull/903"
 pr4="https://github.com/Poetic-Poems/agent-ops/pull/904"
+
+# The digest's own `in_window` test (scripts/publish-dashboard.sh) is a
+# rolling 24h against real wall-clock `date -u`, not anything this harness
+# controls — so, unlike Part A, these events cannot use fixed calendar
+# timestamps: a fixed 2026-08-22 date is inside the window the moment this
+# file is written and silently outside it (every row here dropped from
+# `.armed`, not merely mismatched) as soon as real time moves more than 24h
+# past it. Every ts below is instead an offset from the moment this test
+# runs, the same pattern test/publish-dashboard.test.sh's own `now_iso`
+# already uses — so the whole spread stays inside the window no matter when
+# this file is run.
+now_epoch="$(date -u +%s)"
+ts() { date -u -d "@$(( now_epoch + $1 ))" +%Y-%m-%dT%H:%M:%SZ; }
+t_pr1_arm="$(ts -18000)"      # now -5h
+t_pr1_audit="$(ts -17999)"    # now -5h +1s
+t_pr2_arm="$(ts -14400)"      # now -4h
+t_pr3_verdict="$(ts -10860)"  # now -3h -1m
+t_pr3_arm="$(ts -10800)"      # now -3h
+t_pr4_arm_died="$(ts -7200)"  # now -2h
+t_pr4_arm_retry="$(ts -3600)" # now -1h
+t_pr4_audit="$(ts -3599)"     # now -1h +1s
 {
   # pr1 — the real write order `_landing_stage_attempt` produces: `landing-armed`
   # first, `landing-audit-record` one second later (the gh round-trip between
   # the two writes). The digest join must find this record despite it landing
   # in a later second than the arm.
-  printf '{"ts":"2026-08-22T01:00:00Z","cycle":"c1","node":"node-1","event":"landing-armed","pr_url":"%s","repo":"Poetic-Poems/agent-ops","source":"tech-debt","complexity":"medium","method":"enqueued"}\n' "$pr1"
-  printf '{"ts":"2026-08-22T01:00:01Z","cycle":"c1","node":"node-1","event":"landing-audit-record","pr_url":"%s","repo":"Poetic-Poems/agent-ops","number":901,"head_sha":"sha1","source":"tech-debt","complexity":"medium","autonomy":{"level":"agent-merges-routine","source":"top-level-default"},"protected_path":{"verdict":"clear","paths":[]},"approver":{"tier":"complex","model":"claude-sonnet-5","verdict":"approve","adjudication":false,"history":[]},"gates":[],"budget":{"decision":"arm","cap":8,"count":1,"anomaly":false,"waiting_backlog":null},"mechanism":"enqueued"}\n' "$pr1"
+  printf '{"ts":"%s","cycle":"c1","node":"node-1","event":"landing-armed","pr_url":"%s","repo":"Poetic-Poems/agent-ops","source":"tech-debt","complexity":"medium","method":"enqueued"}\n' "$t_pr1_arm" "$pr1"
+  printf '{"ts":"%s","cycle":"c1","node":"node-1","event":"landing-audit-record","pr_url":"%s","repo":"Poetic-Poems/agent-ops","number":901,"head_sha":"sha1","source":"tech-debt","complexity":"medium","autonomy":{"level":"agent-merges-routine","source":"top-level-default"},"protected_path":{"verdict":"clear","paths":[]},"approver":{"tier":"complex","model":"claude-sonnet-5","verdict":"approve","adjudication":false,"history":[]},"gates":[],"budget":{"decision":"arm","cap":8,"count":1,"anomaly":false,"waiting_backlog":null},"mechanism":"enqueued"}\n' "$t_pr1_audit" "$pr1"
   # pr2 — no audit record and no approver-verdict either: genuinely
   # unexplained, tier/verdict stay null and it renders as an anomaly.
-  printf '{"ts":"2026-08-22T02:00:00Z","cycle":"c2","node":"node-1","event":"landing-armed","pr_url":"%s","repo":"Poetic-Poems/agent-ops","source":"register-hygiene","complexity":"low","method":"auto-merge"}\n' "$pr2"
+  printf '{"ts":"%s","cycle":"c2","node":"node-1","event":"landing-armed","pr_url":"%s","repo":"Poetic-Poems/agent-ops","source":"register-hygiene","complexity":"low","method":"auto-merge"}\n' "$t_pr2_arm" "$pr2"
   # pr3 — a pre-8x `landing-armed`: no audit record will ever match it, but an
   # `approver-verdict` from before the arm is on record, so the fallback join
   # should still populate tier/verdict while anomaly stays true.
-  printf '{"ts":"2026-08-22T02:59:00Z","cycle":"c3","node":"node-1","event":"approver-verdict","pr_url":"%s","repo":"Poetic-Poems/agent-ops","tier":"critical","model":"claude-sonnet-5","verdict":"approve","refuse_streak":0,"adjudication":false,"posted":true}\n' "$pr3"
-  printf '{"ts":"2026-08-22T03:00:00Z","cycle":"c3","node":"node-1","event":"landing-armed","pr_url":"%s","repo":"Poetic-Poems/agent-ops","source":"tech-debt","complexity":"low","method":"auto-merge"}\n' "$pr3"
+  printf '{"ts":"%s","cycle":"c3","node":"node-1","event":"approver-verdict","pr_url":"%s","repo":"Poetic-Poems/agent-ops","tier":"critical","model":"claude-sonnet-5","verdict":"approve","refuse_streak":0,"adjudication":false,"posted":true}\n' "$t_pr3_verdict" "$pr3"
+  printf '{"ts":"%s","cycle":"c3","node":"node-1","event":"landing-armed","pr_url":"%s","repo":"Poetic-Poems/agent-ops","source":"tech-debt","complexity":"low","method":"auto-merge"}\n' "$t_pr3_arm" "$pr3"
   # pr4 — the same pull request armed twice: cycle c4 died between the two
   # log_event calls and so left no record at all, and cycle c5 retried it and
   # recorded one properly. On timestamps alone the c4 arm would adopt c5's
   # record — it is the earliest at-or-after c4's own ts — and render
   # anomaly:false, hiding the one landing here that genuinely has no record.
   # The cycle is part of the join key precisely so that it cannot.
-  printf '{"ts":"2026-08-22T04:00:00Z","cycle":"c4","node":"node-1","event":"landing-armed","pr_url":"%s","repo":"Poetic-Poems/agent-ops","source":"tech-debt","complexity":"high","method":"auto-merge"}\n' "$pr4"
-  printf '{"ts":"2026-08-22T05:00:00Z","cycle":"c5","node":"node-1","event":"landing-armed","pr_url":"%s","repo":"Poetic-Poems/agent-ops","source":"tech-debt","complexity":"high","method":"auto-merge","retry":true}\n' "$pr4"
-  printf '{"ts":"2026-08-22T05:00:01Z","cycle":"c5","node":"node-1","event":"landing-audit-record","pr_url":"%s","repo":"Poetic-Poems/agent-ops","number":904,"head_sha":"sha4","source":"tech-debt","complexity":"high","autonomy":{"level":"agent-merges-routine","source":"top-level-default"},"protected_path":{"verdict":"clear","paths":[]},"approver":{"tier":"critical","model":"claude-sonnet-5","verdict":"approve","adjudication":false,"history":[]},"gates":[],"budget":{"decision":"arm","cap":8,"count":2,"anomaly":false,"waiting_backlog":null},"mechanism":"auto-merge","retry":true}\n' "$pr4"
+  printf '{"ts":"%s","cycle":"c4","node":"node-1","event":"landing-armed","pr_url":"%s","repo":"Poetic-Poems/agent-ops","source":"tech-debt","complexity":"high","method":"auto-merge"}\n' "$t_pr4_arm_died" "$pr4"
+  printf '{"ts":"%s","cycle":"c5","node":"node-1","event":"landing-armed","pr_url":"%s","repo":"Poetic-Poems/agent-ops","source":"tech-debt","complexity":"high","method":"auto-merge","retry":true}\n' "$t_pr4_arm_retry" "$pr4"
+  printf '{"ts":"%s","cycle":"c5","node":"node-1","event":"landing-audit-record","pr_url":"%s","repo":"Poetic-Poems/agent-ops","number":904,"head_sha":"sha4","source":"tech-debt","complexity":"high","autonomy":{"level":"agent-merges-routine","source":"top-level-default"},"protected_path":{"verdict":"clear","paths":[]},"approver":{"tier":"critical","model":"claude-sonnet-5","verdict":"approve","adjudication":false,"history":[]},"gates":[],"budget":{"decision":"arm","cap":8,"count":2,"anomaly":false,"waiting_backlog":null},"mechanism":"auto-merge","retry":true}\n' "$t_pr4_audit" "$pr4"
 } > "$home_dir/.local/state/poetic-agents/log.jsonl"
 
 env HOME="$home_dir" "$PUBLISH" --no-github >/dev/null 2>&1
@@ -325,8 +346,8 @@ row1="$(jq -c --arg u "$pr1" '.armed[] | select(.pr_url == $u)' <<<"$landings")"
 row2="$(jq -c --arg u "$pr2" '.armed[] | select(.pr_url == $u)' <<<"$landings")"
 row3="$(jq -c --arg u "$pr3" '.armed[] | select(.pr_url == $u)' <<<"$landings")"
 # pr4 has two arms; take each by its own ts rather than by pr_url alone.
-row4_died="$(jq -c --arg u "$pr4" '.armed[] | select(.pr_url == $u and .ts == "2026-08-22T04:00:00Z")' <<<"$landings")"
-row4_retry="$(jq -c --arg u "$pr4" '.armed[] | select(.pr_url == $u and .ts == "2026-08-22T05:00:00Z")' <<<"$landings")"
+row4_died="$(jq -c --arg u "$pr4" --arg t "$t_pr4_arm_died" '.armed[] | select(.pr_url == $u and .ts == $t)' <<<"$landings")"
+row4_retry="$(jq -c --arg u "$pr4" --arg t "$t_pr4_arm_retry" '.armed[] | select(.pr_url == $u and .ts == $t)' <<<"$landings")"
 
 assert_eq "the landing with a matching audit record written one second after the arm still renders its own tier" \
   '"complex"' "$(jq -c '.tier' <<<"$row1")"
