@@ -195,6 +195,14 @@ _handoff_blocking_reviewers() {
   return 0
 }
 
+
+# agent-ops#672: gate 4's own second veto read, right after
+# `_handoff_blocking_reviewers` above. Stubbed clean throughout — this file's
+# axis is the formal-review half of the veto (issue #577); the reconciliation
+# half is swept directly in test/landing-wiring.test.sh — so every case below
+# reaches this call and passes it exactly as it would with nothing standing.
+reconciliation_gate() { printf '%s' "clean"; return 0; }
+
 landing_protected_path_controls_ok() { printf '%s' "ok"; }
 landing_retry_tier() { printf '%s' "critical"; }
 merge_budget_decide() {

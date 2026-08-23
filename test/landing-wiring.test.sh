@@ -245,6 +245,29 @@ _handoff_blocking_reviewers() {
   return 0
 }
 
+# agent-ops#672: gate 4's own second veto read, right after the formal-review
+# one above. Records its own argv so a test can confirm this call is
+# unbounded (a lone PR_URL, no NOT_AFTER) — unlike the Reviewer's own call to
+# the real function, this stage never flips the pull request out of draft
+# itself, so it must never pass a round-start bound the way
+# `handoff_complete_review` does. `RC_WORD`/`RC_REASON` default to `clean`,
+# so every case in this file that does not opt in stays exactly as it read
+# before this gate existed.
+#
+# `${RC_WORD-clean}`, not `${RC_WORD:-clean}`: an explicitly empty `RC_WORD`
+# has to reach the caller as the empty answer a call that never executed at
+# all leaves behind — the case the gate must not read as a pass — while an
+# unset one still defaults.
+reconciliation_gate() {
+  printf '%s\n' "$*" >>"$T/reconciliation_args"
+  if [[ -n "${RC_REASON:-}" ]]; then
+    printf '%s\t%s' "${RC_WORD-clean}" "$RC_REASON"
+  else
+    printf '%s' "${RC_WORD-clean}"
+  fi
+  [[ "${RC_WORD-clean}" != "dirty" ]]
+}
+
 landing_protected_path_controls_ok() {
   printf '%s\n' "$*" >>"$T/pp_ctl_args"
   printf '%s' "${PP_CTL:-ok}"
@@ -331,7 +354,7 @@ run_case() {
   : >"$tmp_dir/mal_calls"; : >"$tmp_dir/budget_decide_args"; rm -f "$tmp_dir/armed_flag"
   rm -f "$tmp_dir/armed_by_repo_flag"
   : >"$tmp_dir/pp_ctl_args"; : >"$tmp_dir/retry_tier_args"; : >"$tmp_dir/kill_state_calls"
-  : >"$tmp_dir/pp_hit_args"
+  : >"$tmp_dir/pp_hit_args"; : >"$tmp_dir/reconciliation_args"
   rm -rf "${tmp_dir:?}/state"
   env -i PATH="$PATH" HOME="$HOME" \
     T="$tmp_dir" SCRIPT_DIR="$SCRIPT_DIR" PR_URL="$URL" COMPLEXITY="medium" \
@@ -357,6 +380,7 @@ armed_by_repo_flag() { cat "$tmp_dir/armed_by_repo_flag" 2>/dev/null || true; }
 pp_ctl_args() { cat "$tmp_dir/pp_ctl_args" 2>/dev/null || true; }
 retry_tier_args() { cat "$tmp_dir/retry_tier_args" 2>/dev/null || true; }
 kill_state_calls() { cat "$tmp_dir/kill_state_calls" 2>/dev/null || true; }
+reconciliation_args() { cat "$tmp_dir/reconciliation_args" 2>/dev/null || true; }
 
 # --- The happy path: one landing-armed, naming the method --------------------
 
@@ -385,6 +409,14 @@ assert_eq "  ... gate 0's own call site reads an empty landing_armed_by_repo as 
   "0" "$(budget_decide_args | awk '{print $NF}')"
 assert_eq "  ... and grows landing_armed_by_repo[selected_repo] to 1 after arming" \
   "1" "$(armed_by_repo_flag)"
+# agent-ops#672: gate 4's own second veto read is called exactly once per
+# attempt, with the pull request URL alone — never a NOT_AFTER bound, since
+# this stage (unlike the Reviewer's own hand-off call) never flips the pull
+# request out of draft itself.
+assert_eq "  ... and calls reconciliation_gate exactly once, unbounded" \
+  "1" "$(count reconciliation_args)"
+assert_eq "  ... with only the pull request's own URL, no NOT_AFTER" \
+  "$URL" "$(reconciliation_args)"
 
 # --- ... alongside one landing-audit-record (requirement 8x, agent-ops#578) --
 # Deep field-by-field coverage lives in test/landing-audit-record.test.sh;
@@ -606,6 +638,37 @@ rc="$(run_case BLOCKING_RC="1")"
 assert_eq "a reviews list that could not be read prevents arming" "0" "$(count arms)"
 assert_eq "  ... returning 0" "0" "$rc"
 
+# --- Gate 4 (human half, continued): an unreconciled plain comment posted
+# after the pull request was already Ready blocks too (agent-ops#672) --------
+# `_handoff_blocking_reviewers` above only ever sees a formal review, which a
+# human cannot leave on this system's own pull requests at all — their only
+# instrument is an ordinary comment, and this is the read that catches one
+# posted in the window between Ready and this very arming attempt.
+
+rc="$(run_case RC_WORD="dirty" RC_REASON="human comment(s) posted on $URL since it last left draft carry no reconciles line")"
+assert_eq "an unreconciled human comment since Ready prevents arming" "0" "$(count arms)"
+assert_contains "  ... naming the reason reconciliation_gate itself gave" \
+  "carry no reconciles line" "$(refusal)"
+assert_eq "  ... returning 0" "0" "$rc"
+assert_eq "  ... and never marks _landing_stage_attempt_armed" "0" "$(armed_flag)"
+
+rc="$(run_case RC_WORD="unknown" RC_REASON="could not read $URL's comments")"
+assert_eq "an unreadable reconciliation read does not itself block arming" "1" "$(count arms)"
+assert_eq "  ... returning 0" "0" "$rc"
+assert_contains "  ... but logs a warning naming what could not be read" \
+  "could not read $URL's comments" "$(jq -r '.detail' <<<"$(event_of warning)")"
+
+# An answer that is neither word at all — what a call that never executed
+# leaves behind, since the `|| true` guarding it swallows a failure to run
+# exactly as it swallows the exit 1 a `dirty` verdict reports — is read as
+# `unknown`, never as a pass. A veto check that logs and records nothing on
+# the one path where it did not run is the failure this gate exists to
+# prevent.
+rc="$(run_case RC_WORD="")"
+assert_eq "  ... returning 0" "0" "$rc"
+assert_contains "an answer that is no word at all still logs the warning" \
+  "answered nothing at all" "$(jq -r '.detail' <<<"$(event_of warning)")"
+
 # --- Gate 5: the merge budget ------------------------------------------------
 
 for decision in hold refuse; do
@@ -739,6 +802,7 @@ run_case_direct() {
       landing_protected_path_controls_ok() { printf "%s\n" "$*" >>"$T/pp_ctl_args"; printf "%s" "${PP_CTL:-ok}"; }
       landing_retry_tier() { printf "%s\n" "$*" >>"$T/retry_tier_args"; printf "%s" "${RETRY_TIER:-critical}"; }
       _handoff_blocking_reviewers() { return 0; }
+      reconciliation_gate() { printf "%s\n" "$*" >>"$T/reconciliation_args"; printf "%s" "${RC_WORD:-clean}"; [[ "${RC_WORD:-clean}" != "dirty" ]]; }
       merge_budget_decide() {
         printf "%s\n" "$*" >>"$T/budget_decide_args"
         printf "{\"decision\":\"%s\",\"cap\":8,\"count\":8,\"anomaly\":false,\"waiting_backlog\":null}" "$BUDGET"

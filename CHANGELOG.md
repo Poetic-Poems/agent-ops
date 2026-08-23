@@ -540,6 +540,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A human's plain comment now vetoes an autonomous landing however late it
+  arrives, not only if it arrives before the pull request goes Ready
+  (agent-ops#672, part of #402). The landing gate's human-veto check
+  (`_landing_stage_attempt`'s gate 4, `agent-cycle.sh`) read only formal
+  reviews — and a human cannot leave a formal `REQUEST_CHANGES` review on this
+  system's own pull requests at all, since GitHub refuses that review type from
+  a pull request's own author and every pipeline write and human comment here
+  land under the same account, so an ordinary comment is their only instrument.
+  `lib/reconciliation-gate.sh` (agent-ops#533) already closed that gap at the
+  Reviewer's own ready-flip, but it runs once, at hand-off: a comment posted in
+  the window between a pull request going Ready and a later cycle's arming step
+  was seen by neither check, and the pull request could land with it never
+  consulted. Gate 4 now calls `reconciliation_gate` itself, a second time and
+  unbounded — this stage never flips the pull request out of draft, so the raw
+  "last left draft, and stayed left" anchor is the one this read needs. A
+  `dirty` verdict refuses to arm, naming the unreconciled comments as
+  permalinks; anything other than `clean` — an unreadable timeline or comment
+  list, or no answer at all — logs a `warning` and lets the remaining gates
+  decide, and rides in the landing audit record (requirement 8x) as its own
+  `comment-reconciliation` gate, so a landing armed over a question that could
+  not be put is never recorded as one where it came back clear.
+
 - The Refiner's Priority ratchet now writes at all: every `setIssueFieldValue`
   mutation it has ever sent was rejected before reaching the resolver, so no
   issue in any repository has been banded by the pipeline (agent-ops#737).
