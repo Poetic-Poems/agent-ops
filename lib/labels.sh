@@ -117,6 +117,32 @@ labels_catalogue() {
   ' <<<"$defaulted" 2>/dev/null || true
 }
 
+# _labels_create_one GH_BIN REPO NAME COLOUR DESCRIPTION
+# Internal: attempt one create, and on refusal re-list to tell a peer node's
+# race (created moments ago, not a failure) apart from a genuine failure.
+# Prints `created`, `present` or `failed` and returns 0 for the first two.
+# Shared by labels_ensure's batch loop and labels_ensure_one's single-name
+# path so this create-then-recheck logic lives in exactly one place.
+_labels_create_one() {
+  local gh_bin="$1" repo="$2" name="$3" colour="$4" description="$5"
+  if "$gh_bin" api -X POST "repos/$repo/labels" \
+       -f "name=$name" -f "color=$colour" -f "description=$description" \
+       >/dev/null 2>&1; then
+    printf 'created'
+    return 0
+  elif "$gh_bin" api "repos/$repo/labels" --paginate --jq '.[].name' 2>/dev/null \
+       | grep -qixF -- "$name"; then
+    # Another node created it between the listing above and this attempt.
+    # Several nodes run the same cycle against the same repositories, so this
+    # race is ordinary rather than exceptional, and it is not a failure.
+    printf 'present'
+    return 0
+  else
+    printf 'failed'
+    return 1
+  fi
+}
+
 # labels_ensure REPO < CATALOGUE
 # Create, in REPO, every label on stdin that is not there already. Prints one
 # `created<TAB>name` line per label it made and one `failed<TAB>name` per label
@@ -142,22 +168,40 @@ labels_ensure() {
     # case-sensitive comparison here would try to create a duplicate and be
     # refused — reported as a failure that is really a success.
     grep -qixF -- "$name" <<<"$existing" && continue
-    if "$gh_bin" api -X POST "repos/$repo/labels" \
-         -f "name=$name" -f "color=$colour" -f "description=$description" \
-         >/dev/null 2>&1; then
-      printf 'created\t%s\n' "$name"
-    elif "$gh_bin" api "repos/$repo/labels" --paginate --jq '.[].name' 2>/dev/null \
-         | grep -qixF -- "$name"; then
-      # Another node created it between the listing above and this attempt.
-      # Several nodes run the same cycle against the same repositories, so this
-      # race is ordinary rather than exceptional, and it is not a failure.
-      :
-    else
-      printf 'failed\t%s\n' "$name"
-    fi
+    case "$(_labels_create_one "$gh_bin" "$repo" "$name" "$colour" "$description")" in
+      created) printf 'created\t%s\n' "$name" ;;
+      failed)  printf 'failed\t%s\n' "$name" ;;
+    esac
   done
 
   return 0
+}
+
+# labels_ensure_one REPO NAME [COLOUR] [DESCRIPTION]
+# Create NAME in REPO iff it is not already there. Prints `created`, `present`
+# or `failed` — no trailing name, since the caller names exactly one label
+# already — on labels_ensure's own three properties: create-only, never
+# fatal to the caller (a repository this cannot list still returns 1
+# advisory, same as labels_ensure), and race-tolerant.
+#
+# COLOUR/DESCRIPTION default to a neutral grey and no description, for a
+# caller that just wants *a* label to exist. When NAME is a catalogue member,
+# pass its catalogue colour/description (from labels_catalogue) instead, so a
+# label created lazily this way is indistinguishable from one the ordinary
+# eager `labels_ensure_role` path would have created.
+labels_ensure_one() {
+  local repo="$1" name="$2" colour="${3:-ededed}" description="${4:-}" \
+    gh_bin="${LABELS_GH:-gh}"
+  [[ -n "$repo" && -n "$name" ]] || return 1
+
+  local existing
+  existing="$("$gh_bin" api "repos/$repo/labels" --paginate --jq '.[].name' 2>/dev/null)" \
+    || { printf 'failed'; return 1; }
+  if grep -qixF -- "$name" <<<"$existing"; then
+    printf 'present'
+    return 0
+  fi
+  _labels_create_one "$gh_bin" "$repo" "$name" "$colour" "$description"
 }
 
 # labels_ensure_role CONFIG_FILE SCHEMA_FILE REPO ROLE [REVIEW_PR_LABEL]

@@ -79,6 +79,14 @@ if [[ "$1" == "api" && "$2" == "-X" && "$3" == "POST" ]]; then
 fi
 if [[ "$1" == "api" && "$2" == repos/*/labels ]]; then
   [[ -n "${GH_LIST_FAILS:-}" ]] && { echo "gh: HTTP 404" >&2; exit 1; }
+  # A one-shot empty listing, for simulating a peer node's create landing
+  # between our own listing and our own create attempt: the first listing
+  # this stub serves comes back empty regardless of $GH_LABELS, and every
+  # listing after that serves the file as normal.
+  if [[ -n "${GH_LIST_EMPTY_ONCE:-}" && ! -f "$GH_LIST_EMPTY_ONCE.used" ]]; then
+    touch "$GH_LIST_EMPTY_ONCE.used"
+    exit 0
+  fi
   cat "$GH_LABELS"
   exit 0
 fi
@@ -91,8 +99,9 @@ export LABELS_GH="$tmp/gh"
 reset_stub() {
   : > "$tmp/labels"
   : > "$tmp/log"
+  rm -f "$tmp/list-empty-once.used"
   export GH_LABELS="$tmp/labels" GH_LOG="$tmp/log"
-  unset GH_REFUSE_CREATE GH_LIST_FAILS
+  unset GH_REFUSE_CREATE GH_LIST_FAILS GH_LIST_EMPTY_ONCE
   [[ $# -eq 0 ]] || printf '%s\n' "$@" > "$tmp/labels"
 }
 
@@ -211,6 +220,56 @@ assert_eq "a guarded call survives a total failure under set -e" \
 reset_stub
 assert_eq "an empty repository slug is refused rather than guessed at" "1" \
   "$(labels_ensure "" </dev/null >/dev/null 2>&1; echo $?)"
+
+# --- labels_ensure_one: the single-name path Part 1 mints its self-heal from ---
+reset_stub
+out="$(labels_ensure_one "Owner/repo" needs-refinement fbca04 "a description")"
+rc=$?
+assert_eq "an absent catalogue label is created with the caller's colour/description" \
+  "created" "$out"
+assert_eq "  ... through exactly one create" "1" "$(grep -c '^api -X POST' "$tmp/log")"
+assert_eq "  ... with that colour and description" \
+  "api -X POST repos/Owner/repo/labels -f name=needs-refinement -f color=fbca04 -f description=a description" \
+  "$(grep '^api -X POST' "$tmp/log")"
+assert_eq "  ... and reports success" "0" "$rc"
+
+reset_stub needs-refinement
+out="$(labels_ensure_one "Owner/repo" needs-refinement)"
+assert_eq "a label that already exists is reported present without a POST" "present" "$out"
+assert_eq "  ... no create is issued" "0" "$(grep -c '^api -X POST' "$tmp/log")"
+
+reset_stub Needs-Refinement
+out="$(labels_ensure_one "Owner/repo" needs-refinement)"
+assert_eq "a differently-cased existing label is present too" "present" "$out"
+assert_eq "  ... no create is issued" "0" "$(grep -c '^api -X POST' "$tmp/log")"
+
+reset_stub
+out="$(labels_ensure_one "Owner/repo" needs-refinement)"
+assert_eq "with no colour/description given, it still creates (a neutral default)" \
+  "created" "$out"
+
+reset_stub needs-refinement
+export GH_LIST_EMPTY_ONCE="$tmp/list-empty-once"
+out="$(labels_ensure_one "Owner/repo" needs-refinement)"
+rc=$?
+assert_eq "a POST refused because a peer node just created it is present, not failed" \
+  "present" "$out"
+assert_eq "  ... reported as a success" "0" "$rc"
+unset GH_LIST_EMPTY_ONCE
+
+reset_stub
+export GH_LIST_FAILS=1
+out="$(labels_ensure_one "Owner/repo" needs-refinement)"
+rc=$?
+assert_eq "a repository whose labels cannot be listed reports failed" "failed" "$out"
+assert_eq "  ... and returns 1" "1" "$rc"
+unset GH_LIST_FAILS
+
+reset_stub
+assert_eq "an empty repository slug is refused rather than guessed at" "1" \
+  "$(labels_ensure_one "" needs-refinement >/dev/null 2>&1; echo $?)"
+assert_eq "an empty name is refused rather than guessed at" "1" \
+  "$(labels_ensure_one "Owner/repo" "" >/dev/null 2>&1; echo $?)"
 
 echo
 if (( failures == 0 )); then
