@@ -8789,11 +8789,12 @@ implements.
         register ids (a `TD<date><nn>`/`TD-<scope>-<date><nn>` shape) by a
         further `scripts/gather-register-status.sh` call per repo, alongside
         the one requirement 34i already makes for that repo's blocked ones;
-      - **liveness**, for the five shapes the cycle already gathers as
+      - **liveness**, for the six shapes the cycle already gathers as
         structured data each cycle (TD-PPagop-26081303, extended by
-        TD-PPagop-26081409): a
+        TD-PPagop-26081409 and agent-ops#646): a
         `dependabot-alert-<n>`/`code-scanning-alert-<n>`, a
-        `register-hygiene-<hash>`, either merge-conflicts shape
+        `register-hygiene-<hash>`, a `human-visibility-<hash>`, either
+        merge-conflicts shape
         (`pr-<n>-conflict-<head-sha>`, which 34k deliberately excludes from its
         own close, and `pr-<n>-superseded-<head-sha>`, which it closes — both
         come from the same gather, so the same absent-from-it test decides
@@ -8805,21 +8806,22 @@ implements.
         cycle's own gather for its source, decided only when that source's
         gather succeeded this cycle, and (b) nothing else — liveness is not
         itself the age test, which the second half of this rule still
-        applies uniformly. Age-only retirement for these five shapes was
+        applies uniformly. Age-only retirement for these six shapes was
         considered and rejected: a void whose id is *still being gathered* —
         a still-open alert, a register-hygiene finding the register still
         has, a workflow still failing, a PR still conflicted or dequeued — is doing live
         suppression work every cycle, and retiring it on age alone would
         re-expose the item to be rediscovered void all over again, the exact
         rediscovery churn requirement 34k exists to stop. "This cycle's own
-        gather" is, for the first four, the same array the Co-Ordinator's
+        gather" is, for the first five, the same array the Co-Ordinator's
         runtime input already carries for that repo — read from the tee
         files `gather_findings`/`gather_register_hygiene`/
-        `gather_merge_conflicts`/`gather_dequeued` already write during the
+        `gather_merge_conflicts`/`gather_dequeued`/
+        `gather_human_visibility_hygiene` already write during the
         repo walk, before
         claim exclusion narrows them (a claimed alert is still an open one),
         so this costs no further `gh` call; "that source's gather succeeded"
-        is a `.ok` marker each of those four functions writes *only*
+        is a `.ok` marker each of those five functions writes *only*
         alongside its tee file — never on its own, since a marker with no
         array beside it reads downstream as "gathered, found nothing", the
         one sentence it exists to stop the cycle saying — and only when that
@@ -8846,6 +8848,30 @@ implements.
         this class; it needs nothing beyond the ordinary liveness rule, since
         `scripts/gather-merge-conflicts.sh` re-gathers the source every cycle
         and stops yielding the id the moment the conflict resolves.
+
+        The `human-visibility-<hash>` shape (agent-ops#646) joins on the same
+        rule and needs one thing none of the others do. Its ref is a digest
+        of the surviving violations' own `pr_url|detail` pairs, so — like
+        `register-hygiene-<hash>`, and unlike every `pr-<n>-…` shape — a
+        violation set that merely *changes* mints a different ref rather than
+        dropping this one, and the void of the superseded ref is dead weight
+        from that moment on; the absent-from-this-cycle's-gather test is
+        exactly right for it. What differs is the walk. The human-visibility
+        band is built only for repos the union-log reduction found a live
+        violation for, so a repo whose violations have all cleared — the
+        precise state in which its void residue *should* retire — was walked
+        by nobody, left no `.ok` marker, and was read as ungathered for ever.
+        So the walk additionally covers any repo carrying unretired void
+        residue of this shape, bounded the same way requirement 34n's own
+        `failed-run` fetch is (usually no repos at all) and free where it
+        applies: with no violations handed to it,
+        `scripts/gather-human-visibility-hygiene.sh` re-verifies nothing,
+        makes no `gh` call, and prints the `[]` that is the definite answer
+        the rule was missing. Its marker condition is that printed array
+        itself — every failure path in that script leaves stdout empty or
+        unparseable — and an unreadable reduction walks no repo at all, since
+        `[]` handed to the gatherer on evidence we never read would be the
+        one way a marker could assert an emptiness nothing established.
         `failed-run-<…>` is the one shape not read straight off a tee file:
         `scripts/gather-source-state.sh`'s own `workflows` digest names each
         still-failing workflow by id, not by the basename the item id is
@@ -8880,9 +8906,14 @@ implements.
         shapes whose id *form* names the source that mints them: a bare issue
         number or a `pr-<n>-…` shaped neither `-conflict-` nor `-superseded-`
         is offered by several sources
-        (`issues:<band>`, `review-feedback`, `abandoned-drafts`,
-        `human-visibility`), so no inverse exists and no verdict can be read
+        (`issues:<band>`, `review-feedback`, `abandoned-drafts`), so no
+        inverse exists and no verdict can be read
         off the id — those keep the closed-object signal they already had.
+        `human-visibility` was listed among them until agent-ops#646 and is
+        not one: it mints exactly one id shape, its own
+        `human-visibility-<hash>` ref, so the inverse is as well defined for
+        it as for the other mapped shapes and it carries a `source-dropped`
+        verdict like them.
 
         This is **not** a weakening of requirement 34i's "unknown is not
         gone". That rule is about a *failed read*, which is indistinguishable
@@ -14600,9 +14631,9 @@ pull request, run the ones the change touches and any it could regress.
    retires, once its source stops yielding it (requirement 34n's liveness
    rule, TD-PPagop-26081303).** `test/cycle-state.test.sh`'s
    `void_liveness_actioned` section passes, against `lib/void-liveness.sh`:
-   for each of the five structured-gather shapes (an alert ref, a
+   for each of the six structured-gather shapes (an alert ref, a
    register-hygiene ref, a `failed-run-` ref, a merge-conflict ref, a
-   `pr-<n>-dequeued-<head-sha>` ref), an id
+   `pr-<n>-dequeued-<head-sha>` ref, a `human-visibility-<hash>` ref), an id
    still present in GATHER_JSON's `ids` for its repo+shape is never actioned,
    however old; an id absent from a `{ok: true}` gather is actioned, tagged
    `liveness-<shape>`; an id absent from a `{ok: false}` gather, or from a
@@ -14610,7 +14641,7 @@ pull request, run the ones the change touches and any it could regress.
    same "unknown is not gone" rule requirement 34i's own clearances observe;
    a same-numbered id in a different, unlisted repo is untouched; a
    repo-less (hand-appended) void matches no shape's repo lookup; an id
-   shaped like none of the four is ignored; and malformed `VOID_JSON` or
+   shaped like none of the six is ignored; and malformed `VOID_JSON` or
    `GATHER_JSON` fails safe to `[]`. The `void_review_plan_actioned` section
    passes the same way for the two on-demand-reader shapes: a project-review
    ref is actioned only once a status map reports `"merged"`, an

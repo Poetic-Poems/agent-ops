@@ -459,11 +459,13 @@ assert_eq "round-trip: a fresh verdict after the retirement re-enters the extrac
 # --- void_liveness_actioned (requirement 34n's liveness rule, --------------
 # --- TD-PPagop-26081303) ----------------------------------------------------
 #
-# The five shapes the cycle already gathers as structured data each cycle:
+# The six shapes the cycle already gathers as structured data each cycle:
 # an alert ref, a register-hygiene ref, a failed-run ref, a merge-conflict
 # ref (the addendum's `pr-<n>-conflict-<head-sha>` — "merge-conflict-
-# resolved" below) and a dequeued ref (TD-PPagop-26081409's own
-# `pr-<n>-dequeued-<head-sha>`). Each is tested for both halves of the rule: liveness (an
+# resolved" below), a dequeued ref (TD-PPagop-26081409's own
+# `pr-<n>-dequeued-<head-sha>`) and a human-visibility ref (agent-ops#646's
+# own `human-visibility-<hash>`).
+# Each is tested for both halves of the rule: liveness (an
 # id still present in this cycle's own gather is never actioned, however old)
 # and the gather's own success (an id absent from a gather that did not
 # succeed decides nothing either).
@@ -481,6 +483,8 @@ void_shapes='[
   {"repo":"o/r","item":"pr-15-superseded-abcdef123456","ts":"2026-07-01T00:00:00Z"},
   {"repo":"o/r","item":"pr-16-dequeued-fedcba098765","ts":"2026-07-01T00:00:00Z"},
   {"repo":"o/r","item":"pr-17-dequeued-0011223344ff","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/r","item":"human-visibility-cccccccccccc","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/r","item":"human-visibility-dddddddddddd","ts":"2026-07-01T00:00:00Z"},
   {"repo":"o/other","item":"dependabot-alert-1","ts":"2026-07-01T00:00:00Z"},
   {"item":"dependabot-alert-1","ts":"2026-07-01T00:00:00Z"}
 ]'
@@ -490,7 +494,8 @@ gather_map='{
     "register-hygiene": {"ok": true, "ids": ["register-hygiene-aaaaaaaaaaaa"]},
     "failed-run": {"ok": false, "ids": []},
     "merge-conflict": {"ok": true, "ids": ["pr-12-conflict-1a2b3c4d5e6f", "pr-14-superseded-1234567890ab"]},
-    "dequeued": {"ok": true, "ids": ["pr-16-dequeued-fedcba098765"]}
+    "dequeued": {"ok": true, "ids": ["pr-16-dequeued-fedcba098765"]},
+    "human-visibility": {"ok": true, "ids": ["human-visibility-cccccccccccc"]}
   }
 }'
 liveness_out="$(void_liveness_actioned "$void_shapes" "$gather_map")"
@@ -545,6 +550,20 @@ assert_eq "dequeued: a dequeue still reported by this cycle's gather is kept" \
 assert_eq "dequeued: a dequeue no longer reported (fixed, or re-queued) is actioned" \
   "liveness-dequeued" \
   "$(jq -r '.[] | select(.item == "pr-17-dequeued-0011223344ff") | .by' <<<"$liveness_out")"
+# The `human-visibility` shape (agent-ops#646): identical liveness rule, its
+# own gather key. Its ref is a digest of the violation set, so "no longer
+# yielded" covers a set that changed as well as one that emptied — either way
+# the old ref is never offered again.
+assert_eq "human-visibility: a ref this cycle's gather still yields is kept" \
+  "0" "$(jq '[.[] | select(.item == "human-visibility-cccccccccccc")] | length' <<<"$liveness_out")"
+assert_eq "human-visibility: a ref no longer yielded (set cleared, or changed) is actioned" \
+  "liveness-human-visibility" \
+  "$(jq -r '.[] | select(.item == "human-visibility-dddddddddddd") | .by' <<<"$liveness_out")"
+assert_eq "human-visibility: absent from a gather that did not succeed decides nothing" \
+  "0" "$(void_liveness_actioned "$void_shapes" '{
+    "o/r": {"human-visibility": {"ok": false, "ids": []}}
+  }' | jq '[.[] | select(.item == "human-visibility-dddddddddddd")] | length')"
+
 assert_eq "a same-id void in a different repo, absent from GATHER_JSON, decides nothing" \
   "0" "$(jq '[.[] | select(.repo == "o/other")] | length' <<<"$liveness_out")"
 assert_eq "a repo-less (hand-appended) void matches no shape's repo lookup" \
@@ -634,6 +653,7 @@ cfg_void='[
   {"repo":"o/kept","item":"register-hygiene-aaaaaaaaaaaa","ts":"2026-07-01T00:00:00Z"},
   {"repo":"o/kept","item":"pr-13-conflict-9f8e7d6c5b4a","ts":"2026-07-01T00:00:00Z"},
   {"repo":"o/kept","item":"pr-16-dequeued-fedcba098765","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/kept","item":"human-visibility-cccccccccccc","ts":"2026-07-01T00:00:00Z"},
   {"repo":"o/kept","item":"failed-run-ci","ts":"2026-07-01T00:00:00Z"},
   {"repo":"o/kept","item":"review-2026-07-11-R-02","ts":"2026-07-01T00:00:00Z"},
   {"repo":"o/kept","item":"TD-PPagop-26081303","ts":"2026-07-01T00:00:00Z"},
@@ -649,9 +669,12 @@ cfg_all='[{"slug":"o/kept","sources":["security","code-quality","register-hygien
 assert_eq "a repo still listing every mapped source actions nothing" \
   "0" "$(void_config_actioned "$cfg_void" "$cfg_all" | jq '[.[] | select(.repo == "o/kept")] | length')"
 
-# The same repo with every mapped source dropped, `issues:high` and the three
-# unmapped finishing sources left behind.
-cfg_stripped='[{"slug":"o/kept","sources":["issues:high","review-feedback","abandoned-drafts","human-visibility"]}]'
+# The same repo with every mapped source dropped, `issues:high` and the two
+# unmapped finishing sources left behind. `human-visibility` moved out of this
+# list when it became mapped (agent-ops#646): it mints exactly one id shape of
+# its own, so it belongs with the dropped sources being asserted on below
+# rather than among the ones no verdict can be read off.
+cfg_stripped='[{"slug":"o/kept","sources":["issues:high","review-feedback","abandoned-drafts"]}]'
 cfg_out="$(void_config_actioned "$cfg_void" "$cfg_stripped")"
 # Scoped to o/kept: the same fixture's o/gone entries are repo-dropped, which
 # is the next block's subject and would otherwise answer these assertions.
@@ -667,6 +690,8 @@ assert_eq "merge-conflict: source gone is source-dropped" \
   "source-dropped" "$(by_item "$cfg_out" pr-13-conflict-9f8e7d6c5b4a)"
 assert_eq "dequeued: source gone is source-dropped" \
   "source-dropped" "$(by_item "$cfg_out" pr-16-dequeued-fedcba098765)"
+assert_eq "human-visibility: source gone is source-dropped" \
+  "source-dropped" "$(by_item "$cfg_out" human-visibility-cccccccccccc)"
 assert_eq "failed-run: source gone is source-dropped" \
   "source-dropped" "$(by_item "$cfg_out" failed-run-ci)"
 assert_eq "project-review: source gone is source-dropped" \
@@ -677,7 +702,7 @@ assert_eq "implementation-plan: source gone is source-dropped" \
   "source-dropped" "$(by_item "$cfg_out" W10-breach-handling)"
 assert_eq "a bare issue number names no single source, so it is never source-dropped" \
   "0" "$(jq '[.[] | select(.item == "42")] | length' <<<"$cfg_out")"
-assert_eq "  ... nor is a non-conflict pr-<n>- shape, offered by three sources" \
+assert_eq "  ... nor is a non-conflict pr-<n>- shape, offered by two sources" \
   "0" "$(jq '[.[] | select(.item == "pr-7-stale")] | length' <<<"$cfg_out")"
 assert_eq "a repo-less (hand-appended) void is left for a human" \
   "0" "$(jq '[.[] | select(has("repo") | not)] | length' <<<"$cfg_out")"

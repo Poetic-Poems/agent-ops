@@ -2595,6 +2595,16 @@ gather_human_visibility_hygiene() {
         2>"$cycle_dir/human-visibility-hygiene-$safe.err" || true)"
   if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
     printf '%s\n' "$out" > "$cycle_dir/human-visibility-hygiene-$safe.json"
+    # The `.ok` marker requirement 34n's liveness rule reads back
+    # (agent-ops#646), written on exactly the condition the four shapes beside
+    # it use: this cycle produced a definite answer for this repo. The
+    # gatherer prints a valid array only when it completed — every failure
+    # path leaves stdout empty or unparseable and lands in the `else` below —
+    # and an empty array from a completed run is a real "no ref survives",
+    # not an unknown. Without the marker, `void_liveness_actioned` reads the
+    # repo as ungathered and decides nothing, which is the safe direction and
+    # what this whole file's `ok` convention exists to express.
+    : > "$cycle_dir/human-visibility-hygiene-$safe.ok"
     printf '%s' "$out"
   else
     printf '[]'
@@ -7786,25 +7796,52 @@ done < <(jq -r 'keys[]' <<<"$void_register_ids_json" 2>/dev/null || true)
 # violation for at all — everywhere else costs nothing beyond the one
 # reduction over `union_log` below, already read once each for `blocked_json`
 # and `void_json` above.
+#
+# ...with one addition (agent-ops#646): a repo carrying *unretired
+# `human-visibility-<hash>` void residue* is walked too, even with no live
+# violation of its own. That is the only case in which the walk's own "found a
+# violation for it" test and requirement 34n's liveness rule want opposite
+# answers — the rule needs a definite "this repo yields no such ref this
+# cycle", and a repo the walk skipped leaves no `.ok` marker to say so, which
+# `void_liveness_actioned` reads as ungathered and declines to decide on
+# forever. It is exactly the bound the `failed-run` shape's own extra fetch
+# takes further down, and it is free: with no violations to re-verify,
+# scripts/gather-human-visibility-hygiene.sh makes no `gh` call at all and
+# prints `[]` on the empty input, which is the definite answer the rule was
+# missing. `hv_finding_n` of `0` then skips the assignment below, so a repo
+# added by this clause contributes a marker and nothing else — it can never
+# manufacture a candidate.
 human_visibility_json="$(human_visibility_violations "$union_log")"
+# The reduction's own validity gate, and the reason it is a gate rather than a
+# fallback to `[]`: a malformed reduction is not "no violations", it is "no
+# answer", and handing `[]` to the gatherer for a repo whose violations we
+# failed to read would mint an `.ok` marker over an emptiness we never
+# established — the one way the marker could lie. So an unreadable reduction
+# walks nothing at all, exactly as it did before agent-ops#646 widened the
+# walk, and every human-visibility void simply stays undecided for a cycle.
 human_visibility_n="$(jq 'length' <<<"$human_visibility_json" 2>&1)" \
-  || { guard_warn "human_visibility_n" "$human_visibility_n"; human_visibility_n=0; }
-if [[ "$human_visibility_n" != "0" ]]; then
-  while IFS= read -r hv_slug; do
-    [[ -n "$hv_slug" ]] || continue
-    jq -e --arg r "$hv_slug" \
-      'any(.[]; .slug == $r and ((.sources // []) | any(.[]; . == "human-visibility")))' \
-      <<<"$ordered_repos_json" >/dev/null 2>&1 || continue
-    hv_candidates_json="$(jq -c --arg r "$hv_slug" '[.[] | select(.repo == $r)]' <<<"$human_visibility_json")"
-    hv_finding_json="$(gather_human_visibility_hygiene "$hv_slug" "$hv_candidates_json")"
-    hv_finding_n="$(jq 'length' <<<"$hv_finding_json" 2>&1)" \
-      || { guard_warn "hv_finding_n" "$hv_finding_n"; hv_finding_n=0; }
-    [[ "$hv_finding_n" != "0" ]] || continue
-    ordered_repos_json="$(jq -c --arg r "$hv_slug" --argjson hv "$hv_finding_json" \
-      'map(if .slug == $r then .human_visibility = $hv else . end)' \
-      <<<"$ordered_repos_json" 2>/dev/null || printf '%s' "$ordered_repos_json")" # TD-PPagop-26081407: passes test 2 -- falls back to the unchanged prior aggregate, not a fabricated empty
-  done < <(jq -r '[.[].repo] | unique[]' <<<"$human_visibility_json" 2>/dev/null || true)
-fi
+  || { guard_warn "human_visibility_n" "$human_visibility_n"; human_visibility_n=""; }
+hv_void_repos_json="$(jq -c --arg re "$VOID_LIVENESS_HUMAN_VISIBILITY_RE" '
+  [ .[] | select((.repo // "") != "" and ((.item // "") | test($re))) | .repo ] | unique' \
+  <<<"$void_json" 2>&1)" \
+  || { guard_warn "hv_void_repos_json" "$hv_void_repos_json"; hv_void_repos_json='[]'; }
+[[ -n "$human_visibility_n" ]] || hv_void_repos_json='[]'
+while IFS= read -r hv_slug; do
+  [[ -n "$hv_slug" ]] || continue
+  jq -e --arg r "$hv_slug" \
+    'any(.[]; .slug == $r and ((.sources // []) | any(.[]; . == "human-visibility")))' \
+    <<<"$ordered_repos_json" >/dev/null 2>&1 || continue
+  hv_candidates_json="$(jq -c --arg r "$hv_slug" '[.[] | select(.repo == $r)]' <<<"$human_visibility_json")"
+  hv_finding_json="$(gather_human_visibility_hygiene "$hv_slug" "$hv_candidates_json")"
+  hv_finding_n="$(jq 'length' <<<"$hv_finding_json" 2>&1)" \
+    || { guard_warn "hv_finding_n" "$hv_finding_n"; hv_finding_n=0; }
+  [[ "$hv_finding_n" != "0" ]] || continue
+  ordered_repos_json="$(jq -c --arg r "$hv_slug" --argjson hv "$hv_finding_json" \
+    'map(if .slug == $r then .human_visibility = $hv else . end)' \
+    <<<"$ordered_repos_json" 2>/dev/null || printf '%s' "$ordered_repos_json")" # TD-PPagop-26081407: passes test 2 -- falls back to the unchanged prior aggregate, not a fabricated empty
+done < <(jq -rn --argjson v "$hv_void_repos_json" \
+         'input as $hv | (($hv | map(.repo)) + $v) | unique[]' \
+         <<<"$human_visibility_json" 2>/dev/null || true)
 
 # Requirement 34n: retire every void entry that is both fully actioned and
 # old enough out of `void_json` before anything else reads it — from here on
@@ -7845,7 +7882,7 @@ fi
 #     register ids, alongside the one 34i already makes for that repo's
 #     blocked ones — the recorded subtraction above is what keeps that
 #     residue, and so this read, bounded;
-#   - liveness, for the five shapes the cycle already gathers as structured
+#   - liveness, for the six shapes the cycle already gathers as structured
 #     data each cycle (TD-PPagop-26081303, extended by TD-PPagop-26081409):
 #     a `dependabot-alert-<n>`/
 #     `code-scanning-alert-<n>`, a `register-hygiene-<hash>`, either
@@ -7879,7 +7916,7 @@ fi
 #     `ordered_repos_json`'s own `sources` are rewritten by back-pressure
 #     (step 2.2a, further down) to the four finishing sources.
 #
-# Age-only retirement for the five liveness shapes was considered and
+# Age-only retirement for the six liveness shapes was considered and
 # rejected: a void whose id is *still being gathered* — a still-open alert, a
 # register-hygiene finding the register still has, a workflow still failing, a
 # PR still conflicted — is doing live suppression work every cycle, and
@@ -7955,13 +7992,15 @@ if (( void_retire_after_days > 0 )); then
   done < <(jq -r 'to_entries[] | .key + "\t" + (.value | join(" "))' \
            <<<"$(work_gone_plan_ids "$void_json")" 2>/dev/null || true)
 
-  # The five liveness shapes (TD-PPagop-26081303, extended by TD-PPagop-26081409
-  # for `dequeued`): per repo, whatever
-  # gather_findings/gather_register_hygiene/gather_merge_conflicts/gather_dequeued
+  # The six liveness shapes (TD-PPagop-26081303, extended by TD-PPagop-26081409
+  # for `dequeued` and by agent-ops#646 for `human-visibility`): per repo,
+  # whatever gather_findings/gather_register_hygiene/gather_merge_conflicts/
+  # gather_dequeued/gather_human_visibility_hygiene
   # already wrote to the cycle dir during the repo loop — the `.ok` marker
   # (this cycle's own read of that source succeeded) and the ids it currently
   # yields — read straight off those tee files, so alert/register-hygiene/
-  # merge-conflict/dequeued liveness costs no further `gh` call at all.
+  # merge-conflict/dequeued/human-visibility liveness costs no further `gh`
+  # call at all.
   # `failed-run` is the one exception: gather-source-state.sh's own `workflows`
   # digest names
   # each still-failing workflow by id, not by the basename the item id is
@@ -8009,6 +8048,18 @@ if (( void_retire_after_days > 0 )); then
       vl_dq_ids="$(jq -c '[.[].ref]' "$cycle_dir/dequeued-$vl_safe.json" 2>/dev/null || echo '[]')"
     fi
 
+    # The human-visibility gather's own tee (agent-ops#646). Its array is the
+    # candidate objects, so the ids come from `.ref` exactly as the four
+    # shapes above take theirs; the walk that writes it is widened, further
+    # up, to cover a repo carrying this shape's void residue but no live
+    # violation, which is the case that otherwise never produces a marker.
+    vl_hv_ok=false; vl_hv_ids='[]'
+    if [[ -f "$cycle_dir/human-visibility-hygiene-$vl_safe.ok" ]]; then
+      vl_hv_ok=true
+      vl_hv_ids="$(jq -c '[.[].ref]' "$cycle_dir/human-visibility-hygiene-$vl_safe.json" 2>&1)" \
+        || { guard_warn "void-liveness:vl_hv_ids:$vl_safe" "$vl_hv_ids"; vl_hv_ids='[]'; }
+    fi
+
     vl_fr_ok=false; vl_fr_ids='[]'
     if jq -e --arg r "$vl_slug" 'index($r) != null' <<<"$void_failed_run_repos_json" >/dev/null 2>&1; then
       vl_basenames_json="$(gather_workflow_basenames "$vl_slug")"
@@ -8033,11 +8084,13 @@ if (( void_retire_after_days > 0 )); then
       --argjson rh_ok "$vl_rh_ok" --argjson rh_ids "$vl_rh_ids" \
       --argjson mc_ok "$vl_mc_ok" --argjson mc_ids "$vl_mc_ids" \
       --argjson dq_ok "$vl_dq_ok" --argjson dq_ids "$vl_dq_ids" \
+      --argjson hv_ok "$vl_hv_ok" --argjson hv_ids "$vl_hv_ids" \
       --argjson fr_ok "$vl_fr_ok" --argjson fr_ids "$vl_fr_ids" \
       '. + {($s): {alert: {ok: $alert_ok, ids: $alert_ids},
                    "register-hygiene": {ok: $rh_ok, ids: $rh_ids},
                    "merge-conflict": {ok: $mc_ok, ids: $mc_ids},
                    "dequeued": {ok: $dq_ok, ids: $dq_ids},
+                   "human-visibility": {ok: $hv_ok, ids: $hv_ids},
                    "failed-run": {ok: $fr_ok, ids: $fr_ids}}}' \
       <<<"$void_liveness_gather_json" 2>/dev/null || printf '%s' "$void_liveness_gather_json")" # TD-PPagop-26081407: passes test 2 -- falls back to the unchanged prior aggregate, not a fabricated empty
   done < <(jq -r '.[].slug' <<<"$ordered_repos_json" 2>/dev/null || true)
