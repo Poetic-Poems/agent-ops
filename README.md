@@ -129,7 +129,7 @@ every *other* kind of work the pipeline could pick instead:
 |---|---|
 | `Urgent` | **Second overall, across both repos** — ahead of everything except security work, including ahead of your review feedback and of finishing a stalled PR. |
 | `High` | After a red default branch, but ahead of `TECH-DEBT.md`. |
-| `Medium` | After `TECH-DEBT.md`, ahead of the implementation plan and the weekly review's recommendations. |
+| `Medium` | After `TECH-DEBT.md`, ahead of the implementation plan and the repository review's recommendations. |
 | `Low` | After the review recommendations, ahead of only the automated code-quality findings. |
 
 **An issue with no `Priority` set counts as `Medium`**, which is exactly where
@@ -255,8 +255,8 @@ the fleet to carry an existing PR the rest of the way.
 Two things to know:
 
 - **It only applies to `agent/` and `td/` branches** — the ones the system is
-  allowed to push to. `/td` raises its PRs on `td/<id>` and the hourly cycle on
-  `agent/<item>`, so both qualify; labelling a PR on any other branch (e.g.
+  allowed to push to. `/td` raises its PRs on `td/<id>` and the implementation
+  cycle on `agent/<item>`, so both qualify; labelling a PR on any other branch (e.g.
   `feature/…`) does nothing, because the human gate reserves those and the
   gatherers skip them even when labelled.
 - **Labelling grants write access.** A labelled PR is one the fleet may push to —
@@ -384,7 +384,7 @@ Keys:
 | `state_dir` | `~/.local/state/poetic-agents` | Lock, shared log, stage transcripts. |
 | `workspace_root` | `~/.cache/poetic-agents/workspaces` | Ephemeral clones. Each cycle gets its own subdirectory, and the state repository keeps its mirror here. |
 | `state_repo` | `Poetic-Poems/agent-ops-state` | Private repository through which `state_dir` replicates between nodes. See [Keeping every node warm](#keeping-every-node-warm). Leave it out and nothing syncs — a single-node install behaves exactly as before. |
-| `cycles_retained` | `200` | Cycle directories kept in the replicated copy (~8 days of hourly cycles). Your own `state_dir` is not pruned. |
+| `cycles_retained` | `200` | Cycle directories kept in the replicated copy — bounds disk use at whatever cadence `schedule.cycle_interval_minutes` sets (about eight days' worth at the historical hourly default). Your own `state_dir` is not pruned. |
 | `state_local_cycles_retained` | `1000` | Cycle and review directories the node's own `state_dir` keeps; the same push that replicates prunes to it. Deliberately far above `cycles_retained`, so the local machine is always the longer record. |
 | `state_local_streams_retained` | `50` | Cycle and review directories whose stage event streams (`<stage>.stream.jsonl`) are kept. Streams are large and local-only — never replicated — so they are bounded well below `state_local_cycles_retained`; the records themselves are untouched. |
 | `log_retained_bytes` | `2000000` | Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `doctor.log`, `revert-rate.log`, `cron.log` and `review-cron.log`. `log.jsonl`, `review-log.jsonl` and `revert-rate.jsonl` are never rotated. |
@@ -477,7 +477,7 @@ because Anthropic is the only executable provider today. A qualifier naming
 any other provider is rejected at cycle start with an error naming the key,
 not passed to the `claude` CLI. No existing config needs to change.
 
-The `project_review` object configures the separate weekly project-review pipeline — see [Weekly project review](#weekly-project-review).
+The `project_review` object configures the separate repository-review pipeline — see [Repository review](#repository-review).
 
 <!-- config-table:notes id=main — GENERATED from config.schema.json by scripts/render-config-table.sh; edit the schema, not this section -->
 
@@ -492,7 +492,7 @@ Array of `{"slug": "...", "sources": [...]}`. `sources` is that repo's work sour
 - `dequeued` (agent PRs GitHub's merge queue removed over a merge-group checks failure without merging) comes fifth, alongside `merge-conflicts`: a real defect in the pull request itself, of the same "finishing beats starting" kind, just surfaced by the queue's speculative merge rather than by git.
 - `human-visibility` (an agent PR the sweep could not confirm a human was actually asked to review, or nudge, after `human_nudge_idle_hours` idle) comes sixth, ranked with the sources around it rather than beside `register-hygiene`: finished work invisible to the human whose merge everything waits on is the same "finishing beats starting" gap, not a cosmetic repair.
 - `abandoned-drafts` (draft PRs this system raised and then left untouched past `abandoned_draft_after_hours`) comes seventh for the same reason — finishing a stalled draft of ours turns a slot silted with a dead draft into a PR you can merge.
-- `project-review` (the latest weekly review's recommendations that aren't already tech-debt or issues) sits just above `issues:low` and `code-quality` (non-security code-scanning findings).
+- `project-review` (the latest repository review's recommendations that aren't already tech-debt or issues) sits just above `issues:low` and `code-quality` (non-security code-scanning findings).
 - `register-hygiene` (the repo's tech-debt register failing its own consistency check — an item file whose frontmatter disagrees with its filename, its declared scope, or itself) is last, because a deterministic cosmetic repair must never outrank real work, and each repo's `tech-debt-register` CI check keeps its volume near zero anyway.
 
 The four `issues:<band>` tokens are the *same* source at four ranks, banded by each issue's `Priority` field — see "Issue priority" below; list a subset to have the pipeline see only those bands, or none to turn issues off for that repo. Adding a repo or source is a config-only change.
@@ -796,7 +796,7 @@ is a container: Docker and the `.env` above are the whole of it.
    ```
    Then restart WSL: `wsl --shutdown` (from Windows).
 
-   *Alternative (Windows Task Scheduler):* Create a task running `wsl.exe -u wallen -e $HOME/Code/Poetic-Poems/agent-ops/agent-cycle.sh` hourly.
+   *Alternative (Windows Task Scheduler):* Create a task running `wsl.exe -u wallen -e $HOME/Code/Poetic-Poems/agent-ops/agent-cycle.sh` on the node's configured cadence (`schedule.cycle_interval_minutes`).
 
 4. **Labels: nothing to do.** The pipeline creates the labels it uses — the PR
    label, the Enabler's escalation label, `needs-refinement`, `unvoided`, the
@@ -994,17 +994,17 @@ docker compose exec scheduler /app/agent-cycle.sh --status
 # record:   /home/agent/.local/state/poetic-agents/disabled.json
 # cycle:    idle
 # review:   idle
-# limit:    STANDING DOWN — with no stated reset; each hourly cycle probes whether it has lifted — …
+# limit:    STANDING DOWN — with no stated reset; each cycle probes whether it has lifted — …
 ```
 
 When the message states a reset time, `resume_at` is that time and waiting is
 the whole answer. When it does not — the monthly spend-cap message is the
 common case — `resume_at` is this system's own guess, only an upper bound:
-each hourly cycle probes the API with one minimal request (requirement 2.1b)
-and retires the stand-down by itself the moment the account answers, so a
-limit that was really an exhausted 5-hour session window clears within the
-hour of its rollover, not a day later. Such a limit still has two exits, and
-you choose:
+each cycle probes the API with one minimal request (requirement 2.1b) and
+retires the stand-down by itself the moment the account answers, so a limit
+that was really an exhausted 5-hour session window clears within one cycle
+interval of its rollover, not a day later. Such a limit still has two exits,
+and you choose:
 
 - **wait**, and let the probe notice the rollover on its own; or
 - **raise the cap** at `claude.ai/settings/usage`, then tell the fleet
@@ -1022,8 +1022,8 @@ re-hits it and publishes a fresh stand-down.
 
 Before the probe existed, `resume_at` passing was the only automatic exit, on
 a clock the system had invented — so a cap raised in the morning still left
-the fleet down until the next day. The probe asks the account itself, hourly;
-`--clear-limit` remains for when you have just raised the cap and want the
+the fleet down until the next day. The probe asks the account itself, every
+cycle; `--clear-limit` remains for when you have just raised the cap and want the
 fleet back now rather than at the next cycle. The probe's verdict is in the
 stand-down reason (`probe: still limited` / `probe: inconclusive`), and its
 transcript is kept as `limit-probe.out` in the cycle record. To ask the
@@ -1042,7 +1042,7 @@ offsets (D5) keep them from even firing together. The environment variable
 `AGENT_OPS_ROLE` says whether *this* machine spends unattended:
 
 ```bash
-AGENT_OPS_ROLE=active     # this machine runs the hourly cycle and the daily review tick
+AGENT_OPS_ROLE=active     # this machine runs the implementation cycle and the daily review tick
 AGENT_OPS_ROLE=standby    # ...anything else does not
 ```
 
@@ -1542,23 +1542,26 @@ and exits 0 when a repo simply has the features off; a real failure to read
 them (a rate limit, an outage) is different and exits 1, so the dashboard can
 tell the two apart rather than showing a repo with nothing to report.
 
-## Weekly project review
+## Repository review
 
-A second, independent pipeline runs a full **project review** of each target
-repo about once a week and opens a pull request with the results — a set of
-Markdown reports (summary, findings, prioritised recommendations, ready-to-use
-improvement prompts) plus an updated tech-debt register. Merging that PR
-feeds the hourly pipeline above: its Co-Ordinator picks up the new tech-debt
-items, and you can hand the improvement prompts to the `project-remediation`
-skill.
+A second, independent pipeline — the **repository-review** pipeline, named
+because each run takes one target repo, on its own, with its own clone,
+branch, report set and pull request — runs a full **project review** of that
+repo on a configured cadence
+(`project_review.defaults.min_days_between_reviews`) and opens a pull
+request with the results — a set of Markdown reports (summary, findings,
+prioritised recommendations, ready-to-use improvement prompts) plus an
+updated tech-debt register. Merging that PR feeds the implementation
+pipeline above: its Co-Ordinator picks up the new tech-debt items, and you
+can hand the improvement prompts to the `project-remediation` skill.
 
-It reuses the hourly pipeline's machinery (ephemeral clones, the shared
-usage-limit stand-down, the same lock/timeout discipline) but has its own
-Script (`review-cycle.sh`), lock, PR label, and cron entry. It **defers to** a
-running hourly cycle and shares the one usage-limit signal, so the two never
-spend quota at the same moment. The `project-review` skill it runs is vendored
-at `.claude/skills/project-review/` and staged into each ephemeral clone at run
-time (never committed to the repo under review).
+It reuses the implementation pipeline's machinery (ephemeral clones, the
+shared usage-limit stand-down, the same lock/timeout discipline) but has its
+own Script (`review-cycle.sh`), lock, PR label, and cron entry. It **defers
+to** a running implementation cycle and shares the one usage-limit signal, so
+the two never spend quota at the same moment. The `project-review` skill it
+runs is vendored at `.claude/skills/project-review/` and staged into each
+ephemeral clone at run time (never committed to the repo under review).
 
 ### Configuration (`project_review` block in `config.json`)
 
@@ -1572,7 +1575,7 @@ time (never committed to the repo under review).
 | `project_review.defaults.timeout_review` | *(unset)* | Minutes, and an override. Leave it out — the backstop tunes itself. |
 | `project_review.defaults.inactivity_review` | *(unset)* | Minutes of total silence before the review stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
 | `project_review.defaults.min_days_between_reviews` | `6` | Skip a repo reviewed within this many days. This is what makes a daily cron tick behave as "about once a week" and stay robust to a sleeping machine. |
-| `project_review.defaults.not_before` | *(unset)* | Optional. Hold reviews until this timestamp — e.g. `2026-07-30T16:00:00Z` — while the hourly pipeline carries on. Use this rather than `agent-cycle.sh --disable`, which is shared and would stop the cycles too, and rather than raising `min_days_between_reviews`, which has to be lowered again afterwards. It expires by itself; leaving the key in place once the date has passed does nothing. An unparseable value stands reviews down rather than running through it. As...[continued below](#extended-notes-project_reviewdefaultsnot_before) |
+| `project_review.defaults.not_before` | *(unset)* | Optional. Hold reviews until this timestamp — e.g. `2026-07-30T16:00:00Z` — while the implementation pipeline carries on. Use this rather than `agent-cycle.sh --disable`, which is shared and would stop the cycles too, and rather than raising `min_days_between_reviews`, which has to be lowered again afterwards. It expires by itself; leaving the key in place once the date has passed does nothing. An unparseable value stands reviews down rather than running through it. As...[continued below](#extended-notes-project_reviewdefaultsnot_before) |
 | `project_review.repos` | `[{"slug": "Poetic-Poems/poetic"}, {"slug": "Poetic-Poems/poetic-fiddle"}]` | Repositories to review. Each entry is `{"slug": "owner/name"}`, plus any of `defaults`' own keys to override it for that repository alone. |
 <!-- config-table:end -->
 
@@ -1580,7 +1583,7 @@ time (never committed to the repo under review).
 
 #### Extended notes: `project_review.defaults.not_before`
 
-Optional. Hold reviews until this timestamp — e.g. `2026-07-30T16:00:00Z` — while the hourly pipeline carries on. Use this rather than `agent-cycle.sh --disable`, which is shared and would stop the cycles too, and rather than raising `min_days_between_reviews`, which has to be lowered again afterwards. It expires by itself; leaving the key in place once the date has passed does nothing. An unparseable value stands reviews down rather than running through it. As `defaults.not_before` it holds every configured repository off before the pipeline even takes its lock; a repository's own `not_before` override additionally holds that repository off for longer (or shorter) than the installation-wide value, checked per repository once the cycle is under way.
+Optional. Hold reviews until this timestamp — e.g. `2026-07-30T16:00:00Z` — while the implementation pipeline carries on. Use this rather than `agent-cycle.sh --disable`, which is shared and would stop the cycles too, and rather than raising `min_days_between_reviews`, which has to be lowered again afterwards. It expires by itself; leaving the key in place once the date has passed does nothing. An unparseable value stands reviews down rather than running through it. As `defaults.not_before` it holds every configured repository off before the pipeline even takes its lock; a repository's own `not_before` override additionally holds that repository off for longer (or shorter) than the installation-wide value, checked per repository once the cycle is under way.
 
 <!-- config-table:notes-end -->
 
@@ -1590,7 +1593,7 @@ Create the review PR label in both repos (once):
 ```bash
 gh api -X POST repos/Poetic-Poems/poetic/labels \
   -f name='project-review' -f color='5319e7' \
-  -f description='PR raised by the weekly project-review pipeline'
+  -f description='Raised by the project-review pipeline'
 # ...and the same for Poetic-Poems/poetic-fiddle
 ```
 
@@ -1600,8 +1603,9 @@ weekly tick:
 ```bash
 (crontab -l 2>/dev/null || true; echo "30 3 * * * $HOME/Code/Poetic-Poems/agent-ops/review-cycle.sh >> $HOME/.local/state/poetic-agents/review-cron.log 2>&1") | crontab -
 ```
-This needs the same `AGENT_OPS_ROLE=active` line in the crontab as the hourly
-cycle ("Which node runs the cycles"); one line covers both pipelines.
+This needs the same `AGENT_OPS_ROLE=active` line in the crontab as the
+implementation cycle ("Which node runs the cycles"); one line covers both
+pipelines.
 The skip-guard ensures this actually reviews each repo only about once a week.
 For a strict weekly tick instead, use `30 3 * * 1` (Mondays 03:30) — simpler,
 but a missed Monday tick skips the whole week.
@@ -1615,8 +1619,9 @@ but a missed Monday tick skips the whole week.
 tail -f ~/.local/state/poetic-agents/review-log.jsonl   # this pipeline's own event stream
 ```
 Stage transcripts land in `~/.local/state/poetic-agents/reviews/<review-id>/`.
-The shared `limit-hit` signal is written to the hourly pipeline's `log.jsonl`,
-so a usage limit hit during a review also stands the hourly pipeline down.
+The shared `limit-hit` signal is written to the implementation pipeline's
+`log.jsonl`, so a usage limit hit during a review also stands the
+implementation pipeline down.
 
 See `docs/REVIEW-PIPELINE-SPEC.md` for the full specification.
 
@@ -1676,7 +1681,7 @@ locally instead (loopback only):
 
 ### Keep it fresh
 The dashboard refreshes at the end of every cycle (a hook in `agent-cycle.sh`).
-To also keep it current between hourly cycles — reflecting in-flight runs, the
+To also keep it current between cycles — reflecting in-flight runs, the
 lock, and live GitHub status — add a heartbeat to your crontab:
 ```bash
 (crontab -l 2>/dev/null || true; echo "*/5 * * * * $HOME/Code/Poetic-Poems/Poetic-Poems/agent-ops/scripts/publish-dashboard.sh >> $HOME/.local/state/poetic-agents/dashboard.log 2>&1") | crontab -
@@ -1878,7 +1883,7 @@ some source isn't covered by the fingerprint. The recheck valve
 ```bash
 ./agent-cycle.sh --once    # bypasses the short-circuit
 ```
-If `--once` then picks up work that hourly cycles were skipping, the
+If `--once` then picks up work that scheduled cycles were skipping, the
 fingerprint is missing a signal — a bug worth filing, in
 `scripts/gather-source-state.sh`.
 
@@ -2108,7 +2113,7 @@ decommissioned)](#on-the-host-legacy-decommissioned)) — cron entries, state
 directories, and services on the machine itself. To remove a *container* node,
 follow [Removing a node for good](#removing-a-node-for-good) instead.
 
-1. **Remove the crontab lines** (the cycle, the weekly review, and, if added, the dashboard heartbeat):
+1. **Remove the crontab lines** (the cycle, the repository review, and, if added, the dashboard heartbeat):
    ```bash
    crontab -l | grep -v 'Poetic-Poems/agent-ops/agent-cycle.sh' | grep -v 'Poetic-Poems/agent-ops/review-cycle.sh' | grep -v 'Poetic-Poems/agent-ops/scripts/publish-dashboard.sh' | crontab -
    ```
@@ -2142,7 +2147,7 @@ To modify this system (add a new work source, change the selection logic, etc.),
 
 `docs/DASHBOARD-SPEC.md` is the companion specification for the monitoring dashboard (`scripts/publish-dashboard.sh` and `dashboard/index.html`).
 
-`docs/REVIEW-PIPELINE-SPEC.md` is the companion specification for the weekly project-review pipeline (`review-cycle.sh` and `prompts/project-reviewer.md`).
+`docs/REVIEW-PIPELINE-SPEC.md` is the companion specification for the repository-review pipeline (`review-cycle.sh` and `prompts/project-reviewer.md`).
 
 ## Branch workflow
 

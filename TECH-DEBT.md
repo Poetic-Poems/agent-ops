@@ -51,7 +51,7 @@ rather than let a permanent record change quietly), and no old-format
 ## Filing alongside other work
 
 A stage already committing to its own branch — an Implementer or Reviewer
-mid-pull-request, or a weekly project review batching several findings —
+mid-pull-request, or a repository review batching several findings —
 sometimes notices debt it has no reason to stop and fix. Filing it should not
 cost a second round trip: reserve the ID as above, but skip "Filing an item"
 step 2's `td/<id>` checkout, and add `tech-debt/<id>.md` straight onto the

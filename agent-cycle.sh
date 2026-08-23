@@ -2038,9 +2038,9 @@ release_refinement_label() {
 #   - a re-report of an item that is *already* blocked. Requirement 34 keys a
 #     block on repo+item and requirement 35a measures the Enabler threshold from
 #     the latest one, so re-reporting the same item every cycle would push that
-#     clock forward hourly and the item would never become eligible — the same
-#     silent starvation this whole path exists to end, with an event trail that
-#     looks like progress.
+#     clock forward cycle after cycle and the item would never become eligible —
+#     the same silent starvation this whole path exists to end, with an event
+#     trail that looks like progress.
 #   - a `source: "issues"` entry whose own `reason`/`missing`/`evidence` names,
 #     by number, the same `Blocked-by:` dependency this cycle's
 #     `issues_by_repo_json` already proves resolved for that item's thread
@@ -2712,7 +2712,7 @@ gather_tech_debt() {
   fi
 }
 
-# Pre-fetch the most recent weekly review's recommendations, for the Refiner
+# Pre-fetch the most recent repository review's recommendations, for the Refiner
 # only (requirement 3y; TD-PPagop-26081307) — never folded into
 # `ordered_repos_json`, the Co-Ordinator's own input, which still reads
 # `reviews/…` live (prompts/coordinator.md's "Project-review

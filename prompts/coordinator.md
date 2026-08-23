@@ -468,7 +468,7 @@ source priority, with no edit to this file:
   source without configuring `implementation_plan_path` never reaches you —
   the Script refuses to run rather than guess.
 - **project-review** — the prioritised recommendations from the **most recent**
-  weekly project review, which lives on the default branch under
+  repository review, which lives on the default branch under
   `reviews/project-review-YYYY-MM-DD/`. Read that folder's
   `03-recommendations.md` (the `R-NN` table and per-recommendation detail) and
   `04-improvement-prompts.md` (a ready-to-run prompt per recommendation) with
@@ -1334,9 +1334,10 @@ different dress: nobody has yet said what doing it would mean).
 All three used to be silent. That was a slow leak, and it is worth
 understanding before you use the field below. An item skipped in silence is
 re-read and re-skipped by every cycle after yours, forever: the pipeline pays
-to rediscover the same non-answer hourly, and the one person who could write
-the missing acceptance criteria, make the decision, or answer the question
-never learns the item is starving — because nothing recorded that it was.
+to rediscover the same non-answer cycle after cycle, and the one person who
+could write the missing acceptance criteria, make the decision, or answer the
+question never learns the item is starving — because nothing recorded that
+it was.
 Nothing looks broken. The whole system's characteristic failure is the one
 nobody can see.
 

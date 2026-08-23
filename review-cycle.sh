@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# review-cycle.sh — orchestrates one weekly project-review run across the
+# review-cycle.sh — orchestrates one repository-review run across the
 # configured target repositories. For each repo not skipped by the idempotency
 # guard, it clones the repo fresh, stages the vendored project-review skill into
 # the clone, runs the Reviewer-Agent (which produces the review reports, updates
@@ -447,11 +447,13 @@ log_event "review-start" "$(jq -nc --argjson once "$([[ $ONCE == 1 ]] && echo tr
 # exists for is an agent editing the agent-ops working tree, and this script
 # runs out of that same tree and sources that same lib/. An agent that disabled
 # only the implementation pipeline and then started editing lib/limit-detect.sh
-# would have left the weekly review free to fire mid-edit and read half of it.
+# would have left the review pipeline free to fire mid-edit and read half of it.
 #
 # The expired case is left for agent-cycle.sh to clear and log. This pipeline
-# runs weekly; letting it clear a switch would mean the event that explains why
-# cycles resumed could land days after they did.
+# runs on its own configured cadence
+# (`project_review.defaults.min_days_between_reviews`); letting it clear a
+# switch would mean the event that explains why cycles resumed could land
+# days after they did.
 review_switch_state="$(toggle_state "$state_dir")"
 if [[ "$(jq -r '.state' <<<"$review_switch_state")" == "disabled" ]]; then
   log_event "review-stand-down" "$(jq -nc \
@@ -476,7 +478,7 @@ fi
 # --- The dated stand-down (R3.3) ---
 # `project_review.defaults.not_before` holds a timestamp before which no
 # review may start. It exists for the case the switch above cannot express:
-# the operator wants the weekly review held off until a date, and wants the
+# the operator wants the review pipeline held off until a date, and wants the
 # implementation pipeline to carry on meanwhile. The switch is deliberately
 # shared between both pipelines (see its comment), so reaching for it here
 # would stop the cycles too — a far bigger stand-down than "not this week's

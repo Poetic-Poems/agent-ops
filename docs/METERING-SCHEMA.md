@@ -193,7 +193,8 @@ any other spec/code disagreement is.
 
 - **Produced:** `lib/metering.sh` (`metering_fields`), called from
   `agent-cycle.sh`'s four stage-end sites (Co-Ordinator, Implementer,
-  Reviewer, Enabler) and `review-cycle.sh`'s one (the weekly Reviewer), each
+  Reviewer, Enabler) and `review-cycle.sh`'s one (the repository-review
+  pipeline's Reviewer), each
   passing its own model id, `.out` path and the gap statistics
   `lib/stage-run.sh` left in `stage_gaps_json` for the run that just ended
   (requirement 33a). Those five are
