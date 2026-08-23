@@ -537,7 +537,7 @@
       "minimum": 0,
       "default": 24,
       "x-docs": {
-        "readme": "How often, in hours, the pipeline re-lists a repository's labels to create any that are missing — see [Labels](#labels). Every repository the cycle gathers data for gets this, not only the one it works, so a label you delete comes back within this interval rather than only the next time that repository happens to be selected. `0` re-lists on every cycle.",
+        "readme": "How often, in hours, the pipeline re-lists a repository's labels to create any that are missing (installation step 4, below). Every repository the cycle gathers data for gets this, not only the one it works, so a label you delete comes back within this interval rather than only the next time that repository happens to be selected. `0` re-lists on every cycle.",
         "spec": "How often, at most, the Script re-lists a repository's labels to create any absent ones (requirement 6a), keyed per repository via a stamp file under `state_dir` rather than a single fleet-wide clock — so one repository's interval elapsing says nothing about another's. `0` disables the stamp check, so it ensures on every cycle regardless."
       }
     },
