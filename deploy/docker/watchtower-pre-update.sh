@@ -24,9 +24,25 @@
 # than that pipeline's `lock_stale_after`. Taking only "live pid" would let one
 # wedged process veto every update for as long as it survived; bounding it by
 # the same staleness the next cycle uses means the hook can never defer past
-# the point where a cycle would have taken the lock over anyway. The worst case
-# is therefore `lock_stale_after` hours of deferral, not "until somebody
-# notices this node stopped updating".
+# the point where a cycle would have taken the lock over anyway.
+#
+# That bounds **one** deferral, and only one. It does not bound the sequence.
+# Each poll is answered independently, so a node whose next cycle starts
+# before watchtower's next poll is never *asked* at a moment when the lock is
+# free: every individual refusal is correct, every one is well inside
+# `lock_stale_after`, and the node still never rolls. Nothing here is wedged
+# and nothing self-corrects.
+#
+# Measured on VM1, 2026-08-24: `Failed=3 Scanned=3 Updated=0` every five
+# minutes for hours. One of the two nodes sharing that host happened to be
+# polled during a gap between cycles and rolled; its neighbour kept missing
+# the gap and stayed on an image ninety minutes older, with nothing anywhere
+# saying so. This earlier read the other way — "the worst case is therefore
+# `lock_stale_after` hours of deferral, not 'until somebody notices this node
+# stopped updating'" — which holds for the *wedged* cycle it was written
+# about and not for a merely busy one. Reporting the repeated `Failed` is
+# agent-ops#603; this comment's job is only to stop the bound being read as
+# wider than it is.
 #
 # Both pipelines count. agent-cycle.sh holds `lock.json` and review-cycle.sh
 # holds `review-lock.json`, and either dying to a roll costs the same.

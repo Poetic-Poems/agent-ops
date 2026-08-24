@@ -359,6 +359,20 @@ file and carries placeholders only; `.env` itself is never committed.
   roll at a fixed time than poll — the two are mutually exclusive and
   watchtower exits fatally if given both, so setting the schedule means
   clearing the interval.
+
+  **It watches only what is running.** A container that is stopped, or that
+  never started at all, is not scanned and therefore cannot be rolled — and
+  it is absent from the `Scanned=` count, so nothing in watchtower's own log
+  distinguishes "this container is up to date" from "this container has not
+  been looked at since it died". A service that stays down across an image
+  release is left on the old code with no drift signal of its own, and comes
+  back on that old code whenever it is next started, however many rolls the
+  rest of the stack has taken meanwhile. Observed on VM1, 2026-08-24:
+  `dashboard` sat in `Created` for four hours behind a stopped `tailscale`
+  (below), scanned zero times, while the scheduler beside it was polled every
+  five minutes. This is the second half of #603 — the updater's silence about
+  a container it is not watching is as unreportable as its repeated failure
+  on one it is.
 - **A roll defers to a running cycle.** Recreating a container kills the
   process group its cycle runs in, so before watchtower touches any agent-ops
   container it runs `deploy/docker/watchtower-pre-update.sh` inside it (the
@@ -374,8 +388,18 @@ file and carries placeholders only; `.env` itself is never committed.
   other container, or one carrying no `host`, is held **until released or
   stale, with no liveness check at all**: a pid is only meaningful in the PID
   namespace that minted it, and on a tailnet node the dashboard reads the
-  scheduler's locks through the shared `state` volume. Either way a deferral
-  can never outlast `lock_stale_after`, and the fail-closed side is the cheap
+  scheduler's locks through the shared `state` volume. Either way **a single
+  deferral** can never outlast `lock_stale_after` — which is not a bound on
+  the *sequence* of them, and must not be read as one. Each poll is answered
+  independently, so a node whose next cycle starts before watchtower's next
+  poll is never asked at a moment when the lock is free: every refusal
+  correct, every one well inside `lock_stale_after`, and the node never
+  rolling. Nothing is wedged and nothing self-corrects. Measured on VM1,
+  2026-08-24: `Failed=3 Scanned=3 Updated=0` every five minutes for hours,
+  one of two nodes on that host catching a gap and rolling while its
+  neighbour kept missing it and stayed ninety minutes behind, unreported.
+  Surfacing that is #603's business, not this hook's; what belongs here is
+  that the bound is per-deferral only. The fail-closed side is the cheap
   one — a leftover foreign lock is taken over or removed within the hour by
   the next cycle (requirement 1 precedes the stand-down checks, so standby
   nodes clear it too), while a foreign `kill -0` answers for the wrong
@@ -13382,14 +13406,30 @@ pull request, run the ones the change touches and any it could regress.
    `dashboard` in a failed state and `docker compose logs tailscale` carries a
    single line naming the missing variable and the active profile, never
    reaching `tailscaled` — no new node key is registered against the tailnet.
-   `docker compose ps` shows both `Exited` after five attempts apiece rather
-   than restarting indefinitely: the `tailscale` service's own
-   `restart: on-failure:5` bounds it where the rest of the file is
-   `unless-stopped`, and `dashboard` carries the same bound because it cannot
-   join a network namespace whose container is not running, so it fails on
-   every attempt for as long as `tailscale` stays stopped
-   (TD-PPagop-26082303). `docker events` over that window shows five restart
-   attempts per container, not an unbounded stream.
+   `docker compose ps` shows neither restarting indefinitely — but they
+   settle by **different mechanisms, and at different counts**, and the check
+   asserts each separately. `tailscale` reaches `Exited` with a
+   `RestartCount` of 5: it starts, exits non-zero, and its own
+   `restart: on-failure:5` bounds the retries where the rest of the file is
+   `unless-stopped`. `dashboard` reaches **`Created` with a `RestartCount` of
+   0**: joining the network namespace of a container that is not running is
+   refused at *start*, so the container never runs, never exits, and a policy
+   keyed on exit codes is never consulted. Its `on-failure:5` is therefore
+   not a budget it spends — it is what stops `unless-stopped` retrying a
+   start that cannot succeed, which is the thrash TD-PPagop-26082303 recorded.
+   `docker events` over the window shows five restart attempts for the
+   sidecar and none for the dashboard, not an unbounded stream from either.
+
+   The dashboard half is **observed**: on VM1, 2026-08-24, `dashboard` sat at
+   `status=created, RestartCount=0, ExitCode=128` behind a `tailscale` at
+   `status=exited, RestartCount=5, ExitCode=1`. That run had `TS_AUTHKEY`
+   *set but invalid* rather than unset, so it is not this check's own
+   precondition and does not discharge it — the sidecar failed at
+   `tailscale up` instead of at the entrypoint. It transfers for the
+   dashboard regardless, whose view of both cases is identical: the sidecar
+   is stopped, and the namespace cannot be joined. The sidecar's own unset
+   path — one line naming the missing variable, `tailscaled` never reached —
+   remains unobserved (#706).
    With `TS_AUTHKEY` set, the same `up -d` starts both containers normally and
    `docker compose exec tailscale tailscale status` succeeds.
 1d. **State replicates per node, and comes back as peers.**
