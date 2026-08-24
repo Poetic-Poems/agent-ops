@@ -129,12 +129,12 @@ blocked_json='[]'
 # `coordinator_blocked_view` is lifted rather than stubbed: it decides how many
 # bytes `blocked` contributes to the overhead, which is part of what is being
 # measured.
-eval "$(extract_block '^coordinator_blocked_view\(\) \{' '^\}$' "$AGENT_CYCLE")"
+eval "$(extract_block '^coordinator_blocked_view\(\) \{' '^\}$' "$SCRIPT_DIR/lib/candidate-select.sh")"
 # And requirement 4j's view of `refinements`, lifted for the same reason: it
 # decides how many bytes that band contributes to the overhead, which on the
 # outage it was written for was more than every other unsheddable term put
 # together.
-eval "$(extract_block '^coordinator_refinements_view\(\) \{' '^\}$' "$AGENT_CYCLE")"
+eval "$(extract_block '^coordinator_refinements_view\(\) \{' '^\}$' "$SCRIPT_DIR/lib/candidate-select.sh")"
 # shellcheck disable=SC2317  # Called from the lifted base-prompt render below.
 stage_prompt_text() { cat "$PROMPTS_DIR/coordinator.md"; }
 

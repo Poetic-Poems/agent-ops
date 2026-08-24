@@ -56,6 +56,9 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CYCLE="$SCRIPT_DIR/agent-cycle.sh"
+# The Enabler's own copy of this same rereview block moved to lib/enabler.sh
+# (#771); the Reviewer's own handoff, extracted via $CYCLE above, did not.
+ENABLER_CYCLE="$SCRIPT_DIR/lib/enabler.sh"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -111,7 +114,7 @@ enabler_block="$(awk '
   /^ *e_rereview_state="\$\(jq -r '"'"'\.rereview\.state/ { on = 1 }
   on { print }
   on && /human_review_requested: \$hr, human_reviewer: \$ha} end\)'"'"'\)"$/ { exit }
-' "$CYCLE")"
+' "$ENABLER_CYCLE")"
 
 for pair in "reviewer:$reviewer_block" "enabler:$enabler_block"; do
   if [[ -z "${pair#*:}" ]]; then

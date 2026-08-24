@@ -59,7 +59,7 @@ extract_block() {
   ' "$file"
 }
 
-fn_block="$(extract_block '^refinement_traceability_fault\(\) \{' '^\}$' "$AGENT_CYCLE")"
+fn_block="$(extract_block '^refinement_traceability_fault\(\) \{' '^\}$' "$SCRIPT_DIR/lib/candidate-select.sh")"
 if [[ -z "$fn_block" || "$fn_block" != *'jq'* ]]; then
   echo "FAIL - could not extract refinement_traceability_fault from agent-cycle.sh — has it moved?" >&2
   exit 1
@@ -224,7 +224,7 @@ fi
 # these pin is the one thing that must not follow from that: the corrupt-
 # ledger fault is still never repaired.
 
-repair_block="$(extract_block '^refinement_traceability_repair\(\) \{' '^\}$' "$AGENT_CYCLE")"
+repair_block="$(extract_block '^refinement_traceability_repair\(\) \{' '^\}$' "$SCRIPT_DIR/lib/candidate-select.sh")"
 if [[ -z "$repair_block" || "$repair_block" != *'jq'* ]]; then
   echo "FAIL - could not extract refinement_traceability_repair from agent-cycle.sh — has it moved?" >&2
   exit 1

@@ -293,7 +293,7 @@ resume_block_src="$(awk '
     /^resume_epoch=0$/ { on = 1 }
     on                 { print }
     on && /^fi$/        { exit }
-  ' "$SCRIPT_DIR/agent-cycle.sh")"
+  ' "$SCRIPT_DIR/lib/standdown.sh")"
 if [[ "$resume_block_src" != *"resume_epoch"* ]]; then
   printf 'FAIL - could not extract the resume_epoch block from agent-cycle.sh (moved or reworded?)\n'
   exit 1
@@ -339,43 +339,55 @@ assert_eq "…and nothing is reported on the happy path" "0" "$(last_guard_event
 # a jq call nothing else re-checks.
 # =================================================================================
 
-guard_site_report="$(perl -0777 -ne '
-  my @lines = split /\n/, $_;
-  my $sites = 0;
-  for my $i (0 .. $#lines) {
-    my $t = $lines[$i];
-    next unless $t =~ /guard_warn\s+"/;      # skips the definition and the prose
-    $sites++;
-    my ($detail) = $t =~ /guard_warn\s+"[^"]*"\s+"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"/;
-    my ($fb)     = $t =~ /guard_warn\s+"[^"]*"\s+"[^"]*";\s*([A-Za-z_][A-Za-z0-9_]*)=/;
-    # The assignment this guard belongs to opens the statement, which the jq
-    # program between them can carry a long way up the file — so walk back to
-    # the nearest `<var>="$(`, rather than trying to rejoin a statement whose
-    # continuations are raw newlines inside a single-quoted jq script.
-    my $target;
-    for (my $j = $i; $j >= 0 && $j > $i - 80; $j--) {
-      if ($lines[$j] =~ /([A-Za-z_][A-Za-z0-9_]*)="\$\(/) { $target = $1; last }
+# #771 moved most of agent-cycle.sh's own guard_warn sites out to lib/*.sh —
+# the sweep below follows them there rather than assuming every site still
+# lives in the one file it used to. Run per file (never one perl process over
+# a concatenation of all of them): the walk-back-80-lines target search must
+# not cross a file boundary into an unrelated file's tail.
+guard_site_count=0
+guard_site_mismatches=""
+for guard_file in "$SCRIPT_DIR/agent-cycle.sh" "$SCRIPT_DIR"/lib/*.sh; do
+  guard_site_report="$(perl -0777 -ne '
+    my @lines = split /\n/, $_;
+    my $sites = 0;
+    for my $i (0 .. $#lines) {
+      my $t = $lines[$i];
+      next unless $t =~ /guard_warn\s+"/;      # skips the definition and the prose
+      $sites++;
+      my ($detail) = $t =~ /guard_warn\s+"[^"]*"\s+"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"/;
+      my ($fb)     = $t =~ /guard_warn\s+"[^"]*"\s+"[^"]*";\s*([A-Za-z_][A-Za-z0-9_]*)=/;
+      # The assignment this guard belongs to opens the statement, which the jq
+      # program between them can carry a long way up the file — so walk back to
+      # the nearest `<var>="$(`, rather than trying to rejoin a statement whose
+      # continuations are raw newlines inside a single-quoted jq script.
+      my $target;
+      for (my $j = $i; $j >= 0 && $j > $i - 80; $j--) {
+        if ($lines[$j] =~ /([A-Za-z_][A-Za-z0-9_]*)="\$\(/) { $target = $1; last }
+      }
+      for my $pair ([ "detail", $detail ], [ "fallback", $fb ]) {
+        my ($what, $got) = @$pair;
+        next if defined $target && defined $got && $target eq $got;
+        printf "%s: %s names %s, assignment targets %s\n",
+          $i + 1, $what, (defined $got ? $got : "(unparsed)"),
+          (defined $target ? $target : "(unparsed)");
+      }
     }
-    for my $pair ([ "detail", $detail ], [ "fallback", $fb ]) {
-      my ($what, $got) = @$pair;
-      next if defined $target && defined $got && $target eq $got;
-      printf "%s: %s names %s, assignment targets %s\n",
-        $i + 1, $what, (defined $got ? $got : "(unparsed)"),
-        (defined $target ? $target : "(unparsed)");
-    }
-  }
-  print "sites=$sites\n";
-' "$SCRIPT_DIR/agent-cycle.sh")"
-
-guard_site_count="$(sed -n 's/^sites=//p' <<<"$guard_site_report")"
-guard_site_mismatches="$(grep -v '^sites=' <<<"$guard_site_report" || true)"
+    print "sites=$sites\n";
+  ' "$guard_file")"
+  guard_file_count="$(sed -n 's/^sites=//p' <<<"$guard_site_report")"
+  guard_file_mismatches="$(grep -v '^sites=' <<<"$guard_site_report" || true)"
+  guard_site_count=$(( guard_site_count + guard_file_count ))
+  if [[ -n "$guard_file_mismatches" ]]; then
+    guard_site_mismatches="$guard_site_mismatches$(printf '%s:\n%s\n' "$guard_file" "$guard_file_mismatches")"
+  fi
+done
 
 # A parser that matched nothing would pass the assertion below vacuously; the
 # floor is deliberately well under the count this item converted, so ordinary
 # additions and removals do not need to touch it, but a silent parse failure
 # still fails here.
 if (( guard_site_count < 50 )); then
-  printf 'FAIL - found only %s guard_warn call sites in agent-cycle.sh (parser broken?)\n' \
+  printf 'FAIL - found only %s guard_warn call sites across agent-cycle.sh and lib/*.sh (parser broken?)\n' \
     "$guard_site_count"
   failures=$(( failures + 1 ))
 else

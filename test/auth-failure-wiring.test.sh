@@ -46,7 +46,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-AGENT_CYCLE="$SCRIPT_DIR/agent-cycle.sh"
+AGENT_CYCLE="$SCRIPT_DIR/lib/standdown.sh"
 
 failures=0
 tmp_dir="$(mktemp -d)"

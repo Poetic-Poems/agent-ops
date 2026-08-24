@@ -51,6 +51,9 @@ AGENT_CYCLE="$SCRIPT_DIR/agent-cycle.sh"
 # derived from $SCRIPT_DIR at the point of use — rather than captured here,
 # before anything clobbers it — would resolve against the fake root instead.
 AGENT_APPROVER_LIB="$SCRIPT_DIR/lib/approver.sh"
+# Same reasoning: the back-pressure counting block itself moved to
+# lib/standdown.sh (#771).
+AGENT_STANDDOWN_LIB="$SCRIPT_DIR/lib/standdown.sh"
 
 failures=0
 tmp_dir="$(mktemp -d)"
@@ -79,7 +82,7 @@ extract_block() {
   ' "$file"
 }
 
-counting_block="$(extract_block '^ready_count=0$' '^open_composition=' "$AGENT_CYCLE")"
+counting_block="$(extract_block '^ready_count=0$' '^open_composition=' "$AGENT_STANDDOWN_LIB")"
 if [[ -z "$counting_block" ]]; then
   echo "FAIL - could not extract the back-pressure counting block from agent-cycle.sh — has it moved?" >&2
   exit 1

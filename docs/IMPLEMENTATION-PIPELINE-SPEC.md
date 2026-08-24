@@ -11401,9 +11401,62 @@ What exists, and the requirements each part answers to:
    the role guard, requirement 2.4; the no-op short-circuit, requirement 3b; the
    implementation-plan path passthrough and its startup validation,
    requirement 3k; and the Refiner-only pre-fetch and its `refiner_repos_json`
-   copy, requirement 3y) and the Enabler's engagement, requirements 35–37:
-   `maybe_run_enabler` (the single call site in the cleanup, every guard, and
-   the per-verdict actions), `enabler_claim_key` and `create_escalation_issue`.
+   copy, requirement 3y) — the cycle's own spine: argument handling, the
+   lock, the stand-down reason ladder (`run_standdown_checks`, `lib/
+   standdown.sh`, #771), the claim loop and candidate selection (`lib/
+   candidate-select.sh`, #771), the ordered sequence of phases, and the exit
+   path. The Enabler's engagement, requirements 35–37 — `maybe_run_enabler`
+   (the single call site in the cleanup, every guard, and the per-verdict
+   actions), `enabler_claim_key` and `create_escalation_issue` — is
+   `lib/enabler.sh` (#771), sourced and called from the cleanup trap exactly
+   as it was inline.
+2a. `lib/standdown.sh` implementing requirement 2, the stand-down reason
+   ladder in full: `run_standdown_checks`, called once from `agent-cycle.sh`
+   in place of the inline block it replaces (#771) — the GitHub API budget
+   and credential checks (2.0, 2.0b), the fleet-wide usage-limit cooldown and
+   its own probe (2.1), the per-cycle claim GC and orphan-branch/closing-
+   keyword/human-visibility/landing-retry/classifier-escape sweeps
+   (2.1a–2.1f), and back-pressure across every configured repository (2.2).
+   Reads and writes `agent-cycle.sh`'s own cycle-state globals directly
+   (`backpressure_tripped`, `open_composition`, `adjusted_open_count`,
+   `counted_prs_json`, among others) rather than through return values, the
+   same way the inline block it replaces did — deliberately not `local`, so
+   the call is indistinguishable, to the rest of the cycle, from the code it
+   replaces. Sourced, never executed. Must pass `shellcheck`.
+2b. `lib/candidate-select.sh` implementing the claim loop and candidate
+   selection (requirements 3o, 3p, 3t, 3u, 17f, among others; #771): the
+   per-source gatherers (`gather_findings`, `gather_review_feedback`,
+   `gather_abandoned_drafts`, `gather_merge_conflicts`, `gather_dequeued`,
+   `gather_register_hygiene`, `gather_human_visibility_hygiene`,
+   `gather_issues`, `gather_issues_excluded`, `gather_tech_debt`,
+   `gather_project_review_candidates`, `gather_implementation_plan_candidates`,
+   `gather_unvoid_requests`, `gather_hand_flagged_refinements`,
+   `gather_source_state`, `gather_register_status`, `gather_review_status`,
+   `gather_plan_status`, `gather_workflow_basenames`), the claim exclusion and
+   blocked/void filters (`exclude_claimed_prs`, `exclude_claimed_items`,
+   `exclude_blocked_or_void_items`, `exclude_blocked_or_void_issues`,
+   `candidate_preclaimed`, `pr_number_for_candidate`), `emit_first_seen`,
+   `coordinator_blocked_view`/`coordinator_refinements_view`, the
+   refinement-traceability check and repair from #768
+   (`refinement_traceability_fault`/`refinement_traceability_repair`), and the
+   needs-refinement/voided accounting the Co-Ordinator's verdict is checked
+   against (`unaccounted_items`, `coordinator_eligible_items`,
+   `record_needs_refinement_block`, `log_needs_refinement_items`,
+   `log_voided_items`, `log_unblocked_items`, `log_recheck_clean_items`,
+   `release_refinement_label`, `detect_and_log_limit_hit`). Also carries
+   `release_claim`/`release_pr_claim`/`claim_branch_for` (requirement 17a's
+   own item-keyed and PR-keyed claim release, moved beside the code that
+   calls them). Sourced, never executed. Must pass `shellcheck`.
+2c. `lib/stage-attempt.sh` implementing the Co-Ordinator stage-attempt
+   sequence and the failure handling every stage shares (requirement 3v,
+   4d and 4i; #771): `run_coordinator_stage_attempt` (one launch/parse/
+   salvage attempt), `fallback_select_candidate` and
+   `coordinator_corroborate_retry_or_fallback` (the mechanical last resort
+   once a `none-selected` verdict has failed corroboration twice), and
+   `extract_json_result`/`stage_salvage_result`/`dump_stage_output`/
+   `stage_api_refusal`/`stage_api_refusal_message`/`handle_stage_failure`,
+   used by every stage this pipeline runs. Sourced, never executed. Must
+   pass `shellcheck`.
 3. `scripts/gather-findings.sh` implementing requirement 3a: given a repo
    slug, prints a normalised JSON array of the repo's open Dependabot and
    code-scanning alerts, degrading to `[]` (exit 0) when a feature is
@@ -11743,6 +11796,10 @@ What exists, and the requirements each part answers to:
    and requirement 39b's `refiner_engagement_set`. Sourced after
    `lib/void-guard.sh`, whose `entry_field_text` it shares rather than keeping a
    second opinion about what counts as a filled-in field (requirement 34a).
+   Also carries the Refiner stage itself (moved from `agent-cycle.sh`, #771):
+   `maybe_run_refiner`, `refiner_claim_key` and
+   `refiner_filter_unbandable_triage`, sourced and called from the cleanup
+   trap exactly as they were inline.
    Unit-tested (`test/needs-refinement.test.sh`, `test/refiner-eligibility.test.sh`);
    must pass `shellcheck`.
 3s. `lib/label-marker.sh` implementing requirement 39f's own-label-action
@@ -12464,18 +12521,19 @@ What exists, and the requirements each part answers to:
     EVENT BODY TOKEN` POSTs the actual `APPROVE`/`REQUEST_CHANGES` review,
     `GH_TOKEN` set for that one invocation only, never exported — the one
     GitHub write this whole stage performs, and the only place in this
-    codebase that mints a review under a non-owner identity. `agent-cycle.sh`'s
-    `run_approver_stage`, `approver_post_or_warn` and `approver_escalate` are
-    the sole callers,
-    composing these primitives with `merge_autonomy_effective_level`
-    (`lib/merge-autonomy.sh`), `create_escalation_issue` (component 2) and
-    the ordinary `run_claude_stage` launch every other stage uses. Sourced,
-    never executed. Regression-tested in `test/approver.test.sh` against a
-    stubbed `gh`, and the wiring those primitives hang off in
-    `test/approver-wiring.test.sh`, which lifts `run_approver_stage`,
-    `approver_post_or_warn` and `approver_stage_complexity` verbatim out of
-    `agent-cycle.sh` rather than restating their logic (acceptance check 8s).
-    Must pass `shellcheck`.
+    codebase that mints a review under a non-owner identity. This file also
+    carries the stage itself (moved from `agent-cycle.sh`, #771):
+    `run_approver_stage`, `approver_post_or_warn`, `approver_escalate` and
+    `approver_stage_complexity`, the sole callers of the primitives above,
+    composing them with `merge_autonomy_effective_level`
+    (`lib/merge-autonomy.sh`), `create_escalation_issue` (`lib/enabler.sh`,
+    component 2) and the ordinary `run_claude_stage` launch every other stage
+    uses. Sourced, never executed, by `agent-cycle.sh`. Regression-tested in
+    `test/approver.test.sh` against a stubbed `gh`, and the wiring those
+    primitives hang off in `test/approver-wiring.test.sh`, which lifts
+    `run_approver_stage`, `approver_post_or_warn` and `approver_stage_complexity`
+    verbatim out of this file rather than restating their logic (acceptance
+    check 8s). Must pass `shellcheck`.
 14d. `lib/merge-budget.sh` implementing requirement 2.3c: the
     `merge_budget_per_day` spend governor. `merge_budget_effective_cap
     CONFIG_JSON SLUG` resolves the cap on the same precedence
@@ -12819,6 +12877,15 @@ What exists, and the requirements each part answers to:
     detail-at-or-after, so the current streak escalates once however many
     items it degrades through, while a new streak — its `first_ts` matching
     no logged event — escalates afresh.
+
+    Also carries two Reviewer/Enabler helpers (moved from `agent-cycle.sh`,
+    #771): `log_reviewer_handback DETAIL PR_URL UNBLOCK_CONDITION`, the
+    single `attempt-failed` recording for a Reviewer verdict that did not end
+    in a human-visible pull request; and
+    `review_gate_escalate_unreadable_streak`, the streak-and-escalate
+    sequence both the Reviewer's own "ready" handoff and the Enabler's
+    `complete_handoff` recovery path share (TD-PPagop-26081603), built on
+    `review_gate_unknown_streak_verdict`/`review_gate_degraded_since` above.
 
     Unit-tested (`test/review-gate.test.sh`); must pass `shellcheck`.
 20a. `lib/reconciliation-gate.sh` implementing requirement 31c's
@@ -16179,7 +16246,7 @@ pull request, run the ones the change touches and any it could regress.
     comment posted after a pull request is already Ready, in the window
     before a later cycle's arming step lands it — gate 4's fresh
     formal-review read alone still sees nothing standing against a plain
-    comment. Gate 4 (`_landing_stage_attempt`, `agent-cycle.sh`) closes that
+    comment. Gate 4 (`_landing_stage_attempt`, `lib/landing.sh`) closes that
     residual window itself (agent-ops#672) by calling `reconciliation_gate`
     a second time, unbounded, immediately after `_handoff_blocking_reviewers`
     — unbounded because, unlike the Reviewer's own call, this stage never
