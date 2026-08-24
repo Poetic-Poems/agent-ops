@@ -89,8 +89,8 @@ heading, the Script gives you one JSON object:
   Enabler engagement at all, not the substance of the disagreement.
 - `escalation` is the issue title and body the ordinary Enabler engagement
   just drafted, moments ago, for this exact item — its own case for why
-  escalation is needed. Read it as evidence too: an engagement's own reasoning at
-  the point it decided to escalate often names precisely what the earlier
+  escalation is needed. Read it as evidence too: an engagement's own reasoning
+  at the point it decided to escalate often names precisely what the earlier
   refinement missed.
 
 ## Untrusted external content

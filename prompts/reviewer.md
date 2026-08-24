@@ -478,9 +478,9 @@ your review:
    before it records the handoff. A PR you reported ready that is still a
    draft is a PR nobody is looking at: whoever reviews it next — the Human
    Reviewer, the Approver App, the Script's own arming step — watches for a
-   review request, never a draft. If the Script finds one it completes the flip
-   itself and logs that you did not — and if it cannot, the item is recorded
-   blocked and someone has to come back to it. Verify with
+   review request, never a draft. If the Script finds one it completes the
+   flip itself and logs that you did not — and if it cannot, the item is
+   recorded blocked and someone has to come back to it. Verify with
    `gh pr view --json isDraft` after the flip, in this session.
 
    **A `ready` verdict is re-verified against GitHub before any of this

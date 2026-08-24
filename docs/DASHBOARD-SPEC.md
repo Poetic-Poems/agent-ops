@@ -2352,9 +2352,9 @@ number's twins elsewhere on the page.
   refinement block is waiting on the pipeline's own Enabler and, past one
   refinement, on escalation — `escalation_autonomy` deciding whether that
   reaches a human straightaway or is adjudicated first: reading "blocked: 9"
-  with no way to tell the two
-  populations apart understates how much of the backlog is a specification gap
-  rather than a stalled merge. The filter defaults to showing both — hiding is
+  with no way to tell the two populations apart understates how much of the
+  backlog is a specification gap rather than a stalled merge. The filter
+  defaults to showing both — hiding is
   an explicit, per-session choice, never the page's default view — because the
   count in the heading is itself information ("that many things need
   attention"), and defaulting to hidden would bury exactly the population this

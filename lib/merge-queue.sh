@@ -13,8 +13,8 @@
 # read before this file existed:
 #
 #   1. A currently-queued pull request is mid-transaction, whoever enqueued
-#      it — it must never be pushed to (a push evicts it from the queue with no
-#      further signal) and must never be treated as "nobody has clicked
+#      it — it must never be pushed to (a push evicts it from the queue with
+#      no further signal) and must never be treated as "nobody has clicked
 #      merge yet" (`scripts/sweep-human-visibility.sh`'s idle nudge did,
 #      before this file: an enqueued pull request reads `APPROVED`,
 #      `MERGEABLE` and green exactly like one nobody has acted on yet).

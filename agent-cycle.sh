@@ -3907,8 +3907,8 @@ object, nothing else.
 }
 
 # A Reviewer verdict that did not end in a pull request the human can see
-# (requirement 32a): `blocked`, an unparseable status, or a
-# `ready` the handoff could not be made true.
+# (requirement 32a): `blocked`, an unparseable status, or a `ready` the
+# handoff could not be made true.
 #
 # It is recorded exactly as any other failed attempt — an `attempt-failed`
 # against repo+item, which is what requirement 34 reads as blocked and
@@ -7640,9 +7640,9 @@ fi
 # it carries the `pr-<n>-<kind>-<scope>` ref the four finishing sources use,
 # and until now it was counted — a claimed abandoned draft was its own draft
 # PR *plus* its own claim, two against a cap it occupies once. Only the PRs
-# actually inside the sum are passed, so a conflicted or dequeued PR sitting
-# in the human's queue — excluded from the sum by the rule above — keeps
-# counting through its claim, which is then the only record of it in flight.
+# actually inside the sum are passed, so a conflicted or dequeued PR that the
+# rule above leaves out of the sum keeps counting through its claim, which is
+# then the only record of it in flight.
 ready_count=0
 human_queue_count=0
 draft_count=0

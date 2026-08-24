@@ -2076,11 +2076,11 @@ fi
 # Risk 6 of the autonomy investigation ("overnight merges with nobody
 # watching") is accepted deliberately, on the stated condition that this
 # replaces the synchronous landing gate at `human` with an asynchronous audit:
-# the queue
-# re-tests, `failed-runs` turns post-merge breakage back into selectable work,
-# and this section is where a human sees, once a day, everything the Script
-# landed without them. It is permanent, not rollout scaffolding — at
-# `agent-merges-all` it is the *only* routine account of what merged.
+# the queue re-tests, `failed-runs` turns post-merge breakage back into
+# selectable work, and this section is where a human sees, once a day,
+# everything the Script landed without them. It is permanent, not rollout
+# scaffolding — at `agent-merges-all` it is the *only* routine account of what
+# merged.
 #
 # Built from the fleet-wide event union, never from a private counter, so a
 # landing armed on any node appears on every node's dashboard. Three parts:

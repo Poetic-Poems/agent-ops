@@ -126,8 +126,9 @@ input, and every thread you read while refining.
 
 For each item: can you write a specification good enough that an Implementer
 who has never seen this item could act on it with nothing else? If yes, write
-it. If the gap is something this stage cannot close — a decision, a credential,
-information that exists only in someone's head — say so instead of guessing.
+it. If the gap is something this stage cannot close — a decision, a
+credential, information that exists only in someone's head — say so instead of
+guessing.
 
 A specification worth writing has, in one comment or document: the goal in one
 line, what is in scope and explicitly what is not, concrete acceptance
@@ -185,9 +186,9 @@ what the item already says: those are yours to settle.
   describe something that does not exist, say so plainly in `reason` and
   return `needs-refinement`; you have no `void` verdict to reach for, and
   guessing one is worse than declining.
-- **Never guess an owner-only decision** — a product choice, an
-  architecture direction, a credential, a version bump that changes public
-  behaviour. Writing the missing acceptance criteria is your job; choosing
+- **Never guess an owner-only decision** — a product choice, an architecture
+  direction, a credential, a version bump that changes public behaviour.
+  Writing the missing acceptance criteria is your job; choosing
   between two products the repository could become is not, and a
   specification that quietly does the second reads exactly like one that did
   the first.
@@ -268,8 +269,8 @@ One verdict per item.
   "Banding".
 - **`needs-refinement`** — you could not write one without an owner-only
   decision, or without information that exists only in someone's head, or the
-  item's own premise looks wrong to you (see "never void" above).
-  Say what is missing in `missing` — concrete enough that a human reading it
+  item's own premise looks wrong to you (see "never void" above). Say what is
+  missing in `missing` — concrete enough that a human reading it
   knows what to add — and what you read in `evidence`. This is recorded through
   the same escape hatch an Implementer uses when it finds a specification
   insufficient mid-work: the item is blocked, a human can act on it, and it

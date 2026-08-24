@@ -6184,8 +6184,8 @@ implements.
     issues and review-feedback, and likewise outranking the plain
     repo-then-source walk: any
     selectable `merge_conflicts` candidate in any repo is taken before any fresh
-    work in a more-overdue repo. The PR is otherwise ready to land, and until the
-    conflict is resolved nothing else on it can proceed, so
+    work in a more-overdue repo. The PR is otherwise ready to land, and until
+    the conflict is resolved nothing else on it can proceed, so
     a rebase-and-resolve is finishing, not starting. As with review-feedback, the
     Co-Ordinator must **not** apply requirement 16's claim exclusion to this
     source — the open PR *is* the item, and the pre-fetch (requirement 3g) has
@@ -6193,8 +6193,9 @@ implements.
     narrow: rebase onto the base and resolve the conflict, without completing or
     re-doing the underlying item (that is what merges the PR, and remains this
     repository's own landing decision — see "The Landing Gate" — not the
-    Implementer's to make). A Dependabot takeover candidate (requirement 3s) ranks and is
-    exempted from requirement 16's claim exclusion here identically, even though
+    Implementer's to make). A Dependabot takeover candidate (requirement 3s)
+    ranks and is exempted from requirement 16's claim exclusion here
+    identically, even though
     it is, unlike every other `merge_conflicts` candidate, genuinely new work — a
     fresh PR on a fresh branch, not a finish of an existing one, and it does raise
     `max_open_agent_prs`' count by one once claimed (Dependabot's own PR never
@@ -10024,10 +10025,10 @@ implements.
       into an escalation on its own.
     - **Escalates**, where this stage cannot settle it — a decision, answer, or
       action is needed first — through the unchanged protocol of requirement
-      36a, in a **separate** issue. Never
-      the work item's own issue: that protocol ends with "close this issue when
-      you are done", which on the item's own issue asks the human to close the
-      work itself and removes it from the `issues` source. The ask is phrased so
+      36a, in a **separate** issue. Never the work item's own issue: that
+      protocol ends with "close this issue when you are done", which on the
+      item's own issue asks the human to close the work itself and removes it
+      from the `issues` source. The ask is phrased so
       the human's answers land as comments on the escalation issue *before* they
       close it, since the closure is what returns the item to a later engagement
       and their comments are what let that engagement complete the refinement.
@@ -10117,8 +10118,8 @@ implements.
     disagreement that escalates instead — adjudicated first at
     `adjudicate-first`, reaching a person directly at `always-escalate` — and a
     third pass from the Enabler settles it only by coincidence. The prompt says
-    so, and the Script enforces it — an `unblocked`
-    verdict on a refinement item whose `refined_before` is set is **refused**,
+    so, and the Script enforces it — an `unblocked` verdict on a refinement
+    item whose `refined_before` is set is **refused**,
     logged as a `warning`, and recorded with the outcome `refinement-refused`,
     leaving the item blocked. Mechanical for requirement 34d's reason: "do not
     do this" is already in the prompt, and the model that would do it anyway is
@@ -10198,7 +10199,7 @@ implements.
 
 38. **Human-visibility.** Whatever the configured escalation ladder leaves for
     the human — every item `escalation_autonomy`/`merge_autonomy` did not
-    settle earlier, not a fixed universal — must be visible to them — on
+    settle earlier, not a fixed universal — must be visible to them: on
     `github.com/pulls/review-requested` for a pull request, on Assigned-to-me
     for a genuine Enabler escalation (requirement 36a), on a filtered issue
     list (`blocked`/`blocked:needs-refinement` — requirement 38b) for a
@@ -15188,9 +15189,9 @@ pull request, run the ones the change touches and any it could regress.
    dropping it silently disarms the gate rather than failing.
 8e. **A pull request nobody could hand off reaches the Enabler, not the human
    (requirement 32a).** Drive a cycle whose Reviewer answers `blocked`: the
-   cycle must log an `attempt-failed` for the
-   item carrying the PR's `pr_url`, so that the next cycle lists it blocked and,
-   after `enabler_after_coordinator_cycles`, eligible — with the `pr_url` present
+   cycle must log an `attempt-failed` for the item carrying the PR's `pr_url`,
+   so that the next cycle lists it blocked and, after
+   `enabler_after_coordinator_cycles`, eligible — with the `pr_url` present
    in the Enabler's runtime input. Assert the PR is *not* commented on with
    anything telling a human it is theirs, and that a bare `stage-end` is no
    longer the only record: that shape named no item, pinned no state, and is what
@@ -17338,9 +17339,9 @@ requirements above, which state only what is.
   stalled drafts. It ranks seventh, after security, urgent issues, review-feedback,
   merge-conflicts and dequeued, and ahead of
   all fresh work (requirement 15c): finishing beats starting, and it turns a slot
-  silted with a dead draft into a landable PR; under back-pressure it is
-  one of the four
-  finishing sources the cycle narrows to (requirement 2.2a). Four choices make it
+  silted with a dead draft into a landable PR; under back-pressure it is one of
+  the four finishing sources the cycle narrows to (requirement 2.2a). Four
+  choices make it
   safe: the draft/label/branch filter keeps it to *our* stalled work (never a
   human's PR, never a ready one); the ref is scoped to the head SHA, so a
   re-abandoned draft that has since gained commits is a new item rather than one
@@ -18002,9 +18003,8 @@ requirements above, which state only what is.
   whose landing is still bounded by `merge_autonomy_effective_level`'s own
   (separately fail-closed) read, recoverable at the next fetch; here the
   report is simply false, in the one direction this switch exists never to
-  be. So the
-  clear side has no mode to opt into — the unconditional accept is gone
-  outright.
+  be. So the clear side has no mode to opt into — the unconditional accept is
+  gone outright.
   `fleet_flag_delete` reuses `fleet_repo_visible` (extracted for exactly
   this reuse, per its own header) directly, unconditionally, on every 404
   its read-for-sha meets: only a probe that confirms the repo is visible

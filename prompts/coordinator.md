@@ -514,14 +514,14 @@ source priority, with no edit to this file:
 - **merge-conflicts** — pull requests this system raised that are otherwise ready
   (for review or for merge) but blocked by a conflict with their base, handed to
   you **pre-fetched** in each repo's `merge_conflicts` array. Third, after security
-  and review-feedback: a rebase-and-resolve on a PR that's otherwise ready to land
-  beats starting anything new, and until it merges cleanly nothing else on the PR can
-  proceed. See "Merge conflicts" below.
+  and review-feedback: a rebase-and-resolve on a PR that's otherwise ready to
+  land beats starting anything new, and until it merges cleanly nothing else on
+  the PR can proceed. See "Merge conflicts" below.
 - **dequeued** — pull requests this system raised that GitHub's merge queue
   removed over a merge-group checks failure without merging, handed to you
   **pre-fetched** in each repo's `dequeued` array. Fifth, immediately after
-  merge-conflicts and for the identical reason: a diagnose-and-fix on a PR that's
-  otherwise ready to land beats starting anything new, and until the
+  merge-conflicts and for the identical reason: a diagnose-and-fix on a PR
+  that's otherwise ready to land beats starting anything new, and until the
   merge-group failure is fixed it cannot be re-queued. See "Dequeued pull
   requests" below.
 - **human-visibility** — a violation the periodic sweep
