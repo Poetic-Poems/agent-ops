@@ -89,6 +89,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/fleet.sh"
 # shellcheck source=lib/crash-loop.sh
 . "$SCRIPT_DIR/lib/crash-loop.sh"
+# shellcheck source=lib/workspace.sh
+. "$SCRIPT_DIR/lib/workspace.sh"
 # shellcheck source=lib/role.sh
 . "$SCRIPT_DIR/lib/role.sh"
 # shellcheck source=lib/git-identity.sh
@@ -6605,6 +6607,26 @@ stage_budget_json="$(stage_budget_table \
 # `lock_stale_after` is a floor, never a ceiling.
 lock_stale_after_sec="$(stage_budget_lock_seconds "$stage_budget_json" \
   "$(stage_budget_all_overrides "$stage_budget_config")" "$LOCK_SLACK_MIN" "$lock_stale_configured_hours")"
+
+# --- 1a2. Reclaim the workspaces of cycles that never cleaned up (#605) ---
+# Here because this is the first point at which the lock window exists, and
+# comfortably before the clone that will need the room. Before the lock rather
+# than after it, and before every stand-down: a node standing down for a
+# fleet limit is a node with hours of nothing to do and, quite possibly, a
+# full disk — the one moment housekeeping matters most is the one where the
+# cycle does no other work. It runs at most once per cycle interval per node
+# either way.
+#
+# `|| true` and a lib that swallows its own failures: reclaiming disk must
+# never be the reason a cycle does not run. The event is written only when
+# something was actually reclaimed — an ordinary cycle on a healthy node reaps
+# nothing, and a `workspaces-reaped` line every cycle would say nothing while
+# burying the ones that mean something.
+workspace_reap_json="$(workspace_reap_summary "$workspace_root" \
+  "$(workspace_reap_window "$lock_stale_after_sec")" || printf '{"reaped":0}')"
+if [[ "$(jq -r '.reaped // 0' <<<"$workspace_reap_json" 2>/dev/null || printf 0)" != "0" ]]; then
+  log_event "workspaces-reaped" "$workspace_reap_json"
+fi
 
 acquire_lock
 

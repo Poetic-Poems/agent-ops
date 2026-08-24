@@ -4817,6 +4817,57 @@ implements.
    diverge, and `CLONE_GIT` substitutes a stub for tests — a seam this needs in
    its own right, because a test that wants the clone to fail can no longer get
    that from a fail-fast `gh` on `PATH`.
+
+   Anything already at the clone's target path is **residue, and is discarded
+   rather than inspected**. Both callers derive the path from an id minted
+   moments earlier and unique to the run, so nothing legitimate can be there;
+   what can is the partial clone of a run the machine killed mid-`git clone`.
+   The discard is unconditional by choice: a check that the directory "is a
+   complete repository at the expected remote and revision" passes on a clone
+   that is complete and *dirty* — a dead cycle's working tree, carrying its
+   half-finished edits — which is the residue likeliest to mislead the stage
+   that inherits it and the hardest to tell from a good clone.
+
+6b. **The workspace root is reclaimed, because the exit trap cannot be
+   trusted to do it.** The clone is deleted in the cycle's exit trap, and a
+   trap is exactly what `SIGKILL` does not run: a cycle killed by the machine
+   — an out-of-memory kill, a host freeze, a container recreate mid-stage —
+   leaks its entire clone, and nothing looks at that directory again. The
+   residue is invisible until the volume is full, at which point it is the
+   reason the volume is full. Measured 2026-08-24: 17 orphans and 4.2 GB
+   across the two ockham nodes, the oldest 32 days old; 5 more and ~2.5 GB on
+   VM1 (#605).
+
+   So both pipelines reap `workspace_root` before they clone — and before
+   every stand-down, since a node with nothing to do is the node whose
+   housekeeping matters most. The rule is a **property, never the naming
+   convention**: anything directly under `workspace_root` that nothing has
+   written to within the reap window cannot belong to a live run. Keying it
+   on `<cycle-id>` would have missed the two largest orphans found in the
+   field — `scratch-implementor/` (968 MB) and `scratch/` (101 MB) — because
+   the pipeline does not create those. The stage agents do, following the
+   target repository's own dedicated-clone rule, choosing names the framework
+   never sees and cannot predict.
+
+   The window is requirement 4f's derived cycle-lock window — the same number
+   `scripts/doctor.sh` reports — floored at 24 hours, so no new constant is
+   configured. The floor is what binds in practice and is what makes the reap
+   safe against the one legitimate overlap: a review cycle and an
+   implementation cycle hold separate locks and do run at once. Freshness is
+   read from the **tree**, never the directory's own mtime, which git stamps
+   once at clone and never moves again — reading it alone would reap the
+   workspace of a cycle five hours into its Implementer. Entries whose name
+   begins with `.` are never candidates: the fleet's own stores share this
+   directory (`.agent-ops-state`, `.agent-ops-peers`), are bounded by their
+   own retentions (requirement 2.5), and a node whose last fetch was days ago
+   is a stale node, not one that should lose its peers.
+
+   What is reclaimed is a **fact the fleet can read**, not a silent tidy-up:
+   a `workspaces-reaped` event carries the count, the bytes and the names,
+   and is written only when something was actually reclaimed. The names are
+   the diagnostic — a node reaping a workspace every cycle is a node being
+   killed every cycle, which nothing else reports. Reclaiming disk never
+   fails a cycle: every failure inside the reap is swallowed.
 6a. **The pipeline creates its own labels.** As it gathers each repository's
    data — not only, and not first, at the one it later selects to work — the
    Script ensures every label this system applies exists there, creating
