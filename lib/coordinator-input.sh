@@ -93,6 +93,26 @@ COORDINATOR_INPUT_TIERS=(
   "0:0:1000"
 )
 
+# Decision (agent-ops#683): the bottom rung above stays a trim, not a drop.
+# Reaching it used to mean every candidate's body was cut to a title-level
+# fragment, comments emptied outright, and the Co-Ordinator — correctly
+# following its own prompt's "if you cannot tell what done would mean, report
+# needs_refinement" — dutifully reported exactly that for its whole visible
+# backlog, which requirement 3x's completeness bar then compelled the Script
+# to record as blocks (nine items in 68 seconds, 2026-08-21). That made
+# "drop entries here instead of trimming them" a real candidate fix: an entry
+# this small could not be judged either way, so keeping it costs a candidate
+# slot for something the Co-Ordinator cannot use.
+#
+# `coordinator_fit_trim_refusal_reason` above removes that harm at its
+# source: a trimmed entry can no longer force a block, so all a bottom-rung
+# entry still buys the Co-Ordinator is its identity fields (`ref`, `title`,
+# `priority`, `labels`, `updated_at`) — enough to rank it, and enough to
+# select and live-read it should its title alone look worth the fetch.
+# Dropping it instead would remove that option for no remaining harm left to
+# trade it against, so the ladder is unchanged: eight rungs, generous first,
+# `0:0:1000` last.
+
 # The per-band, per-repo entry caps the last rung walks once the tightest tier
 # above still does not fit — halving, so a wildly oversized input converges in
 # a handful of measurements rather than one per entry.
@@ -337,4 +357,89 @@ coordinator_fit_detail() {  # <fit-json>
          else "" end)
       + (if .fits then "" else " — and it still does not fit, so this cycle'"'"'s Co-Ordinator will be refused by the API" end)
     end' <<<"${1:-{\}}" 2>/dev/null || true
+}
+
+# coordinator_fit_trimmed_items
+# Which candidates in the `issues`/`tech_debt` bands actually had their body
+# or comments shed by the fit ladder this cycle — `{repo, item, source}` per
+# entry, the same shape `coordinator_eligible_items` (agent-cycle.sh) already
+# uses for its own denominator. Only entries `fit_entry` actually touched: the
+# ladder applies one set of caps to the whole document, but whether a given
+# entry exceeded them is per-entry, and a small entry no rung ever needed to
+# shrink is not "trimmed" just because its neighbours were.
+#
+# This is the exemption set behind requirement 34e's fourth refusal and
+# requirement 3x's matching completeness exception (agent-ops#683): on
+# 2026-08-21 a context-tight cycle's fit reached its bottom rung, every
+# candidate's body was cut to a title-level fragment, and the Co-Ordinator —
+# correctly following "if you cannot tell what done would mean, report
+# needs_refinement" — reported exactly that for its whole visible backlog,
+# which requirement 3x's own completeness bar then obliged the Script to
+# record as blocks. Neither rule was wrong; the fix is a Script-side refusal
+# to write the block, and a matching carve-out so declining to write it does
+# not itself read as an unaccounted verdict.
+#
+# Detected the same way a human reading the rendered prompt would: the
+# elision marker `fit_entry`'s own `clip` leaves in a clipped body, or the
+# `comments_elided` key it adds when the comment list itself was cut. Never
+# re-measured against the byte caps here — that arithmetic already ran once,
+# inside the ladder, and re-deriving it from an entry's current byte length
+# would drift the moment either side changed independently. The literal
+# `[Script: elided` prefix is deliberately not prose any real issue or
+# register body would ever produce, the same reasoning `coordinator_fit_detail`
+# above and TD-PPagop-26081407 both rely on for their own sentinels.
+#
+# Read the *fitted* repos array on stdin — `coordinator_fit_bands`'s own
+# `repos` output, whichever rung it stopped at — never the array handed to
+# it: an untrimmed document carries none of the markers this looks for, so
+# feeding it the pre-fit array would answer "nothing trimmed" correctly, but
+# only by accident.
+coordinator_fit_trimmed_items() {  # (fitted repos JSON on stdin)
+  jq -c '
+    def trimmed:
+      (((.body // "") | type) == "string" and ((.body // "") | contains("[Script: elided")))
+      or has("comments_elided");
+    [ .[] | . as $repo | (.slug // "") as $r
+      | ( ($repo.issues // [])[] | select(trimmed)
+          | {repo: $r, item: ((.ref // "") | tostring), source: "issues"} ),
+        ( ($repo.tech_debt // [])[] | select(trimmed)
+          | {repo: $r, item: ((.ref // "") | tostring), source: "tech-debt"} )
+    ] | map(select(.item != ""))
+  ' 2>/dev/null || printf '[]'
+}
+
+# coordinator_fit_trim_refusal_reason ENTRY_JSON TRIMMED_JSON RUNG
+# Decide whether a needs_refinement-shaped ENTRY (`{repo, item, source,
+# reason, missing, evidence}`, from any reporting stage) names an item this
+# cycle's fit ladder actually trimmed (requirement 4i, `coordinator_fit_trimmed_items`
+# above) — requirement 34e's fourth refusal, agent-ops#683.
+#
+# Prints nothing and returns 0 when ENTRY may be recorded ordinarily. Prints a
+# one-line reason and returns 1 when it must be refused instead — the same
+# calling convention `dependency_refusal_reason` (lib/dependency-gate.sh) uses,
+# so a caller can chain both bars the same way.
+#
+# Matched on repo+item alone, not source: TRIMMED_JSON only ever carries the
+# two bands the ladder can touch (`issues`, `tech-debt`), whose ref shapes
+# never collide (a bare issue number against a `TD…`-prefixed register id), so
+# the extra key buys nothing an entry that omitted or mis-stated its own
+# `source` would still need.
+#
+# Deliberately unconditional on what ENTRY's own `reason`/`missing`/`evidence`
+# say, and on whether the reporting stage actually fetched the item live
+# before writing them: the Script has no way to tell a report grounded in a
+# live read from one grounded in the elided extract it was handed, and the
+# harm of the rare false refusal is far smaller than the harm of asking the
+# question at all on a cycle whose whole backlog was trimmed this far.
+coordinator_fit_trim_refusal_reason() {  # <entry-json> <trimmed-json> <rung>
+  local entry="$1" trimmed="${2:-[]}" rung="${3:-0}" repo item
+  repo="$(jq -r '.repo // ""' <<<"$entry" 2>/dev/null || true)"
+  item="$(jq -r '(.item // "") | tostring' <<<"$entry" 2>/dev/null || true)"
+  [[ -n "$repo" && -n "$item" ]] || return 0
+  jq -e --arg r "$repo" --arg i "$item" \
+    'any(.[]?; (.repo // "") == $r and ((.item // "") | tostring) == $i)' \
+    <<<"$trimmed" >/dev/null 2>&1 || return 0
+  printf 'names an entry the fit ladder trimmed this cycle (rung %s) — the report may be right, but the Script cannot tell it apart from one read off the elided extract, so it is refused and the item stays exactly as eligible as it was' \
+    "$rung"
+  return 1
 }

@@ -35,6 +35,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$SCRIPT_DIR/lib/void-guard.sh"
 # shellcheck source=lib/dependency-gate.sh
 . "$SCRIPT_DIR/lib/dependency-gate.sh"
+# shellcheck source=lib/coordinator-input.sh
+. "$SCRIPT_DIR/lib/coordinator-input.sh"
 # shellcheck source=lib/refinement.sh
 . "$SCRIPT_DIR/lib/refinement.sh"
 # shellcheck source=lib/label-marker.sh

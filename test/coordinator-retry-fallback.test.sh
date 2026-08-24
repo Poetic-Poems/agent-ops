@@ -70,7 +70,7 @@ extract_fn() {
   ' "$file"
 }
 
-unaccounted_items_fn="$(extract_fn 'unaccounted_items() {  # <recorded-json> <eligible-json> <refinement-policy-json>' "$SCRIPT_DIR/agent-cycle.sh")"
+unaccounted_items_fn="$(extract_fn 'unaccounted_items() {  # <recorded-json> <eligible-json> <refinement-policy-json> [trimmed-json]' "$SCRIPT_DIR/agent-cycle.sh")"
 log_unblocked_items_fn="$(extract_fn 'log_unblocked_items() {' "$SCRIPT_DIR/agent-cycle.sh")"
 log_recheck_clean_items_fn="$(extract_fn 'log_recheck_clean_items() {' "$SCRIPT_DIR/agent-cycle.sh")"
 log_needs_refinement_items_fn="$(extract_fn 'log_needs_refinement_items() {' "$SCRIPT_DIR/agent-cycle.sh")"

@@ -1420,6 +1420,18 @@ The rules:
   it, so `evidence` must never cite a `Blocked-by:` reference as the reason
   for a report — the Script refuses such an entry outright, on exactly this
   runtime input, and records nothing (agent-ops#566).
+- **A this-cycle-trimmed entry is never worth reporting.** "Some of that text
+  may have been trimmed…" under "What you receive" already told you a trimmed
+  entry is still fully rankable — the fit ladder shrinking it, not a genuine
+  gap in the item, is usually why you cannot yet tell what "done" would mean.
+  The Script refuses any `needs_refinement` entry naming a this-cycle-trimmed
+  item outright and records nothing, whether or not you read it live first
+  (agent-ops#683) — so there is nothing to gain by reporting one, and nothing
+  lost by leaving it out: it no longer needs an account either (see "If you
+  found nothing selectable anywhere" below). If you genuinely believe a
+  trimmed item is under-specified, read it live first — `gh issue view <n>
+  --comments`, or the register file at its `url` — and report what that full
+  read shows, never the elided extract.
 - **Reporting changes nothing about what you select.** It is side-work you do
   while walking, and it never promotes or demotes a candidate. On a cycle that
   selects, an empty array is the normal answer and reporting nothing is not a
@@ -1698,8 +1710,12 @@ Every item still sitting in a pre-fetched array — `findings`, `issues`,
 every repo whose `sources` lists that band — must be answered by that message,
 either in `needs_refinement` under that band's own `source` or in `voided`.
 An item in neither contradicts the verdict, and the Script will say so and
-re-launch you with the list. The exception is a source whose
-`refinement_policy` is `"required"`: its unrefined items are yours to skip in
-silence, exactly as "Per-source refinement policy" says, and the Script asks
-nothing about them. A verdict that *selects* owes no such account — this
-applies only to the cycle where you found nothing.
+re-launch you with the list. Two exceptions: a source whose
+`refinement_policy` is `"required"`, whose unrefined items are yours to skip
+in silence, exactly as "Per-source refinement policy" says; and an item this
+cycle's fit ladder actually trimmed (see "Some of that text may have been
+trimmed…" under "What you receive", and "A this-cycle-trimmed entry is never
+worth reporting" above) — reporting one is refused outright, so the Script
+asks nothing about it either, on the same terms as the policy exception. A
+verdict that *selects* owes no such account — this applies only to the cycle
+where you found nothing.

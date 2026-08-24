@@ -224,6 +224,67 @@ assert_eq "an untrimmed cycle produces no detail line at all" \
 assert_true "a cycle that could not be fitted says so in the detail" \
   "$(grep -qF "still does not fit" <<<"$(coordinator_fit_detail "$(fit 200 <<<"$many" | jq -c '.fit')")" && echo true || echo false)"
 
+# --- coordinator_fit_trimmed_items / coordinator_fit_trim_refusal_reason
+#     (agent-ops#683): the exemption set behind requirement 34e's fourth
+#     refusal and requirement 3x's matching completeness exception. ---
+
+# The mass-flag shape: the bottom rung cuts every candidate's body to a
+# title-level fragment, and every one of them is now trimmed — with every
+# entry still present (budget 5000 lands on rung 8, `0:0:1000`, without
+# forcing the entry-cap rungs below it, which would drop candidates rather
+# than merely trim their prose).
+many_small="$(mk_repos 3 5000 2 5000)"
+bottom="$(fit 5000 <<<"$many_small")"
+assert_eq "the fixture actually reaches the bottom rung with no entries dropped" \
+  "8 0" "$(jq -r '"\(.fit.rung) \(.fit.entries_dropped)"' <<<"$bottom")"
+trimmed="$(coordinator_fit_trimmed_items <<<"$(jq -c '.repos' <<<"$bottom")")"
+assert_eq "the bottom rung marks every candidate trimmed" "3" "$(jq 'length' <<<"$trimmed")"
+assert_eq "each mark carries the item's own repo, ref and source" \
+  "$(jq -cS 'sort_by(.item)' <<<'[{"repo":"o/r","item":"1","source":"issues"},{"repo":"o/r","item":"2","source":"issues"},{"repo":"o/r","item":"3","source":"issues"}]')" \
+  "$(jq -cS 'sort_by(.item)' <<<"$trimmed")"
+
+# An input the fit never touches (inside its allowance) marks nothing.
+untouched="$(fit 5000000 <<<"$small")"
+assert_eq "an untrimmed cycle's fitted array marks nothing trimmed" "0" \
+  "$(jq 'length' <<<"$(coordinator_fit_trimmed_items <<<"$(jq -c '.repos' <<<"$untouched")")")"
+
+# A cycle trimmed only a little (a middle rung) marks only the entries that
+# actually exceeded that rung's caps — not every entry in the band.
+mixed="$(python3 -c '
+import json
+issues = [
+  {"source": "issues", "ref": "1", "url": "https://github.com/o/r/issues/1",
+   "title": "t", "priority": "Medium", "updated_at": "2026-08-01T00:00:00Z",
+   "body": "tiny", "comments": []},
+  {"source": "issues", "ref": "2", "url": "https://github.com/o/r/issues/2",
+   "title": "t", "priority": "Medium", "updated_at": "2026-08-02T00:00:00Z",
+   "body": "B" * 30000, "comments": []},
+]
+print(json.dumps([{"slug": "o/r", "sources": ["issues"], "issues": issues, "tech_debt": []}]))')"
+mixed_out="$(fit 3000 <<<"$mixed")"
+mixed_trimmed="$(coordinator_fit_trimmed_items <<<"$(jq -c '.repos' <<<"$mixed_out")")"
+assert_eq "only the entry that actually exceeded the rung is marked trimmed" \
+  '["2"]' "$(jq -c '[.[].item]' <<<"$mixed_trimmed")"
+
+# The refusal function itself: refuses only an entry naming a repo+item the
+# trimmed set carries, regardless of source, and names the rung.
+entry_trimmed='{"repo":"o/r","item":"2","source":"issues","reason":"x","missing":"y","evidence":"z"}'
+reason="$(coordinator_fit_trim_refusal_reason "$entry_trimmed" "$mixed_trimmed" "3")"
+rc=$?
+assert_eq "a report naming a trimmed item is refused" "1" "$rc"
+assert_true "the refusal names the rung" "$(grep -qF 'rung 3' <<<"$reason" && echo true || echo false)"
+
+entry_untouched='{"repo":"o/r","item":"1","source":"issues","reason":"x","missing":"y","evidence":"z"}'
+coordinator_fit_trim_refusal_reason "$entry_untouched" "$mixed_trimmed" "3"
+assert_eq "a report naming an untrimmed item is not refused" "0" "$?"
+
+assert_eq "an entry naming no repo/item is never refused" "0" \
+  "$(coordinator_fit_trim_refusal_reason '{}' "$mixed_trimmed" "3" >/dev/null 2>&1; echo $?)"
+assert_eq "an empty trimmed set refuses nothing" "0" \
+  "$(coordinator_fit_trim_refusal_reason "$entry_trimmed" '[]' "3" >/dev/null 2>&1; echo $?)"
+assert_eq "malformed trimmed JSON degrades to refusing nothing" "0" \
+  "$(coordinator_fit_trim_refusal_reason "$entry_trimmed" "not json" "3" >/dev/null 2>&1; echo $?)"
+
 echo
 if (( failures == 0 )); then
   echo "All coordinator-input assertions passed."

@@ -1851,10 +1851,11 @@ exclude_blocked_or_void_issues() {  # <candidates-json> <repo> <blocked-json> <v
 # Malformed input degrades to `[]` — silence, not a false positive — on the
 # same fail-open terms as exclude_claimed_items and
 # exclude_blocked_or_void_items above.
-unaccounted_items() {  # <recorded-json> <eligible-json> <refinement-policy-json>
-  local recorded="$1" eligible="${2:-[]}" policy="${3:-{\}}" docs
+unaccounted_items() {  # <recorded-json> <eligible-json> <refinement-policy-json> [trimmed-json]
+  local recorded="$1" eligible="${2:-[]}" policy="${3:-{\}}" trimmed="${4:-[]}" docs
   jq -e 'type == "array"' <<<"$eligible" >/dev/null 2>&1 || eligible='[]'
   jq -e 'type == "object"' <<<"$policy" >/dev/null 2>&1 || policy='{}'
+  jq -e 'type == "array"' <<<"$trimmed" >/dev/null 2>&1 || trimmed='[]'
   # Keyed on joined strings through two lookup maps rather than on jq's own
   # array/object equality: `index` given an array argument searches for a
   # *subsequence*, not an element, so the obvious `[$repo,$item] | index` form
@@ -1871,8 +1872,10 @@ unaccounted_items() {  # <recorded-json> <eligible-json> <refinement-policy-json
   # [] -- an oversized eligible set would then read as "everything is
   # accounted for" rather than the argv failure it actually is, exactly the
   # silent-degradation failure mode requirement 4g exists to remove.
-  # $recorded travels alongside it on the same stdin document.
-  docs="$(printf '%s\n' "$recorded" "$eligible")"
+  # $recorded and $trimmed travel alongside it on the same stdin document, for
+  # the same reason -- $trimmed grows with the cycle's own trimmed band
+  # (requirement 4i) and is no more bounded than $eligible is.
+  docs="$(printf '%s\n' "$recorded" "$eligible" "$trimmed")"
   # TD-PPagop-26081407: this is the guard the 2026-08-14 outage actually went
   # through -- an execve failure here read as "everything is accounted for"
   # and the Script corroborated a none-selected verdict silently. requirement
@@ -1882,16 +1885,48 @@ unaccounted_items() {  # <recorded-json> <eligible-json> <refinement-policy-json
   # so this reports regardless of cause.
   local out
   out="$(jq -nc --argjson policy "$policy" '
-    input as $recorded | input as $eligible
+    input as $recorded | input as $eligible | input as $trimmed
     | def ikey: ((.repo // "") + "\u0000" + ((.item // "") | tostring));
       def skey: (ikey + "\u0000" + (.source // ""));
       (($recorded.needs_refinement // []) | map({key: skey, value: true}) | from_entries) as $reported
       | (($recorded.voided // []) | map({key: ikey, value: true}) | from_entries) as $disposed
+      # requirement 34e'"'"'s fourth refusal already discards any needs_refinement
+      # report against an item this cycle'"'"'s fit ladder trimmed (agent-ops#683),
+      # so this bar must not demand one either -- asking for a report the
+      # Script'"'"'s own other rule throws away is the identical self-defeating
+      # loop the "required" policy exemption just below already exists to
+      # avoid for a different reason.
+      | ($trimmed | map({key: skey, value: true}) | from_entries) as $fit_trimmed
       | [ $eligible[]
           | select((($policy[(.source // "")] // "exempt") != "required")
                    and (($reported[skey] // false) | not)
-                   and (($disposed[ikey] // false) | not)) ]
+                   and (($disposed[ikey] // false) | not)
+                   and (($fit_trimmed[skey] // false) | not)) ]
     ' <<<"$docs" 2>&1)" || { guard_warn "unaccounted_items" "$out"; out='[]'; }
+  printf '%s' "$out"
+}
+
+# coordinator_unassessable_items ELIGIBLE_JSON TRIMMED_JSON
+# The subset of ELIGIBLE_JSON (`coordinator_eligible_items`' own output) the
+# fit ladder actually trimmed this cycle (`coordinator_fit_trimmed_items`,
+# lib/coordinator-input.sh) -- the set `unaccounted_items` above no longer
+# demands an account for (requirement 3x's exemption, agent-ops#683). Kept as
+# its own small pass, keyed the same way `unaccounted_items` keys `skey`,
+# rather than folded into that function's own jq program, so the count is
+# available for the cycle log independently of whether the verdict needed
+# correcting at all -- a cycle whose Co-Ordinator got everything right still
+# owes the log this figure.
+coordinator_unassessable_items() {  # <eligible-json> <trimmed-json>
+  local eligible="${1:-[]}" trimmed="${2:-[]}" docs out
+  jq -e 'type == "array"' <<<"$eligible" >/dev/null 2>&1 || eligible='[]'
+  jq -e 'type == "array"' <<<"$trimmed" >/dev/null 2>&1 || trimmed='[]'
+  docs="$(printf '%s\n' "$eligible" "$trimmed")"
+  out="$(jq -nc '
+    def skey: ((.repo // "") + "\u0000" + ((.item // "") | tostring) + "\u0000" + (.source // ""));
+    input as $eligible | input as $trimmed
+    | ($trimmed | map({key: skey, value: true}) | from_entries) as $t
+    | [ $eligible[] | select($t[skey] // false) ]
+  ' <<<"$docs" 2>&1)" || { guard_warn "coordinator_unassessable_items" "$out"; out='[]'; }
   printf '%s' "$out"
 }
 
@@ -2161,6 +2196,20 @@ release_refinement_label() {
 #     from a thread's own stale prose is never a legitimate reason to decline an
 #     item, and recording one as a block would silently blind selection to an
 #     item the gate already cleared.
+#   - a Co-Ordinator report naming an item this same cycle's fit ladder
+#     actually trimmed (`coordinator_fit_trim_refusal_reason`,
+#     lib/coordinator-input.sh; requirement 4i; agent-ops#683), logged as a
+#     warning naming the item and the rung. A trimmed candidate's body can be
+#     as little as a title-level fragment, and "if you cannot tell what done
+#     would mean, report needs_refinement" then compels a report the
+#     completeness bar (requirement 3x) would otherwise force the Script to
+#     record as a block — nine items, most of them already refined, flagged
+#     `needs-refinement` in 68 seconds on 2026-08-21 (and, before
+#     agent-ops#651 ended that separate path, re-assigned too), on a cycle
+#     whose Co-Ordinator did nothing wrong. Scoped to `stage == "coordinator"`:
+#     the Refiner and Implementer read the repository live rather than off
+#     this cycle's Co-Ordinator input, so a fit-ladder mark on that input says
+#     nothing about what either of them actually had in front of them.
 record_needs_refinement_block() {
   local entry="$1" stage="$2" repo item reason problem label blocked_label blocked_reason_label reason_label number who
   who="$(pipeline_actor_label "$stage")"
@@ -2183,6 +2232,13 @@ record_needs_refinement_block() {
   fi
 
   if ! problem="$(dependency_refusal_reason "$entry" "${issues_by_repo_json:-{\}}")"; then
+    log_event "warning" "$(jq -nc --arg d "$who needs_refinement entry for $repo $item refused — it $problem" \
+      '{detail: $d}')"
+    return 1
+  fi
+
+  if [[ "$stage" == "coordinator" ]] \
+     && ! problem="$(coordinator_fit_trim_refusal_reason "$entry" "${coordinator_fit_trimmed_json:-[]}" "${coordinator_fit_rung:-0}")"; then
     log_event "warning" "$(jq -nc --arg d "$who needs_refinement entry for $repo $item refused — it $problem" \
       '{detail: $d}')"
     return 1
@@ -3539,7 +3595,7 @@ coordinator_corroborate_retry_or_fallback() {
     unaccounted_json="$(unaccounted_items \
       "$(jq -nc 'input as $nr | input as $v | {needs_refinement: $nr, voided: $v}' \
           <<<"${coord_recorded_refinement_json:-[]}"$'\n'"${coord_recorded_voided_json:-[]}")" \
-      "$eligible_items_json" "$refinement_policy_json")"
+      "$eligible_items_json" "$refinement_policy_json" "${coordinator_fit_trimmed_json:-[]}")"
   fi
   unaccounted_n="$(jq 'length' <<<"$unaccounted_json" 2>&1)" \
     || { guard_warn "unaccounted_n" "$unaccounted_n"; unaccounted_n=0; }
@@ -3767,7 +3823,7 @@ object, nothing else.
   unaccounted_retry_json="$(unaccounted_items \
     "$(jq -nc 'input as $nr | input as $v | {needs_refinement: $nr, voided: $v}' \
         <<<"$recorded_refinement_all_json"$'\n'"$recorded_voided_all_json")" \
-    "$eligible_items_json" "$refinement_policy_json")"
+    "$eligible_items_json" "$refinement_policy_json" "${coordinator_fit_trimmed_json:-[]}")"
   unaccounted_retry_n="$(jq 'length' <<<"$unaccounted_retry_json" 2>&1)" \
     || { guard_warn "unaccounted_retry_n" "$unaccounted_retry_n"; unaccounted_retry_n=0; }
   unaccounted_retry_bands_json="$(jq -c 'group_by(.source)
@@ -8967,6 +9023,22 @@ if (( coordinator_prompt_max_bytes > 0 )); then
 fi
 # --- end of requirement 4i's fit ---
 
+# The fit's own exemption set for requirement 34e's fourth refusal and
+# requirement 3x's matching completeness exception (agent-ops#683): which
+# issues/tech-debt candidates this cycle's fit actually trimmed, `{repo,
+# item, source}` per entry, on the same shape `coordinator_eligible_items`
+# below produces. Read straight off `ordered_repos_json` as the fit above
+# left it — never the pre-fit array, which carries none of the markers
+# `coordinator_fit_trimmed_items` looks for — and only when the fit actually
+# ran: an untouched array has nothing to find, and asking would cost a jq
+# pass for an empty answer on every ordinary cycle.
+coordinator_fit_trimmed_json="[]"
+coordinator_fit_rung=0
+if jq -e '.applied == true' <<<"${coordinator_fit_report_json:-{}}" >/dev/null 2>&1; then
+  coordinator_fit_trimmed_json="$(coordinator_fit_trimmed_items <<<"$ordered_repos_json")"
+  coordinator_fit_rung="$(jq -r '.rung // 0' <<<"$coordinator_fit_report_json" 2>/dev/null || echo 0)"
+fi
+
 # The Script's own count of what *every* pre-fetched band could actually offer
 # this cycle, and which repo+item+source triples make it up — the
 # machine-corroboration baseline "5a. Verdict corroboration" below tests the
@@ -8982,6 +9054,22 @@ fi
 eligible_items_json="$(coordinator_eligible_items "$ordered_repos_json" "$blocked_json")"
 eligible_items_total="$(jq 'length' <<<"$eligible_items_json" 2>&1)" \
   || { guard_warn "eligible_items_total" "$eligible_items_total"; eligible_items_total=0; }
+
+# The count behind requirement 3x's trimmed exemption (agent-ops#683): how
+# many of this cycle's eligible candidates the fit above actually trimmed —
+# the ones `unaccounted_items` below no longer demands a `needs_refinement`/
+# `voided` account for. Logged unconditionally on the verdict, once per
+# cycle, because it is a fact about this cycle's input rather than about what
+# the Co-Ordinator went on to decide.
+coordinator_unassessable_json="$(coordinator_unassessable_items "$eligible_items_json" "$coordinator_fit_trimmed_json")"
+coordinator_unassessable_total="$(jq 'length' <<<"$coordinator_unassessable_json" 2>&1)" \
+  || { guard_warn "coordinator_unassessable_total" "$coordinator_unassessable_total"; coordinator_unassessable_total=0; }
+if (( coordinator_unassessable_total > 0 )); then
+  log_event "coordinator-input-fit-unassessable" "$(jq -nc \
+    --argjson n "$coordinator_unassessable_total" --argjson rung "$coordinator_fit_rung" \
+    --arg d "the fit ladder trimmed $coordinator_unassessable_total of this cycle's eligible candidate(s) (rung $coordinator_fit_rung) — requirement 34e refuses a needs_refinement report against any of them, and requirement 3x's completeness check asks for none either" \
+    '{detail: $d, unassessable_total: $n, rung: $rung}')"
+fi
 
 # --- 3b. No-op short-circuit (requirement 3b) ---
 # The Co-Ordinator costs the same to tell us "nothing to do" as it does to
