@@ -225,6 +225,12 @@
         "repo": "Poetic-Poems/agent-ops",
         "pr_url": "https://github.com/Poetic-Poems/agent-ops/pull/605",
         "reason": "kill-switch:merge_autonomy kill switch is engaged fleet-wide — effective level forced to human regardless of the configured level, until an operator clears it"
+      },
+      {
+        "ts": "@ago:8h",
+        "repo": "Poetic-Poems/agent-ops",
+        "pr_url": "https://github.com/Poetic-Poems/agent-ops/pull/652",
+        "reason": "open-question:https://github.com/Poetic-Poems/agent-ops/pull/652 carries an unresolved open question — see the escalation issue"
       }
     ],
     "budget": [

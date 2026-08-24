@@ -121,7 +121,10 @@ a node updates by pulling a new image rather than by pulling a branch.
   byte-identical to `.github/workflows/shellcheck.yml`'s own pin — component
   10), so an Implementer working inside this image can run
   `scripts/lint-shell.sh` — the gate its own pull request is judged by —
-  before pushing.
+  before pushing. On a node that run is the gate minus its size guard: the
+  container's memory ceiling is below what the largest script costs to lint,
+  so that one file is skipped with a warning and CI is where it is actually
+  checked (acceptance check 1g-i).
 - `deploy/docker/entrypoint.sh` runs as `agent` on every container start and is
   idempotent: it seeds `$CLAUDE_CONFIG_DIR/settings.json` from
   `deploy/docker/claude-settings.json` **only when absent** (that directory is a
@@ -871,6 +874,8 @@ Cycle and review directories whose derived files are kept — the stage event st
 ### Extended notes: `escalation_autonomy`
 
 The D18 escalation-autonomy ladder (agent-ops#627), fleet-wide default; a `repos[]` entry's own `escalation_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). At `adjudicate-first`, before the Script files the escalation issue for a refinement-disagreement item (requirement 36b: a `needs-refinement` block whose `refined_before` is set), one bounded adjudication pass runs at `enabler_model` — the Enabler has no second, critical tier to call this at, unlike the Approver's own adjudication (requirement 8c) — and is logged as an `enabler-adjudication` event carrying its `verdict` (`adequate`/`inadequate`) and `evidence`. `adequate` is recorded exactly as an ordinary `unblocked` refinement (an `unblocked` event plus `item-refined`, carrying the existing refinement's own `spec`/`comment_url`); `inadequate`, an unparseable verdict, or a failed adjudication engagement all escalate, with the pass's own `evidence` appended to `issue.body` under an `## Adjudication attempted` heading (agent-ops#681) before the issue is filed, so the human starts from why an adjudicator's answer is missing rather than only the pre-adjudication verdict. Bounded, not a loop: one pass per item, per human touch — an item with an `enabler-adjudication` event already on the log escalates without a further pass, the one exemption being eligibility `reason: "issue-closed"`, a human having acted on an escalation about it. Owner-only decisions (spec edits, architecture and strategy choices) escalate at every level; nothing here relaxes requirement 36a's protocol.
+
+The same top-level (or per-repo) level also governs a second, independent consumer: a Reviewer's own open question against a pull request (requirement 8f, agent-ops#668). The ladder word is shared — one config key, not two — but the actor, tier and prompt are not: an open question adjudicates at the Approver's own critical tier (`approver_model_critical`, `prompts/approver-adjudicate-open-question.md`) rather than `enabler_model`, is logged as `open-question-adjudication` rather than `enabler-adjudication`, and is bounded by `open_question_pass_available` rather than `escalation_autonomy_pass_available` — a distinct function reading the same "one pass per item, per human touch, with a closed-escalation-issue exemption" shape, never the same log entries. A repository dialled to `adjudicate-first` for refinement disagreements gets the open-question adjudication path too; there is no way to enable one without the other.
 
 ### Extended notes: `needs_refinement_label`
 
@@ -3806,6 +3811,32 @@ implements.
    thing that varies by band is which items are eligible, and that is the
    eligible set's job.
 
+   **So is an eligible entry the fit ladder actually trimmed this cycle**
+   (requirement 4i's own exemption, agent-ops#683), on the same "per source"
+   shape but keyed on the individual entry rather than the whole band:
+   requirement 34e's fourth refusal already discards any `needs_refinement`
+   report against one, so demanding an account of it here would demand a
+   report the Script's own other rule throws away — the identical
+   self-defeating loop the `"required"` exemption above exists to avoid, for a
+   different reason. `coordinator_fit_trimmed_items` (`lib/coordinator-input.sh`)
+   is the exemption set, matched against the eligible set on the same `{repo,
+   item, source}` key `unaccounted_items` already keys everything else on.
+   This is what stops the refusal from simply relocating the mass-flag into a
+   corroboration-rejected retry loop over the same trimmed input: without it, a
+   Co-Ordinator that (correctly) declines to guess at a trimmed candidate's
+   acceptance criteria would find its `"selected": false` rejected for leaving
+   that candidate unaccounted, retried against byte-identical input, and
+   rejected again — the fallback selection (below) then handing an Implementer
+   a candidate the Co-Ordinator was never given enough of the thread to brief.
+   The count of eligible entries the exemption actually covers is logged
+   separately, once per cycle and whatever the Co-Ordinator went on to decide,
+   as `coordinator-input-fit-unassessable` (carrying `unassessable_total` and
+   the rung) — `coordinator_unassessable_items` — so a human reading the cycle
+   log can still see how much of a cycle's backlog went unassessed even though
+   no per-item report was asked for. A cycle the fit trimmed nothing in has
+   nothing to say here and says nothing: the event is written only where the
+   count is above zero, so the ordinary cycle carries no such record.
+
    **Rejections are tagged with the band.** The `warning` and the rejected
    `corroboration` both carry a `bands` object (`{"issues": 3, "tech-debt":
    1}`), every `unaccounted` entry carries its own `source`, and the
@@ -4700,6 +4731,23 @@ implements.
    stops being read. A fit that still does not fit at one entry per band logs
    a `warning` as well, saying so *before* the API refuses the prompt.
 
+   **The bottom rung (`0:0:1000`) stays a trim, not a drop, and requirement
+   34e's fourth refusal (agent-ops#683) is the decision, reasoned.** Before
+   that refusal existed, reaching this rung meant every candidate's body was
+   pared to a title-level fragment and its comments emptied — exactly the
+   shape that compelled the mass-flagging incident 34e's fourth bullet
+   describes — which made "drop entries here instead of trimming them" a real
+   fix to weigh: an entry this small could not be judged either way, so
+   keeping it costs a candidate slot for something the Co-Ordinator could not
+   use. Requirement 34e's refusal removes that harm at its source: a trimmed
+   entry can no longer force a block, so all a bottom-rung entry still buys
+   the Co-Ordinator is its identity fields (`ref`, `title`, `priority`,
+   `labels`, `updated_at`) — enough to rank it, and enough to select and
+   live-read it should its title alone look worth the fetch. Dropping it
+   instead would remove that option for no remaining harm left to trade it
+   against, so the ladder is unchanged: eight rungs, generous first, `0:0:1000`
+   last, no floor added below it.
+
    **Every degradation here is toward the unbounded input, never toward an
    empty one.** A budget of `0`, a non-numeric budget, a stdin document that
    is not an array, or a `jq` failure at any rung all answer with the input
@@ -5257,17 +5305,18 @@ implements.
       needs. `dirty` refuses arming, naming the unreconciled comment(s) as
       the reason; any other answer that is not `clean` — `unknown`, where the
       timeline or the comment list could not be read, and the empty word left
-      behind by a call that did not execute at all — logs a `warning` and
-      lets the rest of this gate sequence decide, the same "could not ask is
-      not a failure" contract the Reviewer's own reconciliation read already
-      keeps. Only the exact word `clean` passes silently: a veto check that
-      reads as clear on the one path where it never ran is the failure this
-      gate exists to prevent, so an unrecognised answer is treated as
-      `unknown` rather than fallen through. The verdict rides in the landing
-      audit record (requirement 8x) as its own `comment-reconciliation` gate
-      entry, carrying the word the read actually returned, so a landing armed
-      over a question that could not be put is never recorded as one where it
-      came back clear.
+      behind by a call that did not execute at all — refuses too (#753's
+      ruling on agent-ops#746), naming the pull request and what could not
+      be confirmed. Neither is unfolded as a case distinct from the other,
+      and neither is conditioned on `merge_autonomy_effective_level`: unlike
+      the Reviewer's own reconciliation read at hand-off, which does
+      tolerate an `unknown` there with a logged warning, this arming-time
+      instance never lets an unanswered question pass. Only the exact word
+      `clean` passes silently: a veto check that reads as clear on the one
+      path where it never ran is the failure this gate exists to prevent.
+      Because every non-`clean` word now refuses before this gate sequence
+      can reach an arm, the landing audit record (requirement 8x) can only
+      ever carry a `comment-reconciliation` entry reading `clean`.
    4.5. D18 WI-12 (Stage 4, agent-ops#415): only at `agent-merges-all`, and
       only for a pull request `landing_protected_path_controls_ok`
       (`lib/landing.sh`) itself re-confirms still touches a protected path —
@@ -5513,6 +5562,110 @@ implements.
    enough ago for the sweep to have reached it, merged by someone other than
    the Approver identity, or genuinely unauditable) reads `audit: null`,
    never folded into either `clean` or `escape`.
+8f. **An open question the Reviewer could not settle holds unattended
+    landing (D18, agent-ops#668).** Requirement 32's `open_questions` is
+    additive to a `ready` verdict — the pull request still hands off exactly
+    as it always has — and names a narrow case: nothing in the diff is
+    wrong, but a question about the work order or its scope needs a
+    decision the Reviewer is not the right actor to make. The Script
+    projects `open-question` onto the pull request (`landing_open_question_
+    label_project`, `lib/landing.sh`) the moment a `ready` verdict carries
+    one or more, read-before-write exactly as `refinement_label_project`
+    already is for the issue-side `blocked` (agent-ops#651's contract), and
+    logs `open-question-raised` carrying the question, why the Reviewer
+    could not settle it, and the PR comment stating it in the Reviewer's own
+    words (requirement 30).
+
+    A further gate in `_landing_stage_attempt`, inserted between gate 2
+    (eligibility) and gate 3 (the review gate), on the same terms as every
+    gate beside it: `landing_open_question_hit` reads the label fresh from
+    GitHub — never a log join, so a human's own removal of the label is
+    seen the moment it happens, and requirement 8u's retry sweep re-reads it
+    exactly as it re-reads every other gate, needing no second copy of this
+    one either. A hit refuses, logged `landing-refused` with its own
+    `open-question:` reason class (the same `class:detail` shape
+    `landing_autonomy_refusal_reason`'s `kill-switch:` and `landing_
+    eligible`'s `ineligible:` already establish, so the *Autonomous
+    landings* panel's existing `byReason` grouping (`docs/DASHBOARD-
+    SPEC.md`) surfaces it with no dashboard code change); a pass rides in
+    the landing audit record (requirement 8x) as its own `open-question`
+    gate, reading `clear` where no question stood and `settled` where one
+    did and the adjudication pass below answered it on that same round — so
+    a landing armed over a question is never indistinguishable, in the
+    record, from one that never had a question at all. But a hit does
+    not merely refuse: it resolves through the same `escalation_autonomy`
+    ladder requirement 36b already reads (`escalation_autonomy_configured_
+    level`, `lib/escalation-autonomy.sh`), level-aware rather than summoning
+    a human outright:
+
+    - At `always-escalate`, `open_question_escalate` files (or finds
+      already-filed, via `create_escalation_issue`'s own dedup) one
+      escalation issue per pull request — footer-keyed to a synthetic
+      `pr-<n>-open-question` item reference, the same shape
+      `pr-<n>-approver-adjudication` (requirement 8c) already uses — naming
+      the question, and asking the human to answer it, take the
+      `open-question` label off the pull request, and close the issue. The
+      label is what the gate reads, so the label is what the issue body asks
+      for first and names as the releasing act: the gate keeps refusing
+      until it comes off, whatever the issue's own state. A closed issue
+      means only that a human has acted — it restores the
+      `adjudicate-first` pass below, and never releases the gate by itself.
+    - At `adjudicate-first`, one bounded adjudication pass runs first
+      (`run_open_question_adjudication`, `prompts/approver-adjudicate-open-
+      question.md`) at the Approver's own critical tier
+      (`approver_model_critical` — the tier D18 §5.2 already reserves for
+      litigated judgement, never `enabler_model`: the question is about
+      whether this pull request's own diff and work order already answer
+      it, the Approver's own ground). `settled` posts the answer as a PR
+      comment, logs `open-question-adjudication` carrying `verdict:
+      "settled"` and `evidence`, releases the label
+      (`landing_open_question_label_release`), and the gate clears —
+      nothing else about the pull request changes. `escalate`, a stage
+      failure, or an unparseable verdict all log the same event with
+      `verdict: "escalate"` and reach `open_question_escalate` exactly as
+      `always-escalate` does; "cannot settle" is not read as "nothing to
+      settle" (requirement 8c). Bounded exactly as 36b is bounded — one
+      pass per question, per human touch (`open_question_pass_available`,
+      mirroring `escalation_autonomy_pass_available`'s own shape, including
+      its "a human already acted" exemption: a closed escalation issue for
+      this pull request's `pr-<n>-open-question` reference means the next
+      pass is the first since they did) — a question already carrying an
+      `open-question-adjudication` event escalates without a second pass.
+
+    **Distinct from requirement 8c's own refuse-streak adjudication in every
+    way that requirement's own text calls for**: different trigger (an open
+    question stands, never a refuse streak), different prompt
+    (`prompts/approver-adjudicate-open-question.md`, never
+    `prompts/approver.md` with a `## Prior refusals` section appended),
+    different input (the question and its own comment, never prior refusal
+    bodies), different event (`open-question-adjudication`, never
+    `approver-verdict`), and never conflated with requirement 36b's own
+    `enabler-adjudication` either — same ladder, different actor and tier.
+
+    **Only two things clear `open-question`**: a `settled` adjudication
+    verdict, or a human removing the label themselves. A new head commit
+    does not — the question is about scope, not about the diff, so pushing
+    more code answers nothing a label keyed to the diff's own head would
+    correctly track. A later Reviewer round raising a further question
+    while the label already stands logs its own `open-question-raised`
+    event (the label projects `present`, not `added`) and leaves the pull
+    request exactly as held as it already was.
+
+    No identifier this requirement introduces names a human as the
+    destination of the signal (requirement 45's own framing extended by
+    agent-ops#679): `open-question`, `open_questions`, `open-question-
+    raised`, `open-question-adjudication` and `open-question-escalated` all
+    name the question, never where it goes.
+
+    **Requirement 38 needs no change for this.** A pull request held on an
+    open question is finished work not landing, the shape requirement 38
+    exists to surface — but every gate round that refuses on a hit either
+    settles the question or calls `open_question_escalate` before it
+    returns, so the escalation issue (assigned to `enabler_assignee` under
+    `enabler_escalation_label`, `open_question_escalate`'s own dedup finding
+    it again on every later round) exists by the same round the refusal is
+    logged, giving it exactly the visibility requirement 36a's own
+    escalations get (Assigned-to-me) with no gap for a sweep to close.
 9. **Failure handling.** If any stage times out, exits non-zero, or returns
    an unparseable summary: kill that stage's process group, log
    `attempt-failed` with enough detail for a future cycle to know the item
@@ -5913,9 +6066,10 @@ implements.
    round's feedback) or fetched live with `gh` mid-run. Every shipped stage
    prompt — `prompts/coordinator.md`, `prompts/implementer.md`,
    `prompts/reviewer.md`, `prompts/approver.md`, `prompts/enabler.md`,
-   `prompts/enabler-adjudicate.md`, `prompts/refiner.md` — carries an
-   `## Untrusted external content` section stating this rule to the stage
-   it operates.
+   `prompts/enabler-adjudicate.md`,
+   `prompts/approver-adjudicate-open-question.md`, `prompts/refiner.md` —
+   carries an `## Untrusted external content` section stating this rule to
+   the stage it operates.
 
 45a. **One canonical wording, pinned.** The framing is a single canonical
    block, byte-identical in every prompt that carries it, delimited by a
@@ -7642,6 +7796,19 @@ implements.
     the block's own `detail` under requirement 32a. `needs-human` is accepted as
     a synonym for `blocked` for one release, on the precedent of requirement
     20's shape migration; the prompt emits `blocked`.
+
+    Additive to a `ready` verdict, absent or empty on the overwhelming
+    majority of rounds: `"open_questions": [{"question": …,
+    "why_this_actor_cannot_settle_it": …, "comment_url": …}]` (D18,
+    agent-ops#668) — a narrow, structured companion for the one case
+    `comments_left`'s plain findings comments do not fit: nothing in the diff
+    is wrong, so there is nothing to fix or flag as a defect, but a question
+    about the work order or its scope needs a decision the Reviewer is not
+    the right actor to make. It is deliberately not a third status alongside
+    `ready`/`blocked`: the pull request still hands off exactly as it always
+    has, and an unresolved entry holds only *unattended landing*, through the
+    gate requirement 8f adds — never the handoff itself, and never anything
+    a defect or an impediment already has a channel for.
 32a. **A Reviewer that cannot hand off hands back, not out.** Any ending other
     than a pull request the human can see — `blocked`, an unparseable status, or
     a `ready` whose handoff requirement 31a could not make true — is recorded as
@@ -7764,6 +7931,7 @@ implements.
     `salvage`, `chained`,
     `approver-verdict`, `approver-escalated`,
     `landing-armed`, `landing-refused`, `classifier-escape`, `landing-audit`,
+    `open-question-raised`, `open-question-adjudication`, `open-question-escalated`,
     `review-gate-checks-read`, `review-gate-checks-degraded`, `first-seen`,
     `issues-excluded`,
     `warning`, `cycle-end`. `classifier-escape` and `landing-audit`
@@ -7809,6 +7977,23 @@ implements.
     marker carries (requirement 8c), read here rather than reused there
     because the two adjudications judge different questions over different
     stages' own verdicts.
+    `open-question-raised` (requirement 8f, agent-ops#668) is logged once per
+    Reviewer `ready` round carrying one or more `open_questions`, whether or
+    not this is the first such round for the pull request, carrying
+    `pr_url`, `repo`, `label_projection` (`landing_open_question_label_
+    project`'s own word) and `questions` (requirement 32's array, verbatim).
+    `open-question-adjudication` is logged once per adjudication pass
+    `run_open_question_adjudication` runs, carrying `pr_url`, `repo`,
+    `verdict` (`settled`/`escalate`), `evidence` and `adjudication: true` —
+    the same verdict-plus-evidence shape `enabler-adjudication` and
+    `approver-verdict`'s own `adjudication: true` marker carry, read as its
+    own event rather than reused from either because it judges a third,
+    distinct question (does an existing pull request's own diff and work
+    order already answer this question?) over neither stage's own verdict.
+    `open-question-escalated` mirrors `approver-escalated` exactly —
+    `pr_url`, `issue_number`, `issue_url` — logged by `open_question_
+    escalate` whether reached directly (`escalation_autonomy:
+    "always-escalate"`) or after an `escalate`/failed adjudication pass.
     `review-gate-checks-read` (requirement 31c,
     TD-PPagop-26081404) is bookkeeping, one per ready-gate evaluation, carrying
     `ok: true|false` — machine-read by the streak verdict, and kept out of
@@ -8541,7 +8726,7 @@ implements.
     version appearing for a skipped security finding — several cycles to settle
     the item before the expensive stage is bought.
 
-    Three entries are refused, all on the Script's side of the boundary:
+    Four entries are refused, all on the Script's side of the boundary:
     - **A malformed entry** — missing `repo`, `item`, `reason`, `missing` or
       `evidence`, judged on requirement 34d's emptiness discipline — is logged
       as a `warning` and dropped. The fields are what the Enabler starts from,
@@ -8569,6 +8754,45 @@ implements.
       `source: "issues"` entry declining the item as a question or
       discussion, or for any other under-specification, names none and is
       recorded on the ordinary bar above.
+    - **A Co-Ordinator report naming an item this same cycle's fit ladder
+      (requirement 4i) actually trimmed** (`coordinator_fit_trim_refusal_reason`,
+      `lib/coordinator-input.sh`; agent-ops#683) is logged as a `warning`
+      naming the item and the rung, and dropped. On 2026-08-21 the ladder's
+      bottom rung (`0:0:1000`) cut every candidate's body to a title-level
+      fragment and its comments to none; the Co-Ordinator, correctly following
+      its own prompt's "if you cannot tell what done would mean, report
+      needs_refinement", reported exactly that for its whole visible backlog,
+      and requirement 3x's own completeness bar then compelled the Script to
+      record every one as a block — nine items, most of them already refined
+      within the preceding day, flagged `needs-refinement` in 68 seconds (and,
+      before agent-ops#651 ended that separate path, re-assigned too). Neither
+      rule was individually wrong; the two are jointly compelled to this
+      outcome whenever the ladder trims this far, and it recurs on every
+      context-tight cycle that selects nothing, scaling with backlog size —
+      the fix is a refusal here, on the Script's side, matched by requirement
+      3x's own completeness exception below. `coordinator_fit_trimmed_items`
+      (`lib/coordinator-input.sh`) is the exemption set — every issues/
+      tech-debt candidate whose body or comments the fit's own `fit_entry`
+      actually clipped this cycle, detected off the elision marker in a
+      clipped body, the same marker in a clipped *comment* body, or the
+      `comments_elided` key a cut comment list leaves behind, and never
+      re-derived from the entry's current byte length. All three markers,
+      because all three take text away from the same reader: an issue whose
+      body is two lines and whose acceptance criteria live in a Refiner's
+      comment is trimmed past what "done" would mean by a middle rung that
+      clips that one comment and leaves everything else as it found it. The
+      refusal is unconditional on the entry's own `reason`/`missing`/`evidence`, and on whether the reporting stage
+      fetched the item live before writing them: the Script cannot tell a
+      report grounded in a live read from one grounded in the elided extract
+      it was handed, and the harm of the occasional false refusal is far
+      smaller than the harm of asking the question at all on a cycle whose
+      whole backlog was trimmed this far. Scoped to `stage == "coordinator"`:
+      the Refiner and Implementer read the repository live rather than off
+      this cycle's Co-Ordinator input, so a fit-ladder mark on that input says
+      nothing about what either of them actually had in front of them. An item
+      refused here is neither blocked nor accounted for — it stays exactly as
+      eligible as it was, for a future, untrimmed cycle to judge on its own
+      terms.
 
     **The label is a projection, never the record.** Where (and only where) the
     item is a GitHub issue — the `issues` source, whose ref is a bare number —
@@ -12048,6 +12272,18 @@ What exists, and the requirements each part answers to:
    the `agent-cycle.sh` block lifted verbatim: the allowance arithmetic,
    measured by reassembling the real prompt around the block's output, and
    the three events the union log depends on. Both must pass `shellcheck`.
+   `coordinator_fit_trimmed_items`, given the *fitted* repos array, prints
+   `{repo, item, source}` for every issues/tech-debt entry `fit_entry`
+   actually clipped — detected off the elision marker in a body or a comment
+   body, or `comments_elided`, never re-measured — and
+   `coordinator_fit_trim_refusal_reason`, given an entry and that set, is
+   requirement 34e's fourth refusal (agent-ops#683).
+   Both are unit-tested directly in `test/coordinator-input.test.sh`
+   (bottom-rung marking, a middle rung marking only the entries it actually
+   touched, an untrimmed cycle marking nothing, and the refusal function's own
+   match/no-match/malformed-input cases) and exercised through the real
+   `record_needs_refinement_block`/`unaccounted_items` in
+   `test/fit-trim-block-refusal.test.sh`.
 5. `README.md`: what the system does, every config key, install steps
    (below), how to operate it (`--dry-run`, `--once`, reading the log and
    stage transcripts), and how to uninstall. It presents the container as the
@@ -12083,9 +12319,12 @@ What exists, and the requirements each part answers to:
    about its own file set, and because a rule that decides what reaches a node
    is worth unit-testing.
 10. `scripts/lint-shell.sh` and `.github/workflows/shellcheck.yml` — the
-    shell linter and the job that enforces it (acceptance check 1g). The file
-    set and the invocation live in the script, so a developer's run and CI's
-    are the same run; the workflow's job is to install a **pinned** shellcheck
+    shell linter and the job that enforces it (acceptance checks 1g and 1g-i).
+    The file set and the invocation live in the script, so a developer's run
+    and CI's are the same run — with one deliberate asymmetry, the size guard
+    of 1g-i, which lets a 3 GB node skip the one script it cannot lint without
+    being OOM-killed while a 16 GB runner still checks it; the workflow's job
+    is to install a **pinned** shellcheck
     (version and tarball checksum, both in the workflow) and call it. The pin
     is the point: the runner image's own version moves without notice, and a
     linter that gains a check overnight fails pull requests that changed
@@ -12945,9 +13184,15 @@ What exists, and the requirements each part answers to:
     both "no human comments since the anchor" and
     "every one is cited". `unknown` covers the timeline, the creation-time
     fallback or the comment list failing to read at all — a node or token
-    fact, never itself blocking (the same "could not ask is not a failure"
-    contract `lib/closing-keyword-gate.sh` already keeps) — and an empty URL
-    is `dirty`, a bug in the caller rather than a degraded node.
+    fact, and this primitive itself decides nothing about it either way; its
+    callers differ. `lib/handoff.sh`'s `handoff_complete_review` treats it as
+    never itself blocking (the same "could not ask is not a failure" contract
+    `lib/closing-keyword-gate.sh` already keeps), logging a warning and
+    letting the rest of that gate sequence decide; requirement 8d's own gate
+    4, re-reading this same primitive a second time at arming, refuses
+    outright instead (#753's ruling on agent-ops#746) — arming an automatic
+    merge tolerates an unanswered question even less than a hand-off does. An
+    empty URL is `dirty`, a bug in the caller rather than a degraded node.
     `RECONCILIATION_GATE_GH` stubs `gh` for tests. Unit-tested
     (`test/reconciliation-gate.test.sh`); must pass `shellcheck`.
 21. `scripts/pickup-metrics.sh` — a read-only operator report, like
@@ -13645,14 +13890,40 @@ pull request, run the ones the change touches and any it could regress.
    `./scripts/lint-shell.sh` exits 0. It discovers the file set — every tracked
    `*.sh`, plus every tracked file whose first line is a sh or bash shebang, so
    the init scripts and git hooks are included and a script added tomorrow is
-   covered without anyone adding it to a list — and checks them in one
-   invocation with `-x`, which is what lets `source` resolve between the
-   pipelines and `lib/` instead of raising SC1091 on each of them. Clean means
+   covered without anyone adding it to a list — and checks them **one process
+   per file** with `-x`, which is what lets `source` resolve between the
+   pipelines and `lib/` instead of raising SC1091 on each of them. `-x` follows
+   a `source` by path whether or not the target was also passed in, so the file
+   set does not have to share a process for this to work; what sharing one did
+   do was couple every script's fate to every other's, and a process that died
+   on the largest script took the other 253 scripts' coverage with it (#770).
+   Clean means
    nothing reported at all, info findings included; a false positive is
    silenced by a `# shellcheck disable=` in the file that carries it, with a
    comment saying why, never by an exclusion in the runner.
    `.github/workflows/shellcheck.yml` runs the same script on every pull
    request against a pinned shellcheck (component 10).
+   `test/lint-shell.test.sh` passes.
+1g-i. **A script too large to lint in the memory available is degraded or
+   skipped, never allowed to kill the cycle.** The pinned shellcheck 0.10.0
+   needs more than 3 GiB to lint `agent-cycle.sh` (10,136 lines) with `-x`, and
+   more than 1,536 MiB — a scheduler container's entire ceiling — even without
+   it. The GHC runtime it is built on ignores `+RTS -M` (the release binary is
+   not linked with `-rtsopts`) and reserves a 1 TB address space, so neither a
+   heap cap nor `ulimit -v` can bound it; the only thing that can is not
+   running it. So `scripts/lint-shell.sh` reads the smaller of its cgroup
+   ceiling and `MemAvailable`, and for a file at or above
+   `LINT_SHELL_LARGE_LINES` (3,000) it follows sources when at least
+   `LINT_SHELL_FOLLOW_MIB` (4,096) is free, drops `-x` and suppresses SC1091
+   when at least `LINT_SHELL_PLAIN_MIB` (3,072) is, and otherwise does not
+   invoke shellcheck on that file at all. Degrading and skipping are both
+   announced on stderr naming the file and the shortfall, because silence would
+   read as coverage that did not happen; a skip alone does not fail the run,
+   since CI has the memory and does check it — `.github/workflows/shellcheck.yml`
+   sets `LINT_SHELL_FOLLOW_MIB: 0` so the guard cannot apply there at all, and
+   the gate's coverage does not quietly track how much memory a runner happens
+   to have. This guard is a consequence of
+   one file's size (#771) and stops applying to anything once that is fixed.
 1h. **A log past `log_retained_bytes` rotates, keeps `log_generations`, and
    never touches `log.jsonl`.** `test/rotate-logs.test.sh` passes: a log under
    the threshold is left alone; one over it is renamed to `.1` and a fresh
@@ -14183,7 +14454,48 @@ pull request, run the ones the change touches and any it could regress.
    unaccounted; and a verdict answering each band by its own route (a
    `needs_refinement` for the issue, a `voided` for the review-feedback entry)
    is accepted on the first attempt, buys no retry, and keeps its
-   fingerprint.
+   fingerprint. `test/verdict-corroboration.test.sh` also passes
+   `unaccounted_items`' fit-ladder exemption (requirement 4i, agent-ops#683): a
+   4th `trimmed-json` argument naming one eligible item exempts only that
+   item, on the same repo+item+source key as `voided`/`needs_refinement`,
+   leaving any other still-unaccounted item flagged; an omitted 4th argument
+   exempts nothing, matching the function's behaviour before this change; and
+   malformed trimmed JSON degrades to exempting nothing rather than
+   everything.
+2j-iii. **A `needs_refinement` block against an entry the fit ladder trimmed
+   this cycle is refused, never recorded, and the completeness check owes no
+   account of it either (requirement 34e's fourth refusal, requirement 3x's
+   matching exemption; agent-ops#683).** `test/coordinator-input.test.sh`
+   passes `coordinator_fit_trimmed_items`/`coordinator_fit_trim_refusal_reason`
+   in isolation: a cycle driven to the ladder's bottom rung with every entry
+   still present marks every one of them trimmed; an untrimmed cycle marks
+   nothing; a cycle trimmed only enough to clip one of two entries marks only
+   that one; an entry whose comment prose alone was clipped — its body inside
+   the rung's cap and its comment list kept whole — is marked trimmed on the
+   marker inside that comment; and the refusal function refuses only an entry
+   whose repo+item the trimmed set carries, names the rung in its reason, and
+   degrades to
+   refusing nothing on an empty or malformed trimmed set.
+   `test/fit-trim-block-refusal.test.sh` then drives the real
+   `record_needs_refinement_block` (lifted verbatim, the same technique
+   `test/dependency-block-refusal.test.sh` uses) and passes: an
+   agent-ops#683-shaped report — the Co-Ordinator citing a trimmed body's own
+   lack of acceptance criteria — is refused with a `warning` naming the item
+   and the rung, applies no label, and writes no `attempt-failed` at all; a
+   genuine report against an item this cycle's fit never touched is recorded
+   exactly as requirement 34e already describes; the refusal is scoped to
+   `stage == "coordinator"` — the identical entry reported by a Refiner or an
+   Implementer is not refused on this bar, since neither reads this cycle's
+   fit-ladder-trimmed Co-Ordinator input; and the malformed-entry bar
+   (requirement 34d) still runs ahead of this one. The same file then proves
+   the two halves compose: with both of a fully-trimmed cycle's eligible items
+   left unreported (as the refusal above forces), `unaccounted_items` finds
+   nothing unaccounted — a `"selected": false` verdict over that cycle is
+   accepted — while `coordinator_unassessable_items` still surfaces both as
+   unassessable for the log, closing the loop the incident opened: the
+   refusal alone would have just relocated the mass-flag into a
+   corroboration-rejected retry loop over the same trimmed input, and this is
+   the assertion that it does not.
 2f. **A preview nobody can reach is never reported as a healthy one
    (requirement 24a).** `test/preview-deploy.test.sh` passes: against a stubbed
    `gh` and a stubbed Vercel that answers the login flow to any request not
@@ -16254,14 +16566,18 @@ pull request, run the ones the change touches and any it could regress.
     `ready_for_review` event, not since undone" already is the anchor this
     read needs. A `dirty` verdict refuses arming, naming the unreconciled
     comment(s); an `unknown` verdict (the timeline or comment list could not
-    be read) logs a `warning` and lets the rest of the gate sequence decide,
-    rather than refusing on a node fact rather than a pull request one.
+    be read), and the empty word a call that never executed at all leaves
+    behind, both refuse too (#753's ruling on agent-ops#746) — neither is
+    unfolded as a case distinct from the other, and the refusal is
+    unconditional, never dependent on `merge_autonomy_effective_level`.
     `test/landing-wiring.test.sh` pins this directly: a case with a `dirty`
     `reconciliation_gate` stub refuses arming with the unreconciled comment
     named in `landing-refused` and never calls `landing_arm`, a case with
-    `unknown` logs the `warning` and still arms once every other gate
-    clears, and the happy path confirms `reconciliation_gate` is called
-    exactly once per attempt, unbounded.
+    `unknown` and a case with the empty word both refuse arming too — a
+    `landing-refused` naming what could not be confirmed, `landing_arm`
+    never called, `_landing_stage_attempt_armed` staying `0` — and the happy
+    path confirms `reconciliation_gate` is called exactly once per attempt,
+    unbounded.
 
     D18 WI-12 (Stage 4, agent-ops#415) is pinned separately, in both files.
     `test/landing.test.sh`: `landing_eligible` reads `eligible`, not
@@ -16815,6 +17131,86 @@ pull request, run the ones the change touches and any it could regress.
     block exactly once, and every copy is byte-identical with requirement
     45a's canonical one, which the test lifts from this document at run
     time rather than restating.
+
+9. **An open question the Reviewer could not settle holds unattended landing,
+   resolves through the configured ladder, and never through a new commit
+   alone (requirement 8f, agent-ops#668).** `test/landing.test.sh` passes
+   against a stubbed `gh`: `landing_open_question_hit` reads `hit`/`clear`/
+   `unknown` off a pull request's own labels, fresh every call, never a
+   log join; `landing_open_question_label_project` mirrors `refinement_
+   label_project`'s own `added`/`present`/`unrecorded`/`failed` vocabulary
+   and exit status exactly, never removing a label it finds already present;
+   `landing_open_question_label_release` removes only the fixed
+   `open-question` label; `landing_open_question_latest` reads every
+   question a pull request's own `open-question-raised` events carry off a
+   synthetic log — deduplicated by question text across rounds, never only
+   the most recent round's, so a second round's further question never
+   drops the first — and `[]` when none is on it.
+
+   `test/landing-wiring.test.sh` lifts the modified `_landing_stage_attempt`
+   verbatim and proves the new gate sits between eligibility and the review
+   gate: a `clear` label leaves every existing case in this file passing
+   unchanged (no new stub defaults it); an `unknown` label read refuses with
+   its own reason, naming no escalation issue and running no adjudication,
+   since an unreadable label list is a plain retryable failure, not a
+   confirmed question; a `hit` at `escalation_autonomy: "always-escalate"`
+   refuses with an `open-question:`-prefixed reason (grouped by the
+   *Autonomous landings* panel's existing `byReason` split, `docs/DASHBOARD-
+   SPEC.md`) and calls `open_question_escalate` exactly once; a `hit` at
+   `adjudicate-first` with `run_open_question_adjudication` stubbed to
+   return `settled` releases the label, posts the PR comment, logs
+   `open-question-adjudication` with `verdict: "settled"`, and **arms** —
+   the gate clearing on its own round, no second read required, with the
+   landing audit record's own `open-question` gate reading `settled` there
+   and `clear` on the round where no question ever stood
+   (`test/landing-audit-record.test.sh` pins the latter alongside every
+   other gate); the same
+   stub returning `escalate` refuses and escalates exactly as
+   `always-escalate` does; a pull request already carrying an
+   `open-question-adjudication` event on the log runs no further
+   adjudication pass and escalates directly (`open_question_pass_available`'s
+   own bound), unless a closed escalation issue for its `pr-<n>-
+   open-question` reference stands, in which case one further pass runs.
+   Replaying agent-ops#652's own shape — `complexity:low`, an open question
+   standing — does not arm, the regression this requirement exists to close.
+   The same file's `run_case_direct` proves requirement 8u's retry sweep
+   reaches the identical gate, never a second copy of it: `_landing_stage_
+   attempt` called directly with `RETRY` set — exactly as `_landing_retry_
+   sweep_repo` calls it — refuses on the same `open-question:` reason with no
+   stubbing beyond what the gate-0 path above already exercises, since both
+   entry points share one function body. `test/landing-retry-sweep.test.sh`
+   itself stubs `_landing_stage_attempt` as a black box (it tests candidate
+   selection, not gate behaviour), so it is unaffected by this gate and needs
+   no change.
+
+   `test/open-question-adjudication.test.sh` lifts `run_open_question_
+   adjudication`, `open_question_escalate`, `open_question_pass_available`
+   and `open_question_adjudicated_before` verbatim out of `agent-cycle.sh`:
+   the adjudication prompt launches at `approver_model_critical`, never
+   `enabler_model` or `approver_model_default`/`approver_model_complex`,
+   against `prompts/approver-adjudicate-open-question.md`, never
+   `prompts/approver.md` or `prompts/enabler-adjudicate.md`; a missing
+   prompt file, a stage failure, a timeout and an unparseable verdict all
+   print `escalate` with a distinguishing `evidence` string, never
+   `adequate`/`inadequate` (requirement 36b's own vocabulary) and never
+   `land`/`refuse`/`escalate` unadorned (requirement 8c's own, which also
+   accepts `escalate`, but never emits `settled`); `open_question_escalate`
+   composes an issue body naming the question text from a synthetic log's
+   `open-question-raised` event and keys `create_escalation_issue`'s dedup
+   on a `pr-<n>-open-question` reference, distinct from `pr-<n>-approver-
+   adjudication` (requirement 8c) sharing the same pull request number.
+   `test/prompt-untrusted-framing.test.sh` (requirement 8z) covers
+   `prompts/approver-adjudicate-open-question.md` alongside every other
+   shipped stage prompt. `test/dashboard-render.test.sh` (requirement 8x)
+   asserts an `open-question:`-classed refusal in a fixture renders as its
+   own `byReason` group, exactly as `ineligible`/`kill-switch` already do,
+   with no `dashboard/index.html` change required to produce it. No test
+   name, event name, label name or prompt filename this requirement adds
+   contains `human` (requirement 45's own framing, extended by
+   agent-ops#679) — `open-question`, `open_questions`, `open-question-
+   raised`, `open-question-adjudication`, `open-question-escalated` and
+   `approver-adjudicate-open-question.md` all name the question, never
+   where it goes.
 
 10. **The egress fence holds its shape (D24).** `test/egress-fence.test.sh`
     passes: the baked allowlist carries every domain the cycles need

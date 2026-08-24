@@ -294,6 +294,21 @@ policy_preferred='{"tech-debt": "preferred"}'
 assert_eq "a preferred refinement policy does not exempt anything" "2" \
   "$(jq 'length' <<<"$(unaccounted_items "$wo_silent" "$eligible" "$policy_preferred")")"
 
+# requirement 3x's trimmed exemption (agent-ops#683): an eligible item the
+# fit ladder actually trimmed this cycle is exempt too, on the same
+# per-source-and-item terms as `policy_required` above, but through a 4th
+# argument rather than the policy object — 34e's fourth refusal already
+# discards any report against it, so this bar must not demand one either.
+trimmed_td1='[{"repo":"org/a","item":"TD1","source":"tech-debt"}]'
+assert_eq "a trimmed item is exempt from the completeness bar" "1" \
+  "$(jq 'length' <<<"$(unaccounted_items "$wo_silent" "$eligible" '{}' "$trimmed_td1")")"
+assert_eq "  ... and the untrimmed one is still unaccounted" "TD2" \
+  "$(jq -r '.[0].item' <<<"$(unaccounted_items "$wo_silent" "$eligible" '{}' "$trimmed_td1")")"
+assert_eq "an omitted 4th argument exempts nothing, same as before this change" "2" \
+  "$(jq 'length' <<<"$(unaccounted_items "$wo_silent" "$eligible" '{}')")"
+assert_eq "malformed trimmed JSON degrades to exempting nothing" "2" \
+  "$(jq 'length' <<<"$(unaccounted_items "$wo_silent" "$eligible" '{}' "not json")")"
+
 # An empty eligible set has nothing to be unaccounted.
 assert_eq "an empty eligible set is never unaccounted" "0" \
   "$(jq 'length' <<<"$(unaccounted_items "$wo_silent" '[]' '{}')")"

@@ -211,6 +211,32 @@ landing_eligible() {
   printf '%s' "$ELIGIBLE"
 }
 
+# Gate 2.5 (requirement 8f, agent-ops#668). Defaults to `clear` (exit 1) so
+# every case in this file that predates this gate keeps passing unchanged.
+# OQ_RC=0 simulates a hit, OQ_RC=2 an unreadable label list.
+landing_open_question_hit() {
+  printf '%s\n' "$*" >>"$T/oq_hit_args"
+  return "${OQ_RC:-1}"
+}
+
+# The whole escalation/adjudication ladder behind a hit, stubbed as one
+# controllable unit — test/open-question-adjudication.test.sh covers
+# `run_open_question_adjudication`/`open_question_escalate`/`open_question_
+# pass_available` in isolation; this file only needs to prove the gate
+# dispatches to this function and respects its return value. Records its own
+# argv so a case can confirm the gate passes (slug, pr_url, number, retry) in
+# that order. `OQ_RESOLVE_RC=0` (default) simulates "settled this round" —
+# the caller falls through to the next gate; `OQ_RESOLVE_RC=1` simulates
+# "refused, already logged", and itself calls the real, extracted
+# `_landing_refuse` so a case can assert the reason exactly as every other
+# gate's refusal already is.
+_landing_open_question_resolve() {
+  printf '%s\n' "$*" >>"$T/oq_resolve_args"
+  [[ "${OQ_RESOLVE_RC:-0}" != "0" ]] || return 0
+  _landing_refuse "$2" "$1" "${OQ_RESOLVE_REASON:-open-question:stubbed}" "$4"
+  return 1
+}
+
 # The one gate helper that speaks in its exit status as well as its word.
 review_gate_verdict() {
   if [[ -n "${GATE_REASON:-}" ]]; then
@@ -355,6 +381,7 @@ run_case() {
   rm -f "$tmp_dir/armed_by_repo_flag"
   : >"$tmp_dir/pp_ctl_args"; : >"$tmp_dir/retry_tier_args"; : >"$tmp_dir/kill_state_calls"
   : >"$tmp_dir/pp_hit_args"; : >"$tmp_dir/reconciliation_args"
+  : >"$tmp_dir/oq_hit_args"; : >"$tmp_dir/oq_resolve_args"
   rm -rf "${tmp_dir:?}/state"
   env -i PATH="$PATH" HOME="$HOME" \
     T="$tmp_dir" SCRIPT_DIR="$SCRIPT_DIR" PR_URL="$URL" COMPLEXITY="medium" \
@@ -575,6 +602,53 @@ assert_eq "  ... returning 0" "0" "$rc"
 assert_contains "the classifier is asked about this round's own source" \
   "tech-debt" "$(cat "$tmp_dir/eligible_args")"
 
+# --- Gate 2.5: an open question the Reviewer raised (requirement 8f,
+#     agent-ops#668) ---------------------------------------------------------
+
+rc="$(run_case OQ_RC="1")"
+assert_eq "a clear open-question label leaves an otherwise-eligible PR arming" "1" "$(count arms)"
+assert_eq "  ... returning 0" "0" "$rc"
+
+rc="$(run_case OQ_RC="2")"
+assert_eq "an unreadable open-question label list is never a pass" "0" "$(count arms)"
+assert_contains "  ... refusing with the plain 'could not read' wording" \
+  "could not read" "$(refusal)"
+assert_contains "  ... naming the labels, not an escalation" \
+  "confirm no open question stands" "$(refusal)"
+assert_eq "  ... never dispatching to the resolve ladder" "" "$(cat "$tmp_dir/oq_resolve_args")"
+assert_eq "  ... returning 0" "0" "$rc"
+
+rc="$(run_case OQ_RC="0" OQ_RESOLVE_RC="1")"
+assert_eq "a hit that the resolve ladder refuses is never armed" "0" "$(count arms)"
+assert_contains "  ... carrying the ladder's own reason" "open-question:stubbed" "$(refusal)"
+assert_eq "  ... having dispatched slug, pr_url, number and retry in that order" \
+  "Poetic-Poems/agent-ops $URL 512 " "$(cat "$tmp_dir/oq_resolve_args")"
+assert_eq "  ... returning 0" "0" "$rc"
+
+rc="$(run_case OQ_RC="0" OQ_RESOLVE_RC="0")"
+assert_eq "a hit the resolve ladder settles this round still arms" "1" "$(count arms)"
+assert_eq "  ... recording the gate as settled in the landing audit record, never as clear" \
+  '"settled"' \
+  "$(jq -c '.gates[] | select(.gate == "open-question") | .verdict' <<<"$(event_of landing-audit-record)")"
+assert_eq "  ... returning 0" "0" "$rc"
+
+rc="$(run_case OQ_RC="1")"
+assert_eq "  ... where no question ever stood, the same gate records clear" \
+  '"clear"' \
+  "$(jq -c '.gates[] | select(.gate == "open-question") | .verdict' <<<"$(event_of landing-audit-record)")"
+assert_eq "  ... returning 0" "0" "$rc"
+
+# Acceptance criterion 8 (agent-ops#668): replaying agent-ops#652's own shape
+# — complexity:low, an open question standing — never lands unattended, at
+# any escalation_autonomy level (this harness's OQ_RESOLVE_RC stub covers
+# both: `1` is what the real ladder returns at every level until a human or a
+# settled adjudication clears it, exercised end to end in
+# test/open-question-adjudication.test.sh).
+rc="$(run_case COMPLEXITY="low" OQ_RC="0" OQ_RESOLVE_RC="1")"
+assert_eq "agent-ops#652's own shape (complexity:low, an open question) does not land unattended" \
+  "0" "$(count arms)"
+assert_eq "  ... returning 0" "0" "$rc"
+
 # --- Gate 3: the review gate, whose refusal travels in its exit status -------
 # `review_gate_verdict` returns 1 for `dirty` and 2 when the required-check
 # list could not be read. Under agent-cycle.sh's own `errexit` a bare
@@ -653,21 +727,25 @@ assert_eq "  ... returning 0" "0" "$rc"
 assert_eq "  ... and never marks _landing_stage_attempt_armed" "0" "$(armed_flag)"
 
 rc="$(run_case RC_WORD="unknown" RC_REASON="could not read $URL's comments")"
-assert_eq "an unreadable reconciliation read does not itself block arming" "1" "$(count arms)"
+assert_eq "an unreadable reconciliation read refuses arming too (#753 on #746)" \
+  "0" "$(count arms)"
 assert_eq "  ... returning 0" "0" "$rc"
-assert_contains "  ... but logs a warning naming what could not be read" \
-  "could not read $URL's comments" "$(jq -r '.detail' <<<"$(event_of warning)")"
+assert_contains "  ... logging a landing-refused naming what could not be read" \
+  "could not read $URL's comments" "$(refusal)"
+assert_eq "  ... and never marks _landing_stage_attempt_armed" "0" "$(armed_flag)"
 
 # An answer that is neither word at all — what a call that never executed
 # leaves behind, since the `|| true` guarding it swallows a failure to run
-# exactly as it swallows the exit 1 a `dirty` verdict reports — is read as
-# `unknown`, never as a pass. A veto check that logs and records nothing on
-# the one path where it did not run is the failure this gate exists to
-# prevent.
+# exactly as it swallows the exit 1 a `dirty` verdict reports — refuses
+# exactly as `unknown` does, never unfolded into a separate case. A veto
+# check that logs and records nothing on the one path where it did not run
+# is the failure this gate exists to prevent.
 rc="$(run_case RC_WORD="")"
+assert_eq "an answer that is no word at all refuses arming too" "0" "$(count arms)"
 assert_eq "  ... returning 0" "0" "$rc"
-assert_contains "an answer that is no word at all still logs the warning" \
-  "answered nothing at all" "$(jq -r '.detail' <<<"$(event_of warning)")"
+assert_contains "  ... logging a landing-refused with \"nothing at all\" wording" \
+  "answered nothing at all" "$(refusal)"
+assert_eq "  ... and never marks _landing_stage_attempt_armed" "0" "$(armed_flag)"
 
 # --- Gate 5: the merge budget ------------------------------------------------
 
@@ -792,6 +870,13 @@ run_case_direct() {
       log_event() { printf "%s\t%s\n" "$1" "$2" >>"$T/events"; }
       merge_autonomy_effective_level() { printf "%s" "$LEVEL"; }
       landing_eligible() { printf "%s" "$ELIGIBLE"; }
+      landing_open_question_hit() { printf "%s\n" "$*" >>"$T/oq_hit_args"; return "${OQ_RC:-1}"; }
+      _landing_open_question_resolve() {
+        printf "%s\n" "$*" >>"$T/oq_resolve_args"
+        [[ "${OQ_RESOLVE_RC:-0}" != "0" ]] || return 0
+        _landing_refuse "$2" "$1" "${OQ_RESOLVE_REASON:-open-question:stubbed}" "$4"
+        return 1
+      }
       review_gate_verdict() { printf "%s" "$GATE_WORD"; return "${GATE_RC:-0}"; }
       approver_token_identity_login() { printf "pullwright-approver[bot]"; }
       landing_approver_standing_review_at() {
@@ -839,6 +924,17 @@ assert_eq "  ... and marks _landing_stage_attempt_armed" "1" "$(armed_flag)"
 
 rc="$(run_case_direct ELIGIBLE="ineligible:complexity is high, not low or medium")"
 assert_eq "a retry attempt never arms complexity:high" "0" "$(count arms)"
+assert_eq "  ... and marks the landing-refused event retry:true" \
+  "true" "$(jq -c '.retry' <<<"$(event_of landing-refused)")"
+assert_eq "  ... and never marks _landing_stage_attempt_armed" "0" "$(armed_flag)"
+
+# Requirement 8u (agent-ops#668): the 2.1e retry sweep calls `_landing_stage_
+# attempt` directly, RETRY set — the identical function `run_case`'s own
+# gate-2.5 assertions above already exercise via gate 0, so a held pull
+# request stays held across cycles rather than being re-offered until
+# something lets it through by accident.
+rc="$(run_case_direct OQ_RC="0" OQ_RESOLVE_RC="1")"
+assert_eq "a retry attempt never re-arms a pull request an open question still holds" "0" "$(count arms)"
 assert_eq "  ... and marks the landing-refused event retry:true" \
   "true" "$(jq -c '.retry' <<<"$(event_of landing-refused)")"
 assert_eq "  ... and never marks _landing_stage_attempt_armed" "0" "$(armed_flag)"

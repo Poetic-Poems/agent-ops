@@ -62,4 +62,14 @@ jobs:
           shellcheck --version
 
       - name: Lint every shell script in the repository
+        # CI is the one place the script's size guard must never apply. A node
+        # is capped below what the largest script costs to lint and skips it
+        # (pipeline spec, acceptance check 1g-i); this runner has the memory,
+        # and the gate's coverage should not quietly track how much RAM GitHub
+        # happens to give a runner this month. A zero threshold puts every
+        # file, whatever its size, on the full `-x` path — so a runner that
+        # cannot afford it fails here, loudly, instead of checking less and
+        # still reporting success.
+        env:
+          LINT_SHELL_FOLLOW_MIB: 0
         run: ./scripts/lint-shell.sh

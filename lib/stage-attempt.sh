@@ -564,7 +564,7 @@ coordinator_corroborate_retry_or_fallback() {
     unaccounted_json="$(unaccounted_items \
       "$(jq -nc 'input as $nr | input as $v | {needs_refinement: $nr, voided: $v}' \
           <<<"${coord_recorded_refinement_json:-[]}"$'\n'"${coord_recorded_voided_json:-[]}")" \
-      "$eligible_items_json" "$refinement_policy_json")"
+      "$eligible_items_json" "$refinement_policy_json" "${coordinator_fit_trimmed_json:-[]}")"
   fi
   unaccounted_n="$(jq 'length' <<<"$unaccounted_json" 2>&1)" \
     || { guard_warn "unaccounted_n" "$unaccounted_n"; unaccounted_n=0; }
@@ -792,7 +792,7 @@ object, nothing else.
   unaccounted_retry_json="$(unaccounted_items \
     "$(jq -nc 'input as $nr | input as $v | {needs_refinement: $nr, voided: $v}' \
         <<<"$recorded_refinement_all_json"$'\n'"$recorded_voided_all_json")" \
-    "$eligible_items_json" "$refinement_policy_json")"
+    "$eligible_items_json" "$refinement_policy_json" "${coordinator_fit_trimmed_json:-[]}")"
   unaccounted_retry_n="$(jq 'length' <<<"$unaccounted_retry_json" 2>&1)" \
     || { guard_warn "unaccounted_retry_n" "$unaccounted_retry_n"; unaccounted_retry_n=0; }
   unaccounted_retry_bands_json="$(jq -c 'group_by(.source)

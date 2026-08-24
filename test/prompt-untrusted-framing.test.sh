@@ -58,10 +58,10 @@ if [[ "$(count_markers "$SCRIPT_DIR/docs/IMPLEMENTATION-PIPELINE-SPEC.md")" != 1
 fi
 printf 'ok   - canonical block lifted from requirement 45a (%s lines)\n' "$(wc -l <<<"$canon")"
 
-# Requirement 45's seven implementation-pipeline prompts, plus
+# Requirement 45's implementation-pipeline prompts, plus
 # project-reviewer.md under REVIEW-PIPELINE-SPEC.md R18.
 prompts=(coordinator implementer reviewer approver enabler enabler-adjudicate
-         refiner project-reviewer)
+         approver-adjudicate-open-question refiner project-reviewer)
 
 for p in "${prompts[@]}"; do
   f="$SCRIPT_DIR/prompts/$p.md"

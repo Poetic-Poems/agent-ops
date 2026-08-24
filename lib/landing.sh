@@ -190,6 +190,13 @@
 # `github_pr_list_truncated` already apply to `gh pr list`.
 LANDING_PR_FILES_LIMIT="${LANDING_PR_FILES_LIMIT:-3000}"
 
+# Fixed, unconfigurable — the same footing `blocked`/`obsolete`
+# (lib/labels.sh's own header) already stand on: no installation renames
+# this, and unlike `blocked` no human has a reason to hand-apply it for an
+# unrelated purpose, so its whole lifecycle (add, and the one release below)
+# stays this pipeline's own (D18, agent-ops#668).
+LANDING_OPEN_QUESTION_LABEL="${LANDING_OPEN_QUESTION_LABEL:-open-question}"
+
 # _landing_protected_paths CONFIG_JSON SLUG
 # The protected-path list SLUG is governed by: its own `repos[]` entry's
 # `merge_autonomy_protected_paths` when present, else the top-level key, else
@@ -991,6 +998,17 @@ run_landing_stage() {
 #      reading the log has no reason to suspect they set correctly.
 #   2. `landing_eligible` (lib/landing.sh) — complexity, source and the
 #      protected-paths classifier.
+#   2.5. `landing_open_question_hit` (lib/landing.sh, requirement 8f, D18,
+#      agent-ops#668) — the `open-question` label the Reviewer's own
+#      `open_questions` verdict projects must not be standing. A hit does not
+#      merely refuse: `_landing_open_question_resolve` runs the
+#      `escalation_autonomy` ladder for it (an escalation issue, or one
+#      bounded adjudication pass first), and only a `settled` verdict lets
+#      this round fall through to gate 3. Unlike every other unreadable
+#      here, an unreadable label list refuses in the plain "could not read"
+#      wording rather than routing into that ladder — see that function's
+#      own header for why a question never confirmed to exist must not
+#      summon anybody.
 #   3. `review_gate_verdict` — must read `clean`; `dirty` and `unknown`
 #      both refuse (stricter than the ordinary ready-gate handoff, which
 #      tolerates an alerts-only `unknown` as a warning — arming an
@@ -1031,12 +1049,14 @@ run_landing_stage() {
 #      `dirty` refuses arming, naming the unreconciled comment(s); anything
 #      else that is not `clean` — `unknown`, where the timeline or comment
 #      list could not be read, and the empty word a call that never ran at
-#      all leaves behind — warns and lets the other checks decide, the same
-#      "could not ask is not a failure" the Reviewer's own reconciliation
-#      read already applies. Either way the verdict itself rides in the
-#      landing audit record (requirement 8x) as its own
-#      `comment-reconciliation` gate, so a landing armed over a read that
-#      could not be made is never recorded as one where it came back clear.
+#      all leaves behind — refuses too (#753's ruling on #746): neither
+#      should ever pass a safety gate, unlike the Reviewer's own
+#      reconciliation read at hand-off (`handoff_complete_review`), which
+#      does tolerate an `unknown` there as non-blocking — this arming-time
+#      instance is stricter by design. Because every non-`clean` word now
+#      refuses before this function can reach an arm, the landing audit
+#      record (requirement 8x) never carries a `comment-reconciliation`
+#      entry reading anything but `clean`.
 #   4.5. D18 WI-12 (Stage 4, agent-ops#415): only at `agent-merges-all`, and
 #      only for a pull request `landing_protected_path_controls_ok`
 #      (lib/landing.sh) itself confirms still touches a protected path —
@@ -1136,6 +1156,37 @@ _landing_stage_attempt() {
     return 0
   fi
 
+  # Gate 2.5 (requirement 8f, D18, agent-ops#668): an open question the
+  # Reviewer raised against this pull request's work order or scope, and
+  # could not settle itself, holds unattended landing until an adjudication
+  # pass settles it or a human acts — read fresh from GitHub every round,
+  # exactly like every other gate here, so a human's own removal of the
+  # label is seen the moment it happens. Unlike `landing_protected_paths_
+  # hit`'s own exit 2, an unreadable label list here is a plain, retryable
+  # read failure — it refuses with the ordinary "could not read" wording and
+  # tries again next cycle, rather than routing into the escalation/
+  # adjudication machinery over a question it never confirmed exists.
+  # `oq_word` is this gate's own verdict for the landing audit record
+  # (requirement 8x, which carries *every* gate this function passed): `clear`
+  # when no question stood, `settled` when one did and the adjudication pass
+  # answered it on this very round. No other value can reach the record — every
+  # other outcome returns above without arming anything.
+  local oq_hit_rc=0 oq_word="clear"
+  landing_open_question_hit "$slug" "$number" || oq_hit_rc=$?
+  case "$oq_hit_rc" in
+    1) ;; # clear — no open question stands.
+    2)
+      _landing_refuse "$pr_url" "$slug" "could not read $pr_url's own labels to confirm no open question stands" "$retry"
+      return 0
+      ;;
+    0)
+      if ! _landing_open_question_resolve "$slug" "$pr_url" "$number" "$retry"; then
+        return 0
+      fi
+      oq_word="settled"
+      ;;
+  esac
+
   # `review_gate_verdict` speaks in its exit status as well as its word: 1 for
   # `dirty`, 2 when the required-check list itself could not be read (see its
   # own header, which tells every caller to capture that status rather than
@@ -1206,17 +1257,22 @@ _landing_stage_attempt() {
     _landing_refuse "$pr_url" "$slug" "$rc_reason" "$retry"
     return 0
   fi
-  # Anything that is not `clean` is treated as `unknown`, not as a pass: the
-  # empty word a call that never executed at all leaves behind (`|| true`
-  # swallows a `command not found` exactly as it swallows the exit 1 a `dirty`
-  # verdict reports, and both arrive here as a bare string) would otherwise
-  # clear this gate silently, logging nothing and recording nothing — a veto
-  # check reading "clear" on the one path where it did not run is the failure
-  # this gate exists to prevent, not a case to fall through.
+  # Anything that is not `clean` refuses arming outright, never falls through
+  # as a pass: the empty word a call that never executed at all leaves behind
+  # (`|| true` swallows a `command not found` exactly as it swallows the exit
+  # 1 a `dirty` verdict reports, and both arrive here as a bare string) would
+  # otherwise clear this gate silently, logging nothing and recording nothing
+  # — a veto check reading "clear" on the one path where it did not run is
+  # the failure this gate exists to prevent. `unknown` from a read that
+  # genuinely ran and the empty word a call that never ran leaves behind are
+  # not distinguished: neither should ever pass a safety gate (#753's own
+  # ruling on #746) — this is stricter than the ordinary ready-gate handoff,
+  # which does tolerate `unknown` as a warning, because arming an automatic
+  # merge is not that.
   if [[ "$rc_word" != "clean" ]]; then
-    log_event "warning" "$(jq -nc --arg u "$pr_url" \
-      --arg d "${rc_reason:-reconciliation_gate answered ${rc_word:-nothing at all}}" \
-      '{detail: ("could not confirm every human comment on " + $u + " since it last left draft is reconciled: " + $d), pr_url: $u}')"
+    _landing_refuse "$pr_url" "$slug" \
+      "could not confirm every human comment on $pr_url since it last left draft is reconciled: ${rc_reason:-reconciliation_gate answered ${rc_word:-nothing at all}}" "$retry"
+    return 0
   fi
 
   # Gate 4.5 (D18 WI-12, Stage 4, agent-ops#415): the protected-path
@@ -1380,11 +1436,12 @@ _landing_stage_attempt() {
   gates_json="$(jq -nc \
     --arg level "$level" --arg elig "$elig" --arg gate_word "$gate_word" \
     --arg standing "$standing" --arg pp_ctl "${pp_ctl:-n/a}" \
-    --arg rc_word "${rc_word:-}" \
+    --arg rc_word "${rc_word:-}" --arg oq "${oq_word:-clear}" \
     --arg budget_decision "$budget_decision" --arg queued "$queued" \
     '[
       {gate: "autonomy-level", verdict: $level},
       {gate: "eligibility", verdict: $elig},
+      {gate: "open-question", verdict: $oq},
       {gate: "review-gate", verdict: $gate_word},
       {gate: "approver-standing-review", verdict: $standing},
       {gate: "human-veto", verdict: "clear"},
@@ -1417,6 +1474,262 @@ _landing_stage_attempt() {
     } + (if $retry then {retry: true} else {} end)')"
 
   _landing_stage_attempt_armed=1
+}
+
+# _landing_open_question_resolve SLUG PR_URL NUMBER [RETRY]
+# Requirement 8f's own escalation/adjudication ladder, factored out of
+# `_landing_stage_attempt`'s gate 2.5 so that gate's own `case` stays as
+# short as every other gate's inline check. Returns 0 when the question is
+# settled this round — the caller falls through to the next gate exactly as
+# a `clear` read would have — and 1 when it refused and logged
+# `landing-refused` itself, in which case the caller must return without
+# running any further gate.
+_landing_open_question_resolve() {
+  local slug="$1" pr_url="$2" number="$3" retry="${4:-}"
+  local item_ref level adjudication verdict evidence answer
+  item_ref="pr-${number}-open-question"
+  level="$(escalation_autonomy_configured_level "$DEFAULTED_CONFIG" "$slug")"
+
+  if [[ "$level" == "adjudicate-first" ]] && open_question_pass_available "$slug" "$pr_url" "$item_ref"; then
+    adjudication="$(run_open_question_adjudication "$slug" "$pr_url" "$number")"
+    verdict="$(jq -r '.verdict // ""' <<<"$adjudication" 2>/dev/null)"
+    evidence="$(jq -r '.evidence // ""' <<<"$adjudication" 2>/dev/null)"
+    [[ "$verdict" == "settled" ]] || verdict="escalate"
+    log_event "open-question-adjudication" "$(jq -nc --arg u "$pr_url" --arg r "$slug" \
+      --arg v "$verdict" --arg e "$evidence" \
+      '{pr_url: $u, repo: $r, verdict: $v, evidence: $e, adjudication: true}')"
+    if [[ "$verdict" == "settled" ]]; then
+      answer="$(jq -r '.answer // ""' <<<"$adjudication" 2>/dev/null)"
+      if [[ -n "$answer" ]]; then
+        gh pr comment "$pr_url" --body "$(pipeline_comment_header approver-adjudicate-open-question "$node_name")
+
+$answer
+
+$(pipeline_comment_marker "$cycle_id" approver-adjudicate-open-question)" >/dev/null 2>&1 || \
+          log_event "warning" "$(jq -nc --arg u "$pr_url" \
+            --arg d "the open-question adjudication settled $pr_url but the answer could not be posted as a PR comment" \
+            '{detail: $d, pr_url: $u}')"
+      fi
+      if landing_open_question_label_release "$slug" "$number"; then
+        return 0
+      fi
+      log_event "warning" "$(jq -nc --arg u "$pr_url" --arg l "$LANDING_OPEN_QUESTION_LABEL" \
+        --arg d "the open-question adjudication settled $pr_url but the $LANDING_OPEN_QUESTION_LABEL label could not be removed — it will settle again next round" \
+        '{detail: $d, pr_url: $u, label: $l}')"
+      return 0
+    fi
+    open_question_escalate "$slug" "$pr_url" "$item_ref" \
+      "$(landing_open_question_latest "$pr_url" "${union_log:-$log_file}")" "$adjudication"
+    _landing_refuse "$pr_url" "$slug" "open-question:$pr_url carries an unresolved open question the adjudication pass could not settle — see the escalation issue" "$retry"
+    return 1
+  fi
+
+  open_question_escalate "$slug" "$pr_url" "$item_ref" \
+    "$(landing_open_question_latest "$pr_url" "${union_log:-$log_file}")"
+  _landing_refuse "$pr_url" "$slug" "open-question:$pr_url carries an unresolved open question — see the escalation issue" "$retry"
+  return 1
+}
+
+# open_question_adjudicated_before PR_URL < union.jsonl
+# Exit 0 when an `open-question-adjudication` event for PR_URL already
+# exists in the log on stdin at or after the most recently logged
+# `open-question-raised` for it — this question's one adjudication pass has
+# been spent — and 1 otherwise. Mirrors `escalation_autonomy_adjudicated_
+# before`'s own shape (lib/escalation-autonomy.sh, requirement 36b) for the
+# bound agent-ops#668 names as identical: "one pass per question, per human
+# touch."
+open_question_adjudicated_before() {
+  local pr_url="$1" hits
+  hits="$(jq -r -R -s --arg u "$pr_url" '
+    [splits("\n") | select(length > 0) | (fromjson? // empty)] as $all
+    | ([$all[] | select(.event == "open-question-raised" and (.pr_url // "") == $u) | (.ts // "")]
+       | sort | last // "") as $raised_ts
+    | [$all[] | select(.event == "open-question-adjudication"
+                       and (.pr_url // "") == $u and (.ts // "") >= $raised_ts)]
+    | length
+  ' 2>/dev/null || echo 0)"
+  [[ "$hits" =~ ^[0-9]+$ ]] && (( hits > 0 ))
+}
+
+# open_question_pass_available SLUG PR_URL ITEM_REF
+# The bound on `adjudicate-first` for an open question (requirement 8f,
+# mirroring requirement 36b's own `escalation_autonomy_pass_available`): one
+# adjudication pass per question, per human touch. True (exit 0) when this
+# question still has its pass to spend; false, having logged why, when it
+# does not.
+#
+# The exemption mirrors 36b's own "issue-closed": a *closed* escalation
+# issue carrying ITEM_REF in its body means a human has already acted on
+# this exact question since the last pass, so the next one is the first
+# since they did — read live from GitHub, never from the log, on the same
+# "ask the thing that actually changed" reasoning `approver_refuse_streak`
+# already applies to the Approver's own streak.
+open_question_pass_available() {
+  local slug="$1" pr_url="$2" item_ref="$3" closed
+  closed="$(gh issue list -R "$slug" --label "$enabler_escalation_label" --state closed --search "$item_ref" \
+              --json body 2>/dev/null \
+            | jq -r --arg it "$item_ref" 'map(select(((.body // "") | contains($it)))) | length' 2>/dev/null || echo 0)"
+  [[ "$closed" =~ ^[0-9]+$ ]] || closed=0
+  (( closed > 0 )) && return 0
+  open_question_adjudicated_before "$pr_url" < "${union_log:-$log_file}" || return 0
+  log_event "warning" "$(jq -nc --arg u "$pr_url" --arg i "$item_ref" \
+    --arg d "open-question: $pr_url has already spent its one adjudication pass for $item_ref and no human has acted on it since — escalating without adjudicating (escalation_autonomy is bounded per question, per human touch)" \
+    '{detail: $d, pr_url: $u, item: $i}')"
+  return 1
+}
+
+# run_open_question_adjudication SLUG PR_URL NUMBER
+# One bounded adjudication pass (requirement 8f, mirroring requirement 36b's
+# own `run_enabler_adjudication` in shape: bounded, once, verdict-plus-
+# evidence logged) over a Reviewer's own open question against PR_URL — a
+# fresh, narrow engagement at the Approver's own critical tier
+# (`approver_model_critical`, the tier D18 §5.2 already reserves for
+# litigated judgement), never `enabler_model`: the question is about whether
+# this pull request's own diff and work order already answer it, the
+# Approver's own ground, not a refinement disagreement.
+#
+# Distinct from requirement 8c's own refuse-streak adjudication in every way
+# that requirement's own text calls for: different trigger (an open question
+# stands, never a refuse streak), different prompt (`prompts/approver-
+# adjudicate-open-question.md`, never `prompts/approver.md`), different
+# input (the question and its own comment, never prior refusal bodies), and
+# never conflated in the log — `open-question-adjudication` is its own
+# event, carrying `adjudication: true` on the same footing as
+# `enabler-adjudication`, never `approver-verdict`.
+#
+# Prints `{"verdict": "settled"|"escalate", "evidence": "...", "answer":
+# "..."}` on stdout — `answer` is present only on `settled`, the text posted
+# to the pull request. A missing prompt file, a disabled critical tier, a
+# stage failure, or an unparseable verdict all print `escalate` with an
+# `evidence` string naming why — "cannot settle" is not read as "nothing to
+# settle" (requirement 8c).
+run_open_question_adjudication() {
+  local slug="$1" pr_url="$2" number="$3"
+  local questions input prompt out rc=0 result parsed verdict evidence answer
+
+  if [[ -z "$approver_model_critical" ]]; then
+    printf '{"verdict":"escalate","evidence":"no approver_model_critical is configured to adjudicate this question"}'
+    return 0
+  fi
+  if [[ ! -f "$PROMPTS_DIR/approver-adjudicate-open-question.md" ]]; then
+    printf '{"verdict":"escalate","evidence":"no prompts/approver-adjudicate-open-question.md in this installation"}'
+    return 0
+  fi
+
+  questions="$(landing_open_question_latest "$pr_url" "${union_log:-$log_file}")"
+  [[ -n "$questions" && "$questions" != "null" ]] || questions='[]'
+
+  input="$(jq -nc --arg r "$slug" --arg u "$pr_url" --argjson qs "$questions" \
+    '{repo: $r, pr_url: $u, questions: $qs}' 2>/dev/null || true)"
+  if [[ -z "$input" ]]; then
+    printf '{"verdict":"escalate","evidence":"could not build the adjudication input"}'
+    return 0
+  fi
+
+  prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" approver-adjudicate-open-question '{}')
+
+## Runtime input for this adjudication
+
+\`\`\`json
+$(jq . <<<"$input")
+\`\`\`
+"
+  out="$cycle_dir/approver-adjudicate-open-question-${number}.out"
+  stage_budget_apply approver-adjudicate-open-question "$slug" "$approver_model_critical" '{}'
+  if run_claude_stage approver-adjudicate-open-question "$(( stage_backstop_min * 60 ))" "$approver_model_critical" "$prompt" "$out" "$cycle_dir" "$(( stage_inactivity_min * 60 ))"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  log_event "stage-end" "$(jq -nc --argjson rc "$rc" --arg kr "$stage_kill_reason" \
+    --argjson m "$(metering_fields "$approver_model_critical" "$out" "$stage_gaps_json")" \
+    '{stage: "approver-adjudicate-open-question", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m')"
+
+  result="$(jq -r '.result // empty' "$out" 2>/dev/null || true)"
+  parsed="$(extract_json_result "$result" 2>/dev/null || true)"
+  if (( rc != 0 )) || [[ -z "$parsed" ]]; then
+    if (( rc == 124 )); then
+      printf '{"verdict":"escalate","evidence":"the adjudication engagement timed out"}'
+    else
+      printf '{"verdict":"escalate","evidence":"the adjudication engagement returned no parseable verdict"}'
+    fi
+    return 0
+  fi
+  verdict="$(jq -r '.verdict // ""' <<<"$parsed" 2>/dev/null || true)"
+  evidence="$(jq -r '.evidence // ""' <<<"$parsed" 2>/dev/null || true)"
+  answer="$(jq -r '.answer // ""' <<<"$parsed" 2>/dev/null || true)"
+  if [[ "$verdict" == "settled" ]]; then
+    jq -nc --arg v "settled" --arg e "$evidence" --arg a "$answer" '{verdict: $v, evidence: $e, answer: $a}' 2>/dev/null \
+      || printf '{"verdict":"escalate","evidence":"could not encode the adjudication verdict"}'
+  else
+    jq -nc --arg v "escalate" --arg e "$evidence" '{verdict: $v, evidence: $e}' 2>/dev/null \
+      || printf '{"verdict":"escalate","evidence":"could not encode the adjudication verdict"}'
+  fi
+}
+
+# open_question_escalate REPO PR_URL ITEM_REF QUESTIONS_JSON [ADJUDICATION_JSON]
+# File (or find already-filed, via `create_escalation_issue`'s own dedup)
+# the escalation issue for a pull request an open question holds — land it,
+# or leave the pull request refused and let a human decide. Mirrors
+# `approver_escalate` exactly in shape (same dedup, same label, same
+# load-bearing assignee), differing only in what it names: a question about
+# the work order or its scope, never a diff the Approver refused twice.
+# Takes REPO explicitly, never `$selected_repo` — this runs from
+# `_landing_stage_attempt`, which the requirement 8u retry sweep calls once
+# per candidate across every configured repository, not only the one this
+# cycle selected.
+open_question_escalate() {
+  local repo="$1" pr_url="$2" item_ref="$3" questions_json="$4" adjudication_json="${5:-}"
+  local body_file questions_text adj_section created
+  body_file="$cycle_dir/open-question-escalation-${item_ref}.md"
+  [[ -n "$questions_json" && "$questions_json" != "null" ]] || questions_json='[]'
+  questions_text="$(jq -r 'if length == 0 then "(no question text recorded)" else
+    map("- **" + (.question // "(no question given)") + "**\n  Why the Reviewer could not settle it: "
+        + (.why_this_actor_cannot_settle_it // "(not given)") + "\n  " + (.comment_url // "")) | join("\n\n") end' \
+    <<<"$questions_json" 2>/dev/null)"
+  adj_section=""
+  if [[ -n "$adjudication_json" && "$adjudication_json" != "{}" ]]; then
+    adj_section="
+## Adjudication attempted
+
+$(jq -r '"- verdict: " + (.verdict // "escalate") + "\n- evidence: " + (.evidence // "(none given)")' <<<"$adjudication_json" 2>/dev/null)
+"
+  fi
+  {
+    printf '## What the autonomous pipeline needs from you\n\n'
+    printf 'Review %s and answer the question below yourself — the Reviewer found nothing wrong with the diff, but raised a question about the work order or its scope that only you can settle.\n\n' "$pr_url"
+    printf '## The question\n\n'
+    printf '%s\n\n' "$questions_text"
+    printf '%s' "$adj_section"
+    cat <<OQ_ESC_BODY
+
+## When you're done: answer, then take the label off
+
+Answer the question on $pr_url — a comment is enough. Then
+remove the \`$LANDING_OPEN_QUESTION_LABEL\` label from that pull request, and close this issue.
+
+**Removing the label is what releases the pipeline.** Until it comes off — or
+until an adjudication pass settles the question itself — no automatic landing
+action is taken on this pull request.
+Closing this issue alone does not clear it.
+
+---
+Item: \`$item_ref\` · pull request $pr_url
+Raised by the Reviewer stage (D18, agent-ops#668) · cycle \`$cycle_id\` · node \`$node_name\`
+OQ_ESC_BODY
+  } > "$body_file"
+  if created="$(create_escalation_issue "$repo" "$item_ref" \
+        "$enabler_escalation_label" \
+        "Open question on $pr_url needs your judgement" \
+        "$body_file")" && [[ -n "$created" ]]; then
+    log_event "open-question-escalated" "$(jq -nc --arg u "$pr_url" \
+      --arg n "${created%%$'\t'*}" --arg iu "${created#*$'\t'}" \
+      '{pr_url: $u, issue_number: ($n | tonumber), issue_url: $iu}')"
+  else
+    log_event "warning" "$(jq -nc --arg u "$pr_url" \
+      --arg d "$pr_url carries an unresolved open question, and the escalation issue could not be filed — will retry next cycle" \
+      '{detail: $d, pr_url: $u}')"
+  fi
 }
 
 # _landing_retry_sweep_repo SLUG RETRY_LOGIN
@@ -1525,4 +1838,135 @@ _landing_retry_sweep_repo() {
     fi
   done < <(jq -c '.[]' <<<"$candidates" 2>/dev/null || true)
   return 0
+}
+
+# landing_open_question_hit SLUG NUMBER
+# Requirement 8f (D18, agent-ops#668): does pull request #NUMBER in SLUG
+# currently carry $LANDING_OPEN_QUESTION_LABEL? Read fresh from GitHub on
+# every call, the same "no private state, no log join" contract every other
+# gate in this file already holds — a human can remove the label directly,
+# and the next read must see that immediately, the same way a fresh
+# `merge_autonomy_effective_level` read sees a kill switch an operator just
+# flipped.
+#
+# Exit 0 ("hit") when the label is present, 1 ("clear") when it is not, and 2
+# ("unknown") when the label list itself could not be read. Unlike
+# `landing_protected_paths_hit`'s own exit 2 — which routes *to* the more
+# cautious outcome because a missed protected path is the failure mode this
+# whole gate exists to prevent — an unknown label list here is a plain,
+# retryable read failure: the caller refuses this round with the ordinary
+# "could not read" wording and tries again next cycle, rather than routing
+# into the escalation/adjudication machinery over a question it never
+# confirmed exists.
+landing_open_question_hit() {
+  local slug="$1" number="$2" gh_bin="${LANDING_GH:-gh}" labels
+  labels="$("$gh_bin" pr view "$number" -R "$slug" --json labels \
+              --jq '.labels[].name' 2>/dev/null)" || return 2
+  grep -qxF "$LANDING_OPEN_QUESTION_LABEL" <<<"$labels" && return 0
+  return 1
+}
+
+# landing_open_question_label_project SLUG NUMBER
+# Put $LANDING_OPEN_QUESTION_LABEL on pull request #NUMBER in SLUG iff it is
+# not already there, and say whether the resulting label is this
+# projection's to remove later. Mirrors `refinement_label_project`'s
+# (lib/refinement.sh) read-before-write contract exactly, for the identical
+# reason: `gh pr edit --add-label` succeeds as a no-op on a pull request that
+# already carries the label, so an unconditional add-and-record would let
+# `landing_open_question_label_release` later remove a label a human applied
+# for their own reasons before this question was ever raised.
+#
+# Prints one word:
+#   added       LABEL was absent and is now on the pull request — record it,
+#               so settling the question takes it off again.
+#   present     LABEL was already there. Nothing is touched and nothing must
+#               be recorded — most often a later Reviewer round raising a
+#               further question while an earlier one still stands.
+#   unrecorded  the pull request's labels could not be read, so the add was
+#               attempted best-effort but must not be recorded — over-holding
+#               a label is cosmetic; removing one that may have pre-existed
+#               is the defect this function exists to prevent.
+#   failed      the list was readable, LABEL was absent, and the add would
+#               not take (a repo where the label was never created is the
+#               practical case, ordinarily self-healed by `labels_ensure`'s
+#               own periodic sweep, lib/labels.sh) — the caller records the
+#               question regardless: losing the label costs a filter, losing
+#               the gate would cost the hold.
+#
+# Exit status is 0 for `added` and `present`, 1 for `unrecorded` and `failed`.
+landing_open_question_label_project() {
+  local slug="$1" number="$2" gh_bin="${LANDING_GH:-gh}" existing
+  if [[ -z "$slug" || -z "$number" ]]; then
+    printf 'failed'
+    return 1
+  fi
+  if ! existing="$("$gh_bin" pr view "$number" -R "$slug" --json labels \
+                     --jq '.labels[].name' 2>/dev/null)"; then
+    "$gh_bin" pr edit "$number" -R "$slug" --add-label "$LANDING_OPEN_QUESTION_LABEL" >/dev/null 2>&1 || true
+    printf 'unrecorded'
+    return 1
+  fi
+  if grep -qxF "$LANDING_OPEN_QUESTION_LABEL" <<<"$existing"; then
+    printf 'present'
+    return 0
+  fi
+  if "$gh_bin" pr edit "$number" -R "$slug" --add-label "$LANDING_OPEN_QUESTION_LABEL" >/dev/null 2>&1; then
+    printf 'added'
+    return 0
+  fi
+  printf 'failed'
+  return 1
+}
+
+# landing_open_question_label_release SLUG NUMBER
+# Take $LANDING_OPEN_QUESTION_LABEL off pull request #NUMBER in SLUG. Callers
+# never call this except once an adjudication pass has actually returned
+# `settled` (agent-cycle.sh's `run_open_question_adjudication`) — the one
+# clearing path design point 3 in agent-ops#668 names besides a human's own
+# act, and the reason this needs no read-before-write of its own the way the
+# projection above does: a pipeline-projected label is the only one this
+# function is ever asked to remove.
+landing_open_question_label_release() {
+  local slug="$1" number="$2" gh_bin="${LANDING_GH:-gh}"
+  [[ -n "$slug" && -n "$number" ]] || return 1
+  "$gh_bin" pr edit "$number" -R "$slug" --remove-label "$LANDING_OPEN_QUESTION_LABEL" >/dev/null 2>&1
+}
+
+# landing_open_question_latest PR_URL [SRC]
+# Every question a Reviewer round has logged against PR_URL via
+# `open-question-raised`, deduplicated by its own `question` text — never
+# only the most recent round's, so a second round raising a further question
+# while an earlier one still stands does not silently drop the first from an
+# escalation issue's body or an adjudication pass's own input (agent-ops#668
+# design point: "whether more than one open question per pull request is
+# permitted" — yes, and every one of them is carried forward). `[]` if none
+# is on the log SRC names.
+#
+# SRC follows `landing_approver_adjudication_history`'s own convention:
+# `$log_file` on the round that first raises a question (this process's own
+# just-written `open-question-raised` event is already there) or
+# `$union_log` when read back later (a peer node's or an earlier cycle's
+# round), or stdin if omitted or "-". Malformed lines are skipped, not
+# fatal. This is read-only, supplementary content for prose a human or an
+# adjudication pass reads — never what the landing gate itself decides on,
+# which stays the label alone (requirement 8f's own "no log join" reasoning
+# for the gate proper), so a peer node's cycle racing to log its own
+# `open-question-raised` event costs this reader nothing but slightly stale
+# prose.
+landing_open_question_latest() {
+  local pr_url="$1" src="${2:--}" out=""
+  # shellcheck disable=SC2016  # $pr_url is jq's own --arg variable, not the shell's.
+  local jq_prog='
+    [ .[] | select(.event == "open-question-raised" and (.pr_url // "") == $u)
+      | (.questions // [])[] ]
+    | unique_by(.question // "")'
+  if [[ "$src" == "-" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' 2>/dev/null \
+      | jq -cs --arg u "$pr_url" "$jq_prog" 2>/dev/null || true)"
+  elif [[ -s "$src" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null \
+      | jq -cs --arg u "$pr_url" "$jq_prog" 2>/dev/null || true)"
+  fi
+  [[ -n "$out" ]] || out='[]'
+  printf '%s' "$out"
 }

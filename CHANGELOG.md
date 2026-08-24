@@ -8,6 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A Reviewer that finds a pull request otherwise green and finished, but
+  carrying a question about the work order or its scope it is not the right
+  actor to settle, can now say so structurally (requirement 32/8f, D18,
+  agent-ops#668): an `open_questions` entry alongside a `ready` verdict.
+  The landing gate refuses unattended landing while one stands
+  (`open-question:`-classed, grouped by the *Autonomous landings* panel with
+  no dashboard change needed) and requirement 8u's retry sweep holds it
+  across cycles through the identical gate. It resolves through the
+  `escalation_autonomy` ladder: at `always-escalate`, one escalation issue
+  per pull request; at `adjudicate-first`, one bounded adjudication pass at
+  the Approver's own critical tier (`prompts/approver-adjudicate-open-
+  question.md`) settles it with a posted answer or escalates — distinct
+  from both the Approver's own refuse-streak adjudication (requirement 8c)
+  and the Enabler's refinement-disagreement one (requirement 36b). A new
+  head commit never clears it; only a settled adjudication or a human's own
+  act does.
 - The scheduler's egress is fenced (agent-ops#760; roadmap D24 stage two,
   review F-SEC-01, `TD-PPagop-26082407`/`TD-PPagop-26082429`): it now sits
   on an internal-only Docker network — no gateway, so the fence is topology
@@ -573,6 +589,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A context-tight Co-Ordinator cycle no longer mass-flags its whole backlog
+  `needs-refinement` (agent-ops#683). On 2026-08-21 the fit ladder
+  (requirement 4i) reached its bottom rung, every candidate's body was cut
+  to a title-level fragment, and the Co-Ordinator — correctly following its
+  own prompt's "if you cannot tell what done would mean, report
+  needs_refinement" — reported exactly that for its entire visible backlog;
+  requirement 3x's completeness bar then obliged the Script to record every
+  one as a block, so nine items, most of them refined within the preceding
+  day, were flagged in 68 seconds. Neither rule was wrong on its own, and
+  the outcome recurred on every context-tight cycle that selected nothing.
+  `record_needs_refinement_block` now refuses a Co-Ordinator report naming
+  an item this cycle's fit actually trimmed — Script-side and deterministic,
+  logged as a `warning` naming the item and the rung, writing no label,
+  block or assignment, and scoped to the Co-Ordinator alone, since the
+  Refiner and Implementer read the repository live. `unaccounted_items`
+  carries the matching exemption, so declining to write the block does not
+  itself read as an unaccounted verdict and simply relocate the mass-flag
+  into a retry loop over the same trimmed input; the count of candidates
+  that went unassessed is logged as `coordinator-input-fit-unassessable`
+  instead. An entry counts as trimmed on any of the three marks `fit_entry`
+  leaves — a clipped body, a clipped comment body, or a cut comment list —
+  so the ordinary shape here, a short issue whose acceptance criteria live
+  in a Refiner's comment, is covered by a middle rung as well as by the
+  bottom one. The ladder itself is unchanged: `0:0:1000` stays a trim rather
+  than becoming a drop, reasoned in requirement 4i, because the refusal
+  removes the harm that made dropping tempting while a trimmed entry still
+  buys the Co-Ordinator something to rank and, if worth it, live-read.
 - A human's plain comment now vetoes an autonomous landing however late it
   arrives, not only if it arrives before the pull request goes Ready
   (agent-ops#672, part of #402). The landing gate's human-veto check
@@ -589,11 +632,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   unbounded — this stage never flips the pull request out of draft, so the raw
   "last left draft, and stayed left" anchor is the one this read needs. A
   `dirty` verdict refuses to arm, naming the unreconciled comments as
-  permalinks; anything other than `clean` — an unreadable timeline or comment
-  list, or no answer at all — logs a `warning` and lets the remaining gates
-  decide, and rides in the landing audit record (requirement 8x) as its own
-  `comment-reconciliation` gate, so a landing armed over a question that could
-  not be put is never recorded as one where it came back clear.
+  permalinks; anything else that is not `clean` — an unreadable timeline or
+  comment list, or no answer at all — refuses too (agent-ops#746, ruled in
+  agent-ops#753), naming the pull request and what could not be confirmed, so
+  the veto holds whether or not the read succeeds rather than only when it
+  does. The refusal is unconditional, and draws no distinction between an
+  `unknown` a read genuinely returned and the empty word a call that never
+  executed leaves behind: neither passes a safety gate. Only the exact word
+  `clean` reaches the arm, and rides in the landing audit record (requirement
+  8x) as its own `comment-reconciliation` gate entry. The refusal is not
+  terminal — the landing-retry sweep re-offers the pull request next cycle, so
+  a transient read failure costs a delayed landing rather than a lost one.
 - An `adjudicate-first` escalation now carries the adjudicator's own finding,
   not just the Enabler's pre-adjudication verdict (agent-ops#681). Where
   `run_enabler_adjudication` returned `inadequate` — or any other reason the

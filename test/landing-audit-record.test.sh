@@ -131,6 +131,7 @@ merge_autonomy_kill_state() { printf '{"state":"enabled"}'; }
 # state's own "enabled" vocabulary for "clear".
 merge_budget_freeze_state() { printf '{"state":"enabled"}'; }
 landing_eligible() { printf '%s' "${ELIGIBLE:-eligible}"; }
+landing_open_question_hit() { return 1; }
 review_gate_verdict() { printf '%s' "${GATE_WORD:-clean}"; return "${GATE_RC:-0}"; }
 approver_token_identity_login() { printf 'pullwright-approver[bot]'; }
 landing_approver_standing_review_at() {
@@ -209,6 +210,8 @@ assert_eq "  ... every gate this attempt cleared, named with its own evidence" \
   '"agent-merges-routine"' "$(jq -c '.gates[] | select(.gate == "autonomy-level") | .verdict' <<<"$audit")"
 assert_eq "  ... the eligibility gate" \
   '"eligible"' "$(jq -c '.gates[] | select(.gate == "eligibility") | .verdict' <<<"$audit")"
+assert_eq "  ... the open-question gate (requirement 8f, agent-ops#668)" \
+  '"clear"' "$(jq -c '.gates[] | select(.gate == "open-question") | .verdict' <<<"$audit")"
 assert_eq "  ... the review gate" \
   '"clean"' "$(jq -c '.gates[] | select(.gate == "review-gate") | .verdict' <<<"$audit")"
 assert_eq "  ... the Approver's own standing review" \
@@ -243,21 +246,23 @@ audit="$(event_of landing-audit-record)"
 assert_eq "the protected-path verdict is unknown, never read as clear" \
   '"unknown"' "$(jq -c '.protected_path.verdict' <<<"$audit")"
 
-# --- An unreadable comment-reconciliation read is recorded as itself -------
-# (agent-ops#672). That read is fail-open — it lets the rest of the gate
-# sequence decide, rather than refusing on a node fact — so the record is the
-# only place the distinction survives: a landing armed while the question
-# could not be put must not read, afterwards, like one where it came back
-# clear. The empty answer a call that never executed leaves behind reads as
-# `unknown` for the same reason.
+# --- An unreadable comment-reconciliation read arms nothing at all ---------
+# (#753's ruling on agent-ops#746). Gate 4 now refuses outright on any
+# non-`clean` word, so this path can never reach the arm and never writes a
+# `landing-audit-record` at all — unlike a `dirty` word, whose refusal at
+# least names the unreconciled comment, an unreadable read's refusal names
+# what could not be confirmed instead. The empty answer a call that never
+# executed leaves behind is refused the same way, never unfolded as a
+# separate case.
 
 for word in unknown ""; do
   rc="$(run_case RC_WORD="$word")"
-  assert_eq "an ${word:-absent} comment-reconciliation answer still arms (it is fail-open by design)" \
+  assert_eq "an ${word:-absent} comment-reconciliation answer arms nothing" \
     "0" "$rc"
-  audit="$(event_of landing-audit-record)"
-  assert_eq "  ... and the record carries unknown, never a silent clean" \
-    '"unknown"' "$(jq -c '.gates[] | select(.gate == "comment-reconciliation") | .verdict' <<<"$audit")"
+  assert_eq "  ... and writes no landing-audit-record at all" \
+    "" "$(event_of landing-audit-record)"
+  assert_eq "  ... but does log a landing-refused" \
+    "1" "$([[ -n "$(event_of landing-refused)" ]] && echo 1 || echo 0)"
 done
 
 # --- Adjudication history: every approver-verdict for this pull request, ---

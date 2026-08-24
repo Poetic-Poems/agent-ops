@@ -3278,6 +3278,22 @@ if (( coordinator_prompt_max_bytes > 0 )); then
 fi
 # --- end of requirement 4i's fit ---
 
+# The fit's own exemption set for requirement 34e's fourth refusal and
+# requirement 3x's matching completeness exception (agent-ops#683): which
+# issues/tech-debt candidates this cycle's fit actually trimmed, `{repo,
+# item, source}` per entry, on the same shape `coordinator_eligible_items`
+# below produces. Read straight off `ordered_repos_json` as the fit above
+# left it — never the pre-fit array, which carries none of the markers
+# `coordinator_fit_trimmed_items` looks for — and only when the fit actually
+# ran: an untouched array has nothing to find, and asking would cost a jq
+# pass for an empty answer on every ordinary cycle.
+coordinator_fit_trimmed_json="[]"
+coordinator_fit_rung=0
+if jq -e '.applied == true' <<<"${coordinator_fit_report_json:-{}}" >/dev/null 2>&1; then
+  coordinator_fit_trimmed_json="$(coordinator_fit_trimmed_items <<<"$ordered_repos_json")"
+  coordinator_fit_rung="$(jq -r '.rung // 0' <<<"$coordinator_fit_report_json" 2>/dev/null || echo 0)"
+fi
+
 # The Script's own count of what *every* pre-fetched band could actually offer
 # this cycle, and which repo+item+source triples make it up — the
 # machine-corroboration baseline "5a. Verdict corroboration" below tests the
@@ -3293,6 +3309,23 @@ fi
 eligible_items_json="$(coordinator_eligible_items "$ordered_repos_json" "$blocked_json")"
 eligible_items_total="$(jq 'length' <<<"$eligible_items_json" 2>&1)" \
   || { guard_warn "eligible_items_total" "$eligible_items_total"; eligible_items_total=0; }
+
+# The count behind requirement 3x's trimmed exemption (agent-ops#683): how
+# many of this cycle's eligible candidates the fit above actually trimmed —
+# the ones `unaccounted_items` below no longer demands a `needs_refinement`/
+# `voided` account for. Logged once per cycle whatever the Co-Ordinator went
+# on to decide, because it is a fact about this cycle's input rather than
+# about the verdict — and only where there is a count to log, so the ordinary
+# cycle, whose fit trimmed nothing, carries no such record.
+coordinator_unassessable_json="$(coordinator_unassessable_items "$eligible_items_json" "$coordinator_fit_trimmed_json")"
+coordinator_unassessable_total="$(jq 'length' <<<"$coordinator_unassessable_json" 2>&1)" \
+  || { guard_warn "coordinator_unassessable_total" "$coordinator_unassessable_total"; coordinator_unassessable_total=0; }
+if (( coordinator_unassessable_total > 0 )); then
+  log_event "coordinator-input-fit-unassessable" "$(jq -nc \
+    --argjson n "$coordinator_unassessable_total" --argjson rung "$coordinator_fit_rung" \
+    --arg d "the fit ladder trimmed $coordinator_unassessable_total of this cycle's eligible candidate(s) (rung $coordinator_fit_rung) — requirement 34e refuses a needs_refinement report against any of them, and requirement 3x's completeness check asks for none either" \
+    '{detail: $d, unassessable_total: $n, rung: $rung}')"
+fi
 
 # --- 3b. No-op short-circuit (requirement 3b) ---
 # The Co-Ordinator costs the same to tell us "nothing to do" as it does to
@@ -4411,6 +4444,45 @@ if [[ "$rev_status" == "ready" ]]; then
   # claim pr-raised left standing above is released only now, at the actual
   # handoff, not back when the item-keyed claim was.
   release_pr_claim
+
+  # --- 8f. Open-question signal (D18, agent-ops#668) ---
+  # `open_questions` is additive to a `ready` verdict, never a substitute for
+  # it — the handoff above has already happened regardless of what follows
+  # here. Projected as a label (requirement 8f's own landing gate,
+  # `_landing_stage_attempt`, and the 2.1e retry sweep both read it with no
+  # log join) and logged as its own event so the escalation/adjudication
+  # path that gate drives has the question's own words to work from, not
+  # only the label's bare presence. A later Reviewer round raising a further
+  # question while an earlier one still stands is additive too: the label
+  # projects as `present` and the new question still gets its own event, but
+  # the pull request was already held and stays held.
+  oq_json="$(jq -c '[.open_questions[]? | select(type == "object")]' <<<"$rev_status_json" 2>/dev/null)"
+  [[ -n "$oq_json" && "$oq_json" != "null" ]] || oq_json='[]'
+  if [[ "$(jq 'length' <<<"$oq_json" 2>/dev/null || echo 0)" != "0" ]]; then
+    if [[ "$impl_pr_url" =~ /pull/([0-9]+)$ ]]; then
+      oq_number="${BASH_REMATCH[1]}"
+      oq_proj="$(landing_open_question_label_project "$selected_repo" "$oq_number")"
+      if [[ "$oq_proj" == "failed" ]]; then
+        # Self-heal, once: the common cause is a repository this pipeline has
+        # not created the label in yet, the same gap
+        # `refinement_label_add`'s own retry (agent-ops#687) exists to close.
+        refinement_label_ensure_one "$selected_repo" "$LANDING_OPEN_QUESTION_LABEL" >/dev/null 2>&1 || true
+        oq_proj="$(landing_open_question_label_project "$selected_repo" "$oq_number")"
+      fi
+      log_event "open-question-raised" "$(jq -nc --arg u "$impl_pr_url" --arg r "$selected_repo" \
+        --arg proj "$oq_proj" --argjson qs "$oq_json" \
+        '{pr_url: $u, repo: $r, label_projection: $proj, questions: $qs}')"
+      if [[ "$oq_proj" != "added" && "$oq_proj" != "present" ]]; then
+        log_event "warning" "$(jq -nc --arg u "$impl_pr_url" --arg l "$LANDING_OPEN_QUESTION_LABEL" \
+          --arg d "$impl_pr_url carries an open question but the $LANDING_OPEN_QUESTION_LABEL label could not be confirmed on it (projection: $oq_proj) — the landing gate cannot hold it on this label alone until a later read succeeds" \
+          '{detail: $d, pr_url: $u, label: $l}')"
+      fi
+    else
+      log_event "warning" "$(jq -nc --arg u "$impl_pr_url" \
+        --arg d "$impl_pr_url carries an open question but no pull request number could be parsed from its URL — the open-question label was not projected" \
+        '{detail: $d, pr_url: $u}')"
+    fi
+  fi
 
   # --- 8b. Approver stage (D18 WI-5) ---
   # After every existing gate has passed and the handoff itself is complete —
