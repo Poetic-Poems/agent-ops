@@ -1319,8 +1319,9 @@ most recent per-stage verdict computed on *this* node, read from
 `state_dir/.stage-health.json` (written by `lib/stage-health.sh`'s
 `stage_health_write_status` at the end of every cycle) rather than
 recomputed, on `status.doctor`'s own precedent just above. One row per stage
-(`coordinator`, `approver`, `enabler-adjudicate`, `enabler`, `refiner`,
-`implementer`, `reviewer`), each carrying a verdict badge (`failing` red,
+(`coordinator`, `approver`, `approver-adjudicate-open-question`,
+`enabler-adjudicate`, `enabler`, `refiner`, `implementer`, `reviewer`),
+each carrying a verdict badge (`failing` red,
 `idle` grey, `ok` green), when it last succeeded, and — for a `failing`
 row — its consecutive-failure count and the most recent attempt's own
 failure detail; no cycle having completed since this check shipped says so,

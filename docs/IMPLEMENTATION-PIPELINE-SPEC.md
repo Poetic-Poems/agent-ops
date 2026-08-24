@@ -2690,8 +2690,11 @@ implements.
    node's own event stream on stdin — deliberately never the fleet union
    `crash_loop_verdict` reads: a stage that is healthy on every other node
    says nothing about whether it is healthy on this one. For each of
-   `coordinator`, `approver`, `enabler-adjudicate`, `enabler`, `refiner`,
-   `implementer` and `reviewer` it derives, from that stage's own `stage-end`
+   `coordinator`, `approver`, `approver-adjudicate-open-question`,
+   `enabler-adjudicate`, `enabler`, `refiner`, `implementer` and `reviewer` —
+   every stage that logs a `stage-end` of its own, so that a stage this
+   reader does not name can never be one whose failures go unread — it
+   derives, from that stage's own `stage-end`
    and `attempt-failed` events: `last_success` (the most recent `stage-end`
    with exit_code 0, or null), `consecutive_failures` (a running streak reset
    to 0 by a success — the same reduction `crash_loop_verdict` already uses,

@@ -96,8 +96,8 @@ stage_health_verdicts() {
   out="$(jq -c -R -n --argjson threshold "$threshold" \
     --argjson idle_secs "$(( idle_after_hours * 3600 ))" --argjson now "$now" '
     def stage_names: [
-      "coordinator", "approver", "enabler-adjudicate", "enabler",
-      "refiner", "implementer", "reviewer"
+      "coordinator", "approver", "approver-adjudicate-open-question",
+      "enabler-adjudicate", "enabler", "refiner", "implementer", "reviewer"
     ];
     ([ inputs | select(length > 0) | (fromjson? // empty) ]) as $events
     | reduce stage_names[] as $stage (
@@ -112,7 +112,8 @@ stage_health_verdicts() {
           | (
               if ($ends | length) == 0 then "idle"
               elif $consecutive >= $threshold then "failing"
-              elif $last_success_epoch != null and ($now - $last_success_epoch) > $idle_secs then "idle"
+              elif $consecutive == 0 and $last_success_epoch != null
+                   and ($now - $last_success_epoch) > $idle_secs then "idle"
               else "ok"
               end
             ) as $verdict

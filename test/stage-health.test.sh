@@ -78,8 +78,31 @@ NOW_EPOCH="$(epoch_of "$NOW")"
 
 empty_verdicts="$(stage_health_verdicts 3 48 "$NOW_EPOCH" <<<"")"
 assert_eq "an empty stream still names every known stage" \
-  '["approver","coordinator","enabler","enabler-adjudicate","implementer","refiner","reviewer"]' \
+  '["approver","approver-adjudicate-open-question","coordinator","enabler","enabler-adjudicate","implementer","refiner","reviewer"]' \
   "$(jq -cS 'keys' <<<"$empty_verdicts")"
+
+# --- the stage list tracks agent-cycle.sh, not a snapshot of it -------------
+#
+# A stage the Script logs a `stage-end` for but `stage_names` does not name is
+# invisible everywhere this feature reports — absent from `--status`, from the
+# dashboard panel and from the heartbeat, not even `idle` — which is the exact
+# blind spot #662 exists to close, restored for that one stage and silent
+# about it. That is not hypothetical: `approver-adjudicate-open-question`
+# (#776) landed while this branch was open and was missed until review. So the
+# list is asserted against the literals agent-cycle.sh actually logs rather
+# than against a copy of itself. `workspace` is deliberately not among them:
+# it logs `attempt-failed` only, never a `stage-end`, so it would read `idle`
+# for ever.
+logged_stages="$(grep -oE 'stage: "[a-z-]+", exit_code' "$SCRIPT_DIR/agent-cycle.sh" \
+  | grep -oE '"[a-z-]+"' | tr -d '"' | jq -Rnc '[inputs] | unique' 2>/dev/null \
+  || true)"
+if [[ -z "$logged_stages" || "$logged_stages" == "[]" ]]; then
+  printf 'FAIL - could not read the stage-end literals out of agent-cycle.sh — has the shape moved?\n'
+  failures=$(( failures + 1 ))
+else
+  assert_eq "every stage agent-cycle.sh logs a stage-end for is one this reader names" \
+    "$logged_stages" "$(jq -cS 'keys' <<<"$empty_verdicts")"
+fi
 assert_eq "a stage with no events at all reads idle" \
   "idle" "$(jq -r '.coordinator.verdict' <<<"$empty_verdicts")"
 assert_eq "and its last_success is null" \
@@ -146,6 +169,27 @@ fresh_success="$(stage_end_at 2026-08-21T11:00:00Z reviewer 0)"
 verdict="$(stage_health_verdicts 3 48 "$NOW_EPOCH" <<<"$fresh_success")"
 assert_eq "a success one hour ago, well inside the idle window, reads ok" \
   "ok" "$(jq -r '.reviewer.verdict' <<<"$verdict")"
+
+# ... but "nothing since" is the whole of what makes a stale success idle. A
+# stage whose last success is old *and* which has failed since has had work,
+# and it went wrong: calling that "idle" reports "nothing to report" over a
+# stage that is actively failing — below THRESHOLD, so not yet `failing`, but
+# `ok` at worst, never the grey "no recent work" badge. The failures are also
+# what `--status` and the dashboard would otherwise omit entirely from that
+# row.
+stale_then_failed="$(stage_end_at 2026-01-01T00:00:00Z reviewer 0
+  attempt_failed_at 2026-08-21T10:00:00Z reviewer 'reviewer exited 1'
+  stage_end_at 2026-08-21T10:00:00Z reviewer 1
+  attempt_failed_at 2026-08-21T11:00:00Z reviewer 'reviewer exited 1'
+  stage_end_at 2026-08-21T11:00:00Z reviewer 1)"
+verdict="$(stage_health_verdicts 3 48 "$NOW_EPOCH" <<<"$stale_then_failed")"
+assert_eq "a stale success with failures since is not idle" \
+  "ok" "$(jq -r '.reviewer.verdict' <<<"$verdict")"
+assert_eq "  ... and those failures are still counted, not hidden by the stale success" \
+  "2" "$(jq -r '.reviewer.consecutive_failures' <<<"$verdict")"
+assert_eq "  ... reaching THRESHOLD makes it failing, never idle" \
+  "failing" "$(jq -r '.reviewer.verdict' \
+    <<<"$(stage_health_verdicts 2 48 "$NOW_EPOCH" <<<"$stale_then_failed")")"
 
 # --- per-stage isolation -----------------------------------------------------
 
