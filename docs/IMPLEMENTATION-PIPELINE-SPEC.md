@@ -3827,11 +3827,13 @@ implements.
    rejected again — the fallback selection (below) then handing an Implementer
    a candidate the Co-Ordinator was never given enough of the thread to brief.
    The count of eligible entries the exemption actually covers is logged
-   separately and unconditionally, once per cycle, as
-   `coordinator-input-fit-unassessable` (carrying `unassessable_total` and the
-   rung) — `coordinator_unassessable_items` — so a human reading the cycle log
-   can still see how much of a cycle's backlog went unassessed even though no
-   per-item report was asked for.
+   separately, once per cycle and whatever the Co-Ordinator went on to decide,
+   as `coordinator-input-fit-unassessable` (carrying `unassessable_total` and
+   the rung) — `coordinator_unassessable_items` — so a human reading the cycle
+   log can still see how much of a cycle's backlog went unassessed even though
+   no per-item report was asked for. A cycle the fit trimmed nothing in has
+   nothing to say here and says nothing: the event is written only where the
+   count is above zero, so the ordinary cycle carries no such record.
 
    **Rejections are tagged with the band.** The `warning` and the rejected
    `corroboration` both carry a `bands` object (`{"issues": 3, "tech-debt":
@@ -8632,10 +8634,15 @@ implements.
       3x's own completeness exception below. `coordinator_fit_trimmed_items`
       (`lib/coordinator-input.sh`) is the exemption set — every issues/
       tech-debt candidate whose body or comments the fit's own `fit_entry`
-      actually clipped this cycle, detected off the elision marker or the
-      `comments_elided` key it leaves behind, not re-derived from the entry's
-      current byte length. The refusal is unconditional on the entry's own
-      `reason`/`missing`/`evidence`, and on whether the reporting stage
+      actually clipped this cycle, detected off the elision marker in a
+      clipped body, the same marker in a clipped *comment* body, or the
+      `comments_elided` key a cut comment list leaves behind, and never
+      re-derived from the entry's current byte length. All three markers,
+      because all three take text away from the same reader: an issue whose
+      body is two lines and whose acceptance criteria live in a Refiner's
+      comment is trimmed past what "done" would mean by a middle rung that
+      clips that one comment and leaves everything else as it found it. The
+      refusal is unconditional on the entry's own `reason`/`missing`/`evidence`, and on whether the reporting stage
       fetched the item live before writing them: the Script cannot tell a
       report grounded in a live read from one grounded in the elided extract
       it was handed, and the harm of the occasional false refusal is far
@@ -12071,9 +12078,10 @@ What exists, and the requirements each part answers to:
    the three events the union log depends on. Both must pass `shellcheck`.
    `coordinator_fit_trimmed_items`, given the *fitted* repos array, prints
    `{repo, item, source}` for every issues/tech-debt entry `fit_entry`
-   actually clipped — detected off the elision marker or `comments_elided`,
-   never re-measured — and `coordinator_fit_trim_refusal_reason`, given an
-   entry and that set, is requirement 34e's fourth refusal (agent-ops#683).
+   actually clipped — detected off the elision marker in a body or a comment
+   body, or `comments_elided`, never re-measured — and
+   `coordinator_fit_trim_refusal_reason`, given an entry and that set, is
+   requirement 34e's fourth refusal (agent-ops#683).
    Both are unit-tested directly in `test/coordinator-input.test.sh`
    (bottom-rung marking, a middle rung marking only the entries it actually
    touched, an untrimmed cycle marking nothing, and the refusal function's own
@@ -14250,8 +14258,11 @@ pull request, run the ones the change touches and any it could regress.
    in isolation: a cycle driven to the ladder's bottom rung with every entry
    still present marks every one of them trimmed; an untrimmed cycle marks
    nothing; a cycle trimmed only enough to clip one of two entries marks only
-   that one; and the refusal function refuses only an entry whose repo+item
-   the trimmed set carries, names the rung in its reason, and degrades to
+   that one; an entry whose comment prose alone was clipped — its body inside
+   the rung's cap and its comment list kept whole — is marked trimmed on the
+   marker inside that comment; and the refusal function refuses only an entry
+   whose repo+item the trimmed set carries, names the rung in its reason, and
+   degrades to
    refusing nothing on an empty or malformed trimmed set.
    `test/fit-trim-block-refusal.test.sh` then drives the real
    `record_needs_refinement_block` (lifted verbatim, the same technique
@@ -14267,7 +14278,7 @@ pull request, run the ones the change touches and any it could regress.
    (requirement 34d) still runs ahead of this one. The same file then proves
    the two halves compose: with both of a fully-trimmed cycle's eligible items
    left unreported (as the refusal above forces), `unaccounted_items` finds
-   nothing unaccounted — a `"selected": false"` verdict over that cycle is
+   nothing unaccounted — a `"selected": false` verdict over that cycle is
    accepted — while `coordinator_unassessable_items` still surfaces both as
    unassessable for the log, closing the loop the incident opened: the
    refusal alone would have just relocated the mass-flag into a

@@ -380,8 +380,13 @@ coordinator_fit_detail() {  # <fit-json>
 # not itself read as an unaccounted verdict.
 #
 # Detected the same way a human reading the rendered prompt would: the
-# elision marker `fit_entry`'s own `clip` leaves in a clipped body, or the
-# `comments_elided` key it adds when the comment list itself was cut. Never
+# elision marker `fit_entry`'s own `clip` leaves in a clipped body, the same
+# marker in a clipped *comment* body, or the `comments_elided` key it adds
+# when the comment list itself was cut. All three, because all three take
+# text away from the same reader: an issue whose body is two lines and whose
+# acceptance criteria live in a Refiner's comment — the ordinary shape in
+# this repository — is trimmed past what "done" means by a middle rung that
+# clips that one comment and touches nothing else. Never
 # re-measured against the byte caps here — that arithmetic already ran once,
 # inside the ladder, and re-deriving it from an entry's current byte length
 # would drift the moment either side changed independently. The literal
@@ -396,9 +401,12 @@ coordinator_fit_detail() {  # <fit-json>
 # only by accident.
 coordinator_fit_trimmed_items() {  # (fitted repos JSON on stdin)
   jq -c '
+    def elided: ((. // "") | type) == "string" and ((. // "") | contains("[Script: elided"));
     def trimmed:
-      (((.body // "") | type) == "string" and ((.body // "") | contains("[Script: elided")))
-      or has("comments_elided");
+      (.body | elided)
+      or has("comments_elided")
+      or ((.comments // []) as $cs
+          | ($cs | type) == "array" and ($cs | any(type == "object" and (.body | elided))));
     [ .[] | . as $repo | (.slug // "") as $r
       | ( ($repo.issues // [])[] | select(trimmed)
           | {repo: $r, item: ((.ref // "") | tostring), source: "issues"} ),

@@ -9058,9 +9058,10 @@ eligible_items_total="$(jq 'length' <<<"$eligible_items_json" 2>&1)" \
 # The count behind requirement 3x's trimmed exemption (agent-ops#683): how
 # many of this cycle's eligible candidates the fit above actually trimmed —
 # the ones `unaccounted_items` below no longer demands a `needs_refinement`/
-# `voided` account for. Logged unconditionally on the verdict, once per
-# cycle, because it is a fact about this cycle's input rather than about what
-# the Co-Ordinator went on to decide.
+# `voided` account for. Logged once per cycle whatever the Co-Ordinator went
+# on to decide, because it is a fact about this cycle's input rather than
+# about the verdict — and only where there is a count to log, so the ordinary
+# cycle, whose fit trimmed nothing, carries no such record.
 coordinator_unassessable_json="$(coordinator_unassessable_items "$eligible_items_json" "$coordinator_fit_trimmed_json")"
 coordinator_unassessable_total="$(jq 'length' <<<"$coordinator_unassessable_json" 2>&1)" \
   || { guard_warn "coordinator_unassessable_total" "$coordinator_unassessable_total"; coordinator_unassessable_total=0; }

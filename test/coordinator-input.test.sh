@@ -266,6 +266,29 @@ mixed_trimmed="$(coordinator_fit_trimmed_items <<<"$(jq -c '.repos' <<<"$mixed_o
 assert_eq "only the entry that actually exceeded the rung is marked trimmed" \
   '["2"]' "$(jq -c '[.[].item]' <<<"$mixed_trimmed")"
 
+# The ordinary shape in this repository: a two-line issue body whose
+# acceptance criteria live in a Refiner's comment. A middle rung clips that
+# comment and leaves the body alone, so neither the body marker nor
+# `comments_elided` (the comment was kept, only shortened) is what says the
+# entry was trimmed — the marker inside the comment's own body is.
+comment_only="$(python3 -c '
+import json
+issues = [
+  {"source": "issues", "ref": "5", "url": "https://github.com/o/r/issues/5",
+   "title": "t", "priority": "Medium", "updated_at": "2026-08-01T00:00:00Z",
+   "body": "two lines, no criteria",
+   "comments": [{"author": "refiner", "created_at": "2026-08-02T00:00:00Z",
+                 "body": "C" * 9000}]},
+]
+print(json.dumps([{"slug": "o/r", "sources": ["issues"], "issues": issues, "tech_debt": []}]))')"
+comment_only_out="$(fit 3000 <<<"$comment_only")"
+assert_eq "the fixture clips the comment while leaving the body alone" \
+  "false false" \
+  "$(jq -r '.repos[0].issues[0] | "\(.body | contains("[Script: elided")) \(has("comments_elided"))"' <<<"$comment_only_out")"
+assert_eq "an entry whose comment prose alone was clipped is still marked trimmed" \
+  '["5"]' \
+  "$(jq -c '[.[].item]' <<<"$(coordinator_fit_trimmed_items <<<"$(jq -c '.repos' <<<"$comment_only_out")")")"
+
 # The refusal function itself: refuses only an entry naming a repo+item the
 # trimmed set carries, regardless of source, and names the rung.
 entry_trimmed='{"repo":"o/r","item":"2","source":"issues","reason":"x","missing":"y","evidence":"z"}'
