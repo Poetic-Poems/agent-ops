@@ -28,6 +28,17 @@
 # (`fromjson? // empty`), the same tolerance every other log reader in this
 # codebase gives a partial write.
 #
+# The stream is parsed with `jq -R -n 'inputs'`, one line at a time, and
+# deliberately not with the `jq -R -s '[splits("\n")]'` spelling the other
+# log readers here use (lib/crash-loop.sh, lib/review-gate.sh,
+# lib/escalation-autonomy.sh — TD-PPagop-26082501). `splits` runs an
+# oniguruma regex over the whole slurped file, which is quadratic enough in
+# practice that a real 2.3 MB `log.jsonl` takes ~80 s to split and ~0.07 s
+# to read with `inputs` — a difference that matters here more than it does
+# there, because this reader runs inside every cycle's own `cleanup()` and
+# `log.jsonl` is never rotated (scripts/rotate-logs.sh), so the cost would
+# grow without bound for the life of the node.
+#
 # For each stage in `stage_names` (below) it returns:
 #   - last_success: the `ts` of the most recent `stage-end` with exit_code 0
 #     for that stage, or null if it has never once succeeded on this node.
@@ -37,9 +48,7 @@
 #     `crash_loop_verdict` already uses, but per-stage, per-node, and
 #     without requiring an identical failure detail: any failure counts,
 #     because "always wrong in some new way" is exactly as unhealthy as
-#     "always wrong the same way" — and detail-matching is what makes
-#     `crash_loop_verdict` slow (agent-ops#642), which this reader must not
-#     inherit.
+#     "always wrong the same way".
 #   - last_detail: the `detail` of the most recent `attempt-failed` event
 #     for this stage, but only while `consecutive_failures` > 0 — null again
 #     the moment a success clears the streak, because this describes the
@@ -84,13 +93,13 @@ stage_health_verdicts() {
   [[ "$threshold" =~ ^[0-9]+$ ]] || threshold=3
   [[ "$idle_after_hours" =~ ^[0-9]+$ ]] || idle_after_hours=48
   [[ "$now" =~ ^[0-9]+$ ]] || now="$(date +%s)"
-  out="$(jq -c -R -s --argjson threshold "$threshold" \
+  out="$(jq -c -R -n --argjson threshold "$threshold" \
     --argjson idle_secs "$(( idle_after_hours * 3600 ))" --argjson now "$now" '
     def stage_names: [
       "coordinator", "approver", "enabler-adjudicate", "enabler",
       "refiner", "implementer", "reviewer"
     ];
-    ([ splits("\n") | select(length > 0) | (fromjson? // empty) ]) as $events
+    ([ inputs | select(length > 0) | (fromjson? // empty) ]) as $events
     | reduce stage_names[] as $stage (
         {};
         . + { ($stage): (
