@@ -940,7 +940,8 @@ running/idle state, independent of it — the whole point being a node whose
 process is alive and whose cycles are completing, which reads as plain
 "running" or "idle", while one or more stages have failed every attempt for
 `threshold` cycles running (see the Stage health section below for which,
-and since when); stale peers bordered red and reported as state unknown; click a card to
+and since when); stale peers bordered red and reported as state unknown;
+click a card to
 filter the cycle list and the recent log to that node, click again to clear —
 the filter survives refreshes like every other UI state; **live claims** — the
 registry rows, i.e. work no other node will pick up. Both, plus the cycles
