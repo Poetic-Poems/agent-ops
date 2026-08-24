@@ -1290,8 +1290,8 @@
   // derived here, since only it can tell "queued last tick, not now" apart
   // from "never queued at all" (see publish-dashboard.sh's merge-queue
   // block). A queued pull request is landing hands-off, so it gets its own
-  // badge rather than reading as an ordinary "ready" one a human still needs
-  // to act on; `dequeued` — GitHub reverted it to an ordinary open pull
+  // badge rather than reading as an ordinary "ready" one still waiting on the
+  // landing gate; `dequeued` — GitHub reverted it to an ordinary open pull
   // request without merging — gets a warning badge beside it, since that is
   // exactly the state a maintainer's already-clicked "Merge when ready" can
   // silently fall out of.
@@ -1459,9 +1459,9 @@
   // ---------- autonomous landings panel (D18 WI-8, agent-ops#411) ----------
   // Risk 6 of the autonomy investigation — "overnight merges with nobody
   // watching" — was accepted on the condition that this replaces the
-  // synchronous human gate with an asynchronous audit. So this panel answers
-  // one question for a person who was asleep: what did the Script merge
-  // without me, and on whose authority?
+  // synchronous landing gate at `human` with an asynchronous audit. So this
+  // panel answers one question for a person who was asleep: what did the
+  // Script merge without me, and on whose authority?
   //
   // Three deliberate choices about what it refuses to hide:
   //
@@ -1832,16 +1832,17 @@
 
   // A refinement block (kind: "needs-refinement") is not waiting on the world
   // like an ordinary block — it is waiting on the pipeline's own Enabler and,
-  // past one refinement, on a human. Reading "blocked: 9" with no way to tell
-  // the two populations apart understates how much of the backlog is really a
-  // specification gap, so each such row gets a badge and the panel a filter to
-  // set them aside.
+  // past one refinement, on escalation (`escalation_autonomy` decides whether
+  // that reaches a human straightaway or is adjudicated first). Reading
+  // "blocked: 9" with no way to tell the two populations apart understates
+  // how much of the backlog is really a specification gap, so each such row
+  // gets a badge and the panel a filter to set them aside.
   var REFINEMENT_KIND = "needs-refinement";
   function isRefinementBlock(b) { return b.kind === REFINEMENT_KIND; }
   function refinementBadge(b) {
     if (!isRefinementBlock(b)) return null;
     return el("span", {class:"badge b-purple", style:"margin-left:6px",
-      title:"waiting on the pipeline's own Enabler, and past one refinement, on a human",
+      title:"waiting on the pipeline's own Enabler, and past one refinement, on escalation",
       text:"refinement"});
   }
 

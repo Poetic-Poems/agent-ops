@@ -102,7 +102,7 @@ labels_catalogue() {
        [ entry(.pr_label; "1d76db";
                "Raised by the autonomous implementation pipeline"),
          entry(.enabler_escalation_label; "b60205";
-               "Raised by the Enabler: a blocked item that needs a human"),
+               "Raised by the Enabler: a blocked item that escalates"),
          entry(.needs_refinement_label; "fbca04";
                "Too under-specified to work on; say what done looks like"),
          entry(.refined_label; "0e8a16";
@@ -128,7 +128,7 @@ labels_catalogue() {
                "Raised by the project-review pipeline") ]
      elif $role == "escalation" then
        [ entry(.enabler_escalation_label; "b60205";
-               "Raised by the Enabler: a blocked item that needs a human") ]
+               "Raised by the Enabler: a blocked item that escalates") ]
      else [] end)
     | .[] | @tsv
   ' <<<"$defaulted" 2>/dev/null || true

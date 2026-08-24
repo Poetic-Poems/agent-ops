@@ -227,15 +227,17 @@ retire the bot's PR.
 
 Like `merge-conflicts`, this work order inverts the assumptions the rest of
 this prompt is written around, so read this before the Procedure. A pull
-request this system raised was otherwise ready to merge — a human clicked
-"Merge when ready" and GitHub enqueued it — but the **merge group's** own
-checks failed: the pull request's own head can be green while the speculative
-merge with whatever sat ahead of it in the queue was not, and GitHub removed
-it from the queue without merging. **The branch and the PR exist.** The work
-order carries `pr_url`, `pr_number` and `base` alongside the usual fields, and
-`branch` names the existing branch. Your job is narrow: find what actually
-failed in the merge group, fix it, and leave the pull request ready for a
-human to re-queue — you cannot re-queue it yourself.
+request this system raised was otherwise ready to merge — a human's merge
+click ("Merge when ready"), or, at `merge_autonomy: agent-merges-routine` and
+above, the Script's own arming step, enqueued it — but the **merge group's**
+own checks failed: the pull request's own head can be green while the
+speculative merge with whatever sat ahead of it in the queue was not, and
+GitHub removed it from the queue without merging. **The branch and the PR
+exist.** The work order carries `pr_url`, `pr_number` and `base` alongside
+the usual fields, and `branch` names the existing branch. Your job is
+narrow: find what actually failed in the merge group, fix it, and leave the
+pull request ready for a human to re-queue — you cannot re-queue it
+yourself.
 
 - **Do not open a pull request, and do not create a branch.** `git fetch
   origin` and `git checkout` the work order's `branch` (it is on the remote
@@ -402,11 +404,12 @@ merge act itself — the human's merge click ("Merge when ready"), or, at
 `merge_autonomy: agent-merges-routine` and above, the Script's own arming
 step after every gate it re-reads has cleared; never you, at any level — and
 the actual merge lands minutes later, asynchronously, once the merge group's
-own checks pass. A currently
-queued pull request is **the human's, mid-transaction: never push to it.** A
+own checks pass. A currently queued pull request is **mid-transaction — the
+human's merge click at `merge_autonomy: human`, or the Script's own arming
+step at `agent-merges-routine` and above — either way, never push to it.** A
 push evicts it from the queue with no further signal that this happened — the
-pull request silently reverts to an ordinary open one, and the human's merge
-click is simply undone.
+pull request silently reverts to an ordinary open one, and whichever of those
+enqueued it is simply undone.
 
 This matters only for the sources whose branch and pull request already
 exist before you start and whose pull request is not a draft —

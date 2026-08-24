@@ -373,7 +373,7 @@ run_coordinator_stage_attempt() {  # <attempt-out-file> <prompt> [extra-budget-j
 # tech-debt-only gate could never reject during a restricted cycle and this
 # function was never reached — but a gate that now counts the finishing
 # sources can, and a fallback blind to `sources` would answer it by starting
-# fresh work through a full human gate. The one place the list is coarser
+# fresh work through a full landing gate. The one place the list is coarser
 # than the array is `findings`, whose two kinds are separate source tokens
 # (`security`, `code-quality`) and are matched as such here.
 #

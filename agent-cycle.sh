@@ -1933,16 +1933,16 @@ refiner_allowed=1
 
 # --- 2.2a Back-pressure, decided (requirement 2.2a) ---
 # Deferred from step 2.2 until the sources were gathered. Back-pressure's stated
-# purpose is to throttle new work and stop the human gate silting up — and the
+# purpose is to throttle new work and stop the landing gate silting up — and the
 # four *finishing* sources do neither: `review-feedback` answers a review the
-# human has already written, `merge-conflicts` rebases a ready PR the human is
-# waiting to merge, `dequeued` fixes the merge-group checks failure that got a
-# ready PR of ours removed from the human's own queue, and `abandoned-drafts`
+# human has already written, `merge-conflicts` rebases a ready PR that is
+# waiting to land, `dequeued` fixes the merge-group checks failure that got a
+# ready PR of ours removed from the merge queue, and `abandoned-drafts`
 # carries a stalled draft this system started to completion. All are the
 # activity that *un*-silts the gate — indeed an abandoned draft is itself
 # occupying one of the very back-pressure slots the cap is counting, and a
-# conflicted or dequeued PR is one the human cannot merge to free a slot until
-# it is fixed. So when back-pressure trips we do not stand down if
+# conflicted or dequeued PR is one nothing can land to free a slot until it
+# is fixed. So when back-pressure trips we do not stand down if
 # any has work waiting; we restrict every repo's source list to those four.
 #
 # No new prompt machinery is needed for that, and deliberately so: the
@@ -1953,8 +1953,8 @@ refiner_allowed=1
 # The system still cannot open a new PR while the gate is full; it can only
 # finish what is already in it.
 #
-# "a conflicted or dequeued PR is one the human cannot merge to free a slot
-# until it is fixed" above claims those two already hold a slot requirement
+# "a conflicted or dequeued PR is one nothing can land to free a slot until
+# it is fixed" above claims those two already hold a slot requirement
 # 2.2's own count counts — but that count was taken before this cycle's
 # merge-conflict and dequeued candidates were gathered (they arrive only
 # once ordered_repos_json's sources are populated, in step 3), and neither

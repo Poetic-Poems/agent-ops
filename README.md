@@ -9,11 +9,13 @@ Once an hour:
 1. **Co-Ordinator** (Haiku) selects at most one well-scoped item of work (security findings, review feedback, merge conflicts on otherwise-ready PRs of ours, abandoned draft PRs of ours, failed CI runs, tech-debt, issues, fiddle's implementation plan, project-review recommendations, or code-quality findings). Security work — open Dependabot alerts and security code-scanning alerts — is always prioritised ahead of everything else; an issue you have marked `Urgent` comes second; answering your review feedback comes third, rebasing a ready PR of ours that has hit a merge conflict comes fourth, and finishing a draft PR this system started and then abandoned comes fifth. Issues rank by their **`Priority`** field — `Urgent`, `High`, `Medium` (also the default when the field is unset) and `Low` each sit at a different point in the order — so triaging an issue is how you move it up or down the queue.
 2. **Implementer** (Sonnet/Haiku) clones the repo, implements the item on a feature branch, and opens a draft pull request — or, for review feedback, pushes to the existing branch of the PR you commented on.
 3. **Reviewer** (Sonnet, or Opus when the Implementer graded the work `complexity:high`) checks and corrects the implementation, then marks the PR ready for review.
-4. **Human** reviews and merges via the normal GitHub process. At the default
-   `merge_autonomy` (`human`) this is the only gate; where an installation has
-   raised it, an **Approver** App reviews first (see
+4. **The Landing Gate** reviews and merges the pull request. At the default
+   `merge_autonomy` (`human`) a human does both; an opt-in trust ladder (see
    [The Landing Gate](docs/IMPLEMENTATION-PIPELINE-SPEC.md#the-landing-gate))
-   — a human still merges every pull request regardless.
+   can add an **Approver** App review and, at its top two rungs, have the
+   Script itself land an eligible pull request — a human's own role then
+   narrows to whatever the classifier didn't cover, and a human
+   `CHANGES_REQUESTED` blocks landing at every level regardless.
 
 And, at the end of a cycle, rarely: the **Enabler** (Opus) re-examines an item
 that has been blocked for several cycles, unblocks it if it can and raises an
@@ -257,7 +259,7 @@ Two things to know:
 - **It only applies to `agent/` and `td/` branches** — the ones the system is
   allowed to push to. `/td` raises its PRs on `td/<id>` and the implementation
   cycle on `agent/<item>`, so both qualify; labelling a PR on any other branch (e.g.
-  `feature/…`) does nothing, because the human gate reserves those and the
+  `feature/…`) does nothing, because the landing gate reserves those and the
   gatherers skip them even when labelled.
 - **Labelling grants write access.** A labelled PR is one the fleet may push to —
   including a `--force-with-lease` rebase to clear a conflict — and it counts
@@ -275,7 +277,7 @@ requirements this section summarises:
 |---|---|---|---|
 | `human` — **the product default** | You | You | Everything — the pipeline never approves or merges anything |
 | `agent-approves` | The Approver App | You | The merge (or enqueue) click |
-| `agent-merges-routine` | The Approver App | The Script — for a `complexity:low`/`medium` pull request from a source in `merge_autonomy_routine_sources`, touching no protected path | The click for anything the classifier doesn't cover |
+| `agent-merges-routine` | The Approver App | The Script — for a pull request graded within `merge_autonomy_routine_complexity` (`low`/`medium` by default) from a source in `merge_autonomy_routine_sources`, touching no protected path | The click for anything the classifier doesn't cover |
 | `agent-merges-all` | The Approver App | The Script — the same classifier as `agent-merges-routine`; nothing lands here that wouldn't already land there | The click for anything the classifier doesn't cover, same as `agent-merges-routine` |
 
 The top two rungs are configured and validated separately even though they
@@ -392,7 +394,7 @@ Keys:
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
 | `implementer_model_default` | `claude-sonnet-5` | For code changes. |
 | `implementer_model_trivial` | `claude-haiku-4-5-20251001` | For docs, comments, register entries only. |
-| `reviewer_model_default` | `claude-sonnet-5` | Quality gate before human review, for work the Implementer graded `complexity:low` or `complexity:medium`. |
+| `reviewer_model_default` | `claude-sonnet-5` | Quality gate before the landing gate, for work the Implementer graded `complexity:low` or `complexity:medium`. |
 | `reviewer_model_complex` | `claude-opus-5` | The same gate for work graded `complexity:high` — the Implementer grades each PR ex post and labels it; the higher of that grade and the PR's existing label picks the tier. Leave it empty to review everything on `reviewer_model_default`. |
 | `approver_model_default` | `claude-sonnet-5` | The Approver's model for work graded `complexity:medium`, active once `merge_autonomy` (see below) is above `human`. Leave it empty to switch the whole stage off — no App review is ever posted, at any level. |
 | `approver_model_complex` | `claude-opus-5` | The same gate for work graded `complexity:high`, refuse-by-default. Leave it empty to run every Approver engagement on `approver_model_default`. |
@@ -416,7 +418,7 @@ Keys:
 | `prompt_overrides` | `{}` | Add house rules to a stage's operating prompt, or replace it outright, without forking `prompts/`. The Approver's prompt takes no override — it is the trust gate the merge-autonomy ladder rests on. See [Prompt overrides](#prompt-overrides). |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. Do not name it `obsolete`, which is reserved for a human to mark one of these PRs as unwanted. Threaded through every work order's own `pr_label` field, which the Implementer labels its pull request with. |
 | `branch_prefix` | `agent/` | Branch naming: `agent/<item-slug>`. |
-| `max_open_agent_prs` | `8` | Back-pressure limit: draft PRs, changes-requested PRs and claims across both repos — not PRs waiting on a human review. |
+| `max_open_agent_prs` | `8` | Back-pressure limit: draft PRs, changes-requested PRs and claims across both repos — not PRs only waiting on approval or merge. |
 | `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list, so a lost race costs the next-best item rather than the cycle. |
 | `coordinator_prompt_max_bytes` | `350000` | The largest assembled prompt the Script will hand the Co-Ordinator. What a context window rejects is the whole prompt, not the runtime input alone, so the Script measures the rendered base prompt, subtracts it, and trims the two bands that carry a whole document each — an issue's entire thread and a tech-debt item's entire file — into what is left. Prose is shed and candidacy is not: every entry stays selectable, and every cut carries a marker naming how many bytes went and...[continued below](#extended-notes-coordinator_prompt_max_bytes) |
 | `max_chained_cycles` | `3` | The most cycles that may run back-to-back in one lineage — the cron-fired original plus its immediate continuations, instead of each waiting for the next cron firing. A productive cycle chains to this cap regardless of remaining work (the remaining-sources gate counts enabled source categories, which back-pressure never empties) — up to `max_chained_cycles − 1` further full Co-Ordinator passes, the accepted price of the drain rate. `1` disables chaining. |
@@ -426,8 +428,9 @@ Keys:
 | `merge_queue_dequeue_notice_max_age_hours` | `24` | Hours a merge-queue-dequeue notice comment (`scripts/sweep-human-visibility.sh`, requirement 38f) may still fire for after the removal event's own time — bounds the notice to genuinely new information rather than an event a sweep is only now seeing for the first time. `0` disables the notice entirely, at the cost of losing the only human signal this pipeline raises for a merge-group failure. |
 | `merge_autonomy` | `human` | The D18 merge-autonomy trust ladder: `human` (today's behaviour — a human approves and merges), `agent-approves` (the Approver App reviews; a human still merges), `agent-merges-routine`/`agent-merges-all` (the Script itself lands an eligible pull request — see `merge_autonomy_routine_sources` — and a human's residual act narrows to whatever the classifier refused). A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Every...[continued below](#extended-notes-merge_autonomy) |
 | `merge_budget_per_day` | `8` | D18's spend governor: a rolling-24-hour cap on pull requests this pipeline may land in one repository, counted from GitHub's own merged-PR record. A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). `0` means unlimited. Reaching the cap approves a pull request but does not merge it — the backlog queues visibly; landing more than the cap is a counting anomaly that freezes the repository to `agent-approves` and escalates to a human. |
-| `merge_autonomy_routine_sources` | `["register-hygiene", "tech-debt"]` | D18 WI-7: which work sources may be armed automatically at `agent-merges-routine` and above — a pull request also needs `complexity:low`/`medium`, and — below `agent-merges-all` — to touch no protected path; at `agent-merges-all` a protected-path hit is deferred to the critical-tier and `landing_cool_off_hours` controls rather than refused. A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Takes `landingSourceToken`s...[continued below](#extended-notes-merge_autonomy_routine_sources) |
+| `merge_autonomy_routine_sources` | `["register-hygiene", "tech-debt"]` | D18 WI-7: which work sources may be armed automatically at `agent-merges-routine` and above — a pull request also needs a `complexity:*` grade in `merge_autonomy_routine_complexity`, and — below `agent-merges-all` — to touch no protected path; at `agent-merges-all` a protected-path hit is deferred to the critical-tier and `landing_cool_off_hours` controls rather than refused. A `repos[]` entry may override this per repository — see...[continued below](#extended-notes-merge_autonomy_routine_sources) |
 | `merge_autonomy_protected_paths` | `[".github/*", "deploy/*", "prompts/*", "lib/*", "config.schema.json", "config.json", "agent-cycle.sh", "review-cycle.sh", "CODEOWNERS"]` | D18 Stage 3: the whole-path prefixes a routine-tier landing must touch none of — below `agent-merges-all` a hit refuses outright; at `agent-merges-all` it is deferred to the critical-tier and `landing_cool_off_hours` controls instead. An entry ending `/*` matches a whole-path prefix; any other entry matches an exact path. A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Defaults to agent-ops's own gate paths, which...[continued below](#extended-notes-merge_autonomy_protected_paths) |
+| `merge_autonomy_routine_complexity` | `["low", "medium"]` | D18 Stage 3: which `complexity:*` grades may be armed automatically at `agent-merges-routine` and above — a pull request also needs a `source` in `merge_autonomy_routine_sources`, and — below `agent-merges-all` — to touch no protected path. A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Widening past the default to include `high` is a bigger step than it looks: requirement 26a already forces `high` onto the riskiest...[continued below](#extended-notes-merge_autonomy_routine_complexity) |
 | `landing_cool_off_hours` | `24` | D18 WI-12 (Stage 4): the wait, in hours, between the Approver's own approval of a protected-path pull request and the arming step landing it — only at `agent-merges-all`, and only alongside the critical-tier control. Measured from the standing review's own timestamp, re-read fresh every cycle; a fresh push restarts it, since the standing review's own commit no longer matches the pull request's current head. A `repos[]` entry may override this per repository — see...[continued below](#extended-notes-landing_cool_off_hours) |
 | `approver_app_id` | *(unset)* | The Pullwright Approver GitHub App's id. Every `merge_autonomy` level above `human` needs it set, and `scripts/doctor.sh` fails the config otherwise. `doctor.sh` also cross-checks it against the node's `PULLWRIGHT_APPROVER_APP_ID` environment, so the id the token wrapper mints against can never silently differ from the one recorded here. One id for the whole installation: the Approver is a single App identity, and its per-repository reach comes from where the App is...[continued below](#extended-notes-approver_app_id) |
 | `crash_loop_after` | `4` | Consecutive fleet-wide failures, with no intervening recovery, before the Script files a crash-loop escalation issue — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. Neither class blames a repo or an item, so without this nothing ever surfaces a deterministic fleet-wide failure — the dashboard shows a healthy idle fleet. `0` (or absent) disables both checks. |
@@ -517,6 +520,8 @@ A repo entry may also carry `merge_autonomy_routine_sources` — the per-repo ov
 
 A repo entry may also carry `merge_autonomy_protected_paths` — the per-repo override of the top-level key of the same name, on the same precedence. Omit it and the repository follows the fleet-wide default (today's nine agent-ops paths) — a repository whose own gate code lives elsewhere should name its own list rather than inherit agent-ops's.
 
+A repo entry may also carry `merge_autonomy_routine_complexity` — the per-repo override of the top-level key of the same name, on the same precedence. Omit it and the repository follows the fleet-wide default.
+
 A repo entry may also carry `landing_cool_off_hours` — the per-repo override of the top-level key of the same name, on the same precedence. Omit it and the repository follows the fleet-wide default.
 
 A repo entry may also carry `escalation_autonomy` — the per-repo override of the top-level key of the same name, on the same precedence. Omit it and the repository follows the fleet-wide default.
@@ -586,11 +591,15 @@ The D18 merge-autonomy trust ladder: `human` (today's behaviour — a human appr
 
 ### Extended notes: `merge_autonomy_routine_sources`
 
-D18 WI-7: which work sources may be armed automatically at `agent-merges-routine` and above — a pull request also needs `complexity:low`/`medium`, and — below `agent-merges-all` — to touch no protected path; at `agent-merges-all` a protected-path hit is deferred to the critical-tier and `landing_cool_off_hours` controls rather than refused. A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Takes `landingSourceToken`s, not the `sourceToken`s `repos[].sources` takes: issue work is the plain `issues` here, never `issues:<band>`, because banding is spent at gathering time and a finished work order carries the bare word.
+D18 WI-7: which work sources may be armed automatically at `agent-merges-routine` and above — a pull request also needs a `complexity:*` grade in `merge_autonomy_routine_complexity`, and — below `agent-merges-all` — to touch no protected path; at `agent-merges-all` a protected-path hit is deferred to the critical-tier and `landing_cool_off_hours` controls rather than refused. A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Takes `landingSourceToken`s, not the `sourceToken`s `repos[].sources` takes: issue work is the plain `issues` here, never `issues:<band>`, because banding is spent at gathering time and a finished work order carries the bare word.
 
 ### Extended notes: `merge_autonomy_protected_paths`
 
 D18 Stage 3: the whole-path prefixes a routine-tier landing must touch none of — below `agent-merges-all` a hit refuses outright; at `agent-merges-all` it is deferred to the critical-tier and `landing_cool_off_hours` controls instead. An entry ending `/*` matches a whole-path prefix; any other entry matches an exact path. A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Defaults to agent-ops's own gate paths, which govern nothing outside agent-ops itself.
+
+### Extended notes: `merge_autonomy_routine_complexity`
+
+D18 Stage 3: which `complexity:*` grades may be armed automatically at `agent-merges-routine` and above — a pull request also needs a `source` in `merge_autonomy_routine_sources`, and — below `agent-merges-all` — to touch no protected path. A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Widening past the default to include `high` is a bigger step than it looks: requirement 26a already forces `high` onto the riskiest class of diff (concurrency/locking, security, CI/workflow machinery, shared library code), so admitting it here routes exactly that class through automatic landing, with the protected-path list as the remaining belt-and-braces control.
 
 ### Extended notes: `landing_cool_off_hours`
 

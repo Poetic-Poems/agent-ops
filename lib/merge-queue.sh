@@ -3,16 +3,18 @@
 # lib/merge-queue.sh — GitHub merge-queue awareness (D17, docs/ROADMAP.md;
 # agent-ops#374).
 #
-# A GitHub merge queue makes landing asynchronous: the human act is
-# enqueueing ("Merge when ready"), and the actual merge happens minutes
-# later, after the merge group's own checks pass — or never, if the queue
-# dequeues the pull request (a checks failure, or its own base moving under
-# it). Two things follow that nothing in this repository could read before
-# this file existed:
+# A GitHub merge queue makes landing asynchronous: the enqueueing act is
+# either the human's own "Merge when ready" click at merge_autonomy: human
+# or agent-approves, or `landing_arm`'s own enqueue mutation at
+# agent-merges-routine and above (lib/landing.sh) — and the actual merge
+# happens minutes later, after the merge group's own checks pass — or never,
+# if the queue dequeues the pull request (a checks failure, or its own base
+# moving under it). Two things follow that nothing in this repository could
+# read before this file existed:
 #
-#   1. A currently-queued pull request is the human's, mid-transaction — it
-#      must never be pushed to (a push evicts it from the queue with no
-#      further signal) and must never be treated as "nobody has clicked
+#   1. A currently-queued pull request is mid-transaction, whoever enqueued
+#      it — it must never be pushed to (a push evicts it from the queue with
+#      no further signal) and must never be treated as "nobody has clicked
 #      merge yet" (`scripts/sweep-human-visibility.sh`'s idle nudge did,
 #      before this file: an enqueued pull request reads `APPROVED`,
 #      `MERGEABLE` and green exactly like one nobody has acted on yet).

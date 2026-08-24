@@ -495,7 +495,7 @@ $(jq . <<<"$input")
             --arg d "enabler: second refinement of $e_repo $e_item refused — $e_refusal; the item stays blocked" \
             '{detail: $d}')"
           outcome="refinement-refused"
-          extra="$(jq -nc --arg c "A human decides whether this item's specification is adequate; the Enabler has already refined it once." \
+          extra="$(jq -nc --arg c "Whether this item's specification is adequate is escalation_autonomy's call from here; the Enabler has already refined it once." \
             '{unblock_condition: $c}')"
         else
           # The item becomes selectable again next cycle. `by` names the Enabler
@@ -777,8 +777,8 @@ $(jq . <<<"$input")
             # carries refined_before's own spec/comment_url, unchanged.
             #
             # The reason is the adjudication's own, never `$e_reason` — that
-            # is the *escalate* verdict's rationale for why the item needed a
-            # human, and an `unblocked` event carrying it would read, to
+            # is the *escalate* verdict's rationale for why the item was
+            # escalating, and an `unblocked` event carrying it would read, to
             # whoever later asks why this item came back, as the pipeline
             # unblocking an item on the strength of an argument that it could
             # not proceed.

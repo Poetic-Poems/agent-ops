@@ -544,9 +544,10 @@ refinement_record_fields() {
 #
 # One refinement per item per human touch. A cheap model re-flagging an item an
 # expensive one has already specified is a disagreement between two models, and
-# the way to settle it is to ask the person who owns the requirement — not to
-# rewrite the spec and hand it back, which is a loop that terminates only when
-# the two models happen to agree.
+# the way to settle it is to escalate it — by requirement 36b, adjudicated
+# first at `adjudicate-first`, reaching a person directly at `always-escalate`
+# — not to rewrite the spec and hand it back, which is a loop that terminates
+# only when the two models happen to agree.
 #
 # The exemption is `issue-closed`, and it is the whole reason the guard can be
 # mechanical rather than a plea in the prompt: that reason exists only because a
@@ -565,7 +566,7 @@ refinement_second_pass_refused() {
   [[ -n "$refined" ]] || return 0
   reason="$(jq -r '.reason // ""' <<<"$entry" 2>/dev/null || true)"
   [[ "$reason" == "issue-closed" ]] && return 0
-  printf 'refined once already at %s and no human has touched it since, so a second refinement is a disagreement only a human can settle' \
+  printf 'refined once already at %s and no human has touched it since, so a second refinement is a disagreement that escalates instead of being settled here' \
     "$refined"
   return 1
 }

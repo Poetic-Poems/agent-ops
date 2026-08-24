@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 #
 # lib/handoff.sh — the moment a pull request stops being the pipeline's and
-# becomes the human's, made a fact rather than a claim (requirement 31a).
+# reaches the landing gate, made a fact rather than a claim (requirement 31a).
 #
 # Requirement 31 gives the Reviewer one irreversible action: once CI is green
 # and the PR is mergeable, it runs `gh pr ready`. That single call is the whole
 # handoff — everything before it is the pipeline talking to itself, and
-# everything after it is a human's queue. Requirement 32 then has the Reviewer
+# everything after it belongs to whoever lands the pull request: a human's
+# queue at `merge_autonomy: human`, or the Script's own arming step at
+# `agent-merges-routine` and above. Requirement 32 then has the Reviewer
 # *report* what it did, and the Script logs `pr-ready` from that report.
 #
 # Those are two different things, and treating the report as the deed is how a
@@ -177,8 +179,8 @@ _handoff_draft_flag() {
 # `failed` is deliberately also the answer when the API cannot be reached. The
 # alternative — assume the Reviewer was right and log `pr-ready` — is exactly
 # the silent strand above, and the cost of being wrong the other way is one
-# blocked item that the Enabler re-examines (requirement 32a), not a human
-# interruption. Fail towards the state something else will look at.
+# blocked item that the Enabler re-examines (requirement 32a), not an
+# escalation. Fail towards the state something else will look at.
 confirm_pr_ready() {
   local url="${1:-}" gh_bin="${HANDOFF_GH:-gh}" flag
 
@@ -462,10 +464,10 @@ _handoff_pr_author() {
 #
 # It does not clear the block, and must not appear to. Re-requesting review
 # leaves `reviewDecision` at `CHANGES_REQUESTED` and `mergeable_state` at
-# `blocked` — verified against GitHub on #200, before and after — so the human
-# gate holds exactly as "The Landing Gate" describes it, and the PR still needs an
-# approving review from a code owner that this system cannot give itself. All
-# this does is put the PR back in the queue the human actually reads.
+# `blocked` — verified against GitHub on #200, before and after — so "The
+# Landing Gate" holds unchanged, and the PR still needs an approving review
+# from a code owner that this system cannot give itself. All this does is put
+# the PR back in the queue the human actually reads.
 #
 # Nor does it fail the handoff when it fails. The PR is finished, green and
 # visible; what is missing is a notification, and the Implementer's own reply
@@ -848,8 +850,9 @@ _handoff_complete_review_json() {
 #     `revert` so a caller can tell "the refusal took, the pull request is a
 #     draft again" from "the refusal was recorded but the pull request is
 #     still sitting ready" (`revert: "failed"`), which is worth a warning of
-#     its own since a human could otherwise merge a `CHANGES_REQUESTED` pull
-#     request that reads as ready.
+#     its own since whatever lands next — a human, or the Script itself at a
+#     higher `merge_autonomy` rung — could otherwise merge a
+#     `CHANGES_REQUESTED` pull request that reads as ready.
 #   - Neither gate found anything, but the flip itself did not take —
 #     `handoff` is `failed`. This is the one `safe: false` shape that still
 #     names a stage: `handoff` carries `"failed"` so a caller can tell "this

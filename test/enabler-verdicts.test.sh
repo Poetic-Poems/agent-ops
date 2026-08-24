@@ -490,8 +490,8 @@ assert_contains "refinement-refused: the warning names the refusal" \
 xmn_evt="$(events_named "$calls" enabler-examined | head -n1)"
 assert_eq "refinement-refused: enabler-examined's outcome is exactly refinement-refused" \
   "refinement-refused" "$(jq -r '.outcome' <<<"$xmn_evt")"
-assert_eq "refinement-refused: ...carrying the human hand-off condition" \
-  "A human decides whether this item's specification is adequate; the Enabler has already refined it once." \
+assert_eq "refinement-refused: ...carrying the escalation hand-off condition" \
+  "Whether this item's specification is adequate is escalation_autonomy's call from here; the Enabler has already refined it once." \
   "$(jq -r '.unblock_condition' <<<"$xmn_evt")"
 assert_not_contains "refinement-refused: the label is not released — the item is still blocked" \
   "release-refinement-label" "$calls"

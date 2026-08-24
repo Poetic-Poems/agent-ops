@@ -67,9 +67,10 @@
 # complete one: `gh` says nothing, and the caller counts what it was given. The
 # back-pressure gate (requirement 2.2) counts open pull requests carrying
 # `pr_label` to decide whether the fleet may start more work — and pull
-# requests sitting in the human's merge queue carry that label without counting
-# against the cap, so the listing genuinely can exceed 30 while the gate's own
-# sum stays small. Truncated, it undercounts, and the gate opens when it should
+# requests sitting in whichever queue requirement 2.2's merge_autonomy-aware
+# exclusion currently parks them in carry that label without counting against
+# the cap, so the listing genuinely can exceed 30 while the gate's own sum
+# stays small. Truncated, it undercounts, and the gate opens when it should
 # have held.
 #
 # So the cap is stated rather than inherited, and every caller checks whether

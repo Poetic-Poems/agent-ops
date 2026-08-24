@@ -427,8 +427,8 @@ review_gate_degraded_since() {
 # consecutive-unreadable-checks streak both the Reviewer's own "ready"
 # handoff and the Enabler's recovery path escalate through.
 # A Reviewer verdict that did not end in a pull request the human can see
-# (requirement 32a): `needs-human`/`blocked`, an unparseable status, or a
-# `ready` the handoff could not be made true.
+# (requirement 32a): `blocked`, an unparseable status, or a `ready` the
+# handoff could not be made true.
 #
 # It is recorded exactly as any other failed attempt — an `attempt-failed`
 # against repo+item, which is what requirement 34 reads as blocked and
