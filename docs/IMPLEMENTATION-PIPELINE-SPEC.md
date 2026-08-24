@@ -700,7 +700,7 @@ and the schema must carry every one of them.
 | `state_repo` | `Poetic-Poems/agent-ops-state` | The private repository through which `state_dir` replicates between nodes (requirement 2.5). Its `main` carries the small shared surface: the claim registry (requirement 17a) and the fleet flags `fleet/disabled.json` and `fleet/limit.json` (requirements 2.3a and 2.1). Unset means a single-node operation: every mode of `scripts/state-sync.sh` becomes a no-op, and the fleet-flag reads and writes quietly do nothing. |
 | `cycles_retained` | `200` | Cycle directories kept in the replicated mirror — bounds disk use at whatever cadence `schedule.cycle_interval_minutes` sets (about eight days' worth at the historical hourly default). Bounds a repository that is force-pushed after every cycle. The node's own `state_dir` is bounded by `state_local_cycles_retained` instead. |
 | `state_local_cycles_retained` | `1000` | Cycle and review directories the node's *own* `state_dir` keeps — bounds disk use at whatever cadence `schedule.cycle_interval_minutes` sets (about six weeks' worth at the historical hourly default); the same push that replicates prunes to it (requirement 2.5). Deliberately far above `cycles_retained`, so the local machine is always the longer record, with a floor of one protecting the cycle being recorded. `STATE_SYNC_LOCAL_RETAINED` overrides it for tests. |
-| `state_local_streams_retained` | `50` | Cycle and review directories whose stage event streams (`<stage>.stream.jsonl`, requirement 4d) are kept; the push that replicates prunes to it (requirement 2.5). Far below `state_local_cycles_retained` because a stream is a different order of size from the record holding it — a cycle directory without them is kilobytes, one Reviewer stream megabytes — so streams go early and their records stay. Streams never reach the state repository. `STATE_SYNC_STREAMS_RETAINED` overrides it for tests. |
+| `state_local_streams_retained` | `50` | Cycle and review directories whose derived files are kept — the stage event streams (`<stage>.stream.jsonl`, requirement 4d) and the fleet-log snapshot (`.fleet-log.jsonl`, requirement 2.5); the push that replicates prunes to it (requirement 2.5). Far below `state_local_cycles_retained` because each is a different order of size from the record holding it — a cycle directory without them is kilobytes, one Reviewer stream megabytes, one snapshot the whole fleet's history to...[continued below](#extended-notes-state_local_streams_retained) |
 | `log_retained_bytes` | `2000000` | Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `doctor.log`, `revert-rate.log`, `cron.log` and `review-cron.log` (requirement 2.6). `log.jsonl`, `review-log.jsonl` and `revert-rate.jsonl` are never rotated regardless of size. `ROTATE_LOGS_RETAINED_BYTES` overrides it for tests. |
 | `log_generations` | `3` | Rotated generations of each log kept beside the live file (`<name>.1` … `<name>.<log_generations>`), floored at one. `ROTATE_LOGS_GENERATIONS` overrides it for tests. |
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
@@ -839,6 +839,10 @@ Every optional key sits on the repository's own entry, beside `slug` and `source
   }
 ]
 ```
+
+### Extended notes: `state_local_streams_retained`
+
+Cycle and review directories whose derived files are kept — the stage event streams (`<stage>.stream.jsonl`, requirement 4d) and the fleet-log snapshot (`.fleet-log.jsonl`, requirement 2.5); the push that replicates prunes to it (requirement 2.5). Far below `state_local_cycles_retained` because each is a different order of size from the record holding it — a cycle directory without them is kilobytes, one Reviewer stream megabytes, one snapshot the whole fleet's history to that moment — so they go early and their records stay. Neither reaches the state repository. `STATE_SYNC_STREAMS_RETAINED` overrides it for tests.
 
 ### Extended notes: `escalation_autonomy`
 
@@ -2144,8 +2148,9 @@ implements.
    pass's own local artefacts (`doctor.log`, `.doctor-status.json` —
    requirement 2.6a), the revert-rate publishing tick's own local text
    output (`revert-rate.log` — requirement 2.6b, its structured sibling
-   `revert-rate.jsonl` excepted, below), and the stage event streams
-   (`*.stream.jsonl`, requirement 4d).
+   `revert-rate.jsonl` excepted, below), the stage event streams
+   (`*.stream.jsonl`, requirement 4d), and the fleet-log snapshot
+   (`.fleet-log.jsonl`, "The union" below).
    The exclusions are not tidiness: a copied `lock.json` is a lock no process
    holds — peers read logs, never locks; the
    dashboard is generated from the state beside it, so copying it would be
@@ -2160,9 +2165,14 @@ implements.
    `<stage>.out` exactly as before, while the stream beside it is every
    message and every tool result — kilobytes against megabytes — and the
    branch is a single rolling commit holding `cycles_retained` of them. The
-   exclusion covers both transfers, the general one and the cycle
-   directories' own filter, and deletes any stream a node published before
-   the rule existed. `log.jsonl`,
+   fleet-log snapshot is excluded on the same two grounds and more sharply
+   still: it is a *derivative of what is already being sent* — the union of
+   the very `log.jsonl` files the branch publishes — and one copy of it sits
+   in every cycle directory, so a branch carried `cycles_retained` copies of
+   the whole fleet's history, each one larger than the last, and every peer
+   fetched all of them (#763). Both exclusions cover both transfers, the
+   general one and the cycle directories' own filter, and delete any copy a
+   node published before the rules existed. `log.jsonl`,
    `review-log.jsonl`, `revert-rate.jsonl`, `cycles/`, `reviews/`,
    `disabled.json` and the cron logs
    do replicate — they are what makes a spare node warm rather than merely
@@ -2219,15 +2229,24 @@ implements.
    `state_local_cycles_retained` each — a deliberately longer record than
    the branch's, so everything the branch wants is always still on disk and
    the machine remains the fuller history of the two, with a floor of one so
-   the cycle being recorded is always kept. The stage streams inside those
-   directories are bounded separately again, and far more tightly: the same
-   push deletes every `*.stream.jsonl` outside the newest
-   `state_local_streams_retained` directories, leaving the directories
-   themselves — and everything else in them — untouched. Two retentions
-   rather than one because the two are different orders of size: keeping six
-   weeks of cycle *records* costs megabytes, and keeping six weeks of the
-   streams inside them would cost tens of gigabytes. A mirror-level `flock`
-   serialises the cron push against the end-of-cycle push.
+   the cycle being recorded is always kept. The **derived** files inside
+   those directories are bounded separately again, and far more tightly: the
+   same push deletes every `*.stream.jsonl` and every `.fleet-log.jsonl`
+   outside the newest `state_local_streams_retained` directories, leaving the
+   directories themselves — and everything else in them — untouched. Two
+   retentions rather than one because the two are different orders of size:
+   keeping six weeks of cycle *records* costs megabytes, and keeping six
+   weeks of the derived files inside them would cost tens of gigabytes.
+
+   What qualifies as derived is the **property, not the filename**: large,
+   wholly reconstructible from what the record already holds, and read only
+   by the cycle that wrote it. Stating the rule as a list of names is what
+   let `.fleet-log.jsonl` fall through to the record retention and be kept a
+   thousand deep on every node and published to every branch (#763), and a
+   file added to a record directory later that shares those three properties
+   belongs on the list for the same reason. Nothing reports the omission: the
+   disk does, once it is already gone. A mirror-level `flock` serialises the
+   cron push against the end-of-cycle push.
 
    **Fetch.** Every node materialises every *other* node's branch, whole,
    under the peers directory (`lib/fleet.sh`, `<workspace_root>/
@@ -2242,7 +2261,16 @@ implements.
    (3b) and the usage-limit cooldown (2.1) all read `fleet_logs` — this
    node's own log concatenated with every peer's, sorted into time order —
    so a lesson any node learned stands the whole fleet down, or spares it a
-   re-check, within one fetch interval. The union is advisory speed; the
+   re-check, within one fetch interval. Each cycle and each review takes that
+   union **once**, into `.fleet-log.jsonl` in its own record directory, so
+   every reader downstream sees one consistent stream rather than a moving
+   one; `union_log` names it, and requirement 39f's horizon is captured from
+   it immediately afterwards. The snapshot is scratch with a cycle's
+   lifetime: it is read only through that variable, by the script that just
+   wrote it, and never by a peer or by a later cycle. That is why it neither
+   replicates nor outlives the derived-file retention above — it is a
+   *derivative* of the logs the fleet is already exchanging, and republishing
+   it would send every node N copies of what it already has. The union is advisory speed; the
    claims of requirement 17a are the lock underneath it. Cross-node work
    arbitration has no other mechanism: there is no lease and no leader, and
    `claims/` on the state repository's `main` branch — which per-node

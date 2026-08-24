@@ -262,13 +262,13 @@
       }
     },
     "state_local_streams_retained": {
-      "description": "Cycle and review directories whose stage event streams (`*.stream.jsonl`) the node keeps. Far below state_local_cycles_retained because a stream is orders of magnitude larger than the record holding it; the records themselves are unaffected.",
+      "description": "Cycle and review directories whose derived files (the stage event streams `*.stream.jsonl` and the fleet-log snapshot `.fleet-log.jsonl`) the node keeps. Far below state_local_cycles_retained because each is orders of magnitude larger than the record holding it; the records themselves are unaffected.",
       "type": "integer",
       "minimum": 1,
       "default": 50,
       "x-docs": {
-        "readme": "Cycle and review directories whose stage event streams (`<stage>.stream.jsonl`) are kept. Streams are large and local-only \u2014 never replicated \u2014 so they are bounded well below `state_local_cycles_retained`; the records themselves are untouched.",
-        "spec": "Cycle and review directories whose stage event streams (`<stage>.stream.jsonl`, requirement 4d) are kept; the push that replicates prunes to it (requirement 2.5). Far below `state_local_cycles_retained` because a stream is a different order of size from the record holding it \u2014 a cycle directory without them is kilobytes, one Reviewer stream megabytes \u2014 so streams go early and their records stay. Streams never reach the state repository. `STATE_SYNC_STREAMS_RETAINED` overrides it for tests."
+        "readme": "Cycle and review directories whose derived files are kept \u2014 the stage event streams (`<stage>.stream.jsonl`) and the fleet-log snapshot (`.fleet-log.jsonl`). Both are large and local-only \u2014 never replicated \u2014 so they are bounded well below `state_local_cycles_retained`; the records themselves are untouched.",
+        "spec": "Cycle and review directories whose derived files are kept \u2014 the stage event streams (`<stage>.stream.jsonl`, requirement 4d) and the fleet-log snapshot (`.fleet-log.jsonl`, requirement 2.5); the push that replicates prunes to it (requirement 2.5). Far below `state_local_cycles_retained` because each is a different order of size from the record holding it \u2014 a cycle directory without them is kilobytes, one Reviewer stream megabytes, one snapshot the whole fleet's history to that moment \u2014 so they go early and their records stay. Neither reaches the state repository. `STATE_SYNC_STREAMS_RETAINED` overrides it for tests."
       }
     },
     "log_retained_bytes": {
