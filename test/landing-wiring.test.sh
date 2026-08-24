@@ -727,21 +727,25 @@ assert_eq "  ... returning 0" "0" "$rc"
 assert_eq "  ... and never marks _landing_stage_attempt_armed" "0" "$(armed_flag)"
 
 rc="$(run_case RC_WORD="unknown" RC_REASON="could not read $URL's comments")"
-assert_eq "an unreadable reconciliation read does not itself block arming" "1" "$(count arms)"
+assert_eq "an unreadable reconciliation read refuses arming too (#753 on #746)" \
+  "0" "$(count arms)"
 assert_eq "  ... returning 0" "0" "$rc"
-assert_contains "  ... but logs a warning naming what could not be read" \
-  "could not read $URL's comments" "$(jq -r '.detail' <<<"$(event_of warning)")"
+assert_contains "  ... logging a landing-refused naming what could not be read" \
+  "could not read $URL's comments" "$(refusal)"
+assert_eq "  ... and never marks _landing_stage_attempt_armed" "0" "$(armed_flag)"
 
 # An answer that is neither word at all — what a call that never executed
 # leaves behind, since the `|| true` guarding it swallows a failure to run
-# exactly as it swallows the exit 1 a `dirty` verdict reports — is read as
-# `unknown`, never as a pass. A veto check that logs and records nothing on
-# the one path where it did not run is the failure this gate exists to
-# prevent.
+# exactly as it swallows the exit 1 a `dirty` verdict reports — refuses
+# exactly as `unknown` does, never unfolded into a separate case. A veto
+# check that logs and records nothing on the one path where it did not run
+# is the failure this gate exists to prevent.
 rc="$(run_case RC_WORD="")"
+assert_eq "an answer that is no word at all refuses arming too" "0" "$(count arms)"
 assert_eq "  ... returning 0" "0" "$rc"
-assert_contains "an answer that is no word at all still logs the warning" \
-  "answered nothing at all" "$(jq -r '.detail' <<<"$(event_of warning)")"
+assert_contains "  ... logging a landing-refused with \"nothing at all\" wording" \
+  "answered nothing at all" "$(refusal)"
+assert_eq "  ... and never marks _landing_stage_attempt_armed" "0" "$(armed_flag)"
 
 # --- Gate 5: the merge budget ------------------------------------------------
 
