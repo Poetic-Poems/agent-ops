@@ -71,7 +71,7 @@ extract_block() {
   ' "$file"
 }
 
-auth_block="$(extract_block '^# 2\.0b GitHub credential check' '^# 2\.1 Usage-limit cooldown' "$AGENT_CYCLE")"
+auth_block="$(extract_block '^# 2\.0b GitHub credential check' '^# 2\.0c Free disk space' "$AGENT_CYCLE")"
 if [[ -z "$auth_block" ]]; then
   echo "FAIL - could not extract the GitHub credential check block from agent-cycle.sh — has it moved?" >&2
   exit 1

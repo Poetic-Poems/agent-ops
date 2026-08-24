@@ -53,6 +53,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 # see the wrapper's header for what that does and does not cover.
 # shellcheck source=lib/github-limit.sh
 . "$SCRIPT_DIR/lib/github-limit.sh"
+# shellcheck source=lib/disk-space.sh
+. "$SCRIPT_DIR/lib/disk-space.sh"
 # shellcheck source=lib/repo-clone.sh
 . "$SCRIPT_DIR/lib/repo-clone.sh"
 # shellcheck source=lib/model-id.sh
@@ -653,6 +655,13 @@ GITHUB_LIMIT_MAX_WAIT_SECONDS="$(cfg '.github_retry_max_wait_seconds')"
 [[ "$GITHUB_LIMIT_MAX_WAIT_SECONDS" =~ ^[0-9]+$ ]] || GITHUB_LIMIT_MAX_WAIT_SECONDS=60
 GITHUB_LIMIT_TOTAL_WAIT_SECONDS=$(( GITHUB_LIMIT_MAX_WAIT_SECONDS * 2 ))
 export GITHUB_LIMIT_MAX_WAIT_SECONDS GITHUB_LIMIT_TOTAL_WAIT_SECONDS
+# The free-space floor on workspace_root a cycle must clear before it is worth
+# starting one (requirement 2.0c, agent-ops#756): a cycle that starts anyway
+# clones into whatever room is actually left, and a clone or push truncated
+# mid-write is what disabled `git gc` on the ockham laptop (#604) and left it
+# 4.2 GB of orphaned clones (#605). `0` turns the check off.
+min_free_workspace_bytes="$(cfg '.min_free_workspace_bytes')"
+[[ "$min_free_workspace_bytes" =~ ^[0-9]+$ ]] || min_free_workspace_bytes=0
 none_selected_recheck_hours="$(cfg '.none_selected_recheck_hours')"
 candidates_max="$(cfg '.candidates_max')"
 # Requirement 4i (agent-ops#641): the largest assembled prompt the Co-Ordinator

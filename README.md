@@ -456,6 +456,7 @@ Keys:
 | `github_min_core_budget` | `300` | GitHub REST points a cycle must have left before it starts. `0` turns the check off for this resource. |
 | `github_min_graphql_budget` | `100` | GitHub GraphQL points a cycle must have left before it starts. `0` turns the check off for this resource. |
 | `github_retry_max_wait_seconds` | `60` | Seconds. How long a single `gh` call may wait out a rate-limit refusal before failing; a process may spend twice this in total. `0` turns retrying off. |
+| `min_free_workspace_bytes` | `2147483648` | Bytes. Free space `workspace_root` must have before a cycle starts one; below it the cycle stands down before cloning. `scripts/doctor.sh` warns on the same floor. `0` turns the check off. |
 | `disable_default_ttl` | `4` | Hours. How long `--disable` lasts when neither `--for` nor `--until` says. See [Pausing the pipelines](#pausing-the-pipelines). |
 | `none_selected_recheck_hours` | `24` | Hours. The Co-Ordinator is engaged at least this often even when nothing has changed. See [Skipping no-op cycles](#skipping-no-op-cycles). `0` disables that safety net entirely — not recommended. |
 | `image_behind_grace_hours` | `3` | Hours a node may sit behind the newest published image before the dashboard's **image behind** badge turns amber and `scripts/check-node-image.sh` exits non-zero. A roll defers while a cycle is in flight, so being behind an image published more recently than this is the ordinary mid-roll state. See [Is this node on the newest image](deploy/docker/README.md#is-this-node-on-the-newest-image). |

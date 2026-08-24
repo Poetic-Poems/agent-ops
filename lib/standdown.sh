@@ -143,6 +143,41 @@ if [[ "$gh_auth_verdict" == "unauthorized" ]]; then
   exit 0
 fi
 
+# 2.0c Free disk space (requirement 2.0c, agent-ops#756). Free, like 2.0 and
+# 2.0b: `df -Pk` costs nothing and touches no network, so it runs ahead of
+# every check below that can spend. `scripts/doctor.sh` has read
+# workspace_root's free space and warned below a fixed 2 GiB since before this
+# check existed — "a cycle clones every repository it touches" — but a
+# warning only a human reads by hand does nothing for the cycle that clones
+# into whatever room is actually left. On the ockham laptop that ran short, a
+# write truncated mid-flight left zero-length git objects in both nodes'
+# state mirrors, permanently disabling `git gc` (#604) and leaving 4.2 GB of
+# orphaned clones behind it (#605) — starting work the host cannot finish is
+# what made both possible, and this stands the cycle down before it tries.
+#
+# `min_free_workspace_bytes` set to `0` turns the check off. `lib/disk-
+# space.sh` is the one place free space is read and judged, so doctor.sh's own
+# advisory warning and this gate cannot silently disagree about what "low"
+# means.
+#
+# An unreadable `df` is not a stand-down, the same "no evidence" reasoning
+# 2.0's own `unknown` rests on: `disk_space_verdict` reads it as `ok`.
+if (( min_free_workspace_bytes > 0 )); then
+  disk_free_kb="$(disk_space_free_kb "$workspace_root")"
+  if [[ "$(disk_space_verdict "$disk_free_kb" "$min_free_workspace_bytes")" == "low" ]]; then
+    if [[ "$disk_free_kb" =~ ^[0-9]+$ ]] && (( disk_free_kb == 0 )); then
+      disk_standdown_cause="disk-full"
+    else
+      disk_standdown_cause="disk-low"
+    fi
+    log_event "stand-down" "$(jq -nc \
+      --arg r "$(disk_space_describe "$workspace_root" "$disk_free_kb" "$min_free_workspace_bytes")" \
+      --arg cause "$disk_standdown_cause" --arg path "$workspace_root" --arg free_kb "$disk_free_kb" \
+      '{reason: $r, cause: $cause, path: $path, free_kb: $free_kb}')"
+    exit 0
+  fi
+fi
+
 # 2.1 Usage-limit cooldown (fleet-wide: every node shares one Claude account,
 # so a limit any node hit stands this one down too). Two carriers of the same
 # signal, and the later resume wins: the log union is as fresh as the last
