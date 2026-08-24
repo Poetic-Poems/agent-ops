@@ -6358,15 +6358,49 @@ implements.
       entry carries no per-comment id to join against, so this is the only
       way to know the comment's real text) — a fault if that text is present
       in neither `context` nor `acceptance`.
-    A candidate that fails either check is skipped without a claim attempt —
-    logged as `claim-skipped` with `cause: "untraceable"` and a `detail`
-    naming what disagreed — exactly as a pre-claimed candidate is skipped, so
-    a peer's later ranked candidate still gets a chance this cycle. An item
-    with no `refinements` entry at all costs nothing: the check returns
-    immediately with no `gh` call. A `gh` read that fails (network, rate
-    limit) fails open — a fact about GitHub's availability, not about the
-    work order, the same direction every other degraded `gh` read in this
-    pipeline already fails.
+    **A failed check is repaired, not discarded (agent-ops#767).** The
+    requirement is that the work order *carry* the item's refinement — not
+    that the model be the one who carried it — and the Script is holding the
+    text at the moment it asks. So `refinement_traceability_repair` appends
+    the recorded refinement verbatim to `context`, under a heading naming it
+    as the Script's own insertion, and the candidate proceeds to its claim;
+    the repair is logged as `work-order-repaired` carrying the fault it
+    answered. Traceability becomes true **by construction**, which is a
+    stronger guarantee than any check of a model's compliance and one no
+    model can fail.
+
+    That this is the right half to enforce was settled in production. Between
+    the check landing (2026-08-22T23:42Z) and the repair, it discarded 92
+    candidates across 20 issues on four nodes and admitted **none** — while
+    `coordinator_model` was `claude-haiku-4-5-20251001` and the bands feeding
+    it were being trimmed to fit that model's window, so the text it was
+    required to paste had in some cycles already been trimmed out of what it
+    was given. The fleet selected no issue-sourced work for fifteen hours. A
+    gate with no observed passes is not a gate.
+
+    **One fault is never repaired**: a `comment_url` whose embedded issue
+    number disagrees with the candidate's `item`. That is a corrupt ledger
+    entry rather than a copying failure, and appending another issue's
+    refinement to this item's order is precisely the cross-item swap this
+    requirement exists to prevent. It stays a hard skip, and no `gh` read is
+    spent on it.
+
+    A candidate whose fault the repair cannot answer is skipped without a
+    claim attempt — logged as `claim-skipped` with `cause: "untraceable"` and
+    a `detail` naming what disagreed — exactly as a pre-claimed candidate is
+    skipped, so a peer's later ranked candidate still gets a chance this
+    cycle. Such a skip is counted in its own right: a cycle that loses every
+    candidate this way stands down with `cause: "untraceable"` and a reason
+    naming the check, never `raced`. It reported `raced` with `race_losses:
+    0` for the whole of the fifteen hours above, sending every reader after a
+    claim contention that did not exist, which is why the cause is now
+    counted separately from both the pre-claimed skips and the race losses.
+    An item with no `refinements` entry at all costs nothing: the check
+    returns immediately with no `gh` call. A `gh` read that fails (network,
+    rate limit) fails open — a fact about GitHub's availability, not about
+    the work order, the same direction every other degraded `gh` read in this
+    pipeline already fails — and a refinement that cannot be read cannot be
+    repaired in either.
 
     A fallback selection (requirement 3v) is not checked. `context` there is
     composed by `fallback_select_candidate` in jq, out of the very band entry
@@ -14436,8 +14470,20 @@ pull request, run the ones the change touches and any it could regress.
    `1` even though requirement 2.2's own count left it untripped; and an
    already-tripped cycle with nothing left to fold in stays tripped without
    its composition line changing.
-7g. **A candidate whose refinement does not trace back to it is skipped,
-   never claimed (requirement 17f, agent-ops#626).**
+7g. **A candidate's refinement is made to trace back to it, and one that
+   cannot be is skipped rather than claimed (requirement 17f, agent-ops#626,
+   agent-ops#767).**
+   The repair half is proven alongside the check: a work order missing its
+   refinement comment is repaired and then passes the check it had just
+   failed, with the comment landing verbatim in `context` and everything the
+   order already said left intact; a recorded `spec` absent from `context` is
+   repaired the same way; a `comment_url` naming a *different* issue is never
+   repaired and spends no `gh` call proving it; a compliant work order is not
+   touched at all; and an unreadable refinement leaves the candidate exactly
+   as it was. The claim loop is asserted to attempt the repair before
+   skipping, and to count an unrescued fault separately from both the
+   pre-claimed skips and the race losses, so a traceability stand-down can
+   never again be reported as `raced`.
    `test/refinement-traceability.test.sh` passes, against
    `refinement_traceability_fault` lifted verbatim from `agent-cycle.sh`: a
    candidate whose recorded `spec` is absent from its own `context`, or

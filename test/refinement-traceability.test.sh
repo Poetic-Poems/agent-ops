@@ -216,5 +216,88 @@ else
   failures=$(( failures + 1 ))
 fi
 
+# --- The repair half (issue #767) --------------------------------------------
+# The check above asks whether the *model* copied the refinement across. In
+# production it answered "no" 92 times across 20 issues and "yes" never, while
+# the Script held the text the whole time. `refinement_traceability_repair`
+# supplies it instead, which makes traceability true by construction. What
+# these pin is the one thing that must not follow from that: the corrupt-
+# ledger fault is still never repaired.
+
+repair_block="$(extract_block '^refinement_traceability_repair\(\) \{' '^\}$' "$AGENT_CYCLE")"
+if [[ -z "$repair_block" || "$repair_block" != *'jq'* ]]; then
+  echo "FAIL - could not extract refinement_traceability_repair from agent-cycle.sh — has it moved?" >&2
+  exit 1
+fi
+eval "$repair_block"
+
+# 1. The production case: a comment refinement the work order does not carry.
+reset_gh_calls
+GH_COMMENT_BODY='the refinement the Refiner wrote, in full, as a human would read it'
+cand_missing='{"repo":"o/r","item":"571",
+  "context":"Issue #571: a title\n\nComments:\nsomething else entirely",
+  "acceptance":"resolve it"}'
+repaired="$(refinement_traceability_repair "$cand_missing" "$refinements")"
+assert_nonempty "a work order missing its refinement comment is repaired" "$repaired"
+assert_eq "…and the repaired order then passes the check it just failed" "" \
+  "$(refinement_traceability_fault "$repaired" "$refinements")"
+assert_eq "…the comment landing in context, verbatim" "1" \
+  "$(jq -r --arg b "$GH_COMMENT_BODY" 'if (.context | contains($b)) then 1 else 0 end' <<<"$repaired")"
+assert_eq "…without disturbing what the order already said" "1" \
+  "$(jq -r 'if (.context | contains("something else entirely")) and (.acceptance == "resolve it") then 1 else 0 end' <<<"$repaired")"
+
+# 2. The corrupt-ledger case must NOT be repaired: the comment_url names a
+#    different issue than the item it is filed under, so appending it would
+#    write another issue's refinement into this one's order — precisely the
+#    #626 defect. The fault stands and the caller skips.
+reset_gh_calls
+GH_COMMENT_BODY='a refinement belonging to some other issue'
+assert_eq "a comment_url naming another issue is never repaired" "" \
+  "$(refinement_traceability_repair "$cand_swapped" "$refinements_wrong_issue")"
+assert_eq "…and no fetch is even attempted for it" "0" "$(gh_calls)"
+
+# 3. A spec refinement absent from context is repaired the same way.
+reset_gh_calls
+cand_spec_bare='{"repo":"o/r","item":"TD1","context":"the tech-debt record body as filed","acceptance":"fix it"}'
+repaired_spec="$(refinement_traceability_repair "$cand_spec_bare" "$refinements_spec")"
+assert_nonempty "a work order missing its recorded spec is repaired" "$repaired_spec"
+assert_eq "…and then passes" "" "$(refinement_traceability_fault "$repaired_spec" "$refinements_spec")"
+
+# 4. An order that already carries its refinement is left completely alone —
+#    the repair must never churn a candidate that was fine.
+reset_gh_calls
+GH_COMMENT_BODY='already pasted in full'
+cand_already='{"repo":"o/r","item":"571","context":"Issue #571\n\nComments:\nalready pasted in full","acceptance":""}'
+assert_eq "a compliant work order is not repaired" "" \
+  "$(refinement_traceability_repair "$cand_already" "$refinements")"
+
+# 5. An unreadable refinement leaves the candidate untouched, failing in the
+#    same direction the check already fails.
+reset_gh_calls
+GH_RC=1
+GH_COMMENT_BODY=''
+assert_eq "an unreadable refinement comment is not repaired" "" \
+  "$(refinement_traceability_repair "$cand_missing" "$refinements")"
+GH_RC=0
+
+# 6. The claim loop must actually attempt the repair before skipping, and must
+#    count what it could not rescue separately — a cycle that dropped every
+#    candidate on traceability reported `raced` for 15 hours because this
+#    counter did not exist (issue #767).
+loop_src="$(sed -n '/^  c_trace_fault=""/,/^  if candidate_preclaimed /p' "$AGENT_CYCLE")"
+# shellcheck disable=SC2016  # the literal source text is what is being matched
+if [[ "$loop_src" == *'refinement_traceability_repair'* && "$loop_src" == *'trace_faults=$(( trace_faults + 1 ))'* ]]; then
+  printf 'ok   - %s\n' "the claim loop repairs before skipping, and counts an unrescued fault as its own kind"
+else
+  printf 'FAIL - %s\n' "the claim loop does not attempt a repair, or does not count trace faults separately"
+  failures=$(( failures + 1 ))
+fi
+if grep -q 'standdown_cause="untraceable"' "$AGENT_CYCLE"; then
+  printf 'ok   - %s\n' "a traceability stand-down has its own cause, and is never reported as raced"
+else
+  printf 'FAIL - %s\n' "a cycle whose candidates all failed traceability still falls through to the raced reason"
+  failures=$(( failures + 1 ))
+fi
+
 printf '\n%s\n' "$( (( failures == 0 )) && echo "All assertions passed." || echo "$failures assertion(s) failed." )"
 exit $(( failures > 0 ))
