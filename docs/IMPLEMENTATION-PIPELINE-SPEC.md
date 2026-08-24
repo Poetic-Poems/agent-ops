@@ -13153,7 +13153,8 @@ pull request, run the ones the change touches and any it could regress.
    architectures.** `docker build -f deploy/docker/Dockerfile -t agent-ops .`
    succeeds, and inside it, as user `agent`: `bash`, `git`, `jq`, `curl`,
    `python3`, `perl`, `flock`, `sha256sum`, `rsync`, `node`, `claude`, `gh`
-   (≥ 2.60), `supercronic` and `shellcheck` all resolve; `shellcheck
+   (≥ 2.60), `supercronic`, `shellcheck` and `squid` (the egress-proxy service's
+   fence, requirement-checked at check 10) all resolve; `shellcheck
    --version` prints `0.10.0`, the same version
    `.github/workflows/shellcheck.yml` pins; `supercronic -test
    /app/deploy/docker/crontab` reports the crontab valid; the `test/` suite

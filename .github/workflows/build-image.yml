@@ -287,7 +287,7 @@ jobs:
         run: |
           docker run --rm agent-ops:ci bash -lc '
             set -e
-            for bin in bash git jq curl python3 perl flock sha256sum rsync node claude gh supercronic shellcheck; do
+            for bin in bash git jq curl python3 perl flock sha256sum rsync node claude gh supercronic shellcheck squid; do
               command -v "$bin" >/dev/null || { echo "missing: $bin" >&2; exit 1; }
               printf "%-12s %s\n" "$bin" "$(command -v "$bin")"
             done
