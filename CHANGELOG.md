@@ -616,11 +616,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   unbounded — this stage never flips the pull request out of draft, so the raw
   "last left draft, and stayed left" anchor is the one this read needs. A
   `dirty` verdict refuses to arm, naming the unreconciled comments as
-  permalinks; anything other than `clean` — an unreadable timeline or comment
-  list, or no answer at all — logs a `warning` and lets the remaining gates
-  decide, and rides in the landing audit record (requirement 8x) as its own
-  `comment-reconciliation` gate, so a landing armed over a question that could
-  not be put is never recorded as one where it came back clear.
+  permalinks; anything else that is not `clean` — an unreadable timeline or
+  comment list, or no answer at all — refuses too (agent-ops#746, ruled in
+  agent-ops#753), naming the pull request and what could not be confirmed, so
+  the veto holds whether or not the read succeeds rather than only when it
+  does. The refusal is unconditional, and draws no distinction between an
+  `unknown` a read genuinely returned and the empty word a call that never
+  executed leaves behind: neither passes a safety gate. Only the exact word
+  `clean` reaches the arm, and rides in the landing audit record (requirement
+  8x) as its own `comment-reconciliation` gate entry. The refusal is not
+  terminal — the landing-retry sweep re-offers the pull request next cycle, so
+  a transient read failure costs a delayed landing rather than a lost one.
 - An `adjudicate-first` escalation now carries the adjudicator's own finding,
   not just the Enabler's pre-adjudication verdict (agent-ops#681). Where
   `run_enabler_adjudication` returned `inadequate` — or any other reason the
