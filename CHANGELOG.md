@@ -8,6 +8,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- The scheduler's egress is fenced (agent-ops#760; roadmap D24 stage two,
+  review F-SEC-01, `TD-PPagop-26082407`/`TD-PPagop-26082429`): it now sits
+  on an internal-only Docker network — no gateway, so the fence is topology
+  rather than convention — and reaches the internet solely through a new
+  `egress-proxy` service, squid on the same agent-ops image, permitting
+  only HTTPS CONNECT to the domains in `deploy/docker/egress-allowlist.txt`
+  (every entry commented with the code that needs it, several reachable
+  only via redirects no grep would find) plus a node's own
+  `EGRESS_EXTRA_ALLOW`. Claude Code's optional traffic — update checks,
+  telemetry, error reporting, claude.ai connectors — is disabled in the
+  scheduler's environment rather than allowlisted. Being compose-level,
+  the fence reaches an existing node only by hand (`README.md`, "The
+  egress fence"); until then the node self-reports compose drift, and
+  `scripts/doctor.sh`'s new Egress section probes the live fence's three
+  failure shapes — path broken, allowlist not enforcing, direct egress
+  still open — on every unattended run. `test/egress-fence.test.sh` pins
+  the static shape, and the image build refuses a squid config or an
+  empty allowlist rather than shipping either to a node.
 - Every stage prompt now states its untrusted-content stance explicitly: a
   canonical `## Untrusted external content` block — byte-identical across
   all eight prompts, stated canonically in

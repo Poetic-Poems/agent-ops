@@ -772,6 +772,59 @@ be, since per-item claims keep them off each other's work (see
 `standby`. Then read
 [deploy/docker/README.md](deploy/docker/README.md) for everything after that.
 
+### The egress fence
+
+The scheduler — the container that runs `claude` over text anyone on GitHub
+can author, with live credentials in its environment — reaches the internet
+only through the `egress-proxy` service's domain allowlist
+(`deploy/docker/egress-allowlist.txt`; roadmap decision D24). The fence is
+topology, not convention: the scheduler sits on an internal-only Docker
+network with no gateway, and the proxy is the one way out, permitting only
+HTTPS to the domains the pipelines actually use — GitHub, the Anthropic API,
+Vercel previews, the npm registry and its build-time font fetches, and the
+image registry. Everything else is refused, including all of Claude Code's
+optional traffic (updates, telemetry, error reporting), which the
+scheduler's environment turns off at the source.
+
+**Rolling it onto an existing node** — the fence is compose-level, so no
+image roll delivers it (the node's own heartbeat reports the compose drift
+until you act):
+
+```sh
+cd ~/agent-ops   # wherever this node keeps compose.yaml and .env
+base=https://raw.githubusercontent.com/Poetic-Poems/agent-ops/main/deploy/docker
+curl -fsSLO "$base/compose.yaml"
+docker compose pull && docker compose up -d
+docker compose exec scheduler /app/scripts/doctor.sh --offline || true
+docker compose exec scheduler /app/scripts/doctor.sh   # Egress section: three [ ok ] lines
+```
+
+Mind the timing: `up -d` recreates the scheduler, so run it between cycles
+or accept losing the one in flight (the watchtower pre-update hook does not
+guard a manual `up -d`).
+
+**A node needing an extra domain** — a Vercel project serving previews from
+a custom domain is the expected case — names it in its `.env`:
+
+```sh
+EGRESS_EXTRA_ALLOW=preview.example.com
+```
+
+comma- or whitespace-separated, then `docker compose up -d egress-proxy`.
+Fleet-wide additions belong in `deploy/docker/egress-allowlist.txt` instead,
+where each entry states the code that needs it and
+`test/egress-fence.test.sh` pins the set.
+
+**If everything times out after enabling the fence**, check `DOCKER_MTU`
+before blaming the allowlist: an MTU black hole through the proxy looks
+exactly like a refused domain (compose.yaml's own MTU note tells you how to
+set it). `scripts/doctor.sh`'s Egress section tells the three failure shapes
+apart — proxy path broken, allowlist not enforcing, or direct egress still
+open because this node's compose.yaml predates the fence.
+
+There is deliberately no off-switch variable: unfencing a node is an edit to
+its compose.yaml, made knowingly or not at all.
+
 ### On the host (legacy, decommissioned)
 
 How the laptop ran before the cut-over — straight out of a checkout, under the

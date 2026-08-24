@@ -24,6 +24,51 @@ name: agent-ops
 # different commands over the same state — the dashboard renders what the
 # scheduler's cycles record — so their environment and volumes are defined once
 # here and merged into both.
+# The environment the agent-ops services share, its own anchor so a service
+# can *extend* it with a YAML merge key (the scheduler does, for the egress
+# fence below) — a service-level `environment:` replaces the anchor's whole
+# map rather than merging into it, so without this anchor the scheduler would
+# have to restate every variable and the two copies would drift.
+x-agent-ops-env: &agent-ops-env
+  # A node stands down unless it is explicitly told otherwise
+  # (IMPLEMENTATION-PIPELINE-SPEC requirement 2.4). Defaulting the default is
+  # deliberate: an .env copied from the example, or a variable lost in a
+  # restart, must not turn a spare node into a second worker.
+  AGENT_OPS_ROLE: ${ROLE:-standby}
+  NODE_NAME: ${NODE_NAME:-unnamed}
+  # The minute of each hour this node's cycle fires (1-59). Unset means a
+  # stable hash of NODE_NAME — see deploy/docker/render-crontab.sh.
+  CYCLE_MINUTE: ${CYCLE_MINUTE:-}
+  GH_TOKEN: ${GH_TOKEN:-}
+  GIT_USER_NAME: ${GIT_USER_NAME:-}
+  GIT_USER_EMAIL: ${GIT_USER_EMAIL:-}
+  # What lets a stage check the Vercel preview its own pull request deploys
+  # (scripts/preview-deploy.sh). Both optional, and a node without either
+  # runs every cycle exactly as before: the check then reports "could not
+  # check" rather than a verdict, which is the honest answer and not a
+  # failure. The first is the project's Protection Bypass for Automation
+  # secret, without which every preview answers the SSO login page; the
+  # second buys the build log when a deployment failed.
+  VERCEL_AUTOMATION_BYPASS_SECRET: ${VERCEL_AUTOMATION_BYPASS_SECRET:-}
+  VERCEL_TOKEN: ${VERCEL_TOKEN:-}
+  # The Pullwright Approver App's identity (D18 §5.3, lib/approver-token.sh) —
+  # what lets a `merge_autonomy` above `human` mint a review as a non-author.
+  # All three are optional, and all three must arrive together:
+  # `approver_token_credential_present` requires both ids *and* a readable
+  # key, so a partial set reads as "not configured", the Approver stage skips
+  # the App review, and the human merges exactly as at `human`.
+  #
+  # They have to be named here explicitly. This block is an allowlist, and
+  # there is no `env_file:` anywhere in this file — compose reads .env for
+  # `${...}` interpolation only, never injecting it into a container — so a
+  # variable an operator adds to a node's .env and that is not named here is
+  # silently absent from every cycle. That is precisely how these three came
+  # to be set on all four nodes while no cycle could see any of them.
+  PULLWRIGHT_APPROVER_APP_ID: ${PULLWRIGHT_APPROVER_APP_ID:-}
+  PULLWRIGHT_APPROVER_INSTALLATION_ID: ${PULLWRIGHT_APPROVER_INSTALLATION_ID:-}
+  PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH: ${PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH:-}
+  TZ: ${TZ:-Pacific/Auckland}
+
 x-agent-ops: &agent-ops
   # The registry image is the deployment artefact, and there is deliberately no
   # `build:` stanza: a node holds this file and its .env, not a clone, so a
@@ -70,45 +115,7 @@ x-agent-ops: &agent-ops
     options:
       max-size: ${AGENT_OPS_LOG_MAX_SIZE:-10m}
       max-file: ${AGENT_OPS_LOG_MAX_FILE:-5}
-  environment:
-    # A node stands down unless it is explicitly told otherwise
-    # (IMPLEMENTATION-PIPELINE-SPEC requirement 2.4). Defaulting the default is
-    # deliberate: an .env copied from the example, or a variable lost in a
-    # restart, must not turn a spare node into a second worker.
-    AGENT_OPS_ROLE: ${ROLE:-standby}
-    NODE_NAME: ${NODE_NAME:-unnamed}
-    # The minute of each hour this node's cycle fires (1-59). Unset means a
-    # stable hash of NODE_NAME — see deploy/docker/render-crontab.sh.
-    CYCLE_MINUTE: ${CYCLE_MINUTE:-}
-    GH_TOKEN: ${GH_TOKEN:-}
-    GIT_USER_NAME: ${GIT_USER_NAME:-}
-    GIT_USER_EMAIL: ${GIT_USER_EMAIL:-}
-    # What lets a stage check the Vercel preview its own pull request deploys
-    # (scripts/preview-deploy.sh). Both optional, and a node without either
-    # runs every cycle exactly as before: the check then reports "could not
-    # check" rather than a verdict, which is the honest answer and not a
-    # failure. The first is the project's Protection Bypass for Automation
-    # secret, without which every preview answers the SSO login page; the
-    # second buys the build log when a deployment failed.
-    VERCEL_AUTOMATION_BYPASS_SECRET: ${VERCEL_AUTOMATION_BYPASS_SECRET:-}
-    VERCEL_TOKEN: ${VERCEL_TOKEN:-}
-    # The Pullwright Approver App's identity (D18 §5.3, lib/approver-token.sh) —
-    # what lets a `merge_autonomy` above `human` mint a review as a non-author.
-    # All three are optional, and all three must arrive together:
-    # `approver_token_credential_present` requires both ids *and* a readable
-    # key, so a partial set reads as "not configured", the Approver stage skips
-    # the App review, and the human merges exactly as at `human`.
-    #
-    # They have to be named here explicitly. This block is an allowlist, and
-    # there is no `env_file:` anywhere in this file — compose reads .env for
-    # `${...}` interpolation only, never injecting it into a container — so a
-    # variable an operator adds to a node's .env and that is not named here is
-    # silently absent from every cycle. That is precisely how these three came
-    # to be set on all four nodes while no cycle could see any of them.
-    PULLWRIGHT_APPROVER_APP_ID: ${PULLWRIGHT_APPROVER_APP_ID:-}
-    PULLWRIGHT_APPROVER_INSTALLATION_ID: ${PULLWRIGHT_APPROVER_INSTALLATION_ID:-}
-    PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH: ${PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH:-}
-    TZ: ${TZ:-Pacific/Auckland}
+  environment: *agent-ops-env
   volumes:
     # The three things that must survive a container being replaced by a newer
     # image. Everything else in the container is rebuilt from the image.
@@ -222,6 +229,82 @@ services:
     # conclude the pipeline is broken.
     mem_limit: ${AGENT_OPS_SCHEDULER_MEMORY:-1536m}
     cpus: ${AGENT_OPS_SCHEDULER_CPUS:-2.0}
+    # --- The egress fence (D24) -------------------------------------------
+    # The scheduler is the container that runs `claude` over text anyone on
+    # GitHub can author, with live credentials in its environment, so it is
+    # the one container whose way out is fenced: it sits on the internal-only
+    # `egress` network — no route to the internet by topology, not by
+    # convention — and reaches the world solely through `egress-proxy`'s
+    # domain allowlist. The proxy variables below are what make the tools
+    # (`gh`, `git`, `curl`, `claude` — all of them honour the convention) use
+    # that route; the internal network is what makes ignoring them futile.
+    # Both halves matter: the variables alone would be advisory, the network
+    # alone would just break every stage. `scripts/doctor.sh`'s Egress
+    # section probes all three failure shapes, and an un-updated node — this
+    # file predating the fence, which no image roll can fix —
+    # self-reports through lib/compose-drift.sh's heartbeat verdict as well.
+    networks: [egress]
+    depends_on:
+      - egress-proxy
+    environment:
+      <<: *agent-ops-env
+      # Upper- and lower-case both, because the convention has two spellings
+      # and the tools disagree about which they read.
+      HTTPS_PROXY: http://egress-proxy:3128
+      HTTP_PROXY: http://egress-proxy:3128
+      https_proxy: http://egress-proxy:3128
+      http_proxy: http://egress-proxy:3128
+      NO_PROXY: localhost,127.0.0.1
+      no_proxy: localhost,127.0.0.1
+      # With egress fenced, Claude Code's optional traffic (auto-update
+      # checks, telemetry, error reporting, claude.ai MCP connectors) is
+      # turned off at the source rather than allowlisted: none of it is
+      # needed by a headless stage, and every domain not on the list is one
+      # less place a compromised stage can reach. Set to "1" and never "0" —
+      # some of these treat *any* value, "0" included, as opted out, so a
+      # templated 0 would not mean what it says.
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+      DISABLE_AUTOUPDATER: "1"
+      ENABLE_CLAUDEAI_MCP_SERVERS: "false"
+
+  # The scheduler's only route out (D24): squid, running the same agent-ops
+  # image, on both the default network (the internet) and the internal-only
+  # `egress` network (the scheduler). Only CONNECT to port 443 on a domain in
+  # deploy/docker/egress-allowlist.txt — plus a node's own EGRESS_EXTRA_ALLOW
+  # additions — is allowed; everything else is refused. In no profile, like
+  # the scheduler it serves: a node whose scheduler cannot reach GitHub is
+  # not a node. It overrides the image's entrypoint because it runs no
+  # cycles and must not be gated on a writable state volume — it mounts
+  # state read-only, solely so watchtower's pre-update hook can honour a
+  # running cycle's lock before a roll recreates this container mid-stage.
+  egress-proxy:
+    image: ${AGENT_OPS_IMAGE:-ghcr.io/poetic-poems/agent-ops:latest}
+    restart: unless-stopped
+    entrypoint: ["/app/deploy/docker/egress-proxy-start.sh"]
+    # ~30 MiB of squid moving bytes it may not cache; the ceiling is tight
+    # for the same reason the tailscale sidecar's is.
+    mem_limit: ${AGENT_OPS_EGRESS_PROXY_MEMORY:-128m}
+    cpus: ${AGENT_OPS_EGRESS_PROXY_CPUS:-0.5}
+    pids_limit: ${AGENT_OPS_SIDECAR_PIDS_LIMIT:-256}
+    logging:
+      driver: json-file
+      options:
+        max-size: ${AGENT_OPS_LOG_MAX_SIZE:-10m}
+        max-file: ${AGENT_OPS_LOG_MAX_FILE:-5}
+    environment:
+      # Per-node allowlist additions (comma- or whitespace-separated domains)
+      # — a custom Vercel preview domain is the expected case. Named here
+      # because this block is an allowlist, like the scheduler's own: a
+      # variable set in .env and not named here reaches nothing.
+      EGRESS_EXTRA_ALLOW: ${EGRESS_EXTRA_ALLOW:-}
+      TZ: ${TZ:-Pacific/Auckland}
+    networks: [default, egress]
+    volumes:
+      - state:/home/agent/.local/state/poetic-agents:ro
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+      com.centurylinklabs.watchtower.lifecycle.pre-update: /app/deploy/docker/watchtower-pre-update.sh
+      com.centurylinklabs.watchtower.lifecycle.pre-update-timeout: "1"
 
   # --- tailnet profile ---------------------------------------------------
   # Tailscale in a sidecar, with the dashboard sharing its network namespace.
@@ -444,6 +527,16 @@ networks:
       # (`ip route get 1.1.1.1` names the interface; `ip link show <if>` gives
       # its MTU) whenever that is below 1500. The default changes nothing on a
       # node whose network is ordinary.
+      com.docker.network.driver.mtu: ${DOCKER_MTU:-1500}
+  # The fence itself (D24): `internal: true` is what removes the scheduler's
+  # route to the internet — Docker attaches no gateway, so a process that
+  # strips the proxy variables gains nothing. The MTU treatment is the same
+  # as the default bridge's above, and matters the same way: the proxy path
+  # ultimately leaves through the same host egress, and an MTU black hole
+  # through the fence looks exactly like a broken allowlist (it is neither).
+  egress:
+    internal: true
+    driver_opts:
       com.docker.network.driver.mtu: ${DOCKER_MTU:-1500}
 
 volumes:

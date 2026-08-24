@@ -1470,6 +1470,45 @@ else
   rm -rf "$flush_dir"
 fi
 
+# --- Egress -------------------------------------------------------------
+# The D24 egress fence (IMPLEMENTATION-PIPELINE-SPEC, "The node stack"): on
+# a fleet node the scheduler sits on an internal-only network and reaches
+# the world solely through egress-proxy's domain allowlist. Three probes,
+# because the fence has three distinct failure shapes and each needs its own
+# verdict: the proxy path itself broken (the node cannot work at all), the
+# allowlist not enforcing (the fence is theatre), and direct egress still
+# routable (the fence is advisory — exactly the state an un-updated
+# compose.yaml leaves behind, which no image roll can fix; the same drift
+# lib/compose-drift.sh reports in the heartbeat). The canary domain is one
+# no pipeline code path has any business reaching, so a success can only
+# mean the allowlist is not doing its job.
+section "Egress"
+if ((offline)); then
+  skip "egress fence probes (--offline)"
+elif [[ -z "${HTTPS_PROXY:-}" ]]; then
+  if [[ -n "${AGENT_OPS_ROLE:-}" ]]; then
+    warn "no egress fence: HTTPS_PROXY is unset, so this node's stages have unrestricted egress (D24) — update this node's deploy/docker/compose.yaml and 'docker compose up -d'"
+  else
+    skip "egress fence (AGENT_OPS_ROLE unset — not a fleet node, nothing to fence)"
+  fi
+else
+  if curl -sS --max-time 10 -o /dev/null "https://api.github.com/octocat" 2>/dev/null; then
+    ok "the proxy path works: api.github.com answers via $HTTPS_PROXY"
+  else
+    fail "the proxy path is broken: api.github.com is unreachable via $HTTPS_PROXY, so no stage can reach GitHub at all — check the egress-proxy container (and DOCKER_MTU: an MTU black hole through the fence looks exactly like this)"
+  fi
+  if curl -sS --max-time 10 -o /dev/null "https://example.com/" 2>/dev/null; then
+    fail "the allowlist is not enforced: example.com answers through the proxy — check egress-proxy's config and log"
+  else
+    ok "the allowlist refuses a canary domain (example.com)"
+  fi
+  if curl -sS --noproxy '*' --max-time 10 -o /dev/null "https://api.github.com/octocat" 2>/dev/null; then
+    fail "direct egress works despite HTTPS_PROXY being set: the scheduler is not on the internal-only egress network, so the fence is advisory — this node's compose.yaml predates the fence; update it and 'docker compose up -d'"
+  else
+    ok "direct egress is blocked (the internal-only network holds)"
+  fi
+fi
+
 # --unattended's own artefact (agent-ops#543): scripts/publish-dashboard.sh
 # reads this rather than re-running the GitHub section itself, which would
 # cost several API calls per configured repository every heartbeat instead of
