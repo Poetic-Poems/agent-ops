@@ -1604,9 +1604,10 @@ implements.
       signal that it truncated, so a capped listing simply produces low
       counts, and low counts open a gate whose purpose is to stay shut. Note
       that nothing bounds the listing at `max_open_agent_prs`: a pull request
-      waiting in the human's merge queue carries `pr_label` and is
-      deliberately excluded from the sum above, so a repository can hold
-      arbitrarily many open labelled PRs while the sum stays small. Of the two
+      sitting in whichever queue the level-aware exclusion above currently
+      parks it in still carries `pr_label` and is deliberately excluded from
+      the sum above, so a repository can hold arbitrarily many open labelled
+      PRs while the sum stays small. Of the two
       ways to be wrong here, deferring a cycle that could have run is
       recoverable next cycle and opening work past a full cap is not.
 2.2a. **Back-pressure throttles starting work, not finishing it.** Compute the

@@ -45,11 +45,11 @@ file this swept.
 
 | Area | Lines (at sweep time) | How classified | Band A rewordings |
 |---|---:|---|---|
-| `prompts/` (8 files) | 234 | Every hit in every file read in context | 38 |
-| `docs/IMPLEMENTATION-PIPELINE-SPEC.md` | 569 | Every hit read in context, in four overlapping-free line-range passes, cross-checked against `agent-cycle.sh`'s real branching for escalation-gating claims | ~21 |
+| `prompts/` (8 files) | 234 | Every hit in every file read in context | 40 |
+| `docs/IMPLEMENTATION-PIPELINE-SPEC.md` | 569 | Every hit read in context, in four overlapping-free line-range passes, cross-checked against `agent-cycle.sh`'s real branching for escalation-gating claims | ~22 |
 | `lib/` (33 files) | 282 | Every hit in every file read in context | 10 |
 | `scripts/` (19 files) | 216 | Every hit in every file read in context | 1 (keeping the `merge_autonomy: human` rung per Edge 3) |
-| `agent-cycle.sh` | 196 | Every hit read in context, in two line-range passes | 7 |
+| `agent-cycle.sh` | 196 | Every hit read in context, in two line-range passes | 8 |
 | `config.schema.json` | 47 | Every hit read; edited via the schema `description`/`x-docs`, never a generated table cell; `scripts/render-config-table.sh` re-run after | 2 keys (3 fields) |
 | `README.md` | 41 | Every hit outside the generated config-table regions read in context | 1 (plus the table regions, regenerated) |
 | `docs/ROADMAP.md` | 20 | Every hit read in context | 5 (3 of which keep the `merge_autonomy: human` rung per Edge 3, reworded to "the landing gate at `human`" rather than flattened) |

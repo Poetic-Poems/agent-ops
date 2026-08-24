@@ -7619,7 +7619,8 @@ fi
 # a truncated listing is actively dangerous: `gh` gives no signal that it
 # capped, so the counts below would simply be low, and low counts open a gate
 # whose whole purpose is to stay shut. Note that the raw listing is not bounded
-# by `max_open_agent_prs` — a pull request waiting in the human's merge queue
+# by `max_open_agent_prs` — a pull request sitting in whichever queue
+# requirement 2.2's merge_autonomy-aware exclusion currently parks it in still
 # carries `pr_label` and is deliberately excluded from the sum — so a repo can
 # genuinely hold more open labelled PRs than the cap, and the cap is no
 # guarantee the page was big enough.
