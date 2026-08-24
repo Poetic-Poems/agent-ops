@@ -7587,7 +7587,9 @@ fi
 # The stand-down is *deferred* rather than taken here (requirement 2.2a). Back-
 # pressure throttles starting new work, and until the sources are gathered we do
 # not know whether the only candidate is review-feedback — which finishes work
-# already in the human's queue instead of adding to it. Standing down here would
+# already parked in whichever queue requirement 2.2's merge_autonomy-aware
+# exclusion currently holds it in (a human's, below agent-merges-routine; see
+# D18 WI-6 below) instead of adding to it. Standing down here would
 # deadlock the pipeline exactly when it is most stuck: max_open_agent_prs PRs
 # all waiting on the agent, and the one source that could clear them never
 # reached. The cost of deferring is the handful of `gh` calls in step 3.
@@ -7597,21 +7599,26 @@ fi
 # is it" rule requirement 3c's review-feedback candidate filter uses
 # (scripts/gather-review-feedback.sh), so the two definitions cannot disagree.
 # A ready PR that is approved, or awaiting a first or re-review with nothing
-# currently `CHANGES_REQUESTED`-blocking it, is sitting in the human's queue —
-# the pipeline cannot shrink that by declining to open new work, so counting
+# currently `CHANGES_REQUESTED`-blocking it, is sitting in a human's queue only
+# below agent-merges-routine (D18 WI-6, the level-aware loop below) — the
+# pipeline cannot shrink that queue by declining to open new work, so counting
 # it against the cap only back-pressures the fleet for a queue it has no lever
-# to drain (agent-ops#246).
+# to drain (agent-ops#246). At agent-merges-routine and above there is no such
+# queue for it to sit in, and it counts like any other ready PR (see
+# `backpressure_autonomous_rank` below).
 #
-# The count is taken in four parts — ready PRs awaiting a human, ready PRs
-# awaiting the pipeline, draft PRs, live claims — because the trip decision
-# needs only the human-queue-excluded sum, but the logged reason states the
-# full split: a human-queue PR could fill the raw total without ever counting
-# against the cap; a pipeline-turn ready PR is the human's queue answered and
-# now the agent's to act on; a draft is work in flight (the Implementer's own
-# claim marker, requirement 23); an unraised claim is a registry entry whose
-# PR does not yet exist. Which of them filled the gate is what a cap-tuning
-# decision needs to know. Recording it here costs nothing; reconstructing it
-# later means cycle-record archaeology.
+# The count is taken in four parts — ready PRs awaiting a human (only below
+# agent-merges-routine; see D18 WI-6 below), ready PRs awaiting the pipeline,
+# draft PRs, live claims — because the trip decision needs only the
+# human-queue-excluded sum, but the logged reason states the full split: a
+# human-queue PR could fill the raw total without ever counting against the
+# cap, at levels where such a queue exists; a pipeline-turn ready PR is that
+# queue answered (or, at agent-merges-routine and above, simply the next
+# ready PR) and now the agent's to act on; a draft is work in flight (the
+# Implementer's own claim marker, requirement 23); an unraised claim is a
+# registry entry whose PR does not yet exist. Which of them filled the gate
+# is what a cap-tuning decision needs to know. Recording it here costs
+# nothing; reconstructing it later means cycle-record archaeology.
 #
 # The listing's page size is stated (`GITHUB_PR_LIST_LIMIT`, lib/github-limit.sh)
 # rather than left to `gh`'s undeclared default of 30, and a response that came

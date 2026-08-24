@@ -106,12 +106,15 @@ heading, the Script gives you one JSON object:
   as `issues:urgent`, `issues:high`, `issues:medium` and `issues:low`, the same
   source at four ranks — see "Issue priority" below.
 - Each entry's `review_feedback` is the repo's PRs awaiting our reply to a
-  human's review, **already fetched, filtered and assembled for you** by the
+  blocking review — a human's, or, at `agent-approves` and above, the
+  Approver App's own `REQUEST_CHANGES` (`scripts/gather-review-feedback.sh`
+  keys off GitHub's `reviewDecision`, which counts both alike) —
+  **already fetched, filtered and assembled for you** by the
   Script, and — like every other pre-fetched band except `issues` — already
   cross-referenced against `claimed`, `blocked` and `void` for you: a
   candidate blocked or void for its own repo never reaches this array at all
-  (see "Review feedback" below). An empty array means no human is waiting on
-  us — do not go looking.
+  (see "Review feedback" below). An empty array means nothing is waiting on
+  our reply — do not go looking.
 - Each entry's `merge_conflicts` is the repo's own PRs that are otherwise ready
   (for review or for merge) but whose only blocker is a conflict with their base
   branch — open, non-draft, ours by label on a branch we own, and definitively
