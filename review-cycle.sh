@@ -77,6 +77,8 @@ SKILL_SRC="$SCRIPT_DIR/.claude/skills/project-review"
 . "$SCRIPT_DIR/lib/git-identity.sh"
 # shellcheck source=lib/fleet.sh
 . "$SCRIPT_DIR/lib/fleet.sh"
+# shellcheck source=lib/workspace.sh
+. "$SCRIPT_DIR/lib/workspace.sh"
 # shellcheck source=lib/labels.sh
 . "$SCRIPT_DIR/lib/labels.sh"
 # shellcheck source=lib/pipeline-marker.sh
@@ -655,6 +657,19 @@ lock_stale_after_sec="$(jq -nr --argjson t "$stage_budget_json" \
     | ([($repos | length), 1] | max) as $repo_count
     | ((($cap * $repo_count) + 30) * 60) as $derived
     | ([$derived, ($configured * 3600)] | max | ceil)' 2>/dev/null || printf 21600)"
+
+# Reclaim the workspaces of runs that never cleaned up (agent-ops#605), on the
+# same terms and for the same reason as agent-cycle.sh's own call: the review
+# cycle clones into the same `workspace_root` and loses its clones to a kill
+# in exactly the same way. Its window is its own — the review lock is derived
+# from the Reviewer's budget times the repository count, which is wider than a
+# cycle's — and both are floored at 24 h, so whichever of the two pipelines
+# runs first cannot reap a workspace the other is still working in.
+workspace_reap_json="$(workspace_reap_summary "$workspace_root" \
+  "$(workspace_reap_window "$lock_stale_after_sec")" || printf '{"reaped":0}')"
+if [[ "$(jq -r '.reaped // 0' <<<"$workspace_reap_json" 2>/dev/null || printf 0)" != "0" ]]; then
+  log_event "workspaces-reaped" "$workspace_reap_json"
+fi
 
 acquire_lock
 

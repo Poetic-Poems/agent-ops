@@ -406,7 +406,16 @@ R2c. **The fleet's memory and state publication.** After the lock and before
    (`docs/IMPLEMENTATION-PIPELINE-SPEC.md`, requirement 2.5) — so the
    usage-limit checks below see a limit *any* node hit; the union is
    re-snapshotted between repos. There is no lease: per-item claims
-   (requirement 17a of the implementation spec) arbitrate work. At the
+   (requirement 17a of the implementation spec) arbitrate work.
+
+   Before the lock, reap `workspace_root` on the terms of the implementation
+   spec's requirement 6b: this pipeline clones into the same directory and
+   loses its clones to a kill in exactly the same way. Its window is its own
+   — the review lock is derived from the Reviewer's budget times the
+   repository count, so it is wider than a cycle's — and both are floored at
+   24 hours, which is why whichever pipeline runs first cannot reap a
+   workspace the other is still working in. A `workspaces-reaped` event is
+   written only when something was reclaimed. At the
    end of the run — from the cleanup that releases the lock, once the review
    is fully recorded — publish this node's `state_dir` to its own
    `nodes/<NODE_NAME>` branch with `scripts/state-sync.sh push`,
@@ -500,7 +509,8 @@ R5. **Per non-skipped repo** (processed **sequentially**, so a failure of one
       GraphQL query that is billed against the API budget, and git's own
       transport is not rate-limited. `gh auth setup-git` in
       `deploy/docker/entrypoint.sh` authenticates the HTTPS remote, and
-      `CLONE_GIT` substitutes a stub for tests. Assert
+      `CLONE_GIT` substitutes a stub for tests, and anything already at the
+      target path is discarded rather than inspected (requirement 6). Assert
       the working
       directory is under `workspace_root` before launching any stage
       (requirement 6). The user's own clones under `~/Code` are never touched.

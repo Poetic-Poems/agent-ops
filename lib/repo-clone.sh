@@ -33,6 +33,28 @@ CLONE_GIT="${CLONE_GIT:-git}"
 # clone_repo SLUG DIR
 # Clone `owner/name` into DIR. Returns git's exit status; stderr is git's own,
 # left for the caller to show or redirect to the `clone*.err` file it records.
+#
+# A directory already at DIR is **residue, always** — discarded rather than
+# inspected (agent-ops#605). Both callers derive DIR from an id minted moments
+# earlier and unique to the run (`<cycle-id>`, `<review-id>-<repo>`), so
+# nothing legitimate can be sitting there: what can is the partial clone of a
+# cycle the machine killed mid-`git clone`, or of one whose host ran out of
+# disk part-way through writing it.
+#
+# Discarding unconditionally is deliberately stronger than validating. A check
+# that the directory "is a complete repository at the expected remote and
+# revision" passes on a clone that is complete and *dirty* — the working tree
+# of a dead cycle, carrying its half-finished edits and its branch — which is
+# the residue most likely to mislead the stage that inherits it, and the one
+# hardest to tell from a good clone. The unconditional discard has no such
+# blind spot, needs no git invocation to reach its verdict, and cannot be
+# wrong about a repository shape it has not met before.
+#
+# Left to itself, `git clone` into a non-empty directory fails, so before this
+# the residue did not corrupt a cycle — it killed it, at the last cheap step
+# before the expensive one, and then stayed on the disk.
 clone_repo() {
-  "$CLONE_GIT" clone --quiet "https://github.com/$1.git" "$2"
+  local slug="$1" dir="$2"
+  [[ -e "$dir" ]] && rm -rf -- "${dir:?}"
+  "$CLONE_GIT" clone --quiet "https://github.com/$slug.git" "$dir"
 }
