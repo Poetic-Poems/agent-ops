@@ -437,6 +437,28 @@ file and carries placeholders only; `.env` itself is never committed.
   and one aborts the `up` with `mkdir … /cycles: file exists`. The dependency
   routes the first-run seed through a single container. On every later start the
   volume already exists, so it only orders startup.
+- **Every container carries a resource ceiling (D14).** Each service states a
+  `mem_limit`, a `cpus` and a `pids_limit`, and every agent-ops service also
+  states a bounded `json-file` rotation; each value is a `${VAR:-default}` a
+  node may raise or lower in its `.env`. The defaults come from measurement
+  rather than from a rule of thumb — scheduler 1536m/2.0 against an observed
+  190-290 MiB at 1.0-1.3 cores, dashboard 512m/1.0 against 11-54 MiB, and the
+  `tailscale` and `watchtower` sidecars 256m/0.5 and 128m/0.5 against 52 MiB
+  and 28 MiB — and they are ceilings, not reservations: Docker reserves
+  nothing, so the sum may exceed the host and only bounds one container's blast
+  radius. Where the host is small enough that the sum is the binding number, as
+  on a WSL2 VM running two nodes, the defaults are chosen so the whole file
+  fits. A process ceiling sits beside the memory one because a fork loop
+  exhausts a host's pid space long before its memory, and the failure then
+  takes the host rather than the container. The stated trade is that a stage
+  outgrowing its ceiling is killed mid-cycle instead of taking the host down
+  with it — one lost cycle, loudly, over a frozen machine — so a node losing
+  cycles to exit 137 raises the variable rather than removing the limit. Two
+  of D14's four budgets are **not** enforced here and cannot be: Docker's
+  blkio throttles need kernel support the WSL2 kernel lacks (`docker info`
+  warns `No blkio throttle.read_bps_device support`), and Compose has no
+  per-container egress cap at all. Disk and bandwidth are therefore bounded
+  only by what the pipeline itself does.
 
 ### Target repositories
 

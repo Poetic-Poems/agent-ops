@@ -32,6 +32,44 @@ x-agent-ops: &agent-ops
   # set AGENT_OPS_IMAGE in .env.
   image: ${AGENT_OPS_IMAGE:-ghcr.io/poetic-poems/agent-ops:latest}
   restart: unless-stopped
+  # --- Resource ceilings (D14) --------------------------------------------
+  # What is shared by all three agent-ops services; the per-service memory and
+  # CPU ceilings are on the services themselves, because a dashboard and a
+  # scheduler are not the same size and pretending otherwise would set both
+  # wrong.
+  #
+  # These are *ceilings*, not reservations. Docker does not reserve, so the sum
+  # of every limit in this file may legitimately exceed the host's memory: a
+  # limit bounds the blast radius of one runaway container, it does not make the
+  # set of them fit. Where the host is small enough that the sum matters — a WSL2
+  # VM capped at 6 GiB running two nodes, which is the deployment this was
+  # measured on — the defaults below are chosen so the whole file fits: one
+  # tailnet node at 2.4 GiB plus one local node at 2.2 GiB leaves headroom for
+  # the VM itself. Every one is overridable per node in .env, because a node on
+  # a bigger host should not inherit a laptop's arithmetic.
+  #
+  # Not set, and not an oversight: disk and bandwidth, the other two budgets D14
+  # names. Docker's blkio throttles need kernel support the WSL2 kernel does not
+  # have (`docker info` warns "No blkio throttle.read_bps_device support"), and
+  # there is no per-container egress cap in Compose at all. Both are bounded
+  # today only by what the pipeline itself does — which, on the evidence of a
+  # 4 GB peer-clone directory and month-old workspaces nothing reaps, is not
+  # bounded at all. That is housekeeping's job, not this file's.
+  #
+  # A process ceiling as well as a memory one: the scheduler forks git, gh, jq
+  # and claude per stage, and a fork loop exhausts a host's pid space long
+  # before it exhausts its memory — the failure then takes the *host* down, not
+  # the container, which is the one outcome a limit exists to prevent.
+  pids_limit: ${AGENT_OPS_PIDS_LIMIT:-1024}
+  # Unbounded json-file logs are how a long-lived node fills a disk without
+  # anyone choosing to store anything. watchtower below has carried an explicit
+  # rotation since issue #155; there was never a reason the services that
+  # actually produce log volume should not.
+  logging:
+    driver: json-file
+    options:
+      max-size: ${AGENT_OPS_LOG_MAX_SIZE:-10m}
+      max-file: ${AGENT_OPS_LOG_MAX_FILE:-5}
   environment:
     # A node stands down unless it is explicitly told otherwise
     # (IMPLEMENTATION-PIPELINE-SPEC requirement 2.4). Defaulting the default is
@@ -170,6 +208,20 @@ services:
   scheduler:
     <<: *agent-ops
     command: ["supercronic", "/app/deploy/docker/crontab"]
+    # Measured 2026-08-24 over a 30-second window with a cycle in flight:
+    # 190-290 MiB resident, CPU pinning 1.0-1.3 cores. The ceiling is ~5x the
+    # observed peak, which is headroom for a stage that reads more than the
+    # measured ones did rather than a guess dressed as a budget — and it is the
+    # number to revise first when #606's real measurements land.
+    #
+    # The trade this makes, stated because D14 requires it stated: a stage whose
+    # working set exceeds 1.5 GiB is now killed by the OOM killer mid-cycle
+    # instead of taking the host down with it. That is the intended exchange —
+    # one lost cycle, loudly, over a frozen machine — but it is an exchange, and
+    # a node that starts losing cycles to exit 137 should raise this rather than
+    # conclude the pipeline is broken.
+    mem_limit: ${AGENT_OPS_SCHEDULER_MEMORY:-1536m}
+    cpus: ${AGENT_OPS_SCHEDULER_CPUS:-2.0}
 
   # --- tailnet profile ---------------------------------------------------
   # Tailscale in a sidecar, with the dashboard sharing its network namespace.
@@ -192,6 +244,18 @@ services:
     # sidecar, and the `dashboard` sharing its namespace, may need a
     # `docker compose up -d` that the rest of the stack does not.
     restart: on-failure:5
+    # 52 MiB resident and effectively no CPU, measured 2026-08-24. A sidecar
+    # whose whole job is to hold a WireGuard tunnel open has no business growing,
+    # so the ceiling is tight; it does not inherit the anchor's, because this
+    # service does not use the anchor.
+    mem_limit: ${AGENT_OPS_TAILSCALE_MEMORY:-256m}
+    cpus: ${AGENT_OPS_TAILSCALE_CPUS:-0.5}
+    pids_limit: ${AGENT_OPS_SIDECAR_PIDS_LIMIT:-256}
+    logging:
+      driver: json-file
+      options:
+        max-size: ${AGENT_OPS_LOG_MAX_SIZE:-10m}
+        max-file: ${AGENT_OPS_LOG_MAX_FILE:-5}
     # /usr/local/bin/containerboot is the image's own default command: the
     # tailscale/tailscale image sets `CMD`, not `ENTRYPOINT`, and an
     # `entrypoint:` here clears that CMD — hence naming the binary explicitly
@@ -234,6 +298,13 @@ services:
     <<: *agent-ops
     profiles: [tailnet]
     command: ["/app/scripts/serve-dashboard.sh", "8787"]
+    # 54 MiB resident, measured 2026-08-24. Overrides the anchor's scheduler-
+    # sized ceiling: this container renders a page from state another container
+    # wrote, and giving it a scheduler's budget would mean two nodes reserving
+    # 3 GiB of headroom for two processes that use a tenth of it.
+    mem_limit: ${AGENT_OPS_DASHBOARD_MEMORY:-512m}
+    cpus: ${AGENT_OPS_DASHBOARD_CPUS:-1.0}
+    pids_limit: ${AGENT_OPS_DASHBOARD_PIDS_LIMIT:-512}
     # Bounded like the sidecar it shares a namespace with, overriding the
     # anchor's `unless-stopped`: this container cannot start at all without
     # `tailscale`'s namespace to join, so once the sidecar has given up
@@ -284,6 +355,11 @@ services:
     <<: *agent-ops
     profiles: [local]
     command: ["/app/scripts/serve-dashboard.sh", "8787", "0.0.0.0"]
+    # The same page and the same ceilings as the `dashboard` service above; only
+    # how it is reached differs. 11 MiB resident, measured 2026-08-24.
+    mem_limit: ${AGENT_OPS_DASHBOARD_MEMORY:-512m}
+    cpus: ${AGENT_OPS_DASHBOARD_CPUS:-1.0}
+    pids_limit: ${AGENT_OPS_DASHBOARD_PIDS_LIMIT:-512}
     ports:
       - "127.0.0.1:${DASHBOARD_PORT:-8787}:8787"
     # Depend on the scheduler so the shared `state` volume is seeded by one
@@ -300,6 +376,11 @@ services:
     image: containrrr/watchtower:latest
     profiles: [auto-update]
     restart: unless-stopped
+    # 28 MiB resident, measured 2026-08-24. It polls a registry and calls the
+    # daemon; there is no workload here that a ceiling this size can obstruct.
+    mem_limit: ${AGENT_OPS_WATCHTOWER_MEMORY:-128m}
+    cpus: ${AGENT_OPS_WATCHTOWER_CPUS:-0.5}
+    pids_limit: ${AGENT_OPS_SIDECAR_PIDS_LIMIT:-256}
     environment:
       # Opt-in by label: watchtower must not touch containers this stack does
       # not own.
