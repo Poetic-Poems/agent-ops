@@ -1,0 +1,75 @@
+# deploy/docker/egress-allowlist.txt — every domain the scheduler may reach
+# (D24; IMPLEMENTATION-PIPELINE-SPEC, "The node stack"). One domain per line;
+# a leading dot means the domain and every subdomain (squid dstdomain
+# semantics); comments and blank lines are stripped by egress-proxy-start.sh.
+#
+# This file is the fence's whole policy, so every entry carries its reason —
+# an entry nobody can justify is an entry to delete. Fleet-wide additions
+# land here (they ship with the image); a single node's extra domain goes in
+# that node's .env as EGRESS_EXTRA_ALLOW. test/egress-fence.test.sh pins the
+# entries below; the build fails if the stripped list is empty.
+#
+# Not here, deliberately: Claude Code's optional traffic (auto-update,
+# telemetry, error reporting, claude.ai MCP connectors) is disabled by the
+# scheduler's environment in compose.yaml rather than allowlisted, and
+# raw.githubusercontent.com is used only by host bootstrap and CI, never by
+# the running scheduler.
+
+# --- GitHub: the forge every cycle reads and writes -----------------------
+# gh and every literal https://github.com clone/push (lib/repo-clone.sh,
+# scripts/state-sync.sh, lib/tech-debt-file.sh).
+github.com
+# gh's API host, and lib/approver-token.sh's raw curl App-token flow.
+api.github.com
+# Never named in any source file, and required all the same: the REST
+# tarball endpoint (scripts/gather-tech-debt.sh, gather-register-hygiene.sh)
+# answers with a 302 to this host, which gh follows. Blocking it fails the
+# register gatherers quietly — a degrade, not an error — every cycle.
+codeload.github.com
+# GitHub's content/redirect hosts, as one suffix on purpose: release-asset
+# downloads 302 here (poetic-fiddle's root dependency is a release tarball,
+# fetched by every `npm ci`), ghcr.io blob reads 307 here, and GitHub has
+# already migrated which subdomain serves what once (objects → release-assets,
+# 2025) — a churn that would silently break a narrower pin. Same trust class
+# as github.com itself, which is already above.
+.githubusercontent.com
+
+# --- Anthropic: the execution substrate of every stage --------------------
+# Model calls (and, with nonessential traffic disabled, everything else the
+# CLI still needs rides here too).
+api.anthropic.com
+# OAuth token exchange, refresh and revocation for the subscription
+# credentials in the claude-config volume — without it every stage dies the
+# moment the current access token expires.
+platform.claude.com
+# The once-per-node interactive login (`docker compose exec scheduler
+# claude`) runs inside the fence too; these two are what that flow touches
+# beyond the pair above. Runtime stages do not use them.
+claude.ai
+claude.com
+
+# --- Vercel: the preview a Reviewer checks (D19 "deployed" tier) ----------
+# scripts/preview-deploy.sh: the deployments API (build logs on failure)...
+api.vercel.com
+# ...and each pull request's own preview host, minted per deployment under
+# this suffix. A Vercel project serving previews from a custom domain needs
+# that domain in the node's EGRESS_EXTRA_ALLOW.
+.vercel.app
+# The SSO-wall redirect target preview-deploy.sh recognises; allowed so wall
+# detection can follow what the preview host answers.
+vercel.com
+
+# --- Registries and the target repos' own toolchains ----------------------
+# Target repos' own toolchains run inside stages (`npm ci` and friends —
+# poetic and poetic-fiddle both resolve every lockfile entry here).
+registry.npmjs.org
+# poetic-fiddle's `npm run build` evaluates `next/font/google` (layout.tsx),
+# which fetches these two at build time — a stage building fiddle without
+# them fails on fonts, not on anything a reviewer would think to check.
+fonts.googleapis.com
+fonts.gstatic.com
+# lib/image-drift.sh verifies the fleet's image digest from inside the
+# scheduler (state-sync heartbeat and the dashboard publisher, every few
+# minutes). Blocking it reads as a permanent "unverified" fleet-health
+# signal, indistinguishable from a registry outage.
+ghcr.io

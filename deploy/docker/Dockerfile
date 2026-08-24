@@ -77,10 +77,20 @@ RUN apt-get update \
         perl \
         python3 \
         rsync \
+        squid \
         tzdata \
         vim-tiny \
         xz-utils \
     && rm -rf /var/lib/apt/lists/*
+
+# squid (installed above) is the egress-proxy service's fence (D24;
+# deploy/docker/egress-proxy.conf) — same image, different entrypoint. Its
+# config is parsed here so a typo fails the build, not a node: the conf
+# references the merged allowlist at /tmp/egress-allowlist, so the parse
+# check stages the shipped baked list there first, exactly as
+# egress-proxy-start.sh will at run time. COPY of deploy/ happens later, so
+# the check lives beside it below — see "egress fence config" after the
+# /app COPY.
 
 # gh from GitHub's own apt repository: the distro package is years behind, and
 # the pipelines use flags it does not have.
@@ -211,6 +221,18 @@ RUN mkdir -p /home/agent/.claude \
     && chown -R "$PUID:$PGID" /home/agent
 
 COPY --chown=agent:agent . /app
+
+# The egress fence config (D24), parsed at build so a typo fails here, not on
+# a node. The conf reads its allowlist from /tmp/egress-allowlist, so stage
+# the baked list there exactly as egress-proxy-start.sh does at run time —
+# and require the baked list non-empty, because a fence that would refuse
+# everything is a config error, not a policy. Deliberately shaped like the
+# `gh` diagnosis guard above: the guard must be seen to bite (a deleted
+# domain or a misspelled directive must fail this step) or it guards nothing.
+RUN grep -vE '^[[:space:]]*(#|$)' /app/deploy/docker/egress-allowlist.txt > /tmp/egress-allowlist \
+    && test -s /tmp/egress-allowlist \
+    && squid -k parse -f /app/deploy/docker/egress-proxy.conf \
+    && rm -f /tmp/egress-allowlist
 
 USER agent
 WORKDIR /app

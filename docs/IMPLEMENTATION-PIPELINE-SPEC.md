@@ -266,6 +266,39 @@ file and carries placeholders only; `.env` itself is never committed.
   it runs on every node. `AGENT_OPS_ROLE` comes from `ROLE` in `.env` and
   **defaults to `standby`** if unset, so a half-configured node cannot become a
   second worker.
+- **`egress-proxy` and the egress fence (D24)** — the scheduler reaches the
+  internet only through this service. The scheduler sits on the
+  `egress` network, declared `internal: true`, so Docker attaches no
+  gateway: there is no route out to strip a proxy variable towards, and the
+  fence is enforced by topology rather than by convention. `egress-proxy` —
+  the same agent-ops image with `deploy/docker/egress-proxy-start.sh` as its
+  entrypoint, in no profile, on both `egress` and `default` — runs squid
+  permitting exactly one thing: CONNECT to port 443 on a domain named by
+  `deploy/docker/egress-allowlist.txt` (baked into the image, every entry
+  commented with the code that needs it) merged with the node's own
+  `EGRESS_EXTRA_ALLOW` additions from `.env`. The scheduler's environment
+  extends the shared block — via the `x-agent-ops-env` merge anchor, so the
+  two never drift — with the proxy variables in both spellings, and with
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `DISABLE_AUTOUPDATER` and
+  `ENABLE_CLAUDEAI_MCP_SERVERS=false`, which turn off the `claude` CLI's
+  optional traffic at the source so its domains stay off the allowlist. The
+  proxy overrides the image's entrypoint because it runs no cycles and must
+  not be gated on a writable state volume; it mounts `state` read-only
+  solely so `watchtower-pre-update.sh` can honour a running cycle's lock
+  before a roll recreates it mid-stage, and its config is parsed at image
+  build time so a typo fails the build rather than a node.
+- **The fence is delivered per node and observed per node.** Being
+  compose-level, the fence arrives only when a human updates a node's
+  `compose.yaml` and runs `docker compose up -d` there — no image roll
+  carries it (the general hazard `lib/compose-drift.sh` exists for, and an
+  un-updated node self-reports as compose drift in its heartbeat).
+  `scripts/doctor.sh`'s Egress section probes the live fence's three failure
+  shapes on every unattended run: the proxy path broken (fail — the node
+  cannot work), a canary domain answering through the proxy (fail — the
+  allowlist is theatre), and direct egress still routable (fail — the
+  compose predates the fence, so it is advisory). A node with no
+  `HTTPS_PROXY` at all warns rather than fails, so the fleet can roll the
+  fence out node by node without every un-updated node reading as broken.
 - **The Vercel variables are a capability, not a precondition.**
   `VERCEL_AUTOMATION_BYPASS_SECRET` and `VERCEL_TOKEN` reach both agent-ops
   services from `.env` through the shared environment block, and requirement
@@ -16550,6 +16583,20 @@ pull request, run the ones the change touches and any it could regress.
     45a's canonical one, which the test lifts from this document at run
     time rather than restating.
 
+10. **The egress fence holds its shape (D24).** `test/egress-fence.test.sh`
+    passes: the baked allowlist carries every domain the cycles need
+    (`codeload.github.com` and `ghcr.io` included — the two no grep of the
+    source would find), the squid config is default-deny with CONNECT-to-443
+    the only allow, the scheduler sits on the internal-only `egress` network
+    with the proxy variables and Claude-Code opt-outs in its environment,
+    `egress-proxy` bridges exactly `[default, egress]`, and
+    `egress-proxy-start.sh`'s merge behaves — run for real against a stub
+    squid. The build additionally runs `squid -k parse` over the shipped
+    config (deploy/docker/Dockerfile). The *live* fence is deliberately not
+    asserted here: the suite runs inside one container and cannot stand up
+    Docker networks, so per-node enforcement is `scripts/doctor.sh`'s Egress
+    probes' job, on every unattended run.
+
 ## Host provisioning (human steps)
 
 All of this is in place on the current host; it is needed again only when
@@ -17469,6 +17516,34 @@ confirmed by the repo owner on 2026-07-13; no open questions remain.
   final-message parser's three copies are pinned to each other: a rule with
   drifting copies is two rules.
 
+- **The egress fence is compose topology plus a proxy, not a firewall in
+  the image.** The image runs fully non-root with no `NET_ADMIN` anywhere
+  but the tailscale sidecar, so an `iptables` rule in the entrypoint would
+  have needed a capability expansion on every service that runs a stage —
+  exactly the wrong direction for a control meant to contain a compromised
+  stage, and a mechanism running *inside* the thing it fences. An
+  `internal: true` network plus a squid sidecar needs neither: the
+  enforcement lives outside the fenced container, in topology Docker
+  applies, and the proxy variables are merely what points the tools at the
+  one door (investigation credit: TD-PPagop-26082429, filed from the
+  pipeline's own attempt at this work on the closed #752). Stated honestly,
+  per D24: the fence removes the arbitrary-host exfiltration and
+  command-and-control channel; it does not close GitHub-as-exfiltration (an
+  allowlisted, writable, public destination by design), and DNS resolution
+  still reaches the host's resolver through Docker's embedded DNS, so
+  DNS-tunnelling exfiltration remains technically open — narrow, noisy, and
+  accepted under D24's residual rather than pretended away.
+- **The `claude` CLI's optional traffic is disabled, not allowlisted.**
+  Auto-update checks, telemetry, error reporting and claude.ai MCP
+  connectors are all turned off in the scheduler's environment
+  (`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, `DISABLE_AUTOUPDATER=1`,
+  `ENABLE_CLAUDEAI_MCP_SERVERS=false`), shrinking the allowlist to what
+  stages actually need — and pinning stage behaviour to the shipped CLI
+  version and code-default feature flags, which for an unattended fleet is
+  a reproducibility gain, not a loss. The variables' quirk is recorded
+  where they are set: some treat *any* value, `"0"` included, as opted
+  out, so they are set to `"1"` or not at all, never templated.
+
 ## Gotchas
 
 Failure modes this system actually shipped with, kept because each one is
@@ -17514,3 +17589,4 @@ confident, recurring no-op.
 | A "snapshot" horizon captured too late is wall clock wearing a disguise | Requirement 39f's own-label grace period (agent-ops#670) is supposed to measure how stale `union_log` is, not how long the cycle has been running — but `union_log` is not immutable after it is snapshotted: the cycle appends its own fresh local log lines into it at least three times before the requirement-39f read-back runs. Computing the horizon as "the newest `.ts` in `$union_log`" *at read-back time*, instead of once right after the snapshot, would silently reintroduce almost the same bug the fix exists to close: this node's own events, appended in between, advance the horizon in step with wall clock, so a long cycle would again read a peer's label write — still absent from the snapshot proper — as older than it really is. | Capture a derived "as-of" value once, immediately next to the read whose staleness it is meant to describe, into a variable — not a function re-derived from state the rest of the cycle goes on to mutate. `union_log_horizon="$(log_latest_ts "$union_log")"` sits on the very next line after `union_log` is materialised, textually before any `>> "$union_log"` append, so nothing downstream can move it forward by coincidence. |
 | A fail-closed gate that fails *every* time, and so is never seen to pass | `landing_protected_paths_hit` (requirement 8d) read its changed-file list with `gh api …/files -F per_page=100`, and `gh api` sends a request carrying `-f`/`-F` fields as a POST unless `--method GET` says otherwise — a 404 on this path. The read failed on every call from the day D18 Stage 2 was entered; every call site did the right thing with the exit 2 and refused to arm. The fleet logged 72 `landing-refused` events reading `unknown:could not establish …'s changed-file list`, raised and reviewed pull requests as usual, and never armed a single landing in five days — while the stage report, correctly, showed `0 autonomous landings` (agent-ops#718). | Give a gate that can refuse for an *environmental* reason a way to be seen never succeeding: alert on a refusal reason whose rate is 100%, and make the first success of a new capability an explicit, dated exit criterion rather than an assumption (the Stage 1 exit check’s "merged with only the App’s approval is not merged **by** the App" distinction is the same lesson, one rung down). In tests, stub a dependency’s **rule**, not just its shape — the stubbed `gh` that dispatched on the path alone answered happily to a request the real one refuses. |
 | A killed command destroys the work that finished before it, not just the work in flight | The Reviewer's own Bash tool kills a command still running at 10 minutes and returns nothing for it — not partial stdout, not the exit code of whatever it had already checked, nothing (requirement 29a). On agent-ops#734 the model read that as a command to retry rather than a wall to plan around: three consecutive 10-minute kills against the same unbatched `test/*.test.sh` run burned exactly a third of a 90-minute budget for zero test evidence, and a fourth hour of ad hoc re-batching still did not finish — so the review's own findings, already complete after the first 13 minutes, were never posted in time and the whole engagement was recorded as a failed attempt. | Before running anything that might be large, ask what the tool that runs it will do if it is too large — here, silently discard everything, including the part that already succeeded. Where the answer is "nothing survives," split the work into pieces sized to the limit *before* the first attempt (`scripts/run-tests.sh --list`, requirement 29a) rather than sizing down only after a kill proves the first guess wrong, and land whatever is already decided (a review's own findings, posted as formed — requirement 30a) before starting the part that risks the wall, so a kill there costs only the part still in flight. |
+| A network-layer fault surfacing behind an application-layer control | With `DOCKER_MTU` unset on a host whose egress link sits below 1500, DNS resolves, squid accepts the CONNECT — and the TLS handshake inside the tunnel hangs and resets, which reads as "the egress allowlist is blocking me" when squid already said yes. The debugging then happens at the wrong layer, in the allowlist, where nothing is wrong. | The `egress` network carries the same `DOCKER_MTU` driver_opts as the default bridge, and `doctor.sh`'s Egress fail message names the trap. Rule the MTU out (compose.yaml's own note tells you how) before touching the allowlist. |
