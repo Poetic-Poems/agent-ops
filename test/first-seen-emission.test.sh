@@ -55,18 +55,20 @@ assert_eq() {
 }
 
 # --- Lift emit_first_seen, log_event and exclude_claimed_items whole out of
-#     agent-cycle.sh, the same extraction test/pr-claim-exclusion.test.sh uses.
-extract_function() {  # extract_function <name>
+#     their own files, the same extraction test/pr-claim-exclusion.test.sh
+#     uses — emit_first_seen/exclude_claimed_items from lib/candidate-select.sh
+#     (#771), log_event still from agent-cycle.sh itself.
+extract_function() {  # extract_function <name> <file>
   awk -v fn="$1" '
     $0 ~ ("^" fn "\\(\\) \\{") { on = 1 }
     on                          { print }
     on && /^}$/                 { exit }
-  ' "$SCRIPT_DIR/agent-cycle.sh"
+  ' "$2"
 }
 
-emit_first_seen_src="$(extract_function emit_first_seen)"
-log_event_src="$(extract_function log_event)"
-exclude_claimed_items_src="$(extract_function exclude_claimed_items)"
+emit_first_seen_src="$(extract_function emit_first_seen "$SCRIPT_DIR/lib/candidate-select.sh")"
+log_event_src="$(extract_function log_event "$SCRIPT_DIR/agent-cycle.sh")"
+exclude_claimed_items_src="$(extract_function exclude_claimed_items "$SCRIPT_DIR/lib/candidate-select.sh")"
 
 if [[ "$emit_first_seen_src" != *"emit_first_seen()"* ]]; then
   printf 'FAIL - could not extract emit_first_seen from agent-cycle.sh (renamed or moved?)\n'

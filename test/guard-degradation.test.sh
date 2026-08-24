@@ -50,21 +50,23 @@ assert_eq() {
   fi
 }
 
-# --- Lift the functions under test whole out of agent-cycle.sh -------------
-extract_function() {  # extract_function <name>
+# --- Lift the functions under test whole out of their own files (#771: -----
+#     gather_claimed/unaccounted_items/coordinator_eligible_items moved to
+#     lib/candidate-select.sh; the other three stay in agent-cycle.sh) -------
+extract_function() {  # extract_function <name> <file>
   awk -v fn="$1" '
     $0 ~ ("^" fn "\\(\\) \\{") { on = 1 }
     on                          { print }
     on && /^}$/                 { exit }
-  ' "$SCRIPT_DIR/agent-cycle.sh"
+  ' "$2"
 }
 
-log_event_src="$(extract_function log_event)"
-guard_warn_src="$(extract_function guard_warn)"
-stage_budget_overrides_src="$(extract_function stage_budget_overrides)"
-gather_claimed_src="$(extract_function gather_claimed)"
-unaccounted_items_src="$(extract_function unaccounted_items)"
-coordinator_eligible_items_src="$(extract_function coordinator_eligible_items)"
+log_event_src="$(extract_function log_event "$SCRIPT_DIR/agent-cycle.sh")"
+guard_warn_src="$(extract_function guard_warn "$SCRIPT_DIR/agent-cycle.sh")"
+stage_budget_overrides_src="$(extract_function stage_budget_overrides "$SCRIPT_DIR/agent-cycle.sh")"
+gather_claimed_src="$(extract_function gather_claimed "$SCRIPT_DIR/lib/candidate-select.sh")"
+unaccounted_items_src="$(extract_function unaccounted_items "$SCRIPT_DIR/lib/candidate-select.sh")"
+coordinator_eligible_items_src="$(extract_function coordinator_eligible_items "$SCRIPT_DIR/lib/candidate-select.sh")"
 
 for pair in \
   "log_event_src:log_event()" \

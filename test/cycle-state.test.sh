@@ -876,7 +876,7 @@ extract_function() {  # extract_function <name>
     $0 ~ ("^" fn "\\(\\) \\{") { on = 1 }
     on                          { print }
     on && /^}$/                 { exit }
-  ' "$SCRIPT_DIR/agent-cycle.sh"
+  ' "$SCRIPT_DIR/lib/candidate-select.sh"
 }
 
 for fn in exclude_blocked_or_void_items exclude_blocked_or_void_issues coordinator_blocked_view coordinator_refinements_view; do

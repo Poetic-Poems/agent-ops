@@ -774,7 +774,7 @@ extract_fn() {
 }
 
 maybe_run_refiner_fn="$(extract_fn 'maybe_run_refiner() {' "$SCRIPT_DIR/lib/refinement.sh")"
-record_needs_refinement_block_fn="$(extract_fn 'record_needs_refinement_block() {' "$SCRIPT_DIR/agent-cycle.sh")"
+record_needs_refinement_block_fn="$(extract_fn 'record_needs_refinement_block() {' "$SCRIPT_DIR/lib/candidate-select.sh")"
 refiner_claim_key_fn="$(extract_fn 'refiner_claim_key() {' "$SCRIPT_DIR/lib/refinement.sh")"
 extract_json_result_fn="$(extract_fn 'extract_json_result() {' "$SCRIPT_DIR/lib/stage-attempt.sh")"
 refiner_filter_unbandable_triage_fn="$(extract_fn 'refiner_filter_unbandable_triage() {' "$SCRIPT_DIR/lib/refinement.sh")"

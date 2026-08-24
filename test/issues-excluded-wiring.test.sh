@@ -74,7 +74,7 @@ assert_eq() {
 sidecar_fns_src="$(awk '
   index($0, "issues_excluded_sidecar_path() {") == 1 { on = 1 }
   on { print; if ($0 == "}") { n++; if (n == 3) exit } }
-' "$SCRIPT_DIR/agent-cycle.sh")"
+' "$SCRIPT_DIR/lib/candidate-select.sh")"
 if [[ "$sidecar_fns_src" != *'issues_excluded_sidecar_path'* \
    || "$sidecar_fns_src" != *'gather_issues_excluded'* ]]; then
   printf 'FAIL - could not extract issues_excluded_sidecar_path/gather_issues/gather_issues_excluded from agent-cycle.sh (moved or reworded?)\n'

@@ -92,7 +92,7 @@ extract_block() {
   ' "$file"
 }
 
-hygiene_fn="$(extract_block '^gather_register_hygiene\(\) \{' '^\}$' "$SCRIPT_DIR/agent-cycle.sh")"
+hygiene_fn="$(extract_block '^gather_register_hygiene\(\) \{' '^\}$' "$SCRIPT_DIR/lib/candidate-select.sh")"
 if [[ -z "$hygiene_fn" ]]; then
   echo "FAIL - could not extract gather_register_hygiene from agent-cycle.sh — has it moved?" >&2
   exit 1
@@ -182,7 +182,7 @@ assert_eq "  ... and two separate markers" \
 # follow the array it certifies, and an empty array from a *completed* run is a
 # real answer that must earn one.
 
-hv_fn="$(extract_block '^gather_human_visibility_hygiene\(\) \{' '^\}$' "$SCRIPT_DIR/agent-cycle.sh")"
+hv_fn="$(extract_block '^gather_human_visibility_hygiene\(\) \{' '^\}$' "$SCRIPT_DIR/lib/candidate-select.sh")"
 if [[ -z "$hv_fn" ]]; then
   echo "FAIL - could not extract gather_human_visibility_hygiene from agent-cycle.sh — has it moved?" >&2
   exit 1

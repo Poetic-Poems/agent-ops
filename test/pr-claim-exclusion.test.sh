@@ -67,7 +67,7 @@ extract_function() {  # extract_function <name>
     $0 ~ ("^" fn "\\(\\) \\{") { on = 1 }
     on                          { print }
     on && /^}$/                 { exit }
-  ' "$SCRIPT_DIR/agent-cycle.sh"
+  ' "$SCRIPT_DIR/lib/candidate-select.sh"
 }
 
 gather_claimed_src="$(extract_function gather_claimed)"

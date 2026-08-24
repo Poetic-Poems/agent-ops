@@ -70,11 +70,11 @@ extract_fn() {
   ' "$file"
 }
 
-unaccounted_items_fn="$(extract_fn 'unaccounted_items() {  # <recorded-json> <eligible-json> <refinement-policy-json>' "$SCRIPT_DIR/agent-cycle.sh")"
-log_unblocked_items_fn="$(extract_fn 'log_unblocked_items() {' "$SCRIPT_DIR/agent-cycle.sh")"
-log_recheck_clean_items_fn="$(extract_fn 'log_recheck_clean_items() {' "$SCRIPT_DIR/agent-cycle.sh")"
-log_needs_refinement_items_fn="$(extract_fn 'log_needs_refinement_items() {' "$SCRIPT_DIR/agent-cycle.sh")"
-log_voided_items_fn="$(extract_fn 'log_voided_items() {' "$SCRIPT_DIR/agent-cycle.sh")"
+unaccounted_items_fn="$(extract_fn 'unaccounted_items() {  # <recorded-json> <eligible-json> <refinement-policy-json>' "$SCRIPT_DIR/lib/candidate-select.sh")"
+log_unblocked_items_fn="$(extract_fn 'log_unblocked_items() {' "$SCRIPT_DIR/lib/candidate-select.sh")"
+log_recheck_clean_items_fn="$(extract_fn 'log_recheck_clean_items() {' "$SCRIPT_DIR/lib/candidate-select.sh")"
+log_needs_refinement_items_fn="$(extract_fn 'log_needs_refinement_items() {' "$SCRIPT_DIR/lib/candidate-select.sh")"
+log_voided_items_fn="$(extract_fn 'log_voided_items() {' "$SCRIPT_DIR/lib/candidate-select.sh")"
 extract_json_result_fn="$(extract_fn 'extract_json_result() {' "$SCRIPT_DIR/lib/stage-attempt.sh")"
 run_coordinator_stage_attempt_fn="$(extract_fn 'run_coordinator_stage_attempt() {  # <attempt-out-file> <prompt> [extra-budget-json]' "$SCRIPT_DIR/lib/stage-attempt.sh")"
 fallback_select_candidate_fn="$(extract_fn 'fallback_select_candidate() {  # <ordered-repos-json> <default-model> <refinements-json> <refinement-policy-json> <pr-label>' "$SCRIPT_DIR/lib/stage-attempt.sh")"

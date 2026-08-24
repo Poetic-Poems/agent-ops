@@ -60,13 +60,13 @@ assert_eq() {
   fi
 }
 
-# --- Lift both functions whole out of agent-cycle.sh -----------------------------
+# --- Lift both functions whole out of lib/candidate-select.sh (#771) -------------
 extract_function() {  # extract_function <name>
   awk -v fn="$1" '
     $0 ~ ("^" fn "\\(\\) \\{") { on = 1 }
     on                          { print }
     on && /^}$/                 { exit }
-  ' "$SCRIPT_DIR/agent-cycle.sh"
+  ' "$SCRIPT_DIR/lib/candidate-select.sh"
 }
 
 exclude_blocked_or_void_items_src="$(extract_function exclude_blocked_or_void_items)"
@@ -456,7 +456,7 @@ assert_eq "a refused void still accounts for its item (the block de-eligibles it
 # for the identical shape.
 extract_fold_line() {  # extract_fold_line <accumulator-var-name>
   awk -v v="$1" 'index($0, v "=\"$(jq -nc") > 0 { print; getline; print; exit }' \
-    "$SCRIPT_DIR/agent-cycle.sh"
+    "$SCRIPT_DIR/lib/candidate-select.sh"
 }
 refinement_fold_line="$(extract_fold_line coord_recorded_refinement_json)"
 voided_fold_line="$(extract_fold_line coord_recorded_voided_json)"

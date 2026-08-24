@@ -315,7 +315,7 @@ lift_bash_fn() {
     on && /^\}$/      { exit }
   ' "$1"
 }
-gather_fn="$(lift_bash_fn "$SCRIPT_DIR/agent-cycle.sh" gather_merge_conflicts)"
+gather_fn="$(lift_bash_fn "$SCRIPT_DIR/lib/candidate-select.sh" gather_merge_conflicts)"
 if [[ -z "$gather_fn" ]]; then
   echo "FAIL - could not lift gather_merge_conflicts from agent-cycle.sh"
   failures=$(( failures + 1 ))
