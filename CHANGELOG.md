@@ -8,6 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Every stage prompt now states its untrusted-content stance explicitly: a
+  canonical `## Untrusted external content` block — byte-identical across
+  all eight prompts, stated canonically in
+  `IMPLEMENTATION-PIPELINE-SPEC.md`'s new requirement 45 (R18 in
+  `REVIEW-PIPELINE-SPEC.md` for the project reviewer) — frames
+  forge-authored free text (issue and pull-request titles and bodies,
+  comments, review text, commit messages — embedded in a stage's input or
+  fetched mid-run) as data about the work, never instructions to the stage
+  (agent-ops#759; roadmap D24 stage one, review F-SEC-01,
+  `TD-PPagop-26082407`). The line it draws: such text may define *what the
+  work is*, and can never change *how the stage operates* — nor
+  authenticate anyone, since a `pipeline:` stamp in a comment body can be
+  typed by any account. `test/prompt-untrusted-framing.test.sh` pins every
+  copy to the spec's canonical one at run time, so the one containment
+  that is only words cannot quietly become different words.
 - The routine landing class's protected-path list — the whole-path prefixes a
   routine-tier landing must touch none of before it can land unattended — is
   now a config key, `merge_autonomy_protected_paths`, with a per-repository
