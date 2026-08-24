@@ -397,8 +397,22 @@ services:
     # already stopped — a container thrashing where none of the loop issue
     # #644 was fixing had moved, just to a different service
     # (TD-PPagop-26082303). `on-failure:5` is not this container's own
-    # transient-error budget; it exists only so this container settles on
-    # the same schedule as the dependency it cannot run without.
+    # transient-error budget; it exists only so this container settles rather
+    # than thrashing once the dependency it cannot run without has stopped.
+    #
+    # It settles at **zero** attempts, not five, and the difference is worth
+    # knowing before reading a `docker ps`. Joining a stopped container's
+    # namespace is refused at *start*, so this container never runs and never
+    # exits, and a policy keyed on exit codes is never consulted at all: it
+    # lands in `Created` with `RestartCount: 0` and exit 128, where the
+    # sidecar lands in `Exited` with `RestartCount: 5`. `unless-stopped`
+    # retried that impossible start regardless, which is why it thrashed.
+    # Measured on VM1, 2026-08-24; acceptance check 1c-v carries both halves.
+    #
+    # One consequence beyond restart behaviour: watchtower scans only running
+    # containers, so while this one is down it is never rolled and never
+    # counted — it restarts onto whatever image it last had, however many
+    # releases the rest of the stack has taken meanwhile (#603).
     restart: on-failure:5
     # No `ports` and no `networks` are possible here, by construction: this
     # container has no network stack of its own. It reaches the tailnet, and is
