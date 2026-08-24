@@ -28,9 +28,10 @@
 # Stages 2 and 3 are both `agent-merges-routine` (#402: "Stage 3 … Same
 # metrics per repo") — the ladder has no field that tells them apart, only
 # which *sources* and *complexity* grades a repository's own
-# `merge_autonomy_routine_sources` currently admits, which this report does
-# not attempt to classify. Since their exit criteria are identical, a
-# repository at that level is reported against "Stage 2/3" once, not twice.
+# `merge_autonomy_routine_sources` and `merge_autonomy_routine_complexity`
+# currently admit, which this report does not attempt to classify. Since
+# their exit criteria are identical, a repository at that level is reported
+# against "Stage 2/3" once, not twice.
 #
 # ## What is unavailable, and why that is not zero
 #

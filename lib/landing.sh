@@ -105,11 +105,11 @@
 # gate-bearing in the same direct sense as the entries above —
 # `agent-cycle.sh` is the engine that calls this very arming step,
 # `review-cycle.sh` is the review pipeline's entry point, and `config.json`
-# carries the `merge_autonomy` level and `merge_autonomy_routine_sources`
-# that `landing_eligible` reads — so a pull request editing one of them is
-# precisely the self-modifying case risk register item 1 names, and the
-# "adding one line is cheap, forgetting one is not" argument above applies
-# to them unchanged.
+# carries the `merge_autonomy` level, `merge_autonomy_routine_sources` and
+# `merge_autonomy_routine_complexity` that `landing_eligible` reads — so a
+# pull request editing one of them is precisely the self-modifying case risk
+# register item 1 names, and the "adding one line is cheap, forgetting one
+# is not" argument above applies to them unchanged.
 # Protected paths refuse arming at every level below `agent-merges-all`
 # unconditionally. At `agent-merges-all` a hit is deliberately relaxed to
 # `eligible` by `landing_eligible` itself, and the decision deferred to
@@ -331,6 +331,35 @@ _landing_routine_sources() {
   printf '["register-hygiene","tech-debt"]'
 }
 
+# _landing_routine_complexity CONFIG_JSON SLUG
+# The routine-complexity list SLUG is governed by: its own `repos[]` entry's
+# `merge_autonomy_routine_complexity` when present, else the top-level key,
+# else the schema default `["low","medium"]` — the same
+# entry-wins-else-top-level-else-shipped-default precedence
+# `_landing_routine_sources` above already uses (D18 Stage 3, agent-ops#725).
+# Prints a compact JSON array; never fails — a config that does not parse
+# simply falls through to the shipped default, for the same reason
+# `_landing_routine_sources` does: a missing or malformed key is not evidence
+# a repository accepts no complexity at all, and this must not be the reason
+# `landing_eligible` reads `unknown` for an otherwise ordinary pull request.
+_landing_routine_complexity() {
+  local config_json="$1" slug="$2" repo_list
+  repo_list="$(jq -c --arg slug "$slug" \
+    '(.repos // [])[] | select(.slug == $slug) | .merge_autonomy_routine_complexity // empty' \
+    <<<"$config_json" 2>/dev/null | head -1)"
+  if [[ -n "$repo_list" ]] && jq -e 'type == "array"' <<<"$repo_list" >/dev/null 2>&1; then
+    printf '%s' "$repo_list"
+    return 0
+  fi
+  local top_list
+  top_list="$(jq -c '.merge_autonomy_routine_complexity // empty' <<<"$config_json" 2>/dev/null)"
+  if [[ -n "$top_list" ]] && jq -e 'type == "array"' <<<"$top_list" >/dev/null 2>&1; then
+    printf '%s' "$top_list"
+    return 0
+  fi
+  printf '["low","medium"]'
+}
+
 # landing_autonomy_refusal_reason STATE_REPO STATE_DIR LEVEL [FRESH]
 # The `landing-refused` reason text for gate 1 of `_landing_stage_attempt`
 # (agent-cycle.sh) when LEVEL is not `agent-merges-routine`/`agent-merges-all`
@@ -380,10 +409,14 @@ landing_autonomy_refusal_reason() {
 #
 # Eligible iff **all** of:
 #   - LEVEL is `agent-merges-routine` or `agent-merges-all`;
-#   - COMPLEXITY is `low` or `medium` — `high` is ineligible regardless of
-#     source or path, the first half of risk register item 1's belt and
-#     braces (requirement 26a already forces `high` onto anything touching
-#     concurrency, security, CI/workflow machinery or shared library code);
+#   - COMPLEXITY is a member of `_landing_routine_complexity`'s list for
+#     SLUG (default `low`/`medium`; agent-ops#725) — an empty or
+#     unrecognised COMPLEXITY is ineligible, never eligible by omission.
+#     This is the first half of risk register item 1's belt and braces:
+#     requirement 26a already forces `high` onto anything touching
+#     concurrency, security, CI/workflow machinery or shared library code,
+#     so widening this list to admit `high` routes exactly that class of
+#     diff through automatic landing;
 #   - SOURCE is a member of `_landing_routine_sources`'s list for SLUG — an
 #     empty or unrecognised SOURCE is ineligible, never eligible by
 #     omission;
@@ -414,13 +447,18 @@ landing_eligible() {
       ;;
   esac
 
-  case "$complexity" in
-    low|medium) ;;
-    *)
-      printf 'ineligible:complexity is %s, not low or medium' "${complexity:-empty}"
-      return 0
-      ;;
-  esac
+  local routine_complexity_json
+  routine_complexity_json="$(_landing_routine_complexity "$config_json" "$slug")"
+  # Same emptiness-guard reasoning as the SOURCE membership test below: `jq
+  # -e` on empty input exits 0 on jq 1.6 and 4 on jq 1.7, so skipping this
+  # guard would silently admit every complexity on a 1.6 host. See that
+  # test's own comment for the full argument.
+  if [[ -z "$complexity" || -z "$routine_complexity_json" ]] \
+     || ! jq -e --arg c "$complexity" 'index($c) != null' <<<"$routine_complexity_json" >/dev/null 2>&1; then
+    printf 'ineligible:complexity is %s, not in %s'\''s configured routine complexity %s' \
+      "${complexity:-empty}" "$slug" "$routine_complexity_json"
+    return 0
+  fi
 
   local routine_json
   routine_json="$(_landing_routine_sources "$config_json" "$slug")"

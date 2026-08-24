@@ -18,17 +18,20 @@
 #     explicit GET (agent-ops#718 — the stubbed `gh` models `gh api`'s own
 #     method selection, so a field-carrying request that forgets
 #     `--method GET` 404s here exactly as it did in production).
-#   - landing_eligible: LEVEL below agent-merges-routine, COMPLEXITY above
-#     medium, and a SOURCE outside the routine list are each `ineligible`
-#     with no gh call at all; a repo-level merge_autonomy_routine_sources
-#     override widens what that one repository accepts; a protected path
-#     is `ineligible`; an unreadable changed-file list, or a protected-paths
-#     list that cannot be evaluated at all (TD-PPagop-26082320), is
-#     `unknown`, never a pass; the plain-string SOURCE comparison this
-#     file's own header documents is pinned directly — a plain `issues`
-#     entry in the routine list matches the word a real issues work order
-#     always carries, and an `issues:low` entry (a schema error since
-#     agent-ops#558) still does not, because the comparison folds no bands.
+#   - landing_eligible: LEVEL below agent-merges-routine, a COMPLEXITY outside
+#     the routine-complexity list (default `low`/`medium`), and a SOURCE
+#     outside the routine list are each `ineligible` with no gh call at all;
+#     a repo-level merge_autonomy_routine_sources override widens what that
+#     one repository accepts; a repo-level merge_autonomy_routine_complexity
+#     override likewise widens the complexity ceiling, admitting `high`
+#     (D18 Stage 3, agent-ops#725); a protected path is `ineligible`; an
+#     unreadable changed-file list, or a protected-paths list that cannot be
+#     evaluated at all (TD-PPagop-26082320), is `unknown`, never a pass; the
+#     plain-string SOURCE comparison this file's own header documents is
+#     pinned directly — a plain `issues` entry in the routine list matches
+#     the word a real issues work order always carries, and an `issues:low`
+#     entry (a schema error since agent-ops#558) still does not, because the
+#     comparison folds no bands.
 #   - landing_arm: a base branch with an active merge queue enqueues via
 #     the enqueuePullRequest mutation; one without falls back to
 #     `gh pr merge --auto --squash`; both write under GH_TOKEN for that one
@@ -398,8 +401,12 @@ assert_eq "level agent-approves: still ineligible" \
   "ineligible:merge_autonomy effective level is agent-approves, not agent-merges-routine or agent-merges-all" "$out"
 
 out="$(landing_eligible "$base_cfg" acme/widgets 12 high tech-debt agent-merges-routine)"
-assert_eq "complexity:high is always ineligible, regardless of source or path" \
-  "ineligible:complexity is high, not low or medium" "$out"
+assert_eq "complexity:high is ineligible by default (outside the default routine-complexity list), regardless of source or path" \
+  'ineligible:complexity is high, not in acme/widgets'\''s configured routine complexity ["low","medium"]' "$out"
+
+out="$(landing_eligible "$base_cfg" acme/widgets 12 "" tech-debt agent-merges-routine)"
+assert_eq "an empty complexity is ineligible, never eligible by omission" \
+  'ineligible:complexity is empty, not in acme/widgets'\''s configured routine complexity ["low","medium"]' "$out"
 
 out="$(landing_eligible "$base_cfg" acme/widgets 12 medium issues agent-merges-routine)"
 assert_eq "a source outside the default routine list (register-hygiene, tech-debt) is ineligible" \
@@ -411,6 +418,19 @@ assert_eq "an empty source is ineligible, never eligible by omission" \
 
 out="$(landing_eligible "$base_cfg" acme/widgets 12 low tech-debt agent-merges-routine)"
 assert_eq "complexity:low, a routine source, no protected path: eligible" "eligible" "$out"
+
+complexity_override_cfg='{"repos":[{"slug":"acme/widgets","merge_autonomy_routine_complexity":["low","medium","high"]}]}'
+out="$(landing_eligible "$complexity_override_cfg" acme/widgets 12 high tech-debt agent-merges-routine)"
+assert_eq "a repo-level merge_autonomy_routine_complexity override admits complexity:high (D18 Stage 3, agent-ops#725)" \
+  "eligible" "$out"
+out="$(landing_eligible "$complexity_override_cfg" acme/gizmos 12 high tech-debt agent-merges-routine)"
+assert_eq "a repo with no complexity override of its own falls through to the default list, still refusing high" \
+  'ineligible:complexity is high, not in acme/gizmos'\''s configured routine complexity ["low","medium"]' "$out"
+
+top_complexity_cfg='{"merge_autonomy_routine_complexity":["low","medium","high"]}'
+out="$(landing_eligible "$top_complexity_cfg" acme/widgets 12 high tech-debt agent-merges-routine)"
+assert_eq "a top-level merge_autonomy_routine_complexity override admits complexity:high fleet-wide" \
+  "eligible" "$out"
 
 out="$(landing_eligible "$base_cfg" acme/widgets 12 medium register-hygiene agent-merges-all)"
 assert_eq "agent-merges-all is eligible too, on the same terms" "eligible" "$out"
