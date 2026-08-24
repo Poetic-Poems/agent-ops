@@ -210,6 +210,8 @@ assert_eq "  ... every gate this attempt cleared, named with its own evidence" \
   '"agent-merges-routine"' "$(jq -c '.gates[] | select(.gate == "autonomy-level") | .verdict' <<<"$audit")"
 assert_eq "  ... the eligibility gate" \
   '"eligible"' "$(jq -c '.gates[] | select(.gate == "eligibility") | .verdict' <<<"$audit")"
+assert_eq "  ... the open-question gate (requirement 8f, agent-ops#668)" \
+  '"clear"' "$(jq -c '.gates[] | select(.gate == "open-question") | .verdict' <<<"$audit")"
 assert_eq "  ... the review gate" \
   '"clean"' "$(jq -c '.gates[] | select(.gate == "review-gate") | .verdict' <<<"$audit")"
 assert_eq "  ... the Approver's own standing review" \

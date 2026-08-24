@@ -398,6 +398,10 @@ echo
 cat >"$tmp_dir/harness_d.sh" <<'HARNESS'
 set -euo pipefail
 enabler_escalation_label="agent-escalation"
+# lib/landing.sh's own fixed label, which the issue body names so the human
+# is told what actually releases the gate (only removing it, or a `settled`
+# adjudication, does — closing the issue does not).
+LANDING_OPEN_QUESTION_LABEL="open-question"
 cycle_id="20260825T000000Z-test-1"
 node_name="test-node"
 cycle_dir="$T/cycle"
@@ -438,6 +442,10 @@ assert_contains "... and why the Reviewer could not settle it" \
   "scope judgement call" "$(cat "$tmp_dir/body.md")"
 assert_contains "... and the pull request's own footer, distinct from pr-<n>-approver-adjudication" \
   "pr-512-open-question" "$(cat "$tmp_dir/body.md")"
+assert_contains "... and tells the human that removing the label is what releases the gate" \
+  "remove the \`open-question\` label" "$(cat "$tmp_dir/body.md")"
+assert_contains "... never that closing the issue alone clears it" \
+  "Closing this issue alone does not clear it" "$(cat "$tmp_dir/body.md")"
 assert_contains "logs open-question-escalated with the issue number and url" \
   '"issue_number":42' "$(awk -F'\t' '$1=="open-question-escalated"{print $2}' "$tmp_dir/events")"
 

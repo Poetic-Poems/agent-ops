@@ -627,6 +627,15 @@ assert_eq "  ... returning 0" "0" "$rc"
 
 rc="$(run_case OQ_RC="0" OQ_RESOLVE_RC="0")"
 assert_eq "a hit the resolve ladder settles this round still arms" "1" "$(count arms)"
+assert_eq "  ... recording the gate as settled in the landing audit record, never as clear" \
+  '"settled"' \
+  "$(jq -c '.gates[] | select(.gate == "open-question") | .verdict' <<<"$(event_of landing-audit-record)")"
+assert_eq "  ... returning 0" "0" "$rc"
+
+rc="$(run_case OQ_RC="1")"
+assert_eq "  ... where no question ever stood, the same gate records clear" \
+  '"clear"' \
+  "$(jq -c '.gates[] | select(.gate == "open-question") | .verdict' <<<"$(event_of landing-audit-record)")"
 assert_eq "  ... returning 0" "0" "$rc"
 
 # Acceptance criterion 8 (agent-ops#668): replaying agent-ops#652's own shape

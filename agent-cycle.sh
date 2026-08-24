@@ -4472,6 +4472,17 @@ run_landing_stage() {
 #      reading the log has no reason to suspect they set correctly.
 #   2. `landing_eligible` (lib/landing.sh) — complexity, source and the
 #      protected-paths classifier.
+#   2.5. `landing_open_question_hit` (lib/landing.sh, requirement 8f, D18,
+#      agent-ops#668) — the `open-question` label the Reviewer's own
+#      `open_questions` verdict projects must not be standing. A hit does not
+#      merely refuse: `_landing_open_question_resolve` runs the
+#      `escalation_autonomy` ladder for it (an escalation issue, or one
+#      bounded adjudication pass first), and only a `settled` verdict lets
+#      this round fall through to gate 3. Unlike every other unreadable
+#      here, an unreadable label list refuses in the plain "could not read"
+#      wording rather than routing into that ladder — see that function's
+#      own header for why a question never confirmed to exist must not
+#      summon anybody.
 #   3. `review_gate_verdict` — must read `clean`; `dirty` and `unknown`
 #      both refuse (stricter than the ordinary ready-gate handoff, which
 #      tolerates an alerts-only `unknown` as a warning — arming an
@@ -4627,7 +4638,12 @@ _landing_stage_attempt() {
   # read failure — it refuses with the ordinary "could not read" wording and
   # tries again next cycle, rather than routing into the escalation/
   # adjudication machinery over a question it never confirmed exists.
-  local oq_hit_rc=0
+  # `oq_word` is this gate's own verdict for the landing audit record
+  # (requirement 8x, which carries *every* gate this function passed): `clear`
+  # when no question stood, `settled` when one did and the adjudication pass
+  # answered it on this very round. No other value can reach the record — every
+  # other outcome returns above without arming anything.
+  local oq_hit_rc=0 oq_word="clear"
   landing_open_question_hit "$slug" "$number" || oq_hit_rc=$?
   case "$oq_hit_rc" in
     1) ;; # clear — no open question stands.
@@ -4639,6 +4655,7 @@ _landing_stage_attempt() {
       if ! _landing_open_question_resolve "$slug" "$pr_url" "$number" "$retry"; then
         return 0
       fi
+      oq_word="settled"
       ;;
   esac
 
@@ -4886,11 +4903,12 @@ _landing_stage_attempt() {
   gates_json="$(jq -nc \
     --arg level "$level" --arg elig "$elig" --arg gate_word "$gate_word" \
     --arg standing "$standing" --arg pp_ctl "${pp_ctl:-n/a}" \
-    --arg rc_word "${rc_word:-}" \
+    --arg rc_word "${rc_word:-}" --arg oq "${oq_word:-clear}" \
     --arg budget_decision "$budget_decision" --arg queued "$queued" \
     '[
       {gate: "autonomy-level", verdict: $level},
       {gate: "eligibility", verdict: $elig},
+      {gate: "open-question", verdict: $oq},
       {gate: "review-gate", verdict: $gate_word},
       {gate: "approver-standing-review", verdict: $standing},
       {gate: "human-veto", verdict: "clear"},
@@ -5152,11 +5170,15 @@ $(jq -r '"- verdict: " + (.verdict // "escalate") + "\n- evidence: " + (.evidenc
     printf '%s' "$adj_section"
     cat <<OQ_ESC_BODY
 
-## When you're done: close this issue
+## When you're done: answer, then take the label off
 
-Answer the question on $pr_url (a comment is enough) and close this issue.
-The pipeline takes no further automatic landing action on this pull request
-until you do, or until you remove the label yourself.
+Answer the question on $pr_url — a comment is enough. Then
+remove the \`$LANDING_OPEN_QUESTION_LABEL\` label from that pull request, and close this issue.
+
+**Removing the label is what releases the pipeline.** Until it comes off — or
+until an adjudication pass settles the question itself — no automatic landing
+action is taken on this pull request.
+Closing this issue alone does not clear it.
 
 ---
 Item: \`$item_ref\` · pull request $pr_url

@@ -5543,7 +5543,12 @@ implements.
     `landing_autonomy_refusal_reason`'s `kill-switch:` and `landing_
     eligible`'s `ineligible:` already establish, so the *Autonomous
     landings* panel's existing `byReason` grouping (`docs/DASHBOARD-
-    SPEC.md`) surfaces it with no dashboard code change) — but a hit does
+    SPEC.md`) surfaces it with no dashboard code change); a pass rides in
+    the landing audit record (requirement 8x) as its own `open-question`
+    gate, reading `clear` where no question stood and `settled` where one
+    did and the adjudication pass below answered it on that same round — so
+    a landing armed over a question is never indistinguishable, in the
+    record, from one that never had a question at all. But a hit does
     not merely refuse: it resolves through the same `escalation_autonomy`
     ladder requirement 36b already reads (`escalation_autonomy_configured_
     level`, `lib/escalation-autonomy.sh`), level-aware rather than summoning
@@ -5554,8 +5559,13 @@ implements.
       escalation issue per pull request — footer-keyed to a synthetic
       `pr-<n>-open-question` item reference, the same shape
       `pr-<n>-approver-adjudication` (requirement 8c) already uses — naming
-      the question and asking the human to answer it and close the issue.
-      The gate keeps refusing until that issue closes.
+      the question, and asking the human to answer it, take the
+      `open-question` label off the pull request, and close the issue. The
+      label is what the gate reads, so the label is what the issue body asks
+      for first and names as the releasing act: the gate keeps refusing
+      until it comes off, whatever the issue's own state. A closed issue
+      means only that a human has acted — it restores the
+      `adjudicate-first` pass below, and never releases the gate by itself.
     - At `adjudicate-first`, one bounded adjudication pass runs first
       (`run_open_question_adjudication`, `prompts/approver-adjudicate-open-
       question.md`) at the Approver's own critical tier
@@ -16918,9 +16928,11 @@ pull request, run the ones the change touches and any it could regress.
    label_project`'s own `added`/`present`/`unrecorded`/`failed` vocabulary
    and exit status exactly, never removing a label it finds already present;
    `landing_open_question_label_release` removes only the fixed
-   `open-question` label; `landing_open_question_latest` reads the most
-   recently logged `open-question-raised` event's own `questions` array for
-   a pull request off a synthetic log, `[]` when none is on it.
+   `open-question` label; `landing_open_question_latest` reads every
+   question a pull request's own `open-question-raised` events carry off a
+   synthetic log — deduplicated by question text across rounds, never only
+   the most recent round's, so a second round's further question never
+   drops the first — and `[]` when none is on it.
 
    `test/landing-wiring.test.sh` lifts the modified `_landing_stage_attempt`
    verbatim and proves the new gate sits between eligibility and the review
@@ -16935,7 +16947,11 @@ pull request, run the ones the change touches and any it could regress.
    `adjudicate-first` with `run_open_question_adjudication` stubbed to
    return `settled` releases the label, posts the PR comment, logs
    `open-question-adjudication` with `verdict: "settled"`, and **arms** —
-   the gate clearing on its own round, no second read required; the same
+   the gate clearing on its own round, no second read required, with the
+   landing audit record's own `open-question` gate reading `settled` there
+   and `clear` on the round where no question ever stood
+   (`test/landing-audit-record.test.sh` pins the latter alongside every
+   other gate); the same
    stub returning `escalate` refuses and escalates exactly as
    `always-escalate` does; a pull request already carrying an
    `open-question-adjudication` event on the log runs no further
