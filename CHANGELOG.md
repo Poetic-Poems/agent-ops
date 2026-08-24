@@ -573,6 +573,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A context-tight Co-Ordinator cycle no longer mass-flags its whole backlog
+  `needs-refinement` (agent-ops#683). On 2026-08-21 the fit ladder
+  (requirement 4i) reached its bottom rung, every candidate's body was cut
+  to a title-level fragment, and the Co-Ordinator — correctly following its
+  own prompt's "if you cannot tell what done would mean, report
+  needs_refinement" — reported exactly that for its entire visible backlog;
+  requirement 3x's completeness bar then obliged the Script to record every
+  one as a block, so nine items, most of them refined within the preceding
+  day, were flagged in 68 seconds. Neither rule was wrong on its own, and
+  the outcome recurred on every context-tight cycle that selected nothing.
+  `record_needs_refinement_block` now refuses a Co-Ordinator report naming
+  an item this cycle's fit actually trimmed — Script-side and deterministic,
+  logged as a `warning` naming the item and the rung, writing no label,
+  block or assignment, and scoped to the Co-Ordinator alone, since the
+  Refiner and Implementer read the repository live. `unaccounted_items`
+  carries the matching exemption, so declining to write the block does not
+  itself read as an unaccounted verdict and simply relocate the mass-flag
+  into a retry loop over the same trimmed input; the count of candidates
+  that went unassessed is logged as `coordinator-input-fit-unassessable`
+  instead. An entry counts as trimmed on any of the three marks `fit_entry`
+  leaves — a clipped body, a clipped comment body, or a cut comment list —
+  so the ordinary shape here, a short issue whose acceptance criteria live
+  in a Refiner's comment, is covered by a middle rung as well as by the
+  bottom one. The ladder itself is unchanged: `0:0:1000` stays a trim rather
+  than becoming a drop, reasoned in requirement 4i, because the refusal
+  removes the harm that made dropping tempting while a trimmed entry still
+  buys the Co-Ordinator something to rank and, if worth it, live-read.
 - A human's plain comment now vetoes an autonomous landing however late it
   arrives, not only if it arrives before the pull request goes Ready
   (agent-ops#672, part of #402). The landing gate's human-veto check

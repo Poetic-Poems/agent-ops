@@ -3809,6 +3809,32 @@ implements.
    thing that varies by band is which items are eligible, and that is the
    eligible set's job.
 
+   **So is an eligible entry the fit ladder actually trimmed this cycle**
+   (requirement 4i's own exemption, agent-ops#683), on the same "per source"
+   shape but keyed on the individual entry rather than the whole band:
+   requirement 34e's fourth refusal already discards any `needs_refinement`
+   report against one, so demanding an account of it here would demand a
+   report the Script's own other rule throws away — the identical
+   self-defeating loop the `"required"` exemption above exists to avoid, for a
+   different reason. `coordinator_fit_trimmed_items` (`lib/coordinator-input.sh`)
+   is the exemption set, matched against the eligible set on the same `{repo,
+   item, source}` key `unaccounted_items` already keys everything else on.
+   This is what stops the refusal from simply relocating the mass-flag into a
+   corroboration-rejected retry loop over the same trimmed input: without it, a
+   Co-Ordinator that (correctly) declines to guess at a trimmed candidate's
+   acceptance criteria would find its `"selected": false` rejected for leaving
+   that candidate unaccounted, retried against byte-identical input, and
+   rejected again — the fallback selection (below) then handing an Implementer
+   a candidate the Co-Ordinator was never given enough of the thread to brief.
+   The count of eligible entries the exemption actually covers is logged
+   separately, once per cycle and whatever the Co-Ordinator went on to decide,
+   as `coordinator-input-fit-unassessable` (carrying `unassessable_total` and
+   the rung) — `coordinator_unassessable_items` — so a human reading the cycle
+   log can still see how much of a cycle's backlog went unassessed even though
+   no per-item report was asked for. A cycle the fit trimmed nothing in has
+   nothing to say here and says nothing: the event is written only where the
+   count is above zero, so the ordinary cycle carries no such record.
+
    **Rejections are tagged with the band.** The `warning` and the rejected
    `corroboration` both carry a `bands` object (`{"issues": 3, "tech-debt":
    1}`), every `unaccounted` entry carries its own `source`, and the
@@ -4702,6 +4728,23 @@ implements.
    on every cycle and a standing warning for the ordinary case is how a log
    stops being read. A fit that still does not fit at one entry per band logs
    a `warning` as well, saying so *before* the API refuses the prompt.
+
+   **The bottom rung (`0:0:1000`) stays a trim, not a drop, and requirement
+   34e's fourth refusal (agent-ops#683) is the decision, reasoned.** Before
+   that refusal existed, reaching this rung meant every candidate's body was
+   pared to a title-level fragment and its comments emptied — exactly the
+   shape that compelled the mass-flagging incident 34e's fourth bullet
+   describes — which made "drop entries here instead of trimming them" a real
+   fix to weigh: an entry this small could not be judged either way, so
+   keeping it costs a candidate slot for something the Co-Ordinator could not
+   use. Requirement 34e's refusal removes that harm at its source: a trimmed
+   entry can no longer force a block, so all a bottom-rung entry still buys
+   the Co-Ordinator is its identity fields (`ref`, `title`, `priority`,
+   `labels`, `updated_at`) — enough to rank it, and enough to select and
+   live-read it should its title alone look worth the fetch. Dropping it
+   instead would remove that option for no remaining harm left to trade it
+   against, so the ladder is unchanged: eight rungs, generous first, `0:0:1000`
+   last, no floor added below it.
 
    **Every degradation here is toward the unbounded input, never toward an
    empty one.** A budget of `0`, a non-numeric budget, a stdin document that
@@ -8544,7 +8587,7 @@ implements.
     version appearing for a skipped security finding — several cycles to settle
     the item before the expensive stage is bought.
 
-    Three entries are refused, all on the Script's side of the boundary:
+    Four entries are refused, all on the Script's side of the boundary:
     - **A malformed entry** — missing `repo`, `item`, `reason`, `missing` or
       `evidence`, judged on requirement 34d's emptiness discipline — is logged
       as a `warning` and dropped. The fields are what the Enabler starts from,
@@ -8572,6 +8615,45 @@ implements.
       `source: "issues"` entry declining the item as a question or
       discussion, or for any other under-specification, names none and is
       recorded on the ordinary bar above.
+    - **A Co-Ordinator report naming an item this same cycle's fit ladder
+      (requirement 4i) actually trimmed** (`coordinator_fit_trim_refusal_reason`,
+      `lib/coordinator-input.sh`; agent-ops#683) is logged as a `warning`
+      naming the item and the rung, and dropped. On 2026-08-21 the ladder's
+      bottom rung (`0:0:1000`) cut every candidate's body to a title-level
+      fragment and its comments to none; the Co-Ordinator, correctly following
+      its own prompt's "if you cannot tell what done would mean, report
+      needs_refinement", reported exactly that for its whole visible backlog,
+      and requirement 3x's own completeness bar then compelled the Script to
+      record every one as a block — nine items, most of them already refined
+      within the preceding day, flagged `needs-refinement` in 68 seconds (and,
+      before agent-ops#651 ended that separate path, re-assigned too). Neither
+      rule was individually wrong; the two are jointly compelled to this
+      outcome whenever the ladder trims this far, and it recurs on every
+      context-tight cycle that selects nothing, scaling with backlog size —
+      the fix is a refusal here, on the Script's side, matched by requirement
+      3x's own completeness exception below. `coordinator_fit_trimmed_items`
+      (`lib/coordinator-input.sh`) is the exemption set — every issues/
+      tech-debt candidate whose body or comments the fit's own `fit_entry`
+      actually clipped this cycle, detected off the elision marker in a
+      clipped body, the same marker in a clipped *comment* body, or the
+      `comments_elided` key a cut comment list leaves behind, and never
+      re-derived from the entry's current byte length. All three markers,
+      because all three take text away from the same reader: an issue whose
+      body is two lines and whose acceptance criteria live in a Refiner's
+      comment is trimmed past what "done" would mean by a middle rung that
+      clips that one comment and leaves everything else as it found it. The
+      refusal is unconditional on the entry's own `reason`/`missing`/`evidence`, and on whether the reporting stage
+      fetched the item live before writing them: the Script cannot tell a
+      report grounded in a live read from one grounded in the elided extract
+      it was handed, and the harm of the occasional false refusal is far
+      smaller than the harm of asking the question at all on a cycle whose
+      whole backlog was trimmed this far. Scoped to `stage == "coordinator"`:
+      the Refiner and Implementer read the repository live rather than off
+      this cycle's Co-Ordinator input, so a fit-ladder mark on that input says
+      nothing about what either of them actually had in front of them. An item
+      refused here is neither blocked nor accounted for — it stays exactly as
+      eligible as it was, for a future, untrimmed cycle to judge on its own
+      terms.
 
     **The label is a projection, never the record.** Where (and only where) the
     item is a GitHub issue — the `issues` source, whose ref is a bare number —
@@ -11994,6 +12076,18 @@ What exists, and the requirements each part answers to:
    the `agent-cycle.sh` block lifted verbatim: the allowance arithmetic,
    measured by reassembling the real prompt around the block's output, and
    the three events the union log depends on. Both must pass `shellcheck`.
+   `coordinator_fit_trimmed_items`, given the *fitted* repos array, prints
+   `{repo, item, source}` for every issues/tech-debt entry `fit_entry`
+   actually clipped — detected off the elision marker in a body or a comment
+   body, or `comments_elided`, never re-measured — and
+   `coordinator_fit_trim_refusal_reason`, given an entry and that set, is
+   requirement 34e's fourth refusal (agent-ops#683).
+   Both are unit-tested directly in `test/coordinator-input.test.sh`
+   (bottom-rung marking, a middle rung marking only the entries it actually
+   touched, an untrimmed cycle marking nothing, and the refusal function's own
+   match/no-match/malformed-input cases) and exercised through the real
+   `record_needs_refinement_block`/`unaccounted_items` in
+   `test/fit-trim-block-refusal.test.sh`.
 5. `README.md`: what the system does, every config key, install steps
    (below), how to operate it (`--dry-run`, `--once`, reading the log and
    stage transcripts), and how to uninstall. It presents the container as the
@@ -14148,7 +14242,48 @@ pull request, run the ones the change touches and any it could regress.
    unaccounted; and a verdict answering each band by its own route (a
    `needs_refinement` for the issue, a `voided` for the review-feedback entry)
    is accepted on the first attempt, buys no retry, and keeps its
-   fingerprint.
+   fingerprint. `test/verdict-corroboration.test.sh` also passes
+   `unaccounted_items`' fit-ladder exemption (requirement 4i, agent-ops#683): a
+   4th `trimmed-json` argument naming one eligible item exempts only that
+   item, on the same repo+item+source key as `voided`/`needs_refinement`,
+   leaving any other still-unaccounted item flagged; an omitted 4th argument
+   exempts nothing, matching the function's behaviour before this change; and
+   malformed trimmed JSON degrades to exempting nothing rather than
+   everything.
+2j-iii. **A `needs_refinement` block against an entry the fit ladder trimmed
+   this cycle is refused, never recorded, and the completeness check owes no
+   account of it either (requirement 34e's fourth refusal, requirement 3x's
+   matching exemption; agent-ops#683).** `test/coordinator-input.test.sh`
+   passes `coordinator_fit_trimmed_items`/`coordinator_fit_trim_refusal_reason`
+   in isolation: a cycle driven to the ladder's bottom rung with every entry
+   still present marks every one of them trimmed; an untrimmed cycle marks
+   nothing; a cycle trimmed only enough to clip one of two entries marks only
+   that one; an entry whose comment prose alone was clipped — its body inside
+   the rung's cap and its comment list kept whole — is marked trimmed on the
+   marker inside that comment; and the refusal function refuses only an entry
+   whose repo+item the trimmed set carries, names the rung in its reason, and
+   degrades to
+   refusing nothing on an empty or malformed trimmed set.
+   `test/fit-trim-block-refusal.test.sh` then drives the real
+   `record_needs_refinement_block` (lifted verbatim, the same technique
+   `test/dependency-block-refusal.test.sh` uses) and passes: an
+   agent-ops#683-shaped report — the Co-Ordinator citing a trimmed body's own
+   lack of acceptance criteria — is refused with a `warning` naming the item
+   and the rung, applies no label, and writes no `attempt-failed` at all; a
+   genuine report against an item this cycle's fit never touched is recorded
+   exactly as requirement 34e already describes; the refusal is scoped to
+   `stage == "coordinator"` — the identical entry reported by a Refiner or an
+   Implementer is not refused on this bar, since neither reads this cycle's
+   fit-ladder-trimmed Co-Ordinator input; and the malformed-entry bar
+   (requirement 34d) still runs ahead of this one. The same file then proves
+   the two halves compose: with both of a fully-trimmed cycle's eligible items
+   left unreported (as the refusal above forces), `unaccounted_items` finds
+   nothing unaccounted — a `"selected": false` verdict over that cycle is
+   accepted — while `coordinator_unassessable_items` still surfaces both as
+   unassessable for the log, closing the loop the incident opened: the
+   refusal alone would have just relocated the mass-flag into a
+   corroboration-rejected retry loop over the same trimmed input, and this is
+   the assertion that it does not.
 2f. **A preview nobody can reach is never reported as a healthy one
    (requirement 24a).** `test/preview-deploy.test.sh` passes: against a stubbed
    `gh` and a stubbed Vercel that answers the login flow to any request not
