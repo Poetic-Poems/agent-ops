@@ -2209,8 +2209,10 @@ implements.
    `.dashboard-github.json`, `.dashboard-claims.json`,
    `.image-drift-cache.json`), `state-sync.log`, the unattended doctor
    pass's own local artefacts (`doctor.log`, `.doctor-status.json` —
-   requirement 2.6a), the revert-rate publishing tick's own local text
-   output and cumulative-since-baseline cache (`revert-rate.log`,
+   requirement 2.6a), the per-stage health snapshot's own raw file
+   (`.stage-health.json` — requirement 2.8, its content excepted, below), the
+   revert-rate publishing tick's own local text output and
+   cumulative-since-baseline cache (`revert-rate.log`,
    `revert-rate-cumulative-state.json` — requirement 2.6b, the structured
    `revert-rate.jsonl` excepted, below), the stage event streams
    (`*.stream.jsonl`, requirement 4d), and the fleet-log snapshot
@@ -2223,7 +2225,12 @@ implements.
    peer ran; `doctor.log`/`revert-rate.log` are each a local pass's own text
    output, superseded for a reader by the structured sibling that pass also
    writes (`.doctor-status.json` locally, `revert-rate.jsonl` fleet-wide —
-   the asymmetry is exactly why one is excluded and the other is not). The
+   the asymmetry is exactly why one is excluded and the other is not); a
+   copied `.stage-health.json` would answer for a computation nobody on the
+   peer ran, on the identical reasoning as `.image-drift-cache.json` — but
+   unlike that cache, its *content* is meant to reach peers regardless, which
+   is why it travels a different way, folded into the heartbeat below rather
+   than replicated verbatim. The
    streams are excluded on size as much as on relevance: what
    a peer reads of a stage is its result envelope, which replicates as
    `<stage>.out` exactly as before, while the stream beside it is every
@@ -2248,7 +2255,7 @@ implements.
    crontab and again from the cleanup that ends a cycle. No two nodes share
    a branch, so pushes cannot contend and nothing arbitrates them. Each push
    stamps `heartbeat.json` (`{node, role, ts, last_cycle, version, compose,
-   image, switch}`)
+   image, switch, stage_health}`)
    into the branch root — on a standby, which has no cycles to publish, the
    heartbeat is the entire point, and it is what lets the fleet dashboard
    tell a quiet node from a dead one. `version` is `lib/version.sh`'s answer
@@ -2280,6 +2287,13 @@ implements.
    the verdict it reached, not just the file it reached it from. The
    fleet-wide switch needs no such carriage: it is a flag file every node
    already fetches for itself (requirement 2.3a).
+   `stage_health` (requirement 2.8, `lib/stage-health.sh`) is this node's own
+   `.stage-health.json`, read verbatim rather than recomputed — that file is
+   already this cycle's finished verdict, written by the same cycle's own
+   `cleanup()` before this push runs, so reading it keeps this one write the
+   single source both the heartbeat and this node's own dashboard read,
+   rather than two computations that could disagree. `null` on a node that
+   has not completed a cycle since this check shipped.
    Each branch is a single rolling commit — `commit
    --amend` plus a force-push — because the state files carry their own
    history (`log.jsonl` is append-only, every cycle keeps its own directory)
@@ -2655,6 +2669,79 @@ implements.
    retries next cycle, same as 1b and 2.0b. Skipped entirely on `--dry-run`
    and when `crash_loop_repo` or `enabler_assignee` is unset, the same as
    both of those checks.
+2.8. **Per-stage health.** During the 2026-08-21 incident (01:38-12:09Z)
+   every stage in every node's cycles failed for 10.5 hours, and every signal
+   an operator had said otherwise: `agent-cycle.sh --status` reported
+   `cycle: RUNNING — held by pid …` (the process was alive), no
+   `check-node-*.sh` complained (nothing there reads a stage's own outcome),
+   and the dashboard stayed green. All three were technically true — the
+   needed detection already existed, as `stage-end`'s own `exit_code` — but
+   nothing read it (issue #662). This is narrower and cheaper than
+   requirement 2.7's crash-loop escalation above, which it complements rather
+   than replaces: 2.7 is fleet-wide, matches on one identical failure detail,
+   and files a GitHub issue, built for one specific deterministic class of
+   Co-Ordinator failure. This is node-local, purely informational — nothing
+   here ever opens an issue, blocks a cycle, or escalates anything — and
+   answers a narrower question for every stage the Script runs, not only the
+   Co-Ordinator: is this stage's most recent run of attempts on this node
+   succeeding?
+
+   `lib/stage-health.sh`'s `stage_health_verdicts` is a pure reader of one
+   node's own event stream on stdin — deliberately never the fleet union
+   `crash_loop_verdict` reads: a stage that is healthy on every other node
+   says nothing about whether it is healthy on this one. For each of
+   `coordinator`, `approver`, `enabler-adjudicate`, `enabler`, `refiner`,
+   `implementer` and `reviewer` it derives, from that stage's own `stage-end`
+   and `attempt-failed` events: `last_success` (the most recent `stage-end`
+   with exit_code 0, or null), `consecutive_failures` (a running streak reset
+   to 0 by a success — the same reduction `crash_loop_verdict` already uses,
+   but per-stage, per-node, and without requiring an identical failure detail,
+   since "always wrong in some new way" is exactly as unhealthy as "always
+   wrong the same way"), `last_detail` (the most recent `attempt-failed`
+   detail, cleared to null the moment a success resets the streak), and a
+   `verdict` — `idle` (no `stage-end` record at all, i.e. never invoked, or a
+   last success older than `IDLE_AFTER_HOURS` with nothing failed since —
+   a stage with no recent work is not unhealthy), `failing`
+   (`consecutive_failures` has reached `THRESHOLD`), or `ok` (anything else,
+   including one or two failures below `THRESHOLD` — "one failure does not
+   trigger a verdict" is the issue's own acceptance bar). `THRESHOLD` (3) and
+   `IDLE_AFTER_HOURS` (48) are ordinary function parameters shared by every
+   stage, not config keys: every stage here shares the same one-whole-attempt-
+   per-cycle invocation shape once it does run, so one pair of numbers covers
+   all of them, and three consecutive whole-cycle failures already reaches
+   the same order of confidence `crash_loop_after`'s own default (4) requires
+   before requirement 2.7 escalates — well before that heavier, issue-filing
+   mechanism would ever fire.
+
+   `agent-cycle.sh`'s `cleanup()` (requirement 35's own call site) calls
+   `stage_health_write_status` at the end of every real cycle, after
+   `cycle-end` is logged and before the state-sync push: it recomputes the
+   verdict from this node's own `$log_file` — which by then already carries
+   every `stage-end`/`attempt-failed` event this cycle logged — and writes it
+   atomically (`mktemp` then `mv -f`) to `state_dir/.stage-health.json` as
+   `{computed_at, threshold, idle_after_hours, stages}`, on
+   `write_unattended_status`'s own precedent (requirement 2.6a). `--status`
+   reads this file (never recomputes it) and prints it as a new `stages:`
+   section, one line per stage — `coordinator failing (11 consecutive, last
+   success 8h ago)`, `reviewer idle (never run)` — or a plain "no data yet"
+   line on a node that has not completed a cycle since upgrading.
+   `check-nodes.sh` (external to this repository; not committed here) prints
+   `--status` per node and so inherits the new section for free, with
+   nothing in this repository to change.
+
+   Unlike `.doctor-status.json`, this verdict is not local to the node that
+   computed it: `scripts/state-sync.sh`'s heartbeat write folds it in as
+   `stage_health`, the same way `compose`/`image`/`switch` already travel —
+   this node's own answer about itself, published like any other fact only
+   this node can state — and `.stage-health.json` itself is excluded from
+   general replication (`scripts/state-sync.sh`'s `EXCLUDES`) so its content
+   travels exactly once, through the heartbeat, rather than twice.
+   `scripts/publish-dashboard.sh` reads its own `.stage-health.json` (rather
+   than recomputing it, on `.doctor-status.json`'s identical precedent) and
+   surfaces it as `status.stage_health`; a peer's verdict comes from its
+   heartbeat's `stage_health` field or reads null, never a verdict this node
+   derives on that peer's behalf. `docs/DASHBOARD-SPEC.md` documents the
+   page's own Stage health section and fleet-strip badge.
 3. **Repo ordering.** For each configured repo, fetch the timestamp of the
    most recent commit on its default branch via `gh api`. A repo entry may
    also carry `nice`, an optional integer from `-19` to `19` (absent means

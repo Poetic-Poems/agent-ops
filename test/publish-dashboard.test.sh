@@ -1380,7 +1380,7 @@ vh="$(new_home nodeV)"
 vpeer="$vh/.cache/poetic-agents/workspaces/.agent-ops-peers/peerV"
 vold="$vh/.cache/poetic-agents/workspaces/.agent-ops-peers/peerOld"
 mkdir -p "$vpeer" "$vold"
-printf '{"node":"peerV","role":"active","ts":"%s","last_cycle":"","version":{"pr":88,"commit":"aa53d62f1b0c4e9a7d2839fbc5104e6a8d7b3f21","short":"aa53d62","built_at":"2026-07-26T11:21:00Z","repo":"Poetic-Poems/agent-ops","source":"image","dirty":false},"compose":{"status":"drifted","diff_lines":3},"image":{"status":"behind","registry_commit":"bb64d73a2c1d","registry_created_at":"2026-07-26T12:00:00Z","checked_at":"2026-07-26T12:05:00Z"}}\n' \
+printf '{"node":"peerV","role":"active","ts":"%s","last_cycle":"","version":{"pr":88,"commit":"aa53d62f1b0c4e9a7d2839fbc5104e6a8d7b3f21","short":"aa53d62","built_at":"2026-07-26T11:21:00Z","repo":"Poetic-Poems/agent-ops","source":"image","dirty":false},"compose":{"status":"drifted","diff_lines":3},"image":{"status":"behind","registry_commit":"bb64d73a2c1d","registry_created_at":"2026-07-26T12:00:00Z","checked_at":"2026-07-26T12:05:00Z"},"stage_health":{"computed_at":"2026-07-26T12:00:00Z","threshold":3,"idle_after_hours":48,"stages":{"coordinator":{"verdict":"failing","consecutive_failures":4,"last_success":null,"last_detail":"coordinator exited 1"}}}}\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$vpeer/heartbeat.json"
 printf '{"node":"peerOld","role":"standby","ts":"%s","last_cycle":""}\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$vold/heartbeat.json"
@@ -1420,6 +1420,21 @@ assert_eq "a peer that publishes none reads null, never a locally computed one" 
   "$(jq -r '.fleet.nodes[] | select(.node=="peerOld") | .image' <<<"$vdata")"
 assert_eq "and this node answers for its own image too" "1" \
   "$(jq '[.fleet.nodes[] | select(.self) | has("image")] | length' <<<"$vdata")"
+
+# The per-stage health verdict (lib/stage-health.sh, agent-ops#662) rides the
+# same rules once more: only the node that computed it — over its own
+# log.jsonl, at its own cycle's cleanup — can answer for it, so a peer's
+# verdict comes from its heartbeat or not at all, and this node answers for
+# itself from its own .stage-health.json (null here: this suite runs a
+# publish with no cycle having completed, so no such file exists yet).
+assert_eq "a peer's stage-health verdict comes from its heartbeat" "failing" \
+  "$(jq -r '.fleet.nodes[] | select(.node=="peerV") | .stage_health.stages.coordinator.verdict' <<<"$vdata")"
+assert_eq "with its consecutive-failure count intact" "4" \
+  "$(jq -r '.fleet.nodes[] | select(.node=="peerV") | .stage_health.stages.coordinator.consecutive_failures' <<<"$vdata")"
+assert_eq "a peer that publishes none reads null, never a locally computed one" "null" \
+  "$(jq -r '.fleet.nodes[] | select(.node=="peerOld") | .stage_health' <<<"$vdata")"
+assert_eq "and this node answers for its own stage-health too" "1" \
+  "$(jq '[.fleet.nodes[] | select(.self) | has("stage_health")] | length' <<<"$vdata")"
 
 # --- The pull-request index ------------------------------------------------------
 # Every `#number` on the page resolves to a record here. Two properties are what
@@ -2315,6 +2330,29 @@ assert_eq "token_expiry reaches the page verbatim too" "3" \
   "$(jq -r '.status.doctor.token_expiry.days_remaining' <<<"$ddata")"
 assert_eq "  ... including its expiry timestamp" "2026-08-22T09:35:00Z" \
   "$(jq -r '.status.doctor.token_expiry.expires_at' <<<"$ddata")"
+
+# --- The per-stage health verdict (agent-ops#662) ---------------------------
+# lib/stage-health.sh's stage_health_write_status writes
+# state_dir/.stage-health.json at the end of every cycle; this Publisher
+# reads it rather than recomputing it, on the identical precedent just
+# exercised above for status.doctor, and surfaces it as status.stage_health.
+sh_home="$(new_home nodeStageHealth)"
+run_publish "$sh_home" NODE_NAME=nodeStageHealth
+shdata="$(data_of "$sh_home")"
+assert_eq "with no stage-health file yet, status.stage_health is null" "null" \
+  "$(jq -c '.status.stage_health' <<<"$shdata")"
+
+cat > "$sh_home/.local/state/poetic-agents/.stage-health.json" <<'JSON'
+{"computed_at":"2026-08-21T09:00:00Z","threshold":3,"idle_after_hours":48,"stages":{"coordinator":{"verdict":"failing","consecutive_failures":11,"last_success":"2026-08-21T01:00:00Z","last_detail":"coordinator was refused by the API before it could run"}}}
+JSON
+run_publish "$sh_home" NODE_NAME=nodeStageHealth
+shdata="$(data_of "$sh_home")"
+assert_eq "a written status file is read verbatim into status.stage_health" "failing" \
+  "$(jq -r '.status.stage_health.stages.coordinator.verdict' <<<"$shdata")"
+assert_eq "its consecutive-failure count reaches the page" "11" \
+  "$(jq -r '.status.stage_health.stages.coordinator.consecutive_failures' <<<"$shdata")"
+assert_eq "and its last_detail" "coordinator was refused by the API before it could run" \
+  "$(jq -r '.status.stage_health.stages.coordinator.last_detail' <<<"$shdata")"
 
 # --- The merge-budget row (D18 issue #574, PR #671 review) ------------------
 # landings.budget is sourced from the event log's own landing-armed/

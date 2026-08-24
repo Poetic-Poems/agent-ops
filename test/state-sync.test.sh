@@ -124,6 +124,12 @@ printf '{"ok":false}\n' > "$state/.image-drift-cache.json"
 # this node, like the caches above, so neither should replicate.
 printf 'doctor noise\n' > "$state/doctor.log"
 printf '{"verdict":"ok"}\n' > "$state/.doctor-status.json"
+# The per-stage health snapshot (lib/stage-health.sh, agent-ops#662): local to
+# this node as a raw file, on the same reasoning as the doctor status cache
+# above — but unlike it, its content is meant to reach peers, folded into the
+# heartbeat below rather than replicated verbatim.
+printf '{"computed_at":"2026-07-20T00:00:00Z","threshold":3,"idle_after_hours":48,"stages":{"coordinator":{"verdict":"failing","consecutive_failures":5,"last_success":null,"last_detail":"boom"}}}\n' \
+  > "$state/.stage-health.json"
 # The daily revert-rate publishing pass's own text output (agent-ops#579):
 # local to this node, like doctor.log above — its structured sibling,
 # revert-rate.jsonl (set up above, beside log.jsonl), is fleet-wide data and
@@ -160,6 +166,7 @@ assert_eq "the GitHub cache does not replicate" "0" "$(test -e "$pushed/.dashboa
 assert_eq "the image-drift cache does not replicate" "0" "$(test -e "$pushed/.image-drift-cache.json" && echo 1 || echo 0)"
 assert_eq "the doctor log does not replicate" "0" "$(test -e "$pushed/doctor.log" && echo 1 || echo 0)"
 assert_eq "the doctor status cache does not replicate" "0" "$(test -e "$pushed/.doctor-status.json" && echo 1 || echo 0)"
+assert_eq "the stage-health cache does not replicate as a raw file" "0" "$(test -e "$pushed/.stage-health.json" && echo 1 || echo 0)"
 assert_eq "the revert-rate publish log does not replicate" "0" "$(test -e "$pushed/revert-rate.log" && echo 1 || echo 0)"
 assert_eq "the revert-rate cumulative-state cache does not replicate" "0" \
   "$(test -e "$pushed/revert-rate-cumulative-state.json" && echo 1 || echo 0)"
@@ -210,6 +217,16 @@ assert_eq "carrying the reason from disabled.json" "testing" \
 # value, is the wiring this asserts.
 assert_eq "the heartbeat carries an image-drift slot" "true" "$(jq 'has("image")' <<<"$hb")"
 
+# --- The heartbeat carries the per-stage health verdict (agent-ops#662) -------
+# Unlike image/compose above, this is a verbatim read of `.stage-health.json`
+# — lib/stage-health.sh's own suite covers what the verdict says, so what
+# belongs here is only that the fixture written above (the file excluded from
+# raw replication two assertions up) reaches the heartbeat unchanged.
+assert_eq "the heartbeat carries the stage-health verdict computed this cycle" "failing" \
+  "$(jq -r '.stage_health.stages.coordinator.verdict' <<<"$hb")"
+assert_eq "with its consecutive-failure count intact" "5" \
+  "$(jq -r '.stage_health.stages.coordinator.consecutive_failures' <<<"$hb")"
+
 # --- The heartbeat carries the compose-drift verdict (#131) -------------------
 # End to end: a node whose compose.yaml has drifted publishes that fact with
 # its next push. The check's paths are forced to fixtures, because this suite
@@ -246,6 +263,10 @@ assert_eq "a standby publishes its own branch" "1" \
   "$(git -C "$remote" rev-parse --verify --quiet refs/heads/nodes/standby-node >/dev/null && echo 1 || echo 0)"
 assert_eq "…and never touches a peer's" "1" \
   "$(git -C "$remote" rev-list --count nodes/active-node)"
+sb_pushed="$tmp_dir/pushed-standby"
+git clone --quiet --branch nodes/standby-node "$remote" "$sb_pushed"
+assert_eq "a node with no .stage-health.json yet publishes a null stage_health, not a guess" "null" \
+  "$(jq -c '.stage_health' "$sb_pushed/heartbeat.json")"
 
 # --- Mirror retention ---
 # One more cycle directory than the configured retention, so the oldest must

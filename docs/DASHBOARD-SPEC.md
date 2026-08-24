@@ -569,7 +569,7 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
              last_cycle:{id,node,ended_at,outcome,repo,item,title},  // the FLEET's newest FINISHED
              limit:{active,note}, switch:{…},
              doctor:{timestamp,verdict,fails[],warns[],skips,
-                     token_expiry:{expires_at,days_remaining} | null} | null },
+                     token_expiry:{expires_at,days_remaining} | null} | null,
                                     //   THIS node's most recent hourly
                                     //   `doctor.sh --unattended` pass
                                     //   (agent-ops#543), read from
@@ -583,6 +583,15 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                     //   when that header was absent (a
                                     //   classic PAT, or any credential
                                     //   GitHub states no expiry for)
+             stage_health:{computed_at,threshold,idle_after_hours,
+                           stages:{<stage>:{verdict,consecutive_failures,
+                                             last_success,last_detail}}} | null },
+                                    //   THIS node's most recent per-stage
+                                    //   verdict (agent-ops#662), read from
+                                    //   state_dir/.stage-health.json —
+                                    //   null until this node's first cycle
+                                    //   since this check shipped has
+                                    //   completed
   counts:  { cycles_shown, failures_shown, prs_reached_ready,   // fleet-wide
              spend_today_usd, spend_total_usd,
              by_day[], by_model[], by_actor[],   // both pipelines' actors;
@@ -755,6 +764,17 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                             //   the node that issued it (2.3);
                                             //   never the fleet flag itself;
                                             //   null if unreported
+                         stage_health: { computed_at, threshold,
+                                          idle_after_hours,           // the
+                                            //   node's own per-stage verdict
+                                            //   (#662), from its heartbeat's
+                                            //   own `stage_health` field for
+                                            //   a peer, or this node's own
+                                            //   .stage-health.json for self;
+                                            //   null if unreported
+                                          stages: { "<stage>": {
+                                            verdict, consecutive_failures,
+                                            last_success, last_detail } } },
                          live: { cycle, since, running, ended_at,
                                  stage, repo, item, source, title } } ],
                                             // what THAT node is doing; null
@@ -901,7 +921,7 @@ schema, the roadmap — each opening the file at `blob/main/<path>` on GitHub
 in a new tab; no data behind it, so it renders identically on every load) +
 disabled / fleet-switch / merge-autonomy-kill-switch / usage-limit
 / fleet-limit / failing-checks / dequeued-pr / gh-down / stale-peer /
-doctor-fail / doctor-warn banners
+doctor-fail / doctor-warn / stage-health-failing banners
 (the switch first: when it is set, every other quiet signal on the page
 is a consequence of it rather than news, and an operator reading them in the
 other order goes looking for a fault that isn't there);
@@ -915,7 +935,12 @@ pull request carrying its record card, a grey `behind` marker when the fleet
 holds a newer build and an amber `modified` one on a checkout with uncommitted
 work, and how
 fresh that answer is: read live for our own row, "as of its last push" for a
-peer); stale peers bordered red and reported as state unknown; click a card to
+peer); a red **N stage(s) failing** badge (agent-ops#662) beside the
+running/idle state, independent of it — the whole point being a node whose
+process is alive and whose cycles are completing, which reads as plain
+"running" or "idle", while one or more stages have failed every attempt for
+`threshold` cycles running (see the Stage health section below for which,
+and since when); stale peers bordered red and reported as state unknown; click a card to
 filter the cycle list and the recent log to that node, click again to clear —
 the filter survives refreshes like every other UI state; **live claims** — the
 registry rows, i.e. work no other node will pick up. Both, plus the cycles
@@ -1288,6 +1313,31 @@ nothing here replicates a peer's `status.doctor` to this page — a repository's
 configuration and this node's own GitHub access are this node's alone to
 report.
 
+The **Stage health** panel (agent-ops#662) renders `status.stage_health`: the
+most recent per-stage verdict computed on *this* node, read from
+`state_dir/.stage-health.json` (written by `lib/stage-health.sh`'s
+`stage_health_write_status` at the end of every cycle) rather than
+recomputed, on `status.doctor`'s own precedent just above. One row per stage
+(`coordinator`, `approver`, `enabler-adjudicate`, `enabler`, `refiner`,
+`implementer`, `reviewer`), each carrying a verdict badge (`failing` red,
+`idle` grey, `ok` green), when it last succeeded, and — for a `failing`
+row — its consecutive-failure count and the most recent attempt's own
+failure detail; no cycle having completed since this check shipped says so,
+rather than rendering an empty table. A `failing` row also raises its own
+page-top banner naming which stage(s), the same way a `doctor` `fail` does —
+this is the reading that was missing entirely during the 2026-08-21
+incident (issue #662): `cycle: RUNNING` and a clean Doctor pass both stayed
+true while every stage failed for 10.5 hours, because neither reads a
+stage's own `exit_code`.
+
+Unlike `status.doctor`, this verdict is not local to the node that computed
+it: `scripts/state-sync.sh`'s heartbeat carries it as `stage_health`, on the
+same terms as the compose/image/switch verdicts, so the fleet strip's own
+**N stage(s) failing** badge (above) can render for a peer, not only for this
+page's own node — a peer's badge comes from its heartbeat's `stage_health`
+field or renders nothing at all, never a verdict this page derives for that
+peer.
+
 The **Co-Ordinator verdict quality** panel renders
 `counts.coordinator_verdicts` (issue #319). Implementation spec 3t
 corroborates a `selected: false` verdict against the Script's own eligible
@@ -1573,6 +1623,23 @@ number's twins elsewhere on the page.
   (`{timestamp, verdict, fails[], warns[], skips}`). This Publisher reads
   that file verbatim into `status.doctor`; `null` until the first hourly
   pass has run. Local to this node only — nothing replicates it to peers.
+- `lib/stage-health.sh` (agent-ops#662,
+  `docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement 2.8) — not read live by
+  this Publisher either, on `doctor.sh --unattended`'s own precedent just
+  above, even though (unlike doctor's GitHub section) recomputing it here
+  would cost no network call: `agent-cycle.sh`'s own `cleanup()` already
+  computes and writes `<state_dir>/.stage-health.json`
+  (`{computed_at, threshold, idle_after_hours, stages}`) at the end of every
+  cycle, so reading it keeps this Publisher and the fleet heartbeat
+  (`scripts/state-sync.sh`, below) reading the identical file rather than two
+  computations that could disagree. This Publisher reads it verbatim into
+  `status.stage_health`; `null` until this node's first cycle since this
+  check shipped has completed. Unlike `.doctor-status.json`, its *content*
+  does reach peers — folded into the heartbeat's own `stage_health` field,
+  the same way `compose`/`image`/`switch` already travel — even though the
+  raw file itself is excluded from `scripts/state-sync.sh`'s general
+  replication, since a peer's copy of the raw file would answer for a
+  computation nobody there ran.
 - `scripts/publish-revert-rate.sh` (D18 issue #579,
   `docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement 2.6b) — not read live by
   this Publisher either, on the identical reasoning as `doctor.sh
@@ -1895,6 +1962,15 @@ number's twins elsewhere on the page.
   off the absent aggregate, same as any other pre-#529 payload — with no third
   costnote, since that caption only exists once the Publisher actually ships
   the aggregate.
+  A fixture with no `status.stage_health` renders "No cycle has completed
+  on this node" in the Stage health section and raises no banner (agent-ops
+  #662); one carrying a `failing` stage raises the red banner naming it,
+  lists that row with its own consecutive-failure count and failure detail
+  alongside an `ok` and an `idle` row rendered distinctly, and badges the
+  same node's own fleet-strip card with its failing-stage count —
+  independent of that card's running/idle state, which is the property this
+  check exists for: a node whose cycles are completing normally while a
+  stage keeps failing must not read as plain "running" or "idle".
 - The back-pressure card agrees with the gate it depicts, in both directions,
   from two fixtures of its own. `backpressure-claims.json` (issue #427) holds
   a changes-requested PR, a draft, an approved PR waiting on a human, one

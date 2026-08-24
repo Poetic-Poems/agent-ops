@@ -1732,7 +1732,12 @@ the no-op ticks the `*/15` cadence mostly produces are summarised in one
 count beneath the table instead of holding rows), failures, blocked and void
 items, the work sources the Co-Ordinator sees, the hourly unattended
 `doctor.sh` pass's own warnings and failures (a **Doctor** section, with a
-page-top banner when it has something to say), how often the Script rejects
+page-top banner when it has something to say), a per-stage health verdict for
+each node (a **Stage health** section — `coordinator failing (11
+consecutive, last success 8h ago)` and the like — with a page-top banner and
+a fleet-strip badge naming which stage: the reading that stays green a plain
+`cycle: RUNNING`/idle state cannot give, when a stage's own attempts keep
+failing while the cycle process itself keeps completing), how often the Script rejects
 a Co-Ordinator verdict — by day and by the model that produced it, with what
 the fleet spent recovering, so it is visible whether the cheap Co-Ordinator
 model is paying for itself — estimated token cost by day, by

@@ -69,6 +69,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and the Enabler's refinement-disagreement one (requirement 36b). A new
   head commit never clears it; only a settled adjudication or a human's own
   act does.
+- A per-stage health verdict (agent-ops#662), for the incident a `RUNNING`
+  cycle and a clean fleet check both stayed silent about on 2026-08-21: every
+  stage failed for 10.5 hours and nothing read `stage-end`'s own `exit_code`
+  to say so. `lib/stage-health.sh` derives, per stage on each node,
+  `last_success`, a `consecutive_failures` streak (reset by any success),
+  the most recent failure's own detail, and a verdict (`idle`/`ok`/`failing`
+  once three consecutive whole-cycle failures accumulate). Written
+  atomically to `state_dir/.stage-health.json` at the end of every cycle
+  (`write_unattended_status`'s own precedent), it now surfaces as a new
+  `stages:` section in `agent-cycle.sh --status` (and so in
+  `check-nodes.sh`, which already prints `--status` per node), and — folded
+  into the fleet heartbeat alongside the compose/image/switch verdicts — as
+  a **Stage health** dashboard section plus a fleet-strip badge naming which
+  stage(s) are failing, independent of that node's own running/idle state.
 - The scheduler's egress is fenced (agent-ops#760; roadmap D24 stage two,
   review F-SEC-01, `TD-PPagop-26082407`/`TD-PPagop-26082429`): it now sits
   on an internal-only Docker network — no gateway, so the fence is topology
