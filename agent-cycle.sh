@@ -1659,6 +1659,90 @@ refinement_traceability_fault() {  # <candidate-json> <refinements-json>
   fi
 }
 
+# Requirement 17f, repair half (issue #767).
+#
+# `refinement_traceability_fault` above asks whether the *model* copied the
+# refinement across. That question was never the requirement: 17b/20 ask that
+# the work order **carry** the item's refinement, and the Script is holding
+# the text while it asks. Between 2026-08-22T23:42Z (when the check landed)
+# and 2026-08-24T10:00Z it discarded 92 candidates across 20 issues and
+# admitted none — a gate with no observed passes is not a gate, it is an
+# outage — while `coordinator_model` was `claude-haiku-4-5-20251001` and the
+# band feeding it was being trimmed to fit that model's window. Text trimmed
+# out of the input cannot be pasted back out of it, so the check was asking
+# for something the cycle had already made impossible.
+#
+# So: supply what is missing instead of discarding the work. This function
+# returns the candidate with the recorded refinement appended verbatim to
+# `context`, which makes traceability true **by construction** rather than
+# by inspection — a stronger guarantee than the check it replaces, and one
+# no model can fail.
+#
+# What it deliberately does not repair:
+#
+#   * A `comment_url` whose own embedded issue number disagrees with `item`.
+#     That is a corrupt ledger entry, not a copying failure, and appending
+#     another issue's comment to this item's order is exactly the #626 defect
+#     the gate exists to prevent. `refinement_traceability_fault` still
+#     reports it and the caller still skips — repair is offered only for the
+#     missing-text faults.
+#   * A refinement it cannot read. A failed `gh` fetch leaves the candidate
+#     untouched and the caller's own fault check decides, so this fails in
+#     the same direction the check already does.
+#
+# Prints the repaired candidate JSON, or nothing when there is nothing to
+# repair or the repair cannot be made. Never exits non-zero.
+refinement_traceability_repair() {  # <candidate-json> <refinements-json>
+  local cand="$1" refinements="${2:-{\}}" repo item entry spec comment_url \
+    url_issue comment_id body out changed=0
+  jq -e 'type == "object"' <<<"$refinements" >/dev/null 2>&1 || refinements='{}'
+  repo="$(jq -r '.repo // ""' <<<"$cand" 2>/dev/null || true)"
+  item="$(jq -r '.item // ""' <<<"$cand" 2>/dev/null || true)"
+  [[ -n "$repo" && -n "$item" ]] || return 0
+  entry="$(jq -c --arg r "$repo" --arg i "$item" \
+    '((.[$r] // {})[$i]) // {}' <<<"$refinements" 2>/dev/null || printf '{}')"
+  out="$cand"
+
+  # The spec half: appended under a heading naming where it came from, so an
+  # Implementer reading the order can tell the refinement from the item's own
+  # text — the one thing pasting it inline would lose.
+  spec="$(jq -r '.spec // ""' <<<"$entry" 2>/dev/null || true)"
+  if [[ -n "$spec" ]] \
+     && jq -e --arg spec "$spec" '((.context // "") | contains($spec)) | not' \
+          <<<"$out" >/dev/null 2>&1; then
+    out="$(jq -c --arg spec "$spec" \
+      '.context = ((.context // "") + "\n\n## Recorded refinement (supplied verbatim by the Script)\n\n" + $spec)' \
+      <<<"$out" 2>/dev/null)" || return 0
+    changed=1
+  fi
+
+  comment_url="$(jq -r '.comment_url // ""' <<<"$entry" 2>/dev/null || true)"
+  if [[ -n "$comment_url" ]]; then
+    url_issue="$(printf '%s' "$comment_url" \
+      | sed -n 's|.*/issues/\([0-9][0-9]*\)#issuecomment-.*|\1|p')"
+    # The ledger-disagreement case is never repaired — see above.
+    if [[ -z "$url_issue" || "$url_issue" == "$item" ]]; then
+      comment_id="$(printf '%s' "$comment_url" \
+        | sed -n 's|.*#issuecomment-\([0-9][0-9]*\)$|\1|p')"
+      if [[ -n "$comment_id" ]]; then
+        body="$(gh api "repos/$repo/issues/comments/$comment_id" --jq '.body // ""' 2>/dev/null || true)"
+        if [[ -n "$body" ]] \
+           && jq -e --arg body "$body" \
+                '((((.context // "") | contains($body)) or ((.acceptance // "") | contains($body))) | not)' \
+                <<<"$out" >/dev/null 2>&1; then
+          out="$(jq -c --arg body "$body" --arg url "$comment_url" \
+            '.context = ((.context // "") + "\n\n## Recorded refinement comment (supplied verbatim by the Script)\n\n" + $url + "\n\n" + $body)' \
+            <<<"$out" 2>/dev/null)" || return 0
+          changed=1
+        fi
+      fi
+    fi
+  fi
+
+  (( changed )) && printf '%s\n' "$out"
+  return 0
+}
+
 # Requirement 3u/issue #320: the same deterministic-code-not-model-judgement
 # exclusion as exclude_blocked_or_void_items above, purpose-built for the one
 # pre-fetched band that function cannot be reused for as-is. Requirement 3t
@@ -9168,6 +9252,15 @@ race_losses=0
 # loss is healthy contention, and the dashboard's `↻ raced` badge must keep
 # meaning only the second.
 claim_skips=0
+# trace_faults: candidates dropped by requirement 17f that the repair above
+# could not rescue. Counted separately from both of the above for the reason
+# issue #767 exists: without it, a cycle whose every candidate failed
+# traceability left `claim_attempts` and `claim_skips` at zero and fell
+# through the reason ladder below to `raced` — reporting healthy contention,
+# with `race_losses: 0` and not one `claim-lost` event to its name, for 15
+# hours. A stand-down that names the wrong cause is worse than one that names
+# none: it sends the reader after a claim problem that was never there.
+trace_faults=0
 for (( ci = 0; ci < n_cand; ci++ )); do
   cand="$(jq -c --argjson i "$ci" '.[$i]' <<<"$candidates_json")"
   c_repo="$(jq -r '.repo // ""' <<<"$cand")"
@@ -9192,9 +9285,29 @@ for (( ci = 0; ci < n_cand; ci++ )); do
   # to claim, disarming the one path that exists to keep the fleet moving
   # when the model will not select.
   c_trace_fault=""
+  c_repaired=""
   (( selected_by_fallback )) \
     || c_trace_fault="$(refinement_traceability_fault "$cand" "$refinements_json")"
   if [[ -n "$c_trace_fault" ]]; then
+    # Supply the refinement rather than discard the work (issue #767). The
+    # Script is holding the text while it asks whether the model copied it,
+    # so the honest move is to write it in and let the item through — 17b/20
+    # require the work order to *carry* the refinement, not the model to have
+    # been the one who carried it. `refinement_traceability_repair` declines
+    # the one fault where appending is unsafe (a `comment_url` naming a
+    # different issue: corrupt ledger, and the very cross-item swap #626 is
+    # about), so a fault that survives the repair is still a hard skip.
+    c_repaired="$(refinement_traceability_repair "$cand" "$refinements_json")"
+    if [[ -n "$c_repaired" ]] \
+       && [[ -z "$(refinement_traceability_fault "$c_repaired" "$refinements_json")" ]]; then
+      cand="$c_repaired"
+      log_event "work-order-repaired" "$(jq -nc --arg r "$c_repo" --arg i "$c_item" --arg s "$c_source" --arg d "$c_trace_fault" \
+        '{repo: $r, item: $i, source: $s, cause: "untraceable", detail: $d}')"
+      c_trace_fault=""
+    fi
+  fi
+  if [[ -n "$c_trace_fault" ]]; then
+    trace_faults=$(( trace_faults + 1 ))
     log_event "claim-skipped" "$(jq -nc --arg r "$c_repo" --arg i "$c_item" --arg s "$c_source" --arg d "$c_trace_fault" \
       '{repo: $r, item: $i, source: $s, cause: "untraceable", detail: $d}')"
     continue
@@ -9310,6 +9423,14 @@ if [[ -z "$claimed_json" ]]; then
   elif (( claim_attempts == 0 && claim_skips > 0 )); then
     standdown_reason="every candidate was already claimed before this cycle's Co-Ordinator ran — skipped without an attempt"
     standdown_cause="pre-claimed"
+  elif (( claim_attempts == 0 && trace_faults > 0 )); then
+    # Requirement 17f dropped every candidate and the repair could not rescue
+    # one (issue #767). Nothing was claimed, nothing was raced, and nothing
+    # about the fleet is busy — this is a defect in the work orders reaching
+    # the gate, and it is named as one so no reader mistakes it for
+    # contention again.
+    standdown_reason="every candidate failed the refinement traceability check — no claim was attempted"
+    standdown_cause="untraceable"
   else
     standdown_reason="every candidate is already claimed elsewhere"
     standdown_cause="raced"
