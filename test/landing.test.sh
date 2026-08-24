@@ -197,6 +197,23 @@ if [[ "${args[0]:-}" == "pr" && "${args[1]:-}" == "merge" ]]; then
   exit 0
 fi
 
+# --- gh pr view NUMBER -R SLUG --json labels --jq '.labels[].name' ---
+# (landing_open_question_hit and landing_open_question_label_project's own
+# read, requirement 8f, agent-ops#668) — checked ahead of the generic `pr
+# view` case below, since both share `args[0]=pr args[1]=view` and only the
+# `--json` value tells them apart.
+if [[ "${args[0]:-}" == "pr" && "${args[1]:-}" == "view" ]]; then
+  json_field=""
+  for ((_j = 0; _j < ${#args[@]}; _j++)); do
+    [[ "${args[$_j]}" == "--json" ]] && json_field="${args[$((_j+1))]:-}"
+  done
+  if [[ "$json_field" == "labels" ]]; then
+    [[ -f "$f/labels-fail" ]] && exit 1
+    cat "$f/labels.txt" 2>/dev/null
+    exit 0
+  fi
+fi
+
 # --- gh pr view NUMBER -R SLUG --json headRefOid --jq '.headRefOid' ---
 # (landing_protected_path_controls_ok's own fresh read of the pull request's
 # current head, checked against the standing review's commit_id)
@@ -206,16 +223,34 @@ if [[ "${args[0]:-}" == "pr" && "${args[1]:-}" == "view" ]]; then
   exit 0
 fi
 
+# --- gh pr edit NUMBER -R SLUG --add-label LABEL / --remove-label LABEL ---
+# (landing_open_question_label_project/_release, requirement 8f,
+# agent-ops#668)
+if [[ "${args[0]:-}" == "pr" && "${args[1]:-}" == "edit" ]]; then
+  for ((_j = 0; _j < ${#args[@]}; _j++)); do
+    case "${args[$_j]}" in
+      --add-label)    printf 'add\t%s\n' "${args[$((_j+1))]:-}" >> "$LABEL_CALLS" ;;
+      --remove-label) printf 'remove\t%s\n' "${args[$((_j+1))]:-}" >> "$LABEL_CALLS" ;;
+    esac
+  done
+  [[ -f "$f/edit-fail" ]] && exit 1
+  exit 0
+fi
+
 echo "gh-stub: unhandled invocation: ${args[*]}" >&2
 exit 1
 STUB
 chmod +x "$stub_bin/gh"
 
-export GH_FIXTURES="$fixtures" ENQUEUE_CALLS="$enqueue_calls" MERGE_CALLS="$merge_calls"
+label_calls="$tmp_dir/label-calls"
+: > "$label_calls"
+export GH_FIXTURES="$fixtures" ENQUEUE_CALLS="$enqueue_calls" MERGE_CALLS="$merge_calls" \
+  LABEL_CALLS="$label_calls"
 LANDING_GH="$stub_bin/gh"; MERGE_QUEUE_GH="$stub_bin/gh"
 export LANDING_GH MERGE_QUEUE_GH
 
 files() { printf '%s\n' "$@" > "$fixtures/files.txt"; }
+labels() { printf '%s\n' "$@" > "$fixtures/labels.txt"; }  # labels NAME...
 prd() {  # prd NODE_ID BASE
   jq -nc --arg id "$1" --arg base "$2" '{id: $id, base: $base}' > "$fixtures/pr.json"
 }
@@ -757,6 +792,95 @@ assert_eq "an unreadable log prints nothing rather than guessing" "" "$out"
 
 out="$(landing_retry_source acme/widgets td/TD-1 < "$log_file")"
 assert_eq "stdin works the same as a named file (LOG_FILE omitted/-)" "tech-debt" "$out"
+
+# --- landing_open_question_hit (requirement 8f, agent-ops#668) ---------------
+
+labels "complexity:low" "autonomous-agent"
+out="$(landing_open_question_hit acme/widgets 12)"; rc=$?
+assert_eq "no open-question label: nothing printed" "" "$out"
+assert_eq "  ... exit 1 (clear)" "1" "$rc"
+
+labels "complexity:low" "open-question"
+out="$(landing_open_question_hit acme/widgets 12)"; rc=$?
+assert_eq "an open-question label: nothing printed either — the caller reads the exit status" "" "$out"
+assert_eq "  ... exit 0 (hit)" "0" "$rc"
+
+: > "$fixtures/labels-fail"
+out="$(landing_open_question_hit acme/widgets 12)"; rc=$?
+assert_eq "an unreadable label list: exit 2 (unknown), nothing printed" "2" "$rc"
+assert_eq "  ... nothing printed" "" "$out"
+rm -f "$fixtures/labels-fail"
+
+# --- landing_open_question_label_project/_release ----------------------------
+
+labels "complexity:low"
+: > "$label_calls"
+out="$(landing_open_question_label_project acme/widgets 12)"; rc=$?
+assert_eq "an absent label is added" "added" "$out"
+assert_eq "  ... exit 0" "0" "$rc"
+assert_eq "  ... via --add-label, never --remove-label" \
+  "add	open-question" "$(cat "$label_calls")"
+
+labels "complexity:low" "open-question"
+: > "$label_calls"
+out="$(landing_open_question_label_project acme/widgets 12)"; rc=$?
+assert_eq "an already-present label is left alone" "present" "$out"
+assert_eq "  ... exit 0" "0" "$rc"
+assert_eq "  ... and nothing is written to GitHub" "" "$(cat "$label_calls")"
+
+: > "$fixtures/labels-fail"
+: > "$label_calls"
+out="$(landing_open_question_label_project acme/widgets 12)"; rc=$?
+assert_eq "an unreadable label list attempts the add best-effort" "unrecorded" "$out"
+assert_eq "  ... exit 1" "1" "$rc"
+assert_eq "  ... having tried --add-label anyway" "add	open-question" "$(cat "$label_calls")"
+rm -f "$fixtures/labels-fail"
+
+labels "complexity:low"
+: > "$fixtures/edit-fail"
+out="$(landing_open_question_label_project acme/widgets 12)"; rc=$?
+assert_eq "a readable list whose add GitHub refuses is failed, not unrecorded" "failed" "$out"
+assert_eq "  ... exit 1" "1" "$rc"
+rm -f "$fixtures/edit-fail"
+
+: > "$label_calls"
+out="$(landing_open_question_label_release acme/widgets 12)"; rc=$?
+assert_eq "  ... exit 0" "0" "$rc"
+assert_eq "release removes the fixed label, never adds" \
+  "remove	open-question" "$(cat "$label_calls")"
+
+out="$(landing_open_question_label_project "" 12)"; rc=$?
+assert_eq "an empty slug fails the projection before calling gh" "failed" "$out"
+assert_eq "  ... exit 1" "1" "$rc"
+
+# --- landing_open_question_latest --------------------------------------------
+
+cat > "$log_file" <<'LOG'
+{"ts":"2026-08-20T00:00:00Z","event":"open-question-raised","repo":"acme/widgets","pr_url":"https://github.com/acme/widgets/pull/12","questions":[{"question":"Is CODEOWNERS in scope?","why_this_actor_cannot_settle_it":"scope call","comment_url":"https://github.com/acme/widgets/pull/12#issuecomment-1"}]}
+this line is not json at all
+{"ts":"2026-08-21T00:00:00Z","event":"open-question-raised","repo":"acme/widgets","pr_url":"https://github.com/acme/widgets/pull/12","questions":[{"question":"Is CODEOWNERS in scope?","why_this_actor_cannot_settle_it":"scope call","comment_url":"https://github.com/acme/widgets/pull/12#issuecomment-1"},{"question":"Is the second file also in scope?","why_this_actor_cannot_settle_it":"scope call","comment_url":"https://github.com/acme/widgets/pull/12#issuecomment-2"}]}
+{"ts":"2026-08-20T00:30:00Z","event":"open-question-raised","repo":"acme/widgets","pr_url":"https://github.com/acme/widgets/pull/13","questions":[{"question":"An unrelated pull request's own question","why_this_actor_cannot_settle_it":"x","comment_url":"y"}]}
+LOG
+
+out="$(landing_open_question_latest "https://github.com/acme/widgets/pull/12" "$log_file")"
+assert_eq "every distinct question across every round is carried forward, never only the latest" \
+  "2" "$(jq 'length' <<<"$out")"
+assert_contains "  ... including the first round's own question" \
+  "Is CODEOWNERS in scope?" "$out"
+assert_contains "  ... and the second round's" \
+  "Is the second file also in scope?" "$out"
+assert_eq "  ... but never a different pull request's own" \
+  "0" "$(jq '[.[] | select(.question | contains("unrelated pull request"))] | length' <<<"$out")"
+
+out="$(landing_open_question_latest "https://github.com/acme/widgets/pull/999" "$log_file")"
+assert_eq "an unmatched pull request prints an empty array" "[]" "$out"
+
+out="$(landing_open_question_latest "https://github.com/acme/widgets/pull/12" "$tmp_dir/does-not-exist.jsonl")"
+assert_eq "an unreadable log prints an empty array rather than guessing" "[]" "$out"
+
+out="$(landing_open_question_latest "https://github.com/acme/widgets/pull/12" < "$log_file")"
+assert_eq "stdin works the same as a named file (LOG_FILE omitted/-)" \
+  "2" "$(jq 'length' <<<"$out")"
 
 echo
 if (( failures == 0 )); then

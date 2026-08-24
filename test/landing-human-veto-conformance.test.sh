@@ -178,6 +178,7 @@ log_event() { printf '%s\t%s\n' "$1" "$2" >>"$T/events"; }
 merge_autonomy_kill_state() { printf '{"state":"enabled"}'; }
 merge_autonomy_effective_level() { printf '%s\n' "$*" >>"$T/mal_calls"; printf '%s' "$LEVEL"; }
 landing_eligible() { printf '%s' "eligible"; }
+landing_open_question_hit() { return 1; }
 review_gate_verdict() { printf '%s' "clean"; return 0; }
 approver_token_identity_login() { printf 'pullwright-approver[bot]'; }
 landing_approver_standing_review_at() {

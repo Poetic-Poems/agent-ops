@@ -8,6 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A Reviewer that finds a pull request otherwise green and finished, but
+  carrying a question about the work order or its scope it is not the right
+  actor to settle, can now say so structurally (requirement 32/8f, D18,
+  agent-ops#668): an `open_questions` entry alongside a `ready` verdict.
+  The landing gate refuses unattended landing while one stands
+  (`open-question:`-classed, grouped by the *Autonomous landings* panel with
+  no dashboard change needed) and requirement 8u's retry sweep holds it
+  across cycles through the identical gate. It resolves through the
+  `escalation_autonomy` ladder: at `always-escalate`, one escalation issue
+  per pull request; at `adjudicate-first`, one bounded adjudication pass at
+  the Approver's own critical tier (`prompts/approver-adjudicate-open-
+  question.md`) settles it with a posted answer or escalates — distinct
+  from both the Approver's own refuse-streak adjudication (requirement 8c)
+  and the Enabler's refinement-disagreement one (requirement 36b). A new
+  head commit never clears it; only a settled adjudication or a human's own
+  act does.
 - The scheduler's egress is fenced (agent-ops#760; roadmap D24 stage two,
   review F-SEC-01, `TD-PPagop-26082407`/`TD-PPagop-26082429`): it now sits
   on an internal-only Docker network — no gateway, so the fence is topology

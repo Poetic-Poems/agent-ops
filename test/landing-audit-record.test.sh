@@ -131,6 +131,7 @@ merge_autonomy_kill_state() { printf '{"state":"enabled"}'; }
 # state's own "enabled" vocabulary for "clear".
 merge_budget_freeze_state() { printf '{"state":"enabled"}'; }
 landing_eligible() { printf '%s' "${ELIGIBLE:-eligible}"; }
+landing_open_question_hit() { return 1; }
 review_gate_verdict() { printf '%s' "${GATE_WORD:-clean}"; return "${GATE_RC:-0}"; }
 approver_token_identity_login() { printf 'pullwright-approver[bot]'; }
 landing_approver_standing_review_at() {
@@ -209,6 +210,8 @@ assert_eq "  ... every gate this attempt cleared, named with its own evidence" \
   '"agent-merges-routine"' "$(jq -c '.gates[] | select(.gate == "autonomy-level") | .verdict' <<<"$audit")"
 assert_eq "  ... the eligibility gate" \
   '"eligible"' "$(jq -c '.gates[] | select(.gate == "eligibility") | .verdict' <<<"$audit")"
+assert_eq "  ... the open-question gate (requirement 8f, agent-ops#668)" \
+  '"clear"' "$(jq -c '.gates[] | select(.gate == "open-question") | .verdict' <<<"$audit")"
 assert_eq "  ... the review gate" \
   '"clean"' "$(jq -c '.gates[] | select(.gate == "review-gate") | .verdict' <<<"$audit")"
 assert_eq "  ... the Approver's own standing review" \

@@ -190,6 +190,13 @@
 # `github_pr_list_truncated` already apply to `gh pr list`.
 LANDING_PR_FILES_LIMIT="${LANDING_PR_FILES_LIMIT:-3000}"
 
+# Fixed, unconfigurable — the same footing `blocked`/`obsolete`
+# (lib/labels.sh's own header) already stand on: no installation renames
+# this, and unlike `blocked` no human has a reason to hand-apply it for an
+# unrelated purpose, so its whole lifecycle (add, and the one release below)
+# stays this pipeline's own (D18, agent-ops#668).
+LANDING_OPEN_QUESTION_LABEL="${LANDING_OPEN_QUESTION_LABEL:-open-question}"
+
 # _landing_protected_paths CONFIG_JSON SLUG
 # The protected-path list SLUG is governed by: its own `repos[]` entry's
 # `merge_autonomy_protected_paths` when present, else the top-level key, else
@@ -877,6 +884,137 @@ landing_approver_adjudication_history() {
          verdict: (.verdict // null), adjudication: (.adjudication // false),
          refuse_streak: (.refuse_streak // null), posted: (.posted // null)} ]
     | sort_by(.ts)'
+  if [[ "$src" == "-" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' 2>/dev/null \
+      | jq -cs --arg u "$pr_url" "$jq_prog" 2>/dev/null || true)"
+  elif [[ -s "$src" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null \
+      | jq -cs --arg u "$pr_url" "$jq_prog" 2>/dev/null || true)"
+  fi
+  [[ -n "$out" ]] || out='[]'
+  printf '%s' "$out"
+}
+
+# landing_open_question_hit SLUG NUMBER
+# Requirement 8f (D18, agent-ops#668): does pull request #NUMBER in SLUG
+# currently carry $LANDING_OPEN_QUESTION_LABEL? Read fresh from GitHub on
+# every call, the same "no private state, no log join" contract every other
+# gate in this file already holds — a human can remove the label directly,
+# and the next read must see that immediately, the same way a fresh
+# `merge_autonomy_effective_level` read sees a kill switch an operator just
+# flipped.
+#
+# Exit 0 ("hit") when the label is present, 1 ("clear") when it is not, and 2
+# ("unknown") when the label list itself could not be read. Unlike
+# `landing_protected_paths_hit`'s own exit 2 — which routes *to* the more
+# cautious outcome because a missed protected path is the failure mode this
+# whole gate exists to prevent — an unknown label list here is a plain,
+# retryable read failure: the caller refuses this round with the ordinary
+# "could not read" wording and tries again next cycle, rather than routing
+# into the escalation/adjudication machinery over a question it never
+# confirmed exists.
+landing_open_question_hit() {
+  local slug="$1" number="$2" gh_bin="${LANDING_GH:-gh}" labels
+  labels="$("$gh_bin" pr view "$number" -R "$slug" --json labels \
+              --jq '.labels[].name' 2>/dev/null)" || return 2
+  grep -qxF "$LANDING_OPEN_QUESTION_LABEL" <<<"$labels" && return 0
+  return 1
+}
+
+# landing_open_question_label_project SLUG NUMBER
+# Put $LANDING_OPEN_QUESTION_LABEL on pull request #NUMBER in SLUG iff it is
+# not already there, and say whether the resulting label is this
+# projection's to remove later. Mirrors `refinement_label_project`'s
+# (lib/refinement.sh) read-before-write contract exactly, for the identical
+# reason: `gh pr edit --add-label` succeeds as a no-op on a pull request that
+# already carries the label, so an unconditional add-and-record would let
+# `landing_open_question_label_release` later remove a label a human applied
+# for their own reasons before this question was ever raised.
+#
+# Prints one word:
+#   added       LABEL was absent and is now on the pull request — record it,
+#               so settling the question takes it off again.
+#   present     LABEL was already there. Nothing is touched and nothing must
+#               be recorded — most often a later Reviewer round raising a
+#               further question while an earlier one still stands.
+#   unrecorded  the pull request's labels could not be read, so the add was
+#               attempted best-effort but must not be recorded — over-holding
+#               a label is cosmetic; removing one that may have pre-existed
+#               is the defect this function exists to prevent.
+#   failed      the list was readable, LABEL was absent, and the add would
+#               not take (a repo where the label was never created is the
+#               practical case, ordinarily self-healed by `labels_ensure`'s
+#               own periodic sweep, lib/labels.sh) — the caller records the
+#               question regardless: losing the label costs a filter, losing
+#               the gate would cost the hold.
+#
+# Exit status is 0 for `added` and `present`, 1 for `unrecorded` and `failed`.
+landing_open_question_label_project() {
+  local slug="$1" number="$2" gh_bin="${LANDING_GH:-gh}" existing
+  if [[ -z "$slug" || -z "$number" ]]; then
+    printf 'failed'
+    return 1
+  fi
+  if ! existing="$("$gh_bin" pr view "$number" -R "$slug" --json labels \
+                     --jq '.labels[].name' 2>/dev/null)"; then
+    "$gh_bin" pr edit "$number" -R "$slug" --add-label "$LANDING_OPEN_QUESTION_LABEL" >/dev/null 2>&1 || true
+    printf 'unrecorded'
+    return 1
+  fi
+  if grep -qxF "$LANDING_OPEN_QUESTION_LABEL" <<<"$existing"; then
+    printf 'present'
+    return 0
+  fi
+  if "$gh_bin" pr edit "$number" -R "$slug" --add-label "$LANDING_OPEN_QUESTION_LABEL" >/dev/null 2>&1; then
+    printf 'added'
+    return 0
+  fi
+  printf 'failed'
+  return 1
+}
+
+# landing_open_question_label_release SLUG NUMBER
+# Take $LANDING_OPEN_QUESTION_LABEL off pull request #NUMBER in SLUG. Callers
+# never call this except once an adjudication pass has actually returned
+# `settled` (agent-cycle.sh's `run_open_question_adjudication`) — the one
+# clearing path design point 3 in agent-ops#668 names besides a human's own
+# act, and the reason this needs no read-before-write of its own the way the
+# projection above does: a pipeline-projected label is the only one this
+# function is ever asked to remove.
+landing_open_question_label_release() {
+  local slug="$1" number="$2" gh_bin="${LANDING_GH:-gh}"
+  [[ -n "$slug" && -n "$number" ]] || return 1
+  "$gh_bin" pr edit "$number" -R "$slug" --remove-label "$LANDING_OPEN_QUESTION_LABEL" >/dev/null 2>&1
+}
+
+# landing_open_question_latest PR_URL [SRC]
+# Every question a Reviewer round has logged against PR_URL via
+# `open-question-raised`, deduplicated by its own `question` text — never
+# only the most recent round's, so a second round raising a further question
+# while an earlier one still stands does not silently drop the first from an
+# escalation issue's body or an adjudication pass's own input (agent-ops#668
+# design point: "whether more than one open question per pull request is
+# permitted" — yes, and every one of them is carried forward). `[]` if none
+# is on the log SRC names.
+#
+# SRC follows `landing_approver_adjudication_history`'s own convention:
+# `$log_file` on the round that first raises a question (this process's own
+# just-written `open-question-raised` event is already there) or
+# `$union_log` when read back later (a peer node's or an earlier cycle's
+# round), or stdin if omitted or "-". Malformed lines are skipped, not
+# fatal. This is read-only, supplementary content for prose a human or an
+# adjudication pass reads — never what the landing gate itself decides on,
+# which stays the label alone (requirement 8f's own "no log join" reasoning
+# for the gate proper), so a peer node's cycle racing to log its own
+# `open-question-raised` event costs this reader nothing but slightly stale
+# prose.
+landing_open_question_latest() {
+  local pr_url="$1" src="${2:--}" out=""
+  # shellcheck disable=SC2016  # $pr_url is jq's own --arg variable, not the shell's.
+  local jq_prog='
+    [ .[] | select(.event == "open-question-raised" and (.pr_url // "") == $u)
+      | (.questions // [])[] ]
+    | unique_by(.question // "")'
   if [[ "$src" == "-" ]]; then
     out="$(jq -c -R 'fromjson? // empty' 2>/dev/null \
       | jq -cs --arg u "$pr_url" "$jq_prog" 2>/dev/null || true)"

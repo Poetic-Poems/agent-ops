@@ -875,6 +875,8 @@ Cycle and review directories whose derived files are kept — the stage event st
 
 The D18 escalation-autonomy ladder (agent-ops#627), fleet-wide default; a `repos[]` entry's own `escalation_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). At `adjudicate-first`, before the Script files the escalation issue for a refinement-disagreement item (requirement 36b: a `needs-refinement` block whose `refined_before` is set), one bounded adjudication pass runs at `enabler_model` — the Enabler has no second, critical tier to call this at, unlike the Approver's own adjudication (requirement 8c) — and is logged as an `enabler-adjudication` event carrying its `verdict` (`adequate`/`inadequate`) and `evidence`. `adequate` is recorded exactly as an ordinary `unblocked` refinement (an `unblocked` event plus `item-refined`, carrying the existing refinement's own `spec`/`comment_url`); `inadequate`, an unparseable verdict, or a failed adjudication engagement all escalate, with the pass's own `evidence` appended to `issue.body` under an `## Adjudication attempted` heading (agent-ops#681) before the issue is filed, so the human starts from why an adjudicator's answer is missing rather than only the pre-adjudication verdict. Bounded, not a loop: one pass per item, per human touch — an item with an `enabler-adjudication` event already on the log escalates without a further pass, the one exemption being eligibility `reason: "issue-closed"`, a human having acted on an escalation about it. Owner-only decisions (spec edits, architecture and strategy choices) escalate at every level; nothing here relaxes requirement 36a's protocol.
 
+The same top-level (or per-repo) level also governs a second, independent consumer: a Reviewer's own open question against a pull request (requirement 8f, agent-ops#668). The ladder word is shared — one config key, not two — but the actor, tier and prompt are not: an open question adjudicates at the Approver's own critical tier (`approver_model_critical`, `prompts/approver-adjudicate-open-question.md`) rather than `enabler_model`, is logged as `open-question-adjudication` rather than `enabler-adjudication`, and is bounded by `open_question_pass_available` rather than `escalation_autonomy_pass_available` — a distinct function reading the same "one pass per item, per human touch, with a closed-escalation-issue exemption" shape, never the same log entries. A repository dialled to `adjudicate-first` for refinement disagreements gets the open-question adjudication path too; there is no way to enable one without the other.
+
 ### Extended notes: `needs_refinement_label`
 
 The label the Script projects onto an issue-type item while its refinement block is open (requirement 34e), and removes when the block clears.
@@ -5559,6 +5561,110 @@ implements.
    enough ago for the sweep to have reached it, merged by someone other than
    the Approver identity, or genuinely unauditable) reads `audit: null`,
    never folded into either `clean` or `escape`.
+8f. **An open question the Reviewer could not settle holds unattended
+    landing (D18, agent-ops#668).** Requirement 32's `open_questions` is
+    additive to a `ready` verdict — the pull request still hands off exactly
+    as it always has — and names a narrow case: nothing in the diff is
+    wrong, but a question about the work order or its scope needs a
+    decision the Reviewer is not the right actor to make. The Script
+    projects `open-question` onto the pull request (`landing_open_question_
+    label_project`, `lib/landing.sh`) the moment a `ready` verdict carries
+    one or more, read-before-write exactly as `refinement_label_project`
+    already is for the issue-side `blocked` (agent-ops#651's contract), and
+    logs `open-question-raised` carrying the question, why the Reviewer
+    could not settle it, and the PR comment stating it in the Reviewer's own
+    words (requirement 30).
+
+    A further gate in `_landing_stage_attempt`, inserted between gate 2
+    (eligibility) and gate 3 (the review gate), on the same terms as every
+    gate beside it: `landing_open_question_hit` reads the label fresh from
+    GitHub — never a log join, so a human's own removal of the label is
+    seen the moment it happens, and requirement 8u's retry sweep re-reads it
+    exactly as it re-reads every other gate, needing no second copy of this
+    one either. A hit refuses, logged `landing-refused` with its own
+    `open-question:` reason class (the same `class:detail` shape
+    `landing_autonomy_refusal_reason`'s `kill-switch:` and `landing_
+    eligible`'s `ineligible:` already establish, so the *Autonomous
+    landings* panel's existing `byReason` grouping (`docs/DASHBOARD-
+    SPEC.md`) surfaces it with no dashboard code change); a pass rides in
+    the landing audit record (requirement 8x) as its own `open-question`
+    gate, reading `clear` where no question stood and `settled` where one
+    did and the adjudication pass below answered it on that same round — so
+    a landing armed over a question is never indistinguishable, in the
+    record, from one that never had a question at all. But a hit does
+    not merely refuse: it resolves through the same `escalation_autonomy`
+    ladder requirement 36b already reads (`escalation_autonomy_configured_
+    level`, `lib/escalation-autonomy.sh`), level-aware rather than summoning
+    a human outright:
+
+    - At `always-escalate`, `open_question_escalate` files (or finds
+      already-filed, via `create_escalation_issue`'s own dedup) one
+      escalation issue per pull request — footer-keyed to a synthetic
+      `pr-<n>-open-question` item reference, the same shape
+      `pr-<n>-approver-adjudication` (requirement 8c) already uses — naming
+      the question, and asking the human to answer it, take the
+      `open-question` label off the pull request, and close the issue. The
+      label is what the gate reads, so the label is what the issue body asks
+      for first and names as the releasing act: the gate keeps refusing
+      until it comes off, whatever the issue's own state. A closed issue
+      means only that a human has acted — it restores the
+      `adjudicate-first` pass below, and never releases the gate by itself.
+    - At `adjudicate-first`, one bounded adjudication pass runs first
+      (`run_open_question_adjudication`, `prompts/approver-adjudicate-open-
+      question.md`) at the Approver's own critical tier
+      (`approver_model_critical` — the tier D18 §5.2 already reserves for
+      litigated judgement, never `enabler_model`: the question is about
+      whether this pull request's own diff and work order already answer
+      it, the Approver's own ground). `settled` posts the answer as a PR
+      comment, logs `open-question-adjudication` carrying `verdict:
+      "settled"` and `evidence`, releases the label
+      (`landing_open_question_label_release`), and the gate clears —
+      nothing else about the pull request changes. `escalate`, a stage
+      failure, or an unparseable verdict all log the same event with
+      `verdict: "escalate"` and reach `open_question_escalate` exactly as
+      `always-escalate` does; "cannot settle" is not read as "nothing to
+      settle" (requirement 8c). Bounded exactly as 36b is bounded — one
+      pass per question, per human touch (`open_question_pass_available`,
+      mirroring `escalation_autonomy_pass_available`'s own shape, including
+      its "a human already acted" exemption: a closed escalation issue for
+      this pull request's `pr-<n>-open-question` reference means the next
+      pass is the first since they did) — a question already carrying an
+      `open-question-adjudication` event escalates without a second pass.
+
+    **Distinct from requirement 8c's own refuse-streak adjudication in every
+    way that requirement's own text calls for**: different trigger (an open
+    question stands, never a refuse streak), different prompt
+    (`prompts/approver-adjudicate-open-question.md`, never
+    `prompts/approver.md` with a `## Prior refusals` section appended),
+    different input (the question and its own comment, never prior refusal
+    bodies), different event (`open-question-adjudication`, never
+    `approver-verdict`), and never conflated with requirement 36b's own
+    `enabler-adjudication` either — same ladder, different actor and tier.
+
+    **Only two things clear `open-question`**: a `settled` adjudication
+    verdict, or a human removing the label themselves. A new head commit
+    does not — the question is about scope, not about the diff, so pushing
+    more code answers nothing a label keyed to the diff's own head would
+    correctly track. A later Reviewer round raising a further question
+    while the label already stands logs its own `open-question-raised`
+    event (the label projects `present`, not `added`) and leaves the pull
+    request exactly as held as it already was.
+
+    No identifier this requirement introduces names a human as the
+    destination of the signal (requirement 45's own framing extended by
+    agent-ops#679): `open-question`, `open_questions`, `open-question-
+    raised`, `open-question-adjudication` and `open-question-escalated` all
+    name the question, never where it goes.
+
+    **Requirement 38 needs no change for this.** A pull request held on an
+    open question is finished work not landing, the shape requirement 38
+    exists to surface — but every gate round that refuses on a hit either
+    settles the question or calls `open_question_escalate` before it
+    returns, so the escalation issue (assigned to `enabler_assignee` under
+    `enabler_escalation_label`, `open_question_escalate`'s own dedup finding
+    it again on every later round) exists by the same round the refusal is
+    logged, giving it exactly the visibility requirement 36a's own
+    escalations get (Assigned-to-me) with no gap for a sweep to close.
 9. **Failure handling.** If any stage times out, exits non-zero, or returns
    an unparseable summary: kill that stage's process group, log
    `attempt-failed` with enough detail for a future cycle to know the item
@@ -5959,9 +6065,10 @@ implements.
    round's feedback) or fetched live with `gh` mid-run. Every shipped stage
    prompt — `prompts/coordinator.md`, `prompts/implementer.md`,
    `prompts/reviewer.md`, `prompts/approver.md`, `prompts/enabler.md`,
-   `prompts/enabler-adjudicate.md`, `prompts/refiner.md` — carries an
-   `## Untrusted external content` section stating this rule to the stage
-   it operates.
+   `prompts/enabler-adjudicate.md`,
+   `prompts/approver-adjudicate-open-question.md`, `prompts/refiner.md` —
+   carries an `## Untrusted external content` section stating this rule to
+   the stage it operates.
 
 45a. **One canonical wording, pinned.** The framing is a single canonical
    block, byte-identical in every prompt that carries it, delimited by a
@@ -7688,6 +7795,19 @@ implements.
     the block's own `detail` under requirement 32a. `needs-human` is accepted as
     a synonym for `blocked` for one release, on the precedent of requirement
     20's shape migration; the prompt emits `blocked`.
+
+    Additive to a `ready` verdict, absent or empty on the overwhelming
+    majority of rounds: `"open_questions": [{"question": …,
+    "why_this_actor_cannot_settle_it": …, "comment_url": …}]` (D18,
+    agent-ops#668) — a narrow, structured companion for the one case
+    `comments_left`'s plain findings comments do not fit: nothing in the diff
+    is wrong, so there is nothing to fix or flag as a defect, but a question
+    about the work order or its scope needs a decision the Reviewer is not
+    the right actor to make. It is deliberately not a third status alongside
+    `ready`/`blocked`: the pull request still hands off exactly as it always
+    has, and an unresolved entry holds only *unattended landing*, through the
+    gate requirement 8f adds — never the handoff itself, and never anything
+    a defect or an impediment already has a channel for.
 32a. **A Reviewer that cannot hand off hands back, not out.** Any ending other
     than a pull request the human can see — `blocked`, an unparseable status, or
     a `ready` whose handoff requirement 31a could not make true — is recorded as
@@ -7810,6 +7930,7 @@ implements.
     `salvage`, `chained`,
     `approver-verdict`, `approver-escalated`,
     `landing-armed`, `landing-refused`, `classifier-escape`, `landing-audit`,
+    `open-question-raised`, `open-question-adjudication`, `open-question-escalated`,
     `review-gate-checks-read`, `review-gate-checks-degraded`, `first-seen`,
     `issues-excluded`,
     `warning`, `cycle-end`. `classifier-escape` and `landing-audit`
@@ -7855,6 +7976,23 @@ implements.
     marker carries (requirement 8c), read here rather than reused there
     because the two adjudications judge different questions over different
     stages' own verdicts.
+    `open-question-raised` (requirement 8f, agent-ops#668) is logged once per
+    Reviewer `ready` round carrying one or more `open_questions`, whether or
+    not this is the first such round for the pull request, carrying
+    `pr_url`, `repo`, `label_projection` (`landing_open_question_label_
+    project`'s own word) and `questions` (requirement 32's array, verbatim).
+    `open-question-adjudication` is logged once per adjudication pass
+    `run_open_question_adjudication` runs, carrying `pr_url`, `repo`,
+    `verdict` (`settled`/`escalate`), `evidence` and `adjudication: true` —
+    the same verdict-plus-evidence shape `enabler-adjudication` and
+    `approver-verdict`'s own `adjudication: true` marker carry, read as its
+    own event rather than reused from either because it judges a third,
+    distinct question (does an existing pull request's own diff and work
+    order already answer this question?) over neither stage's own verdict.
+    `open-question-escalated` mirrors `approver-escalated` exactly —
+    `pr_url`, `issue_number`, `issue_url` — logged by `open_question_
+    escalate` whether reached directly (`escalation_autonomy:
+    "always-escalate"`) or after an `escalate`/failed adjudication pass.
     `review-gate-checks-read` (requirement 31c,
     TD-PPagop-26081404) is bookkeeping, one per ready-gate evaluation, carrying
     `ok: true|false` — machine-read by the streak verdict, and kept out of
@@ -16915,6 +17053,86 @@ pull request, run the ones the change touches and any it could regress.
     block exactly once, and every copy is byte-identical with requirement
     45a's canonical one, which the test lifts from this document at run
     time rather than restating.
+
+9. **An open question the Reviewer could not settle holds unattended landing,
+   resolves through the configured ladder, and never through a new commit
+   alone (requirement 8f, agent-ops#668).** `test/landing.test.sh` passes
+   against a stubbed `gh`: `landing_open_question_hit` reads `hit`/`clear`/
+   `unknown` off a pull request's own labels, fresh every call, never a
+   log join; `landing_open_question_label_project` mirrors `refinement_
+   label_project`'s own `added`/`present`/`unrecorded`/`failed` vocabulary
+   and exit status exactly, never removing a label it finds already present;
+   `landing_open_question_label_release` removes only the fixed
+   `open-question` label; `landing_open_question_latest` reads every
+   question a pull request's own `open-question-raised` events carry off a
+   synthetic log — deduplicated by question text across rounds, never only
+   the most recent round's, so a second round's further question never
+   drops the first — and `[]` when none is on it.
+
+   `test/landing-wiring.test.sh` lifts the modified `_landing_stage_attempt`
+   verbatim and proves the new gate sits between eligibility and the review
+   gate: a `clear` label leaves every existing case in this file passing
+   unchanged (no new stub defaults it); an `unknown` label read refuses with
+   its own reason, naming no escalation issue and running no adjudication,
+   since an unreadable label list is a plain retryable failure, not a
+   confirmed question; a `hit` at `escalation_autonomy: "always-escalate"`
+   refuses with an `open-question:`-prefixed reason (grouped by the
+   *Autonomous landings* panel's existing `byReason` split, `docs/DASHBOARD-
+   SPEC.md`) and calls `open_question_escalate` exactly once; a `hit` at
+   `adjudicate-first` with `run_open_question_adjudication` stubbed to
+   return `settled` releases the label, posts the PR comment, logs
+   `open-question-adjudication` with `verdict: "settled"`, and **arms** —
+   the gate clearing on its own round, no second read required, with the
+   landing audit record's own `open-question` gate reading `settled` there
+   and `clear` on the round where no question ever stood
+   (`test/landing-audit-record.test.sh` pins the latter alongside every
+   other gate); the same
+   stub returning `escalate` refuses and escalates exactly as
+   `always-escalate` does; a pull request already carrying an
+   `open-question-adjudication` event on the log runs no further
+   adjudication pass and escalates directly (`open_question_pass_available`'s
+   own bound), unless a closed escalation issue for its `pr-<n>-
+   open-question` reference stands, in which case one further pass runs.
+   Replaying agent-ops#652's own shape — `complexity:low`, an open question
+   standing — does not arm, the regression this requirement exists to close.
+   The same file's `run_case_direct` proves requirement 8u's retry sweep
+   reaches the identical gate, never a second copy of it: `_landing_stage_
+   attempt` called directly with `RETRY` set — exactly as `_landing_retry_
+   sweep_repo` calls it — refuses on the same `open-question:` reason with no
+   stubbing beyond what the gate-0 path above already exercises, since both
+   entry points share one function body. `test/landing-retry-sweep.test.sh`
+   itself stubs `_landing_stage_attempt` as a black box (it tests candidate
+   selection, not gate behaviour), so it is unaffected by this gate and needs
+   no change.
+
+   `test/open-question-adjudication.test.sh` lifts `run_open_question_
+   adjudication`, `open_question_escalate`, `open_question_pass_available`
+   and `open_question_adjudicated_before` verbatim out of `agent-cycle.sh`:
+   the adjudication prompt launches at `approver_model_critical`, never
+   `enabler_model` or `approver_model_default`/`approver_model_complex`,
+   against `prompts/approver-adjudicate-open-question.md`, never
+   `prompts/approver.md` or `prompts/enabler-adjudicate.md`; a missing
+   prompt file, a stage failure, a timeout and an unparseable verdict all
+   print `escalate` with a distinguishing `evidence` string, never
+   `adequate`/`inadequate` (requirement 36b's own vocabulary) and never
+   `land`/`refuse`/`escalate` unadorned (requirement 8c's own, which also
+   accepts `escalate`, but never emits `settled`); `open_question_escalate`
+   composes an issue body naming the question text from a synthetic log's
+   `open-question-raised` event and keys `create_escalation_issue`'s dedup
+   on a `pr-<n>-open-question` reference, distinct from `pr-<n>-approver-
+   adjudication` (requirement 8c) sharing the same pull request number.
+   `test/prompt-untrusted-framing.test.sh` (requirement 8z) covers
+   `prompts/approver-adjudicate-open-question.md` alongside every other
+   shipped stage prompt. `test/dashboard-render.test.sh` (requirement 8x)
+   asserts an `open-question:`-classed refusal in a fixture renders as its
+   own `byReason` group, exactly as `ineligible`/`kill-switch` already do,
+   with no `dashboard/index.html` change required to produce it. No test
+   name, event name, label name or prompt filename this requirement adds
+   contains `human` (requirement 45's own framing, extended by
+   agent-ops#679) — `open-question`, `open_questions`, `open-question-
+   raised`, `open-question-adjudication`, `open-question-escalated` and
+   `approver-adjudicate-open-question.md` all name the question, never
+   where it goes.
 
 10. **The egress fence holds its shape (D24).** `test/egress-fence.test.sh`
     passes: the baked allowlist carries every domain the cycles need
