@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2154,SC2034  # this file's functions read and write the cycle's own globals — assigned by agent-cycle.sh, which sources every lib/*.sh file into one process (#771) — never locally; each function's own header names which ones.
 #
 # lib/candidate-select.sh — the claim loop and candidate selection: gathering
 # each source's candidates per repository, excluding what a peer already

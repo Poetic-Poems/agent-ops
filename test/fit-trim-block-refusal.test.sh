@@ -11,10 +11,10 @@
 #
 # `record_needs_refinement_block` (requirement 34e's fourth refusal) and
 # `unaccounted_items`/`coordinator_unassessable_items` (requirement 3x's
-# matching exemption) are lifted verbatim out of agent-cycle.sh with awk and
-# eval'd, the same technique test/dependency-block-refusal.test.sh uses, so
-# what is under test is the genuine recording and completeness path, not a
-# paraphrase of it. `coordinator_fit_trimmed_items`/
+# matching exemption) are lifted verbatim out of lib/candidate-select.sh with
+# awk and eval'd, the same technique test/dependency-block-refusal.test.sh
+# uses, so what is under test is the genuine recording and completeness path,
+# not a paraphrase of it. `coordinator_fit_trimmed_items`/
 # `coordinator_fit_trim_refusal_reason` (lib/coordinator-input.sh) are
 # exercised directly in test/coordinator-input.test.sh; this file's job is
 # the integration those unit tests cannot see: that the real recorder and the
@@ -83,9 +83,9 @@ extract_fn() {
   ' "$file"
 }
 
-record_needs_refinement_block_fn="$(extract_fn 'record_needs_refinement_block() {' "$SCRIPT_DIR/agent-cycle.sh")"
+record_needs_refinement_block_fn="$(extract_fn 'record_needs_refinement_block() {' "$SCRIPT_DIR/lib/candidate-select.sh")"
 if [[ "$record_needs_refinement_block_fn" != *"attempt-failed"* ]]; then
-  printf 'FAIL - record_needs_refinement_block could not be found in agent-cycle.sh (renamed or moved?)\n'
+  printf 'FAIL - record_needs_refinement_block could not be found in lib/candidate-select.sh (renamed or moved?)\n'
   exit 1
 fi
 if [[ "$record_needs_refinement_block_fn" != *"coordinator_fit_trim_refusal_reason"* ]]; then
@@ -99,7 +99,7 @@ extract_pat() {  # extract_pat <name>
     $0 ~ ("^" fn "\\(\\) \\{") { on = 1 }
     on                          { print }
     on && /^}$/                 { exit }
-  ' "$SCRIPT_DIR/agent-cycle.sh"
+  ' "$SCRIPT_DIR/lib/candidate-select.sh"
 }
 unaccounted_items_fn="$(extract_pat unaccounted_items)"
 coordinator_unassessable_items_fn="$(extract_pat coordinator_unassessable_items)"

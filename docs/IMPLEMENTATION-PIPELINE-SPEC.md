@@ -11681,6 +11681,24 @@ What exists, and the requirements each part answers to:
    `stage_api_refusal`/`stage_api_refusal_message`/`handle_stage_failure`,
    used by every stage this pipeline runs. Sourced, never executed. Must
    pass `shellcheck`.
+2d. `lib/candidate-gather.sh` implementing the repo-ordering/candidate-
+   gathering loop and the skip-list extracts built directly on top of it
+   (requirement 3, the requirement-34 blocked/void skip-lists; #771):
+   `gather_ordered_repos` orders every configured repository by effective
+   staleness (`lib/repo-order.sh`) and, for each, runs every pre-fetched
+   source's gather script, folding claims, first-seen state and the
+   per-repo entry into `ordered_repos_json`/`source_states_json`/
+   `claimed_json`/`unvoid_requests_json`/`hand_flagged_refinements_json`.
+   `compute_skip_lists` reconciles the `unvoid`/hand-flagged
+   `needs_refinement` label overrides against the cycle's own claim, then
+   derives `blocked_json`/`void_json`, the skip-lists everything downstream
+   (eligibility, the Enabler's threshold, the Co-Ordinator's input) reads.
+   Both are pure moves out of `agent-cycle.sh`'s own top-level script body —
+   never before functions, so their bodies keep the original top-level
+   indentation rather than being reformatted as a function's own — reading
+   and writing the cycle's own globals exactly as they did inline. Sourced,
+   never executed, called once each from `agent-cycle.sh` in place of the
+   inline block they replace. Must pass `shellcheck`.
 3. `scripts/gather-findings.sh` implementing requirement 3a: given a repo
    slug, prints a normalised JSON array of the repo's open Dependabot and
    code-scanning alerts, degrading to `[]` (exit 0) when a feature is
@@ -13905,11 +13923,13 @@ pull request, run the ones the change touches and any it could regress.
    request against a pinned shellcheck (component 10).
    `test/lint-shell.test.sh` passes.
 1g-i. **A script too large to lint in the memory available is degraded or
-   skipped, never allowed to kill the cycle.** The pinned shellcheck 0.10.0
-   needs more than 3 GiB to lint `agent-cycle.sh` (10,136 lines) with `-x`, and
-   more than 1,536 MiB — a scheduler container's entire ceiling — even without
-   it. The GHC runtime it is built on ignores `+RTS -M` (the release binary is
-   not linked with `-rtsopts`) and reserves a 1 TB address space, so neither a
+   skipped, never allowed to kill the cycle.** `agent-cycle.sh` is #771's own
+   ongoing case: shrinking steadily as functions move out to `lib/*.sh`, but
+   still above `LINT_SHELL_LARGE_LINES` and still more than
+   `LINT_SHELL_PLAIN_MIB` for the pinned shellcheck 0.10.0 to lint even
+   without `-x` on a scheduler container's entire 1,536 MiB ceiling. The GHC
+   runtime it is built on ignores `+RTS -M` (the release binary is not
+   linked with `-rtsopts`) and reserves a 1 TB address space, so neither a
    heap cap nor `ulimit -v` can bound it; the only thing that can is not
    running it. So `scripts/lint-shell.sh` reads the smaller of its cgroup
    ceiling and `MemAvailable`, and for a file at or above

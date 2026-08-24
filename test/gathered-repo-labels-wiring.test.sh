@@ -36,6 +36,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 AGENT_CYCLE="$SCRIPT_DIR/agent-cycle.sh"
+CANDIDATE_GATHER="$SCRIPT_DIR/lib/candidate-gather.sh"
 
 failures=0
 
@@ -54,9 +55,9 @@ labels_block="$(awk '
   /^  gathered_labels_report=/ { on = 1 }
   on                           { print }
   on && /^  fi$/               { exit }
-' "$AGENT_CYCLE")"
+' "$CANDIDATE_GATHER")"
 if [[ "$labels_block" != *'labels_ensure_stamped'* || "$labels_block" != *'labels-ensured'* ]]; then
-  echo "FAIL - could not extract the gathered-repo label ensure from agent-cycle.sh (moved or reworded?)" >&2
+  echo "FAIL - could not extract the gathered-repo label ensure from lib/candidate-gather.sh (moved or reworded?)" >&2
   exit 1
 fi
 

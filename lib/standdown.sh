@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2154,SC2034  # this file's functions read and write the cycle's own globals — assigned by agent-cycle.sh, which sources every lib/*.sh file into one process (#771) — never locally; each function's own header names which ones.
 #
 # lib/standdown.sh — the stand-down reason ladder (requirement 2): every
 # check a cycle runs, in order, before it commits to doing any work this

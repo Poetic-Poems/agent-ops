@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2154,SC2034  # this file's functions read and write the cycle's own globals — assigned by agent-cycle.sh, which sources every lib/*.sh file into one process (#771) — never locally; each function's own header names which ones.
 #
 # lib/approver.sh — the Approver stage's own decision primitives (D18 WI-5,
 # agent-ops#408; design: docs/reviews/2026-08-14-autonomy-investigation.md

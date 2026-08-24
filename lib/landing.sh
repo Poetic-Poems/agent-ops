@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2154,SC2034  # this file's functions read and write the cycle's own globals — assigned by agent-cycle.sh, which sources every lib/*.sh file into one process (#771) — never locally; each function's own header names which ones.
 #
 # lib/landing.sh — the deterministic eligibility classifier and the arming
 # step (D18 WI-7, docs/reviews/2026-08-14-autonomy-investigation.md §5.1,
@@ -951,6 +952,9 @@ run_landing_stage() {
   local already_armed="${landing_armed_by_repo[$selected_repo]:-0}"
   _landing_stage_attempt "$selected_repo" "$pr_url" "$complexity" "$selected_source" "$gate_default_branch" "" "$already_armed"
   if (( _landing_stage_attempt_armed )); then
+    # shellcheck disable=SC2004  # false positive: landing_armed_by_repo is
+    # declare -A (agent-cycle.sh) — its subscript is a literal string key,
+    # never arithmetic, so the $ is required, not "unnecessary".
     landing_armed_by_repo[$selected_repo]=$(( already_armed + 1 ))
   fi
 }
@@ -1834,6 +1838,8 @@ _landing_retry_sweep_repo() {
     _landing_stage_attempt "$slug" "$pr_url" "$complexity" "$source" "$default_branch" "retry" "$armed_this_pass"
     if (( _landing_stage_attempt_armed )); then
       armed_this_pass=$(( armed_this_pass + 1 ))
+      # shellcheck disable=SC2004  # false positive: see the sibling
+      # assignment in run_landing_stage above.
       landing_armed_by_repo[$slug]="$armed_this_pass"
     fi
   done < <(jq -c '.[]' <<<"$candidates" 2>/dev/null || true)

@@ -98,9 +98,9 @@ if [[ -z "$hygiene_fn" ]]; then
   exit 1
 fi
 
-liveness_block="$(extract_block '^  void_failed_run_repos_json="\$\(jq' '^  done < <' "$SCRIPT_DIR/agent-cycle.sh")"
+liveness_block="$(extract_block '^  void_failed_run_repos_json="\$\(jq' '^  done < <' "$SCRIPT_DIR/lib/candidate-gather.sh")"
 if [[ -z "$liveness_block" ]]; then
-  echo "FAIL - could not extract the void-liveness gather block from agent-cycle.sh — has it moved?" >&2
+  echo "FAIL - could not extract the void-liveness gather block from lib/candidate-gather.sh — has it moved?" >&2
   exit 1
 fi
 
@@ -317,11 +317,13 @@ assert_eq "  ... and offers no ids to decide it with" \
 #
 # Tab-separated: expected count, description, pattern. The quoted heredoc
 # delimiter is what keeps `$void_json` and its siblings the variable *names*
-# they are in agent-cycle.sh rather than expansions this shell should make,
-# and `grep -F` matches them as the literals they are.
+# they are in lib/candidate-gather.sh (#771 moved the repo walk and
+# requirement 34l's re-derivation there, out of agent-cycle.sh) rather than
+# expansions this shell should make, and `grep -F` matches them as the
+# literals they are.
 while IFS=$'\t' read -r want desc pattern; do
   [[ -n "$pattern" ]] || continue
-  assert_eq "$desc" "$want" "$(grep -cF -- "$pattern" "$SCRIPT_DIR/agent-cycle.sh")"
+  assert_eq "$desc" "$want" "$(grep -cF -- "$pattern" "$SCRIPT_DIR/lib/candidate-gather.sh")"
 done <<'PATTERNS'
 1	void_config_actioned is handed the unnarrowed all_repos_json	void_config_actioned "$void_json" "$all_repos_json"
 0	  ... and never the --repo-filtered repos_json	void_config_actioned "$void_json" "$repos_json"

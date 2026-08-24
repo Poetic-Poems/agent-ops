@@ -270,11 +270,11 @@ extract_claims_fold() {
     /^  claimed_fold_docs="\$\(printf/ { on = 1 }
     on                                 { print }
     on && /<<<"\$claimed_fold_docs"\)"$/ { exit }
-  ' "$SCRIPT_DIR/agent-cycle.sh"
+  ' "$SCRIPT_DIR/lib/candidate-gather.sh"
 }
 claims_fold_block="$(extract_claims_fold)"
 if [[ "$claims_fold_block" != *"claimed_fold_docs"* ]]; then
-  echo "FAIL - could not extract the claims fold from agent-cycle.sh — has it moved?" >&2
+  echo "FAIL - could not extract the claims fold from lib/candidate-gather.sh — has it moved?" >&2
   exit 1
 fi
 

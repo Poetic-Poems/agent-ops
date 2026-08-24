@@ -99,10 +99,10 @@ issues_block_src="$(awk '
   index($0, "  # The issues source is one source at four ranks") == 1 { on = 1 }
   on && index($0, "  tech_debt=\"[]\"") == 1 { exit }
   on { print }
-' "$SCRIPT_DIR/agent-cycle.sh")"
+' "$SCRIPT_DIR/lib/candidate-gather.sh")"
 if [[ "$issues_block_src" != *'issues-excluded'* \
    || "$issues_block_src" != *'latest_issues_excluded_json'* ]]; then
-  printf 'FAIL - could not extract the issues-source block from agent-cycle.sh (moved or reworded?)\n'
+  printf 'FAIL - could not extract the issues-source block from lib/candidate-gather.sh (moved or reworded?)\n'
   exit 1
 fi
 

@@ -51,9 +51,9 @@ entry_build_block="$(awk '
   index($0, "  entry_docs=\"$(printf") == 1 { on = 1 }
   on                                         { print }
   on && index($0, "<<<\"$entry_docs\")\"") > 0 { exit }
-' "$SCRIPT_DIR/agent-cycle.sh")"
+' "$SCRIPT_DIR/lib/candidate-gather.sh")"
 if [[ "$entry_build_block" != *'entry_docs'* || "$entry_build_block" != *'human_visibility: []'* ]]; then
-  printf 'FAIL - could not extract the per-repo entry build from agent-cycle.sh (moved or reworded?)\n'
+  printf 'FAIL - could not extract the per-repo entry build from lib/candidate-gather.sh (moved or reworded?)\n'
   exit 1
 fi
 
