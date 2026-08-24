@@ -657,7 +657,7 @@ rather than starting new work — and all are pre-fetched:
 - **`merge-conflicts`** — pull requests this system raised that are otherwise
   ready (for review or for merge) but whose `mergeable` is definitively
   `CONFLICTING` because the base advanced underneath them (requirement 3g). A
-  rebase-and-resolve makes the PR mergeable again; until it is, a human cannot land
+  rebase-and-resolve makes the PR mergeable again; until it is, nothing can land
   it and nothing else on it can proceed. Ranked third, and across all repos
   (requirement 15d). Like `abandoned-drafts` its candidacy turns on something no
   event on the PR itself carries — the base moving, which GitHub reflects in
@@ -669,7 +669,7 @@ rather than starting new work — and all are pre-fetched:
   `abandoned_draft_after_hours` (requirement 3e). A stage that timed out, hit a
   usage limit, or died leaves its draft PR behind as a stalled claim; finishing it
   costs less than starting fresh and turns the back-pressure slot it occupies —
-  which nothing would otherwise clear — into a PR a human can merge.
+  which nothing would otherwise clear — into a landable PR.
   Ranked fourth, and across all repos (requirement 15c). Uniquely, its candidacy
   turns on the passage of time itself, which the no-op fingerprint must account
   for (requirement 3b) as it must for merge-conflicts' base-driven flip.
@@ -1607,9 +1607,9 @@ implements.
       sitting in whichever queue the level-aware exclusion above currently
       parks it in still carries `pr_label` and is deliberately excluded from
       the sum above, so a repository can hold arbitrarily many open labelled
-      PRs while the sum stays small. Of the two
-      ways to be wrong here, deferring a cycle that could have run is
-      recoverable next cycle and opening work past a full cap is not.
+      PRs while the sum stays small. Of the two ways to be wrong here,
+      deferring a cycle that could have run is recoverable next cycle and
+      opening work past a full cap is not.
 2.2a. **Back-pressure throttles starting work, not finishing it.** Compute the
    count in 2.2 but **defer the stand-down** until the sources are gathered
    (requirements 3c, 3g, 3z and 3e). If back-pressure has tripped *and* any
@@ -1623,7 +1623,7 @@ implements.
    opening a new one — and three are doubly apt here, because they already hold
    back-pressure slots the cap counts: an abandoned draft occupies a slot nothing
    will clear until the draft is finished, and a conflicted or dequeued PR
-   occupies one the human cannot merge to free until it is fixed.
+   occupies one nothing can land to free until it is fixed.
 
    Without this the pipeline deadlocks exactly when it is most stuck.
    `max_open_agent_prs` PRs all sitting on "changes requested" is a state the
@@ -1652,7 +1652,7 @@ implements.
    scored as contradicting a band it was not allowed to walk.
 2.2b. **The decision site folds in what 2.2's count missed.** 2.2a's own
    justification for treating a conflicted or dequeued PR as doubly apt —
-   "occupies one the human cannot merge to free until it is fixed" — is only
+   "occupies one nothing can land to free until it is fixed" — is only
    true if that PR is actually counted somewhere. It usually is not: 2.2's
    count is taken before this cycle's `merge_conflicts` and `dequeued`
    candidates are gathered (they arrive only once each repo's sources are
@@ -10951,8 +10951,10 @@ implements.
 
     Nothing in this pipeline infers "merged" from anything but `merged`/
     `merged_at` — the queue's asynchronous landing makes this load-bearing
-    rather than merely tidy, since "the human clicked merge" (enqueued) no
-    longer implies "merged" the moment a click happens.
+    rather than merely tidy, since enqueueing — a human's merge click at
+    `merge_autonomy: human`, the Script's own arming step at
+    `agent-merges-routine` and above — no longer implies "merged" the moment
+    it happens.
 
 38g. **The ruleset setting behind requirement 38c's own approval derivation
     is reported, not silent (agent-ops#391).** GitHub computes
