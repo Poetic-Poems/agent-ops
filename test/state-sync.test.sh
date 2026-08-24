@@ -101,6 +101,13 @@ printf 'transcript\n' > "$state/cycles/20260720T010000Z-1/coordinator.out"
 # holding `cycles_retained` of them.
 printf '{"type":"system"}\n' > "$state/cycles/20260720T010000Z-1/coordinator.stream.jsonl"
 printf '{"type":"system"}\n' > "$state/reviews/20260720T020000Z-1/reviewer.stream.jsonl"
+# The fleet-log snapshot beside them (agent-ops#763). Same class and a sharper
+# case of it: the union of every node's log.jsonl as this cycle saw it, so
+# publishing it would send a peer a derivative of the logs it is already being
+# sent — one copy per retained cycle, each the whole fleet's history to that
+# point.
+printf '{"type":"union"}\n' > "$state/cycles/20260720T010000Z-1/.fleet-log.jsonl"
+printf '{"type":"union"}\n' > "$state/reviews/20260720T020000Z-1/.fleet-log.jsonl"
 # Every directory here carries a file, because git stores no empty ones: a
 # cycle that stood down before its first stage leaves an empty directory, and
 # that directory does not replicate. Its log.jsonl entry does, which is what
@@ -156,6 +163,14 @@ assert_eq "a cycle's stage stream does not replicate" "0" \
   "$(test -e "$pushed/cycles/20260720T010000Z-1/coordinator.stream.jsonl" && echo 1 || echo 0)"
 assert_eq "nor does a review's" "0" \
   "$(test -e "$pushed/reviews/20260720T020000Z-1/reviewer.stream.jsonl" && echo 1 || echo 0)"
+assert_eq "a cycle's fleet-log snapshot does not replicate" "0" \
+  "$(test -e "$pushed/cycles/20260720T010000Z-1/.fleet-log.jsonl" && echo 1 || echo 0)"
+assert_eq "nor does a review's" "0" \
+  "$(test -e "$pushed/reviews/20260720T020000Z-1/.fleet-log.jsonl" && echo 1 || echo 0)"
+# The record itself is untouched by either exclusion — what a peer reads of a
+# cycle is still there.
+assert_eq "the record survives both exclusions" "1" \
+  "$(test -f "$pushed/cycles/20260720T010000Z-1/coordinator.out" && echo 1 || echo 0)"
 
 assert_contains "the commit names the node" "state: active-node" \
   "$(git -C "$pushed" log -1 --format=%s)"
@@ -283,11 +298,15 @@ assert_contains "a later push prunes a reappearing stale dir" "pruned 1 cycles r
 assert_eq "the stale directory is gone" "0" \
   "$(test -e "$lr_state/cycles/20250101T000000Z-9" && echo 1 || echo 0)"
 
-# --- Local retention of the stage streams -------------------------------------
-# A second, much tighter bound (state_local_streams_retained), on the streams
-# alone: they are megabytes where the records holding them are kilobytes, so
-# the streams go early and the records stay. What this asserts is precisely
-# that separation — the record survives its stream.
+# --- Local retention of the derived files -------------------------------------
+# A second, much tighter bound (state_local_streams_retained), on the derived
+# files alone: they are megabytes where the records holding them are kilobytes,
+# so they go early and the records stay. What this asserts is precisely that
+# separation — the record survives them.
+#
+# Both files in the class are exercised, not just the stream: `.fleet-log.jsonl`
+# was absent from this prune until agent-ops#763 and so fell through to the
+# record retention, a thousand deep, which is the whole of the bug.
 sr_home="$(new_node stream-retention-node)"
 sr_state="$sr_home/.local/state/poetic-agents"
 # A real event rather than filler: this node's branch survives to the union
@@ -299,44 +318,59 @@ while (( i < 4 )); do
   mkdir -p "$d"
   printf 'filler\n' > "$d/coordinator.out"
   printf '{"type":"system"}\n' > "$d/coordinator.stream.jsonl"
+  printf '{"type":"union"}\n' > "$d/.fleet-log.jsonl"
   r="$(printf '%s/reviews/20260301T%06dZ-%d' "$sr_state" "$i" "$i")"
   mkdir -p "$r"
   printf 'filler\n' > "$r/review.out"
   printf '{"type":"system"}\n' > "$r/reviewer.stream.jsonl"
+  printf '{"type":"union"}\n' > "$r/.fleet-log.jsonl"
   i=$(( i + 1 ))
 done
 out="$(sync_as "$sr_home" active push STATE_SYNC_LOCAL_RETAINED=10 STATE_SYNC_STREAMS_RETAINED=2)"
-assert_eq "the stream-retention push exits 0" "0" "$?"
-assert_contains "a push reports the stream prune" "pruned 2 stage stream(s) from cycles" "$out"
+assert_eq "the derived-retention push exits 0" "0" "$?"
+# Four files across the two doomed cycle directories: a stream and a snapshot
+# each. The count is the assertion that the snapshot is in the class at all.
+assert_contains "a push reports the derived prune" "pruned 4 derived file(s) from cycles" "$out"
 assert_eq "the oldest cycle's stream is deleted" "0" \
   "$(test -e "$sr_state/cycles/20260301T000000Z-0/coordinator.stream.jsonl" && echo 1 || echo 0)"
+assert_eq "…and its fleet-log snapshot with it" "0" \
+  "$(test -e "$sr_state/cycles/20260301T000000Z-0/.fleet-log.jsonl" && echo 1 || echo 0)"
 assert_eq "…while the record it belonged to is untouched" "1" \
   "$(test -f "$sr_state/cycles/20260301T000000Z-0/coordinator.out" && echo 1 || echo 0)"
 assert_eq "the newest cycles keep their streams" "1" \
   "$(test -f "$sr_state/cycles/20260301T000003Z-3/coordinator.stream.jsonl" && echo 1 || echo 0)"
+assert_eq "…and their snapshots — the running cycle still reads its own" "1" \
+  "$(test -f "$sr_state/cycles/20260301T000003Z-3/.fleet-log.jsonl" && echo 1 || echo 0)"
 assert_eq "reviews are bounded the same way" "0" \
   "$(test -e "$sr_state/reviews/20260301T000000Z-0/reviewer.stream.jsonl" && echo 1 || echo 0)"
+assert_eq "…snapshots included" "0" \
+  "$(test -e "$sr_state/reviews/20260301T000000Z-0/.fleet-log.jsonl" && echo 1 || echo 0)"
 assert_eq "…and keep their own records too" "1" \
   "$(test -f "$sr_state/reviews/20260301T000000Z-0/review.out" && echo 1 || echo 0)"
-assert_eq "no cycle directory is removed by the stream prune" "4" \
+assert_eq "no cycle directory is removed by the derived prune" "4" \
   "$(find "$sr_state/cycles" -mindepth 1 -maxdepth 1 -type d | wc -l)"
 
-# A stream already in the mirror from before the exclusion existed is deleted
-# from it, not merely left behind: `--delete-excluded` is what makes the rule
-# retroactive, and without it every node's branch would keep whatever it had
-# published up to the day this landed.
+# A derived file already in the mirror from before its exclusion existed is
+# deleted from it, not merely left behind: `--delete-excluded` is what makes
+# the rules retroactive, and without it every node's branch would keep whatever
+# it had published up to the day this landed. For `.fleet-log.jsonl` that is
+# not a hypothetical tail: at agent-ops#763 every copy on every branch predated
+# the rule, so the retroactive half is the entire reclamation.
 git clone --quiet --branch nodes/active-node "$remote" "$tmp_dir/legacy"
 mkdir -p "$tmp_dir/legacy/cycles/20260720T010000Z-1"
 printf '{"type":"system"}\n' > "$tmp_dir/legacy/cycles/20260720T010000Z-1/legacy.stream.jsonl"
+printf '{"type":"union"}\n' > "$tmp_dir/legacy/cycles/20260720T010000Z-1/.fleet-log.jsonl"
 git -C "$tmp_dir/legacy" add -A >/dev/null 2>&1
-git -C "$tmp_dir/legacy" commit --quiet -m "state: a stream published before the exclusion" >/dev/null 2>&1
+git -C "$tmp_dir/legacy" commit --quiet -m "state: derived files published before the exclusions" >/dev/null 2>&1
 git -C "$tmp_dir/legacy" push --quiet origin HEAD:nodes/active-node >/dev/null 2>&1
 sync_as "$active_home" active push >/dev/null
-assert_eq "the legacy-stream push exits 0" "0" "$?"
+assert_eq "the legacy-derived push exits 0" "0" "$?"
 rm -rf "$tmp_dir/pushed-again"
 git clone --quiet --branch nodes/active-node "$remote" "$tmp_dir/pushed-again"
 assert_eq "a stream already in the mirror is deleted from it" "0" \
   "$(test -e "$tmp_dir/pushed-again/cycles/20260720T010000Z-1/legacy.stream.jsonl" && echo 1 || echo 0)"
+assert_eq "a snapshot already in the mirror is deleted from it" "0" \
+  "$(test -e "$tmp_dir/pushed-again/cycles/20260720T010000Z-1/.fleet-log.jsonl" && echo 1 || echo 0)"
 
 # ==============================================================================
 # fetch — peers materialised whole, pruned when gone

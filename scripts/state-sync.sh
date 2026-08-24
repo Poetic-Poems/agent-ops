@@ -144,16 +144,25 @@ peers_dir="$(fleet_peers_dir "$workspace_root")"
 #                   the whole history in git. What a peer reads — the result
 #                   envelope — is published as `<stage>.out` exactly as
 #                   before.
+#   the fleet-log   `.fleet-log.jsonl` is the union of every node's
+#   snapshot         `log.jsonl` as one cycle saw it, materialised into that
+#                   cycle's own directory (`fleet_logs`, lib/fleet.sh) and
+#                   read only by the cycle that wrote it. Publishing it would
+#                   send a peer a derivative of the very logs it is already
+#                   being sent — and 200 copies of it, one per retained
+#                   cycle, each the size of the whole fleet's history to
+#                   that point (agent-ops#763).
 #   .git            the mirror's own repository, which lives at the same root.
 #
 # Everything else — log.jsonl, review-log.jsonl, revert-rate.jsonl, cycles/,
 # reviews/, disabled.json, the cron logs — is the node's contribution to the
 # fleet's memory and is published.
 #
-# The stream exclusion has to be stated twice, once here and once in the
-# cycles filter file below, because the cycle directories are transferred by a
-# second rsync whose `--filter` rules these `--exclude`s do not reach. The
-# comment is here rather than there so the two do not drift.
+# The two per-cycle exclusions — the stage streams and the fleet-log snapshot
+# — have to be stated twice, once here and once in the cycles filter file
+# below, because the cycle directories are transferred by a second rsync whose
+# `--filter` rules these `--exclude`s do not reach. The comment is here rather
+# than there so the two do not drift.
 EXCLUDES=(
   --exclude=.git
   --exclude=lock.json
@@ -186,6 +195,7 @@ EXCLUDES=(
   # of every repository by a full interval.
   --exclude=labels-ensured/
   --exclude=*.stream.jsonl
+  --exclude=.fleet-log.jsonl
   --exclude=/dashboard/
 )
 
@@ -245,17 +255,34 @@ prune_local() {
   return 0
 }
 
-# The stage event streams are bounded far more tightly than the records that
-# hold them, and separately from them, because they are a different order of
-# size: a cycle directory without its streams is a handful of kilobytes of
-# JSON, and one 47-turn Reviewer stream alone can be megabytes. Keeping
-# `state_local_cycles_retained` (1000) cycles' worth of those would trade the
-# node's whole disk for forensics nobody reads past the day of the incident,
-# so the streams go early and the records they belong to stay.
+# A record directory's *derived* files are bounded far more tightly than the
+# record that holds them, and separately from it, because they are a different
+# order of size: a cycle directory without them is a handful of kilobytes of
+# JSON, while one 47-turn Reviewer stream alone can be megabytes and the
+# fleet-log snapshot beside it is the whole fleet's history to that moment.
+# Keeping `state_local_cycles_retained` (1000) cycles' worth of those would
+# trade the node's whole disk for forensics nobody reads past the day of the
+# incident, so they go early and the records they belong to stay.
+#
+# Two files qualify, and the rule is the property they share rather than
+# either name: large, purely derived, and read only by the cycle that wrote
+# them.
+#
+#   `*.stream.jsonl`    a stage's whole event stream (lib/stage-run.sh).
+#   `.fleet-log.jsonl`  the union of every node's log as that cycle saw it
+#                       (`fleet_logs`, lib/fleet.sh).
+#
+# The second was missing here until agent-ops#763, so it fell through to
+# `prune_local` and was kept a thousand deep — 17 GB across one host's two
+# nodes and their peer mirrors, growing about a gigabyte a day. Anything
+# added to a record directory later that shares those three properties
+# belongs in this list too; the disk is the only thing that reports its
+# absence, and only once it is already gone.
 #
 # Newest-first with a floor of 1, exactly as `prune_local`: the cycle running
-# right now must never lose the stream its own watchdog is reading.
-prune_streams() {
+# right now must never lose the stream its own watchdog is reading, nor the
+# snapshot its own gates are still reading back.
+prune_derived() {
   local dir="$1" retained="$2" doomed pruned=0
   [[ -d "$dir" ]] || return 0
   (( retained >= 1 )) || retained=1
@@ -264,10 +291,12 @@ prune_streams() {
     while IFS= read -r -d '' f; do
       rm -f -- "$f"
       pruned=$(( pruned + 1 ))
-    done < <(find "${dir:?}/$doomed" -maxdepth 1 -name '*.stream.jsonl' -type f -print0 2>/dev/null)
+    done < <(find "${dir:?}/$doomed" -maxdepth 1 -type f \
+                  \( -name '*.stream.jsonl' -o -name '.fleet-log.jsonl' \) \
+                  -print0 2>/dev/null)
   done < <(find "$dir" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null \
              | sort -r | tail -n "+$(( retained + 1 ))")
-  (( pruned > 0 )) && say "pruned $pruned stage stream(s) from $(basename "$dir"), keeping those of the newest $retained"
+  (( pruned > 0 )) && say "pruned $pruned derived file(s) from $(basename "$dir"), keeping those of the newest $retained"
   return 0
 }
 
@@ -283,8 +312,8 @@ do_push() {
   # and the machine stays the longer record of the two.
   prune_local "$state_dir/cycles"  "$local_retained"
   prune_local "$state_dir/reviews" "$local_retained"
-  prune_streams "$state_dir/cycles"  "$streams_retained"
-  prune_streams "$state_dir/reviews" "$streams_retained"
+  prune_derived "$state_dir/cycles"  "$streams_retained"
+  prune_derived "$state_dir/reviews" "$streams_retained"
 
   # Start from the branch's current tip when there is one — the amend below
   # keeps history a single rolling commit per node.
@@ -304,11 +333,13 @@ do_push() {
   filter_file="$(mktemp)"
   # shellcheck disable=SC2064  # expand the path now, while it is still set
   trap "rm -f '$filter_file'" RETURN
-  # First rule wins in an rsync filter, so the stage streams are excluded
-  # ahead of the per-cycle includes that would otherwise carry them. With
-  # `--delete-excluded` below, this also removes any stream a node published
-  # before this rule existed.
+  # First rule wins in an rsync filter, so the derived per-cycle files are
+  # excluded ahead of the per-cycle includes that would otherwise carry them.
+  # With `--delete-excluded` below, this also removes any copy a node
+  # published before these rules existed — which for `.fleet-log.jsonl` is
+  # every copy on every branch at the time of agent-ops#763.
   printf -- '- *.stream.jsonl\n' >> "$filter_file"
+  printf -- '- .fleet-log.jsonl\n' >> "$filter_file"
   while IFS= read -r c; do
     [[ -n "$c" ]] && printf -- '+ /%s/\n' "$c" >> "$filter_file"
   done < <(kept_cycles)
