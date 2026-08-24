@@ -102,6 +102,7 @@ STUB
     printf '#!/usr/bin/env bash\nset -uo pipefail\n'
     printf 'SCRIPT_DIR=%q\n' "$run_dir"
     printf 'state_dir=%q\n' "$run_dir"
+    printf 'log_file=%q\n' "$run_dir/log.jsonl"
     printf 'lock_acquired=0\nlock_file=%q\nclone_dir=""\n' "$run_dir/lock.json"
     printf 'max_chained_cycles=%q\n' "$max"
     printf '%s\n' "$argv_decl"
@@ -166,6 +167,7 @@ slow_script="$slow_run_dir/run.sh"
   printf '#!/usr/bin/env bash\nset -uo pipefail\n'
   printf 'SCRIPT_DIR=%q\n' "$slow_run_dir"
   printf 'state_dir=%q\n' "$slow_run_dir"
+  printf 'log_file=%q\n' "$slow_run_dir/log.jsonl"
   printf 'lock_acquired=0\nlock_file=%q\nclone_dir=""\n' "$slow_run_dir/lock.json"
   printf 'max_chained_cycles=3\nORIGINAL_ARGV=()\n'
   printf 'log_event() { :; }\nmaybe_run_enabler() { :; }\n'
@@ -207,6 +209,7 @@ sig_script="$sig_run_dir/run.sh"
   printf '#!/usr/bin/env bash\nset -uo pipefail\n'
   printf 'SCRIPT_DIR=%q\n' "$sig_run_dir"
   printf 'state_dir=%q\n' "$sig_run_dir"
+  printf 'log_file=%q\n' "$sig_run_dir/log.jsonl"
   printf 'lock_acquired=0\nlock_file=%q\nclone_dir=""\n' "$sig_run_dir/lock.json"
   printf 'max_chained_cycles=3\nORIGINAL_ARGV=()\n'
   printf 'log_event() { :; }\nmaybe_run_enabler() { :; }\n'
