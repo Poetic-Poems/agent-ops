@@ -370,7 +370,7 @@ assert_eq "an unreadable refinements/policy argument degrades to exempt, not to 
 # requirement 2.2a's back-pressure *empties*, so this path was unreachable on
 # a restricted cycle; a gate that also counts the finishing sources makes it
 # reachable, and a fallback reading only the arrays would answer it by
-# starting fresh work through a full human gate — the one thing back-pressure
+# starting fresh work through a full landing gate — the one thing back-pressure
 # exists to stop. The narrowing itself is lib/handoff.sh's
 # handoff_narrow_repos_to_finishing_sources (sourced above, issue #431) —
 # `repos_with_security`'s own `sources` carries no `dequeued`, so that is all

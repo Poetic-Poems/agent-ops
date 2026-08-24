@@ -17,9 +17,10 @@ A pipeline that, on a configured cadence
 (`schedule.cycle_interval_minutes`), picks **at most one** well-scoped item
 of pending work from one of two GitHub repositories, implements it on a
 feature branch in an ephemeral clone, reviews and corrects the result, and
-leaves a mergeable pull request for a human to approve. It runs unattended
-on the host machine (WSL2 Ubuntu). The only human involvement is final
-pull-request review and merge.
+leaves a mergeable pull request for approval and landing at the repository's
+configured `merge_autonomy` level (see "## The Landing Gate"). It runs
+unattended on the host machine (WSL2 Ubuntu); human involvement narrows to
+whatever that level still requires.
 
 ```
 cron (schedule.cycle_interval_minutes)
@@ -27,7 +28,7 @@ cron (schedule.cycle_interval_minutes)
        ├─ Co-Ordinator (Haiku)      ← selects ≤ 1 item, emits a work order; nothing else
        ├─ Implementer (Sonnet/Haiku)← ephemeral clone, feature branch, draft PR
        ├─ Reviewer (Sonnet/Opus)    ← corrects the branch, flips the PR to ready
-       │     └─ Human               ← reviews and merges (the only gate)
+       │     └─ Human Reviewer      ← approves/merges per `merge_autonomy` (D18)
        ├─ Enabler (Opus, rarely)    ← re-examines long-blocked items at the end of a
        │                              cycle: unblocks, voids, or raises an issue
        │                              assigned to the Human saying what to do
@@ -62,9 +63,12 @@ cron (schedule.cycle_interval_minutes)
    the end of a cycle, that re-examines items recorded as blocked which the
    pipeline has not cleared by itself. It unblocks, voids, or leaves them
    blocked with a fresher condition; where an item was never specified well
-   enough to select, it specifies it (requirement 36b); and where only a human
-   can move an item, it composes a GitHub issue that the Script files, assigned
-   to that human. It writes no code and raises no pull request.
+   enough to select, it specifies it (requirement 36b); and where an item
+   cannot be moved without escalating, it composes a GitHub issue that the
+   Script files, assigned to a human — directly, or, for a
+   refinement-disagreement item (requirement 36b), after a bounded
+   adjudication pass per `escalation_autonomy`. It writes no code and raises
+   no pull request.
 8. The **Refiner** — a headless Claude Code invocation, engaged from the same
    end-of-cycle cleanup as the Enabler and immediately after it, that writes
    the specification an under-specified item lacks *before* the item has to be
@@ -653,7 +657,7 @@ rather than starting new work — and all are pre-fetched:
 - **`merge-conflicts`** — pull requests this system raised that are otherwise
   ready (for review or for merge) but whose `mergeable` is definitively
   `CONFLICTING` because the base advanced underneath them (requirement 3g). A
-  rebase-and-resolve makes the PR mergeable again; until it is, a human cannot land
+  rebase-and-resolve makes the PR mergeable again; until it is, nothing can land
   it and nothing else on it can proceed. Ranked third, and across all repos
   (requirement 15d). Like `abandoned-drafts` its candidacy turns on something no
   event on the PR itself carries — the base moving, which GitHub reflects in
@@ -665,7 +669,7 @@ rather than starting new work — and all are pre-fetched:
   `abandoned_draft_after_hours` (requirement 3e). A stage that timed out, hit a
   usage limit, or died leaves its draft PR behind as a stalled claim; finishing it
   costs less than starting fresh and turns the back-pressure slot it occupies —
-  which nothing would otherwise clear — into a PR a human can merge.
+  which nothing would otherwise clear — into a landable PR.
   Ranked fourth, and across all repos (requirement 15c). Uniquely, its candidacy
   turns on the passage of time itself, which the no-op fingerprint must account
   for (requirement 3b) as it must for merge-conflicts' base-driven flip.
@@ -757,7 +761,7 @@ and the schema must carry every one of them.
 | `prompt_overrides` | `{}` | Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementer`/`reviewer`/`enabler`/`refiner`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. `approver` is deliberately absent from the enumeration: the Approver's...[continued below](#extended-notes-prompt_overrides) |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. It must not be `obsolete`: the pipeline would then project requirement 34k's human-only corroboration onto every draft it raises, and the void guard would close live drafts on the pipeline's own say-so — `scripts/doctor.sh` fails the config. Threaded through the Co-Ordinator's runtime input (requirement 4) into every work order's own `pr_label` field, which the Implementer labels its pull request with (requirement 23). |
 | `branch_prefix` | `agent/` | Branch name `agent/<item-slug>`, e.g. `agent/td26051201-fix-xyz`. |
-| `max_open_agent_prs` | `8` | Back-pressure: draft PRs, ready PRs still `CHANGES_REQUESTED`, and live claim-registry entries, carrying `pr_label` across all repos — excludes ready PRs whose next action is human-side (requirement 2.2). |
+| `max_open_agent_prs` | `8` | Back-pressure: draft PRs, ready PRs still `CHANGES_REQUESTED`, and live claim-registry entries, carrying `pr_label` across all repos — excludes ready PRs whose next action lies outside the pipeline (requirement 2.2). |
 | `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list (requirement 17a), so alternates turn a lost race into the next-best item instead of a wasted cycle. |
 | `coordinator_prompt_max_bytes` | `350000` | The largest assembled prompt the Script will hand the Co-Ordinator (requirement 4i). The default is derived from the 200000-token window of the Co-Ordinator model this installation runs, less the ~50000 tokens of system prompt and tool definitions the Script neither assembles nor can measure, less a reserve for the verdict itself, at the ~2.35 bytes per token JSON-escaped Markdown actually costs. Stated in bytes because bytes are what the Script can count without a tokenizer....[continued below](#extended-notes-coordinator_prompt_max_bytes) |
 | `max_chained_cycles` | `3` | Finish-then-continue (requirement 39): the most cycles that may run back-to-back in one lineage — the cron-fired original plus its immediate chained continuations — bounded so a busy fleet still yields the lock periodically. `1` disables chaining. |
@@ -1531,7 +1535,7 @@ implements.
       claim-registry entries for those repos** (requirement 17a — work a
       node has claimed but not yet surfaced as a PR; an item-keyed entry is
       dropped the moment its PR exists), is ≥ `max_open_agent_prs`, stand
-      down. This is the primary throttle on both spend and on the human gate
+      down. This is the primary throttle on both spend and on the landing gate
       silting up. The count is approximate by design: N nodes can pass it
       simultaneously, so the stated bound is `max_open_agent_prs +
       (nodes − 1)`, transient.
@@ -1611,11 +1615,12 @@ implements.
       signal that it truncated, so a capped listing simply produces low
       counts, and low counts open a gate whose purpose is to stay shut. Note
       that nothing bounds the listing at `max_open_agent_prs`: a pull request
-      waiting in the human's merge queue carries `pr_label` and is
-      deliberately excluded from the sum above, so a repository can hold
-      arbitrarily many open labelled PRs while the sum stays small. Of the two
-      ways to be wrong here, deferring a cycle that could have run is
-      recoverable next cycle and opening work past a full cap is not.
+      sitting in whichever queue the level-aware exclusion above currently
+      parks it in still carries `pr_label` and is deliberately excluded from
+      the sum above, so a repository can hold arbitrarily many open labelled
+      PRs while the sum stays small. Of the two ways to be wrong here,
+      deferring a cycle that could have run is recoverable next cycle and
+      opening work past a full cap is not.
 2.2a. **Back-pressure throttles starting work, not finishing it.** Compute the
    count in 2.2 but **defer the stand-down** until the sources are gathered
    (requirements 3c, 3g, 3z and 3e). If back-pressure has tripped *and* any
@@ -1629,7 +1634,7 @@ implements.
    opening a new one — and three are doubly apt here, because they already hold
    back-pressure slots the cap counts: an abandoned draft occupies a slot nothing
    will clear until the draft is finished, and a conflicted or dequeued PR
-   occupies one the human cannot merge to free until it is fixed.
+   occupies one nothing can land to free until it is fixed.
 
    Without this the pipeline deadlocks exactly when it is most stuck.
    `max_open_agent_prs` PRs all sitting on "changes requested" is a state the
@@ -1658,7 +1663,7 @@ implements.
    scored as contradicting a band it was not allowed to walk.
 2.2b. **The decision site folds in what 2.2's count missed.** 2.2a's own
    justification for treating a conflicted or dequeued PR as doubly apt —
-   "occupies one the human cannot merge to free until it is fixed" — is only
+   "occupies one nothing can land to free until it is fixed" — is only
    true if that PR is actually counted somewhere. It usually is not: 2.2's
    count is taken before this cycle's `merge_conflicts` and `dequeued`
    candidates are gathered (they arrive only once each repo's sources are
@@ -3615,7 +3620,7 @@ implements.
      tech-debt-only gate could never reject during a restricted cycle, and
      this function was unreachable); under a gate that also counts the
      finishing sources it can, and a fallback blind to `sources` would answer
-     a back-pressured cycle by starting fresh work through a full human gate.
+     a back-pressured cycle by starting fresh work through a full landing gate.
      `eligible_items_total > 0` is what let
      the gate reject a verdict at all, and every band that set counts has a
      rank in this walk, so there is always something to fall to — the one
@@ -6201,16 +6206,18 @@ implements.
     issues and review-feedback, and likewise outranking the plain
     repo-then-source walk: any
     selectable `merge_conflicts` candidate in any repo is taken before any fresh
-    work in a more-overdue repo. The PR is otherwise ready — a human is waiting to
-    land it — and until the conflict is resolved nothing else on it can proceed, so
+    work in a more-overdue repo. The PR is otherwise ready to land, and until
+    the conflict is resolved nothing else on it can proceed, so
     a rebase-and-resolve is finishing, not starting. As with review-feedback, the
     Co-Ordinator must **not** apply requirement 16's claim exclusion to this
     source — the open PR *is* the item, and the pre-fetch (requirement 3g) has
     already established it is ours and conflicting. The Implementer's job here is
     narrow: rebase onto the base and resolve the conflict, without completing or
-    re-doing the underlying item (that is what merges the PR, and remains the
-    human's call). A Dependabot takeover candidate (requirement 3s) ranks and is
-    exempted from requirement 16's claim exclusion here identically, even though
+    re-doing the underlying item (that is what merges the PR, and remains this
+    repository's own landing decision — see "The Landing Gate" — not the
+    Implementer's to make). A Dependabot takeover candidate (requirement 3s)
+    ranks and is exempted from requirement 16's claim exclusion here
+    identically, even though
     it is, unlike every other `merge_conflicts` candidate, genuinely new work — a
     fresh PR on a fresh branch, not a finish of an existing one, and it does raise
     `max_open_agent_prs`' count by one once claimed (Dependabot's own PR never
@@ -7814,9 +7821,11 @@ implements.
 32. Ends with a single JSON object:
     `{"status": "ready" | "blocked", "pr_url": …, "fixes_applied": […], "comments_left": n, "ci": "passing" | …}`,
     plus `reason` — one line naming what is wrong — on `blocked`, which becomes
-    the block's own `detail` under requirement 32a. `needs-human` is accepted as
-    a synonym for `blocked` for one release, on the precedent of requirement
-    20's shape migration; the prompt emits `blocked`.
+    the block's own `detail` under requirement 32a. `blocked` is the only
+    spelling that means anything; requirement 32a's `!= ready` fall-through
+    already routes every other ending — an unparseable status included — down
+    the same `attempt-failed` path, so no synonym was ever needed to provide
+    tolerance for one.
 
     Additive to a `ready` verdict, absent or empty on the overwhelming
     majority of rounds: `"open_questions": [{"question": …,
@@ -9981,6 +9990,21 @@ implements.
     rather than against the closure. That loop is the reason the ask must be
     executable without further investigation: an escalation a reader has to
     interpret has failed even where its verdict was right.
+
+    **Which escalations configuration routes, and which it does not.** An
+    `escalate` verdict reached here is a person's at every setting of
+    `escalation_autonomy`: the acts it names — a credential or secret, an
+    account/settings/permissions change, a product or architecture decision,
+    an external service, information that exists only in someone's head — are
+    owner-only, and the ladder has no rung that could settle one. The single
+    exception is requirement 36b's **refinement disagreement**, and it is the
+    only escalation the key gates: at `adjudicate-first` one bounded
+    adjudication pass runs first, and a person is reached only where that pass
+    declines to settle it. `agent-cycle.sh` branches on exactly that
+    distinction (`refinement_is_disagreement`), so prose describing an
+    ordinary escalation may name the person, and prose describing a
+    refinement disagreement may not — it names the condition, and the key
+    that chooses the destination.
 36b. **The refinement duty.** For an item carrying `kind: "needs-refinement"`
     (requirement 34e) the Enabler reads the item and its whole context and then:
 
@@ -10021,11 +10045,12 @@ implements.
       **verdict**: it changes nothing about the choice between `unblocked`,
       `still-blocked` and `escalate` below, and never turns a refinement
       into an escalation on its own.
-    - **Escalates**, where a human must decide, answer, or act first — through
-      the unchanged protocol of requirement 36a, in a **separate** issue. Never
-      the work item's own issue: that protocol ends with "close this issue when
-      you are done", which on the item's own issue asks the human to close the
-      work itself and removes it from the `issues` source. The ask is phrased so
+    - **Escalates**, where this stage cannot settle it — a decision, answer, or
+      action is needed first — through the unchanged protocol of requirement
+      36a, in a **separate** issue. Never the work item's own issue: that
+      protocol ends with "close this issue when you are done", which on the
+      item's own issue asks the human to close the work itself and removes it
+      from the `issues` source. The ask is phrased so
       the human's answers land as comments on the escalation issue *before* they
       close it, since the closure is what returns the item to a later engagement
       and their comments are what let that engagement complete the refinement.
@@ -10112,9 +10137,11 @@ implements.
     **The thrash guard.** An item is refined at most once between human touches.
     Where `refined_before` is set, a second refinement is not the answer: two
     models disagreeing about whether a specification is adequate is a
-    disagreement only a human can settle, and a third pass settles it only by
-    coincidence. The prompt says so, and the Script enforces it — an `unblocked`
-    verdict on a refinement item whose `refined_before` is set is **refused**,
+    disagreement that escalates instead — adjudicated first at
+    `adjudicate-first`, reaching a person directly at `always-escalate` — and a
+    third pass from the Enabler settles it only by coincidence. The prompt says
+    so, and the Script enforces it — an `unblocked` verdict on a refinement
+    item whose `refined_before` is set is **refused**,
     logged as a `warning`, and recorded with the outcome `refinement-refused`,
     leaving the item blocked. Mechanical for requirement 34d's reason: "do not
     do this" is already in the prompt, and the model that would do it anyway is
@@ -10192,17 +10219,29 @@ implements.
     item stays blocked and the log is the only place a stage that routinely
     omits items would ever become visible.
 
-38. **Human-visibility.** Work genuinely waiting on the human must be visible
-    to the human — on `github.com/pulls/review-requested` for a pull request,
-    on Assigned-to-me for a genuine Enabler escalation (requirement 36a), on a
-    filtered issue list (`blocked`/`blocked:needs-refinement` — requirement
-    38b) for a Co-Ordinator-, Refiner- or Implementer-recorded refinement
-    block — not merely recorded in the pipeline's own log. A 2026-08-07
-    pipeline-flow review found neither guarantee held: no currently-open pull
-    request carried a live review request (every prior request had been
-    consumed by a submitted review), and the one genuine human-decision block
-    in this repository (#203) was unassigned, so it never appeared on
-    Assigned-to-me either.
+38. **Human-visibility.** Whatever the configured escalation ladder leaves for
+    the human — every item `escalation_autonomy`/`merge_autonomy` did not
+    settle earlier, not a fixed universal — must be visible to them: on
+    `github.com/pulls/review-requested` for a pull request, on Assigned-to-me
+    for a genuine Enabler escalation (requirement 36a), on a filtered issue
+    list (`blocked`/`blocked:needs-refinement` — requirement 38b) for a
+    Co-Ordinator-, Refiner- or Implementer-recorded refinement block — not
+    merely recorded in the pipeline's own log. A 2026-08-07 pipeline-flow
+    review found neither guarantee held: no currently-open pull request
+    carried a live review request (every prior request had been consumed by a
+    submitted review), and the one genuine human-decision block in this
+    repository (#203) was unassigned, so it never appeared on Assigned-to-me
+    either.
+
+    Today this membership test is still, in practice, every item the ladder
+    leaves over: `run_enabler_adjudication` (D18, agent-ops#627) runs inline,
+    in the same cycle as the `escalate` verdict that triggers it, so no item
+    is ever durably parked awaiting adjudication and there is no non-person
+    waiting state for this requirement to cover. #668's landing gate is what
+    would first change that — it holds a pull request across cycles on an
+    unresolved open question, with its own adjudication explicitly not
+    same-cycle — and is the point at which this membership test would
+    genuinely need widening; revisit it there, not before.
 
 38a. **A ready pull request's live review request is kept, not only made
     once.** `lib/handoff.sh`'s `ensure_human_reviewer(pr_url, assignee)`
@@ -10933,8 +10972,10 @@ implements.
 
     Nothing in this pipeline infers "merged" from anything but `merged`/
     `merged_at` — the queue's asynchronous landing makes this load-bearing
-    rather than merely tidy, since "the human clicked merge" (enqueued) no
-    longer implies "merged" the moment a click happens.
+    rather than merely tidy, since enqueueing — a human's merge click at
+    `merge_autonomy: human`, the Script's own arming step at
+    `agent-merges-routine` and above — no longer implies "merged" the moment
+    it happens.
 
 38g. **The ruleset setting behind requirement 38c's own approval derivation
     is reported, not silent (agent-ops#391).** GitHub computes
@@ -15008,7 +15049,7 @@ pull request, run the ones the change touches and any it could regress.
    show the review pending. Assert the negative too, because it is the whole
    point of the requirement's bound: `reviewDecision` must still read
    `CHANGES_REQUESTED` and the PR must still be un-mergeable afterwards. A
-   re-request that cleared the block would have moved the human gate, not
+   re-request that cleared the block would have moved the landing gate, not
    rung it.
 8d-ii. **A `ready` verdict is confirmed against GitHub, not trusted, before any
    handoff mechanism runs (requirement 31c).** `test/review-gate.test.sh`
@@ -15171,10 +15212,10 @@ pull request, run the ones the change touches and any it could regress.
    forward the round-start bound: it is a trailing positional argument, so
    dropping it silently disarms the gate rather than failing.
 8e. **A pull request nobody could hand off reaches the Enabler, not the human
-   (requirement 32a).** Drive a cycle whose Reviewer answers `blocked` (and again
-   with the legacy `needs-human`): the cycle must log an `attempt-failed` for the
-   item carrying the PR's `pr_url`, so that the next cycle lists it blocked and,
-   after `enabler_after_coordinator_cycles`, eligible — with the `pr_url` present
+   (requirement 32a).** Drive a cycle whose Reviewer answers `blocked`: the
+   cycle must log an `attempt-failed` for the item carrying the PR's `pr_url`,
+   so that the next cycle lists it blocked and, after
+   `enabler_after_coordinator_cycles`, eligible — with the `pr_url` present
    in the Enabler's runtime input. Assert the PR is *not* commented on with
    anything telling a human it is theirs, and that a bare `stage-end` is no
    longer the only record: that shape named no item, pinned no state, and is what
@@ -17214,7 +17255,7 @@ standing the system up on a new machine.
    `gh api -X POST repos/Poetic-Poems/<repo>/labels -f name='autonomous-agent' -f color='ededed' -f description='PR raised by the autonomous agent system'`.
    If your `gh` version already supports `gh label create`, that form also works; the API form above is the most compatible fallback.
 3c. Create the Enabler's escalation label in both repos, the same way:
-   `gh api -X POST repos/Poetic-Poems/<repo>/labels -f name='enabler-escalation' -f color='b60205' -f description='The autonomous pipeline is blocked and needs a human to act'`
+   `gh api -X POST repos/Poetic-Poems/<repo>/labels -f name='enabler-escalation' -f color='b60205' -f description='Raised by the Enabler: a blocked item that escalates'`
    (`enabler_escalation_label`, requirement 36a). Without it an escalation is
    still raised — the create is retried unlabelled — but it arrives with only
    the assignment to distinguish it, so the human's filter and the duplicate
@@ -17254,8 +17295,10 @@ probe's answer is the limit message, which serves no tokens and costs
 nothing, and the first answered probe (a fraction of a cent of
 `implementer_model_trivial`) retires the stand-down fleet-wide, so at most
 one probe per stand-down is ever paid for. Because back-pressure caps open agent PRs
-at `max_open_agent_prs`, sustained spend is bounded by the rate at which the
-human merges — the system cannot run ahead of its only consumer.
+at `max_open_agent_prs`, sustained spend is bounded by the rate at which pull
+requests land — a human's own merge click at `merge_autonomy: human` and
+`agent-approves`, the arming step (requirement 8d) from `agent-merges-routine`
+up — the system cannot run ahead of its only consumer.
 
 The Approver (requirements 8b/8c) costs nothing at the product default
 (`merge_autonomy: human`): the stage is never engaged. Where an installation
@@ -17319,7 +17362,7 @@ requirements above, which state only what is.
 - **Draft-PR claiming is fused with the review flow**: the Implementer's
   draft PR is simultaneously the repos' standard claim marker and the
   Reviewer's input; the Reviewer flipping it to ready is the hand-off to the
-  human gate.
+  landing gate.
 - **An abandoned draft PR is itself a work source.** Draft-PR claiming (above)
   has a failure mode: a stage that dies mid-implementation leaves its draft PR
   behind as a claim nobody will ever finish, silting a back-pressure slot until a
@@ -17329,9 +17372,9 @@ requirements above, which state only what is.
   stalled drafts. It ranks seventh, after security, urgent issues, review-feedback,
   merge-conflicts and dequeued, and ahead of
   all fresh work (requirement 15c): finishing beats starting, and it turns a slot
-  silted with a dead draft into a PR a human can merge; under back-pressure it is
-  one of the four
-  finishing sources the cycle narrows to (requirement 2.2a). Four choices make it
+  silted with a dead draft into a landable PR; under back-pressure it is one of
+  the four finishing sources the cycle narrows to (requirement 2.2a). Four
+  choices make it
   safe: the draft/label/branch filter keeps it to *our* stalled work (never a
   human's PR, never a ready one); the ref is scoped to the head SHA, so a
   re-abandoned draft that has since gained commits is a new item rather than one
@@ -17344,13 +17387,13 @@ requirements above, which state only what is.
   pipeline (requirement 3b).
 - **A merge conflict on an otherwise-ready PR is itself a work source.** A PR this
   system raised can go green, be reviewed, even be approved, and then conflict when
-  the base advances underneath it — leaving a finished PR a human cannot merge and
+  the base advances underneath it — leaving a finished PR nothing can merge and
   a back-pressure slot nothing will clear. The `merge-conflicts` source
   (requirement 3g) treats such a PR — open, non-draft, ours, `mergeable`
   definitively `CONFLICTING` — as selectable work: the pipeline rebases and
   resolves its own conflicts. It ranks fourth, after security, urgent issues and
   review-feedback,
-  and ahead of all fresh work (requirement 15d): a human is waiting to land it and
+  and ahead of all fresh work (requirement 15d): it is otherwise ready to land and
   nothing else on it can proceed first; under back-pressure it is one of the four
   finishing sources the cycle narrows to (requirement 2.2a). It deliberately does
   *not* complete the underlying item — that is the eventual merge's job — so it
@@ -17373,7 +17416,7 @@ requirements above, which state only what is.
   a textual conflict would leave if requirement 3g did not exist. The
   `dequeued` source (requirement 3z) closes it the same way: selectable work,
   ranked fifth, immediately after `merge-conflicts` and for the identical
-  reason (a human is waiting to land it, and nothing else on it can proceed
+  reason (it is otherwise ready to land, and nothing else on it can proceed
   until it is fixed); under back-pressure it is one of the four finishing
   sources the cycle narrows to, alongside `merge-conflicts`. Two choices keep
   it safe and non-overlapping: `mergeable` must be `MERGEABLE`, never
@@ -17675,7 +17718,7 @@ requirements above, which state only what is.
   The mechanism turns on a constraint that looks like an obstacle and is
   actually the design: GitHub will not let a PR's author approve or dismiss a
   review on it, and this system is the author. So the agent *cannot* clear
-  `CHANGES_REQUESTED` — which both preserves the human gate for free (there is
+  `CHANGES_REQUESTED` — which both preserves the landing gate for free (there is
   no route by which an agent marks its own work accepted) and means the PR's
   own state can never tell us the feedback was answered. Whose turn it is has
   to be derived, and the derivation is events GitHub itself stamps when they
@@ -17990,10 +18033,11 @@ requirements above, which state only what is.
   the false clear) stopped confirming the disagreement locally too. The
   asymmetry argument that justifies the read side's fail-open 404 does not
   carry over: there, the cost of getting it wrong is a node running a cycle
-  a human still gates, recoverable at the next fetch; here the report is
-  simply false, in the one direction this switch exists never to be. So the
-  clear side has no mode to opt into — the unconditional accept is gone
-  outright.
+  whose landing is still bounded by `merge_autonomy_effective_level`'s own
+  (separately fail-closed) read, recoverable at the next fetch; here the
+  report is simply false, in the one direction this switch exists never to
+  be. So the clear side has no mode to opt into — the unconditional accept is
+  gone outright.
   `fleet_flag_delete` reuses `fleet_repo_visible` (extracted for exactly
   this reuse, per its own header) directly, unconditionally, on every 404
   its read-for-sha meets: only a probe that confirms the repo is visible
@@ -18149,7 +18193,7 @@ confident, recurring no-op.
 | Trap | What it looks like when it bites | Build it this way instead |
 |---|---|---|
 | A `--json` field that is cheap to type and expensive to fetch | `gh pr list --json commits` cost 31 GraphQL points a call against a repository with **three** open pull requests, because `gh` asks for `commits(last: 100)` in each of the `--limit` slots and GitHub charges for nodes requested, not returned. Two gatherers × three repos × two nodes × four cycles an hour was most of the 5,000-point hourly budget, and the fleet exhausted it on 2026-08-12 — after which every work source read as empty and the pipeline looked idle rather than blocked. | Ask for the scalar (`headRefOid`, not `commits[-1].oid`) and fetch the rest from REST per candidate, where the budget is thousands. Measure a call's real cost — bracket it with `gh api rate_limit`, which is itself exempt — rather than assuming that a listing of three items costs three items' worth. |
-| A listing that silently comes back at its page size | `gh pr list` defaults to `--limit 30` and says nothing when it truncates, so the back-pressure gate simply counted low — and a gate that counts low opens. Nothing bounds the listing at `max_open_agent_prs`, because a PR waiting in the human's merge queue carries the label but is excluded from the sum. | State the cap (`GITHUB_PR_LIST_LIMIT`) instead of inheriting one, and test for it (`github_pr_list_truncated`). Then decide per call site which direction is dangerous: a work source that misses a candidate has merely not fired, whereas a gate that undercounts has let work past a cap that was already full. |
+| A listing that silently comes back at its page size | `gh pr list` defaults to `--limit 30` and says nothing when it truncates, so the back-pressure gate simply counted low — and a gate that counts low opens. Nothing bounds the listing at `max_open_agent_prs`, because a PR waiting to be merged carries the label but is excluded from the sum. | State the cap (`GITHUB_PR_LIST_LIMIT`) instead of inheriting one, and test for it (`github_pr_list_truncated`). Then decide per call site which direction is dangerous: a work source that misses a candidate has merely not fired, whereas a gate that undercounts has let work past a cap that was already full. |
 | A helper returns non-zero for a legitimately empty result, and the script runs under `set -e` | `[[ -z "$x" ]] && x="$(helper)"` takes the helper's exit status, so the *whole cycle* dies at that line. Here it died two lines before logging the failure it had just detected — nine cycles left nothing behind but a `selection` event and `exit 1`. | A lookup that finds nothing is a normal outcome: return 0 and print nothing. Reserve non-zero for real errors. Assert it at the real call-site shape under `set -e`, not on the function alone — the function looked fine; the *interaction* was the bug. |
 | The writer of an event and the reader of it disagree about the key | `attempt-failed` recorded no `repo`/`item`; the blocked extract grouped by exactly those. Every event collapsed into one anonymous group, so **no failed attempt ever blocked anything** — for months, undetected, because each half reads correctly on its own. | Round-trip the contract in a test: write the event, read it back through the real extract, assert the item is blocked. Any log the system reads back is a contract with itself. |
 | A model's clean "I can't/needn't do this" is treated as a crash | A `{"status":"blocked"}` report went down the failure path and was filed as `"implementer exited 0"`, throwing away the reason and unblock condition — the entire product of a full model run. So the next cycle bought the same discovery. | A verdict is a result. Persist it with the model's own words (requirement 9a), and note *which* verdict it is (requirement 9b). The log is the system's only memory: a finding you don't write down, you pay for again, on a schedule, forever. |

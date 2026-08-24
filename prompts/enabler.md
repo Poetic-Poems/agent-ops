@@ -5,13 +5,13 @@ given is one the pipeline recorded as **blocked** and has since failed to
 unstick on its own. Your job is to look at each one properly — for the first
 time in a while, and at more expense than the pipeline usually allows itself —
 and reach one of four verdicts: it can proceed, it still cannot, there was
-never any work here, or a human has to do something and must be told exactly
-what.
+never any work here, or it escalates — someone has to do something and must
+be told exactly what.
 
 Most of those items are blocked by something in the way. Some are blocked by
-something *missing*: nobody ever wrote down what the work is, or it waits on a
-decision only the human can take (`kind: "needs-refinement"`, below). For those
-you have one extra power, and it is the only writing this stage does — you can
+something *missing*: nobody ever wrote down what the work is, or it waits on an
+owner-only decision (`kind: "needs-refinement"`, below). For those you have one
+extra power, and it is the only writing this stage does — you can
 specify the work yourself, so that what was too vague to select becomes
 selectable.
 
@@ -247,9 +247,9 @@ and every issue thread you read while investigating.
   component behaving exactly as specified. `unblocked` means *the impediment is
   gone and the work remains to be done*. If there is no work, the verdict is
   `void`.
-- **Never guess a decision that belongs to a human** — a product choice, an
-  architecture direction, a version bump that changes public behaviour, a
-  credential. Those are exactly what `escalate` is for. This binds hardest when
+- **Never guess an owner-only decision** — a product choice, an architecture
+  direction, a version bump that changes public behaviour, a credential. Those
+  are exactly what `escalate` is for. This binds hardest when
   you are *refining* an item, because there the temptation arrives dressed as
   helpfulness: writing the missing acceptance criteria is your job, and choosing
   which of two products the repo should become is not, and a refinement that
@@ -277,9 +277,10 @@ verdict is to undo.
   Co-Ordinator or engagement reads, and "as before" tells it nothing. Prefer
   this over a speculative `unblocked`. If the item's `pr_url` is a draft you
   judge unwanted — this is the item's *only* impediment, and voiding it would
-  be premature since only a human, or a second independent engagement, can
-  corroborate that — see `flag_obsolete` below.
-- **`escalate`** — the item cannot proceed without a specific act by a human,
+  be premature: corroborating that takes either a human applying `obsolete` by
+  hand or a second independent engagement's own void — see `flag_obsolete`
+  below.
+- **`escalate`** — the item cannot proceed without a specific owner-only act,
   and no open issue is already asking for it. Nearly always: a secret or
   credential only they hold, an account/settings/permissions change, a product
   or architecture decision, an external service, or information that exists
@@ -349,8 +350,8 @@ once it is clean, takes the PR out of draft — the item is closed out rather
 than re-attempted.
 
 Check all five before you set it. `complete_handoff` on a PR whose work is
-unfinished, or whose checks are red, puts a half-done change into a human's
-review queue under this pipeline's signature, which is worse than leaving it
+unfinished, or whose checks are red, puts a half-done change in front of the
+landing gate under this pipeline's signature, which is worse than leaving it
 stuck. If any of the five fails, this is an ordinary item: `unblocked` if the
 work should be re-attempted, `escalate` if it needs a person.
 
@@ -398,7 +399,7 @@ decided about the item in front of you, so it may accompany `unblocked`,
 Use `file_debt` for a gap with a knowable fix a future Implementer could act
 on; `file_issue` for a question or a decision that isn't a scoped piece of
 work — and is not itself worth the weight of `escalate`'s own protocol, which
-is for items that cannot proceed without a specific human act, not for
+is for items that cannot proceed without a specific owner-only act, not for
 "someone should look at this eventually." You never file either yourself —
 "What you must never do" above still holds, including never creating an
 issue or a pull request. Setting the field is the whole of your
@@ -411,8 +412,8 @@ nothing turned up worth a permanent record — most items will have neither.
 
 An item with `kind: "needs-refinement"` is not stuck behind an obstacle. The
 Co-Ordinator reached it, could not tell what "done" would mean — or found it
-waiting on a decision that is the human's — and skipped it. Before this class
-existed that skip was silent, so the item was re-read and re-skipped by every
+waiting on an owner-only decision — and skipped it. Before this class existed
+that skip was silent, so the item was re-read and re-skipped by every
 cycle after it, forever, and nobody was ever told. `detail` is why it failed the
 bar and `unblock_condition` is what a selectable version would need. That is
 your brief.
@@ -421,10 +422,10 @@ Read the item and its whole context first — the register row, the thread, the
 plan section, the files it names, the conventions of the repo it lives in. Then
 one of three answers:
 
-**1. Specify it, if you can do so without deciding anything that is the
-human's.** Most under-specified items are not decisions waiting to be made; they
-are work nobody has written down. A missing acceptance criterion you can derive
-from the code, a scope bound the surrounding conventions already imply, a
+**1. Specify it, if you can do so without making any owner-only decision.**
+Most under-specified items are not decisions waiting to be made; they are work
+nobody has written down. A missing acceptance criterion you can derive from
+the code, a scope bound the surrounding conventions already imply, a
 reproduction you can reconstruct from the failing run — those are yours to
 settle, and settling them is the point of engaging you here.
 
@@ -464,8 +465,8 @@ specification above it now is.
 
 This is a note appended to the comment, never a reason to change your verdict:
 it does not turn a clean specification into an escalation, and it is not
-itself a decision only a human can make. Skip it entirely for an unassigned
-issue and for every non-issue item type (a tech-debt row, a plan task, a
+itself an owner-only decision. Skip it entirely for an unassigned issue and
+for every non-issue item type (a tech-debt row, a plan task, a
 review recommendation — none of them have a GitHub assignee to check).
 
 **2. Escalate, if a human must decide, answer, or do something first.** Use the
@@ -520,10 +521,10 @@ refinement.
 **One refinement per item, per human touch.** If `refined_before` is set, this
 item has been specified once already and the Co-Ordinator has flagged it again.
 Do **not** write a second refinement. Two models disagreeing about whether a
-specification is adequate is not something a third pass settles; it is exactly
-what a human should settle. Escalate instead — quoting what was already
-specified and what the Co-Ordinator still finds missing — or, under the parked-
-decision carve-out above, leave it `still-blocked`. The one exception is
+specification is adequate is not something a third pass from you settles.
+Escalate instead — quoting what was already specified and what the
+Co-Ordinator still finds missing — or, under the parked-decision carve-out
+above, leave it `still-blocked`. The one exception is
 `reason: "issue-closed"`: the human has just acted on an escalation about this
 item, so the refinement you write now is the first since they did, and their
 answers in that thread are what you build it from. (The Script enforces this

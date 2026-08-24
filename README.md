@@ -9,11 +9,13 @@ Once an hour:
 1. **Co-Ordinator** (Haiku) selects at most one well-scoped item of work (security findings, review feedback, merge conflicts on otherwise-ready PRs of ours, abandoned draft PRs of ours, failed CI runs, tech-debt, issues, fiddle's implementation plan, project-review recommendations, or code-quality findings). Security work — open Dependabot alerts and security code-scanning alerts — is always prioritised ahead of everything else; an issue you have marked `Urgent` comes second; answering your review feedback comes third, rebasing a ready PR of ours that has hit a merge conflict comes fourth, and finishing a draft PR this system started and then abandoned comes fifth. Issues rank by their **`Priority`** field — `Urgent`, `High`, `Medium` (also the default when the field is unset) and `Low` each sit at a different point in the order — so triaging an issue is how you move it up or down the queue.
 2. **Implementer** (Sonnet/Haiku) clones the repo, implements the item on a feature branch, and opens a draft pull request — or, for review feedback, pushes to the existing branch of the PR you commented on.
 3. **Reviewer** (Sonnet, or Opus when the Implementer graded the work `complexity:high`) checks and corrects the implementation, then marks the PR ready for review.
-4. **Human** reviews and merges via the normal GitHub process. At the default
-   `merge_autonomy` (`human`) this is the only gate; where an installation has
-   raised it, an **Approver** App reviews first (see
+4. **The Landing Gate** reviews and merges the pull request. At the default
+   `merge_autonomy` (`human`) a human does both; an opt-in trust ladder (see
    [The Landing Gate](docs/IMPLEMENTATION-PIPELINE-SPEC.md#the-landing-gate))
-   — a human still merges every pull request regardless.
+   can add an **Approver** App review and, at its top two rungs, have the
+   Script itself land an eligible pull request — a human's own role then
+   narrows to whatever the classifier didn't cover, and a human
+   `CHANGES_REQUESTED` blocks landing at every level regardless.
 
 And, at the end of a cycle, rarely: the **Enabler** (Opus) re-examines an item
 that has been blocked for several cycles, unblocks it if it can and raises an
@@ -257,7 +259,7 @@ Two things to know:
 - **It only applies to `agent/` and `td/` branches** — the ones the system is
   allowed to push to. `/td` raises its PRs on `td/<id>` and the implementation
   cycle on `agent/<item>`, so both qualify; labelling a PR on any other branch (e.g.
-  `feature/…`) does nothing, because the human gate reserves those and the
+  `feature/…`) does nothing, because the landing gate reserves those and the
   gatherers skip them even when labelled.
 - **Labelling grants write access.** A labelled PR is one the fleet may push to —
   including a `--force-with-lease` rebase to clear a conflict — and it counts
@@ -392,7 +394,7 @@ Keys:
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
 | `implementer_model_default` | `claude-sonnet-5` | For code changes. |
 | `implementer_model_trivial` | `claude-haiku-4-5-20251001` | For docs, comments, register entries only. |
-| `reviewer_model_default` | `claude-sonnet-5` | Quality gate before human review, for work the Implementer graded `complexity:low` or `complexity:medium`. |
+| `reviewer_model_default` | `claude-sonnet-5` | Quality gate before the landing gate, for work the Implementer graded `complexity:low` or `complexity:medium`. |
 | `reviewer_model_complex` | `claude-opus-5` | The same gate for work graded `complexity:high` — the Implementer grades each PR ex post and labels it; the higher of that grade and the PR's existing label picks the tier. Leave it empty to review everything on `reviewer_model_default`. |
 | `approver_model_default` | `claude-sonnet-5` | The Approver's model for work graded `complexity:medium`, active once `merge_autonomy` (see below) is above `human`. Leave it empty to switch the whole stage off — no App review is ever posted, at any level. |
 | `approver_model_complex` | `claude-opus-5` | The same gate for work graded `complexity:high`, refuse-by-default. Leave it empty to run every Approver engagement on `approver_model_default`. |
@@ -416,7 +418,7 @@ Keys:
 | `prompt_overrides` | `{}` | Add house rules to a stage's operating prompt, or replace it outright, without forking `prompts/`. The Approver's prompt takes no override — it is the trust gate the merge-autonomy ladder rests on. See [Prompt overrides](#prompt-overrides). |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. Do not name it `obsolete`, which is reserved for a human to mark one of these PRs as unwanted. Threaded through every work order's own `pr_label` field, which the Implementer labels its pull request with. |
 | `branch_prefix` | `agent/` | Branch naming: `agent/<item-slug>`. |
-| `max_open_agent_prs` | `8` | Back-pressure limit: draft PRs, changes-requested PRs and claims across both repos — not PRs waiting on a human review. |
+| `max_open_agent_prs` | `8` | Back-pressure limit: draft PRs, changes-requested PRs and claims across both repos — not PRs only waiting on approval or merge. |
 | `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list, so a lost race costs the next-best item rather than the cycle. |
 | `coordinator_prompt_max_bytes` | `350000` | The largest assembled prompt the Script will hand the Co-Ordinator. What a context window rejects is the whole prompt, not the runtime input alone, so the Script measures the rendered base prompt, subtracts it, and trims the two bands that carry a whole document each — an issue's entire thread and a tech-debt item's entire file — into what is left. Prose is shed and candidacy is not: every entry stays selectable, and every cut carries a marker naming how many bytes went and...[continued below](#extended-notes-coordinator_prompt_max_bytes) |
 | `max_chained_cycles` | `3` | The most cycles that may run back-to-back in one lineage — the cron-fired original plus its immediate continuations, instead of each waiting for the next cron firing. A productive cycle chains to this cap regardless of remaining work (the remaining-sources gate counts enabled source categories, which back-pressure never empties) — up to `max_chained_cycles − 1` further full Co-Ordinator passes, the accepted price of the drain rate. `1` disables chaining. |

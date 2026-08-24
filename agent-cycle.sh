@@ -3403,7 +3403,7 @@ run_coordinator_stage_attempt() {  # <attempt-out-file> <prompt> [extra-budget-j
 # tech-debt-only gate could never reject during a restricted cycle and this
 # function was never reached — but a gate that now counts the finishing
 # sources can, and a fallback blind to `sources` would answer it by starting
-# fresh work through a full human gate. The one place the list is coarser
+# fresh work through a full landing gate. The one place the list is coarser
 # than the array is `findings`, whose two kinds are separate source tokens
 # (`security`, `code-quality`) and are matched as such here.
 #
@@ -3907,8 +3907,8 @@ object, nothing else.
 }
 
 # A Reviewer verdict that did not end in a pull request the human can see
-# (requirement 32a): `needs-human`/`blocked`, an unparseable status, or a
-# `ready` the handoff could not be made true.
+# (requirement 32a): `blocked`, an unparseable status, or a `ready` the
+# handoff could not be made true.
 #
 # It is recorded exactly as any other failed attempt — an `attempt-failed`
 # against repo+item, which is what requirement 34 reads as blocked and
@@ -6059,7 +6059,7 @@ $(jq . <<<"$input")
             --arg d "enabler: second refinement of $e_repo $e_item refused — $e_refusal; the item stays blocked" \
             '{detail: $d}')"
           outcome="refinement-refused"
-          extra="$(jq -nc --arg c "A human decides whether this item's specification is adequate; the Enabler has already refined it once." \
+          extra="$(jq -nc --arg c "Whether this item's specification is adequate is escalation_autonomy's call from here; the Enabler has already refined it once." \
             '{unblock_condition: $c}')"
         else
           # The item becomes selectable again next cycle. `by` names the Enabler
@@ -6341,8 +6341,8 @@ $(jq . <<<"$input")
             # carries refined_before's own spec/comment_url, unchanged.
             #
             # The reason is the adjudication's own, never `$e_reason` — that
-            # is the *escalate* verdict's rationale for why the item needed a
-            # human, and an `unblocked` event carrying it would read, to
+            # is the *escalate* verdict's rationale for why the item was
+            # escalating, and an `unblocked` event carrying it would read, to
             # whoever later asks why this item came back, as the pipeline
             # unblocking an item on the strength of an argument that it could
             # not proceed.
@@ -7587,7 +7587,9 @@ fi
 # The stand-down is *deferred* rather than taken here (requirement 2.2a). Back-
 # pressure throttles starting new work, and until the sources are gathered we do
 # not know whether the only candidate is review-feedback — which finishes work
-# already in the human's queue instead of adding to it. Standing down here would
+# already parked in whichever queue requirement 2.2's merge_autonomy-aware
+# exclusion currently holds it in (a human's, below agent-merges-routine; see
+# D18 WI-6 below) instead of adding to it. Standing down here would
 # deadlock the pipeline exactly when it is most stuck: max_open_agent_prs PRs
 # all waiting on the agent, and the one source that could clear them never
 # reached. The cost of deferring is the handful of `gh` calls in step 3.
@@ -7597,21 +7599,26 @@ fi
 # is it" rule requirement 3c's review-feedback candidate filter uses
 # (scripts/gather-review-feedback.sh), so the two definitions cannot disagree.
 # A ready PR that is approved, or awaiting a first or re-review with nothing
-# currently `CHANGES_REQUESTED`-blocking it, is sitting in the human's queue —
-# the pipeline cannot shrink that by declining to open new work, so counting
+# currently `CHANGES_REQUESTED`-blocking it, is sitting in a human's queue only
+# below agent-merges-routine (D18 WI-6, the level-aware loop below) — the
+# pipeline cannot shrink that queue by declining to open new work, so counting
 # it against the cap only back-pressures the fleet for a queue it has no lever
-# to drain (agent-ops#246).
+# to drain (agent-ops#246). At agent-merges-routine and above there is no such
+# queue for it to sit in, and it counts like any other ready PR (see
+# `backpressure_autonomous_rank` below).
 #
-# The count is taken in four parts — ready PRs awaiting a human, ready PRs
-# awaiting the pipeline, draft PRs, live claims — because the trip decision
-# needs only the human-queue-excluded sum, but the logged reason states the
-# full split: a human-queue PR could fill the raw total without ever counting
-# against the cap; a pipeline-turn ready PR is the human's queue answered and
-# now the agent's to act on; a draft is work in flight (the Implementer's own
-# claim marker, requirement 23); an unraised claim is a registry entry whose
-# PR does not yet exist. Which of them filled the gate is what a cap-tuning
-# decision needs to know. Recording it here costs nothing; reconstructing it
-# later means cycle-record archaeology.
+# The count is taken in four parts — ready PRs awaiting a human (only below
+# agent-merges-routine; see D18 WI-6 below), ready PRs awaiting the pipeline,
+# draft PRs, live claims — because the trip decision needs only the
+# human-queue-excluded sum, but the logged reason states the full split: a
+# human-queue PR could fill the raw total without ever counting against the
+# cap, at levels where such a queue exists; a pipeline-turn ready PR is that
+# queue answered (or, at agent-merges-routine and above, simply the next
+# ready PR) and now the agent's to act on; a draft is work in flight (the
+# Implementer's own claim marker, requirement 23); an unraised claim is a
+# registry entry whose PR does not yet exist. Which of them filled the gate
+# is what a cap-tuning decision needs to know. Recording it here costs
+# nothing; reconstructing it later means cycle-record archaeology.
 #
 # The listing's page size is stated (`GITHUB_PR_LIST_LIMIT`, lib/github-limit.sh)
 # rather than left to `gh`'s undeclared default of 30, and a response that came
@@ -7619,7 +7626,8 @@ fi
 # a truncated listing is actively dangerous: `gh` gives no signal that it
 # capped, so the counts below would simply be low, and low counts open a gate
 # whose whole purpose is to stay shut. Note that the raw listing is not bounded
-# by `max_open_agent_prs` — a pull request waiting in the human's merge queue
+# by `max_open_agent_prs` — a pull request sitting in whichever queue
+# requirement 2.2's merge_autonomy-aware exclusion currently parks it in still
 # carries `pr_label` and is deliberately excluded from the sum — so a repo can
 # genuinely hold more open labelled PRs than the cap, and the cap is no
 # guarantee the page was big enough.
@@ -7640,9 +7648,9 @@ fi
 # it carries the `pr-<n>-<kind>-<scope>` ref the four finishing sources use,
 # and until now it was counted — a claimed abandoned draft was its own draft
 # PR *plus* its own claim, two against a cap it occupies once. Only the PRs
-# actually inside the sum are passed, so a conflicted or dequeued PR sitting
-# in the human's queue — excluded from the sum by the rule above — keeps
-# counting through its claim, which is then the only record of it in flight.
+# actually inside the sum are passed, so a conflicted or dequeued PR that the
+# rule above leaves out of the sum keeps counting through its claim, which is
+# then the only record of it in flight.
 ready_count=0
 human_queue_count=0
 draft_count=0
@@ -9075,16 +9083,16 @@ refiner_allowed=1
 
 # --- 2.2a Back-pressure, decided (requirement 2.2a) ---
 # Deferred from step 2.2 until the sources were gathered. Back-pressure's stated
-# purpose is to throttle new work and stop the human gate silting up — and the
+# purpose is to throttle new work and stop the landing gate silting up — and the
 # four *finishing* sources do neither: `review-feedback` answers a review the
-# human has already written, `merge-conflicts` rebases a ready PR the human is
-# waiting to merge, `dequeued` fixes the merge-group checks failure that got a
-# ready PR of ours removed from the human's own queue, and `abandoned-drafts`
+# human has already written, `merge-conflicts` rebases a ready PR that is
+# waiting to land, `dequeued` fixes the merge-group checks failure that got a
+# ready PR of ours removed from the merge queue, and `abandoned-drafts`
 # carries a stalled draft this system started to completion. All are the
 # activity that *un*-silts the gate — indeed an abandoned draft is itself
 # occupying one of the very back-pressure slots the cap is counting, and a
-# conflicted or dequeued PR is one the human cannot merge to free a slot until
-# it is fixed. So when back-pressure trips we do not stand down if
+# conflicted or dequeued PR is one nothing can land to free a slot until it
+# is fixed. So when back-pressure trips we do not stand down if
 # any has work waiting; we restrict every repo's source list to those four.
 #
 # No new prompt machinery is needed for that, and deliberately so: the
@@ -9095,8 +9103,8 @@ refiner_allowed=1
 # The system still cannot open a new PR while the gate is full; it can only
 # finish what is already in it.
 #
-# "a conflicted or dequeued PR is one the human cannot merge to free a slot
-# until it is fixed" above claims those two already hold a slot requirement
+# "a conflicted or dequeued PR is one nothing can land to free a slot until
+# it is fixed" above claims those two already hold a slot requirement
 # 2.2's own count counts — but that count was taken before this cycle's
 # merge-conflict and dequeued candidates were gathered (they arrive only
 # once ordered_repos_json's sources are populated, in step 3), and neither

@@ -309,6 +309,13 @@ limit_later_record() {
 # time. Reads the superseded `needs_human` when `reset_known` is absent, so a
 # node running this code reports a peer's older event correctly during a
 # rollout rather than silently calling every one of them authoritative.
+#
+# Left named `needs_human` deliberately (agent-ops#679): nothing ever writes
+# it anymore, so renaming a wire-compatibility field read only for this
+# cross-version fallback would buy a migration for nothing. It is also
+# correct on its own merits regardless of `escalation_autonomy` — raising a
+# spend cap is an owner-only act, so "needs a human" is what the old field
+# actually meant.
 limit_reset_known() {
   jq -r 'if has("reset_known") then .reset_known
          elif has("needs_human") then (.needs_human | not)

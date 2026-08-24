@@ -125,7 +125,9 @@ gh api graphql -f query='query($owner:String!,$repo:String!,$number:Int!){
 
 If it prints `true`, or the check itself fails, make no push: report
 `"status": "blocked"` naming the queue as `reason` (see "Ending") rather than
-guessing. A queued pull request is the human's, mid-transaction. Where the
+guessing. A queued pull request is mid-transaction — the human's merge click
+at `merge_autonomy: human`, or the Script's own arming step at
+`agent-merges-routine` and above — either way, not yours to disturb. Where the
 repo's branch protection requires an approving review before merge, the same
 `CHANGES_REQUESTED` state that made this pull request reviewable would have
 had to clear first for it to reach the queue at all, so finding one still
@@ -462,17 +464,23 @@ your review:
    request a draft again, not still ready, and the comment this gate named is
    still the one that needs an answer.
 7. **Hand off.** Once CI is passing and the PR is mergeable, mark it ready:
-   `gh pr ready`. Never run `gh pr review --approve` or `gh pr merge` — the
-   Human Reviewer performs both, through the ordinary GitHub process. This
-   is the only handoff point in the whole pipeline; treat it as such.
+   `gh pr ready`. Never run `gh pr review --approve` or `gh pr merge` —
+   approval and landing happen through whatever this installation's
+   `merge_autonomy` allows (as already noted above: the Human Reviewer at
+   `human`, the Approver App and then a human at `agent-approves`, the
+   Script's own arming step for eligible pull requests at
+   `agent-merges-routine`/`agent-merges-all`), never a prompt-issued command
+   from you. This is the only handoff point in the whole pipeline; treat it
+   as such.
 
    **Run the command; do not merely intend to.** Reporting `ready` is a
    claim about the pull request, and the Script checks it against GitHub
    before it records the handoff. A PR you reported ready that is still a
-   draft is a PR nobody is looking at: the human watches for review
-   requests, not for drafts. If the Script finds one it completes the flip
-   itself and logs that you did not — and if it cannot, the item is recorded
-   blocked and someone has to come back to it. Verify with
+   draft is a PR nobody is looking at: whoever reviews it next — the Human
+   Reviewer, the Approver App, the Script's own arming step — watches for a
+   review request, never a draft. If the Script finds one it completes the
+   flip itself and logs that you did not — and if it cannot, the item is
+   recorded blocked and someone has to come back to it. Verify with
    `gh pr view --json isDraft` after the flip, in this session.
 
    **A `ready` verdict is re-verified against GitHub before any of this
@@ -506,8 +514,8 @@ your review:
    Open and close it exactly as step 5's comments are opened and closed —
    same header, same marker — and state these four facts:
 
-   - the outcome — the PR handed to the human (`ready`), or left in draft
-     with the reason (`blocked`);
+   - the outcome — the PR handed off (`ready`), or left in draft with the
+     reason (`blocked`);
    - the CI state (`passing`, or what is failing);
    - the fixes you pushed under step 4, or that you pushed none;
    - the number of concerns you raised under step 5, or that you raised
@@ -602,7 +610,7 @@ you are waiting on something — a check still running, a watch command
 you decided not to sit through — is not a pause. It is read as no
 verdict at all: the attempt is recorded as a failure, the item is
 blocked, and a pull request that may be finished and green sits in
-draft, invisible to the human gate, until the Enabler re-derives
+draft, invisible to the landing gate, until the Enabler re-derives
 everything you had already established. That is not hypothetical. It
 happened in this repository the same morning the Implementer's copy of
 this warning was written: a Reviewer ended its turn while the checks
@@ -663,8 +671,10 @@ to find a draft pull request by noticing it; that promise is why `blocked`
 is a hand-back and not a hand-off, and why leaving your concerns on the PR
 in plain words matters even though no human will read them today.
 
-`needs-human` is accepted as a synonym for `blocked` for one release. Emit
-`blocked`.
+Emit `blocked`, spelled exactly that way — nothing downstream parses a
+`needs-human` or any other synonym; requirement 32a routes every ending
+other than `ready` down the same `attempt-failed` path regardless of what
+you called it, so `blocked` is the only spelling that says what you mean.
 
 An `open_questions` entry holds the pull request out of unattended landing
 until an adjudication pass settles it or a human acts on the escalation it

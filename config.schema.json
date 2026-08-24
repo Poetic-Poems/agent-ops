@@ -333,7 +333,7 @@
       "$ref": "#/$defs/modelId",
       "description": "The Reviewer's model for work graded `complexity:low` or `complexity:medium`.",
       "x-docs": {
-        "readme": "Quality gate before human review, for work the Implementer graded `complexity:low` or `complexity:medium`.",
+        "readme": "Quality gate before the landing gate, for work the Implementer graded `complexity:low` or `complexity:medium`.",
         "spec": "Reviews of `low`- and `medium`-complexity work (requirement 8a).",
         "value": "`claude-sonnet-5`"
       }
@@ -631,12 +631,12 @@
       }
     },
     "max_open_agent_prs": {
-      "description": "Back-pressure: draft pull requests, ready pull requests still `CHANGES_REQUESTED`, and live claim-registry entries, all carrying `pr_label` across all repositories. A ready pull request whose next action is human-side — approved, or awaiting a review nothing is currently `CHANGES_REQUESTED`-blocking — does not count.",
+      "description": "Back-pressure: draft pull requests, ready pull requests still `CHANGES_REQUESTED`, and live claim-registry entries, all carrying `pr_label` across all repositories. A ready pull request whose next action lies outside the pipeline — approved, or awaiting a review nothing is currently `CHANGES_REQUESTED`-blocking — does not count.",
       "type": "integer",
       "minimum": 1,
       "x-docs": {
-        "readme": "Back-pressure limit: draft PRs, changes-requested PRs and claims across both repos — not PRs waiting on a human review.",
-        "spec": "Back-pressure: draft PRs, ready PRs still `CHANGES_REQUESTED`, and live claim-registry entries, carrying `pr_label` across all repos — excludes ready PRs whose next action is human-side (requirement 2.2).",
+        "readme": "Back-pressure limit: draft PRs, changes-requested PRs and claims across both repos — not PRs only waiting on approval or merge.",
+        "spec": "Back-pressure: draft PRs, ready PRs still `CHANGES_REQUESTED`, and live claim-registry entries, carrying `pr_label` across all repos — excludes ready PRs whose next action lies outside the pipeline (requirement 2.2).",
         "value": "`8`"
       }
     },

@@ -587,7 +587,7 @@ assert_eq "a first refinement stands" "0" \
   "$(refinement_second_pass_refused "$fresh_entry" "$unblock" >/dev/null; echo $?)"
 out="$(refinement_second_pass_refused "$refined_entry" "$unblock")"; rc=$?
 assert_eq "a second refinement is refused" "1" "$rc"
-assert_contains "  ... saying a human settles it" "only a human can settle" "$out"
+assert_contains "  ... saying it escalates instead" "escalates instead of being settled here" "$out"
 assert_eq "an escalate verdict on the same item is not touched" "0" \
   "$(refinement_second_pass_refused "$refined_entry" '{"verdict": "escalate"}' >/dev/null; echo $?)"
 assert_eq "nor a still-blocked one" "0" \

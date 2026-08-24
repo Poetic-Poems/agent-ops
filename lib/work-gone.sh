@@ -11,8 +11,9 @@
 #   the item is not blocked any more because the *work* is gone.
 #
 # The issue was closed, the pull request merged, the register entry flipped to
-# `resolved`. Nothing about that moment produces an event — the merge is a human
-# clicking a button in a browser — so the block outlives the work it describes.
+# `resolved`. Nothing about that moment produces an event — the merge is a
+# click, whether a human's in a browser or the Script's own — so the block
+# outlives the work it describes.
 # The Co-Ordinator never revisits it, because a finished item is offered by no
 # source and so never reaches the Co-Ordinator's candidates at all; the Enabler
 # does, but only after `enabler_recheck_hours`, and it pays a full engagement to

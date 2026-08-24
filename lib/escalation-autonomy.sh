@@ -56,7 +56,7 @@ escalation_autonomy_configured_level() {
 # verdict, over the same evidence, that an adjudication pass has already
 # answered once. Without this, the pass that answered it would simply run
 # again and answer it the same way, and the disagreement the thrash guard
-# routes to a human would loop between two models forever with nobody paged.
+# escalates would loop between two models forever with nobody paged.
 #
 # The caller's one exemption is the thrash guard's own: eligibility
 # `reason: "issue-closed"`, which exists only because a human acted on an

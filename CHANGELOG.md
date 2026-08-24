@@ -1261,6 +1261,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The pipeline no longer names a human as the destination of an escalation or
+  a landing where `escalation_autonomy` or `merge_autonomy` chooses that
+  destination (agent-ops#679, discharging the debt #668 declared). Since #627
+  landed `escalation_autonomy`, "needs a human" and "the human gate" had been
+  false at `adjudicate-first` and at every `merge_autonomy` rung above
+  `human` — and the wording is read by the actors themselves, so a stage told
+  the destination is a person could not reason about the ladder it was
+  actually standing on. Every line in the repository mentioning a human was
+  read and placed in one of three bands: reworded where configuration now
+  chooses (the escalation *act* is named, its target is not, and where the
+  sentence must say where it goes it names the key), kept where it is a
+  person's at every setting — owner-only acts, a human `CHANGES_REQUESTED`,
+  hand-applied labels, the `human-visibility` notification cluster — and left
+  alone where it is historical record. `lib/refinement.sh`'s runtime refusal
+  string and the `enabler-escalation` label's description (updated live on
+  every repository the fleet has already created it in, not only in
+  `lib/labels.sh`) are now true at both settings. Requirement 36a states the
+  distinction outright: every escalation it names is owner-only at every
+  rung, and requirement 36b's refinement disagreement is the only one the key
+  gates. Requirement 38's opening sentence states its membership test as a
+  consequence of the configured ladder rather than as a universal, naming
+  #668 as the trigger to revisit it. No identifier changed, so there is no
+  migration and no compatibility window; `docs/VOCABULARY-SWEEP-679-AUDIT.md`
+  records the band placement for every pattern found.
+
+- Requirement 32 no longer promises `needs-human` as a synonym for the
+  Reviewer's `blocked` status (agent-ops#679). The synonym was never
+  implemented — no code path ever parsed it — and requirement 32a's `!=
+  ready` fall-through already routes every non-`ready` ending, an unparseable
+  status included, down the same `attempt-failed` path, which is the
+  tolerance the synonym claimed to provide. Nothing behavioural changes; the
+  sentence promising it is gone from the spec and from
+  `prompts/reviewer.md`.
+
 - Requirement 38b no longer assigns a Co-Ordinator-, Refiner- or
   Implementer-recorded refinement block's issue to `enabler_assignee`
   (agent-ops#639): it projects `blocked` and `blocked:needs-refinement`
