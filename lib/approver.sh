@@ -212,3 +212,477 @@ approver_prior_refusal_bodies() {
     | "### " + .at + "\n\n" + .body
   ' <<<"$lines" 2>/dev/null || return 0
 }
+
+# The following four functions moved from agent-cycle.sh (#771): the
+# per-round Approver stage itself (`run_approver_stage`), its posting and
+# escalation helpers, and the complexity-to-tier mapping. Reads and writes
+# the cycle's own globals (`cycle_dir`, `node_name`, `approver_stage_*`, …)
+# exactly as they did inline.
+# approver_post_or_warn PR_URL EVENT BODY TOKEN
+# `approver_post_review` (lib/approver.sh) returns 0 only on a real 2xx from
+# GitHub, and its own header is explicit that a caller must not read a failure
+# as a posted review. This is that reading, in one place: a review GitHub
+# refused — an expired token, an App whose installation lost review rights, an
+# API outage — leaves the pull request exactly as it was, which is the
+# harmless half of requirement 8b's "a missing review, never a stranded PR".
+# The harmful half would be leaving no trace: every other way this stage can
+# fail to post logs a `warning`, so the one failure that happens at the moment
+# of the write must too, or an operator reading the log sees an
+# `approver-verdict` and no review on the pull request and has nothing to
+# connect them. Always returns 0 — the caller's own path is unchanged either
+# way.
+#
+# Reports the write's own success through `approver_last_post_ok` (`1`/`0`),
+# reset on every call — the one fact `run_approver_stage` needs to decide
+# whether this round's verdict actually reached GitHub before logging it
+# (requirement 8c's `posted` field, agent-ops#573): a verdict a human never
+# saw a review for cannot have diverged from, or agreed with, anything.
+approver_post_or_warn() {
+  local pr_url="$1" event="$2" body="$3" token="$4"
+  approver_last_post_ok=1
+  if ! approver_post_review "$pr_url" "$event" "$body" "$token"; then
+    approver_last_post_ok=0
+    log_event "warning" "$(jq -nc --arg u "$pr_url" --arg e "$event" \
+      --arg d "the Approver's $event review of $pr_url could not be posted — GitHub refused the write, so the pull request carries no App review this round" \
+      '{detail: $d, pr_url: $u, event: $e}')"
+  fi
+  return 0
+}
+
+# approver_escalate PR_URL REASONS_JSON
+# File (or find already-filed, via create_escalation_issue's own dedup) the
+# escalation issue for a pull request an Approver adjudication engagement
+# could not settle — land it, or refuse it and let a human decide. Unlike
+# crash_loop_escalate and the Enabler's own escalations, there is no model
+# drafting this one: `reasons_json` already carries the adjudication's
+# structured findings (or the Script's own "could not settle" fallback), so
+# the Script composes the issue body directly.
+approver_escalate() {
+  local pr_url="$1" reasons_json="$2"
+  local number item_ref body_file reasons_text created
+  number="${pr_url##*/}"
+  item_ref="pr-${number}-approver-adjudication"
+  body_file="$cycle_dir/approver-escalation-${number}.md"
+  reasons_text="$(jq -r 'if length == 0 then "(no reasons given)" else map("- " + .) | join("\n") end' <<<"$reasons_json")"
+  {
+    printf '## What the autonomous pipeline needs from you\n\n'
+    printf 'Review %s and either request further changes yourself or approve and merge it — the Approver could not settle its own disagreement about this pull request.\n\n' "$pr_url"
+    printf '## Why the pipeline is blocked\n\n'
+    printf 'The Approver App refused %s twice in a row. A critical-tier adjudication engagement then read both the pull request and the prior refusals and could not resolve the disagreement on its own.\n\n' "$pr_url"
+    printf '## What has already been tried and established\n\n'
+    printf '%s\n\n' "$reasons_text"
+    cat <<APPROVER_ESC_BODY
+## When you're done: close this issue
+
+Close this issue once you have reviewed the pull request yourself. The
+pipeline takes no further automatic landing action on it — your own GitHub
+review and merge are the next step.
+
+---
+Item: \`$item_ref\` · pull request $pr_url
+Raised by the Approver stage (D18 WI-5) · cycle \`$cycle_id\` · node \`$node_name\`
+APPROVER_ESC_BODY
+  } > "$body_file"
+  if created="$(create_escalation_issue "$selected_repo" "$item_ref" \
+        "$enabler_escalation_label" \
+        "Approver adjudication could not settle $pr_url" \
+        "$body_file")" && [[ -n "$created" ]]; then
+    log_event "approver-escalated" "$(jq -nc --arg u "$pr_url" \
+      --arg n "${created%%$'\t'*}" --arg iu "${created#*$'\t'}" \
+      '{pr_url: $u, issue_number: ($n | tonumber), issue_url: $iu}')"
+  else
+    log_event "warning" "$(jq -nc --arg u "$pr_url" \
+      --arg d "Approver adjudication could not settle $pr_url, and the escalation issue could not be filed — will retry next cycle" \
+      '{detail: $d, pr_url: $u}')"
+  fi
+}
+
+# approver_stage_complexity PR_URL PRE_REVIEW_COMPLEXITY TRIVIAL
+# Requirement 8b: the Approver's tier is resolved from the complexity as it
+# stands *after* the Reviewer stage has run, not the value requirement 8a
+# resolved before it. The Reviewer may correct a `complexity:*` label it
+# finds plainly wrong for the diff, in either direction (prompts/reviewer.md
+# step 4, requirement 30) — a correction that lands on the pull request after
+# PRE_REVIEW_COMPLEXITY (the caller's `rev_complexity`) was already computed
+# and the Reviewer itself already launched at that grade. This re-reads the
+# label now and folds it through the same raise-never-lower comparison
+# `reviewer_complexity` (lib/cycle-state.sh) already applies at requirement
+# 8a, with PRE_REVIEW_COMPLEXITY standing in for the Implementer's own grade:
+# the Approver's tier can rise on a mid-cycle correction, but never settles
+# below what the round was already reviewed at. Best-effort, the same as
+# requirement 8a's own read: an unreadable label contributes nothing and the
+# result falls back to PRE_REVIEW_COMPLEXITY unchanged.
+approver_stage_complexity() {
+  local pr_url="$1" pre="$2" trivial="${3:-0}"
+  local grades=()
+  if [[ -n "$pr_url" ]]; then
+    mapfile -t grades < <(gh pr view "$pr_url" --json labels \
+      --jq '.labels[].name | select(startswith("complexity:")) | sub("^complexity:"; "")' 2>/dev/null || true)
+  fi
+  reviewer_complexity "$pre" "$trivial" ${grades[@]+"${grades[@]}"}
+}
+
+# run_approver_stage PR_URL COMPLEXITY
+# D18 WI-5 (requirement 8b): the tiered Approver, engaged once per
+# Reviewer-ready round, for every repository whose merge_autonomy is
+# currently above `human` (lib/merge-autonomy.sh's own kill-switch-aware
+# resolution — the fleet-wide kill switch reads as `human` here exactly as
+# everywhere else). Judges the pull request `confirm_pr_ready` has already
+# flipped out of draft, and posts a real GitHub review — `APPROVE` or
+# `REQUEST_CHANGES` — from the Pullwright Approver's own App identity, never
+# from a model-issued `gh` command; the model only ever returns a verdict
+# (prompts/approver.md).
+#
+# Always returns 0, and never touches the PR claim or the draft flag: a
+# stage that cannot run, or a GitHub write that fails, costs a missing App
+# review, never a blocked pull request — by construction, since every path
+# through this function ends in either a best-effort review post or a
+# best-effort escalation, and the caller's own `pr-ready` log and
+# `release_pr_claim` follow unconditionally regardless of what happened here.
+#
+# Reports its own outcome through three globals, reset here on every call
+# rather than left to whatever a previous pull request's round left behind
+# — `approver_stage_verdict` (this round's `verdict`, or empty when the
+# stage did not reach one), `approver_stage_adjudicating` (`1` iff the
+# refuse streak, not the complexity grade, chose the tier), and
+# `approver_stage_tier` (D18 WI-12, agent-ops#415: this round's own tier,
+# `trivial`/`standard`/`high`/`critical` — `critical` whenever a protected
+# path forced it, whatever the complexity grade said). `run_landing_stage`
+# (D18 WI-7, requirement 8d), called immediately after this function
+# returns, is the one reader of the first two: it arms nothing at all unless
+# this round's own engagement reached an explicit, non-adjudicating
+# `approve` — an adjudication's own `land` does not count, because a
+# disagreement settled this round is not the same fact as an engagement
+# that agreed the first time. `_landing_stage_attempt`'s own protected-path
+# gate (D18 WI-12) is the reader of the third, on the original arming round
+# only — a re-arm reads `landing_retry_tier` from the fleet log instead,
+# since that round's own `approver_stage_tier` belongs to a process this one
+# never was. A return value rather than a global would say the same thing,
+# but every existing caller of this function already reads nothing from it
+# (`run_approver_stage "$impl_pr_url" "$approver_complexity"`, no
+# assignment) and a second, unrelated caller could plausibly want the
+# verdict without wanting to restructure that call — the same reasoning
+# `stage_kill_reason` (set by `run_claude_stage`, read by its own callers)
+# already applies to a stage outcome this file needs to carry past its own
+# return.
+run_approver_stage() {
+  local pr_url="$1" complexity="$2"
+  local level login streak tier model="" mode="" adjudicating=0
+  local prompt out rc status_json verdict="" reasons_json="[]"
+  approver_stage_verdict=""
+  approver_stage_adjudicating=0
+  approver_stage_tier=""
+  local token review_body prior_section adj_bool
+  local number="" protected_rc=0 protected_hit=0 critical_reason=""
+  local posted_review="" posted_bool="false"
+  local ap_file_debt ap_fd_title ap_fd_body ap_fd_result ap_fd_id ap_fd_pr_url
+  local ap_file_issue ap_fi_title ap_fi_body ap_fi_body_file ap_fi_result ap_fi_number ap_fi_url
+  approver_last_post_ok=""
+
+  # `fresh` (issue #513, PR #506 review follow-up): this stage posts a real
+  # App review under the level it reads, so an operator's mid-cycle kill must
+  # stop it here, not wait for the next cycle's process — see
+  # merge_autonomy_effective_level's own comment on FRESH.
+  level="$(merge_autonomy_effective_level "$DEFAULTED_CONFIG" "$selected_repo" "$state_repo" "$state_dir" fresh)"
+  [[ "$level" != "human" ]] || return 0
+
+  if [[ -z "$approver_model_default" ]]; then
+    log_event "warning" "$(jq -nc --arg u "$pr_url" --arg l "$level" \
+      --arg d "merge_autonomy is \"$level\" for $selected_repo but approver_model_default is empty — the Approver stage is disabled, so no App review was posted on $pr_url" \
+      '{detail: $d, pr_url: $u}')"
+    return 0
+  fi
+  if ! approver_token_credential_present; then
+    log_event "warning" "$(jq -nc --arg u "$pr_url" --arg l "$level" \
+      --arg d "merge_autonomy is \"$level\" for $selected_repo but the Approver's runtime credential is not present on this node — no App review was posted on $pr_url" \
+      '{detail: $d, pr_url: $u}')"
+    return 0
+  fi
+  if ! login="$(approver_token_identity_login "")" || [[ -z "$login" ]]; then
+    log_event "warning" "$(jq -nc --arg u "$pr_url" \
+      --arg d "could not read the Approver App's own login — no App review was posted on $pr_url" \
+      '{detail: $d, pr_url: $u}')"
+    return 0
+  fi
+  if ! streak="$(approver_refuse_streak "$pr_url" "$login")" || [[ ! "$streak" =~ ^[0-9]+$ ]]; then
+    log_event "warning" "$(jq -nc --arg u "$pr_url" \
+      --arg d "could not read $pr_url's own review history to count a refuse streak — no App review was posted this round" \
+      '{detail: $d, pr_url: $u}')"
+    return 0
+  fi
+  if ! token="$(approver_token_get "")"; then
+    log_event "warning" "$(jq -nc --arg u "$pr_url" \
+      --arg d "could not mint the Approver's installation token — no App review was posted on $pr_url" \
+      '{detail: $d, pr_url: $u}')"
+    return 0
+  fi
+
+  tier="$(approver_tier_for "$complexity")"
+
+  # D18 WI-12 (Stage 4, agent-ops#415, docs/reviews/2026-08-14-autonomy-
+  # investigation.md §7 risk 1): a pull request touching a protected path
+  # routes to the critical tier regardless of its complexity grade — the
+  # deadliest class this design names is a self-modifying change riding a
+  # cheap tier through the gate it just weakened. `landing_protected_paths_hit`
+  # is the one classifier this reads (lib/landing.sh); nothing here keeps a
+  # second copy of its list. This read only ever runs once the stage has
+  # already committed to engaging (every check above has passed), so it
+  # never costs a `gh` call at `merge_autonomy: human`, where the stage
+  # already returned. Its own exit 2 (the changed-file list unreadable or
+  # truncated, or a protected-paths list it cannot evaluate against a path
+  # at all — TD-PPagop-26082320) routes *to* the critical tier, not away
+  # from it — the opposite fail-closed polarity from `landing_eligible`'s
+  # own exit-2 handling, since here fail-closed means the more expensive
+  # tier, never the cheaper one.
+  if [[ "$pr_url" =~ /pull/([0-9]+)$ ]]; then
+    number="${BASH_REMATCH[1]}"
+    landing_protected_paths_hit "$DEFAULTED_CONFIG" "$selected_repo" "$number" >/dev/null 2>&1 || protected_rc=$?
+  else
+    protected_rc=2
+  fi
+  if (( protected_rc == 0 || protected_rc == 2 )); then
+    protected_hit=1
+    tier="critical"
+  fi
+
+  if (( protected_hit )); then
+    critical_reason="protected-path"
+  elif (( streak >= 2 )); then
+    critical_reason="refuse-streak"
+  fi
+
+  if (( streak >= 2 )); then
+    adjudicating=1
+    mode="adjudication"
+    model="$approver_model_critical"
+  elif [[ "$tier" == "trivial" ]]; then
+    # Deterministic: complexity:low already means "docs, comments, or
+    # register entries only; no behaviour change" (requirement 26a) — no
+    # model call, zero tokens, per the design's own framing of this tier
+    # (docs/reviews/2026-08-14-autonomy-investigation.md §5.2). A protected
+    # path already forced tier to `critical` above, so this branch is only
+    # ever reached for a genuinely untouched-protected-path complexity:low
+    # pull request.
+    verdict="approve"
+    reasons_json='["complexity:low — deterministic approval, no model engagement (D18 §5.2)"]'
+  elif [[ "$tier" == "critical" ]]; then
+    mode="tier"
+    model="$approver_model_critical"
+  else
+    mode="tier"
+    model="$(approver_model_for_tier "$tier" "$approver_model_default" "$approver_model_complex")"
+  fi
+
+  if [[ -n "$mode" ]]; then
+    if [[ -z "$model" ]]; then
+      log_event "warning" "$(jq -nc --arg u "$pr_url" \
+        --arg d "no Approver model resolved for tier $tier on $pr_url (every configured tier fell back to empty) — no App review was posted this round" \
+        '{detail: $d, pr_url: $u}')"
+      return 0
+    fi
+
+    prior_section=""
+    if (( adjudicating )); then
+      prior_section="
+## Prior refusals
+
+$(approver_prior_refusal_bodies "$pr_url" "$login")
+"
+    fi
+
+    # '{}', never "$prompt_overrides_json": the Approver's adversarial prompt
+    # is the gate the D18 trust ladder rests on, so no installation may extend
+    # or replace it — the schema's prompt_overrides enumeration omits
+    # `approver`, and this call site matches it deliberately (requirement 4a,
+    # agent-ops#469).
+    prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" approver '{}')
+
+## Work order
+
+\`\`\`json
+$(jq . <<<"$work_order_json")
+\`\`\`
+
+## Implementer summary
+
+\`\`\`json
+$(jq . <<<"$impl_status_json")
+\`\`\`
+
+## Reviewer summary
+
+\`\`\`json
+$(jq . <<<"$rev_status_json")
+\`\`\`
+
+## Tier
+
+$([[ $adjudicating -eq 1 ]] && printf 'adjudication' || printf '%s' "$tier")
+$prior_section
+## Cycle
+
+$cycle_id
+
+## Node
+
+$node_name
+"
+    out="$cycle_dir/approver.out"
+    stage_budget_apply approver "$selected_repo" "$model" \
+      "$(jq -nc --arg t "$tier" --arg m "$mode" '{complexity: $t, mode: $m}')"
+    if run_claude_stage approver "$(( stage_backstop_min * 60 ))" "$model" "$prompt" "$out" "$clone_dir" "$(( stage_inactivity_min * 60 ))"; then
+      rc=0
+    else
+      rc=$?
+    fi
+    log_event "stage-end" "$(jq -nc --argjson rc "$rc" --arg kr "$stage_kill_reason" --argjson m "$(metering_fields "$model" "$out" "$stage_gaps_json")" \
+      '{stage: "approver", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m')"
+    approver_watchdog_warning="$(stage_watchdog_warning approver || true)"
+    [[ -n "$approver_watchdog_warning" ]] && log_event "warning" "$approver_watchdog_warning"
+    (( ONCE )) && dump_stage_output "$out"
+
+    status_json="$(extract_json_result "$(jq -r '.result // empty' "$out" 2>/dev/null || true)" 2>/dev/null || true)"
+    if (( rc == 0 )) && [[ -z "$status_json" ]]; then
+      status_json="$(stage_salvage_result approver "$out" "$model" "$clone_dir" || true)"
+    fi
+
+    if (( rc != 0 )) || [[ -z "$status_json" ]]; then
+      log_event "warning" "$(jq -nc --arg u "$pr_url" \
+        --arg d "the Approver stage did not return a parseable verdict for $pr_url — no App review was posted this round" \
+        '{detail: $d, pr_url: $u}')"
+      if (( adjudicating )); then
+        approver_escalate "$pr_url" \
+          '["the adjudication engagement did not return a parseable verdict — treated as \"cannot settle\" (D18 §5.2)"]'
+      fi
+      return 0
+    fi
+
+    verdict="$(jq -r '.verdict // empty' <<<"$status_json")"
+    reasons_json="$(jq -c '[.reasons[]? | select(type == "string")]' <<<"$status_json" 2>/dev/null)"
+    [[ "$reasons_json" != "null" && -n "$reasons_json" ]] || reasons_json='[]'
+
+    # file_debt/file_issue (agent-ops#631): orthogonal to `verdict` — the
+    # Approver's own posture ("What you must never do") never writes to
+    # GitHub itself, so lib/tech-debt-file.sh is what actually files it,
+    # here, under the Approver's own App token — the same identity
+    # approver_post_or_warn already posts its review under — never the
+    # ordinary pipeline login. `clone_dir` is reused as-is for the tech-debt
+    # id reservation: it is still on disk at this point in the cycle (torn
+    # down only in the EXIT trap, well after this stage returns), and
+    # techdebt_file_debt never reads or writes its checked-out branch or
+    # working tree, only `origin/main` — safe regardless of what this pull
+    # request's own branch happens to be checked out to.
+    ap_file_debt="$(jq -c '.file_debt // empty' <<<"$status_json" 2>/dev/null || true)"
+    if [[ -n "$ap_file_debt" && "$ap_file_debt" != "null" ]]; then
+      ap_fd_title="$(jq -r '.title // ""' <<<"$ap_file_debt" 2>/dev/null || true)"
+      ap_fd_body="$(jq -r '.body // ""' <<<"$ap_file_debt" 2>/dev/null || true)"
+      if [[ -z "$ap_fd_title" || -z "$ap_fd_body" ]]; then
+        log_event "warning" "$(jq -nc --arg u "$pr_url" \
+          --arg d "approver set file_debt for $pr_url, but it carries no title or body — ignored" \
+          '{detail: $d, pr_url: $u}')"
+      elif ap_fd_result="$(techdebt_file_debt "$selected_repo" "$ap_fd_title" "$ap_fd_body" \
+             "while the Approver was judging $pr_url" "$token" "$clone_dir")" \
+             && [[ -n "$ap_fd_result" ]]; then
+        IFS=$'\t' read -r ap_fd_id ap_fd_pr_url <<<"$ap_fd_result"
+        log_event "tech-debt-filed" "$(jq -nc --arg u "$pr_url" --arg r "$selected_repo" \
+          --arg id "$ap_fd_id" --arg fu "$ap_fd_pr_url" \
+          '{pr_url: $u, repo: $r, by: "approver", id: $id, filed_pr_url: $fu}')"
+      else
+        log_event "warning" "$(jq -nc --arg u "$pr_url" \
+          --arg d "approver: could not file the tech-debt record for $pr_url (see tech-debt-file.err)" \
+          '{detail: $d, pr_url: $u}')"
+      fi
+    fi
+
+    ap_file_issue="$(jq -c '.file_issue // empty' <<<"$status_json" 2>/dev/null || true)"
+    if [[ -n "$ap_file_issue" && "$ap_file_issue" != "null" ]]; then
+      ap_fi_title="$(jq -r '.title // ""' <<<"$ap_file_issue" 2>/dev/null || true)"
+      ap_fi_body="$(jq -r '.body // ""' <<<"$ap_file_issue" 2>/dev/null || true)"
+      if [[ -z "$ap_fi_title" || -z "$ap_fi_body" ]]; then
+        log_event "warning" "$(jq -nc --arg u "$pr_url" \
+          --arg d "approver set file_issue for $pr_url, but it carries no title or body — ignored" \
+          '{detail: $d, pr_url: $u}')"
+      else
+        # The pull request's own URL is appended, not merely hoped for in
+        # the model's own prose, because techdebt_file_issue's dedup guard
+        # searches the issue body for exactly this string on every later
+        # call — the Approver runs once per Reviewer round, so a repeated
+        # observation across rounds on the same pull request must not spawn
+        # a fresh issue each time.
+        ap_fi_body_file="$cycle_dir/approver-file-issue.md"
+        printf '%s\n\n---\nNoticed by the autonomous pipeline while approving %s.\n' \
+          "$ap_fi_body" "$pr_url" > "$ap_fi_body_file"
+        if ap_fi_result="$(techdebt_file_issue "$selected_repo" "$pr_url" "$ap_fi_title" \
+               "$ap_fi_body_file" "$token")" && [[ -n "$ap_fi_result" ]]; then
+          IFS=$'\t' read -r ap_fi_number ap_fi_url <<<"$ap_fi_result"
+          log_event "issue-filed" "$(jq -nc --arg u "$pr_url" --arg r "$selected_repo" \
+            --argjson n "$ap_fi_number" --arg iu "$ap_fi_url" \
+            '{pr_url: $u, repo: $r, by: "approver", issue_number: $n, issue_url: $iu}')"
+        else
+          log_event "warning" "$(jq -nc --arg u "$pr_url" \
+            --arg d "approver: could not file the issue for $pr_url (see tech-debt-file.err)" \
+            '{detail: $d, pr_url: $u}')"
+        fi
+      fi
+    fi
+  fi
+
+  review_body="$(jq -r 'if length == 0 then "(no reasons given)" else map("- " + .) | join("\n") end' <<<"$reasons_json")"
+
+  if (( adjudicating )); then
+    case "$verdict" in
+      land)
+        posted_review="APPROVE"
+        approver_post_or_warn "$pr_url" APPROVE "$review_body" "$token"
+        ;;
+      refuse)
+        posted_review="REQUEST_CHANGES"
+        approver_post_or_warn "$pr_url" REQUEST_CHANGES "$review_body" "$token"
+        approver_escalate "$pr_url" "$reasons_json"
+        ;;
+      escalate)
+        approver_escalate "$pr_url" "$reasons_json"
+        ;;
+      *)
+        approver_escalate "$pr_url" \
+          '["the adjudication engagement returned an unrecognised verdict — treated as \"cannot settle\" (D18 §5.2)"]'
+        ;;
+    esac
+  else
+    case "$verdict" in
+      approve)
+        posted_review="APPROVE"
+        approver_post_or_warn "$pr_url" APPROVE "$review_body" "$token"
+        ;;
+      refuse)
+        posted_review="REQUEST_CHANGES"
+        approver_post_or_warn "$pr_url" REQUEST_CHANGES "$review_body" "$token"
+        ;;
+      *)
+        log_event "warning" "$(jq -nc --arg u "$pr_url" --arg v "${verdict:-empty}" \
+          --arg d "the Approver returned an unrecognised verdict (\"${verdict:-empty}\") for $pr_url — no App review was posted this round" \
+          '{detail: $d, pr_url: $u, verdict: $v}')"
+        ;;
+    esac
+  fi
+
+  # `posted` (agent-ops#573): true only when a review was actually attempted
+  # (`posted_review` non-empty — an escalate-only or unrecognised verdict
+  # attempts none) *and* `approver_post_or_warn` reported success. A verdict a
+  # human never saw a review for cannot be compared against their eventual
+  # action, so the divergence report (`lib/verdict-fate.sh`) drops it rather
+  # than reading a failed write as either agreement or divergence.
+  [[ -n "$posted_review" && "$approver_last_post_ok" == "1" ]] && posted_bool="true"
+
+  adj_bool="false"
+  (( adjudicating )) && adj_bool="true"
+  log_event "approver-verdict" "$(jq -nc --arg u "$pr_url" --arg r "$selected_repo" --arg t "$tier" \
+    --arg m "$model" --arg v "${verdict:-none}" --argjson s "$streak" --argjson adj "$adj_bool" \
+    --argjson posted "$posted_bool" --arg cr "$critical_reason" \
+    '{pr_url: $u, repo: $r, tier: $t, model: $m, verdict: $v, refuse_streak: $s, adjudication: $adj, posted: $posted}
+     + (if $cr == "" then {} else {critical_reason: $cr} end)')"
+  approver_stage_verdict="$verdict"
+  approver_stage_adjudicating="$adjudicating"
+  approver_stage_tier="$tier"
+  return 0
+}

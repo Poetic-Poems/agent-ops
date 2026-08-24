@@ -45,6 +45,12 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 AGENT_CYCLE="$SCRIPT_DIR/agent-cycle.sh"
+# Captured now, alongside AGENT_CYCLE above: run_block (below) reassigns the
+# global $SCRIPT_DIR to a fake root for the lifted counting_block's own use,
+# and that reassignment outlives the function call (no `local`), so a path
+# derived from $SCRIPT_DIR at the point of use — rather than captured here,
+# before anything clobbers it — would resolve against the fake root instead.
+AGENT_APPROVER_LIB="$SCRIPT_DIR/lib/approver.sh"
 
 failures=0
 tmp_dir="$(mktemp -d)"
@@ -328,7 +334,7 @@ assert_eq "…while a repo ranked above agent-approves does fetch its freeze fla
 # counting block above is, so this is testing the shipped function, not a
 # copy of it.
 approver_escalate_fn="$(awk -v fn='^approver_escalate\\(\\) \\{' \
-  '$0 ~ fn { on = 1 } on { print } on && /^\}$/ { exit }' "$AGENT_CYCLE")"
+  '$0 ~ fn { on = 1 } on { print } on && /^\}$/ { exit }' "$AGENT_APPROVER_LIB")"
 if [[ -z "$approver_escalate_fn" ]]; then
   echo "FAIL - could not extract approver_escalate from agent-cycle.sh — has it moved?" >&2
   exit 1

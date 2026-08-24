@@ -54,7 +54,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CYCLE="$SCRIPT_DIR/agent-cycle.sh"
+CYCLE="$SCRIPT_DIR/lib/landing.sh"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT

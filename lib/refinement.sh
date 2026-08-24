@@ -871,3 +871,396 @@ refiner_engagement_set() {
   jq -c --argjson max "$max" 'sort_by(.repo, .source, .item) | .[0:$max]' \
     <<<"$candidates" 2>/dev/null || printf '[]'
 }
+
+# The following three functions moved from agent-cycle.sh (#771): the
+# Refiner stage itself (`maybe_run_refiner`), its claim-key deriver, and the
+# unbandable-triage filter. Reads and writes the cycle's own globals
+# (`cycle_dir`, `refiner_allowed`, `refiner_candidates_json`, …) exactly as
+# they did inline.
+
+# refiner_claim_key REPO SOURCE ITEM
+# The fleet's dedup key for one Refiner candidate: stable across cycles for the
+# same item, unlike `enabler_claim_key`'s block-timestamp-scoped key, because
+# there is no block here to re-mint a fresh one from — an item stops being a
+# candidate the moment it is refined or blocked, which is what lets a claim
+# stay stable without ever locking out a legitimately fresh occurrence.
+refiner_claim_key() {
+  local repo="$1" source="$2" item="$3"
+  printf '%s__%s__%s' "${repo//[^A-Za-z0-9._-]/-}" "${source//[^A-Za-z0-9._-]/-}" \
+    "${item//[^A-Za-z0-9._-]/-}"
+}
+
+# refiner_filter_unbandable_triage CANDIDATES_JSON
+# The I/O wrapper around `refiner_drop_unbandable_triage` (lib/refinement.sh,
+# issue #511): resolves, once per repository, the `Priority` field for every
+# repository contributing a `triage_only: true` candidate — a cycle with none
+# at all makes no query here — and drops that repository's `triage_only`
+# candidates when the field cannot be resolved *or* resolves carrying none of
+# the four band names at all (agent-ops#542 — a repository that renamed every
+# option, e.g. to `P0`…`P3`; the narrower agent-ops#534 case, missing only
+# *some* of the four, is unaffected here and still reaches the Refiner, since
+# `issue_priority_apply`'s own fallback bands it), so the Refiner is never
+# engaged for a band it structurally cannot write either way. Every other
+# candidate is unaffected; when every contributing repository's field
+# resolves with at least one band option, the input is returned
+# byte-identical.
+#
+# `issue_priority_field_ids` (lib/issue-priority.sh) is itself cached per
+# repository for the life of this process (`ISSUE_PRIORITY_CACHE_DIR`),
+# including its own failure — so this call and `issue_priority_apply`'s own
+# later call inside `maybe_run_refiner` never resolve the same repository's
+# field twice; the "no bands at all" check below reads the same field_json
+# this call already fetched rather than issuing a second GraphQL query.
+# Guarded rather than let `set -euo pipefail` abort the cycle on the field's
+# own non-zero return.
+refiner_filter_unbandable_triage() {
+  local candidates="${1:-[]}" triage_repos slug unresolvable='[]' no_bands='[]' counts count
+  local field_json
+  triage_repos="$(jq -r '[.[] | select(.triage_only == true) | (.repo // "")] | unique | .[]' \
+    <<<"$candidates" 2>/dev/null || true)"
+  [[ -n "$triage_repos" ]] || { printf '%s' "$candidates"; return 0; }
+
+  while IFS= read -r slug; do
+    [[ -n "$slug" ]] || continue
+    if field_json="$(issue_priority_field_ids "$slug" 2>/dev/null)"; then
+      issue_priority_options_any "$field_json" \
+        || no_bands="$(jq -c --arg s "$slug" '. + [$s]' <<<"$no_bands" 2>/dev/null \
+             || printf '%s' "$no_bands")"
+    else
+      unresolvable="$(jq -c --arg s "$slug" '. + [$s]' <<<"$unresolvable" 2>/dev/null \
+           || printf '%s' "$unresolvable")"
+    fi
+  done <<<"$triage_repos"
+  [[ "$unresolvable" != "[]" || "$no_bands" != "[]" ]] || { printf '%s' "$candidates"; return 0; }
+
+  counts="$(jq -c '[.[] | select(.triage_only == true) | (.repo // "")] | group_by(.)
+    | map({key: .[0], value: length}) | from_entries' <<<"$candidates" 2>/dev/null || printf '{}')"
+  while IFS= read -r slug; do
+    [[ -n "$slug" ]] || continue
+    count="$(jq -r --arg s "$slug" '.[$s] // 0' <<<"$counts" 2>/dev/null || printf 0)"
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    log_event "warning" "$(jq -nc --arg s "$slug" --argjson n "$count" \
+      --arg d "refiner: Priority field unresolvable for $slug — dropped $count band-only triage candidate(s)" \
+      '{detail: $d, repo: $s, dropped: $n}')"
+  done < <(jq -r '.[]' <<<"$unresolvable" 2>/dev/null || true)
+  while IFS= read -r slug; do
+    [[ -n "$slug" ]] || continue
+    count="$(jq -r --arg s "$slug" '.[$s] // 0' <<<"$counts" 2>/dev/null || printf 0)"
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    log_event "warning" "$(jq -nc --arg s "$slug" --argjson n "$count" \
+      --arg d "refiner: Priority field for $slug carries none of Urgent/High/Medium/Low — dropped $count band-only triage candidate(s)" \
+      '{detail: $d, repo: $s, dropped: $n}')"
+  done < <(jq -r '.[]' <<<"$no_bands" 2>/dev/null || true)
+
+  local drop_slugs
+  drop_slugs="$(jq -c -n --argjson a "$unresolvable" --argjson b "$no_bands" '$a + $b' 2>/dev/null \
+    || printf '%s' "$unresolvable")"
+  refiner_drop_unbandable_triage "$candidates" "$drop_slugs"
+}
+
+# maybe_run_refiner CYCLE_EXIT_CODE
+# Engage the Refiner if this cycle should, and translate its verdicts into log
+# events, labels and issue comments. Always returns without disturbing the
+# cycle's outcome — the same contract as `maybe_run_enabler`, and for the same
+# reason: this runs from the exit trap, after the cycle's own result is
+# already decided.
+#
+# Deliberately narrower than the Enabler: no escalation, no void, no handoff.
+# The Refiner has exactly two things to say about an item — `refined` (it
+# wrote a specification) or `needs-refinement` (it could not, and that decline
+# is recorded through the same `record_needs_refinement_block` a Co-Ordinator's
+# own report uses (requirement 39d)) — so there is no verdict here that needs
+# a third power.
+maybe_run_refiner() {
+  local cycle_rc="${1:-1}"
+  local engagement_json='[]' claimed_json='[]' n_eligible=0 n_claimed=0
+  local entry repo source item key live_resume live_epoch input prompt out rc=0 result parsed detail
+  local items_named_json
+  local ex e_repo e_item verdict e_reason claimed_entry e_source outcome extra
+  local e_synthetic e_block_ok e_refined_fields e_number e_triage_only
+  local e_priority priority_result priority_applied priority_reason
+  local priority_attempted priority_requested
+
+  # --- Guards, mirroring requirement 35's for the Enabler ---
+  (( lock_acquired )) || return 0
+  (( refiner_allowed )) || return 0
+  (( DRY_RUN )) && return 0
+  [[ "$cycle_rc" == "0" ]] || return 0
+  (( limit_hit_this_cycle )) && return 0
+  [[ -n "$refiner_model" ]] || return 0
+  [[ -f "$PROMPTS_DIR/refiner.md" ]] || return 0
+
+  # Requirement 39b: capped and deterministic, same reasoning as requirement
+  # 35d's cap on the Enabler's refinement class.
+  engagement_json="$(refiner_engagement_set "$refiner_candidates_json" "$refiner_max_per_engagement")"
+  n_eligible="$(jq 'length' <<<"$engagement_json" 2>&1)" \
+    || { guard_warn "refiner:n_eligible" "$n_eligible"; n_eligible=0; }
+  [[ "$n_eligible" =~ ^[0-9]+$ ]] || n_eligible=0
+  (( n_eligible > 0 )) || return 0
+
+  live_resume="$(fleet_limit_resume_at "$state_repo" "$state_dir" 2>/dev/null || true)"
+  if [[ -n "$live_resume" ]]; then
+    live_epoch="$(date -d "$live_resume" +%s 2>&1)" \
+      || { guard_warn "live_epoch" "$live_epoch"; live_epoch=0; }
+    (( live_epoch > $(date +%s) )) && return 0
+  fi
+
+  # --- Claim each item, under the pseudo-slug `refiner` ---
+  for (( i = 0; i < n_eligible; i++ )); do
+    entry="$(jq -c --argjson i "$i" '.[$i]' <<<"$engagement_json" 2>/dev/null || true)"
+    [[ -n "$entry" ]] || continue
+    repo="$(jq -r '.repo // ""' <<<"$entry" 2>/dev/null || true)"
+    source="$(jq -r '.source // ""' <<<"$entry" 2>/dev/null || true)"
+    item="$(jq -r '.item // ""' <<<"$entry" 2>/dev/null || true)"
+    [[ -n "$repo" && -n "$source" && -n "$item" ]] || continue
+    key="$(refiner_claim_key "$repo" "$source" "$item")"
+    [[ -n "$key" ]] || continue
+    if CLAIM_NODE="$node_name" CLAIM_CYCLE="$cycle_id" CLAIM_ITEM="$item" CLAIM_SOURCE="refiner" \
+         "$SCRIPT_DIR/lib/claim.sh" claim file refiner "$key" \
+         >>"$cycle_dir/claim.log" 2>&1; then
+      # requirement 4g (TD-PPagop-26081401): same conversion as the
+      # Enabler's own claim accumulator above — $entry joins $claimed_json
+      # on stdin rather than riding in as a second --argjson.
+      # TD-PPagop-26081407: passes test 1 -- $claimed_json and $entry are
+      # concatenated in-memory immediately above; the trivial append script
+      # cannot fail independently of the concatenation itself.
+      claimed_json="$(jq -nc 'input as $arr | input as $e | $arr + [$e]' \
+        <<<"$claimed_json"$'\n'"$entry" 2>/dev/null || printf '%s' "$claimed_json")"
+    fi
+  done
+  n_claimed="$(jq 'length' <<<"$claimed_json" 2>&1)" \
+    || { guard_warn "n_claimed" "$n_claimed"; n_claimed=0; }
+  [[ "$n_claimed" =~ ^[0-9]+$ ]] || n_claimed=0
+  (( n_claimed > 0 )) || return 0
+
+  # --- One engagement over every claimed item ---
+  # The claimed items arrive on stdin, bound with `input as $items`
+  # (requirement 4g) — never in argv, on the same terms as the Enabler's build
+  # above: past MAX_ARG_STRLEN this would fail into the guard below and skip
+  # the engagement silently.
+  input="$(jq -nc --arg lbl "$refined_label" \
+    --arg cycle "$cycle_id" --arg node "$node_name" \
+    'input as $items
+     | {items: $items, refined_label: $lbl, cycle: $cycle, node: $node}' \
+    <<<"$claimed_json" 2>/dev/null || true)"
+  [[ -n "$input" ]] || return 0
+
+  prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" refiner "$prompt_overrides_json")
+
+## Runtime input for this engagement
+
+\`\`\`json
+$(jq . <<<"$input")
+\`\`\`
+"
+  out="$cycle_dir/refiner.out"
+  # The Refiner spans repositories by construction, so its cell is keyed `*`
+  # (requirement 4f), the same as the Enabler's.
+  stage_budget_apply refiner "*" "$refiner_model"
+  if run_claude_stage refiner "$(( stage_backstop_min * 60 ))" "$refiner_model" "$prompt" "$out" "$cycle_dir" "$(( stage_inactivity_min * 60 ))"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  log_event "stage-end" "$(jq -nc --argjson rc "$rc" --arg kr "$stage_kill_reason" --argjson m "$(metering_fields "$refiner_model" "$out" "$stage_gaps_json")" \
+    '{stage: "refiner", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m')"
+  watchdog_warning="$(stage_watchdog_warning refiner || true)"
+  if [[ -n "$watchdog_warning" ]]; then
+    log_event "warning" "$watchdog_warning"
+  fi
+  (( ONCE )) && dump_stage_output "$out"
+
+  result="$(jq -r '.result // empty' "$out" 2>/dev/null || true)"
+  parsed="$(extract_json_result "$result" 2>/dev/null || true)"
+  if (( rc == 0 )) && [[ -z "$parsed" ]]; then
+    parsed="$(stage_salvage_result refiner "$out" "$refiner_model" "$cycle_dir" || true)"
+  fi
+  if (( rc != 0 )) || [[ -z "$parsed" ]]; then
+    if (( rc == 124 )); then
+      detail="refiner timed out"
+    elif (( rc != 0 )); then
+      detail="refiner exited $rc"
+    else
+      detail="refiner returned an unparseable final message"
+    fi
+    detect_and_log_limit_hit "$out" || true
+    items_named_json="$(jq -c '[.[] | {repo: (.repo // ""), item: (.item // "")}]' <<<"$claimed_json" 2>&1)" \
+      || { guard_warn "items_named_json" "$items_named_json"; items_named_json='[]'; }
+    # requirement 4g (TD-PPagop-26081401): same conversion as the Enabler's
+    # own unparseable-verdict warning above — $items_named_json arrives on
+    # stdin rather than as a second --argjson.
+    log_event "warning" "$(jq -nc --arg d "$detail — no verdicts recorded; the claims stand until gc lets a later cycle retry" \
+      'input as $items | {detail: $d, items: $items}' <<<"$items_named_json")"
+    for (( i = 0; i < n_claimed; i++ )); do
+      entry="$(jq -c --argjson i "$i" '.[$i]' <<<"$claimed_json" 2>/dev/null || true)"
+      [[ -n "$entry" ]] || continue
+      repo="$(jq -r '.repo // ""' <<<"$entry" 2>/dev/null || true)"
+      source="$(jq -r '.source // ""' <<<"$entry" 2>/dev/null || true)"
+      item="$(jq -r '.item // ""' <<<"$entry" 2>/dev/null || true)"
+      key="$(refiner_claim_key "$repo" "$source" "$item")"
+      [[ -n "$key" ]] || continue
+      "$SCRIPT_DIR/lib/claim.sh" expire refiner "$key" >>"$cycle_dir/claim.log" 2>&1 || true
+    done
+    return 0
+  fi
+
+  # --- Verdict loop (requirement 39c/39d) ---
+  while IFS= read -r ex; do
+    [[ -n "$ex" ]] || continue
+    e_repo="$(jq -r '.repo // ""' <<<"$ex")"
+    e_item="$(jq -r '.item // ""' <<<"$ex")"
+    verdict="$(jq -r '.verdict // ""' <<<"$ex")"
+    e_reason="$(jq -r '.reason // "no reason given"' <<<"$ex")"
+
+    claimed_entry="$(jq -c --arg r "$e_repo" --arg i "$e_item" \
+      'map(select((.repo // "") == $r and ((.item // "") | tostring) == $i)) | first // empty' \
+      <<<"$claimed_json" 2>/dev/null || true)"
+    if [[ -z "$claimed_entry" ]]; then
+      log_event "warning" "$(jq -nc --arg d "refiner: a verdict for an item this cycle did not claim ($e_repo $e_item) — ignored" \
+        '{detail: $d}')"
+      continue
+    fi
+    e_source="$(jq -r '.source // ""' <<<"$claimed_entry")"
+    outcome="$verdict"
+    extra='{}'
+    e_number=""
+    [[ "$e_source" == "issues" ]] && e_number="$e_item"
+    # requirement 39g: an entry the candidate rule (refiner_candidate_items)
+    # marked `triage_only` is one already refined — the Refiner was offered
+    # it solely to band it, never to write a second specification, so a
+    # `refined` verdict on it carries no spec/comment and must not be judged
+    # against the corroboration bar below, or recorded as a fresh refinement.
+    e_triage_only="$(jq -r 'if (.triage_only // false) == true then "true" else "false" end' \
+      <<<"$claimed_entry" 2>/dev/null || printf 'false')"
+
+    case "$verdict" in
+      refined)
+        if [[ "$e_triage_only" == "true" ]]; then
+          outcome="triage-only"
+        else
+          e_refined_fields="$(refinement_record_fields "$ex")"
+          if [[ "$e_source" == "issues" ]]; then
+            if [[ -z "$(jq -r '.comment_url // ""' <<<"$e_refined_fields")" ]]; then
+              log_event "warning" "$(jq -nc --arg d "refiner: refined $e_repo#$e_item carries no comment — nothing was posted for the Co-Ordinator to find; not recorded as refined" \
+                '{detail: $d}')"
+              outcome="refined-uncorroborated"
+            fi
+          elif [[ -z "$(jq -r '.spec // ""' <<<"$e_refined_fields")" ]]; then
+            log_event "warning" "$(jq -nc --arg d "refiner: refined $e_repo $e_item carries no spec — there is nowhere else this item type's specification lives; not recorded as refined" \
+              '{detail: $d}')"
+            outcome="refined-uncorroborated"
+          fi
+          if [[ "$outcome" == "refined" ]]; then
+            log_event "item-refined" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" --arg by "refiner" \
+              --argjson x "$e_refined_fields" '{repo: $r, item: $i, by: $by} + $x')"
+            if [[ -n "$e_number" && -n "$refined_label" ]] && ! (( DRY_RUN )); then
+              if refinement_label_add "$e_repo" "$e_number" "$refined_label"; then
+                log_event "own-label-action" \
+                  "$(label_own_action_fields "$e_repo" "$e_number" "$refined_label" "add")"
+              else
+                log_event "warning" "$(jq -nc \
+                  --arg d "could not apply the $refined_label label to $e_repo#$e_number (does it exist in that repo?) — the refinement is recorded either way" \
+                  '{detail: $d}')"
+              fi
+            fi
+          fi
+        fi
+        ;;
+      needs-refinement)
+        # requirement 39g: never from a `triage_only` item. That item is
+        # already refined — it reached the Refiner solely for its missing
+        # band, and recording a block here would label an item that already
+        # carries a specification `needs_refinement`, `blocked` and
+        # `blocked:needs-refinement`, and hold it out of selection until
+        # someone clears a block nobody asked for. The decline is refused
+        # rather than obeyed, on the same terms as the ratchet itself: the
+        # Script is what enforces the shape of this duty, never the prompt
+        # alone. The band below still applies.
+        if [[ "$e_triage_only" == "true" ]]; then
+          outcome="triage-only-refused"
+          log_event "warning" "$(jq -nc --arg d "refiner: needs-refinement for $e_repo $e_item, an already-refined item offered only for its Priority band — not recorded as a block" \
+            '{detail: $d}')"
+        else
+          e_synthetic="$(jq -nc --arg r "$e_repo" --arg i "$e_item" --arg s "$e_source" \
+            --arg reason "$e_reason" \
+            --arg missing "$(jq -r '.missing // ""' <<<"$ex")" \
+            --arg evidence "$(jq -r '.evidence // ""' <<<"$ex")" \
+            '{repo: $r, item: $i, source: $s, reason: $reason, missing: $missing, evidence: $evidence}')"
+          if record_needs_refinement_block "$e_synthetic" "refiner"; then
+            e_block_ok=1
+          else
+            e_block_ok=0
+            outcome="needs-refinement-refused"
+          fi
+          extra="$(jq -nc --argjson ok "$e_block_ok" '{recorded: $ok}')"
+        fi
+        ;;
+      *)
+        outcome="unknown-verdict"
+        log_event "warning" "$(jq -nc --arg d "refiner: unrecognised verdict '$verdict' for $e_repo $e_item — recorded, acted on in no way" \
+          '{detail: $d}')"
+        ;;
+    esac
+
+    # requirement 39g: the priority band is a side channel of the verdict,
+    # independent of whether it was `refined` or `needs-refinement` above — a
+    # failed or skipped write here must never retract the refinement (or
+    # block) already recorded. Only the four band names are honoured; the
+    # Refiner naming anything else is silently ignored rather than warned
+    # about, on the same terms as an omitted field.
+    e_priority="$(jq -r '.priority // ""' <<<"$ex" 2>/dev/null || true)"
+    case "$e_priority" in
+      Urgent | High | Medium | Low) ;;
+      *) e_priority="" ;;
+    esac
+    if [[ -n "$e_priority" && "$e_source" == "issues" && -n "$e_number" ]] && ! (( DRY_RUN )); then
+      priority_result="$(issue_priority_apply "$e_repo" "$e_number" "$e_priority" 2>/dev/null || true)"
+      [[ -n "$priority_result" ]] || priority_result='{}'
+      priority_applied="$(jq -r '.applied // false' <<<"$priority_result" 2>/dev/null || printf 'false')"
+      priority_reason="$(jq -r '.reason // "unknown"' <<<"$priority_result" 2>/dev/null || printf 'unknown')"
+      if [[ "$priority_applied" == "true" ]]; then
+        log_event "issue-prioritised" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" --arg by "refiner" \
+          --argjson x "$priority_result" \
+          '{repo: $r, item: $i, priority: $x.priority, previous: $x.previous, by: $by}
+           + (if ($x.requested // null) != null then {requested: $x.requested} else {} end)')"
+      elif [[ "$priority_reason" == "skipped-lower-or-equal" || "$priority_reason" == "skipped-unrankable" ]]; then
+        log_event "issue-prioritised-skipped" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" --arg by "refiner" \
+          --argjson x "$priority_result" \
+          '{repo: $r, item: $i, priority: $x.priority, previous: $x.previous, by: $by}
+           + (if ($x.requested // null) != null then {requested: $x.requested} else {} end)')"
+      else
+        # requested is present only for mutation-failed after a fallback
+        # (issue_priority_apply's header comment) — the other reasons
+        # reaching this branch never set it, so they fall through unchanged.
+        priority_attempted="$(jq -r '.priority // ""' <<<"$priority_result" 2>/dev/null || true)"
+        priority_requested="$(jq -r '.requested // ""' <<<"$priority_result" 2>/dev/null || true)"
+        if [[ -n "$priority_requested" ]]; then
+          log_event "warning" "$(jq -nc \
+            --arg d "refiner: could not set Priority on $e_repo#$e_number to $priority_attempted ($priority_reason) — the verdict asked for $priority_requested; the refinement verdict above is recorded either way" \
+            '{detail: $d}')"
+        else
+          log_event "warning" "$(jq -nc \
+            --arg d "refiner: could not set Priority on $e_repo#$e_number to $e_priority ($priority_reason) — the refinement verdict above is recorded either way" \
+            '{detail: $d}')"
+        fi
+      fi
+    fi
+
+    log_event "refiner-examined" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" --arg s "$e_source" \
+      --arg o "$outcome" --arg d "$e_reason" --argjson x "$extra" \
+      '{repo: $r, item: $i, source: $s, outcome: $o, detail: $d} + $x')"
+  done < <(jq -c '.refined[]? // empty' <<<"$parsed" 2>/dev/null || true)
+
+  # A claimed item the model never mentioned keeps its claim, exactly as the
+  # Enabler's equivalent does, so gc is what eventually retries it.
+  while IFS= read -r detail; do
+    [[ -n "$detail" ]] || continue
+    log_event "warning" "$(jq -nc \
+      --arg d "refiner: no verdict for claimed item $detail — left unrefined until the claim TTL lets a later cycle retry" \
+      '{detail: $d}')"
+  done < <(jq -r --argjson p "$parsed" '
+      (($p.refined // []) | map(((.repo // "") + " " + (.item // "")))) as $seen
+      | .[] | ((.repo // "") + " " + (.item // ""))
+      | select(. as $k | $seen | index($k) | not)' <<<"$claimed_json" 2>/dev/null || true)
+  return 0
+}
