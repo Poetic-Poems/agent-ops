@@ -5602,6 +5602,16 @@ implements.
     agent-ops#679): `open-question`, `open_questions`, `open-question-
     raised`, `open-question-adjudication` and `open-question-escalated` all
     name the question, never where it goes.
+
+    **Requirement 38 needs no change for this.** A pull request held on an
+    open question is finished work not landing, the shape requirement 38
+    exists to surface — but every gate round that refuses on a hit either
+    settles the question or calls `open_question_escalate` before it
+    returns, so the escalation issue (assigned to `enabler_assignee` under
+    `enabler_escalation_label`, `open_question_escalate`'s own dedup finding
+    it again on every later round) exists by the same round the refusal is
+    logged, giving it exactly the visibility requirement 36a's own
+    escalations get (Assigned-to-me) with no gap for a sweep to close.
 9. **Failure handling.** If any stage times out, exits non-zero, or returns
    an unparseable summary: kill that stage's process group, log
    `attempt-failed` with enough detail for a future cycle to know the item

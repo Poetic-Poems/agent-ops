@@ -986,3 +986,42 @@ landing_open_question_label_release() {
   [[ -n "$slug" && -n "$number" ]] || return 1
   "$gh_bin" pr edit "$number" -R "$slug" --remove-label "$LANDING_OPEN_QUESTION_LABEL" >/dev/null 2>&1
 }
+
+# landing_open_question_latest PR_URL [SRC]
+# Every question a Reviewer round has logged against PR_URL via
+# `open-question-raised`, deduplicated by its own `question` text — never
+# only the most recent round's, so a second round raising a further question
+# while an earlier one still stands does not silently drop the first from an
+# escalation issue's body or an adjudication pass's own input (agent-ops#668
+# design point: "whether more than one open question per pull request is
+# permitted" — yes, and every one of them is carried forward). `[]` if none
+# is on the log SRC names.
+#
+# SRC follows `landing_approver_adjudication_history`'s own convention:
+# `$log_file` on the round that first raises a question (this process's own
+# just-written `open-question-raised` event is already there) or
+# `$union_log` when read back later (a peer node's or an earlier cycle's
+# round), or stdin if omitted or "-". Malformed lines are skipped, not
+# fatal. This is read-only, supplementary content for prose a human or an
+# adjudication pass reads — never what the landing gate itself decides on,
+# which stays the label alone (requirement 8f's own "no log join" reasoning
+# for the gate proper), so a peer node's cycle racing to log its own
+# `open-question-raised` event costs this reader nothing but slightly stale
+# prose.
+landing_open_question_latest() {
+  local pr_url="$1" src="${2:--}" out=""
+  # shellcheck disable=SC2016  # $pr_url is jq's own --arg variable, not the shell's.
+  local jq_prog='
+    [ .[] | select(.event == "open-question-raised" and (.pr_url // "") == $u)
+      | (.questions // [])[] ]
+    | unique_by(.question // "")'
+  if [[ "$src" == "-" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' 2>/dev/null \
+      | jq -cs --arg u "$pr_url" "$jq_prog" 2>/dev/null || true)"
+  elif [[ -s "$src" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null \
+      | jq -cs --arg u "$pr_url" "$jq_prog" 2>/dev/null || true)"
+  fi
+  [[ -n "$out" ]] || out='[]'
+  printf '%s' "$out"
+}
