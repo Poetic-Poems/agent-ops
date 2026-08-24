@@ -206,6 +206,50 @@ missing_status="$scratch/does-not-exist.json"
 assert_contains "a missing status file explains itself rather than printing nothing" \
   "$(stage_health_status_lines "$missing_status" "$NOW_EPOCH")" "no data yet"
 
+# --- stage_health_status_report: the --status wiring itself ----------------
+#
+# The acceptance bar for #662 is not that the library can render a block, but
+# that `agent-cycle.sh --status` prints one — and the two are joined by three
+# lines in agent-cycle.sh that nothing else exercises: the `stages:` header,
+# and the `$state_dir/.stage-health.json` path the reporter reads. A typo in
+# either restores the original blind spot in the exact place the issue was
+# filed about, while every assertion above still passes. So the block is
+# lifted verbatim out of agent-cycle.sh (the same `extract` pattern
+# test/merge-autonomy.test.sh and test/approver-wiring.test.sh use) rather
+# than reimplemented here.
+
+extract() {  # <function name>
+  awk -v fn="^$1\\\\(\\\\) \\\\{" '$0 ~ fn { on = 1 } on { print } on && /^\}$/ { exit }' \
+    "$SCRIPT_DIR/agent-cycle.sh"
+}
+report_block="$(extract stage_health_status_report)"
+if [[ -z "$report_block" || "$report_block" != *"stage_health_status_lines"* ]]; then
+  printf 'FAIL - could not extract stage_health_status_report from agent-cycle.sh — has it moved?\n'
+  failures=$(( failures + 1 ))
+else
+  eval "$report_block"
+
+  # $status_file above was written by stage_health_write_status into
+  # $scratch, under the name the reporter looks for, so pointing state_dir at
+  # that directory is the same join the shipped --status makes.
+  state_dir="$(dirname "$status_file")"
+  report="$(stage_health_status_report)"
+  assert_eq "the reporter opens with the stages: header --status is specified to print" \
+    "stages:" "$(head -1 <<<"$report")"
+  assert_contains "  ... over the verdicts written to state_dir/.stage-health.json" \
+    "$report" "coordinator failing (3 consecutive"
+
+  # A node that has not completed a cycle since upgrading: the header still
+  # prints, so --status never goes quiet on a question it was just asked.
+  state_dir="$scratch/no-status-yet"
+  mkdir -p "$state_dir"
+  report="$(stage_health_status_report)"
+  assert_eq "a node with no snapshot yet still prints the header" \
+    "stages:" "$(head -1 <<<"$report")"
+  assert_contains "  ... and says so rather than printing an empty section" \
+    "$report" "no data yet"
+fi
+
 printf '\n'
 if (( failures )); then
   printf '%d assertion(s) failed\n' "$failures"
