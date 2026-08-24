@@ -131,6 +131,7 @@ merge_autonomy_kill_state() { printf '{"state":"enabled"}'; }
 # state's own "enabled" vocabulary for "clear".
 merge_budget_freeze_state() { printf '{"state":"enabled"}'; }
 landing_eligible() { printf '%s' "${ELIGIBLE:-eligible}"; }
+landing_open_question_hit() { return 1; }
 review_gate_verdict() { printf '%s' "${GATE_WORD:-clean}"; return "${GATE_RC:-0}"; }
 approver_token_identity_login() { printf 'pullwright-approver[bot]'; }
 landing_approver_standing_review_at() {

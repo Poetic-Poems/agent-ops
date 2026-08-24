@@ -973,6 +973,13 @@ assert_contains "  ... naming each refusal class and its count" \
 # one-off full-sentence group.
 assert_contains "  ... and a kill-switch refusal groups under its own tag" \
   "kill-switch ×1" "$out"
+# Requirement 8f (D18, agent-ops#668): an open-question refusal groups under
+# its own tag too, with no dashboard code change — `open-question:` is
+# produced directly by `_landing_stage_attempt`'s own new gate, and the
+# generic split-on-first-`:` grouping (byReason, dashboard/index.html) gives
+# it its own group beside `ineligible`/`kill-switch` for free.
+assert_contains "  ... and an open-question refusal groups under its own tag" \
+  "open-question ×1" "$out"
 assert_contains "the merge budget shows consumed against the cap" \
   "agent-ops 2/8" "$out"
 assert_contains "  ... and an unlimited repository reads as unlimited, never as 0" \

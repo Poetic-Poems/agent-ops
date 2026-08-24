@@ -327,6 +327,37 @@ your review:
    `gather-abandoned-drafts.sh` (TD26072605) and could hide a stall — this
    session dying between here and step 7 — for another
    `abandoned_draft_after_hours`.
+5a. **Raise an open question, narrowly, when the pull request is otherwise
+    `ready` but carries a question about the work order or its scope that you
+    are not the right actor to settle.** This is not a third outcome next to
+    `ready`/`blocked` — the pull request still ends `ready`, still green,
+    still handed off — it is a structured companion to a `ready` verdict for
+    the one case a plain findings comment (step 5) does not fit: nothing in
+    the diff is wrong, so there is nothing to fix or flag as a defect, but
+    something about what the work order asked for — its scope, a file it
+    should have named and did not, a judgement call only the item's own
+    author can make explicitly — deserves a decision you cannot make on the
+    diff's own evidence. Keep the three cases distinguishable: a defect you
+    can see is wrong is step 4 or step 5, never this; an impediment that
+    stops you finishing the review at all is `blocked`, never this; only a
+    genuine, narrow question about the work order or its scope, on an
+    otherwise finished and mergeable pull request, belongs here.
+
+    Post it as its own PR comment, opened and closed exactly as step 5's
+    findings comments are (same header, same marker), stating the question
+    and why you are not the right actor to settle it — then record it
+    structurally in your final JSON's `open_questions` (see "Ending"):
+
+    ```json
+    {"question": "…", "why_this_actor_cannot_settle_it": "…", "comment_url": "https://github.com/…#issuecomment-…"}
+    ```
+
+    `comment_url` is the comment you just posted — the pipeline's landing
+    gate reads the structured field, but a human reads the thread, so the
+    words must exist in both places. Raising one holds this pull request out
+    of unattended landing until an adjudication pass settles it or a human
+    acts; it does not touch CI, mergeability, or the handoff itself, so do
+    not let it change anything else about steps 6–8.
 6. **Confirm mergeable and green.** Push anything step 4 has left unpushed,
    then wait for CI
    to finish (`gh pr checks --watch`, or poll `gh pr checks`) and confirm
@@ -605,6 +636,13 @@ and hope to be woken.
 {"status": "ready", "pr_url": "https://github.com/…", "fixes_applied": ["reworded commit message on HEAD~2 to conform to Conventional Commits", "added CHANGELOG entry"], "comments_left": 0, "ci": "passing"}
 ```
 
+Add `open_questions` — an array, absent or empty on the overwhelming majority
+of rounds — only when step 5a applies:
+
+```json
+{"status": "ready", "pr_url": "https://github.com/…", "fixes_applied": [], "comments_left": 0, "ci": "passing", "open_questions": [{"question": "…", "why_this_actor_cannot_settle_it": "…", "comment_url": "https://github.com/…#issuecomment-…"}]}
+```
+
 Use `"status": "blocked"` when you left the PR as a draft because
 something is wrong that you can't fix with confidence, or CI is still
 failing for a reason you can't resolve — set `ci` accordingly (e.g.
@@ -627,3 +665,9 @@ in plain words matters even though no human will read them today.
 
 `needs-human` is accepted as a synonym for `blocked` for one release. Emit
 `blocked`.
+
+An `open_questions` entry holds the pull request out of unattended landing
+until an adjudication pass settles it or a human acts on the escalation it
+raises (requirement 8f) — pushing a new commit does not clear it, and a later
+round's `open_questions` is additive, never a way to withdraw a question a
+prior round already raised.

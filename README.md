@@ -546,6 +546,8 @@ Each of them is set by editing `config.json`, like every other key here — see 
 
 The D18 escalation-autonomy ladder: `always-escalate` (today's behaviour — every refinement-disagreement escalation goes straight to a human) or `adjudicate-first` (one bounded Enabler adjudication pass runs first; it either confirms the earlier refinement or escalates anyway). One such pass per item: a second disagreement over the same item comes to you regardless, until you act on it. A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Owner-only decisions still escalate at every level.
 
+The same setting also governs a second, independent case: a Reviewer's own open question about a pull request's work order or scope (D18, agent-ops#668). `adjudicate-first` runs one bounded adjudication pass there too, at the Approver's own critical tier rather than the Enabler's — you cannot enable one path without the other.
+
 ### Extended notes: `needs_refinement_label`
 
 Label put on an **issue** while the pipeline has it recorded as too under-specified to work on, and taken off again when that clears — see [Items nobody has specified](#items-nobody-has-specified). You can also apply it yourself to flag one directly; the pipeline reads that back the same way.

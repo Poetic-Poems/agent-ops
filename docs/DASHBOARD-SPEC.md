@@ -998,7 +998,12 @@ Three things it will not hide, each a way a digest could mislead by omission:
   switch confirms it is the actual cause of the effective level not
   qualifying, so an engaged switch groups on its own rather than folding into
   (or being indistinguishable from) the full-sentence group a level simply
-  never raised forms.
+  never raised forms. An open question the Reviewer could not settle
+  (requirement 8f, agent-ops#668) groups the same way, on an `open-question:`
+  prefix `_landing_stage_attempt`'s own new gate produces directly — no
+  further prefixing function, and no change to this file, since the generic
+  split-on-first-`:` rule already gives it its own group beside `ineligible`
+  and `kill-switch`.
 - **The merge budget** (D18 issue #574), per repository: `merge_budget_per_day`'s
   effective cap against consumption, its status (`ok`/`held`/`frozen`), and,
   when held or frozen, the oldest waiting pull request and its age. An
