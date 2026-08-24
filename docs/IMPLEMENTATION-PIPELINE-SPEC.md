@@ -121,7 +121,10 @@ a node updates by pulling a new image rather than by pulling a branch.
   byte-identical to `.github/workflows/shellcheck.yml`'s own pin — component
   10), so an Implementer working inside this image can run
   `scripts/lint-shell.sh` — the gate its own pull request is judged by —
-  before pushing.
+  before pushing. On a node that run is the gate minus its size guard: the
+  container's memory ceiling is below what the largest script costs to lint,
+  so that one file is skipped with a warning and CI is where it is actually
+  checked (acceptance check 1g-i).
 - `deploy/docker/entrypoint.sh` runs as `agent` on every container start and is
   idempotent: it seeds `$CLAUDE_CONFIG_DIR/settings.json` from
   `deploy/docker/claude-settings.json` **only when absent** (that directory is a
@@ -12026,9 +12029,12 @@ What exists, and the requirements each part answers to:
    about its own file set, and because a rule that decides what reaches a node
    is worth unit-testing.
 10. `scripts/lint-shell.sh` and `.github/workflows/shellcheck.yml` — the
-    shell linter and the job that enforces it (acceptance check 1g). The file
-    set and the invocation live in the script, so a developer's run and CI's
-    are the same run; the workflow's job is to install a **pinned** shellcheck
+    shell linter and the job that enforces it (acceptance checks 1g and 1g-i).
+    The file set and the invocation live in the script, so a developer's run
+    and CI's are the same run — with one deliberate asymmetry, the size guard
+    of 1g-i, which lets a 3 GB node skip the one script it cannot lint without
+    being OOM-killed while a 16 GB runner still checks it; the workflow's job
+    is to install a **pinned** shellcheck
     (version and tarball checksum, both in the workflow) and call it. The pin
     is the point: the runner image's own version moves without notice, and a
     linter that gains a check overnight fails pull requests that changed
@@ -13578,14 +13584,40 @@ pull request, run the ones the change touches and any it could regress.
    `./scripts/lint-shell.sh` exits 0. It discovers the file set — every tracked
    `*.sh`, plus every tracked file whose first line is a sh or bash shebang, so
    the init scripts and git hooks are included and a script added tomorrow is
-   covered without anyone adding it to a list — and checks them in one
-   invocation with `-x`, which is what lets `source` resolve between the
-   pipelines and `lib/` instead of raising SC1091 on each of them. Clean means
+   covered without anyone adding it to a list — and checks them **one process
+   per file** with `-x`, which is what lets `source` resolve between the
+   pipelines and `lib/` instead of raising SC1091 on each of them. `-x` follows
+   a `source` by path whether or not the target was also passed in, so the file
+   set does not have to share a process for this to work; what sharing one did
+   do was couple every script's fate to every other's, and a process that died
+   on the largest script took the other 253 scripts' coverage with it (#770).
+   Clean means
    nothing reported at all, info findings included; a false positive is
    silenced by a `# shellcheck disable=` in the file that carries it, with a
    comment saying why, never by an exclusion in the runner.
    `.github/workflows/shellcheck.yml` runs the same script on every pull
    request against a pinned shellcheck (component 10).
+   `test/lint-shell.test.sh` passes.
+1g-i. **A script too large to lint in the memory available is degraded or
+   skipped, never allowed to kill the cycle.** The pinned shellcheck 0.10.0
+   needs more than 3 GiB to lint `agent-cycle.sh` (10,136 lines) with `-x`, and
+   more than 1,536 MiB — a scheduler container's entire ceiling — even without
+   it. The GHC runtime it is built on ignores `+RTS -M` (the release binary is
+   not linked with `-rtsopts`) and reserves a 1 TB address space, so neither a
+   heap cap nor `ulimit -v` can bound it; the only thing that can is not
+   running it. So `scripts/lint-shell.sh` reads the smaller of its cgroup
+   ceiling and `MemAvailable`, and for a file at or above
+   `LINT_SHELL_LARGE_LINES` (3,000) it follows sources when at least
+   `LINT_SHELL_FOLLOW_MIB` (4,096) is free, drops `-x` and suppresses SC1091
+   when at least `LINT_SHELL_PLAIN_MIB` (3,072) is, and otherwise does not
+   invoke shellcheck on that file at all. Degrading and skipping are both
+   announced on stderr naming the file and the shortfall, because silence would
+   read as coverage that did not happen; a skip alone does not fail the run,
+   since CI has the memory and does check it — `.github/workflows/shellcheck.yml`
+   sets `LINT_SHELL_FOLLOW_MIB: 0` so the guard cannot apply there at all, and
+   the gate's coverage does not quietly track how much memory a runner happens
+   to have. This guard is a consequence of
+   one file's size (#771) and stops applying to anything once that is fixed.
 1h. **A log past `log_retained_bytes` rotates, keeps `log_generations`, and
    never touches `log.jsonl`.** `test/rotate-logs.test.sh` passes: a log under
    the threshold is left alone; one over it is renamed to `.1` and a fresh
