@@ -57,7 +57,7 @@ lift_bash_fn() {
   ' "$1"
 }
 
-agent_fn="$(lift_bash_fn "$SCRIPT_DIR/agent-cycle.sh")"
+agent_fn="$(lift_bash_fn "$SCRIPT_DIR/lib/stage-attempt.sh")"
 review_fn="$(lift_bash_fn "$SCRIPT_DIR/review-cycle.sh")"
 if [[ -z "$agent_fn" || -z "$review_fn" ]]; then
   echo "FAIL - could not lift extract_json_result from one of the cycle scripts"

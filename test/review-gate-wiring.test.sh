@@ -130,7 +130,7 @@ streak_helper_fn="$(awk '
   /^review_gate_escalate_unreadable_streak\(\) \{/ { on = 1 }
   on                                                { print }
   on && /^}$/                                       { exit }
-' "$CYCLE")"
+' "$SCRIPT_DIR/lib/review-gate.sh")"
 
 if [[ -z "$streak_helper_fn" ]]; then
   echo "FAIL - could not extract review_gate_escalate_unreadable_streak from agent-cycle.sh — has it moved?" >&2

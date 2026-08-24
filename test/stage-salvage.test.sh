@@ -67,11 +67,11 @@ lift_bash_fn() {
     on && /^\}$/      { exit }
   ' "$1"
 }
-extract_fn="$(lift_bash_fn "$SCRIPT_DIR/agent-cycle.sh" extract_json_result)"
-salvage_fn="$(lift_bash_fn "$SCRIPT_DIR/agent-cycle.sh" stage_salvage_result)"
-salvage_consts="$(grep -E '^stage_salvage_(backstop|inactivity)_sec=' "$SCRIPT_DIR/agent-cycle.sh")"
+extract_fn="$(lift_bash_fn "$SCRIPT_DIR/lib/stage-attempt.sh" extract_json_result)"
+salvage_fn="$(lift_bash_fn "$SCRIPT_DIR/lib/stage-attempt.sh" stage_salvage_result)"
+salvage_consts="$(grep -E '^stage_salvage_(backstop|inactivity)_sec=' "$SCRIPT_DIR/lib/stage-attempt.sh")"
 if [[ -z "$extract_fn" || -z "$salvage_fn" || -z "$salvage_consts" ]]; then
-  echo "FAIL - could not lift extract_json_result/stage_salvage_result from agent-cycle.sh"
+  echo "FAIL - could not lift extract_json_result/stage_salvage_result from lib/stage-attempt.sh"
   exit 1
 fi
 

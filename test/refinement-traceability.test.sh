@@ -195,7 +195,7 @@ assert_empty "a candidate missing repo/item is skipped" \
 # that the fault is real (so the scoping is load-bearing, not decorative), and
 # that the claim loop's own call site is guarded by `selected_by_fallback`.
 
-fb_block="$(extract_block '^fallback_select_candidate\(\) \{' "^\}$" "$AGENT_CYCLE")"
+fb_block="$(extract_block '^fallback_select_candidate\(\) \{' "^\}$" "$SCRIPT_DIR/lib/stage-attempt.sh")"
 if [[ -z "$fb_block" || "$fb_block" != *'jq'* ]]; then
   echo "FAIL - could not extract fallback_select_candidate from agent-cycle.sh — has it moved?" >&2
   exit 1

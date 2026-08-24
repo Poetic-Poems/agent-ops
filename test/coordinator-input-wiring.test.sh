@@ -296,8 +296,8 @@ assert_true "…and that warning says the API will refuse this cycle's prompt" \
 #     refusal it was, and a stage that merely died does not get mislabelled as
 #     one. `handle_stage_failure`'s two readers are lifted the same way the fit
 #     block is. ---
-eval "$(extract_block '^stage_api_refusal\(\) \{' '^\}$' "$AGENT_CYCLE")"
-eval "$(extract_block '^stage_api_refusal_message\(\) \{' '^\}$' "$AGENT_CYCLE")"
+eval "$(extract_block '^stage_api_refusal\(\) \{' '^\}$' "$SCRIPT_DIR/lib/stage-attempt.sh")"
+eval "$(extract_block '^stage_api_refusal_message\(\) \{' '^\}$' "$SCRIPT_DIR/lib/stage-attempt.sh")"
 
 # The record the fleet actually produced on 2026-08-21, verbatim but for the
 # fields nothing here reads.

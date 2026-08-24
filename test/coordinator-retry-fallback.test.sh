@@ -75,10 +75,10 @@ log_unblocked_items_fn="$(extract_fn 'log_unblocked_items() {' "$SCRIPT_DIR/agen
 log_recheck_clean_items_fn="$(extract_fn 'log_recheck_clean_items() {' "$SCRIPT_DIR/agent-cycle.sh")"
 log_needs_refinement_items_fn="$(extract_fn 'log_needs_refinement_items() {' "$SCRIPT_DIR/agent-cycle.sh")"
 log_voided_items_fn="$(extract_fn 'log_voided_items() {' "$SCRIPT_DIR/agent-cycle.sh")"
-extract_json_result_fn="$(extract_fn 'extract_json_result() {' "$SCRIPT_DIR/agent-cycle.sh")"
-run_coordinator_stage_attempt_fn="$(extract_fn 'run_coordinator_stage_attempt() {  # <attempt-out-file> <prompt> [extra-budget-json]' "$SCRIPT_DIR/agent-cycle.sh")"
-fallback_select_candidate_fn="$(extract_fn 'fallback_select_candidate() {  # <ordered-repos-json> <default-model> <refinements-json> <refinement-policy-json> <pr-label>' "$SCRIPT_DIR/agent-cycle.sh")"
-coordinator_corroborate_retry_or_fallback_fn="$(extract_fn 'coordinator_corroborate_retry_or_fallback() {' "$SCRIPT_DIR/agent-cycle.sh")"
+extract_json_result_fn="$(extract_fn 'extract_json_result() {' "$SCRIPT_DIR/lib/stage-attempt.sh")"
+run_coordinator_stage_attempt_fn="$(extract_fn 'run_coordinator_stage_attempt() {  # <attempt-out-file> <prompt> [extra-budget-json]' "$SCRIPT_DIR/lib/stage-attempt.sh")"
+fallback_select_candidate_fn="$(extract_fn 'fallback_select_candidate() {  # <ordered-repos-json> <default-model> <refinements-json> <refinement-policy-json> <pr-label>' "$SCRIPT_DIR/lib/stage-attempt.sh")"
+coordinator_corroborate_retry_or_fallback_fn="$(extract_fn 'coordinator_corroborate_retry_or_fallback() {' "$SCRIPT_DIR/lib/stage-attempt.sh")"
 
 for pair in \
   "unaccounted_items_fn:\$eligible" \
