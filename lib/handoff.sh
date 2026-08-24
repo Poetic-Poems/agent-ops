@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 #
 # lib/handoff.sh — the moment a pull request stops being the pipeline's and
-# becomes the human's, made a fact rather than a claim (requirement 31a).
+# reaches the landing gate, made a fact rather than a claim (requirement 31a).
 #
 # Requirement 31 gives the Reviewer one irreversible action: once CI is green
 # and the PR is mergeable, it runs `gh pr ready`. That single call is the whole
 # handoff — everything before it is the pipeline talking to itself, and
-# everything after it is a human's queue. Requirement 32 then has the Reviewer
+# everything after it belongs to whoever lands the pull request: a human's
+# queue at `merge_autonomy: human`, or the Script's own arming step at
+# `agent-merges-routine` and above. Requirement 32 then has the Reviewer
 # *report* what it did, and the Script logs `pr-ready` from that report.
 #
 # Those are two different things, and treating the report as the deed is how a
