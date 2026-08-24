@@ -5303,17 +5303,18 @@ implements.
       needs. `dirty` refuses arming, naming the unreconciled comment(s) as
       the reason; any other answer that is not `clean` — `unknown`, where the
       timeline or the comment list could not be read, and the empty word left
-      behind by a call that did not execute at all — logs a `warning` and
-      lets the rest of this gate sequence decide, the same "could not ask is
-      not a failure" contract the Reviewer's own reconciliation read already
-      keeps. Only the exact word `clean` passes silently: a veto check that
-      reads as clear on the one path where it never ran is the failure this
-      gate exists to prevent, so an unrecognised answer is treated as
-      `unknown` rather than fallen through. The verdict rides in the landing
-      audit record (requirement 8x) as its own `comment-reconciliation` gate
-      entry, carrying the word the read actually returned, so a landing armed
-      over a question that could not be put is never recorded as one where it
-      came back clear.
+      behind by a call that did not execute at all — refuses too (#753's
+      ruling on agent-ops#746), naming the pull request and what could not
+      be confirmed. Neither is unfolded as a case distinct from the other,
+      and neither is conditioned on `merge_autonomy_effective_level`: unlike
+      the Reviewer's own reconciliation read at hand-off, which does
+      tolerate an `unknown` there with a logged warning, this arming-time
+      instance never lets an unanswered question pass. Only the exact word
+      `clean` passes silently: a veto check that reads as clear on the one
+      path where it never ran is the failure this gate exists to prevent.
+      Because every non-`clean` word now refuses before this gate sequence
+      can reach an arm, the landing audit record (requirement 8x) can only
+      ever carry a `comment-reconciliation` entry reading `clean`.
    4.5. D18 WI-12 (Stage 4, agent-ops#415): only at `agent-merges-all`, and
       only for a pull request `landing_protected_path_controls_ok`
       (`lib/landing.sh`) itself re-confirms still touches a protected path —
@@ -12978,9 +12979,15 @@ What exists, and the requirements each part answers to:
     both "no human comments since the anchor" and
     "every one is cited". `unknown` covers the timeline, the creation-time
     fallback or the comment list failing to read at all — a node or token
-    fact, never itself blocking (the same "could not ask is not a failure"
-    contract `lib/closing-keyword-gate.sh` already keeps) — and an empty URL
-    is `dirty`, a bug in the caller rather than a degraded node.
+    fact, and this primitive itself decides nothing about it either way; its
+    callers differ. `lib/handoff.sh`'s `handoff_complete_review` treats it as
+    never itself blocking (the same "could not ask is not a failure" contract
+    `lib/closing-keyword-gate.sh` already keeps), logging a warning and
+    letting the rest of that gate sequence decide; requirement 8d's own gate
+    4, re-reading this same primitive a second time at arming, refuses
+    outright instead (#753's ruling on agent-ops#746) — arming an automatic
+    merge tolerates an unanswered question even less than a hand-off does. An
+    empty URL is `dirty`, a bug in the caller rather than a degraded node.
     `RECONCILIATION_GATE_GH` stubs `gh` for tests. Unit-tested
     (`test/reconciliation-gate.test.sh`); must pass `shellcheck`.
 21. `scripts/pickup-metrics.sh` — a read-only operator report, like
@@ -16354,14 +16361,18 @@ pull request, run the ones the change touches and any it could regress.
     `ready_for_review` event, not since undone" already is the anchor this
     read needs. A `dirty` verdict refuses arming, naming the unreconciled
     comment(s); an `unknown` verdict (the timeline or comment list could not
-    be read) logs a `warning` and lets the rest of the gate sequence decide,
-    rather than refusing on a node fact rather than a pull request one.
+    be read), and the empty word a call that never executed at all leaves
+    behind, both refuse too (#753's ruling on agent-ops#746) — neither is
+    unfolded as a case distinct from the other, and the refusal is
+    unconditional, never dependent on `merge_autonomy_effective_level`.
     `test/landing-wiring.test.sh` pins this directly: a case with a `dirty`
     `reconciliation_gate` stub refuses arming with the unreconciled comment
     named in `landing-refused` and never calls `landing_arm`, a case with
-    `unknown` logs the `warning` and still arms once every other gate
-    clears, and the happy path confirms `reconciliation_gate` is called
-    exactly once per attempt, unbounded.
+    `unknown` and a case with the empty word both refuse arming too — a
+    `landing-refused` naming what could not be confirmed, `landing_arm`
+    never called, `_landing_stage_attempt_armed` staying `0` — and the happy
+    path confirms `reconciliation_gate` is called exactly once per attempt,
+    unbounded.
 
     D18 WI-12 (Stage 4, agent-ops#415) is pinned separately, in both files.
     `test/landing.test.sh`: `landing_eligible` reads `eligible`, not

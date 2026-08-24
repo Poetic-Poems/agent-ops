@@ -4568,12 +4568,14 @@ run_landing_stage() {
 #      `dirty` refuses arming, naming the unreconciled comment(s); anything
 #      else that is not `clean` — `unknown`, where the timeline or comment
 #      list could not be read, and the empty word a call that never ran at
-#      all leaves behind — warns and lets the other checks decide, the same
-#      "could not ask is not a failure" the Reviewer's own reconciliation
-#      read already applies. Either way the verdict itself rides in the
-#      landing audit record (requirement 8x) as its own
-#      `comment-reconciliation` gate, so a landing armed over a read that
-#      could not be made is never recorded as one where it came back clear.
+#      all leaves behind — refuses too (#753's ruling on #746): neither
+#      should ever pass a safety gate, unlike the Reviewer's own
+#      reconciliation read at hand-off (`handoff_complete_review`), which
+#      does tolerate an `unknown` there as non-blocking — this arming-time
+#      instance is stricter by design. Because every non-`clean` word now
+#      refuses before this function can reach an arm, the landing audit
+#      record (requirement 8x) never carries a `comment-reconciliation`
+#      entry reading anything but `clean`.
 #   4.5. D18 WI-12 (Stage 4, agent-ops#415): only at `agent-merges-all`, and
 #      only for a pull request `landing_protected_path_controls_ok`
 #      (lib/landing.sh) itself confirms still touches a protected path —
@@ -4743,17 +4745,22 @@ _landing_stage_attempt() {
     _landing_refuse "$pr_url" "$slug" "$rc_reason" "$retry"
     return 0
   fi
-  # Anything that is not `clean` is treated as `unknown`, not as a pass: the
-  # empty word a call that never executed at all leaves behind (`|| true`
-  # swallows a `command not found` exactly as it swallows the exit 1 a `dirty`
-  # verdict reports, and both arrive here as a bare string) would otherwise
-  # clear this gate silently, logging nothing and recording nothing — a veto
-  # check reading "clear" on the one path where it did not run is the failure
-  # this gate exists to prevent, not a case to fall through.
+  # Anything that is not `clean` refuses arming outright, never falls through
+  # as a pass: the empty word a call that never executed at all leaves behind
+  # (`|| true` swallows a `command not found` exactly as it swallows the exit
+  # 1 a `dirty` verdict reports, and both arrive here as a bare string) would
+  # otherwise clear this gate silently, logging nothing and recording nothing
+  # — a veto check reading "clear" on the one path where it did not run is
+  # the failure this gate exists to prevent. `unknown` from a read that
+  # genuinely ran and the empty word a call that never ran leaves behind are
+  # not distinguished: neither should ever pass a safety gate (#753's own
+  # ruling on #746) — this is stricter than the ordinary ready-gate handoff,
+  # which does tolerate `unknown` as a warning, because arming an automatic
+  # merge is not that.
   if [[ "$rc_word" != "clean" ]]; then
-    log_event "warning" "$(jq -nc --arg u "$pr_url" \
-      --arg d "${rc_reason:-reconciliation_gate answered ${rc_word:-nothing at all}}" \
-      '{detail: ("could not confirm every human comment on " + $u + " since it last left draft is reconciled: " + $d), pr_url: $u}')"
+    _landing_refuse "$pr_url" "$slug" \
+      "could not confirm every human comment on $pr_url since it last left draft is reconciled: ${rc_reason:-reconciliation_gate answered ${rc_word:-nothing at all}}" "$retry"
+    return 0
   fi
 
   # Gate 4.5 (D18 WI-12, Stage 4, agent-ops#415): the protected-path
