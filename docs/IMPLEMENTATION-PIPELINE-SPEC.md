@@ -14152,28 +14152,46 @@ pull request, run the ones the change touches and any it could regress.
    `.github/workflows/shellcheck.yml` runs the same script on every pull
    request against a pinned shellcheck (component 10).
    `test/lint-shell.test.sh` passes.
-1g-i. **A script too large to lint in the memory available is degraded or
-   skipped, never allowed to kill the cycle.** `agent-cycle.sh` is #771's own
-   ongoing case: shrinking steadily as functions move out to `lib/*.sh`, but
-   still above `LINT_SHELL_LARGE_LINES` and still more than
-   `LINT_SHELL_PLAIN_MIB` for the pinned shellcheck 0.10.0 to lint even
-   without `-x` on a scheduler container's entire 1,536 MiB ceiling. The GHC
-   runtime it is built on ignores `+RTS -M` (the release binary is not
-   linked with `-rtsopts`) and reserves a 1 TB address space, so neither a
-   heap cap nor `ulimit -v` can bound it; the only thing that can is not
-   running it. So `scripts/lint-shell.sh` reads the smaller of its cgroup
+1g-i. **A script too large to lint in the memory available is degraded,
+   never skipped and never allowed to kill the cycle.** What "too large"
+   measures is the **union `-x` actually parses** — the file plus every file
+   it names in a `# shellcheck source=` directive, transitively, each counted
+   once (`analysed_lines`, `scripts/lint-shell.sh`) — and never the file's own
+   length. #771 is why the distinction matters: splitting `agent-cycle.sh`
+   moved its bulk into the `lib/*.sh` modules it sources, and `-x` re-inlines
+   every one of them, so the file's own `wc -l` fell from 10,136 to 2,865
+   while the union it costs stayed at 26,262. A guard reading the file's own
+   length would have declared the problem solved and gone on to OOM-kill the
+   node it ran on. The unions in this tree are 26,262 lines for
+   `agent-cycle.sh` and 7,522 for the next largest,
+   `scripts/publish-dashboard.sh`, so `LINT_SHELL_LARGE_LINES` (10,000) picks
+   out one file and only one.
+   The GHC runtime shellcheck is built on ignores `+RTS -M` (the release
+   binary is not linked with `-rtsopts`) and reserves a 1 TB address space, so
+   neither a heap cap nor `ulimit -v` can bound it; the only thing that can is
+   not running it. So `scripts/lint-shell.sh` reads the smaller of its cgroup
    ceiling and `MemAvailable`, and for a file at or above
-   `LINT_SHELL_LARGE_LINES` (3,000) it follows sources when at least
-   `LINT_SHELL_FOLLOW_MIB` (4,096) is free, drops `-x` and suppresses SC1091
-   when at least `LINT_SHELL_PLAIN_MIB` (3,072) is, and otherwise does not
-   invoke shellcheck on that file at all. Degrading and skipping are both
-   announced on stderr naming the file and the shortfall, because silence would
-   read as coverage that did not happen; a skip alone does not fail the run,
-   since CI has the memory and does check it — `.github/workflows/shellcheck.yml`
-   sets `LINT_SHELL_FOLLOW_MIB: 0` so the guard cannot apply there at all, and
-   the gate's coverage does not quietly track how much memory a runner happens
-   to have. This guard is a consequence of
-   one file's size (#771) and stops applying to anything once that is fixed.
+   `LINT_SHELL_LARGE_LINES` it follows sources when at least
+   `LINT_SHELL_FOLLOW_MIB` (6,144) is free, and otherwise — down to
+   `LINT_SHELL_PLAIN_MIB` (1,024) — drops `-x` and suppresses SC1091, SC2154
+   and SC2034 for that file. All three are artefacts of the degradation rather
+   than findings about the code: without `-x` shellcheck sees none of the
+   modules the file sources, so a `source` line raises SC1091 and every
+   variable crossing the boundary reads as unassigned (SC2154) or as assigned
+   and never read (SC2034), which after #771 is 25 of them in `agent-cycle.sh`
+   with nothing wrong with any of them. Below `LINT_SHELL_PLAIN_MIB` the file
+   is not linted at all — reachable in principle, and after #771 no longer
+   reachable in practice: `agent-cycle.sh` without `-x` completes in 634 MiB,
+   comfortably inside a scheduler container's entire 1,536 MiB ceiling, where
+   before the split it was killed at that ceiling and skipped outright.
+   Degrading and skipping are both announced on stderr naming the file, its
+   own length, its union and the shortfall, because silence would read as
+   coverage that did not happen; a skip alone does not fail the run, since CI
+   has the memory and does check it — `.github/workflows/shellcheck.yml` sets
+   `LINT_SHELL_FOLLOW_MIB: 0` so the guard cannot apply there at all, and the
+   gate's coverage does not quietly track how much memory a runner happens to
+   have, which is also what keeps the three suppressed checks checked in full
+   on every pull request.
 1h. **A log past `log_retained_bytes` rotates, keeps `log_generations`, and
    never touches `log.jsonl`.** `test/rotate-logs.test.sh` passes: a log under
    the threshold is left alone; one over it is renamed to `.1` and a fresh

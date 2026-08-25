@@ -29,20 +29,35 @@
 # unchecked (#770). Per file, a script that cannot be linted costs only itself.
 #
 # THE SIZE GUARD exists because shellcheck 0.10.0's memory grows sharply with
-# file size: `agent-cycle.sh` (10,136 lines) needs more than 3 GiB with `-x`,
-# where every other script in the tree fits in a fraction of that. The scheduler
-# container is capped at 1,536 MiB and VM1 has 3 GB in total, so on a node this
-# does not OOM the linter so much as the cycle — the kernel picks a victim from
-# the whole cgroup, and the Implementer is often the one it takes (#770).
+# the size of what it analyses, and what `-x` analyses is not one file: it is
+# the union of that file and everything it sources, parsed as a single program.
+# `agent-cycle.sh` is what makes the point. It was 10,136 lines when the guard
+# was written and is 2,865 now (#771), but it names all fifty `lib/*.sh`
+# modules in `# shellcheck source=` directives, so `-x` still parses 26,262
+# lines for it and still needs more than 4.5 GiB — while the same file without
+# `-x` needs 634 MiB, and `review-cycle.sh`, whose union is 4,945 lines, is
+# followed in 396 MiB. The scheduler container is capped at 1,536 MiB and VM1
+# has 3 GB in total, so on a node this does not OOM the linter so much as the
+# cycle — the kernel picks a victim from the whole cgroup, and the Implementer
+# is often the one it takes (#770).
 #
-# So a file above the threshold is linted WITHOUT `-x`, which costs the analysis
-# of its `source` targets and nothing else; SC1091 ("not following") is
-# suppressed for those files alone, because without `-x` it fires on every
-# source line and says nothing about the code. This is a real reduction in
-# coverage, so it is announced on every run rather than left to be discovered.
-# The threshold is not tuning: it is a statement that a shell script this large
-# is a defect in itself, tracked as #771, and when that is fixed this guard
-# stops applying to anything and can go.
+# So the guard measures the union (`analysed_lines` below), never the file's
+# own length: the split that shrank `agent-cycle.sh` moved lines from it into
+# the modules it sources, and `-x` re-inlines every one of them. A file whose
+# union is above the threshold is linted WITHOUT `-x`, which costs the
+# analysis of its source targets and nothing else. Three checks are suppressed
+# for those files alone, because all three are artefacts of the degradation
+# rather than findings about the code: SC1091 ("not following") fires on every
+# source line, and SC2154/SC2034 fire on every variable that crosses the
+# boundary in either direction — read here and assigned in a module, or
+# assigned here for a module to read. All three are checked properly wherever
+# there is room to follow (CI has it), which is what makes suppressing them
+# here a deferral rather than a hole.
+#
+# This is still a real reduction in coverage, so it is announced on every run
+# rather than left to be discovered. What the guard can no longer say is that
+# it will one day apply to nothing: the union it measures is the whole of this
+# pipeline's code, and following it will always cost what following it costs.
 #
 # Exit 0 iff shellcheck reports nothing at all — info findings included, which
 # is what the specs mean by "clean". Where a finding is a false positive, the
@@ -59,19 +74,25 @@ set -uo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root" || exit 1
 
-# A script at or above this many lines is "large" for the purposes of the guard
-# above. Chosen to separate the one offender from the rest of the tree rather
-# than to tune anything: agent-cycle.sh is 10,136 lines and the next largest
-# script is 2,548, so anything in this range picks out the same single file.
-LARGE_LINES="${LINT_SHELL_LARGE_LINES:-3000}"
+# A script whose *analysed union* (see `analysed_lines`) is at or above this
+# many lines is "large" for the purposes of the guard above. Chosen to separate
+# the one offender from the rest of the tree rather than to tune anything:
+# agent-cycle.sh's union is 26,262 lines and the next largest is
+# scripts/publish-dashboard.sh's at 7,522, so anything in this range picks out
+# the same single file. It also sits below the point where the pinned linter's
+# cost starts to climb steeply — a 161-line entry point over the same fifty
+# modules, 24,000 lines of union, costs 2.0 GiB; agent-cycle.sh's own 26,262
+# passed 4.5 GiB before the kernel stopped it — rather than inside it.
+LARGE_LINES="${LINT_SHELL_LARGE_LINES:-10000}"
 
 # What a large file costs, in MiB of headroom, as measured with the pinned
-# 0.10.0 linter on agent-cycle.sh: killed at a 3,072 MiB cap with `-x`, and
-# killed at 1,536 MiB — the scheduler's whole ceiling — even without it. Both
-# figures are floors, because the GHC collector expands to fill what it is
-# given; these add the headroom that turns a floor into a decision.
-FOLLOW_MIB="${LINT_SHELL_FOLLOW_MIB:-4096}"    # enough to lint a large file with -x
-PLAIN_MIB="${LINT_SHELL_PLAIN_MIB:-3072}"      # enough to lint one at all
+# 0.10.0 linter on agent-cycle.sh at 2,865 lines and a 26,262-line union: it
+# reached 4,543 MiB with `-x` before the kernel killed it, and completed
+# without `-x` in 634 MiB. The first is a floor, not a peak — the run never
+# finished — and the GHC collector expands to fill what it is given, so both
+# figures below add the headroom that turns a measurement into a decision.
+FOLLOW_MIB="${LINT_SHELL_FOLLOW_MIB:-6144}"    # enough to lint a large file with -x
+PLAIN_MIB="${LINT_SHELL_PLAIN_MIB:-1024}"      # enough to lint one at all
 
 if ! command -v shellcheck >/dev/null 2>&1; then
   echo "lint-shell: shellcheck is not installed." >&2
@@ -113,6 +134,38 @@ budget_mib() {
   printf '%s\n' "$budget"
 }
 
+# analysed_lines FILE
+# How much shell source `shellcheck -x` will actually parse for FILE: its own
+# lines plus those of every file it names in a `# shellcheck source=`
+# directive, transitively, each counted once however many files source it.
+# This, not FILE's own length, is what decides the memory — `-x` analyses the
+# union as a single program — and it is why the guard above measures it: after
+# #771 `agent-cycle.sh` is 2,865 lines and its union is 26,262, and it is the
+# 26,262 that costs the memory.
+#
+# Directive targets are repository-root-relative, which is where this script
+# has already `cd`-ed. A target that does not exist is counted as nothing
+# rather than treated as an error: a wrong path is shellcheck's own SC1091 to
+# report, not this estimate's to fail on.
+analysed_lines() {  # <file>
+  local -A seen=()
+  local -a queue=( "$1" )
+  local i=0 f target n total=0
+  while (( i < ${#queue[@]} )); do
+    f="${queue[i]}"; i=$(( i + 1 ))
+    [[ -z "${seen[$f]:-}" ]] || continue
+    seen["$f"]=1
+    [[ -f "$f" ]] || continue
+    n="$(wc -l < "$f" 2>/dev/null || echo 0)"
+    total=$(( total + n ))
+    while IFS= read -r target; do
+      [[ -n "$target" ]] || continue
+      queue+=( "$target" )
+    done < <(sed -n 's/^# shellcheck source=//p' "$f" 2>/dev/null)
+  done
+  printf '%s\n' "$total"
+}
+
 files=()
 while IFS= read -r -d '' f; do
   [[ -f "$f" ]] || continue          # a deleted-but-staged path lists too
@@ -138,9 +191,10 @@ rc=0
 degraded=()
 skipped=()
 
+declare -A union_lines=()
 for f in "${files[@]}"; do
-  lines="$(wc -l < "$f" 2>/dev/null || echo 0)"
-  if (( lines < LARGE_LINES )); then
+  union_lines["$f"]="$(analysed_lines "$f")"
+  if (( union_lines["$f"] < LARGE_LINES )); then
     shellcheck -x "$@" -- "$f" || rc=1
     continue
   fi
@@ -150,19 +204,26 @@ for f in "${files[@]}"; do
     shellcheck -x "$@" -- "$f" || rc=1
   elif (( budget >= PLAIN_MIB )); then
     degraded+=( "$f" )
-    shellcheck -e SC1091 "$@" -- "$f" || rc=1
+    # SC2154/SC2034 alongside SC1091: all three are artefacts of not following
+    # the sources, never findings about the code. Without `-x` shellcheck sees
+    # no module this file sources, so every variable that crosses the boundary
+    # reads as unassigned (SC2154) or as assigned and never used (SC2034) —
+    # 25 of them in agent-cycle.sh, against nothing wrong with any of them.
+    # They are checked in full wherever there is room to follow, which is why
+    # this is a deferral and not a hole.
+    shellcheck -e SC1091,SC2154,SC2034 "$@" -- "$f" || rc=1
   else
     skipped+=( "$f" )
   fi
 done
 
 for f in "${degraded[@]}"; do
-  printf 'lint-shell: WARNING: %s (%s lines) was linted WITHOUT -x — its source targets were not analysed. %s MiB available, %s MiB needed to follow them. See #771.\n' \
-    "$f" "$(wc -l < "$f")" "$budget" "$FOLLOW_MIB" >&2
+  printf 'lint-shell: WARNING: %s (%s lines, %s including everything it sources) was linted WITHOUT -x — its source targets were not analysed, and SC1091/SC2154/SC2034 were suppressed for it because they say nothing about the code once they are not. %s MiB available, %s MiB needed to follow them. See #771.\n' \
+    "$f" "$(wc -l < "$f")" "${union_lines[$f]}" "$budget" "$FOLLOW_MIB" >&2
 done
 for f in "${skipped[@]}"; do
-  printf 'lint-shell: WARNING: %s (%s lines) was NOT LINTED AT ALL — shellcheck cannot analyse it in %s MiB and would be OOM-killed trying, taking the cycle with it. CI has the memory and does check it. See #770, #771.\n' \
-    "$f" "$(wc -l < "$f")" "$budget" >&2
+  printf 'lint-shell: WARNING: %s (%s lines, %s including everything it sources) was NOT LINTED AT ALL — shellcheck cannot analyse it in %s MiB and would be OOM-killed trying, taking the cycle with it. CI has the memory and does check it. See #770, #771.\n' \
+    "$f" "$(wc -l < "$f")" "${union_lines[$f]}" "$budget" >&2
 done
 
 if (( rc == 0 )); then
