@@ -237,10 +237,29 @@ mirror_init() {
 
 # Newest-first list of the cycle directories worth keeping. Their names are
 # UTC timestamps, so lexical order is chronological order.
+#
+# `sed -n '1,Np'` rather than `head -n N`, and the same at every other site
+# that slices a sorted stream: `head` closes the pipe the instant it has its N
+# lines, and `sort` — which cannot emit anything before it has read every name
+# — is still writing. That is a SIGPIPE, and `pipefail` promotes it to 141 for
+# the whole pipeline. `sed` without `q` reads its input to the end, so no
+# writer upstream is ever signalled.
+#
+# This particular site never killed anything, but only by accident of its
+# caller: `done < <(kept_cycles)` is a process substitution, and bash discards
+# a process substitution's status. The identical shape at `node_meta`'s
+# `last_cycle` below sat in a command substitution under `set -euo pipefail`
+# instead, and killed roughly half of every node's state pushes for a month
+# (#806). Depending on the caller's shape to stay safe is not a property worth
+# keeping, so both were rewritten the same way.
 kept_cycles() {
   [[ -d "$state_dir/cycles" ]] || return 0
+  # Matching prune_local's floor: a nonsense retention value must not turn
+  # into `sed -n '1,0p'`, which is an error rather than an empty list.
+  local retained="$cycles_retained"
+  (( retained >= 1 )) || retained=1
   find "$state_dir/cycles" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null \
-    | sort -r | head -n "$cycles_retained"
+    | sort -r | sed -n "1,${retained}p"
 }
 
 # The node's own history is bounded too (TD26072004): without this, a
@@ -390,9 +409,19 @@ do_push() {
   # dashboard's page-top banner reads. The fleet-wide switch needs none of
   # this: it is a flag every node fetches for itself
   # (`fleet/disabled.json`).
-  local last_cycle version_json
-  last_cycle="$(find "$state_dir/cycles" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null \
-    | sort -r | head -n 1)"
+  # Newest cycle id. Sliced in bash rather than piped into `head -n 1`, for
+  # the reason kept_cycles sets out — and this is the site where it mattered:
+  # a command substitution in the current shell, under `set -euo pipefail`, so
+  # `sort`'s SIGPIPE became the push's own exit status. `do_push` died here,
+  # after taking the mirror lock and fetching but before committing anything,
+  # writing not one line to state-sync.log. Measured at 17 of 30 runs on
+  # `ockham-container` and 16 of 30 on `ockham-2`: a node replicated its state
+  # every 11-20 minutes against the `*/5` the cron entry asks for, and the
+  # only evidence anywhere was supercronic's `exit status 141` (#806).
+  local last_cycle version_json cycles_newest_first
+  cycles_newest_first="$(find "$state_dir/cycles" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null \
+    | sort -r)"
+  last_cycle="${cycles_newest_first%%$'\n'*}"
   version_json="$(agent_ops_version "$SCRIPT_DIR")"
   jq -nc \
     --arg node "$node_name" \
