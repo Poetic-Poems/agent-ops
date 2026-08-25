@@ -8,6 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A pull request the Approver refused no longer relies on the same cycle
+  that fixed it to also re-review it (requirement 46, agent-ops#682): a new
+  fleet-wide restale sweep (`_approver_restale_sweep_repo`, `agent-cycle.sh`)
+  detects a standing Approver `CHANGES_REQUESTED` whose `commit_id` no
+  longer matches the pull request's head — never GitHub's
+  `requested_reviewers`, which silently no-ops for the Approver's own Bot
+  identity — and, where a commit was genuinely authored since the review
+  (never a rebase alone, which cannot move an authored date), triggers a
+  real re-review by reusing `run_approver_stage` itself, falling back to a
+  self-dismissal (`PUT .../reviews/{id}/dismissals`) only when that
+  re-review could not even be attempted. A rebase-only-stale review — the
+  head moved, but nothing was authored since — is left alone until the new
+  `approver_restale_escalate_after_hours` config key (default 24) elapses,
+  then escalated to `enabler_assignee` instead of retried forever. Closes
+  the gap that left PR #621 blocked for 13.5 hours on a fix nobody re-reviewed.
 - A Reviewer that finds a pull request otherwise green and finished, but
   carrying a question about the work order or its scope it is not the right
   actor to settle, can now say so structurally (requirement 32/8f, D18,

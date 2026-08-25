@@ -75,22 +75,40 @@ if [[ -s "$d/api-fail" ]]; then
 fi
 if [[ "$1 $2" == "api -X" ]]; then
   # api -X POST repos/<slug>/pulls/<n>/reviews -f event=<e> -f body=<b>
+  # api -X PUT  repos/<slug>/pulls/<n>/reviews/<id>/dismissals -f message=<m>
+  method="$3"
   event=""
   body=""
-  shift 3
+  message=""
+  shift 4
   while (( $# )); do
     case "$1" in
-      -f) shift; case "$1" in event=*) event="${1#event=}" ;; body=*) body="${1#body=}" ;; esac ;;
+      -f) shift; case "$1" in
+            event=*) event="${1#event=}" ;;
+            body=*) body="${1#body=}" ;;
+            message=*) message="${1#message=}" ;;
+          esac ;;
     esac
     shift
   done
-  printf 'token=%s\tevent=%s\tbody=%s\n' "${GH_TOKEN:-}" "$event" "$body" >>"$d/posts"
+  if [[ "$method" == "PUT" ]]; then
+    printf 'token=%s\tmessage=%s\n' "${GH_TOKEN:-}" "$message" >>"$d/dismissals"
+  else
+    printf 'token=%s\tevent=%s\tbody=%s\n' "${GH_TOKEN:-}" "$event" "$body" >>"$d/posts"
+  fi
+  exit 0
+fi
+if [[ "$1 $2" == "pr view" ]]; then
+  # pr view <number> -R <slug> --json commits --jq '[.commits[].authoredDate] | max // empty'
+  # `gh --jq` prints a selected scalar raw, unquoted (`-r`'s own behaviour) —
+  # `jq -r` here, never `-c`, to match what the real call actually receives.
+  jq -r '[.commits[].authoredDate] | max // empty' "$d/commits.json" 2>/dev/null
   exit 0
 fi
 # A GET against .../reviews. `gh api --jq` takes one query string with no
 # `--arg` of its own, so — matching the real functions — neither call filters
 # by login here; that happens in the real, un-stubbed second `jq --arg`
-# call each function pipes this output through. The two callers ask for
+# call each function pipes this output through. The three callers ask for
 # different shapes via --jq, distinguished the same way the real filters
 # differ: only approver_prior_refusal_bodies' own filter names
 # CHANGES_REQUESTED and body explicitly.
@@ -113,10 +131,14 @@ set_reviews() {  # <json review>...
   local IFS=,
   printf '[%s]' "$*" >"$tmp_dir/reviews"
 }
+set_commits() {  # <authoredDate>...
+  jq -cn '{commits: ($ARGS.positional | map({authoredDate: .}))}' --args "$@" >"$tmp_dir/commits.json"
+}
 reset_stub() {
-  : >"$tmp_dir/posts"; : >"$tmp_dir/api-fail"
+  : >"$tmp_dir/posts"; : >"$tmp_dir/api-fail"; : >"$tmp_dir/dismissals"; rm -f "$tmp_dir/commits.json"
 }
 posts() { wc -l <"$tmp_dir/posts" | tr -d ' '; }
+dismissals() { wc -l <"$tmp_dir/dismissals" | tr -d ' '; }
 
 # --- approver_refuse_streak (requirement 8c) ----------------------------------
 
@@ -240,6 +262,86 @@ assert_eq "no token means no POST is even attempted" "0" "$(posts)"
 reset_stub
 approver_post_review "" APPROVE "x" "secret-token"
 assert_eq "an empty PR URL posts nothing" "0" "$(posts)"
+
+# --- approver_review_stale (requirement 46, agent-ops#682) ---------------------
+# Pure predicate, no `gh` involved.
+
+assert_eq "a matching commit is not stale" "1" \
+  "$(approver_review_stale CHANGES_REQUESTED abc123 abc123 && echo 0 || echo 1)"
+assert_eq "a mismatched commit under CHANGES_REQUESTED is stale" "0" \
+  "$(approver_review_stale CHANGES_REQUESTED abc123 def456 && echo 0 || echo 1)"
+assert_eq "an APPROVED state is never stale, mismatch or not" "1" \
+  "$(approver_review_stale APPROVED abc123 def456 && echo 0 || echo 1)"
+assert_eq "an empty state is never stale" "1" \
+  "$(approver_review_stale "" abc123 def456 && echo 0 || echo 1)"
+assert_eq "an empty commit is never stale" "1" \
+  "$(approver_review_stale CHANGES_REQUESTED "" def456 && echo 0 || echo 1)"
+assert_eq "an empty head is never stale" "1" \
+  "$(approver_review_stale CHANGES_REQUESTED abc123 "" && echo 0 || echo 1)"
+
+# --- approver_newest_commit_authored_at (requirement 46, agent-ops#682) --------
+
+reset_stub
+set_commits "2026-08-21T09:00:00Z" "2026-08-21T13:00:00Z" "2026-08-20T08:00:00Z"
+assert_eq "the newest authoredDate wins, not list order" "2026-08-21T13:00:00Z" \
+  "$(approver_newest_commit_authored_at "$URL")"
+
+reset_stub
+set_commits "2026-08-21T09:00:00Z"
+assert_eq "a single commit is its own newest" "2026-08-21T09:00:00Z" \
+  "$(approver_newest_commit_authored_at "$URL")"
+
+reset_stub
+set_commits
+out="$(approver_newest_commit_authored_at "$URL")"; rc=$?
+assert_eq "an empty commit list is a failure, never a guessed date" "" "$out"
+assert_eq "  ... and exits non-zero" "1" "$rc"
+
+reset_stub
+printf 'x' >"$tmp_dir/api-fail"
+out="$(approver_newest_commit_authored_at "$URL")"; rc=$?
+assert_eq "an unreadable commit list is a failure too" "" "$out"
+assert_eq "  ... and exits non-zero" "1" "$rc"
+
+reset_stub
+out="$(approver_newest_commit_authored_at "")"; rc=$?
+assert_eq "an empty PR URL is a failure" "" "$out"
+assert_eq "  ... and exits non-zero" "1" "$rc"
+
+# --- approver_dismiss_review (requirement 46, agent-ops#682) -------------------
+
+reset_stub
+approver_dismiss_review "$URL" "12345" "rebase only, dismissed" "secret-token"
+assert_eq "one PUT is made" "1" "$(dismissals)"
+assert_eq "  ... carrying the token for that call only" "1" \
+  "$(grep -c '^token=secret-token' "$tmp_dir/dismissals")"
+assert_eq "  ... and the right message" "1" \
+  "$(grep -c 'message=rebase only, dismissed' "$tmp_dir/dismissals")"
+assert_eq "  ... and never touches the ordinary review-post log" "0" "$(posts)"
+
+before_gh_token="${GH_TOKEN-<unset>}"
+reset_stub
+approver_dismiss_review "$URL" "12345" "x" "a-different-token-entirely"
+assert_eq "GH_TOKEN never leaks into the caller's own environment" \
+  "$before_gh_token" "${GH_TOKEN-<unset>}"
+
+reset_stub
+approver_dismiss_review "$URL" "12345" "x" ""
+assert_eq "no token means no PUT is even attempted" "0" "$(dismissals)"
+
+reset_stub
+approver_dismiss_review "$URL" "" "x" "secret-token"
+assert_eq "a non-numeric review id means no PUT is even attempted" "0" "$(dismissals)"
+
+reset_stub
+approver_dismiss_review "" "12345" "x" "secret-token"
+assert_eq "an empty PR URL dismisses nothing" "0" "$(dismissals)"
+
+reset_stub
+printf 'x' >"$tmp_dir/api-fail"
+rc=0
+approver_dismiss_review "$URL" "12345" "x" "secret-token" || rc=$?
+assert_eq "GitHub refusing the write is reported, never read as a dismissal" "1" "$rc"
 
 # --- Survives the caller's shell options ---------------------------------------
 # agent-cycle.sh runs under `set -euo pipefail`; every call site captures
