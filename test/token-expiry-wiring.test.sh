@@ -60,7 +60,7 @@ extract_block() {
   ' "$file"
 }
 
-te_block="$(extract_block '^# 1c\. Token-expiry escalation' '^# --- 2\. Stand-down checks ---' "$AGENT_CYCLE")"
+te_block="$(extract_block '^# 1c\. Token-expiry escalation' '^run_standdown_checks$' "$AGENT_CYCLE")"
 if [[ -z "$te_block" ]]; then
   echo "FAIL - could not extract the token-expiry escalation block from agent-cycle.sh — has it moved?" >&2
   exit 1
@@ -114,6 +114,9 @@ run_block() {
       printf '%s\t%s\n' "$1" "${2:-{\}}" >> "$EVENT_FILE"
     }
     export EVENT_FILE="$event_file"
+
+    # shellcheck disable=SC2317  # called from $te_block via eval, invisible to a static reader
+    run_standdown_checks() { :; }
 
     eval "$te_block"
     printf 'FELL THROUGH\n' >> "$EVENT_FILE"

@@ -104,8 +104,8 @@ token_expiry_parse() {
 # EXPIRES_AT changes.
 token_expiry_escalated_for() {
   local node="$1" expires_at="$2" hits
-  hits="$(jq -r -R -s --arg n "$node" --arg e "$expires_at" '
-    [ splits("\n") | select(length > 0) | (fromjson? // empty)
+  hits="$(jq -r -R -n --arg n "$node" --arg e "$expires_at" '
+    [ inputs | select(length > 0) | (fromjson? // empty)
       | select(.event == "token-expiry-escalated"
                and (.node // "") == $n
                and (.expires_at // "") == $e) ]
