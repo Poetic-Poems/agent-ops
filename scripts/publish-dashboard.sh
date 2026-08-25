@@ -212,12 +212,30 @@ local_state_fingerprint() {
     # the one the same state produced a moment earlier, and nothing would ever
     # skip.
     #
-    # `.image-drift-cache.json` is the same hazard wearing a different hat, and
-    # it made this whole short-circuit inert from the day it shipped: every
-    # publish rewrites it, normally with byte-identical content, so its mtime
-    # moves on every tick while its meaning does not. Its *content* is a real
-    # input — a node that has drifted off its image must be able to say so — so
-    # it is hashed below rather than pruned outright.
+    # Two more classes of path must not contribute an *mtime*, and the
+    # difference between them decides how each is handled. The failure modes
+    # are not symmetric: leaving a non-input in costs a wasted rebuild, while
+    # leaving a real input out would leave the page stale, which is the failure
+    # lib/noop-skip.sh exists to warn about. So prune only what is
+    # demonstrably never read, and for anything that *is* read, downgrade it
+    # from mtime to content rather than dropping it.
+    #
+    #   not read at all — other cron entries' logs and error sidecars:
+    #     state-sync.log, doctor.log, fleet-cache/*.err, *.repo-err. Anchored
+    #     with -path, not -name, so a same-named file inside a cycle directory
+    #     is not caught by accident.
+    #
+    #   read, but rewritten on a timer with normally identical content:
+    #     .image-drift-cache.json, .doctor-status.json, .dashboard-*.json and
+    #     fleet-cache/*.json. Their mtimes move while their meaning does not —
+    #     fleet-cache/ every ~90 seconds, which on its own guaranteed that no
+    #     tick could ever skip (#803). Hashed by content below; the whole set
+    #     is a few hundred KB, a few milliseconds against a ~20s rebuild.
+    #
+    # `.image-drift-cache.json` was the first of these found (#801) and was
+    # fixed alone, which is why this needed a second pass: the question to ask
+    # of a self-invalidating key is not "which file did this" but "what else
+    # behaves the same way".
     #
     # `-type f` for the same reason one level up: replacing any file in a
     # directory moves that directory's own mtime, so counting directory entries
@@ -229,14 +247,22 @@ local_state_fingerprint() {
       -name 'dashboard.log*' -prune -o \
       -name '.dashboard-fingerprint' -prune -o \
       -name '.dashboard-skips' -prune -o \
-      -name '.image-drift-cache.json' -prune -o \
+      -path "$state_dir/state-sync.log" -prune -o \
+      -path "$state_dir/doctor.log" -prune -o \
+      -path "$state_dir/fleet-cache" -prune -o \
+      -path "$state_dir/.image-drift-cache.json" -prune -o \
+      -path "$state_dir/.doctor-status.json" -prune -o \
+      -path "$state_dir/.dashboard-*.json" -prune -o \
       -type f -printf '%p %s %T@\n' 2>/dev/null
     [[ -d "$peers_dir" ]] && find "$peers_dir" -type f -printf '%p %s %T@\n' 2>/dev/null
-    # What the drift cache says, not when it was last written.
-    if [[ -f "$state_dir/.image-drift-cache.json" ]]; then
-      printf 'image-drift %s\n' \
-        "$(sha256sum < "$state_dir/.image-drift-cache.json" 2>/dev/null | cut -d' ' -f1)"
-    fi
+    # What the timer-rewritten caches say, not when they were last written.
+    {
+      find "$state_dir" -maxdepth 1 -type f \
+        \( -name '.image-drift-cache.json' -o -name '.doctor-status.json' \
+           -o -name '.dashboard-*.json' \) -print0 2>/dev/null
+      [[ -d "$state_dir/fleet-cache" ]] &&
+        find "$state_dir/fleet-cache" -maxdepth 1 -type f -name '*.json' -print0 2>/dev/null
+    } | xargs -0 -r sha256sum 2>/dev/null
     # The config, the page template and this script itself: an image roll moves
     # the last two, and a page that would render differently has to be rewritten
     # even when the data behind it has not moved.
