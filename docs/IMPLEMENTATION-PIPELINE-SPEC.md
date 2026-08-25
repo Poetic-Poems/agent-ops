@@ -2193,7 +2193,8 @@ implements.
    `.image-drift-cache.json`), `state-sync.log`, the unattended doctor
    pass's own local artefacts (`doctor.log`, `.doctor-status.json` —
    requirement 2.6a), the revert-rate publishing tick's own local text
-   output (`revert-rate.log` — requirement 2.6b, its structured sibling
+   output and cumulative-since-baseline cache (`revert-rate.log`,
+   `revert-rate-cumulative-state.json` — requirement 2.6b, the structured
    `revert-rate.jsonl` excepted, below), the stage event streams
    (`*.stream.jsonl`, requirement 4d), and the fleet-log snapshot
    (`.fleet-log.jsonl`, "The union" below).
@@ -2424,8 +2425,10 @@ implements.
    and nothing less; **cumulative-since-baseline** — every merged pull
    request since `revert_rate_baseline.generated`, unfiltered, which is what
    this criterion itself compares against the baseline (both all-population
-   aggregates, measured the same way); and **baseline** — the stored Stage 0
-   figures (`revert_rate_baseline` — see Configuration), copied in once
+   aggregates, measured the same way; see below for how this figure is
+   computed without re-mining that whole population on every tick); and
+   **baseline** — the stored Stage 0 figures (`revert_rate_baseline` — see
+   Configuration), copied in once
    rather than re-derived at runtime the way `scripts/autonomy-stage-
    report.sh` (component 22, issue #571, out of this component's scope)
    still does for its own one-off comparison by scanning `docs/reviews/` —
@@ -2433,6 +2436,44 @@ implements.
    `revert_rate_baseline.repos`, or the whole key absent, publishes its
    rolling figure unaffected and reads baseline (and, absent the whole key,
    cumulative too) `null` throughout, rather than failing the run.
+
+   **Bounding the cumulative-since-baseline pass** (TD-PPagop-26082204): a
+   fixed `--since` bound that never advances would otherwise re-mine every
+   labelled pull request merged since the baseline, from scratch, on every
+   tick, forever — an unbounded and ever-growing cost, unlike the rolling and
+   recent passes above, whose own `--since` bound is always "now minus a
+   fixed offset". Instead, each node caches the *settled* portion of that
+   population — merged more than 48 hours ago, whose post-merge outcome
+   (revert or follow-up fix) cannot change again, "Post-merge outcome" in
+   `scripts/mine-merge-history.sh`'s own header — per repository, in
+   `<state_dir>/revert-rate-cumulative-state.json`: the settled aggregate
+   itself (`{count, post_merge: {reverts, follow_up_fixes}}`), the
+   `settled_until` instant it is settled as of, and the `baseline_since` it
+   was computed against. A run with no usable cached entry for a repository
+   (new to this node, or the configured baseline has moved since the entry
+   was written) falls back to one full `--since revert_rate_baseline.generated`
+   pass, exactly as every run used to — the one place this pass is
+   still unbounded, and only once per repository per node — and seeds the
+   cache from it (that pass's own result, minus the still-unsettled tail the
+   recent pass above already mined, becomes the new settled aggregate). A run
+   with a usable entry instead mines only the delta since that entry's own
+   `settled_until`, subtracts out the still-unsettled tail the same way (the
+   recent pass mined at the new `since_recent` bound, reused at no extra API
+   cost), and adds what remains — now-settled pull requests merged between
+   the old `settled_until` and the new one — into the cached aggregate. This
+   is the rolling figure's own "since subtraction" argument again, with
+   `settled_until`/`since_recent` standing in for the 14-day/48-hour pair: any
+   pull request an outcome check could classify as a revert or follow-up of
+   one merged since the old `settled_until` must itself have merged since
+   that same instant too, so the delta pass finds every partner the rolling
+   figure's own recent pass would, and the subtraction removes exactly the
+   still-unsettled population. Published `cumulative` is always the rolled-
+   forward settled aggregate plus the recent pass's own tail — the same
+   figure a full re-mine would give, never an approximation of it. The cache
+   is this node's own local memoisation, not fleet data: it is excluded from
+   the state branch (requirement 2.5) the same way `.doctor-status.json` is,
+   and a repository with no configured baseline (`baseline_since` empty)
+   neither reads nor writes an entry for it.
 
    Every mining pass reads GitHub through `scripts/mine-merge-history.sh`'s
    own `lib/github-limit.sh` wrapper and `gh_retry`, so the fleet-wide rate
