@@ -1244,6 +1244,14 @@
     return el("section", {}, [ el("h2", {text:title}), body ]);
   }
 
+  // Days' notice under which a fine-grained PAT's expiry earns an amber
+  // badge (agent-ops#694) — must match TOKEN_EXPIRY_WARN_DAYS
+  // (lib/token-expiry.sh), the same constant doctor.sh's own warn/ok split
+  // and agent-cycle.sh's escalation decision already share; not read from
+  // the payload itself, since doctor.sh only ever records the figures, not
+  // the threshold it judged them against.
+  var TOKEN_EXPIRY_WARN_DAYS = 7;
+
   // ---------- Doctor panel (agent-ops#543) ----------
   // status.doctor is THIS node's own most recent hourly `doctor.sh
   // --unattended` pass (state_dir/.doctor-status.json, written by the pass
@@ -1256,6 +1264,22 @@
     if (!doc) {
       return el("div", {class:"panel"}, el("div", {class:"empty",
         text: "No unattended doctor pass has run on this node yet."}));
+    }
+    // Fine-grained PAT expiry (agent-ops#694): a standing line above the
+    // fail/warn table, since it is a figure this node always has an answer
+    // for (once any unattended pass has recorded one), not a message that
+    // only appears when something is wrong.
+    var te = doc.token_expiry || null;
+    var teLine = null;
+    if (te && typeof te.days_remaining === "number") {
+      var teUnder = te.days_remaining < TOKEN_EXPIRY_WARN_DAYS;
+      teLine = el("div", {class:"empty", style:"padding:8px 12px 0"}, [
+        el("span", {class:"badge " + (teUnder ? "b-amber" : "b-grey"),
+          text: "PAT expires in " + te.days_remaining + "d",
+          title: "GitHub-Authentication-Token-Expiration, read hourly by doctor.sh --unattended"}),
+        el("span", {style:"margin-left:6px", text: "at " + te.expires_at
+          + (teUnder ? " — rotate GH_TOKEN before it expires" : "")})
+      ]);
     }
     var rows = [];
     (doc.fails || []).forEach(function (m) {
@@ -1271,10 +1295,14 @@
       ]));
     });
     if (!rows.length) {
-      return el("div", {class:"panel"}, el("div", {class:"empty",
-        text: "No failures or warnings on the last unattended pass, " + fmtAgo(doc.timestamp) + "."}));
+      return el("div", {class:"panel"}, [
+        teLine,
+        el("div", {class:"empty",
+          text: "No failures or warnings on the last unattended pass, " + fmtAgo(doc.timestamp) + "."})
+      ]);
     }
     return el("div", {class:"panel scroll"}, [
+      teLine,
       el("div", {class:"empty", style:"padding:8px 12px 0", text:
         "Last unattended pass " + fmtAgo(doc.timestamp) + " (" + fmtTime(doc.timestamp) + ")."}),
       el("table", {}, [
