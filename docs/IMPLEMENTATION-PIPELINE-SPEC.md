@@ -779,7 +779,7 @@ and the schema must carry every one of them.
 | `approver_app_id` | *(unset)* | The Approver GitHub App's id for this installation (§5.3) — required for any `merge_autonomy` level above `human`, and reconciled by `scripts/doctor.sh` against the `PULLWRIGHT_APPROVER_APP_ID` environment the token wrapper (requirement 14b) mints from: a set pair that differs is a doctor `fail`. Deliberately one fleet-wide scalar string with no per-repo override — see the Design decisions entry on this key's shape. |
 | `crash_loop_after` | `4` | Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue (requirement 2.7) — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. At four nodes each hitting the same deterministic failure once per cycle, this crosses within about one `schedule.cycle_interval_minutes` interval. `0` (or absent) disables both checks. |
 | `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where requirement 2.7's escalation issues are filed — the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks. |
-| `escalation_webhook_url` | *(unset)* | A URL POSTed to as a best-effort, `GH_TOKEN`-independent fallback whenever `create_escalation_issue` cannot file (requirement 2m). Empty disables it: the call is skipped rather than attempted, so an installation with none configured is unaffected. Must be `https://` when set — a plain-text channel is not a fit substitute for the credential it stands in for. |
+| `escalation_webhook_url` | *(unset)* | A URL POSTed to as a best-effort, `GH_TOKEN`-independent fallback whenever `create_escalation_issue` cannot file (requirement 2m). Empty disables it: the call is skipped rather than attempted, so an installation with none configured is unaffected. Must be `https://` when set — a plain-text channel is not a fit substitute for the credential it stands in for. Fleet-wide like every key here, and inert on a node whose `EGRESS_EXTRA_ALLOW` does not name the webhook's host — see...[continued below](#extended-notes-escalation_webhook_url) |
 | `timeout_coordinator` | *(unset)* | An override for the wall-clock backstop of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case and the intended one: a configured value wins permanently, so setting it turns the self-tuning off for that actor. |
 | `timeout_implementer` | *(unset)* | As `timeout_coordinator`, for the Implementer. The interim raise to 120 this key carried (#203, #209) has gone with the fixed cap it belonged to: the shipped prior is 150 and the derivation moves from there. |
 | `timeout_reviewer` | *(unset)* | As `timeout_coordinator`, for the Reviewer. This is the key #203 was opened about: it was raised 30 → 45 → 60 in two days, and 45 lasted six hours before a complex-model review of a 16-file diff consumed all of it. Complex-model reviews are killed roughly six times as often as default-model ones, so a single fixed number spans two quite different populations — which is why the derivation keys on the model. |
@@ -949,6 +949,10 @@ D18 Stage 3 (requirement 8d, `lib/landing.sh`'s `landing_eligible`, agent-ops#72
 ### Extended notes: `landing_cool_off_hours`
 
 D18 WI-12 (Stage 4, §7 risk 1, `lib/landing.sh`'s `landing_protected_path_controls_ok`/`landing_cool_off_effective_hours`/`landing_cool_off_remaining_hours`): the wait between the Approver's own approval of a protected-path pull request and the arming step (requirement 8d) landing it, fleet-wide default; a `repos[]` entry's own `landing_cool_off_hours` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). Binds only at `agent-merges-all`, alongside the critical-tier control (`approver_model_critical`, forced regardless of complexity by a protected-path hit) — the compensating controls Stage 4 requires before a protected-path pull request is eligible at all. Measured from `landing_approver_standing_review_at`'s own `submitted_at`, re-read fresh at every arming attempt; a fresh push restarts the wait, since the standing review's own `commit_id` (also read there) no longer matches a fresh read of the pull request's `headRefOid`, and the mismatch alone refuses regardless of how much of `submitted_at`'s own cool-off has elapsed. `0` disables the wait.
+
+### Extended notes: `escalation_webhook_url`
+
+A URL POSTed to as a best-effort, `GH_TOKEN`-independent fallback whenever `create_escalation_issue` cannot file (requirement 2m). Empty disables it: the call is skipped rather than attempted, so an installation with none configured is unaffected. Must be `https://` when set — a plain-text channel is not a fit substitute for the credential it stands in for. Fleet-wide like every key here, and inert on a node whose `EGRESS_EXTRA_ALLOW` does not name the webhook's host — see the requirement-2m entry.
 
 <!-- config-table:notes-end -->
 
@@ -14661,7 +14665,27 @@ pull request, run the ones the change touches and any it could regress.
    and `cycle`, to a URL `GH_TOKEN` plays no part in reaching. A POST
    failure is recorded as a local `warning` event and never propagates: a
    down or misconfigured webhook costs a cycle nothing beyond the escalation
-   it was already failing to file. `test/escalation-webhook.test.sh` passes
+   it was already failing to file.
+
+   **Enabling it is two edits per node, not one.** The POST leaves the
+   scheduler through the egress fence like every other outbound call — the
+   scheduler's own `HTTPS_PROXY` (compose.yaml) points at squid, which is
+   default-deny (D24, "The node stack") — so a webhook host that is not in
+   that node's `EGRESS_EXTRA_ALLOW` (`.env`) draws a proxy `403`, `curl -f`
+   returns non-zero, and the node logs the same local `warning` it logged
+   before this requirement existed. `escalation_webhook_url` is set
+   fleet-wide (`config.json` ships in the image, so its value is every
+   node's value); the allowlist entry is per node and ships with none,
+   because no host can be guessed for an installation. A configured webhook
+   whose host is not allowed is therefore inert, not broken, and looks in
+   the log exactly like a webhook that is simply down — which is why the
+   operator-facing documentation of the key states both edits together
+   rather than the config one alone. The baked
+   `deploy/docker/egress-allowlist.txt` gains no entry for this: it carries
+   only hosts this repository's own code names, and a webhook endpoint is an
+   installation's choice.
+
+   `test/escalation-webhook.test.sh` passes
    against `create_escalation_issue` and `escalation_webhook_notify` lifted
    verbatim from `lib/enabler.sh`: an unset `escalation_webhook_url` files
    no HTTP request on a filing failure; a set one POSTs exactly once, to
