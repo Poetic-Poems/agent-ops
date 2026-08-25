@@ -629,8 +629,9 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                              //   spec 17a) before its outcome; present
                                              //   whether or not it recovered
                standdown_cause,             // "raced" | "unreachable" | "pre-claimed"
-                                             //   | null — only on an outcome of
-                                             //   "stand-down"
+                                             //   | "unauthorized" | "disk-full"
+                                             //   | "disk-low" | null — only on an
+                                             //   outcome of "stand-down"
                stages:{ coordinator|implementer|reviewer:
                         { ran, cost_usd, duration_ms, num_turns, is_error,
                           terminal_reason, model, status, result, stderr,

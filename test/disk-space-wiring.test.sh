@@ -18,11 +18,13 @@
 # their own, so the assertions are about the shipped code rather than a copy
 # of its logic.
 #
-# No network, no real disk read: disk_space_free_kb and disk_space_verdict
-# (lib/disk-space.sh's own, sourced for real — only `df` would need
-# stubbing, and this test never calls it) are exercised indirectly by
-# stubbing disk_space_free_kb's own output through an injected free-KiB
-# value, so no assertion depends on this host's real free space.
+# No network, no real disk read: lib/disk-space.sh is deliberately not
+# sourced here. `disk_space_free_kb`, `disk_space_verdict` and
+# `disk_space_describe` are all supplied as stubs below, so the free-KiB
+# figure the block sees is injected outright and no assertion depends on this
+# host's real free space. What the real helpers compute is
+# test/disk-space.test.sh's subject; this file's subject is only whether the
+# shipped block acts on their verdict.
 #
 # No test framework is used (none exists elsewhere in this repo). Run
 # directly: ./test/disk-space-wiring.test.sh — exit 0 iff all passed.
