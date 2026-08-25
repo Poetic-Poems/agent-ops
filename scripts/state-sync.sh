@@ -125,10 +125,10 @@ peers_dir="$(fleet_peers_dir "$workspace_root")"
 #   the dashboard   `dashboard/` is generated from the state beside it, and the
 #                   logs and caches beside it (`dashboard.log`,
 #                   `dashboard-server.log`, `.dashboard-github.json`,
-#                   `.dashboard-claims.json`) are one node's rendering
-#                   machinery. Each node republishes its own page from the
-#                   union it fetches; copying the pixels would be copying a
-#                   derivative of what we are already copying.
+#                   `.dashboard-claims.json`, `.dashboard-tick-cost`) are one
+#                   node's rendering machinery. Each node republishes its own
+#                   page from the union it fetches; copying the pixels would
+#                   be copying a derivative of what we are already copying.
 #   the image-drift `.image-drift-cache.json` is this node's own last read of
 #   cache            the registry (lib/image-drift.sh) — a peer's copy of it
 #                   would answer for a registry query nobody there ran, not
@@ -191,6 +191,7 @@ EXCLUDES=(
   # .doctor-status.json above.
   --exclude=revert-rate-cumulative-state.json
   --exclude=.dashboard-github.json
+  --exclude=.dashboard-tick-cost
   --exclude=.dashboard-claims.json
   --exclude=.image-drift-cache.json
   # labels-ensured/ (lib/labels.sh's labels_ensure_stamped, agent-ops#687):

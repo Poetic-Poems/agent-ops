@@ -83,6 +83,27 @@ lck="$logdir/dashboard.lck"
 gh_cache="$logdir/.dashboard-github.json"
 gh_max_age="${LAUNCHER_GITHUB_MAX_AGE:-285}"
 
+# What a tick of each kind last cost, in whole seconds, rounded up. The tail
+# reserve below needs this on the *first* tick of a window, and cron starts a
+# fresh launcher every window — so learning it in-process would reset it
+# exactly when it is wanted, and the fix would ship inert. That is the shape
+# #793 shipped with for a day and a half, so it is worth a file.
+#
+# Seconds rather than milliseconds because `endat` and `EPOCHSECONDS` are
+# seconds and the reserve is the only consumer; rounded up because
+# under-reserving is what this exists to prevent.
+cost_cache="$logdir/.dashboard-tick-cost"
+gh_cost_s=0
+local_cost_s=0
+if [[ -r "$cost_cache" ]]; then
+  read -r gh_cost_s local_cost_s _ < "$cost_cache" 2>/dev/null || true
+fi
+# A truncated or hand-edited cache must not become an arithmetic error in the
+# loop; an unreadable value simply means "not measured yet".
+[[ "$gh_cost_s"    =~ ^[0-9]+$ ]] || gh_cost_s=0
+[[ "$local_cost_s" =~ ^[0-9]+$ ]] || local_cost_s=0
+cost_stamp="$gh_cost_s $local_cost_s"
+
 # The very first thing we touch is the lock/log in $logdir, before
 # publish-dashboard.sh gets a chance to create it — make sure it exists.
 mkdir -p "$logdir"
@@ -145,14 +166,11 @@ sleep_ms() {
 # delayed and a window that runs one tick behaves exactly as it did before.
 last_cost_ms=0
 next_tick_ms=0
+# Ticks actually started in this window, for the first-tick floor on the
+# reserve below.
+ticks_run=0
 
 while (( EPOCHSECONDS < endat - tick_margin )); do
-  # Reserve enough of the window's tail for a tick of the size we last saw,
-  # not for the five-second one this loop was written around. Starting a 21s
-  # tick 12s before the window closes just hands the overrun to the next
-  # cron-fired launcher, which then logs it as a lock collision.
-  (( EPOCHSECONDS < endat - tick_margin - last_cost_ms / 1000 )) || break
-
   # Wait out the backoff the previous tick earned. One that would run past the
   # end of the window ends the window instead: cron opens the next one on
   # schedule, and sleeping through the remainder here would only delay it.
@@ -162,11 +180,59 @@ while (( EPOCHSECONDS < endat - tick_margin )); do
     sleep_ms "$backoff_ms"
   fi
 
-  github=(--no-github)
+  github=(--no-github); kind=local
   sleep $(( 5 - EPOCHSECONDS % 5 ))
   gh_at="$(stat -c %Y "$gh_cache" 2>/dev/null)" || gh_at=0
   if (( EPOCHSECONDS - ${gh_at:-0} >= gh_max_age )); then
-    github=()
+    github=(); kind=github
+  fi
+
+  # Reserve the window's tail for a tick of the kind about to run, or for
+  # `tick_margin`, whichever is longer.
+  #
+  # This used to reserve `tick_margin` *plus* `last_cost_ms` — whatever the
+  # previous tick cost, of either kind — one line above, before the kind was
+  # even decided. That was a sound proxy only while every tick was expensive.
+  # #804 made the no-op path actually fire, so the previous tick became a
+  # sub-second skip, the reserve collapsed to the bare `tick_margin`, and a 45s
+  # GitHub tick starting in the last half-minute ran past the end of the
+  # window. supercronic does not run overlapping instances of a job, so it
+  # dropped the *whole* next window — `not starting: job is still running` —
+  # and the page went ten minutes without an update (#807). The old reserve was
+  # correct precisely for as long as the bug it depended on was still there.
+  #
+  # A GitHub tick costs 42-47s against a local tick's 17-20s on both laptop
+  # nodes, so the two kinds cannot share an estimate in either direction: the
+  # local figure under-reserves a GitHub tick, and the GitHub figure would cost
+  # an idle window most of the cheap ticks it has room for.
+  #
+  # Larger-of-the-two rather than the sum: `tick_margin` is the floor on this
+  # reserve, not a separate cushion to add to it. Summing them made a 1s tick
+  # in a 30s window reserve 11s of it, which is how the original guard read —
+  # and it means a cheap tick's tail behaves exactly as it always has, because
+  # for anything under 10s this is still just `tick_margin`.
+  if [[ "$kind" == github ]]; then reserve_s=$gh_cost_s; else reserve_s=$local_cost_s; fi
+  (( reserve_s > tick_margin )) || reserve_s=$tick_margin
+  # A window always runs its first tick, whatever the reserve says. Without
+  # this floor a tick that grew past the window would stop the dashboard
+  # altogether, silently and permanently — every window deferring its only
+  # tick, no page update, and nothing in the log but one deferral every five
+  # minutes. That trades a bounded overrun for an unbounded outage, which is
+  # the wrong way round; and the tick that overran in #807 was never a
+  # window's first, since a GitHub tick starting at t<=5s of a 295s window
+  # cannot overrun it. So the floor costs the fix nothing.
+  if (( ticks_run > 0 && EPOCHSECONDS > endat - reserve_s )); then
+    # In practice only the expensive kind reaches this, so it is at most one
+    # line per window and usually far fewer. It is also the only place the tail
+    # rule becomes visible: without it a deferred fetch is indistinguishable
+    # from a quiet system, which is the failure mode the pacing line above was
+    # added for.
+    printf '%(%Y-%m-%dT%H:%M:%S%z)T deferred: a %s tick needs %ss, window has %ss left\n' \
+      -1 "$kind" "$reserve_s" "$(( endat - EPOCHSECONDS ))" >>"$log"
+    break
+  fi
+
+  if [[ "$kind" == github ]]; then
     # One line every five minutes, and the only record anywhere of when the
     # GitHub-sourced panels were last actually refreshed — the symptom this
     # gate's predecessor produced was a page that looked healthy while its PR
@@ -178,6 +244,7 @@ while (( EPOCHSECONDS < endat - tick_margin )); do
   # up) from a genuine publish failure, and leave a trace so a stuck lock
   # doesn't look like a quiet system.
   tick_start_ms="$(now_ms)"
+  ticks_run=$(( ticks_run + 1 ))
   flock -n -E 111 "$lck" "$cmd" "${github[@]}" >>"$log" 2>&1
   rc=$?
   tick_end_ms="$(now_ms)"
@@ -199,11 +266,41 @@ while (( EPOCHSECONDS < endat - tick_margin )); do
     printf '%(%Y-%m-%dT%H:%M:%S%z)T pacing: tick cost %sms — next tick in %ss (duty cycle 1:%s)\n' \
       -1 "$last_cost_ms" "$(( last_cost_ms * duty_divisor / 1000 ))" "$duty_divisor" >>"$log"
   fi
+  # Remember what this kind of tick costs, for the tail reserve at the top of
+  # the loop — and for the next window, which is a different process.
+  #
+  # A lock collision is excluded: it returns in milliseconds without publishing
+  # anything, and recording that as the cost of a GitHub tick would under-
+  # reserve the next window's tail by forty seconds — the exact defect this is
+  # here to fix, reintroduced through its own bookkeeping.
+  if (( rc != 111 )); then
+    if [[ "$kind" == github ]]; then
+      gh_cost_s=$(( (last_cost_ms + 999) / 1000 ))
+    else
+      local_cost_s=$(( (last_cost_ms + 999) / 1000 ))
+    fi
+    # Written only when a whole second moved. The cache lives in `state_dir`,
+    # which the Publisher fingerprints, and a rewrite on every 5-second no-op
+    # tick would be pure churn for that fingerprint to step around — the same
+    # self-invalidation that made #802 and #804 necessary. It is pruned there
+    # explicitly, but not writing it is cheaper than excluding it well.
+    if [[ "$gh_cost_s $local_cost_s" != "$cost_stamp" ]]; then
+      cost_stamp="$gh_cost_s $local_cost_s"
+      # Rename into place: a launcher killed mid-write must not leave the next
+      # window reading half a number and reserving nothing.
+      if printf '%s\n' "$cost_stamp" > "$cost_cache.$$" 2>/dev/null; then
+        mv -f "$cost_cache.$$" "$cost_cache" 2>/dev/null || rm -f "$cost_cache.$$" 2>/dev/null
+      else
+        rm -f "$cost_cache.$$" 2>/dev/null || true
+      fi
+    fi
+  fi
+
   if (( rc == 111 )); then
     # Not our turn and no fetch happened, so the stamp is deliberately left
     # alone: the next tick inherits the attempt rather than losing the window.
     printf '%(%Y-%m-%dT%H:%M:%S%z)T skipped: publish already running\n' -1 >>"$log"
-  elif (( ${#github[@]} == 0 )); then
+  elif [[ "$kind" == github ]]; then
     # A GitHub tick ran. The Publisher stamps the file itself at the end of
     # any fetch it reaches, but one that dies before then — a missing binary,
     # a killed process — would leave the stamp untouched and put every

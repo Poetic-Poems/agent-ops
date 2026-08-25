@@ -483,10 +483,23 @@ one.
 Two properties make that safe against the stale-page failure `lib/noop-skip.sh`
 warns about, where a missed input stalls everything silently. It covers by
 exclusion rather than enumeration — everything under the state dir counts
-except the served directory and `dashboard.log`, the two things publishing
-itself writes — so an input a later panel adds is covered on the day it is
-added, and the failure direction of a mistake is a needless rebuild, never a
-stale page. And a GitHub tick never skips, so even a fingerprint wrong in the
+except what the Publisher and its heartbeat write themselves (the served
+directory, `dashboard.log*`, and the `.dashboard-fingerprint`,
+`.dashboard-skips` and `.dashboard-tick-cost` bookkeeping beside it), what the
+Publisher never reads (`state-sync.log`, `doctor.log`, and the `*.err`
+sidecars), and the caches a timer rewrites with identical content — so an
+input a later panel adds is covered on the day it is added, and the failure
+direction of a mistake is a needless rebuild, never a stale page. Those caches
+(`fleet-cache/*.json`, `.image-drift-cache.json`, `.doctor-status.json`,
+`.dashboard-*.json`) are excluded from the size-and-mtime scan and folded in by
+**content hash** instead, so a verdict that actually changed still rebuilds
+while one merely rewritten does not. Directory entries are not counted at all:
+adding or replacing a file moves its directory's mtime, which would put back
+exactly the self-reference these exclusions remove, and a file that appears,
+changes or vanishes is already visible as a file. Getting this wrong is not
+theoretical — the fingerprint counted its own outputs for a day and a half, so
+no tick ever skipped and the feature it was built for saved nothing (#801,
+#803). And a GitHub tick never skips, so even a fingerprint wrong in the
 dangerous direction can only hold a stale page until the next one, about five
 minutes (`LAUNCHER_GITHUB_MAX_AGE`) — the cadence the dashboard published at
 before the sub-minute heartbeat existed (#26).
@@ -1438,11 +1451,32 @@ number's twins elsewhere on the page.
   fetch renders exactly like a fresh one. Hence both the age gate and the
   freshness reporting under **The Site**.) `flock` guards against a slow
   publish stacking up under the next tick. No tick starts inside the window's
-  final ten seconds **or within the cost of the tick before it**, so an
-  oversized publish is not started just before the window closes and handed to
-  the next cron fire as a lock collision — those ten seconds were sized against
-  the same unenforced five-second budget as the cadence above,
-  and a healthy window ends `exit 0` — its exit status is explicit, not
+  final ten seconds **or within the last measured cost of a tick of its own
+  kind** — GitHub or local, whichever this tick is about to be, read from
+  `<state_dir>/.dashboard-tick-cost` — so an oversized publish is not started
+  just before the window closes and handed to the next cron fire as a lock
+  collision. The reserve is the larger of the two, not their sum: ten seconds
+  is its floor, so a tick costing less than that reserves exactly the tail it
+  always did. It is tracked **per kind and persisted across windows** because
+  the two kinds differ by more than a factor of two (42–47s against 17–20s on
+  both laptop nodes) and because cron starts a fresh launcher every window,
+  while the reserve is needed on a window's *first* tick — an in-process
+  measurement would reset exactly when it is wanted. Reserving against
+  whichever tick merely ran last was correct only while every tick was
+  expensive: once the no-op path began firing the previous tick was almost
+  always a sub-second skip, the reserve collapsed to the bare ten seconds, and
+  a 45s GitHub tick starting in the last half-minute overran the window.
+  supercronic runs no overlapping instance of a job, so it then dropped the
+  entire next window — `not starting: job is still running` — and the page went
+  ten minutes without an update (#807). A window always runs its **first**
+  tick regardless, so a publish that outgrew its window degrades to one
+  overrun per window rather than to a page that silently stops updating; a
+  deferred tick logs `deferred: a <kind> tick needs Ns, window has Ns left`,
+  because a fetch that does not happen is otherwise indistinguishable from a
+  quiet system. `.dashboard-tick-cost` is launcher bookkeeping: it is excluded
+  from the fingerprint under **The no-op tick** and from replication, so
+  writing it cannot invalidate the skip it exists beside.
+  A healthy window ends `exit 0` — its exit status is explicit, not
   whatever the final tick's lock bookkeeping happened to return
   (`LAUNCHER_WINDOW` shortens the window, `LAUNCHER_PUBLISH_CMD` swaps in a
   stub Publisher, and `LAUNCHER_DUTY_DIVISOR` sets the pacing ratio, for the

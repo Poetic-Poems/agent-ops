@@ -247,6 +247,7 @@ local_state_fingerprint() {
       -name 'dashboard.log*' -prune -o \
       -name '.dashboard-fingerprint' -prune -o \
       -name '.dashboard-skips' -prune -o \
+      -name '.dashboard-tick-cost' -prune -o \
       -path "$state_dir/state-sync.log" -prune -o \
       -path "$state_dir/doctor.log" -prune -o \
       -path "$state_dir/fleet-cache" -prune -o \

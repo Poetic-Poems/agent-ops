@@ -995,6 +995,74 @@ assert_contains "the cost and the backoff are logged, not left to top" "pacing: 
 run_paced 20 6 1
 assert_eq "a tick the window cannot fit is not started" "1" "$(grep -c . "$pace_log")"
 
+# --- ...and the reserve is per tick kind, across windows (#807) ---------------
+# The reserve above was taken against `last_cost_ms` — the previous tick, of
+# whichever kind. That held only while every tick was expensive. #804 made the
+# no-op path fire, so the previous tick became a sub-second skip, the reserve
+# collapsed to the bare tick_margin, and a 45s GitHub tick starting in the last
+# half-minute overran the window. supercronic runs no overlapping instance of a
+# job, so it dropped the entire next window and the page went ten minutes
+# without an update.
+#
+# The cost therefore has to be remembered per kind, and it has to survive the
+# process: cron starts a fresh launcher every window, and the reserve is needed
+# on a window's *first* tick. An in-process counter would be reset exactly when
+# it is wanted — inert in production while passing any single-window test,
+# which is how #793 shipped and stayed shipped for a day and a half. So the
+# first window here measures a real GitHub tick, and the second reads what the
+# first persisted.
+tail_home="$(new_home nodeT)"
+tail_state="$tail_home/.local/state/poetic-agents"
+tail_log="$tmp_dir/tail-ticks"
+tail_stub="$tmp_dir/tail-publish.sh"
+cat > "$tail_stub" <<'STUB'
+#!/usr/bin/env bash
+# The launcher passes --no-github for a local tick and nothing at all for a
+# GitHub one, so the stub can cost what that kind is told to cost.
+if [[ "${1:-}" == "--no-github" ]]; then
+  printf '%s local\n' "${EPOCHREALTIME/,/.}" >> "$TICK_LOG"
+  sleep "${STUB_LOCAL_COST:-0}"
+else
+  printf '%s github\n' "${EPOCHREALTIME/,/.}" >> "$TICK_LOG"
+  sleep "${STUB_GH_COST:-0}"
+fi
+STUB
+chmod +x "$tail_stub"
+
+run_tail() {  # run_tail <window> <gh-max-age> <local-cost> <gh-cost>
+  env HOME="$tail_home" LAUNCHER_WINDOW="$1" LAUNCHER_GITHUB_MAX_AGE="$2" \
+      STUB_LOCAL_COST="$3" STUB_GH_COST="$4" LAUNCHER_DUTY_DIVISOR=1 \
+      LAUNCHER_PUBLISH_CMD="$tail_stub" TICK_LOG="$tail_log" "$LAUNCHER" >/dev/null 2>&1
+}
+tail_kinds() { awk '{print $2}' "$tail_log" | sort -u | tr '\n' ' '; }
+
+# Window one: the stamp has aged out (max age 0), so the first tick is a GitHub
+# tick, and it costs 15s — longer than tick_margin, which is what makes the
+# reserve bite at all. Nothing else fits, which is the point: one measured
+# GitHub tick is all the next window needs.
+: > "$tail_log"
+run_tail 20 0 0 15
+assert_contains "a GitHub tick runs when the stamp has aged out" "github" "$(tail_kinds)"
+assert_eq "and what it cost outlives the window that measured it" "1" \
+  "$(( $(awk '{print $1+0}' "$tail_state/.dashboard-tick-cost" 2>/dev/null || echo 0) >= 15 ))"
+
+# Window two: cheap local ticks every 5s, and a GitHub tick coming due 18s into
+# a 30s window — so it would start around t=20 and run to t=35, five seconds
+# past the window and into the next cron firing. The bare loop reserved against
+# the last *local* tick (~0s) and started it. The kind-aware reserve reads the
+# 15s window one persisted and stops instead.
+touch "$tail_state/.dashboard-github.json"
+: > "$tail_log"
+run_tail 30 18 0 15
+assert_eq "a GitHub tick that cannot fit the tail is not started" "local " "$(tail_kinds)"
+assert_contains "and the window says why, rather than just going quiet" \
+  "deferred: a github tick needs" "$(cat "$tail_state/dashboard.log")"
+
+# The reserve must not cost an idle window its cheap ticks: a local tick's own
+# cost is what gates a local tick, not the expensive kind's.
+assert_eq "cheap local ticks still run several to a window" "1" \
+  "$(( $(grep -c . "$tail_log") >= 2 ))"
+
 # --- The cron panel survives a rotation (TD26072501, spec requirement 2.6) ------
 # scripts/rotate-logs.sh renames cron.log to cron.log.1 once it grows past
 # log_retained_bytes, leaving a fresh, short cron.log behind. The panel must
