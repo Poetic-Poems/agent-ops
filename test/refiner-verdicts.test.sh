@@ -337,6 +337,50 @@ assert_eq "refined issue: the own-label-action is an add of refined_label" "add 
 assert_contains "refined issue: the label reached gh" "gh-label add o/r 55 refined-by-agent" "$calls"
 
 # ============================================================================
+# (a2) refined, source issues, re-affirmation: a `refined` verdict citing a
+# comment URL that is not this cycle's own write — an older, pre-existing
+# comment, exactly what a re-affirmation posts nothing new to (requirement
+# 39c; agent-ops#670 Part 2) — is recorded identically to case (a). The
+# Script's own corroboration (`refinement_record_fields`) never asks whether
+# the URL is fresh, which is what makes re-affirmation possible without a
+# Script-side change: pinning it here is what stops a future "was this
+# comment posted this cycle?" check from silently reintroducing the deadlock
+# TD-PPagop-26082305 fixed (a Refiner declining `needs-refinement` because
+# re-affirming looked, from the Script's side, indistinguishable from doing
+# nothing).
+# ============================================================================
+verdicts='[{"repo":"o/r","item":"55","verdict":"refined","reason":"already adequately specified by the Enabler; nothing changed since — re-affirming",
+            "comments_posted":["https://github.com/o/r/issues/55#issuecomment-0-from-a-prior-cycle"]}]'
+calls="$(run_case "refined issue, re-affirmation" "$issue_candidates" "$verdicts")"
+
+assert_eq "re-affirmation: exactly one item-refined event" "1" \
+  "$(grep -cE '^event item-refined ' <<<"$calls")"
+ir_evt="$(events_named "$calls" item-refined | head -n1)"
+assert_eq "re-affirmation: item-refined is attributed by: refiner" "refiner" "$(jq -r '.by' <<<"$ir_evt")"
+assert_eq "re-affirmation: item-refined carries the pre-existing comment URL" \
+  "https://github.com/o/r/issues/55#issuecomment-0-from-a-prior-cycle" "$(jq -r '.comment_url' <<<"$ir_evt")"
+xmn_evt="$(events_named "$calls" refiner-examined | head -n1)"
+assert_eq "re-affirmation: refiner-examined outcome is refined, not needs-refinement" \
+  "refined" "$(jq -r '.outcome' <<<"$xmn_evt")"
+assert_eq "re-affirmation: no block is ever written" "0" \
+  "$(grep -cE '^event attempt-failed ' <<<"$calls")"
+assert_eq "re-affirmation: the item is re-labelled exactly like a fresh refinement" "1" \
+  "$(grep -cE '^event own-label-action ' <<<"$calls")"
+assert_contains "re-affirmation: the label reached gh" "gh-label add o/r 55 refined-by-agent" "$calls"
+
+# The other side of re-affirmation: the shipped prompt must actually tell the
+# model to reach for it, or the Script-side proof above is a capability
+# nobody uses. `prompts/refiner.md` naming `refined` as the re-affirmation
+# route, rather than leaving "already refined" -> `needs-refinement` as the
+# only instruction, is what the agent-ops#670/TD-PPagop-26082305 incident
+# needed and what this test would not otherwise catch.
+refiner_prompt="$repo_root/prompts/refiner.md"
+assert_eq "prompt: re-affirmation is named" "yes" \
+  "$(grep -qi 're-affirm' "$refiner_prompt" && echo yes || echo no)"
+assert_eq "prompt: re-affirmation is reached via refined, not needs-refinement" "yes" \
+  "$(grep -qE 'Say so with .refined., not .needs-refinement' "$refiner_prompt" && echo yes || echo no)"
+
+# ============================================================================
 # (b) refined, source issues, no comment posted: degraded, never recorded
 # ============================================================================
 verdicts='[{"repo":"o/r","item":"55","verdict":"refined","reason":"wrote a spec but posted nothing",
