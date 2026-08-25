@@ -11967,8 +11967,9 @@ What exists, and the requirements each part answers to:
    as it was inline.
 2a. `lib/standdown.sh` implementing requirement 2, the stand-down reason
    ladder in full: `run_standdown_checks`, called once from `agent-cycle.sh`
-   in place of the inline block it replaces (#771) — the GitHub API budget
-   and credential checks (2.0, 2.0b), the fleet-wide usage-limit cooldown and
+   in place of the inline block it replaces (#771) — the GitHub API budget,
+   credential and free-disk-space checks (2.0, 2.0b, 2.0c), the fleet-wide
+   usage-limit cooldown and
    its own probe (2.1), the per-cycle claim GC and orphan-branch/closing-
    keyword/human-visibility/Approver-restale/landing-retry/classifier-escape
    sweeps (2.1a–2.1f, and requirement 46's own sweep between the human-
@@ -12528,6 +12529,14 @@ What exists, and the requirements each part answers to:
    `lib/claim.sh`, `lib/void-guard.sh` and every
    `scripts/gather-*`/`scripts/sweep-*` that calls GitHub. Unit-tested,
    `test/github-limit.test.sh`),
+   `lib/disk-space.sh` (requirement 2.0c's `disk_space_free_kb`,
+   `disk_space_verdict` and `disk_space_describe` — the one place free space
+   on a directory's filesystem is read and judged, sourced by both
+   `agent-cycle.sh`, whose pre-clone stand-down acts on the verdict, and
+   `scripts/doctor.sh`, whose advisory warning reads the same
+   `min_free_workspace_bytes` floor through the same three functions, so the
+   gate and the warning cannot silently disagree about what "low" means.
+   Unit-tested, `test/disk-space.test.sh`),
    `lib/repo-clone.sh` (requirement 6's `clone_repo`, the one clone both
    pipelines take, with `CLONE_GIT` substituting a stub for tests),
    `lib/toggle.sh`, `lib/noop-skip.sh`, `lib/role.sh`, `lib/void-guard.sh`,
