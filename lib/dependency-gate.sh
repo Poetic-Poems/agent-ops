@@ -82,8 +82,8 @@ dependency_refs() {
   # catch, which under `set -e -o pipefail` (agent-cycle.sh) it otherwise
   # would be, printing a duplicate `[]` after `jq` had already printed one.
   tokens="$(tr ',' ' ' <<<"$raw" | tr -s ' \t' '\n' | grep -oE "$DEPENDENCY_REF_RE" 2>/dev/null || true)"
-  jq -R -s -c '
-      [splits("\n")] | map(select(length > 0))
+  jq -R -n -c '
+      [inputs] | map(select(length > 0))
       | map(if test("/") then . else ltrimstr("#") end)
       | unique' <<<"$tokens" 2>/dev/null || printf '[]'
 }
