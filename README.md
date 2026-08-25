@@ -1735,10 +1735,11 @@ items, the work sources the Co-Ordinator sees, the hourly unattended
 page-top banner when it has something to say), a per-stage health verdict for
 each node (a **Stage health** section — `coordinator failing (11
 consecutive, last success 8h ago)` and the like — with a page-top banner and
-a fleet-strip badge naming which stage: the reading that stays green a plain
-`cycle: RUNNING`/idle state cannot give, when a stage's own attempts keep
-failing while the cycle process itself keeps completing), how often the
-Script rejects a Co-Ordinator verdict — by day and by the model that produced it, with what
+a fleet-strip badge naming which stage: the reading a plain `cycle:
+RUNNING`/idle state cannot give, since that state stays green while a
+stage's own attempts keep failing and the cycle process itself keeps
+completing), how often the Script rejects a Co-Ordinator verdict — by day
+and by the model that produced it, with what
 the fleet spent recovering, so it is visible whether the cheap Co-Ordinator
 model is paying for itself — estimated token cost by day, by
 model and by actor, and the raw log — with each stage's transcript viewable
