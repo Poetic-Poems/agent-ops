@@ -175,6 +175,39 @@ assert_eq "…labelled and titled for a human scanning open issues" \
 assert_eq "…and the body quotes GitHub's own 401 response" \
   "yes" "$(if grep -q 'Bad credentials (HTTP 401)' "$esc_file"; then echo yes; else echo no; fi)"
 
+# --- unauthorized, no token present (TD-PPagop-26082306): the same stand-down
+# and escalation route, but the wording must not claim a rejected token
+# (HTTP 401) when there was never a token to reject ---
+
+esc_file="$tmp_dir/notoken-escalations"
+evt_file="$tmp_dir/notoken-events"
+block_rc="$(run_block unauthorized 'no token present (gh: To get started with GitHub CLI, please run: gh auth login)' "$esc_file" "$evt_file")"
+
+assert_eq "a missing token stands the cycle down (exit 0, never falls through)" \
+  "0" "$block_rc"
+assert_eq "…and the block never runs off its own end into the rest of the cycle" \
+  "no" "$(if grep -q 'FELL THROUGH' "$evt_file"; then echo yes; else echo no; fi)"
+
+standdown_line="$(grep '^stand-down' "$evt_file" || true)"
+assert_eq "a stand-down event was logged" "yes" "$(if [[ -n "$standdown_line" ]]; then echo yes; else echo no; fi)"
+assert_eq "the stand-down reason names the missing token" \
+  "yes" "$(if [[ "$standdown_line" == *"no GH_TOKEN/GITHUB_TOKEN is set"* ]]; then echo yes; else echo no; fi)"
+assert_eq "…and never claims a rejected token (HTTP 401) that never happened" \
+  "no" "$(if [[ "$standdown_line" == *"HTTP 401"* || "$standdown_line" == *"invalid or expired"* ]]; then echo yes; else echo no; fi)"
+assert_eq "…and never claims this is a generic outage" \
+  "no" "$(if [[ "$standdown_line" == *"could not be reached"* || "$standdown_line" == *"outage, not contention"* ]]; then echo yes; else echo no; fi)"
+assert_eq "…and the structured cause is unauthorized, not unreachable" \
+  "yes" "$(if [[ "$standdown_line" == *'"cause":"unauthorized"'* ]]; then echo yes; else echo no; fi)"
+
+assert_eq "exactly one escalation is filed" \
+  "1" "$(grep -c '^---end---' "$esc_file" 2>/dev/null)"
+assert_eq "the escalation names the item ref by node" \
+  "yes" "$(if grep -q '^item=auth-failure:test-node$' "$esc_file"; then echo yes; else echo no; fi)"
+assert_eq "…titled for a human scanning open issues, without claiming HTTP 401" \
+  "yes" "$(if grep -q '^title=GitHub credentials missing on node test-node$' "$esc_file"; then echo yes; else echo no; fi)"
+assert_eq "…and the body quotes the probe's own missing-token detail" \
+  "yes" "$(if grep -q 'no token present' "$esc_file"; then echo yes; else echo no; fi)"
+
 # --- ok: nothing to do, the cycle proceeds untouched ---
 
 esc_file="$tmp_dir/ok-escalations"

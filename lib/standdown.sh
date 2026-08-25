@@ -59,17 +59,20 @@ if (( github_min_core_budget > 0 || github_min_graphql_budget > 0 )); then
 fi
 
 # 2.0b GitHub credential check (requirement 2.0b, agent-ops#691). The same
-# free `/rate_limit` call classifies a 401 apart from every other failure:
-# GitHub read the request and rejected the credentials outright, which is
-# permanent — no wait and no retry ever clears an expired or revoked token,
-# unlike 2.0's `exhausted` or 2.1's cooldown below. Checked here, ahead of
-# the Co-Ordinator (step 4), because that stage is what a dead token wastes:
-# on 2026-08-22 a node whose fine-grained PAT had expired ran a full
-# Co-Ordinator engagement every cycle for ~3 hours ($1.05 across five
-# cycles) before a human noticed, every claim failing with `cause:
-# "unreachable"` and the cycle reporting "this is an outage, not
+# free `/rate_limit` call classifies a 401, and a missing token, apart from
+# every other failure: either GitHub read the request and rejected the
+# credentials outright, or `gh` had no credentials to send in the first
+# place — both permanent, unlike 2.0's `exhausted` or 2.1's cooldown below,
+# since no wait and no retry clears an expired, revoked or absent token.
+# Checked here, ahead of the Co-Ordinator (step 4), because that stage is
+# what a dead token wastes: on 2026-08-22 a node whose fine-grained PAT had
+# expired ran a full Co-Ordinator engagement every cycle for ~3 hours ($1.05
+# across five cycles) before a human noticed, every claim failing with
+# `cause: "unreachable"` and the cycle reporting "this is an outage, not
 # contention" — the one classification that sends nobody looking at the
-# token.
+# token. TD-PPagop-26082306 is the same fault in a different shape: a token
+# unset or dropped from the environment failed the probe's stderr match too,
+# so it also read as `unreachable` rather than `unauthorized`.
 #
 # Deliberately unconditional, unlike 2.0: a dead token is worth catching
 # even on a node that has turned `github_min_core_budget` /
@@ -89,28 +92,49 @@ fi
 # ref is found, not re-filed).
 IFS=$'\t' read -r gh_auth_verdict gh_auth_detail < <(github_auth_probe)
 if [[ "$gh_auth_verdict" == "unauthorized" ]]; then
-  gh_auth_reason="GitHub authentication failed (HTTP 401) — GH_TOKEN is invalid or expired"
+  # `github_auth_probe` folds two permanent faults into one verdict (2.0b's
+  # own header above): a token GitHub rejected outright, and no token to send
+  # at all. `detail`'s leading "no token present" (the probe's own literal
+  # wording, TD-PPagop-26082306) is the only thing that tells them apart here
+  # — without this branch every missing-token stand-down and escalation would
+  # keep claiming a nonexistent "(HTTP 401)" and tell a human to replace a
+  # token that was never set.
+  if [[ "$gh_auth_detail" == "no token present"* ]]; then
+    gh_auth_reason="GitHub authentication failed — no GH_TOKEN/GITHUB_TOKEN is set and gh has no stored credentials"
+    auth_heading="This node has no GitHub credentials"
+    auth_detail_label="detail"
+    auth_title="GitHub credentials missing on node $node_name"
+    auth_remedy="Nothing clears this automatically — set \`GH_TOKEN\` on this node and the next cycle proceeds normally."
+    auth_warning_detail="GitHub credentials missing but the escalation issue could not be filed — will retry next cycle"
+  else
+    gh_auth_reason="GitHub authentication failed (HTTP 401) — GH_TOKEN is invalid or expired"
+    auth_heading="GitHub rejected this node's credentials"
+    auth_detail_label="GitHub's own response"
+    auth_title="GitHub credentials rejected on node $node_name (HTTP 401)"
+    auth_remedy="Nothing clears this automatically — replace \`GH_TOKEN\` on this node and the next cycle proceeds normally."
+    auth_warning_detail="GitHub credentials rejected (401) but the escalation issue could not be filed — will retry next cycle"
+  fi
   if ! (( DRY_RUN )) && [[ -n "$crash_loop_repo" && -n "$enabler_assignee" ]]; then
     auth_body="$cycle_dir/auth-failure-issue.md"
     # shellcheck disable=SC2016  # the backticks are the issue body's Markdown, not expansions
     {
-      printf '## GitHub rejected this node'"'"'s credentials\n\n'
-      printf -- '- node: `%s`\n- cycle: `%s`\n- GitHub'"'"'s own response:\n\n```\n%s\n```\n\n' \
-        "$node_name" "$cycle_id" "$gh_auth_detail"
-      printf 'Every cycle stands down the moment it makes this same free `/rate_limit` check, before any model runs. Nothing clears this automatically — replace `GH_TOKEN` on this node and the next cycle proceeds normally.\n\n'
+      printf '## %s\n\n' "$auth_heading"
+      printf -- '- node: `%s`\n- cycle: `%s`\n- %s:\n\n```\n%s\n```\n\n' \
+        "$node_name" "$cycle_id" "$auth_detail_label" "$gh_auth_detail"
+      printf '%s\n\n' "$auth_remedy"
       printf -- '---\nItem: `auth-failure:%s` · raised by the Script · cycle `%s` · node `%s`\n' \
         "$node_name" "$cycle_id" "$node_name"
     } > "$auth_body"
     if auth_created="$(create_escalation_issue "$crash_loop_repo" "auth-failure:$node_name" \
          "$enabler_escalation_label" \
-         "GitHub credentials rejected on node $node_name (HTTP 401)" \
+         "$auth_title" \
          "$auth_body")" && [[ -n "$auth_created" ]]; then
       log_event "auth-failure-escalated" "$(jq -nc \
         --argjson n "${auth_created%%$'\t'*}" --arg u "${auth_created#*$'\t'}" \
         '{issue_number: $n, issue_url: $u}')"
     else
       log_event "warning" "$(jq -nc \
-        --arg d "GitHub credentials rejected (401) but the escalation issue could not be filed — will retry next cycle" \
+        --arg d "$auth_warning_detail" \
         '{detail: $d}')"
     fi
   fi
