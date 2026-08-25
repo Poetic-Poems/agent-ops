@@ -29,9 +29,9 @@
 # codebase gives a partial write.
 #
 # The stream is parsed with `jq -R -n 'inputs'`, one line at a time, and
-# deliberately not with the `jq -R -s '[splits("\n")]'` spelling the other
+# deliberately not with the slurp-then-split-on-newlines spelling the other
 # log readers here use (lib/crash-loop.sh, lib/review-gate.sh,
-# lib/escalation-autonomy.sh — TD-PPagop-26082503). `splits` runs an
+# lib/escalation-autonomy.sh — TD-PPagop-26082503). That spelling runs an
 # oniguruma regex over the whole slurped file, which is quadratic enough in
 # practice that a real 2.3 MB `log.jsonl` takes ~80 s to split and ~0.07 s
 # to read with `inputs` — a difference that matters here more than it does
