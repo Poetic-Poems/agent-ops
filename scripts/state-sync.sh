@@ -192,6 +192,8 @@ EXCLUDES=(
   --exclude=revert-rate-cumulative-state.json
   --exclude=.dashboard-github.json
   --exclude=.dashboard-tick-cost
+  --exclude=.dashboard-payload
+  --exclude=/.dashboard-cycle-cache/
   --exclude=.dashboard-claims.json
   --exclude=.image-drift-cache.json
   # labels-ensured/ (lib/labels.sh's labels_ensure_stamped, agent-ops#687):

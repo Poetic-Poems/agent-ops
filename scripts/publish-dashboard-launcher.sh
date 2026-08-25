@@ -180,7 +180,11 @@ while (( EPOCHSECONDS < endat - tick_margin )); do
     sleep_ms "$backoff_ms"
   fi
 
-  github=(--no-github); kind=local
+  # --fast with it: a local tick carries the history roll-ups forward from the
+  # last full payload instead of rebuilding them, which is what lets the page
+  # follow a running cycle at 1:9 pacing (#798). The GitHub tick below is the
+  # full build, so nothing carried forward is ever more than one fetch old.
+  github=(--no-github --fast); kind=local
   sleep $(( 5 - EPOCHSECONDS % 5 ))
   gh_at="$(stat -c %Y "$gh_cache" 2>/dev/null)" || gh_at=0
   if (( EPOCHSECONDS - ${gh_at:-0} >= gh_max_age )); then
