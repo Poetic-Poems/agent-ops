@@ -11727,7 +11727,17 @@ with the Reviewer's own.
       own engagement already carries, reused rather than duplicated, under
       globals (`selected_repo`/`clone_dir`/`work_order_json`/
       `impl_status_json`/`rev_status_json`) saved before the call and
-      restored after it regardless of outcome. A pull request this re-review
+      restored after it regardless of outcome — read defensively, since this
+      sweep runs before the cycle has selected any work of its own and the
+      last three are genuinely unset at that point, which `set -u` would
+      otherwise make fatal. Its own outcome comes back in the
+      `_approver_restale_review_result` global rather than on stdout, the
+      same signalling `_landing_stage_attempt` uses for
+      `_landing_stage_attempt_armed`: `run_approver_stage` writes the whole
+      stage transcript to stdout itself under `--once`
+      (`dump_stage_output`), so a caller capturing this function's output
+      would read that transcript as the outcome and route a posted
+      re-review into the dismissal fallback below. A pull request this re-review
       approves is picked up by the very next requirement-8u sweep pass in
       the same cycle, since a fresh `APPROVED` standing review is exactly
       that sweep's own precondition.
@@ -12880,8 +12890,8 @@ What exists, and the requirements each part answers to:
     and `merge_autonomy_effective_level` (`lib/merge-autonomy.sh`).
     Regression-tested in `test/approver.test.sh` (the three primitives) and
     `test/approver-restale-sweep.test.sh`, which lifts
-    `_approver_restale_sweep_repo` verbatim (acceptance check 46). Must pass
-    `shellcheck`.
+    `_approver_restale_sweep_repo` and `_approver_restale_review` verbatim
+    (acceptance check 46). Must pass `shellcheck`.
 14d. `lib/merge-budget.sh` implementing requirement 2.3c: the
     `merge_budget_per_day` spend governor. `merge_budget_effective_cap
     CONFIG_JSON SLUG` resolves the cap on the same precedence
@@ -16953,6 +16963,18 @@ pull request, run the ones the change touches and any it could regress.
     Approver itself never engages there); and a truncated pull-request
     listing logs one `warning` naming the repository and saying a stale
     review beyond it is not swept this cycle.
+
+    A second harness in the same file lifts `_approver_restale_review` itself
+    verbatim, run under `set -euo pipefail` with none of the five globals it
+    borrows defined — the sweep's own context, since it runs before the cycle
+    has selected any work — and pins that it reaches a verdict rather than
+    dying on the unset read, engages `run_approver_stage` under the pull
+    request's own slug, its own fresh clone and the synthetic work
+    order/Implementer summary/Reviewer summary, reports `posted` in
+    `_approver_restale_review_result` even when the stage writes its whole
+    transcript to stdout (`--once`), reports `unavailable` for a stage that
+    reached no verdict and for a clone that failed (engaging nothing in that
+    case), restores every borrowed global, and tears its recovery clone down.
 8v. **A D18 rollout stage's own exit criteria are measured, not recalled
     (component 22).** `test/autonomy-stage-report.test.sh` passes: a
     repository at `human` (Stage 0) verdicts `met` once a baseline file

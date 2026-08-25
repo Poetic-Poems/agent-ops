@@ -5394,22 +5394,43 @@ _landing_retry_sweep_repo() {
 # saved and restored around it, never left mutated for whatever this cycle's
 # own selected work order does next.
 #
-# Prints `posted` once `run_approver_stage` reached a real verdict (whether or
-# not the GitHub write itself then succeeded — that failure is already
-# `approver_post_or_warn`'s own warning, and retrying it again immediately
-# would only compound writes rather than fix anything) and `unavailable` when
-# a verdict could not even be reached — the clone or checkout failed, or
-# `run_approver_stage` bailed out before engaging (the stage disabled at this
-# level, the credential absent, the streak unreadable, no model resolved).
-# `unavailable` is what tells the caller acceptance criterion 2's dismissal is
-# the fallback to take instead.
+# Reports its outcome through the global `_approver_restale_review_result`,
+# set on every path before this function returns — `posted` once
+# `run_approver_stage` reached a real verdict (whether or not the GitHub write
+# itself then succeeded — that failure is already `approver_post_or_warn`'s
+# own warning, and retrying it again immediately would only compound writes
+# rather than fix anything), `unavailable` when a verdict could not even be
+# reached: the clone or checkout failed, or `run_approver_stage` bailed out
+# before engaging (the stage disabled at this level, the credential absent,
+# the streak unreadable, no model resolved). `unavailable` is what tells the
+# caller acceptance criterion 2's dismissal is the fallback to take instead.
+#
+# A global rather than something printed for the caller to capture, the same
+# signalling `_landing_stage_attempt_armed` uses and for a sharper version of
+# the same reason: this function's stdout is not its own. `run_approver_stage`
+# ends in `(( ONCE )) && dump_stage_output`, which `cat`s the whole stage's
+# result to stdout, so a `--once` run of a caller reading `$(…)` would capture
+# the stage output with the outcome word glued to the end of it and route a
+# re-review that did post into the dismissal fallback.
 _approver_restale_review() {
   local slug="$1" pr_url="$2" number="$3" branch="$4" complexity="$5" title="$6"
   local restale_clone_dir saved_repo saved_clone saved_wo saved_impl saved_rev
-  local synthetic_wo synthetic_impl synthetic_rev result="unavailable" restale_acceptance
+  local synthetic_wo synthetic_impl synthetic_rev restale_acceptance
 
-  saved_repo="$selected_repo"; saved_clone="$clone_dir"
-  saved_wo="$work_order_json"; saved_impl="$impl_status_json"; saved_rev="$rev_status_json"
+  _approver_restale_review_result="unavailable"
+
+  # `${…-}` on all five: this sweep runs before the cycle has selected any
+  # work of its own — that is the whole point of it — so `work_order_json`,
+  # `impl_status_json` and `rev_status_json` are genuinely unset here, and
+  # reading them bare under `set -u` kills this function outright. (The kill
+  # lands in whatever context the caller runs it in and leaves the outcome
+  # looking exactly like `unavailable`, which is why the dismissal fallback
+  # hid it rather than the cycle failing loudly.) The same hazard
+  # `landing_armed_by_repo`'s own declaration below names, answered where the
+  # unset read actually happens, so this function stays correct wherever in a
+  # cycle it is called from.
+  saved_repo="${selected_repo-}"; saved_clone="${clone_dir-}"
+  saved_wo="${work_order_json-}"; saved_impl="${impl_status_json-}"; saved_rev="${rev_status_json-}"
 
   restale_clone_dir="$workspace_root/${cycle_id}-restale-${number}"
   assert_in_workspace "$restale_clone_dir"
@@ -5432,13 +5453,13 @@ _approver_restale_review() {
     rev_status_json="$synthetic_rev"
 
     run_approver_stage "$pr_url" "$complexity"
-    [[ -n "$approver_stage_verdict" ]] && result="posted"
+    [[ -n "$approver_stage_verdict" ]] && _approver_restale_review_result="posted"
   fi
 
   [[ -d "$restale_clone_dir" ]] && rm -rf -- "$restale_clone_dir"
   selected_repo="$saved_repo"; clone_dir="$saved_clone"
   work_order_json="$saved_wo"; impl_status_json="$saved_impl"; rev_status_json="$saved_rev"
-  printf '%s' "$result"
+  return 0
 }
 
 # _approver_restale_dismiss SLUG PR_URL REVIEW_ID REASON
@@ -5616,7 +5637,8 @@ _approver_restale_sweep_repo() {
 
     if newest="$(approver_newest_commit_authored_at "$pr_url" 2>/dev/null)" && [[ -n "$newest" ]] \
        && [[ "$newest" > "$review_at" ]]; then
-      if [[ "$(_approver_restale_review "$slug" "$pr_url" "$number" "$branch" "$complexity" "$title")" != "posted" ]]; then
+      _approver_restale_review "$slug" "$pr_url" "$number" "$branch" "$complexity" "$title"
+      if [[ "$_approver_restale_review_result" != "posted" ]]; then
         _approver_restale_dismiss "$slug" "$pr_url" "$review_id" \
           "Dismissed by the autonomous pipeline (requirement 46, agent-ops#682): a commit was authored after this review, but a fresh re-review could not be attempted this cycle." || true
       fi

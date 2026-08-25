@@ -140,7 +140,10 @@ _approver_restale_review() {
     "$1" "$2" "$3" "$4" "$5" "$6" >>"$T/review-calls"
   local num="$3" var
   var="REVIEW_ACTION_$num"
-  printf '%s' "${!var:-unavailable}"
+  # The real function's own contract: the outcome comes back in a global, not
+  # on stdout — see its header, and the second harness at the foot of this
+  # file, which pins that the shipped one really does set it.
+  _approver_restale_review_result="${!var:-unavailable}"
 }
 
 _approver_restale_dismiss() {
@@ -317,6 +320,99 @@ assert_contains "a truncated pull-request listing logs a warning naming the repo
   "acme/widgets" "$(events)"
 assert_contains "  ... and says a stale review beyond it is not swept this cycle" \
   "not swept this cycle" "$(events)"
+
+# --- `_approver_restale_review` itself, lifted verbatim -----------------------
+# The sweep harness above stubs it out, which is the right split for asking
+# *which* helper the sweep reaches for — and is exactly why the function's own
+# two hazards need their own harness here. Both are about the context it runs
+# in rather than anything it does:
+#
+#   - It runs from the sweep, which runs before the cycle has selected any work
+#     of its own, so `work_order_json`, `impl_status_json` and `rev_status_json`
+#     — the globals it saves and restores around `run_approver_stage` — are
+#     genuinely unset at that point. Under `set -euo pipefail` (agent-cycle.sh
+#     line 6) reading one bare is fatal, and a fatal read here looks exactly
+#     like "the re-review could not be attempted", which routes a pull request
+#     with a real fix straight into the dismissal fallback instead of the
+#     re-review requirement 46 exists to give it. So this harness deliberately
+#     defines none of the five.
+#   - `run_approver_stage` writes to stdout itself under `--once`
+#     (`dump_stage_output`), so the outcome travels in a global rather than in
+#     what the function printed. The stub below prints, and the assertion is
+#     that the outcome survives it.
+
+cat >"$tmp_dir/review-harness.sh" <<'RHARNESS'
+set -euo pipefail
+
+workspace_root="$T/ws"
+cycle_id="cyc1"
+cycle_dir="$T/cycdir"
+mkdir -p "$workspace_root" "$cycle_dir"
+
+assert_in_workspace() { case "$1" in "$workspace_root"/*) return 0 ;; *) exit 1 ;; esac; }
+clone_repo() { [[ "${CLONE_FAILS:-0}" == "1" ]] && return 1; mkdir -p "$2"; return 0; }
+git() { return 0; }
+
+approver_stage_verdict=""
+run_approver_stage() {
+  # Records what the swapped-in globals looked like from inside the call, and
+  # writes to stdout exactly as a `--once` run's own `dump_stage_output` does.
+  printf 'repo=%s\tclone=%s\two_item=%s\timpl_status=%s\trev_status=%s\n' \
+    "$selected_repo" "$clone_dir" \
+    "$(jq -r '.item' <<<"$work_order_json")" \
+    "$(jq -r '.status' <<<"$impl_status_json")" \
+    "$(jq -r '.status' <<<"$rev_status_json")" >>"$T/stage-calls"
+  printf 'the whole stage transcript, as --once dumps it\n'
+  # `${…-…}`, not `${…:-…}`: an explicitly empty VERDICT is the case being
+  # steered — a stage that ran and reached no verdict of its own.
+  approver_stage_verdict="${VERDICT-approve}"
+}
+RHARNESS
+{
+  printf '%s\n' "$(extract _approver_restale_review)"
+  cat <<'RTAIL'
+_approver_restale_review "acme/widgets" "https://github.com/acme/widgets/pull/7" 7 "agent/682" "high" "feat: thing"
+printf 'result=%s\n' "$_approver_restale_review_result"
+printf 'restored_wo=[%s] restored_impl=[%s] restored_rev=[%s] restored_repo=[%s] restored_clone=[%s]\n' \
+  "$work_order_json" "$impl_status_json" "$rev_status_json" "$selected_repo" "$clone_dir"
+printf 'clone_left=%s\n' "$([[ -d "$workspace_root/cyc1-restale-7" ]] && printf 'yes' || printf 'no')"
+RTAIL
+} >>"$tmp_dir/review-harness.sh"
+
+run_review_case() {
+  : >"$tmp_dir/stage-calls"
+  env -i PATH="$PATH" HOME="$HOME" T="$tmp_dir" "$@" \
+    bash "$tmp_dir/review-harness.sh" >"$tmp_dir/review-stdout" 2>"$tmp_dir/review-stderr"
+  printf '%s' "$?"
+}
+
+rc="$(run_review_case)"
+review_out="$(cat "$tmp_dir/review-stdout")"
+assert_eq "the function survives the globals it saves being unset — the sweep's own context" "0" "$rc"
+assert_eq "  ... with no unbound-variable death on the way" "" "$(cat "$tmp_dir/review-stderr")"
+assert_contains "a verdict reached is reported as posted" "result=posted" "$review_out"
+assert_contains "  ... even though the stage wrote its own transcript to stdout (--once)" \
+  "result=posted" "$review_out"
+assert_contains "the stage really was engaged, under the pull request's own repo" \
+  "repo=acme/widgets" "$(cat "$tmp_dir/stage-calls")"
+assert_contains "  ... its own fresh clone" "clone=$tmp_dir/ws/cyc1-restale-7" "$(cat "$tmp_dir/stage-calls")"
+assert_contains "  ... and a synthetic work order naming the pull request" \
+  "wo_item=pr-7-approver-restale" "$(cat "$tmp_dir/stage-calls")"
+assert_contains "  ... a complete Implementer summary" "impl_status=complete" "$(cat "$tmp_dir/stage-calls")"
+assert_contains "  ... and a ready Reviewer summary" "rev_status=ready" "$(cat "$tmp_dir/stage-calls")"
+assert_contains "the borrowed globals are restored, never left mutated" \
+  "restored_wo=[] restored_impl=[] restored_rev=[] restored_repo=[] restored_clone=[]" "$review_out"
+assert_contains "the recovery clone is torn down" "clone_left=no" "$review_out"
+
+rc="$(run_review_case VERDICT="")"
+assert_contains "a stage that reached no verdict at all is unavailable" \
+  "result=unavailable" "$(cat "$tmp_dir/review-stdout")"
+
+rc="$(run_review_case CLONE_FAILS=1)"
+assert_eq "a failed clone is not a failed cycle" "0" "$rc"
+assert_contains "  ... it is reported as unavailable, for the dismissal fallback" \
+  "result=unavailable" "$(cat "$tmp_dir/review-stdout")"
+assert_eq "  ... and the stage is never engaged" "" "$(cat "$tmp_dir/stage-calls")"
 
 # --- Result -------------------------------------------------------------------
 
