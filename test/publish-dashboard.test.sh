@@ -2573,6 +2573,119 @@ assert_eq "  ... and it does rewrite the page" "1" \
 out="$(np_publish)"
 assert_eq "the tick after a GitHub tick skips again" "" "$out"
 
+# --- The tiered publish (#798) -------------------------------------------------
+# A publish rebuilt the fleet's whole history every tick — every roll-up and
+# every cycle in the window — to produce a page whose only moving part was the
+# cycle actually running. At 15.8s a tick, against the launcher's 1:9 duty
+# cycle, that left the page two and a half minutes behind the pipeline it
+# exists to show.
+#
+# So a tick now comes in two kinds. A *full* build is what it always was, and is
+# what every GitHub tick runs. A *fast* build recomputes only what moves —
+# status, the cycle window, the log tail, the fleet — and carries the history
+# roll-ups forward from the last full payload. What follows checks that the
+# carry-forward is real, that the volatile half is genuinely fresh, that a
+# missing cache degrades to a full build rather than to a blank page, and that
+# the per-cycle cache is both used and invalidated.
+f798="$(new_home nodeF)"
+f798_state="$f798/.local/state/poetic-agents"
+for _n in 1 2 3 4 5; do
+  make_cycle "$f798" "${today_day}T10000${_n}Z-$_n" "0.1$_n" model-t
+done
+
+run_publish_fast() {  # run_publish_fast <home> [env assignments…]
+  local home="$1"; shift
+  env HOME="$home" "$@" "$PUBLISH" --no-github --fast >/dev/null 2>&1
+}
+# Every publish below is about what a *build* produces, so each one drops the
+# fingerprint first. Without that the no-op short-circuit (#787) quite correctly
+# skips — the fixture stops moving between assertions — and every one of these
+# would read the page the previous assertion left behind, passing or failing on
+# a build that never ran.
+b798()      { rm -f "$f798_state/.dashboard-fingerprint"; run_publish      "$f798"; }
+b798_fast() { rm -f "$f798_state/.dashboard-fingerprint"; run_publish_fast "$f798"; }
+
+b798
+full798="$(data_of "$f798")"
+assert_eq "a full build leaves a payload for the fast builds to carry forward" "1" \
+  "$(( $(wc -c < "$f798_state/.dashboard-payload" 2>/dev/null || echo 0) > 0 ))"
+assert_eq "and the cycle window is cached per cycle" "1" \
+  "$(( $(find "$f798_state/.dashboard-cycle-cache" -maxdepth 1 -name '*.json' 2>/dev/null | wc -l) >= 5 ))"
+
+# The carried-forward half. `counts` alone is about a third of a full publish,
+# and a fast build must neither pay for it nor lose it.
+sleep 1   # generated_at has one-second resolution and must be seen to move
+b798_fast
+fast798="$(data_of "$f798")"
+for _k in counts blocked void landings config; do
+  assert_eq "a fast build carries .$_k forward unchanged" \
+    "$(jq -Sc ".$_k" <<<"$full798")" "$(jq -Sc ".$_k" <<<"$fast798")"
+done
+assert_eq "and is not merely the old page: generated_at moves" "1" \
+  "$([[ "$(jq -r .generated_at <<<"$fast798")" > "$(jq -r .generated_at <<<"$full798")" ]] && echo 1 || echo 0)"
+
+# The point of the whole exercise: a cycle advancing has to reach the page on a
+# fast tick. This is #798's acceptance bullet, and the thing a cheaper publish
+# could most easily lose.
+make_cycle "$f798" "${today_day}T100099Z-99" 0.99 model-t
+b798_fast
+assert_contains "a cycle that advanced shows up on a fast build" \
+  "${today_day}T100099Z-99" "$(jq -r '[.cycles[].id] | join(" ")' <<<"$(data_of "$f798")")"
+
+# The per-cycle cache is genuinely read, not merely written: a sentinel planted
+# in one unchanged cycle's entry survives the next build, and nothing else could
+# put it on the page.
+_sent="${today_day}T100001Z-1"
+printf '{"id":"%s","sentinel":true}' "$_sent" > "$f798_state/.dashboard-cycle-cache/$_sent.json"
+b798_fast
+assert_eq "an unchanged cycle is served from the cache, not rebuilt" "true" \
+  "$(jq -r --arg id "$_sent" '.cycles[] | select(.id == $id) | .sentinel // false' <<<"$(data_of "$f798")")"
+
+# ...and is invalidated the moment that cycle's own transcript moves, or the
+# cache would be a way to pin a stale cycle on the page for ever.
+make_cycle "$f798" "$_sent" 0.42 model-t "moved along"
+b798_fast
+assert_eq "a cycle whose transcript moved is rebuilt, sentinel gone" "false" \
+  "$(jq -r --arg id "$_sent" '.cycles[] | select(.id == $id) | .sentinel // false' <<<"$(data_of "$f798")")"
+
+# A fast build with nothing to carry forward is a full build, not a blank one.
+# The failure this guards is silent: merging over a missing cache would publish
+# a page with every history panel empty and nothing to say so.
+rm -f "$f798_state/.dashboard-payload"
+b798_fast
+assert_eq "a fast build with no payload cache degrades to a full build" "object" \
+  "$(jq -r '.counts | type' <<<"$(data_of "$f798")")"
+assert_eq "and writes the cache back for the next one" "1" \
+  "$(( $(wc -c < "$f798_state/.dashboard-payload" 2>/dev/null || echo 0) > 0 ))"
+
+# The bound #798 asks for. Counted in jq invocations rather than seconds, which
+# is what keeps it meaningful on a loaded CI box.
+#
+# The threshold is deliberately well short of the production ratio. This fixture
+# has six cycles, no peers and no GitHub, so the roll-ups a fast build skips are
+# nearly free here; on a real node the same skip is 15.8s against 4.4s. What
+# this can still catch — and the only regression that matters — is one of the
+# gated regions being taken back out of `if (( FULL ))`, which would pull the
+# fast count straight back up to the full one.
+_c_full="$tmp_dir/jq-full-798"; _c_fast="$tmp_dir/jq-fast-798"
+: > "$_c_full"; : > "$_c_fast"
+(
+  jq() { printf 'x\n' >> "${JQ_COUNT_FILE:?}"; command jq "$@"; }
+  export -f jq
+  rm -f "$f798_state/.dashboard-fingerprint"
+  env HOME="$f798" JQ_COUNT_FILE="$_c_full" "$PUBLISH" --no-github >/dev/null 2>&1
+)
+(
+  jq() { printf 'x\n' >> "${JQ_COUNT_FILE:?}"; command jq "$@"; }
+  export -f jq
+  rm -f "$f798_state/.dashboard-fingerprint"
+  env HOME="$f798" JQ_COUNT_FILE="$_c_fast" "$PUBLISH" --no-github --fast >/dev/null 2>&1
+)
+_n_full="$(wc -l < "$_c_full")"; _n_fast="$(wc -l < "$_c_fast")"
+printf '# tiered publish: full %s jq invocations, fast %s\n' "$_n_full" "$_n_fast"
+assert_eq "a fast build costs materially less than a full one" "1" \
+  "$(( _n_fast * 3 < _n_full * 2 ))"
+
 # ---------------------------------------------------------------------------------
 if (( failures > 0 )); then
   printf '\n%d assertion(s) failed\n' "$failures"

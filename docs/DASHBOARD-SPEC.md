@@ -485,7 +485,8 @@ warns about, where a missed input stalls everything silently. It covers by
 exclusion rather than enumeration — everything under the state dir counts
 except what the Publisher and its heartbeat write themselves (the served
 directory, `dashboard.log*`, and the `.dashboard-fingerprint`,
-`.dashboard-skips` and `.dashboard-tick-cost` bookkeeping beside it), what the
+`.dashboard-skips`, `.dashboard-tick-cost`, `.dashboard-payload` and
+`.dashboard-cycle-cache/` bookkeeping beside it), what the
 Publisher never reads (`state-sync.log`, `doctor.log`, and the `*.err`
 sidecars), and the caches a timer rewrites with identical content — so an
 input a later panel adds is covered on the day it is added, and the failure
@@ -496,13 +497,62 @@ direction of a mistake is a needless rebuild, never a stale page. Those caches
 while one merely rewritten does not. Directory entries are not counted at all:
 adding or replacing a file moves its directory's mtime, which would put back
 exactly the self-reference these exclusions remove, and a file that appears,
-changes or vanishes is already visible as a file. Getting this wrong is not
+changes or vanishes is already visible as a file. Anything this script writes
+under the state dir has to join that list on the day it is added, or it
+invalidates the very skip it sits beside. Getting this wrong is not
 theoretical — the fingerprint counted its own outputs for a day and a half, so
 no tick ever skipped and the feature it was built for saved nothing (#801,
 #803). And a GitHub tick never skips, so even a fingerprint wrong in the
 dangerous direction can only hold a stale page until the next one, about five
 minutes (`LAUNCHER_GITHUB_MAX_AGE`) — the cadence the dashboard published at
 before the sub-minute heartbeat existed (#26).
+
+### The tiered publish
+
+Skipping only helps a node with nothing happening on it. A node running a cycle
+writes to `state_dir` continuously, so its fingerprint moves on every tick and
+it rebuilds every time — which is the node where the cost actually lands. A full
+publish measured 15.8s on `ockham-container`, and against the launcher's 1:9
+duty cycle that put the page about two and a half minutes behind the pipeline it
+exists to show.
+
+So a tick has two kinds, and `--fast` chooses:
+
+- A **full build** assembles the whole payload, and writes it to
+  `<state_dir>/.dashboard-payload` afterwards. Every GitHub tick is a full
+  build, which is what bounds how stale anything carried forward can be — no
+  separate clock, and nothing that can drift out of step with the one cadence
+  guaranteed to run.
+- A **fast build** recomputes only what moves between ticks — `status`,
+  `cycles`, `log_tail`, `cron_tail`, `fleet`, `revert_rate` — and merges those
+  keys over the last full payload. The history roll-ups (`counts` and its
+  verdict-quality, model-selection and classifier-escape enrichments, `blocked`,
+  `void`, `landings`, and the stage budgets inside `config`) are not computed at
+  all: they read the fleet's whole history and change on the scale of cycles,
+  not ticks.
+
+A fast build emits only the keys it recomputed and merges them **over** the
+cached payload rather than assembling a whole object from variables the skipped
+regions never set. That direction is the safety property: a key it forgets keeps
+its previous value, where a key a full-style assemble forgot would render `null`
+and blank a panel. Staleness is bounded and visible against `generated_at`; a
+blanked panel is neither. A fast build with no usable payload cache is silently
+a full build, and a merge that fails re-runs itself in full rather than leaving
+the page to age.
+
+The cycle window is cached per cycle under `<state_dir>/.dashboard-cycle-cache/`,
+keyed on that cycle's stage files (size and mtime), how far its own events have
+got (count and newest timestamp), and a digest of the program that renders it —
+so an image roll invalidates every entry, which is the case a key made only of
+inputs would miss. A cycle that renders to nothing caches that verdict too, or
+it is recomputed on every tick for as long as it stays in the window. The cache
+is pruned to the window on each publish: entries are never touched on a hit, so
+an mtime sweep would evict exactly the cycles still in use.
+
+Measured on `ockham-container` (35,574 union events, 1000 local cycles, three
+peers): a full build 15.8s → 11.1s, and a fast build 4.4s — which at 1:9 puts a
+cycle's progress on the page inside about 45 seconds, against two and a half
+minutes before. The `cycles` payload is byte-identical to the unbatched build's.
 
 Redaction is unconditional: `/home/<user>` and `/Users/<user>` → `~`, and
 `ghp_/gho_/github_pat_/sk-…/Bearer …` token shapes → `[REDACTED-TOKEN]`,
@@ -1434,8 +1484,12 @@ number's twins elsewhere on the page.
   rather than only in `top`. A full GitHub-hitting publish runs only when the last fetch has
   aged past `LAUNCHER_GITHUB_MAX_AGE` (285s, so that the gap between fetches
   including the fetch's own ~20s comes to about five minutes); the cheaper
-  `--no-github` publish runs in between and carries the last fetch forward, so
-  the page stays near-live without hammering the GitHub API. The gate is the
+  `--no-github --fast` publish runs in between and carries the last fetch
+  forward, so the page stays near-live without hammering the GitHub API. That
+  GitHub tick is also the **full** build (see **The tiered publish**): the
+  history roll-ups a fast tick carries forward are therefore never more than one
+  fetch old, and the launcher needs no second cadence to decide when to rebuild
+  them. The gate is the
   **age of `<state_dir>/.dashboard-github.json`**, which the Publisher stamps
   on every fetch it attempts — succeeded or failed — and which the launcher
   stamps itself if a publish dies before getting that far. Age, rather than a
