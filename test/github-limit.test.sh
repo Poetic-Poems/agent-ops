@@ -327,6 +327,13 @@ if [[ "${1:-}" == "api" && "${2:-}" == "rate_limit" ]]; then
     unreachable)
       echo 'gh: Could not resolve host: api.github.com' >&2
       exit 1 ;;
+    notoken)
+      # gh's real wording (verified against gh 2.98.0) when GH_TOKEN and
+      # GITHUB_TOKEN are both unset/empty and there is no `gh auth login`
+      # session either — it never sends a request, so there is no HTTP
+      # status at all, unlike the `unauthorized` mode above.
+      printf 'To get started with GitHub CLI, please run:  gh auth login\nAlternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token.\n' >&2
+      exit 4 ;;
   esac
 fi
 echo "unexpected call: $*" >&2
@@ -352,6 +359,20 @@ probe_result="$(GH_AUTH_STUB_MODE=unreachable github_auth_probe)"
 assert_eq "a network fault probes as unreachable, not unauthorized" \
   "unreachable" "$(cut -f1 <<<"$probe_result")"
 
+# TD-PPagop-26082306: a missing/empty GH_TOKEN (and no `gh auth login`
+# session) makes gh refuse locally before it ever sends a request — no HTTP
+# status at all — which used to match neither the 401 pattern above nor
+# anything else, so it fell through to `unreachable` and bought a full
+# Co-Ordinator engagement every cycle exactly as an expired token did before
+# agent-ops#691.
+probe_result="$(GH_AUTH_STUB_MODE=notoken github_auth_probe)"
+assert_eq "a missing token probes as unauthorized, not unreachable" \
+  "unauthorized" "$(cut -f1 <<<"$probe_result")"
+assert_eq "…and the detail names the missing token rather than an HTTP status" \
+  "yes" "$(if [[ "$(cut -f2 <<<"$probe_result")" == "no token present"* ]]; then echo yes; else echo no; fi)"
+assert_eq "…and never claims an HTTP 401 the way a rejected token would" \
+  "no" "$(if [[ "$(cut -f2 <<<"$probe_result")" == *"HTTP 401"* ]]; then echo yes; else echo no; fi)"
+
 # Every caller reads this with `read -r v d < <(github_auth_probe)`, and
 # `read` fails — non-zero, though it still populates both variables — for a
 # final line with no trailing newline. agent-cycle.sh sources this file and
@@ -373,6 +394,19 @@ for probe_mode in ok unauthorized unreachable; do
   assert_eq "github_auth_probe's $probe_mode output survives a read under set -e" \
     "SURVIVED_SET_E:$probe_mode" "$strict_probe"
 done
+
+# Same check for `notoken`, kept out of the loop above since its stub mode
+# name and its verdict differ (`notoken` probes as `unauthorized`, not
+# `notoken`).
+strict_probe="$(
+  set -e
+  v="" d=""
+  # shellcheck disable=SC2034  # $d is read to consume the field, never used
+  IFS=$'\t' read -r v d < <(GH_AUTH_STUB_MODE=notoken github_auth_probe)
+  echo "SURVIVED_SET_E:$v"
+)"
+assert_eq "github_auth_probe's notoken output survives a read under set -e" \
+  "SURVIVED_SET_E:unauthorized" "$strict_probe"
 
 echo
 if (( failures == 0 )); then

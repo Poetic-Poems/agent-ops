@@ -167,12 +167,17 @@ github_limit_snapshot() {
 # "<verdict>\t<detail>" —
 #
 #   - ok            a real `/rate_limit` document came back. The token works.
-#   - unauthorized  GitHub answered HTTP 401 — it read the request and
-#                   rejected the credentials outright. `detail` is its own
-#                   response, trimmed to one line. Persistent: unlike a rate
-#                   limit or a network blip, no wait and no retry clears an
-#                   expired or revoked token, and every call this process
-#                   makes from here on fails the same way.
+#   - unauthorized  either GitHub answered HTTP 401 — it read the request and
+#                   rejected the credentials outright, `detail` is its own
+#                   response trimmed to one line — or `gh` never sent the
+#                   request at all because it has no credentials to send:
+#                   `GH_TOKEN`/`GITHUB_TOKEN` unset or empty and no `gh auth
+#                   login` session either, `detail` then starts with "no token
+#                   present" rather than carrying a GitHub response. Both are
+#                   persistent: unlike a rate limit or a network blip, no wait
+#                   and no retry clears an expired, revoked or absent token,
+#                   and every call this process makes from here on fails the
+#                   same way.
 #   - unreachable   the call failed for any other reason (DNS, a timeout, a
 #                   transient 5xx). Says nothing about the credentials — the
 #                   same "no evidence" reading `github_limit_snapshot`'s
@@ -204,6 +209,18 @@ github_auth_probe() {
   rm -f "$err"
   if grep -qiE 'HTTP 401|Bad credentials' <<<"$detail"; then
     printf 'unauthorized\t%s\n' "$detail"
+  elif grep -qiE 'gh auth login' <<<"$detail"; then
+    # `gh` never sent a request here — it refused locally because it has no
+    # credentials at all (GH_TOKEN/GITHUB_TOKEN unset or empty, and no `gh
+    # auth login` session either). Folding this into `unreachable` is the
+    # fault TD-PPagop-26082306 filed: a missing token reads exactly like a
+    # network blip, so a node whose token was dropped from the environment
+    # still ran a full Co-Ordinator engagement every cycle before every claim
+    # failed. The leading "no token present" (rather than gh's own wording,
+    # which never mentions HTTP 401) is what lets a caller's stand-down
+    # reason and escalation body describe the true cause instead of
+    # defaulting to language written for a rejected token.
+    printf 'unauthorized\tno token present (gh: %s)\n' "$detail"
   else
     printf 'unreachable\t%s\n' "$detail"
   fi
