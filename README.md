@@ -436,6 +436,7 @@ Keys:
 | `approver_app_id` | *(unset)* | The Pullwright Approver GitHub App's id. Every `merge_autonomy` level above `human` needs it set, and `scripts/doctor.sh` fails the config otherwise. `doctor.sh` also cross-checks it against the node's `PULLWRIGHT_APPROVER_APP_ID` environment, so the id the token wrapper mints against can never silently differ from the one recorded here. One id for the whole installation: the Approver is a single App identity, and its per-repository reach comes from where the App is...[continued below](#extended-notes-approver_app_id) |
 | `crash_loop_after` | `4` | Consecutive fleet-wide failures, with no intervening recovery, before the Script files a crash-loop escalation issue — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. Neither class blames a repo or an item, so without this nothing ever surfaces a deterministic fleet-wide failure — the dashboard shows a healthy idle fleet. `0` (or absent) disables both checks. |
 | `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where the crash-loop escalation issues are filed — the pipeline's own repository. Deduplicated like an Enabler escalation and assigned to `enabler_assignee`, so the pipeline never selects its own SOS as work. Empty disables both checks. |
+| `escalation_webhook_url` | *(unset)* | A webhook URL, POSTed to as a fallback whenever the pipeline cannot file an escalation issue on GitHub — most often a dead `GH_TOKEN`, which also blocks the filing call itself. Carries the same `reason`/`detail` the issue would have. Empty (the default) disables it: nothing is attempted, and a node with no webhook configured behaves exactly as before. Setting it takes a second edit each node: the webhook's host must also be named in that node's `EGRESS_EXTRA_ALLOW`, or the...[continued below](#extended-notes-escalation_webhook_url) |
 | `timeout_coordinator` | *(unset)* | Minutes, and an override. Leave it out — the backstop tunes itself, and a key set here outranks the derivation for as long as it is there. A repo entry's own `stage_timeouts` outranks this key in turn, for that repo alone — see [`repos`](#extended-notes-repos). |
 | `timeout_implementer` | *(unset)* | Minutes, and an override. As above. |
 | `timeout_reviewer` | *(unset)* | Minutes, and an override. As above. |
@@ -609,6 +610,10 @@ D18 WI-12 (Stage 4): the wait, in hours, between the Approver's own approval of 
 ### Extended notes: `approver_app_id`
 
 The Pullwright Approver GitHub App's id. Every `merge_autonomy` level above `human` needs it set, and `scripts/doctor.sh` fails the config otherwise. `doctor.sh` also cross-checks it against the node's `PULLWRIGHT_APPROVER_APP_ID` environment, so the id the token wrapper mints against can never silently differ from the one recorded here. One id for the whole installation: the Approver is a single App identity, and its per-repository reach comes from where the App is installed, not from configuration.
+
+### Extended notes: `escalation_webhook_url`
+
+A webhook URL, POSTed to as a fallback whenever the pipeline cannot file an escalation issue on GitHub — most often a dead `GH_TOKEN`, which also blocks the filing call itself. Carries the same `reason`/`detail` the issue would have. Empty (the default) disables it: nothing is attempted, and a node with no webhook configured behaves exactly as before. Setting it takes a second edit each node: the webhook's host must also be named in that node's `EGRESS_EXTRA_ALLOW`, or the egress fence answers every POST with a `403` and the node is as silent as it was before the webhook existed.
 
 <!-- config-table:notes-end -->
 

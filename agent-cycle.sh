@@ -463,6 +463,15 @@ enabler_assignee="$(cfg '.enabler_assignee')"
 crash_loop_after="$(cfg '.crash_loop_after')"
 [[ "$crash_loop_after" =~ ^[0-9]+$ ]] || crash_loop_after=0
 crash_loop_repo="$(cfg '.crash_loop_repo')"
+# The out-of-band fallback create_escalation_issue POSTs to when it cannot
+# file (requirement 2m, TD-PPagop-26082304) — fleet-wide like every other key
+# in config.json, which ships in the image, and credential-independent of
+# GH_TOKEN by construction. Empty (the default) means this installation has
+# none configured, and escalation_webhook_notify is a no-op throughout the
+# cycle. A set value is still inert on a node whose EGRESS_EXTRA_ALLOW does
+# not name the webhook's host: the POST leaves through the same default-deny
+# egress fence every other outbound call does (D24).
+escalation_webhook_url="$(cfg '.escalation_webhook_url')"
 # TD-PPagop-26081404: how many consecutive times, on this one node, the
 # required-checks read at the ready-gate (requirement 31c) must come back
 # `unknown` before its per-item node-level `warning` is replaced by one

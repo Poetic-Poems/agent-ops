@@ -8,6 +8,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Every escalation route now reaches an operator even when GitHub itself
+  rejects the node's own credential (requirement 2m, TD-PPagop-26082304): a
+  new optional `escalation_webhook_url` config key, POSTed to
+  from inside `create_escalation_issue` (`lib/enabler.sh`) on every failure
+  to file — most often the same dead `GH_TOKEN` requirement 2.0b's
+  auth-failure check has just detected, which previously left the
+  escalation issue itself unable to file, `warning`-and-retry the only
+  trace, and nobody outside the node told. The fallback lives inside the
+  shared `create_escalation_issue` rather than at each of its call sites, so
+  2.0b's auth-failure escalation, 1c's usage-limit freeze escalation and
+  requirement 2.7's crash loop all pick it up identically. Unset (the
+  default) is a no-op: an installation that configures none of this behaves
+  exactly as before. Switching it on is two edits per node rather than one —
+  the key is fleet-wide (`config.json` ships in the image), while the
+  webhook's host has to be named in each node's own `EGRESS_EXTRA_ALLOW`,
+  since the scheduler reaches the internet only through the default-deny
+  egress fence (D24) and an unlisted host turns every POST into a proxy
+  `403`, which in the log is indistinguishable from a webhook that is down.
 - A pull request the Approver refused no longer relies on the same cycle
   that fixed it to also re-review it (requirement 46, agent-ops#682): a new
   fleet-wide restale sweep (`_approver_restale_sweep_repo`, `lib/approver.sh`)

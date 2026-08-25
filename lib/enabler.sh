@@ -56,9 +56,49 @@ enabler_claim_key() {
   printf '%s' "$key"
 }
 
+# escalation_webhook_notify REPO ITEM TITLE BODY_FILE
+# Best-effort, `GH_TOKEN`-independent fallback for an escalation
+# `create_escalation_issue` could not file (requirement 2m,
+# TD-PPagop-26082304). Every escalation route ultimately reaches GitHub
+# through the same credential its own trigger may have just shown GitHub
+# rejects — requirement 2.0b's is the expected case, but 1c's usage-limit
+# freeze and requirement 2.7's crash loop can hit a dead token or a genuine
+# outage too — so this lives inside `create_escalation_issue` itself rather
+# than at each call site: every route gets the same fallback, and no site
+# has to guess whether its own failure was credential-shaped.
+#
+# A no-op when `escalation_webhook_url` is unset (the default): nothing is
+# attempted, so an installation that configures none of this behaves exactly
+# as it did before this existed. When it is set, POSTs a JSON body carrying
+# `reason` (TITLE) and `detail` (BODY_FILE's own content) — the same two
+# fields a `stand-down` event already carries — plus `item`, `repo`, `node`
+# and `cycle` for routing. Never propagates a failure of its own: a webhook
+# that is down, misconfigured, or rejects the payload is worth a local
+# `warning` event for a human to find later, never worth costing the caller
+# the escalation it was already failing to file through GitHub.
+escalation_webhook_notify() {
+  local repo="$1" item="$2" title="$3" body_file="$4"
+  [[ -n "$escalation_webhook_url" ]] || return 0
+  local detail payload
+  detail="$(cat "$body_file" 2>/dev/null || true)"
+  payload="$(jq -nc --arg reason "$title" --arg detail "$detail" \
+    --arg repo "$repo" --arg item "$item" --arg node "$node_name" \
+    --arg cycle "$cycle_id" \
+    '{reason: $reason, detail: $detail, repo: $repo, item: $item, node: $node, cycle: $cycle}' \
+    2>/dev/null)" || return 0
+  if ! curl -fsS --max-time 10 -X POST -H 'Content-Type: application/json' \
+        --data-binary "$payload" "$escalation_webhook_url" \
+        >/dev/null 2>>"$cycle_dir/escalation-webhook.err"; then
+    log_event "warning" "$(jq -nc --arg d "escalation webhook POST to escalation_webhook_url failed for item $item — see escalation-webhook.err" '{detail: $d}')"
+  fi
+  return 0
+}
+
 # create_escalation_issue REPO ITEM LABEL TITLE BODY_FILE
 # File one escalation issue, printing "<number>\t<url>"; print nothing and
-# return 1 if it could not be filed. Three behaviours, in order:
+# return 1 if it could not be filed — after which `escalation_webhook_notify`
+# has already made one best-effort attempt at the credential-independent
+# fallback, so a caller need not repeat it. Three behaviours, in order:
 #
 #   - A duplicate guard. An open issue carrying the escalation label whose body
 #     already quotes this item's reference *is* the escalation — return it
@@ -101,9 +141,15 @@ create_escalation_issue() {
              2>>"$cycle_dir/enabler-issue.err" || true)"
   fi
   url="$(grep -oE 'https://github\.com/[A-Za-z0-9_./-]+/issues/[0-9]+' <<<"$raw" | tail -n1 || true)"
-  [[ -n "$url" ]] || return 1
+  if [[ -z "$url" ]]; then
+    escalation_webhook_notify "$repo" "$item" "$title" "$body_file"
+    return 1
+  fi
   number="${url##*/}"
-  [[ "$number" =~ ^[0-9]+$ ]] || return 1
+  if [[ ! "$number" =~ ^[0-9]+$ ]]; then
+    escalation_webhook_notify "$repo" "$item" "$title" "$body_file"
+    return 1
+  fi
   printf '%s\t%s' "$number" "$url"
 }
 
