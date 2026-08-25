@@ -11785,7 +11785,8 @@ What exists, and the requirements each part answers to:
    implementation-plan path passthrough and its startup validation,
    requirement 3k; and the Refiner-only pre-fetch and its `refiner_repos_json`
    copy, requirement 3y) — the cycle's own spine: argument handling, the
-   lock, the stand-down reason ladder (`run_standdown_checks`, `lib/
+   lock, the management commands (`run_manage_command`, `lib/manage.sh`,
+   #771), the stand-down reason ladder (`run_standdown_checks`, `lib/
    standdown.sh`, #771), the claim loop and candidate selection (`lib/
    candidate-select.sh`, #771), the ordered sequence of phases, and the exit
    path. The Enabler's engagement, requirements 35–37 — `maybe_run_enabler`
@@ -11861,6 +11862,23 @@ What exists, and the requirements each part answers to:
    and writing the cycle's own globals exactly as they did inline. Sourced,
    never executed, called once each from `agent-cycle.sh` in place of the
    inline block they replace. Must pass `shellcheck`.
+2e. `lib/manage.sh` implementing requirement 2.3's management commands in
+   full (#771): `run_manage_command`, called once from `agent-cycle.sh` in
+   place of the inline block it replaces, before the lock and before any `gh`
+   call — `--status`, `--disable`, `--enable`, `--clear-limit` and
+   `--kill-merge-autonomy`, together with the five reporters they print
+   through (`toggle_status_report`'s companions `fleet_status_report`,
+   `limit_status_report`, `merge_autonomy_status_report`,
+   `current_limit_record` and `refresh_dashboard`). Returns at once when no
+   management action was asked for, so the call site carries no guard of its
+   own; every action it does handle exits the process, so nothing after the
+   call site is reachable from one. Reads the cycle's own globals directly and
+   declares nothing `local`, the same way `run_standdown_checks` does and for
+   the same reason. Sourced, never executed. `merge_autonomy_status_report` is
+   lifted verbatim out of this file by `test/merge-autonomy.test.sh`
+   (acceptance check for #454), and the whole of it is exercised end-to-end
+   through `agent-cycle.sh --disable`/`--enable`/`--status` in
+   `test/toggle.test.sh`. Must pass `shellcheck`.
 3. `scripts/gather-findings.sh` implementing requirement 3a: given a repo
    slug, prints a normalised JSON array of the repo's open Dependabot and
    code-scanning alerts, degrading to `[]` (exit 0) when a feature is

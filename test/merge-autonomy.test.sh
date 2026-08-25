@@ -389,16 +389,16 @@ rm -f "$gh_backing/fleet/merge-autonomy-kill.json"
 #     `record.kind: "fail-closed"` marker exactly as scripts/doctor.sh does.
 #     Reporting-only — the effective-level assertions above already pin that
 #     both states resolve to human. The block is lifted verbatim out of
-#     agent-cycle.sh (the same pattern test/approver-wiring.test.sh uses), so
+#     lib/manage.sh (the same pattern test/approver-wiring.test.sh uses), so
 #     these assertions are about the shipped reporter, not a copy of it. ---
 
 extract() {  # <function name>
   awk -v fn="^$1\\\\(\\\\) \\\\{" '$0 ~ fn { on = 1 } on { print } on && /^\}$/ { exit }' \
-    "$SCRIPT_DIR/agent-cycle.sh"
+    "$SCRIPT_DIR/lib/manage.sh"
 }
 status_block="$(extract merge_autonomy_status_report)"
 if [[ -z "$status_block" || "$status_block" != *"merge_autonomy_kill_state"* ]]; then
-  printf 'FAIL - could not extract merge_autonomy_status_report from agent-cycle.sh — has it moved?\n'
+  printf 'FAIL - could not extract merge_autonomy_status_report from lib/manage.sh — has it moved?\n'
   failures=$(( failures + 1 ))
 else
   eval "$status_block"
