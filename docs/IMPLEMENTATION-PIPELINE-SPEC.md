@@ -12488,6 +12488,13 @@ What exists, and the requirements each part answers to:
    `lib/crash-loop.sh` (requirement 2.7's `crash_loop_verdict`,
    `crash_loop_preselection_verdict` and `crash_loop_escalated_since`, all
    pure readers of the union stream),
+   `lib/token-expiry.sh` (requirement 2.7a's `TOKEN_EXPIRY_WARN_DAYS`,
+   `token_expiry_header`, `token_expiry_parse` and
+   `token_expiry_escalated_for` — the one place the warning threshold and
+   the header's own parsing live, sourced by both `scripts/doctor.sh`, which
+   reads the header, and `agent-cycle.sh`, which escalates on what it read,
+   so the two can never judge the same token differently. Unit-tested,
+   `test/token-expiry.test.sh`),
    `lib/human-visibility-hygiene.sh` (requirement 38e's
    `human_visibility_violations`, another pure reader of the union stream,
    reducing requirement 38c's `warning` events to the identities — pull
@@ -15006,6 +15013,31 @@ pull request, run the ones the change touches and any it could regress.
    does not, and a different detail never matches.
    back-pressure, and the logged reason states the count's composition
    (`N ready + N draft + N unraised claim(s)`).
+5b. **A fine-grained PAT's own expiry is read, recorded, and escalated once
+   per credential (requirement 2.7a).** `test/token-expiry.test.sh` passes:
+   `token_expiry_parse` turns a `GitHub-Authentication-Token-Expiration`
+   header value into an ISO-8601 UTC instant and a day count that floors
+   toward zero — a fractional remainder rounds down, six hours out reads 0
+   days rather than 1, and a token already past its own expiry reads 0
+   rather than a negative number — while an empty or unparseable value is
+   refused outright rather than read as some fallback date;
+   `token_expiry_escalated_for` matches on the exact node *and* `expires_at`,
+   so a rotated token (a new expiry) escalates again despite the repeated
+   event name, and another node's identical expiry never cross-matches.
+   `test/token-expiry-wiring.test.sh` passes against the block lifted
+   verbatim out of `agent-cycle.sh`: a recorded `token_expiry` under
+   `TOKEN_EXPIRY_WARN_DAYS` files exactly one issue, through
+   `create_escalation_issue` in `crash_loop_repo` under
+   `enabler_escalation_label` and keyed `token-expiry:<node>:<expires_at>`,
+   and logs one `token-expiry-escalated` event naming that expiry; a second
+   cycle over the same expiry — reading the first cycle's own event back out
+   of the log union, as state-sync would deliver it — files nothing and logs
+   nothing further; a rotated token files again; and a token at or above the
+   threshold, a `token_expiry` of `null`, and a missing
+   `.doctor-status.json` each file nothing. In every one of those cases the
+   block falls through and the cycle proceeds — unlike requirement 2.0b's,
+   this check never stands the cycle down, because a token that has not yet
+   expired blocks nothing the cycle needs.
 6a. **The switch stops both pipelines and lets go by itself.**
    `--disable 'testing'` then a plain invocation of *both* `agent-cycle.sh` and
    `review-cycle.sh`: each logs a stand-down carrying the reason, exits 0, and
@@ -16469,8 +16501,11 @@ pull request, run the ones the change touches and any it could regress.
     stream-flushing probe are each reported `skip` naming `--unattended`,
     never `--offline`'s wording; a completed run leaves
     `state_dir/.doctor-status.json` with a `timestamp` (a real UTC instant),
-    a `verdict` (the worst of `fail`/`warn`/`ok` this run found), and its
-    `fails`/`warns` as arrays of the exact messages printed; an ordinary run
+    a `verdict` (the worst of `fail`/`warn`/`ok` this run found), its
+    `fails`/`warns` as arrays of the exact messages printed, and a
+    `token_expiry` (requirement 2.7a) that is `{expires_at, days_remaining}`
+    when the GitHub section read a `GitHub-Authentication-Token-Expiration`
+    header and `null` when it did not; an ordinary run
     with neither flag writes no such file and runs the Claude section for
     real, against the stub. Must pass `shellcheck`.
 6h. **The pipeline creates the labels it applies, and touches no others

@@ -1373,9 +1373,16 @@ fi
 # Before the stand-down checks, like 1b, so a fleet that is also standing
 # down still raises the alarm; the cycle then proceeds normally regardless,
 # since a token that has not yet expired blocks nothing this cycle needs.
+#
+# Every read below falls back rather than propagating `jq`'s own exit status:
+# this file runs under `set -e`, `.doctor-status.json` is not this script's
+# own artefact, and a shape `jq` refuses to index (a `token_expiry` that is
+# valid JSON but not an object, say) would otherwise kill the cycle here —
+# before any stage starts, which is exactly requirement 2.7's pre-selection
+# crash-loop class. No warning is worth costing the cycle that carries it.
 doctor_status_json="$(jq -c '.' "$state_dir/.doctor-status.json" 2>/dev/null || echo null)"
-token_expiry_days="$(jq -r '.token_expiry.days_remaining // empty' <<<"$doctor_status_json" 2>/dev/null)"
-token_expiry_expires_at="$(jq -r '.token_expiry.expires_at // empty' <<<"$doctor_status_json" 2>/dev/null)"
+token_expiry_days="$(jq -r '.token_expiry.days_remaining // empty' <<<"$doctor_status_json" 2>/dev/null || true)"
+token_expiry_expires_at="$(jq -r '.token_expiry.expires_at // empty' <<<"$doctor_status_json" 2>/dev/null || true)"
 if [[ "$token_expiry_days" =~ ^[0-9]+$ ]] && [[ -n "$token_expiry_expires_at" ]] \
     && (( token_expiry_days < TOKEN_EXPIRY_WARN_DAYS )); then
   if ! (( DRY_RUN )) && [[ -n "$crash_loop_repo" && -n "$enabler_assignee" ]] \
