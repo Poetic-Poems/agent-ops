@@ -429,13 +429,39 @@ do_fetch() {
   mirror_lock
   mirror_init
 
-  # All the nodes' branches at once, pruning the tracking refs of nodes whose
-  # branch has been deleted — a decommissioned machine leaves the fleet by
-  # having its branch removed.
-  if ! git -C "$mirror" fetch --quiet --prune --depth 1 origin \
-      '+refs/heads/nodes/*:refs/remotes/origin/nodes/*' 2>/dev/null; then
+  # Probe before fetching: the bootstrap case (no node branches published
+  # yet) and a real failure (bad credentials, network outage, a corrupt
+  # mirror) used to fail the plain `git fetch` below the same way, with
+  # stderr discarded — so a dead credential and an empty state repository
+  # were indistinguishable, and both silently reported success (#693).
+  # `git ls-remote`'s own exit status tells them apart: non-zero is a real
+  # failure; a zero exit with empty output is the genuine bootstrap case.
+  local err_file ls_out
+  err_file="$(mktemp)"
+  # shellcheck disable=SC2064  # expand the path now, while it is still set
+  trap "rm -f '$err_file'" RETURN
+  if ! ls_out="$(git -C "$mirror" ls-remote --heads origin 'refs/heads/nodes/*' 2>"$err_file")"; then
+    say "WARNING: could not reach the state repository to fetch peers — $(cat "$err_file")"
+    fleet_mark_peers "$peers_dir" false
+    return 1
+  fi
+  if [[ -z "$ls_out" ]]; then
     say "the state repository has no node branches yet — nothing to fetch"
     return 0
+  fi
+
+  # All the nodes' branches at once, pruning the tracking refs of nodes whose
+  # branch has been deleted — a decommissioned machine leaves the fleet by
+  # having its branch removed. The probe above already confirmed branches
+  # exist and the remote is reachable, so a failure here is a second, later
+  # real failure (a network blip between the two calls) rather than the
+  # bootstrap case, and is reported the same way as the probe's own.
+  : > "$err_file"
+  if ! git -C "$mirror" fetch --quiet --prune --depth 1 origin \
+      '+refs/heads/nodes/*:refs/remotes/origin/nodes/*' 2>"$err_file"; then
+    say "WARNING: fetch failed — $(cat "$err_file")"
+    fleet_mark_peers "$peers_dir" false
+    return 1
   fi
 
   mkdir -p "$peers_dir"
@@ -472,6 +498,7 @@ do_fetch() {
   done < <(find "$peers_dir" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null)
 
   say "holding ${#peers[@]} peer(s)"
+  fleet_mark_peers "$peers_dir" true
   return 0
 }
 

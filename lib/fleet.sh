@@ -10,6 +10,26 @@ fleet_peers_dir() {  # <workspace_root>
   printf '%s/.agent-ops-peers' "$1"
 }
 
+# The peers directory's own freshness marker (requirement 2.5, #693):
+# `state-sync.sh fetch` writes it after every attempt —
+# `{"ok":true,"ts":…}` once the peer trees below it were just materialised
+# from a successful fetch, `{"ok":false,"ts":…}` while a real failure (bad
+# credentials, network outage, a corrupt mirror) is in force. A reader that
+# cares whether the peer copies it is about to union might be frozen reads
+# this rather than trusting a directory that looks populated either way — an
+# absent marker is the genuine bootstrap case: no fetch has ever succeeded,
+# because the state repository has no node branches yet.
+fleet_peers_marker() {  # <peers_dir>
+  printf '%s/.last-fetch.json' "$1"
+}
+
+fleet_mark_peers() {  # <peers_dir> true|false
+  local dir="$1" ok="$2"
+  mkdir -p "$dir"
+  jq -nc --argjson ok "$ok" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{ok: $ok, ts: $ts}' > "$(fleet_peers_marker "$dir")"
+}
+
 # The fleet's event stream: this node's own log followed by every peer's,
 # sorted into time order (each line begins {"ts":"…", so a plain byte sort is
 # a time sort). The consumers that reduce by most-recent-event-wins — the
