@@ -985,6 +985,14 @@ band, say) does not go unseen between one operator-invoked pass and the
 next. Its result reaches the **Doctor** section of the dashboard (see
 Monitoring below), not your terminal.
 
+That hourly pass also reads how many days remain on this node's fine-grained
+PAT — GitHub states its expiry on every authenticated response — and records
+it for the dashboard, amber under 7 days; a node whose own token falls under
+that threshold escalates once (an issue at the pipeline's configured
+destination), the same route a crash loop or a dead credential already
+escalates through, so a token's own expiry date is never again a fleet-wide
+outage nobody saw coming (agent-ops#691, agent-ops#694).
+
 Inside a container node, run it there rather than on the host, since that is
 where the toolchain and the credentials are:
 

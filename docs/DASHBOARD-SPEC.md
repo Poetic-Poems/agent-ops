@@ -505,13 +505,21 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
              current:{stage,repo,item,source,title},
              last_cycle:{id,node,ended_at,outcome,repo,item,title},  // the FLEET's newest FINISHED
              limit:{active,note}, switch:{…},
-             doctor:{timestamp,verdict,fails[],warns[],skips} | null },
+             doctor:{timestamp,verdict,fails[],warns[],skips,
+                     token_expiry:{expires_at,days_remaining} | null} | null },
                                     //   THIS node's most recent hourly
                                     //   `doctor.sh --unattended` pass
                                     //   (agent-ops#543), read from
                                     //   state_dir/.doctor-status.json —
                                     //   null until the first hourly pass
-                                    //   has run
+                                    //   has run. token_expiry (agent-ops#694)
+                                    //   is this node's fine-grained PAT's own
+                                    //   expiry, read from GitHub's
+                                    //   `GitHub-Authentication-Token-
+                                    //   Expiration` response header; null
+                                    //   when that header was absent (a
+                                    //   classic PAT, or any credential
+                                    //   GitHub states no expiry for)
   counts:  { cycles_shown, failures_shown, prs_reached_ready,   // fleet-wide
              spend_today_usd, spend_total_usd,
              by_day[], by_model[], by_actor[],   // both pipelines' actors;
@@ -1194,8 +1202,25 @@ clean pass. A `fail` or `warn` also raises its own page-top banner (naming the
 count and pointing at this section), the same way failing PR checks do —
 because, like those, a `warn` this pass leaves unclaimed the same way a
 misconfigured `Priority` field did before this existed is otherwise invisible
-between one operator-invoked `doctor.sh` and the next. Local to this node
-only: unlike the compose/image/switch verdicts the fleet heartbeat carries,
+between one operator-invoked `doctor.sh` and the next.
+
+Above the fail/warn table, a standing line (agent-ops#694) states this node's
+fine-grained PAT expiry once any unattended pass has recorded one:
+`token_expiry.days_remaining` and `.expires_at`, read from GitHub's own
+`GitHub-Authentication-Token-Expiration` response header. Unlike the
+fail/warn rows, this line renders whenever `token_expiry` is non-null,
+including on an otherwise-clean pass — it is a figure this node always has an
+answer for, not a message that only appears when something is wrong. A badge
+reads amber below `TOKEN_EXPIRY_WARN_DAYS` (7; `lib/token-expiry.sh`) and grey
+at or above it, with a rotate-`GH_TOKEN` nudge alongside the amber reading;
+`token_expiry: null` (a classic PAT, an installation token, or any other
+credential GitHub states no expiry for) renders nothing here at all. This is
+the dashboard half of the warning the 2026-08-22 fleet-wide outage
+(agent-ops#691) needed and never had — the expiry date was knowable a month
+out, and every node lost GitHub at once, misdiagnosed as an outage, before an
+operator noticed hours later.
+
+Local to this node only: unlike the compose/image/switch verdicts the fleet heartbeat carries,
 nothing here replicates a peer's `status.doctor` to this page — a repository's
 configuration and this node's own GitHub access are this node's alone to
 report.

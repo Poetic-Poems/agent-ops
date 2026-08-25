@@ -114,6 +114,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/manage.sh"
 # shellcheck source=lib/crash-loop.sh
 . "$SCRIPT_DIR/lib/crash-loop.sh"
+# shellcheck source=lib/token-expiry.sh
+. "$SCRIPT_DIR/lib/token-expiry.sh"
 # shellcheck source=lib/workspace.sh
 . "$SCRIPT_DIR/lib/workspace.sh"
 # shellcheck source=lib/role.sh
@@ -1335,6 +1337,80 @@ if ! (( DRY_RUN )) && (( crash_loop_after > 0 )) \
       "cycles dying before any stage started" \
       "Crash loop: cycles are dying before any stage starts" \
       "No stage transcript exists for a cycle that dies before any stage begins — start with the newest failing cycle's entry in \`cron.log\` (or \`cron.log.1\` after rotation) under \`state_dir/\`."
+  fi
+fi
+
+# 1c. Token-expiry escalation (agent-ops#694). GitHub states a fine-grained
+# PAT's own expiry on every API response it authenticates
+# (`GitHub-Authentication-Token-Expiration`); on 2026-08-22 that date went
+# unread until it arrived, and every node lost GitHub at once, misdiagnosed
+# as an outage (agent-ops#691) for hours before an operator noticed. This is
+# the warning before that cliff, 2.0b above is the fallback for having
+# missed it.
+#
+# Free: reads this node's own `state_dir/.doctor-status.json` — the hourly
+# `doctor.sh --unattended` pass's own artefact (requirement 2.6a) — rather
+# than making a GitHub call of its own. `doctor.sh` is read-only by its own
+# declared contract, so the header read lives there and the escalation
+# (a write — `gh issue create`) lives here instead, the same split
+# `.doctor-status.json`'s fails/warns already use with the dashboard.
+#
+# Escalated the same fleet-scoped, deduplicated route 1b's crash loop and
+# 2.0b's auth failure already use — `create_escalation_issue` in
+# `crash_loop_repo`, labelled `enabler_escalation_label`, assigned
+# `enabler_assignee` — never `escalation_autonomy` (D18, agent-ops#627):
+# that ladder decides whether one specific escalation, an Enabler
+# refinement-disagreement (requirement 36b), is adjudicated once before
+# reaching a human, and there is no disagreement to adjudicate here, only a
+# date comparison — the same reasoning 2.0b's own block gives for the
+# identical choice.
+#
+# Deduplicated on the expiry timestamp itself (`token_expiry_escalated_for`,
+# lib/token-expiry.sh), not merely "is there an open issue right now": a
+# human closing the issue without rotating the token must not reopen the
+# gate every cycle until they do — it reopens only once the token is
+# actually rotated, which is exactly when the expiry timestamp changes.
+# Before the stand-down checks, like 1b, so a fleet that is also standing
+# down still raises the alarm; the cycle then proceeds normally regardless,
+# since a token that has not yet expired blocks nothing this cycle needs.
+#
+# Every read below falls back rather than propagating `jq`'s own exit status:
+# this file runs under `set -e`, `.doctor-status.json` is not this script's
+# own artefact, and a shape `jq` refuses to index (a `token_expiry` that is
+# valid JSON but not an object, say) would otherwise kill the cycle here —
+# before any stage starts, which is exactly requirement 2.7's pre-selection
+# crash-loop class. No warning is worth costing the cycle that carries it.
+doctor_status_json="$(jq -c '.' "$state_dir/.doctor-status.json" 2>/dev/null || echo null)"
+token_expiry_days="$(jq -r '.token_expiry.days_remaining // empty' <<<"$doctor_status_json" 2>/dev/null || true)"
+token_expiry_expires_at="$(jq -r '.token_expiry.expires_at // empty' <<<"$doctor_status_json" 2>/dev/null || true)"
+if [[ "$token_expiry_days" =~ ^[0-9]+$ ]] && [[ -n "$token_expiry_expires_at" ]] \
+    && (( token_expiry_days < TOKEN_EXPIRY_WARN_DAYS )); then
+  if ! (( DRY_RUN )) && [[ -n "$crash_loop_repo" && -n "$enabler_assignee" ]] \
+      && ! token_expiry_escalated_for "$node_name" "$token_expiry_expires_at" < "$union_log"; then
+    token_expiry_body="$cycle_dir/token-expiry-issue.md"
+    # shellcheck disable=SC2016  # the backticks are the issue body's Markdown, not expansions
+    {
+      printf '## This node'"'"'s fine-grained PAT is expiring soon\n\n'
+      printf -- '- node: `%s`\n- expires: `%s`\n- days remaining: **%s**\n\n' \
+        "$node_name" "$token_expiry_expires_at" "$token_expiry_days"
+      printf 'GitHub states this on every authenticated API response; `doctor.sh --unattended` reads it hourly. Rotate this node'"'"'s `GH_TOKEN` before it expires — agent-ops#691 is what happens if it is not: every pipeline stands down at once, misread as an outage.\n\n'
+      printf -- '---\nItem: `token-expiry:%s:%s` · raised by the Script · node `%s`\n' \
+        "$node_name" "$token_expiry_expires_at" "$node_name"
+    } > "$token_expiry_body"
+    if token_expiry_created="$(create_escalation_issue "$crash_loop_repo" \
+         "token-expiry:$node_name:$token_expiry_expires_at" \
+         "$enabler_escalation_label" \
+         "GitHub PAT on node $node_name expires in ${token_expiry_days}d ($token_expiry_expires_at)" \
+         "$token_expiry_body")" && [[ -n "$token_expiry_created" ]]; then
+      log_event "token-expiry-escalated" "$(jq -nc \
+        --arg e "$token_expiry_expires_at" --argjson d "$token_expiry_days" \
+        --argjson n "${token_expiry_created%%$'\t'*}" --arg u "${token_expiry_created#*$'\t'}" \
+        '{expires_at: $e, days_remaining: $d, issue_number: $n, issue_url: $u}')"
+    else
+      log_event "warning" "$(jq -nc \
+        --arg d "this node's GitHub PAT expires in ${token_expiry_days}d but the escalation issue could not be filed — will retry next cycle" \
+        '{detail: $d}')"
+    fi
   fi
 fi
 

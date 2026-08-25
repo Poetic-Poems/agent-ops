@@ -79,6 +79,8 @@ source "$SCRIPT_DIR/lib/merge-queue.sh"
 source "$SCRIPT_DIR/lib/approver-token.sh"
 # shellcheck source=lib/issue-priority.sh
 source "$SCRIPT_DIR/lib/issue-priority.sh"
+# shellcheck source=lib/token-expiry.sh
+source "$SCRIPT_DIR/lib/token-expiry.sh"
 # doctor.sh has no other trap and exits from several points below (bad
 # arguments, an unusable config, the ordinary end of a clean pass) — a single
 # EXIT trap, armed as soon as the library that owns the cache directory is
@@ -145,6 +147,13 @@ pending_section=""
 # structured rather than reparsing this script's own text output.
 fail_msgs=()
 warn_msgs=()
+# Set by the GitHub section's fine-grained-PAT-expiry check (agent-ops#694)
+# when the header is present and parseable; read by write_unattended_status
+# below. Declared here, ahead of that check, so a run that never reaches or
+# never sets them (--offline, gh unauthenticated, a classic PAT with no
+# expiry header) still has both bound under `set -u`.
+token_expiry_expires_at=""
+token_expiry_days_remaining=""
 
 # A section heading is held back until something under it prints, so --quiet
 # never leaves a heading with nothing beneath it.
@@ -787,6 +796,33 @@ else
 fi
 
 if ((gh_ready)); then
+  # Fine-grained PAT expiry (agent-ops#694). GitHub states this on every
+  # authenticated API response, so one read here — the same free, GET-only
+  # `/rate_limit` endpoint the GitHub API budget check (above) already
+  # reads — a month before expiry is what the 2026-08-22 fleet-wide outage
+  # (agent-ops#691) needed and never had: every node lost GitHub at once,
+  # misdiagnosed as an outage, for hours before an operator noticed. Absent
+  # header (a classic PAT, or any credential GitHub states no expiry for) is
+  # not this check's concern — nothing to warn about, `null` in the
+  # artefact below — and an already-expired or rejected token is #691's own
+  # territory (`gh_ready` would already be 0 above, in the common case).
+  token_expiry_header_raw="$(token_expiry_header)"
+  if [[ -n "$token_expiry_header_raw" ]]; then
+    # Not gated on this `read`'s own exit status: like `github_auth_probe`
+    # (lib/github-limit.sh), a final line with no trailing newline reports
+    # failure while still populating both variables, so the check below is
+    # against the value actually read, not against `read`'s return code.
+    IFS=$'\t' read -r token_expiry_expires_at token_expiry_days_remaining \
+      < <(token_expiry_parse "$token_expiry_header_raw") || true
+    if [[ -n "$token_expiry_expires_at" ]]; then
+      if (( token_expiry_days_remaining < TOKEN_EXPIRY_WARN_DAYS )); then
+        warn "this node's fine-grained PAT expires in ${token_expiry_days_remaining} day(s), at $token_expiry_expires_at — under the ${TOKEN_EXPIRY_WARN_DAYS}-day warning threshold; rotate GH_TOKEN before it expires"
+      else
+        ok "this node's fine-grained PAT expires in ${token_expiry_days_remaining} day(s), at $token_expiry_expires_at"
+      fi
+    fi
+  fi
+
   # D18 Stage 3 (agent-ops#575): facts about each repository's forge
   # configuration, gathered as the ruleset and merge-settings/merge-queue
   # passes below already walk every repository, and read back afterwards by
@@ -1520,7 +1556,7 @@ fi
 # Directories section above already reported as a fail, and this must not
 # mask that behind a second, unrelated failure of its own.
 write_unattended_status() {
-  local dir="$1" ts verdict tmp fail_json warn_json
+  local dir="$1" ts verdict tmp fail_json warn_json token_expiry_json
   [[ -n "$dir" && "$dir" != "null" ]] || return 0
   mkdir -p "$dir" 2>/dev/null && [[ -w "$dir" ]] || return 0
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -1529,10 +1565,20 @@ write_unattended_status() {
   warn_json="$(printf '%s\n' "${warn_msgs[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))' 2>/dev/null)"
   [[ -n "$fail_json" ]] || fail_json='[]'
   [[ -n "$warn_json" ]] || warn_json='[]'
+  # null when the GitHub section never established a days_remaining figure —
+  # --offline, an unauthenticated token, or a credential (a classic PAT, an
+  # installation token) GitHub states no expiry for at all (agent-ops#694).
+  if [[ "$token_expiry_days_remaining" =~ ^[0-9]+$ ]]; then
+    token_expiry_json="$(jq -nc --arg e "$token_expiry_expires_at" --argjson d "$token_expiry_days_remaining" \
+      '{expires_at: $e, days_remaining: $d}' 2>/dev/null)"
+  fi
+  [[ -n "${token_expiry_json:-}" ]] || token_expiry_json='null'
   tmp="$(mktemp "$dir/.doctor-status.json.XXXXXX" 2>/dev/null)" || return 0
   if jq -n --arg ts "$ts" --arg verdict "$verdict" \
         --argjson fails "$fail_json" --argjson warns "$warn_json" --argjson skips "$skips" \
-        '{timestamp: $ts, verdict: $verdict, fails: $fails, warns: $warns, skips: $skips}' \
+        --argjson token_expiry "$token_expiry_json" \
+        '{timestamp: $ts, verdict: $verdict, fails: $fails, warns: $warns, skips: $skips,
+          token_expiry: $token_expiry}' \
         > "$tmp" 2>/dev/null; then
     mv -f "$tmp" "$dir/.doctor-status.json"
   else

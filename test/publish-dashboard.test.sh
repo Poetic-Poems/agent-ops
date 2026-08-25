@@ -2235,6 +2235,19 @@ assert_eq "its warns array reaches the page" "1" \
 assert_eq "and its timestamp" "2026-08-18T09:00:00Z" \
   "$(jq -r '.status.doctor.timestamp' <<<"$ddata")"
 
+# token_expiry (agent-ops#694) rides through the same verbatim read as
+# verdict/warns/timestamp above — no field-level plumbing of its own in
+# this script, since the whole object is threaded through opaquely.
+cat > "$d/.local/state/poetic-agents/.doctor-status.json" <<'JSON'
+{"timestamp":"2026-08-18T09:00:00Z","verdict":"warn","fails":[],"warns":[],"skips":2,"token_expiry":{"expires_at":"2026-08-22T09:35:00Z","days_remaining":3}}
+JSON
+run_publish "$d" NODE_NAME=nodeDoctor
+ddata="$(data_of "$d")"
+assert_eq "token_expiry reaches the page verbatim too" "3" \
+  "$(jq -r '.status.doctor.token_expiry.days_remaining' <<<"$ddata")"
+assert_eq "  ... including its expiry timestamp" "2026-08-22T09:35:00Z" \
+  "$(jq -r '.status.doctor.token_expiry.expires_at' <<<"$ddata")"
+
 # --- The merge-budget row (D18 issue #574, PR #671 review) ------------------
 # landings.budget is sourced from the event log's own landing-armed/
 # merge-budget-hold/merge-budget-frozen entries, never recomputed, so its

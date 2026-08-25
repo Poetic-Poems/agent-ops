@@ -1105,6 +1105,25 @@ assert_not_contains "a clean pass raises no banner at all" \
   "unattended doctor pass found" "$out"
 assert_contains "and the Doctor section says so, with when it last ran" \
   "No failures or warnings on the last unattended pass" "$out"
+assert_not_contains "a clean pass with no recorded token_expiry shows no PAT-expiry line" \
+  "PAT expires in" "$out"
+
+# --- doctor-token-expiry-*.json: the fine-grained PAT expiry line
+# (agent-ops#694), rendered in the Doctor section alongside the fail/warn
+# table rather than only appearing when something is wrong.
+out="$(render doctor-token-expiry-warn.json)" || { printf 'FAIL - doctor-token-expiry-warn.json did not render:\n%s\n' "$out"; exit 1; }
+assert_contains "a token under the warning threshold shows the day count" \
+  "PAT expires in 3d" "$out"
+assert_contains "  ... and its own expiry timestamp" \
+  "at 2026-08-22T09:35:00Z" "$out"
+assert_contains "  ... with a rotate-it-now nudge" \
+  "rotate GH_TOKEN before it expires" "$out"
+
+out="$(render doctor-token-expiry-ok.json)" || { printf 'FAIL - doctor-token-expiry-ok.json did not render:\n%s\n' "$out"; exit 1; }
+assert_contains "a token well above the threshold still shows the day count" \
+  "PAT expires in 90d" "$out"
+assert_not_contains "  ... but without the rotate-it-now nudge" \
+  "rotate GH_TOKEN before it expires" "$out"
 
 printf '\n'
 if (( failures > 0 )); then
