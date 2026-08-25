@@ -79,19 +79,20 @@
 # means a partial run (some repositories skipped) never reads as a crashed
 # script in `cron.log`.
 #
-# The cumulative-since-baseline pass (below) is the one unbounded cost here:
-# unlike the rolling and recent passes, whose --since bound is always "now
-# minus a fixed offset", its --since bound is the fixed 2026-08-15 baseline
-# date, so the population it re-mines from scratch — every labelled PR ever
-# merged since then — only grows, forever, on every scheduled run, on every
-# node, at roughly three GitHub API calls per PR in that population. This is
-# already several hundred calls a day per node across the fleet's repos and
-# will keep climbing as the baseline recedes into the past; nothing here
-# bounds it. TD-PPagop-26082204 tracks the fix (memoise each PR's post-merge
-# outcome once its 48h window has elapsed — it cannot change after that — or
-# roll the cumulative row forward from the previous day's published figure
-# instead of re-deriving it from the whole population) and is the place to
-# read the full argument for either remedy.
+# The cumulative-since-baseline pass is the one pass whose --since bound
+# isn't a fixed offset from "now": naively, it would mine the population
+# since the fixed baseline date afresh on every run, an unbounded cost that
+# only grows as the baseline recedes into the past. Instead, each repo's
+# *settled* portion (>48h post-merge, whose outcome cannot change again — see
+# "Post-merge outcome" in scripts/mine-merge-history.sh's own header) is
+# cached in `<state_dir>/revert-rate-cumulative-state.json` and rolled
+# forward: a run mines only the delta since the previous run's own settled
+# boundary, subtracts out the still-unsettled tail (reusing the `recent_stats`
+# pass already mined for the rolling figure — no extra API cost there), and
+# adds the remainder to the cached settled aggregate. A repo with no usable
+# cached state (new to this node, or the configured baseline has moved) falls
+# back to one full baseline-bound pass — the only place this pass is still
+# unbounded, and only once per repo per node. TD-PPagop-26082204 tracks this.
 #
 # Usage:
 #   scripts/publish-revert-rate.sh [--config FILE] [--repo OWNER/REPO ...]
@@ -107,6 +108,10 @@
 # unions it fleet-wide the identical way). A repository absent from
 # `revert_rate_baseline.repos` still gets its rolling figure; its cumulative
 # and baseline blocks read `null` throughout rather than failing the run.
+# The cumulative-since-baseline pass also maintains this node's own
+# `<state_dir>/revert-rate-cumulative-state.json`, one settled-aggregate
+# cache per repository (see "GitHub API quota" above) — local memoisation,
+# not published output.
 #
 # Exit status: 0 iff every configured repository's rolling figure was
 # published; 1 if any repository's mining passes failed (its row is still
@@ -191,6 +196,8 @@ else
 fi
 mkdir -p "$state_dir"
 out_file="$state_dir/revert-rate.jsonl"
+cum_state_file="$state_dir/revert-rate-cumulative-state.json"
+[[ -s "$cum_state_file" ]] || printf '{}' > "$cum_state_file"
 
 now_iso="${now_override:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 jq -n --arg n "$now_iso" '$n | fromdateiso8601' >/dev/null 2>&1 \
@@ -230,6 +237,39 @@ mine_window() {
   rm -rf "$tmp"
   [[ -n "$raw" ]] || return 1
   printf '%s' "$raw"
+}
+
+# stat_add/stat_sub A_JSON B_JSON — the three fields the cumulative-since-
+# baseline rolling-forward logic below combines, added or subtracted
+# component-wise. Both take (and produce) the same `{count, post_merge:
+# {reverts, follow_up_fixes}}` shape mine_window's raw output carries (extra
+# fields, if any, are dropped).
+stat_add() {
+  jq -nc --argjson a "$1" --argjson b "$2" \
+    '{count: ($a.count + $b.count),
+      post_merge: {reverts: ($a.post_merge.reverts + $b.post_merge.reverts),
+                   follow_up_fixes: ($a.post_merge.follow_up_fixes + $b.post_merge.follow_up_fixes)}}'
+}
+stat_sub() {
+  jq -nc --argjson a "$1" --argjson b "$2" \
+    '{count: ($a.count - $b.count),
+      post_merge: {reverts: ($a.post_merge.reverts - $b.post_merge.reverts),
+                   follow_up_fixes: ($a.post_merge.follow_up_fixes - $b.post_merge.follow_up_fixes)}}'
+}
+
+# cum_state_get SLUG — prints SLUG's cached {settled_aggregate, settled_until,
+# baseline_since} entry, or "null" if this node has none yet.
+cum_state_get() {
+  jq -c --arg slug "$1" '.[$slug] // null' "$cum_state_file"
+}
+
+# cum_state_put SLUG ENTRY_JSON — persists SLUG's entry, replacing any prior
+# one for that repo; other repos' entries are untouched.
+cum_state_put() {
+  local slug="$1" entry="$2" tmp
+  tmp="$(mktemp)" || return 1
+  jq -c --arg slug "$slug" --argjson entry "$entry" '.[$slug] = $entry' "$cum_state_file" > "$tmp" \
+    && mv "$tmp" "$cum_state_file"
 }
 
 # shellcheck disable=SC2016  # jq's own $w/$r/$cum/$base/etc, not the shell's.
@@ -280,10 +320,42 @@ for slug in "${REPOS[@]}"; do
 
   cum_stats='null'
   if [[ -n "$baseline_since" ]]; then
-    cum_stats="$(mine_window "$slug" "$baseline_since")" || {
-      echo "publish-revert-rate: $slug: cumulative-since-baseline mining pass failed; cumulative reads unavailable for this run" >&2
-      cum_stats='null'
-    }
+    cum_entry="$(cum_state_get "$slug")"
+    if [[ "$cum_entry" != "null" ]] \
+       && [[ "$(jq -r '.baseline_since' <<<"$cum_entry")" == "$baseline_since" ]]; then
+      # Usable cache: mine only the delta since the previous run's own
+      # settled boundary, subtract out the still-unsettled tail (recent_stats,
+      # already mined above for the rolling figure), and roll the remainder
+      # into the cached settled aggregate — the same "since subtraction" exact-
+      # not-approximate argument the rolling figure's own header explains,
+      # here with the previous settled_until/since_recent pair standing in for
+      # the rolling window's 14-day/48-hour pair.
+      prev_settled_until="$(jq -r '.settled_until' <<<"$cum_entry")"
+      prev_settled_aggregate="$(jq -c '.settled_aggregate' <<<"$cum_entry")"
+      if delta_stats="$(mine_window "$slug" "$prev_settled_until")"; then
+        newly_settled="$(stat_sub "$delta_stats" "$recent_stats")"
+        new_settled_aggregate="$(stat_add "$prev_settled_aggregate" "$newly_settled")"
+        cum_stats="$(stat_add "$new_settled_aggregate" "$recent_stats")"
+        cum_state_put "$slug" "$(jq -nc --argjson agg "$new_settled_aggregate" \
+          --arg su "$since_recent" --arg bs "$baseline_since" \
+          '{settled_aggregate: $agg, settled_until: $su, baseline_since: $bs}')"
+      else
+        echo "publish-revert-rate: $slug: cumulative-since-baseline delta mining pass failed; cumulative reads unavailable for this run" >&2
+      fi
+    else
+      # No usable cache — new to this node, or the configured baseline has
+      # moved. One full baseline-bound pass, same as every run used to do;
+      # this seeds the cache so the next run can roll forward instead.
+      if cum_full="$(mine_window "$slug" "$baseline_since")"; then
+        settled_aggregate="$(stat_sub "$cum_full" "$recent_stats")"
+        cum_stats="$cum_full"
+        cum_state_put "$slug" "$(jq -nc --argjson agg "$settled_aggregate" \
+          --arg su "$since_recent" --arg bs "$baseline_since" \
+          '{settled_aggregate: $agg, settled_until: $su, baseline_since: $bs}')"
+      else
+        echo "publish-revert-rate: $slug: cumulative-since-baseline mining pass failed; cumulative reads unavailable for this run" >&2
+      fi
+    fi
   fi
 
   base_entry="$(jq -c --arg slug "$slug" '(.repos // [])[] | select(.slug == $slug)' <<<"$BASELINE_JSON" 2>/dev/null)"

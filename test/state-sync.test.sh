@@ -129,6 +129,12 @@ printf '{"verdict":"ok"}\n' > "$state/.doctor-status.json"
 # revert-rate.jsonl (set up above, beside log.jsonl), is fleet-wide data and
 # must replicate instead.
 printf 'revert-rate noise\n' > "$state/revert-rate.log"
+# The cumulative-since-baseline pass's own settled-aggregate cache
+# (TD-PPagop-26082204): this node's memoisation of what it has already
+# mined, not a fact about the fleet, so it stays local like
+# .doctor-status.json above.
+printf '{"o/r":{"settled_aggregate":{"count":1,"post_merge":{"reverts":0,"follow_up_fixes":0}},"settled_until":"2026-08-21T00:00:00Z","baseline_since":"2026-08-15T00:00:00Z"}}\n' \
+  > "$state/revert-rate-cumulative-state.json"
 mkdir -p "$state/dashboard"
 printf '<html>\n' > "$state/dashboard/index.html"
 
@@ -155,6 +161,8 @@ assert_eq "the image-drift cache does not replicate" "0" "$(test -e "$pushed/.im
 assert_eq "the doctor log does not replicate" "0" "$(test -e "$pushed/doctor.log" && echo 1 || echo 0)"
 assert_eq "the doctor status cache does not replicate" "0" "$(test -e "$pushed/.doctor-status.json" && echo 1 || echo 0)"
 assert_eq "the revert-rate publish log does not replicate" "0" "$(test -e "$pushed/revert-rate.log" && echo 1 || echo 0)"
+assert_eq "the revert-rate cumulative-state cache does not replicate" "0" \
+  "$(test -e "$pushed/revert-rate-cumulative-state.json" && echo 1 || echo 0)"
 assert_eq "the generated dashboard does not replicate" "0" "$(test -e "$pushed/dashboard" && echo 1 || echo 0)"
 # Both transfers are covered: the cycle directories go through their own rsync
 # with its own filter, so an exclusion that held only for the general transfer

@@ -184,6 +184,12 @@ EXCLUDES=(
   # fleet-wide data the revert-rate dashboard panel unions, the same as
   # log.jsonl, so it must travel.
   --exclude=revert-rate.log
+  # revert-rate-cumulative-state.json (TD-PPagop-26082204): this node's own
+  # memoisation of the cumulative-since-baseline pass's settled aggregate —
+  # a cache of what this node has already mined, not a fact about the fleet
+  # a peer would read, so it stays local on the same reasoning as
+  # .doctor-status.json above.
+  --exclude=revert-rate-cumulative-state.json
   --exclude=.dashboard-github.json
   --exclude=.dashboard-claims.json
   --exclude=.image-drift-cache.json

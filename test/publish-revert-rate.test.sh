@@ -156,14 +156,20 @@ case "$path" in
     ;;
   repos/*/pulls/*/reviews\?*)
     n="${path#repos/*/pulls/}"; n="${n%%/*}"
+    [[ -f "$STUB_DIR/blocked-numbers" ]] && grep -qx "$n" "$STUB_DIR/blocked-numbers" \
+      && { echo "stub gh: #$n is a settled PR that should never be re-mined" >&2; exit 1; }
     body="$(cat "$STUB_DIR/reviews-$n.json" 2>/dev/null || echo '[]')"
     ;;
   repos/*/pulls/*/files\?*)
     n="${path#repos/*/pulls/}"; n="${n%%/*}"
+    [[ -f "$STUB_DIR/blocked-numbers" ]] && grep -qx "$n" "$STUB_DIR/blocked-numbers" \
+      && { echo "stub gh: #$n is a settled PR that should never be re-mined" >&2; exit 1; }
     body="$(cat "$STUB_DIR/files-$n.json" 2>/dev/null || echo '[]')"
     ;;
   repos/*/issues/*/timeline\?*)
     n="${path#repos/*/issues/}"; n="${n%%/*}"
+    [[ -f "$STUB_DIR/blocked-numbers" ]] && grep -qx "$n" "$STUB_DIR/blocked-numbers" \
+      && { echo "stub gh: #$n is a settled PR that should never be re-mined" >&2; exit 1; }
     body="$(cat "$STUB_DIR/timeline-$n.json" 2>/dev/null || echo '[]')"
     ;;
   *) echo "stub gh: unexpected path: $path" >&2; exit 1 ;;
@@ -275,6 +281,106 @@ assert_eq "  ... but the readable repo still gets its row" "1" \
 assert_eq "  ... and the unreadable one gets none" "0" \
   "$(jq -r 'select(.repo == "o/broken")' "$state_e/revert-rate.jsonl" 2>/dev/null | jq -s 'length')"
 assert_contains "  ... and says why on stderr" "$(cat "$tmp_dir/run-e.err")" "o/broken"
+
+# ============================================================================
+# Run G: cumulative rolls forward across two runs on a second repo (o/r2) —
+# the second run mines only the delta since the first run's own settled
+# boundary, and the settled portion (#201/#202, already >48h old at the
+# first run's `now`) is never re-mined at all.
+#
+#   #201  merged 2026-08-20 (settled well before run 1)
+#   #202  merged 2026-08-29 (settled well before run 1)
+#   #203  merged 2026-08-30, #204 "fix: correct z" merged 2026-08-31,
+#         referencing #203 — both still inside run 1's last-48h tail
+#         (since_recent = 2026-08-30), so unsettled as of run 1.
+#   Run 1: --now 2026-09-01T00:00:00Z. cumulative = #201-#204 (n=4, 1
+#   follow-up), all mined fresh (no cache yet) — same figure a full re-mine
+#   would give, seeding the cache.
+#
+#   #205  merged 2026-09-01, #206 "Revert \"Add w\"" merged 2026-09-01T12:00,
+#         referencing #205 — both merge after run 1's settled boundary, so
+#         run 2 must mine them.
+#   #207  merged 2026-09-04 (inside run 2's own last-48h tail).
+#   Run 2: --now 2026-09-05T00:00:00Z, same state dir, --window-days 3 (so
+#   the rolling-window pass — unrelated to the cumulative cache — never
+#   reaches back to #201/#202 either; run 1 already exercised the default
+#   14-day window, so this doesn't lose coverage). #201/#202's per-PR detail
+#   endpoints are blocked in the stub for this run — if the implementation
+#   re-mines the whole since-baseline population instead of rolling the
+#   cache forward, this run fails instead of quietly passing.
+#   cumulative = #201-#207 (n=7: #203/#204's follow-up plus #205/#206's
+#   revert, both now settled; #207 still in the tail) = 1 revert, 1
+#   follow-up, rate = 2/7 = 0.286.
+# ============================================================================
+cat > "$STUB_DIR/hits-o_r2.json" <<'EOF'
+[
+  {"number": 201, "title": "Add x", "created_at": "2026-08-20T00:00:00Z", "pull_request": {"merged_at": "2026-08-20T00:00:00Z"}},
+  {"number": 202, "title": "Add y", "created_at": "2026-08-29T00:00:00Z", "pull_request": {"merged_at": "2026-08-29T00:00:00Z"}},
+  {"number": 203, "title": "Add z", "created_at": "2026-08-30T00:00:00Z", "pull_request": {"merged_at": "2026-08-30T00:00:00Z"}},
+  {"number": 204, "title": "fix: correct z", "created_at": "2026-08-31T00:00:00Z", "pull_request": {"merged_at": "2026-08-31T00:00:00Z"}}
+]
+EOF
+for n in 201 202 203 204; do
+  printf '[]\n' > "$STUB_DIR/reviews-$n.json"
+  printf '[{"filename": "file-%s.txt"}]\n' "$n" > "$STUB_DIR/files-$n.json"
+  printf '[]\n' > "$STUB_DIR/timeline-$n.json"
+done
+cat > "$STUB_DIR/timeline-203.json" <<'EOF'
+[{"event": "cross-referenced",
+  "source": {"issue": {"number": 204, "title": "fix: correct z",
+                        "pull_request": {"merged_at": "2026-08-31T00:00:00Z"}}}}]
+EOF
+
+cfg_g="$tmp_dir/config-g.json"
+write_config "$cfg_g" '{"source": "x", "generated": "2026-08-15", "repos": []}'
+jq '.repos = [{slug: "o/r2", sources: ["tech-debt"]}]' "$cfg_g" > "$cfg_g.tmp" && mv "$cfg_g.tmp" "$cfg_g"
+state_g="$tmp_dir/state-g"
+
+"$PUBLISH" --config "$cfg_g" --state-dir "$state_g" --now "$NOW" >/dev/null 2>"$tmp_dir/run-g1.err"
+assert_eq "run G1 exits 0" "0" "$?"
+row_g1="$(cat "$state_g/revert-rate.jsonl")"
+assert_eq "run G1: cumulative n = 4 (#201-#204, no cache yet)" "4" "$(jq -r '.cumulative.n' <<<"$row_g1")"
+assert_eq "run G1: 0 reverts" "0" "$(jq -r '.cumulative.reverts' <<<"$row_g1")"
+assert_eq "run G1: 1 follow-up (#203 by #204)" "1" "$(jq -r '.cumulative.follow_up_fixes' <<<"$row_g1")"
+assert_eq "run G1: rate = 1/4 = 0.25" "0.25" "$(jq -r '.cumulative.rate' <<<"$row_g1")"
+assert_eq "run G1 seeds the settled-state cache" "2026-08-30T00:00:00Z" \
+  "$(jq -r '.["o/r2"].settled_until' "$state_g/revert-rate-cumulative-state.json")"
+assert_eq "  ... settled aggregate = #201/#202 only (n=2, clean)" '{"count":2,"post_merge":{"reverts":0,"follow_up_fixes":0}}' \
+  "$(jq -c '.["o/r2"].settled_aggregate' "$state_g/revert-rate-cumulative-state.json")"
+
+jq -s '.[0] + .[1]' "$STUB_DIR/hits-o_r2.json" - <<'EOF' > "$STUB_DIR/hits-o_r2.json.tmp"
+[
+  {"number": 205, "title": "Add w", "created_at": "2026-09-01T00:00:00Z", "pull_request": {"merged_at": "2026-09-01T00:00:00Z"}},
+  {"number": 206, "title": "Revert \"Add w\"", "created_at": "2026-09-01T12:00:00Z", "pull_request": {"merged_at": "2026-09-01T12:00:00Z"}},
+  {"number": 207, "title": "Add v", "created_at": "2026-09-04T00:00:00Z", "pull_request": {"merged_at": "2026-09-04T00:00:00Z"}}
+]
+EOF
+mv "$STUB_DIR/hits-o_r2.json.tmp" "$STUB_DIR/hits-o_r2.json"
+for n in 205 206 207; do
+  printf '[]\n' > "$STUB_DIR/reviews-$n.json"
+  printf '[{"filename": "file-%s.txt"}]\n' "$n" > "$STUB_DIR/files-$n.json"
+  printf '[]\n' > "$STUB_DIR/timeline-$n.json"
+done
+cat > "$STUB_DIR/timeline-205.json" <<'EOF'
+[{"event": "cross-referenced",
+  "source": {"issue": {"number": 206, "title": "Revert \"Add w\"",
+                        "pull_request": {"merged_at": "2026-09-01T12:00:00Z"}}}}]
+EOF
+
+printf '201\n202\n' > "$STUB_DIR/blocked-numbers"
+"$PUBLISH" --config "$cfg_g" --state-dir "$state_g" --now "2026-09-05T00:00:00Z" --window-days 3 \
+  >/dev/null 2>"$tmp_dir/run-g2.err"
+assert_eq "run G2 exits 0 (never re-mines the already-settled #201/#202)" "0" "$?"
+rm -f "$STUB_DIR/blocked-numbers"
+row_g2="$(tail -n1 "$state_g/revert-rate.jsonl")"
+assert_eq "run G2: cumulative n = 7 (#201-#207)" "7" "$(jq -r '.cumulative.n' <<<"$row_g2")"
+assert_eq "run G2: 1 revert (#205 by #206, newly settled)" "1" "$(jq -r '.cumulative.reverts' <<<"$row_g2")"
+assert_eq "run G2: 1 follow-up (#203 by #204, rolled forward from the cache)" "1" "$(jq -r '.cumulative.follow_up_fixes' <<<"$row_g2")"
+assert_eq "run G2: rate = 2/7 = 0.286" "0.286" "$(jq -r '.cumulative.rate' <<<"$row_g2")"
+assert_eq "run G2 rolls settled_until forward" "2026-09-03T00:00:00Z" \
+  "$(jq -r '.["o/r2"].settled_until' "$state_g/revert-rate-cumulative-state.json")"
+assert_eq "  ... settled aggregate now includes #203-#206" '{"count":6,"post_merge":{"reverts":1,"follow_up_fixes":1}}' \
+  "$(jq -c '.["o/r2"].settled_aggregate' "$state_g/revert-rate-cumulative-state.json")"
 
 echo "---"
 if [[ "$failures" -eq 0 ]]; then
