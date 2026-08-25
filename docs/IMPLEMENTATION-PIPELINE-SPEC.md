@@ -2904,7 +2904,8 @@ implements.
      cycle, since a failed nudge leaves `rebase_requested: false`. If the
      nudge step itself fails to produce a valid result (`nudge-dependabot-rebase.sh`
      crashes, or emits something other than the expected object),
-     `agent-cycle.sh`'s `gather_merge_conflicts` falls back to the gatherer's
+     `lib/candidate-select.sh`'s `gather_merge_conflicts` falls back to the
+     gatherer's
      own read rather than losing every candidate in the repo — including our
      own, non-bot ones — over one broken write step, but that fallback drops
      first-sighting entries too, by the same predicate: a broken nudge step
@@ -3215,8 +3216,8 @@ implements.
      decision on agent-ops#452 concern 3): the deterministic filter did not
      run to completion, so the exclusion set is unknown, not known-empty, and
      an empty array would read downstream as "gathered, and nothing was
-     excluded" — a claim the degrade cannot back. `agent-cycle.sh`'s own
-     `gather_issues` carries the same reading one layer up, defaulting to
+     excluded" — a claim the degrade cannot back. `lib/candidate-select.sh`'s
+     own `gather_issues` carries the same reading one layer up, defaulting to
      `excluded: null` for the shapes it falls back on itself (a gather that
      produced no object at all). Failures are loud on stderr (teed to
      `issues-<repo>.err` in the cycle record).
@@ -5222,7 +5223,8 @@ implements.
    Immediately after `run_approver_stage` returns — never before, and gating
    nothing above it, the same placement 8b already establishes for the
    Approver stage itself relative to the handoff — `run_landing_stage`
-   (`agent-cycle.sh`, calling `lib/landing.sh`) decides whether to land the
+   (`lib/landing.sh`, called from `agent-cycle.sh`'s own phase sequence)
+   decides whether to land the
    pull request this cycle just reviewed. It arms nothing at all unless this
    very round's own Approver engagement reached an explicit, non-adjudicating
    `approve` — an adjudication's own `land` does not count, because a
@@ -5829,7 +5831,7 @@ implements.
    or exited non-zero has no living session behind it and is never salvaged
    — only a process that exited 0 and still left `extract_json_result`
    nothing to parse gets the attempt (`stage_salvage_result`,
-   `agent-cycle.sh`). The resume is capped at a fixed, conservative
+   `lib/stage-attempt.sh`). The resume is capped at a fixed, conservative
    `stage_salvage_backstop_sec`/`stage_salvage_inactivity_sec` (5 minutes /
    90 seconds) rather than requirement 4f's adaptive per-(actor, repository,
    model) budget — a continuation with no tool calls needs none of that
@@ -5872,7 +5874,8 @@ implements.
    (requirement 27) found real work whose *specification* — not the world
    around it — is what stopped it: no acceptance criterion it could find, a
    scope too vague for two implementations of it to agree. Recorded through
-   `record_needs_refinement_block` (`agent-cycle.sh`), the same recorder a
+   `record_needs_refinement_block` (`lib/candidate-select.sh`), the same
+   recorder a
    Co-Ordinator's own `needs_refinement` report uses (requirement 34e) and,
    independently, the Refiner's own decline (requirement 39d) — one
    definition (requirement 34a), three reporters, attributed by `stage`
@@ -6521,7 +6524,7 @@ implements.
     Implementer, handed nothing but the mismatched work order, finds it
     incoherent and burns the item's one refinement-per-human-touch allowance
     re-flagging a fault the item never had. `refinement_traceability_fault`
-    (`agent-cycle.sh`) closes this the only way that does not depend on the
+    (`lib/candidate-select.sh`) closes this the only way that does not depend on the
     model getting it right a second time: for each ranked candidate of a
     model-composed work order, in claim order, before requirement 17a's claim
     is attempted, it re-derives the item's own recorded refinement from
@@ -8036,7 +8039,8 @@ implements.
     `node`, `gate`, `count`, `first_ts` and `last_ts` — `first_ts` doubling
     as the dedup key `review_gate_degraded_since` matches the run by. A
     `first-seen` (TD-PPagop-26081405, issue #248 acceptance 4) is written by
-    `emit_first_seen` (agent-cycle.sh) the first time any node's gather ever
+    `emit_first_seen` (lib/candidate-select.sh) the first time any node's gather
+    ever
     reports a given `{repo, item}` pair, for each of the eight pre-fetched
     arrays requirement 3q names (`issues`, `findings` — split into its own
     `security`/`code-quality` `source`, since one gather call answers for
@@ -8104,7 +8108,8 @@ implements.
     excluded" with no trailing colon when the set is empty) for the
     dashboard's generic log-tail renderer, which shows any event's `detail`
     verbatim with no event-specific rendering of its own. Logged by
-    `gather_issues`'s caller (agent-cycle.sh) on change only (review decision
+    `gather_issues`'s caller (lib/candidate-gather.sh) on change only (review
+    decision
     on agent-ops#452 concern 1): once per repo per cycle when that repo's
     exclusion set differs from the one carried by the most recent
     `issues-excluded` event logged for it — `lib/cycle-state.sh`'s
@@ -8128,7 +8133,7 @@ implements.
     must be known to be made at all. `scripts/gather-issues.sh` reports
     `excluded: null`, not `[]`, when its deterministic filter did not run to
     completion (an API failure mid-gather), and `gather_issues`
-    (agent-cycle.sh) carries the same `null` one layer up for its own
+    (lib/candidate-select.sh) carries the same `null` one layer up for its own
     catastrophic-fallback shapes; `gather_issues_excluded` returns that
     `null` verbatim. A `null` current set skips the comparison, the event and
     the baseline update entirely — the degraded mode must never assert
@@ -10100,7 +10105,7 @@ implements.
       pass ever runs.
 
       **Bounded, not a loop.** One pass per item, per human touch
-      (`escalation_autonomy_pass_available`, `agent-cycle.sh`, over
+      (`escalation_autonomy_pass_available`, `lib/enabler.sh`, over
       `escalation_autonomy_adjudicated_before`): where an
       `enabler-adjudication` event for this item is already on the log, no
       further pass runs and the escalation is filed as it would have been at
@@ -11346,7 +11351,7 @@ implements.
     A pre-flight, not a post-hoc latch, guards against this: immediately
     after `refiner_candidate_items` builds this cycle's candidate set, and
     before the engagement cap or any claim, `refiner_filter_unbandable_triage`
-    (`agent-cycle.sh`) collects the distinct repositories among this cycle's
+    (`lib/refinement.sh`) collects the distinct repositories among this cycle's
     `triage_only` candidates — a cycle with none makes no query at all — and
     resolves each one's `Priority` field via `issue_priority_field_ids`
     (itself process-cached per repository, including its own failure, so this
@@ -12101,9 +12106,9 @@ What exists, and the requirements each part answers to:
    item file verbatim as `body` — sorted by id ascending. A repo with no
    `tech-debt` tree prints `[]` silently; an API failure prints `[]` with
    `gh`'s diagnosis on stderr. Fails safe to `[]` (exit 0). Claimed/blocked/
-   void exclusion is deliberately not this script's job — `agent-cycle.sh`
-   applies `exclude_claimed_items` and the new `exclude_blocked_or_void_items`
-   (both in `agent-cycle.sh` itself, alongside `exclude_claimed_prs`) once the
+   void exclusion is deliberately not this script's job — the cycle applies
+   `exclude_claimed_items` and the new `exclude_blocked_or_void_items`
+   (both in `lib/candidate-select.sh`, alongside `exclude_claimed_prs`) once the
    repo's claim/blocked/void state is in hand, so there is one definition of
    each exclusion rather than one per gatherer. Its shape is
    regression-tested in `test/gather-tech-debt.test.sh`; must pass
@@ -12445,7 +12450,7 @@ What exists, and the requirements each part answers to:
 4e. `prompts/approver.md` implementing requirements 40–44 (D18 WI-5): judge
    only, never fix, posture keyed to the tier it is told (Standard, High or
    adjudication), no GitHub-write instruction of any kind, ends with a
-   verdict-only JSON object. Sourced by `agent-cycle.sh`'s `run_approver_stage`
+   verdict-only JSON object. Sourced by `lib/approver.sh`'s `run_approver_stage`
    only.
 4f. `prompts/enabler-adjudicate.md` implementing requirement 36b's
    `escalation_autonomy: "adjudicate-first"` adjudication pass
@@ -12453,7 +12458,7 @@ What exists, and the requirements each part answers to:
    re-flag's own reason and the drafted escalation issue; no power to write a
    new specification and no GitHub-write instruction of any kind; ends with a
    verdict-only JSON object carrying `verdict` (`adequate`/`inadequate`) and
-   `evidence`. Launched by `agent-cycle.sh`'s `run_enabler_adjudication` only.
+   `evidence`. Launched by `lib/enabler.sh`'s `run_enabler_adjudication` only.
    Absent from `prompt_overrides`' enumeration for the same reason `approver`
    is (requirement 4a): it is the pass that decides whether a human is asked,
    so no installation may extend or replace it.
@@ -12879,8 +12884,9 @@ What exists, and the requirements each part answers to:
     frozen. It is the one function every approval/landing path must call,
     `run_approver_stage` (requirement 8b) among them — which is exactly why
     the freeze needs no call site of its own. Sourced by
-    `agent-cycle.sh` (the `--kill-merge-autonomy`/`--restore-merge-autonomy`
-    flags, `--status`, and requirement 2.2's own per-repository back-pressure
+    `agent-cycle.sh` and called from its modules (`lib/manage.sh`'s
+    `--kill-merge-autonomy`/`--restore-merge-autonomy` flags and `--status`,
+    and `lib/standdown.sh`'s requirement 2.2 per-repository back-pressure
     read) and `scripts/doctor.sh` (the pairing and ruleset checks,
     requirement 2.3b); depends on `lib/toggle.sh` and, for the freeze read
     alone, on `lib/merge-budget.sh` — both sourced ahead of it by both
@@ -12888,7 +12894,7 @@ What exists, and the requirements each part answers to:
     time, so the textual order is readability and not a constraint. Regression-tested in `test/merge-autonomy.test.sh` against the
     same stubbed contents-API `gh` `test/toggle.test.sh` uses for the fleet
     flags it wraps; the same suite lifts `merge_autonomy_status_report` out
-    of `agent-cycle.sh` and asserts the `--status` headline split — KILLED
+    of `lib/manage.sh` and asserts the `--status` headline split — KILLED
     for a real record (cached-set included), FAIL-CLOSED for the unreachable
     synthesis, with the restore pointer only on the former (#454). Must pass
     `shellcheck`.
@@ -12961,7 +12967,7 @@ What exists, and the requirements each part answers to:
     `APPROVER_TOKEN_OPENSSL` and `APPROVER_TOKEN_CACHE_DIR` override the two
     binaries and the cache directory for tests only — the directory override
     passes through the same mount-type check, so it cannot re-introduce
-    disk. Sourced by `agent-cycle.sh`; `run_approver_stage`
+    disk. Sourced by `agent-cycle.sh`; `lib/approver.sh`'s `run_approver_stage`
     (requirements 8b/8c) is its first caller. Regression-tested in
     `test/approver-token.test.sh` against a stubbed `curl` and a throwaway
     RSA key real `openssl` signs, covering the success path, a cache hit, a
@@ -13054,8 +13060,10 @@ What exists, and the requirements each part answers to:
     this file's own `fleet_flag_*`/`_toggle_eval` dependency on
     `lib/toggle.sh` uses) and, on an anomaly, `merge_budget_freeze_set` plus
     an inlined dedup-then-`gh issue create` against SLUG itself — this file
-    cannot call `agent-cycle.sh`'s own `create_escalation_issue`, which is
-    a function of the Script, not a sourced library. `merge_budget_freeze_
+    cannot call `create_escalation_issue` (`lib/enabler.sh`), which every
+    other escalation in this pipeline goes through: `lib/enabler.sh` is
+    sourced by `agent-cycle.sh` alone, and this file is also sourced by
+    `scripts/doctor.sh`, which never loads it. `merge_budget_freeze_
     state`/`_set`/`_clear` manage `fleet/merge-budget-freeze-<slug>.json`
     through `lib/toggle.sh`'s generic machinery, exactly as
     `lib/merge-autonomy.sh`'s kill-switch functions manage their own flag,
@@ -13085,7 +13093,7 @@ What exists, and the requirements each part answers to:
     `adjudicate-first` never lets the Script act with less human oversight
     than `always-escalate` already does (this file's own header explains why
     that makes a safety override pointless). Sourced by `agent-cycle.sh`
-    (`maybe_run_enabler`'s `escalate` verdict handling) and `scripts/doctor.sh`
+    (`lib/enabler.sh`'s `maybe_run_enabler`, in its `escalate` verdict handling) and `scripts/doctor.sh`
     (the `enabler_model` pairing check) — plus
     `escalation_autonomy_adjudicated_before REPO ITEM`, requirement 36b's
     "bounded, not a loop" predicate, which reads the log on stdin the way
@@ -14424,9 +14432,10 @@ pull request, run the ones the change touches and any it could regress.
    to start, naming every offending repo's slug.
 1m. **A guard reports its degradation and still answers exactly what it
    always did (requirement 4h).** `test/guard-degradation.test.sh` passes.
-   `guard_warn`, `stage_budget_overrides`, `gather_claimed`,
-   `unaccounted_items` and `coordinator_eligible_items` are lifted whole out
-   of `agent-cycle.sh`, and the fleet stand-down date parse by its own
+   `guard_warn` and `stage_budget_overrides` are lifted whole out of
+   `agent-cycle.sh`, `gather_claimed`, `unaccounted_items` and
+   `coordinator_eligible_items` out of `lib/candidate-select.sh` (#771), and
+   the fleet stand-down date parse by its own
    start/end markers, the way `test/verdict-corroboration.test.sh` and
    `test/pr-claim-exclusion.test.sh` already lift theirs — so the file cannot
    pass against a paraphrase. Every case asserts **both** halves: that one
@@ -14639,7 +14648,7 @@ pull request, run the ones the change touches and any it could regress.
 2j-i. **A rejected verdict costs one retry, then a mechanical pick, never the
    cycle (requirement 3v).** `test/coordinator-retry-fallback.test.sh` passes,
    against `run_coordinator_stage_attempt` and `fallback_select_candidate`
-   lifted verbatim out of `agent-cycle.sh` and a stubbed `run_claude_stage`
+   lifted verbatim out of `lib/stage-attempt.sh` and a stubbed `run_claude_stage`
    returning a queued sequence of canned verdicts (one per call, so the first
    and second engagement can answer differently):
    - **Retry succeeds.** A first verdict `td_verdict_rejected` and a second
@@ -15075,7 +15084,8 @@ pull request, run the ones the change touches and any it could regress.
    their own transitions.
 7d. **The PR-keyed claim outlives the PR's own raising (requirement 17a,
    issue #360).** `test/pr-claim-hold-through-review.test.sh` passes: with
-   `release_claim` and `release_pr_claim` lifted from `agent-cycle.sh` and
+   `release_claim` and `release_pr_claim` lifted from `lib/candidate-select.sh`
+   and
    the real `lib/claim.sh` running against a create-only `gh` stub,
    `have-pr-pending` drops the item-keyed registry entry and leaves the
    `pr-<n>` one standing; a peer's own claim on that same `pr-<n>` loses
@@ -15141,7 +15151,8 @@ pull request, run the ones the change touches and any it could regress.
    pre-claimed skips and the race losses, so a traceability stand-down can
    never again be reported as `raced`.
    `test/refinement-traceability.test.sh` passes, against
-   `refinement_traceability_fault` lifted verbatim from `agent-cycle.sh`: a
+   `refinement_traceability_fault` lifted verbatim from `lib/candidate-select.sh`:
+   a
    candidate whose recorded `spec` is absent from its own `context`, or
    whose recorded `comment_url` names a different issue than the candidate's
    own `item`, is faulted with no `gh` call at all; a candidate whose
@@ -15626,7 +15637,8 @@ pull request, run the ones the change touches and any it could regress.
    naming no reference the thread's own resolved list carries (a genuine
    under-specification or a question/discussion decline). Then, driving
    `record_needs_refinement_block` itself — lifted verbatim from
-   `agent-cycle.sh`, the same technique `test/refiner-verdicts.test.sh` uses —
+   `lib/candidate-select.sh`, the same technique
+   `test/refiner-verdicts.test.sh` uses —
    `test/dependency-block-refusal.test.sh` passes: a report shaped like the
    agent-ops#566 incident (an issue present in `issues_by_repo_json`, `evidence`
    quoting its thread's own stale `Blocked-by:` line) is refused with a
@@ -15939,8 +15951,8 @@ pull request, run the ones the change touches and any it could regress.
     Neither ever exits non-zero.
 39c. **The Refiner's verdicts are recorded as stated, driving the real switch
     (requirements 39c, 39d, 39e).** `test/refiner-verdicts.test.sh` passes:
-    driving `maybe_run_refiner` itself — lifted verbatim from `agent-cycle.sh`,
-    with the real `lib/refinement.sh` sourced — a `refined` verdict on an
+    driving `maybe_run_refiner` itself — lifted verbatim from
+    `lib/refinement.sh`, the file that now carries it — a `refined` verdict on an
     `issues`-source item carrying `comments_posted` produces exactly one
     `item-refined` with `by: "refiner"` and the `comment_url`, plus the
     `refined_label` add logged as an `own-label-action`; a non-issue item's
@@ -16162,7 +16174,7 @@ pull request, run the ones the change touches and any it could regress.
     JSON. `issue_priority_options_any` (`lib/issue-priority.sh`,
     agent-ops#542) is asserted true whenever the field carries at least one
     of the four band names, including only one, and false only when it
-    carries none. `refiner_filter_unbandable_triage` (`agent-cycle.sh`),
+    carries none. `refiner_filter_unbandable_triage` (`lib/refinement.sh`),
     lifted verbatim and driven against a stubbed `gh` distinguishing three
     repositories — one whose field query fails outright, one whose field
     resolves carrying none of the four band names, one whose field resolves
@@ -16662,7 +16674,7 @@ pull request, run the ones the change touches and any it could regress.
     same login's `REQUEST_CHANGES` bodies oldest-first and nothing on an
     unreadable list. `test/approver-wiring.test.sh` lifts `run_approver_stage`,
     `approver_post_or_warn` and `approver_stage_complexity` verbatim out of
-    `agent-cycle.sh` and drives them with every GitHub call, model launch and
+    `lib/approver.sh` and drives them with every GitHub call, model launch and
     log write stubbed: at `merge_autonomy: human` the stage posts no review,
     launches no model and logs nothing at all, having asked
     `merge_autonomy_effective_level` for a *fresh* read of the level rather
@@ -16761,13 +16773,14 @@ pull request, run the ones the change touches and any it could regress.
     `test/merge-queue.test.sh` covers `merge_queue_for_branch` the same way
     `merge_queue_probe` is already covered: the literal `null` for no
     queue, the queue object verbatim when one exists, and non-zero on an
-    unreadable or malformed response. Wired into `agent-cycle.sh`
-    (`test/approver-wiring.test.sh` continuing to pass confirms
+    unreadable or malformed response. Wired into the Approver stage
+    (`lib/approver.sh`; `test/approver-wiring.test.sh` continuing to pass
+    confirms
     `run_approver_stage` still reports `approver_stage_verdict`/
     `approver_stage_adjudicating` correctly for `run_landing_stage`'s own
     precondition), with `test/landing-wiring.test.sh` lifting
     `run_landing_stage`, `_landing_stage_attempt` and `_landing_refuse`
-    verbatim out of `agent-cycle.sh` and exercising every gate under `set
+    verbatim out of `lib/landing.sh` and exercising every gate under `set
     -euo pipefail`,
     the options that file itself runs under rather than the `set -uo
     pipefail` a library test uses — a refusal a gate helper reports in its
@@ -17052,7 +17065,7 @@ pull request, run the ones the change touches and any it could regress.
     skipped rather than aborting the read, and an unmatched
     repository/branch or an unreadable log both print nothing.
     `test/landing-retry-sweep.test.sh` lifts `_landing_retry_sweep_repo`
-    (`agent-cycle.sh`) verbatim — the candidate rule that decides which pull
+    (`lib/landing.sh`) verbatim — the candidate rule that decides which pull
     requests reach `_landing_stage_attempt` at all, with that function itself
     stubbed to record what it is offered — and pins: below
     `agent-merges-routine` nothing is even listed; a draft, a
@@ -17403,7 +17416,7 @@ pull request, run the ones the change touches and any it could regress.
 
 8x. **One durable audit record justifies every autonomous landing, and a
     landing with none is an anomaly, not a null (D18, agent-ops#578).**
-    `_landing_stage_attempt` (agent-cycle.sh) logs `landing-audit-record`
+    `_landing_stage_attempt` (lib/landing.sh) logs `landing-audit-record`
     once, in the same call that logs `landing-armed`, on every successful
     arm — assembled at the moment of arming, never reconstructed later by
     joining separate events at report time. It carries the pull request's
@@ -17532,7 +17545,7 @@ pull request, run the ones the change touches and any it could regress.
 
    `test/open-question-adjudication.test.sh` lifts `run_open_question_
    adjudication`, `open_question_escalate`, `open_question_pass_available`
-   and `open_question_adjudicated_before` verbatim out of `agent-cycle.sh`:
+   and `open_question_adjudicated_before` verbatim out of `lib/landing.sh`:
    the adjudication prompt launches at `approver_model_critical`, never
    `enabler_model` or `approver_model_default`/`approver_model_complex`,
    against `prompts/approver-adjudicate-open-question.md`, never
