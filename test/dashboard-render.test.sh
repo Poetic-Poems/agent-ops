@@ -1142,16 +1142,38 @@ assert_not_contains "and raises no banner about it" \
 out="$(render stage-health-failing.json)" || { printf 'FAIL - stage-health-failing.json did not render:\n%s\n' "$out"; exit 1; }
 assert_contains "a failing stage raises a red banner naming it" \
   "stage failing on this node: coordinator" "$out"
-assert_contains "the Stage health section lists it with a failing verdict badge" \
-  "failing" "$out"
 assert_contains "  ... and its consecutive-failure count alongside its own detail" \
   "11 consecutive: coordinator was refused by the API before it could run" "$out"
-assert_contains "an ok stage is listed too, distinctly" \
-  "implementer" "$out"
-assert_contains "  ... an idle stage never invoked reads idle, not ok" \
-  "reviewer" "$out"
 assert_contains "the fleet-strip card badges the same node with its own failing-stage count" \
   "1 stage failing" "$out"
+
+# The three verdict rows are asserted against the Stage health section alone,
+# not the whole page: "failing" also appears in the banner above it, and
+# "implementer"/"reviewer" appear in half a dozen unrelated panels, so a
+# whole-output grep for any of them would pass just as happily over a section
+# that rendered nothing at all — which is the one failure this fixture exists
+# to catch.
+stage_health_section="$(awk '$0 == "  <section>" { on = 0 } on { print } $0 == "      Stage health" { on = 1 }' <<<"$out")"
+assert_contains "the Stage health section lists the failing stage with a red verdict badge" \
+  '<td class="mono">
+              coordinator
+            <td>
+              <span class="badge b-red">
+                failing' "$stage_health_section"
+assert_contains "an ok stage is listed too, distinctly — a green badge, not a red one" \
+  '<td class="mono">
+              implementer
+            <td>
+              <span class="badge b-green">
+                ok' "$stage_health_section"
+assert_contains "  ... an idle stage never invoked reads idle, not ok" \
+  '<td class="mono">
+              reviewer
+            <td>
+              <span class="badge b-grey">
+                idle' "$stage_health_section"
+assert_contains "  ... with no last success to report, rather than a blank cell" \
+  "never" "$stage_health_section"
 
 printf '\n'
 if (( failures > 0 )); then
