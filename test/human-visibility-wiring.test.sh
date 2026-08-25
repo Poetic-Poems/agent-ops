@@ -86,9 +86,9 @@ extract_hv_block() {
   ' "$1"
 }
 
-block="$(extract_hv_block "$SCRIPT_DIR/agent-cycle.sh")"
+block="$(extract_hv_block "$SCRIPT_DIR/lib/candidate-gather.sh")"
 if [[ -z "$block" ]]; then
-  echo "FAIL - could not extract the human-visibility block from agent-cycle.sh — has it moved?" >&2
+  echo "FAIL - could not extract the human-visibility block from lib/candidate-gather.sh — has it moved?" >&2
   exit 1
 fi
 

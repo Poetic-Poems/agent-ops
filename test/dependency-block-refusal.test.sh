@@ -80,7 +80,7 @@ extract_fn() {
   ' "$file"
 }
 
-record_needs_refinement_block_fn="$(extract_fn 'record_needs_refinement_block() {' "$SCRIPT_DIR/agent-cycle.sh")"
+record_needs_refinement_block_fn="$(extract_fn 'record_needs_refinement_block() {' "$SCRIPT_DIR/lib/candidate-select.sh")"
 if [[ "$record_needs_refinement_block_fn" != *"attempt-failed"* ]]; then
   printf 'FAIL - record_needs_refinement_block could not be found in agent-cycle.sh (renamed or moved?)\n'
   exit 1

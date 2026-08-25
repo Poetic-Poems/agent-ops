@@ -26,10 +26,17 @@
 #     fixture can see.
 #
 # Both are textual facts about the shipped script, so this file asserts them by
-# reading agent-cycle.sh rather than by executing it: there is no way to
-# observe the capture's *position* from inside a stubbed run of the block, and
-# lifting the block verbatim (as the other `*-wiring` tests do) would lift the
-# ordering along with it and assert nothing.
+# reading agent-cycle.sh (and, since #771 moved the gather loop that owns the
+# appends and the two read-back call sites into lib/candidate-gather.sh,
+# that file too) rather than by executing it: there is no way to observe the
+# capture's *position* from inside a stubbed run of the block, and lifting
+# the block verbatim (as the other `*-wiring` tests do) would lift the
+# ordering along with it and assert nothing. The horizon-before-append
+# ordering itself is no longer one line-number comparison in a single file —
+# the two live in different files now — so it is checked in two steps: the
+# horizon is captured before agent-cycle.sh hands off to
+# `gather_ordered_repos`, and the append/call sites are confirmed to exist in
+# lib/candidate-gather.sh, which nothing runs before that hand-off.
 #
 # No test framework is used (none exists elsewhere in this repo). Run directly:
 #
@@ -41,6 +48,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CYCLE="$SCRIPT_DIR/agent-cycle.sh"
+CANDIDATE_GATHER="$SCRIPT_DIR/lib/candidate-gather.sh"
 
 failures=0
 
@@ -55,26 +63,26 @@ assert_eq() {
 }
 
 # --- Where the horizon is captured -------------------------------------------
-# Three line numbers, in the order they must appear: the snapshot that
-# materialises `$union_log`, the horizon captured from it, and the first of the
-# appends that go on to mutate it.
+# Four line numbers, in the order they must appear: the snapshot that
+# materialises `$union_log`, the horizon captured from it, the call into
+# lib/candidate-gather.sh (#771) that hands control to the code owning the
+# first of the appends that go on to mutate it, and that call itself.
 first_line_matching() { grep -n -m1 -- "$1" "$CYCLE" | cut -d: -f1; }
 
 # shellcheck disable=SC2016  # grep patterns: the `$` is agent-cycle.sh's own
 # variable reference, matched literally, not one to expand here.
 snapshot_line="$(first_line_matching 'fleet_logs .* > "\$union_log"')"
 horizon_line="$(first_line_matching '^union_log_horizon=')"
-# shellcheck disable=SC2016  # ditto — agent-cycle.sh's `$union_log`, literal.
-append_line="$(first_line_matching '>> "\$union_log"')"
+gather_call_line="$(first_line_matching '^gather_ordered_repos$')"
 
 assert_eq "the union-log snapshot is still where this test expects to find it" \
   "yes" "$([[ -n "$snapshot_line" ]] && echo yes || echo no)"
 assert_eq "the horizon is captured from the snapshot at all" \
   "yes" "$([[ -n "$horizon_line" ]] && echo yes || echo no)"
-assert_eq "the cycle still appends its own log lines into the snapshot" \
-  "yes" "$([[ -n "$append_line" ]] && echo yes || echo no)"
+assert_eq "agent-cycle.sh still hands off to the gather loop that appends into the snapshot" \
+  "yes" "$([[ -n "$gather_call_line" ]] && echo yes || echo no)"
 
-if [[ -z "$snapshot_line" || -z "$horizon_line" || -z "$append_line" ]]; then
+if [[ -z "$snapshot_line" || -z "$horizon_line" || -z "$gather_call_line" ]]; then
   printf '\n%d assertion(s) failed\n' "$(( failures + 1 ))" >&2
   echo "FAIL - could not locate the union-log snapshot wiring in agent-cycle.sh — has it moved?" >&2
   exit 1
@@ -82,13 +90,28 @@ fi
 
 assert_eq "the horizon is captured after the snapshot that materialises \$union_log" \
   "yes" "$([[ "$horizon_line" -gt "$snapshot_line" ]] && echo yes || echo no)"
-assert_eq "the horizon is captured before the first append into \$union_log" \
-  "yes" "$([[ "$horizon_line" -lt "$append_line" ]] && echo yes || echo no)"
+assert_eq "the horizon is captured before control passes to the gather loop that appends into \$union_log" \
+  "yes" "$([[ "$horizon_line" -lt "$gather_call_line" ]] && echo yes || echo no)"
+
+# The append itself now lives in lib/candidate-gather.sh (#771's move of the
+# repo-ordering/candidate-gathering loop out of agent-cycle.sh) — checked
+# there directly rather than by a further line-number comparison, since the
+# two files no longer share one line-number space to compare within.
+# shellcheck disable=SC2016  # ditto — lib/candidate-gather.sh's `$union_log`, literal.
+append_line="$(grep -n -m1 -- '>> "\$union_log"' "$CANDIDATE_GATHER" | cut -d: -f1)"
+assert_eq "the gather loop still appends its own log lines into the snapshot" \
+  "yes" "$([[ -n "$append_line" ]] && echo yes || echo no)"
+if [[ -z "$append_line" ]]; then
+  printf '\n%d assertion(s) failed\n' "$(( failures + 1 ))" >&2
+  echo "FAIL - could not locate the union-log append in lib/candidate-gather.sh — has it moved?" >&2
+  exit 1
+fi
 
 # --- What the read-back call sites are handed --------------------------------
 # Both calls are wrapped across two lines with a trailing backslash, so join
-# continuations before looking for the argument.
-joined="$(sed -e ':a' -e '/\\$/N; s/\\\n//; ta' "$CYCLE")"
+# continuations before looking for the argument. Both calls now live in
+# lib/candidate-gather.sh alongside the append above.
+joined="$(sed -e ':a' -e '/\\$/N; s/\\\n//; ta' "$CANDIDATE_GATHER")"
 
 call_passes_horizon() {
   local fn="$1" call

@@ -41,7 +41,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CYCLE="$SCRIPT_DIR/agent-cycle.sh"
+CYCLE="$SCRIPT_DIR/lib/landing.sh"
 PUBLISH="$SCRIPT_DIR/scripts/publish-dashboard.sh"
 
 tmp_dir="$(mktemp -d)"

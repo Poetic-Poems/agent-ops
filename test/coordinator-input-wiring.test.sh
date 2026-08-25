@@ -129,12 +129,12 @@ blocked_json='[]'
 # `coordinator_blocked_view` is lifted rather than stubbed: it decides how many
 # bytes `blocked` contributes to the overhead, which is part of what is being
 # measured.
-eval "$(extract_block '^coordinator_blocked_view\(\) \{' '^\}$' "$AGENT_CYCLE")"
+eval "$(extract_block '^coordinator_blocked_view\(\) \{' '^\}$' "$SCRIPT_DIR/lib/candidate-select.sh")"
 # And requirement 4j's view of `refinements`, lifted for the same reason: it
 # decides how many bytes that band contributes to the overhead, which on the
 # outage it was written for was more than every other unsheddable term put
 # together.
-eval "$(extract_block '^coordinator_refinements_view\(\) \{' '^\}$' "$AGENT_CYCLE")"
+eval "$(extract_block '^coordinator_refinements_view\(\) \{' '^\}$' "$SCRIPT_DIR/lib/candidate-select.sh")"
 # shellcheck disable=SC2317  # Called from the lifted base-prompt render below.
 stage_prompt_text() { cat "$PROMPTS_DIR/coordinator.md"; }
 
@@ -296,8 +296,8 @@ assert_true "…and that warning says the API will refuse this cycle's prompt" \
 #     refusal it was, and a stage that merely died does not get mislabelled as
 #     one. `handle_stage_failure`'s two readers are lifted the same way the fit
 #     block is. ---
-eval "$(extract_block '^stage_api_refusal\(\) \{' '^\}$' "$AGENT_CYCLE")"
-eval "$(extract_block '^stage_api_refusal_message\(\) \{' '^\}$' "$AGENT_CYCLE")"
+eval "$(extract_block '^stage_api_refusal\(\) \{' '^\}$' "$SCRIPT_DIR/lib/stage-attempt.sh")"
+eval "$(extract_block '^stage_api_refusal_message\(\) \{' '^\}$' "$SCRIPT_DIR/lib/stage-attempt.sh")"
 
 # The record the fleet actually produced on 2026-08-21, verbatim but for the
 # fields nothing here reads.

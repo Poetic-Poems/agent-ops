@@ -45,6 +45,20 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 AGENT_CYCLE="$SCRIPT_DIR/agent-cycle.sh"
+# Captured now, alongside AGENT_CYCLE above: run_block (below) reassigns the
+# global $SCRIPT_DIR to a fake root for the lifted counting_block's own use,
+# and that reassignment outlives the function call (no `local`), so a path
+# derived from $SCRIPT_DIR at the point of use — rather than captured here,
+# before anything clobbers it — would resolve against the fake root instead.
+AGENT_APPROVER_LIB="$SCRIPT_DIR/lib/approver.sh"
+# Same reasoning: the back-pressure counting block itself moved to
+# lib/standdown.sh (#771).
+AGENT_STANDDOWN_LIB="$SCRIPT_DIR/lib/standdown.sh"
+# Captured here, alongside the two above, because the harness below reassigns
+# `SCRIPT_DIR` to a fixture root — deliberately, so the lifted block resolves
+# its own helpers against the stubs — and never restores it. The SC2154 scan at
+# the end of this file must still reach the real modules.
+AGENT_LIB_DIR="$SCRIPT_DIR/lib"
 
 failures=0
 tmp_dir="$(mktemp -d)"
@@ -73,7 +87,7 @@ extract_block() {
   ' "$file"
 }
 
-counting_block="$(extract_block '^ready_count=0$' '^open_composition=' "$AGENT_CYCLE")"
+counting_block="$(extract_block '^ready_count=0$' '^open_composition=' "$AGENT_STANDDOWN_LIB")"
 if [[ -z "$counting_block" ]]; then
   echo "FAIL - could not extract the back-pressure counting block from agent-cycle.sh — has it moved?" >&2
   exit 1
@@ -328,7 +342,7 @@ assert_eq "…while a repo ranked above agent-approves does fetch its freeze fla
 # counting block above is, so this is testing the shipped function, not a
 # copy of it.
 approver_escalate_fn="$(awk -v fn='^approver_escalate\\(\\) \\{' \
-  '$0 ~ fn { on = 1 } on { print } on && /^\}$/ { exit }' "$AGENT_CYCLE")"
+  '$0 ~ fn { on = 1 } on { print } on && /^\}$/ { exit }' "$AGENT_APPROVER_LIB")"
 if [[ -z "$approver_escalate_fn" ]]; then
   echo "FAIL - could not extract approver_escalate from agent-cycle.sh — has it moved?" >&2
   exit 1
@@ -372,8 +386,40 @@ assert_eq "…and carrying a non-empty detail naming the same pull request" "tru
   "$(jq --arg u "https://github.com/acme/widgets/pull/42" \
      '(.detail // "") != "" and ((.detail // "") | contains($u))' <<<"$escalate_json")"
 
-shellcheck_out="$(shellcheck --severity=warning "$AGENT_CYCLE" 2>&1 | grep -A2 'SC2154' || true)"
-assert_eq "shellcheck --severity=warning reports no SC2154 in agent-cycle.sh" "" "$shellcheck_out"
+# The same scan #499 added, adjusted for #771 rather than dropped. What it is
+# for is unchanged: a `$name` interpolated in agent-cycle.sh that no shell
+# variable anywhere provides — `--arg d "…$u…"`, where `u` is jq's own
+# argument and not a shell variable at all, which under `set -u` aborts the
+# command substitution and logs an event with no fields.
+#
+# What changed is that agent-cycle.sh is now the cycle's spine and reads
+# globals the lib/*.sh modules assign, and shellcheck without `-x` sees none
+# of them — while `-x` here would parse the whole 26,000-line union and need
+# more than 4.5 GiB, which is the very thing #770/#771 are about. So each
+# SC2154 is resolved against the modules by hand: a name some module assigns
+# *as a global* is an artefact of the unfollowed sources, and a name nothing
+# assigns is the bug this scan exists to catch. "As a global" means assigned
+# in a module that never declares it `local` — without which a jq `--arg u`
+# would be excused by any `local u` in any module, which is exactly the
+# finding #499 was about.
+sc2154_names="$(shellcheck --severity=warning -f gcc "$AGENT_CYCLE" 2>/dev/null \
+  | sed -n 's/.*: \([A-Za-z_][A-Za-z0-9_]*\) is referenced but not assigned.*/\1/p' \
+  | sort -u)"
+sc2154_unresolved=""
+while IFS= read -r sc_name; do
+  [[ -n "$sc_name" ]] || continue
+  sc_global=0
+  for sc_lib in "$AGENT_LIB_DIR"/*.sh; do
+    grep -qE "(^|[^A-Za-z0-9_])${sc_name}=" "$sc_lib" || continue
+    grep -qE "^[[:space:]]*(local|declare|typeset)([[:space:]]+-[A-Za-z]+)*[[:space:]].*(^|[^A-Za-z0-9_])${sc_name}([=[:space:]]|\$)" \
+      "$sc_lib" && continue
+    sc_global=1
+    break
+  done
+  (( sc_global )) || sc2154_unresolved+="$sc_name "
+done <<<"$sc2154_names"
+assert_eq "every SC2154 in agent-cycle.sh names a global some lib/*.sh module assigns" \
+  "" "${sc2154_unresolved% }"
 
 # --- Report -------------------------------------------------------------------
 

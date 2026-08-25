@@ -30,7 +30,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-AGENT_CYCLE="$SCRIPT_DIR/agent-cycle.sh"
+AGENT_CYCLE="$SCRIPT_DIR/lib/candidate-select.sh"
 
 failures=0
 

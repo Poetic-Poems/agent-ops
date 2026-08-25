@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2154,SC2034  # this file's functions read and write the cycle's own globals — assigned by agent-cycle.sh, which sources every lib/*.sh file into one process (#771) — never locally; each function's own header names which ones.
 #
 # lib/review-gate.sh — script-side confirmation, independent of what a
 # Reviewer's own model says, that a pull request is genuinely safe to hand to
@@ -419,4 +420,66 @@ review_gate_degraded_since() {
     | length
   ' 2>/dev/null || echo 0)"
   [[ "$hits" =~ ^[0-9]+$ ]] && (( hits > 0 ))
+}
+
+# The following two functions moved from agent-cycle.sh (#771): a Reviewer
+# handback that did not end in a human-visible pull request, and the
+# consecutive-unreadable-checks streak both the Reviewer's own "ready"
+# handoff and the Enabler's recovery path escalate through.
+# A Reviewer verdict that did not end in a pull request the human can see
+# (requirement 32a): `blocked`, an unparseable status, or a `ready` the
+# handoff could not be made true.
+#
+# It is recorded exactly as any other failed attempt — an `attempt-failed`
+# against repo+item, which is what requirement 34 reads as blocked and
+# requirement 35a reads as Enabler-eligible. That single choice is what keeps
+# the promise the pipeline makes to its human: a pull request that is not ready
+# for review is the pipeline's problem until an Enabler says otherwise, and the
+# Enabler says otherwise by opening an escalation issue, not by leaving a draft
+# where somebody might notice it.
+#
+# Deliberately silent on the PR itself. The Reviewer has already left its
+# concerns there in its own words (requirement 30), which is the record the
+# Enabler reads; a second comment from the Script would say nothing new. It
+# would not distort the abandoned-drafts clock — a comment this system posts
+# carries the marker that keeps it out of that measure (requirement 3e) — but
+# "nothing new to say" is reason enough not to post it.
+log_reviewer_handback() {
+  local detail="$1" pr_url="${2:-}" unblock_condition="${3:-}"
+  log_attempt_failed "reviewer" "$detail" \
+    "$(jq -nc --arg u "$pr_url" --arg c "$unblock_condition" \
+       '(if $u == "" then {} else {pr_url: $u} end)
+        + (if $c == "" then {} else {unblock_condition: $c} end)')"
+  if [[ -n "$pr_url" ]]; then
+    release_claim have-pr
+  else
+    release_claim no-pr
+  fi
+}
+
+# review_gate_escalate_unreadable_streak
+# TD-PPagop-26081603: the streak-and-escalate half of TD-PPagop-26081404's
+# node-health bookkeeping, factored out so both call sites that run
+# `handoff_complete_review` and can see `gate.checks_unreadable: true` —
+# the Reviewer's own "ready" handoff below, and the Enabler's
+# `complete_handoff` recovery path in `maybe_run_enabler` — escalate a run
+# of consecutive unreadable-checks failures the same way, rather than only
+# the former. Prints `review_gate_unknown_streak_verdict`'s own verdict JSON
+# (empty below `review_gate_unknown_streak_after` consecutive failures) so a
+# caller that also needs to know whether the threshold was reached — the
+# Reviewer's own site logs a different per-item warning when it was not —
+# does not have to recompute it. Reads `review_gate_unknown_streak_after`,
+# `node_name` and `log_file` as globals, same as every other Script-
+# bookkeeping helper in this file. Logs `review-gate-checks-degraded` (and
+# its stderr echo) at most once per streak — `review_gate_degraded_since` is
+# the dedup.
+review_gate_escalate_unreadable_streak() {
+  local streak_json streak_count
+  streak_json="$(review_gate_unknown_streak_verdict "$review_gate_unknown_streak_after" "$node_name" < "$log_file")"
+  if [[ -n "$streak_json" ]] && ! review_gate_degraded_since "$(jq -r '.first_ts // ""' <<<"$streak_json")" "$node_name" < "$log_file"; then
+    log_event "review-gate-checks-degraded" "$streak_json"
+    streak_count="$(jq -r '.count // "?"' <<<"$streak_json")"
+    echo "agent-cycle: WARNING — node $node_name has failed to read required checks $streak_count times in a row (review-gate); see log.jsonl event review-gate-checks-degraded" >&2
+  fi
+  printf '%s' "$streak_json"
 }

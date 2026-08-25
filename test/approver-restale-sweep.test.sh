@@ -10,7 +10,7 @@
 # them the sweep reaches for and with what arguments, never about what any of
 # them does with the call, the same split test/landing-retry-sweep.test.sh
 # already draws around `_landing_stage_attempt`. `_approver_restale_sweep_repo`
-# is lifted verbatim out of agent-cycle.sh, the same technique that file and
+# is lifted verbatim out of lib/approver.sh, the same technique that file and
 # its siblings use, so the assertions are about the shipped code rather than a
 # copy of its logic.
 #
@@ -29,7 +29,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CYCLE="$SCRIPT_DIR/agent-cycle.sh"
+CYCLE="$SCRIPT_DIR/lib/approver.sh"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -63,7 +63,7 @@ extract() {  # <function name>
 
 sweep_block="$(extract _approver_restale_sweep_repo)"
 if [[ -z "$sweep_block" || "$sweep_block" != *"approver_review_stale"* ]]; then
-  echo "FAIL - could not extract _approver_restale_sweep_repo from agent-cycle.sh — has it moved?" >&2
+  echo "FAIL - could not extract _approver_restale_sweep_repo from lib/approver.sh — has it moved?" >&2
   exit 1
 fi
 

@@ -57,11 +57,11 @@ extract_fn() {
   ' "$file"
 }
 
-maybe_run_enabler_fn="$(extract_fn 'maybe_run_enabler() {' "$SCRIPT_DIR/agent-cycle.sh")"
-enabler_claim_key_fn="$(extract_fn 'enabler_claim_key() {' "$SCRIPT_DIR/agent-cycle.sh")"
-extract_json_result_fn="$(extract_fn 'extract_json_result() {' "$SCRIPT_DIR/agent-cycle.sh")"
-review_gate_escalate_unreadable_streak_fn="$(extract_fn 'review_gate_escalate_unreadable_streak() {' "$SCRIPT_DIR/agent-cycle.sh")"
-escalation_autonomy_pass_available_fn="$(extract_fn 'escalation_autonomy_pass_available() {' "$SCRIPT_DIR/agent-cycle.sh")"
+maybe_run_enabler_fn="$(extract_fn 'maybe_run_enabler() {' "$SCRIPT_DIR/lib/enabler.sh")"
+enabler_claim_key_fn="$(extract_fn 'enabler_claim_key() {' "$SCRIPT_DIR/lib/enabler.sh")"
+extract_json_result_fn="$(extract_fn 'extract_json_result() {' "$SCRIPT_DIR/lib/stage-attempt.sh")"
+review_gate_escalate_unreadable_streak_fn="$(extract_fn 'review_gate_escalate_unreadable_streak() {' "$SCRIPT_DIR/lib/review-gate.sh")"
+escalation_autonomy_pass_available_fn="$(extract_fn 'escalation_autonomy_pass_available() {' "$SCRIPT_DIR/lib/enabler.sh")"
 
 for pair in \
   'maybe_run_enabler_fn:enabler-examined' \

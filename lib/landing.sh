@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2154,SC2034  # this file's functions read and write the cycle's own globals — assigned by agent-cycle.sh, which sources every lib/*.sh file into one process (#771) — never locally; each function's own header names which ones.
 #
 # lib/landing.sh — the deterministic eligibility classifier and the arming
 # step (D18 WI-7, docs/reviews/2026-08-14-autonomy-investigation.md §5.1,
@@ -931,6 +932,956 @@ landing_approver_adjudication_history() {
   fi
   [[ -n "$out" ]] || out='[]'
   printf '%s' "$out"
+}
+
+# The following four functions moved from agent-cycle.sh (#771): the arming
+# round itself (`run_landing_stage`, `_landing_stage_attempt`, gates and all),
+# its refusal logger, and the 2.1e landing-retry sweep that re-enters the same
+# gates for a stranded, already-approved pull request. Reads and writes the
+# cycle's own globals (`cycle_dir`, `landing_armed_by_repo`, …) exactly as
+# they did inline; `landing_armed_by_repo` itself stays declared in
+# agent-cycle.sh, ahead of both this file's functions and the Enabler/Refiner
+# state beside it, so nothing here reads it unset under `set -u`.
+# _landing_refuse PR_URL REPO REASON [RETRY]
+# Log `landing-refused` (requirement 8d, requirement 33). The one write
+# every refusal path in `_landing_stage_attempt` makes — never a blocked pull
+# request, never a withheld claim, exactly as an Approver refusal (8b/8c)
+# costs a missing review and nothing else. RETRY, when non-empty, marks the
+# event `retry: true` (TD-PPagop-26081701) — a fact worth keeping distinct in
+# the log, since it means the refusal happened outside the round that first
+# approved this pull request.
+_landing_refuse() {
+  local retry_bool="false"
+  [[ -z "${4:-}" ]] || retry_bool="true"
+  log_event "landing-refused" "$(jq -nc --arg u "$1" --arg r "$2" --arg reason "$3" --argjson retry "$retry_bool" \
+    '{pr_url: $u, repo: $r, reason: $reason} + (if $retry then {retry: true} else {} end)')"
+}
+
+# run_landing_stage PR_URL COMPLEXITY
+# The arming step's own gate 0 (D18 WI-7,
+# docs/reviews/2026-08-14-autonomy-investigation.md §5.1, §6, §7; requirement
+# 8d). Called immediately after `run_approver_stage` — deliberately after,
+# not folded into it: `run_approver_stage` is the review, and every failure
+# mode `_landing_stage_attempt` has of its own (a budget hold, a protected
+# path, a queue race) must never be confused for "the Approver refused to
+# review", which requirement 8c's own `approver-verdict` event already
+# speaks for.
+#
+# Arms nothing at all unless this very round's Approver engagement reached
+# an explicit, non-adjudicating `approve` — read from `approver_stage_verdict`/
+# `approver_stage_adjudicating`, the globals `run_approver_stage` set
+# immediately before returning (never reused beyond this one read). Once that
+# holds, every other gate is `_landing_stage_attempt`'s job — the same
+# function the 2.1e landing-retry sweep calls for a pull request this gate
+# already passed once, on a later cycle, for a repo and source this global
+# scope does not carry (TD-PPagop-26081701; see that function's own header).
+#
+# Passes `landing_armed_by_repo[$selected_repo]` as ALREADY_ARMED (PR #557
+# review round 2) rather than leaving it at `_landing_stage_attempt`'s own
+# default of 0: the 2.1e sweep (`_landing_retry_sweep_repo`, run earlier this
+# same cycle, well before this stage) may already have armed candidates for
+# this repository, and this stage's own live `merge_budget_decide` read must
+# discount those too, not just its own — the gap PR #557's first review round
+# left, since that round's fix bounded only the sweep's own pass, and this
+# call site threaded no ALREADY_ARMED at all.
+run_landing_stage() {
+  local pr_url="$1" complexity="$2"
+  [[ "$approver_stage_verdict" == "approve" && "$approver_stage_adjudicating" != "1" ]] || return 0
+  local already_armed="${landing_armed_by_repo[$selected_repo]:-0}"
+  _landing_stage_attempt "$selected_repo" "$pr_url" "$complexity" "$selected_source" "$gate_default_branch" "" "$already_armed"
+  if (( _landing_stage_attempt_armed )); then
+    # shellcheck disable=SC2004  # false positive: landing_armed_by_repo is
+    # declare -A (agent-cycle.sh) — its subscript is a literal string key,
+    # never arithmetic, so the $ is required, not "unnecessary".
+    landing_armed_by_repo[$selected_repo]=$(( already_armed + 1 ))
+  fi
+}
+
+# _landing_stage_attempt SLUG PR_URL COMPLEXITY SOURCE DEFAULT_BRANCH [RETRY] [ALREADY_ARMED]
+# The seven re-read-fresh gates the arming step re-reads before landing a pull
+# request — extracted out of `run_landing_stage` (TD-PPagop-26081701) so the
+# 2.1e landing-retry sweep can reuse the identical, single-source-of-truth
+# sequence for a pull request outside the round that first approved it,
+# rather than a second copy that could drift from what this one actually
+# does. SLUG, SOURCE and DEFAULT_BRANCH are parameters rather than
+# `$selected_repo`/`$selected_source`/`$gate_default_branch` for exactly that
+# reason: the retry sweep runs fleet-wide, for a repository, an originating
+# work-order source and a default branch none of those globals carry this
+# cycle. RETRY, when non-empty, is threaded through to `_landing_refuse` and
+# the final `landing-armed` log as `retry: true` — see that function's own
+# header. ALREADY_ARMED (default 0; PR #557 review of TD-PPagop-26081701) is
+# forwarded to `merge_budget_decide` verbatim (gate 5 below) — how many pull
+# requests this repository has already been armed for earlier in this same
+# cycle, by either caller, and therefore how far this candidate's own live
+# budget read must be discounted before it can arm another; both callers read
+# and grow the same cycle-scoped `landing_armed_by_repo[SLUG]` (declared
+# ahead of both, PR #557 review round 2) rather than a tally of their own, so
+# a repository's remaining budget is never double-spent across the sweep and
+# this round's own arming step just because neither call site knew what the
+# other had already armed. Sets the global `_landing_stage_attempt_armed`
+# to `1` immediately after a successful arm and to `0` at every other return
+# (including every refusal) — the one signal a caller can use to grow its own
+# running ALREADY_ARMED count for the next candidate, since this function's
+# own exit status stays `0` on every path (a refusal costs a `landing-refused`
+# event, never a non-zero return) and cannot carry that.
+#
+# Everything below is re-read fresh from GitHub, the discipline
+# `lib/review-gate.sh` established, because nothing this stage arms may
+# trust state more than one function call old:
+#
+#   1. `merge_autonomy_effective_level`, called with `fresh` (issue #513) so
+#      the kill switch bypasses this process's own memo — must still be
+#      `agent-merges-routine` or `agent-merges-all` (the kill switch or a
+#      budget freeze may have moved since the Approver ran). A refusal here
+#      names its actual cause (`landing_autonomy_refusal_reason`, D18 issue
+#      #576) — the fleet-wide kill switch, distinguishable in the
+#      `landing-refused` log from a repository that simply never had its
+#      level raised — rather than always blaming "the level", which a human
+#      reading the log has no reason to suspect they set correctly.
+#   2. `landing_eligible` (lib/landing.sh) — complexity, source and the
+#      protected-paths classifier.
+#   2.5. `landing_open_question_hit` (lib/landing.sh, requirement 8f, D18,
+#      agent-ops#668) — the `open-question` label the Reviewer's own
+#      `open_questions` verdict projects must not be standing. A hit does not
+#      merely refuse: `_landing_open_question_resolve` runs the
+#      `escalation_autonomy` ladder for it (an escalation issue, or one
+#      bounded adjudication pass first), and only a `settled` verdict lets
+#      this round fall through to gate 3. Unlike every other unreadable
+#      here, an unreadable label list refuses in the plain "could not read"
+#      wording rather than routing into that ladder — see that function's
+#      own header for why a question never confirmed to exist must not
+#      summon anybody.
+#   3. `review_gate_verdict` — must read `clean`; `dirty` and `unknown`
+#      both refuse (stricter than the ordinary ready-gate handoff, which
+#      tolerates an alerts-only `unknown` as a warning — arming an
+#      automatic merge does not).
+#   4. The Approver App's own review is genuinely standing `APPROVED` on
+#      GitHub right now (`landing_approver_standing_review_at`,
+#      lib/landing.sh)
+#      — never inferred from this round's own `approver_stage_verdict`
+#      alone: `approver_post_or_warn` always returns 0 even when the write
+#      itself failed ("a missing review, never a stranded PR"), so a local
+#      `approve` verdict is this process's *intent*, not GitHub's own
+#      record — and no human `CHANGES_REQUESTED` stands
+#      (`_handoff_blocking_reviewers`, lib/handoff.sh, requirement 34a's own
+#      standing-position computation, reused for the human half rather than
+#      re-derived). Both are fresh reads: a token that expired between
+#      minting and posting, or a push/review submitted after the Approver
+#      ran, are exactly the facts this step must catch.
+#
+#      Neither read sees a plain comment: a human cannot leave a formal
+#      `REQUEST_CHANGES` review on this system's own pull requests at all
+#      (GitHub refuses that review type from a pull request's own author, and
+#      every pipeline write and every human comment here land under the same
+#      account), so their only instrument is an ordinary comment, and
+#      `_handoff_blocking_reviewers` reads only formal reviews. #533 closed
+#      that gap at the Reviewer's own ready-flip
+#      (`lib/reconciliation-gate.sh`'s `reconciliation_gate`, requirement
+#      31c): a pull request carrying an unreconciled comment since it last
+#      left draft cannot be flipped Ready in the first place. That gate runs
+#      once, at hand-off, and never reaches here — a plain comment posted
+#      after a pull request is already Ready, in the window before a later
+#      cycle's arming step lands it, was answered by neither mechanism
+#      (agent-ops#672). Gate 4 closes that residual window by calling
+#      `reconciliation_gate` itself, a second time, right here: unbounded (no
+#      NOT_AFTER), since this stage never flips the pull request out of draft
+#      itself the way the Reviewer's own call must guard against — the real
+#      current "last left draft, and stayed left" anchor is exactly the one
+#      this arming read needs, not one bounded away from a flip of its own.
+#      `dirty` refuses arming, naming the unreconciled comment(s); anything
+#      else that is not `clean` — `unknown`, where the timeline or comment
+#      list could not be read, and the empty word a call that never ran at
+#      all leaves behind — refuses too (#753's ruling on #746): neither
+#      should ever pass a safety gate, unlike the Reviewer's own
+#      reconciliation read at hand-off (`handoff_complete_review`), which
+#      does tolerate an `unknown` there as non-blocking — this arming-time
+#      instance is stricter by design. Because every non-`clean` word now
+#      refuses before this function can reach an arm, the landing audit
+#      record (requirement 8x) never carries a `comment-reconciliation`
+#      entry reading anything but `clean`.
+#   4.5. D18 WI-12 (Stage 4, agent-ops#415): only at `agent-merges-all`, and
+#      only for a pull request `landing_protected_path_controls_ok`
+#      (lib/landing.sh) itself confirms still touches a protected path —
+#      gate 2's own `landing_eligible` already deferred rather than refused
+#      that case. Requires the approving engagement to have run at the
+#      critical Approver tier, the standing review's own `commit_id` (gate
+#      4's own `landing_approver_standing_review_at` read, no extra `gh`
+#      call) to still match a fresh read of the pull request's current
+#      `headRefOid`, and the configurable `landing_cool_off_hours` wait
+#      since that review's own `submitted_at` to have elapsed. A push after
+#      approval moves `headRefOid` without touching the standing review at
+#      all — nothing here dismisses a stale review — so a `commit_id`
+#      mismatch refuses outright rather than measuring a cool-off against a
+#      timestamp that no longer speaks for the code on the branch; this is
+#      the sense in which a fresh push restarts the wait, since nothing
+#      resumes it until a later review matches the new head. TIER comes from
+#      this round's own `approver_stage_tier` on the first-approval round, or
+#      `landing_retry_tier`'s fleet-log read on a retry — never re-derived.
+#   5. `merge_budget_decide`/`merge_budget_apply_decision`
+#      (lib/merge-budget.sh) — only `arm` proceeds; `hold` and `refuse` are
+#      applied and stop here.
+#   6. `merge_queue_probe` — the pull request must not already be queued,
+#      and must never have been queued and removed without being re-queued
+#      since (`merge_queue_dequeue_actionable`, lib/merge-queue.sh, PR #557
+#      review of TD-PPagop-26081701, distinguishes only the refusal wording —
+#      never re-arms either way; `scripts/gather-dequeued.sh`'s own source
+#      owns a `failed_checks` dequeue, and a human's own `manual` one is
+#      never this stage's to reverse). "Could not read" is "possibly queued
+#      or dequeued", so it refuses too.
+#
+# Any read above that cannot be answered is a refusal (`_landing_refuse`,
+# `landing-refused`), never a pass. A successful arm logs `landing-armed`
+# exactly once, naming the method (`enqueued`/`auto-merge`) `landing_arm`
+# actually used, and never withholds anything requirement 8b already did —
+# the *first* attempt (RETRY empty) runs strictly after the `pr-ready` log
+# and the claim release, and nothing here can affect either; a retry attempt
+# runs long after both, against a pull request already sitting `pr-ready`.
+#
+# A successful arm also logs `landing-audit-record` (requirement 8x, D18,
+# agent-ops#578) — one durable record of everything that justified landing
+# this pull request without a human act anywhere in the chain, assembled
+# here rather than reconstructed later by joining separate events at report
+# time (the WI-8 digest's own former failure mode: a landing whose verdict
+# could not be found rendered with nulls rather than saying so). It carries
+# the pull request's own number and head SHA (the Approver's standing
+# review's own `commit_id`, already in hand from gate 4 — never a fresh read
+# for a fact this cheap to reuse), the effective `merge_autonomy` level and
+# whether SLUG's own `repos[]` entry or the top-level key produced it
+# (`merge_autonomy_resolution_source`, lib/merge-autonomy.sh — reached only
+# once gate 1 has already confirmed the kill switch is clear and no budget
+# freeze binds, so no fresher read is needed), the protected-path verdict and
+# the protected paths it hit (`landing_protected_paths_hit`, read fresh once
+# more here — the same "never more than one function call old" discipline gate
+# 4.5's own `landing_protected_path_controls_ok` already applies to the same
+# primitive, rather than trust gate 2's now-discarded read), the Approver's
+# tier/model/verdict/adjudication and this pull request's full adjudication
+# history (`landing_approver_adjudication_history`, lib/landing.sh — the
+# fleet log's own record of every `approver-verdict` event this pull request
+# ever received, not only the one that authorised this landing), every
+# deterministic gate this function itself just passed and its evidence, the
+# `merge_budget_decide` object gate 5 already computed and would otherwise
+# discard the moment `decision == "arm"` was confirmed, and the landing
+# mechanism `landing_arm` actually used. `scripts/publish-dashboard.sh`'s
+# WI-8 digest reads this record instead of re-joining `approver-verdict`
+# events against `landing-armed`, and reports a `landing-armed` with no
+# matching record as an anomaly in its own right.
+_landing_stage_attempt() {
+  local slug="$1" pr_url="$2" complexity="$3" source="$4" default_branch="${5:-main}" retry="${6:-}" already_armed="${7:-0}"
+  local number level
+  _landing_stage_attempt_armed=0
+
+  if [[ "$pr_url" =~ /pull/([0-9]+)$ ]]; then
+    number="${BASH_REMATCH[1]}"
+  else
+    _landing_refuse "$pr_url" "$slug" "could not parse a pull request number from $pr_url" "$retry"
+    return 0
+  fi
+
+  # `fresh` (issue #513, PR #506 review follow-up): this stage arms a real
+  # merge/enqueue under the level it reads, so an operator's mid-cycle kill
+  # must stop it here, not wait for the next cycle's process — see
+  # merge_autonomy_effective_level's own comment on FRESH, and
+  # run_approver_stage's identical read immediately before this one.
+  level="$(merge_autonomy_effective_level "$DEFAULTED_CONFIG" "$slug" "$state_repo" "$state_dir" fresh)"
+  case "$level" in
+    agent-merges-routine|agent-merges-all) ;;
+    *)
+      _landing_refuse "$pr_url" "$slug" "$(landing_autonomy_refusal_reason "$state_repo" "$state_dir" "$level" fresh)" "$retry"
+      return 0
+      ;;
+  esac
+
+  local elig
+  elig="$(landing_eligible "$DEFAULTED_CONFIG" "$slug" "$number" "$complexity" "$source" "$level")"
+  if [[ "$elig" != "eligible" ]]; then
+    _landing_refuse "$pr_url" "$slug" "$elig" "$retry"
+    return 0
+  fi
+
+  # Gate 2.5 (requirement 8f, D18, agent-ops#668): an open question the
+  # Reviewer raised against this pull request's work order or scope, and
+  # could not settle itself, holds unattended landing until an adjudication
+  # pass settles it or a human acts — read fresh from GitHub every round,
+  # exactly like every other gate here, so a human's own removal of the
+  # label is seen the moment it happens. Unlike `landing_protected_paths_
+  # hit`'s own exit 2, an unreadable label list here is a plain, retryable
+  # read failure — it refuses with the ordinary "could not read" wording and
+  # tries again next cycle, rather than routing into the escalation/
+  # adjudication machinery over a question it never confirmed exists.
+  # `oq_word` is this gate's own verdict for the landing audit record
+  # (requirement 8x, which carries *every* gate this function passed): `clear`
+  # when no question stood, `settled` when one did and the adjudication pass
+  # answered it on this very round. No other value can reach the record — every
+  # other outcome returns above without arming anything.
+  local oq_hit_rc=0 oq_word="clear"
+  landing_open_question_hit "$slug" "$number" || oq_hit_rc=$?
+  case "$oq_hit_rc" in
+    1) ;; # clear — no open question stands.
+    2)
+      _landing_refuse "$pr_url" "$slug" "could not read $pr_url's own labels to confirm no open question stands" "$retry"
+      return 0
+      ;;
+    0)
+      if ! _landing_open_question_resolve "$slug" "$pr_url" "$number" "$retry"; then
+        return 0
+      fi
+      oq_word="settled"
+      ;;
+  esac
+
+  # `review_gate_verdict` speaks in its exit status as well as its word: 1 for
+  # `dirty`, 2 when the required-check list itself could not be read (see its
+  # own header, which tells every caller to capture that status rather than
+  # discard it — `lib/handoff.sh`'s `if gate_combined="$(…)"` is the other
+  # site). Captured with `|| gate_rc=$?` rather than a bare assignment because
+  # this file runs under `errexit`, where a bare assignment does not merely
+  # discard the status: it aborts the whole cycle mid-stage, on the two
+  # verdicts — a red required check, an unreadable check list — this gate
+  # exists to refuse. A refusal here must cost one `landing-refused` event and
+  # nothing else, exactly like every other gate in this function.
+  local gate_combined gate_word gate_reason gate_rc=0
+  gate_combined="$(review_gate_verdict "$pr_url" "$default_branch" 2>/dev/null)" || gate_rc=$?
+  gate_word="${gate_combined%%$'\t'*}"
+  gate_reason="${gate_combined#*$'\t'}"
+  if [[ "$gate_word" != "clean" || "$gate_rc" != "0" ]]; then
+    _landing_refuse "$pr_url" "$slug" \
+      "review gate: ${gate_reason:-${gate_word:-unreadable (review_gate_verdict exited $gate_rc)}}" "$retry"
+    return 0
+  fi
+
+  local login
+  if ! login="$(approver_token_identity_login "")" || [[ -z "$login" ]]; then
+    _landing_refuse "$pr_url" "$slug" "could not read the Approver App's own login" "$retry"
+    return 0
+  fi
+
+  # `_at` rather than the plain reader: D18 WI-12's protected-path cool-off
+  # (gate 4.5, below) is measured from this exact standing review's own
+  # `submitted_at`, and reset by its own `commit_id`, at no extra `gh` call —
+  # the same one reviews-list read either function makes (lib/landing.sh's
+  # own header).
+  local standing_at standing submitted_at review_commit rest
+  if ! standing_at="$(landing_approver_standing_review_at "$slug" "$number" "$login")"; then
+    _landing_refuse "$pr_url" "$slug" "could not read $pr_url's own review list to confirm the Approver's review actually landed" "$retry"
+    return 0
+  fi
+  standing="${standing_at%%$'\t'*}"
+  rest="${standing_at#*$'\t'}"
+  submitted_at="${rest%%$'\t'*}"
+  review_commit="${rest#*$'\t'}"
+  if [[ "$standing" != "APPROVED" ]]; then
+    _landing_refuse "$pr_url" "$slug" "the Approver's own review is not standing APPROVED on GitHub (state: ${standing:-none})" "$retry"
+    return 0
+  fi
+
+  local blocking
+  if ! blocking="$(_handoff_blocking_reviewers "$slug" "$number")"; then
+    _landing_refuse "$pr_url" "$slug" "could not read $pr_url's own review list to confirm no human CHANGES_REQUESTED stands" "$retry"
+    return 0
+  fi
+  if [[ -n "$blocking" ]]; then
+    _landing_refuse "$pr_url" "$slug" "a human CHANGES_REQUESTED stands ($(paste -sd, - <<<"$blocking"))" "$retry"
+    return 0
+  fi
+
+  # agent-ops#672: closes the residual human-veto gap `_handoff_blocking_
+  # reviewers` above cannot see — a plain comment posted after this pull
+  # request was already Ready. Unbounded (no NOT_AFTER): this stage never
+  # flips the pull request out of draft itself, so the raw "most recent
+  # ready_for_review event, not since undone" already is the anchor this read
+  # needs (see this function's own header comment on gate 4, and
+  # `_reconciliation_gate_anchor`'s header on why a caller that does flip the
+  # pull request must bound it and this one must not).
+  local rc_combined rc_word rc_reason
+  rc_combined="$(reconciliation_gate "$pr_url")" || true
+  IFS=$'\t' read -r rc_word rc_reason <<<"$rc_combined"
+  if [[ "$rc_word" == "dirty" ]]; then
+    _landing_refuse "$pr_url" "$slug" "$rc_reason" "$retry"
+    return 0
+  fi
+  # Anything that is not `clean` refuses arming outright, never falls through
+  # as a pass: the empty word a call that never executed at all leaves behind
+  # (`|| true` swallows a `command not found` exactly as it swallows the exit
+  # 1 a `dirty` verdict reports, and both arrive here as a bare string) would
+  # otherwise clear this gate silently, logging nothing and recording nothing
+  # — a veto check reading "clear" on the one path where it did not run is
+  # the failure this gate exists to prevent. `unknown` from a read that
+  # genuinely ran and the empty word a call that never ran leaves behind are
+  # not distinguished: neither should ever pass a safety gate (#753's own
+  # ruling on #746) — this is stricter than the ordinary ready-gate handoff,
+  # which does tolerate `unknown` as a warning, because arming an automatic
+  # merge is not that.
+  if [[ "$rc_word" != "clean" ]]; then
+    _landing_refuse "$pr_url" "$slug" \
+      "could not confirm every human comment on $pr_url since it last left draft is reconciled: ${rc_reason:-reconciliation_gate answered ${rc_word:-nothing at all}}" "$retry"
+    return 0
+  fi
+
+  # Gate 4.5 (D18 WI-12, Stage 4, agent-ops#415): the protected-path
+  # compensating controls — critical-tier approval, the standing review's
+  # `commit_id` still matching the pull request's current head, and the
+  # cool-off since the review's own `submitted_at` — only ever bind at
+  # `agent-merges-all`, and only for a pull request
+  # `landing_protected_path_controls_ok` itself confirms still touches a
+  # protected path (gate 2's own `landing_eligible` already deferred that
+  # decision here rather than refusing outright, see its own header). TIER
+  # is this round's own in-process fact on the first-approval round
+  # (`run_approver_stage`'s `approver_stage_tier`), or read back from the
+  # fleet log's `approver-verdict` event on a retry (`landing_retry_tier`) —
+  # a retry attempt has no in-process fact for a pull request this process
+  # never claimed, the same reasoning `landing_retry_source` already applies
+  # to a work order's own source.
+  if [[ "$level" == "agent-merges-all" ]]; then
+    local pp_tier pp_ctl
+    if [[ -n "$retry" ]]; then
+      pp_tier="$(landing_retry_tier "$pr_url" "$union_log")"
+    else
+      pp_tier="$approver_stage_tier"
+    fi
+    pp_ctl="$(landing_protected_path_controls_ok "$DEFAULTED_CONFIG" "$slug" "$number" "$pp_tier" "$submitted_at" "$review_commit")"
+    if [[ "$pp_ctl" != "ok" ]]; then
+      _landing_refuse "$pr_url" "$slug" "$pp_ctl" "$retry"
+      return 0
+    fi
+  fi
+
+  local budget_json budget_decision
+  budget_json="$(merge_budget_decide "$DEFAULTED_CONFIG" "$slug" "$pr_label" "$login" "" "$already_armed")"
+  budget_decision="$(jq -r '.decision' <<<"$budget_json" 2>/dev/null)"
+  if [[ "$budget_decision" != "arm" ]]; then
+    merge_budget_apply_decision "$budget_json" "$slug" "$state_repo" "$enabler_escalation_label" "$enabler_assignee"
+    return 0
+  fi
+
+  local queue_json queued dequeue_reason
+  if ! queue_json="$(merge_queue_probe "$slug" "$number")"; then
+    _landing_refuse "$pr_url" "$slug" "could not read $pr_url's merge-queue status" "$retry"
+    return 0
+  fi
+  queued="$(jq -r '.queued' <<<"$queue_json" 2>/dev/null)"
+  if [[ "$queued" != "false" ]]; then
+    _landing_refuse "$pr_url" "$slug" "already in the merge queue" "$retry"
+    return 0
+  fi
+  # A dequeue is otherwise invisible on an open pull request (PR #557 review
+  # of TD-PPagop-26081701): `queued` alone reads identically whether GitHub
+  # has never queued this pull request or removed it once and nobody has
+  # re-queued it since, and this stage must never arm the second case. Every
+  # `dequeue_reason` this scans for is `merge_queue_dequeue_actionable`
+  # (lib/merge-queue.sh): `manual` is the maintainer's own removal ("they
+  # caused it, so they already know" — re-enqueueing here would silently
+  # reverse it, every cycle, for as long as the pull request stays open) and
+  # any other reason (chiefly `failed_checks`) is exactly what
+  # `scripts/gather-dequeued.sh`'s own `dequeued` source exists to diagnose
+  # and fix before a human re-queues — arming it blindly here instead would
+  # re-run the same failing merge group every cycle, an unbounded CI cost for
+  # no forward progress. Neither reading is this stage's to retry: gate 5's
+  # own comment already draws the line between "this gate refuses and a
+  # later re-entry may succeed" and "a different mechanism owns this pull
+  # request now", and a dequeue is the latter, not the former.
+  dequeue_reason="$(jq -r '.dequeue_reason // empty' <<<"$queue_json" 2>/dev/null)"
+  if [[ -n "$dequeue_reason" ]]; then
+    if merge_queue_dequeue_actionable "$dequeue_reason"; then
+      _landing_refuse "$pr_url" "$slug" \
+        "GitHub's merge queue removed $pr_url over a $dequeue_reason failure — the dequeued source's own diagnose-and-fix path and a fresh human 'Merge when ready' click land this, never a blind re-arm here" "$retry"
+    else
+      _landing_refuse "$pr_url" "$slug" \
+        "GitHub's merge queue removed $pr_url (reason: $dequeue_reason) — a deliberate removal, so this stage never re-enqueues it" "$retry"
+    fi
+    return 0
+  fi
+
+  local token method arm_rc=0
+  if ! token="$(approver_token_get "")"; then
+    _landing_refuse "$pr_url" "$slug" "could not mint the Approver's installation token" "$retry"
+    return 0
+  fi
+  # Captured with `|| arm_rc=$?` rather than a bare `if ! …; then`, matching
+  # `review_gate_verdict`'s own capture above: `landing_arm`'s exit status is
+  # itself the signal (agent-ops#532, see its own header) — a bare `if !`
+  # would still branch correctly but discard the very code
+  # `_landing_arm_failure_reason` needs to say which step failed.
+  method="$(landing_arm "$slug" "$number" "$token")" || arm_rc=$?
+  if (( arm_rc != 0 )); then
+    _landing_refuse "$pr_url" "$slug" \
+      "landing_arm could not enqueue or auto-merge $pr_url: $(_landing_arm_failure_reason "$arm_rc")" "$retry"
+    return 0
+  fi
+  if [[ -z "$method" ]]; then
+    _landing_refuse "$pr_url" "$slug" "landing_arm could not enqueue or auto-merge $pr_url: printed no method despite exiting 0" "$retry"
+    return 0
+  fi
+
+  local retry_bool="false"
+  [[ -z "$retry" ]] || retry_bool="true"
+  # `cap`/`count` (D18 issue #574) are gate 5's own `budget_json`, already
+  # paid for above — never a second read. This is the only place an `arm`
+  # decision leaves any trace of the cap/count `merge_budget_decide` saw, so
+  # a dashboard tick can source a repository's current consumption from the
+  # same rolling-24h count `lib/merge-budget.sh` uses (never a private
+  # counter) without a live read of its own: the latest of this event and
+  # `merge-budget-hold`/`merge-budget-frozen` for a repository is that
+  # repository's last-known budget state.
+  local budget_cap budget_count
+  budget_cap="$(jq -r '.cap' <<<"$budget_json")"
+  budget_count="$(jq -c '.count' <<<"$budget_json")"
+  # `level` is the *effective* level gate 1 above actually judged this arm
+  # against — kill switch and per-repo merge-budget freeze already folded in
+  # by `merge_autonomy_effective_level`. It is written down here because this
+  # is the only moment anything knows it: requirement 8e's audit
+  # (`scripts/detect-classifier-escapes.sh`) runs post hoc with no state-repo
+  # access, so it can no more reconstruct the level in force at this instant
+  # than it can the work source recorded beside it. Left unrecorded, that
+  # audit had to read today's `config.json` instead, which breaks its own
+  # governing invariant in both directions: an operator's later dial-down —
+  # the exact move D18 staging makes, and the direction an incident would
+  # move it — manufactures a `classifier-escape` out of a landing that was
+  # correct when it happened, driving the Stage 2 "zero classifier escapes"
+  # exit criterion non-zero on an action with nothing wrong with it; and a
+  # since-cleared kill switch or since-lifted freeze reads a level that
+  # actually forbade landing as one that permitted it. One field closes both.
+  log_event "landing-armed" "$(jq -nc --arg u "$pr_url" --arg r "$slug" --arg src "$source" \
+    --arg c "$complexity" --arg m "$method" --arg lvl "$level" --argjson retry "$retry_bool" \
+    --argjson cap "$budget_cap" --argjson count "$budget_count" \
+    '{pr_url: $u, repo: $r, source: $src, complexity: $c, method: $m, level: $lvl, cap: $cap, count: $count} + (if $retry then {retry: true} else {} end)')"
+
+  # requirement 8x (D18, agent-ops#578) — see this function's own header for
+  # what each field is and why it costs no extra read beyond the one line
+  # below actually needs.
+  local autonomy_source
+  autonomy_source="$(merge_autonomy_resolution_source "$DEFAULTED_CONFIG" "$slug")"
+
+  local pp_hit_rc=0 pp_hit_paths="" pp_verdict pp_paths_json
+  pp_hit_paths="$(landing_protected_paths_hit "$DEFAULTED_CONFIG" "$slug" "$number")" || pp_hit_rc=$?
+  case "$pp_hit_rc" in
+    0) pp_verdict="hit" ;;
+    1) pp_verdict="clear" ;;
+    *) pp_verdict="unknown" ;;
+  esac
+  if [[ "$pp_hit_rc" == "0" ]]; then
+    pp_paths_json="$(jq -R -s 'split("\n") | map(select(length > 0))' <<<"$pp_hit_paths")"
+  else
+    pp_paths_json='[]'
+  fi
+
+  local approver_history_json approver_latest_json
+  if [[ -n "$retry" ]]; then
+    approver_history_json="$(landing_approver_adjudication_history "$pr_url" "$union_log")"
+  else
+    approver_history_json="$(landing_approver_adjudication_history "$pr_url" "${log_file:-}")"
+  fi
+  [[ -n "$approver_history_json" ]] || approver_history_json='[]'
+  approver_latest_json="$(jq -c 'if length > 0 then .[-1] else {} end' <<<"$approver_history_json" 2>/dev/null)"
+  [[ -n "$approver_latest_json" ]] || approver_latest_json='{}'
+
+  local gates_json
+  gates_json="$(jq -nc \
+    --arg level "$level" --arg elig "$elig" --arg gate_word "$gate_word" \
+    --arg standing "$standing" --arg pp_ctl "${pp_ctl:-n/a}" \
+    --arg rc_word "${rc_word:-}" --arg oq "${oq_word:-clear}" \
+    --arg budget_decision "$budget_decision" --arg queued "$queued" \
+    '[
+      {gate: "autonomy-level", verdict: $level},
+      {gate: "eligibility", verdict: $elig},
+      {gate: "open-question", verdict: $oq},
+      {gate: "review-gate", verdict: $gate_word},
+      {gate: "approver-standing-review", verdict: $standing},
+      {gate: "human-veto", verdict: "clear"},
+      {gate: "comment-reconciliation",
+       verdict: (if $rc_word == "" then "unknown" else $rc_word end)},
+      {gate: "protected-path-controls", verdict: $pp_ctl},
+      {gate: "merge-budget", verdict: $budget_decision},
+      {gate: "merge-queue", verdict: (if $queued == "false" then "clear" else $queued end)}
+    ]')"
+
+  log_event "landing-audit-record" "$(jq -nc \
+    --arg u "$pr_url" --arg r "$slug" --argjson n "$number" --arg sha "${review_commit:-}" \
+    --arg src "$source" --arg c "$complexity" --arg level "$level" --arg asrc "$autonomy_source" \
+    --arg ppv "$pp_verdict" --argjson pp_paths "$pp_paths_json" \
+    --argjson approver_latest "$approver_latest_json" --argjson approver_hist "$approver_history_json" \
+    --argjson gates "$gates_json" --argjson budget "$budget_json" \
+    --arg m "$method" --argjson retry "$retry_bool" \
+    '{
+      pr_url: $u, repo: $r, number: $n, head_sha: (if $sha == "" then null else $sha end),
+      source: $src, complexity: $c,
+      autonomy: {level: $level, source: $asrc},
+      protected_path: {verdict: $ppv, paths: $pp_paths},
+      approver: {tier: ($approver_latest.tier // null), model: ($approver_latest.model // null),
+                 verdict: ($approver_latest.verdict // null),
+                 adjudication: ($approver_latest.adjudication // false),
+                 history: $approver_hist},
+      gates: $gates,
+      budget: $budget,
+      mechanism: $m
+    } + (if $retry then {retry: true} else {} end)')"
+
+  _landing_stage_attempt_armed=1
+}
+
+# _landing_open_question_resolve SLUG PR_URL NUMBER [RETRY]
+# Requirement 8f's own escalation/adjudication ladder, factored out of
+# `_landing_stage_attempt`'s gate 2.5 so that gate's own `case` stays as
+# short as every other gate's inline check. Returns 0 when the question is
+# settled this round — the caller falls through to the next gate exactly as
+# a `clear` read would have — and 1 when it refused and logged
+# `landing-refused` itself, in which case the caller must return without
+# running any further gate.
+_landing_open_question_resolve() {
+  local slug="$1" pr_url="$2" number="$3" retry="${4:-}"
+  local item_ref level adjudication verdict evidence answer
+  item_ref="pr-${number}-open-question"
+  level="$(escalation_autonomy_configured_level "$DEFAULTED_CONFIG" "$slug")"
+
+  if [[ "$level" == "adjudicate-first" ]] && open_question_pass_available "$slug" "$pr_url" "$item_ref"; then
+    adjudication="$(run_open_question_adjudication "$slug" "$pr_url" "$number")"
+    verdict="$(jq -r '.verdict // ""' <<<"$adjudication" 2>/dev/null)"
+    evidence="$(jq -r '.evidence // ""' <<<"$adjudication" 2>/dev/null)"
+    [[ "$verdict" == "settled" ]] || verdict="escalate"
+    log_event "open-question-adjudication" "$(jq -nc --arg u "$pr_url" --arg r "$slug" \
+      --arg v "$verdict" --arg e "$evidence" \
+      '{pr_url: $u, repo: $r, verdict: $v, evidence: $e, adjudication: true}')"
+    if [[ "$verdict" == "settled" ]]; then
+      answer="$(jq -r '.answer // ""' <<<"$adjudication" 2>/dev/null)"
+      if [[ -n "$answer" ]]; then
+        gh pr comment "$pr_url" --body "$(pipeline_comment_header approver-adjudicate-open-question "$node_name")
+
+$answer
+
+$(pipeline_comment_marker "$cycle_id" approver-adjudicate-open-question)" >/dev/null 2>&1 || \
+          log_event "warning" "$(jq -nc --arg u "$pr_url" \
+            --arg d "the open-question adjudication settled $pr_url but the answer could not be posted as a PR comment" \
+            '{detail: $d, pr_url: $u}')"
+      fi
+      if landing_open_question_label_release "$slug" "$number"; then
+        return 0
+      fi
+      log_event "warning" "$(jq -nc --arg u "$pr_url" --arg l "$LANDING_OPEN_QUESTION_LABEL" \
+        --arg d "the open-question adjudication settled $pr_url but the $LANDING_OPEN_QUESTION_LABEL label could not be removed — it will settle again next round" \
+        '{detail: $d, pr_url: $u, label: $l}')"
+      return 0
+    fi
+    open_question_escalate "$slug" "$pr_url" "$item_ref" \
+      "$(landing_open_question_latest "$pr_url" "${union_log:-$log_file}")" "$adjudication"
+    _landing_refuse "$pr_url" "$slug" "open-question:$pr_url carries an unresolved open question the adjudication pass could not settle — see the escalation issue" "$retry"
+    return 1
+  fi
+
+  open_question_escalate "$slug" "$pr_url" "$item_ref" \
+    "$(landing_open_question_latest "$pr_url" "${union_log:-$log_file}")"
+  _landing_refuse "$pr_url" "$slug" "open-question:$pr_url carries an unresolved open question — see the escalation issue" "$retry"
+  return 1
+}
+
+# open_question_adjudicated_before PR_URL < union.jsonl
+# Exit 0 when an `open-question-adjudication` event for PR_URL already
+# exists in the log on stdin at or after the most recently logged
+# `open-question-raised` for it — this question's one adjudication pass has
+# been spent — and 1 otherwise. Mirrors `escalation_autonomy_adjudicated_
+# before`'s own shape (lib/escalation-autonomy.sh, requirement 36b) for the
+# bound agent-ops#668 names as identical: "one pass per question, per human
+# touch."
+open_question_adjudicated_before() {
+  local pr_url="$1" hits
+  hits="$(jq -r -R -n --arg u "$pr_url" '
+    [inputs | select(length > 0) | (fromjson? // empty)] as $all
+    | ([$all[] | select(.event == "open-question-raised" and (.pr_url // "") == $u) | (.ts // "")]
+       | sort | last // "") as $raised_ts
+    | [$all[] | select(.event == "open-question-adjudication"
+                       and (.pr_url // "") == $u and (.ts // "") >= $raised_ts)]
+    | length
+  ' 2>/dev/null || echo 0)"
+  [[ "$hits" =~ ^[0-9]+$ ]] && (( hits > 0 ))
+}
+
+# open_question_pass_available SLUG PR_URL ITEM_REF
+# The bound on `adjudicate-first` for an open question (requirement 8f,
+# mirroring requirement 36b's own `escalation_autonomy_pass_available`): one
+# adjudication pass per question, per human touch. True (exit 0) when this
+# question still has its pass to spend; false, having logged why, when it
+# does not.
+#
+# The exemption mirrors 36b's own "issue-closed": a *closed* escalation
+# issue carrying ITEM_REF in its body means a human has already acted on
+# this exact question since the last pass, so the next one is the first
+# since they did — read live from GitHub, never from the log, on the same
+# "ask the thing that actually changed" reasoning `approver_refuse_streak`
+# already applies to the Approver's own streak.
+open_question_pass_available() {
+  local slug="$1" pr_url="$2" item_ref="$3" closed
+  closed="$(gh issue list -R "$slug" --label "$enabler_escalation_label" --state closed --search "$item_ref" \
+              --json body 2>/dev/null \
+            | jq -r --arg it "$item_ref" 'map(select(((.body // "") | contains($it)))) | length' 2>/dev/null || echo 0)"
+  [[ "$closed" =~ ^[0-9]+$ ]] || closed=0
+  (( closed > 0 )) && return 0
+  open_question_adjudicated_before "$pr_url" < "${union_log:-$log_file}" || return 0
+  log_event "warning" "$(jq -nc --arg u "$pr_url" --arg i "$item_ref" \
+    --arg d "open-question: $pr_url has already spent its one adjudication pass for $item_ref and no human has acted on it since — escalating without adjudicating (escalation_autonomy is bounded per question, per human touch)" \
+    '{detail: $d, pr_url: $u, item: $i}')"
+  return 1
+}
+
+# run_open_question_adjudication SLUG PR_URL NUMBER
+# One bounded adjudication pass (requirement 8f, mirroring requirement 36b's
+# own `run_enabler_adjudication` in shape: bounded, once, verdict-plus-
+# evidence logged) over a Reviewer's own open question against PR_URL — a
+# fresh, narrow engagement at the Approver's own critical tier
+# (`approver_model_critical`, the tier D18 §5.2 already reserves for
+# litigated judgement), never `enabler_model`: the question is about whether
+# this pull request's own diff and work order already answer it, the
+# Approver's own ground, not a refinement disagreement.
+#
+# Distinct from requirement 8c's own refuse-streak adjudication in every way
+# that requirement's own text calls for: different trigger (an open question
+# stands, never a refuse streak), different prompt (`prompts/approver-
+# adjudicate-open-question.md`, never `prompts/approver.md`), different
+# input (the question and its own comment, never prior refusal bodies), and
+# never conflated in the log — `open-question-adjudication` is its own
+# event, carrying `adjudication: true` on the same footing as
+# `enabler-adjudication`, never `approver-verdict`.
+#
+# Prints `{"verdict": "settled"|"escalate", "evidence": "...", "answer":
+# "..."}` on stdout — `answer` is present only on `settled`, the text posted
+# to the pull request. A missing prompt file, a disabled critical tier, a
+# stage failure, or an unparseable verdict all print `escalate` with an
+# `evidence` string naming why — "cannot settle" is not read as "nothing to
+# settle" (requirement 8c).
+run_open_question_adjudication() {
+  local slug="$1" pr_url="$2" number="$3"
+  local questions input prompt out rc=0 result parsed verdict evidence answer
+
+  if [[ -z "$approver_model_critical" ]]; then
+    printf '{"verdict":"escalate","evidence":"no approver_model_critical is configured to adjudicate this question"}'
+    return 0
+  fi
+  if [[ ! -f "$PROMPTS_DIR/approver-adjudicate-open-question.md" ]]; then
+    printf '{"verdict":"escalate","evidence":"no prompts/approver-adjudicate-open-question.md in this installation"}'
+    return 0
+  fi
+
+  questions="$(landing_open_question_latest "$pr_url" "${union_log:-$log_file}")"
+  [[ -n "$questions" && "$questions" != "null" ]] || questions='[]'
+
+  input="$(jq -nc --arg r "$slug" --arg u "$pr_url" --argjson qs "$questions" \
+    '{repo: $r, pr_url: $u, questions: $qs}' 2>/dev/null || true)"
+  if [[ -z "$input" ]]; then
+    printf '{"verdict":"escalate","evidence":"could not build the adjudication input"}'
+    return 0
+  fi
+
+  prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" approver-adjudicate-open-question '{}')
+
+## Runtime input for this adjudication
+
+\`\`\`json
+$(jq . <<<"$input")
+\`\`\`
+"
+  out="$cycle_dir/approver-adjudicate-open-question-${number}.out"
+  stage_budget_apply approver-adjudicate-open-question "$slug" "$approver_model_critical" '{}'
+  if run_claude_stage approver-adjudicate-open-question "$(( stage_backstop_min * 60 ))" "$approver_model_critical" "$prompt" "$out" "$cycle_dir" "$(( stage_inactivity_min * 60 ))"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  log_event "stage-end" "$(jq -nc --argjson rc "$rc" --arg kr "$stage_kill_reason" \
+    --argjson m "$(metering_fields "$approver_model_critical" "$out" "$stage_gaps_json")" \
+    '{stage: "approver-adjudicate-open-question", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m')"
+
+  result="$(jq -r '.result // empty' "$out" 2>/dev/null || true)"
+  parsed="$(extract_json_result "$result" 2>/dev/null || true)"
+  if (( rc != 0 )) || [[ -z "$parsed" ]]; then
+    if (( rc == 124 )); then
+      printf '{"verdict":"escalate","evidence":"the adjudication engagement timed out"}'
+    else
+      printf '{"verdict":"escalate","evidence":"the adjudication engagement returned no parseable verdict"}'
+    fi
+    return 0
+  fi
+  verdict="$(jq -r '.verdict // ""' <<<"$parsed" 2>/dev/null || true)"
+  evidence="$(jq -r '.evidence // ""' <<<"$parsed" 2>/dev/null || true)"
+  answer="$(jq -r '.answer // ""' <<<"$parsed" 2>/dev/null || true)"
+  if [[ "$verdict" == "settled" ]]; then
+    jq -nc --arg v "settled" --arg e "$evidence" --arg a "$answer" '{verdict: $v, evidence: $e, answer: $a}' 2>/dev/null \
+      || printf '{"verdict":"escalate","evidence":"could not encode the adjudication verdict"}'
+  else
+    jq -nc --arg v "escalate" --arg e "$evidence" '{verdict: $v, evidence: $e}' 2>/dev/null \
+      || printf '{"verdict":"escalate","evidence":"could not encode the adjudication verdict"}'
+  fi
+}
+
+# open_question_escalate REPO PR_URL ITEM_REF QUESTIONS_JSON [ADJUDICATION_JSON]
+# File (or find already-filed, via `create_escalation_issue`'s own dedup)
+# the escalation issue for a pull request an open question holds — land it,
+# or leave the pull request refused and let a human decide. Mirrors
+# `approver_escalate` exactly in shape (same dedup, same label, same
+# load-bearing assignee), differing only in what it names: a question about
+# the work order or its scope, never a diff the Approver refused twice.
+# Takes REPO explicitly, never `$selected_repo` — this runs from
+# `_landing_stage_attempt`, which the requirement 8u retry sweep calls once
+# per candidate across every configured repository, not only the one this
+# cycle selected.
+open_question_escalate() {
+  local repo="$1" pr_url="$2" item_ref="$3" questions_json="$4" adjudication_json="${5:-}"
+  local body_file questions_text adj_section created
+  body_file="$cycle_dir/open-question-escalation-${item_ref}.md"
+  [[ -n "$questions_json" && "$questions_json" != "null" ]] || questions_json='[]'
+  questions_text="$(jq -r 'if length == 0 then "(no question text recorded)" else
+    map("- **" + (.question // "(no question given)") + "**\n  Why the Reviewer could not settle it: "
+        + (.why_this_actor_cannot_settle_it // "(not given)") + "\n  " + (.comment_url // "")) | join("\n\n") end' \
+    <<<"$questions_json" 2>/dev/null)"
+  adj_section=""
+  if [[ -n "$adjudication_json" && "$adjudication_json" != "{}" ]]; then
+    adj_section="
+## Adjudication attempted
+
+$(jq -r '"- verdict: " + (.verdict // "escalate") + "\n- evidence: " + (.evidence // "(none given)")' <<<"$adjudication_json" 2>/dev/null)
+"
+  fi
+  {
+    printf '## What the autonomous pipeline needs from you\n\n'
+    printf 'Review %s and answer the question below yourself — the Reviewer found nothing wrong with the diff, but raised a question about the work order or its scope that only you can settle.\n\n' "$pr_url"
+    printf '## The question\n\n'
+    printf '%s\n\n' "$questions_text"
+    printf '%s' "$adj_section"
+    cat <<OQ_ESC_BODY
+
+## When you're done: answer, then take the label off
+
+Answer the question on $pr_url — a comment is enough. Then
+remove the \`$LANDING_OPEN_QUESTION_LABEL\` label from that pull request, and close this issue.
+
+**Removing the label is what releases the pipeline.** Until it comes off — or
+until an adjudication pass settles the question itself — no automatic landing
+action is taken on this pull request.
+Closing this issue alone does not clear it.
+
+---
+Item: \`$item_ref\` · pull request $pr_url
+Raised by the Reviewer stage (D18, agent-ops#668) · cycle \`$cycle_id\` · node \`$node_name\`
+OQ_ESC_BODY
+  } > "$body_file"
+  if created="$(create_escalation_issue "$repo" "$item_ref" \
+        "$enabler_escalation_label" \
+        "Open question on $pr_url needs your judgement" \
+        "$body_file")" && [[ -n "$created" ]]; then
+    log_event "open-question-escalated" "$(jq -nc --arg u "$pr_url" \
+      --arg n "${created%%$'\t'*}" --arg iu "${created#*$'\t'}" \
+      '{pr_url: $u, issue_number: ($n | tonumber), issue_url: $iu}')"
+  else
+    log_event "warning" "$(jq -nc --arg u "$pr_url" \
+      --arg d "$pr_url carries an unresolved open question, and the escalation issue could not be filed — will retry next cycle" \
+      '{detail: $d, pr_url: $u}')"
+  fi
+}
+
+# _landing_retry_sweep_repo SLUG RETRY_LOGIN
+# One repository's own pass of the 2.1e landing-retry sweep
+# (TD-PPagop-26081701) — every candidate this repository currently has,
+# offered to `_landing_stage_attempt` with `RETRY` set. See that requirement
+# for the full design; this function is the candidate rule alone:
+#
+#   - Same FRESH discipline every other landing read uses (issue #513): a
+#     repository the kill switch or a budget freeze currently holds at
+#     `human`/`agent-approves` is skipped before any further GitHub call —
+#     `_landing_stage_attempt` would refuse every candidate on this gate
+#     alone, so asking is pure cost for a repository this sweep cannot act
+#     on regardless.
+#   - A candidate is open, non-draft, carries `pr_label`, and its own
+#     `complexity:*` label reads `low` or `medium` (never `high` — the
+#     cheapest of the seven gates to pre-check, from data already fetched here,
+#     so a permanently-ineligible pull request costs one list call per
+#     repository per cycle rather than the changed-file read
+#     `landing_eligible` would otherwise repeat forever).
+#   - Only a pull request the Approver has genuinely, currently approved is
+#     this sweep's business (`landing_approver_standing_review`, the same
+#     fresh read `_landing_stage_attempt`'s own gate 4 makes) — one never
+#     reviewed (still mid-Reviewer, or `run_approver_stage` never ran for it)
+#     is not a stranded approval, it is ordinary in-flight work, and logging
+#     a `landing-refused` against it every cycle would be pure noise.
+#   - `landing_retry_source` (lib/landing.sh) resolves the pull request's
+#     originating `source` from the fleet's own union log (`$union_log`) —
+#     the one fact this sweep cannot re-read fresh from GitHub, because
+#     GitHub carries no field for it and a pull request's source is fixed at
+#     claim time regardless. A pull request whose source cannot be resolved
+#     this cycle (the claim predates this node's log window, or the union
+#     log itself could not be read) is skipped, never guessed at.
+#
+# Every remaining gate — level, eligibility, review, budget, queue, the arm
+# itself — is `_landing_stage_attempt`'s alone; this function never repeats
+# or second-guesses any of them, with one exception it must carry itself
+# (PR #557 review of TD-PPagop-26081701): `merge_budget_decide`'s own count
+# is GitHub's *merged*-PR record, which a pull request this same pass just
+# armed does not join synchronously, so a naive per-candidate call would read
+# every candidate against the same stale count and arm all of them regardless
+# of the cap — 12 stranded approved pull requests each reading `count=0`
+# against `merge_budget_per_day: 8`, say, all twelve arming, and the *next*
+# cycle's own budget read then seeing 12 merged against a cap of 8 and
+# tripping the counting-anomaly freeze against an operator who did nothing
+# wrong. `armed_this_pass` below starts from — and, on every arm, writes
+# back to — the cycle-scoped `landing_armed_by_repo[$slug]` (declared ahead
+# of this function, PR #557 review round 2) rather than a tally private to
+# this one pass: `run_landing_stage`'s own gate 0, called later the same
+# cycle for whatever repository this round's own Implementer worked in,
+# reads and grows the identical global, so a repository this sweep already
+# armed candidates for cannot then have that round's own arming step push it
+# one past `merge_budget_per_day` on a live count neither call site's own
+# pass-local tally would have caught alone. Grown here (read off
+# `_landing_stage_attempt`'s own `_landing_stage_attempt_armed` global
+# immediately after each call, the one signal that function's own always-0
+# exit status cannot carry) exactly as before within one pass; only the
+# variable it starts from and feeds back into is no longer private to this
+# function.
+_landing_retry_sweep_repo() {
+  local slug="$1" login="$2"
+  local level default_branch open armed_this_pass="${landing_armed_by_repo[$slug]:-0}"
+
+  level="$(merge_autonomy_effective_level "$DEFAULTED_CONFIG" "$slug" "$state_repo" "$state_dir" fresh)"
+  case "$level" in
+    agent-merges-routine|agent-merges-all) ;;
+    *) return 0 ;;
+  esac
+
+  default_branch="$(gh api "repos/$slug" --jq '.default_branch' 2>/dev/null)" || default_branch=""
+  [[ -n "$default_branch" ]] || default_branch="main"
+
+  open="$(gh pr list -R "$slug" --state open --label "$pr_label" \
+    --json number,url,headRefName,isDraft,labels --limit "$GITHUB_PR_LIST_LIMIT" 2>/dev/null || true)"
+  jq -e 'type == "array"' <<<"$open" >/dev/null 2>&1 || open='[]'
+  if github_pr_list_truncated "$(jq 'length' <<<"$open")"; then
+    log_event "warning" "$(jq -nc --arg r "$slug" \
+      --arg d "landing-retry sweep ($slug): the pull-request listing came back at its ${GITHUB_PR_LIST_LIMIT}-item cap; a stranded pull request beyond it is not retried this cycle" \
+      '{detail: $d, repo: $r}')"
+  fi
+
+  local candidates
+  candidates="$(jq -c '[.[] | select(.isDraft | not)
+    | . + {complexity: ((.labels // []) | map(.name) | map(select(startswith("complexity:"))) | first // "" | sub("^complexity:";""))}
+    | select(.complexity == "low" or .complexity == "medium")
+    | {number, url, branch: .headRefName, complexity}]' <<<"$open" 2>/dev/null || echo '[]')"
+
+  local cand pr_url branch number complexity standing source
+  while IFS= read -r cand; do
+    [[ -n "$cand" ]] || continue
+    pr_url="$(jq -r '.url' <<<"$cand")"
+    branch="$(jq -r '.branch' <<<"$cand")"
+    number="$(jq -r '.number' <<<"$cand")"
+    complexity="$(jq -r '.complexity' <<<"$cand")"
+
+    standing="$(landing_approver_standing_review "$slug" "$number" "$login" 2>/dev/null)" || continue
+    [[ "$standing" == "APPROVED" ]] || continue
+
+    source="$(landing_retry_source "$slug" "$branch" "$union_log")"
+    [[ -n "$source" ]] || continue
+
+    _landing_stage_attempt "$slug" "$pr_url" "$complexity" "$source" "$default_branch" "retry" "$armed_this_pass"
+    if (( _landing_stage_attempt_armed )); then
+      armed_this_pass=$(( armed_this_pass + 1 ))
+      # shellcheck disable=SC2004  # false positive: see the sibling
+      # assignment in run_landing_stage above.
+      landing_armed_by_repo[$slug]="$armed_this_pass"
+    fi
+  done < <(jq -c '.[]' <<<"$candidates" 2>/dev/null || true)
+  return 0
 }
 
 # landing_open_question_hit SLUG NUMBER

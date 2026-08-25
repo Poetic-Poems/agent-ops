@@ -137,7 +137,7 @@ assert_not_contains "and is not announced as degraded when nothing was given up"
 
 out="$(run_lint degraded)"
 assert_contains "with less room, a large file is linted without -x" \
-  "-e SC1091 -- big.sh" "$(cat "$invocations")"
+  "-e SC1091,SC2154,SC2034 -- big.sh" "$(cat "$invocations")"
 assert_not_contains "and -x is not passed for it" "-x -- big.sh" "$(cat "$invocations")"
 assert_contains "the reduction in coverage is announced, not left to be discovered" \
   "was linted WITHOUT -x" "$out"
@@ -168,6 +168,26 @@ assert_contains "though the run still reports what it did not fully check" \
 out="$(run_lint follow)"; rc_clean=$?
 assert_eq "a wholly clean run exits 0" "0" "$rc_clean"
 assert_contains "and says plainly that it is clean" "lint-shell: clean" "$out"
+
+# --- "Large" is the union `-x` parses, not the file's own length -----------
+# The distinction #771 turns on: splitting agent-cycle.sh moved lines out of it
+# and into the modules it sources, and `-x` re-inlines every one of them — so a
+# guard reading the file's own `wc -l` would have declared the problem solved
+# and then OOM-killed the node it ran on. Two three-line entry points make the
+# point without any memory being involved: they differ only in what they source.
+printf '#!/usr/bin/env bash\n# shellcheck source=big.sh\n. ./big.sh\n'     > "$repo/wide-entry.sh"
+printf '#!/usr/bin/env bash\n# shellcheck source=small.sh\n. ./small.sh\n' > "$repo/lone-entry.sh"
+git -C "$repo" add wide-entry.sh lone-entry.sh
+git -C "$repo" -c user.email=t@t -c user.name=t commit --quiet -m entries
+
+out="$(run_lint degraded)"
+assert_contains "a three-line file that sources a large one is treated as large" \
+  "-e SC1091,SC2154,SC2034 -- wide-entry.sh" "$(cat "$invocations")"
+assert_not_contains "and is not followed with -x" "-x -- wide-entry.sh" "$(cat "$invocations")"
+assert_contains "a three-line file that sources a small one is followed as usual" \
+  "-x -- lone-entry.sh" "$(cat "$invocations")"
+assert_contains "the warning reports the union, not only the file's own length" \
+  "3 lines, 44 including everything it sources" "$out"
 
 printf '\n%s\n' "-----"
 if (( failures == 0 )); then

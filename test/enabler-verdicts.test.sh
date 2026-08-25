@@ -124,16 +124,16 @@ extract_fn() {
   ' "$file"
 }
 
-maybe_run_enabler_fn="$(extract_fn 'maybe_run_enabler() {' "$SCRIPT_DIR/agent-cycle.sh")"
-enabler_claim_key_fn="$(extract_fn 'enabler_claim_key() {' "$SCRIPT_DIR/agent-cycle.sh")"
-extract_json_result_fn="$(extract_fn 'extract_json_result() {' "$SCRIPT_DIR/agent-cycle.sh")"
+maybe_run_enabler_fn="$(extract_fn 'maybe_run_enabler() {' "$SCRIPT_DIR/lib/enabler.sh")"
+enabler_claim_key_fn="$(extract_fn 'enabler_claim_key() {' "$SCRIPT_DIR/lib/enabler.sh")"
+extract_json_result_fn="$(extract_fn 'extract_json_result() {' "$SCRIPT_DIR/lib/stage-attempt.sh")"
 # TD-PPagop-26081603: `maybe_run_enabler`'s `complete_handoff` block calls
 # `review_gate_escalate_unreadable_streak` on an unreadable-checks verdict,
 # shared with the Reviewer's own handoff (test/review-gate-wiring.test.sh
 # lifts it the same way). Lifted for real rather than stubbed outright, so
 # the "checks-unreadable" scenario below exercises the genuine escalation
 # logic; only its own two callees are stubbed.
-review_gate_escalate_unreadable_streak_fn="$(extract_fn 'review_gate_escalate_unreadable_streak() {' "$SCRIPT_DIR/agent-cycle.sh")"
+review_gate_escalate_unreadable_streak_fn="$(extract_fn 'review_gate_escalate_unreadable_streak() {' "$SCRIPT_DIR/lib/review-gate.sh")"
 # agent-ops#627: the bound on `adjudicate-first` — one adjudication pass per
 # item, per human touch. Lifted for real rather than stubbed, because it is
 # the whole of requirement 36b's "bounded, not a loop": a guard that fails
@@ -141,7 +141,7 @@ review_gate_escalate_unreadable_streak_fn="$(extract_fn 'review_gate_escalate_un
 # loop the thrash guard beside it exists to end. Its own log predicate
 # (`escalation_autonomy_adjudicated_before`) is sourced for real above and
 # unit-tested in test/escalation-autonomy.test.sh.
-escalation_autonomy_pass_available_fn="$(extract_fn 'escalation_autonomy_pass_available() {' "$SCRIPT_DIR/agent-cycle.sh")"
+escalation_autonomy_pass_available_fn="$(extract_fn 'escalation_autonomy_pass_available() {' "$SCRIPT_DIR/lib/enabler.sh")"
 
 if [[ "$maybe_run_enabler_fn" != *"enabler-examined"* ]]; then
   printf 'FAIL - maybe_run_enabler could not be found in agent-cycle.sh (renamed or moved?)\n'

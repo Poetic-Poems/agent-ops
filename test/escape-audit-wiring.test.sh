@@ -72,7 +72,7 @@ extract_block() {
   ' "$1"
 }
 
-block="$(extract_block "$REPO_ROOT/agent-cycle.sh")"
+block="$(extract_block "$REPO_ROOT/lib/standdown.sh")"
 if [[ -z "$block" ]]; then
   echo "FAIL - could not extract the classifier-escape audit block from agent-cycle.sh — has it moved?" >&2
   exit 1

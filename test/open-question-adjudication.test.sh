@@ -5,7 +5,7 @@
 # (D18, agent-ops#668): `_landing_open_question_resolve`,
 # `open_question_pass_available`, `open_question_adjudicated_before`,
 # `open_question_escalate` and `run_open_question_adjudication`, all in
-# agent-cycle.sh.
+# lib/landing.sh.
 #
 # `test/landing-wiring.test.sh` covers the gate itself (`_landing_stage_
 # attempt`'s own dispatch on a hit/clear/unknown label read), with `_landing_
@@ -18,7 +18,7 @@
 # own section below, `run_open_question_adjudication`'s own internals tested
 # directly, with `run_claude_stage` stubbed instead.
 #
-# Every function here is lifted verbatim out of agent-cycle.sh, so the
+# Every function here is lifted verbatim out of lib/landing.sh, so the
 # assertions are about the shipped code rather than a copy of its logic.
 #
 # No test framework is used (none exists elsewhere in this repo). Run
@@ -36,7 +36,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CYCLE="$SCRIPT_DIR/agent-cycle.sh"
+CYCLE="$SCRIPT_DIR/lib/landing.sh"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -82,7 +82,7 @@ for pair in "resolve_block:_landing_open_question_resolve" "refuse_block:_landin
             "adjudicate_block:run_open_question_adjudication"; do
   var="${pair%%:*}" name="${pair#*:}"
   if [[ -z "${!var}" ]]; then
-    echo "FAIL - could not extract $name from agent-cycle.sh — has it moved?" >&2
+    echo "FAIL - could not extract $name from lib/landing.sh — has it moved?" >&2
     exit 1
   fi
 done

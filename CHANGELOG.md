@@ -10,7 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - A pull request the Approver refused no longer relies on the same cycle
   that fixed it to also re-review it (requirement 46, agent-ops#682): a new
-  fleet-wide restale sweep (`_approver_restale_sweep_repo`, `agent-cycle.sh`)
+  fleet-wide restale sweep (`_approver_restale_sweep_repo`, `lib/approver.sh`)
   detects a standing Approver `CHANGES_REQUESTED` whose `commit_id` no
   longer matches the pull request's head — never GitHub's
   `requested_reviewers`, which silently no-ops for the Approver's own Bot
@@ -1276,6 +1276,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `agent-cycle.sh` is no longer one 10,000-line file (agent-ops#771,
+  discharging the cause of #770). Its ninety-six functions and the top-level
+  blocks around them now live in `lib/*.sh` beside the modules they already
+  worked with — `lib/stage-attempt.sh` (the Co-Ordinator stage-attempt
+  sequence and the failure handling every stage shares), `lib/approver.sh`,
+  `lib/landing.sh`, `lib/enabler.sh` and `lib/refinement.sh` (their stages),
+  `lib/candidate-gather.sh` and `lib/candidate-select.sh` (the repo-ordering
+  and gather loop, the claim loop and candidate selection),
+  `lib/standdown.sh` (the stand-down reason ladder), `lib/eligibility.sh`
+  (what this cycle is allowed to act on) and `lib/manage.sh` (`--status`,
+  `--disable`, `--enable` and the rest) — leaving the file at 2,865 lines
+  carrying the cycle's spine and nothing else: argument handling, the lock,
+  the ordered sequence of phases, and the exit path. Pure moves, landed one
+  seam at a time with the affected tests green at each, and no behavioural
+  change: every test that lifted a function out of `agent-cycle.sh` now lifts
+  it from its new home, and the implementation spec's component list moves
+  with the code.
+- `scripts/lint-shell.sh`'s size guard now measures the union `-x` actually
+  parses — a file plus everything it sources, transitively — rather than the
+  file's own length, which after #771 no longer says anything about what a
+  lint costs: `agent-cycle.sh` fell from 10,136 lines to 2,865 while the
+  26,262 lines `-x` re-inlines for it, and the more than 4.5 GiB they cost,
+  did not move. It also suppresses SC2154 and SC2034 alongside SC1091 when it
+  does drop `-x`, all three being artefacts of not following the sources
+  rather than findings about the code, and still checked in full in CI, where
+  the guard is switched off outright. The split does show up where it counts:
+  linted without `-x`, `agent-cycle.sh` now completes in 634 MiB against a
+  scheduler container's 1,536 MiB ceiling, so the file that used to be
+  skipped outright on a node is now checked on every one.
 - The pipeline no longer names a human as the destination of an escalation or
   a landing where `escalation_autonomy` or `merge_autonomy` chooses that
   destination (agent-ops#679, discharging the debt #668 declared). Since #627

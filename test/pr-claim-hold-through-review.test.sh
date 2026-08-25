@@ -39,17 +39,18 @@ assert_eq() {
   fi
 }
 
-# --- Lift release_claim and release_pr_claim whole out of agent-cycle.sh -------
-extract_function() {  # extract_function <name>
+# --- Lift release_claim and release_pr_claim whole out of lib/candidate-select.sh
+#     (#771; cleanup, below, stays in agent-cycle.sh) --------------------------
+extract_function() {  # extract_function <name> <file>
   awk -v fn="$1" '
     $0 ~ ("^" fn "\\(\\) \\{") { on = 1 }
     on                          { print }
     on && /^}$/                 { exit }
-  ' "$SCRIPT_DIR/agent-cycle.sh"
+  ' "$2"
 }
 
-release_claim_src="$(extract_function release_claim)"
-release_pr_claim_src="$(extract_function release_pr_claim)"
+release_claim_src="$(extract_function release_claim "$SCRIPT_DIR/lib/candidate-select.sh")"
+release_pr_claim_src="$(extract_function release_pr_claim "$SCRIPT_DIR/lib/candidate-select.sh")"
 
 if [[ "$release_claim_src" != *"release_claim()"* ]]; then
   printf 'FAIL - could not extract release_claim from agent-cycle.sh (renamed or moved?)\n'
@@ -212,7 +213,7 @@ release_directly "pr-353-review-777"
 # --- effects (Enabler, Refiner, events, state-sync, dashboard) stubbed and -----
 # --- the real lib/ symlinked in, so release_pr_claim still drives the real -----
 # --- lib/claim.sh against the same contended create-only store. ----------------
-cleanup_src="$(extract_function cleanup)"
+cleanup_src="$(extract_function cleanup "$SCRIPT_DIR/agent-cycle.sh")"
 if [[ "$cleanup_src" != *"cleanup()"* ]]; then
   printf 'FAIL - could not extract cleanup from agent-cycle.sh (renamed or moved?)\n'
   failures=$(( failures + 1 ))
