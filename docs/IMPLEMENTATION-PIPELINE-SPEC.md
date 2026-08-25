@@ -14685,6 +14685,17 @@ pull request, run the ones the change touches and any it could regress.
    only hosts this repository's own code names, and a webhook endpoint is an
    installation's choice.
 
+   **The POST repeats every cycle for as long as the fault lasts.**
+   `create_escalation_issue`'s open-issue guard deduplicates the GitHub
+   route to one issue per fault, but it cannot deduplicate this one: on
+   2.0b's path the dead `GH_TOKEN` fails the `gh issue list` that would find
+   the duplicate exactly as it fails the `gh issue create`, so every cycle
+   searches, finds nothing, fails to file, and POSTs again. One POST per
+   cycle per affected node, at `schedule.cycle_interval_minutes`, until the
+   credential is replaced — deliberate for an alarm channel, whose value is
+   in continuing to ring, and stated here because it is what an operator
+   pointing the key at a pager needs to know before setting it.
+
    `test/escalation-webhook.test.sh` passes
    against `create_escalation_issue` and `escalation_webhook_notify` lifted
    verbatim from `lib/enabler.sh`: an unset `escalation_webhook_url` files
