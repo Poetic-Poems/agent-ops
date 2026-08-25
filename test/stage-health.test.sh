@@ -81,7 +81,7 @@ assert_eq "an empty stream still names every known stage" \
   '["approver","approver-adjudicate-open-question","coordinator","enabler","enabler-adjudicate","implementer","refiner","reviewer"]' \
   "$(jq -cS 'keys' <<<"$empty_verdicts")"
 
-# --- the stage list tracks agent-cycle.sh, not a snapshot of it -------------
+# --- the stage list tracks the pipeline's own source, not a snapshot of it --
 #
 # A stage the Script logs a `stage-end` for but `stage_names` does not name is
 # invisible everywhere this feature reports — absent from `--status`, from the
@@ -89,15 +89,21 @@ assert_eq "an empty stream still names every known stage" \
 # blind spot #662 exists to close, restored for that one stage and silent
 # about it. That is not hypothetical: `approver-adjudicate-open-question`
 # (#776) landed while this branch was open and was missed until review. So the
-# list is asserted against the literals agent-cycle.sh actually logs rather
-# than against a copy of itself. `workspace` is deliberately not among them:
-# it logs `attempt-failed` only, never a `stage-end`, so it would read `idle`
-# for ever.
-logged_stages="$(grep -oE 'stage: "[a-z-]+", exit_code' "$SCRIPT_DIR/agent-cycle.sh" \
+# list is asserted against the literals the pipeline's own shell files
+# actually log rather than against a copy of itself. #771 split the
+# `stage-end` call sites out of agent-cycle.sh into per-stage lib/*.sh
+# modules (lib/stage-attempt.sh for coordinator, lib/approver.sh,
+# lib/refinement.sh, lib/enabler.sh, lib/landing.sh), so every one of those is
+# read alongside agent-cycle.sh itself, which still logs implementer and
+# reviewer directly. `workspace` is deliberately not among them: it logs
+# `attempt-failed` only, never a `stage-end`, so it would read `idle` for
+# ever.
+logged_stages="$(grep -ohE 'stage: "[a-z-]+", exit_code' \
+    "$SCRIPT_DIR/agent-cycle.sh" "$SCRIPT_DIR"/lib/*.sh \
   | grep -oE '"[a-z-]+"' | tr -d '"' | jq -Rnc '[inputs] | unique' 2>/dev/null \
   || true)"
 if [[ -z "$logged_stages" || "$logged_stages" == "[]" ]]; then
-  printf 'FAIL - could not read the stage-end literals out of agent-cycle.sh — has the shape moved?\n'
+  printf 'FAIL - could not read the stage-end literals out of the pipeline'"'"'s source — has the shape moved?\n'
   failures=$(( failures + 1 ))
 else
   assert_eq "every stage agent-cycle.sh logs a stage-end for is one this reader names" \
@@ -254,21 +260,22 @@ assert_contains "a missing status file explains itself rather than printing noth
 #
 # The acceptance bar for #662 is not that the library can render a block, but
 # that `agent-cycle.sh --status` prints one — and the two are joined by three
-# lines in agent-cycle.sh that nothing else exercises: the `stages:` header,
-# and the `$state_dir/.stage-health.json` path the reporter reads. A typo in
-# either restores the original blind spot in the exact place the issue was
-# filed about, while every assertion above still passes. So the block is
-# lifted verbatim out of agent-cycle.sh (the same `extract` pattern
+# lines in lib/manage.sh (#771 moved the whole management-command block out of
+# agent-cycle.sh) that nothing else exercises: the `stages:` header, and the
+# `$state_dir/.stage-health.json` path the reporter reads. A typo in either
+# restores the original blind spot in the exact place the issue was filed
+# about, while every assertion above still passes. So the block is lifted
+# verbatim out of lib/manage.sh (the same `extract` pattern
 # test/merge-autonomy.test.sh and test/approver-wiring.test.sh use) rather
 # than reimplemented here.
 
 extract() {  # <function name>
   awk -v fn="^$1\\\\(\\\\) \\\\{" '$0 ~ fn { on = 1 } on { print } on && /^\}$/ { exit }' \
-    "$SCRIPT_DIR/agent-cycle.sh"
+    "$SCRIPT_DIR/lib/manage.sh"
 }
 report_block="$(extract stage_health_status_report)"
 if [[ -z "$report_block" || "$report_block" != *"stage_health_status_lines"* ]]; then
-  printf 'FAIL - could not extract stage_health_status_report from agent-cycle.sh — has it moved?\n'
+  printf 'FAIL - could not extract stage_health_status_report from lib/manage.sh — has it moved?\n'
   failures=$(( failures + 1 ))
 else
   eval "$report_block"
