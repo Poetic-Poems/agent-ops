@@ -14183,7 +14183,16 @@ pull request, run the ones the change touches and any it could regress.
    is not linted at all — reachable in principle, and after #771 no longer
    reachable in practice: `agent-cycle.sh` without `-x` completes in 634 MiB,
    comfortably inside a scheduler container's entire 1,536 MiB ceiling, where
-   before the split it was killed at that ceiling and skipped outright.
+   before the split it was killed at that ceiling and skipped outright. What
+   the split cannot buy is following the sources *inside* that ceiling, and
+   nothing else can either: a 172-line entry point over the same modules —
+   23,569 lines of union — already costs 1,983 MiB, against `agent-cycle.sh`'s
+   own 26,262 passing 4,543 MiB before the kernel stops it. The cost is the
+   union, the union is this pipeline's whole codebase, and following it from
+   an entry point is a CI-sized job by construction. So the guard's degraded
+   mode is permanent for the two entry points rather than a stage on the way
+   to something better, and the checks it gives up are recovered in CI rather
+   than one day locally.
    Degrading and skipping are both announced on stderr naming the file, its
    own length, its union and the shortfall, because silence would read as
    coverage that did not happen; a skip alone does not fail the run, since CI

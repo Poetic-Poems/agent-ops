@@ -80,9 +80,10 @@ cd "$repo_root" || exit 1
 # agent-cycle.sh's union is 26,262 lines and the next largest is
 # scripts/publish-dashboard.sh's at 7,522, so anything in this range picks out
 # the same single file. It also sits below the point where the pinned linter's
-# cost starts to climb steeply — a 161-line entry point over the same fifty
-# modules, 24,000 lines of union, costs 2.0 GiB; agent-cycle.sh's own 26,262
-# passed 4.5 GiB before the kernel stopped it — rather than inside it.
+# cost starts to climb steeply — a 172-line entry point over the same modules,
+# 23,569 lines of union, costs 1,983 MiB, and agent-cycle.sh's own 26,262
+# passed 4,543 MiB before the kernel stopped it: 2,693 more lines for more
+# than twice the memory — rather than inside it.
 LARGE_LINES="${LINT_SHELL_LARGE_LINES:-10000}"
 
 # What a large file costs, in MiB of headroom, as measured with the pinned
