@@ -410,6 +410,10 @@ approver_model_complex="$(resolve_model_id approver_model_complex "$approver_mod
 approver_model_critical="$(cfg '.approver_model_critical')"
 [[ -n "$approver_model_critical" ]] || approver_model_critical="$approver_model_complex"
 approver_model_critical="$(resolve_model_id approver_model_critical "$approver_model_critical")"
+# The restale sweep's own no-progress escalation threshold (requirement 46,
+# agent-ops#682) — how long a rebase-only-stale Approver review is retried
+# before it is handed to a human instead.
+approver_restale_escalate_after_hours="$(cfg '.approver_restale_escalate_after_hours')"
 # The Enabler (requirements 35–37). Its model is the most expensive this system
 # runs, which is affordable only because the eligibility rule engages it rarely:
 # an empty `enabler_model` disables the stage outright.

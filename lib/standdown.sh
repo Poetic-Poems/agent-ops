@@ -400,6 +400,29 @@ if ! (( DRY_RUN )); then
   tail -n "+$(( log_lines_before + 1 ))" "$log_file" >> "$union_log" 2>/dev/null || true
 fi
 
+# Approver restale sweep (requirement 46, agent-ops#682) — a pull request the
+# Approver refused whose own review has since gone stale (the Implementer
+# answered it and pushed, but the cycle that pushed never lived long enough
+# to reach its own Reviewer-then-Approver continuation) otherwise sits behind
+# GitHub's own `requested_reviewers`, which silently no-ops for the
+# Approver's Bot identity and so can never itself clear it — see
+# `_approver_restale_sweep_repo`'s own header for the full candidate rule.
+# Fleet-wide regardless of `--repo`, same as every sweep in this section: any
+# repository at `merge_autonomy` above `human` may have one. Run before the
+# landing-retry sweep below on purpose — a pull request this sweep freshly
+# re-approves becomes exactly the standing-`APPROVED` candidate that sweep's
+# own precondition looks for, so a genuine fix can clear both gaps in the one
+# cycle that finds it rather than waiting a further cycle for the second.
+# Skipped on `--dry-run`: it can post a review, dismiss one, or escalate.
+if ! (( DRY_RUN )); then
+  if restale_login="$(approver_token_identity_login "")" && [[ -n "$restale_login" ]]; then
+    while IFS= read -r restale_slug; do
+      [[ -n "$restale_slug" ]] || continue
+      _approver_restale_sweep_repo "$restale_slug" "$restale_login"
+    done < <(jq -r '.repos[].slug' "$CONFIG_FILE" 2>/dev/null || true)
+  fi
+fi
+
 # 2.1e Landing-retry sweep (TD-PPagop-26081701) — the tracked gap "## The
 # Landing Gate" and requirement 8d gate 5 both name: a pull request the
 # arming step already approved once, but could not land for a reason that
