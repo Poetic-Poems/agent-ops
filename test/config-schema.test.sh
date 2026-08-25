@@ -815,6 +815,32 @@ assert_doctor "doctor passes human explicitly, same as the default, with no appr
 assert_doctor_shipped "the shipped configuration's own merge_autonomy is paired with both Approver keys" \
   '.' 0 'merge_autonomy is "agent-approves"'
 
+# --- requirement 14b: the reconciliation between the environment's
+#     PULLWRIGHT_APPROVER_APP_ID and the configured approver_app_id
+#     (lib/approver-token.sh) is a rule of its own, distinct from the pairing
+#     above — that one is about approver_app_id being set at all, this one is
+#     about a *set* PULLWRIGHT_APPROVER_APP_ID disagreeing with it.
+#     _assert_doctor_check unconditionally clears the three Approver
+#     runtime-credential variables (TD-PPagop-26082201), so a mismatch fixture
+#     cannot go through assert_doctor and instead calls doctor.sh directly,
+#     setting PULLWRIGHT_APPROVER_APP_ID for this one invocation only — the
+#     same way DOCTOR_NEUTRAL_MUTATION sets the config counterpart only for
+#     the fixture that asks for it (TD-PPagop-26082302). ---
+jq "$DOCTOR_NEUTRAL_MUTATION"' | .approver_app_id = "555555"' "$CONFIG" > "$tmp/c.json"
+mismatch_out="$(env -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH \
+  PULLWRIGHT_APPROVER_APP_ID=999999 \
+  bash "$SCRIPT_DIR/scripts/doctor.sh" --offline --config "$tmp/c.json" 2>&1)"
+mismatch_status=$?
+if (( mismatch_status == 1 )) \
+  && [[ "$mismatch_out" == *'PULLWRIGHT_APPROVER_APP_ID is "999999" but approver_app_id is "555555"'* ]] \
+  && [[ "$mismatch_out" == *'requirement 14b'* ]]; then
+  pass "doctor fails a PULLWRIGHT_APPROVER_APP_ID that disagrees with approver_app_id, naming both the mismatch and the reconciliation rule"
+else
+  printf 'FAIL - doctor fails a PULLWRIGHT_APPROVER_APP_ID that disagrees with approver_app_id, naming both the mismatch and the reconciliation rule\n     expected exit 1, output naming both values and "requirement 14b"\n     actual exit: %s\n     actual output: %s\n' \
+    "$mismatch_status" "$mismatch_out"
+  failures=$(( failures + 1 ))
+fi
+
 # --- D18 §5.4 (requirement 2.3c): merge_budget_per_day, reported per
 #     configured source, and a warn (never a fail — nothing arms automatic
 #     landing yet) for a repo trusted at agent-merges-routine or above with
