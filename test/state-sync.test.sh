@@ -499,6 +499,40 @@ env HOME="$cycle_home" AGENT_OPS_ROLE=standby NODE_NAME=cycle-node \
 assert_contains "the enable is logged too" '"event":"enabled"' \
   "$(cat "$cycle_home/.local/state/poetic-agents/log.jsonl" 2>/dev/null)"
 
+# ==============================================================================
+# push — a large cycles/ directory does not kill the push (#806)
+# ==============================================================================
+# `do_push` took the newest cycle id with `find … | sort -r | head -n 1`.
+# `head` closes the pipe the moment it has its one line; `sort`, which cannot
+# emit anything until it has read every name, is still writing, takes SIGPIPE
+# and exits 141. In a command substitution in the current shell, under
+# `set -euo pipefail`, that becomes the push's own status and `-e` aborts it —
+# after the mirror lock and the fetch, before the commit, and without one line
+# in state-sync.log to say so.
+#
+# It is a race against the pipe buffer: when sort's whole output fits before
+# head exits, nothing is signalled. On the live nodes (1000 cycles, ~32-40 KB
+# of names) it fired in 16-17 of every 30 runs — which is exactly why it went
+# a month unattributed. So this test does not reproduce the race, it removes
+# it: enough names to put sort's output well past any pipe buffer, so the old
+# code fails every time and the assertion means something.
+big_home="$(new_node big-cycles-node)"
+big_state="$big_home/.local/state/poetic-agents"
+printf '{"ts":"2026-07-20T00:00:00Z","event":"cycle-start"}\n' > "$big_state/log.jsonl"
+# ~600 names of ~250 bytes is ~150 KB, more than twice a default 64 KB pipe
+# buffer. The directories are deliberately left empty: git stores no empty
+# directory, so none of this reaches the commit and the test stays quick — what
+# matters is the length of the name list `sort` must write, not any payload.
+big_pad="$(printf 'x%.0s' $(seq 1 230))"
+for i in $(seq -w 1 600); do
+  mkdir -p "$big_state/cycles/20260720T0100${i}Z-$big_pad"
+done
+big_out="$(sync_as "$big_home" active push STATE_SYNC_LOCAL_RETAINED=600)"
+big_rc=$?
+assert_eq "a push over a large cycles/ survives the newest-cycle scan" "0" "$big_rc"
+assert_contains "and reports what it pushed, rather than dying silently" \
+  "state-sync(push): pushed" "$big_out"
+
 printf '\n%s\n' "----------------------------------------"
 if (( failures == 0 )); then
   printf 'All assertions passed.\n'
