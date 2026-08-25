@@ -212,3 +212,77 @@ approver_prior_refusal_bodies() {
     | "### " + .at + "\n\n" + .body
   ' <<<"$lines" 2>/dev/null || return 0
 }
+
+# approver_review_stale STATE COMMIT HEAD_SHA
+# Exit 0 iff STATE is a standing `CHANGES_REQUESTED` and COMMIT — the
+# `commit_id` that review was submitted against — no longer matches HEAD_SHA,
+# the pull request's current head: the deterministic re-review trigger
+# agent-ops#682 defines, read from GitHub's own review record rather than
+# depended on GitHub's `requested_reviewers` re-request, which silently
+# no-ops for a Bot account (the Approver's own identity) and so can never
+# itself signal a stale review. Exits 1 on any other STATE, or when COMMIT or
+# HEAD_SHA is empty — an incomplete read must never be misread as "stale".
+approver_review_stale() {
+  local state="${1:-}" commit="${2:-}" head="${3:-}"
+  [[ "$state" == "CHANGES_REQUESTED" && -n "$commit" && -n "$head" && "$commit" != "$head" ]]
+}
+
+# approver_newest_commit_authored_at PR_URL
+# Print the ISO-8601 `authoredDate` of PR_URL's most recently authored
+# commit — the newest value in `git log`'s own `%aI` sense. A rebase does not
+# move it: `git rebase` (absent an explicit `--committer-date-is-author-date`
+# or similar) reuses each replayed commit's original author date and only
+# stamps a fresh committer date, which is what GraphQL's `committedDate` and
+# the REST `commit.committer.date` read instead — the same forgeable-by-
+# force-push signal gather-review-feedback.sh's own header already rejected
+# `committedDate` for. Comparing this against a stale review's own
+# `submitted_at` is agent-ops#682's answer to "ignore a rebase-only push":
+# a rebase alone can never produce a commit whose authored date is newer than
+# a review that already stood over every commit that rebase replayed.
+#
+# One `gh pr view` call, not `--paginate` over the commits REST endpoint: `gh`
+# resolves `--json commits` through GraphQL's `commits(last: 100)`, so this
+# costs the same one read regardless of how many commits the pull request
+# carries, at the same per-call GraphQL price gather-review-feedback.sh's own
+# header measured for `headRefOid` — acceptable here because, unlike that
+# per-cycle listing, this is only ever asked for a pull request the caller has
+# already confirmed carries a stale Approver review, never for every open one.
+#
+# Returns non-zero, printing nothing, when the commit list could not be read
+# or came back empty — the caller must not read that as "no progress", only
+# as "could not tell".
+approver_newest_commit_authored_at() {
+  local url="${1:-}" gh_bin="${APPROVER_GH:-gh}" parts slug number newest
+  [[ -n "$url" ]] || return 1
+  parts="$(_approver_pr_parts "$url")" || return 1
+  IFS=$'\t' read -r slug number <<<"$parts"
+  newest="$("$gh_bin" pr view "$number" -R "$slug" --json commits \
+              --jq '[.commits[].authoredDate] | max // empty' 2>/dev/null)" || return 1
+  [[ -n "$newest" ]] || return 1
+  printf '%s' "$newest"
+}
+
+# approver_dismiss_review PR_URL REVIEW_ID BODY TOKEN
+# Dismiss REVIEW_ID on PR_URL — self-authored, needs no new permission
+# (agent-ops#682) — via `PUT .../reviews/{id}/dismissals`, authenticated with
+# TOKEN (an installation token from `approver_token_get`, the same identity
+# `approver_post_review` posts under). Prints nothing; returns 0 only on a
+# real 2xx from GitHub, non-zero otherwise — same "the caller must not read a
+# failure as a dismissal" contract `approver_post_review`'s own header states.
+#
+# `GH_TOKEN` is set only for this one invocation, the same leading-assignment
+# scoping `approver_post_review` already uses, so the override cannot leak
+# into any later `gh` call this process makes under the owner's own login.
+approver_dismiss_review() {
+  local url="${1:-}" review_id="${2:-}" body="${3:-}" token="${4:-}" gh_bin="${APPROVER_GH:-gh}"
+  local parts slug number
+
+  [[ -n "$token" && "$review_id" =~ ^[0-9]+$ ]] || return 1
+  if [[ -z "$url" ]] || ! parts="$(_approver_pr_parts "$url")"; then
+    return 1
+  fi
+  IFS=$'\t' read -r slug number <<<"$parts"
+
+  GH_TOKEN="$token" "$gh_bin" api -X PUT "repos/$slug/pulls/$number/reviews/$review_id/dismissals" \
+    -f "message=$body" >/dev/null 2>&1
+}

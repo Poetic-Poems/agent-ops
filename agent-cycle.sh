@@ -394,6 +394,10 @@ approver_model_complex="$(resolve_model_id approver_model_complex "$approver_mod
 approver_model_critical="$(cfg '.approver_model_critical')"
 [[ -n "$approver_model_critical" ]] || approver_model_critical="$approver_model_complex"
 approver_model_critical="$(resolve_model_id approver_model_critical "$approver_model_critical")"
+# The restale sweep's own no-progress escalation threshold (requirement 46,
+# agent-ops#682) — how long a rebase-only-stale Approver review is retried
+# before it is handed to a human instead.
+approver_restale_escalate_after_hours="$(cfg '.approver_restale_escalate_after_hours')"
 # The Enabler (requirements 35–37). Its model is the most expensive this system
 # runs, which is affordable only because the eligibility rule engages it rarely:
 # an empty `enabler_model` disables the stage outright.
@@ -5370,6 +5374,261 @@ _landing_retry_sweep_repo() {
   return 0
 }
 
+# _approver_restale_review SLUG PR_URL NUMBER BRANCH COMPLEXITY TITLE
+# Requirement 46 (agent-ops#682), acceptance criterion 1: trigger a genuine
+# re-review of PR_URL, reusing `run_approver_stage` itself rather than a
+# second copy of its tiering/adjudication/escalation/tech-debt-filing logic —
+# the same DRY reasoning `_landing_retry_sweep_repo` already applies to
+# `_landing_stage_attempt`. Unlike that function's own ordinary call
+# (`run_approver_stage "$impl_pr_url" "$approver_complexity"`, immediately
+# after the Reviewer stage in the same cycle that raised or fixed the pull
+# request), this call has no live work order, Implementer summary or
+# Reviewer summary handed to it by an already-running cycle — the whole
+# reason the restale sweep exists is that the cycle which *did* have them
+# never reached this point (a stage timeout, a kill, a host failure; "Long-
+# running commands" above names this exact failure shape, and it is what
+# stranded PR #621 for 13.5 hours). So this function clones the repository
+# fresh, checks the pull request's own branch out into it, and builds
+# synthetic-but-honest work-order/Implementer/Reviewer JSON that says exactly
+# that, then borrows `run_approver_stage`'s own globals for the one call —
+# saved and restored around it, never left mutated for whatever this cycle's
+# own selected work order does next.
+#
+# Prints `posted` once `run_approver_stage` reached a real verdict (whether or
+# not the GitHub write itself then succeeded — that failure is already
+# `approver_post_or_warn`'s own warning, and retrying it again immediately
+# would only compound writes rather than fix anything) and `unavailable` when
+# a verdict could not even be reached — the clone or checkout failed, or
+# `run_approver_stage` bailed out before engaging (the stage disabled at this
+# level, the credential absent, the streak unreadable, no model resolved).
+# `unavailable` is what tells the caller acceptance criterion 2's dismissal is
+# the fallback to take instead.
+_approver_restale_review() {
+  local slug="$1" pr_url="$2" number="$3" branch="$4" complexity="$5" title="$6"
+  local restale_clone_dir saved_repo saved_clone saved_wo saved_impl saved_rev
+  local synthetic_wo synthetic_impl synthetic_rev result="unavailable" restale_acceptance
+
+  saved_repo="$selected_repo"; saved_clone="$clone_dir"
+  saved_wo="$work_order_json"; saved_impl="$impl_status_json"; saved_rev="$rev_status_json"
+
+  restale_clone_dir="$workspace_root/${cycle_id}-restale-${number}"
+  assert_in_workspace "$restale_clone_dir"
+  if clone_repo "$slug" "$restale_clone_dir" 2>"$cycle_dir/restale-clone-${number}.err" \
+     && git -C "$restale_clone_dir" fetch --quiet origin "$branch" 2>>"$cycle_dir/restale-clone-${number}.err" \
+     && git -C "$restale_clone_dir" checkout --quiet "$branch" 2>>"$cycle_dir/restale-clone-${number}.err"; then
+    restale_acceptance="Recovery re-review (requirement 46, agent-ops#682): the Approver's own most recent CHANGES_REQUESTED review on this pull request no longer matches its current head — a commit was authored after that review was submitted, so real work happened, but no fresh Approver round ever reached GitHub (most likely the cycle that pushed it did not finish; see this repository's own Implementer prompt, 'Long-running commands'). Judge the diff as it stands now, against this pull request's own description and history."
+    synthetic_wo="$(jq -nc --arg r "$slug" --arg i "pr-${number}-approver-restale" \
+      --arg b "$branch" --arg t "$title" --arg acc "$restale_acceptance" \
+      '{repo: $r, item: $i, source: "approver-restale", branch: $b, title: $t, acceptance: $acc}')"
+    synthetic_impl="$(jq -nc --arg u "$pr_url" \
+      --arg n "synthetic recovery summary (requirement 46, agent-ops#682) — the original Implementer round's own summary is not available to this recovery engagement" \
+      '{status: "complete", pr_url: $u, notes: $n}')"
+    synthetic_rev="$(jq -nc --arg u "$pr_url" '{status: "ready", pr_url: $u}')"
+
+    selected_repo="$slug"
+    clone_dir="$restale_clone_dir"
+    work_order_json="$synthetic_wo"
+    impl_status_json="$synthetic_impl"
+    rev_status_json="$synthetic_rev"
+
+    run_approver_stage "$pr_url" "$complexity"
+    [[ -n "$approver_stage_verdict" ]] && result="posted"
+  fi
+
+  [[ -d "$restale_clone_dir" ]] && rm -rf -- "$restale_clone_dir"
+  selected_repo="$saved_repo"; clone_dir="$saved_clone"
+  work_order_json="$saved_wo"; impl_status_json="$saved_impl"; rev_status_json="$saved_rev"
+  printf '%s' "$result"
+}
+
+# _approver_restale_dismiss SLUG PR_URL REVIEW_ID REASON
+# Requirement 46 (agent-ops#682), acceptance criterion 2: the fallback
+# `_approver_restale_sweep_repo` reaches for when `_approver_restale_review`
+# reports `unavailable` — self-dismissing the Approver's own stale review via
+# the dismissals endpoint, which needs no permission beyond what
+# `approver_post_review` already holds (both write under the same App
+# identity; `approver_dismiss_review`'s own header states the precondition).
+# Best-effort: logs its own outcome and never raises past the sweep that
+# called it — the same "a missing review, never a stranded pull request"
+# posture `approver_post_or_warn` already holds for the ordinary post.
+_approver_restale_dismiss() {
+  local slug="$1" pr_url="$2" review_id="$3" reason="$4" login token ok=0
+
+  if ! login="$(approver_token_identity_login "")" || [[ -z "$login" ]]; then
+    log_event "warning" "$(jq -nc --arg u "$pr_url" \
+      --arg d "$pr_url carries a stale Approver review a re-review could not be attempted for, and the Approver App's own login could not be read to dismiss it either — it remains blocked" \
+      '{detail: $d, pr_url: $u}')"
+    return 1
+  fi
+  if ! token="$(approver_token_get "")"; then
+    log_event "warning" "$(jq -nc --arg u "$pr_url" \
+      --arg d "$pr_url carries a stale Approver review a re-review could not be attempted for, and the Approver's installation token could not be minted to dismiss it either — it remains blocked" \
+      '{detail: $d, pr_url: $u}')"
+    return 1
+  fi
+  if approver_dismiss_review "$pr_url" "$review_id" "$reason" "$token"; then
+    ok=1
+    log_event "approver-restale-dismissed" "$(jq -nc --arg u "$pr_url" --arg r "$slug" --argjson id "$review_id" \
+      '{pr_url: $u, repo: $r, review_id: $id}')"
+  else
+    log_event "warning" "$(jq -nc --arg u "$pr_url" \
+      --arg d "$pr_url carries a stale Approver review, a re-review could not be attempted, and GitHub refused the dismissal write too — it remains blocked" \
+      '{detail: $d, pr_url: $u}')"
+  fi
+  (( ok ))
+}
+
+# _approver_restale_escalate SLUG PR_URL NUMBER ITEM_REF REVIEW_AT
+# Requirement 46 (agent-ops#682), acceptance criteria 3 and 4: a
+# rebase-only-stale Approver review — the head keeps moving, but no commit has
+# been authored since the review — retried every cycle with nothing ever
+# changing is exactly the "rebase-only cycle masquerading as progress" the
+# issue names. Once REVIEW_AT (the standing review's own `submitted_at`,
+# which a rebase does not move — never `updatedAt`) is older than
+# `approver_restale_escalate_after_hours`, this hands the pull request to a
+# human instead of retrying it forever, through the same generic
+# `create_escalation_issue` (`enabler_assignee`) every other escalation in
+# this file already uses — never a destination this function names itself
+# (D18, agent-ops#627/#679).
+_approver_restale_escalate() {
+  local slug="$1" pr_url="$2" number="$3" item_ref="$4" review_at="$5"
+  local body_file created
+
+  body_file="$cycle_dir/approver-restale-escalation-${number}.md"
+  {
+    printf '## What the autonomous pipeline needs from you\n\n'
+    printf 'Review %s yourself and either dismiss the standing Approver review or push a real fix — the pipeline could not tell the difference between a genuine fix and a rebase.\n\n' "$pr_url"
+    printf '## Why the pipeline is blocked\n\n'
+    printf "The Approver's own \`CHANGES_REQUESTED\` review (submitted %s) no longer matches this pull request's head, but no commit has been authored since that review was submitted — every push since has been a rebase, never a fix. The restale sweep (requirement 46, agent-ops#682) does not treat that as progress worth a fresh Approver engagement, and \`approver_restale_escalate_after_hours\` (%s h) has now passed with the review still standing.\n\n" \
+      "$review_at" "$approver_restale_escalate_after_hours"
+    cat <<RESTALE_ESC_BODY
+## When you're done: close this issue
+
+Close this issue once you have looked at the pull request yourself — dismiss
+the review, or push an actual fix and let the pipeline pick the round up as
+ordinary review feedback next cycle.
+
+---
+Item: \`$item_ref\` · pull request $pr_url
+Raised by the Approver restale sweep (requirement 46, agent-ops#682) · cycle \`$cycle_id\` · node \`$node_name\`
+RESTALE_ESC_BODY
+  } > "$body_file"
+
+  if created="$(create_escalation_issue "$slug" "$item_ref" \
+        "$enabler_escalation_label" \
+        "Stale Approver review on $pr_url needs your judgement" \
+        "$body_file")" && [[ -n "$created" ]]; then
+    log_event "approver-restale-escalated" "$(jq -nc --arg u "$pr_url" --arg r "$slug" \
+      --arg n "${created%%$'\t'*}" --arg iu "${created#*$'\t'}" \
+      '{pr_url: $u, repo: $r, issue_number: ($n | tonumber), issue_url: $iu}')"
+  else
+    log_event "warning" "$(jq -nc --arg u "$pr_url" \
+      --arg d "$pr_url carries a rebase-only-stale Approver review past the escalation threshold, and the escalation issue could not be filed — will retry next cycle" \
+      '{detail: $d, pr_url: $u}')"
+  fi
+}
+
+# _approver_restale_sweep_repo SLUG LOGIN
+# Requirement 46 (agent-ops#682): the fleet-wide sweep that keeps a pull
+# request from sitting silently behind the Approver's own stale
+# `CHANGES_REQUESTED` — the gap PR #621 fell into for 13.5 hours before a
+# human dismissed it by hand. Same shape as `_landing_retry_sweep_repo`
+# immediately above: skip a repository the kill switch or a freeze currently
+# holds at `human` before any further GitHub call, then walk every open,
+# non-draft, `pr_label` pull request whose `reviewDecision` is
+# `CHANGES_REQUESTED`.
+#
+# The deterministic trigger (`approver_review_stale`, lib/approver.sh) is the
+# Approver's own standing review (`landing_approver_standing_review_at`, the
+# same fresh read `_landing_retry_sweep_repo` and `_landing_stage_attempt`'s
+# own gate 4 already make) carrying a `commit_id` that no longer matches the
+# pull request's current head — never GitHub's `requested_reviewers`, which
+# silently no-ops for the Approver's own Bot identity (the exact failure
+# `prompts/implementer.md`'s review-feedback section already documents
+# best-effort around, and the reason this sweep exists at all rather than
+# trusting that call to have worked).
+#
+# A stale review with a commit *authored* since it was submitted
+# (`approver_newest_commit_authored_at`) is genuine progress — a rebase alone
+# cannot produce one, since it reuses each replayed commit's own original
+# author date — and gets a real re-review (`_approver_restale_review`,
+# acceptance criterion 1), falling back to a self-dismissal
+# (`_approver_restale_dismiss`, criterion 2) only when the re-review itself
+# could not even be attempted. A stale review with nothing authored since it
+# is a rebase-only push masquerading as one worth reviewing — neither
+# re-reviewed nor dismissed, since nothing has actually changed for either
+# action to judge — and is left alone until `approver_restale_escalate_after_
+# hours` hands it to a human instead (`_approver_restale_escalate`, criteria 3
+# and 4).
+_approver_restale_sweep_repo() {
+  local slug="$1" login="$2"
+  local level open
+
+  level="$(merge_autonomy_effective_level "$DEFAULTED_CONFIG" "$slug" "$state_repo" "$state_dir" fresh)"
+  [[ "$level" != "human" ]] || return 0
+
+  open="$(gh pr list -R "$slug" --state open --label "$pr_label" \
+    --json number,url,headRefName,headRefOid,isDraft,reviewDecision,title,labels \
+    --limit "$GITHUB_PR_LIST_LIMIT" 2>/dev/null || true)"
+  jq -e 'type == "array"' <<<"$open" >/dev/null 2>&1 || open='[]'
+  if github_pr_list_truncated "$(jq 'length' <<<"$open")"; then
+    log_event "warning" "$(jq -nc --arg r "$slug" \
+      --arg d "approver-restale sweep ($slug): the pull-request listing came back at its ${GITHUB_PR_LIST_LIMIT}-item cap; a stale review beyond it is not swept this cycle" \
+      '{detail: $d, repo: $r}')"
+  fi
+
+  local candidates
+  candidates="$(jq -c '[.[] | select(.isDraft | not) | select(.reviewDecision == "CHANGES_REQUESTED")
+    | . + {complexity: ((.labels // []) | map(.name) | map(select(startswith("complexity:"))) | first // "" | sub("^complexity:";""))}
+    | {number, url, branch: .headRefName, head: (.headRefOid // ""), title, complexity}]' <<<"$open" 2>/dev/null || echo '[]')"
+
+  local cand pr_url branch number head title complexity standing state commit review_at
+  local reviews_raw review_id item_ref newest cutoff
+  while IFS= read -r cand; do
+    [[ -n "$cand" ]] || continue
+    pr_url="$(jq -r '.url' <<<"$cand")"
+    branch="$(jq -r '.branch' <<<"$cand")"
+    number="$(jq -r '.number' <<<"$cand")"
+    head="$(jq -r '.head' <<<"$cand")"
+    title="$(jq -r '.title' <<<"$cand")"
+    complexity="$(jq -r '.complexity' <<<"$cand")"
+    [[ -n "$head" ]] || continue
+
+    standing="$(landing_approver_standing_review_at "$slug" "$number" "$login" 2>/dev/null)" || continue
+    IFS=$'\t' read -r state review_at commit <<<"$standing"
+    approver_review_stale "$state" "$commit" "$head" || continue
+
+    # The review's own numeric id, never derived from `commit`/`review_at`
+    # alone (a login can legitimately submit two reviews against the same
+    # commit): a fresh `jq --arg` filter over every one of this login's own
+    # reviews, matched on `submitted_at` — the same unique key
+    # `landing_approver_standing_review_at` itself just read. `gh api --jq`
+    # has no `--arg` of its own, so the login/timestamp filter runs in this
+    # second, genuine `jq` call, the same split every other reader in this
+    # file already applies for the same reason.
+    reviews_raw="$(gh api "repos/$slug/pulls/$number/reviews" --paginate \
+                    --jq '.[] | select(.submitted_at != null) | {id, login: .user.login, at: .submitted_at}' \
+                    2>/dev/null || true)"
+    review_id="$(jq -s -r --arg l "$login" --arg at "$review_at" \
+      '[.[] | select(.login == $l and .at == $at)] | first | (.id // empty)' <<<"$reviews_raw" 2>/dev/null || true)"
+    [[ "$review_id" =~ ^[0-9]+$ ]] || continue
+    item_ref="pr-${number}-approver-restale-${review_id}"
+
+    if newest="$(approver_newest_commit_authored_at "$pr_url" 2>/dev/null)" && [[ -n "$newest" ]] \
+       && [[ "$newest" > "$review_at" ]]; then
+      if [[ "$(_approver_restale_review "$slug" "$pr_url" "$number" "$branch" "$complexity" "$title")" != "posted" ]]; then
+        _approver_restale_dismiss "$slug" "$pr_url" "$review_id" \
+          "Dismissed by the autonomous pipeline (requirement 46, agent-ops#682): a commit was authored after this review, but a fresh re-review could not be attempted this cycle." || true
+      fi
+    else
+      cutoff="$(date -u -d "${approver_restale_escalate_after_hours} hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+      [[ -n "$cutoff" && "$review_at" < "$cutoff" ]] || continue
+      _approver_restale_escalate "$slug" "$pr_url" "$number" "$item_ref" "$review_at"
+    fi
+  done < <(jq -c '.[]' <<<"$candidates" 2>/dev/null || true)
+  return 0
+}
+
 # --- The Enabler's state for this cycle (requirements 35, 37) ---
 # All three are read from the exit trap, so they are initialised here — before
 # anything can exit — and only ever move in the safe direction. `enabler_allowed`
@@ -7499,6 +7758,29 @@ if ! (( DRY_RUN )); then
                2>>"$cycle_dir/human-visibility-sweep.err" || true)
   done < <(jq -r '.repos[].slug' "$CONFIG_FILE" 2>/dev/null || true)
   tail -n "+$(( log_lines_before + 1 ))" "$log_file" >> "$union_log" 2>/dev/null || true
+fi
+
+# Approver restale sweep (requirement 46, agent-ops#682) — a pull request the
+# Approver refused whose own review has since gone stale (the Implementer
+# answered it and pushed, but the cycle that pushed never lived long enough
+# to reach its own Reviewer-then-Approver continuation) otherwise sits behind
+# GitHub's own `requested_reviewers`, which silently no-ops for the
+# Approver's Bot identity and so can never itself clear it — see
+# `_approver_restale_sweep_repo`'s own header for the full candidate rule.
+# Fleet-wide regardless of `--repo`, same as every sweep in this section: any
+# repository at `merge_autonomy` above `human` may have one. Run before the
+# landing-retry sweep below on purpose — a pull request this sweep freshly
+# re-approves becomes exactly the standing-`APPROVED` candidate that sweep's
+# own precondition looks for, so a genuine fix can clear both gaps in the one
+# cycle that finds it rather than waiting a further cycle for the second.
+# Skipped on `--dry-run`: it can post a review, dismiss one, or escalate.
+if ! (( DRY_RUN )); then
+  if restale_login="$(approver_token_identity_login "")" && [[ -n "$restale_login" ]]; then
+    while IFS= read -r restale_slug; do
+      [[ -n "$restale_slug" ]] || continue
+      _approver_restale_sweep_repo "$restale_slug" "$restale_login"
+    done < <(jq -r '.repos[].slug' "$CONFIG_FILE" 2>/dev/null || true)
+  fi
 fi
 
 # 2.1e Landing-retry sweep (TD-PPagop-26081701) — the tracked gap "## The

@@ -742,6 +742,7 @@ and the schema must carry every one of them.
 | `approver_model_default` | `claude-sonnet-5` | Standard-tier Approver engagements: work graded `complexity:medium` (requirement 8b). Empty disables the Approver stage. |
 | `approver_model_complex` | `claude-opus-5` | High-tier Approver engagements: work graded `complexity:high` (requirement 8b). Empty falls back to `approver_model_default`, which switches the escalation off. |
 | `approver_model_critical` | `claude-fable-5` | Adjudication engagements, triggered by a refuse streak of two rather than by complexity (requirement 8c). Empty falls back to `approver_model_complex`. |
+| `approver_restale_escalate_after_hours` | 24 h | Requirement 46: how long the restale sweep (agent-ops#682) tolerates a rebase-only-stale Approver review — its standing `CHANGES_REQUESTED` `commit_id` mismatched against the pull request's head, but its most recently authored commit no older than the review itself — before escalating rather than leaving it to retry every cycle indefinitely. Measured from the standing review's own `submitted_at`, which a rebase does not move. |
 | `enabler_model` | `claude-opus-5` | The Enabler (requirement 35). The highest-tier model this system runs, affordable only because the eligibility rule of 35a engages it rarely and the claims of 35c stop it being engaged twice. Empty disables the stage. |
 | `enabler_assignee` | `warwickallen` | GitHub login assigned to every escalation issue the Enabler raises (requirement 36a). Required whenever `enabler_model` is set: the Script exits with an error at startup rather than run with it unset, since an unassigned escalation would not be excluded by requirement 16.4 and could be selected as work by the pipeline itself. |
 | `enabler_after_coordinator_cycles` | `3` | How many distinct cycles that ran a Co-Ordinator to completion must follow a block before the item becomes Enabler-eligible (requirement 35a). Counted in cycles rather than hours because a fleet stood down on a usage limit or a switch has not "had a chance" at anything. |
@@ -11676,6 +11677,92 @@ with the Reviewer's own.
     no review posted (requirement 43) — never a blocked pull request, since
     nothing about the human's own path to merging depends on this stage
     having run at all.
+46. **A pull request the Approver refused cannot rely on the cycle that
+    fixed it to also re-review it (agent-ops#682).** The ordinary path —
+    requirement 8b's own engagement, launched again once the same cycle's
+    Reviewer next reports `ready` — already clears an ordinary standing
+    review the moment the round that answered it completes. The gap is the
+    cycle that never finishes: a stage timeout, a kill, or a host failure
+    between the Implementer's own push and that continuation (PR #621 sat
+    13.5 hours this way before a human dismissed the review by hand) leaves
+    the fix on GitHub with no fresh Approver round ever having reached it,
+    and GitHub's `requested_reviewers` re-request — the Implementer's own
+    best-effort attempt at asking for one — silently no-ops for the
+    Approver's Bot identity, so it can never itself signal the gap either.
+
+    The **restale sweep** (`_approver_restale_sweep_repo`, `agent-cycle.sh`,
+    run fleet-wide every cycle immediately before the requirement-8u
+    landing-retry sweep, skipped on `--dry-run`) is the independent recovery
+    path: for every repository whose effective `merge_autonomy` is above
+    `human`, every open, non-draft, `pr_label` pull request whose
+    `reviewDecision` is `CHANGES_REQUESTED` is read fresh
+    (`landing_approver_standing_review_at`, the same read `_landing_stage_
+    attempt`'s gate 4 already makes — requirement 8u's own sweep calls its
+    state-only sibling, `landing_approver_standing_review`, which carries no
+    `commit_id` for this requirement to compare) for the Approver's own
+    standing review. **Stale** (`approver_review_stale`,
+    `lib/approver.sh`) means that review's own `commit_id` no longer matches
+    the pull request's current head — the deterministic trigger, never
+    `requested_reviewers`.
+
+    A stale review then splits on whether real work happened since it was
+    submitted, decided from the pull request's own commit history rather
+    than anything a rebase can move:
+
+    - **Genuine progress** — `approver_newest_commit_authored_at`
+      (`lib/approver.sh`, one `gh pr view --json commits` read) reports a
+      commit *authored* after the standing review's own `submitted_at`. A
+      rebase alone can never produce this: replaying a commit during a
+      rebase reuses its original author date and only stamps a fresh
+      committer date (the same forgeable-by-force-push signal requirement 3c
+      already rejected `committedDate`/`updatedAt` for), so an authored date
+      genuinely newer than the review means a real commit landed, not merely
+      that the branch moved. This gets a **real re-review**
+      (`_approver_restale_review`): the sweep clones the repository fresh,
+      checks the pull request's branch out, assembles a synthetic-but-honest
+      work order/Implementer-summary/Reviewer-summary explaining exactly
+      why the usual ones are unavailable, and calls `run_approver_stage`
+      itself — the same tiering, protected-path forcing, refuse-streak
+      adjudication, escalation and tech-debt-filing logic requirement 8b's
+      own engagement already carries, reused rather than duplicated, under
+      globals (`selected_repo`/`clone_dir`/`work_order_json`/
+      `impl_status_json`/`rev_status_json`) saved before the call and
+      restored after it regardless of outcome. A pull request this re-review
+      approves is picked up by the very next requirement-8u sweep pass in
+      the same cycle, since a fresh `APPROVED` standing review is exactly
+      that sweep's own precondition.
+    - **No commit authored since the review** — a push landed (the head
+      moved, or the trigger would not have fired at all) but it authored
+      nothing new, i.e. a rebase alone. Neither re-reviewed (there is
+      nothing new to judge) nor dismissed (the standing refusal may still be
+      correct) — left exactly as it stands until
+      `approver_restale_escalate_after_hours` have passed since the review's
+      own `submitted_at` (never `updatedAt`, which a rebase does move),
+      at which point `_approver_restale_escalate` hands it to a human
+      instead of retrying it forever — the "rebase-only cycle masquerading
+      as progress" the issue names. The escalation issue is filed through
+      the same `create_escalation_issue` (`enabler_assignee`) every other
+      escalation in this pipeline already uses, never a destination this
+      path names itself (D18, agent-ops#627/#679), and is deduplicated per
+      review round (`pr-<n>-approver-restale-<review-id>`), so a fresh
+      standing review after a human acts gets its own escalation rather than
+      colliding with the old one's.
+
+    A genuine re-review that could not even be attempted — the clone or
+    branch checkout failed, or `run_approver_stage` bailed out before
+    engaging at all (the stage disabled at this level, the credential
+    absent, the refuse streak unreadable, no model resolved) — falls back to
+    `_approver_restale_dismiss`: a self-dismissal of the Approver's own
+    stale review via `PUT .../reviews/{id}/dismissals`
+    (`approver_dismiss_review`, `lib/approver.sh`), which needs no
+    permission beyond what posting a review already grants, since both write
+    under the same App identity. This is reached only when genuine progress
+    was found but a real re-review is not achievable this cycle — never in
+    place of one that succeeded, and never for the no-progress case above,
+    where dismissing a review that may still be correct would be worse than
+    leaving it stand. Every write this requirement makes is best-effort: a
+    failure at any step logs a `warning` and leaves the pull request exactly
+    as it was, for the sweep to find again next cycle.
 
 ## Components
 
@@ -12749,7 +12836,7 @@ What exists, and the requirements each part answers to:
     left uncached, a refused mint, an unreachable API, a malformed body,
     an unusable cache directory, and the identity-login lookup's own success
     and failure paths. Must pass `shellcheck`.
-14c. `lib/approver.sh` implementing requirements 8b, 8c and 40–43: the
+14c. `lib/approver.sh` implementing requirements 8b, 8c, 40–43 and 46: the
     Approver stage's own decision primitives. `approver_tier_for COMPLEXITY`
     and `approver_model_for_tier TIER MODEL_DEFAULT MODEL_COMPLEX` are pure
     lookups (requirement 8b). `approver_refuse_streak PR_URL LOGIN` reads the
@@ -12776,7 +12863,25 @@ What exists, and the requirements each part answers to:
     `test/approver-wiring.test.sh`, which lifts `run_approver_stage`,
     `approver_post_or_warn` and `approver_stage_complexity` verbatim out of
     `agent-cycle.sh` rather than restating their logic (acceptance check 8s).
-    Must pass `shellcheck`.
+    `approver_review_stale STATE COMMIT HEAD_SHA` (requirement 46, agent-
+    ops#682) is a pure predicate: a standing `CHANGES_REQUESTED` whose
+    `commit_id` no longer matches the pull request's head. `approver_newest_
+    commit_authored_at PR_URL` reads the newest `authoredDate` among the pull
+    request's own commits — one `gh pr view --json commits` call, unaffected
+    by a rebase, which reuses each replayed commit's original author date and
+    only stamps a fresh committer date. `approver_dismiss_review PR_URL
+    REVIEW_ID BODY TOKEN` PUTs `.../reviews/{id}/dismissals` under the same
+    `GH_TOKEN`-scoped-to-one-call discipline `approver_post_review` already
+    holds. `agent-cycle.sh`'s `_approver_restale_sweep_repo`,
+    `_approver_restale_review`, `_approver_restale_dismiss` and
+    `_approver_restale_escalate` are the sole callers of these three,
+    composing them with `run_approver_stage` itself (reused, not duplicated,
+    for the genuine re-review path), `create_escalation_issue` (component 2)
+    and `merge_autonomy_effective_level` (`lib/merge-autonomy.sh`).
+    Regression-tested in `test/approver.test.sh` (the three primitives) and
+    `test/approver-restale-sweep.test.sh`, which lifts
+    `_approver_restale_sweep_repo` verbatim (acceptance check 46). Must pass
+    `shellcheck`.
 14d. `lib/merge-budget.sh` implementing requirement 2.3c: the
     `merge_budget_per_day` spend governor. `merge_budget_effective_cap
     CONFIG_JSON SLUG` resolves the cap on the same precedence
@@ -16799,6 +16904,55 @@ pull request, run the ones the change touches and any it could regress.
     `anomaly` it reports stay exactly what the (unmodified) merged-PR count
     read — an ALREADY_ARMED-driven hold never reports `anomaly: true` on its
     own.
+46. **A pull request the Approver refused cannot rely on the cycle that
+    fixed it to also re-review it (requirement 46, agent-ops#682).**
+    `test/approver.test.sh` passes against a stubbed `gh`: `approver_review_
+    stale` reads `CHANGES_REQUESTED` with a mismatched commit as stale and
+    everything else — an `APPROVED` state, an empty state, an empty commit,
+    an empty head — as not, with no `gh` call at all (a pure predicate);
+    `approver_newest_commit_authored_at` reads the newest of several
+    `authoredDate`s regardless of list order, a single commit as its own
+    newest, and returns non-zero printing nothing on an empty commit list, an
+    unreadable one, or an empty pull request URL; `approver_dismiss_review`
+    issues one `PUT .../reviews/{id}/dismissals` carrying `GH_TOKEN` for that
+    one invocation only (never leaking into the caller's own environment,
+    the same discipline `approver_post_review` already holds) and the
+    message given, never touching the ordinary review-post log, and attempts
+    no write at all given no token, a non-numeric review id, or an empty
+    pull request URL — reporting GitHub's own refusal as a failure, never a
+    dismissal.
+
+    `test/approver-restale-sweep.test.sh` lifts `_approver_restale_sweep_repo`
+    (`agent-cycle.sh`) verbatim — the candidate rule and routing logic, with
+    `_approver_restale_review`, `_approver_restale_dismiss` and
+    `_approver_restale_escalate` stubbed to record what they are offered, the
+    same split `test/landing-retry-sweep.test.sh` already draws around
+    `_landing_stage_attempt` — and pins: a stale review with a commit
+    authored after it reaches `_approver_restale_review` exactly once,
+    carrying the pull request's own slug, url, branch, complexity and title,
+    and never falls back to dismissal or escalation once it reports
+    `posted`; the same candidate falls back to `_approver_restale_dismiss`,
+    naming the review id resolved from the reviews list, only when
+    `_approver_restale_review` reports `unavailable`, and never escalates on
+    that pass; a stale review with nothing authored since it (a rebase-only
+    push) reaches neither `_approver_restale_review` nor
+    `_approver_restale_dismiss` — under `approver_restale_escalate_after_
+    hours` nothing at all is logged, and once the standing review's own
+    `submitted_at` is older than the threshold `_approver_restale_escalate`
+    is called instead, naming a review-round-scoped item ref
+    (`pr-<n>-approver-restale-<review-id>`) and the review's own
+    `submitted_at`, never `updatedAt`; a longer configured threshold holds
+    the identical review back from escalation; a review whose commit still
+    matches the pull request's current head, a draft pull request, a
+    currently-`APPROVED` pull request and one with no readable head SHA are
+    all excluded before any staleness read at all; an unreadable standing-
+    review read is skipped silently (ordinary in-flight work, never a
+    stall to report); a reviews-list entry for a different login or a
+    different `submitted_at` than the one just read never resolves a review
+    id, so nothing runs; nothing runs at `merge_autonomy: human` (the
+    Approver itself never engages there); and a truncated pull-request
+    listing logs one `warning` naming the repository and saying a stale
+    review beyond it is not swept this cycle.
 8v. **A D18 rollout stage's own exit criteria are measured, not recalled
     (component 22).** `test/autonomy-stage-report.test.sh` passes: a
     repository at `human` (Stage 0) verdicts `met` once a baseline file
