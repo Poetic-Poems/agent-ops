@@ -23,6 +23,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `approver_restale_escalate_after_hours` config key (default 24) elapses,
   then escalated to `enabler_assignee` instead of retried forever. Closes
   the gap that left PR #621 blocked for 13.5 hours on a fix nobody re-reviewed.
+- A fine-grained PAT's own expiry is now read and acted on before it arrives
+  (agent-ops#694, agent-ops#691's own postmortem): GitHub states it on every
+  authenticated API response (`GitHub-Authentication-Token-Expiration`), and
+  `scripts/doctor.sh --unattended`'s existing hourly pass now reads it — the
+  same free `/rate_limit` call requirement 2.0 already reads — recording
+  `{expires_at, days_remaining}` in `.doctor-status.json`. The dashboard's
+  Doctor panel shows the day count alongside the existing fail/warn table,
+  amber under a 7-day threshold. `agent-cycle.sh` escalates once per expiry
+  timestamp — through the same fleet-scoped, deduplicated route the crash-loop
+  and dead-credential (agent-ops#691) checks already use — when a node's own
+  token falls under that threshold, so a rotation is never again the fleet's
+  only warning that its credentials are about to lapse.
 - A Reviewer that finds a pull request otherwise green and finished, but
   carrying a question about the work order or its scope it is not the right
   actor to settle, can now say so structurally (requirement 32/8f, D18,

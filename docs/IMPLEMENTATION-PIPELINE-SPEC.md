@@ -2403,19 +2403,29 @@ implements.
    argument- or config-unusable exits near the top of the script, which bail
    before `state_dir` is even resolved) it writes
    `state_dir/.doctor-status.json` — `{timestamp, verdict, fails[], warns[],
-   skips}`, `verdict` the worst of `fail`/`warn`/`ok` — atomically (`mktemp`
-   then `mv -f`), the third declared exception to doctor.sh's read-only rule
-   alongside the state/workspace directories and the trial crontab render.
-   `scripts/publish-dashboard.sh` reads this file rather than re-running the
-   pass itself — the GitHub section alone is several calls per configured
-   repository, too much to repeat on the dashboard's own 5-minute heartbeat
-   — and surfaces it as `status.doctor` (`docs/DASHBOARD-SPEC.md`), local to
-   this node only: nothing here replicates it to peers, unlike the
-   compose/image/switch verdicts the fleet heartbeat carries. `doctor.log`
-   (requirement 2.6) keeps the run's own text output, rotated on size like
-   `dashboard.log`; `.doctor-status.json` is excluded from the state branch
-   (requirement 2.5) alongside the dashboard's own local caches, since
-   nothing but this node's own Publisher ever reads it.
+   skips, token_expiry}`, `verdict` the worst of `fail`/`warn`/`ok` —
+   atomically (`mktemp` then `mv -f`), the third declared exception to
+   doctor.sh's read-only rule alongside the state/workspace directories and
+   the trial crontab render. `scripts/publish-dashboard.sh` reads this file
+   rather than re-running the pass itself — the GitHub section alone is
+   several calls per configured repository, too much to repeat on the
+   dashboard's own 5-minute heartbeat — and surfaces it as `status.doctor`
+   (`docs/DASHBOARD-SPEC.md`), local to this node only: nothing here
+   replicates it to peers, unlike the compose/image/switch verdicts the
+   fleet heartbeat carries. `doctor.log` (requirement 2.6) keeps the run's
+   own text output, rotated on size like `dashboard.log`;
+   `.doctor-status.json` is excluded from the state branch (requirement 2.5)
+   alongside the dashboard's own local caches, since nothing but this node's
+   own Publisher ever reads it.
+
+   `token_expiry` — `{expires_at, days_remaining} | null` — is the
+   fine-grained-PAT-expiry warning (requirement 2.7a, agent-ops#694): read
+   from the same GitHub section, the same free `/rate_limit` call requirement
+   2.0 already reads, `--include`d for the `GitHub-Authentication-Token-
+   Expiration` response header GitHub states on every authenticated request.
+   `null` when that header is absent (a classic PAT, an installation token,
+   or any other credential GitHub states no expiry for) — never a warning or
+   a failure, since an absent header says nothing about the token's health.
 2.6b. **The revert-rate publishing tick** (D18 issue #579, a WI of umbrella
    #402). `scripts/publish-revert-rate.sh`, on its own daily crontab line,
    runs `scripts/mine-merge-history.sh` unprompted so Stage 2's exit
@@ -2583,6 +2593,51 @@ implements.
    detection must never suppress the recovery attempt that might end the
    loop. `crash_loop_after` 0 (or absent), or an empty `crash_loop_repo` or
    `enabler_assignee`, disables both checks; `--dry-run` never files.
+2.7a. **Token-expiry escalation** (agent-ops#694). GitHub states a
+   fine-grained PAT's own expiry on every authenticated API response, in the
+   `GitHub-Authentication-Token-Expiration` response header. On 2026-08-22
+   that date arrived unread and every node lost GitHub at once — requirement
+   2.0b's `github_auth_probe` classifies the resulting 401 and escalates,
+   but only once the token is already dead. This requirement is the warning
+   before that cliff: `scripts/doctor.sh`'s own hourly `--unattended` pass
+   (requirement 2.6a) reads the header — the same free, GET-only
+   `/rate_limit` call requirement 2.0 already reads, `--include`d for the
+   header — and records `{expires_at, days_remaining}` (or `null`, absent a
+   header) in `.doctor-status.json`'s `token_expiry` field. `doctor.sh` is
+   read-only by its own declared contract, so the read stops there; the
+   escalation itself runs in `agent-cycle.sh`, immediately after 1b's
+   crash-loop check and before the requirement-2's stand-down checks, on the
+   same "raise the alarm even if the fleet is also standing down, then
+   proceed normally" placement 1b uses — a token that has not yet expired
+   blocks nothing this cycle needs.
+
+   `agent-cycle.sh` reads this node's own `state_dir/.doctor-status.json` —
+   no GitHub call of its own — and, when `token_expiry.days_remaining` is
+   below `TOKEN_EXPIRY_WARN_DAYS` (`lib/token-expiry.sh`, a fixed constant at
+   7 days rather than a config key: agent-ops#694 calls this "a reasonable
+   default, not a decision that needs a human"), escalates through the same
+   fleet-scoped, deduplicated route 1b's crash loop and 2.0b's auth failure
+   already use: `create_escalation_issue` in `crash_loop_repo`, labelled
+   `enabler_escalation_label`, assigned `enabler_assignee`, item ref
+   `token-expiry:<node>:<expires_at>`. Deliberately not routed through
+   `escalation_autonomy` (D18, agent-ops#627) — that ladder is scoped to one
+   specific escalation, an Enabler refinement-disagreement (requirement
+   36b), and there is no disagreement to adjudicate over a date comparison —
+   the same reasoning 2.0b's own block gives for the identical choice.
+
+   Deduplicated on the expiry timestamp itself
+   (`token_expiry_escalated_for`, keyed on node and `expires_at`), not on
+   whether an open issue currently exists: a fine-grained PAT's expiry is a
+   fixed fact about one credential, so a human closing the issue without
+   rotating the token must not reopen the gate on the very next cycle — it
+   reopens only once the token is actually rotated, which is exactly when
+   `expires_at` changes. This is a stricter dedup than crash-loop's own
+   `crash_loop_escalated_since` needs (that check resets on a `first_ts` run
+   boundary, because a recurring failure has no natural id the way a
+   credential's own expiry does). A failed filing logs a `warning` and
+   retries next cycle, same as 1b and 2.0b. Skipped entirely on `--dry-run`
+   and when `crash_loop_repo` or `enabler_assignee` is unset, the same as
+   both of those checks.
 3. **Repo ordering.** For each configured repo, fetch the timestamp of the
    most recent commit on its default branch via `gh api`. A repo entry may
    also carry `nice`, an optional integer from `-19` to `19` (absent means
