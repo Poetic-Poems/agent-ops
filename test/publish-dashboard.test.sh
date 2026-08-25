@@ -934,6 +934,67 @@ env HOME="$l" LAUNCHER_WINDOW=15 LAUNCHER_PUBLISH_CMD="$stub" \
 assert_lacks "an intact log gets no repair marker" "repaired: dropped" "$(cat "$launcher_log")"
 assert_contains "and keeps what it had" "nothing wrong here" "$(cat "$launcher_log")"
 
+# --- The loop paces itself off what a tick actually costs (#799) ----------------
+# The loop used to sleep to the next 5-second boundary and no further, whatever
+# the tick before it had cost, on the assumption a tick fits in five seconds.
+# Nothing measured a tick, so nothing noticed when that stopped being true: a
+# publish reached 20-22s on every node and the window ran rebuilds back to back,
+# ~11 per window and roughly 78% of a core, with the page byte-identical each
+# time on an idle node. The three assertions below are the three halves of the
+# fix that can each break on their own — the backoff exists, it does *not* cost
+# an idle node its cadence, and the window stops rather than starting a tick it
+# cannot fit.
+#
+# A stub Publisher of known cost (LAUNCHER_PUBLISH_CMD) drives all three, and
+# each asserts on the *gaps between ticks* rather than on a tick count, so a
+# slow or loaded CI box shifts every timestamp together and changes nothing.
+pace_home="$(new_home nodeP)"
+pace_log="$tmp_dir/pace-ticks"
+pace_stub="$tmp_dir/pace-publish.sh"
+cat > "$pace_stub" <<'STUB'
+#!/usr/bin/env bash
+# Records when this tick started, then costs exactly what it is told to.
+printf '%s\n' "${EPOCHREALTIME/,/.}" >> "$TICK_LOG"
+sleep "${STUB_COST:-0}"
+STUB
+chmod +x "$pace_stub"
+
+run_paced() {  # run_paced <window> <cost-seconds> <divisor>
+  : > "$pace_log"
+  env HOME="$pace_home" LAUNCHER_WINDOW="$1" STUB_COST="$2" LAUNCHER_DUTY_DIVISOR="$3" \
+      LAUNCHER_PUBLISH_CMD="$pace_stub" TICK_LOG="$pace_log" "$LAUNCHER" >/dev/null 2>&1
+}
+# The smallest gap between consecutive ticks, in whole seconds, or -1 for a run
+# that produced fewer than two ticks (which every caller below asserts on
+# separately, so "no gaps" can never masquerade as "a big gap").
+min_gap() {
+  awk 'NR > 1 { d = $1 - p; if (m == "" || d < m) m = d } { p = $1 }
+       END { print (m == "" ? -1 : int(m)) }' "$pace_log"
+}
+
+# Cheap ticks must keep the cadence they had. This is the half of the fix that a
+# plain "sleep longer" would break: the hand-applied mitigation this replaces
+# (LAUNCHER_WINDOW=15 on all four production nodes) bought its CPU back by
+# making the page five minutes stale even when a tick cost 0.4s.
+run_paced 20 0 9
+assert_eq "a window of cheap ticks still runs several" "1" "$(( $(grep -c . "$pace_log") >= 2 ))"
+assert_eq "and they stay on the 5-second cadence" "1" "$(( $(min_gap) <= 6 ))"
+
+# An expensive tick earns a backoff proportional to what it cost: 1s at 1:9 owes
+# at least 9 seconds of idle before the next tick may start.
+run_paced 30 1 9
+assert_eq "an expensive tick is followed by a real backoff" "1" "$(( $(grep -c . "$pace_log") >= 2 ))"
+assert_eq "and the backoff is proportional to its cost" "1" "$(( $(min_gap) >= 9 ))"
+assert_contains "the cost and the backoff are logged, not left to top" "pacing: tick cost" \
+  "$(cat "$pace_home/.local/state/poetic-agents/dashboard.log")"
+
+# The window's tail is reserved for a tick the size of the last one, not for the
+# 5-second tick this loop was written around. With a 6s publish and 10s of
+# margin, a 20-second window has room for exactly one: the bare loop would have
+# started a second at t=14 and handed a 6-second overrun to the next cron firing.
+run_paced 20 6 1
+assert_eq "a tick the window cannot fit is not started" "1" "$(grep -c . "$pace_log")"
+
 # --- The cron panel survives a rotation (TD26072501, spec requirement 2.6) ------
 # scripts/rotate-logs.sh renames cron.log to cron.log.1 once it grows past
 # log_retained_bytes, leaving a fresh, short cron.log behind. The panel must

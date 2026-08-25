@@ -3,11 +3,16 @@
 # publish-dashboard-launcher.sh — sub-minute dashboard heartbeat.
 #
 # cron can't fire more than once a minute, so cron launches this once every
-# 5 minutes and it self-loops on 5-second boundaries for ~295s (leaving a
-# ~5s gap so consecutive cron runs don't overlap). Each tick regenerates the
-# dashboard; a full GitHub-hitting refresh runs only when the last one has
-# aged out (~5 minutes), with the cheap local-only --no-github refresh in
-# between — so the page stays near-live without hammering the GitHub API.
+# 5 minutes and it self-loops for ~295s (leaving a ~5s gap so consecutive cron
+# runs don't overlap). Each tick regenerates the dashboard; a full
+# GitHub-hitting refresh runs only when the last one has aged out (~5 minutes),
+# with the cheap local-only --no-github refresh in between — so the page stays
+# near-live without hammering the GitHub API.
+#
+# A tick lands on a 5-second boundary as before, but the loop also measures
+# what each tick costs and idles a multiple of that before the next one, so the
+# Publisher can never take more than a fixed share of the window whatever a
+# publish grows to cost. See `duty_divisor` below.
 
 set -uo pipefail
 
@@ -16,9 +21,30 @@ startat=$EPOCHSECONDS
 # cron always runs the default.
 endat=$(( startat + ${LAUNCHER_WINDOW:-295} ))
 # A tick started in the window's final seconds finishes after it, and the
-# overrun collides with the next cron-fired launcher. Ten seconds covers a
-# publish that misses its 5-second budget once.
+# overrun collides with the next cron-fired launcher. This is the *floor* on
+# that reserve; the loop raises it to whatever the last tick actually cost,
+# because the ten seconds here were sized against a five-second budget that
+# nothing enforced and every node now misses — see `duty_divisor` below.
 tick_margin=10
+
+# How long the loop must idle after a tick, as a multiple of what that tick
+# cost. 9 holds the Publisher to a tenth of the window's wall-clock.
+#
+# The loop used to sleep to the next 5-second boundary and no more, whatever a
+# tick had just cost, on the assumption a tick fits in five seconds (the
+# `tick_margin` note above, and this file's header). Nothing measured a tick,
+# so nothing noticed when that stopped being true: by 2026-08-25 a publish cost
+# 20-22s on every node, and the window ran rebuilds back to back — ~11 per
+# window, roughly 78% of a core, measured at 4 rebuilds per 120s on `poetic-1`
+# (#799). The page it produced was byte-identical each time on an idle node.
+#
+# Pacing off the measured cost rather than a constant is what makes this
+# self-correcting: a cheap tick earns a cheap backoff and the page stays as
+# live as it ever was (a 0.4s no-op tick still lands on the next 5-second
+# boundary), while an expensive one pays for itself. It needs no per-node
+# tuning and cannot be invalidated by the state growing, which a hard-coded
+# budget — or a hand-set LAUNCHER_WINDOW — can and did.
+duty_divisor="${LAUNCHER_DUTY_DIVISOR:-9}"
 
 scriptdir="$(cd "$(dirname "$0")" && pwd)"
 appdir="$(dirname "$scriptdir")"
@@ -100,7 +126,42 @@ repair_log() {
 }
 repair_log
 
+# EPOCHSECONDS is too coarse to pace with: it rounds a 0.4s no-op tick to 0 and
+# a 0.6s one to 1, and the backoff below multiplies whatever it is given, so
+# that rounding would be multiplied too. EPOCHREALTIME carries microseconds.
+now_ms() {
+  local t="${EPOCHREALTIME/,/.}"   # a comma-decimal locale renders it that way
+  printf '%s' "$(( ${t%%.*} * 1000 + 10#${t#*.} / 1000 ))"
+}
+
+sleep_ms() {
+  local ms="$1"
+  (( ms > 0 )) || return 0
+  sleep "$(( ms / 1000 )).$(printf '%03d' "$(( ms % 1000 ))")"
+}
+
+# What the last tick cost, and therefore the earliest the next may start. Zero
+# until a tick has been measured, so the first tick of a window is never
+# delayed and a window that runs one tick behaves exactly as it did before.
+last_cost_ms=0
+next_tick_ms=0
+
 while (( EPOCHSECONDS < endat - tick_margin )); do
+  # Reserve enough of the window's tail for a tick of the size we last saw,
+  # not for the five-second one this loop was written around. Starting a 21s
+  # tick 12s before the window closes just hands the overrun to the next
+  # cron-fired launcher, which then logs it as a lock collision.
+  (( EPOCHSECONDS < endat - tick_margin - last_cost_ms / 1000 )) || break
+
+  # Wait out the backoff the previous tick earned. One that would run past the
+  # end of the window ends the window instead: cron opens the next one on
+  # schedule, and sleeping through the remainder here would only delay it.
+  backoff_ms=$(( next_tick_ms - $(now_ms) ))
+  if (( backoff_ms > 0 )); then
+    (( EPOCHSECONDS + backoff_ms / 1000 < endat - tick_margin )) || break
+    sleep_ms "$backoff_ms"
+  fi
+
   github=(--no-github)
   sleep $(( 5 - EPOCHSECONDS % 5 ))
   gh_at="$(stat -c %Y "$gh_cache" 2>/dev/null)" || gh_at=0
@@ -116,8 +177,28 @@ while (( EPOCHSECONDS < endat - tick_margin )); do
   # -E 111: distinguish "another publish holds the lock" (skip, don't stack
   # up) from a genuine publish failure, and leave a trace so a stuck lock
   # doesn't look like a quiet system.
+  tick_start_ms="$(now_ms)"
   flock -n -E 111 "$lck" "$cmd" "${github[@]}" >>"$log" 2>&1
   rc=$?
+  tick_end_ms="$(now_ms)"
+  last_cost_ms=$(( tick_end_ms - tick_start_ms ))
+  next_tick_ms=$(( tick_end_ms + last_cost_ms * duty_divisor ))
+
+  # A backoff worth naming. The defect behind this loop was invisible for as
+  # long as it was deployed because nothing anywhere recorded what a tick cost
+  # — it took `top` on the host to find it. One line per expensive tick, and
+  # only for an expensive one, keeps that visible without burying the GitHub
+  # and repair lines this log exists for. A lock collision (rc 111) costs
+  # nothing and earns nothing, so it never lands here and still retries on the
+  # next boundary.
+  #
+  # The threshold is on the backoff rather than the tick because the backoff is
+  # what an operator is looking for: it says the heartbeat is deliberately
+  # idling and for how long, which is the question `top` was needed to answer.
+  if (( last_cost_ms * duty_divisor >= 5000 )); then
+    printf '%(%Y-%m-%dT%H:%M:%S%z)T pacing: tick cost %sms — next tick in %ss (duty cycle 1:%s)\n' \
+      -1 "$last_cost_ms" "$(( last_cost_ms * duty_divisor / 1000 ))" "$duty_divisor" >>"$log"
+  fi
   if (( rc == 111 )); then
     # Not our turn and no fetch happened, so the stamp is deliberately left
     # alone: the next tick inherits the attempt rather than losing the window.
