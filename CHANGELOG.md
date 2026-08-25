@@ -616,6 +616,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `github_auth_probe` (`lib/github-limit.sh`, requirement 2.0b) no longer
+  classifies a missing `GH_TOKEN`/`GITHUB_TOKEN` as `unreachable`
+  (TD-PPagop-26082306). Before, only an HTTP 401 GitHub itself answered was
+  read as `unauthorized`; an unset or empty token with no `gh auth login`
+  session either makes `gh` refuse locally, in a shape that matched neither
+  that pattern nor anything else, so requirement 2.0b's stand-down fell
+  through and the cycle proceeded to a full Co-Ordinator engagement every
+  time — the same indefinite per-cycle burn agent-ops#691 was filed about,
+  in a different failure mode of the same fault. The probe now recognises
+  `gh`'s own no-credentials refusal too and reports it as `unauthorized`,
+  with `detail` leading "no token present" rather than an HTTP status; the
+  stand-down reason and the escalation issue's title and body
+  (`lib/standdown.sh`) now say so plainly instead of claiming a rejected
+  token ("HTTP 401", "invalid or expired") that never happened.
 - `state-sync.sh fetch` no longer reports a real failure — dead credentials,
   a network outage, a corrupt mirror — as the benign "the state repository
   has no node branches yet" bootstrap case (agent-ops#693). During the
