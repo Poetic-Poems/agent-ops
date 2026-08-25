@@ -96,12 +96,19 @@ run_case() {
   : > "$tmp_dir/events"
   (
     set -uo pipefail
+    # shellcheck disable=SC2034  # consumed by $notify_src/$create_src below, invisible to a static reader
     escalation_webhook_url="$webhook_url"
+    # shellcheck disable=SC2034  # consumed by $notify_src/$create_src below, invisible to a static reader
     cycle_dir="$tmp_dir"
+    # shellcheck disable=SC2034  # consumed by $notify_src below, invisible to a static reader
     node_name="test-node"
+    # shellcheck disable=SC2034  # consumed by $notify_src below, invisible to a static reader
     cycle_id="20260101T000000Z-test-node-1"
+    # shellcheck disable=SC2034  # consumed by $create_src below, invisible to a static reader
     enabler_assignee="ops-bot"
+    # shellcheck disable=SC2034  # consumed by $create_src below, invisible to a static reader
     CONFIG_FILE=""
+    # shellcheck disable=SC2034  # consumed by $create_src below, invisible to a static reader
     SCHEMA_FILE=""
 
     # shellcheck disable=SC2317  # called via eval below
