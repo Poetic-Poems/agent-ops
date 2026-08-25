@@ -1332,6 +1332,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   existing "Priority field unresolvable" one. A repository missing only
   *some* of the four names is unaffected — `issue_priority_apply`'s own
   per-issue fallback (#534, above) still bands it.
+- The Refiner no longer manufactures a block only a human can clear when it
+  finds an item already adequately specified (agent-ops#670 Part 2,
+  TD-PPagop-26082305). Its prompt's "never write a second specification"
+  rule left `needs-refinement` as the only verdict for that case, and the
+  resulting block's own `unblock_condition` — "a human must remove the
+  hand-applied label" — named a state the Script's own requirement 34e
+  projection was about to create three seconds later: a deadlock the
+  pipeline built for itself and could not exit under its own power
+  (agent-ops#597, #598, #660, #666). Requirement 39c's `refined` verdict now
+  covers **re-affirmation**: an item the Refiner judges already carries an
+  adequate, unchanged specification — its own, the Enabler's, or a human's —
+  is `refined`, citing the *existing* specification's URL (or reproducing
+  its existing text) rather than declined. The Script's recording needed no
+  change — `refinement_record_fields` never required the specification to
+  be this cycle's own write — so the fix is confined to `prompts/refiner.md`
+  and the spec; disagreeing with an existing specification is unaffected and
+  still declines `needs-refinement`, escalating rather than being settled
+  here.
 
 ### Changed
 
