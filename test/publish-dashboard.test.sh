@@ -1935,6 +1935,15 @@ run_publish "$g"
 g_data_js="$g/.local/state/poetic-agents/dashboard/data.js"
 g_good="$(cat "$g_data_js")"
 
+# A changed input first, so this tick actually reaches the assemble: since #787
+# a tick over state that has not moved skips before building anything, which is
+# the whole point of that rule and would make the failure below unobservable
+# here. It costs the scenario nothing — an assemble dies on the input it was
+# given (the argv cap, a malformed record, the OOM killer), so the tick it dies
+# on is by construction one that had something new to assemble.
+printf '{"ts":"%s","cycle":"%sT040000Z-21","node":"nodeG","event":"note"}\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$today_day" >> "$g/.local/state/poetic-agents/log.jsonl"
+
 # Fail the assemble and nothing else: it is the one jq call bound to
 # `generated_at`. As in the process-budget pin above, an exported function is
 # the only way to reach a jq the publisher looks up on a PATH it hardens for
@@ -2269,6 +2278,75 @@ assert_eq "a repository with no revert-rate row yet still appears" \
   "1" "$(jq -c '[.revert_rate[] | select(.repo == "Poetic-Poems/poetic")] | length' <<<"$rrdata")"
 assert_eq "  ... with nothing but its own slug" \
   "true" "$(rr_row "Poetic-Poems/poetic" | jq 'keys == ["repo"]')"
+
+# --- The no-op short-circuit (#787) ----------------------------------------------
+# The heartbeat asks for a publish every five seconds. Before this, every one of
+# those rebuilt the whole payload from cold — 18.1s per tick against a 5-second
+# budget, ~14 byte-identical 1.45 MB writes per window, a core per idle node.
+# What follows is the rule that makes an idle tick free, and the two properties
+# that keep it from becoming the stale-page failure lib/noop-skip.sh warns about.
+np="$(new_home nodeNoop)"
+np_state="$np/.local/state/poetic-agents"
+np_data="$np_state/dashboard/data.js"
+make_cycle "$np" "${today_day}T090000Z-nodeNoop-1" 1 model-a
+
+np_publish() { env HOME="$np" NODE_NAME=nodeNoop "$PUBLISH" --no-github 2>&1; }
+
+out="$(np_publish)"
+assert_eq "the first publish writes the page" "1" \
+  "$(grep -c 'publish-dashboard: wrote' <<<"$out")"
+
+# The page's own mtime is the assertion that matters: "skipped" has to mean the
+# file was not rewritten, not merely that the same bytes were written again.
+before_mtime="$(stat -c %Y "$np_data")"
+before_bytes="$(wc -c < "$np_data")"
+out="$(np_publish)"
+assert_eq "a second tick over unchanged state prints nothing" "" "$out"
+assert_eq "  ... and leaves the page untouched" \
+  "$before_mtime" "$(stat -c %Y "$np_data")"
+assert_eq "  ... byte for byte" "$before_bytes" "$(wc -c < "$np_data")"
+
+np_publish >/dev/null
+np_publish >/dev/null
+
+# A new event is a changed input, so the next tick must rebuild — and say how
+# many ticks it skipped on the way, which is the only place that number shows.
+printf '{"ts":"%s","cycle":"%sT090000Z-nodeNoop-1","node":"nodeNoop","event":"pr-raised","repo":"Poetic-Poems/poetic","pr_url":"https://github.com/Poetic-Poems/poetic/pull/9"}\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$today_day" >> "$np_state/log.jsonl"
+out="$(np_publish)"
+assert_eq "a new event rebuilds" "1" "$(grep -c 'publish-dashboard: wrote' <<<"$out")"
+assert_eq "  ... reporting the ticks it skipped first" "1" \
+  "$(grep -c 'after 3 no-op tick(s)' <<<"$out")"
+out="$(np_publish)"
+assert_eq "  ... and the count resets, so the next rebuild is not cumulative" "" "$out"
+
+# A fingerprint match is not on its own a reason to skip: with no page on disk
+# there is nothing to leave standing. This is the first-run case and the
+# deliberately-failed-assemble case, which leaves the previous data.js in place.
+rm -f "$np_data"
+out="$(np_publish)"
+assert_eq "a missing page rebuilds even when the fingerprint matches" "1" \
+  "$(grep -c 'publish-dashboard: wrote' <<<"$out")"
+
+# The safety net. lib/noop-skip.sh's warning is that a fingerprint missing an
+# input stalls the pipeline silently; here a GitHub tick rebuilds unconditionally,
+# so the worst a wrong fingerprint can do is hold a stale page until the next one
+# — about five minutes (LAUNCHER_GITHUB_MAX_AGE), which is the cadence the
+# dashboard published at before the sub-minute heartbeat existed (#26).
+np_publish >/dev/null
+np_fail_gh="$tmp_dir/np-gh-stub"; printf '#!/usr/bin/env bash\nexit 1\n' > "$np_fail_gh"; chmod +x "$np_fail_gh"
+before_mtime="$(stat -c %Y "$np_data")"
+out="$(env HOME="$np" NODE_NAME=nodeNoop DASHBOARD_GH_CMD="$np_fail_gh" "$PUBLISH" 2>&1)"
+assert_eq "a GitHub tick never skips, whatever the fingerprint says" "1" \
+  "$(grep -c 'publish-dashboard: wrote' <<<"$out")"
+assert_eq "  ... and it does rewrite the page" "1" \
+  "$(( $(stat -c %Y "$np_data") >= before_mtime ))"
+
+# ... and the tick after it skips again, which is the proof that the caches a
+# GitHub tick writes under the state dir are inside the fingerprint rather than
+# a permanent reason to rebuild.
+out="$(np_publish)"
+assert_eq "the tick after a GitHub tick skips again" "" "$out"
 
 # ---------------------------------------------------------------------------------
 if (( failures > 0 )); then

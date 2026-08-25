@@ -424,7 +424,8 @@ Reads the state above, assembles one JSON object, redacts it, and writes it
 as `window.DASHBOARD_DATA = {…}` to `data.js` (atomically: temp file + `mv`).
 It is `set -uo pipefail` (not `-e`) because most reads are best-effort, and
 ends `exit 0`. It sets its own `PATH` for cron and is `shellcheck`-clean.
-It stays inside the heartbeat's 5-second budget as history accumulates: the
+Several measures keep a *rebuild* proportional to the window rather than to
+the whole history: the
 transcript cost scan reads envelopes in batches (one `jq` per 25 files, the
 cycle's day and instant both derived from `input_filename` — the cycle/review
 id's own `YYYYMMDDTHHMMSSZ-…` prefix reformatted to a plain ISO 8601 `ts`,
@@ -459,6 +460,36 @@ than blanking the GitHub panels, it reuses the last real fetch — cached at
 work sources and ok/error state all persist, and no false "GitHub unavailable"
 banner fires. That is what lets the sub-minute heartbeat refresh local state
 every few seconds while hitting the GitHub API only once per window.
+
+Those measures bound a rebuild; they do not make one cheap. A full publish
+grew from 5.1 s when they were introduced (#51) to 18.1 s by 2026-08-25 —
+roughly fifteen dashboard panels later, each legitimately adding a `jq` pass
+over the same inputs — against a heartbeat that asks for one every five
+seconds. The launcher had no way to tell "publishing every 5 s as designed"
+from "publishing continuously and never idle": both look like a full window of
+`wrote …` lines, and two idle nodes held two of six cores producing
+byte-identical payloads.
+
+So the Publisher has the no-op short-circuit the Co-Ordinator has
+(`lib/noop-skip.sh`, requirement 3b), on the same claim: if nothing it reads
+has moved since it last published, publishing again buys the same bytes at the
+same price. A `--no-github` tick fingerprints every path under the state dir
+and the peers dir — plus `config.json`, the page template and the script
+itself — and exits without building anything when that fingerprint matches the
+one stored beside the last publish. The skipped ticks are counted and reported
+by the next real publish (`… after N no-op tick(s)`) rather than logged one by
+one.
+
+Two properties make that safe against the stale-page failure `lib/noop-skip.sh`
+warns about, where a missed input stalls everything silently. It covers by
+exclusion rather than enumeration — everything under the state dir counts
+except the served directory and `dashboard.log`, the two things publishing
+itself writes — so an input a later panel adds is covered on the day it is
+added, and the failure direction of a mistake is a needless rebuild, never a
+stale page. And a GitHub tick never skips, so even a fingerprint wrong in the
+dangerous direction can only hold a stale page until the next one, about five
+minutes (`LAUNCHER_GITHUB_MAX_AGE`) — the cadence the dashboard published at
+before the sub-minute heartbeat existed (#26).
 
 Redaction is unconditional: `/home/<user>` and `/Users/<user>` → `~`, and
 `ghp_/gho_/github_pat_/sk-…/Bearer …` token shapes → `[REDACTED-TOKEN]`,

@@ -48,8 +48,8 @@ crash_loop_verdict() {
   if ! [[ "$threshold" =~ ^[0-9]+$ ]] || (( threshold < 1 )); then
     return 0
   fi
-  jq -c -R -s --argjson threshold "$threshold" '
-    [ splits("\n") | select(length > 0) | (fromjson? // empty) ]
+  jq -c -R -n --argjson threshold "$threshold" '
+    [ inputs | select(length > 0) | (fromjson? // empty) ]
     | map(select(
         (.event == "attempt-failed" and (.stage // "") == "coordinator")
         or ((.event == "stage-end") and ((.stage // "") == "coordinator")
@@ -123,8 +123,8 @@ crash_loop_preselection_verdict() {
   if ! [[ "$threshold" =~ ^[0-9]+$ ]] || (( threshold < 1 )); then
     return 0
   fi
-  jq -c -R -s --argjson threshold "$threshold" '
-    [ splits("\n") | select(length > 0) | (fromjson? // empty) ]
+  jq -c -R -n --argjson threshold "$threshold" '
+    [ inputs | select(length > 0) | (fromjson? // empty) ]
     | map(select(.event == "cycle-start" or .event == "cycle-end"
                  or .event == "stage-start"))
     | group_by(.cycle)
@@ -170,8 +170,8 @@ crash_loop_preselection_verdict() {
 # event.
 crash_loop_escalated_since() {
   local first_ts="$1" detail="$2" hits
-  hits="$(jq -r -R -s --arg ts "$first_ts" --arg detail "$detail" '
-    [ splits("\n") | select(length > 0) | (fromjson? // empty)
+  hits="$(jq -r -R -n --arg ts "$first_ts" --arg detail "$detail" '
+    [ inputs | select(length > 0) | (fromjson? // empty)
       | select(.event == "crash-loop-escalated"
                and (.detail // "") == $detail
                and (.ts // "") >= $ts) ]

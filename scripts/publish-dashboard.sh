@@ -167,6 +167,92 @@ trap 'rm -rf "$work_tmp"' EXIT
 now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 now_epoch="$(date +%s)"
 
+# --- The no-op short-circuit (#787) -------------------------------------------
+# The Publisher is a pure function of its inputs, and the heartbeat asks it for
+# an answer every five seconds. On an idle node every one of those answers is
+# the last answer: on 2026-08-25 this script cost 18.1s per tick against the
+# 5-second budget publish-dashboard-launcher.sh budgets for, ran back-to-back
+# for the whole window because of it, and produced a byte-identical 1.45 MB
+# data.js roughly fourteen times in a row — the only delta between consecutive
+# payloads being their own clock fields. Two idle nodes held two of six cores.
+#
+# So the same rule the Co-Ordinator has (lib/noop-skip.sh, requirement 3b):
+# if nothing this script reads has moved since it last published, publishing
+# again buys the same bytes at the same price.
+#
+# lib/noop-skip.sh is emphatic that a fingerprint missing an input is this
+# system's signature failure — no error, just a page that quietly stops
+# updating. Two properties are what make this instance safe where that warning
+# applies hardest:
+#
+#   1. It covers by *exclusion*, not by enumeration. Everything under the state
+#      dir and the peers dir counts, minus this script's own two outputs. A new
+#      input added by a later panel is therefore covered on the day it is added,
+#      with nobody having to remember this rule exists — the failure direction
+#      of a mistake here is a needless rebuild, never a stale page.
+#   2. A GitHub tick never skips. The launcher forces one about every five
+#      minutes (LAUNCHER_GITHUB_MAX_AGE), so even a fingerprint that is wrong
+#      in the dangerous direction can only hold a stale page until the next
+#      one — which is the cadence the dashboard published at before the
+#      sub-minute heartbeat existed at all (#26), and well inside the hours
+#      that `lock_stale_after` reasons in.
+#
+# The skipped ticks are counted rather than logged. Logging each one would
+# replace fourteen "wrote" lines per window with fourteen "skipped" lines and
+# save nobody anything; the count instead rides the next real publish, where it
+# is the one number that says this rule is working.
+fingerprint_file="$state_dir/.dashboard-fingerprint"
+skips_file="$state_dir/.dashboard-skips"
+
+local_state_fingerprint() {
+  {
+    # `-prune` on the served directory and on the heartbeat log the launcher
+    # appends this script's own stdout to: both change as a *result* of
+    # publishing, so counting them would make every fingerprint differ from
+    # the one the same state produced a moment earlier, and nothing would ever
+    # skip. Every other path under the state dir is an input until proven
+    # otherwise, including ones added after this was written.
+    find "$state_dir" \
+      -path "$out_dir" -prune -o \
+      -name 'dashboard.log*' -prune -o \
+      -name '.dashboard-fingerprint' -prune -o \
+      -name '.dashboard-skips' -prune -o \
+      -printf '%p %s %T@\n' 2>/dev/null
+    [[ -d "$peers_dir" ]] && find "$peers_dir" -printf '%p %s %T@\n' 2>/dev/null
+    # The config, the page template and this script itself: an image roll moves
+    # the last two, and a page that would render differently has to be rewritten
+    # even when the data behind it has not moved.
+    stat -c '%n %s %Y' "$CONFIG_FILE" "$TEMPLATE" "$0" 2>/dev/null
+  } | LC_ALL=C sort | sha256sum | cut -d' ' -f1
+}
+
+read_skips() {
+  local n; n="$(cat "$skips_file" 2>/dev/null)"
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  printf '%s' "$n"
+}
+
+# Both files live in the state dir, and `find` reports a *directory's* mtime,
+# which creating a file in it moves. Pruning them by name keeps their own
+# entries out of the fingerprint but not that side effect, so creating either
+# one lazily would perturb the very comparison it exists to serve — a node
+# would rebuild once more than it needed to, for no reason it could show. They
+# are made to exist before the first fingerprint is ever taken instead;
+# overwriting a file that already exists leaves the directory alone.
+[[ -e "$fingerprint_file" ]] || : > "$fingerprint_file" 2>/dev/null || true
+[[ -e "$skips_file" ]]       || printf '0' > "$skips_file" 2>/dev/null || true
+
+if (( ! WITH_GITHUB )); then
+  # `-s "$data_file"`: a fingerprint match means nothing if there is no page to
+  # leave standing — a first run, or one whose assemble failed and deliberately
+  # left the previous data.js in place, must still build.
+  if [[ -s "$data_file" ]] \
+     && [[ "$(local_state_fingerprint)" == "$(cat "$fingerprint_file" 2>/dev/null)" ]]; then
+    printf '%s' "$(( $(read_skips) + 1 ))" > "$skips_file" 2>/dev/null || true
+    exit 0
+  fi
+fi
+
 # --- Helpers -----------------------------------------------------------------
 # Parse each line of the log independently so a half-written trailing line
 # (the Script may be appending as we read) never aborts the whole parse.
@@ -2545,5 +2631,25 @@ mv -f "$tmp" "$data_file"
 # Refresh the page template alongside the data (source of truth is the repo).
 [[ -f "$TEMPLATE" ]] && cp -f "$TEMPLATE" "$out_dir/index.html"
 
-echo "publish-dashboard: wrote $data_file ($(wc -c < "$data_file") bytes); open $out_dir/index.html"
+# Stamp the state this page was built from, *after* writing it: a GitHub tick
+# rewrites several of the caches under the state dir as part of publishing, so a
+# fingerprint taken before the build could never match the one the next tick
+# computes, and nothing would ever skip.
+#
+# Written only when it is a whole hash, and removed rather than left behind
+# otherwise. The two failure directions are not equal: an absent or unreadable
+# stamp costs one needless rebuild, a truncated one that happens to match costs
+# a page that stops updating.
+new_fingerprint="$(local_state_fingerprint 2>/dev/null)"
+if [[ "$new_fingerprint" =~ ^[0-9a-f]{64}$ ]]; then
+  printf '%s' "$new_fingerprint" > "$fingerprint_file" 2>/dev/null || true
+else
+  rm -f "$fingerprint_file" 2>/dev/null || true
+fi
+
+skipped="$(read_skips)"
+printf '0' > "$skips_file" 2>/dev/null || true
+skipped_note=""
+(( skipped > 0 )) && skipped_note=" after $skipped no-op tick(s)"
+echo "publish-dashboard: wrote $data_file ($(wc -c < "$data_file") bytes)$skipped_note; open $out_dir/index.html"
 exit 0

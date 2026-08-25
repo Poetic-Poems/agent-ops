@@ -374,8 +374,8 @@ review_gate_unknown_streak_verdict() {
   if ! [[ "$threshold" =~ ^[0-9]+$ ]] || (( threshold < 1 )) || [[ -z "$node" ]]; then
     return 0
   fi
-  jq -c -R -s --argjson threshold "$threshold" --arg node "$node" '
-    [ splits("\n") | select(length > 0) | (fromjson? // empty) ]
+  jq -c -R -n --argjson threshold "$threshold" --arg node "$node" '
+    [ inputs | select(length > 0) | (fromjson? // empty) ]
     | map(select(.event == "review-gate-checks-read" and (.node // "") == $node))
     | reduce .[] as $e (
         {count: 0, first_ts: null, last_ts: null};
@@ -412,8 +412,8 @@ review_gate_degraded_since() {
   if [[ -z "$first_ts" || -z "$node" ]]; then
     return 1
   fi
-  hits="$(jq -r -R -s --arg ts "$first_ts" --arg node "$node" '
-    [ splits("\n") | select(length > 0) | (fromjson? // empty)
+  hits="$(jq -r -R -n --arg ts "$first_ts" --arg node "$node" '
+    [ inputs | select(length > 0) | (fromjson? // empty)
       | select(.event == "review-gate-checks-degraded"
                and (.node // "") == $node
                and (.first_ts // "") == $ts) ]

@@ -1582,8 +1582,8 @@ $(pipeline_comment_marker "$cycle_id" approver-adjudicate-open-question)" >/dev/
 # touch."
 open_question_adjudicated_before() {
   local pr_url="$1" hits
-  hits="$(jq -r -R -s --arg u "$pr_url" '
-    [splits("\n") | select(length > 0) | (fromjson? // empty)] as $all
+  hits="$(jq -r -R -n --arg u "$pr_url" '
+    [inputs | select(length > 0) | (fromjson? // empty)] as $all
     | ([$all[] | select(.event == "open-question-raised" and (.pr_url // "") == $u) | (.ts // "")]
        | sort | last // "") as $raised_ts
     | [$all[] | select(.event == "open-question-adjudication"

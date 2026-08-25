@@ -64,8 +64,8 @@ escalation_autonomy_configured_level() {
 # the first since they did — one per item, per human touch.
 escalation_autonomy_adjudicated_before() {
   local repo="$1" item="$2" hits
-  hits="$(jq -r -R -s --arg r "$repo" --arg i "$item" '
-    [ splits("\n") | select(length > 0) | (fromjson? // empty)
+  hits="$(jq -r -R -n --arg r "$repo" --arg i "$item" '
+    [ inputs | select(length > 0) | (fromjson? // empty)
       | select(.event == "enabler-adjudication"
                and (.item // "") == $i
                and ((.repo // "") == "" or (.repo // "") == $r)) ]
