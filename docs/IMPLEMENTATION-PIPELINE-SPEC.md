@@ -2303,6 +2303,28 @@ implements.
    left the fleet — its peer copy is pruned on the next fetch. Nothing is
    ever written into a node's own `state_dir` from outside.
 
+   A fetch probes with `git ls-remote --heads origin 'refs/heads/nodes/*'`
+   before touching any branch, to tell apart the two ways that probe can
+   come back empty-handed: a zero exit with no output is the genuine
+   bootstrap case (the state repository has no node branches published
+   yet), a silent no-op that returns 0; a non-zero exit is a real failure —
+   bad credentials, a network outage, a corrupt mirror — logged from git's
+   own stderr, that returns non-zero so the scheduler surfaces it (#693). A
+   `git fetch` failing after a successful, non-empty probe is reported and
+   handled identically, as a second, later real failure. Either kind of real
+   failure also marks the peers directory stale: `fleet_mark_peers`
+   (`lib/fleet.sh`) writes `<peers_dir>/.last-fetch.json`
+   (`{"ok": bool, "ts": …}`, `fleet_peers_marker`) after every fetch attempt
+   that gets past the bootstrap check — `true` once a fetch has just
+   materialised the peer trees successfully, `false` while a real failure is
+   in force — so a reader that cares whether the peer copies below it might
+   be frozen can tell without re-deriving the answer itself. The marker is
+   written whole and renamed into place, for the same reason the peer trees
+   beside it are: a reader that catches a plain truncate-then-fill mid-write
+   sees neither the old answer nor the new one. The marker is
+   absent only in the bootstrap case, where there has never been a real peer
+   to be stale about.
+
    **The union.** What the fleet shares is memory, not authority: the
    blocked and void extractions (requirements 34/34c), the no-op fingerprint
    (3b) and the usage-limit cooldown (2.1) all read `fleet_logs` — this

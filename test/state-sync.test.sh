@@ -413,6 +413,62 @@ assert_eq "a vanished branch prunes its peer copy" "0" \
   "$(test -e "$sb_peers/local-retention-node" && echo 1 || echo 0)"
 
 # ==============================================================================
+# fetch — a real failure is distinguished from the bootstrap no-op (#693)
+# ==============================================================================
+# A successful fetch marks the peers directory fresh.
+marker="$sb_peers/.last-fetch.json"
+assert_eq "a successful fetch marks the peers fresh" "true" \
+  "$(jq -r '.ok' "$marker" 2>/dev/null)"
+# Written whole and renamed into place, so a reader never catches it empty —
+# and the write-side temporary is not left behind for one to find.
+assert_eq "the marker leaves no half-written temporary behind" "0" \
+  "$(test -e "$marker.tmp" && echo 1 || echo 0)"
+
+# The genuine bootstrap case: a state repository with no node branches at all
+# (a fresh bare repo, never pushed to) stays a silent no-op — exit 0, no
+# marker written, because no fetch has ever actually run against real peer
+# data.
+bootstrap_remote="$tmp_dir/bootstrap-remote.git"
+git init --quiet --bare --initial-branch=main "$bootstrap_remote"
+bootstrap_home="$(new_node bootstrap-node)"
+bootstrap_peers="$(fleet_peers_dir "$bootstrap_home/.cache/poetic-agents/workspaces")"
+out="$(env HOME="$bootstrap_home" AGENT_OPS_ROLE=standby NODE_NAME=bootstrap-node \
+  STATE_SYNC_REMOTE="$bootstrap_remote" "$SYNC" fetch 2>&1)"
+assert_eq "the bootstrap fetch exits 0" "0" "$?"
+assert_contains "the bootstrap fetch names itself as such" \
+  "no node branches yet" "$out"
+assert_eq "the bootstrap fetch writes no marker" "0" \
+  "$(test -e "$bootstrap_peers/.last-fetch.json" && echo 1 || echo 0)"
+
+# A real failure — modelled here as an unreachable remote, standing in for
+# dead credentials or a network outage — is not the bootstrap case: it logs
+# git's stderr, exits non-zero so the scheduler surfaces it, and marks the
+# peers directory stale rather than leaving it silently looking fresh.
+unreachable_home="$(new_node unreachable-node)"
+unreachable_peers="$(fleet_peers_dir "$unreachable_home/.cache/poetic-agents/workspaces")"
+out="$(env HOME="$unreachable_home" AGENT_OPS_ROLE=standby NODE_NAME=unreachable-node \
+  STATE_SYNC_REMOTE="$tmp_dir/does-not-exist.git" "$SYNC" fetch 2>&1)"
+status=$?
+assert_eq "a real fetch failure exits non-zero" "1" "$status"
+assert_contains "a real fetch failure is logged, not swallowed" \
+  "could not reach the state repository" "$out"
+assert_eq "a real fetch failure marks the peers stale" "false" \
+  "$(jq -r '.ok' "$unreachable_peers/.last-fetch.json" 2>/dev/null)"
+
+# A peer directory that was fresh and then starts failing is marked stale in
+# place — a reader must see the flip, not a directory that still looks fresh
+# from the last successful fetch.
+was_fresh_home="$active_home"
+was_fresh_peers="$a_peers"
+sync_as "$was_fresh_home" active fetch >/dev/null
+assert_eq "was fresh before the failure" "true" \
+  "$(jq -r '.ok' "$was_fresh_peers/.last-fetch.json" 2>/dev/null)"
+env HOME="$was_fresh_home" AGENT_OPS_ROLE=active NODE_NAME="$(basename "$was_fresh_home")" \
+  STATE_SYNC_REMOTE="$tmp_dir/does-not-exist.git" "$SYNC" fetch >/dev/null 2>&1
+assert_eq "a previously fresh peers directory flips to stale on failure" "false" \
+  "$(jq -r '.ok' "$was_fresh_peers/.last-fetch.json" 2>/dev/null)"
+
+# ==============================================================================
 # the union read (lib/fleet.sh)
 # ==============================================================================
 union="$(fleet_logs "$sb_state" "$sb_peers" log.jsonl)"

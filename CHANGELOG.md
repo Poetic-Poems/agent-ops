@@ -616,6 +616,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `state-sync.sh fetch` no longer reports a real failure — dead credentials,
+  a network outage, a corrupt mirror — as the benign "the state repository
+  has no node branches yet" bootstrap case (agent-ops#693). During the
+  2026-08-22 token expiry the fetch failed with HTTP 401, and the discarded
+  stderr and the swallowed non-zero exit meant nothing recorded why: the
+  step logged the bootstrap line and exited 0 regardless. `do_fetch` now
+  probes with `git ls-remote --heads origin 'refs/heads/nodes/*'` before
+  fetching — a non-zero exit is a real failure, logged from git's own
+  stderr and returned non-zero so the scheduler surfaces it; a zero exit
+  with empty output is the genuine bootstrap case, still a silent no-op.
+  While a real failure is in force, `fleet_mark_peers` (`lib/fleet.sh`)
+  marks the peers directory stale (`.last-fetch.json`,
+  `{"ok": false, "ts": …}`) rather than leaving it looking as fresh as a
+  directory a successful fetch just materialised, so a union reader can
+  tell frozen peer state from current state.
 - A context-tight Co-Ordinator cycle no longer mass-flags its whole backlog
   `needs-refinement` (agent-ops#683). On 2026-08-21 the fit ladder
   (requirement 4i) reached its bottom rung, every candidate's body was cut
