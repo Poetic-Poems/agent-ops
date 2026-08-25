@@ -463,6 +463,12 @@ enabler_assignee="$(cfg '.enabler_assignee')"
 crash_loop_after="$(cfg '.crash_loop_after')"
 [[ "$crash_loop_after" =~ ^[0-9]+$ ]] || crash_loop_after=0
 crash_loop_repo="$(cfg '.crash_loop_repo')"
+# The out-of-band fallback create_escalation_issue POSTs to when it cannot
+# file (requirement 2m, TD-PPagop-26082304) — node-local like every other
+# config key, and credential-independent of GH_TOKEN by construction. Empty
+# (the default) means this node has none configured, and
+# escalation_webhook_notify is a no-op throughout the cycle.
+escalation_webhook_url="$(cfg '.escalation_webhook_url')"
 # TD-PPagop-26081404: how many consecutive times, on this one node, the
 # required-checks read at the ready-gate (requirement 31c) must come back
 # `unknown` before its per-item node-level `warning` is replaced by one
