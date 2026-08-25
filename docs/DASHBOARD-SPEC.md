@@ -1377,10 +1377,23 @@ number's twins elsewhere on the page.
 - **Heartbeat** — an optional `*/5 * * * *` crontab entry keeps in-flight
   state, the lock, and GitHub current between cycles. cron can't fire
   more than once a minute, so the entry runs `publish-dashboard-launcher.sh`
-  rather than the Publisher directly: the launcher self-loops on 5-second
-  boundaries for ~295s (leaving a ~5s gap so consecutive cron runs don't
-  overlap), republishing local state — lock, running cycle, cost, log — on
-  every tick. A full GitHub-hitting publish runs only when the last fetch has
+  rather than the Publisher directly: the launcher self-loops for ~295s
+  (leaving a ~5s gap so consecutive cron runs don't overlap), republishing
+  local state — lock, running cycle, cost, log — on every tick. A tick lands
+  on a 5-second boundary, but the loop **measures what each tick costs and
+  idles `LAUNCHER_DUTY_DIVISOR` (9) times that before the next one starts**, so
+  the Publisher can take at most about a tenth of the window whatever a publish
+  grows to cost. Pacing off a measurement rather than a constant is what keeps
+  that true as the state grows: the loop previously slept to the next 5-second
+  boundary and no further, on an assumption — stated in its own header and
+  budgeted at five seconds — that nothing enforced and nothing measured. When a
+  publish reached 20–22s the window ran rebuilds back to back, ~11 per window
+  and roughly 78% of a core, producing a byte-identical page each time on an
+  idle node, and the only way to find that was `top` on the host (#799). A
+  cheap tick still lands on the next boundary, so an idle node's page is no
+  less live than it was; an expensive one now pays for itself, and logs its
+  cost and its backoff so the next such regression shows up in `dashboard.log`
+  rather than only in `top`. A full GitHub-hitting publish runs only when the last fetch has
   aged past `LAUNCHER_GITHUB_MAX_AGE` (285s, so that the gap between fetches
   including the fetch's own ~20s comes to about five minutes); the cheaper
   `--no-github` publish runs in between and carries the last fetch forward, so
@@ -1400,11 +1413,15 @@ number's twins elsewhere on the page.
   fetch renders exactly like a fresh one. Hence both the age gate and the
   freshness reporting under **The Site**.) `flock` guards against a slow
   publish stacking up under the next tick. No tick starts inside the window's
-  final ten seconds, so the launcher does not overrun into the next cron fire,
+  final ten seconds **or within the cost of the tick before it**, so an
+  oversized publish is not started just before the window closes and handed to
+  the next cron fire as a lock collision — those ten seconds were sized against
+  the same unenforced five-second budget as the cadence above,
   and a healthy window ends `exit 0` — its exit status is explicit, not
   whatever the final tick's lock bookkeeping happened to return
-  (`LAUNCHER_WINDOW` shortens the window, and `LAUNCHER_PUBLISH_CMD` swaps in
-  a stub Publisher, for the test suite only). Each window also opens by
+  (`LAUNCHER_WINDOW` shortens the window, `LAUNCHER_PUBLISH_CMD` swaps in a
+  stub Publisher, and `LAUNCHER_DUTY_DIVISOR` sets the pacing ratio, for the
+  test suite only — cron runs every default). Each window also opens by
   repairing its own log: a container killed mid-append leaves the
   file's size recorded with the last writes' data blocks missing, and they read
   back as NULs. The lost lines are lost, but one NUL makes the whole file
