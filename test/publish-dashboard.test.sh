@@ -2432,6 +2432,51 @@ assert_eq "but a drift verdict that actually changed rebuilds" "1" \
 out="$(np_publish)"
 assert_eq "  ... and settles back to skipping" "" "$out"
 
+# --- ... and the same for every other thing that behaves that way (#803) -------
+# The four assertions above passed while the short-circuit was still completely
+# inert on every real node, because they fixed the one file caught in the act.
+# `.image-drift-cache.json` was not special: `fleet-cache/*.json` is rewritten
+# on a ~90-second timer with byte-identical content, which on its own meant no
+# tick could ever skip, and `state-sync.log` and `doctor.log` grow continuously
+# while the Publisher never reads either.
+#
+# So this asserts the *class* rather than another instance: nothing the
+# Publisher does not read may move the fingerprint, and nothing it does read may
+# move it by being rewritten with the content it already had.
+np_fc="$np_state/fleet-cache"
+mkdir -p "$np_fc"
+printf '{"disabled":false}'  > "$np_fc/disabled.json"
+printf '{"limit":null}'      > "$np_fc/limit.json"
+printf 'stale error text'    > "$np_fc/limit.json.err"
+printf 'sync log line\n'     > "$np_state/state-sync.log"
+printf 'doctor log line\n'   > "$np_state/doctor.log"
+printf '{"ok":true}'         > "$np_state/.doctor-status.json"
+np_publish >/dev/null   # a rebuild that takes them all into the fingerprint
+
+# Rewritten with exactly what they already said — the 90-second timer.
+for f in "$np_fc"/*.json "$np_state/.doctor-status.json"; do
+  cp -p "$f" "$f.same" && cat "$f.same" > "$f" && rm -f "$f.same"
+  touch "$f"
+done
+out="$(np_publish)"
+assert_eq "caches rewritten with identical content do not move the fingerprint" "" "$out"
+
+# Logs the Publisher never reads, growing as their own cron entries append.
+printf 'more sync\n'  >> "$np_state/state-sync.log"
+printf 'more doctor\n' >> "$np_state/doctor.log"
+printf 'more error'    >> "$np_fc/limit.json.err"
+out="$(np_publish)"
+assert_eq "logs and error sidecars the Publisher never reads do not move it" "" "$out"
+
+# The other direction, again: these are inputs, not noise. What they *say*
+# still has to rebuild, or this has traded a wasted rebuild for a stale page.
+printf '{"limit":{"per_hour":3}}' > "$np_fc/limit.json"
+out="$(np_publish)"
+assert_eq "but a fleet-cache verdict that actually changed rebuilds" "1" \
+  "$(grep -c 'publish-dashboard: wrote' <<<"$out")"
+out="$(np_publish)"
+assert_eq "  ... and settles back to skipping" "" "$out"
+
 # A fingerprint match is not on its own a reason to skip: with no page on disk
 # there is nothing to leave standing. This is the first-run case and the
 # deliberately-failed-assemble case, which leaves the previous data.js in place.
