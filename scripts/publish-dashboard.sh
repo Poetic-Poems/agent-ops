@@ -210,15 +210,33 @@ local_state_fingerprint() {
     # appends this script's own stdout to: both change as a *result* of
     # publishing, so counting them would make every fingerprint differ from
     # the one the same state produced a moment earlier, and nothing would ever
-    # skip. Every other path under the state dir is an input until proven
-    # otherwise, including ones added after this was written.
+    # skip.
+    #
+    # `.image-drift-cache.json` is the same hazard wearing a different hat, and
+    # it made this whole short-circuit inert from the day it shipped: every
+    # publish rewrites it, normally with byte-identical content, so its mtime
+    # moves on every tick while its meaning does not. Its *content* is a real
+    # input — a node that has drifted off its image must be able to say so — so
+    # it is hashed below rather than pruned outright.
+    #
+    # `-type f` for the same reason one level up: replacing any file in a
+    # directory moves that directory's own mtime, so counting directory entries
+    # re-introduces exactly the self-reference the prunes above remove. Nothing
+    # is lost — a file appearing, changing or vanishing is already visible as a
+    # file, and an empty directory cannot change what the page renders.
     find "$state_dir" \
       -path "$out_dir" -prune -o \
       -name 'dashboard.log*' -prune -o \
       -name '.dashboard-fingerprint' -prune -o \
       -name '.dashboard-skips' -prune -o \
-      -printf '%p %s %T@\n' 2>/dev/null
-    [[ -d "$peers_dir" ]] && find "$peers_dir" -printf '%p %s %T@\n' 2>/dev/null
+      -name '.image-drift-cache.json' -prune -o \
+      -type f -printf '%p %s %T@\n' 2>/dev/null
+    [[ -d "$peers_dir" ]] && find "$peers_dir" -type f -printf '%p %s %T@\n' 2>/dev/null
+    # What the drift cache says, not when it was last written.
+    if [[ -f "$state_dir/.image-drift-cache.json" ]]; then
+      printf 'image-drift %s\n' \
+        "$(sha256sum < "$state_dir/.image-drift-cache.json" 2>/dev/null | cut -d' ' -f1)"
+    fi
     # The config, the page template and this script itself: an image roll moves
     # the last two, and a page that would render differently has to be rewritten
     # even when the data behind it has not moved.
