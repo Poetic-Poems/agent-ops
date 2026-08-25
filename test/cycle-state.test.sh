@@ -979,7 +979,7 @@ assert_eq "malformed input degrades to the untrimmed array" "not an array" \
 # blocked and void candidates it no longer has any `void` list to check them
 # against (requirement 3u). `issues` is absent by design: it has its own,
 # narrower pass through exclude_blocked_or_void_issues.
-band_list="$(sed -n 's/^for eligibility_band in \(.*\); do$/\1/p' "$SCRIPT_DIR/agent-cycle.sh")"
+band_list="$(sed -n 's/^for eligibility_band in \(.*\); do$/\1/p' "$SCRIPT_DIR/lib/eligibility.sh")"
 assert_eq "every pre-fetched band but issues reaches exclude_blocked_or_void_items" \
   "findings review_feedback abandoned_drafts merge_conflicts dequeued register_hygiene human_visibility tech_debt" \
   "$band_list"

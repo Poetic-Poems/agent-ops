@@ -1403,7 +1403,8 @@ unset ISSUE_PRIORITY_GH ISSUE_PRIORITY_CACHE_DIR
 # ----------------------------------------------------------------------------
 # (viii) The pre-flight's call site skips outright with no Refiner (issue
 # #567) — refiner_filter_unbandable_triage itself is unchanged (case (vii)
-# above); what changed is agent-cycle.sh's own call site, gating the whole
+# above); what changed is the pre-flight's own call site (lib/eligibility.sh
+# since #771), gating the whole
 # pre-flight (the GraphQL read and any `refiner:` warning it can cost) on
 # `refiner_model` being set, the same fact `maybe_run_refiner`'s own first
 # guard already reads. Lifted verbatim, by the comment that immediately
@@ -1413,7 +1414,7 @@ unset ISSUE_PRIORITY_GH ISSUE_PRIORITY_CACHE_DIR
 refiner_preflight_guard="$(awk '
   /cost every cycle for a stage that never runs \(issue #567\)\.$/ { grab = 3; next }
   grab > 0 { print; grab--; next }
-' "$repo_root/agent-cycle.sh")"
+' "$repo_root/lib/eligibility.sh")"
 # shellcheck disable=SC2016  # the literal call-site text to grep for, not meant to expand
 if [[ "$refiner_preflight_guard" != *'if [[ -n "$refiner_model" ]]; then'* \
    || "$refiner_preflight_guard" != *'refiner_filter_unbandable_triage'* ]]; then

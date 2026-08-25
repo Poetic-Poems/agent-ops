@@ -11786,7 +11786,8 @@ What exists, and the requirements each part answers to:
    requirement 3k; and the Refiner-only pre-fetch and its `refiner_repos_json`
    copy, requirement 3y) — the cycle's own spine: argument handling, the
    lock, the management commands (`run_manage_command`, `lib/manage.sh`,
-   #771), the stand-down reason ladder (`run_standdown_checks`, `lib/
+   #771), the eligibility pass (`lib/eligibility.sh`, #771), the stand-down
+   reason ladder (`run_standdown_checks`, `lib/
    standdown.sh`, #771), the claim loop and candidate selection (`lib/
    candidate-select.sh`, #771), the ordered sequence of phases, and the exit
    path. The Enabler's engagement, requirements 35–37 — `maybe_run_enabler`
@@ -11879,6 +11880,34 @@ What exists, and the requirements each part answers to:
    (acceptance check for #454), and the whole of it is exercised end-to-end
    through `agent-cycle.sh --disable`/`--enable`/`--status` in
    `test/toggle.test.sh`. Must pass `shellcheck`.
+2f. `lib/eligibility.sh` implementing requirements 3t/3u, 35a/35b, 3y and 39a
+   (#771): what this cycle is allowed to act on, once the gatherers have
+   finished and before anything is offered to a model.
+   `compute_band_eligibility` runs every pre-fetched band but `issues`
+   through `exclude_blocked_or_void_items` (`issues` has its own narrower
+   pass through `exclude_blocked_or_void_issues`) and settles
+   `refinements_json`. `compute_enabler_eligible_set` derives
+   `enabler_eligible_json` from the source-state digests of the repositories
+   that sampled cleanly — how "is that escalation issue still open?" is
+   answered without a `gh` call per escalation — and ends by setting
+   `enabler_allowed`. `prefetch_refiner_sources` fetches the Refiner's own
+   two extra sources into `refiner_repos_json`, which `ordered_repos_json`
+   deliberately never gains. `compute_refiner_candidates` derives
+   `refiner_candidates_json` from the same extracts the Enabler set just
+   used — so a Refiner and an Enabler engagement in the same cycle can never
+   disagree about what is already spoken for — and ends by setting
+   `refiner_allowed`. Four functions in one module rather than four modules
+   because they answer one question between them over the same inputs, in an
+   order that matters. All four are pure moves out of `agent-cycle.sh`'s own
+   top-level script body — never before functions, so their bodies keep the
+   original top-level indentation, the same way `lib/candidate-gather.sh`'s
+   do — reading and writing the cycle's own globals exactly as they did
+   inline, `enabler_allowed`/`refiner_allowed` included. Sourced, never
+   executed, called once each from `agent-cycle.sh` in place of the inline
+   blocks they replace. `test/cycle-state.test.sh` reads the band list out of
+   this file and `test/refiner-priority-triage.test.sh` lifts the Refiner
+   pre-flight's own `refiner_model` call-site guard from it. Must pass
+   `shellcheck`.
 3. `scripts/gather-findings.sh` implementing requirement 3a: given a repo
    slug, prints a normalised JSON array of the repo's open Dependabot and
    code-scanning alerts, degrading to `[]` (exit 0) when a feature is
