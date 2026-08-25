@@ -23,11 +23,18 @@ fleet_peers_marker() {  # <peers_dir>
   printf '%s/.last-fetch.json' "$1"
 }
 
+# Written whole and renamed into place, for the same reason the peer trees
+# beside it are: a reader is a separate process on the same machine, and a
+# plain `> marker` truncates the file at redirection and fills it a moment
+# later, so a read landing in that window sees an empty file rather than
+# either the old answer or the new one.
 fleet_mark_peers() {  # <peers_dir> true|false
-  local dir="$1" ok="$2"
+  local dir="$1" ok="$2" marker
   mkdir -p "$dir"
+  marker="$(fleet_peers_marker "$dir")"
   jq -nc --argjson ok "$ok" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{ok: $ok, ts: $ts}' > "$(fleet_peers_marker "$dir")"
+    '{ok: $ok, ts: $ts}' > "$marker.tmp" \
+    && mv -f "$marker.tmp" "$marker"
 }
 
 # The fleet's event stream: this node's own log followed by every peer's,

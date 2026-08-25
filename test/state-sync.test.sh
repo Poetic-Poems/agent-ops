@@ -411,6 +411,10 @@ assert_eq "a vanished branch prunes its peer copy" "0" \
 marker="$sb_peers/.last-fetch.json"
 assert_eq "a successful fetch marks the peers fresh" "true" \
   "$(jq -r '.ok' "$marker" 2>/dev/null)"
+# Written whole and renamed into place, so a reader never catches it empty —
+# and the write-side temporary is not left behind for one to find.
+assert_eq "the marker leaves no half-written temporary behind" "0" \
+  "$(test -e "$marker.tmp" && echo 1 || echo 0)"
 
 # The genuine bootstrap case: a state repository with no node branches at all
 # (a fresh bare repo, never pushed to) stays a silent no-op — exit 0, no

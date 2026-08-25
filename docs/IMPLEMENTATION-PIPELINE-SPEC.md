@@ -2318,6 +2318,9 @@ implements.
    materialised the peer trees successfully, `false` while a real failure is
    in force — so a reader that cares whether the peer copies below it might
    be frozen can tell without re-deriving the answer itself. The marker is
+   written whole and renamed into place, for the same reason the peer trees
+   beside it are: a reader that catches a plain truncate-then-fill mid-write
+   sees neither the old answer nor the new one. The marker is
    absent only in the bootstrap case, where there has never been a real peer
    to be stale about.
 
