@@ -8985,6 +8985,30 @@ implements.
     change to a repository, which requirement 12's run promises not to make.
     Since the event records only what was actually applied, nothing later tries
     to remove a label that was never there.
+
+    **No stage may write a block whose `unblock_condition` names, as the only
+    remaining gap, a state that same block is itself about to create.** This
+    recorder can, in the same write, both log the block and project a label
+    onto the object it names — and a verdict whose own `missing`/`evidence`
+    frames that label's *removal* as the way out has described a condition
+    only a human can satisfy, using the pipeline's own next action as the
+    reason it is needed. This happened for real (agent-ops#670): a Refiner
+    found agent-ops#597 and #598 already carrying an adequate specification
+    and, following its prompt's then-unqualified "never write a second
+    specification" rule, declined both `needs-refinement` with the detail
+    that nothing further could be added and the unblock condition that a
+    human must remove the hand-applied label — three seconds before the
+    Script applied that very label as this requirement's own projection, a
+    deadlock the pipeline had manufactured for itself and could not exit
+    under its own power. Requirement 39c's re-affirmation closes the
+    Refiner's own route to this shape: an item it judges already adequately
+    specified is `refined`, not `needs-refinement`, so no block — and no
+    unblock condition referencing a label not yet applied — is ever written
+    for it. The invariant is stated here, at the shared recorder, rather than
+    only at the Refiner, because any future reporter that reaches this path —
+    Co-Ordinator, Implementer, or a stage not yet written — inherits the same
+    risk the moment its own verdict's free-text fields can describe the label
+    this requirement is about to add.
 34f. **The human's escape hatch reaches the human.** Requirement 34c reserves
     clearing a void to a human and gives them one interface: a line appended by
     hand to `state_dir/log.jsonl`. That interface is unreachable in the
@@ -11271,6 +11295,24 @@ implements.
     agreeing on its shape without a second implementation to drift from the
     first (requirement 34a).
 
+    **A `refined` verdict may be a re-affirmation, not only a fresh
+    specification (agent-ops#670 Part 2).** The Refiner may find the item's
+    thread already carrying an adequate specification — its own, the
+    Enabler's, or a human's — with nothing material changed since, and return
+    `refined` naming that *existing* comment's URL (or, for a non-`issues`
+    source, reproducing its existing text) without posting or writing
+    anything new. The Script's recording is unchanged either way:
+    `refinement_record_fields` requires only that the verdict carry a
+    `comment_url` or `spec`, never that either be this cycle's own write, so
+    a re-affirmation is corroborated on the same terms as a fresh
+    specification and re-enters `refinements_map` (requirement 3h) the same
+    way. This is what closes the item's only path back to a block: once
+    re-affirmed, requirement 39a's candidate rule excludes it again, exactly
+    as a fresh refinement would. Re-affirmation is not available where the
+    Refiner disagrees with the existing specification — that is a second
+    opinion against a first, and stays a `needs-refinement` decline (39d),
+    escalated rather than settled here.
+
 39d. **The `needs-refinement` decline.** Where the Refiner cannot write an
     adequate specification — the gap is a decision, a credential, or
     information that exists only in a human's head, or the item's own premise
@@ -11291,8 +11333,15 @@ implements.
     fresher `needs-refinement` block (from the Implementer's escape hatch,
     requirement 9f, or a further decline here) clears it from that map
     (requirement 39a's third clause reads the same `ts` comparison requirement
-    9f describes). There is no path back to a second refinement pass that
-    does not first pass through a human-actionable block.
+    9f describes). What such an item is offered back to next is not
+    necessarily a second refinement *pass*, though: 39c's re-affirmation lets
+    the Refiner say the existing specification still stands, with no new
+    writing and no second opinion involved. The guarantee that holds is
+    narrower than "no path back without a block" — it is that there is no
+    path back to a *disagreeing* second specification that does not first
+    pass through a human-actionable block. A re-affirmation is never that: it
+    is the same opinion recorded twice, which 39c's corroboration accepts
+    without asking a human anything.
 
 39e. **Failure containment.** Whatever happens inside one Refiner engagement,
     this cycle's own exit code — computed before the exit trap ran — is the
@@ -16202,7 +16251,13 @@ pull request, run the ones the change touches and any it could regress.
     assignee projections, while a decline with `missing` empty and one for
     an item already blocked are refused (`recorded: 0`) with a `warning` and
     no second block; an unrecognised verdict earns a `warning` and outcome
-    `unknown-verdict`, acted on in no way. Requirement 39e's containment:
+    `unknown-verdict`, acted on in no way. Re-affirmation (39c) is pinned from
+    the same corroboration path: a `refined` verdict citing a comment URL
+    that is not this cycle's own write — nothing distinguishes one in the
+    payload the Script reads — is recorded exactly like a fresh comment's
+    URL, `item-refined` and the `refined_label` add both included, proving
+    the Script never demands the comment be freshly posted (agent-ops#670
+    Part 2). Requirement 39e's containment:
     a verdict for an item the cycle never claimed is discarded with a
     `warning` and no `refiner-examined` at all, a claimed item the envelope
     never mentions is warned about by name and left claimed, and an
@@ -18713,6 +18768,23 @@ requirements above, which state only what is.
   Script" where the Reviewer's own launch requirements already live, are
   what a reader tracing the pipeline's actual sequence finds first, and they
   point at "### The Approver" by name.
+
+- **Re-affirmation (39c) extends `refined` rather than adding a third
+  verdict.** The tech-debt item that carried agent-ops#670's Part 2 forward
+  (TD-PPagop-26082305) suggested a new verdict, distinct from
+  `needs-refinement`, for an item the Refiner judges already adequately
+  specified. #670's own design — written by a human before the tech-debt item
+  existed — took the narrower route instead: the item is not a new *kind* of
+  outcome, it is the same outcome (`refined`) reached without writing
+  anything new. Reusing `refined` means the Script's recording path needed no
+  structural change at all — `refinement_record_fields` (requirement 39c)
+  already accepts a `comment_url`/`spec` on its own terms, never asking
+  whether it was this cycle's own write — so the whole fix is confined to
+  what the Refiner is told to do with an existing, adequate specification,
+  never to a new switch case, a new label projection, or a new field on the
+  verdict schema for every reader of it to learn. A third verdict would have
+  bought nothing a re-affirmed `refined` does not already give: the item
+  re-enters `refinements_map` (3h) and proceeds to selection either way.
 
 - **The GitHub credential check (0b) escalates unconditionally, never through
   `escalation_autonomy`.** That ladder decides whether one specific
