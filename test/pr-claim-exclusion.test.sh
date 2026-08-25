@@ -342,7 +342,8 @@ assert_eq "malformed candidate JSON degrades to the ref" "57" \
 
 # --- The Enabler stale-conflict/abandoned-draft ref filter ---------------------
 # Not a standalone function (it runs inline, between enabler_eligible_items and
-# the point past which the exit trap may engage the Enabler), so it is lifted by
+# the point past which the exit trap may engage the Enabler — inside
+# `compute_enabler_eligible_set` since #771), so it is lifted by
 # its own start/end markers instead of a function signature — same technique,
 # same reason: the real code is what runs here, not a reimplementation of it.
 extract_stale_ref_block() {
@@ -350,11 +351,11 @@ extract_stale_ref_block() {
     /^live_pr_refs_json="\$\(jq -c \\$/ { on = 1 }
     on                                  { print }
     on && /^fi$/                        { exit }
-  ' "$SCRIPT_DIR/agent-cycle.sh"
+  ' "$SCRIPT_DIR/lib/eligibility.sh"
 }
 stale_ref_block_src="$(extract_stale_ref_block)"
 if [[ "$stale_ref_block_src" != *"stale_enabler_refs_json"* ]]; then
-  printf 'FAIL - could not extract the stale-ref block from agent-cycle.sh (moved or reworded?)\n'
+  printf 'FAIL - could not extract the stale-ref block from lib/eligibility.sh (moved or reworded?)\n'
   exit 1
 fi
 
