@@ -2394,6 +2394,44 @@ assert_eq "  ... reporting the ticks it skipped first" "1" \
 out="$(np_publish)"
 assert_eq "  ... and the count resets, so the next rebuild is not cumulative" "" "$out"
 
+# --- The fingerprint must not count what the Publisher itself writes -----------
+# The short-circuit above shipped inert and stayed that way, because the state
+# dir it was tested against never held `.image-drift-cache.json`. On a real node
+# every publish rewrites that file — normally with byte-identical content, since
+# it is a TTL cache — and the fingerprint keyed on size and mtime, so every tick
+# saw a changed input and rebuilt. Nothing skipped, on any node, ever.
+#
+# It went unseen because the *symptom* was the old behaviour: a page that is
+# always fresh and a Publisher that always runs. It only became visible once
+# #799 paced the launcher off the measured cost of a tick, at which point the
+# permanent 20s ticks turned into 178-445s backoffs and the dashboard went 12
+# minutes stale.
+#
+# So these four assertions are about provenance, not about drift: an input that
+# the Publisher writes as a side effect of publishing cannot be allowed to
+# invalidate its own fingerprint, and a directory mtime — which moves whenever
+# any file inside it is replaced — is the same hazard one level up.
+np_drift="$np_state/.image-drift-cache.json"
+printf '{"ok":true,"commit":"deadbee","created":"%s"}' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$np_drift"
+np_publish >/dev/null   # a rebuild that takes the drift cache into the fingerprint
+
+touch "$np_drift"
+out="$(np_publish)"
+assert_eq "a cache rewrite that moves only its mtime still skips" "" "$out"
+
+touch "$np_state/cycles" "$np_state"
+out="$(np_publish)"
+assert_eq "a directory mtime moved by replacing a file inside it still skips" "" "$out"
+
+# The other half: pruning it outright would also make these pass, and would be
+# wrong. A node that has drifted off its image must still be able to say so.
+printf '{"ok":false,"commit":"deadbee","created":"%s"}' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$np_drift"
+out="$(np_publish)"
+assert_eq "but a drift verdict that actually changed rebuilds" "1" \
+  "$(grep -c 'publish-dashboard: wrote' <<<"$out")"
+out="$(np_publish)"
+assert_eq "  ... and settles back to skipping" "" "$out"
+
 # A fingerprint match is not on its own a reason to skip: with no page on disk
 # there is nothing to leave standing. This is the first-run case and the
 # deliberately-failed-assemble case, which leaves the previous data.js in place.
