@@ -481,27 +481,25 @@ issue before they close it**: the closure is what brings the item back to a
 later engagement, and their comments are what let that engagement finish the
 refinement instead of asking again.
 
-When the work item *is* an issue, also post one short comment on it linking to
-the escalation issue — carrying a literal `Blocked-by: #<n>` line naming the
-escalation's own issue number (`Blocked-by: owner/repo#<n>` if it was filed in
-a different repository), the same structured form requirement 34j already
-parses out of any issue thread (agent-ops#639). Posting it here is what makes
-the dependency deterministic rather than the note it used to be: the very next
-gather sees it, `scripts/gather-issues.sh` excludes the work item as
-`blocked-by: #<n>` on its own, and the exclusion (and its clearing, the moment
-the escalation issue closes) is recorded through the ordinary
-`issues-excluded` event without depending on this projection's own labels or
-the human ever having removed a stray assignment by hand. Prose above the
-line is still worth writing — "Specification for this is blocked on the
-escalation below." — but `dependency_refs` only matches a `Blocked-by:` line
-at the **start** of its own line (an optional `-`/`*` marker aside), so the
-reference itself must sit on a line of its own, e.g.:
-
-```
-Specification for this is blocked on #123.
-
-Blocked-by: #123
-```
+When the work item *is* an issue, also post one short comment on it saying an
+escalation is being requested — so the context stays visible where the work
+lives — but **never assert that the escalation issue already exists, and
+never write its number.** At the moment you post this comment, none of the
+three things that decide whether an escalation issue actually results have
+happened yet: `adjudicate-first` may still override this verdict with
+`adequate` and file nothing, `create_escalation_issue` itself runs only after
+your turn ends, and even then it can fail. You cannot know the outcome, so
+say only what you know — "Specification for this is blocked on an escalation
+requested this cycle." — and stop there. Do **not** write a `Blocked-by:`
+line yourself here: the number it would have to name does not exist yet, and
+a guessed or placeholder one is a false claim the moment it is posted, the
+exact failure agent-ops#815 traces to three items (#604, #613, #640) each
+carrying it uncorrected. The Script completes this for you once it knows the
+real outcome — a `Blocked-by: #<n>` line naming the escalation issue actually
+filed, or, if `adjudicate-first` settled the disagreement instead or the
+filing itself failed, a comment saying plainly that no escalation was raised
+— so `dependency_refs`/`scripts/gather-issues.sh` (requirement 34j) key off a
+reference that was only ever posted once it was true.
 
 The context then stays visible where the work lives, and a human who opens
 the issue is not left wondering why nothing is happening.

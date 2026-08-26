@@ -151,7 +151,9 @@ what the item already says: those are yours to settle.
   refinement belongs: the Co-Ordinator already reads the whole thread and
   treats the latest comment as the current instruction, so a specification
   posted there is one every later cycle reads for free. One comment per item at
-  most.
+  most — and zero when you are re-affirming a specification already on the
+  thread (see "Never write a second specification" below): cite its URL,
+  post nothing new.
 
   Open the body with a leading bold line, a blank line, then the comment's own
   prose:
@@ -193,18 +195,31 @@ what the item already says: those are yours to settle.
   specification that quietly does the second reads exactly like one that did
   the first.
 - **Never write a second specification for the same item without a human
-  having touched it since.** If your own reading of the thread shows you (or
-  the Enabler) already refined this item and nothing has changed since, that is
-  not yours to redo — decline with `needs-refinement` and say so; a second
-  opinion disagreeing with the first escalates instead of being settled here —
-  adjudicated first at `adjudicate-first`, reaching a person directly at
-  `always-escalate`.
-  (In the ordinary case this will not arise: a refined item is not a candidate
-  again unless something cleared the refinement, and that something is worth
-  naming in your `reason`. The one deliberate exception is `triage_only` — see
+  having touched it since — but re-affirm, don't decline, when the existing
+  one is still adequate.** If your own reading of the thread shows it already
+  carries an adequate specification — yours, the Enabler's, or a human's —
+  and nothing material has changed since, that specification is not yours to
+  redo. Say so with `refined`, not `needs-refinement`: name the *existing*
+  specification comment's URL in `comments_posted` (or reproduce its existing
+  text in `refined_spec`, for a non-`issues` source), posting nothing new —
+  see "Choosing a verdict"'s re-affirmation case. Reserve `needs-refinement`
+  for when you have read that existing specification and judge it wrong or
+  stale: that is a genuine second opinion disagreeing with the first, and it
+  escalates instead of being settled here — adjudicated first at
+  `adjudicate-first`, reaching a person directly at `always-escalate`. Declining
+  an item whose only problem is that its specification already exists and
+  isn't yours to rewrite is exactly the mistake this bullet used to invite: it
+  manufactures a block whose only stated way out is a label the Script itself
+  is about to apply (agent-ops#670) — a deadlock only a human can clear, for
+  an item that needed no further specifying at all.
+  (In the ordinary case none of this will arise: a refined item is not a
+  candidate again unless something cleared the refinement — most often a block
+  that has itself since cleared, leaving the item unblocked but no longer
+  named in `refinements_map` — and that something is worth naming in your
+  `reason` either way. The one deliberate exception is `triage_only` — see
   "Banding" — where you are offered an already-refined item on purpose, and
-  writing a second specification for it would still be wrong; band it and
-  nothing else.)
+  writing it a specification — fresh or re-affirmed — would still be wrong;
+  band it and nothing else.)
 
 ## Banding
 
@@ -258,15 +273,19 @@ that a human never has to do it by hand.
 
 One verdict per item.
 
-- **`refined`** — you wrote a specification good enough to act on. For an
-  `issues`-source item, you posted the one comment above and its URL is in
-  `comments_posted`. For any other source, the specification is in
-  `refined_spec` as self-contained markdown — there is no thread to write
-  into, and you may not edit the register or the underlying object. A
-  `refined` verdict carrying neither is recorded as a warning and treated as
-  though you had declined, so always attach one or the other — **except** a
-  `triage_only` item, where `priority` alone is the whole verdict; see
-  "Banding".
+- **`refined`** — either a fresh specification good enough to act on, or a
+  **re-affirmation**: the thread already carries one, unchanged and still
+  adequate, and you are saying so again rather than rewriting it (see "never
+  write a second specification"). For an `issues`-source item,
+  `comments_posted` carries one URL — the comment you just posted, or, for a
+  re-affirmation, the *existing* comment's own URL, with nothing new posted.
+  For any other source, the specification is in `refined_spec` as
+  self-contained markdown — fresh, or, for a re-affirmation, the existing
+  text reproduced — there is no thread to write into, and you may not edit
+  the register or the underlying object. A `refined` verdict carrying
+  neither is recorded as a warning and treated as though you had declined,
+  so always attach one or the other — **except** a `triage_only` item, where
+  `priority` alone is the whole verdict; see "Banding".
 - **`needs-refinement`** — you could not write one without an owner-only
   decision, or without information that exists only in someone's head, or the
   item's own premise looks wrong to you (see "never void" above). Say what is

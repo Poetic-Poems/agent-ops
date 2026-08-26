@@ -1178,8 +1178,16 @@ memory, and every node follows everyone else's.
 
 | Mode | When | What |
 |---|---|---|
-| `push` | every five minutes, and at the end of every cycle | publishes `state_dir` as this node's own `nodes/<NODE_NAME>` branch, stamped with a heartbeat (`{node, role, ts, last_cycle, version, compose, image, switch}`) |
+| `push` | every five minutes, and at the end of every cycle | publishes `state_dir` as this node's own `nodes/<NODE_NAME>` branch, stamped with a heartbeat (`{node, role, ts, last_cycle, version, compose, image, switch, mirror}`) |
 | `fetch` | every seven minutes | materialises every peer's branch under the peers directory, whole, and prunes a peer whose branch is gone |
+
+Before either mode touches its local mirror of the state repository, it
+checks that mirror's object store (`git fsck --connectivity-only`) rather
+than trusting a `.git/` directory that merely still exists: a host whose
+disk has quietly corrupted a loose object gets that checkout discarded and
+rebuilt from source on the spot, and the rebuild is recorded in the
+heartbeat's `mirror` field so a repeat is visible rather than silent
+self-healing.
 
 What travels is the memory: `log.jsonl`, `review-log.jsonl`, `cycles/`,
 `reviews/`, the switch, the cron logs. What stays behind is anything local or
@@ -1733,8 +1741,14 @@ the no-op ticks the `*/15` cadence mostly produces are summarised in one
 count beneath the table instead of holding rows), failures, blocked and void
 items, the work sources the Co-Ordinator sees, the hourly unattended
 `doctor.sh` pass's own warnings and failures (a **Doctor** section, with a
-page-top banner when it has something to say), how often the Script rejects
-a Co-Ordinator verdict — by day and by the model that produced it, with what
+page-top banner when it has something to say), a per-stage health verdict for
+each node (a **Stage health** section — `coordinator failing (11
+consecutive, last success 8h ago)` and the like — with a page-top banner and
+a fleet-strip badge naming which stage: the reading a plain `cycle:
+RUNNING`/idle state cannot give, since that state stays green while a
+stage's own attempts keep failing and the cycle process itself keeps
+completing), how often the Script rejects a Co-Ordinator verdict — by day
+and by the model that produced it, with what
 the fleet spent recovering, so it is visible whether the cheap Co-Ordinator
 model is paying for itself — estimated token cost by day, by
 model and by actor, and the raw log — with each stage's transcript viewable

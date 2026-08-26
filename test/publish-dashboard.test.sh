@@ -995,6 +995,74 @@ assert_contains "the cost and the backoff are logged, not left to top" "pacing: 
 run_paced 20 6 1
 assert_eq "a tick the window cannot fit is not started" "1" "$(grep -c . "$pace_log")"
 
+# --- ...and the reserve is per tick kind, across windows (#807) ---------------
+# The reserve above was taken against `last_cost_ms` — the previous tick, of
+# whichever kind. That held only while every tick was expensive. #804 made the
+# no-op path fire, so the previous tick became a sub-second skip, the reserve
+# collapsed to the bare tick_margin, and a 45s GitHub tick starting in the last
+# half-minute overran the window. supercronic runs no overlapping instance of a
+# job, so it dropped the entire next window and the page went ten minutes
+# without an update.
+#
+# The cost therefore has to be remembered per kind, and it has to survive the
+# process: cron starts a fresh launcher every window, and the reserve is needed
+# on a window's *first* tick. An in-process counter would be reset exactly when
+# it is wanted — inert in production while passing any single-window test,
+# which is how #793 shipped and stayed shipped for a day and a half. So the
+# first window here measures a real GitHub tick, and the second reads what the
+# first persisted.
+tail_home="$(new_home nodeT)"
+tail_state="$tail_home/.local/state/poetic-agents"
+tail_log="$tmp_dir/tail-ticks"
+tail_stub="$tmp_dir/tail-publish.sh"
+cat > "$tail_stub" <<'STUB'
+#!/usr/bin/env bash
+# The launcher passes --no-github for a local tick and nothing at all for a
+# GitHub one, so the stub can cost what that kind is told to cost.
+if [[ "${1:-}" == "--no-github" ]]; then
+  printf '%s local\n' "${EPOCHREALTIME/,/.}" >> "$TICK_LOG"
+  sleep "${STUB_LOCAL_COST:-0}"
+else
+  printf '%s github\n' "${EPOCHREALTIME/,/.}" >> "$TICK_LOG"
+  sleep "${STUB_GH_COST:-0}"
+fi
+STUB
+chmod +x "$tail_stub"
+
+run_tail() {  # run_tail <window> <gh-max-age> <local-cost> <gh-cost>
+  env HOME="$tail_home" LAUNCHER_WINDOW="$1" LAUNCHER_GITHUB_MAX_AGE="$2" \
+      STUB_LOCAL_COST="$3" STUB_GH_COST="$4" LAUNCHER_DUTY_DIVISOR=1 \
+      LAUNCHER_PUBLISH_CMD="$tail_stub" TICK_LOG="$tail_log" "$LAUNCHER" >/dev/null 2>&1
+}
+tail_kinds() { awk '{print $2}' "$tail_log" | sort -u | tr '\n' ' '; }
+
+# Window one: the stamp has aged out (max age 0), so the first tick is a GitHub
+# tick, and it costs 15s — longer than tick_margin, which is what makes the
+# reserve bite at all. Nothing else fits, which is the point: one measured
+# GitHub tick is all the next window needs.
+: > "$tail_log"
+run_tail 20 0 0 15
+assert_contains "a GitHub tick runs when the stamp has aged out" "github" "$(tail_kinds)"
+assert_eq "and what it cost outlives the window that measured it" "1" \
+  "$(( $(awk '{print $1+0}' "$tail_state/.dashboard-tick-cost" 2>/dev/null || echo 0) >= 15 ))"
+
+# Window two: cheap local ticks every 5s, and a GitHub tick coming due 18s into
+# a 30s window — so it would start around t=20 and run to t=35, five seconds
+# past the window and into the next cron firing. The bare loop reserved against
+# the last *local* tick (~0s) and started it. The kind-aware reserve reads the
+# 15s window one persisted and stops instead.
+touch "$tail_state/.dashboard-github.json"
+: > "$tail_log"
+run_tail 30 18 0 15
+assert_eq "a GitHub tick that cannot fit the tail is not started" "local " "$(tail_kinds)"
+assert_contains "and the window says why, rather than just going quiet" \
+  "deferred: a github tick needs" "$(cat "$tail_state/dashboard.log")"
+
+# The reserve must not cost an idle window its cheap ticks: a local tick's own
+# cost is what gates a local tick, not the expensive kind's.
+assert_eq "cheap local ticks still run several to a window" "1" \
+  "$(( $(grep -c . "$tail_log") >= 2 ))"
+
 # --- The cron panel survives a rotation (TD26072501, spec requirement 2.6) ------
 # scripts/rotate-logs.sh renames cron.log to cron.log.1 once it grows past
 # log_retained_bytes, leaving a fresh, short cron.log behind. The panel must
@@ -1312,7 +1380,7 @@ vh="$(new_home nodeV)"
 vpeer="$vh/.cache/poetic-agents/workspaces/.agent-ops-peers/peerV"
 vold="$vh/.cache/poetic-agents/workspaces/.agent-ops-peers/peerOld"
 mkdir -p "$vpeer" "$vold"
-printf '{"node":"peerV","role":"active","ts":"%s","last_cycle":"","version":{"pr":88,"commit":"aa53d62f1b0c4e9a7d2839fbc5104e6a8d7b3f21","short":"aa53d62","built_at":"2026-07-26T11:21:00Z","repo":"Poetic-Poems/agent-ops","source":"image","dirty":false},"compose":{"status":"drifted","diff_lines":3},"image":{"status":"behind","registry_commit":"bb64d73a2c1d","registry_created_at":"2026-07-26T12:00:00Z","checked_at":"2026-07-26T12:05:00Z"}}\n' \
+printf '{"node":"peerV","role":"active","ts":"%s","last_cycle":"","version":{"pr":88,"commit":"aa53d62f1b0c4e9a7d2839fbc5104e6a8d7b3f21","short":"aa53d62","built_at":"2026-07-26T11:21:00Z","repo":"Poetic-Poems/agent-ops","source":"image","dirty":false},"compose":{"status":"drifted","diff_lines":3},"image":{"status":"behind","registry_commit":"bb64d73a2c1d","registry_created_at":"2026-07-26T12:00:00Z","checked_at":"2026-07-26T12:05:00Z"},"stage_health":{"computed_at":"2026-07-26T12:00:00Z","threshold":3,"idle_after_hours":48,"stages":{"coordinator":{"verdict":"failing","consecutive_failures":4,"last_success":null,"last_detail":"coordinator exited 1"}}}}\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$vpeer/heartbeat.json"
 printf '{"node":"peerOld","role":"standby","ts":"%s","last_cycle":""}\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$vold/heartbeat.json"
@@ -1352,6 +1420,21 @@ assert_eq "a peer that publishes none reads null, never a locally computed one" 
   "$(jq -r '.fleet.nodes[] | select(.node=="peerOld") | .image' <<<"$vdata")"
 assert_eq "and this node answers for its own image too" "1" \
   "$(jq '[.fleet.nodes[] | select(.self) | has("image")] | length' <<<"$vdata")"
+
+# The per-stage health verdict (lib/stage-health.sh, agent-ops#662) rides the
+# same rules once more: only the node that computed it — over its own
+# log.jsonl, at its own cycle's cleanup — can answer for it, so a peer's
+# verdict comes from its heartbeat or not at all, and this node answers for
+# itself from its own .stage-health.json (null here: this suite runs a
+# publish with no cycle having completed, so no such file exists yet).
+assert_eq "a peer's stage-health verdict comes from its heartbeat" "failing" \
+  "$(jq -r '.fleet.nodes[] | select(.node=="peerV") | .stage_health.stages.coordinator.verdict' <<<"$vdata")"
+assert_eq "with its consecutive-failure count intact" "4" \
+  "$(jq -r '.fleet.nodes[] | select(.node=="peerV") | .stage_health.stages.coordinator.consecutive_failures' <<<"$vdata")"
+assert_eq "a peer that publishes none reads null, never a locally computed one" "null" \
+  "$(jq -r '.fleet.nodes[] | select(.node=="peerOld") | .stage_health' <<<"$vdata")"
+assert_eq "and this node answers for its own stage-health too" "1" \
+  "$(jq '[.fleet.nodes[] | select(.self) | has("stage_health")] | length' <<<"$vdata")"
 
 # --- The pull-request index ------------------------------------------------------
 # Every `#number` on the page resolves to a record here. Two properties are what
@@ -2248,6 +2331,29 @@ assert_eq "token_expiry reaches the page verbatim too" "3" \
 assert_eq "  ... including its expiry timestamp" "2026-08-22T09:35:00Z" \
   "$(jq -r '.status.doctor.token_expiry.expires_at' <<<"$ddata")"
 
+# --- The per-stage health verdict (agent-ops#662) ---------------------------
+# lib/stage-health.sh's stage_health_write_status writes
+# state_dir/.stage-health.json at the end of every cycle; this Publisher
+# reads it rather than recomputing it, on the identical precedent just
+# exercised above for status.doctor, and surfaces it as status.stage_health.
+sh_home="$(new_home nodeStageHealth)"
+run_publish "$sh_home" NODE_NAME=nodeStageHealth
+shdata="$(data_of "$sh_home")"
+assert_eq "with no stage-health file yet, status.stage_health is null" "null" \
+  "$(jq -c '.status.stage_health' <<<"$shdata")"
+
+cat > "$sh_home/.local/state/poetic-agents/.stage-health.json" <<'JSON'
+{"computed_at":"2026-08-21T09:00:00Z","threshold":3,"idle_after_hours":48,"stages":{"coordinator":{"verdict":"failing","consecutive_failures":11,"last_success":"2026-08-21T01:00:00Z","last_detail":"coordinator was refused by the API before it could run"}}}
+JSON
+run_publish "$sh_home" NODE_NAME=nodeStageHealth
+shdata="$(data_of "$sh_home")"
+assert_eq "a written status file is read verbatim into status.stage_health" "failing" \
+  "$(jq -r '.status.stage_health.stages.coordinator.verdict' <<<"$shdata")"
+assert_eq "its consecutive-failure count reaches the page" "11" \
+  "$(jq -r '.status.stage_health.stages.coordinator.consecutive_failures' <<<"$shdata")"
+assert_eq "and its last_detail" "coordinator was refused by the API before it could run" \
+  "$(jq -r '.status.stage_health.stages.coordinator.last_detail' <<<"$shdata")"
+
 # --- The merge-budget row (D18 issue #574, PR #671 review) ------------------
 # landings.budget is sourced from the event log's own landing-armed/
 # merge-budget-hold/merge-budget-frozen entries, never recomputed, so its
@@ -2432,6 +2538,51 @@ assert_eq "but a drift verdict that actually changed rebuilds" "1" \
 out="$(np_publish)"
 assert_eq "  ... and settles back to skipping" "" "$out"
 
+# --- ... and the same for every other thing that behaves that way (#803) -------
+# The four assertions above passed while the short-circuit was still completely
+# inert on every real node, because they fixed the one file caught in the act.
+# `.image-drift-cache.json` was not special: `fleet-cache/*.json` is rewritten
+# on a ~90-second timer with byte-identical content, which on its own meant no
+# tick could ever skip, and `state-sync.log` and `doctor.log` grow continuously
+# while the Publisher never reads either.
+#
+# So this asserts the *class* rather than another instance: nothing the
+# Publisher does not read may move the fingerprint, and nothing it does read may
+# move it by being rewritten with the content it already had.
+np_fc="$np_state/fleet-cache"
+mkdir -p "$np_fc"
+printf '{"disabled":false}'  > "$np_fc/disabled.json"
+printf '{"limit":null}'      > "$np_fc/limit.json"
+printf 'stale error text'    > "$np_fc/limit.json.err"
+printf 'sync log line\n'     > "$np_state/state-sync.log"
+printf 'doctor log line\n'   > "$np_state/doctor.log"
+printf '{"ok":true}'         > "$np_state/.doctor-status.json"
+np_publish >/dev/null   # a rebuild that takes them all into the fingerprint
+
+# Rewritten with exactly what they already said — the 90-second timer.
+for f in "$np_fc"/*.json "$np_state/.doctor-status.json"; do
+  cp -p "$f" "$f.same" && cat "$f.same" > "$f" && rm -f "$f.same"
+  touch "$f"
+done
+out="$(np_publish)"
+assert_eq "caches rewritten with identical content do not move the fingerprint" "" "$out"
+
+# Logs the Publisher never reads, growing as their own cron entries append.
+printf 'more sync\n'  >> "$np_state/state-sync.log"
+printf 'more doctor\n' >> "$np_state/doctor.log"
+printf 'more error'    >> "$np_fc/limit.json.err"
+out="$(np_publish)"
+assert_eq "logs and error sidecars the Publisher never reads do not move it" "" "$out"
+
+# The other direction, again: these are inputs, not noise. What they *say*
+# still has to rebuild, or this has traded a wasted rebuild for a stale page.
+printf '{"limit":{"per_hour":3}}' > "$np_fc/limit.json"
+out="$(np_publish)"
+assert_eq "but a fleet-cache verdict that actually changed rebuilds" "1" \
+  "$(grep -c 'publish-dashboard: wrote' <<<"$out")"
+out="$(np_publish)"
+assert_eq "  ... and settles back to skipping" "" "$out"
+
 # A fingerprint match is not on its own a reason to skip: with no page on disk
 # there is nothing to leave standing. This is the first-run case and the
 # deliberately-failed-assemble case, which leaves the previous data.js in place.
@@ -2459,6 +2610,119 @@ assert_eq "  ... and it does rewrite the page" "1" \
 # a permanent reason to rebuild.
 out="$(np_publish)"
 assert_eq "the tick after a GitHub tick skips again" "" "$out"
+
+# --- The tiered publish (#798) -------------------------------------------------
+# A publish rebuilt the fleet's whole history every tick — every roll-up and
+# every cycle in the window — to produce a page whose only moving part was the
+# cycle actually running. At 15.8s a tick, against the launcher's 1:9 duty
+# cycle, that left the page two and a half minutes behind the pipeline it
+# exists to show.
+#
+# So a tick now comes in two kinds. A *full* build is what it always was, and is
+# what every GitHub tick runs. A *fast* build recomputes only what moves —
+# status, the cycle window, the log tail, the fleet — and carries the history
+# roll-ups forward from the last full payload. What follows checks that the
+# carry-forward is real, that the volatile half is genuinely fresh, that a
+# missing cache degrades to a full build rather than to a blank page, and that
+# the per-cycle cache is both used and invalidated.
+f798="$(new_home nodeF)"
+f798_state="$f798/.local/state/poetic-agents"
+for _n in 1 2 3 4 5; do
+  make_cycle "$f798" "${today_day}T10000${_n}Z-$_n" "0.1$_n" model-t
+done
+
+run_publish_fast() {  # run_publish_fast <home> [env assignments…]
+  local home="$1"; shift
+  env HOME="$home" "$@" "$PUBLISH" --no-github --fast >/dev/null 2>&1
+}
+# Every publish below is about what a *build* produces, so each one drops the
+# fingerprint first. Without that the no-op short-circuit (#787) quite correctly
+# skips — the fixture stops moving between assertions — and every one of these
+# would read the page the previous assertion left behind, passing or failing on
+# a build that never ran.
+b798()      { rm -f "$f798_state/.dashboard-fingerprint"; run_publish      "$f798"; }
+b798_fast() { rm -f "$f798_state/.dashboard-fingerprint"; run_publish_fast "$f798"; }
+
+b798
+full798="$(data_of "$f798")"
+assert_eq "a full build leaves a payload for the fast builds to carry forward" "1" \
+  "$(( $(wc -c < "$f798_state/.dashboard-payload" 2>/dev/null || echo 0) > 0 ))"
+assert_eq "and the cycle window is cached per cycle" "1" \
+  "$(( $(find "$f798_state/.dashboard-cycle-cache" -maxdepth 1 -name '*.json' 2>/dev/null | wc -l) >= 5 ))"
+
+# The carried-forward half. `counts` alone is about a third of a full publish,
+# and a fast build must neither pay for it nor lose it.
+sleep 1   # generated_at has one-second resolution and must be seen to move
+b798_fast
+fast798="$(data_of "$f798")"
+for _k in counts blocked void landings config; do
+  assert_eq "a fast build carries .$_k forward unchanged" \
+    "$(jq -Sc ".$_k" <<<"$full798")" "$(jq -Sc ".$_k" <<<"$fast798")"
+done
+assert_eq "and is not merely the old page: generated_at moves" "1" \
+  "$([[ "$(jq -r .generated_at <<<"$fast798")" > "$(jq -r .generated_at <<<"$full798")" ]] && echo 1 || echo 0)"
+
+# The point of the whole exercise: a cycle advancing has to reach the page on a
+# fast tick. This is #798's acceptance bullet, and the thing a cheaper publish
+# could most easily lose.
+make_cycle "$f798" "${today_day}T100099Z-99" 0.99 model-t
+b798_fast
+assert_contains "a cycle that advanced shows up on a fast build" \
+  "${today_day}T100099Z-99" "$(jq -r '[.cycles[].id] | join(" ")' <<<"$(data_of "$f798")")"
+
+# The per-cycle cache is genuinely read, not merely written: a sentinel planted
+# in one unchanged cycle's entry survives the next build, and nothing else could
+# put it on the page.
+_sent="${today_day}T100001Z-1"
+printf '{"id":"%s","sentinel":true}' "$_sent" > "$f798_state/.dashboard-cycle-cache/$_sent.json"
+b798_fast
+assert_eq "an unchanged cycle is served from the cache, not rebuilt" "true" \
+  "$(jq -r --arg id "$_sent" '.cycles[] | select(.id == $id) | .sentinel // false' <<<"$(data_of "$f798")")"
+
+# ...and is invalidated the moment that cycle's own transcript moves, or the
+# cache would be a way to pin a stale cycle on the page for ever.
+make_cycle "$f798" "$_sent" 0.42 model-t "moved along"
+b798_fast
+assert_eq "a cycle whose transcript moved is rebuilt, sentinel gone" "false" \
+  "$(jq -r --arg id "$_sent" '.cycles[] | select(.id == $id) | .sentinel // false' <<<"$(data_of "$f798")")"
+
+# A fast build with nothing to carry forward is a full build, not a blank one.
+# The failure this guards is silent: merging over a missing cache would publish
+# a page with every history panel empty and nothing to say so.
+rm -f "$f798_state/.dashboard-payload"
+b798_fast
+assert_eq "a fast build with no payload cache degrades to a full build" "object" \
+  "$(jq -r '.counts | type' <<<"$(data_of "$f798")")"
+assert_eq "and writes the cache back for the next one" "1" \
+  "$(( $(wc -c < "$f798_state/.dashboard-payload" 2>/dev/null || echo 0) > 0 ))"
+
+# The bound #798 asks for. Counted in jq invocations rather than seconds, which
+# is what keeps it meaningful on a loaded CI box.
+#
+# The threshold is deliberately well short of the production ratio. This fixture
+# has six cycles, no peers and no GitHub, so the roll-ups a fast build skips are
+# nearly free here; on a real node the same skip is 15.8s against 4.4s. What
+# this can still catch — and the only regression that matters — is one of the
+# gated regions being taken back out of `if (( FULL ))`, which would pull the
+# fast count straight back up to the full one.
+_c_full="$tmp_dir/jq-full-798"; _c_fast="$tmp_dir/jq-fast-798"
+: > "$_c_full"; : > "$_c_fast"
+(
+  jq() { printf 'x\n' >> "${JQ_COUNT_FILE:?}"; command jq "$@"; }
+  export -f jq
+  rm -f "$f798_state/.dashboard-fingerprint"
+  env HOME="$f798" JQ_COUNT_FILE="$_c_full" "$PUBLISH" --no-github >/dev/null 2>&1
+)
+(
+  jq() { printf 'x\n' >> "${JQ_COUNT_FILE:?}"; command jq "$@"; }
+  export -f jq
+  rm -f "$f798_state/.dashboard-fingerprint"
+  env HOME="$f798" JQ_COUNT_FILE="$_c_fast" "$PUBLISH" --no-github --fast >/dev/null 2>&1
+)
+_n_full="$(wc -l < "$_c_full")"; _n_fast="$(wc -l < "$_c_fast")"
+printf '# tiered publish: full %s jq invocations, fast %s\n' "$_n_full" "$_n_fast"
+assert_eq "a fast build costs materially less than a full one" "1" \
+  "$(( _n_fast * 3 < _n_full * 2 ))"
 
 # ---------------------------------------------------------------------------------
 if (( failures > 0 )); then

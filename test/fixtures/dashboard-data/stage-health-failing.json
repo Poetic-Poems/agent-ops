@@ -1,0 +1,64 @@
+{
+  "generated_at": "@now",
+  "node": "poetic-1",
+  "status": {
+    "running": false,
+    "stage_health": {
+      "computed_at": "@ago:5m",
+      "threshold": 3,
+      "idle_after_hours": 48,
+      "stages": {
+        "coordinator": {
+          "verdict": "failing",
+          "consecutive_failures": 11,
+          "last_success": "@ago:8h",
+          "last_detail": "coordinator was refused by the API before it could run"
+        },
+        "implementer": {
+          "verdict": "ok",
+          "consecutive_failures": 0,
+          "last_success": "@ago:12m",
+          "last_detail": null
+        },
+        "reviewer": {
+          "verdict": "idle",
+          "consecutive_failures": 0,
+          "last_success": null,
+          "last_detail": null
+        }
+      }
+    }
+  },
+  "fleet": {
+    "flags": {
+      "disabled": null,
+      "limit": null
+    },
+    "nodes": [
+      {
+        "node": "poetic-1",
+        "self": true,
+        "stale": false,
+        "role": "active",
+        "heartbeat_ts": "@now",
+        "heartbeat_age_s": 0,
+        "last_cycle": null,
+        "live": null,
+        "stage_health": {
+          "stages": {
+            "coordinator": {
+              "verdict": "failing",
+              "consecutive_failures": 11,
+              "last_success": "@ago:8h",
+              "last_detail": "coordinator was refused by the API before it could run"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "cycles": [],
+  "log_tail": [],
+  "blocked": [],
+  "void": []
+}

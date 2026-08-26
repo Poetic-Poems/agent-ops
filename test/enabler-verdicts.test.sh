@@ -72,6 +72,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$SCRIPT_DIR/lib/escalation-autonomy.sh"
 # shellcheck source=lib/void-guard.sh
 . "$SCRIPT_DIR/lib/void-guard.sh"
+# Both for the last section only (agent-ops#815), which asserts the comment
+# `escalation_thread_reconcile` actually posts: `pipeline-marker.sh` builds
+# that comment's own header and marker, and `dependency-gate.sh` is the real
+# reader whose `dependency_refs` must parse the `Blocked-by:` line out of it.
+# shellcheck source=lib/pipeline-marker.sh
+. "$SCRIPT_DIR/lib/pipeline-marker.sh"
+# shellcheck source=lib/dependency-gate.sh
+. "$SCRIPT_DIR/lib/dependency-gate.sh"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -142,6 +150,12 @@ review_gate_escalate_unreadable_streak_fn="$(extract_fn 'review_gate_escalate_un
 # (`escalation_autonomy_adjudicated_before`) is sourced for real above and
 # unit-tested in test/escalation-autonomy.test.sh.
 escalation_autonomy_pass_available_fn="$(extract_fn 'escalation_autonomy_pass_available() {' "$SCRIPT_DIR/lib/enabler.sh")"
+# agent-ops#815: lifted here with the rest, while `SCRIPT_DIR` still points at
+# the repository (the scenarios below repoint it at `fake_root` for the
+# claim.sh stub), but `eval`led only in the last section of this file — every
+# scenario before it wants the recording stub in its place, not the real
+# `gh`-writing function.
+escalation_thread_reconcile_fn="$(extract_fn 'escalation_thread_reconcile() {' "$SCRIPT_DIR/lib/enabler.sh")"
 
 if [[ "$maybe_run_enabler_fn" != *"enabler-examined"* ]]; then
   printf 'FAIL - maybe_run_enabler could not be found in agent-cycle.sh (renamed or moved?)\n'
@@ -161,6 +175,10 @@ if [[ "$review_gate_escalate_unreadable_streak_fn" != *"streak_json"* ]]; then
 fi
 if [[ "$escalation_autonomy_pass_available_fn" != *"escalation_autonomy_adjudicated_before"* ]]; then
   printf 'FAIL - escalation_autonomy_pass_available could not be found in agent-cycle.sh (renamed or moved?)\n'
+  exit 1
+fi
+if [[ "$escalation_thread_reconcile_fn" != *"Blocked-by:"* ]]; then
+  printf 'FAIL - escalation_thread_reconcile could not be found in lib/enabler.sh (renamed or moved?)\n'
   exit 1
 fi
 
@@ -198,6 +216,14 @@ metering_fields() { printf '{}'; }
 stage_watchdog_warning() { printf ''; }
 fleet_limit_resume_at() { printf ''; }
 release_refinement_label() { record "release-refinement-label $1 $2"; }
+# escalation_thread_reconcile (agent-ops#815): the Script-side completing/
+# correcting comment on a needs-refinement issue's own thread, called from
+# the escalate branch once the real outcome is known — see the dedicated
+# section below. Recorded like every other side-effecting call this file
+# stubs; its own `gh` write and comment wording are this function's job, not
+# `maybe_run_enabler`'s, so only the call and its arguments are asserted here.
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+escalation_thread_reconcile() { record "escalation_thread_reconcile $1 $2 $3 $4 $5"; }
 # The machine `obsolete` alternative (issue #413, WI-10) is lib/merge-
 # autonomy.sh/config territory, neither of which this file wires in — an
 # empty ctx simply keeps that alternative unreachable here, exactly as every
@@ -747,6 +773,83 @@ assert_eq "always-escalate: no enabler-adjudication event" "0" \
   "$(grep -cE '^event enabler-adjudication ' <<<"$calls")"
 assert_eq "always-escalate: files the escalation directly" "1" \
   "$(grep -cE '^event escalated ' <<<"$calls")"
+assert_eq "always-escalate: TD26071901 is not issue-shaped — no thread reconciliation call" "0" \
+  "$(grep -cE '^escalation_thread_reconcile ' <<<"$calls")"
+
+# ============================================================================
+# agent-ops#815: escalation_thread_reconcile — the Script's own completing or
+# correcting comment on a needs-refinement item's own thread, once this
+# engagement (not the Enabler's turn, which ended before any of the below
+# ran) knows what actually happened to its `escalate` verdict. Scoped to
+# exactly the case prompts/enabler.md documents a work-item comment for: the
+# item's own ref is a bare GitHub issue number — "125" below, not "TD…" —
+# under a needs-refinement block. The TD-shaped scenarios above already prove
+# the call is never made outside that scope (see the assertion just above,
+# and "escalate: filed"/"escalate: filing failed" earlier, neither of which
+# stubs or asserts this function at all).
+# ============================================================================
+
+# --- filed: a completing "escalated" call, carrying the real issue number ---
+eligible_issue='[{"repo":"acme/widgets","item":"125","blocked_ts":"2026-08-01T00:00:00Z",
+  "kind":"needs-refinement","reason":"threshold"}]'
+examined='[{"repo":"acme/widgets","item":"125","verdict":"escalate","reason":"needs a human call",
+            "issue":{"title":"Decide something","body":"Please decide."}}]'
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+create_escalation_issue() { printf '90\thttps://github.com/acme/widgets/issues/90'; return 0; }
+calls="$(run_case "escalation_thread_reconcile: filed" "$eligible_issue" "$examined")"
+
+assert_eq "escalation_thread_reconcile, filed: exactly one call" "1" \
+  "$(grep -cE '^escalation_thread_reconcile ' <<<"$calls")"
+assert_contains "escalation_thread_reconcile, filed: outcome + the real number and URL" \
+  "escalation_thread_reconcile acme/widgets 125 escalated 90 https://github.com/acme/widgets/issues/90" "$calls"
+
+# --- filing failed: a correcting "escalation-failed" call, no number ---
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+create_escalation_issue() { return 1; }
+calls="$(run_case "escalation_thread_reconcile: filing failed" "$eligible_issue" "$examined")"
+
+assert_eq "escalation_thread_reconcile, filing failed: exactly one call" "1" \
+  "$(grep -cE '^escalation_thread_reconcile ' <<<"$calls")"
+assert_contains "escalation_thread_reconcile, filing failed: the correcting outcome, no number" \
+  "escalation_thread_reconcile acme/widgets 125 escalation-failed" "$calls"
+assert_not_contains "escalation_thread_reconcile, filing failed: never claims a number that does not exist" \
+  "escalation_thread_reconcile acme/widgets 125 escalated" "$calls"
+
+# --- superseded by adjudicate-first's own "adequate": a correcting call before create_escalation_issue ever runs ---
+eligible_issue_disagreement='[{"repo":"acme/widgets","item":"125","blocked_ts":"2026-08-01T00:00:00Z",
+  "kind":"needs-refinement","reason":"threshold",
+  "refined_before":{"ts":"2026-08-01T09:00:00Z","cycle":"c1","comment_url":"","spec":"the original spec"}}]'
+# shellcheck disable=SC2034
+DEFAULTED_CONFIG='{"escalation_autonomy": "adjudicate-first"}'
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+run_enabler_adjudication() {
+  printf '{"verdict":"adequate","evidence":"the original spec already names the acceptance criteria"}'
+}
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+create_escalation_issue() {
+  echo "FAIL - create_escalation_issue was called but adjudication should have superseded it" >&2
+  exit 96
+}
+calls="$(run_case "escalation_thread_reconcile: adjudicated adequate" \
+  "$eligible_issue_disagreement" "$examined")"
+
+assert_eq "escalation_thread_reconcile, adjudicated adequate: exactly one call" "1" \
+  "$(grep -cE '^escalation_thread_reconcile ' <<<"$calls")"
+assert_contains "escalation_thread_reconcile, adjudicated adequate: the correcting outcome, no number" \
+  "escalation_thread_reconcile acme/widgets 125 adjudicated-adequate" "$calls"
+assert_eq "escalation_thread_reconcile, adjudicated adequate: still no escalated event either" "0" \
+  "$(grep -cE '^event escalated ' <<<"$calls")"
+
+# Reset to the harness's own defaults, matching the reset already done above
+# for run_enabler_adjudication/DEFAULTED_CONFIG, so a later scenario cannot
+# silently inherit this section's stubs.
+# shellcheck disable=SC2034
+DEFAULTED_CONFIG='{}'
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+run_enabler_adjudication() {
+  echo "FAIL - run_enabler_adjudication was called but no scenario stub was set" >&2
+  exit 97
+}
 
 # ============================================================================
 # An item this cycle did not claim is ignored, not acted on
@@ -1049,6 +1152,103 @@ assert_eq "  ... carrying the flip's own state" "flipped" "$(jq -r '.state' <<<"
 xmn_evt="$(events_named "$calls" enabler-examined | head -n1)"
 assert_eq "gate-clean: enabler-examined records the flip word" \
   "flipped" "$(jq -r '.complete_handoff' <<<"$xmn_evt")"
+
+# ============================================================================
+# agent-ops#815: escalation_thread_reconcile's own comment body.
+#
+# Deliberately last in the file. Every scenario above stubs this function out
+# to assert only that `maybe_run_enabler` calls it, with which outcome and
+# which number — the right coverage for the *caller*. This section evals the
+# real one over that stub, so nothing above it can be affected, and asserts
+# the thing the caller's coverage cannot reach: what actually lands on the
+# human's thread.
+#
+# The `Blocked-by:` assertion is not a spelling check. Requirement 36b's whole
+# claim is that the filed case's comment makes the dependency *deterministic*
+# — `scripts/gather-issues.sh` excludes the work item as `blocked-by: #<n>`
+# from that line alone — and the reference sits inside a string interpolated
+# between a header line and a marker line, where anything that folds it back
+# into the prose beside it ("Escalation filed: <url>, Blocked-by: #90", the
+# obvious tidy-up) costs it its own line and silently stops `dependency_refs`
+# matching, while every assertion above still passes. So it is asserted
+# through the real `dependency_refs` (lib/dependency-gate.sh) — the actual
+# reader, leading whitespace and all — rather than against the literal text.
+#
+# The two correcting outcomes are asserted from both directions for the same
+# reason the file's other guards are: saying "no escalation was filed" is only
+# half of it — a correcting comment that still carried a `Blocked-by:` line
+# would re-assert the very block it exists to withdraw, and would read as a
+# live dependency to the next gather.
+# ============================================================================
+eval "$escalation_thread_reconcile_fn"
+
+# The cycle globals the real function reads, and a `gh` that records the one
+# write it makes: its argv (without the body) and the body itself, separately.
+cycle_dir="$tmp_dir"
+# shellcheck disable=SC2034  # read only by the eval'd escalation_thread_reconcile
+node_name="test-node"
+# shellcheck disable=SC2034  # read only by the eval'd escalation_thread_reconcile
+cycle_id="20260826T000000Z-test-1"
+reconcile_argv="$tmp_dir/reconcile-argv"
+reconcile_body="$tmp_dir/reconcile-body"
+# shellcheck disable=SC2317  # invoked only by the eval'd escalation_thread_reconcile
+gh() {
+  local arg prev=""
+  printf '%s %s %s %s %s\n' "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" > "$reconcile_argv"
+  for arg in "$@"; do
+    [[ "$prev" == "--body" ]] && printf '%s' "$arg" > "$reconcile_body"
+    prev="$arg"
+  done
+  return 0
+}
+
+reconcile_case() {  # reconcile_case OUTCOME NUMBER URL -> the posted body, or "" if nothing was posted
+  rm -f "$reconcile_argv" "$reconcile_body"
+  escalation_thread_reconcile "acme/widgets" "125" "$1" "${2:-}" "${3:-}"
+  [[ -e "$reconcile_body" ]] && cat "$reconcile_body"
+  return 0
+}
+
+# --- filed: the completing comment, carrying a Blocked-by line that parses ---
+body="$(reconcile_case escalated 90 https://github.com/acme/widgets/issues/90)"
+
+assert_eq "reconcile body, filed: comments on the work item's own thread" \
+  "issue comment 125 -R acme/widgets" "$(cat "$reconcile_argv")"
+assert_contains "reconcile body, filed: names the escalation issue's URL" \
+  "https://github.com/acme/widgets/issues/90" "$body"
+assert_eq "reconcile body, filed: dependency_refs reads the Blocked-by line off it" \
+  '["90"]' "$(dependency_refs "$body")"
+# shellcheck disable=SC2016  # the backticks are the header's own literal Markdown, as in lib/pipeline-marker.sh
+assert_contains "reconcile body, filed: opens with the Script's own pipeline header" \
+  '**Script** · autonomous pipeline · node `test-node`' "$body"
+assert_contains "reconcile body, filed: closes with the marker naming this cycle" \
+  '<!-- agent-ops:pipeline-comment cycle=20260826T000000Z-test-1 actor=script -->' "$body"
+
+# --- superseded by adjudication: a correcting comment, and no dependency ---
+body="$(reconcile_case adjudicated-adequate)"
+
+assert_eq "reconcile body, adjudicated adequate: still one comment on the thread" \
+  "issue comment 125 -R acme/widgets" "$(cat "$reconcile_argv")"
+assert_contains "reconcile body, adjudicated adequate: says plainly none was filed" \
+  "No escalation issue was filed for this item" "$body"
+assert_eq "reconcile body, adjudicated adequate: withdraws rather than re-asserts — no Blocked-by" \
+  '[]' "$(dependency_refs "$body")"
+
+# --- the filing failed: the same, naming the failure rather than adjudication ---
+body="$(reconcile_case escalation-failed)"
+
+assert_contains "reconcile body, filing failed: says plainly none was filed" \
+  "No escalation issue was filed for this item" "$body"
+assert_contains "reconcile body, filing failed: says a later cycle retries" \
+  "retry" "$body"
+assert_eq "reconcile body, filing failed: no Blocked-by reference either" \
+  '[]' "$(dependency_refs "$body")"
+
+# --- nothing is ever posted without something true to say ---
+assert_eq "reconcile: an 'escalated' outcome with no number posts nothing at all" \
+  "" "$(reconcile_case escalated "" "")"
+assert_eq "reconcile: an unrecognised outcome posts nothing at all" \
+  "" "$(reconcile_case something-else)"
 
 printf '\n'
 if (( failures > 0 )); then

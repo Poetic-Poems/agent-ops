@@ -2239,21 +2239,31 @@ implements.
    `.dashboard-github.json`, `.dashboard-claims.json`,
    `.image-drift-cache.json`), `state-sync.log`, the unattended doctor
    pass's own local artefacts (`doctor.log`, `.doctor-status.json` —
-   requirement 2.6a), the revert-rate publishing tick's own local text
-   output and cumulative-since-baseline cache (`revert-rate.log`,
+   requirement 2.6a), the per-stage health snapshot's own raw file
+   (`.stage-health.json` — requirement 2.8, its content excepted, below), the
+   revert-rate publishing tick's own local text output and
+   cumulative-since-baseline cache (`revert-rate.log`,
    `revert-rate-cumulative-state.json` — requirement 2.6b, the structured
    `revert-rate.jsonl` excepted, below), the stage event streams
-   (`*.stream.jsonl`, requirement 4d), and the fleet-log snapshot
-   (`.fleet-log.jsonl`, "The union" below).
+   (`*.stream.jsonl`, requirement 4d), the fleet-log snapshot
+   (`.fleet-log.jsonl`, "The union" below), and the mirror's own durable
+   rebuild record (`.mirror-rebuild-state.json`, "Mirror integrity" above).
    The exclusions are not tidiness: a copied `lock.json` is a lock no process
    holds — peers read logs, never locks; the
    dashboard is generated from the state beside it, so copying it would be
    copying a derivative of what is already being copied; a copied
    `.image-drift-cache.json` would answer for a registry query nobody on the
-   peer ran; `doctor.log`/`revert-rate.log` are each a local pass's own text
+   peer ran, and a copied `.mirror-rebuild-state.json` likewise would answer
+   for a rebuild nobody on the peer needed; `doctor.log`/`revert-rate.log`
+   are each a local pass's own text
    output, superseded for a reader by the structured sibling that pass also
    writes (`.doctor-status.json` locally, `revert-rate.jsonl` fleet-wide —
-   the asymmetry is exactly why one is excluded and the other is not). The
+   the asymmetry is exactly why one is excluded and the other is not); a
+   copied `.stage-health.json` would answer for a computation nobody on the
+   peer ran, on the identical reasoning as `.image-drift-cache.json` — but
+   unlike that cache, its *content* is meant to reach peers regardless, which
+   is why it travels a different way, folded into the heartbeat below rather
+   than replicated verbatim. The
    streams are excluded on size as much as on relevance: what
    a peer reads of a stage is its result envelope, which replicates as
    `<stage>.out` exactly as before, while the stream beside it is every
@@ -2273,12 +2283,52 @@ implements.
    installed. Git stores no empty directories, so a cycle that stood down
    before its first stage replicates as its `log.jsonl` entry alone.
 
+   **Mirror integrity.** Before either mode below touches the mirror,
+   `mirror_init` (`scripts/state-sync.sh`) confirms it still deserves the
+   trust a bare directory check used to hand it for free: a host whose disk
+   quietly corrupts a loose object — an unclean shutdown mid-write, as
+   happened on ockham-container from 2026-08-08 and ockham-2 on 2026-08-24
+   — used to leave a `.git/` that opened fine but could not answer for what
+   it held, with `git gc` failing at repair indefinitely (a `gc.log` that
+   never clears) and the node reading from and publishing the damaged
+   checkout for four days with no failure visible anywhere in the
+   automation logs. On a mirror that already existed — never on one this
+   call just created, since a fresh `git init` has nothing to have failed,
+   and treating that as a rebuild would make every node's first-ever push
+   report self-healing that never happened — `mirror_init` runs `git fsck
+   --connectivity-only`: every object reachable from a ref exists and
+   parses, without reading every object's full content the way a plain
+   `git fsck` does. That bound is the right one, because the incident's own
+   damage sat on a *peer's* remote-tracking ref, which is reachable, and it
+   is cheap: measured against a mirror of 220k reachable objects, 0.2s with
+   those objects packed and 1.8s with every one of them loose. The loose
+   figure is the one that governs, because a mirror whose `git gc` is
+   failing is precisely a mirror whose objects stop being packed, so
+   unpacked is the shape damage actually arrives in. Either figure is three
+   orders of magnitude inside the 5-minute push / 7-minute fetch interval
+   this runs on, so no stamp-file gate is needed to keep it off the common
+   path. On any nonzero exit — 2 for an empty loose object, 3 for other
+   corruption — `mirror_init` discards the checkout (`rm -rf`, `git init`,
+   `remote add`) rather than repairing it: the mirror is wholly derived,
+   this node's own branch is rsync'd back out of `state_dir` on the very
+   next push and every peer branch is re-fetched at `--depth 1` by the very
+   next fetch, so nothing in it is the only copy of anything, and repair
+   (`git gc`) is exactly what the incident above already showed does not
+   work. A rebuild is recorded durably in a small cache file under
+   `state_dir` (`lib/mirror-integrity.sh`'s `mirror_rebuild_state_file`,
+   excluded from replication like `.image-drift-cache.json` below, since it
+   answers for this node alone) — living outside the mirror is what lets
+   the record outlive the rebuild that produced it — and published as the
+   heartbeat's `mirror` verdict (below), so a rebuild is as visible to a
+   human or a peer as any other node fact, and a *second* rebuild is
+   visibly a repeat rather than one more indistinguishable line.
+
    **Push.** Every node — active or standby — mirrors its `state_dir` into
    its **own branch**, `nodes/<NODE_NAME>`, every few minutes from the
    crontab and again from the cleanup that ends a cycle. No two nodes share
    a branch, so pushes cannot contend and nothing arbitrates them. Each push
    stamps `heartbeat.json` (`{node, role, ts, last_cycle, version, compose,
-   image, switch}`)
+   image, switch, stage_health, mirror}`)
    into the branch root — on a standby, which has no cycles to publish, the
    heartbeat is the entire point, and it is what lets the fleet dashboard
    tell a quiet node from a dead one. `version` is `lib/version.sh`'s answer
@@ -2310,6 +2360,18 @@ implements.
    the verdict it reached, not just the file it reached it from. The
    fleet-wide switch needs no such carriage: it is a flag file every node
    already fetches for itself (requirement 2.3a).
+   `stage_health` (requirement 2.8, `lib/stage-health.sh`) is this node's own
+   `.stage-health.json`, read verbatim rather than recomputed — that file is
+   already this cycle's finished verdict, written by the same cycle's own
+   `cleanup()` before this push runs, so reading it keeps this one write the
+   single source both the heartbeat and this node's own dashboard read,
+   rather than two computations that could disagree. `null` on a node that
+   has not completed a cycle since this check shipped.
+   `mirror` is `lib/mirror-integrity.sh`'s `mirror_rebuild_verdict`: `null`
+   until "Mirror integrity" above has ever had to discard and rebuild this
+   node's checkout, else `{status: "rebuilt", count, last_rebuilt_at}`, read
+   back from the durable record every push so a repeat rebuild bumps `count`
+   rather than reading identically to the first.
    Each branch is a single rolling commit — `commit
    --amend` plus a force-push — because the state files carry their own
    history (`log.jsonl` is append-only, every cycle keeps its own directory)
@@ -2685,6 +2747,82 @@ implements.
    retries next cycle, same as 1b and 2.0b. Skipped entirely on `--dry-run`
    and when `crash_loop_repo` or `enabler_assignee` is unset, the same as
    both of those checks.
+2.8. **Per-stage health.** During the 2026-08-21 incident (01:38-12:09Z)
+   every stage in every node's cycles failed for 10.5 hours, and every signal
+   an operator had said otherwise: `agent-cycle.sh --status` reported
+   `cycle: RUNNING — held by pid …` (the process was alive), no
+   `check-node-*.sh` complained (nothing there reads a stage's own outcome),
+   and the dashboard stayed green. All three were technically true — the
+   needed detection already existed, as `stage-end`'s own `exit_code` — but
+   nothing read it (issue #662). This is narrower and cheaper than
+   requirement 2.7's crash-loop escalation above, which it complements rather
+   than replaces: 2.7 is fleet-wide, matches on one identical failure detail,
+   and files a GitHub issue, built for one specific deterministic class of
+   Co-Ordinator failure. This is node-local, purely informational — nothing
+   here ever opens an issue, blocks a cycle, or escalates anything — and
+   answers a narrower question for every stage the Script runs, not only the
+   Co-Ordinator: is this stage's most recent run of attempts on this node
+   succeeding?
+
+   `lib/stage-health.sh`'s `stage_health_verdicts` is a pure reader of one
+   node's own event stream on stdin — deliberately never the fleet union
+   `crash_loop_verdict` reads: a stage that is healthy on every other node
+   says nothing about whether it is healthy on this one. For each of
+   `coordinator`, `approver`, `approver-adjudicate-open-question`,
+   `enabler-adjudicate`, `enabler`, `refiner`, `implementer` and `reviewer` —
+   every stage that logs a `stage-end` of its own, so that a stage this
+   reader does not name can never be one whose failures go unread — it
+   derives, from that stage's own `stage-end`
+   and `attempt-failed` events: `last_success` (the most recent `stage-end`
+   with exit_code 0, or null), `consecutive_failures` (a running streak reset
+   to 0 by a success — the same reduction `crash_loop_verdict` already uses,
+   but per-stage, per-node, and without requiring an identical failure detail,
+   since "always wrong in some new way" is exactly as unhealthy as "always
+   wrong the same way"), `last_detail` (the most recent `attempt-failed`
+   detail, cleared to null the moment a success resets the streak), and a
+   `verdict` — `idle` (no `stage-end` record at all, i.e. never invoked, or a
+   last success older than `IDLE_AFTER_HOURS` with nothing failed since —
+   a stage with no recent work is not unhealthy), `failing`
+   (`consecutive_failures` has reached `THRESHOLD`), or `ok` (anything else,
+   including one or two failures below `THRESHOLD` — "one failure does not
+   trigger a verdict" is the issue's own acceptance bar). `THRESHOLD` (3) and
+   `IDLE_AFTER_HOURS` (48) are ordinary function parameters shared by every
+   stage, not config keys: every stage here shares the same one-whole-attempt-
+   per-cycle invocation shape once it does run, so one pair of numbers covers
+   all of them, and three consecutive whole-cycle failures already reaches
+   the same order of confidence `crash_loop_after`'s own default (4) requires
+   before requirement 2.7 escalates — well before that heavier, issue-filing
+   mechanism would ever fire.
+
+   `agent-cycle.sh`'s `cleanup()` (requirement 35's own call site) calls
+   `stage_health_write_status` at the end of every real cycle, after
+   `cycle-end` is logged and before the state-sync push: it recomputes the
+   verdict from this node's own `$log_file` — which by then already carries
+   every `stage-end`/`attempt-failed` event this cycle logged — and writes it
+   atomically (`mktemp` then `mv -f`) to `state_dir/.stage-health.json` as
+   `{computed_at, threshold, idle_after_hours, stages}`, on
+   `write_unattended_status`'s own precedent (requirement 2.6a). `--status`
+   reads this file (never recomputes it) and prints it as a new `stages:`
+   section, one line per stage — `coordinator failing (11 consecutive, last
+   success 8h ago)`, `reviewer idle (never run)` — or a plain "no data yet"
+   line on a node that has not completed a cycle since upgrading.
+   `check-nodes.sh` (external to this repository; not committed here) prints
+   `--status` per node and so inherits the new section for free, with
+   nothing in this repository to change.
+
+   Unlike `.doctor-status.json`, this verdict is not local to the node that
+   computed it: `scripts/state-sync.sh`'s heartbeat write folds it in as
+   `stage_health`, the same way `compose`/`image`/`switch` already travel —
+   this node's own answer about itself, published like any other fact only
+   this node can state — and `.stage-health.json` itself is excluded from
+   general replication (`scripts/state-sync.sh`'s `EXCLUDES`) so its content
+   travels exactly once, through the heartbeat, rather than twice.
+   `scripts/publish-dashboard.sh` reads its own `.stage-health.json` (rather
+   than recomputing it, on `.doctor-status.json`'s identical precedent) and
+   surfaces it as `status.stage_health`; a peer's verdict comes from its
+   heartbeat's `stage_health` field or reads null, never a verdict this node
+   derives on that peer's behalf. `docs/DASHBOARD-SPEC.md` documents the
+   page's own Stage health section and fleet-strip badge.
 3. **Repo ordering.** For each configured repo, fetch the timestamp of the
    most recent commit on its default branch via `gh api`. A repo entry may
    also carry `nice`, an optional integer from `-19` to `19` (absent means
@@ -6695,7 +6833,16 @@ implements.
     is attempted, it re-derives the item's own recorded refinement from
     `refinements` — keyed on that candidate's own `repo`/`item`, never on
     anything the candidate itself claims — and confirms it is genuinely
-    present, verbatim, in that candidate's own `context` or `acceptance`:
+    present, after normalizing whitespace (TD-PPagop-26082307: collapse every
+    run of whitespace to a single space and trim both ends, on both sides of
+    the comparison), in that candidate's own `context` or `acceptance`. A
+    model's paste of a multi-kilobyte spec or issue thread drifts in exactly
+    this way — a reflowed line, a normalized list marker, a trimmed trailing
+    space — without changing what it says, and normalizing tolerates all of
+    that while still failing a passage that is genuinely missing or
+    different; `TRACEABILITY_DEBUG=1` logs, to stderr, the normalized
+    haystack/needle a comparison actually ran against, never required to
+    diagnose a failure, only to see it directly.
     - A `spec` entry (requirement 17b) costs no extra read: the text is
       already in `refinements`, so its presence in `context` is checked
       directly.
@@ -6707,8 +6854,8 @@ implements.
       Second, one `gh api repos/<repo>/issues/comments/<id>` read of the
       actual comment (the pre-fetched `comments` array on a repo's `issues`
       entry carries no per-comment id to join against, so this is the only
-      way to know the comment's real text) — a fault if that text is present
-      in neither `context` nor `acceptance`.
+      way to know the comment's real text) — a fault if that text, normalized
+      the same way, is present in neither `context` nor `acceptance`.
     **A failed check is repaired, not discarded (agent-ops#767).** The
     requirement is that the work order *carry* the item's refinement — not
     that the model be the one who carried it — and the Script is holding the
@@ -6748,10 +6895,19 @@ implements.
     counted separately from both the pre-claimed skips and the race losses.
     An item with no `refinements` entry at all costs nothing: the check
     returns immediately with no `gh` call. A `gh` read that fails (network,
-    rate limit) fails open — a fact about GitHub's availability, not about
-    the work order, the same direction every other degraded `gh` read in this
-    pipeline already fails — and a refinement that cannot be read cannot be
-    repaired in either.
+    rate limit) is itself a fault (TD-PPagop-26082307), reported the same way
+    as a mismatched paste — `cause: "untraceable"`, retried next cycle — and
+    surfaced via `guard_warn` rather than swallowed. This is the one place
+    this requirement's own `gh` read departs from every other degraded `gh`
+    read in this pipeline's fail-open convention: those read a fact about
+    GitHub's availability, but this check exists to gate a claim on a
+    refinement really being present, and assuming pass on a read it could not
+    complete means a token going bad, a narrowed scope, or a sustained rate
+    limit silently disarms the whole gate, indefinitely, while it keeps
+    reading as green — exactly the failure mode this item's own repair
+    (agent-ops#767, below) exists to prevent for the opposite direction. A
+    refinement that cannot be read cannot be repaired either, so a candidate
+    faulted this way is a hard skip, same as a corrupt `comment_url`.
 
     A fallback selection (requirement 3v) is not checked. `context` there is
     composed by `fallback_select_candidate` in jq, out of the very band entry
@@ -9015,6 +9171,30 @@ implements.
     change to a repository, which requirement 12's run promises not to make.
     Since the event records only what was actually applied, nothing later tries
     to remove a label that was never there.
+
+    **No stage may write a block whose `unblock_condition` names, as the only
+    remaining gap, a state that same block is itself about to create.** This
+    recorder can, in the same write, both log the block and project a label
+    onto the object it names — and a verdict whose own `missing`/`evidence`
+    frames that label's *removal* as the way out has described a condition
+    only a human can satisfy, using the pipeline's own next action as the
+    reason it is needed. This happened for real (agent-ops#670): a Refiner
+    found agent-ops#597 and #598 already carrying an adequate specification
+    and, following its prompt's then-unqualified "never write a second
+    specification" rule, declined both `needs-refinement` with the detail
+    that nothing further could be added and the unblock condition that a
+    human must remove the hand-applied label — three seconds before the
+    Script applied that very label as this requirement's own projection, a
+    deadlock the pipeline had manufactured for itself and could not exit
+    under its own power. Requirement 39c's re-affirmation closes the
+    Refiner's own route to this shape: an item it judges already adequately
+    specified is `refined`, not `needs-refinement`, so no block — and no
+    unblock condition referencing a label not yet applied — is ever written
+    for it. The invariant is stated here, at the shared recorder, rather than
+    only at the Refiner, because any future reporter that reaches this path —
+    Co-Ordinator, Implementer, or a stage not yet written — inherits the same
+    risk the moment its own verdict's free-text fields can describe the label
+    this requirement is about to add.
 34f. **The human's escape hatch reaches the human.** Requirement 34c reserves
     clearing a void to a human and gives them one interface: a line appended by
     hand to `state_dir/log.jsonl`. That interface is unreachable in the
@@ -10226,16 +10406,44 @@ implements.
       close it, since the closure is what returns the item to a later engagement
       and their comments are what let that engagement complete the refinement.
       Where the work item is itself an issue, the Enabler also posts one
-      comment on it linking to the escalation, so the context stays visible
-      where the work lives — carrying a structured `Blocked-by: #<n>` line
-      naming the escalation issue's own number (agent-ops#639), the same
-      convention requirement 34j already parses out of any issue thread. That
-      line is what makes the link deterministic rather than merely readable:
-      the very next gather sees it, `scripts/gather-issues.sh` excludes the
-      work item as `blocked-by: #<n>` on its own (requirement 3j), and the
-      exclusion — and its clearing, the moment the escalation issue closes —
-      is recorded through the ordinary `issues-excluded` event without this
-      requirement needing a bespoke mechanism of its own.
+      comment on it saying an escalation is being requested, so the context
+      stays visible where the work lives — but it never asserts the
+      escalation issue already exists or names its number (agent-ops#815):
+      the Enabler's own turn ends before any of the three things that decide
+      whether one actually results have run — a possible `adjudicate-first`
+      override, the `create_escalation_issue` call, and whether that call
+      succeeds — so it cannot truthfully claim the outcome yet. The Script
+      completes the thread once it knows that outcome
+      (`escalation_thread_reconcile`, `lib/enabler.sh`), scoped to exactly
+      this case (a `needs-refinement` item whose ref is a bare GitHub issue
+      number):
+      - **filed** — a completing comment carrying a structured `Blocked-by:
+        #<n>` line naming the escalation issue's own number (agent-ops#639),
+        the same convention requirement 34j already parses out of any issue
+        thread. That line is what makes the link deterministic rather than
+        merely readable: the very next gather sees it,
+        `scripts/gather-issues.sh` excludes the work item as `blocked-by:
+        #<n>` on its own (requirement 3j), and the exclusion — and its
+        clearing, the moment the escalation issue closes — is recorded
+        through the ordinary `issues-excluded` event without this
+        requirement needing a bespoke mechanism of its own;
+      - **superseded by an `adjudicate-first` `adequate` verdict**, before
+        `create_escalation_issue` ever runs — a correcting comment stating
+        plainly that no escalation was filed, because the pass found the
+        existing refinement adequate and the item was unblocked on that
+        basis instead;
+      - **`create_escalation_issue` itself fails** — a correcting comment
+        stating that the escalation attempt failed and a later
+        re-examination will retry it.
+
+      Three items escalated in the same cycle (#604, #613, #640) each
+      carried this false claim — "an escalation issue was raised" —
+      uncorrected, because nothing reconciled the Enabler's own comment
+      against what the Script went on to do; this reconciliation, and the
+      prompt no longer asserting a number it cannot know, is the fix.
+      Best-effort like every other `gh` write this stage makes (requirement
+      37): a failure to post either comment is a `warning`, never a reason to
+      unwind the verdict already recorded.
 
       **`escalation_autonomy` (D18, agent-ops#627).** When the item this
       verdict escalates is a refinement disagreement — `kind:
@@ -11301,6 +11509,24 @@ implements.
     agreeing on its shape without a second implementation to drift from the
     first (requirement 34a).
 
+    **A `refined` verdict may be a re-affirmation, not only a fresh
+    specification (agent-ops#670 Part 2).** The Refiner may find the item's
+    thread already carrying an adequate specification — its own, the
+    Enabler's, or a human's — with nothing material changed since, and return
+    `refined` naming that *existing* comment's URL (or, for a non-`issues`
+    source, reproducing its existing text) without posting or writing
+    anything new. The Script's recording is unchanged either way:
+    `refinement_record_fields` requires only that the verdict carry a
+    `comment_url` or `spec`, never that either be this cycle's own write, so
+    a re-affirmation is corroborated on the same terms as a fresh
+    specification and re-enters `refinements_map` (requirement 3h) the same
+    way. This is what closes the item's only path back to a block: once
+    re-affirmed, requirement 39a's candidate rule excludes it again, exactly
+    as a fresh refinement would. Re-affirmation is not available where the
+    Refiner disagrees with the existing specification — that is a second
+    opinion against a first, and stays a `needs-refinement` decline (39d),
+    escalated rather than settled here.
+
 39d. **The `needs-refinement` decline.** Where the Refiner cannot write an
     adequate specification — the gap is a decision, a credential, or
     information that exists only in a human's head, or the item's own premise
@@ -11321,8 +11547,15 @@ implements.
     fresher `needs-refinement` block (from the Implementer's escape hatch,
     requirement 9f, or a further decline here) clears it from that map
     (requirement 39a's third clause reads the same `ts` comparison requirement
-    9f describes). There is no path back to a second refinement pass that
-    does not first pass through a human-actionable block.
+    9f describes). What such an item is offered back to next is not
+    necessarily a second refinement *pass*, though: 39c's re-affirmation lets
+    the Refiner say the existing specification still stands, with no new
+    writing and no second opinion involved. The guarantee that holds is
+    narrower than "no path back without a block" — it is that there is no
+    path back to a *disagreeing* second specification that does not first
+    pass through a human-actionable block. A re-affirmation is never that: it
+    is the same opinion recorded twice, which 39c's corroboration accepts
+    without asking a human anything.
 
 39e. **Failure containment.** Whatever happens inside one Refiner engagement,
     this cycle's own exit code — computed before the exit trap ran — is the
@@ -15441,7 +15674,8 @@ pull request, run the ones the change touches and any it could regress.
    pre-claimed skips and the race losses, so a traceability stand-down can
    never again be reported as `raced`.
    `test/refinement-traceability.test.sh` passes, against
-   `refinement_traceability_fault` lifted verbatim from `lib/candidate-select.sh`:
+   `refinement_traceability_fault` (and the `_traceability_normalize` helper
+   it calls) lifted verbatim from `lib/candidate-select.sh`:
    a
    candidate whose recorded `spec` is absent from its own `context`, or
    whose recorded `comment_url` names a different issue than the candidate's
@@ -15449,14 +15683,19 @@ pull request, run the ones the change touches and any it could regress.
    `comment_url`'s own issue number matches but whose actual comment body
    (fetched live) is present in neither `context` nor `acceptance` — the
    #571/#529 shape — is faulted after exactly one `gh` call; a candidate
-   carrying its own comment or spec verbatim, in either field, passes; an
-   item with no `refinements` entry, or one recorded under a different repo,
-   is not checked and costs no `gh` call; and an unreachable GitHub, or a
-   malformed `refinements` document, fails open rather than faulting the
-   candidate. The same test pins the scoping: a candidate
-   `fallback_select_candidate` itself picks for a spec-refined item does not
-   satisfy the verbatim check, and the claim loop's own call site guards the
-   check with `selected_by_fallback` so that candidate is never faulted.
+   carrying its own comment or spec, normalized, in either field, passes,
+   including one whose paste reflowed a line or collapsed whitespace
+   (TD-PPagop-26082307), while one whose text is genuinely different still
+   faults; an item with no `refinements` entry, or one recorded under a
+   different repo, is not checked and costs no `gh` call; a malformed
+   `refinements` document fails open rather than faulting the candidate; and
+   an unreachable GitHub now faults the candidate (`untraceable`, same as a
+   mismatch) rather than passing it, with the failed read reported through
+   `guard_warn` rather than swallowed. The same test pins the scoping: a
+   candidate `fallback_select_candidate` itself picks for a spec-refined item
+   does not satisfy the normalized check, and the claim loop's own call site
+   guards the check with `selected_by_fallback` so that candidate is never
+   faulted.
 8. **A no-op Implementer is recorded.** Drive one cycle in which the
    Implementer reports `blocked` without opening a PR: the cycle must exit 0
    having logged an `attempt-failed` carrying that item and the stage's own
@@ -16200,6 +16439,33 @@ pull request, run the ones the change touches and any it could regress.
     reason as requirement 35a's rule: too eager and two models re-specify each
     other's work forever, too shy and the item starves exactly as it did before
     any of this existed.
+11d-i. **An escalation the Script did not file is never claimed on the work
+    item's thread (requirement 36b).** `test/enabler-verdicts.test.sh` passes,
+    on both halves of the reconciliation — the call and the comment.
+    Driving `maybe_run_enabler` itself with an `escalate` verdict on a
+    `needs-refinement` item whose ref is a bare issue number:
+    `escalation_thread_reconcile` is called exactly once per engagement, with
+    `escalated` and the filed issue's real number and URL when
+    `create_escalation_issue` succeeds; with `adjudicated-adequate`, and no
+    number, when an `adjudicate-first` pass settled the disagreement before
+    `create_escalation_issue` was reached at all — asserted with a
+    `create_escalation_issue` stub that fails the run outright if it is
+    called, since that path is the one the #604/#613/#640 incident actually
+    took and the one nothing covered; and with `escalation-failed`, and no
+    number, when the filing itself returns 1. A TD-shaped item calls it on no
+    path, the scope requirement 36b states. Then the comment those calls
+    produce, asserted against the real function: the `escalated` body's
+    `Blocked-by: #<n>` line is read back by `dependency_refs`
+    (`lib/dependency-gate.sh`) — the reader `scripts/gather-issues.sh`'s own
+    exclusion depends on, not a literal-text match — while both correcting
+    bodies say plainly that no escalation was filed **and** carry no
+    `Blocked-by:` reference at all, so a withdrawal can never read as a live
+    dependency to the next gather. Every body opens with the Script's own
+    `pipeline_comment_header` and closes with the cycle's own marker. Nothing
+    at all is posted for an `escalated` outcome carrying no number, or for an
+    outcome this function does not recognise: the failure this requirement
+    exists to end is a comment asserting an escalation that does not exist,
+    so silence is the only safe answer to an outcome it cannot describe.
 11e. **A human's own label is read back, and only where this mechanism put it
     (requirement 34g).** `test/needs-refinement.test.sh` passes:
     `refinement_hand_flag_new` turns a labelled, open issue with no existing
@@ -16261,7 +16527,13 @@ pull request, run the ones the change touches and any it could regress.
     assignee projections, while a decline with `missing` empty and one for
     an item already blocked are refused (`recorded: 0`) with a `warning` and
     no second block; an unrecognised verdict earns a `warning` and outcome
-    `unknown-verdict`, acted on in no way. Requirement 39e's containment:
+    `unknown-verdict`, acted on in no way. Re-affirmation (39c) is pinned from
+    the same corroboration path: a `refined` verdict citing a comment URL
+    that is not this cycle's own write — nothing distinguishes one in the
+    payload the Script reads — is recorded exactly like a fresh comment's
+    URL, `item-refined` and the `refined_label` add both included, proving
+    the Script never demands the comment be freshly posted (agent-ops#670
+    Part 2). Requirement 39e's containment:
     a verdict for an item the cycle never claimed is discarded with a
     `warning` and no `refiner-examined` at all, a claimed item the envelope
     never mentions is warned about by name and left claimed, and an
@@ -18773,6 +19045,23 @@ requirements above, which state only what is.
   what a reader tracing the pipeline's actual sequence finds first, and they
   point at "### The Approver" by name.
 
+- **Re-affirmation (39c) extends `refined` rather than adding a third
+  verdict.** The tech-debt item that carried agent-ops#670's Part 2 forward
+  (TD-PPagop-26082305) suggested a new verdict, distinct from
+  `needs-refinement`, for an item the Refiner judges already adequately
+  specified. #670's own design — written by a human before the tech-debt item
+  existed — took the narrower route instead: the item is not a new *kind* of
+  outcome, it is the same outcome (`refined`) reached without writing
+  anything new. Reusing `refined` means the Script's recording path needed no
+  structural change at all — `refinement_record_fields` (requirement 39c)
+  already accepts a `comment_url`/`spec` on its own terms, never asking
+  whether it was this cycle's own write — so the whole fix is confined to
+  what the Refiner is told to do with an existing, adequate specification,
+  never to a new switch case, a new label projection, or a new field on the
+  verdict schema for every reader of it to learn. A third verdict would have
+  bought nothing a re-affirmed `refined` does not already give: the item
+  re-enters `refinements_map` (3h) and proceeds to selection either way.
+
 - **The GitHub credential check (0b) escalates unconditionally, never through
   `escalation_autonomy`.** That ladder decides whether one specific
   escalation — an Enabler refinement-disagreement (requirement 36b) — is
@@ -18875,3 +19164,4 @@ confident, recurring no-op.
 | A fail-closed gate that fails *every* time, and so is never seen to pass | `landing_protected_paths_hit` (requirement 8d) read its changed-file list with `gh api …/files -F per_page=100`, and `gh api` sends a request carrying `-f`/`-F` fields as a POST unless `--method GET` says otherwise — a 404 on this path. The read failed on every call from the day D18 Stage 2 was entered; every call site did the right thing with the exit 2 and refused to arm. The fleet logged 72 `landing-refused` events reading `unknown:could not establish …'s changed-file list`, raised and reviewed pull requests as usual, and never armed a single landing in five days — while the stage report, correctly, showed `0 autonomous landings` (agent-ops#718). | Give a gate that can refuse for an *environmental* reason a way to be seen never succeeding: alert on a refusal reason whose rate is 100%, and make the first success of a new capability an explicit, dated exit criterion rather than an assumption (the Stage 1 exit check’s "merged with only the App’s approval is not merged **by** the App" distinction is the same lesson, one rung down). In tests, stub a dependency’s **rule**, not just its shape — the stubbed `gh` that dispatched on the path alone answered happily to a request the real one refuses. |
 | A killed command destroys the work that finished before it, not just the work in flight | The Reviewer's own Bash tool kills a command still running at 10 minutes and returns nothing for it — not partial stdout, not the exit code of whatever it had already checked, nothing (requirement 29a). On agent-ops#734 the model read that as a command to retry rather than a wall to plan around: three consecutive 10-minute kills against the same unbatched `test/*.test.sh` run burned exactly a third of a 90-minute budget for zero test evidence, and a fourth hour of ad hoc re-batching still did not finish — so the review's own findings, already complete after the first 13 minutes, were never posted in time and the whole engagement was recorded as a failed attempt. | Before running anything that might be large, ask what the tool that runs it will do if it is too large — here, silently discard everything, including the part that already succeeded. Where the answer is "nothing survives," split the work into pieces sized to the limit *before* the first attempt (`scripts/run-tests.sh --list`, requirement 29a) rather than sizing down only after a kill proves the first guess wrong, and land whatever is already decided (a review's own findings, posted as formed — requirement 30a) before starting the part that risks the wall, so a kill there costs only the part still in flight. |
 | A network-layer fault surfacing behind an application-layer control | With `DOCKER_MTU` unset on a host whose egress link sits below 1500, DNS resolves, squid accepts the CONNECT — and the TLS handshake inside the tunnel hangs and resets, which reads as "the egress allowlist is blocking me" when squid already said yes. The debugging then happens at the wrong layer, in the allowlist, where nothing is wrong. | The `egress` network carries the same `DOCKER_MTU` driver_opts as the default bridge, and `doctor.sh`'s Egress fail message names the trap. Rule the MTU out (compose.yaml's own note tells you how) before touching the allowlist. |
+| A pipeline stage whose reader exits first, under `pipefail` | `do_push` took the newest cycle id with `find … | sort -r | head -n 1`. `head` closes the pipe as soon as it has its one line, `sort` — which cannot emit anything before it has read every name — is still writing, and takes `SIGPIPE`. `pipefail` promotes the 141 to the pipeline's status and `set -e` aborts the push, after the mirror lock and fetch but before the commit, writing nothing to `state-sync.log`. Whether it fires depends on whether sort's output beats `head` into the 64 KB pipe buffer, so it hit 16-17 of every 30 runs: nodes replicated their state every 11-20 minutes against a `*/5` cron entry, for a month, and the only evidence anywhere was supercronic's own `exit status 141` (#806). The identical shape one function away was harmless purely because its caller used a process substitution, whose status bash discards. | Slicing a sorted stream is not a place to save a line: `sort` must buffer the whole input anyway, so capture it and slice in the shell, or use a reader that consumes its input (`sed -n '1,Np'`, `awk 'NR<=n'`). Never `|| true` — it silences the real errors at the same site. And when auditing the pattern, read the *call shape*, not just the pipeline: the same three commands are fatal in `$(…)` and inert in `< <(…)`, which is why a survey by grep alone will mis-rank what to fix. |

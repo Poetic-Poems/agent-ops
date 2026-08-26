@@ -78,7 +78,22 @@ GH_TIMEOUT=15        # seconds per gh call
 COST_SCAN_DAYS=60    # how far back to scan transcripts for cost roll-ups
 
 WITH_GITHUB=1
-[[ "${1:-}" == "--no-github" ]] && WITH_GITHUB=0
+# FULL=0 is a *fast* build: the roll-ups that read the fleet's whole history are
+# skipped and carried forward from the last full payload instead, so a tick
+# costs what the volatile part of the page costs rather than what all of it
+# does. See "The tiered publish" in docs/DASHBOARD-SPEC.md (#798).
+FULL=1
+for _arg in "$@"; do
+  case "$_arg" in
+    --no-github) WITH_GITHUB=0 ;;
+    --fast)      FULL=0 ;;
+  esac
+done
+# A GitHub tick is always a full build. It is the only thing bounding how stale
+# a carried-forward roll-up may get, and it is already the tick that never
+# skips — so "full" needs no clock of its own, and cannot drift out of step with
+# the one cadence that is guaranteed to run.
+(( WITH_GITHUB )) && FULL=1
 
 # --- Config ------------------------------------------------------------------
 expand_home() { local p="$1"; [[ "$p" == "~"* ]] && p="$HOME${p:1}"; printf '%s\n' "$p"; }
@@ -156,6 +171,17 @@ image_cache="$state_dir/.image-drift-cache.json"
 # this instead. `null` when no unattended pass has run yet on this node.
 doctor_status_file="$state_dir/.doctor-status.json"
 doctor_status_json="$(jq -c '.' "$doctor_status_file" 2>/dev/null || echo null)"
+# This node's own per-stage health verdict (lib/stage-health.sh,
+# agent-ops#662), written by agent-cycle.sh's own cleanup at the end of every
+# real cycle — read rather than recomputed, on the identical precedent
+# doctor_status_json above already documents, even though (unlike doctor's
+# GitHub section) recomputing it here would cost no network call: the file
+# is the single source both this node's own page and the fleet heartbeat
+# (scripts/state-sync.sh) read, so the two can never disagree about what
+# this node's own verdict was this cycle. `null` until this node's first
+# cycle since upgrading has completed.
+stage_health_file="$state_dir/.stage-health.json"
+stage_health_json="$(jq -c '.' "$stage_health_file" 2>/dev/null || echo null)"
 mkdir -p "$out_dir"
 
 # Large JSON blobs (the cycles array carries full transcripts) are handed to jq
@@ -203,6 +229,19 @@ now_epoch="$(date +%s)"
 # is the one number that says this rule is working.
 fingerprint_file="$state_dir/.dashboard-fingerprint"
 skips_file="$state_dir/.dashboard-skips"
+# The last full payload, for a fast build to carry the history roll-ups forward
+# from. Deliberately not named `.dashboard-*.json`: that glob is content-hashed
+# into the fingerprint, and a file this script rewrites on every full build
+# would then invalidate the very no-op skip it sits beside — the self-reference
+# that cost #801 and #803.
+payload_cache="$state_dir/.dashboard-payload"
+# No usable carry-forward means this is a full build, whatever was asked for.
+# The fallback direction is time, never truth: a needless full build costs one
+# slow tick, where publishing a merge over a truncated cache would put a
+# half-empty page on every dashboard in the fleet.
+if (( ! FULL )) && [[ ! -s "$payload_cache" ]]; then
+  FULL=1
+fi
 
 local_state_fingerprint() {
   {
@@ -212,12 +251,30 @@ local_state_fingerprint() {
     # the one the same state produced a moment earlier, and nothing would ever
     # skip.
     #
-    # `.image-drift-cache.json` is the same hazard wearing a different hat, and
-    # it made this whole short-circuit inert from the day it shipped: every
-    # publish rewrites it, normally with byte-identical content, so its mtime
-    # moves on every tick while its meaning does not. Its *content* is a real
-    # input — a node that has drifted off its image must be able to say so — so
-    # it is hashed below rather than pruned outright.
+    # Two more classes of path must not contribute an *mtime*, and the
+    # difference between them decides how each is handled. The failure modes
+    # are not symmetric: leaving a non-input in costs a wasted rebuild, while
+    # leaving a real input out would leave the page stale, which is the failure
+    # lib/noop-skip.sh exists to warn about. So prune only what is
+    # demonstrably never read, and for anything that *is* read, downgrade it
+    # from mtime to content rather than dropping it.
+    #
+    #   not read at all — other cron entries' logs and error sidecars:
+    #     state-sync.log, doctor.log, fleet-cache/*.err, *.repo-err. Anchored
+    #     with -path, not -name, so a same-named file inside a cycle directory
+    #     is not caught by accident.
+    #
+    #   read, but rewritten on a timer with normally identical content:
+    #     .image-drift-cache.json, .doctor-status.json, .dashboard-*.json and
+    #     fleet-cache/*.json. Their mtimes move while their meaning does not —
+    #     fleet-cache/ every ~90 seconds, which on its own guaranteed that no
+    #     tick could ever skip (#803). Hashed by content below; the whole set
+    #     is a few hundred KB, a few milliseconds against a ~20s rebuild.
+    #
+    # `.image-drift-cache.json` was the first of these found (#801) and was
+    # fixed alone, which is why this needed a second pass: the question to ask
+    # of a self-invalidating key is not "which file did this" but "what else
+    # behaves the same way".
     #
     # `-type f` for the same reason one level up: replacing any file in a
     # directory moves that directory's own mtime, so counting directory entries
@@ -229,14 +286,25 @@ local_state_fingerprint() {
       -name 'dashboard.log*' -prune -o \
       -name '.dashboard-fingerprint' -prune -o \
       -name '.dashboard-skips' -prune -o \
-      -name '.image-drift-cache.json' -prune -o \
+      -name '.dashboard-tick-cost' -prune -o \
+      -name '.dashboard-payload' -prune -o \
+      -path "$state_dir/.dashboard-cycle-cache" -prune -o \
+      -path "$state_dir/state-sync.log" -prune -o \
+      -path "$state_dir/doctor.log" -prune -o \
+      -path "$state_dir/fleet-cache" -prune -o \
+      -path "$state_dir/.image-drift-cache.json" -prune -o \
+      -path "$state_dir/.doctor-status.json" -prune -o \
+      -path "$state_dir/.dashboard-*.json" -prune -o \
       -type f -printf '%p %s %T@\n' 2>/dev/null
     [[ -d "$peers_dir" ]] && find "$peers_dir" -type f -printf '%p %s %T@\n' 2>/dev/null
-    # What the drift cache says, not when it was last written.
-    if [[ -f "$state_dir/.image-drift-cache.json" ]]; then
-      printf 'image-drift %s\n' \
-        "$(sha256sum < "$state_dir/.image-drift-cache.json" 2>/dev/null | cut -d' ' -f1)"
-    fi
+    # What the timer-rewritten caches say, not when they were last written.
+    {
+      find "$state_dir" -maxdepth 1 -type f \
+        \( -name '.image-drift-cache.json' -o -name '.doctor-status.json' \
+           -o -name '.dashboard-*.json' \) -print0 2>/dev/null
+      [[ -d "$state_dir/fleet-cache" ]] &&
+        find "$state_dir/fleet-cache" -maxdepth 1 -type f -name '*.json' -print0 2>/dev/null
+    } | xargs -0 -r sha256sum 2>/dev/null
     # The config, the page template and this script itself: an image roll moves
     # the last two, and a page that would render differently has to be rewritten
     # even when the data behind it has not moved.
@@ -553,12 +621,23 @@ def cycle_obj($cid; $ev; $manifest_idx; $cap):
 JQDEFS
 
 # --- Slurp all events once (shared by cycle_json and summaries) ---------------
-ALL_EVENTS="$(read_events)"
+# The union lands on disk first, and the variable is filled from it with bash's
+# own `$(<file)` rather than from a pipe. `x="$(read_events)"` made the shell
+# read nine megabytes through a subshell and a pipe, and `$events_file` was then
+# built by writing all of it back out to jq — twice the traffic for one answer.
+# Consumers below still read `$ALL_EVENTS`; the ones on the per-tick hot path
+# read the file directly.
+events_jsonl="$work_tmp/events.jsonl"
+read_events > "$events_jsonl" 2>/dev/null || : > "$events_jsonl"
+# Only a full build still has consumers that want it as a string; filling it
+# costs a nine-megabyte read the fast path would never look at.
+ALL_EVENTS=""
+(( FULL )) && ALL_EVENTS="$(<"$events_jsonl")"
 # The same events as one JSON array on disk, for the per-cycle filters: a file
 # beats re-piping the whole stream once per cycle, and files (unlike argv) have
 # no 128 KB cap.
 events_file="$work_tmp/events.json"
-printf '%s\n' "$ALL_EVENTS" | jq -sc '.' > "$events_file" 2>/dev/null \
+jq -sc '.' "$events_jsonl" > "$events_file" 2>/dev/null \
   || printf '[]' > "$events_file"
 
 # --- Recent cycle ids, newest first, fleet-wide -------------------------------
@@ -645,7 +724,7 @@ dir_rows() {  # dir_rows CYCLES_DIR
 
 {
   dir_rows "$cycles_dir"
-  printf '%s\n' "$ALL_EVENTS" | jq -r '.cycle // empty' 2>/dev/null | sed "s|\$|\tE\t$cycles_dir|"
+  jq -r '.cycle // empty' "$events_jsonl" 2>/dev/null | sed "s|\$|\tE\t$cycles_dir|"
   for pd in "$peers_dir"/*/cycles; do
     [[ -d "$pd" ]] || continue
     dir_rows "$pd"
@@ -663,15 +742,93 @@ dir_rows() {  # dir_rows CYCLES_DIR
 # yields empty content, exactly as the old stage_json's `cat` did, rather
 # than a hard "no such file" error from jq that would fail the single
 # invocation below and blank the whole window over one vanished cycle.
-manifest_items=()
-rawfile_args=(--rawfile events_raw "$events_file")
-order_items=()
-cycle_n=0
+# A cycle's detail is a pure function of three things: its own stage files, its
+# own events, and the program that renders them. None of the first two move once
+# a cycle has ended, and a tick sees at most one cycle still moving — so
+# rebuilding all forty every tick bought thirty-nine identical answers. That one
+# jq invocation was 4.10s of a 15.8s publish, the largest single item in it
+# (#798).
+#
+# So each cycle's rendered object is cached under its own id, keyed on exactly
+# those three inputs, and only the cycles whose key moved are handed to jq.
+cycle_cache="$state_dir/.dashboard-cycle-cache"
+mkdir -p "$cycle_cache" 2>/dev/null || true
+
+# The program text and the cap salt every key. Without them an image roll that
+# changes how a cycle renders would leave every cached entry looking current,
+# and the page would keep yesterday's shape until each cycle happened to move —
+# which, for an ended cycle, is never.
+detail_salt="$( { cat "$detail_defs" 2>/dev/null; printf '%s' "$TRANSCRIPT_CAP"; } \
+  | sha256sum 2>/dev/null | cut -d' ' -f1)"
+
+# How far each cycle's events have got, in one pass. Events are append-only per
+# cycle, so a count and the newest timestamp settle whether anything moved
+# without hashing nine megabytes of union log on every tick.
+declare -A ev_pos=()
+while IFS=$'\t' read -r _c _n _last; do
+  [[ -n "$_c" ]] && ev_pos["$_c"]="$_n:$_last"
+done < <(jq -r 'group_by(.cycle)[]
+                | select(.[0].cycle != null and .[0].cycle != "")
+                | [.[0].cycle, length, ([.[].ts // ""] | max)] | @tsv' \
+           "$events_file" 2>/dev/null)
+
+# Read the window, then stat every stage file it could hold in a single call.
+# Forty cycles is 240 paths, comfortably inside ARG_MAX, and one fork where a
+# per-cycle `stat`-and-hash pipeline cost about 120 — which on a tick this is
+# trying to get under six seconds is not a rounding error.
+win_cids=(); win_dirs=(); stat_paths=()
 while IFS=$'\t' read -r cid cdir; do
   [[ -n "$cid" ]] || continue
-  order_items+=("\"$cid\"")
+  win_cids+=("$cid"); win_dirs+=("${cdir:-$cycles_dir}")
   for stage in coordinator implementer reviewer; do
-    outfile="${cdir:-$cycles_dir}/$cid/$stage.out"
+    stat_paths+=("${cdir:-$cycles_dir}/$cid/$stage.out" \
+                 "${cdir:-$cycles_dir}/$cid/$stage.out.stderr")
+  done
+done < "$cycle_rows"
+
+# `%s:%Y %n` rather than `%n %s %Y`, so `read -r size_mtime path` puts the whole
+# remainder — spaces and all — in the path. A file that does not exist prints
+# nothing at all, and that absence is itself part of the key below: a stage
+# appearing has to rebuild the cycle.
+declare -A fstat=()
+if (( ${#stat_paths[@]} > 0 )); then
+  while IFS=' ' read -r _szmt _p; do
+    [[ -n "$_p" ]] && fstat["$_p"]="$_szmt"
+  done < <(stat -c '%s:%Y %n' "${stat_paths[@]}" 2>/dev/null)
+fi
+
+manifest_items=()
+rawfile_args=(--rawfile events_raw "$events_file")
+order_items=()      # every cycle in the window, newest first — the page's order
+todo_items=()       # only those whose key moved, in the order jq will emit them
+todo_keys=()
+cycle_n=0
+for _i in "${!win_cids[@]}"; do
+  cid="${win_cids[$_i]}"
+  cdirp="${win_dirs[$_i]}/$cid"
+  order_items+=("$cid")
+
+  # Plain text, not a digest. The key is a couple of hundred bytes and bash
+  # compares it for nothing, where hashing it cost three forks per cycle to
+  # save nothing that matters.
+  cycle_key="$detail_salt|$cid|${ev_pos[$cid]:-}"
+  for stage in coordinator implementer reviewer; do
+    cycle_key+="|${fstat[$cdirp/$stage.out]:--}|${fstat[$cdirp/$stage.out.stderr]:--}"
+  done
+
+  # Cached and current: nothing to do. `.json` may legitimately be empty — a
+  # cycle whose stage files failed to parse renders to nothing at all (the
+  # `empty` in cycle_obj), and that verdict has to be cached too or it is
+  # recomputed on every tick forever. `$(<file)` is a bash builtin read, no fork.
+  if [[ -f "$cycle_cache/$cid.json" && -f "$cycle_cache/$cid.key" \
+     && "$(<"$cycle_cache/$cid.key")" == "$cycle_key" ]]; then
+    continue
+  fi
+
+  todo_items+=("$cid")
+  todo_keys+=("$cycle_key")
+  for stage in coordinator implementer reviewer; do
+    outfile="$cdirp/$stage.out"
     [[ -f "$outfile" ]] || continue
     ovar="o${cycle_n}_$stage"
     otmp="$work_tmp/$ovar"
@@ -691,36 +848,91 @@ while IFS=$'\t' read -r cid cdir; do
     fi
   done
   cycle_n=$(( cycle_n + 1 ))
-done < "$cycle_rows"
-manifest_json="[$(IFS=,; echo "${manifest_items[*]}")]"
-order_json="[$(IFS=,; echo "${order_items[*]}")]"
-
-# The dynamic trailer that drives the static defs above: bound via plain
-# printf (never string-interpolated into the program text), so nothing in a
-# cycle id or transcript can be mistaken for jq syntax. The `$name`s below are
-# jq variables, not shell ones — single-quoted on purpose so the shell leaves
-# them alone.
-detail_main="$work_tmp/detail-main.jq"
-# shellcheck disable=SC2016
-{
-  printf '(%s) as $manifest\n' "$manifest_json"
-  printf '| (%s) as $order\n' "$order_json"
-  printf '| ($events_raw | fromjson) as $all_events\n'
-  printf '| ($all_events | group_by(.cycle) | map({(.[0].cycle): .}) | add // {}) as $events_by_cycle\n'
-  printf '| ($manifest | INDEX(.cid + "|" + .stage)) as $manifest_idx\n'
-  printf '| [ $order[] as $cid | cycle_obj($cid; ($events_by_cycle[$cid] // []); $manifest_idx; $cap) ]\n'
-} > "$detail_main"
+done
 
 cycles_file="$work_tmp/cycles.json"
-detail_prog="$work_tmp/detail.jq"
-cat "$detail_defs" "$detail_main" > "$detail_prog"
-jq -n -f "$detail_prog" "${rawfile_args[@]}" --argjson cap "$TRANSCRIPT_CAP" \
-  > "$cycles_file" 2>/dev/null
-# A hard failure (a bad program, a file that vanished between the stat above
-# and jq's own open) must not take down the whole publish — fall back to an
-# empty window exactly as the per-cycle loop this replaced did when nothing
-# parsed.
+
+# Only rebuild if something actually moved. On an idle node this is the whole
+# saving: no jq at all, and the window is assembled straight from the cache.
+if (( ${#todo_items[@]} > 0 )); then
+  manifest_json="[$(IFS=,; echo "${manifest_items[*]}")]"
+  order_json="[$(printf '"%s",' "${todo_items[@]}" | sed 's/,$//')]"
+
+  # The dynamic trailer that drives the static defs above: bound via plain
+  # printf (never string-interpolated into the program text), so nothing in a
+  # cycle id or transcript can be mistaken for jq syntax. The `$name`s below are
+  # jq variables, not shell ones — single-quoted on purpose so the shell leaves
+  # them alone.
+  detail_main="$work_tmp/detail-main.jq"
+  # shellcheck disable=SC2016
+  {
+    printf '(%s) as $manifest\n' "$manifest_json"
+    printf '| (%s) as $order\n' "$order_json"
+    printf '| ($events_raw | fromjson) as $all_events\n'
+    printf '| ($all_events | group_by(.cycle) | map({(.[0].cycle): .}) | add // {}) as $events_by_cycle\n'
+    printf '| ($manifest | INDEX(.cid + "|" + .stage)) as $manifest_idx\n'
+    printf '| [ $order[] as $cid | cycle_obj($cid; ($events_by_cycle[$cid] // []); $manifest_idx; $cap) ]\n'
+  } > "$detail_main"
+
+  fresh_file="$work_tmp/fresh-cycles.json"
+  detail_prog="$work_tmp/detail.jq"
+  cat "$detail_defs" "$detail_main" > "$detail_prog"
+  jq -n -f "$detail_prog" "${rawfile_args[@]}" --argjson cap "$TRANSCRIPT_CAP" \
+    > "$fresh_file" 2>/dev/null
+  # A hard failure (a bad program, a file that vanished between the stat above
+  # and jq's own open) must not take down the whole publish — fall back to an
+  # empty result exactly as the per-cycle loop this replaced did when nothing
+  # parsed. The cache is then left alone rather than poisoned with the failure.
+  if jq -e . "$fresh_file" >/dev/null 2>&1; then
+    # Seed every rebuilt cycle as empty, then overwrite the ones jq rendered:
+    # what is left empty is the `cycle_obj` verdict "this renders to nothing",
+    # and caching that is the difference between one rebuild and one per tick
+    # for as long as the cycle stays in the window.
+    for _i in "${!todo_items[@]}"; do
+      : > "$cycle_cache/${todo_items[$_i]}.json" 2>/dev/null || true
+    done
+    while IFS=$'\t' read -r oid ojson; do
+      [[ -n "$oid" ]] || continue
+      printf '%s' "$ojson" > "$cycle_cache/$oid.json" 2>/dev/null || true
+    done < <(jq -r '.[] | ((.id // "") + "\t" + tojson)' "$fresh_file" 2>/dev/null)
+    # Keys last, and only now: a key written before its object would survive a
+    # crash in between and claim a cache entry that was never written.
+    for _i in "${!todo_items[@]}"; do
+      printf '%s' "${todo_keys[$_i]}" > "$cycle_cache/${todo_items[$_i]}.key" 2>/dev/null || true
+    done
+  fi
+fi
+
+# The window, newest first, straight from the cache. Pure shell: forty small
+# reads beat another jq pass, and an entry that is missing or empty simply does
+# not appear — the same result the `empty` in cycle_obj has always produced.
+{
+  printf '['
+  _sep=""
+  for cid in "${order_items[@]}"; do
+    [[ -s "$cycle_cache/$cid.json" ]] || continue
+    printf '%s' "$_sep"
+    cat "$cycle_cache/$cid.json"
+    _sep=","
+  done
+  printf ']'
+} > "$cycles_file"
 jq -e . "$cycles_file" >/dev/null 2>&1 || printf '[]' > "$cycles_file"
+
+# Keep the cache to the window. Entries are never touched on a hit, so an
+# mtime sweep would delete exactly the cycles that are working; the window
+# itself is the only correct retention, and it is forty files.
+if (( ${#order_items[@]} > 0 )); then
+  {
+    printf '%s\n' "${order_items[@]}" | sed 's/$/.json/'
+    printf '%s\n' "${order_items[@]}" | sed 's/$/.key/'
+  } | LC_ALL=C sort > "$work_tmp/cycle-cache-keep"
+  find "$cycle_cache" -maxdepth 1 -type f \( -name '*.json' -o -name '*.key' \) \
+    -printf '%f\n' 2>/dev/null | LC_ALL=C sort > "$work_tmp/cycle-cache-have"
+  while IFS= read -r _stale; do
+    [[ -n "$_stale" ]] && rm -f -- "$cycle_cache/$_stale" 2>/dev/null
+  done < <(LC_ALL=C comm -13 "$work_tmp/cycle-cache-keep" "$work_tmp/cycle-cache-have")
+fi
 
 # --- Status ------------------------------------------------------------------
 # `host` names the container (PID namespace) the lock's pid is meaningful in
@@ -753,8 +965,8 @@ fi
 # exactly those whose id ends in "-<lock_pid>".
 running_events='[]'
 if [[ "$lock_alive" == "true" && -n "$lock_pid" ]]; then
-  running_events="$(printf '%s\n' "$ALL_EVENTS" \
-    | jq -sc --arg pid "$lock_pid" '[ .[] | select((.cycle // "") | endswith("-" + $pid)) ] | sort_by(.ts)' 2>/dev/null)"
+  running_events="$(jq -sc --arg pid "$lock_pid" \
+    '[ .[] | select((.cycle // "") | endswith("-" + $pid)) ] | sort_by(.ts)' "$events_jsonl" 2>/dev/null)"
   [[ -z "$running_events" || "$running_events" == "null" ]] && running_events='[]'
 fi
 
@@ -763,7 +975,7 @@ fi
 # The reduction is lib/limit-detect.sh's, so a `limit-cleared` event retires
 # the banner exactly when it retires the stand-down itself (requirement 34a —
 # the dashboard must not still be reporting a limit the pipelines have lifted).
-last_limit_hit="$(printf '%s\n' "$ALL_EVENTS" | limit_union_record)"
+last_limit_hit="$(limit_union_record < "$events_jsonl")"
 [[ -n "$last_limit_hit" ]] || last_limit_hit='{}'
 limit_resume="$(jq -r '.resume_at // empty' <<<"$last_limit_hit" 2>/dev/null)"
 limit_class="$(jq -r '.class // "other"' <<<"$last_limit_hit" 2>/dev/null)"
@@ -809,6 +1021,7 @@ status_json="$(jq -n \
   --argjson limit_active "$limit_active" --arg limit_note "$limit_note" \
   --argjson switch "$switch_json" \
   --argjson doctor "$doctor_status_json" \
+  --argjson stage_health "$stage_health_json" \
   --slurpfile cyc "$cycles_file" '
   ($cyc[0] | map(select(.dry_run|not))) as $real
   # (Comments in this program carry no apostrophes: it is a single-quoted shell
@@ -866,9 +1079,15 @@ status_json="$(jq -n \
       last_cycle: (($last_real // $last_any) | if . == null then null else {id, node, ended_at, outcome, repo, item, title} end),
       limit: {active: $limit_active, note: $limit_note},
       switch: $switch,
-      doctor: $doctor
+      doctor: $doctor,
+      stage_health: $stage_health
     }')"
 
+if (( FULL )); then
+# --- everything to the matching `fi` is a full-build-only roll-up: it reads
+# the fleet's whole history, and a fast tick carries the last full answer
+# forward from the payload cache instead. Left unindented so the diff that
+# introduced the tier stays readable against the code it wraps (#798).
 # --- Counts / roll-ups (scan all recent transcripts for cost) ----------------
 # Envelopes are read in batches — one jq per 25 files, each row's day derived
 # from input_filename — rather than two jq forks per file plus a re-parse of a
@@ -1407,6 +1626,7 @@ void_json="$(printf '%s\n' "$ALL_EVENTS" | void_items - | jq -c \
   'map({repo: (.repo // ""), item: .item, ts: .ts, detail: (.detail // ""), stage: (.stage // ""), evidence: (.evidence // "")})' 2>/dev/null)"
 [[ -z "$void_json" ]] && void_json='[]'
 
+fi  # FULL
 # --- Log tail ----------------------------------------------------------------
 # `review-gate-checks-read` (requirement 31c, TD-PPagop-26081404) is machine
 # bookkeeping — one `{ok}` event per ready-gate evaluation, existing only for
@@ -1416,9 +1636,9 @@ void_json="$(printf '%s\n' "$ALL_EVENTS" | void_items - | jq -c \
 # and stays. `first-seen` (requirement 33, TD-PPagop-26081405) gets the same
 # treatment for the same reason: one per item a gather first reports, read
 # only by scripts/pickup-metrics.sh, with nothing an operator can act on.
-log_tail_json="$(printf '%s\n' "$ALL_EVENTS" | jq -sc --argjson n "$MAX_LOG_TAIL" '
+log_tail_json="$(jq -sc --argjson n "$MAX_LOG_TAIL" '
   map(select(.event != "review-gate-checks-read" and .event != "first-seen"))
-  | sort_by(.ts) | reverse | .[0:$n]' 2>/dev/null)"
+  | sort_by(.ts) | reverse | .[0:$n]' "$events_jsonl" 2>/dev/null)"
 [[ -z "$log_tail_json" ]] && log_tail_json='[]'
 
 # --- cron.log tail -----------------------------------------------------------
@@ -1543,9 +1763,11 @@ jq -nc --arg n "$self_node" --arg r "$(role_current)" --arg ts "$now_iso" --arg 
   --argjson compose "$(compose_drift_status)" \
   --argjson image "$(image_drift_status "$self_version_json" "$image_cache")" \
   --argjson switch "$switch_json" \
+  --argjson stage_health "$stage_health_json" \
   '{node: $n, role: $r, heartbeat_ts: $ts, heartbeat_age_s: 0,
     last_cycle: (if $lc == "" then null else $lc end), self: true, stale: false,
-    live: $live, version: $version, compose: $compose, image: $image, switch: $switch}' > "$nodes_rows"
+    live: $live, version: $version, compose: $compose, image: $image, switch: $switch,
+    stage_health: $stage_health}' > "$nodes_rows"
 for hb in "$peers_dir"/*/heartbeat.json; do
   [[ -f "$hb" ]] || continue
   jq -c --argjson now "$now_epoch" --argjson live "$node_live_json" '
@@ -1576,7 +1798,12 @@ for hb in "$peers_dir"/*/heartbeat.json; do
        # also reads (requirement 34a). So an absent field (a peer on a
        # heartbeat built before this check existed) yields null rather than
        # this node re-deriving a verdict — silently — in its place.
-       switch: ($h.switch // null)}' \
+       switch: ($h.switch // null),
+       # And for the per-stage health verdict (lib/stage-health.sh,
+       # agent-ops#662): only the peer itself computed it, over its own
+       # log.jsonl, so a heartbeat built before this check existed yields
+       # null rather than this node deriving a verdict for that peer.
+       stage_health: ($h.stage_health // null)}' \
     "$hb" 2>/dev/null >> "$nodes_rows" || true
 done
 fleet_nodes_json="$(jq -sc 'sort_by([(.self | not), .node])' "$nodes_rows" 2>/dev/null)"
@@ -2176,6 +2403,11 @@ else
   fi
 fi
 
+if (( FULL )); then
+# --- everything to the matching `fi` is a full-build-only roll-up: it reads
+# the fleet's whole history, and a fast tick carries the last full answer
+# forward from the payload cache instead. Left unindented so the diff that
+# introduced the tier stays readable against the code it wraps (#798).
 # --- The autonomous-landing digest (D18 WI-8, agent-ops#411) -----------------
 # Risk 6 of the autonomy investigation ("overnight merges with nobody
 # watching") is accepted deliberately, on the stated condition that this
@@ -2518,6 +2750,7 @@ counts_with_escapes="$(jq -c --argjson e "$escape_audits_json" '. + {escape_audi
   <<<"$counts_json" 2>/dev/null)"
 [[ -n "$counts_with_escapes" ]] && counts_json="$counts_with_escapes"
 
+fi  # FULL
 # --- Revert rate by repository (D18 issue #579) -----------------------------
 #
 # scripts/publish-revert-rate.sh appends one row per repository, per node,
@@ -2538,6 +2771,11 @@ revert_rate_json="$(fleet_logs "$state_dir" "$peers_dir" revert-rate.jsonl \
 jq -e 'type == "array"' <<<"$revert_rate_json" >/dev/null 2>&1 || revert_rate_json='null'
 
 # --- Assemble ----------------------------------------------------------------
+if (( FULL )); then
+# --- everything to the matching `fi` is a full-build-only roll-up: it reads
+# the fleet's whole history, and a fast tick carries the last full answer
+# forward from the payload cache instead. Left unindented so the diff that
+# introduced the tier stays readable against the code it wraps (#798).
 # --- The stage budgets, as the page needs them (requirement 4f) -----------------
 # Two things the page cannot work out for itself. `lock_stale_after` is no
 # longer a configured constant but a derivation over the backstops in force,
@@ -2564,12 +2802,16 @@ config_json="$(jq -c --argjson t "$stage_budget_json" --argjson lock "$lock_stal
         | reduce .[] as $e ({};
             .[$e.value.actor] = ([ (.[$e.value.actor] // 0), $e.value.backstop_min ] | max)))}' \
   "$CONFIG_FILE")"
+fi  # FULL
 
 # cycles/github/log_tail can each be large; hand them to jq via files.
 # fleet.claims rides in github (fetched on the tick, carried by gh_cache
 # between ticks); it is surfaced under fleet because that is what it is.
-printf '%s' "$github_json"   > "$work_tmp/github.json"
-printf '%s' "$log_tail_json" > "$work_tmp/logtail.json"
+printf '%s' "$github_json"      > "$work_tmp/github.json"
+printf '%s' "$log_tail_json"    > "$work_tmp/logtail.json"
+printf '%s' "$revert_rate_json" > "$work_tmp/revert-rate.json"
+
+if (( FULL )); then
 # So can the void and blocked extracts and the counts roll-up, and for the same
 # reason: all three grow with the fleet's history, so none of them may travel as
 # an `--argjson` value — a single argv entry, capped at MAX_ARG_STRLEN (131072
@@ -2584,7 +2826,6 @@ printf '%s' "$log_tail_json" > "$work_tmp/logtail.json"
 # still ride argv.
 printf '%s' "$counts_json"  > "$work_tmp/counts.json"
 printf '%s' "$landings_json" > "$work_tmp/landings.json"
-printf '%s' "$revert_rate_json" > "$work_tmp/revert-rate.json"
 printf '%s' "$blocked_json" > "$work_tmp/blocked.json"
 printf '%s' "$void_json"    > "$work_tmp/void.json"
 data_json="$(jq -n \
@@ -2611,6 +2852,38 @@ data_json="$(jq -n \
     revert_rate: $rr[0],
     cron_tail: $cron_tail, max_open_agent_prs: ($max_prs|tonumber),
     fleet: {nodes: $fleet_nodes, flags: $fleet_flags, claims: ($gh[0].claims // [])}}')"
+else
+# A fast build emits only the keys it actually recomputed and merges them over
+# the last full payload, rather than reassembling the whole object from
+# variables the gated regions above never set. That direction matters: a key
+# this forgets keeps its previous value, where a key a full-style assemble
+# forgot would render as null and blank a panel. Staleness is visible and
+# bounded — every GitHub tick is a full build — while a blanked panel is
+# neither.
+fresh_json="$(jq -n \
+  --arg generated_at "$now_iso" \
+  --arg self_node "$self_node" \
+  --argjson status "$status_json" \
+  --slurpfile cyc "$cycles_file" \
+  --argjson noop "$noop_json" \
+  --slurpfile rr "$work_tmp/revert-rate.json" \
+  --slurpfile gh "$work_tmp/github.json" \
+  --slurpfile lt "$work_tmp/logtail.json" \
+  --argjson cron_tail "$cron_tail_json" \
+  --argjson fleet_nodes "$fleet_nodes_json" \
+  --argjson fleet_flags "$fleet_flags_json" \
+  --arg max_prs "$max_open_agent_prs" \
+  '{generated_at: $generated_at, node: $self_node, status: $status,
+    cycles: $cyc[0], noop_ticks: $noop, github: $gh[0], log_tail: $lt[0],
+    revert_rate: $rr[0],
+    cron_tail: $cron_tail, max_open_agent_prs: ($max_prs|tonumber),
+    fleet: {nodes: $fleet_nodes, flags: $fleet_flags, claims: ($gh[0].claims // [])}}')"
+printf '%s' "$fresh_json" > "$work_tmp/fresh-payload.json"
+# `*` is jq's recursive merge: objects deepen, arrays and scalars are replaced
+# outright, so `cycles` and `fleet.nodes` are this tick's and `counts` is the
+# last full tick's. Order matters — the cache is the base, the fresh keys win.
+data_json="$(jq -s '.[0] * .[1]' "$payload_cache" "$work_tmp/fresh-payload.json" 2>/dev/null)"
+fi
 
 # An assemble that failed must not be published. `set -e` is deliberately off
 # here, so a jq that dies — at `execve`, on a malformed input, out of memory —
@@ -2622,8 +2895,28 @@ data_json="$(jq -n \
 # operator already reads — and the non-zero exit is what puts the reason in
 # cron.log instead of another line claiming a write.
 if ! jq -e . >/dev/null 2>&1 <<<"$data_json"; then
+  # A fast build has one more move before giving up: everything it needed was
+  # in the cache it could not use, so re-run as a full build rather than leave
+  # the page to age. `exec` keeps the flock the launcher took, and the retry
+  # cannot loop — it runs without --fast, so it takes the branch below.
+  if (( ! FULL )); then
+    echo "publish-dashboard: fast assemble failed; rebuilding in full" >&2
+    rm -f "$payload_cache" 2>/dev/null || true
+    exec "$0" --no-github
+  fi
   echo "publish-dashboard: could not assemble the payload; $data_file left unchanged" >&2
   exit 1
+fi
+
+# Keep the full payload for the fast builds that follow. Written only from a
+# full build, and only once the payload has been validated above, so a fast
+# tick can never carry forward something that was never fit to publish.
+if (( FULL )); then
+  if printf '%s' "$data_json" > "$payload_cache.tmp" 2>/dev/null; then
+    mv -f "$payload_cache.tmp" "$payload_cache" 2>/dev/null || rm -f "$payload_cache.tmp" 2>/dev/null
+  else
+    rm -f "$payload_cache.tmp" 2>/dev/null || true
+  fi
 fi
 
 # --- Redact (defensive) & write atomically -----------------------------------

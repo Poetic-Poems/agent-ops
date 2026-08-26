@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `scripts/state-sync.sh`'s mirror is no longer trusted just because its
+  `.git/` directory still exists (requirement 2.5, issue #604): `mirror_init`
+  now runs `git fsck --connectivity-only` against a mirror that already
+  existed, and on any failure discards it and rebuilds it from source
+  instead of continuing to read from and publish a corrupted checkout — the
+  behaviour observed on ockham-container from 2026-08-08 and ockham-2 on
+  2026-08-24, where an unclean shutdown left truncated loose objects and
+  `git gc` failed at repair for four days with no visible failure anywhere.
+  A rebuild is recorded durably under `state_dir` and published as the
+  heartbeat's new `mirror` field, alongside the existing `compose`/`image`/
+  `switch` verdicts, so a repeat rebuild reads as a repeat rather than one
+  more indistinguishable line.
 - Every escalation route now reaches an operator even when GitHub itself
   rejects the node's own credential (requirement 2m, TD-PPagop-26082304): a
   new optional `escalation_webhook_url` config key, POSTed to
@@ -69,6 +81,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and the Enabler's refinement-disagreement one (requirement 36b). A new
   head commit never clears it; only a settled adjudication or a human's own
   act does.
+- A per-stage health verdict (agent-ops#662), for the incident a `RUNNING`
+  cycle and a clean fleet check both stayed silent about on 2026-08-21: every
+  stage failed for 10.5 hours and nothing read `stage-end`'s own `exit_code`
+  to say so. `lib/stage-health.sh` derives, per stage on each node,
+  `last_success`, a `consecutive_failures` streak (reset by any success),
+  the most recent failure's own detail, and a verdict (`idle`/`ok`/`failing`
+  once three consecutive whole-cycle failures accumulate). Written
+  atomically to `state_dir/.stage-health.json` at the end of every cycle
+  (`write_unattended_status`'s own precedent), it now surfaces as a new
+  `stages:` section in `agent-cycle.sh --status` (and so in
+  `check-nodes.sh`, which already prints `--status` per node), and — folded
+  into the fleet heartbeat alongside the compose/image/switch verdicts — as
+  a **Stage health** dashboard section plus a fleet-strip badge naming which
+  stage(s) are failing, independent of that node's own running/idle state.
 - The scheduler's egress is fenced (agent-ops#760; roadmap D24 stage two,
   review F-SEC-01, `TD-PPagop-26082407`/`TD-PPagop-26082429`): it now sits
   on an internal-only Docker network — no gateway, so the fence is topology
@@ -672,6 +698,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   stand-down reason and the escalation issue's title and body
   (`lib/standdown.sh`) now say so plainly instead of claiming a rejected
   token ("HTTP 401", "invalid or expired") that never happened.
+- `refinement_traceability_fault` (requirement 17f, `lib/candidate-select.sh`)
+  no longer faults a compliant work order on ordinary paste drift, and no
+  longer assumes a refinement is present when it cannot check
+  (TD-PPagop-26082307). The comparison against a candidate's `context`/
+  `acceptance` now normalizes whitespace (collapses runs, trims both ends)
+  on both sides before testing containment, so a model's reflowed line or
+  collapsed spacing no longer defeats a verbatim match — the check still
+  faults a passage that is genuinely missing or different. A failed `gh api`
+  read of the actual refinement comment is now itself a fault
+  (`untraceable`, retried next cycle) rather than a silent pass, reported
+  via `guard_warn` instead of swallowed — previously a degraded token, a
+  narrowed scope or a sustained rate limit could disarm the whole gate
+  indefinitely while it kept reading as a passing check. `TRACEABILITY_DEBUG=1`
+  logs the normalized comparison to stderr for diagnosing a real
+  drift-tolerance edge case.
+- The Enabler's escalation comment on a `needs-refinement` issue no longer
+  asserts an escalation exists before the Script has decided whether one
+  actually does (agent-ops#815). The Enabler's own turn ends before
+  `adjudicate-first`'s adjudication pass runs, before `create_escalation_issue`
+  is called, and before that call's own result is known, so its comment can no
+  longer claim the escalation issue's number — three items escalated in the
+  same cycle (#604, #613, #640) each carried that claim, uncorrected, when the
+  filing never happened or was superseded. `escalation_thread_reconcile`
+  (`lib/enabler.sh`) now posts the Script's own follow-up once the outcome is
+  known: a completing `Blocked-by: #<n>` comment naming the issue actually
+  filed, or, when `adjudicate-first` settled the disagreement as `adequate`
+  instead or the filing itself failed, a correcting comment saying plainly
+  that no escalation was raised.
 - `state-sync.sh fetch` no longer reports a real failure — dead credentials,
   a network outage, a corrupt mirror — as the benign "the state repository
   has no node branches yet" bootstrap case (agent-ops#693). During the
@@ -1344,6 +1398,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   existing "Priority field unresolvable" one. A repository missing only
   *some* of the four names is unaffected — `issue_priority_apply`'s own
   per-issue fallback (#534, above) still bands it.
+- The Refiner no longer manufactures a block only a human can clear when it
+  finds an item already adequately specified (agent-ops#670 Part 2,
+  TD-PPagop-26082305). Its prompt's "never write a second specification"
+  rule left `needs-refinement` as the only verdict for that case, and the
+  resulting block's own `unblock_condition` — "a human must remove the
+  hand-applied label" — named a state the Script's own requirement 34e
+  projection was about to create three seconds later: a deadlock the
+  pipeline built for itself and could not exit under its own power
+  (agent-ops#597, #598, #660, #666). Requirement 39c's `refined` verdict now
+  covers **re-affirmation**: an item the Refiner judges already carries an
+  adequate, unchanged specification — its own, the Enabler's, or a human's —
+  is `refined`, citing the *existing* specification's URL (or reproducing
+  its existing text) rather than declined. The Script's recording needed no
+  change — `refinement_record_fields` never required the specification to
+  be this cycle's own write — so the fix is confined to `prompts/refiner.md`
+  and the spec; disagreeing with an existing specification is unaffected and
+  still declines `needs-refinement`, escalating rather than being settled
+  here.
 
 ### Changed
 

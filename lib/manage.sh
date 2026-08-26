@@ -151,6 +151,20 @@ merge_autonomy_status_report() {
   fi
 }
 
+# Per-stage health (issue #662): whether each stage's most recent run of
+# attempts on *this node* has been succeeding — the reading that was missing
+# during the 2026-08-21 incident, where `cycle: RUNNING` and a clean fleet
+# check both stayed true while every stage failed for 10.5 hours. Reads
+# `state_dir/.stage-health.json`, written by `stage_health_write_status`
+# (lib/stage-health.sh) at the end of every real cycle's own cleanup, rather
+# than recomputing here — the same division `doctor_status_json`'s dashboard
+# read keeps from `write_unattended_status`. A node that has not completed a
+# cycle since upgrading reports that plainly instead of nothing.
+stage_health_status_report() {
+  printf 'stages:\n'
+  stage_health_status_lines "$state_dir/.stage-health.json"
+}
+
 # run_manage_command — the `--disable`/`--enable`/`--status`/`--clear-limit`/
 # `--kill-merge-autonomy` handling itself, called once from `agent-cycle.sh`
 # in place of the inline block it replaces (#771). Returns without doing
@@ -164,6 +178,7 @@ if [[ -n "$MANAGE_ACTION" ]]; then
       fleet_status_report
       limit_status_report
       merge_autonomy_status_report
+      stage_health_status_report
       exit 0
       ;;
     disable)

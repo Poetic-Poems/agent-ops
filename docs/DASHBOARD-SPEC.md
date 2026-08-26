@@ -483,13 +483,76 @@ one.
 Two properties make that safe against the stale-page failure `lib/noop-skip.sh`
 warns about, where a missed input stalls everything silently. It covers by
 exclusion rather than enumeration — everything under the state dir counts
-except the served directory and `dashboard.log`, the two things publishing
-itself writes — so an input a later panel adds is covered on the day it is
-added, and the failure direction of a mistake is a needless rebuild, never a
-stale page. And a GitHub tick never skips, so even a fingerprint wrong in the
+except what the Publisher and its heartbeat write themselves (the served
+directory, `dashboard.log*`, and the `.dashboard-fingerprint`,
+`.dashboard-skips`, `.dashboard-tick-cost`, `.dashboard-payload` and
+`.dashboard-cycle-cache/` bookkeeping beside it), what the
+Publisher never reads (`state-sync.log`, `doctor.log`, and the `*.err`
+sidecars), and the caches a timer rewrites with identical content — so an
+input a later panel adds is covered on the day it is added, and the failure
+direction of a mistake is a needless rebuild, never a stale page. Those caches
+(`fleet-cache/*.json`, `.image-drift-cache.json`, `.doctor-status.json`,
+`.dashboard-*.json`) are excluded from the size-and-mtime scan and folded in by
+**content hash** instead, so a verdict that actually changed still rebuilds
+while one merely rewritten does not. Directory entries are not counted at all:
+adding or replacing a file moves its directory's mtime, which would put back
+exactly the self-reference these exclusions remove, and a file that appears,
+changes or vanishes is already visible as a file. Anything this script writes
+under the state dir has to join that list on the day it is added, or it
+invalidates the very skip it sits beside. Getting this wrong is not
+theoretical — the fingerprint counted its own outputs for a day and a half, so
+no tick ever skipped and the feature it was built for saved nothing (#801,
+#803). And a GitHub tick never skips, so even a fingerprint wrong in the
 dangerous direction can only hold a stale page until the next one, about five
 minutes (`LAUNCHER_GITHUB_MAX_AGE`) — the cadence the dashboard published at
 before the sub-minute heartbeat existed (#26).
+
+### The tiered publish
+
+Skipping only helps a node with nothing happening on it. A node running a cycle
+writes to `state_dir` continuously, so its fingerprint moves on every tick and
+it rebuilds every time — which is the node where the cost actually lands. A full
+publish measured 15.8s on `ockham-container`, and against the launcher's 1:9
+duty cycle that put the page about two and a half minutes behind the pipeline it
+exists to show.
+
+So a tick has two kinds, and `--fast` chooses:
+
+- A **full build** assembles the whole payload, and writes it to
+  `<state_dir>/.dashboard-payload` afterwards. Every GitHub tick is a full
+  build, which is what bounds how stale anything carried forward can be — no
+  separate clock, and nothing that can drift out of step with the one cadence
+  guaranteed to run.
+- A **fast build** recomputes only what moves between ticks — `status`,
+  `cycles`, `log_tail`, `cron_tail`, `fleet`, `revert_rate` — and merges those
+  keys over the last full payload. The history roll-ups (`counts` and its
+  verdict-quality, model-selection and classifier-escape enrichments, `blocked`,
+  `void`, `landings`, and the stage budgets inside `config`) are not computed at
+  all: they read the fleet's whole history and change on the scale of cycles,
+  not ticks.
+
+A fast build emits only the keys it recomputed and merges them **over** the
+cached payload rather than assembling a whole object from variables the skipped
+regions never set. That direction is the safety property: a key it forgets keeps
+its previous value, where a key a full-style assemble forgot would render `null`
+and blank a panel. Staleness is bounded and visible against `generated_at`; a
+blanked panel is neither. A fast build with no usable payload cache is silently
+a full build, and a merge that fails re-runs itself in full rather than leaving
+the page to age.
+
+The cycle window is cached per cycle under `<state_dir>/.dashboard-cycle-cache/`,
+keyed on that cycle's stage files (size and mtime), how far its own events have
+got (count and newest timestamp), and a digest of the program that renders it —
+so an image roll invalidates every entry, which is the case a key made only of
+inputs would miss. A cycle that renders to nothing caches that verdict too, or
+it is recomputed on every tick for as long as it stays in the window. The cache
+is pruned to the window on each publish: entries are never touched on a hit, so
+an mtime sweep would evict exactly the cycles still in use.
+
+Measured on `ockham-container` (35,574 union events, 1000 local cycles, three
+peers): a full build 15.8s → 11.1s, and a fast build 4.4s — which at 1:9 puts a
+cycle's progress on the page inside about 45 seconds, against two and a half
+minutes before. The `cycles` payload is byte-identical to the unbatched build's.
 
 Redaction is unconditional: `/home/<user>` and `/Users/<user>` → `~`, and
 `ghp_/gho_/github_pat_/sk-…/Bearer …` token shapes → `[REDACTED-TOKEN]`,
@@ -506,7 +569,7 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
              last_cycle:{id,node,ended_at,outcome,repo,item,title},  // the FLEET's newest FINISHED
              limit:{active,note}, switch:{…},
              doctor:{timestamp,verdict,fails[],warns[],skips,
-                     token_expiry:{expires_at,days_remaining} | null} | null },
+                     token_expiry:{expires_at,days_remaining} | null} | null,
                                     //   THIS node's most recent hourly
                                     //   `doctor.sh --unattended` pass
                                     //   (agent-ops#543), read from
@@ -520,6 +583,15 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                     //   when that header was absent (a
                                     //   classic PAT, or any credential
                                     //   GitHub states no expiry for)
+             stage_health:{computed_at,threshold,idle_after_hours,
+                           stages:{<stage>:{verdict,consecutive_failures,
+                                             last_success,last_detail}}} | null },
+                                    //   THIS node's most recent per-stage
+                                    //   verdict (agent-ops#662), read from
+                                    //   state_dir/.stage-health.json —
+                                    //   null until this node's first cycle
+                                    //   since this check shipped has
+                                    //   completed
   counts:  { cycles_shown, failures_shown, prs_reached_ready,   // fleet-wide
              spend_today_usd, spend_total_usd,
              by_day[], by_model[], by_actor[],   // both pipelines' actors;
@@ -693,6 +765,17 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                             //   the node that issued it (2.3);
                                             //   never the fleet flag itself;
                                             //   null if unreported
+                         stage_health: { computed_at, threshold,
+                                          idle_after_hours,           // the
+                                            //   node's own per-stage verdict
+                                            //   (#662), from its heartbeat's
+                                            //   own `stage_health` field for
+                                            //   a peer, or this node's own
+                                            //   .stage-health.json for self;
+                                            //   null if unreported
+                                          stages: { "<stage>": {
+                                            verdict, consecutive_failures,
+                                            last_success, last_detail } } },
                          live: { cycle, since, running, ended_at,
                                  stage, repo, item, source, title } } ],
                                             // what THAT node is doing; null
@@ -839,7 +922,7 @@ schema, the roadmap — each opening the file at `blob/main/<path>` on GitHub
 in a new tab; no data behind it, so it renders identically on every load) +
 disabled / fleet-switch / merge-autonomy-kill-switch / usage-limit
 / fleet-limit / failing-checks / dequeued-pr / gh-down / stale-peer /
-doctor-fail / doctor-warn banners
+doctor-fail / doctor-warn / stage-health-failing banners
 (the switch first: when it is set, every other quiet signal on the page
 is a consequence of it rather than news, and an operator reading them in the
 other order goes looking for a fault that isn't there);
@@ -853,7 +936,13 @@ pull request carrying its record card, a grey `behind` marker when the fleet
 holds a newer build and an amber `modified` one on a checkout with uncommitted
 work, and how
 fresh that answer is: read live for our own row, "as of its last push" for a
-peer); stale peers bordered red and reported as state unknown; click a card to
+peer); a red **N stage(s) failing** badge (agent-ops#662) beside the
+running/idle state, independent of it — the whole point being a node whose
+process is alive and whose cycles are completing, which reads as plain
+"running" or "idle", while one or more stages have failed every attempt for
+`threshold` cycles running (see the Stage health section below for which,
+and since when); stale peers bordered red and reported as state unknown;
+click a card to
 filter the cycle list and the recent log to that node, click again to clear —
 the filter survives refreshes like every other UI state; **live claims** — the
 registry rows, i.e. work no other node will pick up. Both, plus the cycles
@@ -1226,6 +1315,32 @@ nothing here replicates a peer's `status.doctor` to this page — a repository's
 configuration and this node's own GitHub access are this node's alone to
 report.
 
+The **Stage health** panel (agent-ops#662) renders `status.stage_health`: the
+most recent per-stage verdict computed on *this* node, read from
+`state_dir/.stage-health.json` (written by `lib/stage-health.sh`'s
+`stage_health_write_status` at the end of every cycle) rather than
+recomputed, on `status.doctor`'s own precedent just above. One row per stage
+(`coordinator`, `approver`, `approver-adjudicate-open-question`,
+`enabler-adjudicate`, `enabler`, `refiner`, `implementer`, `reviewer`),
+each carrying a verdict badge (`failing` red,
+`idle` grey, `ok` green), when it last succeeded, and — for a `failing`
+row — its consecutive-failure count and the most recent attempt's own
+failure detail; no cycle having completed since this check shipped says so,
+rather than rendering an empty table. A `failing` row also raises its own
+page-top banner naming which stage(s), the same way a `doctor` `fail` does —
+this is the reading that was missing entirely during the 2026-08-21
+incident (issue #662): `cycle: RUNNING` and a clean Doctor pass both stayed
+true while every stage failed for 10.5 hours, because neither reads a
+stage's own `exit_code`.
+
+Unlike `status.doctor`, this verdict is not local to the node that computed
+it: `scripts/state-sync.sh`'s heartbeat carries it as `stage_health`, on the
+same terms as the compose/image/switch verdicts, so the fleet strip's own
+**N stage(s) failing** badge (above) can render for a peer, not only for this
+page's own node — a peer's badge comes from its heartbeat's `stage_health`
+field or renders nothing at all, never a verdict this page derives for that
+peer.
+
 The **Co-Ordinator verdict quality** panel renders
 `counts.coordinator_verdicts` (issue #319). Implementation spec 3t
 corroborates a `selected: false` verdict against the Script's own eligible
@@ -1422,8 +1537,12 @@ number's twins elsewhere on the page.
   rather than only in `top`. A full GitHub-hitting publish runs only when the last fetch has
   aged past `LAUNCHER_GITHUB_MAX_AGE` (285s, so that the gap between fetches
   including the fetch's own ~20s comes to about five minutes); the cheaper
-  `--no-github` publish runs in between and carries the last fetch forward, so
-  the page stays near-live without hammering the GitHub API. The gate is the
+  `--no-github --fast` publish runs in between and carries the last fetch
+  forward, so the page stays near-live without hammering the GitHub API. That
+  GitHub tick is also the **full** build (see **The tiered publish**): the
+  history roll-ups a fast tick carries forward are therefore never more than one
+  fetch old, and the launcher needs no second cadence to decide when to rebuild
+  them. The gate is the
   **age of `<state_dir>/.dashboard-github.json`**, which the Publisher stamps
   on every fetch it attempts — succeeded or failed — and which the launcher
   stamps itself if a publish dies before getting that far. Age, rather than a
@@ -1439,11 +1558,32 @@ number's twins elsewhere on the page.
   fetch renders exactly like a fresh one. Hence both the age gate and the
   freshness reporting under **The Site**.) `flock` guards against a slow
   publish stacking up under the next tick. No tick starts inside the window's
-  final ten seconds **or within the cost of the tick before it**, so an
-  oversized publish is not started just before the window closes and handed to
-  the next cron fire as a lock collision — those ten seconds were sized against
-  the same unenforced five-second budget as the cadence above,
-  and a healthy window ends `exit 0` — its exit status is explicit, not
+  final ten seconds **or within the last measured cost of a tick of its own
+  kind** — GitHub or local, whichever this tick is about to be, read from
+  `<state_dir>/.dashboard-tick-cost` — so an oversized publish is not started
+  just before the window closes and handed to the next cron fire as a lock
+  collision. The reserve is the larger of the two, not their sum: ten seconds
+  is its floor, so a tick costing less than that reserves exactly the tail it
+  always did. It is tracked **per kind and persisted across windows** because
+  the two kinds differ by more than a factor of two (42–47s against 17–20s on
+  both laptop nodes) and because cron starts a fresh launcher every window,
+  while the reserve is needed on a window's *first* tick — an in-process
+  measurement would reset exactly when it is wanted. Reserving against
+  whichever tick merely ran last was correct only while every tick was
+  expensive: once the no-op path began firing the previous tick was almost
+  always a sub-second skip, the reserve collapsed to the bare ten seconds, and
+  a 45s GitHub tick starting in the last half-minute overran the window.
+  supercronic runs no overlapping instance of a job, so it then dropped the
+  entire next window — `not starting: job is still running` — and the page went
+  ten minutes without an update (#807). A window always runs its **first**
+  tick regardless, so a publish that outgrew its window degrades to one
+  overrun per window rather than to a page that silently stops updating; a
+  deferred tick logs `deferred: a <kind> tick needs Ns, window has Ns left`,
+  because a fetch that does not happen is otherwise indistinguishable from a
+  quiet system. `.dashboard-tick-cost` is launcher bookkeeping: it is excluded
+  from the fingerprint under **The no-op tick** and from replication, so
+  writing it cannot invalidate the skip it exists beside.
+  A healthy window ends `exit 0` — its exit status is explicit, not
   whatever the final tick's lock bookkeeping happened to return
   (`LAUNCHER_WINDOW` shortens the window, `LAUNCHER_PUBLISH_CMD` swaps in a
   stub Publisher, and `LAUNCHER_DUTY_DIVISOR` sets the pacing ratio, for the
@@ -1486,6 +1626,23 @@ number's twins elsewhere on the page.
   (`{timestamp, verdict, fails[], warns[], skips}`). This Publisher reads
   that file verbatim into `status.doctor`; `null` until the first hourly
   pass has run. Local to this node only — nothing replicates it to peers.
+- `lib/stage-health.sh` (agent-ops#662,
+  `docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement 2.8) — not read live by
+  this Publisher either, on `doctor.sh --unattended`'s own precedent just
+  above, even though (unlike doctor's GitHub section) recomputing it here
+  would cost no network call: `agent-cycle.sh`'s own `cleanup()` already
+  computes and writes `<state_dir>/.stage-health.json`
+  (`{computed_at, threshold, idle_after_hours, stages}`) at the end of every
+  cycle, so reading it keeps this Publisher and the fleet heartbeat
+  (`scripts/state-sync.sh`, below) reading the identical file rather than two
+  computations that could disagree. This Publisher reads it verbatim into
+  `status.stage_health`; `null` until this node's first cycle since this
+  check shipped has completed. Unlike `.doctor-status.json`, its *content*
+  does reach peers — folded into the heartbeat's own `stage_health` field,
+  the same way `compose`/`image`/`switch` already travel — even though the
+  raw file itself is excluded from `scripts/state-sync.sh`'s general
+  replication, since a peer's copy of the raw file would answer for a
+  computation nobody there ran.
 - `scripts/publish-revert-rate.sh` (D18 issue #579,
   `docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement 2.6b) — not read live by
   this Publisher either, on the identical reasoning as `doctor.sh
@@ -1808,6 +1965,15 @@ number's twins elsewhere on the page.
   off the absent aggregate, same as any other pre-#529 payload — with no third
   costnote, since that caption only exists once the Publisher actually ships
   the aggregate.
+  A fixture with no `status.stage_health` renders "No cycle has completed
+  on this node" in the Stage health section and raises no banner (agent-ops
+  #662); one carrying a `failing` stage raises the red banner naming it,
+  lists that row with its own consecutive-failure count and failure detail
+  alongside an `ok` and an `idle` row rendered distinctly, and badges the
+  same node's own fleet-strip card with its failing-stage count —
+  independent of that card's running/idle state, which is the property this
+  check exists for: a node whose cycles are completing normally while a
+  stage keeps failing must not read as plain "running" or "idle".
 - The back-pressure card agrees with the gate it depicts, in both directions,
   from two fixtures of its own. `backpressure-claims.json` (issue #427) holds
   a changes-requested PR, a draft, an approved PR waiting on a human, one

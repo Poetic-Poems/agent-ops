@@ -40,6 +40,8 @@ SCHEMA_FILE="$SCRIPT_DIR/config.schema.json"
 . "$SCRIPT_DIR/lib/image-drift.sh"
 # shellcheck source=lib/toggle.sh
 . "$SCRIPT_DIR/lib/toggle.sh"
+# shellcheck source=lib/mirror-integrity.sh
+. "$SCRIPT_DIR/lib/mirror-integrity.sh"
 
 usage() {
   cat <<'EOF'
@@ -125,14 +127,26 @@ peers_dir="$(fleet_peers_dir "$workspace_root")"
 #   the dashboard   `dashboard/` is generated from the state beside it, and the
 #                   logs and caches beside it (`dashboard.log`,
 #                   `dashboard-server.log`, `.dashboard-github.json`,
-#                   `.dashboard-claims.json`) are one node's rendering
-#                   machinery. Each node republishes its own page from the
-#                   union it fetches; copying the pixels would be copying a
-#                   derivative of what we are already copying.
+#                   `.dashboard-claims.json`, `.dashboard-tick-cost`) are one
+#                   node's rendering machinery. Each node republishes its own
+#                   page from the union it fetches; copying the pixels would
+#                   be copying a derivative of what we are already copying.
 #   the image-drift `.image-drift-cache.json` is this node's own last read of
 #   cache            the registry (lib/image-drift.sh) — a peer's copy of it
 #                   would answer for a registry query nobody there ran, not
 #                   for that peer.
+#   the stage-      `.stage-health.json` (lib/stage-health.sh, agent-ops#662)
+#   health snapshot  is excluded as a raw file for the same reason
+#                   `.doctor-status.json` is — a peer's copy of the file
+#                   itself would answer for a computation nobody there ran —
+#                   but unlike doctor's status this verdict does need to
+#                   reach peers, which is the whole point of #662: a fleet
+#                   dashboard that can only see this node's own stages is no
+#                   better than `--status` run locally. So its *content*
+#                   travels a different way, the same one `compose`/`image`/
+#                   `switch` already use below: folded into `heartbeat.json`,
+#                   this node's own verdict about itself, published like any
+#                   other fact only this node can state.
 #   the stage       `*.stream.jsonl` is a stage's whole event stream, every
 #   streams          message and every tool result (lib/stage-run.sh). It is
 #                   local forensics and, while the stage runs, its liveness
@@ -177,6 +191,7 @@ EXCLUDES=(
   # either from a peer, so neither travels.
   --exclude=doctor.log
   --exclude=.doctor-status.json
+  --exclude=.stage-health.json
   # revert-rate.log (scripts/publish-revert-rate.sh, agent-ops#579): the
   # daily pass's own text output, local to this node on the same reasoning
   # as doctor.log above. Its structured sibling, revert-rate.jsonl, is
@@ -191,8 +206,17 @@ EXCLUDES=(
   # .doctor-status.json above.
   --exclude=revert-rate-cumulative-state.json
   --exclude=.dashboard-github.json
+  --exclude=.dashboard-tick-cost
+  --exclude=.dashboard-payload
+  --exclude=/.dashboard-cycle-cache/
   --exclude=.dashboard-claims.json
   --exclude=.image-drift-cache.json
+  # .mirror-rebuild-state.json (lib/mirror-integrity.sh, agent-ops#604): this
+  # node's own durable record of whether/when it last discarded and rebuilt
+  # its state-sync mirror — memoisation like .image-drift-cache.json above,
+  # published to peers only as the heartbeat's `mirror` verdict below, never
+  # as this raw file.
+  --exclude=.mirror-rebuild-state.json
   # labels-ensured/ (lib/labels.sh's labels_ensure_stamped, agent-ops#687):
   # per-(repo, role) rate-limit stamp files, local to this node on the same
   # reasoning as .image-drift-cache.json above — no peer reads another
@@ -226,21 +250,57 @@ mirror_lock() {
 }
 
 mirror_init() {
+  local fresh=0
   if [[ ! -d "$mirror/.git" ]]; then
+    fresh=1
     rm -rf "$mirror"
     mkdir -p "$mirror"
     git -C "$mirror" init --quiet
     git -C "$mirror" remote add origin "$remote_url"
   fi
   git -C "$mirror" remote set-url origin "$remote_url"
+
+  # A mirror that already existed has to prove it still deserves the trust a
+  # bare directory check used to hand it for free (lib/mirror-integrity.sh).
+  # A mirror this call just created has nothing to have failed yet, so the
+  # check — and any rebuild it might otherwise log — never runs against a
+  # fresh init: that first-ever push must stay silent, not report
+  # self-healing that never happened.
+  if (( ! fresh )) && ! mirror_integrity_ok "$mirror"; then
+    say "WARNING: mirror failed its integrity check — discarding and rebuilding from source"
+    rm -rf "$mirror"
+    mkdir -p "$mirror"
+    git -C "$mirror" init --quiet
+    git -C "$mirror" remote add origin "$remote_url"
+    mirror_record_rebuild "$state_dir"
+  fi
 }
 
 # Newest-first list of the cycle directories worth keeping. Their names are
 # UTC timestamps, so lexical order is chronological order.
+#
+# `sed -n '1,Np'` rather than `head -n N`, and the same at every other site
+# that slices a sorted stream: `head` closes the pipe the instant it has its N
+# lines, and `sort` — which cannot emit anything before it has read every name
+# — is still writing. That is a SIGPIPE, and `pipefail` promotes it to 141 for
+# the whole pipeline. `sed` without `q` reads its input to the end, so no
+# writer upstream is ever signalled.
+#
+# This particular site never killed anything, but only by accident of its
+# caller: `done < <(kept_cycles)` is a process substitution, and bash discards
+# a process substitution's status. The identical shape at `node_meta`'s
+# `last_cycle` below sat in a command substitution under `set -euo pipefail`
+# instead, and killed roughly half of every node's state pushes for a month
+# (#806). Depending on the caller's shape to stay safe is not a property worth
+# keeping, so both were rewritten the same way.
 kept_cycles() {
   [[ -d "$state_dir/cycles" ]] || return 0
+  # Matching prune_local's floor: a nonsense retention value must not turn
+  # into `sed -n '1,0p'`, which is an error rather than an empty list.
+  local retained="$cycles_retained"
+  (( retained >= 1 )) || retained=1
   find "$state_dir/cycles" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null \
-    | sort -r | head -n "$cycles_retained"
+    | sort -r | sed -n "1,${retained}p"
 }
 
 # The node's own history is bounded too (TD26072004): without this, a
@@ -390,9 +450,36 @@ do_push() {
   # dashboard's page-top banner reads. The fleet-wide switch needs none of
   # this: it is a flag every node fetches for itself
   # (`fleet/disabled.json`).
-  local last_cycle version_json
-  last_cycle="$(find "$state_dir/cycles" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null \
-    | sort -r | head -n 1)"
+  #
+  # And the per-stage health verdict (lib/stage-health.sh, agent-ops#662), on
+  # the identical shape: `agent-cycle.sh`'s own cleanup already computed and
+  # persisted it to `.stage-health.json` this cycle, so what is read here is
+  # that finished verdict, not a second computation over this node's log —
+  # the file is `null` on a node that has not completed a cycle since
+  # upgrading, which the dashboard already renders as no data rather than as
+  # healthy.
+  #
+  # And the mirror-rebuild verdict (lib/mirror-integrity.sh's
+  # `mirror_rebuild_verdict`, issue #604): `null` until `mirror_init` above
+  # has ever had to discard and rebuild this checkout, else
+  # {status:"rebuilt", count, last_rebuilt_at}. A corrupt mirror silently
+  # self-healing on every tick would hide a disk that is quietly damaging it
+  # on a schedule; publishing the verdict, and bumping `count` on every
+  # further rebuild rather than reading the same as the first, is what makes
+  # a repeat visible instead of indistinguishable noise.
+  # Newest cycle id. Sliced in bash rather than piped into `head -n 1`, for
+  # the reason kept_cycles sets out — and this is the site where it mattered:
+  # a command substitution in the current shell, under `set -euo pipefail`, so
+  # `sort`'s SIGPIPE became the push's own exit status. `do_push` died here,
+  # after taking the mirror lock and fetching but before committing anything,
+  # writing not one line to state-sync.log. Measured at 17 of 30 runs on
+  # `ockham-container` and 16 of 30 on `ockham-2`: a node replicated its state
+  # every 11-20 minutes against the `*/5` the cron entry asks for, and the
+  # only evidence anywhere was supercronic's `exit status 141` (#806).
+  local last_cycle version_json cycles_newest_first
+  cycles_newest_first="$(find "$state_dir/cycles" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null \
+    | sort -r)"
+  last_cycle="${cycles_newest_first%%$'\n'*}"
   version_json="$(agent_ops_version "$SCRIPT_DIR")"
   jq -nc \
     --arg node "$node_name" \
@@ -403,8 +490,11 @@ do_push() {
     --argjson compose "$(compose_drift_status)" \
     --argjson image "$(image_drift_status "$version_json" "$state_dir/.image-drift-cache.json")" \
     --argjson switch "$(toggle_switch_summary "$state_dir")" \
+    --argjson stage_health "$(jq -c '.' "$state_dir/.stage-health.json" 2>/dev/null || echo null)" \
+    --argjson mirror_rebuild "$(mirror_rebuild_verdict "$state_dir")" \
     '{node: $node, role: $role, ts: $ts, last_cycle: $lc, version: $version,
-      compose: $compose, image: $image, switch: $switch}' > "$mirror/heartbeat.json"
+      compose: $compose, image: $image, switch: $switch,
+      stage_health: $stage_health, mirror: $mirror_rebuild}' > "$mirror/heartbeat.json"
 
   # One rolling commit per node, amended and force-pushed. The state files
   # carry their own history — log.jsonl is append-only and every cycle keeps

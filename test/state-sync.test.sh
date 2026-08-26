@@ -3,7 +3,7 @@
 # test/state-sync.test.sh — regression test for scripts/state-sync.sh under
 # the multi-active fleet model (per-node branches, no lease).
 #
-# Four things here are worth a test rather than a careful reading:
+# Five things here are worth a test rather than a careful reading:
 #
 #   what replicates   the exclude list is the difference between a fleet that
 #                     shares its memory and one that shares its locks.
@@ -16,6 +16,11 @@
 #   what comes back   a fetch materialises every peer, whole, and prunes a
 #                     peer whose branch is gone — half a peer or a ghost peer
 #                     both poison the union readers.
+#   what is trusted   a mirror whose object store has quietly corrupted is
+#                     discarded and rebuilt rather than kept and published
+#                     from — the property that makes an unclean shutdown a
+#                     one-tick blip instead of a four-day silent outage
+#                     (#604).
 #
 # No network and no GitHub: the remote is a local bare repository
 # (STATE_SYNC_REMOTE). No test framework is used (none exists elsewhere in
@@ -124,6 +129,12 @@ printf '{"ok":false}\n' > "$state/.image-drift-cache.json"
 # this node, like the caches above, so neither should replicate.
 printf 'doctor noise\n' > "$state/doctor.log"
 printf '{"verdict":"ok"}\n' > "$state/.doctor-status.json"
+# The per-stage health snapshot (lib/stage-health.sh, agent-ops#662): local to
+# this node as a raw file, on the same reasoning as the doctor status cache
+# above — but unlike it, its content is meant to reach peers, folded into the
+# heartbeat below rather than replicated verbatim.
+printf '{"computed_at":"2026-07-20T00:00:00Z","threshold":3,"idle_after_hours":48,"stages":{"coordinator":{"verdict":"failing","consecutive_failures":5,"last_success":null,"last_detail":"boom"}}}\n' \
+  > "$state/.stage-health.json"
 # The daily revert-rate publishing pass's own text output (agent-ops#579):
 # local to this node, like doctor.log above — its structured sibling,
 # revert-rate.jsonl (set up above, beside log.jsonl), is fleet-wide data and
@@ -160,6 +171,7 @@ assert_eq "the GitHub cache does not replicate" "0" "$(test -e "$pushed/.dashboa
 assert_eq "the image-drift cache does not replicate" "0" "$(test -e "$pushed/.image-drift-cache.json" && echo 1 || echo 0)"
 assert_eq "the doctor log does not replicate" "0" "$(test -e "$pushed/doctor.log" && echo 1 || echo 0)"
 assert_eq "the doctor status cache does not replicate" "0" "$(test -e "$pushed/.doctor-status.json" && echo 1 || echo 0)"
+assert_eq "the stage-health cache does not replicate as a raw file" "0" "$(test -e "$pushed/.stage-health.json" && echo 1 || echo 0)"
 assert_eq "the revert-rate publish log does not replicate" "0" "$(test -e "$pushed/revert-rate.log" && echo 1 || echo 0)"
 assert_eq "the revert-rate cumulative-state cache does not replicate" "0" \
   "$(test -e "$pushed/revert-rate-cumulative-state.json" && echo 1 || echo 0)"
@@ -210,6 +222,24 @@ assert_eq "carrying the reason from disabled.json" "testing" \
 # value, is the wiring this asserts.
 assert_eq "the heartbeat carries an image-drift slot" "true" "$(jq 'has("image")' <<<"$hb")"
 
+# --- The heartbeat carries the per-stage health verdict (agent-ops#662) -------
+# Unlike image/compose above, this is a verbatim read of `.stage-health.json`
+# — lib/stage-health.sh's own suite covers what the verdict says, so what
+# belongs here is only that the fixture written above (the file excluded from
+# raw replication two assertions up) reaches the heartbeat unchanged.
+assert_eq "the heartbeat carries the stage-health verdict computed this cycle" "failing" \
+  "$(jq -r '.stage_health.stages.coordinator.verdict' <<<"$hb")"
+assert_eq "with its consecutive-failure count intact" "5" \
+  "$(jq -r '.stage_health.stages.coordinator.consecutive_failures' <<<"$hb")"
+
+# --- The heartbeat carries a mirror-rebuild verdict slot (#604) ---------------
+# lib/mirror-integrity.sh's own behaviour (a corrupted mirror is discarded
+# and rebuilt) is covered by its dedicated section below; what belongs here
+# is only that a mirror which has never had to rebuild reports `null`, not
+# that the key is simply missing.
+assert_eq "the heartbeat carries a mirror-rebuild slot" "true" "$(jq 'has("mirror")' <<<"$hb")"
+assert_eq "unset until this node has actually rebuilt its mirror" "null" "$(jq -c '.mirror' <<<"$hb")"
+
 # --- The heartbeat carries the compose-drift verdict (#131) -------------------
 # End to end: a node whose compose.yaml has drifted publishes that fact with
 # its next push. The check's paths are forced to fixtures, because this suite
@@ -246,6 +276,10 @@ assert_eq "a standby publishes its own branch" "1" \
   "$(git -C "$remote" rev-parse --verify --quiet refs/heads/nodes/standby-node >/dev/null && echo 1 || echo 0)"
 assert_eq "…and never touches a peer's" "1" \
   "$(git -C "$remote" rev-list --count nodes/active-node)"
+sb_pushed="$tmp_dir/pushed-standby"
+git clone --quiet --branch nodes/standby-node "$remote" "$sb_pushed"
+assert_eq "a node with no .stage-health.json yet publishes a null stage_health, not a guess" "null" \
+  "$(jq -c '.stage_health' "$sb_pushed/heartbeat.json")"
 
 # --- Mirror retention ---
 # One more cycle directory than the configured retention, so the oldest must
@@ -381,6 +415,101 @@ assert_eq "a snapshot already in the mirror is deleted from it" "0" \
   "$(test -e "$tmp_dir/pushed-again/cycles/20260720T010000Z-1/.fleet-log.jsonl" && echo 1 || echo 0)"
 
 # ==============================================================================
+# mirror integrity — a corrupted mirror is discarded and rebuilt, never
+# repaired or silently trusted (#604)
+# ==============================================================================
+# The fault this reproduces: an unclean shutdown leaves a loose object
+# truncated to zero bytes (the field evidence behind #604 — ockham-container
+# from 2026-08-08, ockham-2 on 2026-08-24, four empty objects each time), and
+# `mirror_init` used to treat `.git/` existing as the whole check.
+mi_home="$(new_node mirror-integrity-node)"
+mi_state="$mi_home/.local/state/poetic-agents"
+mi_mirror="$mi_home/.cache/poetic-agents/workspaces/.agent-ops-state"
+printf '{"ts":"2026-08-25T00:00:00Z","event":"cycle-start"}\n' > "$mi_state/log.jsonl"
+
+find_head_object() {  # find_head_object <mirror-dir> -> path of the loose
+  # object holding the mirror's own HEAD commit — always reachable, unlike
+  # an arbitrary loose object, some of which are amend-orphaned history that
+  # `git fsck --connectivity-only` never walks.
+  local mirror="$1" sha
+  sha="$(git -C "$mirror" rev-parse HEAD 2>/dev/null)" || return 1
+  printf '%s/.git/objects/%s/%s\n' "$mirror" "${sha:0:2}" "${sha:2}"
+}
+
+truncate_object() {  # truncate_object <path> — git writes loose objects
+  # read-only, so the write needs its own permission first.
+  chmod u+w "$1" && : > "$1"
+}
+
+# A brand-new mirror's first-ever init has nothing to have failed, so it must
+# never be reported as a rebuild — otherwise every node's first-ever push
+# would report self-healing that never happened.
+out="$(sync_as "$mi_home" active push)"
+assert_eq "the first-ever push on a fresh mirror exits 0" "0" "$?"
+mi_pushed_1="$tmp_dir/mi-pushed-1"
+git clone --quiet --branch nodes/mirror-integrity-node "$remote" "$mi_pushed_1"
+assert_eq "a fresh mirror's first push reports no rebuild" "null" \
+  "$(jq -c '.mirror' "$mi_pushed_1/heartbeat.json" 2>/dev/null)"
+
+# Truncate a loose object the way the unclean shutdown did.
+corrupt_1="$(find_head_object "$mi_mirror")"
+assert_eq "the HEAD commit is a loose object to corrupt" "1" "$([[ -f "$corrupt_1" ]] && echo 1 || echo 0)"
+truncate_object "$corrupt_1"
+assert_eq "the mirror now fails its own connectivity check" "1" \
+  "$(git -C "$mi_mirror" fsck --connectivity-only >/dev/null 2>&1 && echo 0 || echo 1)"
+
+# New content, so the next push has to actually reach the remote with the
+# right content — not merely that the check fired.
+printf '{"ts":"2026-08-25T00:05:00Z","event":"cycle-end"}\n' >> "$mi_state/log.jsonl"
+out="$(sync_as "$mi_home" active push)"
+assert_eq "the push over a corrupted mirror still exits 0" "0" "$?"
+assert_contains "it reports discarding and rebuilding the mirror" \
+  "failed its integrity check" "$out"
+
+mi_pushed_2="$tmp_dir/mi-pushed-2"
+git clone --quiet --branch nodes/mirror-integrity-node "$remote" "$mi_pushed_2"
+assert_eq "the rebuilt push publishes the node's current log content" "1" \
+  "$(grep -c 'cycle-end' "$mi_pushed_2/log.jsonl")"
+assert_eq "the heartbeat records the rebuild" "rebuilt" \
+  "$(jq -r '.mirror.status' "$mi_pushed_2/heartbeat.json" 2>/dev/null)"
+assert_eq "as the first rebuild this node has ever needed" "1" \
+  "$(jq -r '.mirror.count' "$mi_pushed_2/heartbeat.json" 2>/dev/null)"
+assert_eq "the branch is still a single rolling commit after the rebuild" "1" \
+  "$(git -C "$mi_pushed_2" rev-list --count nodes/mirror-integrity-node)"
+
+# A second, independent corruption is a *repeat* rebuild, and the record
+# under state_dir — which outlives the mirror it describes — is what makes
+# that a visible fact rather than one more indistinguishable line.
+corrupt_2="$(find_head_object "$mi_mirror")"
+assert_eq "the HEAD commit is a loose object a second time" "1" "$([[ -f "$corrupt_2" ]] && echo 1 || echo 0)"
+truncate_object "$corrupt_2"
+out="$(sync_as "$mi_home" active push)"
+assert_eq "the second corrupted push exits 0" "0" "$?"
+mi_pushed_3="$tmp_dir/mi-pushed-3"
+git clone --quiet --branch nodes/mirror-integrity-node "$remote" "$mi_pushed_3"
+assert_eq "a repeat rebuild bumps the count rather than reading like the first" "2" \
+  "$(jq -r '.mirror.count' "$mi_pushed_3/heartbeat.json" 2>/dev/null)"
+
+# `mirror_init` sits ahead of both do_push and do_fetch (requirement 2.5), so
+# a fetch hitting the same corrupted mirror must rebuild it too — proven here
+# by a third corruption discovered through `fetch` instead of `push`, with
+# the following push (which is what actually reads the durable record) then
+# showing the count has moved again.
+corrupt_3="$(find_head_object "$mi_mirror")"
+assert_eq "the HEAD commit is a loose object a third time" "1" "$([[ -f "$corrupt_3" ]] && echo 1 || echo 0)"
+truncate_object "$corrupt_3"
+out="$(sync_as "$mi_home" active fetch)"
+assert_eq "a fetch over a corrupted mirror still exits 0" "0" "$?"
+assert_contains "the fetch itself reports discarding and rebuilding the mirror" \
+  "failed its integrity check" "$out"
+out="$(sync_as "$mi_home" active push)"
+assert_eq "the push after the fetch-triggered rebuild exits 0" "0" "$?"
+mi_pushed_4="$tmp_dir/mi-pushed-4"
+git clone --quiet --branch nodes/mirror-integrity-node "$remote" "$mi_pushed_4"
+assert_eq "a rebuild triggered by fetch counts the same as one triggered by push" "3" \
+  "$(jq -r '.mirror.count' "$mi_pushed_4/heartbeat.json" 2>/dev/null)"
+
+# ==============================================================================
 # fetch — peers materialised whole, pruned when gone
 # ==============================================================================
 out="$(sync_as "$standby_home" standby fetch)"
@@ -498,6 +627,40 @@ env HOME="$cycle_home" AGENT_OPS_ROLE=standby NODE_NAME=cycle-node \
   "$SCRIPT_DIR/agent-cycle.sh" --enable >/dev/null 2>&1
 assert_contains "the enable is logged too" '"event":"enabled"' \
   "$(cat "$cycle_home/.local/state/poetic-agents/log.jsonl" 2>/dev/null)"
+
+# ==============================================================================
+# push — a large cycles/ directory does not kill the push (#806)
+# ==============================================================================
+# `do_push` took the newest cycle id with `find … | sort -r | head -n 1`.
+# `head` closes the pipe the moment it has its one line; `sort`, which cannot
+# emit anything until it has read every name, is still writing, takes SIGPIPE
+# and exits 141. In a command substitution in the current shell, under
+# `set -euo pipefail`, that becomes the push's own status and `-e` aborts it —
+# after the mirror lock and the fetch, before the commit, and without one line
+# in state-sync.log to say so.
+#
+# It is a race against the pipe buffer: when sort's whole output fits before
+# head exits, nothing is signalled. On the live nodes (1000 cycles, ~32-40 KB
+# of names) it fired in 16-17 of every 30 runs — which is exactly why it went
+# a month unattributed. So this test does not reproduce the race, it removes
+# it: enough names to put sort's output well past any pipe buffer, so the old
+# code fails every time and the assertion means something.
+big_home="$(new_node big-cycles-node)"
+big_state="$big_home/.local/state/poetic-agents"
+printf '{"ts":"2026-07-20T00:00:00Z","event":"cycle-start"}\n' > "$big_state/log.jsonl"
+# ~600 names of ~250 bytes is ~150 KB, more than twice a default 64 KB pipe
+# buffer. The directories are deliberately left empty: git stores no empty
+# directory, so none of this reaches the commit and the test stays quick — what
+# matters is the length of the name list `sort` must write, not any payload.
+big_pad="$(printf 'x%.0s' $(seq 1 230))"
+for i in $(seq -w 1 600); do
+  mkdir -p "$big_state/cycles/20260720T0100${i}Z-$big_pad"
+done
+big_out="$(sync_as "$big_home" active push STATE_SYNC_LOCAL_RETAINED=600)"
+big_rc=$?
+assert_eq "a push over a large cycles/ survives the newest-cycle scan" "0" "$big_rc"
+assert_contains "and reports what it pushed, rather than dying silently" \
+  "state-sync(push): pushed" "$big_out"
 
 printf '\n%s\n' "----------------------------------------"
 if (( failures == 0 )); then

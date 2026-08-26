@@ -968,11 +968,13 @@ refiner_filter_unbandable_triage() {
 # already decided.
 #
 # Deliberately narrower than the Enabler: no escalation, no void, no handoff.
-# The Refiner has exactly two things to say about an item — `refined` (it
-# wrote a specification) or `needs-refinement` (it could not, and that decline
-# is recorded through the same `record_needs_refinement_block` a Co-Ordinator's
-# own report uses (requirement 39d)) — so there is no verdict here that needs
-# a third power.
+# The Refiner has exactly two things to say about an item — `refined` (the
+# item now carries a specification good enough to act on: one it wrote, or,
+# for a re-affirmation, one already on the thread that it judged still
+# adequate and named rather than rewrote — requirement 39c) or
+# `needs-refinement` (it could not, and that decline is recorded through the
+# same `record_needs_refinement_block` a Co-Ordinator's own report uses
+# (requirement 39d)) — so there is no verdict here that needs a third power.
 maybe_run_refiner() {
   local cycle_rc="${1:-1}"
   local engagement_json='[]' claimed_json='[]' n_eligible=0 n_claimed=0
