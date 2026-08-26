@@ -1177,8 +1177,16 @@ memory, and every node follows everyone else's.
 
 | Mode | When | What |
 |---|---|---|
-| `push` | every five minutes, and at the end of every cycle | publishes `state_dir` as this node's own `nodes/<NODE_NAME>` branch, stamped with a heartbeat (`{node, role, ts, last_cycle, version, compose, image, switch}`) |
+| `push` | every five minutes, and at the end of every cycle | publishes `state_dir` as this node's own `nodes/<NODE_NAME>` branch, stamped with a heartbeat (`{node, role, ts, last_cycle, version, compose, image, switch, mirror}`) |
 | `fetch` | every seven minutes | materialises every peer's branch under the peers directory, whole, and prunes a peer whose branch is gone |
+
+Before either mode touches its local mirror of the state repository, it
+checks that mirror's object store (`git fsck --connectivity-only`) rather
+than trusting a `.git/` directory that merely still exists: a host whose
+disk has quietly corrupted a loose object gets that checkout discarded and
+rebuilt from source on the spot, and the rebuild is recorded in the
+heartbeat's `mirror` field so a repeat is visible rather than silent
+self-healing.
 
 What travels is the memory: `log.jsonl`, `review-log.jsonl`, `cycles/`,
 `reviews/`, the switch, the cron logs. What stays behind is anything local or
