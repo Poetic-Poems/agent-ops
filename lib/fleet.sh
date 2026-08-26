@@ -37,6 +37,32 @@ fleet_mark_peers() {  # <peers_dir> true|false
     && mv -f "$marker.tmp" "$marker"
 }
 
+# fleet_logs_healthy <state_dir> <peers_dir> <union_log>
+# True when UNION_LOG — the snapshot `fleet_logs` above just wrote — is fit to
+# read a *negative* off: "no open block exists," not merely "no open block is
+# visible from here" (agent-ops#816 review, requirement 38b). `fleet_logs`
+# degrades silently, emitting nothing at all when STATE_DIR/log.jsonl is
+# absent and PEERS_DIR is empty — a fresh node before its first state-sync, a
+# mirror just discarded and rebuilt (requirement 2.5's own corruption path),
+# or a fetch cron that has been failing all produce exactly that, and an
+# empty union is indistinguishable from "the fleet genuinely has no blocks" to
+# a reader that only ever acts on positive log evidence until now. Unhealthy
+# in either of two ways this checks in order: the union itself came back
+# empty, or PEERS_DIR's own freshness marker (`fleet_mark_peers`, above) says
+# the last fetch attempt failed — a marker no reader consulted before this.
+# A marker that does not exist yet (no `state-sync.sh fetch` has ever run) is
+# not itself a failure — the union's own emptiness already catches that
+# node — so it is read as healthy here.
+fleet_logs_healthy() {  # <state_dir> <peers_dir> <union_log>
+  local peers="$2" union_log="$3" marker
+  [[ -s "$union_log" ]] || return 1
+  marker="$(fleet_peers_marker "$peers")"
+  if [[ -s "$marker" ]]; then
+    [[ "$(jq -r '.ok // false' "$marker" 2>/dev/null)" == "true" ]] || return 1
+  fi
+  return 0
+}
+
 # The fleet's event stream: this node's own log followed by every peer's,
 # sorted into time order (each line begins {"ts":"…", so a plain byte sort is
 # a time sort). The consumers that reduce by most-recent-event-wins — the

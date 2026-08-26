@@ -607,6 +607,26 @@ assert_eq "the union is time-ordered" "1" \
   "$([[ "$(printf '%s\n' "$union" | head -1)" == *2026-07-20T00:00:00Z* ]] && echo 1 || echo 0)"
 
 # ==============================================================================
+# fleet_logs_healthy — the gate requirement 38b's live reconciliation reads
+# before drawing a negative from the union (agent-ops#816 review)
+# ==============================================================================
+union_log_file="$tmp_dir/union-healthy.jsonl"
+printf '%s\n' "$union" > "$union_log_file"
+empty_union_log_file="$tmp_dir/union-empty.jsonl"
+: > "$empty_union_log_file"
+
+assert_eq "a populated union with a fresh (ok:true) peers marker reads healthy" "0" \
+  "$(fleet_logs_healthy "$sb_state" "$sb_peers" "$union_log_file" >/dev/null 2>&1; echo $?)"
+assert_eq "an empty union reads unhealthy regardless of the peers marker" "1" \
+  "$(fleet_logs_healthy "$sb_state" "$sb_peers" "$empty_union_log_file" >/dev/null 2>&1; echo $?)"
+assert_eq "a populated union behind a stale (ok:false) peers marker reads unhealthy" "1" \
+  "$(fleet_logs_healthy "$sb_state" "$unreachable_peers" "$union_log_file" >/dev/null 2>&1; echo $?)"
+no_marker_peers="$tmp_dir/no-marker-peers"
+mkdir -p "$no_marker_peers"
+assert_eq "a populated union with a peers directory never fetched (no marker at all) reads healthy" "0" \
+  "$(fleet_logs_healthy "$sb_state" "$no_marker_peers" "$union_log_file" >/dev/null 2>&1; echo $?)"
+
+# ==============================================================================
 # node identity in pipeline events (requirement 33, offline path)
 # ==============================================================================
 # The management switch logs through the same log_event as every pipeline

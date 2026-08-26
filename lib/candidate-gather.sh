@@ -56,6 +56,23 @@ first_seen_bootstrap="$(jq -c '(length == 0)' <<<"$(first_seen_known_items "$log
 # union log snapshot first_seen_known_json above reads, for the same reason:
 # an event this cycle logs must not make its own repo's later comparison (if
 # the repo were ever visited twice in one cycle) see itself as unchanged.
+# Requirement 38b's live blocked-label reconciliation (below, in the
+# issues-source block) is the one reader in this cycle that draws a
+# *negative* conclusion from the union — "no open block exists" — rather than
+# only ever acting on positive evidence in it, so it is the one reader an
+# empty or unreliable union actively misleads rather than merely leaves
+# uninformed (agent-ops#816 review). Decided once, here, rather than inside
+# the per-repo loop below: every repo shares this cycle's one union log and
+# one peers directory, so a degraded read is degraded for all of them
+# together, and a once-per-cycle warning says so once rather than once per
+# repo.
+union_log_healthy=1
+if ! fleet_logs_healthy "$state_dir" "$peers_dir" "$union_log"; then
+  union_log_healthy=0
+  log_event "warning" "$(jq -nc \
+    --arg d "this cycle's fleet-wide log looks degraded (an empty union, or the peers directory's own fetch marker reporting failure) — requirement 38b's live blocked-label reconciliation is skipped this cycle rather than risk reading a block's absence off an incomplete view of it" \
+    '{detail: $d}')"
+fi
 latest_issues_excluded_json="$(latest_issues_excluded "$union_log")"
 repo_order_now="$(date +%s)"
 while IFS= read -r slug; do
@@ -183,8 +200,12 @@ while IFS=$'\t' read -r _ slug default_branch; do
     # `own-label-action` of its own) or one whose block cleared before that
     # event existed to log never has. One `gh` call per repo per cycle —
     # `refinement_blocked_reason_label` is empty for no configured kind today,
-    # so this never runs for nothing.
-    if ! (( DRY_RUN )) && refinement_reason_label="$(refinement_blocked_reason_label "$REFINEMENT_BLOCK_KIND")" \
+    # so this never runs for nothing. Gated on `union_log_healthy` (computed
+    # once, above the per-repo loop): a degraded union cannot prove a block is
+    # gone, only that this node cannot see one, so nothing below runs against
+    # it (agent-ops#816 review concern 1).
+    if ! (( DRY_RUN )) && (( union_log_healthy )) \
+        && refinement_reason_label="$(refinement_blocked_reason_label "$REFINEMENT_BLOCK_KIND")" \
         && [[ -n "$refinement_reason_label" ]]; then
       # The page cap is stated rather than inherited, and checked, per
       # lib/github-limit.sh's own header: `gh`'s undeclared default of 30
@@ -207,8 +228,46 @@ while IFS=$'\t' read -r _ slug default_branch; do
           --arg d "the $refinement_reason_label listing for $slug came back at the $GITHUB_PR_LIST_LIMIT cap — an orphaned label past it is not reconciled this cycle" \
           '{detail: $d}')"
       fi
+      # _REFINEMENT_ORPHAN_RECENT memoises, per (repo, item) — never bare item
+      # number, which collides across repos — whether that issue's own
+      # reason-label application is too recent to trust an absent block for
+      # (agent-ops#816 review concern 2): a peer node can apply this exact
+      # pair within seconds of logging the block that justifies it, while
+      # that log line reaches this node only through the fleet's periodic
+      # state-sync — up to a full fetch interval behind. `LABEL_OWN_GRACE_SECONDS`
+      # (lib/label-marker.sh) is the same tolerance requirement 39f already
+      # measures a peer's label writes against `union_log_horizon` with,
+      # reused rather than duplicated. Declared once for the whole process
+      # (the same `declare -p ... || declare -gA` guard
+      # `_REFINEMENT_LABEL_ENSURE_ATTEMPTED` below uses), not reset per repo:
+      # an issue this cycle's own gather loop somehow revisits costs one
+      # timeline call, not two.
+      declare -p _REFINEMENT_ORPHAN_RECENT >/dev/null 2>&1 \
+        || declare -gA _REFINEMENT_ORPHAN_RECENT=()
       while IFS=$'\t' read -r orph_repo orph_item orph_label; do
         [[ -n "$orph_repo" && -n "$orph_item" && -n "$orph_label" ]] || continue
+        orph_key="$orph_repo|$orph_item"
+        if [[ -z "${_REFINEMENT_ORPHAN_RECENT[$orph_key]+x}" ]]; then
+          _REFINEMENT_ORPHAN_RECENT[$orph_key]=1
+          orph_labelled_at="$(gh api --paginate "repos/$orph_repo/issues/$orph_item/timeline" \
+              --jq "[.[] | select(.event == \"labeled\" and .label.name == \"$refinement_reason_label\")]
+                    | sort_by(.created_at) | last | .created_at // empty" 2>/dev/null)" || orph_labelled_at=""
+          if [[ -n "$orph_labelled_at" ]]; then
+            orph_age_verdict="$(jq -nr --arg at "$orph_labelled_at" --arg horizon "$union_log_horizon" \
+              --argjson grace "$LABEL_OWN_GRACE_SECONDS" '
+                (try ($at | fromdateiso8601) catch null) as $a |
+                (try ($horizon | fromdateiso8601) catch null) as $h |
+                if $a == null or $h == null then "unknown"
+                elif ($h - $a) < $grace then "recent"
+                else "old" end' 2>/dev/null)" || orph_age_verdict="unknown"
+            [[ "$orph_age_verdict" == "old" ]] && _REFINEMENT_ORPHAN_RECENT[$orph_key]=0
+          fi
+          # No resolvable `labelled_at` (a failed timeline call, an
+          # unparseable horizon) leaves the memo at its default of 1 —
+          # deferred, not stripped, the same fail-safe direction every other
+          # reader of this grace mechanism takes on a malformed input.
+        fi
+        [[ "${_REFINEMENT_ORPHAN_RECENT[$orph_key]}" == "0" ]] || continue
         if refinement_label_remove "$orph_repo" "$orph_item" "$orph_label"; then
           log_event "own-label-action" \
             "$(label_own_action_fields "$orph_repo" "$orph_item" "$orph_label" "remove")"
@@ -217,7 +276,7 @@ while IFS=$'\t' read -r _ slug default_branch; do
              '{detail: $d}')"
         fi
       done < <(refinement_blocked_label_orphaned "$(blocked_items "$union_log")" \
-                 "$live_reason_issues_json" "$slug")
+                 "$live_reason_issues_json" "$slug" "$union_log")
     fi
     issues_raw="$(gather_issues "$slug")"
     emit_first_seen "$slug" issues "$issues_raw"

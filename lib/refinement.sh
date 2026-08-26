@@ -361,7 +361,7 @@ refinement_blocked_label_stale() {
     | "\(.repo)\t\(.item)\t\(.label)"' <<<"$docs" 2>/dev/null || true
 }
 
-# refinement_blocked_label_orphaned OPEN_BLOCKED_JSON LIVE_JSON REPO
+# refinement_blocked_label_orphaned OPEN_BLOCKED_JSON LIVE_JSON REPO [LOG_FILE]
 # Print, one per line as `<repo>\t<item>\t<label>`, every `blocked:<reason>`/
 # `blocked` label a *live* GitHub read shows still standing on an open issue in
 # REPO with no open block behind it — the class `refinement_blocked_label_stale`
@@ -370,8 +370,8 @@ refinement_blocked_label_stale() {
 # logs no `own-label-action` of its own) or one whose block cleared before that
 # event ever existed to log. That sweep keys on history — a logged
 # `own-label-action add` with no later `remove` — which is exactly what neither
-# of those cases has. This needs none: `blocked:<reason>` is never a label a
-# human reaches for on their own (see `refinement_blocked_reason_label`'s
+# of those cases has. The reason label needs none: `blocked:<reason>` is never
+# a label a human reaches for on their own (see `refinement_blocked_reason_label`'s
 # header), so its live presence on an open issue this REPO's open blocks do not
 # name is proof enough on its own that it is stuck, no history required.
 #
@@ -384,35 +384,80 @@ refinement_blocked_label_stale() {
 # than reading every open issue's labels to find the handful that carry this
 # one.
 #
-# The generic `blocked` rides along when LIVE_JSON's own entry for that issue
-# carries it too, per the reasoning `refinement_blocked_label_targets` already
-# applies at the moment a block is recorded: no human reaches for the compound
-# `blocked:<reason>` name on their own, so its presence on an issue is proof
-# this pipeline put both labels there, safe to release together — extended
-# here to live state, not only to the block's own recorded provenance, which is
-# what lets this reach the legacy-swept case that provenance-keyed removal
-# never could (`refinement_blocked_label_targets`'s own header documents why a
-# legacy block's `blocked` is left over-held there). An issue LIVE_JSON does
-# not name — because it never carried the reason label, live or in the
-# fetch — never reaches this function at all, so a standalone hand-applied
-# `blocked` is never touched by it.
+# The generic `blocked` does *not* ride along on the reason label's own
+# no-human-reaches-for-it proof alone (the PR #823 review on agent-ops#816
+# found this: `blocked` is a human's own, hand-applied control, and a modern
+# block's `attempt-failed` event already distinguishes "this pipeline added
+# it" from "found it already there" — the same distinction
+# `refinement_blocked_label_targets` reads at block-clear time). So LOG_FILE
+# — the raw union log, read the same way `refinement_blocked_label_stale`
+# reads it — is consulted first: for each candidate issue, the most recent
+# `attempt-failed` event of this KIND for REPO+item, open or long since
+# cleared, decides whether the ride-along is safe:
+#   - **no such event at all**, or one recorded before agent-ops#639 (it
+#     carries `needs_refinement_assignee` and neither blocked-label field) —
+#     the genuinely history-less cohort this function exists for. `blocked`
+#     rides along on the live-state proof alone, exactly as before.
+#   - **a modern event whose `blocked_label` field is set** — this pipeline
+#     recorded adding `blocked` itself. Safe to release, now doubly proven.
+#   - **a modern event whose `blocked_label` field is empty** — this pipeline
+#     recorded *finding it already present* (or never got far enough to
+#     apply it). Neither proves it ours, so `blocked` is left alone here too:
+#     only the reason label is offered for that issue, the same over-hold
+#     `refinement_blocked_label_targets` already applies for a block still
+#     open, extended to one already cleared.
+# LOG_FILE is optional (omitted or empty reads as "no history available",
+# i.e. every candidate falls into the first bullet) so existing callers that
+# pass only three arguments keep their prior behaviour.
+#
+# An issue LIVE_JSON does not name — because it never carried the reason
+# label, live or in the fetch — never reaches this function at all, so a
+# standalone hand-applied `blocked` is never touched by it.
 refinement_blocked_label_orphaned() {
-  local open_blocked="${1:-[]}" live="${2:-[]}" repo="${3:-}" reason_label
+  local open_blocked="${1:-[]}" live="${2:-[]}" repo="${3:-}" log_src="${4:-}" reason_label log_json
   [[ -n "$open_blocked" ]] || open_blocked='[]'
   [[ -n "$live" ]] || live='[]'
   reason_label="$(refinement_blocked_reason_label "$REFINEMENT_BLOCK_KIND")"
   [[ -n "$reason_label" && -n "$repo" ]] || return 0
+  log_json='[]'
+  if [[ -n "$log_src" ]]; then
+    if [[ "$log_src" == "-" ]]; then
+      log_json="$(jq -c -R 'fromjson? // empty' 2>/dev/null | jq -sc '.' 2>/dev/null || true)"
+    elif [[ -s "$log_src" ]]; then
+      log_json="$(jq -c -R 'fromjson? // empty' "$log_src" 2>/dev/null | jq -sc '.' 2>/dev/null || true)"
+    fi
+    [[ -n "$log_json" ]] || log_json='[]'
+  fi
   jq -nr --arg repo "$repo" --arg kind "$REFINEMENT_BLOCK_KIND" --arg reason "$reason_label" '
-    input as $live | input as $open |
+    input as $live | input as $open | input as $log |
     ($open
      | map(select((.kind // "") == $kind and (.repo // "") == $repo))
      | map((.item // "") | tostring)) as $open_items |
+    ( [ $log[]?
+        | select((.event // "") == "attempt-failed")
+        | select((.kind // "") == $kind)
+        | select((.repo // "") == $repo)
+        | select((.item // "") != "") ]
+      | group_by((.item // "") | tostring)
+      | map(sort_by(.ts // "") | last)
+      | map({key: ((.item // "") | tostring), value: .})
+      | from_entries
+    ) as $history |
     [ $live[]?
       | . as $issue
-      | select(($open_items | index(($issue.number | tostring))) == null)
-      | ([$reason] + (if ([$issue.labels[]?] | index("blocked")) then ["blocked"] else [] end))[]
+      | ($issue.number | tostring) as $num
+      | select(($open_items | index($num)) == null)
+      | ($history[$num]) as $rec
+      | ( $rec != null
+          and (($rec.blocked_label // "") == "")
+          and (($rec.blocked_reason_label // "") == "")
+          and (($rec.needs_refinement_assignee // "") != "") ) as $legacy
+      | ( $rec == null or $legacy or (($rec.blocked_label // "") != "") ) as $blocked_provable
+      | ([$reason]
+         + (if ([$issue.labels[]?] | index("blocked")) and $blocked_provable
+            then ["blocked"] else [] end))[]
       | "\($repo)\t\($issue.number)\t\(.)" ]
-    | .[]' <<<"$live"$'\n'"$open_blocked" 2>/dev/null || true
+    | .[]' <<<"$live"$'\n'"$open_blocked"$'\n'"$log_json" 2>/dev/null || true
 }
 
 # Memoised per (repo, label): a token that cannot create labels must cost one

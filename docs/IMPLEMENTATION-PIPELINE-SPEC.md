@@ -10842,22 +10842,17 @@ implements.
     one path that cannot prove its own history.
 
     `lib/refinement.sh`'s `refinement_blocked_label_orphaned` closes it a
-    different way, needing no history at all: `blocked:<reason>` is never a
-    label a human reaches for on their own (the same fact the fresh path's
-    unconditional add already relies on), so its live presence on an open
-    issue this repo's currently-open blocks do not name is proof enough on
-    its own that it is stuck. `lib/candidate-gather.sh`'s per-repo gather
-    loop runs it wherever `sources` configures the `issues` band, ahead of
-    `scripts/gather-issues.sh` itself so an issue this frees becomes a
-    candidate the same cycle: one `gh issue list --label blocked:<reason>
-    --state open` call per repo, compared against `blocked_items`, with
-    `blocked` released alongside the reason label whenever that issue's own
-    live labels carry both — the same "no human reaches for the compound
-    name" proof extended from the block's own recorded provenance
-    (`refinement_blocked_label_targets`, above) to live GitHub state, which is
-    what lets it reach the legacy-swept case that provenance-keyed removal
-    never could. An issue that never carried the reason label is never read
-    by this call at all, so a standalone hand-applied `blocked` — #402,
+    different way, needing no history for the *reason* label at all:
+    `blocked:<reason>` is never a label a human reaches for on their own (the
+    same fact the fresh path's unconditional add already relies on), so its
+    live presence on an open issue this repo's currently-open blocks do not
+    name is proof enough on its own that it is stuck. `lib/candidate-gather.sh`'s
+    per-repo gather loop runs it wherever `sources` configures the `issues`
+    band, ahead of `scripts/gather-issues.sh` itself so an issue this frees
+    becomes a candidate the same cycle: one `gh issue list --label
+    blocked:<reason> --state open` call per repo, compared against
+    `blocked_items`. An issue that never carried the reason label is never
+    read by this call at all, so a standalone hand-applied `blocked` — #402,
     #677, #678 among them — is untouched by it, the same guarantee the fresh
     path's `refinement_label_project` gives at the moment of application.
     Guarded by requirement 12's dry-run switch, like every other label write
@@ -10869,6 +10864,55 @@ implements.
     cycle, and because the listing is newest-first while a stuck label is by
     nature an old one, that miss does not clear itself on a later pass
     either.
+
+    The generic `blocked` label needs a second proof before it rides along,
+    added on the PR #823 review's own concern 3: a live-labelled issue's most
+    recent `attempt-failed` event of this kind — open or long since cleared —
+    is consulted (`lib/refinement.sh` reads it off the same union log every
+    other reader here does), and `blocked` is released only when that event
+    either predates agent-ops#639 (it carries `needs_refinement_assignee` and
+    neither blocked-label field — the genuinely history-less, legacy-swept
+    cohort this requirement exists for), or explicitly records this pipeline
+    as having added `blocked` itself (`blocked_label` set, the same field
+    `refinement_blocked_label_targets` above reads at block-clear time). A
+    modern event whose `blocked_label` field is empty recorded finding the
+    label already present — a human's own hand — and `blocked` is left alone
+    for that issue even though the reason label still comes off: the same
+    over-hold `refinement_blocked_label_targets` already applies to a block
+    still open, extended here to one already cleared. No history at all for
+    an issue (neither a legacy nor a modern record survives to be read) falls
+    back to the reason label's own proof alone, exactly as this requirement
+    read before PR #823's review.
+
+    Two more conditions gate the whole reconciliation, both added on that
+    same review. First, `union_log_healthy` (`lib/fleet.sh`'s
+    `fleet_logs_healthy`, computed once per cycle ahead of the per-repo
+    loop): this is the one reader in the cycle that turns a *silent* union —
+    `fleet_logs` returns nothing at all when `$state_dir/log.jsonl` is absent
+    and the peers directory is empty, which a fresh node before its first
+    state-sync, a mirror just discarded and rebuilt (requirement 2.5's own
+    corruption path), or a failing fetch cron all produce — into "no block
+    exists" rather than "no block is visible from here", so it is the one
+    reader such a silence actively misleads. `fleet_logs_healthy` refuses to
+    let it: an empty union, or a peers directory whose own `fleet_mark_peers`
+    freshness marker records the last fetch as failed, is unhealthy, and the
+    whole reconciliation for that cycle is skipped with one warning logged
+    (not one per repo, since every repo shares the one union and the one
+    peers directory). Second, a grace window against `union_log_horizon`
+    (requirement 39f's own snapshot horizon): a peer node can apply this
+    exact label pair within seconds of logging the block that justifies it,
+    while that log line reaches this node only through the fleet's periodic
+    state-sync — up to a full fetch interval behind — so a label applied too
+    recently for its own block record to plausibly have arrived yet is
+    deferred rather than stripped. The reason label's own `labelled_at` (read
+    per candidate issue off its GitHub timeline, the same call
+    `scripts/gather-hand-flagged-refinements.sh` already makes) is compared
+    against `union_log_horizon` with `LABEL_OWN_GRACE_SECONDS`
+    (`lib/label-marker.sh`) tolerance — the same constant requirement 39f
+    already measures a peer's label writes against that horizon with, reused
+    rather than duplicated. An unresolvable `labelled_at` (a failed timeline
+    call) defers the same as a too-recent one: this mechanism only ever acts
+    on a positive, aged proof, never a missing one.
 
 38c. **An idle, approved pull request is nudged, not left silent.** For every
     open, non-draft, `pr_label`-carrying pull request in every configured

@@ -565,6 +565,47 @@ assert_eq "removal takes exactly the orphaned pair and the lone reason label, no
 assert_eq "AC4: idempotent — a second read after the removal already landed offers nothing" "" \
   "$(refinement_blocked_label_orphaned "$open_blocked_only_200" '[{"number": 200, "labels": ["blocked", "blocked:needs-refinement"]}]' "o/r")"
 
+# --- Requirement 38b's live reconciliation: a provenance check gates the -------
+# --- generic `blocked` ride-along (PR #823 review concern 3, agent-ops#816) ---
+# Live state alone still proves the *reason* label is orphaned — nothing else
+# applies it — but not that `blocked` is this pipeline's own: a human may also
+# reach for it. A modern block's own attempt-failed event already distinguishes
+# the two cases (the same fields `refinement_blocked_label_targets` reads at
+# block-clear time): `blocked_label` set means this pipeline recorded adding
+# it itself; unset on a *modern* record (one with no `needs_refinement_assignee`,
+# so not the pre-agent-ops#639 shape) means it found the label already there,
+# or never got far enough to try. Passed the fourth argument (the raw union
+# log), the function now consults that history before offering `blocked`.
+cat > "$log" <<'EOF'
+{"ts":"2026-08-01T09:00:00Z","cycle":"c0","event":"attempt-failed","stage":"coordinator","repo":"o/r","item":"210","kind":"needs-refinement","detail":"gated","unblock_condition":"x","blocked_label":"blocked","blocked_reason_label":"blocked:needs-refinement"}
+{"ts":"2026-08-01T10:00:00Z","cycle":"c1","event":"unblocked","repo":"o/r","item":"210"}
+{"ts":"2026-08-01T09:00:00Z","cycle":"c0","event":"attempt-failed","stage":"coordinator","repo":"o/r","item":"211","kind":"needs-refinement","detail":"gated","unblock_condition":"y","blocked_reason_label":"blocked:needs-refinement"}
+{"ts":"2026-08-01T10:00:00Z","cycle":"c1","event":"unblocked","repo":"o/r","item":"211"}
+EOF
+live_210_211="$(jq -c -n '
+  [{number: 210, labels: ["blocked", "blocked:needs-refinement"]},
+   {number: 211, labels: ["blocked", "blocked:needs-refinement"]}]')"
+assert_eq "a modern block's recorded add proves blocked is ours (210); one that found it already present leaves it alone (211)" \
+  "$(printf 'o/r\t210\tblocked:needs-refinement\no/r\t210\tblocked\no/r\t211\tblocked:needs-refinement')" \
+  "$(refinement_blocked_label_orphaned "$open_blocked_only_200" "$live_210_211" "o/r" "$log")"
+
+reset_calls
+while IFS=$'\t' read -r t_repo t_item t_label; do
+  refinement_label_remove "$t_repo" "$t_item" "$t_label"
+done < <(refinement_blocked_label_orphaned "$open_blocked_only_200" "$live_210_211" "o/r" "$log")
+assert_eq "  ... so the removal takes 211's reason label only, never its blocked" \
+  "$(printf 'remove o/r 210 blocked:needs-refinement\nremove o/r 210 blocked\nremove o/r 211 blocked:needs-refinement')" \
+  "$(label_calls)"
+
+# The genuinely history-less cohort (agent-ops#816's own target) is unaffected
+# by passing LOG_FILE: #201 and #202 never had an attempt-failed event at all,
+# and a log that simply does not mention them reads exactly like one that was
+# never passed — the fourth argument is additive, never a new way to withhold
+# the ride-along from the cohort this requirement exists for.
+assert_eq "passing LOG_FILE changes nothing for issues with no history to consult" \
+  "$(printf 'o/r\t201\tblocked:needs-refinement\no/r\t201\tblocked\no/r\t202\tblocked:needs-refinement')" \
+  "$(refinement_blocked_label_orphaned "$open_blocked_only_200" "$live_201_and_202" "o/r" "$log")"
+
 # --- Requirement 35a: a refinement block is eligible like any other -------------
 # Deliberately unchanged by the marker. The threshold delay is a feature here:
 # it gives the human, or the Co-Ordinator's own cheap re-check, several cycles
@@ -1046,6 +1087,7 @@ assert_eq "  ... while still returning the accumulator it already had" "[]" \
   refinement_hand_flag_fields "o/r" 52 needs-refinement >/dev/null
   refinement_hand_flag_cleared 'not json' 'not json' >/dev/null
   refinement_blocked_label_orphaned 'not json' 'not json' "o/r" >/dev/null
+  refinement_blocked_label_orphaned 'not json' 'not json' "o/r" "/nonexistent/log.jsonl" >/dev/null
   exit 0
 ) >/dev/null 2>&1
 assert_eq "the real call-site shapes survive set -e and unparseable input" "0" "$?"
