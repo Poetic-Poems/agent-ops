@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `scripts/state-sync.sh`'s mirror is no longer trusted just because its
+  `.git/` directory still exists (requirement 2.5, issue #604): `mirror_init`
+  now runs `git fsck --connectivity-only` against a mirror that already
+  existed, and on any failure discards it and rebuilds it from source
+  instead of continuing to read from and publish a corrupted checkout — the
+  behaviour observed on ockham-container from 2026-08-08 and ockham-2 on
+  2026-08-24, where an unclean shutdown left truncated loose objects and
+  `git gc` failed at repair for four days with no visible failure anywhere.
+  A rebuild is recorded durably under `state_dir` and published as the
+  heartbeat's new `mirror` field, alongside the existing `compose`/`image`/
+  `switch` verdicts, so a repeat rebuild reads as a repeat rather than one
+  more indistinguishable line.
 - Every escalation route now reaches an operator even when GitHub itself
   rejects the node's own credential (requirement 2m, TD-PPagop-26082304): a
   new optional `escalation_webhook_url` config key, POSTed to

@@ -2215,14 +2215,17 @@ implements.
    cumulative-since-baseline cache (`revert-rate.log`,
    `revert-rate-cumulative-state.json` — requirement 2.6b, the structured
    `revert-rate.jsonl` excepted, below), the stage event streams
-   (`*.stream.jsonl`, requirement 4d), and the fleet-log snapshot
-   (`.fleet-log.jsonl`, "The union" below).
+   (`*.stream.jsonl`, requirement 4d), the fleet-log snapshot
+   (`.fleet-log.jsonl`, "The union" below), and the mirror's own durable
+   rebuild record (`.mirror-rebuild-state.json`, "Mirror integrity" above).
    The exclusions are not tidiness: a copied `lock.json` is a lock no process
    holds — peers read logs, never locks; the
    dashboard is generated from the state beside it, so copying it would be
    copying a derivative of what is already being copied; a copied
    `.image-drift-cache.json` would answer for a registry query nobody on the
-   peer ran; `doctor.log`/`revert-rate.log` are each a local pass's own text
+   peer ran, and a copied `.mirror-rebuild-state.json` likewise would answer
+   for a rebuild nobody on the peer needed; `doctor.log`/`revert-rate.log`
+   are each a local pass's own text
    output, superseded for a reader by the structured sibling that pass also
    writes (`.doctor-status.json` locally, `revert-rate.jsonl` fleet-wide —
    the asymmetry is exactly why one is excluded and the other is not); a
@@ -2250,12 +2253,48 @@ implements.
    installed. Git stores no empty directories, so a cycle that stood down
    before its first stage replicates as its `log.jsonl` entry alone.
 
+   **Mirror integrity.** Before either mode below touches the mirror,
+   `mirror_init` (`scripts/state-sync.sh`) confirms it still deserves the
+   trust a bare directory check used to hand it for free: a host whose disk
+   quietly corrupts a loose object — an unclean shutdown mid-write, as
+   happened on ockham-container from 2026-08-08 and ockham-2 on 2026-08-24
+   — used to leave a `.git/` that opened fine but could not answer for what
+   it held, with `git gc` failing at repair indefinitely (a `gc.log` that
+   never clears) and the node reading from and publishing the damaged
+   checkout for four days with no failure visible anywhere in the
+   automation logs. On a mirror that already existed — never on one this
+   call just created, since a fresh `git init` has nothing to have failed,
+   and treating that as a rebuild would make every node's first-ever push
+   report self-healing that never happened — `mirror_init` runs `git fsck
+   --connectivity-only`: every object reachable from a ref exists and
+   parses, without reading every object's full content the way a plain
+   `git fsck` does. That bound is the right one, because the incident's own
+   damage sat on a *peer's* remote-tracking ref, which is reachable, and it
+   costs well under a second even on a mirror of several hundred thousand
+   objects — comfortably inside the 5-minute push / 7-minute fetch interval
+   this runs on, so no stamp-file gate is needed to keep it off the common
+   path. On any nonzero exit — 2 for an empty loose object, 3 for other
+   corruption — `mirror_init` discards the checkout (`rm -rf`, `git init`,
+   `remote add`) rather than repairing it: the mirror is wholly derived,
+   this node's own branch is rsync'd back out of `state_dir` on the very
+   next push and every peer branch is re-fetched at `--depth 1` by the very
+   next fetch, so nothing in it is the only copy of anything, and repair
+   (`git gc`) is exactly what the incident above already showed does not
+   work. A rebuild is recorded durably in a small cache file under
+   `state_dir` (`lib/mirror-integrity.sh`'s `mirror_rebuild_state_file`,
+   excluded from replication like `.image-drift-cache.json` below, since it
+   answers for this node alone) — living outside the mirror is what lets
+   the record outlive the rebuild that produced it — and published as the
+   heartbeat's `mirror` verdict (below), so a rebuild is as visible to a
+   human or a peer as any other node fact, and a *second* rebuild is
+   visibly a repeat rather than one more indistinguishable line.
+
    **Push.** Every node — active or standby — mirrors its `state_dir` into
    its **own branch**, `nodes/<NODE_NAME>`, every few minutes from the
    crontab and again from the cleanup that ends a cycle. No two nodes share
    a branch, so pushes cannot contend and nothing arbitrates them. Each push
    stamps `heartbeat.json` (`{node, role, ts, last_cycle, version, compose,
-   image, switch, stage_health}`)
+   image, switch, stage_health, mirror}`)
    into the branch root — on a standby, which has no cycles to publish, the
    heartbeat is the entire point, and it is what lets the fleet dashboard
    tell a quiet node from a dead one. `version` is `lib/version.sh`'s answer
@@ -2294,6 +2333,11 @@ implements.
    single source both the heartbeat and this node's own dashboard read,
    rather than two computations that could disagree. `null` on a node that
    has not completed a cycle since this check shipped.
+   `mirror` is `lib/mirror-integrity.sh`'s `mirror_rebuild_verdict`: `null`
+   until "Mirror integrity" above has ever had to discard and rebuild this
+   node's checkout, else `{status: "rebuilt", count, last_rebuilt_at}`, read
+   back from the durable record every push so a repeat rebuild bumps `count`
+   rather than reading identically to the first.
    Each branch is a single rolling commit — `commit
    --amend` plus a force-push — because the state files carry their own
    history (`log.jsonl` is append-only, every cycle keeps its own directory)

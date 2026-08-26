@@ -3,7 +3,7 @@
 # test/state-sync.test.sh — regression test for scripts/state-sync.sh under
 # the multi-active fleet model (per-node branches, no lease).
 #
-# Four things here are worth a test rather than a careful reading:
+# Five things here are worth a test rather than a careful reading:
 #
 #   what replicates   the exclude list is the difference between a fleet that
 #                     shares its memory and one that shares its locks.
@@ -16,6 +16,11 @@
 #   what comes back   a fetch materialises every peer, whole, and prunes a
 #                     peer whose branch is gone — half a peer or a ghost peer
 #                     both poison the union readers.
+#   what is trusted   a mirror whose object store has quietly corrupted is
+#                     discarded and rebuilt rather than kept and published
+#                     from — the property that makes an unclean shutdown a
+#                     one-tick blip instead of a four-day silent outage
+#                     (#604).
 #
 # No network and no GitHub: the remote is a local bare repository
 # (STATE_SYNC_REMOTE). No test framework is used (none exists elsewhere in
@@ -227,6 +232,14 @@ assert_eq "the heartbeat carries the stage-health verdict computed this cycle" "
 assert_eq "with its consecutive-failure count intact" "5" \
   "$(jq -r '.stage_health.stages.coordinator.consecutive_failures' <<<"$hb")"
 
+# --- The heartbeat carries a mirror-rebuild verdict slot (#604) ---------------
+# lib/mirror-integrity.sh's own behaviour (a corrupted mirror is discarded
+# and rebuilt) is covered by its dedicated section below; what belongs here
+# is only that a mirror which has never had to rebuild reports `null`, not
+# that the key is simply missing.
+assert_eq "the heartbeat carries a mirror-rebuild slot" "true" "$(jq 'has("mirror")' <<<"$hb")"
+assert_eq "unset until this node has actually rebuilt its mirror" "null" "$(jq -c '.mirror' <<<"$hb")"
+
 # --- The heartbeat carries the compose-drift verdict (#131) -------------------
 # End to end: a node whose compose.yaml has drifted publishes that fact with
 # its next push. The check's paths are forced to fixtures, because this suite
@@ -400,6 +413,101 @@ assert_eq "a stream already in the mirror is deleted from it" "0" \
   "$(test -e "$tmp_dir/pushed-again/cycles/20260720T010000Z-1/legacy.stream.jsonl" && echo 1 || echo 0)"
 assert_eq "a snapshot already in the mirror is deleted from it" "0" \
   "$(test -e "$tmp_dir/pushed-again/cycles/20260720T010000Z-1/.fleet-log.jsonl" && echo 1 || echo 0)"
+
+# ==============================================================================
+# mirror integrity — a corrupted mirror is discarded and rebuilt, never
+# repaired or silently trusted (#604)
+# ==============================================================================
+# The fault this reproduces: an unclean shutdown leaves a loose object
+# truncated to zero bytes (the field evidence behind #604 — ockham-container
+# from 2026-08-08, ockham-2 on 2026-08-24, four empty objects each time), and
+# `mirror_init` used to treat `.git/` existing as the whole check.
+mi_home="$(new_node mirror-integrity-node)"
+mi_state="$mi_home/.local/state/poetic-agents"
+mi_mirror="$mi_home/.cache/poetic-agents/workspaces/.agent-ops-state"
+printf '{"ts":"2026-08-25T00:00:00Z","event":"cycle-start"}\n' > "$mi_state/log.jsonl"
+
+find_head_object() {  # find_head_object <mirror-dir> -> path of the loose
+  # object holding the mirror's own HEAD commit — always reachable, unlike
+  # an arbitrary loose object, some of which are amend-orphaned history that
+  # `git fsck --connectivity-only` never walks.
+  local mirror="$1" sha
+  sha="$(git -C "$mirror" rev-parse HEAD 2>/dev/null)" || return 1
+  printf '%s/.git/objects/%s/%s\n' "$mirror" "${sha:0:2}" "${sha:2}"
+}
+
+truncate_object() {  # truncate_object <path> — git writes loose objects
+  # read-only, so the write needs its own permission first.
+  chmod u+w "$1" && : > "$1"
+}
+
+# A brand-new mirror's first-ever init has nothing to have failed, so it must
+# never be reported as a rebuild — otherwise every node's first-ever push
+# would report self-healing that never happened.
+out="$(sync_as "$mi_home" active push)"
+assert_eq "the first-ever push on a fresh mirror exits 0" "0" "$?"
+mi_pushed_1="$tmp_dir/mi-pushed-1"
+git clone --quiet --branch nodes/mirror-integrity-node "$remote" "$mi_pushed_1"
+assert_eq "a fresh mirror's first push reports no rebuild" "null" \
+  "$(jq -c '.mirror' "$mi_pushed_1/heartbeat.json" 2>/dev/null)"
+
+# Truncate a loose object the way the unclean shutdown did.
+corrupt_1="$(find_head_object "$mi_mirror")"
+assert_eq "the HEAD commit is a loose object to corrupt" "1" "$([[ -f "$corrupt_1" ]] && echo 1 || echo 0)"
+truncate_object "$corrupt_1"
+assert_eq "the mirror now fails its own connectivity check" "1" \
+  "$(git -C "$mi_mirror" fsck --connectivity-only >/dev/null 2>&1 && echo 0 || echo 1)"
+
+# New content, so the next push has to actually reach the remote with the
+# right content — not merely that the check fired.
+printf '{"ts":"2026-08-25T00:05:00Z","event":"cycle-end"}\n' >> "$mi_state/log.jsonl"
+out="$(sync_as "$mi_home" active push)"
+assert_eq "the push over a corrupted mirror still exits 0" "0" "$?"
+assert_contains "it reports discarding and rebuilding the mirror" \
+  "failed its integrity check" "$out"
+
+mi_pushed_2="$tmp_dir/mi-pushed-2"
+git clone --quiet --branch nodes/mirror-integrity-node "$remote" "$mi_pushed_2"
+assert_eq "the rebuilt push publishes the node's current log content" "1" \
+  "$(grep -c 'cycle-end' "$mi_pushed_2/log.jsonl")"
+assert_eq "the heartbeat records the rebuild" "rebuilt" \
+  "$(jq -r '.mirror.status' "$mi_pushed_2/heartbeat.json" 2>/dev/null)"
+assert_eq "as the first rebuild this node has ever needed" "1" \
+  "$(jq -r '.mirror.count' "$mi_pushed_2/heartbeat.json" 2>/dev/null)"
+assert_eq "the branch is still a single rolling commit after the rebuild" "1" \
+  "$(git -C "$mi_pushed_2" rev-list --count nodes/mirror-integrity-node)"
+
+# A second, independent corruption is a *repeat* rebuild, and the record
+# under state_dir — which outlives the mirror it describes — is what makes
+# that a visible fact rather than one more indistinguishable line.
+corrupt_2="$(find_head_object "$mi_mirror")"
+assert_eq "the HEAD commit is a loose object a second time" "1" "$([[ -f "$corrupt_2" ]] && echo 1 || echo 0)"
+truncate_object "$corrupt_2"
+out="$(sync_as "$mi_home" active push)"
+assert_eq "the second corrupted push exits 0" "0" "$?"
+mi_pushed_3="$tmp_dir/mi-pushed-3"
+git clone --quiet --branch nodes/mirror-integrity-node "$remote" "$mi_pushed_3"
+assert_eq "a repeat rebuild bumps the count rather than reading like the first" "2" \
+  "$(jq -r '.mirror.count' "$mi_pushed_3/heartbeat.json" 2>/dev/null)"
+
+# `mirror_init` sits ahead of both do_push and do_fetch (requirement 2.5), so
+# a fetch hitting the same corrupted mirror must rebuild it too — proven here
+# by a third corruption discovered through `fetch` instead of `push`, with
+# the following push (which is what actually reads the durable record) then
+# showing the count has moved again.
+corrupt_3="$(find_head_object "$mi_mirror")"
+assert_eq "the HEAD commit is a loose object a third time" "1" "$([[ -f "$corrupt_3" ]] && echo 1 || echo 0)"
+truncate_object "$corrupt_3"
+out="$(sync_as "$mi_home" active fetch)"
+assert_eq "a fetch over a corrupted mirror still exits 0" "0" "$?"
+assert_contains "the fetch itself reports discarding and rebuilding the mirror" \
+  "failed its integrity check" "$out"
+out="$(sync_as "$mi_home" active push)"
+assert_eq "the push after the fetch-triggered rebuild exits 0" "0" "$?"
+mi_pushed_4="$tmp_dir/mi-pushed-4"
+git clone --quiet --branch nodes/mirror-integrity-node "$remote" "$mi_pushed_4"
+assert_eq "a rebuild triggered by fetch counts the same as one triggered by push" "3" \
+  "$(jq -r '.mirror.count' "$mi_pushed_4/heartbeat.json" 2>/dev/null)"
 
 # ==============================================================================
 # fetch — peers materialised whole, pruned when gone

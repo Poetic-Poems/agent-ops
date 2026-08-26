@@ -40,6 +40,8 @@ SCHEMA_FILE="$SCRIPT_DIR/config.schema.json"
 . "$SCRIPT_DIR/lib/image-drift.sh"
 # shellcheck source=lib/toggle.sh
 . "$SCRIPT_DIR/lib/toggle.sh"
+# shellcheck source=lib/mirror-integrity.sh
+. "$SCRIPT_DIR/lib/mirror-integrity.sh"
 
 usage() {
   cat <<'EOF'
@@ -209,6 +211,12 @@ EXCLUDES=(
   --exclude=/.dashboard-cycle-cache/
   --exclude=.dashboard-claims.json
   --exclude=.image-drift-cache.json
+  # .mirror-rebuild-state.json (lib/mirror-integrity.sh, agent-ops#604): this
+  # node's own durable record of whether/when it last discarded and rebuilt
+  # its state-sync mirror — memoisation like .image-drift-cache.json above,
+  # published to peers only as the heartbeat's `mirror` verdict below, never
+  # as this raw file.
+  --exclude=.mirror-rebuild-state.json
   # labels-ensured/ (lib/labels.sh's labels_ensure_stamped, agent-ops#687):
   # per-(repo, role) rate-limit stamp files, local to this node on the same
   # reasoning as .image-drift-cache.json above — no peer reads another
@@ -242,13 +250,30 @@ mirror_lock() {
 }
 
 mirror_init() {
+  local fresh=0
   if [[ ! -d "$mirror/.git" ]]; then
+    fresh=1
     rm -rf "$mirror"
     mkdir -p "$mirror"
     git -C "$mirror" init --quiet
     git -C "$mirror" remote add origin "$remote_url"
   fi
   git -C "$mirror" remote set-url origin "$remote_url"
+
+  # A mirror that already existed has to prove it still deserves the trust a
+  # bare directory check used to hand it for free (lib/mirror-integrity.sh).
+  # A mirror this call just created has nothing to have failed yet, so the
+  # check — and any rebuild it might otherwise log — never runs against a
+  # fresh init: that first-ever push must stay silent, not report
+  # self-healing that never happened.
+  if (( ! fresh )) && ! mirror_integrity_ok "$mirror"; then
+    say "WARNING: mirror failed its integrity check — discarding and rebuilding from source"
+    rm -rf "$mirror"
+    mkdir -p "$mirror"
+    git -C "$mirror" init --quiet
+    git -C "$mirror" remote add origin "$remote_url"
+    mirror_record_rebuild "$state_dir"
+  fi
 }
 
 # Newest-first list of the cycle directories worth keeping. Their names are
@@ -434,6 +459,14 @@ do_push() {
   # upgrading, which the dashboard already renders as no data rather than as
   # healthy.
   #
+  # And the mirror-rebuild verdict (lib/mirror-integrity.sh's
+  # `mirror_rebuild_verdict`, issue #604): `null` until `mirror_init` above
+  # has ever had to discard and rebuild this checkout, else
+  # {status:"rebuilt", count, last_rebuilt_at}. A corrupt mirror silently
+  # self-healing on every tick would hide a disk that is quietly damaging it
+  # on a schedule; publishing the verdict, and bumping `count` on every
+  # further rebuild rather than reading the same as the first, is what makes
+  # a repeat visible instead of indistinguishable noise.
   # Newest cycle id. Sliced in bash rather than piped into `head -n 1`, for
   # the reason kept_cycles sets out — and this is the site where it mattered:
   # a command substitution in the current shell, under `set -euo pipefail`, so
@@ -458,8 +491,10 @@ do_push() {
     --argjson image "$(image_drift_status "$version_json" "$state_dir/.image-drift-cache.json")" \
     --argjson switch "$(toggle_switch_summary "$state_dir")" \
     --argjson stage_health "$(jq -c '.' "$state_dir/.stage-health.json" 2>/dev/null || echo null)" \
+    --argjson mirror_rebuild "$(mirror_rebuild_verdict "$state_dir")" \
     '{node: $node, role: $role, ts: $ts, last_cycle: $lc, version: $version,
-      compose: $compose, image: $image, switch: $switch, stage_health: $stage_health}' > "$mirror/heartbeat.json"
+      compose: $compose, image: $image, switch: $switch,
+      stage_health: $stage_health, mirror: $mirror_rebuild}' > "$mirror/heartbeat.json"
 
   # One rolling commit per node, amended and force-pushed. The state files
   # carry their own history — log.jsonl is append-only and every cycle keeps
