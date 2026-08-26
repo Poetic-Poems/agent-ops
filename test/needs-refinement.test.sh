@@ -513,6 +513,58 @@ assert_eq "the retry removes exactly the stale labels, nothing else" \
   "$(printf 'remove o/other 90 blocked\nremove o/r 90 blocked\nremove o/r 90 blocked:needs-refinement')" \
   "$(label_calls)"
 
+# --- Requirement 38b's live reconciliation (agent-ops#816, TD-PPagop-26082602) --
+# `refinement_blocked_label_stale` above can only offer a removal its own
+# history proves is ours — a logged `own-label-action add` with no later
+# `remove`. This cohort has neither: the label was applied by
+# `scripts/sweep-legacy-refinement-assignees.sh` (which logs nothing of its
+# own) or the block cleared before that logging existed at all, so no `add`
+# ever entered the log. `refinement_blocked_label_orphaned` proves it a
+# different way — a *live* GitHub read against the currently-open block set —
+# so it needs no history.
+cat > "$log" <<'EOF'
+{"ts":"2026-08-01T09:00:00Z","cycle":"c0","event":"attempt-failed","stage":"coordinator","repo":"o/r","item":"200","kind":"needs-refinement","detail":"gated","unblock_condition":"x"}
+EOF
+open_blocked_only_200="$(blocked_items "$log")"
+
+# #201: `blocked` + `blocked:needs-refinement` both live on GitHub, no
+# own-label-action history at all (the legacy-sweep shape) and no open block —
+# orphaned, both labels offered.
+live_201_and_202="$(jq -c -n '
+  [{number: 201, labels: ["blocked", "blocked:needs-refinement"]},
+   {number: 202, labels: ["blocked:needs-refinement"]},
+   {number: 200, labels: ["blocked", "blocked:needs-refinement"]}]')"
+assert_eq "an orphaned issue with no history yields both labels; one with only the reason label yields one; the still-open block yields nothing" \
+  "$(printf 'o/r\t201\tblocked:needs-refinement\no/r\t201\tblocked\no/r\t202\tblocked:needs-refinement')" \
+  "$(refinement_blocked_label_orphaned "$open_blocked_only_200" "$live_201_and_202" "o/r")"
+
+assert_eq "AC4: a repo with no live-labelled issues at all is a clean no-op" "" \
+  "$(refinement_blocked_label_orphaned "$open_blocked_only_200" '[]' "o/r")"
+
+# Another repo's open block on an identically-numbered item must not shield
+# this repo's live-labelled issue: LIVE_JSON is already this repo's own read
+# (the caller queries `gh` with `-R`), so only OPEN_BLOCKED_JSON's own
+# repo-matching stands between them.
+cross_repo_open_200="$(jq -c -n '[{repo: "o/other", item: "200", kind: "needs-refinement"}]')"
+assert_eq "another repo's open block on the same-numbered item does not shield it here" \
+  "$(printf 'o/r\t200\tblocked:needs-refinement\no/r\t200\tblocked')" \
+  "$(refinement_blocked_label_orphaned "$cross_repo_open_200" \
+       '[{"number": 200, "labels": ["blocked", "blocked:needs-refinement"]}]' "o/r")"
+
+reset_calls
+while IFS=$'\t' read -r t_repo t_item t_label; do
+  refinement_label_remove "$t_repo" "$t_item" "$t_label"
+done < <(refinement_blocked_label_orphaned "$open_blocked_only_200" "$live_201_and_202" "o/r")
+assert_eq "removal takes exactly the orphaned pair and the lone reason label, nothing else" \
+  "$(printf 'remove o/r 201 blocked:needs-refinement\nremove o/r 201 blocked\nremove o/r 202 blocked:needs-refinement')" \
+  "$(label_calls)"
+
+# AC4, restated as the real steady state: nothing live-labelled at all, on a
+# repo with an open block of its own, is a no-op — not merely an unlabelled
+# repo.
+assert_eq "AC4: idempotent — a second read after the removal already landed offers nothing" "" \
+  "$(refinement_blocked_label_orphaned "$open_blocked_only_200" '[{"number": 200, "labels": ["blocked", "blocked:needs-refinement"]}]' "o/r")"
+
 # --- Requirement 35a: a refinement block is eligible like any other -------------
 # Deliberately unchanged by the marker. The threshold delay is a feature here:
 # it gives the human, or the Co-Ordinator's own cheap re-check, several cycles
@@ -993,6 +1045,7 @@ assert_eq "  ... while still returning the accumulator it already had" "[]" \
   refinement_hand_flag_new 'not json' 'not json' >/dev/null
   refinement_hand_flag_fields "o/r" 52 needs-refinement >/dev/null
   refinement_hand_flag_cleared 'not json' 'not json' >/dev/null
+  refinement_blocked_label_orphaned 'not json' 'not json' "o/r" >/dev/null
   exit 0
 ) >/dev/null 2>&1
 assert_eq "the real call-site shapes survive set -e and unparseable input" "0" "$?"

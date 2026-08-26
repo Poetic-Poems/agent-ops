@@ -10784,16 +10784,18 @@ implements.
     pre-agent-ops#639 block: the exact defect `refinement_label_project`
     exists to prevent, reappearing on the one path that cannot prove its own
     history. `refinement_blocked_label_targets` therefore never offers a
-    legacy block's generic `blocked` for removal at all — over-held rather
-    than guessed at, the same trade-off `refinement_label_project` already
-    makes for an unreadable label list, and bounded to the same one-off,
-    only-ever-shrinking backlog the migration itself is scoped to. It comes
-    off only by a human's own hand: a *fresh* block landing on the same issue
-    later does not release it either, because `refinement_label_project` finds
-    the label already `present` and so records nothing for that block to give
-    back. A legacy block the sweep has not reached yet costs one `gh` call
-    that finds nothing to remove, best-effort like every other call on that
-    path.
+    legacy block's generic `blocked` for removal at *the moment its block
+    clears* — over-held rather than guessed at, the same trade-off
+    `refinement_label_project` already makes for an unreadable label list. A
+    *fresh* block landing on the same issue later does not release it either,
+    because `refinement_label_project` finds the label already `present` and
+    so records nothing for that block to give back. A legacy block the sweep
+    has not reached yet costs one `gh` call that finds nothing to remove,
+    best-effort like every other call on that path.
+
+    This over-hold is bounded in time, not permanent: it lasts until the live
+    reconciliation below next runs against the issue, which needs none of the
+    provenance this paragraph's removal path cannot prove.
 
     **The reconciliation sweep for a removal that silently failed**
     (agent-ops#651). Unlike `needs_refinement_label`'s hand-flag path
@@ -10818,6 +10820,42 @@ implements.
     keep excluding the issue forever (requirement 16.4's deterministic half),
     invisibly, the same permanently-stuck-hold class of failure agent-ops#639
     ended for the assignment-based mechanism.
+
+    **The live reconciliation for a label history cannot see**
+    (agent-ops#816, TD-PPagop-26082602). The sweep just above is blind to two
+    cases, both real: a `blocked:<reason>` applied by
+    `scripts/sweep-legacy-refinement-assignees.sh`, which logs no
+    `own-label-action` of its own (it runs outside a cycle, with nothing to
+    log to), and one whose block cleared before agent-ops#651's
+    `own-label-action` logging existed to record the add at all. Both leave a
+    label standing with no `add` in the log for the sweep to key on, so
+    `scripts/gather-issues.sh` excludes the issue forever, invisibly — the
+    same class of failure the log-based sweep exists to end, reopened on the
+    one path that cannot prove its own history.
+
+    `lib/refinement.sh`'s `refinement_blocked_label_orphaned` closes it a
+    different way, needing no history at all: `blocked:<reason>` is never a
+    label a human reaches for on their own (the same fact the fresh path's
+    unconditional add already relies on), so its live presence on an open
+    issue this repo's currently-open blocks do not name is proof enough on
+    its own that it is stuck. `lib/candidate-gather.sh`'s per-repo gather
+    loop runs it wherever `sources` configures the `issues` band, ahead of
+    `scripts/gather-issues.sh` itself so an issue this frees becomes a
+    candidate the same cycle: one `gh issue list --label blocked:<reason>
+    --state open` call per repo, compared against `blocked_items`, with
+    `blocked` released alongside the reason label whenever that issue's own
+    live labels carry both — the same "no human reaches for the compound
+    name" proof extended from the block's own recorded provenance
+    (`refinement_blocked_label_targets`, above) to live GitHub state, which is
+    what lets it reach the legacy-swept case that provenance-keyed removal
+    never could. An issue that never carried the reason label is never read
+    by this call at all, so a standalone hand-applied `blocked` — #402,
+    #677, #678 among them — is untouched by it, the same guarantee the fresh
+    path's `refinement_label_project` gives at the moment of application.
+    Guarded by requirement 12's dry-run switch, like every other label write
+    here, and gated on the reason label being configured at all — today
+    always true, since `refinement_blocked_reason_label` names exactly one
+    kind.
 
 38c. **An idle, approved pull request is nudged, not left silent.** For every
     open, non-draft, `pr_label`-carrying pull request in every configured

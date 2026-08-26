@@ -174,6 +174,35 @@ while IFS=$'\t' read -r _ slug default_branch; do
   issues="[]"
   issues_excluded="[]"
   if jq -e 'any(.[]; startswith("issues"))' <<<"$sources" >/dev/null 2>&1; then
+    # Requirement 38b's *live* reconciliation (agent-ops#816,
+    # TD-PPagop-26082602), run ahead of the gather below so an issue this
+    # frees becomes a candidate in the same cycle rather than the next one
+    # (acceptance 3): `refinement_blocked_label_stale` above can only retry a
+    # removal its own history already proves is ours, which is exactly what a
+    # label `scripts/sweep-legacy-refinement-assignees.sh` applied (it logs no
+    # `own-label-action` of its own) or one whose block cleared before that
+    # event existed to log never has. One `gh` call per repo per cycle —
+    # `refinement_blocked_reason_label` is empty for no configured kind today,
+    # so this never runs for nothing.
+    if ! (( DRY_RUN )) && refinement_reason_label="$(refinement_blocked_reason_label "$REFINEMENT_BLOCK_KIND")" \
+        && [[ -n "$refinement_reason_label" ]]; then
+      live_reason_issues_json="$(gh issue list -R "$slug" --label "$refinement_reason_label" \
+          --state open --json number,labels 2>/dev/null \
+        | jq -c '[.[] | {number: .number, labels: [.labels[].name]}]' 2>/dev/null)" || true
+      jq -e 'type == "array"' <<<"$live_reason_issues_json" >/dev/null 2>&1 \
+        || live_reason_issues_json='[]'
+      while IFS=$'\t' read -r orph_repo orph_item orph_label; do
+        [[ -n "$orph_repo" && -n "$orph_item" && -n "$orph_label" ]] || continue
+        if refinement_label_remove "$orph_repo" "$orph_item" "$orph_label"; then
+          log_event "own-label-action" \
+            "$(label_own_action_fields "$orph_repo" "$orph_item" "$orph_label" "remove")"
+        else
+          log_event "warning" "$(jq -nc --arg d "could not remove the orphaned $orph_label label from $orph_repo#$orph_item" \
+             '{detail: $d}')"
+        fi
+      done < <(refinement_blocked_label_orphaned "$(blocked_items "$union_log")" \
+                 "$live_reason_issues_json" "$slug")
+    fi
     issues_raw="$(gather_issues "$slug")"
     emit_first_seen "$slug" issues "$issues_raw"
     issues="$(exclude_claimed_items "$issues_raw" "$claimed_item_refs_json")"
