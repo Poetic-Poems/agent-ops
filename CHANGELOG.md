@@ -660,6 +660,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   stand-down reason and the escalation issue's title and body
   (`lib/standdown.sh`) now say so plainly instead of claiming a rejected
   token ("HTTP 401", "invalid or expired") that never happened.
+- `refinement_traceability_fault` (requirement 17f, `lib/candidate-select.sh`)
+  no longer faults a compliant work order on ordinary paste drift, and no
+  longer assumes a refinement is present when it cannot check
+  (TD-PPagop-26082307). The comparison against a candidate's `context`/
+  `acceptance` now normalizes whitespace (collapses runs, trims both ends)
+  on both sides before testing containment, so a model's reflowed line or
+  collapsed spacing no longer defeats a verbatim match — the check still
+  faults a passage that is genuinely missing or different. A failed `gh api`
+  read of the actual refinement comment is now itself a fault
+  (`untraceable`, retried next cycle) rather than a silent pass, reported
+  via `guard_warn` instead of swallowed — previously a degraded token, a
+  narrowed scope or a sustained rate limit could disarm the whole gate
+  indefinitely while it kept reading as a passing check. `TRACEABILITY_DEBUG=1`
+  logs the normalized comparison to stderr for diagnosing a real
+  drift-tolerance edge case.
 - `state-sync.sh fetch` no longer reports a real failure — dead credentials,
   a network outage, a corrupt mirror — as the benign "the state repository
   has no node branches yet" bootstrap case (agent-ops#693). During the

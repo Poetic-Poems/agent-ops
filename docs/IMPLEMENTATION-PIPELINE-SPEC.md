@@ -6665,7 +6665,16 @@ implements.
     is attempted, it re-derives the item's own recorded refinement from
     `refinements` — keyed on that candidate's own `repo`/`item`, never on
     anything the candidate itself claims — and confirms it is genuinely
-    present, verbatim, in that candidate's own `context` or `acceptance`:
+    present, after normalizing whitespace (TD-PPagop-26082307: collapse every
+    run of whitespace to a single space and trim both ends, on both sides of
+    the comparison), in that candidate's own `context` or `acceptance`. A
+    model's paste of a multi-kilobyte spec or issue thread drifts in exactly
+    this way — a reflowed line, a normalized list marker, a trimmed trailing
+    space — without changing what it says, and normalizing tolerates all of
+    that while still failing a passage that is genuinely missing or
+    different; `TRACEABILITY_DEBUG=1` logs, to stderr, the normalized
+    haystack/needle a comparison actually ran against, never required to
+    diagnose a failure, only to see it directly.
     - A `spec` entry (requirement 17b) costs no extra read: the text is
       already in `refinements`, so its presence in `context` is checked
       directly.
@@ -6677,8 +6686,8 @@ implements.
       Second, one `gh api repos/<repo>/issues/comments/<id>` read of the
       actual comment (the pre-fetched `comments` array on a repo's `issues`
       entry carries no per-comment id to join against, so this is the only
-      way to know the comment's real text) — a fault if that text is present
-      in neither `context` nor `acceptance`.
+      way to know the comment's real text) — a fault if that text, normalized
+      the same way, is present in neither `context` nor `acceptance`.
     **A failed check is repaired, not discarded (agent-ops#767).** The
     requirement is that the work order *carry* the item's refinement — not
     that the model be the one who carried it — and the Script is holding the
@@ -6718,10 +6727,19 @@ implements.
     counted separately from both the pre-claimed skips and the race losses.
     An item with no `refinements` entry at all costs nothing: the check
     returns immediately with no `gh` call. A `gh` read that fails (network,
-    rate limit) fails open — a fact about GitHub's availability, not about
-    the work order, the same direction every other degraded `gh` read in this
-    pipeline already fails — and a refinement that cannot be read cannot be
-    repaired in either.
+    rate limit) is itself a fault (TD-PPagop-26082307), reported the same way
+    as a mismatched paste — `cause: "untraceable"`, retried next cycle — and
+    surfaced via `guard_warn` rather than swallowed. This is the one place
+    this requirement's own `gh` read departs from every other degraded `gh`
+    read in this pipeline's fail-open convention: those read a fact about
+    GitHub's availability, but this check exists to gate a claim on a
+    refinement really being present, and assuming pass on a read it could not
+    complete means a token going bad, a narrowed scope, or a sustained rate
+    limit silently disarms the whole gate, indefinitely, while it keeps
+    reading as green — exactly the failure mode this item's own repair
+    (agent-ops#767, below) exists to prevent for the opposite direction. A
+    refinement that cannot be read cannot be repaired either, so a candidate
+    faulted this way is a hard skip, same as a corrupt `comment_url`.
 
     A fallback selection (requirement 3v) is not checked. `context` there is
     composed by `fallback_select_candidate` in jq, out of the very band entry
@@ -15431,7 +15449,8 @@ pull request, run the ones the change touches and any it could regress.
    pre-claimed skips and the race losses, so a traceability stand-down can
    never again be reported as `raced`.
    `test/refinement-traceability.test.sh` passes, against
-   `refinement_traceability_fault` lifted verbatim from `lib/candidate-select.sh`:
+   `refinement_traceability_fault` (and the `_traceability_normalize` helper
+   it calls) lifted verbatim from `lib/candidate-select.sh`:
    a
    candidate whose recorded `spec` is absent from its own `context`, or
    whose recorded `comment_url` names a different issue than the candidate's
@@ -15439,14 +15458,19 @@ pull request, run the ones the change touches and any it could regress.
    `comment_url`'s own issue number matches but whose actual comment body
    (fetched live) is present in neither `context` nor `acceptance` — the
    #571/#529 shape — is faulted after exactly one `gh` call; a candidate
-   carrying its own comment or spec verbatim, in either field, passes; an
-   item with no `refinements` entry, or one recorded under a different repo,
-   is not checked and costs no `gh` call; and an unreachable GitHub, or a
-   malformed `refinements` document, fails open rather than faulting the
-   candidate. The same test pins the scoping: a candidate
-   `fallback_select_candidate` itself picks for a spec-refined item does not
-   satisfy the verbatim check, and the claim loop's own call site guards the
-   check with `selected_by_fallback` so that candidate is never faulted.
+   carrying its own comment or spec, normalized, in either field, passes,
+   including one whose paste reflowed a line or collapsed whitespace
+   (TD-PPagop-26082307), while one whose text is genuinely different still
+   faults; an item with no `refinements` entry, or one recorded under a
+   different repo, is not checked and costs no `gh` call; a malformed
+   `refinements` document fails open rather than faulting the candidate; and
+   an unreachable GitHub now faults the candidate (`untraceable`, same as a
+   mismatch) rather than passing it, with the failed read reported through
+   `guard_warn` rather than swallowed. The same test pins the scoping: a
+   candidate `fallback_select_candidate` itself picks for a spec-refined item
+   does not satisfy the normalized check, and the claim loop's own call site
+   guards the check with `selected_by_fallback` so that candidate is never
+   faulted.
 8. **A no-op Implementer is recorded.** Drive one cycle in which the
    Implementer reports `blocked` without opening a PR: the cycle must exit 0
    having logged an `attempt-failed` carrying that item and the stage's own
