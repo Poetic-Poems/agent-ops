@@ -16332,6 +16332,33 @@ pull request, run the ones the change touches and any it could regress.
     reason as requirement 35a's rule: too eager and two models re-specify each
     other's work forever, too shy and the item starves exactly as it did before
     any of this existed.
+11d-i. **An escalation the Script did not file is never claimed on the work
+    item's thread (requirement 36b).** `test/enabler-verdicts.test.sh` passes,
+    on both halves of the reconciliation — the call and the comment.
+    Driving `maybe_run_enabler` itself with an `escalate` verdict on a
+    `needs-refinement` item whose ref is a bare issue number:
+    `escalation_thread_reconcile` is called exactly once per engagement, with
+    `escalated` and the filed issue's real number and URL when
+    `create_escalation_issue` succeeds; with `adjudicated-adequate`, and no
+    number, when an `adjudicate-first` pass settled the disagreement before
+    `create_escalation_issue` was reached at all — asserted with a
+    `create_escalation_issue` stub that fails the run outright if it is
+    called, since that path is the one the #604/#613/#640 incident actually
+    took and the one nothing covered; and with `escalation-failed`, and no
+    number, when the filing itself returns 1. A TD-shaped item calls it on no
+    path, the scope requirement 36b states. Then the comment those calls
+    produce, asserted against the real function: the `escalated` body's
+    `Blocked-by: #<n>` line is read back by `dependency_refs`
+    (`lib/dependency-gate.sh`) — the reader `scripts/gather-issues.sh`'s own
+    exclusion depends on, not a literal-text match — while both correcting
+    bodies say plainly that no escalation was filed **and** carry no
+    `Blocked-by:` reference at all, so a withdrawal can never read as a live
+    dependency to the next gather. Every body opens with the Script's own
+    `pipeline_comment_header` and closes with the cycle's own marker. Nothing
+    at all is posted for an `escalated` outcome carrying no number, or for an
+    outcome this function does not recognise: the failure this requirement
+    exists to end is a comment asserting an escalation that does not exist,
+    so silence is the only safe answer to an outcome it cannot describe.
 11e. **A human's own label is read back, and only where this mechanism put it
     (requirement 34g).** `test/needs-refinement.test.sh` passes:
     `refinement_hand_flag_new` turns a labelled, open issue with no existing

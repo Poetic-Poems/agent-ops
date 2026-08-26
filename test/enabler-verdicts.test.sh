@@ -72,6 +72,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$SCRIPT_DIR/lib/escalation-autonomy.sh"
 # shellcheck source=lib/void-guard.sh
 . "$SCRIPT_DIR/lib/void-guard.sh"
+# Both for the last section only (agent-ops#815), which asserts the comment
+# `escalation_thread_reconcile` actually posts: `pipeline-marker.sh` builds
+# that comment's own header and marker, and `dependency-gate.sh` is the real
+# reader whose `dependency_refs` must parse the `Blocked-by:` line out of it.
+# shellcheck source=lib/pipeline-marker.sh
+. "$SCRIPT_DIR/lib/pipeline-marker.sh"
+# shellcheck source=lib/dependency-gate.sh
+. "$SCRIPT_DIR/lib/dependency-gate.sh"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -142,6 +150,12 @@ review_gate_escalate_unreadable_streak_fn="$(extract_fn 'review_gate_escalate_un
 # (`escalation_autonomy_adjudicated_before`) is sourced for real above and
 # unit-tested in test/escalation-autonomy.test.sh.
 escalation_autonomy_pass_available_fn="$(extract_fn 'escalation_autonomy_pass_available() {' "$SCRIPT_DIR/lib/enabler.sh")"
+# agent-ops#815: lifted here with the rest, while `SCRIPT_DIR` still points at
+# the repository (the scenarios below repoint it at `fake_root` for the
+# claim.sh stub), but `eval`led only in the last section of this file — every
+# scenario before it wants the recording stub in its place, not the real
+# `gh`-writing function.
+escalation_thread_reconcile_fn="$(extract_fn 'escalation_thread_reconcile() {' "$SCRIPT_DIR/lib/enabler.sh")"
 
 if [[ "$maybe_run_enabler_fn" != *"enabler-examined"* ]]; then
   printf 'FAIL - maybe_run_enabler could not be found in agent-cycle.sh (renamed or moved?)\n'
@@ -161,6 +175,10 @@ if [[ "$review_gate_escalate_unreadable_streak_fn" != *"streak_json"* ]]; then
 fi
 if [[ "$escalation_autonomy_pass_available_fn" != *"escalation_autonomy_adjudicated_before"* ]]; then
   printf 'FAIL - escalation_autonomy_pass_available could not be found in agent-cycle.sh (renamed or moved?)\n'
+  exit 1
+fi
+if [[ "$escalation_thread_reconcile_fn" != *"Blocked-by:"* ]]; then
+  printf 'FAIL - escalation_thread_reconcile could not be found in lib/enabler.sh (renamed or moved?)\n'
   exit 1
 fi
 
@@ -1134,6 +1152,103 @@ assert_eq "  ... carrying the flip's own state" "flipped" "$(jq -r '.state' <<<"
 xmn_evt="$(events_named "$calls" enabler-examined | head -n1)"
 assert_eq "gate-clean: enabler-examined records the flip word" \
   "flipped" "$(jq -r '.complete_handoff' <<<"$xmn_evt")"
+
+# ============================================================================
+# agent-ops#815: escalation_thread_reconcile's own comment body.
+#
+# Deliberately last in the file. Every scenario above stubs this function out
+# to assert only that `maybe_run_enabler` calls it, with which outcome and
+# which number — the right coverage for the *caller*. This section evals the
+# real one over that stub, so nothing above it can be affected, and asserts
+# the thing the caller's coverage cannot reach: what actually lands on the
+# human's thread.
+#
+# The `Blocked-by:` assertion is not a spelling check. Requirement 36b's whole
+# claim is that the filed case's comment makes the dependency *deterministic*
+# — `scripts/gather-issues.sh` excludes the work item as `blocked-by: #<n>`
+# from that line alone — and the reference sits inside a string interpolated
+# between a header line and a marker line, where anything that folds it back
+# into the prose beside it ("Escalation filed: <url>, Blocked-by: #90", the
+# obvious tidy-up) costs it its own line and silently stops `dependency_refs`
+# matching, while every assertion above still passes. So it is asserted
+# through the real `dependency_refs` (lib/dependency-gate.sh) — the actual
+# reader, leading whitespace and all — rather than against the literal text.
+#
+# The two correcting outcomes are asserted from both directions for the same
+# reason the file's other guards are: saying "no escalation was filed" is only
+# half of it — a correcting comment that still carried a `Blocked-by:` line
+# would re-assert the very block it exists to withdraw, and would read as a
+# live dependency to the next gather.
+# ============================================================================
+eval "$escalation_thread_reconcile_fn"
+
+# The cycle globals the real function reads, and a `gh` that records the one
+# write it makes: its argv (without the body) and the body itself, separately.
+cycle_dir="$tmp_dir"
+# shellcheck disable=SC2034  # read only by the eval'd escalation_thread_reconcile
+node_name="test-node"
+# shellcheck disable=SC2034  # read only by the eval'd escalation_thread_reconcile
+cycle_id="20260826T000000Z-test-1"
+reconcile_argv="$tmp_dir/reconcile-argv"
+reconcile_body="$tmp_dir/reconcile-body"
+# shellcheck disable=SC2317  # invoked only by the eval'd escalation_thread_reconcile
+gh() {
+  local arg prev=""
+  printf '%s %s %s %s %s\n' "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" > "$reconcile_argv"
+  for arg in "$@"; do
+    [[ "$prev" == "--body" ]] && printf '%s' "$arg" > "$reconcile_body"
+    prev="$arg"
+  done
+  return 0
+}
+
+reconcile_case() {  # reconcile_case OUTCOME NUMBER URL -> the posted body, or "" if nothing was posted
+  rm -f "$reconcile_argv" "$reconcile_body"
+  escalation_thread_reconcile "acme/widgets" "125" "$1" "${2:-}" "${3:-}"
+  [[ -e "$reconcile_body" ]] && cat "$reconcile_body"
+  return 0
+}
+
+# --- filed: the completing comment, carrying a Blocked-by line that parses ---
+body="$(reconcile_case escalated 90 https://github.com/acme/widgets/issues/90)"
+
+assert_eq "reconcile body, filed: comments on the work item's own thread" \
+  "issue comment 125 -R acme/widgets" "$(cat "$reconcile_argv")"
+assert_contains "reconcile body, filed: names the escalation issue's URL" \
+  "https://github.com/acme/widgets/issues/90" "$body"
+assert_eq "reconcile body, filed: dependency_refs reads the Blocked-by line off it" \
+  '["90"]' "$(dependency_refs "$body")"
+# shellcheck disable=SC2016  # the backticks are the header's own literal Markdown, as in lib/pipeline-marker.sh
+assert_contains "reconcile body, filed: opens with the Script's own pipeline header" \
+  '**Script** · autonomous pipeline · node `test-node`' "$body"
+assert_contains "reconcile body, filed: closes with the marker naming this cycle" \
+  '<!-- agent-ops:pipeline-comment cycle=20260826T000000Z-test-1 actor=script -->' "$body"
+
+# --- superseded by adjudication: a correcting comment, and no dependency ---
+body="$(reconcile_case adjudicated-adequate)"
+
+assert_eq "reconcile body, adjudicated adequate: still one comment on the thread" \
+  "issue comment 125 -R acme/widgets" "$(cat "$reconcile_argv")"
+assert_contains "reconcile body, adjudicated adequate: says plainly none was filed" \
+  "No escalation issue was filed for this item" "$body"
+assert_eq "reconcile body, adjudicated adequate: withdraws rather than re-asserts — no Blocked-by" \
+  '[]' "$(dependency_refs "$body")"
+
+# --- the filing failed: the same, naming the failure rather than adjudication ---
+body="$(reconcile_case escalation-failed)"
+
+assert_contains "reconcile body, filing failed: says plainly none was filed" \
+  "No escalation issue was filed for this item" "$body"
+assert_contains "reconcile body, filing failed: says a later cycle retries" \
+  "retry" "$body"
+assert_eq "reconcile body, filing failed: no Blocked-by reference either" \
+  '[]' "$(dependency_refs "$body")"
+
+# --- nothing is ever posted without something true to say ---
+assert_eq "reconcile: an 'escalated' outcome with no number posts nothing at all" \
+  "" "$(reconcile_case escalated "" "")"
+assert_eq "reconcile: an unrecognised outcome posts nothing at all" \
+  "" "$(reconcile_case something-else)"
 
 printf '\n'
 if (( failures > 0 )); then
