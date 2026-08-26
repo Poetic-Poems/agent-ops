@@ -149,6 +149,18 @@ chooses:
    still cannot tell a reader what to do differently is not finished. The
    Co-Ordinator verdict-quality panel is the worked counter-example, and it
    is superseded rather than extended.
+8. **Autonomy-parity rule (D18).** No repository the product is developed in
+   sits below the `merge_autonomy` level agent-ops has reached. A fresh
+   repository defaults to `human` and climbs the ladder on its own evidence
+   (§6's stage table) — that is the right behaviour for a customer's
+   repository, whose safety evidence has not yet been mined. It is the wrong
+   behaviour for a repository the pipeline's own code lives in: the evidence
+   the ladder gates on is evidence about the pipeline's mechanism, already
+   mined once on agent-ops, and re-mining it a second time on the product's
+   own home would gate the pipeline's development behind a slower rung than
+   the tool it produces has already cleared — the customer-zero rule's own
+   bug case. `docs/PULLWRIGHT-DAY-ONE-AUTONOMY.md` is the provisioning
+   checklist this rule cashes out to for the Pullwright product repository.
 
 ## Phase 1 — Untether
 
@@ -349,8 +361,10 @@ Pullwright organisation and carries its licence.
       dashboard, and the review skill `.claude/skills/project-review/` that
       `review-cycle.sh` stages into each clone at runtime, which stops being
       a pinned copy of a personal authoring repo and becomes product source
-      (D7, D8); reduce agent-ops to consumer config + deployment.
-      *[interactive]*
+      (D7, D8); reduce agent-ops to consumer config + deployment. Provision
+      it at agent-ops's own `merge_autonomy` level from day one rather than
+      climbing from `human` a second time — Principle 8, checklist
+      `docs/PULLWRIGHT-DAY-ONE-AUTONOMY.md`. *[interactive]*
 - [ ] Adopt the tech-debt management framework into the product (D15): move
       the canonical register tooling out of `Poetic-Poems/poetic` into the
       product repository (the drift-synced copies consumer repositories hold
