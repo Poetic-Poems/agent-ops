@@ -45,6 +45,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (within `LABEL_OWN_GRACE_SECONDS` of `union_log_horizon`, the same
   tolerance requirement 39f already measures peer label writes with) is
   deferred to a later cycle rather than stripped.
+
 - A model-tier floor (requirement 1c, issue #822): `lib/model-id.sh` now
   ranks the fleet's models by capability
   (`claude-haiku-4-5-20251001` < `claude-sonnet-5` < `claude-opus-5` <
