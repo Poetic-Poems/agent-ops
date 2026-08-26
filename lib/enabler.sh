@@ -153,6 +153,79 @@ create_escalation_issue() {
   printf '%s\t%s' "$number" "$url"
 }
 
+# escalation_thread_reconcile REPO ITEM OUTCOME NUMBER URL
+# The Script's own completing or correcting comment on a `needs-refinement`
+# item that is itself a GitHub issue, once this engagement has established
+# what actually happened to its `escalate` verdict (agent-ops#815).
+#
+# `prompts/enabler.md` ("Refinement items", "When the work item *is* an
+# issue") has the Enabler post its own comment on the work item's thread
+# during its one turn, linking to the escalation it is composing. But that
+# turn ends before any of the three things that decide whether an escalation
+# actually exists ever run: whether `adjudicate-first`'s adjudication pass
+# overrides the verdict with `adequate`, the `create_escalation_issue` call
+# itself, and whether that call succeeds — all of which happen afterwards, in
+# this function's caller. The model cannot truthfully assert the escalation
+# exists at comment time, because nothing has decided that yet. Three items
+# escalated in the same cycle (#604, #613, #640) each carried exactly this
+# false claim, left standing, because nothing reconciled it against what the
+# Script went on to do.
+#
+# Scoped to the one case `prompts/enabler.md` documents a work-item comment
+# for at all: a `needs-refinement` block whose item is a bare GitHub issue
+# number (the caller checks both before calling this at all).
+#
+#   OUTCOME                the thread gets
+#   escalated               a completing comment carrying `Blocked-by:
+#                           #NUMBER` on its own line — the exact form
+#                           `dependency_refs` (lib/dependency-gate.sh) and
+#                           `scripts/gather-issues.sh` require, so the very
+#                           next gather excludes this item deterministically
+#                           rather than from prose.
+#   adjudicated-adequate     a correcting comment: no escalation was filed,
+#                           because the adjudication pass found the existing
+#                           refinement adequate and the item was unblocked on
+#                           that basis instead.
+#   escalation-failed        a correcting comment: the escalation attempt
+#                           itself failed; a later re-examination will retry
+#                           it.
+#
+# Best-effort like every other `gh` write in this file (requirement 37): a
+# failure here is logged as a `warning`, never a reason to unwind the verdict
+# already recorded — the underlying outcome stands whether or not this
+# comment lands.
+escalation_thread_reconcile() {
+  local repo="$1" item="$2" outcome="$3" number="$4" url="$5"
+  local prose body
+  case "$outcome" in
+    escalated)
+      [[ -n "$number" ]] || return 0
+      prose="Escalation filed: $url
+
+Blocked-by: #$number"
+      ;;
+    adjudicated-adequate)
+      prose="No escalation issue was filed for this item: an \`adjudicate-first\` pass found the existing refinement adequate, and the item was unblocked on that basis instead."
+      ;;
+    escalation-failed)
+      prose="No escalation issue was filed for this item: the attempt itself failed. A later cycle will retry once this item is re-examined."
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+  body="$(pipeline_comment_header script "$node_name")
+
+$prose
+
+$(pipeline_comment_marker "$cycle_id" script)"
+  gh issue comment "$item" -R "$repo" --body "$body" \
+    >/dev/null 2>>"$cycle_dir/enabler-escalation-link.err" \
+    || log_event "warning" "$(jq -nc --arg r "$repo" --arg i "$item" \
+         --arg d "enabler: could not post the escalation-thread reconciliation comment on $repo#$item (see enabler-escalation-link.err)" \
+         '{detail: $d, repo: $r, item: $i}')"
+}
+
 # crash_loop_escalate VERDICT_JSON ITEM_REF KIND_LABEL TITLE_PREFIX EVIDENCE_LINE
 # Shared by both requirement-2.7 crash-loop classes: same dedup
 # (`crash_loop_escalated_since`), same label, same load-bearing assignee, same
@@ -878,6 +951,26 @@ $(jq . <<<"$input")
               --arg d "enabler: could not file the escalation issue for $e_repo $e_item (see enabler-issue.err) — retried after the claim TTL" \
               '{detail: $d}')"
             outcome="escalation-failed"
+          fi
+        fi
+
+        # agent-ops#815: complete or correct the Blocked-by claim on the work
+        # item's own thread now that this engagement — unlike the Enabler's
+        # own turn, which ended before any of the above ran — knows what
+        # actually happened. Scoped exactly to what prompts/enabler.md
+        # documents a linking comment for: a needs-refinement block whose
+        # item is itself a bare GitHub issue number. `outcome` still reads
+        # "escalate" (its initial value, never reassigned) on the one path
+        # that filed successfully, so it is what tells that case apart from
+        # `escalation-failed` here.
+        if [[ "$e_item" =~ ^[0-9]+$ ]] \
+             && [[ "$(jq -r '.kind // ""' <<<"$claimed_entry" 2>/dev/null || true)" == "$REFINEMENT_BLOCK_KIND" ]]; then
+          if (( e_adjudicated )); then
+            escalation_thread_reconcile "$e_repo" "$e_item" "adjudicated-adequate" "" ""
+          elif [[ "$outcome" == "escalation-failed" ]]; then
+            escalation_thread_reconcile "$e_repo" "$e_item" "escalation-failed" "" ""
+          else
+            escalation_thread_reconcile "$e_repo" "$e_item" "escalated" "$number" "$url"
           fi
         fi
         ;;
