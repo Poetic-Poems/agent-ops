@@ -10784,16 +10784,26 @@ implements.
     pre-agent-ops#639 block: the exact defect `refinement_label_project`
     exists to prevent, reappearing on the one path that cannot prove its own
     history. `refinement_blocked_label_targets` therefore never offers a
-    legacy block's generic `blocked` for removal at all — over-held rather
-    than guessed at, the same trade-off `refinement_label_project` already
-    makes for an unreadable label list, and bounded to the same one-off,
-    only-ever-shrinking backlog the migration itself is scoped to. It comes
-    off only by a human's own hand: a *fresh* block landing on the same issue
-    later does not release it either, because `refinement_label_project` finds
-    the label already `present` and so records nothing for that block to give
-    back. A legacy block the sweep has not reached yet costs one `gh` call
-    that finds nothing to remove, best-effort like every other call on that
-    path.
+    legacy block's generic `blocked` for removal at *the moment its block
+    clears* — over-held rather than guessed at, the same trade-off
+    `refinement_label_project` already makes for an unreadable label list. A
+    *fresh* block landing on the same issue later does not release it either,
+    because `refinement_label_project` finds the label already `present` and
+    so records nothing for that block to give back. A legacy block the sweep
+    has not reached yet costs one `gh` call that finds nothing to remove,
+    best-effort like every other call on that path.
+
+    The live reconciliation below lifts this over-hold for one case and one
+    only: an issue still carrying its `blocked:<reason>` label at the moment
+    that reconciliation next runs, since that label is the whole of what puts
+    an issue in front of it. That is the case agent-ops#816 found — the reason
+    label's own removal never happened either, so the pair is still standing
+    and comes off together. Where the reason label *did* come off when the
+    block cleared, the issue carries a bare `blocked` and nothing reads it
+    again: the generic label stays until a human takes it off, and
+    `scripts/gather-issues.sh` goes on excluding the issue for as long as it
+    does. Bounding that residue is TD-PPagop-26082608's, not this
+    requirement's.
 
     **The reconciliation sweep for a removal that silently failed**
     (agent-ops#651). Unlike `needs_refinement_label`'s hand-flag path
@@ -10818,6 +10828,100 @@ implements.
     keep excluding the issue forever (requirement 16.4's deterministic half),
     invisibly, the same permanently-stuck-hold class of failure agent-ops#639
     ended for the assignment-based mechanism.
+
+    **The live reconciliation for a label history cannot see**
+    (agent-ops#816, TD-PPagop-26082602). The sweep just above is blind to two
+    cases, both real: a `blocked:<reason>` applied by
+    `scripts/sweep-legacy-refinement-assignees.sh`, which logs no
+    `own-label-action` of its own (it runs outside a cycle, with nothing to
+    log to), and one whose block cleared before agent-ops#651's
+    `own-label-action` logging existed to record the add at all. Both leave a
+    label standing with no `add` in the log for the sweep to key on, so
+    `scripts/gather-issues.sh` excludes the issue forever, invisibly — the
+    same class of failure the log-based sweep exists to end, reopened on the
+    one path that cannot prove its own history.
+
+    `lib/refinement.sh`'s `refinement_blocked_label_orphaned` closes it a
+    different way, needing no history for the *reason* label at all:
+    `blocked:<reason>` is never a label a human reaches for on their own (the
+    same fact the fresh path's unconditional add already relies on), so its
+    live presence on an open issue this repo's currently-open blocks do not
+    name is proof enough on its own that it is stuck. `lib/candidate-gather.sh`'s
+    per-repo gather loop runs it wherever `sources` configures the `issues`
+    band, ahead of `scripts/gather-issues.sh` itself so an issue this frees
+    becomes a candidate the same cycle: one `gh issue list --label
+    blocked:<reason> --state open` call per repo, compared against
+    `blocked_items`. An issue that never carried the reason label is never
+    read by this call at all, so a standalone hand-applied `blocked` — #402,
+    #677, #678 among them — is untouched by it, the same guarantee the fresh
+    path's `refinement_label_project` gives at the moment of application.
+    Guarded by requirement 12's dry-run switch, like every other label write
+    here, and gated on the reason label being configured at all — today
+    always true, since `refinement_blocked_reason_label` names exactly one
+    kind. The listing states its page cap (`GITHUB_PR_LIST_LIMIT`) rather
+    than inheriting `gh`'s undeclared default, and warns when it comes back
+    at that cap: a stuck pair past the page is simply not released this
+    cycle, and because the listing is newest-first while a stuck label is by
+    nature an old one, that miss does not clear itself on a later pass
+    either.
+
+    The generic `blocked` label needs a second proof before it rides along,
+    added on the PR #823 review's own concern 3: a live-labelled issue's most
+    recent `attempt-failed` event of this kind — open or long since cleared —
+    is consulted (`lib/refinement.sh` reads it off the same union log every
+    other reader here does), and `blocked` is released only when that event
+    either predates agent-ops#639 (it carries `needs_refinement_assignee` and
+    neither blocked-label field — the genuinely history-less, legacy-swept
+    cohort this requirement exists for), or explicitly records this pipeline
+    as having added `blocked` itself (`blocked_label` set, the same field
+    `refinement_blocked_label_targets` above reads at block-clear time). A
+    modern event whose `blocked_label` field is empty did not record this
+    pipeline applying the label: either `refinement_label_project` found it
+    already present — a human's own hand — or it never got as far as
+    recording an application (the `unrecorded` verdict, whose own warning at
+    block-record time already says the label will not be removed when the
+    block clears). Neither proves the label ours, so `blocked` is left alone
+    for that issue even though the reason label still comes off: the same
+    over-hold `refinement_blocked_label_targets` already applies to a block
+    still open, extended here to one already cleared. No history at all for
+    an issue (neither a legacy nor a modern record survives to be read) falls
+    back to the reason label's own proof alone, exactly as this requirement
+    read before PR #823's review.
+
+    Two more conditions gate the whole reconciliation, both added on that
+    same review. First, `union_log_healthy` (`lib/fleet.sh`'s
+    `fleet_logs_healthy`, computed once per cycle ahead of the per-repo
+    loop): this is the one reader in the cycle that turns a *silent* union —
+    `fleet_logs` returns nothing at all when `$state_dir/log.jsonl` is absent
+    and the peers directory is empty, which a fresh node before its first
+    state-sync, a mirror just discarded and rebuilt (requirement 2.5's own
+    corruption path), or a failing fetch cron all produce — into "no block
+    exists" rather than "no block is visible from here", so it is the one
+    reader such a silence actively misleads. `fleet_logs_healthy` refuses to
+    let it: an empty union, or a peers directory whose own `fleet_mark_peers`
+    freshness marker records the last fetch as failed, is unhealthy, and the
+    whole reconciliation for that cycle is skipped with one warning logged
+    (not one per repo, since every repo shares the one union and the one
+    peers directory). Second, a grace window against `union_log_horizon`
+    (requirement 39f's own snapshot horizon): a peer node can apply this
+    exact label pair within seconds of logging the block that justifies it,
+    while that log line reaches this node only through the fleet's periodic
+    state-sync — up to a full fetch interval behind — so a label applied too
+    recently for its own block record to plausibly have arrived yet is
+    deferred rather than stripped. The reason label's own `labelled_at` (read
+    per candidate issue off its GitHub timeline, the same endpoint
+    `scripts/gather-hand-flagged-refinements.sh` already reads, with the
+    latest of the matching applications picked *outside* the `--jq` filter
+    rather than inside it — `gh api --paginate` re-runs that filter once per
+    page and this endpoint pages at thirty, so an in-filter aggregate reads
+    one stamp per matching page on a long timeline, per TD-PPagop-26081306;
+    the two gathers that still do it that way are TD-PPagop-26082701) is
+    compared against `union_log_horizon` with `LABEL_OWN_GRACE_SECONDS`
+    (`lib/label-marker.sh`) tolerance — the same constant requirement 39f
+    already measures a peer's label writes against that horizon with, reused
+    rather than duplicated. An unresolvable `labelled_at` (a failed timeline
+    call) defers the same as a too-recent one: this mechanism only ever acts
+    on a positive, aged proof, never a missing one.
 
 38c. **An idle, approved pull request is nudged, not left silent.** For every
     open, non-draft, `pr_label`-carrying pull request in every configured

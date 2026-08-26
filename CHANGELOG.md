@@ -8,6 +8,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A `blocked`/`blocked:needs-refinement` pair whose block has cleared now
+  comes off the issue even when nothing in the shared log can prove the
+  pipeline applied it (requirement 38b, agent-ops#816, TD-PPagop-26082602).
+  The existing reconciliation sweep keys on a logged `own-label-action add`
+  with no later `remove`, which two real cases never have: a label
+  `scripts/sweep-legacy-refinement-assignees.sh` applied, since it runs
+  outside a cycle and has no log of its own to append to, and one whose
+  block cleared before that logging existed at all. Both left the issue
+  excluded by `scripts/gather-issues.sh`'s deterministic `blocked`-label
+  filter for good, invisibly — twelve high-priority issues in
+  `Poetic-Poems/agent-ops` were sitting in exactly that state, cleared by
+  hand on 2026-08-26. New `refinement_blocked_label_orphaned`
+  (`lib/refinement.sh`) proves the same fact from live GitHub state instead
+  of from history — `blocked:<reason>` is never a name a human reaches for,
+  so its presence on an open issue with no open block behind it is proof
+  enough on its own. `lib/candidate-gather.sh` runs it once per repo per
+  cycle, ahead of the issue gather, so a freed issue re-enters candidacy the
+  same cycle rather than the next one. A bare `blocked` with no reason label
+  beside it is never touched, so a label a human applied for their own
+  reasons is as safe as it was before; the residue that leaves — a
+  legacy-swept issue whose reason label was released successfully, keeping
+  its `blocked` for good — is recorded as TD-PPagop-26082608.
+
+  Three guards keep that live read from over-acting, all added on PR #823's
+  own review. The generic `blocked` rides along only when the issue's own
+  block history — a modern `attempt-failed` event's `blocked_label` field,
+  or the absence of one at all — actually says this pipeline put it there;
+  a modern event that recorded finding `blocked` already present (a human's
+  own hand) leaves it alone even though the reason label still comes off.
+  The whole reconciliation is skipped for a cycle whose fleet-wide log looks
+  degraded — an empty union, or a peers directory whose own fetch marker
+  reports failure (`lib/fleet.sh`'s new `fleet_logs_healthy`) — rather than
+  reading that silence as proof no block exists. And a label applied too
+  recently for its own block record to plausibly have reached this node yet
+  (within `LABEL_OWN_GRACE_SECONDS` of `union_log_horizon`, the same
+  tolerance requirement 39f already measures peer label writes with) is
+  deferred to a later cycle rather than stripped.
 - `scripts/state-sync.sh`'s mirror is no longer trusted just because its
   `.git/` directory still exists (requirement 2.5, issue #604): `mirror_init`
   now runs `git fsck --connectivity-only` against a mirror that already

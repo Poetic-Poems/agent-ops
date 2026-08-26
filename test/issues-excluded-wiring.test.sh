@@ -212,10 +212,13 @@ run_issues_excluded_cycle() {
   (
     # sources, claimed_item_refs_json, cycle_id, node_name and log_file below
     # are consumed only by the eval'd log_event/issues-source block, invisible
-    # to static analysis.
+    # to static analysis. DRY_RUN=1 skips requirement 38b's live label
+    # reconciliation (agent-ops#816) entirely, which this test has no stub
+    # for and has nothing to do with — it is a real agent-cycle.sh global,
+    # always set before this block ever runs for real.
     # shellcheck disable=SC2034
     slug="$slug_arg" sources='["issues:high"]' claimed_item_refs_json='[]' \
-      cycle_id="test-cycle" node_name="test-node" log_file="$log_file_path"
+      cycle_id="test-cycle" node_name="test-node" log_file="$log_file_path" DRY_RUN=1
     latest_issues_excluded_json="$(cat "$map_file_path" 2>/dev/null || printf '{}')"
     [[ -n "$latest_issues_excluded_json" ]] || latest_issues_excluded_json='{}'
     # The four stubs below are likewise invoked only from inside the eval'd
