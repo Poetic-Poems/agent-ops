@@ -401,8 +401,10 @@ refinement_blocked_label_stale() {
 #   - **a modern event whose `blocked_label` field is set** — this pipeline
 #     recorded adding `blocked` itself. Safe to release, now doubly proven.
 #   - **a modern event whose `blocked_label` field is empty** — this pipeline
-#     recorded *finding it already present* (or never got far enough to
-#     apply it). Neither proves it ours, so `blocked` is left alone here too:
+#     recorded *finding it already present*, or never got as far as recording
+#     an application at all (`refinement_label_project`'s `unrecorded`
+#     verdict, or an outright failure to apply). None proves it ours, so
+#     `blocked` is left alone here too:
 #     only the reason label is offered for that issue, the same over-hold
 #     `refinement_blocked_label_targets` already applies for a block still
 #     open, extended to one already cleared.

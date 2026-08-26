@@ -249,9 +249,19 @@ while IFS=$'\t' read -r _ slug default_branch; do
         orph_key="$orph_repo|$orph_item"
         if [[ -z "${_REFINEMENT_ORPHAN_RECENT[$orph_key]+x}" ]]; then
           _REFINEMENT_ORPHAN_RECENT[$orph_key]=1
+          # The aggregate is taken out here, not inside `--jq`: `gh api
+          # --paginate` re-runs its filter once per page and prints each
+          # page's result as its own document (TD-PPagop-26081306), and this
+          # endpoint pages at thirty, so a `sort_by | last` inside the filter
+          # yields one stamp per matching page on any issue with a timeline
+          # longer than that — an unparseable multi-line value that reads as
+          # "unknown" and defers the issue for good. So the read streams one
+          # ISO-8601 stamp per line across every page and the latest is taken
+          # with `sort | tail -1`: a lexical sort is a time sort for these
+          # stamps, the same property `fleet_logs`' own union sort relies on.
           orph_labelled_at="$(gh api --paginate "repos/$orph_repo/issues/$orph_item/timeline" \
-              --jq "[.[] | select(.event == \"labeled\" and .label.name == \"$refinement_reason_label\")]
-                    | sort_by(.created_at) | last | .created_at // empty" 2>/dev/null)" || orph_labelled_at=""
+              --jq ".[] | select(.event == \"labeled\" and .label.name == \"$refinement_reason_label\")
+                    | .created_at // empty" 2>/dev/null | sort | tail -1)" || orph_labelled_at=""
           if [[ -n "$orph_labelled_at" ]]; then
             orph_age_verdict="$(jq -nr --arg at "$orph_labelled_at" --arg horizon "$union_log_horizon" \
               --argjson grace "$LABEL_OWN_GRACE_SECONDS" '

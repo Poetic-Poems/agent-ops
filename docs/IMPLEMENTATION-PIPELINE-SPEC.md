@@ -10875,8 +10875,12 @@ implements.
     cohort this requirement exists for), or explicitly records this pipeline
     as having added `blocked` itself (`blocked_label` set, the same field
     `refinement_blocked_label_targets` above reads at block-clear time). A
-    modern event whose `blocked_label` field is empty recorded finding the
-    label already present — a human's own hand — and `blocked` is left alone
+    modern event whose `blocked_label` field is empty did not record this
+    pipeline applying the label: either `refinement_label_project` found it
+    already present — a human's own hand — or it never got as far as
+    recording an application (the `unrecorded` verdict, whose own warning at
+    block-record time already says the label will not be removed when the
+    block clears). Neither proves the label ours, so `blocked` is left alone
     for that issue even though the reason label still comes off: the same
     over-hold `refinement_blocked_label_targets` already applies to a block
     still open, extended here to one already cleared. No history at all for
@@ -10905,9 +10909,14 @@ implements.
     state-sync — up to a full fetch interval behind — so a label applied too
     recently for its own block record to plausibly have arrived yet is
     deferred rather than stripped. The reason label's own `labelled_at` (read
-    per candidate issue off its GitHub timeline, the same call
-    `scripts/gather-hand-flagged-refinements.sh` already makes) is compared
-    against `union_log_horizon` with `LABEL_OWN_GRACE_SECONDS`
+    per candidate issue off its GitHub timeline, the same endpoint
+    `scripts/gather-hand-flagged-refinements.sh` already reads, with the
+    latest of the matching applications picked *outside* the `--jq` filter
+    rather than inside it — `gh api --paginate` re-runs that filter once per
+    page and this endpoint pages at thirty, so an in-filter aggregate reads
+    one stamp per matching page on a long timeline, per TD-PPagop-26081306;
+    the two gathers that still do it that way are TD-PPagop-26082701) is
+    compared against `union_log_horizon` with `LABEL_OWN_GRACE_SECONDS`
     (`lib/label-marker.sh`) tolerance — the same constant requirement 39f
     already measures a peer's label writes against that horizon with, reused
     rather than duplicated. An unresolvable `labelled_at` (a failed timeline
