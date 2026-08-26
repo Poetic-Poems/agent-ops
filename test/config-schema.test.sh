@@ -713,6 +713,31 @@ assert_doctor "doctor fails duplicate slugs in project_review.repos, as review-c
   'project_review.repos lists [Poetic-Poems/poetic] more than once'
 assert_doctor_shipped "doctor passes distinct project_review.repos slugs" \
   '.' 0 'every project_review.repos entry names a distinct repository'
+# --- requirement 1c, "the floor" (agent-ops#822): refiner_model/enabler_model
+#     must never rank below either implementer tier they might author a
+#     specification for. ---
+assert_doctor "doctor fails refiner_model ranked below implementer_model_default" \
+  '.refiner_model = "claude-haiku-4-5-20251001"' 1 \
+  'refiner_model (claude-haiku-4-5-20251001) ranks below implementer_model_default (claude-sonnet-5)'
+assert_doctor "doctor fails enabler_model ranked below implementer_model_default" \
+  '.enabler_model = "claude-haiku-4-5-20251001" | .enabler_assignee = "someone"' 1 \
+  'enabler_model (claude-haiku-4-5-20251001) ranks below implementer_model_default (claude-sonnet-5)'
+assert_doctor_shipped "doctor passes the shipped configuration's model-tier floor" \
+  '.' 0 'refiner_model and enabler_model each rank at or above every implementer tier'
+assert_doctor "doctor warns about a model the tier ladder does not know, rather than silently passing it" \
+  '.implementer_model_default = "claude-nonexistent-9"' 0 \
+  'implementer_model_default (claude-nonexistent-9) is not on the fleet'"'"'s model-tier ladder'
+# --- requirement 1c: a "required" refinement_policy source with no Refiner
+#     to ever refine it would wait forever. ---
+assert_doctor "doctor fails a required refinement source with refiner_model empty" \
+  '.refiner_model = ""' 1 \
+  'refinement_policy requires [issues, tech-debt] but refiner_model is empty'
+assert_doctor "doctor passes a required refinement source when refiner_model is set" \
+  '.' 0 'every source whose refinement_policy is "required" has a Refiner configured'
+assert_doctor "doctor passes an exempt refinement_policy with no Refiner at all" \
+  '.refiner_model = "" | .refinement_policy = {}' 0 \
+  'every source whose refinement_policy is "required" has a Refiner configured'
+
 assert_doctor "doctor fails a label set to blocked, which would make its item unselectable" \
   '.unvoid_label = "blocked"' 1 'unvoid_label is "blocked"'
 assert_doctor "doctor fails the refined label set to blocked — the projection would bury the item as it became workable" \
@@ -930,13 +955,23 @@ assert_not_contains() {
 #     documented as `claude-haiku-4-5-20251001` while the key had never once
 #     been set in config.json — silently running the empty-string default,
 #     the stage off — for eight days is the failure this exists to catch. ---
+# claude-opus-5 rather than the original incident's claude-haiku-4-5-20251001
+# (agent-ops#822): a refiner_model below implementer_model_default's tier is
+# now a floor violation in its own right (requirement 1c), which would fail
+# this fixture for a different reason than the one under test here — opus
+# ranks above sonnet, so it still resolves differently from what is
+# documented without tripping that check.
 # shellcheck disable=SC2016  # backticks here are literal Markdown, not command substitution
 assert_doctor "doctor warns when a documented installation value drifts from what config.json resolves" \
-  '.refiner_model = "claude-haiku-4-5-20251001"' 0 \
-  'refiner_model is documented (README.md/docs/IMPLEMENTATION-PIPELINE-SPEC.md) as `claude-sonnet-5` but resolves to `claude-haiku-4-5-20251001`'
+  '.refiner_model = "claude-opus-5"' 0 \
+  'refiner_model is documented (README.md/docs/IMPLEMENTATION-PIPELINE-SPEC.md) as `claude-sonnet-5` but resolves to `claude-opus-5`'
+# refinement_policy is cleared too: the shipped config now sets issues/
+# tech-debt to "required" (agent-ops#822), and an empty refiner_model with a
+# "required" source configured is itself a fail (requirement 1c) — a
+# different check than the doc-mismatch rendering convention under test here.
 # shellcheck disable=SC2016  # backticks here are literal Markdown, not command substitution
 assert_doctor "doctor renders an empty resolved value as *(unset)*, the same convention the docs use for one" \
-  '.refiner_model = ""' 0 \
+  '.refiner_model = "" | .refinement_policy = {}' 0 \
   'refiner_model is documented (README.md/docs/IMPLEMENTATION-PIPELINE-SPEC.md) as `claude-sonnet-5` but resolves to *(unset)*'
 # shellcheck disable=SC2016  # backticks here are literal Markdown, not command substitution
 assert_doctor "doctor compares an array-valued x-docs.value by its parsed JSON, naming the resolved array" \
@@ -1053,6 +1088,24 @@ run_cycle_guard "$(jq -c '.enabler_assignee = ""' "$CONFIG")"
 assert_eq "an unassigned enabled Enabler still exits 1, past the schema gate" "1" "$guard_rc"
 assert_contains "the enabler_assignee guard still fires, shared with doctor.sh" \
   "enabler_model is set but enabler_assignee is not configured" "$guard_out"
+assert_not_contains "a config the schema accepts is not reported as a schema failure" \
+  "does not match config.schema.json" "$guard_out"
+
+# requirement 1c (agent-ops#822): the model-tier floor guard, shared with
+# doctor.sh's own `fail` above through the same lib/config-schema.sh function.
+run_cycle_guard "$(jq -c '.refiner_model = "claude-haiku-4-5-20251001"' "$CONFIG")"
+assert_eq "refiner_model below implementer_model_default still exits 1, past the schema gate" "1" "$guard_rc"
+assert_contains "the model-tier floor guard names both sides of the violation" \
+  "refiner_model (claude-haiku-4-5-20251001) ranks below implementer_model_default (claude-sonnet-5)" "$guard_out"
+assert_not_contains "a config the schema accepts is not reported as a schema failure" \
+  "does not match config.schema.json" "$guard_out"
+
+# requirement 1c: a "required" refinement_policy source with refiner_model
+# empty still exits 1, shared the same way.
+run_cycle_guard "$(jq -c '.refiner_model = ""' "$CONFIG")"
+assert_eq "a required refinement source with refiner_model empty still exits 1, past the schema gate" "1" "$guard_rc"
+assert_contains "the refiner-required guard names the source(s) left unrefinable" \
+  "refinement_policy requires [issues, tech-debt] but refiner_model is empty" "$guard_out"
 assert_not_contains "a config the schema accepts is not reported as a schema failure" \
   "does not match config.schema.json" "$guard_out"
 

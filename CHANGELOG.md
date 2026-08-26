@@ -45,6 +45,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (within `LABEL_OWN_GRACE_SECONDS` of `union_log_horizon`, the same
   tolerance requirement 39f already measures peer label writes with) is
   deferred to a later cycle rather than stripped.
+- A model-tier floor (requirement 1c, issue #822): `lib/model-id.sh` now
+  ranks the fleet's models by capability
+  (`claude-haiku-4-5-20251001` < `claude-sonnet-5` < `claude-opus-5` <
+  `claude-fable-5`), and `scripts/doctor.sh`/`agent-cycle.sh` refuse a
+  configuration where `refiner_model` or `enabler_model` — the two stages
+  that can author a work order's `context`/`acceptance` directly — ranks
+  below `implementer_model_default`/`implementer_model_trivial`, or where a
+  `refinement_policy` source is `"required"` with no `refiner_model`
+  configured to ever refine it. `refinement_policy`'s shipped default now
+  names `tech-debt` alongside `issues` as `"preferred"`, and this
+  installation's own `config.json` sets both to `"required"`, closing the
+  gap #815 (fixed by #819) and #821 both traced to a cheaper model authoring
+  a specification for a more capable Implementer.
+
 - `scripts/state-sync.sh`'s mirror is no longer trusted just because its
   `.git/` directory still exists (requirement 2.5, issue #604): `mirror_init`
   now runs `git fsck --connectivity-only` against a mirror that already

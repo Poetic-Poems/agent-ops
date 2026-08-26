@@ -244,6 +244,21 @@ else
   ok "the Enabler is disabled (enabler_model is empty)"
 fi
 
+# Requirement 1c (agent-ops#822): a source whose refinement_policy resolves to
+# "required" is never selected unrefined (prompts/coordinator.md's "Per-source
+# refinement policy"), so with no Refiner ever engaging to refine one
+# (requirement 39's own gate on refiner_model being set), its items wait
+# forever — a configuration nobody can act on, the same shape as the
+# enabler_assignee pairing just above.
+refiner_model="$(cfg '.refiner_model')"
+required_sources_without_refiner="$(config_required_refinement_sources_without_refiner \
+  "$(cfg_json '.refinement_policy')" "$refiner_model")"
+if [[ -n "$required_sources_without_refiner" ]]; then
+  fail "refinement_policy requires [$required_sources_without_refiner] but refiner_model is empty — agent-cycle.sh refuses to start rather than let a source's unrefined items wait forever with nothing ever refining one"
+else
+  ok "every source whose refinement_policy is \"required\" has a Refiner configured to refine it"
+fi
+
 # D18 (agent-ops#627): `escalation_autonomy`'s `adjudicate-first` runs one
 # extra Enabler engagement per refinement-disagreement escalation, so it is a
 # configuration nobody can act on with the Enabler itself disabled — the same
@@ -555,10 +570,18 @@ fi
 
 section "Models"
 
+# The six keys requirement 1c's model-tier ladder covers (lib/model-id.sh's
+# MODEL_TIER_RANK) get a second check beyond simple resolution: a value that
+# resolves cleanly but isn't on the ladder cannot be verified by the floor
+# check below, so it is warned here rather than silently treated as fine.
+tier_ladder_keys=" coordinator_model refiner_model enabler_model implementer_model_default implementer_model_trivial reviewer_model_default "
 while IFS=$'\t' read -r key value; do
   [[ -n "$key" ]] || continue
   if resolved="$(resolve_model_id "$key" "$value" 2>&1)"; then
     ok "$key → $resolved"
+    if [[ "$tier_ladder_keys" == *" $key "* ]] && ! model_tier_known "$resolved"; then
+      warn "$key ($resolved) is not on the fleet's model-tier ladder (lib/model-id.sh's MODEL_TIER_RANK) — the model-tier floor check (requirement 1c) cannot verify it against the other five"
+    fi
   else
     fail "$resolved"
   fi
@@ -572,11 +595,33 @@ done < <(jq -r '
     {k: "approver_model_complex",     v: .approver_model_complex},
     {k: "approver_model_critical",    v: .approver_model_critical},
     {k: "enabler_model",              v: .enabler_model},
+    {k: "refiner_model",              v: .refiner_model},
     {k: "project_review.defaults.model", v: .project_review.defaults.model}
   ]
   + [ (.project_review.repos // [])[] | select(has("model"))
       | {k: (.slug + "'"'"'s project_review.model override"), v: .model} ]
   | .[] | select((.v // "") != "") | [.k, .v] | @tsv' "$config_file")
+
+# Requirement 1c, "the floor" (agent-ops#822): refiner_model and enabler_model
+# are the two stages that can author a work order's context/acceptance
+# directly (requirements 39 and 36b); either ranking below an implementer
+# tier it might write for is exactly the failure #815 (fixed by #819) and
+# #821 both trace to. A fail here mirrors agent-cycle.sh's own startup guard,
+# through the same lib/config-schema.sh function, so the two can never drift.
+refiner_model_bare="$(resolve_model_id refiner_model "$(cfg '.refiner_model')" 2>/dev/null || true)"
+enabler_model_bare="$(resolve_model_id enabler_model "$(cfg '.enabler_model')" 2>/dev/null || true)"
+implementer_model_default_bare="$(resolve_model_id implementer_model_default "$(cfg '.implementer_model_default')" 2>/dev/null || true)"
+implementer_model_trivial_bare="$(resolve_model_id implementer_model_trivial "$(cfg '.implementer_model_trivial')" 2>/dev/null || true)"
+tier_violations="$(config_model_tier_floor_violations "$refiner_model_bare" "$enabler_model_bare" \
+  "$implementer_model_default_bare" "$implementer_model_trivial_bare")"
+if [[ -n "$tier_violations" ]]; then
+  while IFS=$'\t' read -r author_key floor_key author_id floor_id; do
+    [[ -n "$author_key" ]] || continue
+    fail "$author_key ($author_id) ranks below $floor_key ($floor_id) on the fleet's model-tier ladder (lib/model-id.sh's MODEL_TIER_RANK) — it could author a work order's context/acceptance for an Implementer more capable than itself (requirement 1c)"
+  done <<<"$tier_violations"
+else
+  ok "refiner_model and enabler_model each rank at or above every implementer tier they might author a specification for"
+fi
 
 # --- Prompts ---
 

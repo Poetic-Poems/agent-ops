@@ -1505,13 +1505,15 @@ nothing for — may reach a work order at all, per its source:
 
 A source's policy binds only what `refinement_policy` says about that source;
 it says nothing about whether the Refiner will ever actually reach an
-unrefined item there (its own engagement only gathers candidates from the
-sources the Script pre-fetches as structured data — `issues`, `security`,
-`code-quality`, `review-feedback`, `merge-conflicts`, `dequeued`, `abandoned-drafts`,
-`register-hygiene`). A `"required"` policy on `tech-debt`, `project-review` or
-`implementation-plan` is honoured here exactly the same way, but nothing
-proactively refines those items yet — an installation setting one should know
-its unrefined items there will simply wait.
+unrefined item there. Its own candidate gathering reaches every source the
+Script pre-fetches as structured data — `issues`, `security`, `code-quality`,
+`review-feedback`, `merge-conflicts`, `dequeued`, `abandoned-drafts`,
+`register-hygiene`, `tech-debt` — plus `project-review` and
+`implementation-plan`, read only for a repo whose `sources` lists them and
+whose policy for them is not itself `exempt`. `failed-runs` is the one source
+with no array at all, so a policy set for it shapes selection only — nothing
+ever refines an unrefined item there, and an installation setting `"required"`
+on it should know its items will simply wait.
 
 ## Choosing the Implementer's model
 

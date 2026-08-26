@@ -526,6 +526,34 @@ refiner_max_per_engagement="$(cfg '.refiner_max_per_engagement')"
 [[ "$refiner_max_per_engagement" =~ ^[0-9]+$ ]] || refiner_max_per_engagement=5
 refinement_policy_json="$(cfg_json '.refinement_policy')"
 jq -e 'type == "object"' <<<"$refinement_policy_json" >/dev/null 2>&1 || refinement_policy_json='{}'
+# Requirement 1c (agent-ops#822): a source resolved to "required" is never
+# selected unrefined (prompts/coordinator.md's "Per-source refinement
+# policy"), so with no Refiner ever engaging to refine one (requirement 39's
+# own gate on refiner_model being set), its items would wait forever — the
+# same pairing shape as the enabler_assignee guard above, shared with
+# scripts/doctor.sh through the same lib/config-schema.sh function.
+required_sources_without_refiner="$(config_required_refinement_sources_without_refiner \
+  "$refinement_policy_json" "$refiner_model")"
+if [[ -n "$required_sources_without_refiner" ]]; then
+  echo "agent-cycle: refinement_policy requires [$required_sources_without_refiner] but refiner_model is empty — refusing to start rather than let a source's unrefined items wait forever with nothing ever refining one" >&2
+  exit 1
+fi
+# Requirement 1c, "the floor" (agent-ops#822): refiner_model and enabler_model
+# are the two stages that can author a work order's context/acceptance
+# directly (requirements 39 and 36b); either ranking below an implementer
+# tier it might write for is exactly the failure #815 (fixed by #819) and
+# #821 both trace to. Shared with scripts/doctor.sh through the same
+# lib/config-schema.sh function, so the Script's refusal and doctor's `fail`
+# can never drift.
+tier_violations="$(config_model_tier_floor_violations "$refiner_model" "$enabler_model" \
+  "$implementer_model_default" "$implementer_model_trivial")"
+if [[ -n "$tier_violations" ]]; then
+  while IFS=$'\t' read -r author_key floor_key author_id floor_id; do
+    [[ -n "$author_key" ]] || continue
+    echo "agent-cycle: $author_key ($author_id) ranks below $floor_key ($floor_id) on the fleet's model-tier ladder (lib/model-id.sh's MODEL_TIER_RANK) — refusing to start rather than let it author a specification for a more capable Implementer (docs/IMPLEMENTATION-PIPELINE-SPEC.md requirement 1c)" >&2
+  done <<<"$tier_violations"
+  exit 1
+fi
 pr_label="$(cfg '.pr_label')"
 # Read here (rather than left to the Co-Ordinator, which puts it in the work
 # order's `branch`) because requirement 3c's gatherer needs it: a PR is only
