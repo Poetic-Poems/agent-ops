@@ -27,11 +27,14 @@
 # reachable from a ref and confirms it exists and parses, without reading
 # every object's full content the way a plain `git fsck` does. That bound is
 # the right one here — the incident's own damage sat on a *peer's*
-# remote-tracking ref, which is reachable — and, measured against mirrors
-# from a few thousand to several hundred thousand objects, costs well under a
-# second: comfortably inside the 5-minute push / 7-minute fetch interval this
-# runs on (requirement 2.5), so no stamp-file gate is needed to keep it off
-# the common path.
+# remote-tracking ref, which is reachable — and it is cheap. Measured against
+# a synthetic mirror of 220k reachable objects: 0.2s with those objects
+# packed, 1.8s with every one of them loose. The loose figure is the one that
+# governs, because a mirror whose `git gc` is failing is precisely a mirror
+# whose objects stop being packed, so unpacked is the shape damage actually
+# arrives in. Either figure is three orders of magnitude inside the 5-minute
+# push / 7-minute fetch interval this runs on (requirement 2.5), so no
+# stamp-file gate is needed to keep it off the common path.
 #
 # A rebuild has to be recorded somewhere that outlives the rebuild itself —
 # the mirror it happened to is exactly what gets discarded — so the record

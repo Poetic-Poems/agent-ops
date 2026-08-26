@@ -2270,8 +2270,12 @@ implements.
    parses, without reading every object's full content the way a plain
    `git fsck` does. That bound is the right one, because the incident's own
    damage sat on a *peer's* remote-tracking ref, which is reachable, and it
-   costs well under a second even on a mirror of several hundred thousand
-   objects — comfortably inside the 5-minute push / 7-minute fetch interval
+   is cheap: measured against a mirror of 220k reachable objects, 0.2s with
+   those objects packed and 1.8s with every one of them loose. The loose
+   figure is the one that governs, because a mirror whose `git gc` is
+   failing is precisely a mirror whose objects stop being packed, so
+   unpacked is the shape damage actually arrives in. Either figure is three
+   orders of magnitude inside the 5-minute push / 7-minute fetch interval
    this runs on, so no stamp-file gate is needed to keep it off the common
    path. On any nonzero exit — 2 for an empty loose object, 3 for other
    corruption — `mirror_init` discards the checkout (`rm -rf`, `git init`,
