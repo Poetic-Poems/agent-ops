@@ -8,6 +8,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A `blocked`/`blocked:needs-refinement` pair whose block has cleared now
+  comes off the issue even when nothing in the shared log can prove the
+  pipeline applied it (requirement 38b, agent-ops#816, TD-PPagop-26082602).
+  The existing reconciliation sweep keys on a logged `own-label-action add`
+  with no later `remove`, which two real cases never have: a label
+  `scripts/sweep-legacy-refinement-assignees.sh` applied, since it runs
+  outside a cycle and has no log of its own to append to, and one whose
+  block cleared before that logging existed at all. Both left the issue
+  excluded by `scripts/gather-issues.sh`'s deterministic `blocked`-label
+  filter for good, invisibly — twelve high-priority issues in
+  `Poetic-Poems/agent-ops` were sitting in exactly that state, cleared by
+  hand on 2026-08-26. New `refinement_blocked_label_orphaned`
+  (`lib/refinement.sh`) proves the same fact from live GitHub state instead
+  of from history — `blocked:<reason>` is never a name a human reaches for,
+  so its presence on an open issue with no open block behind it is proof
+  enough on its own — and releases the generic `blocked` alongside it
+  whenever that issue's own live labels carry both. `lib/candidate-gather.sh`
+  runs it once per repo per cycle, ahead of the issue gather, so a freed
+  issue re-enters candidacy the same cycle rather than the next one. A bare
+  `blocked` with no reason label beside it is never touched, so a label a
+  human applied for their own reasons is as safe as it was before; the
+  residue that leaves — a legacy-swept issue whose reason label was released
+  successfully, keeping its `blocked` for good — is recorded as
+  TD-PPagop-26082608.
 - `scripts/state-sync.sh`'s mirror is no longer trusted just because its
   `.git/` directory still exists (requirement 2.5, issue #604): `mirror_init`
   now runs `git fsck --connectivity-only` against a mirror that already

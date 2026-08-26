@@ -67,27 +67,36 @@
 # pre-agent-ops#639 block — the exact defect `refinement_label_project` exists
 # to prevent, reappearing on the one path that cannot prove its own history.
 #
-# **The provenance-keyed removal path never releases either label for a
-# legacy-swept issue on its own**, stated plainly: `refinement_blocked_label_targets`
-# will not offer the generic `blocked` (this paragraph's over-hold, unchanged),
-# and even the reason label gets no help from `own-label-action` history, since
-# this script logs none of its own (it runs outside a cycle, with nothing to
-# log to) — so `refinement_blocked_label_stale` (requirement 38b's log-keyed
-# reconciliation sweep, agent-ops#651), which offers up only a label whose
-# logged history says `add`, never sees a legacy-swept label's application at
-# all.
+# **What the provenance-keyed path does and does not release for a
+# legacy-swept issue**, stated plainly: `refinement_blocked_label_targets`
+# offers the *reason* label up when the block clears — a legacy block's
+# `needs_refinement_assignee`, with neither blocked-label field set, is enough
+# to name it — but never the generic `blocked` (this paragraph's over-hold,
+# unchanged). And if that reason-label removal silently fails, nothing retries
+# it: this script logs no `own-label-action` of its own (it runs outside a
+# cycle, with nothing to log to), so `refinement_blocked_label_stale`
+# (requirement 38b's log-keyed reconciliation sweep, agent-ops#651), which
+# offers up only a label whose logged history says `add`, never sees a
+# legacy-swept label's application at all.
 #
-# Requirement 38b's *live* reconciliation closes both
+# Requirement 38b's *live* reconciliation closes that retry gap
 # (agent-ops#816, TD-PPagop-26082602): `refinement_blocked_label_orphaned`
 # needs no `own-label-action` history and no provenance field, only a live
 # GitHub read — a `blocked:<reason>` label is never a human's own, so its
 # presence on an open issue with no open block behind it is proof enough on
 # its own, and `blocked` rides along whenever that same issue's live labels
 # carry both. `lib/candidate-gather.sh`'s per-repo gather loop runs it every
-# cycle a repo's `sources` configures the `issues` band, so a legacy-swept
-# issue's pair comes off within one cycle of its block actually clearing,
-# whether or not this script (or `record_needs_refinement_block`) ever logged
-# a thing about it.
+# cycle a repo's `sources` configures the `issues` band, so a pair still
+# standing when its block clears comes off within one cycle, whether or not
+# this script (or `record_needs_refinement_block`) ever logged a thing about
+# it.
+#
+# What that live read does not reach is the issue whose reason-label removal
+# *did* take: the reason label is the whole of what puts an issue in front of
+# it, so a legacy-swept issue left carrying a bare `blocked` is invisible to
+# it, and `scripts/gather-issues.sh`'s own `blocked`-label filter goes on
+# excluding that issue for as long as the label stands. TD-PPagop-26082608
+# holds that residue.
 #
 # Usage: sweep-legacy-refinement-assignees.sh <owner/repo> [log-file]
 #

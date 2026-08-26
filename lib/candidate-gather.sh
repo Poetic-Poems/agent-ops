@@ -186,11 +186,27 @@ while IFS=$'\t' read -r _ slug default_branch; do
     # so this never runs for nothing.
     if ! (( DRY_RUN )) && refinement_reason_label="$(refinement_blocked_reason_label "$REFINEMENT_BLOCK_KIND")" \
         && [[ -n "$refinement_reason_label" ]]; then
+      # The page cap is stated rather than inherited, and checked, per
+      # lib/github-limit.sh's own header: `gh`'s undeclared default of 30
+      # would truncate this listing silently, and a truncated one is
+      # indistinguishable from a complete one. The direction of harm here is
+      # the mild one — a stuck pair this page misses is simply not released
+      # this cycle — but it does not self-heal on its own, because the
+      # listing is newest-first and a stuck label is by nature an old one:
+      # past the cap it can sit behind newer, legitimately-blocked issues
+      # indefinitely. So it warns rather than degrading silently.
       live_reason_issues_json="$(gh issue list -R "$slug" --label "$refinement_reason_label" \
-          --state open --json number,labels 2>/dev/null \
+          --state open --limit "$GITHUB_PR_LIST_LIMIT" --json number,labels 2>/dev/null \
         | jq -c '[.[] | {number: .number, labels: [.labels[].name]}]' 2>/dev/null)" || true
       jq -e 'type == "array"' <<<"$live_reason_issues_json" >/dev/null 2>&1 \
         || live_reason_issues_json='[]'
+      live_reason_issues_n="$(jq 'length' <<<"$live_reason_issues_json" 2>/dev/null)" \
+        || live_reason_issues_n=0
+      if github_pr_list_truncated "$live_reason_issues_n"; then
+        log_event "warning" "$(jq -nc \
+          --arg d "the $refinement_reason_label listing for $slug came back at the $GITHUB_PR_LIST_LIMIT cap — an orphaned label past it is not reconciled this cycle" \
+          '{detail: $d}')"
+      fi
       while IFS=$'\t' read -r orph_repo orph_item orph_label; do
         [[ -n "$orph_repo" && -n "$orph_item" && -n "$orph_label" ]] || continue
         if refinement_label_remove "$orph_repo" "$orph_item" "$orph_label"; then

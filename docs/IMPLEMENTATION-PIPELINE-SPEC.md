@@ -10793,9 +10793,17 @@ implements.
     has not reached yet costs one `gh` call that finds nothing to remove,
     best-effort like every other call on that path.
 
-    This over-hold is bounded in time, not permanent: it lasts until the live
-    reconciliation below next runs against the issue, which needs none of the
-    provenance this paragraph's removal path cannot prove.
+    The live reconciliation below lifts this over-hold for one case and one
+    only: an issue still carrying its `blocked:<reason>` label at the moment
+    that reconciliation next runs, since that label is the whole of what puts
+    an issue in front of it. That is the case agent-ops#816 found — the reason
+    label's own removal never happened either, so the pair is still standing
+    and comes off together. Where the reason label *did* come off when the
+    block cleared, the issue carries a bare `blocked` and nothing reads it
+    again: the generic label stays until a human takes it off, and
+    `scripts/gather-issues.sh` goes on excluding the issue for as long as it
+    does. Bounding that residue is TD-PPagop-26082608's, not this
+    requirement's.
 
     **The reconciliation sweep for a removal that silently failed**
     (agent-ops#651). Unlike `needs_refinement_label`'s hand-flag path
@@ -10855,7 +10863,12 @@ implements.
     Guarded by requirement 12's dry-run switch, like every other label write
     here, and gated on the reason label being configured at all — today
     always true, since `refinement_blocked_reason_label` names exactly one
-    kind.
+    kind. The listing states its page cap (`GITHUB_PR_LIST_LIMIT`) rather
+    than inheriting `gh`'s undeclared default, and warns when it comes back
+    at that cap: a stuck pair past the page is simply not released this
+    cycle, and because the listing is newest-first while a stuck label is by
+    nature an old one, that miss does not clear itself on a later pass
+    either.
 
 38c. **An idle, approved pull request is nudged, not left silent.** For every
     open, non-draft, `pr_label`-carrying pull request in every configured
