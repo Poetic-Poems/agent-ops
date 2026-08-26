@@ -403,13 +403,34 @@ coordinator_refinements_view() {  # <refinements-json> <ordered-repos-json>
 # degraded `gh` read in this pipeline already fails, because it is a fact
 # about GitHub's availability, not about the work order.
 #
+# Normalizes text for the traceability comparison below (TD-PPagop-26082307):
+# collapses every run of whitespace — spaces, tabs, reflowed newlines — to a
+# single space and trims both ends, by tokenizing on non-whitespace runs and
+# rejoining with a single space. A model's paste of a multi-kilobyte spec or
+# issue thread drifts in exactly these ways (a reflowed line, a normalized
+# list marker, a trimmed trailing space) without changing what it says, and a
+# verbatim `contains` trips on every one of them; this tolerates all of them
+# while still failing a passage that is genuinely missing or different. Prints
+# to stdout; a jq failure (should not happen — input is always a shell
+# string) degrades to the input unchanged rather than losing the text.
+_traceability_normalize() {  # <text>
+  jq -Rrs '[scan("[^[:space:]]+")] | join(" ")' <<<"$1" 2>/dev/null || printf '%s' "$1"
+}
+
 # Prints a non-empty, human-readable fault description when the candidate
 # fails either check; prints nothing when there is nothing to check (no
 # refinement on record for this item) or when the check passes. Never exits
 # non-zero: a candidate this cannot evaluate is not, by itself, a fault.
+#
+# TD-PPagop-26082307: a `gh` read that fails while fetching the actual
+# comment text is a fault now, not a silent pass — see the comment at that
+# fetch below for why. Set `TRACEABILITY_DEBUG=1` to log, to stderr, the
+# normalized haystack/needle a comparison actually ran against; this is
+# never required to diagnose a failure, only to see it directly.
 refinement_traceability_fault() {  # <candidate-json> <refinements-json>
   local cand="$1" refinements="${2:-{\}}" repo item entry spec comment_url \
-    url_issue comment_id body
+    url_issue comment_id body norm_context norm_acceptance norm_needle \
+    body_fetch_failed=0
   jq -e 'type == "object"' <<<"$refinements" >/dev/null 2>&1 || refinements='{}'
   repo="$(jq -r '.repo // ""' <<<"$cand" 2>/dev/null || true)"
   item="$(jq -r '.item // ""' <<<"$cand" 2>/dev/null || true)"
@@ -419,9 +440,15 @@ refinement_traceability_fault() {  # <candidate-json> <refinements-json>
 
   spec="$(jq -r '.spec // ""' <<<"$entry" 2>/dev/null || true)"
   if [[ -n "$spec" ]]; then
-    if jq -e --arg spec "$spec" '((.context // "") | contains($spec)) | not' \
-        <<<"$cand" >/dev/null 2>&1; then
-      printf '%s %s: recorded refinement spec is not present, verbatim, in this work order'\''s context — requirement 17b requires it, and a cross-item swap cannot satisfy this by accident' \
+    norm_context="$(_traceability_normalize "$(jq -r '.context // ""' <<<"$cand" 2>/dev/null)")"
+    norm_needle="$(_traceability_normalize "$spec")"
+    if [[ -n "${TRACEABILITY_DEBUG:-}" ]]; then
+      printf 'traceability-debug: %s %s: spec haystack=%q needle=%q\n' \
+        "$repo" "$item" "$norm_context" "$norm_needle" >&2
+    fi
+    if ! jq -ne --arg h "$norm_context" --arg n "$norm_needle" \
+        '$h | contains($n)' >/dev/null 2>&1; then
+      printf '%s %s: recorded refinement spec is not present, verbatim (after whitespace normalization), in this work order'\''s context — requirement 17b requires it, and a cross-item swap cannot satisfy this by accident' \
         "$repo" "$item"
       return 0
     fi
@@ -441,13 +468,37 @@ refinement_traceability_fault() {  # <candidate-json> <refinements-json>
   comment_id="$(printf '%s' "$comment_url" \
     | sed -n 's|.*#issuecomment-\([0-9][0-9]*\)$|\1|p')"
   [[ -n "$comment_id" ]] || return 0
-  body="$(gh api "repos/$repo/issues/comments/$comment_id" --jq '.body // ""' 2>/dev/null || true)"
+  # A failed fetch here used to fail open (return 0, no fault) — the same
+  # direction every other degraded `gh` read in this pipeline fails, on the
+  # reasoning that an outage is a fact about GitHub, not about the work
+  # order. But requirement 17f exists to gate a claim on a refinement really
+  # being present, and a check that cannot read the refinement cannot know
+  # that — assuming pass here means a token going bad, a rate limit, or a
+  # malformed `comment_url` silently disarms the whole gate, indefinitely,
+  # while still reading as a passing check. So a failed read is now treated
+  # the same as a failed match: a fault, reported as `untraceable` by the
+  # caller, with the failure itself surfaced via guard_warn rather than
+  # swallowed — the caller then retries the item next cycle rather than
+  # ever waving it through unverified.
+  body="$(gh api "repos/$repo/issues/comments/$comment_id" --jq '.body // ""' 2>&1)" \
+    || { guard_warn "traceability:comment-fetch:$repo#$item" "$body"; body=""; body_fetch_failed=1; }
+  if (( body_fetch_failed )); then
+    printf '%s %s: could not fetch recorded refinement comment (%s) to verify traceability — gh api failed, so the check cannot pass and the candidate is treated as untraceable rather than assumed compliant' \
+      "$repo" "$item" "$comment_url"
+    return 0
+  fi
   [[ -n "$body" ]] || return 0
 
-  if jq -e --arg body "$body" \
-      '((((.context // "") | contains($body)) or ((.acceptance // "") | contains($body))) | not)' \
-      <<<"$cand" >/dev/null 2>&1; then
-    printf '%s %s: recorded refinement comment (%s) is not present, verbatim, in this work order'\''s context or acceptance — requirement 17b/20 both require it, and a cross-item swap cannot satisfy this by accident' \
+  norm_context="$(_traceability_normalize "$(jq -r '.context // ""' <<<"$cand" 2>/dev/null)")"
+  norm_acceptance="$(_traceability_normalize "$(jq -r '.acceptance // ""' <<<"$cand" 2>/dev/null)")"
+  norm_needle="$(_traceability_normalize "$body")"
+  if [[ -n "${TRACEABILITY_DEBUG:-}" ]]; then
+    printf 'traceability-debug: %s %s: comment context-haystack=%q acceptance-haystack=%q needle=%q\n' \
+      "$repo" "$item" "$norm_context" "$norm_acceptance" "$norm_needle" >&2
+  fi
+  if ! jq -ne --arg hc "$norm_context" --arg ha "$norm_acceptance" --arg n "$norm_needle" \
+      '($hc | contains($n)) or ($ha | contains($n))' >/dev/null 2>&1; then
+    printf '%s %s: recorded refinement comment (%s) is not present, verbatim (after whitespace normalization), in this work order'\''s context or acceptance — requirement 17b/20 both require it, and a cross-item swap cannot satisfy this by accident' \
       "$repo" "$item" "$comment_url"
   fi
 }
