@@ -115,7 +115,7 @@ assert_eq "…and costs no gh call" "0" "$(gh_calls)"
 # was never in the live item at all — fabricated, not merely reworded.
 
 reset_gh_calls
-GH_LIVE_TEXT='Cycle 20260826T064910Z-poetic-1-186841 selected issue #815 for agent-ops, a Medium-priority Medium-complexity tech-debt item, and the Co-Ordinator input was trimmed to fit its model'\''s window.'
+GH_LIVE_TEXT='Cycle 20260826T064910Z-poetic-1-186841 selected issue #815 for agent-ops, a Medium-priority Medium-complexity tech-debt item, and the Co-Ordinator input was trimmed to fit its model context window.'
 cand_fabricated='{"repo":"o/r","item":"815","source":"issues",
   "context":"This paragraph describes acceptance criteria that were invented wholesale and never appeared anywhere in the real issue thread at all.",
   "acceptance":"ship it"}'
@@ -127,7 +127,7 @@ assert_eq "…exactly one gh read was needed" "1" "$(gh_calls)"
 
 reset_gh_calls
 cand_faithful='{"repo":"o/r","item":"815","source":"issues",
-  "context":"Cycle 20260826T064910Z-poetic-1-186841 selected issue #815 for agent-ops, a Medium-priority Medium-complexity tech-debt item, and the Co-Ordinator input was trimmed to fit its model'\''s window.",
+  "context":"Cycle 20260826T064910Z-poetic-1-186841 selected issue #815 for agent-ops, a Medium-priority Medium-complexity tech-debt item, and the Co-Ordinator input was trimmed to fit its model context window.",
   "acceptance":"fix the fabrication gap"}'
 assert_empty "a context paragraph that really is the live text passes" \
   "$(item_text_fault "$cand_faithful" "$trimmed" "$refinements")"
@@ -148,7 +148,7 @@ assert_empty "short structural lines (under 80 normalized chars) are never flagg
 
 reset_gh_calls
 cand_paraphrase='{"repo":"o/r","item":"815","source":"issues",
-  "context":"Cycle 20260826T064910Z-poetic-1-186841 selected issue #815 for agent-ops, a Medium-priority Medium-complexity tech-debt item, and the Co-Ordinator input was trimmed to fit its model'\''s window.",
+  "context":"Cycle 20260826T064910Z-poetic-1-186841 selected issue #815 for agent-ops, a Medium-priority Medium-complexity tech-debt item, and the Co-Ordinator input was trimmed to fit its model context window.",
   "acceptance":"Make sure the fabrication problem described in the issue thread is actually fixed, in whatever words best describe the change."}'
 assert_empty "a faithful paraphrase in acceptance's free prose is traceable and never flagged" \
   "$(item_text_fault "$cand_paraphrase" "$trimmed" "$refinements")"
@@ -156,8 +156,9 @@ assert_empty "a faithful paraphrase in acceptance's free prose is traceable and 
 # --- Acceptance: an invented backtick-quoted specific is fabrication ----------
 
 reset_gh_calls
+# shellcheck disable=SC2016  # the backtick span is fixture JSON text, not a command substitution
 cand_invented_span='{"repo":"o/r","item":"815","source":"issues",
-  "context":"Cycle 20260826T064910Z-poetic-1-186841 selected issue #815 for agent-ops, a Medium-priority Medium-complexity tech-debt item, and the Co-Ordinator input was trimmed to fit its model'\''s window.",
+  "context":"Cycle 20260826T064910Z-poetic-1-186841 selected issue #815 for agent-ops, a Medium-priority Medium-complexity tech-debt item, and the Co-Ordinator input was trimmed to fit its model context window.",
   "acceptance":"Add a new `refinement_policy_matrix` config key that this issue never actually names."}'
 fault_span="$(item_text_fault "$cand_invented_span" "$trimmed" "$refinements")"
 assert_nonempty "an invented backtick-quoted specific in acceptance is caught" "$fault_span"
@@ -167,8 +168,9 @@ assert_eq "…and the fault names the invented span" "1" \
 # --- Acceptance: a backtick span that really is in the live text passes -------
 
 reset_gh_calls
+# shellcheck disable=SC2016  # the backtick span is fixture JSON text, not a command substitution
 cand_real_span='{"repo":"o/r","item":"815","source":"issues",
-  "context":"Cycle 20260826T064910Z-poetic-1-186841 selected issue #815 for agent-ops, a Medium-priority Medium-complexity tech-debt item, and the Co-Ordinator input was trimmed to fit its model'\''s window.",
+  "context":"Cycle 20260826T064910Z-poetic-1-186841 selected issue #815 for agent-ops, a Medium-priority Medium-complexity tech-debt item, and the Co-Ordinator input was trimmed to fit its model context window.",
   "acceptance":"Confirm `20260826T064910Z-poetic-1-186841` is the cycle this fix must be verified against."}'
 assert_empty "a backtick span that really is in the live text passes" \
   "$(item_text_fault "$cand_real_span" "$trimmed" "$refinements")"
@@ -176,10 +178,12 @@ assert_empty "a backtick span that really is in the live text passes" \
 # --- A recorded refinement spec is also a legitimate source -------------------
 
 reset_gh_calls
-refinements_spec='{"o/r": {"815": {"ts": "t", "cycle": "c", "spec": "the Refiner'\''s own acceptance criteria, verbatim, naming a `refinement_traceability_repair` change"}}}'
+# shellcheck disable=SC2016  # the backtick span is fixture JSON text, not a command substitution
+refinements_spec='{"o/r": {"815": {"ts": "t", "cycle": "c", "spec": "acceptance criteria written by the Refiner, verbatim, naming a `refinement_traceability_repair` change"}}}'
+# shellcheck disable=SC2016  # the backtick span is fixture JSON text, not a command substitution
 cand_from_spec='{"repo":"o/r","item":"815","source":"issues",
-  "context":"Cycle 20260826T064910Z-poetic-1-186841 selected issue #815 for agent-ops, a Medium-priority Medium-complexity tech-debt item, and the Co-Ordinator input was trimmed to fit its model'\''s window.",
-  "acceptance":"Deliver `refinement_traceability_repair` exactly as the Refiner'\''s spec describes."}'
+  "context":"Cycle 20260826T064910Z-poetic-1-186841 selected issue #815 for agent-ops, a Medium-priority Medium-complexity tech-debt item, and the Co-Ordinator input was trimmed to fit its model context window.",
+  "acceptance":"Deliver `refinement_traceability_repair` exactly as the spec written by the Refiner describes."}'
 assert_empty "content sourced from the recorded refinement spec (not the live text) also passes" \
   "$(item_text_fault "$cand_from_spec" "$trimmed" "$refinements_spec")"
 
@@ -248,6 +252,7 @@ assert_empty "a candidate missing repo/item is skipped" \
 # --- The claim loop wiring ------------------------------------------------------
 
 loop_src="$(extract_block '^  c_fab_fault=""' '^  # Requirement 17f ' "$AGENT_CYCLE")"
+# shellcheck disable=SC2016  # the literal source text is what is being matched
 if [[ -n "$loop_src" && "$loop_src" == *'item_text_fault'* && "$loop_src" == *'selected_by_fallback'* \
       && "$loop_src" == *'cause: "fabricated"'* && "$loop_src" == *'fab_faults=$(( fab_faults + 1 ))'* ]]; then
   printf 'ok   - %s\n' "the claim loop checks item_text_fault before requirement 17f, guards it with selected_by_fallback, and counts fab_faults with cause \"fabricated\""
