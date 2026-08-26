@@ -133,6 +133,18 @@ peers_dir="$(fleet_peers_dir "$workspace_root")"
 #   cache            the registry (lib/image-drift.sh) — a peer's copy of it
 #                   would answer for a registry query nobody there ran, not
 #                   for that peer.
+#   the stage-      `.stage-health.json` (lib/stage-health.sh, agent-ops#662)
+#   health snapshot  is excluded as a raw file for the same reason
+#                   `.doctor-status.json` is — a peer's copy of the file
+#                   itself would answer for a computation nobody there ran —
+#                   but unlike doctor's status this verdict does need to
+#                   reach peers, which is the whole point of #662: a fleet
+#                   dashboard that can only see this node's own stages is no
+#                   better than `--status` run locally. So its *content*
+#                   travels a different way, the same one `compose`/`image`/
+#                   `switch` already use below: folded into `heartbeat.json`,
+#                   this node's own verdict about itself, published like any
+#                   other fact only this node can state.
 #   the stage       `*.stream.jsonl` is a stage's whole event stream, every
 #   streams          message and every tool result (lib/stage-run.sh). It is
 #                   local forensics and, while the stage runs, its liveness
@@ -177,6 +189,7 @@ EXCLUDES=(
   # either from a peer, so neither travels.
   --exclude=doctor.log
   --exclude=.doctor-status.json
+  --exclude=.stage-health.json
   # revert-rate.log (scripts/publish-revert-rate.sh, agent-ops#579): the
   # daily pass's own text output, local to this node on the same reasoning
   # as doctor.log above. Its structured sibling, revert-rate.jsonl, is
@@ -412,6 +425,15 @@ do_push() {
   # dashboard's page-top banner reads. The fleet-wide switch needs none of
   # this: it is a flag every node fetches for itself
   # (`fleet/disabled.json`).
+  #
+  # And the per-stage health verdict (lib/stage-health.sh, agent-ops#662), on
+  # the identical shape: `agent-cycle.sh`'s own cleanup already computed and
+  # persisted it to `.stage-health.json` this cycle, so what is read here is
+  # that finished verdict, not a second computation over this node's log —
+  # the file is `null` on a node that has not completed a cycle since
+  # upgrading, which the dashboard already renders as no data rather than as
+  # healthy.
+  #
   # Newest cycle id. Sliced in bash rather than piped into `head -n 1`, for
   # the reason kept_cycles sets out — and this is the site where it mattered:
   # a command substitution in the current shell, under `set -euo pipefail`, so
@@ -435,8 +457,9 @@ do_push() {
     --argjson compose "$(compose_drift_status)" \
     --argjson image "$(image_drift_status "$version_json" "$state_dir/.image-drift-cache.json")" \
     --argjson switch "$(toggle_switch_summary "$state_dir")" \
+    --argjson stage_health "$(jq -c '.' "$state_dir/.stage-health.json" 2>/dev/null || echo null)" \
     '{node: $node, role: $role, ts: $ts, last_cycle: $lc, version: $version,
-      compose: $compose, image: $image, switch: $switch}' > "$mirror/heartbeat.json"
+      compose: $compose, image: $image, switch: $switch, stage_health: $stage_health}' > "$mirror/heartbeat.json"
 
   # One rolling commit per node, amended and force-pushed. The state files
   # carry their own history — log.jsonl is append-only and every cycle keeps

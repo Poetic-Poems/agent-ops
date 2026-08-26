@@ -171,6 +171,17 @@ image_cache="$state_dir/.image-drift-cache.json"
 # this instead. `null` when no unattended pass has run yet on this node.
 doctor_status_file="$state_dir/.doctor-status.json"
 doctor_status_json="$(jq -c '.' "$doctor_status_file" 2>/dev/null || echo null)"
+# This node's own per-stage health verdict (lib/stage-health.sh,
+# agent-ops#662), written by agent-cycle.sh's own cleanup at the end of every
+# real cycle — read rather than recomputed, on the identical precedent
+# doctor_status_json above already documents, even though (unlike doctor's
+# GitHub section) recomputing it here would cost no network call: the file
+# is the single source both this node's own page and the fleet heartbeat
+# (scripts/state-sync.sh) read, so the two can never disagree about what
+# this node's own verdict was this cycle. `null` until this node's first
+# cycle since upgrading has completed.
+stage_health_file="$state_dir/.stage-health.json"
+stage_health_json="$(jq -c '.' "$stage_health_file" 2>/dev/null || echo null)"
 mkdir -p "$out_dir"
 
 # Large JSON blobs (the cycles array carries full transcripts) are handed to jq
@@ -1010,6 +1021,7 @@ status_json="$(jq -n \
   --argjson limit_active "$limit_active" --arg limit_note "$limit_note" \
   --argjson switch "$switch_json" \
   --argjson doctor "$doctor_status_json" \
+  --argjson stage_health "$stage_health_json" \
   --slurpfile cyc "$cycles_file" '
   ($cyc[0] | map(select(.dry_run|not))) as $real
   # (Comments in this program carry no apostrophes: it is a single-quoted shell
@@ -1067,7 +1079,8 @@ status_json="$(jq -n \
       last_cycle: (($last_real // $last_any) | if . == null then null else {id, node, ended_at, outcome, repo, item, title} end),
       limit: {active: $limit_active, note: $limit_note},
       switch: $switch,
-      doctor: $doctor
+      doctor: $doctor,
+      stage_health: $stage_health
     }')"
 
 if (( FULL )); then
@@ -1750,9 +1763,11 @@ jq -nc --arg n "$self_node" --arg r "$(role_current)" --arg ts "$now_iso" --arg 
   --argjson compose "$(compose_drift_status)" \
   --argjson image "$(image_drift_status "$self_version_json" "$image_cache")" \
   --argjson switch "$switch_json" \
+  --argjson stage_health "$stage_health_json" \
   '{node: $n, role: $r, heartbeat_ts: $ts, heartbeat_age_s: 0,
     last_cycle: (if $lc == "" then null else $lc end), self: true, stale: false,
-    live: $live, version: $version, compose: $compose, image: $image, switch: $switch}' > "$nodes_rows"
+    live: $live, version: $version, compose: $compose, image: $image, switch: $switch,
+    stage_health: $stage_health}' > "$nodes_rows"
 for hb in "$peers_dir"/*/heartbeat.json; do
   [[ -f "$hb" ]] || continue
   jq -c --argjson now "$now_epoch" --argjson live "$node_live_json" '
@@ -1783,7 +1798,12 @@ for hb in "$peers_dir"/*/heartbeat.json; do
        # also reads (requirement 34a). So an absent field (a peer on a
        # heartbeat built before this check existed) yields null rather than
        # this node re-deriving a verdict — silently — in its place.
-       switch: ($h.switch // null)}' \
+       switch: ($h.switch // null),
+       # And for the per-stage health verdict (lib/stage-health.sh,
+       # agent-ops#662): only the peer itself computed it, over its own
+       # log.jsonl, so a heartbeat built before this check existed yields
+       # null rather than this node deriving a verdict for that peer.
+       stage_health: ($h.stage_health // null)}' \
     "$hb" 2>/dev/null >> "$nodes_rows" || true
 done
 fleet_nodes_json="$(jq -sc 'sort_by([(.self | not), .node])' "$nodes_rows" 2>/dev/null)"

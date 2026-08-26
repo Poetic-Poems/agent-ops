@@ -116,6 +116,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/crash-loop.sh"
 # shellcheck source=lib/token-expiry.sh
 . "$SCRIPT_DIR/lib/token-expiry.sh"
+# shellcheck source=lib/stage-health.sh
+. "$SCRIPT_DIR/lib/stage-health.sh"
 # shellcheck source=lib/workspace.sh
 . "$SCRIPT_DIR/lib/workspace.sh"
 # shellcheck source=lib/role.sh
@@ -982,6 +984,14 @@ cleanup() {
   if [[ "$lock_acquired" == "1" ]]; then
     rm -f "$lock_file"
   fi
+  # Per-stage health snapshot (issue #662, lib/stage-health.sh): recomputed
+  # from this node's own $log_file — which already carries every stage-end
+  # and attempt-failed event this cycle logged — and written before the
+  # state-sync push below, so that push's own heartbeat (requirement 2.5)
+  # carries this cycle's fresh verdict rather than the previous one's.
+  # Best-effort like the dashboard refresh beside it: never affects this
+  # cycle's own exit code.
+  stage_health_write_status "$state_dir" "$log_file" || true
   # Publish this node's state to the fleet (requirement 2.5) — its own
   # `nodes/<NODE_NAME>` branch, so there is nothing another node's push could
   # overwrite and nothing to gate. Here at the end so the cycle's record is

@@ -1312,6 +1312,54 @@
     ]);
   }
 
+  // ---------- Stage health panel (agent-ops#662) ----------
+  // Per-stage verdicts for this node, computed by lib/stage-health.sh at the
+  // end of every cycle and read from D.status.stage_health exactly as the
+  // Doctor panel above reads D.status.doctor. This is the reading that
+  // stayed silent for 10.5 hours during the 2026-08-21 incident (issue
+  // #662): `cycle: RUNNING` and a clean Doctor pass both stayed true while
+  // every stage failed, because neither reads a stage's own exit code.
+  function stageHealthPanel() {
+    var sh = (D.status && D.status.stage_health) || null;
+    var stages = sh && sh.stages ? sh.stages : null;
+    if (!stages || !Object.keys(stages).length) {
+      return el("div", {class:"panel"}, el("div", {class:"empty",
+        text: "No cycle has completed on this node since this check was added."}));
+    }
+    var rows = Object.keys(stages).map(function (name) {
+      var v = stages[name] || {};
+      var badgeClass = v.verdict === "failing" ? "b-red" : v.verdict === "idle" ? "b-grey" : "b-green";
+      var detail = v.verdict === "failing"
+        ? v.consecutive_failures + " consecutive" + (v.last_detail ? ": " + v.last_detail : "")
+        : "";
+      return el("tr", {}, [
+        el("td", {class:"mono", text: name}),
+        el("td", {}, el("span", {class:"badge " + badgeClass, text: v.verdict})),
+        el("td", {class:"muted", text: v.last_success ? fmtAgo(v.last_success) : "never"}),
+        el("td", {class:"wrap roomy", text: detail})
+      ]);
+    });
+    return el("div", {class:"panel scroll"}, [
+      el("table", {}, [
+        el("thead", {}, el("tr", {}, [el("th",{text:"Stage"}), el("th",{text:"Verdict"}),
+          el("th",{text:"Last success"}), el("th",{text:"Detail"})])),
+        el("tbody", {}, rows)
+      ])
+    ]);
+  }
+
+  // The stage names a node's own or a peer's `stage_health.stages` reports
+  // as `failing` right now — [] when there is no stage-health data yet
+  // (an unrecognised or absent field reads as "nothing to say", never as a
+  // failure) or nothing is. Shared by the fleet-strip badge and any future
+  // reader that only needs the summary, not the whole table `stageHealthPanel`
+  // renders for this node alone.
+  function stageHealthFailingStages(n) {
+    var stages = n && n.stage_health && n.stage_health.stages;
+    if (!stages) return [];
+    return Object.keys(stages).filter(function (k) { return stages[k] && stages[k].verdict === "failing"; });
+  }
+
   // ---------- PRs panel ----------
   // State-cell badges (agent-ops#375, D17): `queued`/`dequeued` ride in on
   // each pull request alongside `isDraft` — the Publisher's own answer, not
@@ -1397,6 +1445,17 @@
                                                title: doubt, text:"may be dead"}));
     } else {
       state.appendChild(el("span", {}, [ el("span",{class:"dot idle"}), "idle" ]));
+    }
+    // Independent of running/idle/unknown above, by design (agent-ops#662):
+    // the whole point is a node whose process is alive and whose cycles are
+    // completing — which reads as plain "running" or "idle" above — while
+    // one or more stages have been failing every attempt. See Stage health
+    // below for which and since when.
+    var failingStages = stageHealthFailingStages(n);
+    if (failingStages.length) {
+      state.appendChild(el("span", {class:"badge b-red", style:"margin-left:6px",
+        title: failingStages.join(", ") + " — see Stage health below",
+        text: failingStages.length + (failingStages.length === 1 ? " stage failing" : " stages failing")}));
     }
     card.appendChild(state);
 
@@ -2820,6 +2879,18 @@
         el("span", {class:"sub", text: "See Doctor below — last run " + fmtAgo(doctorStatus.timestamp) + "."})
       ]));
     }
+    // Per-stage health (agent-ops#662): a stage on this node whose most
+    // recent run of attempts has been failing, the reading that stayed
+    // silent for 10.5 hours on 2026-08-21 while `cycle: RUNNING` and a clean
+    // Doctor pass both said otherwise.
+    var failingHere = stageHealthFailingStages({stage_health: st.stage_health});
+    if (failingHere.length) {
+      banners.appendChild(el("div", {class:"banner red"}, [
+        el("span", {text: "✗ " + failingHere.length + (failingHere.length === 1 ? " stage" : " stages") +
+          " failing on this node: " + failingHere.join(", ") + "."}),
+        el("span", {class:"sub", text: "See Stage health below."})
+      ]));
+    }
 
     var openPrs = (D.github && D.github.prs) || [];
     var failedChecks = openPrs.filter(function (p){ return p.checks && p.checks.failed > 0; });
@@ -2866,6 +2937,9 @@
 
     // ---------- doctor (agent-ops#543) ----------
     app.appendChild(sectionOf("Doctor (unattended, hourly)", doctorPanel()));
+
+    // ---------- stage health (agent-ops#662) ----------
+    app.appendChild(sectionOf("Stage health", stageHealthPanel()));
 
     // ---------- metric cards ----------
     var c = D.counts || {};

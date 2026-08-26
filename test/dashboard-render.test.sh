@@ -1125,6 +1125,56 @@ assert_contains "a token well above the threshold still shows the day count" \
 assert_not_contains "  ... but without the rotate-it-now nudge" \
   "rotate GH_TOKEN before it expires" "$out"
 
+# --- stage-health-*.json: status.stage_health (agent-ops#662) ---------------
+# status.stage_health is THIS node's own most recent per-stage verdict, read
+# from state_dir/.stage-health.json rather than recomputed — null until the
+# first cycle since this check shipped has completed. A failing stage raises
+# a red page-top banner naming it, and the Stage health section lists every
+# stage with its own verdict badge. This is the reading that stayed silent
+# for 10.5 hours during the 2026-08-21 incident: `cycle: RUNNING` and a clean
+# Doctor pass both said the fleet was fine while every stage failed.
+out="$(render switch-scope-node.json)" || { printf 'FAIL - switch-scope-node.json did not render:\n%s\n' "$out"; exit 1; }
+assert_contains "no cycle has completed since this check shipped says so, in the Stage health section" \
+  "No cycle has completed on this node" "$out"
+assert_not_contains "and raises no banner about it" \
+  "stage(s) failing on this node" "$out"
+
+out="$(render stage-health-failing.json)" || { printf 'FAIL - stage-health-failing.json did not render:\n%s\n' "$out"; exit 1; }
+assert_contains "a failing stage raises a red banner naming it" \
+  "stage failing on this node: coordinator" "$out"
+assert_contains "  ... and its consecutive-failure count alongside its own detail" \
+  "11 consecutive: coordinator was refused by the API before it could run" "$out"
+assert_contains "the fleet-strip card badges the same node with its own failing-stage count" \
+  "1 stage failing" "$out"
+
+# The three verdict rows are asserted against the Stage health section alone,
+# not the whole page: "failing" also appears in the banner above it, and
+# "implementer"/"reviewer" appear in half a dozen unrelated panels, so a
+# whole-output grep for any of them would pass just as happily over a section
+# that rendered nothing at all — which is the one failure this fixture exists
+# to catch.
+stage_health_section="$(awk '$0 == "  <section>" { on = 0 } on { print } $0 == "      Stage health" { on = 1 }' <<<"$out")"
+assert_contains "the Stage health section lists the failing stage with a red verdict badge" \
+  '<td class="mono">
+              coordinator
+            <td>
+              <span class="badge b-red">
+                failing' "$stage_health_section"
+assert_contains "an ok stage is listed too, distinctly — a green badge, not a red one" \
+  '<td class="mono">
+              implementer
+            <td>
+              <span class="badge b-green">
+                ok' "$stage_health_section"
+assert_contains "  ... an idle stage never invoked reads idle, not ok" \
+  '<td class="mono">
+              reviewer
+            <td>
+              <span class="badge b-grey">
+                idle' "$stage_health_section"
+assert_contains "  ... with no last success to report, rather than a blank cell" \
+  "never" "$stage_health_section"
+
 printf '\n'
 if (( failures > 0 )); then
   printf '%d assertion(s) failed\n' "$failures"
