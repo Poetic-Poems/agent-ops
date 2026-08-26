@@ -5031,7 +5031,17 @@ implements.
    `warning`, because a fleet whose backlog has outgrown the window will trim
    on every cycle and a standing warning for the ordinary case is how a log
    stops being read. A fit that still does not fit at one entry per band logs
-   a `warning` as well, saying so *before* the API refuses the prompt.
+   a `warning` as well, saying so *before* the API refuses the prompt. Both
+   events also carry a `terms` object (issue #645) breaking the overhead down
+   by band — `prompt` (the rendered base prompt), `blocked`, `refinements`,
+   `claimed`, and `scaffold` (the fence wrapper plus the small, static
+   `models`/`pr_label`/`candidates_max`/`refinement_policy` fields and the
+   JSON structure `coordinator_fit_overhead_json` itself adds) — so a refusal
+   names which half of the document was actually too big without a live shell
+   into the container to re-derive each band from `.fleet-log.jsonl` by hand.
+   `scaffold` is the remainder of the total overhead after the other four are
+   subtracted, not a fifth independent measurement, which keeps the five
+   terms summing to the existing overhead total exactly.
 
    **The bottom rung (`0:0:1000`) stays a trim, not a drop, and requirement
    34e's fourth refusal (agent-ops#683) is the decision, reasoned.** Before
@@ -14884,11 +14894,13 @@ pull request, run the ones the change touches and any it could regress.
    a larger maximum never yields a smaller prompt (which an overhead measured
    against the unfitted array would have caused); a maximum of `0` leaves the
    array untouched and logs nothing; a trim logs exactly one
-   `coordinator-input-fitted` carrying the rung, the byte counts and the
-   detail line, and no `warning`; a cycle needing no trim logs nothing; and
-   both shapes of "cannot fit" — a maximum the prompt text alone exceeds, and
-   an allowance the ladder bottoms out inside — each log a `warning` saying
-   which it was. The same test lifts `handle_stage_failure`'s two refusal
+   `coordinator-input-fitted` carrying the rung, the byte counts, the detail
+   line and a `terms` breakdown by band, and no `warning`; a cycle needing no
+   trim logs nothing; both shapes of "cannot fit" — a maximum the prompt text
+   alone exceeds, and an allowance the ladder bottoms out inside — each log a
+   `warning` saying which it was, itself carrying the same `terms` breakdown,
+   with its five bands summing to the overhead total the block itself
+   computed. The same test lifts `handle_stage_failure`'s two refusal
    readers and drives them over the record the fleet actually produced on
    2026-08-21: the refusal is named `prompt_too_long`, its name carries none
    of the numbers the crash-loop ladder groups on, the API's message is kept
