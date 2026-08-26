@@ -59,6 +59,17 @@ extract_block() {
   ' "$file"
 }
 
+# _traceability_normalize is a helper refinement_traceability_fault calls
+# directly (not through any indirection this harness could stub), so it has
+# to be lifted and eval'd too, or every call below dies on "command not
+# found" the moment the real function reaches for it.
+norm_block="$(extract_block '^_traceability_normalize\(\) \{' '^\}$' "$SCRIPT_DIR/lib/candidate-select.sh")"
+if [[ -z "$norm_block" || "$norm_block" != *'jq'* ]]; then
+  echo "FAIL - could not extract _traceability_normalize from lib/candidate-select.sh — has it moved?" >&2
+  exit 1
+fi
+eval "$norm_block"
+
 fn_block="$(extract_block '^refinement_traceability_fault\(\) \{' '^\}$' "$SCRIPT_DIR/lib/candidate-select.sh")"
 if [[ -z "$fn_block" || "$fn_block" != *'jq'* ]]; then
   echo "FAIL - could not extract refinement_traceability_fault from agent-cycle.sh — has it moved?" >&2
@@ -82,6 +93,15 @@ gh() {
 }
 gh_calls() { [[ -f "$GH_CALLS_FILE" ]] && wc -c <"$GH_CALLS_FILE" | tr -d ' ' || printf '0'; }
 reset_gh_calls() { rm -f "$GH_CALLS_FILE"; }
+
+# guard_warn is the real function's own degraded-read reporter (agent-cycle.sh)
+# — stubbed the same way `gh` is, so a fetch failure's warning is observable
+# without lifting the whole guard-degradation machinery into this harness.
+GUARD_WARN_CALLS_FILE="$T/guard_warn_calls"
+# shellcheck disable=SC2317  # reached only from the lifted refinement_traceability_fault block.
+guard_warn() { printf '%s\t%s\n' "$1" "$2" >>"$GUARD_WARN_CALLS_FILE"; }
+guard_warn_calls() { [[ -f "$GUARD_WARN_CALLS_FILE" ]] && wc -l <"$GUARD_WARN_CALLS_FILE" | tr -d ' ' || printf '0'; }
+reset_guard_warn_calls() { rm -f "$GUARD_WARN_CALLS_FILE"; }
 
 # --- The observed instance: #571's work order carrying #529's comment ---------
 # refinements-json correctly names #571's own comment (a well-formed ledger
@@ -165,17 +185,61 @@ assert_empty "candidacy is scoped per repo — another repo's entry for the same
   "$(refinement_traceability_fault "$cand_swapped" "$refinements_other_repo")"
 assert_eq "…and costs no gh call either" "0" "$(gh_calls)"
 
-# --- Fail-open on a network failure --------------------------------------------
-# A `gh` outage is a fact about GitHub's availability, not about the work
-# order — every other degraded `gh` read in this pipeline fails open the
-# same way (see gather-issues.sh's `degrade`), and a check that could not run
-# must not read as a candidate that failed it.
+# --- Fail-closed (untraceable) on a network failure, and the failure is seen --
+# TD-PPagop-26082307: this used to fail open — a `gh` outage read as a
+# passing check, on the reasoning that an outage is a fact about GitHub's
+# availability, not about the work order. That reasoning missed that a
+# *permanently* degraded read (a token gone bad, a narrowed scope, a repo
+# move) fails exactly the same way forever, silently disarming requirement
+# 17f's whole gate while it keeps reading as green. The check now faults —
+# the caller reports `cause: "untraceable"` and retries next cycle — and the
+# failure itself is surfaced via guard_warn rather than swallowed.
 
 reset_gh_calls
+reset_guard_warn_calls
 GH_RC=1
-assert_empty "an unreachable GitHub fails open rather than faulting the candidate" \
-  "$(refinement_traceability_fault "$cand_swapped" "$refinements")"
+fault_unreachable="$(refinement_traceability_fault "$cand_swapped" "$refinements")"
+assert_nonempty "an unreachable GitHub now faults the candidate instead of passing it" \
+  "$fault_unreachable"
+assert_eq "…and the failed read is reported via guard_warn, not swallowed" "1" \
+  "$(guard_warn_calls)"
 GH_RC=0
+
+# --- Whitespace drift is tolerated; a genuine difference is still caught -------
+# TD-PPagop-26082307: a model's paste of a multi-kilobyte spec or comment
+# drifts in ordinary ways — a reflowed line, collapsed spacing, a trimmed
+# trailing space — without changing what it says. The verbatim check used to
+# trip on every one of these; the normalized check must tolerate all of them
+# while still catching a passage that is genuinely missing or different.
+
+refinements_spec_multiline='{"o/r": {"TD2": {"ts": "t", "cycle": "c",
+  "spec": "line one\nline two   with   extra   spaces\nline three  "}}}'
+
+reset_gh_calls
+cand_spec_drifted='{"repo":"o/r","item":"TD2",
+  "context":"body\n\nline one line two with extra spaces line three"}'
+assert_empty "a reflowed, whitespace-collapsed paste of the spec still passes" \
+  "$(refinement_traceability_fault "$cand_spec_drifted" "$refinements_spec_multiline")"
+
+cand_spec_trailing_space='{"repo":"o/r","item":"TD2",
+  "context":"body\n\nline one   \nline two with extra spaces\nline three"}'
+assert_empty "trimmed/added trailing space alone still passes" \
+  "$(refinement_traceability_fault "$cand_spec_trailing_space" "$refinements_spec_multiline")"
+
+cand_spec_different='{"repo":"o/r","item":"TD2",
+  "context":"body\n\nline one line two totally different line three"}'
+assert_nonempty "a genuinely different passage still faults — drift tolerance is not unlimited" \
+  "$(refinement_traceability_fault "$cand_spec_different" "$refinements_spec_multiline")"
+
+# --- Debug logging is available, and never required --------------------------
+
+reset_gh_calls
+debug_stderr="$(TRACEABILITY_DEBUG=1 refinement_traceability_fault "$cand_spec_drifted" "$refinements_spec_multiline" 2>&1 >/dev/null)"
+assert_nonempty "TRACEABILITY_DEBUG=1 logs the normalized comparison to stderr" "$debug_stderr"
+
+reset_gh_calls
+debug_stderr_off="$(refinement_traceability_fault "$cand_spec_drifted" "$refinements_spec_multiline" 2>&1 >/dev/null)"
+assert_empty "…and stays silent when the flag is unset" "$debug_stderr_off"
 
 # --- Malformed input degrades to no fault, never a crash -----------------------
 
