@@ -709,6 +709,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The dashboard no longer badges a cycle `↻ raced`/"recovered race ×N" when
+  at most one node is currently active (agent-ops#829). Per-item claims only
+  arbitrate contention between concurrently *active* nodes (`lib/role.sh`) —
+  a standby never attempts one — so with `fleet.nodes` present and at most
+  one node carrying `role: "active"`, no peer could have held the claim a
+  cycle's `raced`/`race_losses` fields describe, and the badge previously
+  named contention that could not have happened. The underlying log fields
+  are unchanged; only their rendering is gated, in `dashboard/index.html`'s
+  new `racedMarkersPossible()`. Fleet-less data (no `fleet` key at all) is
+  not evidence of a single node and renders exactly as before.
 - `github_auth_probe` (`lib/github-limit.sh`, requirement 2.0b) no longer
   classifies a missing `GH_TOKEN`/`GITHUB_TOKEN` as `unreachable`
   (TD-PPagop-26082306). Before, only an HTTP 401 GitHub itself answered was

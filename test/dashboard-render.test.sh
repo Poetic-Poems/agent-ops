@@ -347,6 +347,34 @@ assert_not_contains "but wears no raced marker — nothing was contended" \
 assert_not_contains "and no recovered-race badge either" \
   "recovered race" "$pc"
 
+# --- raced-single-active-node.json: contention needs a peer (issue #829) --------
+# Per-item claims only arbitrate between concurrently *active* nodes
+# (lib/role.sh) — with exactly one node carrying `role: "active"` in `fleet`,
+# nothing could have raced for either cycle's claim, even though both still
+# carry `raced: true`/`race_losses` from the log. Neither badge may appear,
+# on the recovered cycle or the stood-down one, though both cycles' outcomes
+# still render plainly.
+rsn="$(render raced-single-active-node.json)" || { printf 'FAIL - raced-single-active-node.json did not render:\n%s\n' "$rsn"; exit 1; }
+assert_contains "a recovered cycle still reads its outcome" \
+  "Ready for review" "$rsn"
+assert_contains "and a lost-every-candidate cycle still reads stood down" \
+  "Stood down" "$rsn"
+assert_not_contains "but with one active node, neither carries the raced marker" \
+  "↻ raced" "$rsn"
+assert_not_contains "nor the recovered-race badge" \
+  "recovered race" "$rsn"
+
+# --- raced-multi-active-node.json: contention with two active nodes (#829) ------
+# The same recovered-race cycle as above, but `fleet.nodes` now names two
+# nodes both carrying `role: "active"` — a peer could genuinely have held the
+# claim, so both badges render exactly as they did before this node count was
+# considered at all.
+rmn="$(render raced-multi-active-node.json)" || { printf 'FAIL - raced-multi-active-node.json did not render:\n%s\n' "$rmn"; exit 1; }
+assert_contains "with two active nodes, a recovered race still carries its marker" \
+  "↻ raced" "$rmn"
+assert_contains "and its recovered-race count" \
+  "recovered race ×2" "$rmn"
+
 # --- noop-aggregate.json: no-op ticks summarised, never listed (issue #271) ------
 # The Publisher holds the */15 cadence's stand-down short-circuits and
 # lock-held skips out of the MAX_CYCLES detail list and ships the single O(1)

@@ -859,6 +859,21 @@
   // as it did single-node until a peer shows up (or a claim exists).
   function fleetVisible() { return fleetNodes().length > 1 || fleetClaims().length > 0; }
 
+  // Per-item claims (requirement 17a, lib/role.sh) only arbitrate contention
+  // between concurrently *active* nodes — a standby never attempts one, so it
+  // cannot be the peer a claim was lost to. With fleet data present and at
+  // most one node currently active, nothing could have raced for any claim,
+  // so the badges below would name contention that never happened (issue
+  // #829) — even though the underlying `raced`/`race_losses` fields are real,
+  // logged events. Fleet-less data (no `fleet` key at all, the shape a
+  // data.js from before the fleet strip existed carries) says nothing about
+  // how many nodes are active, so it is not treated as "one" and renders
+  // exactly as before.
+  function racedMarkersPossible() {
+    if (!fleetNodes().length) return true;
+    return fleetNodes().filter(function (n) { return n.role === "active"; }).length > 1;
+  }
+
   function nodeTag(n) {
     if (!n) return el("span", {class:"muted", text:"—"});
     var self = D.node && n === D.node;
@@ -931,7 +946,7 @@
     if (cur.repo)   { sep(); what.appendChild(el("span", {class:"mono", text: cur.repo.split("/")[1]})); }
     if (cur.source) { what.appendChild(document.createTextNode(" ")); what.appendChild(sourceTag(cur.source)); }
     if (label)      what.appendChild(document.createTextNode(" " + (label.length > 70 ? label.slice(0,69) + "…" : label)));
-    if (cur.race_losses) {
+    if (cur.race_losses && racedMarkersPossible()) {
       what.appendChild(el("span", {class:"badge b-blue", style:"margin-left:6px",
         title: cur.race_losses + " candidate(s) lost to a peer before this claim landed",
         text: "recovered race ×" + cur.race_losses}));
@@ -1067,7 +1082,7 @@
   // makes contention informational rather than a fault, and amber on this
   // page is the colour of something that wants acting on.
   function racedMarker(cy) {
-    if (!cy.raced) return null;
+    if (!cy.raced || !racedMarkersPossible()) return null;
     var n = cy.race_losses || 0, recovered = cy.outcome !== "stand-down";
     return el("span", {class:"badge b-blue", style:"margin-left:6px",
       title: (recovered ? "recovered after " : "stood down after ") + n +
@@ -1822,7 +1837,7 @@
           // candidate has a count without a claim behind it. That one is
           // named by `racedMarker` beside its outcome instead, which says
           // stood-down and recovered apart.
-          (cy.race_losses && cy.outcome !== "stand-down")
+          (cy.race_losses && cy.outcome !== "stand-down" && racedMarkersPossible())
             ? el("span", {class:"badge b-blue", style:"margin-left:6px",
                 title: cy.race_losses + " candidate(s) lost to a peer before this claim landed",
                 text: "recovered race ×" + cy.race_losses}) : null ]),
