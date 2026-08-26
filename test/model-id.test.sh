@@ -115,6 +115,20 @@ assert_false "an unranked model prints nothing and fails" \
   model_tier_rank claude-nonexistent-9
 assert_eq "an unranked model's rank is empty" "" \
   "$(model_tier_rank claude-nonexistent-9 2>/dev/null)"
+# An empty id must return 1 the ordinary way rather than abort the caller:
+# bash rejects an empty associative-array subscript ("bad array subscript"),
+# which under the `set -e` every script sourcing this file runs with would
+# take the whole cycle down instead. Probed in a subshell that would print
+# nothing at all if the lookup aborted.
+assert_false "an empty model id is not ranked" model_tier_rank ""
+assert_eq "an empty model id fails cleanly under set -e rather than aborting the caller" \
+  "survived" \
+  "$(bash -euo pipefail -c '
+      . "$1/lib/model-id.sh"
+      model_tier_rank "" || true
+      model_tier_rank || true
+      printf survived
+    ' _ "$SCRIPT_DIR" 2>/dev/null)"
 
 assert_true "model_tier_known accepts empty (a disabled stage)" model_tier_known ""
 assert_true "model_tier_known accepts a ranked model" model_tier_known claude-sonnet-5

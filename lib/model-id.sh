@@ -63,11 +63,19 @@ declare -gA MODEL_TIER_RANK=(
 
 # model_tier_rank MODEL_ID
 # Prints MODEL_ID's integer tier rank (higher is more capable) and returns 0,
-# or prints nothing and returns 1 for a model MODEL_TIER_RANK does not know.
+# or prints nothing and returns 1 for a model MODEL_TIER_RANK does not know —
+# an empty or absent MODEL_ID included, since "not ranked" is exactly what an
+# unset `modelIdOrEmpty` key is. That empty case is guarded explicitly rather
+# than left to the lookup: bash rejects an empty associative-array subscript
+# outright ("bad array subscript"), which under `set -e` aborts the calling
+# script instead of returning the 1 this promises. Both callers below already
+# screen empties before they get here, but this is shared library code and the
+# next caller may not.
 # Takes an already-resolved bare id, as every caller here has already stripped
 # any `anthropic/` qualifier for its own purposes (requirement 1a).
 model_tier_rank() {
-  local id="$1"
+  local id="${1:-}"
+  [[ -n "$id" ]] || return 1
   if [[ -n "${MODEL_TIER_RANK[$id]+set}" ]]; then
     printf '%s\n' "${MODEL_TIER_RANK[$id]}"
   else
@@ -79,7 +87,7 @@ model_tier_rank() {
 # True (exit 0) iff MODEL_ID is empty (the "this stage is disabled" value
 # every `modelIdOrEmpty` key uses) or ranked in MODEL_TIER_RANK.
 model_tier_known() {
-  local id="$1"
+  local id="${1:-}"
   [[ -z "$id" ]] && return 0
   model_tier_rank "$id" >/dev/null 2>&1
 }
@@ -91,7 +99,7 @@ model_tier_known() {
 # unranked (an unranked model can never be placed relative to anything, so it
 # never fails this predicate on that account alone).
 model_tier_below() {
-  local candidate="$1" floor="$2" cr fr
+  local candidate="${1:-}" floor="${2:-}" cr fr
   [[ -n "$candidate" && -n "$floor" ]] || return 1
   cr="$(model_tier_rank "$candidate")" || return 1
   fr="$(model_tier_rank "$floor")" || return 1
