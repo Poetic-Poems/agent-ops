@@ -399,9 +399,11 @@ coordinator_refinements_view() {  # <refinements-json> <ordered-repos-json>
 # issue number disagrees with `item` is a fault before any fetch is
 # attempted — the one case cheap enough to catch even a corrupted ledger
 # entry, not only a model that ignored a correct one. A network failure
-# fetching the real comment fails open, the same direction every other
-# degraded `gh` read in this pipeline already fails, because it is a fact
-# about GitHub's availability, not about the work order.
+# fetching the real comment is a fault (`untraceable`), not the fail-open
+# direction every other degraded `gh` read in this pipeline takes
+# (TD-PPagop-26082307): this is the one check that exists specifically to
+# confirm a refinement is present, so a read it cannot complete cannot be
+# read as a pass — see the comment at that fetch below.
 #
 # Normalizes text for the traceability comparison below (TD-PPagop-26082307):
 # collapses every run of whitespace — spaces, tabs, reflowed newlines — to a
