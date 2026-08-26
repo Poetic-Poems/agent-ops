@@ -198,6 +198,14 @@ metering_fields() { printf '{}'; }
 stage_watchdog_warning() { printf ''; }
 fleet_limit_resume_at() { printf ''; }
 release_refinement_label() { record "release-refinement-label $1 $2"; }
+# escalation_thread_reconcile (agent-ops#815): the Script-side completing/
+# correcting comment on a needs-refinement issue's own thread, called from
+# the escalate branch once the real outcome is known — see the dedicated
+# section below. Recorded like every other side-effecting call this file
+# stubs; its own `gh` write and comment wording are this function's job, not
+# `maybe_run_enabler`'s, so only the call and its arguments are asserted here.
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+escalation_thread_reconcile() { record "escalation_thread_reconcile $1 $2 $3 $4 $5"; }
 # The machine `obsolete` alternative (issue #413, WI-10) is lib/merge-
 # autonomy.sh/config territory, neither of which this file wires in — an
 # empty ctx simply keeps that alternative unreachable here, exactly as every
@@ -747,6 +755,83 @@ assert_eq "always-escalate: no enabler-adjudication event" "0" \
   "$(grep -cE '^event enabler-adjudication ' <<<"$calls")"
 assert_eq "always-escalate: files the escalation directly" "1" \
   "$(grep -cE '^event escalated ' <<<"$calls")"
+assert_eq "always-escalate: TD26071901 is not issue-shaped — no thread reconciliation call" "0" \
+  "$(grep -cE '^escalation_thread_reconcile ' <<<"$calls")"
+
+# ============================================================================
+# agent-ops#815: escalation_thread_reconcile — the Script's own completing or
+# correcting comment on a needs-refinement item's own thread, once this
+# engagement (not the Enabler's turn, which ended before any of the below
+# ran) knows what actually happened to its `escalate` verdict. Scoped to
+# exactly the case prompts/enabler.md documents a work-item comment for: the
+# item's own ref is a bare GitHub issue number — "125" below, not "TD…" —
+# under a needs-refinement block. The TD-shaped scenarios above already prove
+# the call is never made outside that scope (see the assertion just above,
+# and "escalate: filed"/"escalate: filing failed" earlier, neither of which
+# stubs or asserts this function at all).
+# ============================================================================
+
+# --- filed: a completing "escalated" call, carrying the real issue number ---
+eligible_issue='[{"repo":"acme/widgets","item":"125","blocked_ts":"2026-08-01T00:00:00Z",
+  "kind":"needs-refinement","reason":"threshold"}]'
+examined='[{"repo":"acme/widgets","item":"125","verdict":"escalate","reason":"needs a human call",
+            "issue":{"title":"Decide something","body":"Please decide."}}]'
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+create_escalation_issue() { printf '90\thttps://github.com/acme/widgets/issues/90'; return 0; }
+calls="$(run_case "escalation_thread_reconcile: filed" "$eligible_issue" "$examined")"
+
+assert_eq "escalation_thread_reconcile, filed: exactly one call" "1" \
+  "$(grep -cE '^escalation_thread_reconcile ' <<<"$calls")"
+assert_contains "escalation_thread_reconcile, filed: outcome + the real number and URL" \
+  "escalation_thread_reconcile acme/widgets 125 escalated 90 https://github.com/acme/widgets/issues/90" "$calls"
+
+# --- filing failed: a correcting "escalation-failed" call, no number ---
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+create_escalation_issue() { return 1; }
+calls="$(run_case "escalation_thread_reconcile: filing failed" "$eligible_issue" "$examined")"
+
+assert_eq "escalation_thread_reconcile, filing failed: exactly one call" "1" \
+  "$(grep -cE '^escalation_thread_reconcile ' <<<"$calls")"
+assert_contains "escalation_thread_reconcile, filing failed: the correcting outcome, no number" \
+  "escalation_thread_reconcile acme/widgets 125 escalation-failed" "$calls"
+assert_not_contains "escalation_thread_reconcile, filing failed: never claims a number that does not exist" \
+  "escalation_thread_reconcile acme/widgets 125 escalated" "$calls"
+
+# --- superseded by adjudicate-first's own "adequate": a correcting call before create_escalation_issue ever runs ---
+eligible_issue_disagreement='[{"repo":"acme/widgets","item":"125","blocked_ts":"2026-08-01T00:00:00Z",
+  "kind":"needs-refinement","reason":"threshold",
+  "refined_before":{"ts":"2026-08-01T09:00:00Z","cycle":"c1","comment_url":"","spec":"the original spec"}}]'
+# shellcheck disable=SC2034
+DEFAULTED_CONFIG='{"escalation_autonomy": "adjudicate-first"}'
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+run_enabler_adjudication() {
+  printf '{"verdict":"adequate","evidence":"the original spec already names the acceptance criteria"}'
+}
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+create_escalation_issue() {
+  echo "FAIL - create_escalation_issue was called but adjudication should have superseded it" >&2
+  exit 96
+}
+calls="$(run_case "escalation_thread_reconcile: adjudicated adequate" \
+  "$eligible_issue_disagreement" "$examined")"
+
+assert_eq "escalation_thread_reconcile, adjudicated adequate: exactly one call" "1" \
+  "$(grep -cE '^escalation_thread_reconcile ' <<<"$calls")"
+assert_contains "escalation_thread_reconcile, adjudicated adequate: the correcting outcome, no number" \
+  "escalation_thread_reconcile acme/widgets 125 adjudicated-adequate" "$calls"
+assert_eq "escalation_thread_reconcile, adjudicated adequate: still no escalated event either" "0" \
+  "$(grep -cE '^event escalated ' <<<"$calls")"
+
+# Reset to the harness's own defaults, matching the reset already done above
+# for run_enabler_adjudication/DEFAULTED_CONFIG, so a later scenario cannot
+# silently inherit this section's stubs.
+# shellcheck disable=SC2034
+DEFAULTED_CONFIG='{}'
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+run_enabler_adjudication() {
+  echo "FAIL - run_enabler_adjudication was called but no scenario stub was set" >&2
+  exit 97
+}
 
 # ============================================================================
 # An item this cycle did not claim is ignored, not acted on

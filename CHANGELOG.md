@@ -689,6 +689,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   indefinitely while it kept reading as a passing check. `TRACEABILITY_DEBUG=1`
   logs the normalized comparison to stderr for diagnosing a real
   drift-tolerance edge case.
+- The Enabler's escalation comment on a `needs-refinement` issue no longer
+  asserts an escalation exists before the Script has decided whether one
+  actually does (agent-ops#815). The Enabler's own turn ends before
+  `adjudicate-first`'s adjudication pass runs, before `create_escalation_issue`
+  is called, and before that call's own result is known, so its comment can no
+  longer claim the escalation issue's number — three items escalated in the
+  same cycle (#604, #613, #640) each carried that claim, uncorrected, when the
+  filing never happened or was superseded. `escalation_thread_reconcile`
+  (`lib/enabler.sh`) now posts the Script's own follow-up once the outcome is
+  known: a completing `Blocked-by: #<n>` comment naming the issue actually
+  filed, or, when `adjudicate-first` settled the disagreement as `adequate`
+  instead or the filing itself failed, a correcting comment saying plainly
+  that no escalation was raised.
 - `state-sync.sh fetch` no longer reports a real failure — dead credentials,
   a network outage, a corrupt mirror — as the benign "the state repository
   has no node branches yet" bootstrap case (agent-ops#693). During the

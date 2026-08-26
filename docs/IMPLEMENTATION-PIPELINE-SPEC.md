@@ -10328,16 +10328,44 @@ implements.
       close it, since the closure is what returns the item to a later engagement
       and their comments are what let that engagement complete the refinement.
       Where the work item is itself an issue, the Enabler also posts one
-      comment on it linking to the escalation, so the context stays visible
-      where the work lives — carrying a structured `Blocked-by: #<n>` line
-      naming the escalation issue's own number (agent-ops#639), the same
-      convention requirement 34j already parses out of any issue thread. That
-      line is what makes the link deterministic rather than merely readable:
-      the very next gather sees it, `scripts/gather-issues.sh` excludes the
-      work item as `blocked-by: #<n>` on its own (requirement 3j), and the
-      exclusion — and its clearing, the moment the escalation issue closes —
-      is recorded through the ordinary `issues-excluded` event without this
-      requirement needing a bespoke mechanism of its own.
+      comment on it saying an escalation is being requested, so the context
+      stays visible where the work lives — but it never asserts the
+      escalation issue already exists or names its number (agent-ops#815):
+      the Enabler's own turn ends before any of the three things that decide
+      whether one actually results have run — a possible `adjudicate-first`
+      override, the `create_escalation_issue` call, and whether that call
+      succeeds — so it cannot truthfully claim the outcome yet. The Script
+      completes the thread once it knows that outcome
+      (`escalation_thread_reconcile`, `lib/enabler.sh`), scoped to exactly
+      this case (a `needs-refinement` item whose ref is a bare GitHub issue
+      number):
+      - **filed** — a completing comment carrying a structured `Blocked-by:
+        #<n>` line naming the escalation issue's own number (agent-ops#639),
+        the same convention requirement 34j already parses out of any issue
+        thread. That line is what makes the link deterministic rather than
+        merely readable: the very next gather sees it,
+        `scripts/gather-issues.sh` excludes the work item as `blocked-by:
+        #<n>` on its own (requirement 3j), and the exclusion — and its
+        clearing, the moment the escalation issue closes — is recorded
+        through the ordinary `issues-excluded` event without this
+        requirement needing a bespoke mechanism of its own;
+      - **superseded by an `adjudicate-first` `adequate` verdict**, before
+        `create_escalation_issue` ever runs — a correcting comment stating
+        plainly that no escalation was filed, because the pass found the
+        existing refinement adequate and the item was unblocked on that
+        basis instead;
+      - **`create_escalation_issue` itself fails** — a correcting comment
+        stating that the escalation attempt failed and a later
+        re-examination will retry it.
+
+      Three items escalated in the same cycle (#604, #613, #640) each
+      carried this false claim — "an escalation issue was raised" —
+      uncorrected, because nothing reconciled the Enabler's own comment
+      against what the Script went on to do; this reconciliation, and the
+      prompt no longer asserting a number it cannot know, is the fix.
+      Best-effort like every other `gh` write this stage makes (requirement
+      37): a failure to post either comment is a `warning`, never a reason to
+      unwind the verdict already recorded.
 
       **`escalation_autonomy` (D18, agent-ops#627).** When the item this
       verdict escalates is a refinement disagreement — `kind:
