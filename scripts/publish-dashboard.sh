@@ -370,6 +370,99 @@ gh_call() {
 # trap scripts/gather-findings.sh's own fetch() avoids the same way.
 gh_call_err() { tr '\n' ' ' < "$work_tmp/gh_call.err" 2>/dev/null; }
 
+# gh_fail_cause_of MSG
+# Classifies one gh_fail_msgs entry ("<source> failed for <slug>[: <err>]",
+# see below) by the cause embedded in its text, so the "GitHub unavailable"
+# banner can collapse same-cause failures into one line instead of
+# concatenating every raw message (#695: fifteen semicolon-joined "Bad
+# credentials" bodies during the 2026-08-22 token expiry buried the one fact
+# that mattered). 401/"Bad credentials" is tested before 403, since a
+# generic auth failure's body can still contain the digits "403" elsewhere
+# (a doc URL, an unrelated status mentioned in the same error). $LIMIT_PHRASE_REGEX
+# (lib/limit-detect.sh) already matches "rate limit", so a 403 whose body
+# names one is folded into the same rate-limit cause a bare 403 gets.
+gh_fail_cause_of() {
+  local msg="$1"
+  if grep -qiE '(^|[^0-9])401([^0-9]|$)|bad credentials' <<<"$msg"; then
+    printf 'auth'
+  elif grep -qiE '(^|[^0-9])403([^0-9]|$)' <<<"$msg" || grep -qiE "$LIMIT_PHRASE_REGEX" <<<"$msg"; then
+    printf 'rate-limit'
+  elif grep -qiE 'time(d)? ?out|connection (refused|reset)|could not resolve|name or service not known|network is unreachable|no route to host|temporary failure in name resolution' <<<"$msg"; then
+    printf 'network'
+  else
+    printf 'other'
+  fi
+}
+
+# gh_fail_repo_of MSG
+# The repo slug embedded in one gh_fail_msgs entry, for the per-cause repo
+# count the banner shows. Every call site that appends to gh_fail_msgs
+# writes "<source> failed for <slug>" (optionally followed by ": <err>"), so
+# this always matches in practice; empty on anything else.
+gh_fail_repo_of() {
+  local msg="$1"
+  [[ "$msg" =~ failed\ for\ ([^:]+) ]] && printf '%s' "${BASH_REMATCH[1]}"
+}
+
+# gh_plural N WORD — "1 call" / "3 calls".
+gh_plural() {
+  local n="$1" w="$2"
+  if (( n == 1 )); then printf '%d %s' "$n" "$w"; else printf '%d %ss' "$n" "$w"; fi
+}
+
+# gh_fail_cause_label CAUSE — the human-readable name for one classified
+# cause, without a count; gh_fail_summary (below) appends "· N calls across
+# M repos" to this.
+gh_fail_cause_label() {
+  case "$1" in
+    auth) printf 'GitHub authentication failed (HTTP 401) — GH_TOKEN is invalid or expired' ;;
+    rate-limit) printf 'GitHub rate limit hit (HTTP 403) — wait for it to reset' ;;
+    network) printf 'GitHub could not be reached (network error)' ;;
+    *) printf 'GitHub calls failed' ;;
+  esac
+}
+
+# gh_fail_summary  — reads gh_fail_msgs (global), returns nothing.
+# Dumps every raw message to dashboard.log (via stderr — the launcher tees
+# this script's own stdout/stderr there) and sets $gh_err to one collapsed
+# line per distinct cause, e.g. "GitHub authentication failed (HTTP 401) —
+# GH_TOKEN is invalid or expired · 15 calls across 3 repos — full list in
+# dashboard.log". All-one-cause collapses to a single line; a mixed tick
+# gets one line per cause, joined the same way gh_fail_msgs itself used to
+# be. Sets nothing when gh_fail_msgs is empty.
+gh_fail_summary() {
+  (( ${#gh_fail_msgs[@]} > 0 )) || return 0
+  local gh_msg gh_cause gh_repo
+  declare -A gh_cause_count=() gh_cause_repo_seen=()
+  for gh_msg in "${gh_fail_msgs[@]}"; do
+    echo "publish-dashboard: gh failure: $gh_msg" >&2
+    gh_cause="$(gh_fail_cause_of "$gh_msg")"
+    gh_cause_count[$gh_cause]=$(( ${gh_cause_count[$gh_cause]:-0} + 1 ))
+    gh_repo="$(gh_fail_repo_of "$gh_msg")"
+    [[ -n "$gh_repo" ]] && gh_cause_repo_seen["$gh_cause|$gh_repo"]=1
+  done
+
+  local gh_cause_order=(auth rate-limit network other)
+  local gh_err_lines=() gh_c gh_n gh_repo_n gh_key gh_line
+  for gh_c in "${gh_cause_order[@]}"; do
+    [[ -n "${gh_cause_count[$gh_c]:-}" ]] || continue
+    gh_n="${gh_cause_count[$gh_c]}"
+    gh_repo_n=0
+    for gh_key in "${!gh_cause_repo_seen[@]}"; do
+      [[ "$gh_key" == "$gh_c|"* ]] && (( gh_repo_n++ ))
+    done
+    gh_err_lines+=("$(gh_fail_cause_label "$gh_c") · $(gh_plural "$gh_n" call) across $(gh_plural "$gh_repo_n" repo)")
+  done
+  # Not "${gh_err_lines[*]}" with IFS='; ' — that joins on IFS's first
+  # character only ("a;b;c", no space), not the two-character separator it
+  # looks like it sets.
+  gh_err=""
+  for gh_line in "${gh_err_lines[@]}"; do
+    if [[ -z "$gh_err" ]]; then gh_err="$gh_line"; else gh_err="$gh_err; $gh_line"; fi
+  done
+  gh_err="$gh_err — full list in dashboard.log"
+}
+
 epoch_of() { date -d "$1" +%s 2>/dev/null || echo 0; }
 
 # td_frontmatter — read a tech-debt item file on stdin, print "<title>\t<status>".
@@ -2073,11 +2166,16 @@ if (( WITH_GITHUB )); then
     # neither alert type enabled degrades to [] and exit 0 (gather-findings.sh's
     # own contract), but a real failure — a timeout, a rate limit, an outage —
     # now exits non-zero rather than looking exactly like "nothing to report".
-    findings="$(timeout "$GH_TIMEOUT" "$SCRIPT_DIR/scripts/gather-findings.sh" "$slug" 2>/dev/null)"
+    findings="$(timeout "$GH_TIMEOUT" "$SCRIPT_DIR/scripts/gather-findings.sh" "$slug" 2>"$work_tmp/findings.err")"
     findings_rc=$?
     if (( findings_rc != 0 )); then
       state_findings="failed"; findings='[]'
-      gh_ok=false; gh_fail_msgs+=("findings gathering failed for $slug")
+      # gather-findings.sh's own fetch() already cats gh's diagnosis to
+      # stderr on a real failure (never on a disabled feature or a
+      # legitimate 403/404) — captured here rather than discarded, so this
+      # source classifies by cause (#695) exactly like the other four.
+      gh_ok=false
+      gh_fail_msgs+=("findings gathering failed for $slug: $(tr '\n' ' ' < "$work_tmp/findings.err" 2>/dev/null)")
     else
       state_findings="answered"
       findings="$(jq -c 'if type == "array" then . else [] end' <<<"$findings" 2>/dev/null || echo '[]')"
@@ -2198,9 +2296,9 @@ if (( WITH_GITHUB )); then
 
   # Every source that failed this tick, across every repo — not just `pr
   # list`'s — so the "GitHub unavailable" banner names what actually broke.
-  if (( ${#gh_fail_msgs[@]} > 0 )); then
-    gh_err="$(IFS='; '; echo "${gh_fail_msgs[*]}")"
-  fi
+  # Classified and collapsed by gh_fail_summary (#695), rather than
+  # concatenated raw: the full per-call list still reaches dashboard.log.
+  gh_fail_summary
 
   # Fold this tick's item reads into the metadata cache, stamp everything the
   # registers still name as seen, and drop what none of them has named for a
