@@ -950,6 +950,15 @@ table's Node column,
 appear only once the fleet has more than one node (or a claim exists): a
 single-node page renders exactly as it always did.
 
+The live-claims panel's own **Held** column reads a row's `ts` through the same
+relative-time renderer as the rest of the page, with one exception: a claim
+whose `ts` is the fixed sentinel `lib/claim.sh`'s `do_expire()` backdates a
+discarded Enabler/Refiner tombstone to (`1970-01-01T00:00:01Z`, implementation
+spec 35c) never renders that literal ~56-year age. The panel recognises the
+sentinel and reads the row "expired — pending cleanup" instead (agent-ops#839)
+— the claim is correctly marked for `gc`'s next TTL sweep, and the column says
+so rather than a number that was never a real age.
+
 The strip is rebuilt on every refresh tick alongside the header, not only when
 the body re-renders, because its cards carry running clocks ("since 18m ago")
 and the body deliberately sits still while the data is unchanged.
@@ -2002,6 +2011,11 @@ number's twins elsewhere on the page.
   other. The live-claims panel below is asserted to still show the
   pseudo-slug rows in full: the gauge's narrowing is a statement about the
   cap, not about what an operator hunting a stuck item may see.
+- `claim-expired-tombstone.json` (agent-ops#839) holds one claim backdated to
+  `do_expire()`'s sentinel `1970-01-01T00:00:01Z` alongside one with a real,
+  recent `ts`: the live-claims panel's Held column reads the first "expired —
+  pending cleanup" and never a fabricated day-count, while the second still
+  renders its ordinary relative age.
 - On a node that has been up for at least ten minutes,
   `grep 'github: refreshing' <state_dir>/dashboard.log | tail -3` shows one
   line roughly every five minutes, and `github.fetched_at` in `data.js` is
