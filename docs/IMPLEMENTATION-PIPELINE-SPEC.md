@@ -317,6 +317,17 @@ file and carries placeholders only; `.env` itself is never committed.
   `docker compose up -d` there; no image roll delivers them, which is the
   general hazard `lib/compose-drift.sh` and `scripts/check-node-compose.sh`
   exist for.
+- **Model credentials are one of two paths, per D4.** `ANTHROPIC_API_KEY`
+  reaches the scheduler from `.env` through the shared environment block —
+  the BYO API-key path, D4's primary — read by `claude` directly and
+  non-interactively on every invocation. Left empty, a node instead runs the
+  subscription-OAuth alternative: an interactive `claude` login performed
+  once against the `claude-config` volume, which the entrypoint warns is
+  absent on every start until that login exists. This path carries D4's
+  stated constraints — interactive per node, so it does not scale the way
+  the API-key path does, and limited by the subscription's own terms to your
+  own use. `scripts/doctor.sh`'s Claude section reports on whichever path
+  this node carries.
 - **`tailscale`** (profile `tailnet`) — the sidecar whose network namespace
   `dashboard` shares. Refuses to start when `TS_AUTHKEY` is empty: its
   `entrypoint` checks the variable itself, before the image's own
@@ -13362,13 +13373,21 @@ What exists, and the requirements each part answers to:
     switch's own live state is reported once per run, alongside the
     `state_repo` access check — `ok` "not set" or `warn` "SET" naming what
     clears it — since reading a fleet flag costs a network call this
-    document's offline Configuration section cannot spend. Claude credentials are
-    `claude auth status --json`, treated as a probe that can answer only
-    sometimes: `loggedIn: true` is `ok`, `loggedIn: false` is `fail` —
-    distinguished from a parse failure, since `false` is a legitimate answer
-    — and anything that does not exit 0 with that shape — an older CLI with
-    no `auth` subcommand included — is `skip`, since a probe that cannot
-    answer is never evidence of a fault. The rendered crontab is
+    document's offline Configuration section cannot spend. Claude credentials
+    are checked on whichever of D4's two paths this environment carries,
+    rather than always reading OAuth status and skipping when a node has
+    chosen the other path: a non-empty `ANTHROPIC_API_KEY` (the BYO API-key
+    path, D4's primary) is `ok` when it carries the `sk-ant-` prefix Anthropic
+    mints keys with and `warn` otherwise — a static shape check, never a live
+    call — and OAuth status is not consulted when a key is present. Absent an
+    `ANTHROPIC_API_KEY`, credentials fall back to `claude auth status --json`
+    (the subscription-OAuth path, D4's documented alternative), treated as a
+    probe that can answer only sometimes: `loggedIn: true` is `ok`,
+    `loggedIn: false` is `fail` — distinguished from a parse failure, since
+    `false` is a legitimate answer — and anything that does not exit 0 with
+    that shape — an older CLI with no `auth` subcommand included — is `skip`,
+    since a probe that cannot answer is never evidence of a fault. The
+    rendered crontab is
     `deploy/docker/render-crontab.sh` run for real, into a `mktemp -d` this
     check removes afterwards, against the config under check: a non-zero
     exit is `fail`, a missing template is `skip`, and success is `ok`
@@ -17144,7 +17163,11 @@ pull request, run the ones the change touches and any it could regress.
     nothing on `PATH` able to reach a real network regardless: a
     `.permissions.push` of `true` is `ok`, `false` is `fail`, and an absent
     field is `skip`; `.archived: true` is `fail` even when `.permissions.push`
-    is `true`; `claude auth status --json` reporting `loggedIn: true` is `ok`,
+    is `true`; Claude credentials check whichever of D4's two paths this
+    environment carries — a non-empty `ANTHROPIC_API_KEY` shaped like an
+    Anthropic key (the `sk-ant-` prefix) is `ok`, one that is not is `warn`,
+    and OAuth is not consulted when a key is present; absent a key,
+    `claude auth status --json` reporting `loggedIn: true` is `ok`,
     `loggedIn: false` is `fail` — distinguished from a parse failure, since
     `false` is a legitimate answer rather than evidence the JSON could not be
     read — and a `claude` with no `auth` subcommand is `skip`; the real

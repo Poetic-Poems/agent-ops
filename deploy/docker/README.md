@@ -33,7 +33,16 @@ README](../../README.md) and `docs/*-SPEC.md`.
   without both.
 - A **Tailscale pre-auth key** from the tailnet's admin console, unless this
   node will run the `local` profile.
-- Somewhere to log in to Claude interactively, once, after step 3.
+- **Model credentials**, either of (see step 4):
+  - An **Anthropic API key** — the primary, first-class path (D4). Set
+    `ANTHROPIC_API_KEY` in `.env`; no interactive step, and any number of
+    nodes can share the same key.
+  - Or a **Claude subscription**, authenticated by an interactive login this
+    node performs once. This path is a supported self-hosted configuration,
+    not the primary one, and it comes with two constraints: the login is
+    interactive per node (no way to script it, so it does not scale past a
+    handful of nodes), and the subscription's terms limit it to your own
+    use, not a service you operate for others.
 
 ### 1. Install Docker
 
@@ -103,7 +112,15 @@ loopback, `auto-update` for watchtower. The scheduler starts regardless: it is
 in no profile, because a node that runs no cycles and no heartbeat is not a
 node.
 
-### 4. Authenticate Claude, once
+### 4. Give this node model credentials
+
+**API key (primary, D4):** set `ANTHROPIC_API_KEY` in `.env` (step 2) and
+`docker compose up -d` to pick it up. Nothing further to do — `claude` reads
+it from the environment on every invocation, so there is no per-node login
+and no `claude-config` volume to protect.
+
+**Subscription OAuth (alternative — interactive per node, own use only):**
+leave `ANTHROPIC_API_KEY` unset in `.env` and instead log in once:
 
 ```bash
 docker compose exec scheduler claude
@@ -114,10 +131,16 @@ outlives every container this node will ever run — this is the one thing here
 that cannot be rebuilt from the image, and the entrypoint warns on every start
 until it exists.
 
-Verify:
+Either way, verify:
 
 ```bash
 docker compose exec scheduler claude -p 'say ok' --model claude-haiku-4-5-20251001
+```
+
+Or ask the node itself, which reports which of the two paths it is on:
+
+```bash
+docker compose exec scheduler /app/scripts/doctor.sh
 ```
 
 ### Did it work?
@@ -512,7 +535,7 @@ mkdir ~/poetic-node-2 && cd ~/poetic-node-2
 #   DASHBOARD_PORT=8789                # the first node has 8787
 #   ROLE=standby                       # promote only after the checks below
 docker compose up -d
-docker compose exec scheduler claude   # authenticate once, then exit
+docker compose exec scheduler claude   # OAuth path only — skip if ANTHROPIC_API_KEY is set in .env
 ```
 
 Before setting `ROLE=active` on the newcomer: `docker compose images` in

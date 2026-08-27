@@ -42,6 +42,12 @@ x-agent-ops-env: &agent-ops-env
   GH_TOKEN: ${GH_TOKEN:-}
   GIT_USER_NAME: ${GIT_USER_NAME:-}
   GIT_USER_EMAIL: ${GIT_USER_EMAIL:-}
+  # The BYO API-key path (D4's primary) — the credential `claude` reads
+  # directly and non-interactively on every invocation. Left empty, a node
+  # instead runs the subscription-OAuth alternative (constraints: interactive
+  # login per node, own use only), authenticated once into the claude-config
+  # volume below rather than through any variable here.
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   # What lets a stage check the Vercel preview its own pull request deploys
   # (scripts/preview-deploy.sh). Both optional, and a node without either
   # runs every cycle exactly as before: the check then reports "could not
