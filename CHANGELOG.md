@@ -1517,6 +1517,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The Co-Ordinator no longer treats a documentation-only item as a separate,
+  lower-priority track (agent-ops#582, owner decision S1 on agent-ops#633).
+  `prompts/coordinator.md` now states plainly, beside the existing
+  `models.trivial` model-routing rule, that a documentation-only item is
+  ordinary selectable work — unparking #590, #600 and #601, none of which
+  should have been held back on that premise.
 - `agent-cycle.sh` is no longer one 10,000-line file (agent-ops#771,
   discharging the cause of #770). Its ninety-six functions and the top-level
   blocks around them now live in `lib/*.sh` beside the modules they already
