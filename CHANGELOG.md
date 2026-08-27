@@ -781,9 +781,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   refusals embedded `$pr_url` — itself a `https://…` string carrying its own
   scheme colon — before any stable word boundary, so two pull requests
   hitting the identical underlying failure (e.g. the Approver's review list
-  becoming unreadable) never accumulated into one visible count. Every such
-  call site now carries the same `class:detail` shape the classifier-driven
-  refusals (`ineligible:`, `kill-switch:`, `open-question:`) already used.
+  becoming unreadable) never accumulated into one visible count. Every
+  refusal reason that carries a `:` at all now carries it behind a class
+  word, in the same `class:detail` shape the classifier-driven refusals
+  (`ineligible:`, `kill-switch:`, `open-question:`) already used — including
+  the App-approval gate's own refusal, whose `(state: …)` parenthetical
+  grouped it under a sentence cut off mid-clause rather than under the gate
+  that refused.
 - `techdebt_file_debt` (`lib/tech-debt-file.sh`) now labels the pull request
   it opens to file a tech-debt record with the fleet's configured
   `pr_label`, rather than opening it unlabelled (TD-PPagop-26082426). Every

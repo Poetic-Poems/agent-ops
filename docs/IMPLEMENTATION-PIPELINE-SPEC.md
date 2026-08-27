@@ -5564,12 +5564,14 @@ implements.
       read already carries it) tells the fleet-wide kill switch apart from a
       repository that simply has not had its level raised, since LEVEL alone
       is the *collapsed* answer and does not itself say why it collapsed. The
-      `kill-switch:` tag this branch alone prefixes onto its `reason`
+      `kill-switch:` tag this branch prefixes onto its `reason`
       (`landing-refused`, requirement 33) is what lets
       `scripts/publish-dashboard.sh`'s landings digest (`byReason`,
       `dashboard/index.html`) group it apart from every other refusal class,
       including the plain "effective level is …" wording this gate emits
-      when the level was simply never raised.
+      when the level was simply never raised — one tag among the class
+      prefixes every colon-carrying refusal reason in this step wears
+      (requirement 33).
    2. `landing_eligible` (`lib/landing.sh`) — the deterministic classifier: a
       `complexity:*` grade in this repository's own
       `merge_autonomy_routine_complexity` (default `["low", "medium"]`; D18
@@ -8710,7 +8712,16 @@ implements.
     is …" wording instead. This is what a human — or
     `scripts/publish-dashboard.sh`'s landings digest, which groups
     `landing-refused` reasons by the text before the first `:` — reads to
-    tell the two refusal classes apart.
+    tell the two refusal classes apart. Every `reason` this step produces
+    that carries a `:` at all carries that `:` behind a class word of its
+    own, so that grouping rule always keys on the gate that refused rather
+    than on whatever colon happens to fall first — chiefly the scheme colon
+    of an embedded `$pr_url`, which garbled a whole family of sentence-form
+    refusals into one one-off group per pull request until every such call
+    site was given a prefix (TD-PPagop-26082502, `docs/DASHBOARD-SPEC.md`'s
+    own refusal-grouping note). A reason carrying no `:` at all — the plain
+    "effective level is …" above among them — needs none: the whole string
+    is already one stable group.
     `landing_arm`'s own refusal names which of its steps failed —
     the pull request read, the merge-queue read, the enqueue mutation (a
     transport failure or a partial write reporting no queue entry), or the

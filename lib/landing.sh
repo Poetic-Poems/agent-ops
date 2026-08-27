@@ -1132,10 +1132,12 @@ run_landing_stage() {
 # Any read above that cannot be answered is a refusal (`_landing_refuse`,
 # `landing-refused`), never a pass. Every REASON this function or its own
 # helpers hand to `_landing_refuse` carries a short, GitHub-URL-free class
-# word ahead of its own first `:` — `landing_eligible`'s `ineligible:`/
-# `unknown:`, `landing_autonomy_refusal_reason`'s `kill-switch:`, this
-# function's own `malformed-pr-url:`/`open-question-unreadable:`/
-# `approver-review-unreadable:`/`human-veto-unreadable:`/
+# word ahead of its own first `:` — `landing_eligible`'s and
+# `landing_protected_path_controls_ok`'s `ineligible:`/`unknown:`,
+# `landing_autonomy_refusal_reason`'s `kill-switch:`, gate 3's own
+# `review gate:`, this function's own `malformed-pr-url:`/
+# `open-question-unreadable:`/`approver-review-unreadable:`/
+# `approver-review-not-approved:`/`human-veto-unreadable:`/
 # `human-changes-requested:`/`reconciliation-unanswered:`/
 # `reconciliation-unreadable:`/`merge-queue-unreadable:`/
 # `dequeued-actionable:`/`dequeued-manual:`/`arm-failed:` — so
@@ -1143,11 +1145,12 @@ run_landing_stage() {
 # `dashboard/index.html`) groups by that word rather than by the text before
 # whatever colon happens to occur first, which for a sentence-form refusal
 # embedding `$pr_url` (itself a `https://…` string) is the URL's own scheme
-# colon (TD-PPagop-26082502). A message with no class prefix and no `$pr_url`
-# or other varying content before its own trailing punctuation — "could not
-# read the Approver App's own login", "already in the merge queue", "could
-# not mint the Approver's installation token" — needs none: the whole string
-# is already a stable, single group. A successful arm logs `landing-armed`
+# colon (TD-PPagop-26082502). A message carrying no colon at all, and so no
+# varying content a split could cut it off at — "could not read the Approver
+# App's own login", "already in the merge queue", "could not mint the
+# Approver's installation token", `landing_autonomy_refusal_reason`'s plain
+# "effective level is …" — needs no prefix: the whole string is already a
+# stable, single group. A successful arm logs `landing-armed`
 # exactly once, naming the method (`enqueued`/`auto-merge`) `landing_arm`
 # actually used, and never withholds anything requirement 8b already did —
 # the *first* attempt (RETRY empty) runs strictly after the `pr-ready` log
@@ -1287,7 +1290,7 @@ _landing_stage_attempt() {
   submitted_at="${rest%%$'\t'*}"
   review_commit="${rest#*$'\t'}"
   if [[ "$standing" != "APPROVED" ]]; then
-    _landing_refuse "$pr_url" "$slug" "the Approver's own review is not standing APPROVED on GitHub (state: ${standing:-none})" "$retry"
+    _landing_refuse "$pr_url" "$slug" "approver-review-not-approved:the Approver's own review is not standing APPROVED on GitHub (state: ${standing:-none})" "$retry"
     return 0
   fi
 

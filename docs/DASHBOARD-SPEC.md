@@ -1139,22 +1139,26 @@ Three things it will not hide, each a way a digest could mislead by omission:
   never raised forms. An open question the Reviewer could not settle
   (requirement 8f, agent-ops#668) groups the same way, on an `open-question:`
   prefix `_landing_stage_attempt`'s own new gate produces directly. Every
-  other refusal `_landing_stage_attempt` (`lib/landing.sh`) can produce —
+  refusal `_landing_stage_attempt` (`lib/landing.sh`) can produce that
+  carries a `:` at all carries that `:` behind a class word of its own —
+  `landing_eligible`'s and `landing_protected_path_controls_ok`'s
+  `ineligible:`/`unknown:`, gate 3's `review gate:`, and the gate-by-gate
   `malformed-pr-url:`, `open-question-unreadable:`,
-  `approver-review-unreadable:`, `human-veto-unreadable:`,
-  `human-changes-requested:`, `reconciliation-unanswered:`,
-  `reconciliation-unreadable:`, `merge-queue-unreadable:`,
-  `dequeued-actionable:`, `dequeued-manual:`, `arm-failed:` — carries the
-  same class-word-before-`:` shape (TD-PPagop-26082502), so a caller never
-  reaches the generic split-on-first-`:` rule with a reason whose `$pr_url` —
-  itself a `https://…` string carrying its own scheme colon — would otherwise
-  supply the first `:` this rule ever sees, garbling a whole family of
-  sentence-form refusals into one-off groups keyed on a URL fragment rather
-  than the gate that actually failed. A reason with no class prefix and no
-  `$pr_url` or other varying content ahead of its own first `:` — "could not
-  read the Approver App's own login", "already in the merge queue" — needs
-  none: the whole string is already one stable group, exactly the "full-
-  sentence group" a level simply never raised forms above.
+  `approver-review-unreadable:`, `approver-review-not-approved:`,
+  `human-veto-unreadable:`, `human-changes-requested:`,
+  `reconciliation-unanswered:`, `reconciliation-unreadable:`,
+  `merge-queue-unreadable:`, `dequeued-actionable:`, `dequeued-manual:` and
+  `arm-failed:` (TD-PPagop-26082502) — so a caller never reaches the generic
+  split-on-first-`:` rule with a reason whose own varying content supplies
+  the first `:` the rule ever sees. Chief among that varying content is
+  `$pr_url` — itself a `https://…` string carrying its own scheme colon —
+  which garbled a whole family of sentence-form refusals into one-off groups
+  keyed on a URL fragment rather than on the gate that actually failed; a
+  parenthetical such as `(state: …)` cut the same reason off mid-sentence for
+  the same reason. A reason carrying no `:` at all — "could not read the
+  Approver App's own login", "already in the merge queue" — needs no prefix:
+  the whole string is already one stable group, exactly the "full-sentence
+  group" a level simply never raised forms above.
 - **The merge budget** (D18 issue #574), per repository: `merge_budget_per_day`'s
   effective cap against consumption, its status (`ok`/`held`/`frozen`), and,
   when held or frozen, the oldest waiting pull request and its age. An
