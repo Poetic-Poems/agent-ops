@@ -16,13 +16,22 @@
 #   request excluded from the `issues` source. Prints "<number>\t<url>" on
 #   success; prints nothing and returns 1 otherwise.
 #
-# techdebt_file_debt REPO TITLE BODY PROVENANCE [TOKEN] [GIT_DIR]
+# techdebt_file_debt REPO TITLE BODY PROVENANCE [TOKEN] [GIT_DIR] [PR_LABEL]
 #   Reserves a tech-debt id, writes tech-debt/<id>.md, and opens a pull
-#   request carrying it alone. Follows TECH-DEBT.md's "Filing alongside
-#   other work" exactly, except the filing lands in its own small pull
-#   request rather than riding along on a branch the caller already holds:
-#   neither the Approver nor the Enabler is ever the author of one. Prints
-#   "<id>\t<pr-url>" on success; prints nothing and returns 1 otherwise.
+#   request carrying it alone, labelled PR_LABEL (default "autonomous-agent")
+#   so it is visible to every gatherer that filters pull requests by the
+#   repository's configured label — gather-review-feedback.sh,
+#   gather-abandoned-drafts.sh, gather-merge-conflicts.sh,
+#   gather-dequeued.sh, gather-human-visibility-hygiene.sh — rather than
+#   stranding it unlabelled and invisible to all of them at once
+#   (agent-ops TD-PPagop-26082426). The Approver and the Enabler each resolve
+#   the fleet's configured `pr_label` from `DEFAULTED_CONFIG` at their own
+#   call site and pass it here, neither having it otherwise in hand.
+#   Follows TECH-DEBT.md's "Filing alongside other work" exactly, except the
+#   filing lands in its own small pull request rather than riding along on a
+#   branch the caller already holds: neither the Approver nor the Enabler is
+#   ever the author of one. Prints "<id>\t<pr-url>" on success; prints
+#   nothing and returns 1 otherwise.
 #
 #   Reservation runs scripts/reserve-tech-debt-id.pl exactly as committed on
 #   REPO's own origin/main — never GIT_DIR's checked-out branch, which for
@@ -157,9 +166,10 @@ _techdebt_unfile() {
     >/dev/null 2>>"$errlog" || true
 }
 
-# techdebt_file_debt REPO TITLE BODY PROVENANCE [TOKEN] [GIT_DIR]
+# techdebt_file_debt REPO TITLE BODY PROVENANCE [TOKEN] [GIT_DIR] [PR_LABEL]
 techdebt_file_debt() {
-  local repo="$1" title="$2" body="$3" provenance="$4" token="${5:-}" git_dir="${6:-}"
+  local repo="$1" title="$2" body="$3" provenance="$4" token="${5:-}" git_dir="${6:-}" \
+        pr_label="${7:-autonomous-agent}"
   local made_dir=0 id base_sha branch record_file reserve_script content \
         pr_body_file pr_url errlog
 
@@ -229,6 +239,7 @@ techdebt_file_debt() {
     > "$pr_body_file"
   pr_url="$(_techdebt_gh "$token" pr create -R "$repo" --base main --head "$branch" \
               --title "chore(tech-debt): file $id — $title" --body-file "$pr_body_file" \
+              --label "$pr_label" \
               2>>"$errlog" || true)"
   rm -f "$pr_body_file"
 

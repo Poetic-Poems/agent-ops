@@ -737,6 +737,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `techdebt_file_debt` (`lib/tech-debt-file.sh`) now labels the pull request
+  it opens to file a tech-debt record with the fleet's configured
+  `pr_label`, rather than opening it unlabelled (TD-PPagop-26082426). Every
+  gatherer that finds this pipeline's own pull requests filters on that
+  label — `gather-review-feedback.sh`, `gather-abandoned-drafts.sh`,
+  `gather-merge-conflicts.sh`, `gather-dequeued.sh`,
+  `gather-human-visibility-hygiene.sh` — so an unlabelled filing pull
+  request was invisible to all of them at once: nothing would ever review
+  it, notice it going stale, or notice it conflicting, while the call
+  itself still reported success. The Approver and the Enabler, its only two
+  callers, each resolve `pr_label` from `DEFAULTED_CONFIG` at their own call
+  site (neither having it otherwise in hand) and pass it through.
 - The dashboard no longer badges a cycle `↻ raced`/"recovered race ×N" when
   at most one node is currently active (agent-ops#829). Per-item claims only
   arbitrate contention between concurrently *active* nodes (`lib/role.sh`) —

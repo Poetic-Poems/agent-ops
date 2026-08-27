@@ -237,6 +237,21 @@ assert_eq "  ... exactly one pr create" "1" \
   "$(grep -c '^<none> pr create ' "$tmp_dir/calls")"
 assert_eq "  ... branch is td-record/<id>, not td/<id>" "1" \
   "$(grep -c "ref=refs/heads/td-record/$id" "$tmp_dir/calls")"
+# TD-PPagop-26082426: an unlabelled filing pull request is invisible to every
+# gatherer that filters on `pr_label`, silently in both directions -- the call
+# still succeeds and returns a URL -- so PR_LABEL omitted must still fall back
+# to a real label rather than none at all.
+assert_eq "  ... pr create carries the default label" "1" \
+  "$(grep -c '^<none> pr create .*--label autonomous-agent' "$tmp_dir/calls")"
+
+# --- An explicit PR_LABEL is passed through to `gh pr create` ---------------
+remote="$(make_remote 0)"
+gd="$(a_git_dir "$remote")"
+reset_stub
+techdebt_file_debt "o/r" "A labelled finding" "Body." "while reviewing PR #618" "" "$gd" \
+  "team-x-agent" >/dev/null
+assert_eq "file_debt: explicit PR_LABEL reaches pr create" "1" \
+  "$(grep -c '^<none> pr create .*--label team-x-agent' "$tmp_dir/calls")"
 # Nothing is left behind in GIT_DIR: its working tree still holds exactly the
 # deliberately-broken checked-out copy a_git_dir put there and nothing else.
 # That the extraction never lands there in the first place -- the invariant

@@ -10640,11 +10640,16 @@ implements.
     - `file_debt` reserves a tech-debt id (`scripts/reserve-tech-debt-id.pl`,
       run against a throwaway git context this call creates and tears down,
       since the Enabler holds no clone of any repo — requirement 36) and
-      opens a small pull request carrying `tech-debt/<id>.md` alone, following
-      `TECH-DEBT.md`'s "Filing alongside other work" except that the filing
-      lands in its own pull request rather than riding along on a branch the
-      Enabler does not hold. Logs `tech-debt-filed` (`repo`, `item`,
-      `by: "enabler"`, `id`, `pr_url`) on success; a `warning` naming
+      opens a small pull request carrying `tech-debt/<id>.md` alone, labelled
+      with the fleet's configured `pr_label` — this call site does not
+      otherwise have it in hand, so it reads `.pr_label` off `DEFAULTED_CONFIG`
+      here and passes it through, falling back to `"autonomous-agent"`
+      only if that read comes back empty — so it is visible to every gatherer
+      that filters pull requests by that label (agent-ops TD-PPagop-26082426),
+      following `TECH-DEBT.md`'s "Filing alongside other work" except that the
+      filing lands in its own pull request rather than riding along on a
+      branch the Enabler does not hold. Logs `tech-debt-filed` (`repo`,
+      `item`, `by: "enabler"`, `id`, `pr_url`) on success; a `warning` naming
       `tech-debt-file.err` on failure.
     - `file_issue` reuses the same duplicate-guard shape requirement 36a's own
       escalation issue does — an open issue already quoting the item
@@ -12238,11 +12243,17 @@ with the Reviewer's own.
       `clone_dir` — alive and unmodified at this point in the cycle, and
       untouched by the reservation itself, which only ever fetches and pushes
       refs) and opens a small pull request carrying `tech-debt/<id>.md` alone,
-      following `TECH-DEBT.md`'s "Filing alongside other work" except that the
-      filing lands in its own pull request, never the one under review. Logs
-      `tech-debt-filed` (`pr_url`, `repo`, `by: "approver"`, `id`,
-      `filed_pr_url`) on success; a `warning` naming `tech-debt-file.err` on
-      failure.
+      labelled with the fleet's configured `pr_label` — this call site does
+      not otherwise have it in hand (`_approver_restale_sweep_repo`'s reliance
+      on the ambient `pr_label` is a different function), so it reads
+      `.pr_label` off `DEFAULTED_CONFIG` here and passes it through, falling
+      back to `"autonomous-agent"` only if that read comes back empty — so it is
+      visible to every gatherer that filters pull requests by that label
+      (agent-ops TD-PPagop-26082426), following `TECH-DEBT.md`'s "Filing
+      alongside other work" except that the filing lands in its own pull
+      request, never the one under review. Logs `tech-debt-filed` (`pr_url`,
+      `repo`, `by: "approver"`, `id`, `filed_pr_url`) on success; a `warning`
+      naming `tech-debt-file.err` on failure.
     - `file_issue` reuses the pull request's own URL as the duplicate-guard
       key: an open issue already quoting it *is* the record. No label, no
       assignee — legitimate autonomous work for the `issues` source to pick
@@ -14346,8 +14357,8 @@ What exists, and the requirements each part answers to:
       this is not an escalation addressed at a specific human, and is
       legitimate autonomous work for the `issues` source to pick up later.
       Prints `"<number>\t<url>"` on success, nothing on failure.
-    - `techdebt_file_debt REPO TITLE BODY PROVENANCE [TOKEN] [GIT_DIR]` —
-      reserves an id by running `scripts/reserve-tech-debt-id.pl`
+    - `techdebt_file_debt REPO TITLE BODY PROVENANCE [TOKEN] [GIT_DIR]
+      [PR_LABEL]` — reserves an id by running `scripts/reserve-tech-debt-id.pl`
       **unmodified**, always against `GIT_DIR`'s `origin/main` specifically
       (`git show origin/main:scripts/reserve-tech-debt-id.pl`, extracted
       fresh to a temporary path outside `GIT_DIR` and run from a CWD inside
@@ -14365,8 +14376,17 @@ What exists, and the requirements each part answers to:
       bare `remote add`, no object transfer beyond the one fetch this needs) —
       the Enabler's own case, which holds no clone of anything. Opens a pull
       request carrying the new file alone (`gh pr create --base main --head
-      td-record/<id>`) and prints `"<id>\t<pr-url>"` on success, nothing on
-      failure. Any failure after the id has been reserved — the base-SHA
+      td-record/<id> --label PR_LABEL`) — `PR_LABEL` defaulting to
+      `"autonomous-agent"` when omitted — so it is visible to every gatherer
+      that filters pull requests by that label rather than stranding it
+      unlabelled and invisible to all of them at once (agent-ops
+      TD-PPagop-26082426); the Approver and the Enabler, its only two
+      callers (requirements 42a, 36c), each resolve the fleet's configured
+      `pr_label` from `DEFAULTED_CONFIG` at their own call site, neither
+      having it otherwise in hand, and pass it through here rather
+      than relying on this function's own fallback. Prints `"<id>\t<pr-url>"`
+      on success, nothing on failure. Any failure after the id has been
+      reserved — the base-SHA
       lookup, the branch-create call, the contents-write call, or `gh pr
       create` itself — best-effort deletes `td-record/<id>` and then
       releases the `td/<id>` reservation (`gh api -X DELETE
@@ -14409,9 +14429,16 @@ What exists, and the requirements each part answers to:
     `origin/main`, each of the three API calls failing in turn, and each of
     those three failures additionally deleting both `td-record/<id>` and
     `td/<id>`, for `techdebt_file_debt`; the dedup hit, the
-    ordinary create, and a failed create, for `techdebt_file_issue`. The
-    Script's own wiring — that `run_approver_stage` and `maybe_run_enabler`
-    actually call these with the right arguments and log the right event — is
+    ordinary create, and a failed create, for `techdebt_file_issue`. Also
+    asserts the `gh pr create` call itself carries `--label`, both with
+    `PR_LABEL` omitted (the `"autonomous-agent"` fallback) and with one
+    supplied explicitly — the one case a passing test suite could otherwise
+    hide entirely, since a filing that opens unlabelled still returns a URL
+    and reports success (agent-ops TD-PPagop-26082426). The Script's own
+    wiring — that `run_approver_stage` and `maybe_run_enabler` actually call
+    these with the right arguments, including the fleet's configured
+    `pr_label` resolved from `DEFAULTED_CONFIG` rather than the bare
+    fallback, and log the right event — is
     covered separately, by `test/approver-tech-debt-file-wiring.test.sh` and
     `test/enabler-tech-debt-file-wiring.test.sh`, lifting each block out of
     `agent-cycle.sh` the same way `test/approver-wiring.test.sh` and
@@ -18122,7 +18149,11 @@ pull request, run the ones the change touches and any it could regress.
     or the pull-request-create call fails, each of those three failures
     additionally deleting `td-record/<id>` and then releasing the `td/<id>`
     reservation, in that order, rather than leaving either behind for a
-    sweep that looks at neither (TD-PPagop-26082203);
+    sweep that looks at neither (TD-PPagop-26082203); the pull request it
+    opens carries `--label PR_LABEL`, both with `PR_LABEL` omitted (the
+    `"autonomous-agent"` fallback) and with one supplied explicitly, so a
+    filing that opens unlabelled and still reports success cannot pass
+    unnoticed (agent-ops TD-PPagop-26082426).
     `techdebt_file_issue` returns an existing issue whose body
     already quotes the item reference rather than filing a duplicate, and
     fails cleanly when creation fails. A `TOKEN` argument reaches every `gh`
@@ -18138,7 +18169,10 @@ pull request, run the ones the change touches and any it could regress.
     wiring, and `test/enabler-verdicts.test.sh` for the Enabler's) with
     `techdebt_file_debt`/`techdebt_file_issue` stubbed as recorders: a
     well-formed `file_debt`/`file_issue` on either stage's final JSON calls
-    the matching function with the repo, title, body and (Approver only) the
+    the matching function with the repo, title, body, the fleet's configured
+    `pr_label` resolved from `DEFAULTED_CONFIG` (proven with a `DEFAULTED_CONFIG`
+    whose `pr_label` does not match `techdebt_file_debt`'s own bare fallback,
+    so passing by coincidence is not possible) and (Approver only) the
     same App token `approver_post_review` already posts the review under,
     logs `tech-debt-filed`/`issue-filed` naming `by: "approver"`/
     `by: "enabler"` on success, and logs a `warning` — never a changed
