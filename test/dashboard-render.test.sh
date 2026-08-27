@@ -1026,6 +1026,15 @@ assert_contains "  ... and a kill-switch refusal groups under its own tag" \
 # it its own group beside `ineligible`/`kill-switch` for free.
 assert_contains "  ... and an open-question refusal groups under its own tag" \
   "open-question ×1" "$out"
+# TD-PPagop-26082502: two refusals whose reason text embeds a *different*
+# `$pr_url` each (pull/606 and pull/607) — a `https://…` string that carries
+# its own scheme colon — must still accumulate under one group, not garble
+# into two one-off groups keyed on "approver-review-unreadable...https"
+# fragments cut off by the URL's own colon. The class-prefixed shape every
+# `_landing_stage_attempt` refusal now carries (`lib/landing.sh`) is what
+# keeps this repeated failure mode visible as a repeated failure mode.
+assert_contains "  ... and two refusals differing only by pull request URL still group together" \
+  "approver-review-unreadable ×2" "$out"
 assert_contains "the merge budget shows consumed against the cap" \
   "agent-ops 2/8" "$out"
 assert_contains "  ... and an unlimited repository reads as unlimited, never as 0" \

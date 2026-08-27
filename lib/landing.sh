@@ -1130,7 +1130,24 @@ run_landing_stage() {
 #      or dequeued", so it refuses too.
 #
 # Any read above that cannot be answered is a refusal (`_landing_refuse`,
-# `landing-refused`), never a pass. A successful arm logs `landing-armed`
+# `landing-refused`), never a pass. Every REASON this function or its own
+# helpers hand to `_landing_refuse` carries a short, GitHub-URL-free class
+# word ahead of its own first `:` — `landing_eligible`'s `ineligible:`/
+# `unknown:`, `landing_autonomy_refusal_reason`'s `kill-switch:`, this
+# function's own `malformed-pr-url:`/`open-question-unreadable:`/
+# `approver-review-unreadable:`/`human-veto-unreadable:`/
+# `human-changes-requested:`/`reconciliation-unanswered:`/
+# `reconciliation-unreadable:`/`merge-queue-unreadable:`/
+# `dequeued-actionable:`/`dequeued-manual:`/`arm-failed:` — so
+# `scripts/publish-dashboard.sh`'s landings digest (`byReason`,
+# `dashboard/index.html`) groups by that word rather than by the text before
+# whatever colon happens to occur first, which for a sentence-form refusal
+# embedding `$pr_url` (itself a `https://…` string) is the URL's own scheme
+# colon (TD-PPagop-26082502). A message with no class prefix and no `$pr_url`
+# or other varying content before its own trailing punctuation — "could not
+# read the Approver App's own login", "already in the merge queue", "could
+# not mint the Approver's installation token" — needs none: the whole string
+# is already a stable, single group. A successful arm logs `landing-armed`
 # exactly once, naming the method (`enqueued`/`auto-merge`) `landing_arm`
 # actually used, and never withholds anything requirement 8b already did —
 # the *first* attempt (RETRY empty) runs strictly after the `pr-ready` log
@@ -1173,7 +1190,7 @@ _landing_stage_attempt() {
   if [[ "$pr_url" =~ /pull/([0-9]+)$ ]]; then
     number="${BASH_REMATCH[1]}"
   else
-    _landing_refuse "$pr_url" "$slug" "could not parse a pull request number from $pr_url" "$retry"
+    _landing_refuse "$pr_url" "$slug" "malformed-pr-url:could not parse a pull request number from $pr_url" "$retry"
     return 0
   fi
 
@@ -1218,7 +1235,7 @@ _landing_stage_attempt() {
   case "$oq_hit_rc" in
     1) ;; # clear — no open question stands.
     2)
-      _landing_refuse "$pr_url" "$slug" "could not read $pr_url's own labels to confirm no open question stands" "$retry"
+      _landing_refuse "$pr_url" "$slug" "open-question-unreadable:could not read $pr_url's own labels to confirm no open question stands" "$retry"
       return 0
       ;;
     0)
@@ -1262,7 +1279,7 @@ _landing_stage_attempt() {
   # own header).
   local standing_at standing submitted_at review_commit rest
   if ! standing_at="$(landing_approver_standing_review_at "$slug" "$number" "$login")"; then
-    _landing_refuse "$pr_url" "$slug" "could not read $pr_url's own review list to confirm the Approver's review actually landed" "$retry"
+    _landing_refuse "$pr_url" "$slug" "approver-review-unreadable:could not read $pr_url's own review list to confirm the Approver's review actually landed" "$retry"
     return 0
   fi
   standing="${standing_at%%$'\t'*}"
@@ -1276,11 +1293,11 @@ _landing_stage_attempt() {
 
   local blocking
   if ! blocking="$(_handoff_blocking_reviewers "$slug" "$number")"; then
-    _landing_refuse "$pr_url" "$slug" "could not read $pr_url's own review list to confirm no human CHANGES_REQUESTED stands" "$retry"
+    _landing_refuse "$pr_url" "$slug" "human-veto-unreadable:could not read $pr_url's own review list to confirm no human CHANGES_REQUESTED stands" "$retry"
     return 0
   fi
   if [[ -n "$blocking" ]]; then
-    _landing_refuse "$pr_url" "$slug" "a human CHANGES_REQUESTED stands ($(paste -sd, - <<<"$blocking"))" "$retry"
+    _landing_refuse "$pr_url" "$slug" "human-changes-requested:a human CHANGES_REQUESTED stands ($(paste -sd, - <<<"$blocking"))" "$retry"
     return 0
   fi
 
@@ -1296,7 +1313,7 @@ _landing_stage_attempt() {
   rc_combined="$(reconciliation_gate "$pr_url")" || true
   IFS=$'\t' read -r rc_word rc_reason <<<"$rc_combined"
   if [[ "$rc_word" == "dirty" ]]; then
-    _landing_refuse "$pr_url" "$slug" "$rc_reason" "$retry"
+    _landing_refuse "$pr_url" "$slug" "reconciliation-unanswered:$rc_reason" "$retry"
     return 0
   fi
   # Anything that is not `clean` refuses arming outright, never falls through
@@ -1313,7 +1330,7 @@ _landing_stage_attempt() {
   # merge is not that.
   if [[ "$rc_word" != "clean" ]]; then
     _landing_refuse "$pr_url" "$slug" \
-      "could not confirm every human comment on $pr_url since it last left draft is reconciled: ${rc_reason:-reconciliation_gate answered ${rc_word:-nothing at all}}" "$retry"
+      "reconciliation-unreadable:could not confirm every human comment on $pr_url since it last left draft is reconciled: ${rc_reason:-reconciliation_gate answered ${rc_word:-nothing at all}}" "$retry"
     return 0
   fi
 
@@ -1355,7 +1372,7 @@ _landing_stage_attempt() {
 
   local queue_json queued dequeue_reason
   if ! queue_json="$(merge_queue_probe "$slug" "$number")"; then
-    _landing_refuse "$pr_url" "$slug" "could not read $pr_url's merge-queue status" "$retry"
+    _landing_refuse "$pr_url" "$slug" "merge-queue-unreadable:could not read $pr_url's merge-queue status" "$retry"
     return 0
   fi
   queued="$(jq -r '.queued' <<<"$queue_json" 2>/dev/null)"
@@ -1383,10 +1400,10 @@ _landing_stage_attempt() {
   if [[ -n "$dequeue_reason" ]]; then
     if merge_queue_dequeue_actionable "$dequeue_reason"; then
       _landing_refuse "$pr_url" "$slug" \
-        "GitHub's merge queue removed $pr_url over a $dequeue_reason failure — the dequeued source's own diagnose-and-fix path and a fresh human 'Merge when ready' click land this, never a blind re-arm here" "$retry"
+        "dequeued-actionable:GitHub's merge queue removed $pr_url over a $dequeue_reason failure — the dequeued source's own diagnose-and-fix path and a fresh human 'Merge when ready' click land this, never a blind re-arm here" "$retry"
     else
       _landing_refuse "$pr_url" "$slug" \
-        "GitHub's merge queue removed $pr_url (reason: $dequeue_reason) — a deliberate removal, so this stage never re-enqueues it" "$retry"
+        "dequeued-manual:GitHub's merge queue removed $pr_url (reason: $dequeue_reason) — a deliberate removal, so this stage never re-enqueues it" "$retry"
     fi
     return 0
   fi
@@ -1404,11 +1421,11 @@ _landing_stage_attempt() {
   method="$(landing_arm "$slug" "$number" "$token")" || arm_rc=$?
   if (( arm_rc != 0 )); then
     _landing_refuse "$pr_url" "$slug" \
-      "landing_arm could not enqueue or auto-merge $pr_url: $(_landing_arm_failure_reason "$arm_rc")" "$retry"
+      "arm-failed:landing_arm could not enqueue or auto-merge $pr_url: $(_landing_arm_failure_reason "$arm_rc")" "$retry"
     return 0
   fi
   if [[ -z "$method" ]]; then
-    _landing_refuse "$pr_url" "$slug" "landing_arm could not enqueue or auto-merge $pr_url: printed no method despite exiting 0" "$retry"
+    _landing_refuse "$pr_url" "$slug" "arm-failed:landing_arm could not enqueue or auto-merge $pr_url: printed no method despite exiting 0" "$retry"
     return 0
   fi
 
