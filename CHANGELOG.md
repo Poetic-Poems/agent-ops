@@ -8,6 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- New `label_prefix` config key (default `pw::`, agent-ops#840) and
+  `lib/labels.sh`'s `labels_reconcile`/`labels_reconcile_role`: full CRUD —
+  create, reconcile colour/description drift, and delete once no longer
+  catalogued — for any label whose name starts with the prefix, further
+  colons and all. Every label outside that namespace keeps `labels_ensure`'s
+  own create-only, never-touch treatment, so an operator's own recolouring is
+  still never undone; empty disables reconciliation and deletion entirely.
+  Deletion is scoped to `labels_reconcile_role`'s `target` role, the one
+  catalogue call that is a repository's complete desired label set; `review`
+  and `escalation` reconcile drift without ever deleting, since each is a
+  partial subset whose own deletion pass would remove labels the other role
+  still wants. No call site uses either function yet — the pipeline's own
+  catalogue entries are still unprefixed, and renaming them is a live
+  migration recorded as TD-PPagop-26082809.
+
 - New `tech_debt_branch_prefix` config key (default `td/`, agent-ops#655): the
   human tech-debt-claim protocol's (`TECH-DEBT.md`) own branch prefix was a
   bare `"td/"` literal in `lib/claim.sh`, the four `gather-*.sh` sources and

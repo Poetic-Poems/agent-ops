@@ -56,25 +56,80 @@ assert_eq() {
 }
 
 # --- The stub. `LABELS_GH` is the seam lib/labels.sh leaves for exactly this.
-#     It reproduces the two calls the library makes and the shapes GitHub
-#     answers them with: a listing, and a create that refuses a duplicate. ---
+#     It reproduces the calls the library makes and the shapes GitHub answers
+#     them with: a listing (names only, or full name/colour/description when
+#     the caller's own --jq filter asks for colour), a create that refuses a
+#     duplicate, and — for labels_reconcile's own CRUD — an update and a
+#     delete addressed by the label's name in the URL path, percent-encoded
+#     exactly as a real colon-carrying label name would be. $GH_LABELS itself
+#     always holds `name<TAB>colour<TAB>description` lines; a bare name with
+#     no tabs (every pre-existing test's own seed) is its own first field, so
+#     the two storage shapes coexist without conversion.
 cat > "$tmp/gh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$GH_LOG"
+
+urldecode() {
+  data="${1//+/ }"
+  printf '%b' "${data//%/\\x}"
+}
+
 if [[ "$1" == "api" && "$2" == "-X" && "$3" == "POST" ]]; then
-  name=""
-  for arg in "$@"; do [[ "$arg" == name=* ]] && name="${arg#name=}"; done
+  name=""; colour=""; description=""
+  for arg in "$@"; do
+    case "$arg" in
+      name=*) name="${arg#name=}" ;;
+      color=*) colour="${arg#color=}" ;;
+      description=*) description="${arg#description=}" ;;
+    esac
+  done
   # The failure the caller must survive: a token without permission to create.
   if [[ -n "${GH_REFUSE_CREATE:-}" ]] && grep -qxF "$name" <<<"$GH_REFUSE_CREATE"; then
     echo "gh: HTTP 403" >&2
     exit 1
   fi
   # A duplicate is refused, exactly as GitHub refuses one.
-  if grep -qixF "$name" "$GH_LABELS"; then
+  if cut -f1 "$GH_LABELS" | grep -qixF "$name"; then
     echo "gh: HTTP 422 already_exists" >&2
     exit 1
   fi
-  printf '%s\n' "$name" >> "$GH_LABELS"
+  printf '%s\t%s\t%s\n' "$name" "$colour" "$description" >> "$GH_LABELS"
+  exit 0
+fi
+if [[ "$1" == "api" && "$2" == "-X" && "$3" == "PATCH" ]]; then
+  name="$(urldecode "${4##*/}")"
+  if [[ -n "${GH_REFUSE_UPDATE:-}" ]] && grep -qixF "$name" <<<"$GH_REFUSE_UPDATE"; then
+    echo "gh: HTTP 403" >&2
+    exit 1
+  fi
+  if ! cut -f1 "$GH_LABELS" | grep -qixF "$name"; then
+    echo "gh: HTTP 404" >&2
+    exit 1
+  fi
+  colour=""; description=""
+  for arg in "$@"; do
+    case "$arg" in
+      color=*) colour="${arg#color=}" ;;
+      description=*) description="${arg#description=}" ;;
+    esac
+  done
+  awk -F'\t' -v n="$name" -v c="$colour" -v d="$description" \
+    'BEGIN{OFS="\t"} tolower($1)==tolower(n){$2=c; $3=d} {print}' \
+    "$GH_LABELS" > "$GH_LABELS.tmp" && mv "$GH_LABELS.tmp" "$GH_LABELS"
+  exit 0
+fi
+if [[ "$1" == "api" && "$2" == "-X" && "$3" == "DELETE" ]]; then
+  name="$(urldecode "${4##*/}")"
+  if [[ -n "${GH_REFUSE_DELETE:-}" ]] && grep -qixF "$name" <<<"$GH_REFUSE_DELETE"; then
+    echo "gh: HTTP 403" >&2
+    exit 1
+  fi
+  if ! cut -f1 "$GH_LABELS" | grep -qixF "$name"; then
+    echo "gh: HTTP 404" >&2
+    exit 1
+  fi
+  awk -F'\t' -v n="$name" 'tolower($1) != tolower(n)' "$GH_LABELS" > "$GH_LABELS.tmp" \
+    && mv "$GH_LABELS.tmp" "$GH_LABELS"
   exit 0
 fi
 if [[ "$1" == "api" && "$2" == repos/*/labels ]]; then
@@ -87,7 +142,13 @@ if [[ "$1" == "api" && "$2" == repos/*/labels ]]; then
     touch "$GH_LIST_EMPTY_ONCE.used"
     exit 0
   fi
-  cat "$GH_LABELS"
+  # labels_reconcile's own --jq asks for colour too; every other caller's
+  # asks for `.[].name` alone, so the substring tells the two apart.
+  if [[ "$*" == *color* ]]; then
+    cat "$GH_LABELS"
+  else
+    cut -f1 "$GH_LABELS"
+  fi
   exit 0
 fi
 echo "stub gh: unexpected invocation: $*" >&2
@@ -101,7 +162,7 @@ reset_stub() {
   : > "$tmp/log"
   rm -f "$tmp/list-empty-once.used"
   export GH_LABELS="$tmp/labels" GH_LOG="$tmp/log"
-  unset GH_REFUSE_CREATE GH_LIST_FAILS GH_LIST_EMPTY_ONCE
+  unset GH_REFUSE_CREATE GH_REFUSE_UPDATE GH_REFUSE_DELETE GH_LIST_FAILS GH_LIST_EMPTY_ONCE
   [[ $# -eq 0 ]] || printf '%s\n' "$@" > "$tmp/labels"
 }
 
@@ -363,6 +424,129 @@ out="$(labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/r
 assert_eq "an interval under an hour truncates to 0 and ensures every call" "1" \
   "$(grep -c '^api repos/Owner/repo/labels --paginate' "$tmp/log")"
 rm -rf "$stamp_root"
+
+# --- labels_reconcile: full CRUD for PREFIX-named entries, create-only for
+#     everything else, delete gated on MODE `full`. ---
+
+reset_stub
+out="$(printf 'plain-label\t1d76db\tan ordinary label\npw::extra\t0e8a16\tprefixed and absent\n' \
+  | labels_reconcile "Owner/repo" "pw::" full)"
+assert_eq "an unprefixed entry gets labels_ensure's own create-only treatment" \
+  "created" "$(grep 'plain-label' <<<"$out" | cut -f1)"
+assert_eq "a prefixed entry absent from the repo is created too" \
+  "created" "$(grep 'pw::extra' <<<"$out" | cut -f1)"
+
+reset_stub $'plain-label\t1d76db\tan ordinary label'
+out="$(printf 'plain-label\tffffff\ta different description\n' \
+  | labels_reconcile "Owner/repo" "pw::" full)"
+assert_eq "an existing unprefixed entry is left alone even when its catalogue colour/description drifted" \
+  "" "$out"
+assert_eq "  ... no PATCH, PUT or DELETE is issued for it" "" \
+  "$(grep -E '(^|[[:space:]])-X[[:space:]]+(PATCH|PUT|DELETE)' "$tmp/log" || true)"
+
+reset_stub $'pw::drifted\t1d76db\told description'
+out="$(printf 'pw::drifted\t0e8a16\tnew description\n' | labels_reconcile "Owner/repo" "pw::" full)"
+assert_eq "a prefixed entry whose colour/description drifted is updated" \
+  "updated	pw::drifted" "$out"
+assert_eq "  ... through exactly one PATCH" "1" "$(grep -c '^api -X PATCH' "$tmp/log")"
+assert_eq "  ... with the catalogue's own colour and description" \
+  "api -X PATCH repos/Owner/repo/labels/pw%3A%3Adrifted -f color=0e8a16 -f description=new description" \
+  "$(grep '^api -X PATCH' "$tmp/log")"
+
+reset_stub $'pw::steady\t0e8a16\tunchanged'
+out="$(printf 'pw::steady\t0e8a16\tunchanged\n' | labels_reconcile "Owner/repo" "pw::" full)"
+assert_eq "a prefixed entry that already matches is left silent, no PATCH issued" "" "$out"
+assert_eq "  ... no PATCH is issued" "0" "$(grep -c '^api -X PATCH' "$tmp/log")"
+
+reset_stub $'pw::stale\t1d76db\tno longer catalogued'
+out="$(printf '' | labels_reconcile "Owner/repo" "pw::" full)"
+assert_eq "MODE full deletes a prefixed label the catalogue no longer names" \
+  "deleted	pw::stale" "$out"
+assert_eq "  ... through exactly one DELETE" "1" "$(grep -c '^api -X DELETE' "$tmp/log")"
+
+reset_stub $'pw::kept\t1d76db\tnot in this catalogue call'
+out="$(printf '' | labels_reconcile "Owner/repo" "pw::" additive)"
+assert_eq "MODE additive never deletes, even when the catalogue no longer names it" \
+  "" "$out"
+assert_eq "  ... no DELETE is issued" "0" "$(grep -c '^api -X DELETE' "$tmp/log")"
+
+reset_stub
+out="$(printf 'pw::test:a-test\tc4beda\tfurther colons, structured or not\n' \
+  | labels_reconcile "Owner/repo" "pw::" full)"
+assert_eq "a label carrying further colons past the prefix is created" \
+  "created	pw::test:a-test" "$out"
+reset_stub $'pw::test:a-test\tc4beda\told description'
+out="$(printf 'pw::test:a-test\tc4beda\tnew description\n' | labels_reconcile "Owner/repo" "pw::" full)"
+assert_eq "  ... and reconciled by name, percent-encoded exactly as GitHub's own path segment needs" \
+  "api -X PATCH repos/Owner/repo/labels/pw%3A%3Atest%3Aa-test -f color=c4beda -f description=new description" \
+  "$(grep '^api -X PATCH' "$tmp/log")"
+
+reset_stub $'pw::keep\t1d76db\tcolour drifted too'
+out="$(printf 'pw::keep\tffffff\tcolour drifted too\n' | labels_reconcile "Owner/repo" "" full)"
+assert_eq "an empty PREFIX disables reconciliation: every entry is create-only" \
+  "" "$out"
+assert_eq "  ... no PATCH or DELETE is ever issued" "" \
+  "$(grep -E '(^|[[:space:]])-X[[:space:]]+(PATCH|DELETE)' "$tmp/log" || true)"
+
+reset_stub
+export GH_REFUSE_CREATE="pw::locked"
+out="$(printf 'pw::locked\t0e8a16\ta description\n' | labels_reconcile "Owner/repo" "pw::" full)"
+unset GH_REFUSE_CREATE
+assert_eq "a create that a token cannot make is reported failed, same as labels_ensure's own" \
+  "failed	pw::locked" "$out"
+
+reset_stub $'pw::locked\t1d76db\told description'
+export GH_REFUSE_UPDATE="pw::locked"
+out="$(printf 'pw::locked\t0e8a16\ta new description\n' | labels_reconcile "Owner/repo" "pw::" full)"
+unset GH_REFUSE_UPDATE
+assert_eq "an update a token cannot make is reported failed too, and does not abort the pass" \
+  "failed	pw::locked" "$out"
+
+reset_stub
+export GH_LIST_FAILS=1
+out="$(printf 'pw::anything\t0e8a16\tsomething\n' | labels_reconcile "Owner/repo" "pw::" full)"
+rc=$?
+assert_eq "a repository whose labels cannot be listed returns 1 and does nothing" "1" "$rc"
+assert_eq "  ... and reports nothing" "" "$out"
+unset GH_LIST_FAILS
+
+reset_stub
+assert_eq "an empty repository slug is refused rather than guessed at" "1" \
+  "$(printf '' | labels_reconcile "" "pw::" full >/dev/null 2>&1; echo $?)"
+
+# --- labels_reconcile_role: MODE derived from ROLE, PREFIX read from config ---
+
+config
+reset_stub
+out="$(labels_reconcile_role "$tmp/config.json" "$SCHEMA" "Owner/repo" target)"
+assert_eq "the target role reconciles with today's unprefixed catalogue, unaffected (nothing to reconcile or delete)" \
+  "autonomous-agent enabler-escalation needs-refinement refined unvoided blocked blocked:needs-refinement obsolete open-question complexity:low complexity:medium complexity:high" \
+  "$(cut -f2 <<<"$out" | tr '\n' ' ' | sed 's/ $//')"
+
+reset_stub $'pw::stale-target\t1d76db\tstale\npw::wanted\t1d76db\told desc'
+out="$(labels_catalogue "$tmp/config.json" "$SCHEMA" target | { cat; printf 'pw::wanted\t0e8a16\tkept\n'; } \
+  | labels_reconcile "Owner/repo" "pw::" full)"
+assert_eq "a pw::-prefixed label the catalogue still names is reconciled, not deleted" \
+  "updated	pw::wanted" "$(grep 'pw::wanted' <<<"$out")"
+assert_eq "  ... and one the catalogue no longer names is deleted" \
+  "deleted	pw::stale-target" "$(grep 'pw::stale-target' <<<"$out")"
+
+reset_stub $'pw::stale-escalation\t1d76db\tstale'
+out="$(labels_reconcile_role "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation)"
+assert_eq "the escalation role, a partial subset of target's own catalogue, never deletes" \
+  "" "$(grep '^deleted' <<<"$out")"
+
+config '.unvoid_label = "pw::drift"'
+reset_stub $'pw::drift\t1d76db\told desc'
+out="$(labels_reconcile_role "$tmp/config.json" "$SCHEMA" "Owner/repo" target)"
+assert_eq "labels_reconcile_role reconciles a config-renamed label that happens to carry label_prefix" \
+  "updated	pw::drift" "$(grep '^updated' <<<"$out")"
+
+config '.unvoid_label = "pw::drift" | .label_prefix = ""'
+reset_stub $'pw::drift\t1d76db\told desc'
+out="$(labels_reconcile_role "$tmp/config.json" "$SCHEMA" "Owner/repo" target)"
+assert_eq "label_prefix set empty in config disables reconciliation even for a pw::-named label" \
+  "" "$(grep -v '^created' <<<"$out")"
 
 echo
 if (( failures == 0 )); then

@@ -583,6 +583,17 @@
         "spec": "How often, at most, the Script re-lists a repository's labels to create any absent ones (requirement 6a), keyed per repository via a stamp file under `state_dir` rather than a single fleet-wide clock — so one repository's interval elapsing says nothing about another's. `0` disables the stamp check, so it ensures on every cycle regardless."
       }
     },
+    "label_prefix": {
+      "description": "Namespace prefix for labels lib/labels.sh's labels_reconcile fully owns: a label whose name starts with it (case-insensitively, further colons and all) is created, has its colour/description reconciled on drift, and is deleted once no longer catalogued, rather than labels_ensure's own create-only, never-touch treatment for everything else. Empty disables reconciliation and deletion for every label, whatever its name.",
+      "type": "string",
+      "pattern": "^[^,]*$",
+      "default": "pw::",
+      "x-docs": {
+        "readme": "Namespace prefix for labels the pipeline fully owns, colour, description and existence kept in sync with configuration rather than only ever created once — see `lib/labels.sh`'s `labels_reconcile`. Every other label keeps today's create-only behaviour, so an operator's own colour/description choice is never undone. Leave it empty to disable reconciliation and deletion entirely.",
+        "spec": "Namespace prefix `lib/labels.sh`'s `labels_reconcile` reconciles full CRUD for (create, PATCH colour/description on drift, DELETE once no longer catalogued) rather than `labels_ensure`'s own create-only treatment. `labels_reconcile_role`'s `target` role — the one catalogue call that is a repository's complete desired label set — reconciles with deletion; `review` and `escalation`, each a partial subset of `target`'s own catalogue, reconcile colour/description drift but never delete, since a delete scoped to a subset would remove labels another role still wants. Empty disables reconciliation and deletion for every role, leaving every label on `labels_ensure`'s create-only path.",
+        "value": "`pw::`"
+      }
+    },
     "void_retire_after_days": {
       "description": "How old a fully-actioned void (its GitHub object closed, or its register row read resolved/not-debt) must be before it is dropped from the extract. 0 disables retirement.",
       "type": "integer",
