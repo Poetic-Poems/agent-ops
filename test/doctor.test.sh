@@ -256,7 +256,7 @@ run_doctor() {
     if [[ "$1" == "--" ]]; then shift; extra_args=( "$@" ); break; fi
     env_pairs+=( "$1" ); shift
   done
-  out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" "${env_pairs[@]}" \
+  out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u ANTHROPIC_API_KEY PATH="$stub_bin:$PATH" "${env_pairs[@]}" \
     bash "$DOCTOR" --config "$base_config" "${extra_args[@]}" 2>&1)"
   rc=$?
 }
@@ -1252,17 +1252,36 @@ assert_not_contains "at human, doctor stays silent about the runtime credential"
 # --- Claude credentials ----------------------------------------------------
 
 run_doctor STUB_CLAUDE_AUTH_JSON='{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"max"}'
-assert_contains "loggedIn true is ok" "[ ok ] claude is authenticated" "$out"
+assert_contains "loggedIn true is ok, naming the OAuth path" \
+  "[ ok ] claude is authenticated via subscription OAuth" "$out"
 
 run_doctor STUB_CLAUDE_AUTH_JSON='{"loggedIn":false}'
 assert_contains "loggedIn false is a failure, distinguished from a parse failure" \
-  "[fail] claude is not authenticated" "$out"
+  "[fail] claude is not authenticated on either credential path" "$out"
 assert_eq "and doctor.sh exits 1" "1" "$rc"
 
 run_doctor STUB_CLAUDE_NO_AUTH_SUBCOMMAND=1
 assert_contains "a claude with no auth subcommand is a skip, not a failure" \
   "[skip] claude auth status did not succeed" "$out"
 assert_not_contains "and is not reported as a failure" "[fail] claude" "$out"
+
+# --- Claude credentials: the BYO API-key path (D4's primary) ---------------
+
+run_doctor ANTHROPIC_API_KEY='sk-ant-api03-abc123'
+assert_contains "a well-shaped ANTHROPIC_API_KEY is ok, naming the API-key path" \
+  "[ ok ] ANTHROPIC_API_KEY is set and shaped like an Anthropic key" "$out"
+assert_eq "and doctor.sh exits 0" "0" "$rc"
+
+run_doctor ANTHROPIC_API_KEY='sk-ant-api03-abc123' STUB_CLAUDE_AUTH_JSON='{"loggedIn":false}'
+assert_not_contains "and subscription OAuth is not consulted when a key is present" \
+  "claude is not authenticated" "$out"
+assert_not_contains "nor is it reported as authenticated via OAuth" \
+  "authenticated via subscription OAuth" "$out"
+
+run_doctor ANTHROPIC_API_KEY='not-a-real-key'
+assert_contains "a badly-shaped ANTHROPIC_API_KEY is a warning, not a failure" \
+  "[warn] ANTHROPIC_API_KEY is set but is not shaped like an Anthropic key" "$out"
+assert_eq "a warning alone still exits 0" "0" "$rc"
 
 # --- The rendered crontab ---------------------------------------------------
 

@@ -8,6 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- The BYO API-key model-credential path (D4's primary, agent-ops#684) is now
+  documented alongside subscription OAuth (the existing, self-hosted
+  alternative) rather than the deployment covering only the latter:
+  `deploy/docker/.env.example`, `compose.yaml` and `README.md` name
+  `ANTHROPIC_API_KEY` as the first-class path, with OAuth's constraints
+  (interactive login per node; own-use only) stated for the alternative.
+  `scripts/doctor.sh`'s Claude section now reports on whichever of the two
+  paths a node actually carries — a well-shaped `ANTHROPIC_API_KEY` is `ok`
+  and OAuth is not consulted, a badly-shaped one is `warn`, and OAuth status
+  is read (as before) only when no key is present — instead of always
+  reading OAuth status and skipping the other path; the stream-flush probe
+  gates on either credential rather than OAuth alone. No default or running
+  configuration changes: `ANTHROPIC_API_KEY` is unset unless an operator
+  sets it, same as every other credential in `compose.yaml`'s environment
+  block.
 - New `label_prefix` config key (default `pw::`, agent-ops#840) and
   `lib/labels.sh`'s `labels_reconcile`/`labels_reconcile_role`: full CRUD —
   create, reconcile colour/description drift, and delete once no longer

@@ -1436,8 +1436,19 @@ if ((gh_ready)); then
 fi
 
 # --- Claude ---
+#
+# Two credential paths, per D4: BYO API key (ANTHROPIC_API_KEY) is primary,
+# and subscription OAuth (`claude auth status`) is the documented alternative
+# for a self-hosted, own-use node. A node runs exactly one of them, so this
+# reports on whichever is present rather than always reading OAuth status and
+# skipping when a node has chosen the other path.
 
 section "Claude"
+
+# Whichever branch below finds a working-looking credential sets this, so the
+# stream-flush check further down can ask one question regardless of which of
+# D4's two paths this node runs.
+claude_credential_ok=0
 
 if ((offline)); then
   skip "Claude credentials (--offline)"
@@ -1445,6 +1456,18 @@ elif ((unattended)); then
   skip "Claude credentials (--unattended; a scheduled pass must not read a credential)"
 elif ! command -v claude >/dev/null 2>&1; then
   skip "Claude credentials (claude is not installed)"
+elif [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+  # A static shape check, not a live call — consistent with how the
+  # Approver's own runtime credential is verified above (present and
+  # readable, never exercised against GitHub). Anthropic API keys are
+  # minted with an "sk-ant-" prefix; anything else is very likely a
+  # copy-paste error rather than a working key.
+  claude_credential_ok=1
+  if [[ "$ANTHROPIC_API_KEY" == sk-ant-* ]]; then
+    ok "ANTHROPIC_API_KEY is set and shaped like an Anthropic key — claude uses it directly (BYO API-key path, D4's primary); subscription OAuth is not consulted"
+  else
+    warn "ANTHROPIC_API_KEY is set but is not shaped like an Anthropic key (expected an \"sk-ant-\" prefix) — claude will still try to use it as given; check for a copy-paste error"
+  fi
 elif ! claude_auth_json="$(timeout 15 claude auth status --json 2>/dev/null)"; then
   # An older CLI with no `auth` subcommand, or one that hangs and hits the
   # timeout above, exits non-zero here rather than printing anything this
@@ -1456,9 +1479,10 @@ elif ! logged_in="$(jq -r '.loggedIn' <<<"$claude_auth_json" 2>/dev/null)"; then
   # reflects the output *value*, not whether parsing succeeded).
   skip "claude auth status printed something other than the expected JSON — cannot verify credentials"
 elif [[ "$logged_in" == "true" ]]; then
-  ok "claude is authenticated ($(jq -r '.authMethod // "method unknown"' <<<"$claude_auth_json"), $(jq -r '.subscriptionType // .apiProvider // "provider unknown"' <<<"$claude_auth_json"))"
+  claude_credential_ok=1
+  ok "claude is authenticated via subscription OAuth ($(jq -r '.authMethod // "method unknown"' <<<"$claude_auth_json"), $(jq -r '.subscriptionType // .apiProvider // "provider unknown"' <<<"$claude_auth_json")) — D4's documented alternative path"
 else
-  fail "claude is not authenticated — every stage launches through it and would fail at the first invocation"
+  fail "claude is not authenticated on either credential path — ANTHROPIC_API_KEY is unset and claude auth status reports not logged in; every stage launches through it and would fail at the first invocation"
 fi
 
 # --- The stream really streams, on this node -----------------------------------
@@ -1482,7 +1506,7 @@ elif ((unattended)); then
   skip "stream flushing (--unattended; the check costs one minimal model call, which a scheduled pass must not spend)"
 elif ! command -v claude >/dev/null 2>&1; then
   skip "stream flushing (claude is not installed)"
-elif [[ "${logged_in:-}" != "true" ]]; then
+elif (( ! claude_credential_ok )); then
   skip "stream flushing (needs a working credential)"
 else
   flush_dir="$(mktemp -d)"
