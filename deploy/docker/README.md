@@ -89,6 +89,17 @@ cycles](../../README.md#which-node-runs-the-cycles).
 `.env` holds this node's secrets. It is git-ignored, and if a token ever lands
 in a commit the answer is to rotate it, not to rewrite history.
 
+`.env` must be `chmod 600` — the same protection the Approver App's private
+key already gets (see `PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH` in
+`.env.example`). A world- or group-readable `.env` hands every live token in
+it — `GH_TOKEN`, `VERCEL_TOKEN`, anything else set there — to any other
+account on the host. `check-node-compose.sh` (step 2) flags a `.env` that is
+not `0600`. Rotate a token by editing `.env` in place, or by swapping in a
+`0600` temporary file; never leave a dated copy (`.env.bak-*`, `*.env.old`)
+beside the live file — `check-node-compose.sh` flags those too, and each one
+carries whatever tokens were live when it was made, undead until someone
+finds and deletes it.
+
 ### 3. Start it
 
 ```bash
@@ -334,9 +345,11 @@ bring-up) from the stack directory:
 
 It diffs the file against the running image's copy, confirms the pre-update
 hook label on every agent-ops container and lifecycle hooks in watchtower's
-actual environment, and exits non-zero if anything has drifted — the checks
+actual environment, and exits non-zero if anything has drifted — those checks
 cover exactly the properties whose silent loss cost the cycles behind
-issue #131.
+issue #131. It also flags, host-side and without needing the stack to be up,
+a `.env` that is not `0600` and any `.env.bak*`/`*.env.old` backup left
+beside it (see above).
 
 ### Is this node on the newest image
 

@@ -15,6 +15,10 @@
 #     watchtower given both schedule and interval each fail on their own;
 #   - a stack with no watchtower is information, not a failure — a node
 #     without auto-update is a configuration, not a defect;
+#   - a 0600 .env with no backup siblings passes; a non-0600 .env fails
+#     naming its actual mode, and each .env.bak*/*.env.old sibling fails
+#     naming itself (#696) — checked without Docker, so these still run even
+#     when the stack is down;
 #   - no compose.yaml in the stack directory, or a scheduler that cannot be
 #     exec'd into, is "cannot check" (exit 2), never a clean pass.
 #
@@ -101,6 +105,8 @@ services:
     image: ghcr.io/example/agent-ops:latest
 EOF
 cp "$image_compose" "$stack/compose.yaml"
+printf 'GH_TOKEN=x\n' > "$stack/.env"
+chmod 600 "$stack/.env"
 
 hook_path='/app/deploy/docker/watchtower-pre-update.sh'
 healthy_env='WATCHTOWER_LIFECYCLE_HOOKS=true
@@ -167,6 +173,29 @@ assert_eq "a watchtower that exists but is not running fails" "1" "$rc"
 run_check STUB_WT_ID=""
 assert_eq "no watchtower at all is not a failure" "0" "$rc"
 assert_contains "but is said" "auto-update profile off" "$out"
+
+# --- .env permissions and backup siblings (#696) -------------------------------
+
+chmod 644 "$stack/.env"
+run_check
+assert_eq "a non-0600 .env fails" "1" "$rc"
+assert_contains "naming its actual mode" "0644" "$out"
+chmod 600 "$stack/.env"
+
+touch "$stack/.env.bak-20260802-quoting"
+run_check
+assert_eq "a stale env backup fails" "1" "$rc"
+assert_contains "naming the backup file" ".env.bak-20260802-quoting" "$out"
+rm -f "$stack/.env.bak-20260802-quoting"
+
+touch "$stack/prod.env.old"
+run_check
+assert_eq "a *.env.old sibling fails" "1" "$rc"
+assert_contains "naming that file too" "prod.env.old" "$out"
+rm -f "$stack/prod.env.old"
+
+run_check
+assert_eq "a 0600 .env with no backups passes again" "0" "$rc"
 
 # --- Cannot check is never a pass ---------------------------------------------
 

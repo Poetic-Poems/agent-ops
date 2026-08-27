@@ -13444,18 +13444,29 @@ What exists, and the requirements each part answers to:
     answer (see "The node stack"; the in-container half is
     `lib/compose-drift.sh`). Run on a node's host from the stack directory
     (or `STACK_DIR`; a host running two stacks, once per directory), it
-    verifies what no container can: the stack's `compose.yaml` against the
-    copy inside the *running* image, the mount that arms the in-container
-    check, the watchtower pre-update hook label on every running agent-ops
-    container, and watchtower's actual environment — lifecycle hooks
-    enabled, schedule and interval not both set — plus an advisory count of
-    lifecycle mentions in watchtower's log. Read-only throughout
-    (`docker compose exec/ps`, `docker inspect/logs`, `diff`), so it is safe
-    to allow-list like `watch-node.sh`. Exit 0 all checks passed, 1 at least
-    one failed, 2 unable to check — and unable is never reported as clean.
-    Fetched at bring-up beside `compose.yaml` (component 7, including
-    `cloud-init.yaml`). Unit-tested against a stubbed `docker` on `PATH`
-    (`test/check-node-compose.test.sh`); must pass `shellcheck`.
+    verifies what no container can: `.env`'s own permissions and backup
+    siblings (below), the stack's `compose.yaml` against the copy inside the
+    *running* image, the mount that arms the in-container check, the
+    watchtower pre-update hook label on every running agent-ops container,
+    and watchtower's actual environment — lifecycle hooks enabled, schedule
+    and interval not both set — plus an advisory count of lifecycle mentions
+    in watchtower's log. Every check but the first is read-only against
+    Docker (`docker compose exec/ps`, `docker inspect/logs`, `diff`), so it
+    is safe to allow-list like `watch-node.sh`; the `.env` check reads only
+    the host filesystem (`stat`, a glob) and runs even when the stack is
+    down. Exit 0 all checks passed, 1 at least one failed, 2 unable to check
+    — and unable is never reported as clean. Fetched at bring-up beside
+    `compose.yaml` (component 7, including `cloud-init.yaml`). Unit-tested
+    against a stubbed `docker` on `PATH` (`test/check-node-compose.test.sh`);
+    must pass `shellcheck`.
+
+    The `.env` check (agent-ops#696) flags, never fixes: `.env` not `0600`
+    (see "Bring up a node" in `deploy/docker/README.md` for why — the same
+    protection the Approver App's private key already gets) names the file
+    and its actual mode; any `.env.bak*`/`*.env.old` sibling beside it names
+    each match — a leftover from an ad-hoc token-rotation backup, which the
+    same runbook section says to make instead as an in-place edit or a
+    `0600` temporary file, never a dated copy.
 12a. `scripts/check-node-image.sh` — asks whether this node is running the
     newest image the repository has published (see "The node stack"; the
     library is `lib/image-drift.sh`). Rather than a second, host-side
