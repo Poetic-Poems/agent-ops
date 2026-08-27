@@ -2048,6 +2048,14 @@ claim_skips=0
 # hours. A stand-down that names the wrong cause is worse than one that names
 # none: it sends the reader after a claim problem that was never there.
 trace_faults=0
+# fab_faults: candidates dropped by requirement 17g (issue #821) — a trimmed
+# candidate whose acceptance names a specific detail the live item text does
+# not support. Counted apart from trace_faults for the same reason issue
+# #767 already split trace_faults from race_losses: a fabrication is never
+# repaired (unlike a missing refinement), so a cycle that loses every
+# candidate this way must not fall through to `raced` or get folded into
+# `untraceable` — either would send the reader after the wrong defect.
+fab_faults=0
 for (( ci = 0; ci < n_cand; ci++ )); do
   cand="$(jq -c --argjson i "$ci" '.[$i]' <<<"$candidates_json")"
   c_repo="$(jq -r '.repo // ""' <<<"$cand")"
@@ -2056,6 +2064,25 @@ for (( ci = 0; ci < n_cand; ci++ )); do
   c_db="$(jq -r '.default_branch // "main"' <<<"$cand")"
   c_takeover="$(jq -r '.takeover // false' <<<"$cand")"
   [[ -n "$c_repo" && -n "$c_item" ]] || continue
+  # Requirement 17g (issue #821): checked before requirement 17f below, and
+  # before the pre-claimed check further down — cheaper and unrelated to
+  # either. Guarded by `selected_by_fallback` for the same reason 17f's own
+  # check is: a fallback pick's `context` is Script-built from the entry's
+  # own record (lib/stage-attempt.sh's `fallback_select_candidate`), never
+  # from prose a model wrote, so it cannot fabricate anything and this would
+  # only ever cost a wasted `gh` read there.
+  c_fab_fault=""
+  (( selected_by_fallback )) \
+    || c_fab_fault="$(item_text_fault "$cand" "$coordinator_fit_trimmed_json" "$refinements_json")"
+  if [[ -n "$c_fab_fault" ]]; then
+    # Never repaired (requirement 17g): appending the real text alongside a
+    # false one does not make the false one true, so unlike requirement 17f's
+    # own fault this is always a hard skip.
+    fab_faults=$(( fab_faults + 1 ))
+    log_event "claim-skipped" "$(jq -nc --arg r "$c_repo" --arg i "$c_item" --arg s "$c_source" --arg d "$c_fab_fault" \
+      '{repo: $r, item: $i, source: $s, cause: "fabricated", detail: $d}')"
+    continue
+  fi
   # Requirement 17f (issue #626): checked before the pre-claimed check below,
   # cheaper and unrelated to it — a candidate that fails traceability is
   # never safe to hand to an Implementer regardless of whether it is also
@@ -2098,6 +2125,19 @@ for (( ci = 0; ci < n_cand; ci++ )); do
     log_event "claim-skipped" "$(jq -nc --arg r "$c_repo" --arg i "$c_item" --arg s "$c_source" --arg d "$c_trace_fault" \
       '{repo: $r, item: $i, source: $s, cause: "untraceable", detail: $d}')"
     continue
+  fi
+  # Requirement 17g's other half: a trimmed candidate that cleared
+  # item_text_fault above wrote nothing false, but may still have written
+  # something incomplete. Supply the live text itself so the Implementer
+  # never starts from less than the item actually says — a no-op
+  # (prints nothing) when context already carries it in full.
+  if (( ! selected_by_fallback )); then
+    c_supplied="$(item_text_supply "$cand" "$coordinator_fit_trimmed_json")"
+    if [[ -n "$c_supplied" ]]; then
+      cand="$c_supplied"
+      log_event "work-order-repaired" "$(jq -nc --arg r "$c_repo" --arg i "$c_item" --arg s "$c_source" \
+        '{repo: $r, item: $i, source: $s, cause: "trimmed"}')"
+    fi
   fi
   if candidate_preclaimed "$c_repo" "$c_item" "$claims_at_gather_json"; then
     claim_skips=$(( claim_skips + 1 ))
@@ -2210,6 +2250,14 @@ if [[ -z "$claimed_json" ]]; then
   elif (( claim_attempts == 0 && claim_skips > 0 )); then
     standdown_reason="every candidate was already claimed before this cycle's Co-Ordinator ran — skipped without an attempt"
     standdown_cause="pre-claimed"
+  elif (( claim_attempts == 0 && fab_faults > 0 )); then
+    # Requirement 17g (issue #821): every candidate's acceptance named a
+    # specific detail its own trimmed, live-checked item text does not
+    # support, and — unlike requirement 17f's own fault — that is never
+    # repaired. Named apart from `untraceable` so a reader can tell a
+    # copying failure from an invention.
+    standdown_reason="every candidate failed the trimmed-item fabrication check — no claim was attempted"
+    standdown_cause="fabricated"
   elif (( claim_attempts == 0 && trace_faults > 0 )); then
     # Requirement 17f dropped every candidate and the repair could not rescue
     # one (issue #767). Nothing was claimed, nothing was raced, and nothing

@@ -6899,6 +6899,114 @@ implements.
     list is one candidate long, so that fault would leave the cycle with
     nothing to claim — disarming the path requirement 3v exists to provide
     precisely when the model will not select.
+17g. **The Script verifies a trimmed candidate's `acceptance` against the
+    item's own live text, not only its recorded refinement (agent-ops#821,
+    shape decided agent-ops#830 option (c)).** Requirement 17f closes the
+    cross-item swap — whether the work order carries *this item's own
+    recorded refinement* — but answers nothing about whether the rest of
+    `acceptance` is real. Cycle 20260826T064910Z-poetic-1-186841 (issue
+    #815) showed the gap: a Co-Ordinator whose input had been trimmed to fit
+    its model's window invented an `acceptance` in full — prose no check
+    re-derived, so nothing caught it, and 17f's own repair (below) logged
+    the result a success. `item_text_fault` (`lib/candidate-select.sh`)
+    closes this the same way 17f closes its own gap: not by trusting the
+    model's account, but by re-deriving the truth and checking the work
+    order against it.
+    - **Scope.** Checked only for a candidate whose `{repo, item}` appears in
+      `coordinator_fit_trimmed_items`'s own output this cycle
+      (`lib/coordinator-input.sh`) — the same set requirement 34e's fourth
+      refusal already reads. An untrimmed candidate carries nothing elided to
+      fabricate about, so this costs nothing there, the same "nothing to
+      check" shape 17f already uses for an item with no recorded refinement.
+      Like 17f, it is scoped to a model-composed work order and guarded by
+      `selected_by_fallback` in the claim loop: `fallback_select_candidate`
+      builds `context`/`acceptance` out of the band entry's own record, in
+      jq, so it cannot fabricate anything a check would need to catch.
+    - **The live text.** `item_live_text` fetches it fresh for the one
+      candidate under test — never the pre-fit extract the model actually
+      saw, which is exactly what this exists to check the work order
+      *against*, not to trust: an issue's body plus every comment
+      (`gh issue view --json body,comments`), or a tech-debt item's register
+      file at the repo's default branch (`gh api .../contents/tech-debt/<id>.md`).
+      These are the only two sources `coordinator_fit_trimmed_items` ever
+      names, because the fit ladder only ever sheds prose from the `issues`
+      and `tech_debt` bands.
+    - **`context` is not checked.** `prompts/coordinator.md`'s work-order
+      schema requires `context` to carry the Co-Ordinator's own framing —
+      file paths, related conventions found while evaluating, why the item
+      is unblocked and in scope — alongside the entry's verbatim paste, and
+      nothing in the schema marks where the paste ends and the framing
+      begins. A `context` check faulting every paragraph it could not trace
+      to the live text therefore faulted that mandated framing by
+      construction, on ordinary honest work orders, at the fit rungs the
+      fleet normally runs at (issue #821's own figures: 90% of
+      `coordinator-input-fitted` events land at rungs 7–8) — reproduced by
+      two independent Reviewer rounds against this requirement's own PR
+      (#825), which is why agent-ops#830 dropped it rather than repair it in
+      place. TD-PPagop-26082801 tracks the deferred `context` detection gap
+      against #769, the issue asking whether the Co-Ordinator should be
+      pasting `context` at all — the schema question a narrower check would
+      need answered first. This requirement instead answers 17g's own scope
+      from the completeness direction: `item_text_supply`, below, ensures
+      the Implementer always receives the item's full live text regardless
+      of what `context` says.
+    - **`acceptance`'s backtick-quoted spans are checked, because
+      `prompts/coordinator.md` allows its prose to be a paraphrase but not
+      its specifics.** `acceptance` is explicitly allowed to be the
+      Co-Ordinator's own synthesis ("set `acceptance` from the current state
+      of the thread") — a faithful paraphrase is traceable and must never
+      fault, which is deliberately weaker than requiring an appropriate-tier
+      model to have authored it (that question belongs to agent-ops#822, out
+      of scope here). So only its backtick-quoted spans (`` `like this` ``)
+      — the concrete specifics (a file, a flag, an identifier) a paraphrase
+      preserves from its source and a fabrication is what actually invents —
+      are checked, after the same whitespace normalization requirement 17f's
+      own check applies, against the union of the live text and the item's
+      recorded refinement `spec`; free prose around them is never compared.
+    - **Never repaired.** Unlike a missing refinement, appending the real
+      text alongside a false one does not make the false one true, so a
+      candidate `item_text_fault` faults is always a hard skip — no repair is
+      even attempted. Logged `claim-skipped` with its own `cause: "fabricated"`,
+      never folded into `cause: "untraceable"`; a cycle that loses every
+      candidate this way stands down with the same distinct cause
+      (`fab_faults`, mirroring `trace_faults`' own reason for existing:
+      issue #767's "a stand-down that names the wrong cause is worse than one
+      that names none").
+    - **The other half of "either the live read demonstrably happened, or
+      the Script supplies the full text itself": `item_text_supply`.** A
+      trimmed candidate that clears `item_text_fault` wrote nothing
+      fabricated in `acceptance`, but its `context` may still be incomplete —
+      an honest, faithfully scoped paraphrase of only the extract the model
+      actually saw, or (since `context` is not checked at all) a paraphrase
+      this requirement cannot distinguish from one that drifted further. That
+      candidate still should not reach the Implementer as the item's whole
+      text: the acceptance criterion or scope cut requirement 17b already
+      warns tends to live in exactly the bytes the fit ladder elided. So the
+      Script closes the gap unconditionally, for every trimmed candidate that
+      clears `item_text_fault`, the same "supply what is missing instead of
+      discarding the work" move `refinement_traceability_repair` already
+      makes for a recorded refinement: append the live text, verbatim, under
+      a heading naming it the Script's own insertion. A no-op when `context`
+      already contains the live text in full, so a candidate that really did
+      read live and paste faithfully is never churned — but that exemption is
+      effectively never taken, and the append should be read as
+      always-on for a trimmed candidate: it asks whether `context` carries the
+      whole live text as one contiguous run (body and every comment joined,
+      after the same normalization), and an honest `context` interleaves the
+      Co-Ordinator's own framing between those passages, so the run does not
+      match. It is kept rather than dropped only because taking it out would
+      append a second copy to the `context` that does carry one
+      (agent-ops#830's decision, item 2). Logged
+      `work-order-repaired` with `cause: "trimmed"`. Fails open on an
+      unreadable live text — this is a supplement, not the gate;
+      `item_text_fault` is what fails closed on the same read, and a
+      candidate only reaches this call once that gate has already passed.
+    - **A `gh` read that fails is a fault, not a pass** (TD-PPagop-26082307's
+      reasoning applies unchanged): this check exists to confirm the live
+      text really backs the work order, and assuming pass on a read it could
+      not complete would let a stale token or a narrowed scope disarm the
+      whole gate while it kept reading as green. Reported via `guard_warn`,
+      never swallowed.
 17a. **The claim.** The Script — never the model — takes an atomic per-item
     claim before the Implementer starts, walking the ranked candidates in
     order and handing the first successful claim onward (`lib/claim.sh`).
@@ -15757,6 +15865,35 @@ pull request, run the ones the change touches and any it could regress.
    does not satisfy the normalized check, and the claim loop's own call site
    guards the check with `selected_by_fallback` so that candidate is never
    faulted.
+7h. **A trimmed candidate's `acceptance` is checked against the item's own
+   live text, and never repaired on a genuine fault (requirement 17g,
+   agent-ops#821, shape decided agent-ops#830 option (c)).**
+   `test/item-text-fabrication.test.sh` passes, against `item_live_text`,
+   `item_text_fault` and `item_text_supply` lifted verbatim from
+   `lib/candidate-select.sh`: an untrimmed candidate is not checked and costs
+   no `gh` call; a `context` paragraph that never appeared in the live item
+   at all does **not** fault the candidate — `context` is not checked; a
+   faithful paraphrase in `acceptance`'s free prose is traceable and never
+   flagged, but an invented backtick-quoted specific in `acceptance` is
+   caught after exactly one `gh` read and named in the fault, while one that
+   really is in the live text (or the item's recorded refinement `spec`)
+   passes. `item_text_supply` is proven never to rescue an `acceptance`
+   fabrication fault — the invented span is still there after the live text
+   is appended, so the candidate still faults — and separately proven to
+   append the live text verbatim, without disturbing what the order already
+   said, for a candidate with an honestly incomplete `context` (never
+   fabricated), regardless of whether `item_text_fault` faulted it; to be a
+   no-op when `context` already carries the live text in full or when the
+   candidate was not trimmed this cycle (no `gh` call either); and to fail
+   open, not crash, on an unreachable read. `item_text_fault` itself is
+   proven to fail closed on that same read, with the failure reported
+   through `guard_warn`. The same test pins the claim loop's own wiring: the
+   check runs before requirement 17f's, is guarded by `selected_by_fallback`,
+   counts `fab_faults` under `cause: "fabricated"` on its own `claim-skipped`
+   line, is never handed to `refinement_traceability_repair`, and a cycle
+   that loses every candidate this way stands down with
+   `standdown_cause="fabricated"` — distinct from both `untraceable` and
+   `raced`.
 8. **A no-op Implementer is recorded.** Drive one cycle in which the
    Implementer reports `blocked` without opening a PR: the cycle must exit 0
    having logged an `attempt-failed` carrying that item and the stage's own

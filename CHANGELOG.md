@@ -16,7 +16,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   read the new key instead; left unset, it defaults to `td/` and behaviour is
   unchanged. Empty disables the tech-debt namespace, so those scripts then
   match only `branch_prefix`.
-
+- A trimmed Co-Ordinator candidate's `acceptance` is now checked against the
+  item's own live text before it is claimed, not just against its recorded
+  refinement (requirement 17g, issue #821, decided agent-ops#830 option (c)):
+  `item_text_fault` (`lib/candidate-select.sh`) re-fetches an issue's full
+  thread or a tech-debt item's register file fresh and faults an
+  `acceptance` backtick-quoted specific that text does not support —
+  reproducing and closing the #815 incident, where a Co-Ordinator whose input
+  had been trimmed to fit its model's window invented an `acceptance` in
+  full, and requirement 17f's own repair logged the result a success.
+  `context` is not checked: the work-order schema requires it to carry the
+  Co-Ordinator's own framing prose alongside the entry's verbatim paste, with
+  no marker for where the paste ends, so a check faulting unrecognised
+  paragraphs faulted that mandated framing on ordinary honest work orders
+  (TD-PPagop-26082801 tracks the deferred detection gap against #769). Unlike
+  a missing refinement, an `acceptance` fabrication fault is never repaired —
+  it is a hard skip, logged with its own `cause: "fabricated"`, distinct from
+  `untraceable`. A trimmed candidate that clears the check is still
+  unconditionally supplied the item's live text via `item_text_supply`
+  (a no-op once it is already there), so "the live read demonstrably
+  happened, or the Script supplies the full text itself" holds either way.
 - A `blocked`/`blocked:needs-refinement` pair whose block has cleared now
   comes off the issue even when nothing in the shared log can prove the
   pipeline applied it (requirement 38b, agent-ops#816, TD-PPagop-26082602).
