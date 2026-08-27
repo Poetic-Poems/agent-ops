@@ -626,6 +626,37 @@ assert_eq "an append onto an oversized accumulator keeps every prior candidate" 
 assert_eq "  ... plus the new one just appended" "1" \
   "$(jq '[.[] | select(.ref == "pr-301-review-2")] | length' <<<"$appended")"
 
+# --- tech_debt_branch_prefix: an explicit empty argument disables the td/
+# namespace rather than defaulting back to it (PR #835's review) ---
+#
+# `${4:-td/}` substitutes the default whenever the argument is empty, not only
+# when it is absent, so a caller that explicitly disables the namespace by
+# passing "" got `td/` back regardless — the fix is `${4-td/}`. Reuses this
+# section's own generic stub gh, with a single-page, single-PR fixture: no
+# review or comment lands after the blocking review, so an unanswered
+# CHANGES_REQUESTED round on a `td/…` branch is the candidate whose presence
+# or absence proves whether the namespace is really disabled.
+cat > "$tmp_dir/prs.json" <<'JSON'
+[
+  {"number": 500, "title": "t", "headRefName": "td/TD99", "headRefOid": "abc500",
+   "isDraft": false, "reviewDecision": "CHANGES_REQUESTED",
+   "url": "https://github.com/o/r/pull/500", "body": ""}
+]
+JSON
+jq -n '[{"id": 1, "state": "CHANGES_REQUESTED", "submitted_at": "2026-08-01T00:00:00Z",
+         "user": {"login": "Warwick-Allen"}, "body": "please fix"}]' > "$tmp_dir/reviews.json"
+printf '[]' > "$tmp_dir/issue-comments.json"
+printf '[]' > "$tmp_dir/timeline.json"
+printf '[]' > "$tmp_dir/pr-comments.json"
+
+default_out="$(REVIEW_FEEDBACK_GH="$tmp_dir/gh" "$SCRIPT_DIR/scripts/gather-review-feedback.sh" o/r autonomous-agent 'agent/' 2>/dev/null)"
+assert_eq "omitting tech_debt_branch_prefix defaults to td/, so a td/ branch is still a candidate" \
+  "1" "$(jq 'length' <<<"$default_out")"
+
+disabled_out="$(REVIEW_FEEDBACK_GH="$tmp_dir/gh" "$SCRIPT_DIR/scripts/gather-review-feedback.sh" o/r autonomous-agent 'agent/' '' 2>/dev/null)"
+assert_eq "an explicit empty tech_debt_branch_prefix disables the td/ namespace" \
+  "0" "$(jq 'length' <<<"$disabled_out")"
+
 rm -rf "$tmp_dir"
 trap - EXIT
 

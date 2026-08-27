@@ -193,7 +193,7 @@ GH="${REVIEW_FEEDBACK_GH:-gh}"
 slug="${1:-}"
 pr_label="${2:-autonomous-agent}"
 branch_prefix="${3:-agent/}"
-tech_debt_branch_prefix="${4:-td/}"
+tech_debt_branch_prefix="${4-td/}"
 if [[ -z "$slug" ]]; then
   echo "usage: gather-review-feedback.sh <owner/repo> [pr-label] [branch-prefix] [tech-debt-branch-prefix]" >&2
   exit 64

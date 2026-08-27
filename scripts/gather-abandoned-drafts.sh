@@ -162,7 +162,7 @@ slug="${1:-}"
 pr_label="${2:-autonomous-agent}"
 branch_prefix="${3:-agent/}"
 stale_hours="${4:-3}"
-tech_debt_branch_prefix="${5:-td/}"
+tech_debt_branch_prefix="${5-td/}"
 if [[ -z "$slug" ]]; then
   echo "usage: gather-abandoned-drafts.sh <owner/repo> [pr-label] [branch-prefix] [stale-hours] [tech-debt-branch-prefix]" >&2
   exit 64

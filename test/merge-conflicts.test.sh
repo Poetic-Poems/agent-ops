@@ -289,6 +289,30 @@ out="$(MERGE_CONFLICTS_GH="$tmp_dir/gh" "$SCRIPT_DIR/scripts/gather-merge-confli
 assert_eq "a marker scoped to a stale head does not satisfy rebase_requested for the current one" \
   "false" "$(jq -r '.[0].rebase_requested' <<<"$out")"
 
+# --- tech_debt_branch_prefix: an explicit empty argument disables the td/
+# namespace rather than defaulting back to it (PR #835's review) ---
+#
+# `${4:-td/}` substitutes the default whenever the argument is empty, not only
+# when it is absent, so a caller that explicitly disables the namespace by
+# passing "" got `td/` back regardless — the fix is `${4-td/}`. Reuses this
+# section's own `--label`/`--author` stub gh with a fresh, minimal fixture: one
+# CONFLICTING `td/…` PR of ours, no Dependabot PRs at all.
+printf '[]\n' > "$tmp_dir/dependabot.json"
+cat > "$tmp_dir/ours.json" <<'JSON'
+[
+  {"number": 600, "title": "t", "headRefName": "td/TD99", "baseRefName": "main",
+   "headRefOid": "abc600", "isDraft": false, "mergeable": "CONFLICTING",
+   "updatedAt": "2026-08-03T00:00:00Z", "url": "https://github.com/o/r/pull/600", "body": ""}
+]
+JSON
+default_out="$(MERGE_CONFLICTS_GH="$tmp_dir/gh" "$SCRIPT_DIR/scripts/gather-merge-conflicts.sh" o/r autonomous-agent agent/ 2>/dev/null)"
+assert_eq "omitting tech_debt_branch_prefix defaults to td/, so a td/ branch is still a candidate" \
+  "[600]" "$(jq -c '[.[].number]' <<<"$default_out")"
+
+disabled_out="$(MERGE_CONFLICTS_GH="$tmp_dir/gh" "$SCRIPT_DIR/scripts/gather-merge-conflicts.sh" o/r autonomous-agent agent/ '' 2>/dev/null)"
+assert_eq "an explicit empty tech_debt_branch_prefix disables the td/ namespace" \
+  "[]" "$(jq -c '[.[].number]' <<<"$disabled_out")"
+
 rm -rf "$tmp_dir"
 trap - EXIT
 
