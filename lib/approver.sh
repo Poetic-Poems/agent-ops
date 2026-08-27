@@ -450,7 +450,7 @@ run_approver_stage() {
   local token review_body prior_section adj_bool
   local number="" protected_rc=0 protected_hit=0 critical_reason=""
   local posted_review="" posted_bool="false"
-  local ap_file_debt ap_fd_title ap_fd_body ap_fd_result ap_fd_id ap_fd_pr_url
+  local ap_file_debt ap_fd_title ap_fd_body ap_fd_pr_label ap_fd_result ap_fd_id ap_fd_pr_url
   local ap_file_issue ap_fi_title ap_fi_body ap_fi_body_file ap_fi_result ap_fi_number ap_fi_url
   approver_last_post_ok=""
 
@@ -651,12 +651,19 @@ $node_name
     if [[ -n "$ap_file_debt" && "$ap_file_debt" != "null" ]]; then
       ap_fd_title="$(jq -r '.title // ""' <<<"$ap_file_debt" 2>/dev/null || true)"
       ap_fd_body="$(jq -r '.body // ""' <<<"$ap_file_debt" 2>/dev/null || true)"
+      # The fleet's configured `pr_label` (agent-ops TD-PPagop-26082426): this
+      # stage never otherwise resolves config, so it is read from
+      # `DEFAULTED_CONFIG` here and threaded through to techdebt_file_debt,
+      # which would otherwise open its filing pull request unlabelled and
+      # invisible to every gatherer that filters on it.
+      ap_fd_pr_label="$(jq -r '.pr_label // empty' <<<"$DEFAULTED_CONFIG" 2>/dev/null || true)"
+      [[ -n "$ap_fd_pr_label" ]] || ap_fd_pr_label="autonomous-agent"
       if [[ -z "$ap_fd_title" || -z "$ap_fd_body" ]]; then
         log_event "warning" "$(jq -nc --arg u "$pr_url" \
           --arg d "approver set file_debt for $pr_url, but it carries no title or body — ignored" \
           '{detail: $d, pr_url: $u}')"
       elif ap_fd_result="$(techdebt_file_debt "$selected_repo" "$ap_fd_title" "$ap_fd_body" \
-             "while the Approver was judging $pr_url" "$token" "$clone_dir")" \
+             "while the Approver was judging $pr_url" "$token" "$clone_dir" "$ap_fd_pr_label")" \
              && [[ -n "$ap_fd_result" ]]; then
         IFS=$'\t' read -r ap_fd_id ap_fd_pr_url <<<"$ap_fd_result"
         log_event "tech-debt-filed" "$(jq -nc --arg u "$pr_url" --arg r "$selected_repo" \

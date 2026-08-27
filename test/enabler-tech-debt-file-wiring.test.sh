@@ -155,7 +155,7 @@ limit_hit_this_cycle=0
 # shellcheck disable=SC2034
 enabler_model="claude-test-model"
 # shellcheck disable=SC2034
-DEFAULTED_CONFIG='{}'
+DEFAULTED_CONFIG='{"pr_label":"custom-agent-label"}'
 # shellcheck disable=SC2034
 PROMPTS_DIR="$fake_root/prompts"
 # shellcheck disable=SC2034
@@ -239,6 +239,12 @@ assert_eq "file_debt success: techdebt_file_debt called once" "1" \
   "$(grep -c '^techdebt_file_debt ' <<<"$out")"
 assert_eq "  ... with the repo, title, body and provenance" "1" \
   "$(grep -c 'techdebt_file_debt acme/widgets A gap worth filing The body text' <<<"$out")"
+# TD-PPagop-26082426: this stage never otherwise resolves config, so the
+# fleet's `pr_label` must be read from DEFAULTED_CONFIG and threaded through
+# rather than left for techdebt_file_debt's own fallback -- proven by using a
+# label here that does not match that fallback.
+assert_eq "  ... and the configured pr_label, not the bare fallback" "1" \
+  "$(grep -c 'custom-agent-label' <<<"$out")"
 assert_eq "  ... tech-debt-filed event logged" "1" "$(events_named "$out" tech-debt-filed | grep -c .)"
 fields="$(events_named "$out" tech-debt-filed)"
 assert_eq "  ... event names by:enabler" "enabler" "$(jq -r '.by' <<<"$fields")"
