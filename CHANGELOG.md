@@ -8,6 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- New `label_prefix` config key (default `pw::`, agent-ops#840) and
+  `lib/labels.sh`'s `labels_reconcile`/`labels_reconcile_role`: full CRUD —
+  create, reconcile colour/description drift, and delete once no longer
+  catalogued — for any label whose name starts with the prefix, further
+  colons and all. Every label outside that namespace keeps `labels_ensure`'s
+  own create-only, never-touch treatment, so an operator's own recolouring is
+  still never undone; empty disables reconciliation and deletion entirely.
+  Deletion is scoped to `labels_reconcile_role`'s `target` role, the one
+  catalogue call that is a repository's complete desired label set; `review`
+  and `escalation` reconcile drift without ever deleting, since each is a
+  partial subset whose own deletion pass would remove labels the other role
+  still wants. No call site uses either function yet — the pipeline's own
+  catalogue entries are still unprefixed, and renaming them is a live
+  migration recorded as TD-PPagop-26082809.
+
 - New `tech_debt_branch_prefix` config key (default `td/`, agent-ops#655): the
   human tech-debt-claim protocol's (`TECH-DEBT.md`) own branch prefix was a
   bare `"td/"` literal in `lib/claim.sh`, the four `gather-*.sh` sources and
@@ -36,6 +51,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   unconditionally supplied the item's live text via `item_text_supply`
   (a no-op once it is already there), so "the live read demonstrably
   happened, or the Script supplies the full text itself" holds either way.
+- Requirement 4i's `warning` events (both the allowance-exhausted warning and
+  the warning logged when a fit still does not fit at one entry per band)
+  and the `coordinator-input-fitted` event now carry a `terms` object
+  breaking the measured overhead down by band — `prompt`, `blocked`,
+  `refinements`, `claimed`, `scaffold` — so a `prompt_too_long` refusal names
+  which half of the document was actually too big directly off the cycle
+  log, rather than requiring a live shell into the container to re-derive
+  each band by hand (issue #645).
 - A `blocked`/`blocked:needs-refinement` pair whose block has cleared now
   comes off the issue even when nothing in the shared log can prove the
   pipeline applied it (requirement 38b, agent-ops#816, TD-PPagop-26082602).
