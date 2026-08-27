@@ -10,7 +10,7 @@
 # stage timed out, hit a usage limit, or died. Finishing one costs less than
 # starting fresh and frees the back-pressure slot the stalled PR occupies.
 #
-# Usage: gather-abandoned-drafts.sh <owner/repo> <pr-label> <branch-prefix> [stale-hours]
+# Usage: gather-abandoned-drafts.sh <owner/repo> <pr-label> <branch-prefix> [stale-hours] [tech-debt-branch-prefix]
 #
 # Candidate shape:
 #   {
@@ -162,8 +162,9 @@ slug="${1:-}"
 pr_label="${2:-autonomous-agent}"
 branch_prefix="${3:-agent/}"
 stale_hours="${4:-3}"
+tech_debt_branch_prefix="${5:-td/}"
 if [[ -z "$slug" ]]; then
-  echo "usage: gather-abandoned-drafts.sh <owner/repo> [pr-label] [branch-prefix] [stale-hours]" >&2
+  echo "usage: gather-abandoned-drafts.sh <owner/repo> [pr-label] [branch-prefix] [stale-hours] [tech-debt-branch-prefix]" >&2
   exit 64
 fi
 
@@ -193,8 +194,8 @@ fi
 # fires — the `[]`-on-error trap in the Gotchas table that cost
 # gather-review-feedback.sh a debugging round.
 # Heads may be `agent/…` or — for tech-debt items, whose claim branch is the
-# human protocol's own `td/<ID>` — `td/…`; the label filter is the primary
-# "ours" signal either way.
+# human protocol's own `<tech_debt_branch_prefix><ID>` — `td/…`; the label
+# filter is the primary "ours" signal either way.
 #
 # `headRefOid`, not the whole `commits` collection. Asking for `commits` cost
 # 31 GraphQL points per call against a repository with three open pull requests
@@ -222,9 +223,15 @@ if github_pr_list_truncated "$(jq 'length' <<<"$all_prs")"; then
   echo "gather-abandoned-drafts: $slug: the pull-request listing came back at its ${GITHUB_PR_LIST_LIMIT}-item cap; a draft beyond it is not offered this cycle" >&2
 fi
 
+# Empty tech_debt_branch_prefix disables the tech-debt namespace: the `or`
+# clause is dropped rather than built with an empty startswith(""), which
+# would match every head.
+td_clause=""
+if [[ -n "$tech_debt_branch_prefix" ]]; then
+  td_clause=" or (.headRefName | startswith(\"$tech_debt_branch_prefix\"))"
+fi
 prs="$(jq -c "[.[] | select(.isDraft)
-                   | select((.headRefName | startswith(\"$branch_prefix\"))
-                            or (.headRefName | startswith(\"td/\")))]" <<<"$all_prs" 2>/dev/null || true)"
+                   | select((.headRefName | startswith(\"$branch_prefix\"))$td_clause)]" <<<"$all_prs" 2>/dev/null || true)"
 if [[ -z "$prs" ]] || ! jq -e 'type == "array"' <<<"$prs" >/dev/null 2>&1; then
   printf '[]'
   exit 0

@@ -14,11 +14,12 @@
 # entry was lost (a best-effort write that never landed), wedging its item the
 # same way with nothing to recover at all.
 #
-# For one repository, this sweeps every `td/*` and `<branch_prefix>*` ref and,
-# for each one that is provably an orphan — **no open PR** uses it, **no
-# registry entry** stands for it, and its tip commit is **older than
-# `abandoned_draft_after_hours`** (the same judgement that makes a draft
-# abandoned) — does the one thing that makes the state self-healing:
+# For one repository, this sweeps every `<tech_debt_branch_prefix>*` and
+# `<branch_prefix>*` ref and, for each one that is provably an orphan — **no
+# open PR** uses it, **no registry entry** stands for it, and its tip commit
+# is **older than `abandoned_draft_after_hours`** (the same judgement that
+# makes a draft abandoned) — does the one thing that makes the state
+# self-healing:
 #
 #   commits ahead, never merged,
 #   no rival branch landed the
@@ -108,6 +109,7 @@ DEFAULTED_CONFIG="$(config_defaults "$CONFIG_FILE" "$SCHEMA_FILE" 2>/dev/null)"
 cfg() { jq -r "$1" <<<"$DEFAULTED_CONFIG" 2>/dev/null; }
 
 branch_prefix="$(cfg '.branch_prefix')"
+tech_debt_branch_prefix="$(cfg '.tech_debt_branch_prefix')"
 pr_label="$(cfg '.pr_label')"
 stale_hours="$(cfg '.abandoned_draft_after_hours')"
 state_repo="$(cfg '.state_repo')"
@@ -122,12 +124,13 @@ max_actions=3
 san() { local s="$1"; printf '%s' "${s//\//__}"; }
 
 # stem BRANCH — reduce a claim branch to its item ref, for comparing two
-# branches that might carry the same work: strip the leading `td/` or
-# `$branch_prefix`, then drop a trailing 12-hex-digit random suffix if one is
-# present (exactly twelve, no more and no fewer — claim.sh's own width).
+# branches that might carry the same work: strip the leading
+# `$tech_debt_branch_prefix` or `$branch_prefix`, then drop a trailing
+# 12-hex-digit random suffix if one is present (exactly twelve, no more and
+# no fewer — claim.sh's own width).
 stem() {
   local b="$1" p
-  for p in "td/" "$branch_prefix"; do
+  for p in "$tech_debt_branch_prefix" "$branch_prefix"; do
     if [[ -n "$p" && "$b" == "$p"* ]]; then
       b="${b#"$p"}"
       break
@@ -222,9 +225,9 @@ sweep_branch() {  # <branch> <tip-sha>
   # branch the containing item's own work actually shipped from. The lock's
   # own commit shape says all of that without needing a lookup into either
   # (issue #545). Leave it exactly as found: neither recovered nor deleted.
-  if [[ "$branch" == td/* && "$ahead" == "1" ]]; then
+  if [[ -n "$tech_debt_branch_prefix" && "$branch" == "$tech_debt_branch_prefix"* && "$ahead" == "1" ]]; then
     local reservation_id reservation_message reservation_subject reservation_files
-    reservation_id="${branch#td/}"
+    reservation_id="${branch#"$tech_debt_branch_prefix"}"
     reservation_message="$(jq -r '.commits[0].commit.message // empty' <<<"$compare_json" 2>/dev/null)"
     reservation_subject="${reservation_message%%$'\n'*}"
     reservation_files="$(jq -r '(.files // []) | length' <<<"$compare_json" 2>/dev/null)"
@@ -370,7 +373,7 @@ ORPHAN_BODY
 
 # Both claim namespaces, prefix-listed server-side. A failed listing is an
 # unanswered question about the whole namespace: warn and move on.
-for prefix in "td/" "$branch_prefix"; do
+for prefix in "$tech_debt_branch_prefix" "$branch_prefix"; do
   [[ -n "$prefix" ]] || continue
   refs="$("$GH" api "repos/$slug/git/matching-refs/heads/$prefix" \
     --jq '.[] | [(.ref | sub("^refs/heads/"; "")), .object.sha] | @tsv' 2>/dev/null)" || {

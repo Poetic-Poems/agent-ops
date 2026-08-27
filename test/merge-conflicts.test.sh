@@ -347,6 +347,7 @@ STUB
     cycle_dir='$fallback_tmp/cycle'
     pr_label=autonomous-agent
     branch_prefix=agent/
+    tech_debt_branch_prefix=td/
     cycle_id=test-cycle
     node_name=test-node
     DRY_RUN=0
@@ -402,6 +403,7 @@ STUB
     cycle_dir='$malformed_tmp/cycle'
     pr_label=autonomous-agent
     branch_prefix=agent/
+    tech_debt_branch_prefix=td/
     cycle_id=test-cycle
     node_name=test-node
     DRY_RUN=0

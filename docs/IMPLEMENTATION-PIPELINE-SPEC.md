@@ -762,6 +762,7 @@ and the schema must carry every one of them.
 | `prompt_overrides` | `{}` | Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementer`/`reviewer`/`enabler`/`refiner`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. `approver` is deliberately absent from the enumeration: the Approver's...[continued below](#extended-notes-prompt_overrides) |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. It must not be `obsolete`: the pipeline would then project requirement 34k's human-only corroboration onto every draft it raises, and the void guard would close live drafts on the pipeline's own say-so — `scripts/doctor.sh` fails the config. Threaded through the Co-Ordinator's runtime input (requirement 4) into every work order's own `pr_label` field, which the Implementer labels its pull request with (requirement 23). |
 | `branch_prefix` | `agent/` | Branch name `agent/<item-slug>`, e.g. `agent/td26051201-fix-xyz`. |
+| `tech_debt_branch_prefix` | `td/` | Branch name `<tech_debt_branch_prefix><ID>`, e.g. `td/TD26051201`, read wherever `lib/claim.sh` and the gatherer/sweep scripts of requirements 3c/3e/3g/3z/17b must tell a human's tech-debt claim branch from their own agent's. Empty disables the tech-debt namespace: those scripts then match only `branch_prefix`. |
 | `max_open_agent_prs` | `8` | Back-pressure: draft PRs, ready PRs still `CHANGES_REQUESTED`, and live claim-registry entries, carrying `pr_label` across all repos — excludes ready PRs whose next action lies outside the pipeline (requirement 2.2). |
 | `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list (requirement 17a), so alternates turn a lost race into the next-best item instead of a wasted cycle. |
 | `coordinator_prompt_max_bytes` | `350000` | The largest assembled prompt the Script will hand the Co-Ordinator (requirement 4i). The default is derived from the 200000-token window of the Co-Ordinator model this installation runs, less the ~50000 tokens of system prompt and tool definitions the Script neither assembles nor can measure, less a reserve for the verdict itself, at the ~2.35 bytes per token JSON-escaped Markdown actually costs. Stated in bytes because bytes are what the Script can count without a tokenizer....[continued below](#extended-notes-coordinator_prompt_max_bytes) |
@@ -2833,10 +2834,12 @@ implements.
    model tokens on paginating and digesting those verbose APIs.
 3c. **Review-feedback pre-fetch (requirement 3c).** For each configured repo
    whose `sources` include `review-feedback`, run
-   `scripts/gather-review-feedback.sh <slug> <pr_label> <branch_prefix>` and
+   `scripts/gather-review-feedback.sh <slug> <pr_label> <branch_prefix>
+   <tech_debt_branch_prefix>` and
    attach the array to that repo's entry as `review_feedback`. It prints the
    PRs *waiting on us to answer a human's review*: open, non-draft, carrying
-   `pr_label`, head branch under `branch_prefix`, `reviewDecision` of
+   `pr_label`, head branch under `branch_prefix` (or `tech_debt_branch_prefix`,
+   default `td/`; empty disables that namespace), `reviewDecision` of
    `CHANGES_REQUESTED`, and — the load-bearing clause — **no GitHub
    review-thread event has answered the blocking review**: no marked reply
    whose marker's `actor=` field is `implementer` (a review or general PR
@@ -2953,7 +2956,8 @@ implements.
      (tech-debt/TD-PPagop-26081306.md).
 3e. **Abandoned-drafts pre-fetch.** For each configured repo, run
    `scripts/gather-abandoned-drafts.sh <slug>
-   <pr_label> <branch_prefix> <abandoned_draft_after_hours>` and attach the array
+   <pr_label> <branch_prefix> <abandoned_draft_after_hours>
+   <tech_debt_branch_prefix>` and attach the array
    to that repo's entry as `abandoned_drafts` — unconditionally, because
    `abandoned-drafts` is a required member of every repository's `sources`
    (the schema's `contains` rule, enforced by requirement 1b's gate; decided
@@ -2967,7 +2971,8 @@ implements.
    *position* in `sources` remains the installation's choice: required means
    listed, not ranked anywhere in particular. It prints the draft PRs *this
    system raised and then abandoned*: open, **draft**, carrying `pr_label`, head
-   branch under `branch_prefix` (or `td/`), and whose last **real** activity
+   branch under `branch_prefix` (or `tech_debt_branch_prefix`, default `td/`;
+   empty disables that namespace), and whose last **real** activity
    (below) is older than `now − abandoned_draft_after_hours`. Each entry carries
    the round's ref, the PR number and URL, the existing branch, the head SHA,
    that last-real-activity timestamp (as `updated_at`), and the draft PR's own
@@ -3061,10 +3066,12 @@ implements.
      live work, not leaving a stalled draft one more cycle. `shellcheck`-clean.
 3g. **Merge-conflicts pre-fetch.** For each configured repo whose `sources`
    include `merge-conflicts`, run `scripts/gather-merge-conflicts.sh <slug>
-   <pr_label> <branch_prefix>` and attach the array to that repo's entry as
+   <pr_label> <branch_prefix> <tech_debt_branch_prefix>` and attach the array
+   to that repo's entry as
    `merge_conflicts`. It prints the PRs *this system raised that are otherwise
    ready but conflict with their base*: open, **non-draft**, carrying `pr_label`,
-   head branch under `branch_prefix` (or `td/`), and with `mergeable` exactly
+   head branch under `branch_prefix` (or `tech_debt_branch_prefix`, default
+   `td/`; empty disables that namespace), and with `mergeable` exactly
    `CONFLICTING`. Each entry carries a head-SHA-scoped ref, the PR number and URL,
    the existing branch, its `base`, the head SHA, the `updatedAt`, and the PR's
    own body verbatim.
@@ -3239,11 +3246,13 @@ implements.
    every other conflicted PR is.
 3z. **Dequeued-PR pre-fetch (TD-PPagop-26081409, issue #374).** For each
    configured repo whose `sources` include `dequeued`, run
-   `scripts/gather-dequeued.sh <slug> <pr_label> <branch_prefix>` and attach the
+   `scripts/gather-dequeued.sh <slug> <pr_label> <branch_prefix>
+   <tech_debt_branch_prefix>` and attach the
    array to that repo's entry as `dequeued`. It prints the PRs *this system
    raised that GitHub's merge queue removed over a merge-group checks failure
    without merging*: open, **non-draft**, carrying `pr_label`, head branch under
-   `branch_prefix` (or `td/`), with `mergeable` exactly `MERGEABLE`, and whose
+   `branch_prefix` (or `tech_debt_branch_prefix`, default `td/`; empty
+   disables that namespace), with `mergeable` exactly `MERGEABLE`, and whose
    most recent `lib/merge-queue.sh` `merge_queue_probe` reports `queued: false`,
    a non-null `dequeued_at`, and a `dequeue_reason` reading, case-insensitively,
    exactly `failed_checks`, **and whose dequeue is still unanswered** — no
@@ -3545,7 +3554,9 @@ implements.
      `pr_number` rides along when the underlying registry entry recorded one —
      which, for the four finishing sources, is always, once requirement 17a's
      PR-keyed claim exists alongside the item-keyed one; and
-   - every live `td/*`/`<branch_prefix>*` branch on the target repository
+   - every live `<tech_debt_branch_prefix>*`/`<branch_prefix>*` branch (default
+     `tech_debt_branch_prefix` is `td/`; empty disables that namespace and only
+     `<branch_prefix>*` is listed) on the target repository
      itself (`lib/claim.sh branches`), which still catches a claim the
      registry missed — `state_repo` unset, or a best-effort registry write
      that failed — with `age_hours` reported as `null` when no registry entry
@@ -7052,14 +7063,18 @@ implements.
     with no event ever saying so. Its sibling is the unmoved ref whose
     best-effort registry write never landed, wedging the item with nothing
     to recover. So after the gc (2.1a), every cycle runs
-    `scripts/sweep-orphan-branches.sh` over each configured repo's `td/*`
-    and `<branch_prefix>*` refs. A ref is a provable orphan only when **all
+    `scripts/sweep-orphan-branches.sh` over each configured repo's
+    `<tech_debt_branch_prefix>*` (default `td/`; empty disables that
+    namespace) and `<branch_prefix>*` refs. A ref is a provable orphan only when **all
     three** hold: no open PR uses it, no registry entry stands for it (only
     a clean 404 proves absence — any other failure skips the ref, fail
     closed), and its tip commit is older than `abandoned_draft_after_hours`
     — the same judgement that makes a draft abandoned — provided it is not
-    itself `reserve-tech-debt-id.pl`'s own reservation commit: a `td/<ID>`
-    branch whose sole commit ahead carries that script's fixed
+    itself `reserve-tech-debt-id.pl`'s own reservation commit: a
+    `<tech_debt_branch_prefix><ID>` branch (`reserve-tech-debt-id.pl` itself
+    always names it `td/<ID>`, so this recognition only fires where
+    `tech_debt_branch_prefix` is left at its `td/` default) whose sole commit
+    ahead carries that script's fixed
     `chore(tech-debt): reserve <ID>` subject and touches no files is the
     ID-reservation scheme's atomic claim lock, not work — regardless of
     whether `<ID>` has since been filed, and regardless of which branch any
@@ -7082,7 +7097,8 @@ implements.
     stream of redundant recovery drafts (issue #302) — **or unless the
     branch's own *work*, not its own head, already landed via a rival
     branch**, which the sweep checks by reducing both branches to a stem —
-    the `td/`/`branch_prefix` claim prefix stripped from the front and a
+    the `tech_debt_branch_prefix`/`branch_prefix` claim prefix stripped from
+    the front and a
     trailing, **exactly** twelve-hex-character random suffix stripped from
     the back, if present (a lower bound would misfire: a tech-debt id like
     `TD-PPagop-26081403`'s own trailing `-26081403` is eight hex-legal
