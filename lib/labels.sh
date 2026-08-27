@@ -46,6 +46,14 @@
 # ensure above is periodic, not synchronous with every write, so a projection
 # can still race a repository whose stamp has not been refreshed yet.
 #
+# `labels_reconcile`/`labels_reconcile_role` give the three properties above
+# up for any label named under `label_prefix` (config.schema.json, default
+# `pw::`): create, reconcile colour/description drift, and delete once no
+# longer catalogued — full ownership of that namespace, never touching a
+# label outside it. No call site uses them yet; renaming the catalogue below
+# to `pw::`-prefixed names and wiring `labels_ensure_role`'s own call sites
+# onto `labels_reconcile_role` is TD-PPagop-26082809.
+#
 # Sourced by agent-cycle.sh and review-cycle.sh.
 
 # The product's own labels, with the colour and description a fresh
@@ -228,6 +236,174 @@ labels_ensure_one() {
 labels_ensure_role() {
   local config_file="$1" schema_file="$2" repo="$3" role="$4" review_pr_label="${5:-}"
   labels_catalogue "$config_file" "$schema_file" "$role" "$review_pr_label" | labels_ensure "$repo"
+}
+
+# _labels_urlencode NAME
+# Internal: percent-encode NAME for use as a path segment in a GitHub API
+# URL — a label name may carry `:` or `/`, and the label-specific endpoints
+# (`.../labels/{name}`) address one label by name in the path rather than in
+# a form field, unlike the create endpoint above.
+_labels_urlencode() {
+  jq -rn --arg s "$1" '$s|@uri'
+}
+
+# _labels_find NAME < EXISTING
+# Internal: EXISTING is `name<TAB>colour<TAB>description` lines, as
+# `labels_reconcile`'s own listing produces. Print NAME's existing
+# `colour<TAB>description` and return 0 if EXISTING carries it
+# (case-insensitively, matching GitHub's own label-name comparison), return 1
+# with nothing printed otherwise.
+_labels_find() {
+  local name="$1" e_name e_colour e_desc
+  while IFS=$'\t' read -r e_name e_colour e_desc; do
+    [[ -n "$e_name" ]] || continue
+    if [[ "${e_name,,}" == "${name,,}" ]]; then
+      printf '%s\t%s\n' "$e_colour" "$e_desc"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# _labels_update_one GH_BIN REPO NAME COLOUR DESCRIPTION
+# Internal: PATCH an existing label's colour/description. Prints `updated`
+# and returns 0 on success, `failed` and returns 1 otherwise. Never touches
+# NAME itself — reconciling colour/description drift is this file's whole
+# CRUD story for now; renaming a label is the follow-on item requirement 6a's
+# comment on `labels_reconcile` names.
+_labels_update_one() {
+  local gh_bin="$1" repo="$2" name="$3" colour="$4" description="$5" encoded
+  encoded="$(_labels_urlencode "$name")"
+  if "$gh_bin" api -X PATCH "repos/$repo/labels/$encoded" \
+       -f "color=$colour" -f "description=$description" \
+       >/dev/null 2>&1; then
+    printf 'updated'
+    return 0
+  fi
+  printf 'failed'
+  return 1
+}
+
+# _labels_delete_one GH_BIN REPO NAME
+# Internal: DELETE an existing label. Prints `deleted` and returns 0 on
+# success, `failed` and returns 1 otherwise.
+_labels_delete_one() {
+  local gh_bin="$1" repo="$2" name="$3" encoded
+  encoded="$(_labels_urlencode "$name")"
+  if "$gh_bin" api -X DELETE "repos/$repo/labels/$encoded" >/dev/null 2>&1; then
+    printf 'deleted'
+    return 0
+  fi
+  printf 'failed'
+  return 1
+}
+
+# labels_reconcile REPO PREFIX MODE < CATALOGUE
+# labels_ensure's own create-only, never-touch treatment for every catalogue
+# entry whose name does not start with PREFIX (case-insensitively) — full
+# CRUD for every entry that does: create if absent, PATCH colour/description
+# on drift, and, when MODE is `full`, DELETE any existing PREFIX-named label
+# in REPO that CATALOGUE no longer names. MODE `additive` does the
+# create/update half only and never deletes — for a caller whose CATALOGUE is
+# a partial subset of everything PREFIX owns in REPO: a delete scoped to a
+# subset would remove another caller's still-wanted labels, which is exactly
+# why `labels_reconcile_role` below only ever passes `full` for its `target`
+# role, the one catalogue call that is a repository's complete desired set.
+# PREFIX empty routes every entry through the create-only path: reconciling
+# and deleting are opt-in, never a change to the existing safety property
+# that an operator's own label is never touched.
+#
+# Prints one `created`, `updated`, `deleted` or `failed`<TAB>name line per
+# label acted on; nothing for a label already matching its catalogue entry —
+# labels_ensure's own silence in the steady state, extended to cover
+# "colour/description already match" as well as "already present". Returns 0
+# whenever REPO's labels could be listed, 1 when they could not — the same
+# advisory-only contract as labels_ensure; never fatal to a caller.
+labels_reconcile() {
+  local repo="$1" prefix="${2:-}" mode="${3:-full}" gh_bin="${LABELS_GH:-gh}"
+  [[ -n "$repo" ]] || return 1
+
+  local catalogue existing
+  catalogue="$(cat)"
+  existing="$("$gh_bin" api "repos/$repo/labels" --paginate --jq \
+    '.[] | [.name, .color, (.description // "")] | @tsv' 2>/dev/null)" \
+    || return 1
+
+  local name colour description desired_prefixed=()
+  while IFS=$'\t' read -r name colour description; do
+    [[ -n "$name" ]] || continue
+
+    if [[ -n "$prefix" && "${name,,}" == "${prefix,,}"* ]]; then
+      desired_prefixed+=("$name")
+      local existing_colour_desc
+      if existing_colour_desc="$(_labels_find "$name" <<<"$existing")"; then
+        local existing_colour existing_desc
+        existing_colour="$(cut -f1 <<<"$existing_colour_desc")"
+        existing_desc="$(cut -f2 <<<"$existing_colour_desc")"
+        if [[ "$existing_colour" != "$colour" || "$existing_desc" != "$description" ]]; then
+          if _labels_update_one "$gh_bin" "$repo" "$name" "$colour" "$description" >/dev/null; then
+            printf 'updated\t%s\n' "$name"
+          else
+            printf 'failed\t%s\n' "$name"
+          fi
+        fi
+      else
+        case "$(_labels_create_one "$gh_bin" "$repo" "$name" "$colour" "$description")" in
+          created) printf 'created\t%s\n' "$name" ;;
+          failed)  printf 'failed\t%s\n' "$name" ;;
+        esac
+      fi
+    else
+      _labels_find "$name" <<<"$existing" >/dev/null && continue
+      case "$(_labels_create_one "$gh_bin" "$repo" "$name" "$colour" "$description")" in
+        created) printf 'created\t%s\n' "$name" ;;
+        failed)  printf 'failed\t%s\n' "$name" ;;
+      esac
+    fi
+  done <<<"$catalogue"
+
+  if [[ -n "$prefix" && "$mode" == "full" ]]; then
+    local existing_name existing_colour existing_desc
+    while IFS=$'\t' read -r existing_name existing_colour existing_desc; do
+      [[ -n "$existing_name" ]] || continue
+      [[ "${existing_name,,}" == "${prefix,,}"* ]] || continue
+      local kept=0 d
+      for d in ${desired_prefixed[@]+"${desired_prefixed[@]}"}; do
+        [[ "${d,,}" == "${existing_name,,}" ]] && { kept=1; break; }
+      done
+      if [[ "$kept" -eq 0 ]]; then
+        if _labels_delete_one "$gh_bin" "$repo" "$existing_name" >/dev/null; then
+          printf 'deleted\t%s\n' "$existing_name"
+        else
+          printf 'failed\t%s\n' "$existing_name"
+        fi
+      fi
+    done <<<"$existing"
+  fi
+
+  return 0
+}
+
+# labels_reconcile_role CONFIG_FILE SCHEMA_FILE REPO ROLE [REVIEW_PR_LABEL]
+# labels_ensure_role's own shape, but through labels_reconcile: reads
+# `label_prefix` from CONFIG_FILE/SCHEMA_FILE's merge and reconciles ROLE's
+# catalogue against it, MODE derived from ROLE — `full` for `target`, the one
+# catalogue call that is a repository's complete desired label set;
+# `additive` for every other role, each a partial subset of `target`'s own
+# catalogue whose own deletion pass would remove labels `target` still wants
+# (labels_reconcile's own comment above). A CONFIG_FILE/SCHEMA_FILE that
+# cannot be read leaves PREFIX empty, the same safe fallback
+# labels_reconcile's own empty-PREFIX path gives every other caller: nothing
+# is reconciled or deleted, only ever created.
+labels_reconcile_role() {
+  local config_file="$1" schema_file="$2" repo="$3" role="$4" review_pr_label="${5:-}"
+  local defaulted prefix=""
+  defaulted="$(config_defaults "$config_file" "$schema_file" 2>/dev/null)" \
+    && prefix="$(jq -r '.label_prefix // ""' <<<"$defaulted" 2>/dev/null)"
+  local mode="additive"
+  [[ "$role" == "target" ]] && mode="full"
+  labels_catalogue "$config_file" "$schema_file" "$role" "$review_pr_label" \
+    | labels_reconcile "$repo" "$prefix" "$mode"
 }
 
 # labels_ensure_stamped STATE_DIR CONFIG_FILE SCHEMA_FILE REPO ROLE \

@@ -758,6 +758,7 @@ and the schema must carry every one of them.
 | `refinement_policy` | `{"issues":"preferred"}` | Per-source refinement policy (requirement 39a): `required`, `preferred` or `exempt`, read by the Co-Ordinator alongside `refinements` (requirement 3h) to decide whether an unrefined item may be ranked at all. A source absent from this object is `exempt`. Bounded by what requirement 39's candidate gathering reads — the `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`, `dequeued`, `register_hygiene`, `issues` and `tech_debt` arrays every repo's...[continued below](#extended-notes-refinement_policy) |
 | `unvoid_label` | `unvoided` | The label a human applies on GitHub to ask for a void to be reopened (requirement 34f). No stage here ever applies it, so requirement 34c's "only a human may clear a void" is unchanged; what it adds is a way to say so from the issue itself. It must not be `blocked`, for the reason given against `enabler_escalation_label`. Nor `obsolete`: the label a human applied to ask for a voided pull request to be reopened would itself corroborate requirement 34k closing it. |
 | `labels_ensure_interval_hours` | `24` | How often, at most, the Script re-lists a repository's labels to create any absent ones (requirement 6a), keyed per repository via a stamp file under `state_dir` rather than a single fleet-wide clock — so one repository's interval elapsing says nothing about another's. `0` disables the stamp check, so it ensures on every cycle regardless. |
+| `label_prefix` | `pw::` | Namespace prefix `lib/labels.sh`'s `labels_reconcile` reconciles full CRUD for (create, PATCH colour/description on drift, DELETE once no longer catalogued) rather than `labels_ensure`'s own create-only treatment. `labels_reconcile_role`'s `target` role — the one catalogue call that is a repository's complete desired label set — reconciles with deletion; `review` and `escalation`, each a partial subset of `target`'s own catalogue, reconcile colour/description drift but never...[continued below](#extended-notes-label_prefix) |
 | `void_retire_after_days` | 30 d | How old a fully-actioned void must be, in days, before requirement 34n drops it from the extract. `0` disables retirement, which is also the safe fallback for an unparseable value — never retiring costs bytes, wrongly retiring costs nothing observable, so the failure mode this guards is silent growth, not a wrongly-reopened item. |
 | `prompt_overrides` | `{}` | Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementer`/`reviewer`/`enabler`/`refiner`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. `approver` is deliberately absent from the enumeration: the Approver's...[continued below](#extended-notes-prompt_overrides) |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. It must not be `obsolete`: the pipeline would then project requirement 34k's human-only corroboration onto every draft it raises, and the void guard would close live drafts on the pipeline's own say-so — `scripts/doctor.sh` fails the config. Threaded through the Co-Ordinator's runtime input (requirement 4) into every work order's own `pr_label` field, which the Implementer labels its pull request with (requirement 23). |
@@ -908,6 +909,10 @@ It must not be `blocked` nor `obsolete`, for the reasons given against `enabler_
 ### Extended notes: `refinement_policy`
 
 Per-source refinement policy (requirement 39a): `required`, `preferred` or `exempt`, read by the Co-Ordinator alongside `refinements` (requirement 3h) to decide whether an unrefined item may be ranked at all. A source absent from this object is `exempt`. Bounded by what requirement 39's candidate gathering reads — the `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`, `dequeued`, `register_hygiene`, `issues` and `tech_debt` arrays every repo's `ordered_repos_json` entry carries, plus `project_review` and `implementation_plan`, read only into the Refiner-only copy of the repos array (`refiner_repos_json`, requirement 3y) and only where `refiner_model` is set — with no Refiner to launch, neither is read at all — and the repo's own `sources` lists the source and its policy for it is not itself `exempt`. `failed-runs` is the one source with no array at all, so a policy set for it shapes selection only.
+
+### Extended notes: `label_prefix`
+
+Namespace prefix `lib/labels.sh`'s `labels_reconcile` reconciles full CRUD for (create, PATCH colour/description on drift, DELETE once no longer catalogued) rather than `labels_ensure`'s own create-only treatment. `labels_reconcile_role`'s `target` role — the one catalogue call that is a repository's complete desired label set — reconciles with deletion; `review` and `escalation`, each a partial subset of `target`'s own catalogue, reconcile colour/description drift but never delete, since a delete scoped to a subset would remove labels another role still wants. Empty disables reconciliation and deletion for every role, leaving every label on `labels_ensure`'s create-only path.
 
 ### Extended notes: `prompt_overrides`
 
@@ -5345,6 +5350,22 @@ implements.
    label create` commands, and a label a human deletes must come back on its
    own — in every repository it configures, not only the one currently being
    worked.
+
+   `lib/labels.sh` also exposes `labels_reconcile`/`labels_reconcile_role`:
+   full CRUD — create, reconcile colour/description drift, and delete once no
+   longer catalogued — for any label whose name starts with `label_prefix`
+   (config.schema.json, default `pw::`), leaving every label outside that
+   namespace on the create-only path above unchanged. Deletion is scoped to
+   MODE `full`, which `labels_reconcile_role` passes only for its `target`
+   role — the one catalogue call that is a repository's complete desired
+   label set — because `review` and `escalation` are each a partial subset of
+   `target`'s own catalogue, and a delete scoped to a subset would remove
+   labels the other role still wants; both reconcile colour/description drift
+   under MODE `additive` without ever deleting. No call site uses either
+   function yet: every catalogue entry above is still unprefixed, and
+   `agent-cycle.sh`, `review-cycle.sh`, `lib/enabler.sh` and
+   `lib/candidate-gather.sh` still call `labels_ensure_role`/
+   `labels_ensure_stamped`, which is recorded as TD-PPagop-26082809.
 7. **Implementer stage.** Launch the Implementer in the clone (model from
    the work order, `--dangerously-skip-permissions`, stage timeout), passing
    the implementer prompt plus the work order, and this cycle's `cycle` id and
