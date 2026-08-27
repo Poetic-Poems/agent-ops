@@ -110,6 +110,7 @@ cfg() { jq -r "$1" <<<"$DEFAULTED_CONFIG" 2>/dev/null; }
 state_repo="$(cfg '.state_repo')"
 claim_ttl_hours="$(cfg '.claim_ttl_hours')"
 branch_prefix="$(cfg '.branch_prefix')"
+tech_debt_branch_prefix="$(cfg '.tech_debt_branch_prefix')"
 
 say() { printf 'claim: %s\n' "$*"; }
 
@@ -350,7 +351,7 @@ do_claims() {  # <target-slug> -> JSON array of {item, kind, age_hours, pr_numbe
   printf '%s\n' "$out"
 }
 
-do_branches() {  # <target-slug> -> JSON array of live td/*, <branch_prefix>* branch names
+do_branches() {  # <target-slug> -> JSON array of live <tech_debt_branch_prefix>*, <branch_prefix>* branch names
   # --paginate --slurp on both listings: matching-refs pages at the default
   # page size, so a repository that accumulates more claim branches than one
   # page holds (stale squash-merged refs alone can get there) would silently
@@ -358,13 +359,17 @@ do_branches() {  # <target-slug> -> JSON array of live td/*, <branch_prefix>* br
   # `claimed` input and the Script's own candidate filters both go blind
   # exactly where the contention is worst. --slurp folds the pages into one
   # array of arrays, flattened here.
-  local slug="$1" prefix td_refs pfx_refs
-  td_refs="$("$GH" api --paginate --slurp "repos/$slug/git/matching-refs/heads/td/" \
-    --jq '[.[][].ref | ltrimstr("refs/heads/")]' 2>/dev/null)"
-  [[ -n "$td_refs" ]] || td_refs='[]'
+  local slug="$1" td_prefix prefix td_refs pfx_refs
+  td_prefix="$tech_debt_branch_prefix"
+  td_refs='[]'
+  if [[ -n "$td_prefix" ]]; then
+    td_refs="$("$GH" api --paginate --slurp "repos/$slug/git/matching-refs/heads/$td_prefix" \
+      --jq '[.[][].ref | ltrimstr("refs/heads/")]' 2>/dev/null)"
+    [[ -n "$td_refs" ]] || td_refs='[]'
+  fi
   prefix="$branch_prefix"
   pfx_refs='[]'
-  if [[ "$prefix" != "td/" ]]; then
+  if [[ "$prefix" != "$td_prefix" ]]; then
     pfx_refs="$("$GH" api --paginate --slurp "repos/$slug/git/matching-refs/heads/$prefix" \
       --jq '[.[][].ref | ltrimstr("refs/heads/")]' 2>/dev/null)"
     [[ -n "$pfx_refs" ]] || pfx_refs='[]'

@@ -1382,7 +1382,7 @@ gather_findings() {
 gather_review_feedback() {
   local slug="$1" out safe
   safe="${slug//\//_}"
-  out="$("$SCRIPT_DIR/scripts/gather-review-feedback.sh" "$slug" "$pr_label" "$branch_prefix" \
+  out="$("$SCRIPT_DIR/scripts/gather-review-feedback.sh" "$slug" "$pr_label" "$branch_prefix" "$tech_debt_branch_prefix" \
         2>"$cycle_dir/review-feedback-$safe.err" || true)"
   if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
     printf '%s\n' "$out" > "$cycle_dir/review-feedback-$safe.json"
@@ -1401,7 +1401,7 @@ gather_review_feedback() {
 gather_abandoned_drafts() {
   local slug="$1" out safe
   safe="${slug//\//_}"
-  out="$("$SCRIPT_DIR/scripts/gather-abandoned-drafts.sh" "$slug" "$pr_label" "$branch_prefix" "$abandoned_draft_after_hours" \
+  out="$("$SCRIPT_DIR/scripts/gather-abandoned-drafts.sh" "$slug" "$pr_label" "$branch_prefix" "$abandoned_draft_after_hours" "$tech_debt_branch_prefix" \
         2>"$cycle_dir/abandoned-drafts-$safe.err" || true)"
   if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
     printf '%s\n' "$out" > "$cycle_dir/abandoned-drafts-$safe.json"
@@ -1425,7 +1425,7 @@ gather_abandoned_drafts() {
 gather_merge_conflicts() {
   local slug="$1" out safe nudge_result
   safe="${slug//\//_}"
-  out="$("$SCRIPT_DIR/scripts/gather-merge-conflicts.sh" "$slug" "$pr_label" "$branch_prefix" \
+  out="$("$SCRIPT_DIR/scripts/gather-merge-conflicts.sh" "$slug" "$pr_label" "$branch_prefix" "$tech_debt_branch_prefix" \
         2>"$cycle_dir/merge-conflicts-$safe.err" || true)"
   # Requirement 34n's liveness retirement (TD-PPagop-26081303): a
   # `merge-conflicts-$safe.ok` marker, written iff this cycle's own read
@@ -1527,7 +1527,7 @@ gather_merge_conflicts() {
 gather_dequeued() {
   local slug="$1" out safe
   safe="${slug//\//_}"
-  out="$("$SCRIPT_DIR/scripts/gather-dequeued.sh" "$slug" "$pr_label" "$branch_prefix" \
+  out="$("$SCRIPT_DIR/scripts/gather-dequeued.sh" "$slug" "$pr_label" "$branch_prefix" "$tech_debt_branch_prefix" \
         2>"$cycle_dir/dequeued-$safe.err" || true)"
   # Requirement 34n's liveness retirement, same marker discipline as
   # `merge-conflicts-$safe.ok`: written iff this cycle's own read produced a

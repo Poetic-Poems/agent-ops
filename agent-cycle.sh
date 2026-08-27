@@ -532,6 +532,10 @@ pr_label="$(cfg '.pr_label')"
 # ours to push to if its head branch is under this prefix. The Landing Gate says
 # branches outside it belong to humans.
 branch_prefix="$(cfg '.branch_prefix')"
+# Same rationale as branch_prefix, for the human tech-debt-claim protocol's
+# own namespace (TECH-DEBT.md): empty disables it, so a repository that does
+# not follow that convention sees only branch_prefix.
+tech_debt_branch_prefix="$(cfg '.tech_debt_branch_prefix')"
 max_open_agent_prs="$(cfg '.max_open_agent_prs')"
 # Every stage cap — the wall-clock backstop and the liveness watchdog alike —
 # is now derived per (actor, repository, model) from the fleet's own record of

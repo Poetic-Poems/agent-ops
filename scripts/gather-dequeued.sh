@@ -22,7 +22,7 @@
 # against their base (that is requirement 3g's own candidate — see "Why this
 # source and merge-conflicts never overlap" below).
 #
-# Usage: gather-dequeued.sh <owner/repo> <pr-label> <branch-prefix>
+# Usage: gather-dequeued.sh <owner/repo> <pr-label> <branch-prefix> [tech-debt-branch-prefix]
 #
 # Candidate shape:
 #   {
@@ -200,8 +200,9 @@ export MERGE_QUEUE_GH
 slug="${1:-}"
 pr_label="${2:-autonomous-agent}"
 branch_prefix="${3:-agent/}"
+tech_debt_branch_prefix="${4-td/}"
 if [[ -z "$slug" ]]; then
-  echo "usage: gather-dequeued.sh <owner/repo> [pr-label] [branch-prefix]" >&2
+  echo "usage: gather-dequeued.sh <owner/repo> [pr-label] [branch-prefix] [tech-debt-branch-prefix]" >&2
   exit 64
 fi
 
@@ -230,12 +231,20 @@ fi
 
 # `mergeable` selected against `== "MERGEABLE"` exactly — never `CONFLICTING`
 # (that PR belongs to gather-merge-conflicts.sh alone, see the header) and
-# never `UNKNOWN`. Heads may be `agent/…` or, for tech-debt items, `td/…`;
-# the label filter is the primary "ours" signal either way.
+# never `UNKNOWN`. Heads may be `agent/…` or, for tech-debt items,
+# `<tech_debt_branch_prefix><ID>`; the label filter is the primary "ours"
+# signal either way.
+#
+# Empty tech_debt_branch_prefix disables the tech-debt namespace: the `or`
+# clause is dropped rather than built with an empty startswith(""), which
+# would match every head.
+td_clause=""
+if [[ -n "$tech_debt_branch_prefix" ]]; then
+  td_clause=" or (.headRefName | startswith(\"$tech_debt_branch_prefix\"))"
+fi
 ours="$(jq -c "[.[] | select(.isDraft | not)
                     | select(.mergeable == \"MERGEABLE\")
-                    | select((.headRefName | startswith(\"$branch_prefix\"))
-                             or (.headRefName | startswith(\"td/\")))]" \
+                    | select((.headRefName | startswith(\"$branch_prefix\"))$td_clause)]" \
         <<<"$ours_all" 2>/dev/null || echo '[]')"
 jq -e 'type == "array"' <<<"$ours" >/dev/null 2>&1 || ours='[]'
 

@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- New `tech_debt_branch_prefix` config key (default `td/`, agent-ops#655): the
+  human tech-debt-claim protocol's (`TECH-DEBT.md`) own branch prefix was a
+  bare `"td/"` literal in `lib/claim.sh`, the four `gather-*.sh` sources and
+  `sweep-orphan-branches.sh`, with no way for an adopting repository that
+  does not follow that convention to change or disable it. All six sites now
+  read the new key instead; left unset, it defaults to `td/` and behaviour is
+  unchanged. Empty disables the tech-debt namespace, so those scripts then
+  match only `branch_prefix`.
+
 - A `blocked`/`blocked:needs-refinement` pair whose block has cleared now
   comes off the issue even when nothing in the shared log can prove the
   pipeline applied it (requirement 38b, agent-ops#816, TD-PPagop-26082602).
