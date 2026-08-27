@@ -402,7 +402,7 @@ maybe_run_enabler() {
   local e_rereview_state e_rereview_who e_human_reviewer_state e_human_reviewer_who
   local issue_title issue_body_file created number url missing
   local e_adjudication e_adj_verdict e_adj_evidence e_adjudicated e_refined_adj
-  local e_file_debt fd_title fd_body fd_result fd_id fd_pr_url
+  local e_file_debt fd_title fd_body fd_pr_label fd_result fd_id fd_pr_url
   local e_file_issue fi_title fi_body fi_body_file fi_result fi_number fi_url
 
   # --- Guards (requirement 35). Every one of them declining is normal. ---
@@ -994,12 +994,19 @@ $(jq . <<<"$input")
     if [[ -n "$e_file_debt" && "$e_file_debt" != "null" ]]; then
       fd_title="$(jq -r '.title // ""' <<<"$e_file_debt" 2>/dev/null || true)"
       fd_body="$(jq -r '.body // ""' <<<"$e_file_debt" 2>/dev/null || true)"
+      # The fleet's configured `pr_label` (agent-ops TD-PPagop-26082426): this
+      # call site does not otherwise have it in hand, so it is read from
+      # `DEFAULTED_CONFIG` here and threaded through to techdebt_file_debt,
+      # which would otherwise open its filing pull request unlabelled and
+      # invisible to every gatherer that filters on it.
+      fd_pr_label="$(jq -r '.pr_label // empty' <<<"$DEFAULTED_CONFIG" 2>/dev/null || true)"
+      [[ -n "$fd_pr_label" ]] || fd_pr_label="autonomous-agent"
       if [[ -z "$fd_title" || -z "$fd_body" ]]; then
         log_event "warning" "$(jq -nc \
           --arg d "enabler set file_debt for $e_repo $e_item, but it carries no title or body — ignored" \
           '{detail: $d}')"
       elif fd_result="$(techdebt_file_debt "$e_repo" "$fd_title" "$fd_body" \
-             "during an Enabler engagement on $e_item (cycle $cycle_id)")" \
+             "during an Enabler engagement on $e_item (cycle $cycle_id)" "" "" "$fd_pr_label")" \
              && [[ -n "$fd_result" ]]; then
         IFS=$'\t' read -r fd_id fd_pr_url <<<"$fd_result"
         log_event "tech-debt-filed" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" \

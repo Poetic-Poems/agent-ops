@@ -8,7 +8,7 @@
 # changes that no commit has answered yet. Each candidate carries the review
 # prose verbatim, so the Implementer can act on it without re-querying anything.
 #
-# Usage: gather-review-feedback.sh <owner/repo> <pr-label> <branch-prefix>
+# Usage: gather-review-feedback.sh <owner/repo> <pr-label> <branch-prefix> [tech-debt-branch-prefix]
 #
 # Candidate shape:
 #   {
@@ -193,8 +193,9 @@ GH="${REVIEW_FEEDBACK_GH:-gh}"
 slug="${1:-}"
 pr_label="${2:-autonomous-agent}"
 branch_prefix="${3:-agent/}"
+tech_debt_branch_prefix="${4-td/}"
 if [[ -z "$slug" ]]; then
-  echo "usage: gather-review-feedback.sh <owner/repo> [pr-label] [branch-prefix]" >&2
+  echo "usage: gather-review-feedback.sh <owner/repo> [pr-label] [branch-prefix] [tech-debt-branch-prefix]" >&2
   exit 64
 fi
 
@@ -217,8 +218,8 @@ fi
 # and the source silently never fires. That is the `[]`-on-error trap in the
 # Gotchas table, and it cost a debugging round here before this line existed.
 # Heads may be `agent/…` or — for tech-debt items, whose claim branch is the
-# human protocol's own `td/<ID>` — `td/…`; the label filter above is the
-# primary "ours" signal either way.
+# human protocol's own `<tech_debt_branch_prefix><ID>` — `td/…`; the label
+# filter above is the primary "ours" signal either way.
 all_prs="$("$GH" pr list -R "$slug" --state open --label "$pr_label" \
         --limit "$GITHUB_PR_LIST_LIMIT" \
         --json number,title,headRefName,headRefOid,isDraft,reviewDecision,url,body \
@@ -236,10 +237,16 @@ if github_pr_list_truncated "$(jq 'length' <<<"$all_prs")"; then
   echo "gather-review-feedback: $slug: the pull-request listing came back at its ${GITHUB_PR_LIST_LIMIT}-item cap; a review round beyond it is not offered this cycle" >&2
 fi
 
+# Empty tech_debt_branch_prefix disables the tech-debt namespace: the
+# `or` clause is dropped rather than built with an empty startswith(""),
+# which would match every head.
+td_clause=""
+if [[ -n "$tech_debt_branch_prefix" ]]; then
+  td_clause=" or (.headRefName | startswith(\"$tech_debt_branch_prefix\"))"
+fi
 prs="$(jq -c "[.[] | select(.isDraft | not)
                    | select(.reviewDecision == \"CHANGES_REQUESTED\")
-                   | select((.headRefName | startswith(\"$branch_prefix\"))
-                            or (.headRefName | startswith(\"td/\")))]" <<<"$all_prs" 2>/dev/null || true)"
+                   | select((.headRefName | startswith(\"$branch_prefix\"))$td_clause)]" <<<"$all_prs" 2>/dev/null || true)"
 if [[ -z "$prs" ]] || ! jq -e 'type == "array"' <<<"$prs" >/dev/null 2>&1; then
   printf '[]'
   exit 0

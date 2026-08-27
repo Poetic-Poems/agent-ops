@@ -338,6 +338,27 @@ assert_eq "candidates are ordered longest-dequeued first" \
 assert_eq "…which is not the order updated_at would have given" \
   "[103,96,102]" "$(jq -c '[sort_by(.updated_at)[].number]' <<<"$out")"
 
+# --- tech_debt_branch_prefix: an explicit empty argument disables the td/
+# namespace rather than defaulting back to it (PR #835's review) ---
+#
+# `${4:-td/}` substitutes the default whenever the argument is empty, not only
+# when it is absent, so a caller that explicitly disables the namespace by
+# passing "" got `td/` back regardless — the fix is `${4-td/}`. Reuses this
+# section's own combined stub gh with a fresh, minimal single-PR fixture.
+jq -nc --argjson p "$(pr_entry 200 td/TD99 MERGEABLE false)" '[$p]' > "$tmp_dir/prlist.json"
+jq -nc '{"200": {queued: false, dequeued_at: "2026-08-14T01:00:00Z", dequeue_reason: "failed_checks"}}' \
+  > "$tmp_dir/probes.json"
+jq -nc '{"200": []}' > "$tmp_dir/reviews.json"
+jq -nc '{"200": []}' > "$tmp_dir/comments.json"
+
+default_out="$(DEQUEUED_GH="$tmp_dir/gh" "$SCRIPT_DIR/scripts/gather-dequeued.sh" "o/r" "autonomous-agent" "agent/" 2>/dev/null)"
+assert_eq "omitting tech_debt_branch_prefix defaults to td/, so a td/ branch is still a candidate" \
+  "[200]" "$(jq -c '[.[].number]' <<<"$default_out")"
+
+disabled_out="$(DEQUEUED_GH="$tmp_dir/gh" "$SCRIPT_DIR/scripts/gather-dequeued.sh" "o/r" "autonomous-agent" "agent/" "" 2>/dev/null)"
+assert_eq "an explicit empty tech_debt_branch_prefix disables the td/ namespace" \
+  "[]" "$(jq -c '[.[].number]' <<<"$disabled_out")"
+
 # --- Fails safe -------------------------------------------------------------
 empty_out="$(DEQUEUED_GH="$tmp_dir/gh-missing" "$SCRIPT_DIR/scripts/gather-dequeued.sh" "o/r" "autonomous-agent" "agent/" 2>/dev/null)"
 assert_eq "an unreachable gh degrades to an empty array, exit 0" \

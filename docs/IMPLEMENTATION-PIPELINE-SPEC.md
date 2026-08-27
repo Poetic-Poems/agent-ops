@@ -762,6 +762,7 @@ and the schema must carry every one of them.
 | `prompt_overrides` | `{}` | Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementer`/`reviewer`/`enabler`/`refiner`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. `approver` is deliberately absent from the enumeration: the Approver's...[continued below](#extended-notes-prompt_overrides) |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. It must not be `obsolete`: the pipeline would then project requirement 34k's human-only corroboration onto every draft it raises, and the void guard would close live drafts on the pipeline's own say-so — `scripts/doctor.sh` fails the config. Threaded through the Co-Ordinator's runtime input (requirement 4) into every work order's own `pr_label` field, which the Implementer labels its pull request with (requirement 23). |
 | `branch_prefix` | `agent/` | Branch name `agent/<item-slug>`, e.g. `agent/td26051201-fix-xyz`. |
+| `tech_debt_branch_prefix` | `td/` | Branch name `<tech_debt_branch_prefix><ID>`, e.g. `td/TD26051201`, read wherever `lib/claim.sh` and the gatherer/sweep scripts of requirements 3c/3e/3g/3z/17b must tell a human's tech-debt claim branch from their own agent's. Empty disables the tech-debt namespace: those scripts then match only `branch_prefix`. |
 | `max_open_agent_prs` | `8` | Back-pressure: draft PRs, ready PRs still `CHANGES_REQUESTED`, and live claim-registry entries, carrying `pr_label` across all repos — excludes ready PRs whose next action lies outside the pipeline (requirement 2.2). |
 | `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list (requirement 17a), so alternates turn a lost race into the next-best item instead of a wasted cycle. |
 | `coordinator_prompt_max_bytes` | `350000` | The largest assembled prompt the Script will hand the Co-Ordinator (requirement 4i). The default is derived from the 200000-token window of the Co-Ordinator model this installation runs, less the ~50000 tokens of system prompt and tool definitions the Script neither assembles nor can measure, less a reserve for the verdict itself, at the ~2.35 bytes per token JSON-escaped Markdown actually costs. Stated in bytes because bytes are what the Script can count without a tokenizer....[continued below](#extended-notes-coordinator_prompt_max_bytes) |
@@ -2863,10 +2864,12 @@ implements.
    model tokens on paginating and digesting those verbose APIs.
 3c. **Review-feedback pre-fetch (requirement 3c).** For each configured repo
    whose `sources` include `review-feedback`, run
-   `scripts/gather-review-feedback.sh <slug> <pr_label> <branch_prefix>` and
+   `scripts/gather-review-feedback.sh <slug> <pr_label> <branch_prefix>
+   <tech_debt_branch_prefix>` and
    attach the array to that repo's entry as `review_feedback`. It prints the
    PRs *waiting on us to answer a human's review*: open, non-draft, carrying
-   `pr_label`, head branch under `branch_prefix`, `reviewDecision` of
+   `pr_label`, head branch under `branch_prefix` (or `tech_debt_branch_prefix`,
+   default `td/`; empty disables that namespace), `reviewDecision` of
    `CHANGES_REQUESTED`, and — the load-bearing clause — **no GitHub
    review-thread event has answered the blocking review**: no marked reply
    whose marker's `actor=` field is `implementer` (a review or general PR
@@ -2983,7 +2986,8 @@ implements.
      (tech-debt/TD-PPagop-26081306.md).
 3e. **Abandoned-drafts pre-fetch.** For each configured repo, run
    `scripts/gather-abandoned-drafts.sh <slug>
-   <pr_label> <branch_prefix> <abandoned_draft_after_hours>` and attach the array
+   <pr_label> <branch_prefix> <abandoned_draft_after_hours>
+   <tech_debt_branch_prefix>` and attach the array
    to that repo's entry as `abandoned_drafts` — unconditionally, because
    `abandoned-drafts` is a required member of every repository's `sources`
    (the schema's `contains` rule, enforced by requirement 1b's gate; decided
@@ -2997,7 +3001,8 @@ implements.
    *position* in `sources` remains the installation's choice: required means
    listed, not ranked anywhere in particular. It prints the draft PRs *this
    system raised and then abandoned*: open, **draft**, carrying `pr_label`, head
-   branch under `branch_prefix` (or `td/`), and whose last **real** activity
+   branch under `branch_prefix` (or `tech_debt_branch_prefix`, default `td/`;
+   empty disables that namespace), and whose last **real** activity
    (below) is older than `now − abandoned_draft_after_hours`. Each entry carries
    the round's ref, the PR number and URL, the existing branch, the head SHA,
    that last-real-activity timestamp (as `updated_at`), and the draft PR's own
@@ -3091,10 +3096,12 @@ implements.
      live work, not leaving a stalled draft one more cycle. `shellcheck`-clean.
 3g. **Merge-conflicts pre-fetch.** For each configured repo whose `sources`
    include `merge-conflicts`, run `scripts/gather-merge-conflicts.sh <slug>
-   <pr_label> <branch_prefix>` and attach the array to that repo's entry as
+   <pr_label> <branch_prefix> <tech_debt_branch_prefix>` and attach the array
+   to that repo's entry as
    `merge_conflicts`. It prints the PRs *this system raised that are otherwise
    ready but conflict with their base*: open, **non-draft**, carrying `pr_label`,
-   head branch under `branch_prefix` (or `td/`), and with `mergeable` exactly
+   head branch under `branch_prefix` (or `tech_debt_branch_prefix`, default
+   `td/`; empty disables that namespace), and with `mergeable` exactly
    `CONFLICTING`. Each entry carries a head-SHA-scoped ref, the PR number and URL,
    the existing branch, its `base`, the head SHA, the `updatedAt`, and the PR's
    own body verbatim.
@@ -3269,11 +3276,13 @@ implements.
    every other conflicted PR is.
 3z. **Dequeued-PR pre-fetch (TD-PPagop-26081409, issue #374).** For each
    configured repo whose `sources` include `dequeued`, run
-   `scripts/gather-dequeued.sh <slug> <pr_label> <branch_prefix>` and attach the
+   `scripts/gather-dequeued.sh <slug> <pr_label> <branch_prefix>
+   <tech_debt_branch_prefix>` and attach the
    array to that repo's entry as `dequeued`. It prints the PRs *this system
    raised that GitHub's merge queue removed over a merge-group checks failure
    without merging*: open, **non-draft**, carrying `pr_label`, head branch under
-   `branch_prefix` (or `td/`), with `mergeable` exactly `MERGEABLE`, and whose
+   `branch_prefix` (or `tech_debt_branch_prefix`, default `td/`; empty
+   disables that namespace), with `mergeable` exactly `MERGEABLE`, and whose
    most recent `lib/merge-queue.sh` `merge_queue_probe` reports `queued: false`,
    a non-null `dequeued_at`, and a `dequeue_reason` reading, case-insensitively,
    exactly `failed_checks`, **and whose dequeue is still unanswered** — no
@@ -3575,7 +3584,9 @@ implements.
      `pr_number` rides along when the underlying registry entry recorded one —
      which, for the four finishing sources, is always, once requirement 17a's
      PR-keyed claim exists alongside the item-keyed one; and
-   - every live `td/*`/`<branch_prefix>*` branch on the target repository
+   - every live `<tech_debt_branch_prefix>*`/`<branch_prefix>*` branch (default
+     `tech_debt_branch_prefix` is `td/`; empty disables that namespace and only
+     `<branch_prefix>*` is listed) on the target repository
      itself (`lib/claim.sh branches`), which still catches a claim the
      registry missed — `state_repo` unset, or a best-effort registry write
      that failed — with `age_hours` reported as `null` when no registry entry
@@ -6918,6 +6929,114 @@ implements.
     list is one candidate long, so that fault would leave the cycle with
     nothing to claim — disarming the path requirement 3v exists to provide
     precisely when the model will not select.
+17g. **The Script verifies a trimmed candidate's `acceptance` against the
+    item's own live text, not only its recorded refinement (agent-ops#821,
+    shape decided agent-ops#830 option (c)).** Requirement 17f closes the
+    cross-item swap — whether the work order carries *this item's own
+    recorded refinement* — but answers nothing about whether the rest of
+    `acceptance` is real. Cycle 20260826T064910Z-poetic-1-186841 (issue
+    #815) showed the gap: a Co-Ordinator whose input had been trimmed to fit
+    its model's window invented an `acceptance` in full — prose no check
+    re-derived, so nothing caught it, and 17f's own repair (below) logged
+    the result a success. `item_text_fault` (`lib/candidate-select.sh`)
+    closes this the same way 17f closes its own gap: not by trusting the
+    model's account, but by re-deriving the truth and checking the work
+    order against it.
+    - **Scope.** Checked only for a candidate whose `{repo, item}` appears in
+      `coordinator_fit_trimmed_items`'s own output this cycle
+      (`lib/coordinator-input.sh`) — the same set requirement 34e's fourth
+      refusal already reads. An untrimmed candidate carries nothing elided to
+      fabricate about, so this costs nothing there, the same "nothing to
+      check" shape 17f already uses for an item with no recorded refinement.
+      Like 17f, it is scoped to a model-composed work order and guarded by
+      `selected_by_fallback` in the claim loop: `fallback_select_candidate`
+      builds `context`/`acceptance` out of the band entry's own record, in
+      jq, so it cannot fabricate anything a check would need to catch.
+    - **The live text.** `item_live_text` fetches it fresh for the one
+      candidate under test — never the pre-fit extract the model actually
+      saw, which is exactly what this exists to check the work order
+      *against*, not to trust: an issue's body plus every comment
+      (`gh issue view --json body,comments`), or a tech-debt item's register
+      file at the repo's default branch (`gh api .../contents/tech-debt/<id>.md`).
+      These are the only two sources `coordinator_fit_trimmed_items` ever
+      names, because the fit ladder only ever sheds prose from the `issues`
+      and `tech_debt` bands.
+    - **`context` is not checked.** `prompts/coordinator.md`'s work-order
+      schema requires `context` to carry the Co-Ordinator's own framing —
+      file paths, related conventions found while evaluating, why the item
+      is unblocked and in scope — alongside the entry's verbatim paste, and
+      nothing in the schema marks where the paste ends and the framing
+      begins. A `context` check faulting every paragraph it could not trace
+      to the live text therefore faulted that mandated framing by
+      construction, on ordinary honest work orders, at the fit rungs the
+      fleet normally runs at (issue #821's own figures: 90% of
+      `coordinator-input-fitted` events land at rungs 7–8) — reproduced by
+      two independent Reviewer rounds against this requirement's own PR
+      (#825), which is why agent-ops#830 dropped it rather than repair it in
+      place. TD-PPagop-26082801 tracks the deferred `context` detection gap
+      against #769, the issue asking whether the Co-Ordinator should be
+      pasting `context` at all — the schema question a narrower check would
+      need answered first. This requirement instead answers 17g's own scope
+      from the completeness direction: `item_text_supply`, below, ensures
+      the Implementer always receives the item's full live text regardless
+      of what `context` says.
+    - **`acceptance`'s backtick-quoted spans are checked, because
+      `prompts/coordinator.md` allows its prose to be a paraphrase but not
+      its specifics.** `acceptance` is explicitly allowed to be the
+      Co-Ordinator's own synthesis ("set `acceptance` from the current state
+      of the thread") — a faithful paraphrase is traceable and must never
+      fault, which is deliberately weaker than requiring an appropriate-tier
+      model to have authored it (that question belongs to agent-ops#822, out
+      of scope here). So only its backtick-quoted spans (`` `like this` ``)
+      — the concrete specifics (a file, a flag, an identifier) a paraphrase
+      preserves from its source and a fabrication is what actually invents —
+      are checked, after the same whitespace normalization requirement 17f's
+      own check applies, against the union of the live text and the item's
+      recorded refinement `spec`; free prose around them is never compared.
+    - **Never repaired.** Unlike a missing refinement, appending the real
+      text alongside a false one does not make the false one true, so a
+      candidate `item_text_fault` faults is always a hard skip — no repair is
+      even attempted. Logged `claim-skipped` with its own `cause: "fabricated"`,
+      never folded into `cause: "untraceable"`; a cycle that loses every
+      candidate this way stands down with the same distinct cause
+      (`fab_faults`, mirroring `trace_faults`' own reason for existing:
+      issue #767's "a stand-down that names the wrong cause is worse than one
+      that names none").
+    - **The other half of "either the live read demonstrably happened, or
+      the Script supplies the full text itself": `item_text_supply`.** A
+      trimmed candidate that clears `item_text_fault` wrote nothing
+      fabricated in `acceptance`, but its `context` may still be incomplete —
+      an honest, faithfully scoped paraphrase of only the extract the model
+      actually saw, or (since `context` is not checked at all) a paraphrase
+      this requirement cannot distinguish from one that drifted further. That
+      candidate still should not reach the Implementer as the item's whole
+      text: the acceptance criterion or scope cut requirement 17b already
+      warns tends to live in exactly the bytes the fit ladder elided. So the
+      Script closes the gap unconditionally, for every trimmed candidate that
+      clears `item_text_fault`, the same "supply what is missing instead of
+      discarding the work" move `refinement_traceability_repair` already
+      makes for a recorded refinement: append the live text, verbatim, under
+      a heading naming it the Script's own insertion. A no-op when `context`
+      already contains the live text in full, so a candidate that really did
+      read live and paste faithfully is never churned — but that exemption is
+      effectively never taken, and the append should be read as
+      always-on for a trimmed candidate: it asks whether `context` carries the
+      whole live text as one contiguous run (body and every comment joined,
+      after the same normalization), and an honest `context` interleaves the
+      Co-Ordinator's own framing between those passages, so the run does not
+      match. It is kept rather than dropped only because taking it out would
+      append a second copy to the `context` that does carry one
+      (agent-ops#830's decision, item 2). Logged
+      `work-order-repaired` with `cause: "trimmed"`. Fails open on an
+      unreadable live text — this is a supplement, not the gate;
+      `item_text_fault` is what fails closed on the same read, and a
+      candidate only reaches this call once that gate has already passed.
+    - **A `gh` read that fails is a fault, not a pass** (TD-PPagop-26082307's
+      reasoning applies unchanged): this check exists to confirm the live
+      text really backs the work order, and assuming pass on a read it could
+      not complete would let a stale token or a narrowed scope disarm the
+      whole gate while it kept reading as green. Reported via `guard_warn`,
+      never swallowed.
 17a. **The claim.** The Script — never the model — takes an atomic per-item
     claim before the Implementer starts, walking the ranked candidates in
     order and handing the first successful claim onward (`lib/claim.sh`).
@@ -7082,14 +7201,18 @@ implements.
     with no event ever saying so. Its sibling is the unmoved ref whose
     best-effort registry write never landed, wedging the item with nothing
     to recover. So after the gc (2.1a), every cycle runs
-    `scripts/sweep-orphan-branches.sh` over each configured repo's `td/*`
-    and `<branch_prefix>*` refs. A ref is a provable orphan only when **all
+    `scripts/sweep-orphan-branches.sh` over each configured repo's
+    `<tech_debt_branch_prefix>*` (default `td/`; empty disables that
+    namespace) and `<branch_prefix>*` refs. A ref is a provable orphan only when **all
     three** hold: no open PR uses it, no registry entry stands for it (only
     a clean 404 proves absence — any other failure skips the ref, fail
     closed), and its tip commit is older than `abandoned_draft_after_hours`
     — the same judgement that makes a draft abandoned — provided it is not
-    itself `reserve-tech-debt-id.pl`'s own reservation commit: a `td/<ID>`
-    branch whose sole commit ahead carries that script's fixed
+    itself `reserve-tech-debt-id.pl`'s own reservation commit: a
+    `<tech_debt_branch_prefix><ID>` branch (`reserve-tech-debt-id.pl` itself
+    always names it `td/<ID>`, so this recognition only fires where
+    `tech_debt_branch_prefix` is left at its `td/` default) whose sole commit
+    ahead carries that script's fixed
     `chore(tech-debt): reserve <ID>` subject and touches no files is the
     ID-reservation scheme's atomic claim lock, not work — regardless of
     whether `<ID>` has since been filed, and regardless of which branch any
@@ -7112,7 +7235,8 @@ implements.
     stream of redundant recovery drafts (issue #302) — **or unless the
     branch's own *work*, not its own head, already landed via a rival
     branch**, which the sweep checks by reducing both branches to a stem —
-    the `td/`/`branch_prefix` claim prefix stripped from the front and a
+    the `tech_debt_branch_prefix`/`branch_prefix` claim prefix stripped from
+    the front and a
     trailing, **exactly** twelve-hex-character random suffix stripped from
     the back, if present (a lower bound would misfire: a tech-debt id like
     `TD-PPagop-26081403`'s own trailing `-26081403` is eight hex-legal
@@ -10546,11 +10670,16 @@ implements.
     - `file_debt` reserves a tech-debt id (`scripts/reserve-tech-debt-id.pl`,
       run against a throwaway git context this call creates and tears down,
       since the Enabler holds no clone of any repo — requirement 36) and
-      opens a small pull request carrying `tech-debt/<id>.md` alone, following
-      `TECH-DEBT.md`'s "Filing alongside other work" except that the filing
-      lands in its own pull request rather than riding along on a branch the
-      Enabler does not hold. Logs `tech-debt-filed` (`repo`, `item`,
-      `by: "enabler"`, `id`, `pr_url`) on success; a `warning` naming
+      opens a small pull request carrying `tech-debt/<id>.md` alone, labelled
+      with the fleet's configured `pr_label` — this call site does not
+      otherwise have it in hand, so it reads `.pr_label` off `DEFAULTED_CONFIG`
+      here and passes it through, falling back to `"autonomous-agent"`
+      only if that read comes back empty — so it is visible to every gatherer
+      that filters pull requests by that label (agent-ops TD-PPagop-26082426),
+      following `TECH-DEBT.md`'s "Filing alongside other work" except that the
+      filing lands in its own pull request rather than riding along on a
+      branch the Enabler does not hold. Logs `tech-debt-filed` (`repo`,
+      `item`, `by: "enabler"`, `id`, `pr_url`) on success; a `warning` naming
       `tech-debt-file.err` on failure.
     - `file_issue` reuses the same duplicate-guard shape requirement 36a's own
       escalation issue does — an open issue already quoting the item
@@ -10814,16 +10943,26 @@ implements.
     pre-agent-ops#639 block: the exact defect `refinement_label_project`
     exists to prevent, reappearing on the one path that cannot prove its own
     history. `refinement_blocked_label_targets` therefore never offers a
-    legacy block's generic `blocked` for removal at all — over-held rather
-    than guessed at, the same trade-off `refinement_label_project` already
-    makes for an unreadable label list, and bounded to the same one-off,
-    only-ever-shrinking backlog the migration itself is scoped to. It comes
-    off only by a human's own hand: a *fresh* block landing on the same issue
-    later does not release it either, because `refinement_label_project` finds
-    the label already `present` and so records nothing for that block to give
-    back. A legacy block the sweep has not reached yet costs one `gh` call
-    that finds nothing to remove, best-effort like every other call on that
-    path.
+    legacy block's generic `blocked` for removal at *the moment its block
+    clears* — over-held rather than guessed at, the same trade-off
+    `refinement_label_project` already makes for an unreadable label list. A
+    *fresh* block landing on the same issue later does not release it either,
+    because `refinement_label_project` finds the label already `present` and
+    so records nothing for that block to give back. A legacy block the sweep
+    has not reached yet costs one `gh` call that finds nothing to remove,
+    best-effort like every other call on that path.
+
+    The live reconciliation below lifts this over-hold for one case and one
+    only: an issue still carrying its `blocked:<reason>` label at the moment
+    that reconciliation next runs, since that label is the whole of what puts
+    an issue in front of it. That is the case agent-ops#816 found — the reason
+    label's own removal never happened either, so the pair is still standing
+    and comes off together. Where the reason label *did* come off when the
+    block cleared, the issue carries a bare `blocked` and nothing reads it
+    again: the generic label stays until a human takes it off, and
+    `scripts/gather-issues.sh` goes on excluding the issue for as long as it
+    does. Bounding that residue is TD-PPagop-26082608's, not this
+    requirement's.
 
     **The reconciliation sweep for a removal that silently failed**
     (agent-ops#651). Unlike `needs_refinement_label`'s hand-flag path
@@ -10848,6 +10987,100 @@ implements.
     keep excluding the issue forever (requirement 16.4's deterministic half),
     invisibly, the same permanently-stuck-hold class of failure agent-ops#639
     ended for the assignment-based mechanism.
+
+    **The live reconciliation for a label history cannot see**
+    (agent-ops#816, TD-PPagop-26082602). The sweep just above is blind to two
+    cases, both real: a `blocked:<reason>` applied by
+    `scripts/sweep-legacy-refinement-assignees.sh`, which logs no
+    `own-label-action` of its own (it runs outside a cycle, with nothing to
+    log to), and one whose block cleared before agent-ops#651's
+    `own-label-action` logging existed to record the add at all. Both leave a
+    label standing with no `add` in the log for the sweep to key on, so
+    `scripts/gather-issues.sh` excludes the issue forever, invisibly — the
+    same class of failure the log-based sweep exists to end, reopened on the
+    one path that cannot prove its own history.
+
+    `lib/refinement.sh`'s `refinement_blocked_label_orphaned` closes it a
+    different way, needing no history for the *reason* label at all:
+    `blocked:<reason>` is never a label a human reaches for on their own (the
+    same fact the fresh path's unconditional add already relies on), so its
+    live presence on an open issue this repo's currently-open blocks do not
+    name is proof enough on its own that it is stuck. `lib/candidate-gather.sh`'s
+    per-repo gather loop runs it wherever `sources` configures the `issues`
+    band, ahead of `scripts/gather-issues.sh` itself so an issue this frees
+    becomes a candidate the same cycle: one `gh issue list --label
+    blocked:<reason> --state open` call per repo, compared against
+    `blocked_items`. An issue that never carried the reason label is never
+    read by this call at all, so a standalone hand-applied `blocked` — #402,
+    #677, #678 among them — is untouched by it, the same guarantee the fresh
+    path's `refinement_label_project` gives at the moment of application.
+    Guarded by requirement 12's dry-run switch, like every other label write
+    here, and gated on the reason label being configured at all — today
+    always true, since `refinement_blocked_reason_label` names exactly one
+    kind. The listing states its page cap (`GITHUB_PR_LIST_LIMIT`) rather
+    than inheriting `gh`'s undeclared default, and warns when it comes back
+    at that cap: a stuck pair past the page is simply not released this
+    cycle, and because the listing is newest-first while a stuck label is by
+    nature an old one, that miss does not clear itself on a later pass
+    either.
+
+    The generic `blocked` label needs a second proof before it rides along,
+    added on the PR #823 review's own concern 3: a live-labelled issue's most
+    recent `attempt-failed` event of this kind — open or long since cleared —
+    is consulted (`lib/refinement.sh` reads it off the same union log every
+    other reader here does), and `blocked` is released only when that event
+    either predates agent-ops#639 (it carries `needs_refinement_assignee` and
+    neither blocked-label field — the genuinely history-less, legacy-swept
+    cohort this requirement exists for), or explicitly records this pipeline
+    as having added `blocked` itself (`blocked_label` set, the same field
+    `refinement_blocked_label_targets` above reads at block-clear time). A
+    modern event whose `blocked_label` field is empty did not record this
+    pipeline applying the label: either `refinement_label_project` found it
+    already present — a human's own hand — or it never got as far as
+    recording an application (the `unrecorded` verdict, whose own warning at
+    block-record time already says the label will not be removed when the
+    block clears). Neither proves the label ours, so `blocked` is left alone
+    for that issue even though the reason label still comes off: the same
+    over-hold `refinement_blocked_label_targets` already applies to a block
+    still open, extended here to one already cleared. No history at all for
+    an issue (neither a legacy nor a modern record survives to be read) falls
+    back to the reason label's own proof alone, exactly as this requirement
+    read before PR #823's review.
+
+    Two more conditions gate the whole reconciliation, both added on that
+    same review. First, `union_log_healthy` (`lib/fleet.sh`'s
+    `fleet_logs_healthy`, computed once per cycle ahead of the per-repo
+    loop): this is the one reader in the cycle that turns a *silent* union —
+    `fleet_logs` returns nothing at all when `$state_dir/log.jsonl` is absent
+    and the peers directory is empty, which a fresh node before its first
+    state-sync, a mirror just discarded and rebuilt (requirement 2.5's own
+    corruption path), or a failing fetch cron all produce — into "no block
+    exists" rather than "no block is visible from here", so it is the one
+    reader such a silence actively misleads. `fleet_logs_healthy` refuses to
+    let it: an empty union, or a peers directory whose own `fleet_mark_peers`
+    freshness marker records the last fetch as failed, is unhealthy, and the
+    whole reconciliation for that cycle is skipped with one warning logged
+    (not one per repo, since every repo shares the one union and the one
+    peers directory). Second, a grace window against `union_log_horizon`
+    (requirement 39f's own snapshot horizon): a peer node can apply this
+    exact label pair within seconds of logging the block that justifies it,
+    while that log line reaches this node only through the fleet's periodic
+    state-sync — up to a full fetch interval behind — so a label applied too
+    recently for its own block record to plausibly have arrived yet is
+    deferred rather than stripped. The reason label's own `labelled_at` (read
+    per candidate issue off its GitHub timeline, the same endpoint
+    `scripts/gather-hand-flagged-refinements.sh` already reads, with the
+    latest of the matching applications picked *outside* the `--jq` filter
+    rather than inside it — `gh api --paginate` re-runs that filter once per
+    page and this endpoint pages at thirty, so an in-filter aggregate reads
+    one stamp per matching page on a long timeline, per TD-PPagop-26081306;
+    the two gathers that still do it that way are TD-PPagop-26082701) is
+    compared against `union_log_horizon` with `LABEL_OWN_GRACE_SECONDS`
+    (`lib/label-marker.sh`) tolerance — the same constant requirement 39f
+    already measures a peer's label writes against that horizon with, reused
+    rather than duplicated. An unresolvable `labelled_at` (a failed timeline
+    call) defers the same as a too-recent one: this mechanism only ever acts
+    on a positive, aged proof, never a missing one.
 
 38c. **An idle, approved pull request is nudged, not left silent.** For every
     open, non-draft, `pr_label`-carrying pull request in every configured
@@ -12040,11 +12273,17 @@ with the Reviewer's own.
       `clone_dir` — alive and unmodified at this point in the cycle, and
       untouched by the reservation itself, which only ever fetches and pushes
       refs) and opens a small pull request carrying `tech-debt/<id>.md` alone,
-      following `TECH-DEBT.md`'s "Filing alongside other work" except that the
-      filing lands in its own pull request, never the one under review. Logs
-      `tech-debt-filed` (`pr_url`, `repo`, `by: "approver"`, `id`,
-      `filed_pr_url`) on success; a `warning` naming `tech-debt-file.err` on
-      failure.
+      labelled with the fleet's configured `pr_label` — this call site does
+      not otherwise have it in hand (`_approver_restale_sweep_repo`'s reliance
+      on the ambient `pr_label` is a different function), so it reads
+      `.pr_label` off `DEFAULTED_CONFIG` here and passes it through, falling
+      back to `"autonomous-agent"` only if that read comes back empty — so it is
+      visible to every gatherer that filters pull requests by that label
+      (agent-ops TD-PPagop-26082426), following `TECH-DEBT.md`'s "Filing
+      alongside other work" except that the filing lands in its own pull
+      request, never the one under review. Logs `tech-debt-filed` (`pr_url`,
+      `repo`, `by: "approver"`, `id`, `filed_pr_url`) on success; a `warning`
+      naming `tech-debt-file.err` on failure.
     - `file_issue` reuses the pull request's own URL as the duplicate-guard
       key: an open issue already quoting it *is* the record. No label, no
       assignee — legitimate autonomous work for the `issues` source to pick
@@ -14157,8 +14396,8 @@ What exists, and the requirements each part answers to:
       this is not an escalation addressed at a specific human, and is
       legitimate autonomous work for the `issues` source to pick up later.
       Prints `"<number>\t<url>"` on success, nothing on failure.
-    - `techdebt_file_debt REPO TITLE BODY PROVENANCE [TOKEN] [GIT_DIR]` —
-      reserves an id by running `scripts/reserve-tech-debt-id.pl`
+    - `techdebt_file_debt REPO TITLE BODY PROVENANCE [TOKEN] [GIT_DIR]
+      [PR_LABEL]` — reserves an id by running `scripts/reserve-tech-debt-id.pl`
       **unmodified**, always against `GIT_DIR`'s `origin/main` specifically
       (`git show origin/main:scripts/reserve-tech-debt-id.pl`, extracted
       fresh to a temporary path outside `GIT_DIR` and run from a CWD inside
@@ -14176,8 +14415,17 @@ What exists, and the requirements each part answers to:
       bare `remote add`, no object transfer beyond the one fetch this needs) —
       the Enabler's own case, which holds no clone of anything. Opens a pull
       request carrying the new file alone (`gh pr create --base main --head
-      td-record/<id>`) and prints `"<id>\t<pr-url>"` on success, nothing on
-      failure. Any failure after the id has been reserved — the base-SHA
+      td-record/<id> --label PR_LABEL`) — `PR_LABEL` defaulting to
+      `"autonomous-agent"` when omitted — so it is visible to every gatherer
+      that filters pull requests by that label rather than stranding it
+      unlabelled and invisible to all of them at once (agent-ops
+      TD-PPagop-26082426); the Approver and the Enabler, its only two
+      callers (requirements 42a, 36c), each resolve the fleet's configured
+      `pr_label` from `DEFAULTED_CONFIG` at their own call site, neither
+      having it otherwise in hand, and pass it through here rather
+      than relying on this function's own fallback. Prints `"<id>\t<pr-url>"`
+      on success, nothing on failure. Any failure after the id has been
+      reserved — the base-SHA
       lookup, the branch-create call, the contents-write call, or `gh pr
       create` itself — best-effort deletes `td-record/<id>` and then
       releases the `td/<id>` reservation (`gh api -X DELETE
@@ -14220,9 +14468,16 @@ What exists, and the requirements each part answers to:
     `origin/main`, each of the three API calls failing in turn, and each of
     those three failures additionally deleting both `td-record/<id>` and
     `td/<id>`, for `techdebt_file_debt`; the dedup hit, the
-    ordinary create, and a failed create, for `techdebt_file_issue`. The
-    Script's own wiring — that `run_approver_stage` and `maybe_run_enabler`
-    actually call these with the right arguments and log the right event — is
+    ordinary create, and a failed create, for `techdebt_file_issue`. Also
+    asserts the `gh pr create` call itself carries `--label`, both with
+    `PR_LABEL` omitted (the `"autonomous-agent"` fallback) and with one
+    supplied explicitly — the one case a passing test suite could otherwise
+    hide entirely, since a filing that opens unlabelled still returns a URL
+    and reports success (agent-ops TD-PPagop-26082426). The Script's own
+    wiring — that `run_approver_stage` and `maybe_run_enabler` actually call
+    these with the right arguments, including the fleet's configured
+    `pr_label` resolved from `DEFAULTED_CONFIG` rather than the bare
+    fallback, and log the right event — is
     covered separately, by `test/approver-tech-debt-file-wiring.test.sh` and
     `test/enabler-tech-debt-file-wiring.test.sh`, lifting each block out of
     `agent-cycle.sh` the same way `test/approver-wiring.test.sh` and
@@ -15696,6 +15951,35 @@ pull request, run the ones the change touches and any it could regress.
    does not satisfy the normalized check, and the claim loop's own call site
    guards the check with `selected_by_fallback` so that candidate is never
    faulted.
+7h. **A trimmed candidate's `acceptance` is checked against the item's own
+   live text, and never repaired on a genuine fault (requirement 17g,
+   agent-ops#821, shape decided agent-ops#830 option (c)).**
+   `test/item-text-fabrication.test.sh` passes, against `item_live_text`,
+   `item_text_fault` and `item_text_supply` lifted verbatim from
+   `lib/candidate-select.sh`: an untrimmed candidate is not checked and costs
+   no `gh` call; a `context` paragraph that never appeared in the live item
+   at all does **not** fault the candidate — `context` is not checked; a
+   faithful paraphrase in `acceptance`'s free prose is traceable and never
+   flagged, but an invented backtick-quoted specific in `acceptance` is
+   caught after exactly one `gh` read and named in the fault, while one that
+   really is in the live text (or the item's recorded refinement `spec`)
+   passes. `item_text_supply` is proven never to rescue an `acceptance`
+   fabrication fault — the invented span is still there after the live text
+   is appended, so the candidate still faults — and separately proven to
+   append the live text verbatim, without disturbing what the order already
+   said, for a candidate with an honestly incomplete `context` (never
+   fabricated), regardless of whether `item_text_fault` faulted it; to be a
+   no-op when `context` already carries the live text in full or when the
+   candidate was not trimmed this cycle (no `gh` call either); and to fail
+   open, not crash, on an unreachable read. `item_text_fault` itself is
+   proven to fail closed on that same read, with the failure reported
+   through `guard_warn`. The same test pins the claim loop's own wiring: the
+   check runs before requirement 17f's, is guarded by `selected_by_fallback`,
+   counts `fab_faults` under `cause: "fabricated"` on its own `claim-skipped`
+   line, is never handed to `refinement_traceability_repair`, and a cycle
+   that loses every candidate this way stands down with
+   `standdown_cause="fabricated"` — distinct from both `untraceable` and
+   `raced`.
 8. **A no-op Implementer is recorded.** Drive one cycle in which the
    Implementer reports `blocked` without opening a PR: the cycle must exit 0
    having logged an `attempt-failed` carrying that item and the stage's own
@@ -17924,7 +18208,11 @@ pull request, run the ones the change touches and any it could regress.
     or the pull-request-create call fails, each of those three failures
     additionally deleting `td-record/<id>` and then releasing the `td/<id>`
     reservation, in that order, rather than leaving either behind for a
-    sweep that looks at neither (TD-PPagop-26082203);
+    sweep that looks at neither (TD-PPagop-26082203); the pull request it
+    opens carries `--label PR_LABEL`, both with `PR_LABEL` omitted (the
+    `"autonomous-agent"` fallback) and with one supplied explicitly, so a
+    filing that opens unlabelled and still reports success cannot pass
+    unnoticed (agent-ops TD-PPagop-26082426).
     `techdebt_file_issue` returns an existing issue whose body
     already quotes the item reference rather than filing a duplicate, and
     fails cleanly when creation fails. A `TOKEN` argument reaches every `gh`
@@ -17940,7 +18228,10 @@ pull request, run the ones the change touches and any it could regress.
     wiring, and `test/enabler-verdicts.test.sh` for the Enabler's) with
     `techdebt_file_debt`/`techdebt_file_issue` stubbed as recorders: a
     well-formed `file_debt`/`file_issue` on either stage's final JSON calls
-    the matching function with the repo, title, body and (Approver only) the
+    the matching function with the repo, title, body, the fleet's configured
+    `pr_label` resolved from `DEFAULTED_CONFIG` (proven with a `DEFAULTED_CONFIG`
+    whose `pr_label` does not match `techdebt_file_debt`'s own bare fallback,
+    so passing by coincidence is not possible) and (Approver only) the
     same App token `approver_post_review` already posts the review under,
     logs `tech-debt-filed`/`issue-filed` naming `by: "approver"`/
     `by: "enabler"` on success, and logs a `warning` — never a changed

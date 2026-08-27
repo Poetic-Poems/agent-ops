@@ -13,7 +13,7 @@
 # rebase-and-resolve away from mergeable again, or (for Dependabot's own PRs,
 # which this system does not force-push) a bot-aware nudge-then-takeover away.
 #
-# Usage: gather-merge-conflicts.sh <owner/repo> <pr-label> <branch-prefix>
+# Usage: gather-merge-conflicts.sh <owner/repo> <pr-label> <branch-prefix> [tech-debt-branch-prefix]
 #
 # Candidate shape (our own PRs):
 #   {
@@ -194,8 +194,9 @@ GH="${MERGE_CONFLICTS_GH:-gh}"
 slug="${1:-}"
 pr_label="${2:-autonomous-agent}"
 branch_prefix="${3:-agent/}"
+tech_debt_branch_prefix="${4-td/}"
 if [[ -z "$slug" ]]; then
-  echo "usage: gather-merge-conflicts.sh <owner/repo> [pr-label] [branch-prefix]" >&2
+  echo "usage: gather-merge-conflicts.sh <owner/repo> [pr-label] [branch-prefix] [tech-debt-branch-prefix]" >&2
   exit 64
 fi
 
@@ -241,12 +242,19 @@ fi
 
 # `mergeable` is selected against `== "CONFLICTING"` exactly (never UNKNOWN —
 # see the header). Heads may be `agent/…` or — for tech-debt items, whose claim
-# branch is the human protocol's own `td/<ID>` — `td/…`; the label filter is
-# the primary "ours" signal either way.
+# branch is the human protocol's own `<tech_debt_branch_prefix><ID>` — `td/…`
+# — the label filter is the primary "ours" signal either way.
+#
+# Empty tech_debt_branch_prefix disables the tech-debt namespace: the `or`
+# clause is dropped rather than built with an empty startswith(""), which
+# would match every head.
+td_clause=""
+if [[ -n "$tech_debt_branch_prefix" ]]; then
+  td_clause=" or (.headRefName | startswith(\"$tech_debt_branch_prefix\"))"
+fi
 ours="$(jq -c "[.[] | select(.isDraft | not)
                     | select(.mergeable == \"CONFLICTING\")
-                    | select((.headRefName | startswith(\"$branch_prefix\"))
-                             or (.headRefName | startswith(\"td/\")))]" \
+                    | select((.headRefName | startswith(\"$branch_prefix\"))$td_clause)]" \
         <<<"$ours_all" 2>/dev/null || echo '[]')"
 jq -e 'type == "array"' <<<"$ours" >/dev/null 2>&1 || ours='[]'
 

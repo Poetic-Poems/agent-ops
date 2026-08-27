@@ -89,7 +89,7 @@ set -euo pipefail
 selected_repo="Poetic-Poems/agent-ops"
 state_repo="Poetic-Poems/agent-ops"
 state_dir="$T/state"
-DEFAULTED_CONFIG='{}'
+DEFAULTED_CONFIG='{"pr_label":"custom-agent-label"}'
 PROMPTS_DIR="$SCRIPT_DIR/prompts"
 prompt_overrides_json='{}'
 cycle_dir="$T/cycle"
@@ -185,6 +185,12 @@ assert_contains "  ... with the repo" "Poetic-Poems/agent-ops" "$(fd_calls)"
 assert_contains "  ... the title and body" "A gap the Approver noticed The body." "$(fd_calls)"
 assert_contains "  ... and the Approver's own App token, not the ordinary login" \
   "a-minted-token" "$(fd_calls)"
+# TD-PPagop-26082426: this stage never otherwise resolves config, so the
+# fleet's `pr_label` must be read from DEFAULTED_CONFIG and threaded through
+# rather than left for techdebt_file_debt's own fallback -- proven by using a
+# label here that does not match that fallback.
+assert_contains "  ... and the configured pr_label, not the bare fallback" \
+  "custom-agent-label" "$(fd_calls)"
 assert_contains "  ... a tech-debt-filed event, crediting the approver" \
   '"by":"approver"' "$(grep '^tech-debt-filed' "$tmp_dir/events" || true)"
 assert_eq "  ... no warning" "0" "$(warnings | grep -c .)"

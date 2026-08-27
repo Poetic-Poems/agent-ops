@@ -589,6 +589,181 @@ refinement_traceability_repair() {  # <candidate-json> <refinements-json>
   return 0
 }
 
+# Requirement 17g (issue #821): the live full text of an item whose entry was
+# trimmed this cycle — fetched fresh, never the pre-fit extract the model
+# actually saw, because that extract is exactly what this exists to check the
+# work order *against*, not to trust. Two sources only, because
+# `coordinator_fit_trimmed_items` (lib/coordinator-input.sh) never names a
+# third: the fit ladder only ever sheds prose from the `issues` and
+# `tech_debt` bands (lib/coordinator-input.sh's own header comment). An
+# issue's live text is its body plus every comment, oldest first, matching
+# what `prompts/coordinator.md`'s "An issue is its whole thread" already tells
+# the Co-Ordinator to read; a tech-debt item's is the register file's raw
+# content at the repo's default branch, matching what its own gather entry's
+# `body` carries. Prints the text on success; a non-zero exit (an unreachable
+# GitHub, an unknown item, an unrecognised source) leaves stdout whatever `gh`
+# already wrote to it — the caller reads the exit code, not emptiness, so it
+# cannot confuse "fetched, and empty" with "failed to fetch".
+item_live_text() {  # <repo> <source> <item>
+  local repo="$1" source="$2" item="$3"
+  case "$source" in
+    issues)
+      gh issue view "$item" --repo "$repo" --json body,comments \
+        --jq '(.body // "") + "\n\n" + ([(.comments // [])[].body] | join("\n\n"))'
+      ;;
+    tech-debt)
+      gh api "repos/$repo/contents/tech-debt/${item}.md" --jq '.content | gsub("\n"; "") | @base64d'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# Requirement 17g (issue #821): a work order's `acceptance` can name a
+# specific detail — a file, a flag, an identifier — that the model never
+# actually read, presenting invention as the item's own. The #815 incident
+# (cycle 20260826T064910Z-poetic-1-186841): a Co-Ordinator whose input had
+# been trimmed to fit its model's window invented an `acceptance` in full,
+# and requirement 17f's own repair (which only ever asks "is the *recorded
+# refinement* present", never "is everything else here real") logged the
+# result a success. Scoped to a candidate whose `{repo, item}` appears in
+# `coordinator_fit_trimmed_items`'s own output this cycle — an untrimmed
+# entry carries nothing elided to fabricate about, so this costs nothing
+# there, the same "nothing to check, no `gh` call" shape
+# `refinement_traceability_fault` already uses for an item with no recorded
+# refinement.
+#
+# `context` is not checked here (agent-ops#830's owner decision on #821, PR
+# #825): `prompts/coordinator.md`'s work-order schema requires `context` to
+# carry the Co-Ordinator's own framing — file paths, related conventions
+# found while evaluating, why the item is unblocked and in scope — alongside
+# the entry's verbatim paste, and nothing in the schema marks where the
+# paste ends and the framing begins. A check that faulted every paragraph it
+# could not trace therefore faulted that mandated framing by construction,
+# on ordinary honest work orders, at the fit rungs the fleet normally runs
+# at — reproduced by two independent Reviewer rounds against this PR's own
+# work order. TD-PPagop-26082801 tracks that deferred detection gap against
+# #769, the issue asking whether the Co-Ordinator should be pasting
+# `context` at all — the schema question a narrower check would need first.
+#
+# `acceptance`, by contrast, is explicitly allowed to be the Co-Ordinator's
+# own synthesis ("set acceptance from the current state of the thread") — a
+# faithful paraphrase is traceable and must not fault, which is deliberately
+# weaker than requiring an appropriate-tier model to have authored it (that
+# question belongs to agent-ops#822, out of scope here). So only its own
+# backtick-quoted spans (`` `like this` ``) — the concrete specifics (a
+# file, a flag, an identifier) a paraphrase preserves from its source and a
+# fabrication is what actually invents — are checked, once normalized (the
+# same whitespace collapse `_traceability_normalize` already applies for
+# requirement 17f), against the union of the live text (fetched fresh,
+# above) and the item's own recorded refinement `spec` (already legitimate:
+# whether it belongs in the order at all is requirement 17f's own question,
+# not this one's); free prose around them is never compared.
+#
+# Prints a non-empty fault naming the invented span; prints nothing when
+# there is nothing to check (not trimmed this cycle, or `acceptance` carries
+# no backtick span) or every span checks out. A `gh` read that fails is a
+# fault — TD-PPagop-26082307's reasoning applies unchanged: this check
+# exists to confirm the live text really is what backs the work order, and
+# assuming pass on a read it could not complete would let a stale token or a
+# narrowed scope disarm the whole gate while it kept reading as green —
+# reported via `guard_warn`, never swallowed. Never exits non-zero.
+#
+# Unlike a missing refinement, a fault this function reports is never
+# repaired: appending the real text alongside a false one does not make the
+# false one true, so a candidate that faults here is always a hard skip,
+# logged with its own `cause: "fabricated"` — never folded into
+# `cause: "untraceable"`, so a reader of the log or the dashboard never has to
+# guess whether a skip was a copying failure or an invention.
+item_text_fault() {  # <candidate-json> <trimmed-json> <refinements-json>
+  local cand="$1" trimmed="${2:-[]}" refinements="${3:-{\}}" repo item source \
+    live norm_live norm_spec fault="" span norm_span live_fetch_failed=0
+  jq -e 'type == "array"' <<<"$trimmed" >/dev/null 2>&1 || trimmed='[]'
+  jq -e 'type == "object"' <<<"$refinements" >/dev/null 2>&1 || refinements='{}'
+  repo="$(jq -r '.repo // ""' <<<"$cand" 2>/dev/null || true)"
+  item="$(jq -r '.item // ""' <<<"$cand" 2>/dev/null || true)"
+  source="$(jq -r '.source // ""' <<<"$cand" 2>/dev/null || true)"
+  [[ -n "$repo" && -n "$item" ]] || return 0
+  jq -e --arg r "$repo" --arg i "$item" \
+    'any(.[]?; (.repo // "") == $r and ((.item // "") | tostring) == $i)' \
+    <<<"$trimmed" >/dev/null 2>&1 || return 0
+
+  live="$(item_live_text "$repo" "$source" "$item" 2>&1)" \
+    || { guard_warn "item-text:$repo#$item" "$live"; live=""; live_fetch_failed=1; }
+  if (( live_fetch_failed )); then
+    printf '%s %s: could not fetch the live item text to check this trimmed candidate against — gh failed, so it is treated as fabricated rather than assumed compliant' \
+      "$repo" "$item"
+    return 0
+  fi
+  [[ -n "$live" ]] || return 0
+
+  norm_live="$(_traceability_normalize "$live")"
+  norm_spec="$(_traceability_normalize "$(jq -r --arg r "$repo" --arg i "$item" \
+    '((.[$r] // {})[$i].spec // "")' <<<"$refinements" 2>/dev/null)")"
+
+  while IFS= read -r span; do
+    [[ -n "$span" ]] || continue
+    norm_span="$(_traceability_normalize "$span")"
+    [[ -n "$norm_span" ]] || continue
+    jq -ne --arg h "$norm_live" --arg n "$norm_span" '$h | contains($n)' >/dev/null 2>&1 && continue
+    [[ -n "$norm_spec" ]] \
+      && jq -ne --arg h "$norm_spec" --arg n "$norm_span" '$h | contains($n)' >/dev/null 2>&1 \
+      && continue
+    fault="$repo $item: acceptance names a specific detail (\`$span\`) not present, after whitespace normalization, in the live item text or its recorded refinement — requirement 17g treats this as fabricated, not a faithful paraphrase, so it is never repaired"
+    break
+  done < <(jq -r '(.acceptance // "") | scan("`([^`]+)`") | .[0]' <<<"$cand" 2>/dev/null)
+
+  [[ -n "$fault" ]] && printf '%s' "$fault"
+  return 0
+}
+
+# Requirement 17g, the other half of "either the live read demonstrably
+# happened, or the Script supplies the full text itself": a trimmed candidate
+# that clears `item_text_fault` above has written nothing fabricated, but may
+# still have written something merely incomplete — a faithful, honestly
+# scoped paraphrase of only the extract the model actually saw, never
+# claiming more. That candidate is still not one the Implementer should start
+# from as-is: the acceptance criterion or scope cut requirement 17b already
+# warns tends to live in exactly the bytes the fit ladder elided. So the
+# Script closes the gap itself, the same "supply what is missing instead of
+# discarding the work" move `refinement_traceability_repair` already makes
+# for a recorded refinement, applied here to the item's own body and
+# comments: append the live text fetched above, verbatim, under a heading
+# naming it as the Script's own insertion.
+#
+# Skips (prints nothing) when `context` already contains the live text in
+# full — the ordinary case where the model really did read live and paste
+# faithfully — so a compliant candidate is never churned, matching
+# `refinement_traceability_repair`'s own "already carries it" exemption.
+# Fails open on an unreadable live text: this is a supplement, not the gate —
+# `item_text_fault` above is what fails closed on the same read, and running
+# after it means a candidate only reaches here once that gate has already
+# passed. Never exits non-zero.
+item_text_supply() {  # <candidate-json> <trimmed-json>
+  local cand="$1" trimmed="${2:-[]}" repo item source live norm_context norm_live out
+  jq -e 'type == "array"' <<<"$trimmed" >/dev/null 2>&1 || trimmed='[]'
+  repo="$(jq -r '.repo // ""' <<<"$cand" 2>/dev/null || true)"
+  item="$(jq -r '.item // ""' <<<"$cand" 2>/dev/null || true)"
+  source="$(jq -r '.source // ""' <<<"$cand" 2>/dev/null || true)"
+  [[ -n "$repo" && -n "$item" ]] || return 0
+  jq -e --arg r "$repo" --arg i "$item" \
+    'any(.[]?; (.repo // "") == $r and ((.item // "") | tostring) == $i)' \
+    <<<"$trimmed" >/dev/null 2>&1 || return 0
+
+  live="$(item_live_text "$repo" "$source" "$item" 2>/dev/null)" || return 0
+  [[ -n "$live" ]] || return 0
+
+  norm_context="$(_traceability_normalize "$(jq -r '.context // ""' <<<"$cand" 2>/dev/null)")"
+  norm_live="$(_traceability_normalize "$live")"
+  jq -ne --arg h "$norm_context" --arg n "$norm_live" '$h | contains($n)' >/dev/null 2>&1 && return 0
+
+  out="$(jq -c --arg live "$live" \
+    '.context = ((.context // "") + "\n\n## Live item text (supplied verbatim by the Script)\n\n" + $live)' \
+    <<<"$cand" 2>/dev/null)" || return 0
+  printf '%s' "$out"
+}
+
 # Requirement 3u/issue #320: the same deterministic-code-not-model-judgement
 # exclusion as exclude_blocked_or_void_items above, purpose-built for the one
 # pre-fetched band that function cannot be reused for as-is. Requirement 3t
@@ -1382,7 +1557,7 @@ gather_findings() {
 gather_review_feedback() {
   local slug="$1" out safe
   safe="${slug//\//_}"
-  out="$("$SCRIPT_DIR/scripts/gather-review-feedback.sh" "$slug" "$pr_label" "$branch_prefix" \
+  out="$("$SCRIPT_DIR/scripts/gather-review-feedback.sh" "$slug" "$pr_label" "$branch_prefix" "$tech_debt_branch_prefix" \
         2>"$cycle_dir/review-feedback-$safe.err" || true)"
   if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
     printf '%s\n' "$out" > "$cycle_dir/review-feedback-$safe.json"
@@ -1401,7 +1576,7 @@ gather_review_feedback() {
 gather_abandoned_drafts() {
   local slug="$1" out safe
   safe="${slug//\//_}"
-  out="$("$SCRIPT_DIR/scripts/gather-abandoned-drafts.sh" "$slug" "$pr_label" "$branch_prefix" "$abandoned_draft_after_hours" \
+  out="$("$SCRIPT_DIR/scripts/gather-abandoned-drafts.sh" "$slug" "$pr_label" "$branch_prefix" "$abandoned_draft_after_hours" "$tech_debt_branch_prefix" \
         2>"$cycle_dir/abandoned-drafts-$safe.err" || true)"
   if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
     printf '%s\n' "$out" > "$cycle_dir/abandoned-drafts-$safe.json"
@@ -1425,7 +1600,7 @@ gather_abandoned_drafts() {
 gather_merge_conflicts() {
   local slug="$1" out safe nudge_result
   safe="${slug//\//_}"
-  out="$("$SCRIPT_DIR/scripts/gather-merge-conflicts.sh" "$slug" "$pr_label" "$branch_prefix" \
+  out="$("$SCRIPT_DIR/scripts/gather-merge-conflicts.sh" "$slug" "$pr_label" "$branch_prefix" "$tech_debt_branch_prefix" \
         2>"$cycle_dir/merge-conflicts-$safe.err" || true)"
   # Requirement 34n's liveness retirement (TD-PPagop-26081303): a
   # `merge-conflicts-$safe.ok` marker, written iff this cycle's own read
@@ -1527,7 +1702,7 @@ gather_merge_conflicts() {
 gather_dequeued() {
   local slug="$1" out safe
   safe="${slug//\//_}"
-  out="$("$SCRIPT_DIR/scripts/gather-dequeued.sh" "$slug" "$pr_label" "$branch_prefix" \
+  out="$("$SCRIPT_DIR/scripts/gather-dequeued.sh" "$slug" "$pr_label" "$branch_prefix" "$tech_debt_branch_prefix" \
         2>"$cycle_dir/dequeued-$safe.err" || true)"
   # Requirement 34n's liveness retirement, same marker discipline as
   # `merge-conflicts-$safe.ok`: written iff this cycle's own read produced a

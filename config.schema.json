@@ -644,6 +644,16 @@
         "value": "`agent/`"
       }
     },
+    "tech_debt_branch_prefix": {
+      "description": "Branch naming for the human tech-debt-claim protocol (`TECH-DEBT.md`): `<tech_debt_branch_prefix><ID>`, read by lib/claim.sh and the gatherer/sweep scripts that must not treat a human's tech-debt branch as their own agent's. Empty disables the tech-debt namespace: those scripts then match only `branch_prefix`.",
+      "type": "string",
+      "default": "td/",
+      "x-docs": {
+        "readme": "Branch naming for the human tech-debt-claim protocol (`TECH-DEBT.md`): `<tech_debt_branch_prefix><ID>`. Leave it empty for a repository that does not follow that convention \u2014 the affected scripts then match only `branch_prefix`.",
+        "spec": "Branch name `<tech_debt_branch_prefix><ID>`, e.g. `td/TD26051201`, read wherever `lib/claim.sh` and the gatherer/sweep scripts of requirements 3c/3e/3g/3z/17b must tell a human's tech-debt claim branch from their own agent's. Empty disables the tech-debt namespace: those scripts then match only `branch_prefix`.",
+        "value": "`td/`"
+      }
+    },
     "max_open_agent_prs": {
       "description": "Back-pressure: draft pull requests, ready pull requests still `CHANGES_REQUESTED`, and live claim-registry entries, all carrying `pr_label` across all repositories. A ready pull request whose next action lies outside the pipeline — approved, or awaiting a review nothing is currently `CHANGES_REQUESTED`-blocking — does not count.",
       "type": "integer",

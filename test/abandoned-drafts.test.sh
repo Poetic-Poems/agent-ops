@@ -336,6 +336,55 @@ assert_eq "a garbage staleness threshold yields [] rather than every draft" "[]"
   "$("$SCRIPT_DIR/scripts/gather-abandoned-drafts.sh" "Poetic-Poems/poetic" autonomous-agent 'agent/' "not-a-number" 2>/dev/null)"
 assert_eq "  ... and exits 0" "0" "$?"
 
+# --- tech_debt_branch_prefix: an explicit empty argument disables the td/
+# namespace rather than defaulting back to it (PR #835's review) ---
+#
+# `${5:-td/}` substitutes the default whenever the argument is empty, not only
+# when it is absent, so a caller that explicitly disables the namespace by
+# passing "" got `td/` back regardless — the fix is `${5-td/}`. This script
+# calls the bare `gh` binary rather than reading a GH-variable override, so it
+# is exercised for real via a PATH-prepended stub (the same technique
+# test/gather-tech-debt.test.sh and others already use) rather than the
+# combined-stub-plus-env-var pattern the other three gather scripts allow.
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
+mkdir -p "$tmp_dir/bin"
+cat > "$tmp_dir/bin/gh" <<STUB
+#!/usr/bin/env bash
+d="$tmp_dir"
+if [[ "\${1:-} \${2:-}" == "pr list" ]]; then
+  cat "\$d/prlist.json"
+  exit 0
+fi
+if [[ "\${1:-}" == "api" && "\${2:-}" == repos/*/commits/* ]]; then
+  sha="\${2##*/commits/}"
+  jq -r --arg s "\$sha" '.[\$s] // empty' "\$d/dates.json"
+  exit 0
+fi
+exit 1
+STUB
+chmod +x "$tmp_dir/bin/gh"
+
+cat > "$tmp_dir/prlist.json" <<'JSON'
+[
+  {"number": 700, "title": "t", "headRefName": "td/TD99", "headRefOid": "abc700",
+   "isDraft": true, "updatedAt": "2020-01-01T00:00:00Z",
+   "url": "https://github.com/o/r/pull/700", "body": "", "comments": [], "reviews": []}
+]
+JSON
+jq -nc '{"abc700": "2020-01-01T00:00:00Z"}' > "$tmp_dir/dates.json"
+
+default_out="$(PATH="$tmp_dir/bin:$PATH" "$SCRIPT_DIR/scripts/gather-abandoned-drafts.sh" o/r autonomous-agent agent/ 3 2>/dev/null)"
+assert_eq "omitting tech_debt_branch_prefix defaults to td/, so a td/ branch is still a candidate" \
+  "[700]" "$(jq -c '[.[].number]' <<<"$default_out")"
+
+disabled_out="$(PATH="$tmp_dir/bin:$PATH" "$SCRIPT_DIR/scripts/gather-abandoned-drafts.sh" o/r autonomous-agent agent/ 3 '' 2>/dev/null)"
+assert_eq "an explicit empty tech_debt_branch_prefix disables the td/ namespace" \
+  "[]" "$(jq -c '[.[].number]' <<<"$disabled_out")"
+
+rm -rf "$tmp_dir"
+trap - EXIT
+
 # --- The argv cap (requirement 4g, TD-PPagop-26081406) ---
 #
 # $pr (the candidate build — a whole pull-request object including its body)

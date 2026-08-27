@@ -702,8 +702,9 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                              //   whether or not it recovered
                standdown_cause,             // "raced" | "unreachable" | "pre-claimed"
                                              //   | "unauthorized" | "disk-full"
-                                             //   | "disk-low" | null — only on an
-                                             //   outcome of "stand-down"
+                                             //   | "disk-low" | "fabricated"
+                                             //   | "untraceable" | null — only on
+                                             //   an outcome of "stand-down"
                stages:{ coordinator|implementer|reviewer:
                         { ran, cost_usd, duration_ms, num_turns, is_error,
                           terminal_reason, model, status, result, stderr,
@@ -1770,10 +1771,16 @@ number's twins elsewhere on the page.
   contention, `"unreachable"` when every loss was a GitHub outage instead,
   `"pre-claimed"` when nothing was ever attempted because the cycle's own
   gather had already seen every candidate claimed (implementation spec 17a's
-  `claim-skipped`) — and only a cycle with a `held` loss is marked `raced` at
+  `claim-skipped`), `"fabricated"` when every candidate's `acceptance` named a
+  specific its own live item text does not support (implementation spec 17g),
+  and `"untraceable"` when every candidate failed the refinement-traceability
+  check and the repair could not rescue one (implementation spec 17f) — and
+  only a cycle with a `held` loss is marked `raced` at
   all: a GitHub outage names no peer to contend with, and a pre-claimed
   skip was never contention in the first place, so neither shape may wear
-  contention's badge (implementation spec 17a, issue #245).
+  contention's badge (implementation spec 17a, issue #245). The same is true
+  of the two selection-integrity causes: a work order the Script refused to
+  hand on names no peer either.
   An item that is blocked *and* void reaches `void[]` and not
   `blocked[]` (implementation spec 34h, acceptance check 8g), while an ordinary
   block beside it is still listed — a subtraction that over-reached would empty
@@ -1860,7 +1867,12 @@ number's twins elsewhere on the page.
   third, of a cycle that skipped every candidate as pre-claimed
   (`raced: false`, `standdown_cause: "pre-claimed"`), renders as an ordinary
   stood-down row wearing neither race badge — a selection defect contends
-  with nobody. A
+  with nobody. Both race badges further require more than one active peer
+  (issue #829): a fixture whose `fleet.nodes` names exactly one node carrying
+  `role: "active"` renders neither `↻ raced` nor "recovered race ×N" for a
+  recovered cycle or a lost-every-candidate one, even though both still carry
+  `raced: true`/`race_losses` — while a fixture naming two active nodes
+  renders both badges exactly as the fleet-less fixtures above do. A
   fixture whose `noop_ticks` counts more filtered ticks than the forty slots
   hold (issue #271) renders its substantive cycles as ordinary rows plus the
   one summary line — the total, the stood-down/lock-held-skip split and the
@@ -2244,6 +2256,20 @@ number's twins elsewhere on the page.
   candidate carries one without ever having claimed anything, and "recovered
   race" is withheld from it — an outcome of `stand-down` is exactly the case
   the word "recovered" would be false of.
+  Both badges further require more than one currently *active* node (issue
+  #829): `claim-lost`'s cause `held` means some claim already existed when
+  this cycle tried to take it, but only an active node ever attempts one
+  (`role_current`, `lib/role.sh`) — a standby fetches its peers and serves
+  its own dashboard but runs no cycles, so it can never be the peer a claim
+  was lost to. With `fleet.nodes` present and at most one node carrying
+  `role: "active"`, no peer could have contended for anything, so `↻ raced`
+  and "recovered race ×N" render nothing for that cycle even though its
+  `raced`/`race_losses` fields are unchanged — the row still reads its plain
+  outcome, "Stood down" or otherwise, exactly as if the fields were absent.
+  Fleet-less data (no `fleet` key at all) says nothing about how many nodes
+  are active, so it is not read as "one" and renders as it always has, and
+  fleet data naming two or more active nodes renders both badges exactly as
+  before this distinction existed.
 - **Distinct classes of data are distinguished by shape, not colour alone.**
   Source tags are outlined and square; outcome badges are filled pills. Both
   are colour-coded, and the two sit side by side, so without the shape

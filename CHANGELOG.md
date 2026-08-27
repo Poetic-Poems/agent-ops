@@ -8,6 +8,71 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- New `tech_debt_branch_prefix` config key (default `td/`, agent-ops#655): the
+  human tech-debt-claim protocol's (`TECH-DEBT.md`) own branch prefix was a
+  bare `"td/"` literal in `lib/claim.sh`, the four `gather-*.sh` sources and
+  `sweep-orphan-branches.sh`, with no way for an adopting repository that
+  does not follow that convention to change or disable it. All six sites now
+  read the new key instead; left unset, it defaults to `td/` and behaviour is
+  unchanged. Empty disables the tech-debt namespace, so those scripts then
+  match only `branch_prefix`.
+- A trimmed Co-Ordinator candidate's `acceptance` is now checked against the
+  item's own live text before it is claimed, not just against its recorded
+  refinement (requirement 17g, issue #821, decided agent-ops#830 option (c)):
+  `item_text_fault` (`lib/candidate-select.sh`) re-fetches an issue's full
+  thread or a tech-debt item's register file fresh and faults an
+  `acceptance` backtick-quoted specific that text does not support —
+  reproducing and closing the #815 incident, where a Co-Ordinator whose input
+  had been trimmed to fit its model's window invented an `acceptance` in
+  full, and requirement 17f's own repair logged the result a success.
+  `context` is not checked: the work-order schema requires it to carry the
+  Co-Ordinator's own framing prose alongside the entry's verbatim paste, with
+  no marker for where the paste ends, so a check faulting unrecognised
+  paragraphs faulted that mandated framing on ordinary honest work orders
+  (TD-PPagop-26082801 tracks the deferred detection gap against #769). Unlike
+  a missing refinement, an `acceptance` fabrication fault is never repaired —
+  it is a hard skip, logged with its own `cause: "fabricated"`, distinct from
+  `untraceable`. A trimmed candidate that clears the check is still
+  unconditionally supplied the item's live text via `item_text_supply`
+  (a no-op once it is already there), so "the live read demonstrably
+  happened, or the Script supplies the full text itself" holds either way.
+- A `blocked`/`blocked:needs-refinement` pair whose block has cleared now
+  comes off the issue even when nothing in the shared log can prove the
+  pipeline applied it (requirement 38b, agent-ops#816, TD-PPagop-26082602).
+  The existing reconciliation sweep keys on a logged `own-label-action add`
+  with no later `remove`, which two real cases never have: a label
+  `scripts/sweep-legacy-refinement-assignees.sh` applied, since it runs
+  outside a cycle and has no log of its own to append to, and one whose
+  block cleared before that logging existed at all. Both left the issue
+  excluded by `scripts/gather-issues.sh`'s deterministic `blocked`-label
+  filter for good, invisibly — twelve high-priority issues in
+  `Poetic-Poems/agent-ops` were sitting in exactly that state, cleared by
+  hand on 2026-08-26. New `refinement_blocked_label_orphaned`
+  (`lib/refinement.sh`) proves the same fact from live GitHub state instead
+  of from history — `blocked:<reason>` is never a name a human reaches for,
+  so its presence on an open issue with no open block behind it is proof
+  enough on its own. `lib/candidate-gather.sh` runs it once per repo per
+  cycle, ahead of the issue gather, so a freed issue re-enters candidacy the
+  same cycle rather than the next one. A bare `blocked` with no reason label
+  beside it is never touched, so a label a human applied for their own
+  reasons is as safe as it was before; the residue that leaves — a
+  legacy-swept issue whose reason label was released successfully, keeping
+  its `blocked` for good — is recorded as TD-PPagop-26082608.
+
+  Three guards keep that live read from over-acting, all added on PR #823's
+  own review. The generic `blocked` rides along only when the issue's own
+  block history — a modern `attempt-failed` event's `blocked_label` field,
+  or the absence of one at all — actually says this pipeline put it there;
+  a modern event that recorded finding `blocked` already present (a human's
+  own hand) leaves it alone even though the reason label still comes off.
+  The whole reconciliation is skipped for a cycle whose fleet-wide log looks
+  degraded — an empty union, or a peers directory whose own fetch marker
+  reports failure (`lib/fleet.sh`'s new `fleet_logs_healthy`) — rather than
+  reading that silence as proof no block exists. And a label applied too
+  recently for its own block record to plausibly have reached this node yet
+  (within `LABEL_OWN_GRACE_SECONDS` of `union_log_horizon`, the same
+  tolerance requirement 39f already measures peer label writes with) is
+  deferred to a later cycle rather than stripped.
 - `scripts/state-sync.sh`'s mirror is no longer trusted just because its
   `.git/` directory still exists (requirement 2.5, issue #604): `mirror_init`
   now runs `git fsck --connectivity-only` against a mirror that already
@@ -684,6 +749,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `techdebt_file_debt` (`lib/tech-debt-file.sh`) now labels the pull request
+  it opens to file a tech-debt record with the fleet's configured
+  `pr_label`, rather than opening it unlabelled (TD-PPagop-26082426). Every
+  gatherer that finds this pipeline's own pull requests filters on that
+  label — `gather-review-feedback.sh`, `gather-abandoned-drafts.sh`,
+  `gather-merge-conflicts.sh`, `gather-dequeued.sh`,
+  `gather-human-visibility-hygiene.sh` — so an unlabelled filing pull
+  request was invisible to all of them at once: nothing would ever review
+  it, notice it going stale, or notice it conflicting, while the call
+  itself still reported success. The Approver and the Enabler, its only two
+  callers, each resolve `pr_label` from `DEFAULTED_CONFIG` at their own call
+  site (neither having it otherwise in hand) and pass it through.
+- The dashboard no longer badges a cycle `↻ raced`/"recovered race ×N" when
+  at most one node is currently active (agent-ops#829). Per-item claims only
+  arbitrate contention between concurrently *active* nodes (`lib/role.sh`) —
+  a standby never attempts one — so with `fleet.nodes` present and at most
+  one node carrying `role: "active"`, no peer could have held the claim a
+  cycle's `raced`/`race_losses` fields describe, and the badge previously
+  named contention that could not have happened. The underlying log fields
+  are unchanged; only their rendering is gated, in `dashboard/index.html`'s
+  new `racedMarkersPossible()`. Fleet-less data (no `fleet` key at all) is
+  not evidence of a single node and renders exactly as before.
 - `github_auth_probe` (`lib/github-limit.sh`, requirement 2.0b) no longer
   classifies a missing `GH_TOKEN`/`GITHUB_TOKEN` as `unreachable`
   (TD-PPagop-26082306). Before, only an HTTP 401 GitHub itself answered was
