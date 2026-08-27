@@ -26,7 +26,7 @@
 #   stranding it unlabelled and invisible to all of them at once
 #   (agent-ops TD-PPagop-26082426). The Approver and the Enabler each resolve
 #   the fleet's configured `pr_label` from `DEFAULTED_CONFIG` at their own
-#   call site and pass it here, since neither otherwise resolves config.
+#   call site and pass it here, neither having it otherwise in hand.
 #   Follows TECH-DEBT.md's "Filing alongside other work" exactly, except the
 #   filing lands in its own small pull request rather than riding along on a
 #   branch the caller already holds: neither the Approver nor the Enabler is

@@ -652,10 +652,13 @@ $node_name
       ap_fd_title="$(jq -r '.title // ""' <<<"$ap_file_debt" 2>/dev/null || true)"
       ap_fd_body="$(jq -r '.body // ""' <<<"$ap_file_debt" 2>/dev/null || true)"
       # The fleet's configured `pr_label` (agent-ops TD-PPagop-26082426): this
-      # stage never otherwise resolves config, so it is read from
+      # call site does not otherwise have it in hand, so it is read from
       # `DEFAULTED_CONFIG` here and threaded through to techdebt_file_debt,
       # which would otherwise open its filing pull request unlabelled and
-      # invisible to every gatherer that filters on it.
+      # invisible to every gatherer that filters on it. Read here rather than
+      # taken from the ambient `pr_label` agent-cycle.sh resolves (which
+      # `_approver_restale_sweep_repo` below does rely on) so that the value
+      # this stage files under is its own, and testable as such.
       ap_fd_pr_label="$(jq -r '.pr_label // empty' <<<"$DEFAULTED_CONFIG" 2>/dev/null || true)"
       [[ -n "$ap_fd_pr_label" ]] || ap_fd_pr_label="autonomous-agent"
       if [[ -z "$ap_fd_title" || -z "$ap_fd_body" ]]; then

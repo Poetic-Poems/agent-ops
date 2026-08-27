@@ -10517,9 +10517,9 @@ implements.
       run against a throwaway git context this call creates and tears down,
       since the Enabler holds no clone of any repo — requirement 36) and
       opens a small pull request carrying `tech-debt/<id>.md` alone, labelled
-      with the fleet's configured `pr_label` — this stage never otherwise
-      resolves config, so it reads `.pr_label` off `DEFAULTED_CONFIG` at this
-      call site and passes it through, falling back to `"autonomous-agent"`
+      with the fleet's configured `pr_label` — this call site does not
+      otherwise have it in hand, so it reads `.pr_label` off `DEFAULTED_CONFIG`
+      here and passes it through, falling back to `"autonomous-agent"`
       only if that read comes back empty — so it is visible to every gatherer
       that filters pull requests by that label (agent-ops TD-PPagop-26082426),
       following `TECH-DEBT.md`'s "Filing alongside other work" except that the
@@ -12119,10 +12119,11 @@ with the Reviewer's own.
       `clone_dir` — alive and unmodified at this point in the cycle, and
       untouched by the reservation itself, which only ever fetches and pushes
       refs) and opens a small pull request carrying `tech-debt/<id>.md` alone,
-      labelled with the fleet's configured `pr_label` — this stage never
-      otherwise resolves config, so it reads `.pr_label` off `DEFAULTED_CONFIG`
-      at this call site and passes it through, falling back to
-      `"autonomous-agent"` only if that read comes back empty — so it is
+      labelled with the fleet's configured `pr_label` — this call site does
+      not otherwise have it in hand (`_approver_restale_sweep_repo`'s reliance
+      on the ambient `pr_label` is a different function), so it reads
+      `.pr_label` off `DEFAULTED_CONFIG` here and passes it through, falling
+      back to `"autonomous-agent"` only if that read comes back empty — so it is
       visible to every gatherer that filters pull requests by that label
       (agent-ops TD-PPagop-26082426), following `TECH-DEBT.md`'s "Filing
       alongside other work" except that the filing lands in its own pull
@@ -14257,8 +14258,8 @@ What exists, and the requirements each part answers to:
       unlabelled and invisible to all of them at once (agent-ops
       TD-PPagop-26082426); the Approver and the Enabler, its only two
       callers (requirements 42a, 36c), each resolve the fleet's configured
-      `pr_label` from `DEFAULTED_CONFIG` at their own call site, since
-      neither otherwise resolves config, and pass it through here rather
+      `pr_label` from `DEFAULTED_CONFIG` at their own call site, neither
+      having it otherwise in hand, and pass it through here rather
       than relying on this function's own fallback. Prints `"<id>\t<pr-url>"`
       on success, nothing on failure. Any failure after the id has been
       reserved — the base-SHA

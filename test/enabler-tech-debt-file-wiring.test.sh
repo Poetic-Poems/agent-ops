@@ -244,7 +244,7 @@ assert_eq "  ... with the repo, title, body and provenance" "1" \
 # rather than left for techdebt_file_debt's own fallback -- proven by using a
 # label here that does not match that fallback.
 assert_eq "  ... and the configured pr_label, not the bare fallback" "1" \
-  "$(grep -c 'custom-agent-label' <<<"$out")"
+  "$(grep -c '^techdebt_file_debt .*custom-agent-label' <<<"$out")"
 assert_eq "  ... tech-debt-filed event logged" "1" "$(events_named "$out" tech-debt-filed | grep -c .)"
 fields="$(events_named "$out" tech-debt-filed)"
 assert_eq "  ... event names by:enabler" "enabler" "$(jq -r '.by' <<<"$fields")"

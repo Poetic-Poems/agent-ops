@@ -995,7 +995,7 @@ $(jq . <<<"$input")
       fd_title="$(jq -r '.title // ""' <<<"$e_file_debt" 2>/dev/null || true)"
       fd_body="$(jq -r '.body // ""' <<<"$e_file_debt" 2>/dev/null || true)"
       # The fleet's configured `pr_label` (agent-ops TD-PPagop-26082426): this
-      # stage never otherwise resolves config, so it is read from
+      # call site does not otherwise have it in hand, so it is read from
       # `DEFAULTED_CONFIG` here and threaded through to techdebt_file_debt,
       # which would otherwise open its filing pull request unlabelled and
       # invisible to every gatherer that filters on it.

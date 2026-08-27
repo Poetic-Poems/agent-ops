@@ -720,7 +720,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it, notice it going stale, or notice it conflicting, while the call
   itself still reported success. The Approver and the Enabler, its only two
   callers, each resolve `pr_label` from `DEFAULTED_CONFIG` at their own call
-  site (neither otherwise resolves config) and pass it through.
+  site (neither having it otherwise in hand) and pass it through.
 - The dashboard no longer badges a cycle `↻ raced`/"recovered race ×N" when
   at most one node is currently active (agent-ops#829). Per-item claims only
   arbitrate contention between concurrently *active* nodes (`lib/role.sh`) —
