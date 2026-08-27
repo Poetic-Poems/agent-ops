@@ -528,6 +528,34 @@ if escape_login="$(approver_token_identity_login "")" && [[ -n "$escape_login" ]
   done < <(jq -r '.repos[].slug' "$CONFIG_FILE" 2>/dev/null || true)
 fi
 
+# 2.1g Reservation-release retry sweep (TD-PPagop-26082427) — the durable
+# backstop for a `_techdebt_unfile` (lib/tech-debt-file.sh) DELETE that could
+# not land: rather than leaving an abandoned `td/<id>`/`td-record/<id>`
+# reservation branch orphaned for good, that failure now writes a marker
+# under `reservation-releases/` in the state repository, and this is the
+# pass that retries it. One invocation, not a per-repo loop: every marker
+# already names its own target repository, so a single pass covers
+# whichever repositories have anything pending regardless of `--repo` or
+# which repos this node is configured against — the same shape
+# `lib/claim.sh gc` already uses for its own state-repo-wide sweep. Every
+# node may run it concurrently: a second delete of an already-gone branch is
+# a no-op and a second clear of an already-cleared marker is a 404 this
+# script already treats as nothing to report. Skipped on --dry-run: it
+# deletes refs and state-repo markers.
+if ! (( DRY_RUN )); then
+  while IFS= read -r pending_action; do
+    [[ -n "$pending_action" ]] || continue
+    case "$(jq -r '.action // ""' <<<"$pending_action" 2>/dev/null || true)" in
+      released|absent) log_event "reservation-release-retried" \
+        "$(jq -c 'del(.action) + {outcome: .action}' <<<"$pending_action")" ;;
+      warning) log_event "warning" "$(jq -c \
+        '{detail: ("reservation-release retry: " + (.repo // "") + " " + (.branch // "") + ": " + (.detail // ""))}' \
+        <<<"$pending_action")" ;;
+    esac
+  done < <(timeout 120 "$SCRIPT_DIR/scripts/release-pending-reservations.sh" \
+             2>>"$cycle_dir/reservation-release-sweep.err" || true)
+fi
+
 # 2.2 Back-pressure — across ALL configured repos, regardless of --repo.
 #
 # The stand-down is *deferred* rather than taken here (requirement 2.2a). Back-

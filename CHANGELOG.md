@@ -22,6 +22,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   still wants. No call site uses either function yet — the pipeline's own
   catalogue entries are still unprefixed, and renaming them is a live
   migration recorded as TD-PPagop-26082809.
+- An abandoned tech-debt reservation branch is no longer left orphaned for
+  good when its own release attempt fails (TD-PPagop-26082427). A `td/<id>`
+  or `td-record/<id>` branch `lib/tech-debt-file.sh`'s `_techdebt_unfile`
+  could not delete — the same GitHub API whose failure put it on that path
+  is the same window most likely to fail the `DELETE` meant to undo it —
+  now writes a durable marker into the state repository's
+  `reservation-releases/` tree instead of only logging and swallowing the
+  failure. New `scripts/release-pending-reservations.sh` retries every
+  pending marker each cycle (`lib/standdown.sh` step 2.1g) until the branch
+  is confirmed gone, clearing its own marker once it is. Observed for real
+  on this repository: fourteen consecutive reservations orphaned in a
+  seventy-second window on 2026-08-23, none of which any existing sweep
+  would ever have released.
 
 - New `tech_debt_branch_prefix` config key (default `td/`, agent-ops#655): the
   human tech-debt-claim protocol's (`TECH-DEBT.md`) own branch prefix was a
