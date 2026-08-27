@@ -6988,7 +6988,15 @@ implements.
       makes for a recorded refinement: append the live text, verbatim, under
       a heading naming it the Script's own insertion. A no-op when `context`
       already contains the live text in full, so a candidate that really did
-      read live and paste faithfully is never churned. Logged
+      read live and paste faithfully is never churned — but that exemption is
+      effectively never taken, and the append should be read as
+      always-on for a trimmed candidate: it asks whether `context` carries the
+      whole live text as one contiguous run (body and every comment joined,
+      after the same normalization), and an honest `context` interleaves the
+      Co-Ordinator's own framing between those passages, so the run does not
+      match. It is kept rather than dropped only because taking it out would
+      append a second copy to the `context` that does carry one
+      (agent-ops#830's decision, item 2). Logged
       `work-order-repaired` with `cause: "trimmed"`. Fails open on an
       unreadable live text — this is a supplement, not the gate;
       `item_text_fault` is what fails closed on the same read, and a
