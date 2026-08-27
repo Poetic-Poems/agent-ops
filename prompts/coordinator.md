@@ -1526,6 +1526,11 @@ an edit — so it takes `models.default`. Otherwise use
 when the diff looks small. Record your reasoning in `model_reason`; a future
 reader (human or agent) should be able to see why without re-deriving it.
 
+A documentation-only item — one that takes `models.trivial` by the rule
+above — is ordinary selectable work like any other, not a separate track: do
+not park it, defer it, or treat it as lower-priority solely because it edits
+prose rather than behaviour.
+
 ## Output — your entire final message
 
 Your final message must be **exactly one JSON object and nothing else** —

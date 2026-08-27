@@ -339,10 +339,44 @@ control, not scaffolding.
 | Stage | Level | What changes | Rollback | Exit criteria |
 |---|---|---|---|---|
 | 0 | `human` | WI-1 baseline miner; WI-2 config key + kill switch as dead code; D18 merges | n/a | Baseline recorded; D18 on `main` |
-| 1 | `agent-approves` | WI-3 App + ruleset (0→1 approvals, code-owner review off, stale-dismissal on); WI-4 tokens; WI-5 Approver stage; #390/#391 fixed first (the idle nudge comes back to life at count=1) | Ruleset back; level to `human` | ~50 agent-approved PRs, zero divergence between App verdict and human action |
-| 2 | `agent-merges-routine`, agent-ops only | WI-6 budget; WI-7 classifier + arming (`complexity:low`/`medium`; `register-hygiene` + `tech-debt` sources; no protected paths); WI-8 digest. Prerequisites: fail-closed arming path (TD-PPagop-26081407 subset), #393–#395, #338, TD-PPagop-26081409 | Level downgrade; belt-and-braces: repo `allow_auto_merge` off | ≥30 autonomous merges or 4 weeks; zero classifier escapes; revert rate ≤ baseline |
-| 3 | `agent-merges-routine`, fleet-wide | agent-ops widens to all sources + `complexity:high`; poetic/poetic-fiddle enter narrow (queues there first — poetic#175/poetic-fiddle#318, owner act; WI-10 void corroboration landed) | Per-repo downgrade | Same metrics per repo, ≥30 merges each |
-| 4 | `agent-merges-all` | WI-12 protected-path controls (critical tier + ~24 h cool-off between approval and arming for gate code); WI-9 end-state doctrine complete | Kill switch | Zero human merges in 30 days at baseline revert rate, no unactioned escalations |
+| 1 | `agent-approves` | WI-3 App + ruleset (0→1 approvals, code-owner review off, stale-dismissal on); WI-4 tokens; WI-5 Approver stage; #390/#391 fixed first (the idle nudge comes back to life at count=1) | Ruleset back; level to `human` | ~~50 agent-approved PRs~~ **15**, zero divergence between App verdict and human action |
+| 2 | `agent-merges-routine`, agent-ops only | WI-6 budget; WI-7 classifier + arming (`complexity:low`/`medium`; `register-hygiene` + `tech-debt` sources; no protected paths); WI-8 digest. Prerequisites: fail-closed arming path (TD-PPagop-26081407 subset), #393–#395, #338, TD-PPagop-26081409 | Level downgrade; belt-and-braces: repo `allow_auto_merge` off | ~~≥30 autonomous merges or 4 weeks~~ **≥15 autonomous merges or 2 weeks**; zero classifier escapes; revert rate ≤ baseline |
+| 3 | `agent-merges-routine`, fleet-wide | agent-ops widens to all sources + `complexity:high`; poetic/poetic-fiddle enter narrow (queues there first — poetic#175/poetic-fiddle#318, owner act; WI-10 void corroboration landed) | Per-repo downgrade | Same metrics per repo, ~~≥30~~ **≥15** merges each |
+| 4 | `agent-merges-all` | WI-12 protected-path controls (critical tier + ~24 h cool-off between approval and arming for gate code); WI-9 end-state doctrine complete | Kill switch | ~~Zero human merges in 30 days~~ **Zero human merges in 14 days** at baseline revert rate, no unactioned escalations |
+
+The struck-through figures above are the original per-stage sample sizes,
+fixed before any of the ladder existed and on no evidence about how the
+Approver would actually behave; the bold figures are current, restated by
+[#402's 2026-08-18 amendment](https://github.com/Poetic-Poems/agent-ops/issues/402).
+
+**Stage 2 waiver.** Stage 2 was entered at **six** agent-approved pull
+requests, not the restated bar of 15 — #548, #550, #554 and #555 approved
+and merged, #556 approved and open, #539 `CHANGES_REQUESTED` and open, with
+zero divergence between the App's verdict and the human's action across all
+six. That promotion,
+[PR #560](https://github.com/Poetic-Poems/agent-ops/pull/560), is a
+deliberate decision to proceed on a smaller sample than even the restated
+bar, justified by how narrow Stage 2's blast radius is: two routine
+sources, `complexity:low`/`medium` only, no protected path, an 8-per-day
+merge budget, and the fleet kill switch armed throughout. It is explicitly
+non-precedent: "Stages 3 and 4 are expected to meet the restated bars
+rather than be waived again."
+
+**Second waiver.** [PR #615](https://github.com/Poetic-Poems/agent-ops/pull/615)
+widens agent-ops's own routine landing class ahead of Stage 3's own bar —
+routine sources gain `issues`, and `merge_budget_per_day` rises to 24, for
+agent-ops alone — recorded in #402's
+[2026-08-18T08:56 comment](https://github.com/Poetic-Poems/agent-ops/issues/402#issuecomment-5325924791)
+as "a second deliberate decision of the same kind as the Stage 2 waiver,
+not an inference from it": with `merge_autonomy_routine_sources` at its
+default and the tech-debt register nearly empty, Stage 2 could not
+accumulate the exit evidence its own promotion depends on. Like the Stage 2
+waiver, it is explicitly non-precedent and scoped to one repository.
+
+**Standing rule.** An evidence bar is lowered only by an explicit amendment
+that states why — never by a stage promoting itself. Both waivers above are
+such amendments, recorded here and in #402; neither licenses a future stage
+to waive its own bar without one.
 
 **Stage 3's own promotion is written out in advance** — the exact `config.json`
 diff for each of the three repositories, the preconditions each edit assumes,
