@@ -1181,6 +1181,19 @@
         }
       }
     },
+    "min_free_workspace_bytes": {
+      "description": "Free space `workspace_root`'s filesystem must have before a cycle is worth starting one (requirement 2.0c). Below this the Script stands the cycle down before the clone, rather than cloning into whatever room is actually left. `scripts/doctor.sh` reads the same key for its own advisory warning. `0` turns the check off.",
+      "type": "integer",
+      "minimum": 0,
+      "default": 2147483648,
+      "x-docs": {
+        "readme": "Bytes. Free space `workspace_root` must have before a cycle starts one; below it the cycle stands down before cloning. `scripts/doctor.sh` warns on the same floor. `0` turns the check off.",
+        "spec": "The free-space floor of the pre-clone stand-down (requirement 2.0c, agent-ops#756): below this, `workspace_root`'s filesystem is read via `lib/disk-space.sh` and the cycle stands down before the clone rather than cloning into whatever room is actually left. `scripts/doctor.sh` reads the same key for its own advisory warning, so the two cannot silently disagree about what \"low\" means. `0` turns the check off.",
+        "value": {
+          "spec": "2 GiB"
+        }
+      }
+    },
     "disable_default_ttl": {
       "description": "Hours `--disable` lasts when `--for` does not say. Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one.",
       "type": "number",

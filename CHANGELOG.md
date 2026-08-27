@@ -770,6 +770,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rather than five, widening the default cycle lock by the Approver's 30 min
   prior, and `scripts/doctor.sh`'s pinned-cap warning now covers both new
   keys at every level of the precedence (TD-PPagop-26081802).
+- A cycle no longer starts work the host has no room to finish (requirement
+  2.0c, agent-ops#756): before the clone, and free like the GitHub-budget and
+  credential checks ahead of it, the Script now reads `workspace_root`'s free
+  space and stands down (`cause: "disk-full"` or `"disk-low"`) below a new
+  config key, `min_free_workspace_bytes` (default 2 GiB; `0` turns it off).
+  `scripts/doctor.sh` had warned about the same shortfall since before this
+  key existed, but only a human running it by hand ever saw the warning —
+  the cycle itself cloned into whatever room was actually left, which is
+  what let a disk-full ockham node disable `git gc` (#604) and leave 4.2 GB
+  of orphaned clones behind (#605). `lib/disk-space.sh` is the one place
+  free space is now read and judged, shared by the gate and by `doctor.sh`'s
+  own warning so the two cannot disagree about what "low" means.
 
 ### Fixed
 

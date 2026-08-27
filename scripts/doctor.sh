@@ -79,6 +79,8 @@ source "$SCRIPT_DIR/lib/merge-queue.sh"
 source "$SCRIPT_DIR/lib/approver-token.sh"
 # shellcheck source=lib/issue-priority.sh
 source "$SCRIPT_DIR/lib/issue-priority.sh"
+# shellcheck source=lib/disk-space.sh
+source "$SCRIPT_DIR/lib/disk-space.sh"
 # shellcheck source=lib/token-expiry.sh
 source "$SCRIPT_DIR/lib/token-expiry.sh"
 # doctor.sh has no other trap and exits from several points below (bad
@@ -651,15 +653,20 @@ section "Directories"
 
 workspace_root="$(cfg '.workspace_root')"
 [[ "$workspace_root" == "~"* ]] && workspace_root="$HOME${workspace_root:1}"
+# The same floor requirement 2.0c's pre-clone stand-down reads (lib/disk-
+# space.sh), so this warning and that gate can never disagree about what
+# "low" means.
+min_free_workspace_bytes="$(cfg '.min_free_workspace_bytes')"
+[[ "$min_free_workspace_bytes" =~ ^[0-9]+$ ]] || min_free_workspace_bytes=$(( 2 * 1024 * 1024 * 1024 ))
 for entry in "state_dir=$state_dir" "workspace_root=$workspace_root"; do
   key="${entry%%=*}"
   dir="${entry#*=}"
   if [[ -z "$dir" || "$dir" == "null" ]]; then
     fail "$key is not set"
   elif mkdir -p "$dir" 2>/dev/null && [[ -w "$dir" ]]; then
-    avail_kb="$(df -Pk "$dir" 2>/dev/null | awk 'NR == 2 {print $4}')"
-    if [[ "$avail_kb" =~ ^[0-9]+$ ]] && ((avail_kb < 2 * 1024 * 1024)); then
-      warn "$key ($dir) is writable but has only $((avail_kb / 1024)) MiB free — a cycle clones every repository it touches"
+    avail_kb="$(disk_space_free_kb "$dir")"
+    if [[ "$(disk_space_verdict "$avail_kb" "$min_free_workspace_bytes")" == "low" ]]; then
+      warn "$key: $(disk_space_describe "$dir" "$avail_kb" "$min_free_workspace_bytes")"
     else
       ok "$key ($dir) is writable"
     fi

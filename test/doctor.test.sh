@@ -1497,6 +1497,34 @@ assert_empty_tmpdir "an unreadable config, which exits at argument time, still c
 
 rm -rf "$doctor_tmpdir"
 
+# --- Directories: the free-space floor is configurable (agent-ops#756) -----
+#
+# min_free_workspace_bytes set absurdly high forces the warning
+# deterministically, with no need to fake `df`: this host's real free space,
+# whatever it actually is, is certainly below an exbibyte. Exercises the same
+# lib/disk-space.sh requirement 2.0c's own stand-down reads
+# (test/disk-space.test.sh, test/disk-space-wiring.test.sh), from doctor.sh's
+# side of the shared floor.
+huge_floor_config="$tmp/huge-floor-config.json"
+jq '.min_free_workspace_bytes = 1152921504606846976' "$base_config" > "$huge_floor_config"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$huge_floor_config" 2>&1)"
+rc=$?
+assert_contains "a floor above real free space warns on state_dir, naming the key's own figure" \
+  "state_dir: " "$out"
+assert_contains "…and on workspace_root too" \
+  "workspace_root: " "$out"
+assert_contains "…stating the configured floor in MiB (1 EiB = 1099511627776 MiB)" \
+  "1099511627776 MiB this cycle needs" "$out"
+assert_eq "a warning alone (not a failure) still exits 0" "0" "$rc"
+
+zero_floor_config="$tmp/zero-floor-config.json"
+jq '.min_free_workspace_bytes = 0' "$base_config" > "$zero_floor_config"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$zero_floor_config" 2>&1)"
+assert_contains "0 turns the warning off entirely, regardless of real free space" \
+  "[ ok ] state_dir" "$out"
+assert_contains "…for workspace_root too" \
+  "[ ok ] workspace_root" "$out"
+
 # --- shellcheck ---
 
 if command -v shellcheck >/dev/null 2>&1; then
