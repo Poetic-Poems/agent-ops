@@ -1745,7 +1745,8 @@ if (( coordinator_prompt_max_bytes > 0 )); then
       # it does, so the union log carries the cause rather than an exit code —
       # the exact gap agent-ops#641 was filed into.
       if ! jq -e '.fits' <<<"$coordinator_fit_report_json" >/dev/null 2>&1; then
-        log_event "warning" "$(jq -nc --arg d "$coordinator_fit_detail_text" '{detail: $d}')"
+        log_event "warning" "$(jq -nc --arg d "$coordinator_fit_detail_text" \
+          --argjson terms "$coordinator_fit_terms_json" '{detail: $d} + $terms')"
       fi
     fi
   fi
