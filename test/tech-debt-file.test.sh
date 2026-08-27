@@ -437,15 +437,47 @@ assert_eq "  ... td/<id> confirmed absent -> no marker" "0" \
   "$(grep -c "contents/reservation-releases/o__r/td__$id.json" "$tmp_dir/calls")"
 
 # --- No state_repo -> failed deletes still swallowed, no marker attempted --
+# Both cleanup DELETEs fail and neither branch is listed absent, so both
+# confirmations report the branch still there -- precisely the shape that
+# writes a marker in the first case above. The only thing keeping this pass
+# silent is `_techdebt_record_pending_release`'s own `state_repo` guard, so
+# the assertion below fails if that guard is ever dropped.
 remote="$(make_remote 0)"
 gd="$(a_git_dir "$remote")"
 reset_stub
 : > "$tmp_dir/pr-url"
+printf 'td/*\ntd-record/*\n' > "$tmp_dir/fail-delete-refs"
 out="$(techdebt_file_debt "o/r" "T" "B" "P" "" "$gd")"; rc=$?
 id="$(reserved_id)"
 assert_eq "unfile: no state_repo -> still exit 1 (function unaffected)" "1" "$rc"
+assert_eq "  ... the failing td/<id> delete was still attempted" "1" \
+  "$(grep -c "api -X DELETE repos/o/r/git/refs/heads/td/$id" "$tmp_dir/calls")"
 assert_eq "  ... no reservation-releases/ write attempted" "0" \
   "$(grep -c 'contents/reservation-releases/' "$tmp_dir/calls")"
+
+# --- The confirmation's own 404 must not abort the cleanup under `set -e` --
+# This suite runs without `set -e`, but agent-cycle.sh -- the only real
+# caller -- does not, and there an assignment whose command substitution
+# fails aborts the shell outright. The 404 `_techdebt_release_ref` reads to
+# decide "this branch is already gone, no marker needed" is exactly such a
+# failure, and aborting on it would skip the `td/<id>` delete `_techdebt_unfile`
+# makes straight after -- leaking the very reservation the marker exists to
+# keep. So run the cleanup in its own strict shell and check both deletes are
+# still attempted.
+reset_stub
+printf 'td/*\ntd-record/*\n' > "$tmp_dir/fail-delete-refs"
+printf 'td/*\ntd-record/*\n' > "$tmp_dir/absent-refs"
+strict_out="$(bash -c '
+  set -euo pipefail
+  . "$1/lib/tech-debt-file.sh"
+  _techdebt_unfile "" "o/r" "TD-STRICT" /dev/null
+  echo survived
+' _ "$SCRIPT_DIR" 2>/dev/null)"
+assert_eq "unfile under set -e: survives the confirmation's own 404" "survived" "$strict_out"
+assert_eq "  ... td-record/<id> delete attempted" "1" \
+  "$(grep -c 'api -X DELETE repos/o/r/git/refs/heads/td-record/TD-STRICT' "$tmp_dir/calls")"
+assert_eq "  ... td/<id> reservation delete still reached" "1" \
+  "$(grep -c 'api -X DELETE repos/o/r/git/refs/heads/td/TD-STRICT' "$tmp_dir/calls")"
 
 # ============================================================================
 # techdebt_file_issue

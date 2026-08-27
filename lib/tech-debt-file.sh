@@ -211,8 +211,16 @@ _techdebt_release_ref() {
   local get_err get_rc
   _techdebt_gh "$token" api -X DELETE "repos/$repo/git/refs/heads/$branch" \
     >/dev/null 2>>"$errlog" && return 0
-  get_err="$(_techdebt_gh "$token" api "repos/$repo/git/ref/heads/$branch" 2>&1 >/dev/null)"
-  get_rc=$?
+  # `&& get_rc=0 || get_rc=$?`, never a bare assignment followed by
+  # `get_rc=$?`: this file is sourced into agent-cycle.sh, which runs under
+  # `set -e`, where an assignment whose command substitution fails aborts the
+  # caller outright — and the 404 this call exists to detect *is* a failure.
+  # An abort here would skip the `td/<id>` delete `_techdebt_unfile` makes
+  # straight after, leaking exactly the reservation this function exists to
+  # keep. The same idiom, for the same reason, as lib/github-limit.sh's own
+  # `gh` wrapper.
+  get_err="$(_techdebt_gh "$token" api "repos/$repo/git/ref/heads/$branch" 2>&1 >/dev/null)" \
+    && get_rc=0 || get_rc=$?
   if (( get_rc == 0 )) || [[ "$get_err" != *"HTTP 404"* ]]; then
     [[ -n "$get_err" ]] && printf '%s\n' "$get_err" >>"$errlog"
     _techdebt_record_pending_release "$repo" "$branch" "$errlog"

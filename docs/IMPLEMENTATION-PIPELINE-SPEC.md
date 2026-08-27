@@ -14468,7 +14468,15 @@ What exists, and the requirements each part answers to:
       later cycle. A confirmed 404 — the ordinary case for `td-record/<id>`
       whenever the failure that reached this path happened at or before its
       own branch-create call — needs no marker, since there is nothing left
-      to retry. The record branch is deleted before the reservation
+      to retry. That confirmation's own non-zero exit is captured as `&&
+      get_rc=0 || get_rc=$?`, never as a bare assignment followed by
+      `get_rc=$?`: this file is sourced into `agent-cycle.sh`, which runs
+      under `set -e`, where an assignment whose command substitution fails
+      aborts the caller — and the 404 the confirmation exists to read *is*
+      such a failure, so a bare capture would abort this cleanup before the
+      `td/<id>` delete below and leak the reservation the marker exists to
+      keep. The same idiom, for the same reason, as `lib/github-limit.sh`'s
+      own `gh` wrapper. The record branch is deleted before the reservation
       and never after it, so a failure between the two can never release an
       id whose `td-record/<id>` still exists — which a later reservation
       would hand out again and then fail its own branch-create against. A
@@ -14510,13 +14518,18 @@ What exists, and the requirements each part answers to:
     cleanup `DELETE` that fails while the branch is confirmed still there
     writes a `reservation-releases/` marker under the ordinary login even
     when the call itself carried a token; a cleanup `DELETE` that fails but
-    the branch is confirmed already gone writes no marker; and with no
-    `state_repo` configured, a failed cleanup is swallowed exactly as before,
-    with no marker attempted. The Script's own wiring — that
-    `run_approver_stage` and `maybe_run_enabler` actually call these with the
-    right arguments, including the fleet's configured `pr_label` resolved
-    from `DEFAULTED_CONFIG` rather than the bare fallback, and log the right
-    event — is
+    the branch is confirmed already gone writes no marker; with no
+    `state_repo` configured, a failed cleanup — both `DELETE`s failing
+    against branches confirmed still present, the very shape that writes a
+    marker above — is swallowed exactly as before, with no marker attempted;
+    and, run in its own `set -euo pipefail` shell the way agent-cycle.sh runs
+    it rather than the way this suite does, a cleanup whose confirmation
+    answers 404 still reaches its second `DELETE` instead of aborting at the
+    first (component 23d's `&& get_rc=0 || get_rc=$?`). The Script's own
+    wiring — that `run_approver_stage` and `maybe_run_enabler` actually call
+    these with the right arguments, including the fleet's configured
+    `pr_label` resolved from `DEFAULTED_CONFIG` rather than the bare
+    fallback, and log the right event — is
     covered separately, by `test/approver-tech-debt-file-wiring.test.sh` and
     `test/enabler-tech-debt-file-wiring.test.sh`, lifting each block out of
     `agent-cycle.sh` the same way `test/approver-wiring.test.sh` and
