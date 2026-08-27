@@ -1950,7 +1950,14 @@ if (( WITH_GITHUB )); then
     jq -c --arg slug "$slug" --arg at "$now_iso" "$PR_JQ"'
       .[] | entry_of($slug; $at)' <<<"$prs" >> "$pr_rows" 2>/dev/null || true
 
-    db="$(gh_json api "repos/$slug" --jq '.default_branch')"; db="${db:-main}"
+    db="$(gh_call api "repos/$slug" --jq '.default_branch')"
+    db_rc=$?
+    if (( db_rc != 0 )); then
+      gh_ok=false; gh_fail_msgs+=("default branch lookup failed for $slug: $(gh_call_err)")
+      db="main"
+    else
+      db="${db:-main}"
+    fi
     # The REST listing rather than `gh issue list`, because the Co-Ordinator's
     # ranking turns on each issue's `Priority` issue field (pipeline spec,
     # requirement 15e) and `gh issue list --json` cannot see issue fields. Same

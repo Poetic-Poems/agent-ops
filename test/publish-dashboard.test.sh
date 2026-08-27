@@ -1512,7 +1512,11 @@ case "$1 $2" in
         echo "gh: Not Found (HTTP 404)" >&2
         exit 1 ;;
       *)
-        case "$3" in
+        # `api repos/<slug> --jq .default_branch`: the lookup's own filter
+        # program is $4, not $3 (`--jq` itself) — matching $3 here would never
+        # fire, silently defaulting every repo to the `${db:-main}` fallback
+        # rather than actually exercising this answer.
+        case "$4" in
           *default_branch*) printf 'main' ;;
           *) exit 1 ;;
         esac ;;
@@ -1729,8 +1733,16 @@ case "$1 $2" in
         echo "gh: Not Found (HTTP 404)" >&2
         exit 1 ;;
       *)
-        case "$3" in
-          *default_branch*) printf 'main' ;;
+        # See the healthy stub above: the filter program is $4, not $3. A
+        # failed lookup here (issue #692) used to hand `gh`'s own JSON error
+        # body to the run-list query as its `--branch` value; `rate_limited`
+        # prints exactly that body, so a poisoned branch parameter would show
+        # up verbatim in the recorded `run list` call below if the fallback
+        # ever stopped firing.
+        case "$4" in
+          *default_branch*)
+            [[ "$GH_STUB_FAIL" == "default_branch" ]] && rate_limited
+            printf 'main' ;;
           *) exit 1 ;;
         esac ;;
     esac ;;
@@ -1775,6 +1787,24 @@ run_fail_publish "$f" prs
 fdata="$(data_of "$f")"
 assert_eq "a failed pr list still raises the page-wide alarm" "false" "$(jq -r '.github.ok' <<<"$fdata")"
 assert_contains "naming pr list, not a source it never touched" "pr list" "$(jq -r '.github.error' <<<"$fdata")"
+
+# A failed default-branch lookup (issue #692) used to hand gh's own JSON error
+# body through as the run-list query's `--branch` parameter, since `gh_json`
+# discards both stderr and the exit status; `gh_call` (used since the fix)
+# lets the caller check the exit status and fall back to `main` itself, the
+# same shape every other source in this file already uses.
+f="$(new_home nodeFail6)"
+: > "$gh_calls"
+run_fail_publish "$f" default_branch
+fdata="$(data_of "$f")"
+assert_eq "a failed default-branch lookup raises the page-wide alarm" "false" \
+  "$(jq -r '.github.ok' <<<"$fdata")"
+assert_contains "naming the default-branch lookup, not a source it never touched" \
+  "default branch lookup" "$(jq -r '.github.error' <<<"$fdata")"
+assert_lacks "the run-list query never receives gh's own error body as its branch" \
+  "rate limit exceeded" "$(cat "$gh_calls")"
+assert_eq "it falls back to main instead" \
+  "true" "$(grep -q '^run list .*--branch main' "$gh_calls" && echo true || echo false)"
 
 # --- Blocked rows carry `kind` for a refinement block (TD26072603) --------------
 # A refinement block (`kind: "needs-refinement"`, lib/refinement.sh) is one
@@ -2189,7 +2219,15 @@ case "$1 $2" in
         printf '{"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}'
         echo "gh: Not Found (HTTP 404)" >&2
         exit 1 ;;
-      *) exit 1 ;;
+      *)
+        # The default-branch lookup (`api repos/<slug> --jq .default_branch`):
+        # this suite is about the merge-queue probe, not this source, so it
+        # must answer healthily rather than falling into the catch-all `exit
+        # 1` below and spuriously tripping `gh_ok` for an unrelated reason.
+        case "$4" in
+          *default_branch*) printf 'main' ;;
+          *) exit 1 ;;
+        esac ;;
     esac ;;
   *) exit 1 ;;
 esac
