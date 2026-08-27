@@ -1635,8 +1635,9 @@ coordinator_fit_allowance=0
 # assembly below reads this variable on every path.
 coordinator_refinements_json="$(coordinator_refinements_view "$refinements_json" "$ordered_repos_json")"
 if (( coordinator_prompt_max_bytes > 0 )); then
+  coordinator_fit_blocked_json="$(coordinator_blocked_view "$blocked_json")"
   coordinator_fit_overhead_json="$(jq -nc \
-    --argjson blocked "$(coordinator_blocked_view "$blocked_json")" \
+    --argjson blocked "$coordinator_fit_blocked_json" \
     --arg model_default "$implementer_model_default" \
     --arg model_trivial "$implementer_model_trivial" \
     --arg label "$pr_label" \
@@ -1658,11 +1659,40 @@ if (( coordinator_prompt_max_bytes > 0 )); then
 ```json
 ```
 ' | wc -c)"
+  # Requirement 4i's own terms (issue #645): the same four values already
+  # folded into `coordinator_fit_overhead_json` above, read individually
+  # through the one rendering function this block already has
+  # (`coordinator_rendered_bytes`), so a refusal's log line names which band
+  # was actually big rather than only the combined total.
+  coordinator_fit_prompt_bytes="$(printf '%s' "$coordinator_base_prompt" | wc -c)"
+  coordinator_fit_blocked_bytes="$(coordinator_rendered_bytes <<<"$coordinator_fit_blocked_json")"
+  coordinator_fit_refinements_bytes="$(coordinator_rendered_bytes <<<"$coordinator_refinements_json")"
+  coordinator_fit_claimed_bytes="$(coordinator_rendered_bytes <<<"$claimed_json")"
   coordinator_fit_overhead_bytes=$((
-    $(printf '%s' "$coordinator_base_prompt" | wc -c)
+    coordinator_fit_prompt_bytes
     + $(printf '%s' "$coordinator_fit_overhead_json" | coordinator_rendered_bytes)
     + coordinator_fit_scaffold_bytes ))
+  # The remainder, not a fifth independent measurement: the fence wrapper, the
+  # small and static scaffold fields (`models`, `pr_label`, `candidates_max`,
+  # `refinement_policy`) and the JSON structure `coordinator_fit_overhead_json`
+  # itself adds are not worth a byte count each, so this term is whatever is
+  # left once the four measured bands are subtracted from the total — which
+  # keeps the breakdown summing to `coordinator_fit_overhead_bytes` exactly.
+  coordinator_fit_scaffold_term_bytes=$((
+    coordinator_fit_overhead_bytes
+    - coordinator_fit_prompt_bytes
+    - coordinator_fit_blocked_bytes
+    - coordinator_fit_refinements_bytes
+    - coordinator_fit_claimed_bytes ))
   coordinator_fit_allowance=$(( coordinator_prompt_max_bytes - coordinator_fit_overhead_bytes ))
+  coordinator_fit_terms_json="$(jq -nc \
+    --argjson prompt "$coordinator_fit_prompt_bytes" \
+    --argjson blocked "$coordinator_fit_blocked_bytes" \
+    --argjson refinements "$coordinator_fit_refinements_bytes" \
+    --argjson claimed "$coordinator_fit_claimed_bytes" \
+    --argjson scaffold "$coordinator_fit_scaffold_term_bytes" \
+    '{terms: {prompt: $prompt, blocked: $blocked, refinements: $refinements,
+              claimed: $claimed, scaffold: $scaffold}}')"
 fi
 # An allowance that came out at or below zero is *not* the same fact as the
 # bound being switched off, and must not go through the same door: the prompt
@@ -1691,7 +1721,8 @@ fi
 if (( coordinator_prompt_max_bytes > 0 && coordinator_fit_allowance <= 0 )); then
   log_event "warning" "$(jq -nc \
     --arg d "the Co-Ordinator's prompt text and unsheddable input ($coordinator_fit_overhead_bytes bytes) already meet or exceed coordinator_prompt_max_bytes ($coordinator_prompt_max_bytes) — no runtime-input fit can make this cycle's prompt fit; shedding the candidate bands to the ladder's last rung anyway, and the API may still refuse it" \
-    '{detail: $d}')"
+    --argjson terms "$coordinator_fit_terms_json" \
+    '{detail: $d} + $terms')"
   coordinator_fit_allowance=1
 fi
 if (( coordinator_prompt_max_bytes > 0 )); then
@@ -1706,14 +1737,16 @@ if (( coordinator_prompt_max_bytes > 0 )); then
       # outgrown the window will trim on every cycle from here on, and a
       # standing `warning` for the ordinary case is how a log stops being read.
       log_event "coordinator-input-fitted" "$(jq -nc --arg d "$coordinator_fit_detail_text" \
-        --argjson f "$coordinator_fit_report_json" '{detail: $d} + $f')"
+        --argjson f "$coordinator_fit_report_json" --argjson terms "$coordinator_fit_terms_json" \
+        '{detail: $d} + $f + $terms')"
       # Not fitting is the other thing entirely: the identity fields alone have
       # outgrown the allowance, the ladder has nothing left to shed, and the
       # API will refuse the prompt this cycle is about to send. Say so *before*
       # it does, so the union log carries the cause rather than an exit code —
       # the exact gap agent-ops#641 was filed into.
       if ! jq -e '.fits' <<<"$coordinator_fit_report_json" >/dev/null 2>&1; then
-        log_event "warning" "$(jq -nc --arg d "$coordinator_fit_detail_text" '{detail: $d}')"
+        log_event "warning" "$(jq -nc --arg d "$coordinator_fit_detail_text" \
+          --argjson terms "$coordinator_fit_terms_json" '{detail: $d} + $terms')"
       fi
     fi
   fi

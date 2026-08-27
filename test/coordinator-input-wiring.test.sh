@@ -248,6 +248,11 @@ assert_true "the event carries the rung it reached" \
   "$(jq -e 'has("rung") and has("bytes_before") and has("bytes_after") and has("budget")' <<<"$fitted" >/dev/null && echo true || echo false)"
 assert_true "the event carries the human sentence a reader gets off the log" \
   "$(jq -r '.detail' <<<"$fitted" | grep -qF -- "-byte allowance" && echo true || echo false)"
+# Requirement 4i's per-band terms (issue #645): the breakdown that lets a
+# refusal's cause be read off the log instead of a live shell into the
+# container.
+assert_true "the event carries the per-band terms breakdown" \
+  "$(jq -e '.terms | has("prompt") and has("blocked") and has("refinements") and has("claimed") and has("scaffold")' <<<"$fitted" >/dev/null && echo true || echo false)"
 
 # --- An untrimmed cycle is silent --------------------------------------------
 run_fit 5000000 "$(mk_repos 3 100 1 100)" >/dev/null
@@ -266,6 +271,13 @@ assert_ok "a maximum the prompt text alone exceeds logs a warning" \
   "$(( $(grep -c '^warning' "$events") >= 1 ))"
 assert_true "the warning names the maximum it could not work inside" \
   "$(grep '^warning' "$events" | cut -f2- | jq -r '.detail' | grep -qF "coordinator_prompt_max_bytes" && echo true || echo false)"
+warned="$(grep '^warning' "$events" | head -1 | cut -f2-)"
+assert_true "the warning carries the per-band terms breakdown" \
+  "$(jq -e '.terms | has("prompt") and has("blocked") and has("refinements") and has("claimed") and has("scaffold")' <<<"$warned" >/dev/null && echo true || echo false)"
+# shellcheck disable=SC2154  # Assigned by the lifted fit block, eval'd inside run_fit above.
+assert_eq "…and the five terms sum to the overhead total the block itself computed" \
+  "$coordinator_fit_overhead_bytes" \
+  "$(jq '[.terms[]] | add' <<<"$warned")"
 
 # Requirement 4j: a hopeless allowance still walks the ladder. Before it, this
 # branch warned and fell past the fit entirely, sending the array whole — which
@@ -289,8 +301,17 @@ base_bytes="$(wc -c < "$PROMPTS_DIR/coordinator.md")"
 run_fit "$(( base_bytes + 400 ))" "$(mk_repos 40 6000 6 6000)" >/dev/null
 assert_eq "an allowance the ladder bottoms out inside logs a warning too" \
   "1" "$(grep -c '^warning' "$events")"
+warned_bottomed="$(grep '^warning' "$events" | cut -f2-)"
 assert_true "…and that warning says the API will refuse this cycle's prompt" \
-  "$(grep '^warning' "$events" | cut -f2- | jq -r '.detail' | grep -qF "still does not fit" && echo true || echo false)"
+  "$(jq -r '.detail' <<<"$warned_bottomed" | grep -qF "still does not fit" && echo true || echo false)"
+assert_true "…and the warning itself carries the per-band terms breakdown" \
+  "$(jq -e '.terms | has("prompt") and has("blocked") and has("refinements") and has("claimed") and has("scaffold")' <<<"$warned_bottomed" >/dev/null && echo true || echo false)"
+# shellcheck disable=SC2154  # Assigned by the lifted fit block, eval'd inside run_fit above.
+assert_eq "…and its five terms sum to the overhead total the block itself computed" \
+  "$coordinator_fit_overhead_bytes" \
+  "$(jq '[.terms[]] | add' <<<"$warned_bottomed")"
+assert_true "…and the coordinator-input-fitted event beside it also carries the terms breakdown" \
+  "$(grep '^coordinator-input-fitted' "$events" | cut -f2- | jq -e '.terms | has("prompt") and has("blocked") and has("refinements") and has("claimed") and has("scaffold")' >/dev/null && echo true || echo false)"
 
 # --- The other half of agent-ops#641: a stage the API refused says which
 #     refusal it was, and a stage that merely died does not get mislabelled as

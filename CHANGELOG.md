@@ -36,6 +36,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   unconditionally supplied the item's live text via `item_text_supply`
   (a no-op once it is already there), so "the live read demonstrably
   happened, or the Script supplies the full text itself" holds either way.
+- Requirement 4i's `warning` events (both the allowance-exhausted warning and
+  the warning logged when a fit still does not fit at one entry per band)
+  and the `coordinator-input-fitted` event now carry a `terms` object
+  breaking the measured overhead down by band — `prompt`, `blocked`,
+  `refinements`, `claimed`, `scaffold` — so a `prompt_too_long` refusal names
+  which half of the document was actually too big directly off the cycle
+  log, rather than requiring a live shell into the container to re-derive
+  each band by hand (issue #645).
 - A `blocked`/`blocked:needs-refinement` pair whose block has cleared now
   comes off the issue even when nothing in the shared log can prove the
   pipeline applied it (requirement 38b, agent-ops#816, TD-PPagop-26082602).
