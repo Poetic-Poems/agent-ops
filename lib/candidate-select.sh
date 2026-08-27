@@ -620,50 +620,55 @@ item_live_text() {  # <repo> <source> <item>
   esac
 }
 
-# Requirement 17g (issue #821): a work order's `context`/`acceptance` can
-# present prose as an item's own text that the model never actually read —
-# the #815 incident (cycle 20260826T064910Z-poetic-1-186841): a Co-Ordinator
-# whose input had been trimmed to fit its model's window wrote `context` and
-# `acceptance` by pasting parts of the issue body that had been trimmed out of
-# what it was given, and requirement 17f's own repair (which only ever asks
-# "is the *recorded refinement* present", never "is everything else here
-# real") logged the result a success. Scoped to a candidate whose `{repo,
-# item}` appears in `coordinator_fit_trimmed_items`'s own output this cycle —
-# an untrimmed entry carries nothing elided to fabricate about, so this costs
-# nothing there, the same "nothing to check, no `gh` call" shape
+# Requirement 17g (issue #821): a work order's `acceptance` can name a
+# specific detail — a file, a flag, an identifier — that the model never
+# actually read, presenting invention as the item's own. The #815 incident
+# (cycle 20260826T064910Z-poetic-1-186841): a Co-Ordinator whose input had
+# been trimmed to fit its model's window invented an `acceptance` in full,
+# and requirement 17f's own repair (which only ever asks "is the *recorded
+# refinement* present", never "is everything else here real") logged the
+# result a success. Scoped to a candidate whose `{repo, item}` appears in
+# `coordinator_fit_trimmed_items`'s own output this cycle — an untrimmed
+# entry carries nothing elided to fabricate about, so this costs nothing
+# there, the same "nothing to check, no `gh` call" shape
 # `refinement_traceability_fault` already uses for an item with no recorded
 # refinement.
 #
-# `context` and `acceptance` are checked differently, because
-# `prompts/coordinator.md` asks something different of each. For the `issues`
-# and `tech-debt` sources — the only two `coordinator_fit_trimmed_items` ever
-# names — `context` **must paste the entry's body/comments verbatim**; it is
-# never a paraphrase, so every one of its paragraphs (split on a blank line,
-# the way a markdown document's own are) either really is a passage of the
-# live item or is not. A paragraph is checked only once normalized (the same
-# whitespace collapse `_traceability_normalize` already applies for
-# requirement 17f) it is at least 80 characters — long enough to carry a
-# claim, short enough that a heading, a URL or a list marker never trips it —
-# and is judged against the union of the live text (fetched fresh, above) and
-# the item's own recorded refinement `spec` (already legitimate: whether it
-# belongs in the order at all is requirement 17f's own question, not this
-# one's). `acceptance`, by contrast, is explicitly allowed to be the
-# Co-Ordinator's own synthesis ("set acceptance from the current state of the
-# thread") — a faithful paraphrase is traceable and must not fault. So it is
-# checked at a narrower grain: only its own backtick-quoted spans (`` `like
-# this` ``) — the concrete specifics (a file, a flag, an identifier) a
-# paraphrase preserves from its source and a fabrication is what actually
-# invents — are required to appear in the same union; free prose around them
-# is never compared.
+# `context` is not checked here (agent-ops#830's owner decision on #821, PR
+# #825): `prompts/coordinator.md`'s work-order schema requires `context` to
+# carry the Co-Ordinator's own framing — file paths, related conventions
+# found while evaluating, why the item is unblocked and in scope — alongside
+# the entry's verbatim paste, and nothing in the schema marks where the
+# paste ends and the framing begins. A check that faulted every paragraph it
+# could not trace therefore faulted that mandated framing by construction,
+# on ordinary honest work orders, at the fit rungs the fleet normally runs
+# at — reproduced by two independent Reviewer rounds against this PR's own
+# work order. TD-PPagop-26082801 tracks that deferred detection gap against
+# #769, the issue asking whether the Co-Ordinator should be pasting
+# `context` at all — the schema question a narrower check would need first.
 #
-# Prints a non-empty fault naming which field and, for `acceptance`, the
-# invented span itself; prints nothing when there is nothing to check (not
-# trimmed this cycle) or every check passes. A `gh` read that fails is a fault
-# — TD-PPagop-26082307's reasoning applies unchanged: this check exists to
-# confirm the live text really is what backs the work order, and assuming
-# pass on a read it could not complete would let a stale token or a narrowed
-# scope disarm the whole gate while it kept reading as green — reported via
-# `guard_warn`, never swallowed. Never exits non-zero.
+# `acceptance`, by contrast, is explicitly allowed to be the Co-Ordinator's
+# own synthesis ("set acceptance from the current state of the thread") — a
+# faithful paraphrase is traceable and must not fault, which is deliberately
+# weaker than requiring an appropriate-tier model to have authored it (that
+# question belongs to agent-ops#822, out of scope here). So only its own
+# backtick-quoted spans (`` `like this` ``) — the concrete specifics (a
+# file, a flag, an identifier) a paraphrase preserves from its source and a
+# fabrication is what actually invents — are checked, once normalized (the
+# same whitespace collapse `_traceability_normalize` already applies for
+# requirement 17f), against the union of the live text (fetched fresh,
+# above) and the item's own recorded refinement `spec` (already legitimate:
+# whether it belongs in the order at all is requirement 17f's own question,
+# not this one's); free prose around them is never compared.
+#
+# Prints a non-empty fault naming the invented span; prints nothing when
+# there is nothing to check (not trimmed this cycle, or `acceptance` carries
+# no backtick span) or every span checks out. A `gh` read that fails is a
+# fault — TD-PPagop-26082307's reasoning applies unchanged: this check
+# exists to confirm the live text really is what backs the work order, and
+# assuming pass on a read it could not complete would let a stale token or a
+# narrowed scope disarm the whole gate while it kept reading as green —
+# reported via `guard_warn`, never swallowed. Never exits non-zero.
 #
 # Unlike a missing refinement, a fault this function reports is never
 # repaired: appending the real text alongside a false one does not make the
@@ -673,7 +678,7 @@ item_live_text() {  # <repo> <source> <item>
 # guess whether a skip was a copying failure or an invention.
 item_text_fault() {  # <candidate-json> <trimmed-json> <refinements-json>
   local cand="$1" trimmed="${2:-[]}" refinements="${3:-{\}}" repo item source \
-    live norm_live norm_spec fault="" chunk norm_chunk span norm_span live_fetch_failed=0
+    live norm_live norm_spec fault="" span norm_span live_fetch_failed=0
   jq -e 'type == "array"' <<<"$trimmed" >/dev/null 2>&1 || trimmed='[]'
   jq -e 'type == "object"' <<<"$refinements" >/dev/null 2>&1 || refinements='{}'
   repo="$(jq -r '.repo // ""' <<<"$cand" 2>/dev/null || true)"
@@ -697,31 +702,17 @@ item_text_fault() {  # <candidate-json> <trimmed-json> <refinements-json>
   norm_spec="$(_traceability_normalize "$(jq -r --arg r "$repo" --arg i "$item" \
     '((.[$r] // {})[$i].spec // "")' <<<"$refinements" 2>/dev/null)")"
 
-  while IFS= read -r chunk; do
-    [[ -n "$chunk" ]] || continue
-    norm_chunk="$(_traceability_normalize "$chunk")"
-    (( ${#norm_chunk} >= 80 )) || continue
-    jq -ne --arg h "$norm_live" --arg n "$norm_chunk" '$h | contains($n)' >/dev/null 2>&1 && continue
+  while IFS= read -r span; do
+    [[ -n "$span" ]] || continue
+    norm_span="$(_traceability_normalize "$span")"
+    [[ -n "$norm_span" ]] || continue
+    jq -ne --arg h "$norm_live" --arg n "$norm_span" '$h | contains($n)' >/dev/null 2>&1 && continue
     [[ -n "$norm_spec" ]] \
-      && jq -ne --arg h "$norm_spec" --arg n "$norm_chunk" '$h | contains($n)' >/dev/null 2>&1 \
+      && jq -ne --arg h "$norm_spec" --arg n "$norm_span" '$h | contains($n)' >/dev/null 2>&1 \
       && continue
-    fault="$repo $item: context contains a passage not present, after whitespace normalization, in the live item text or its recorded refinement — requirement 17g treats this as fabricated content presented as the item's own, not merely missing, so it is never repaired"
+    fault="$repo $item: acceptance names a specific detail (\`$span\`) not present, after whitespace normalization, in the live item text or its recorded refinement — requirement 17g treats this as fabricated, not a faithful paraphrase, so it is never repaired"
     break
-  done < <(jq -r '(.context // "") | splits("\n[ \t]*\n+")' <<<"$cand" 2>/dev/null)
-
-  if [[ -z "$fault" ]]; then
-    while IFS= read -r span; do
-      [[ -n "$span" ]] || continue
-      norm_span="$(_traceability_normalize "$span")"
-      [[ -n "$norm_span" ]] || continue
-      jq -ne --arg h "$norm_live" --arg n "$norm_span" '$h | contains($n)' >/dev/null 2>&1 && continue
-      [[ -n "$norm_spec" ]] \
-        && jq -ne --arg h "$norm_spec" --arg n "$norm_span" '$h | contains($n)' >/dev/null 2>&1 \
-        && continue
-      fault="$repo $item: acceptance names a specific detail (\`$span\`) not present, after whitespace normalization, in the live item text or its recorded refinement — requirement 17g treats this as fabricated, not a faithful paraphrase, so it is never repaired"
-      break
-    done < <(jq -r '(.acceptance // "") | scan("`([^`]+)`") | .[0]' <<<"$cand" 2>/dev/null)
-  fi
+  done < <(jq -r '(.acceptance // "") | scan("`([^`]+)`") | .[0]' <<<"$cand" 2>/dev/null)
 
   [[ -n "$fault" ]] && printf '%s' "$fault"
   return 0

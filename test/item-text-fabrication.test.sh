@@ -1,22 +1,25 @@
 #!/usr/bin/env bash
 #
 # test/item-text-fabrication.test.sh — regression test for `item_text_fault`
-# and `item_text_supply` (requirement 17g, agent-ops#821).
+# and `item_text_supply` (requirement 17g, agent-ops#821, shape decided
+# agent-ops#830 option (c)).
 #
 # Reproduces the #815 incident (cycle 20260826T064910Z-poetic-1-186841): a
-# Co-Ordinator whose input had been trimmed to fit its model's window wrote
-# `context`/`acceptance` by pasting parts of the issue body that had been
-# trimmed out of what it was actually given — text requirement 17f's own
-# check never catches, because 17f only asks whether the *recorded
-# refinement* is present, never whether everything else in the order is
-# real. `refinement_traceability_repair` logged the result a success anyway.
+# Co-Ordinator whose input had been trimmed to fit its model's window
+# invented an `acceptance` in full — text requirement 17f's own check never
+# catches, because 17f only asks whether the *recorded refinement* is
+# present, never whether everything else in the order is real.
+# `refinement_traceability_repair` logged the result a success anyway.
 #
 # `item_text_fault` closes that gap for a candidate whose entry was trimmed
-# this cycle: it fetches the item's live full text fresh and faults a
-# `context` paragraph or an `acceptance` backtick span that text does not
-# support. `item_text_supply` is its repair-safe half: it appends the live
-# text itself so an honestly incomplete (never fabricated) candidate still
-# leaves the Implementer starting from the whole item.
+# this cycle: it fetches the item's live full text fresh and faults an
+# `acceptance` backtick span that text does not support. It deliberately does
+# **not** check `context` — an earlier shape of this check did, and was
+# blocked twice in review for faulting the Co-Ordinator's own mandated
+# framing prose (TD-PPagop-26082801 tracks the deferred gap against #769).
+# `item_text_supply` is `context`'s own answer instead: it appends the live
+# text unconditionally so an incomplete `context` still leaves the
+# Implementer starting from the whole item, whether or not it was checked.
 #
 # The functions are lifted verbatim out of lib/candidate-select.sh, the way
 # test/refinement-traceability.test.sh lifts its own, so the assertions are
@@ -111,16 +114,29 @@ assert_empty "an untrimmed candidate is not checked" \
   "$(item_text_fault "$cand_untrimmed" "$trimmed" "$refinements")"
 assert_eq "…and costs no gh call" "0" "$(gh_calls)"
 
-# --- The #815 incident: a trimmed candidate's context pastes a passage that ---
-# was never in the live item at all — fabricated, not merely reworded.
+# --- context is not checked at all (agent-ops#830 option (c)): a paragraph ---
+# invented wholesale, with nothing to do with the live item, does not fault
+# the candidate on its own — only acceptance's backtick spans are checked.
 
 reset_gh_calls
 GH_LIVE_TEXT='Cycle 20260826T064910Z-poetic-1-186841 selected issue #815 for agent-ops, a Medium-priority Medium-complexity tech-debt item, and the Co-Ordinator input was trimmed to fit its model context window.'
-cand_fabricated='{"repo":"o/r","item":"815","source":"issues",
+cand_context_fabricated='{"repo":"o/r","item":"815","source":"issues",
   "context":"This paragraph describes acceptance criteria that were invented wholesale and never appeared anywhere in the real issue thread at all.",
   "acceptance":"ship it"}'
+assert_empty "a wholly invented context paragraph does not fault the candidate — context is not checked" \
+  "$(item_text_fault "$cand_context_fabricated" "$trimmed" "$refinements")"
+assert_eq "…one gh read was still needed, to fetch the live text acceptance is checked against" "1" "$(gh_calls)"
+
+# --- The #815 incident: a trimmed candidate's acceptance invents a specific ---
+# that was never in the live item at all — fabricated, not merely reworded.
+
+reset_gh_calls
+# shellcheck disable=SC2016  # the backtick span is fixture JSON text, not a command substitution
+cand_fabricated='{"repo":"o/r","item":"815","source":"issues",
+  "context":"a short note about issue #815",
+  "acceptance":"Add `_verify_stage_claims`, a subsystem this issue never actually names."}'
 fault_fab="$(item_text_fault "$cand_fabricated" "$trimmed" "$refinements")"
-assert_nonempty "a trimmed candidate's fabricated context paragraph is caught" "$fault_fab"
+assert_nonempty "a trimmed candidate's fabricated acceptance span is caught" "$fault_fab"
 assert_eq "…exactly one gh read was needed" "1" "$(gh_calls)"
 
 # --- The healthy case: the context paragraph really is the live text ----------
@@ -129,22 +145,13 @@ reset_gh_calls
 cand_faithful='{"repo":"o/r","item":"815","source":"issues",
   "context":"Cycle 20260826T064910Z-poetic-1-186841 selected issue #815 for agent-ops, a Medium-priority Medium-complexity tech-debt item, and the Co-Ordinator input was trimmed to fit its model context window.",
   "acceptance":"fix the fabrication gap"}'
-assert_empty "a context paragraph that really is the live text passes" \
+assert_empty "a context paragraph that really is the live text passes (unchecked, so it could not fault anyway)" \
   "$(item_text_fault "$cand_faithful" "$trimmed" "$refinements")"
 
-# --- Short lines never trip the check — headers, list markers, a bare title ---
-
-reset_gh_calls
-cand_short='{"repo":"o/r","item":"815","source":"issues",
-  "context":"## Issue #815\n\nSee below.",
-  "acceptance":"done"}'
-assert_empty "short structural lines (under 80 normalized chars) are never flagged" \
-  "$(item_text_fault "$cand_short" "$trimmed" "$refinements")"
-
 # --- Acceptance: a faithful paraphrase in free prose is traceable -------------
-# Deliberately weaker than context's verbatim bar (agent-ops#821's own scope
-# note): acceptance is allowed to be the Co-Ordinator's own synthesis, so only
-# its backtick-quoted spans are checked, never its prose.
+# Deliberately weaker than a verbatim bar (agent-ops#821's own scope note):
+# acceptance is allowed to be the Co-Ordinator's own synthesis, so only its
+# backtick-quoted spans are checked, never its prose.
 
 reset_gh_calls
 cand_paraphrase='{"repo":"o/r","item":"815","source":"issues",
@@ -194,8 +201,20 @@ reset_gh_calls
 supplied="$(item_text_supply "$cand_fabricated" "$trimmed")"
 assert_nonempty "item_text_supply still appends the live text" "$supplied"
 still_faults="$(item_text_fault "$supplied" "$trimmed" "$refinements")"
-assert_nonempty "…but the fabricated paragraph is still there, so the candidate still faults — appending real text never repairs a false one" \
+assert_nonempty "…but the fabricated acceptance span is still there, so the candidate still faults — appending real text never repairs a false one" \
   "$still_faults"
+
+# --- item_text_supply runs regardless of context, even a fabricated one -------
+# Completeness (item_text_supply) is unconditional and separate from the
+# acceptance-only fault check — a fabricated context is not gated, but it is
+# still supplemented with the live text.
+
+reset_gh_calls
+supplied_context_fabricated="$(item_text_supply "$cand_context_fabricated" "$trimmed")"
+assert_nonempty "item_text_supply appends the live text even to a candidate with a fabricated context" \
+  "$supplied_context_fabricated"
+assert_eq "…the live text landing in context, verbatim" "1" \
+  "$(jq -r --arg b "$GH_LIVE_TEXT" 'if (.context | contains($b)) then 1 else 0 end' <<<"$supplied_context_fabricated")"
 
 # --- item_text_supply: skip when context already carries the live text -------
 

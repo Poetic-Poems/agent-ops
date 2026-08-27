@@ -2049,8 +2049,8 @@ claim_skips=0
 # none: it sends the reader after a claim problem that was never there.
 trace_faults=0
 # fab_faults: candidates dropped by requirement 17g (issue #821) — a trimmed
-# candidate whose context or acceptance carries a passage the live item text
-# does not support. Counted apart from trace_faults for the same reason issue
+# candidate whose acceptance names a specific detail the live item text does
+# not support. Counted apart from trace_faults for the same reason issue
 # #767 already split trace_faults from race_losses: a fabrication is never
 # repaired (unlike a missing refinement), so a cycle that loses every
 # candidate this way must not fall through to `raced` or get folded into
@@ -2251,10 +2251,11 @@ if [[ -z "$claimed_json" ]]; then
     standdown_reason="every candidate was already claimed before this cycle's Co-Ordinator ran — skipped without an attempt"
     standdown_cause="pre-claimed"
   elif (( claim_attempts == 0 && fab_faults > 0 )); then
-    # Requirement 17g (issue #821): every candidate carried a passage its own
-    # trimmed, live-checked item text does not support, and — unlike
-    # requirement 17f's own fault — that is never repaired. Named apart from
-    # `untraceable` so a reader can tell a copying failure from an invention.
+    # Requirement 17g (issue #821): every candidate's acceptance named a
+    # specific detail its own trimmed, live-checked item text does not
+    # support, and — unlike requirement 17f's own fault — that is never
+    # repaired. Named apart from `untraceable` so a reader can tell a
+    # copying failure from an invention.
     standdown_reason="every candidate failed the trimmed-item fabrication check — no claim was attempted"
     standdown_cause="fabricated"
   elif (( claim_attempts == 0 && trace_faults > 0 )); then
