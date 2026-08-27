@@ -73,6 +73,17 @@
 #   reservation by deleting the branch, the same way an abandoned claim
 #   does.
 #
+#   _techdebt_unfile's own deletes are themselves best-effort against a
+#   GitHub API this function has often just seen fail: a delete that cannot
+#   land here writes a durable marker instead of simply logging and
+#   swallowing the failure (TD-PPagop-26082427), so
+#   scripts/release-pending-reservations.sh's later, independent pass can
+#   retry it on some future cycle. Reads the cycle's own `state_repo` global
+#   (agent-cycle.sh sources every lib/*.sh into one process, #771); a caller
+#   with no `state_repo` set — including this file sourced standalone, as
+#   the test suite does — simply gets no durable fallback, same as
+#   `lib/claim.sh`'s own registry when `state_repo` is unset.
+#
 # TOKEN, given to either function, files under that identity
 # (GH_TOKEN="$TOKEN") rather than the ordinary pipeline login — the
 # Approver's own posture never writes to GitHub under the pipeline's own
@@ -140,6 +151,75 @@ techdebt_file_issue() {
   printf '%s\t%s' "$number" "$url"
 }
 
+# _techdebt_pending_release_path REPO BRANCH -> path inside the state repo
+# Mirrors lib/claim.sh's own `claims/<repo>/<key>.json` convention
+# (registry_path) without sourcing that file: this tree is a distinct
+# namespace, `reservation-releases/`, so a listing of one can never be
+# mistaken for the other.
+_techdebt_pending_release_path() {
+  printf 'reservation-releases/%s/%s.json' "${1//\//__}" "${2//\//__}"
+}
+
+# _techdebt_record_pending_release REPO BRANCH ERRLOG
+# Durable fallback for a DELETE _techdebt_unfile could not make land
+# (TD-PPagop-26082427): write a marker into the state repository's
+# `reservation-releases/` tree so scripts/release-pending-reservations.sh's
+# later, independent pass can retry the same delete on some future cycle
+# without depending on this failed engagement, or anything downstream of it,
+# ever running again. Always under the ordinary pipeline login, never
+# TOKEN — TOKEN, when this call carries one, is the Approver's own App
+# token, minted only against the repository whose pull request it is
+# reviewing (lib/approver-token.sh) and never against the state repository,
+# so a write under it here would silently fail every time an Approver
+# engagement is the one cleaning up. Best-effort and silent on its own
+# failure, like every other registry write in this pipeline: a marker this
+# call cannot land is still recoverable by a human running `git push origin
+# --delete <branch>` by hand, the same fallback TECH-DEBT.md already
+# documents for a stuck reservation.
+_techdebt_record_pending_release() {
+  local repo="$1" branch="$2" errlog="$3"
+  [[ -n "${state_repo:-}" ]] || return 0
+  local body payload
+  body="$(jq -nc --arg repo "$repo" --arg branch "$branch" \
+    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{repo: $repo, branch: $branch, ts: $ts}')"
+  payload="$(printf '%s' "$body" | base64 -w0)"
+  _techdebt_gh "" api -X PUT \
+    "repos/$state_repo/contents/$(_techdebt_pending_release_path "$repo" "$branch")" \
+    -f "message=reservation release pending: $branch" -f "content=$payload" \
+    >/dev/null 2>>"$errlog" || true
+}
+
+# _techdebt_release_ref TOKEN REPO BRANCH ERRLOG
+# One best-effort branch delete, made durable. A DELETE that fails is not
+# necessarily a leak: it can fail because BRANCH was never there to begin
+# with — the ordinary case for td-record/<ID> whenever the failure that sent
+# techdebt_file_debt down this path happened at or before its own
+# branch-create call — and a marker for a branch that does not exist would
+# send scripts/release-pending-reservations.sh chasing nothing forever. So a
+# failed DELETE is followed by one direct question: does BRANCH still exist?
+# A confirmed "no" (an HTTP 404 on the ref itself) needs no marker. Anything
+# else — a confirmed "yes", or the confirmation call itself failing, which
+# answers nothing either way — is treated the same, fail-closed: recording a
+# marker for a branch that turns out already gone costs one wasted retry
+# that clears its own marker (release-pending-reservations.sh's own "already
+# absent" case, below), while skipping the marker on a confirmation this
+# call could not actually get would leave exactly the silent gap this
+# function exists to close.
+_techdebt_release_ref() {
+  local token="$1" repo="$2" branch="$3" errlog="$4"
+  local get_err get_rc
+  _techdebt_gh "$token" api -X DELETE "repos/$repo/git/refs/heads/$branch" \
+    >/dev/null 2>>"$errlog" && return 0
+  get_err="$(_techdebt_gh "$token" api "repos/$repo/git/ref/heads/$branch" 2>&1 >/dev/null)"
+  get_rc=$?
+  if (( get_rc == 0 )) || [[ "$get_err" != *"HTTP 404"* ]]; then
+    [[ -n "$get_err" ]] && printf '%s\n' "$get_err" >>"$errlog"
+    _techdebt_record_pending_release "$repo" "$branch" "$errlog"
+  fi
+  return 0
+}
+
 # _techdebt_unfile TOKEN REPO ID ERRLOG
 # Undo whatever a half-finished techdebt_file_debt has already written to
 # GitHub: the td-record/<ID> branch, where the branch-create call got that
@@ -147,23 +227,22 @@ techdebt_file_issue() {
 # Nothing else ever will — td-record/ is not a prefix
 # scripts/sweep-orphan-branches.sh sweeps at all, and a bare td/<ID>
 # carrying only its reservation commit is one it deliberately leaves alone
-# (issue #545) — so a branch left behind here is left for good
-# (agent-ops TD-PPagop-26082203).
+# (issue #545) — so a branch a first attempt here cannot release is left for
+# scripts/release-pending-reservations.sh's later pass, via
+# _techdebt_release_ref's own durable marker (TD-PPagop-26082427), rather
+# than left for good (agent-ops TD-PPagop-26082203).
 #
 # The record branch goes first and the reservation last, never the other way
 # round: releasing the id while td-record/<ID> still existed would let a
 # later reservation hand that id out again and then fail its own
 # branch-create against the ref this call left behind.
 #
-# Best-effort throughout — a DELETE that fails is logged and swallowed, so
-# cleaning up after one failure can never raise a second, and a branch that
-# outlives it is still recoverable by hand (TECH-DEBT.md).
+# Best-effort throughout — a delete this call cannot make land is never
+# raised as a second failure of its own.
 _techdebt_unfile() {
   local token="$1" repo="$2" id="$3" errlog="$4"
-  _techdebt_gh "$token" api -X DELETE "repos/$repo/git/refs/heads/td-record/$id" \
-    >/dev/null 2>>"$errlog" || true
-  _techdebt_gh "$token" api -X DELETE "repos/$repo/git/refs/heads/td/$id" \
-    >/dev/null 2>>"$errlog" || true
+  _techdebt_release_ref "$token" "$repo" "td-record/$id" "$errlog"
+  _techdebt_release_ref "$token" "$repo" "td/$id" "$errlog"
 }
 
 # techdebt_file_debt REPO TITLE BODY PROVENANCE [TOKEN] [GIT_DIR] [PR_LABEL]

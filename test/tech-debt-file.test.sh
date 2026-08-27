@@ -145,6 +145,18 @@ a_git_dir() {
 # $tmp_dir/issue-list-response  printed by `issue list --json ...`
 # $tmp_dir/fail-refs            present -> the git/refs POST fails
 # $tmp_dir/fail-contents        present -> the contents PUT fails
+# $tmp_dir/fail-delete-refs     branch-name glob patterns (one per line,
+#                                e.g. "td/*") whose git/refs/heads/<branch>
+#                                DELETE fails -- globs, since the real
+#                                reserve-tech-debt-id.pl decides the actual
+#                                id and a test cannot know it in advance
+# $tmp_dir/absent-refs          branch-name glob patterns (one per line)
+#                                whose git/ref/heads/<branch> GET 404s (the
+#                                confirmation _techdebt_release_ref makes
+#                                after a failed DELETE) -- anything not
+#                                matched reports the ref as existing
+# $tmp_dir/fail-marker-put      present -> the reservation-releases/ marker
+#                                PUT fails
 cat > "$tmp_dir/gh" <<'STUB'
 #!/usr/bin/env bash
 d="$(dirname "$0")"
@@ -154,11 +166,39 @@ if [[ "$1" == "api" && "$2" == "-X" && "$3" == "POST" && "$4" == *"/git/refs" ]]
   [[ -f "$d/fail-refs" ]] && exit 1
   exit 0
 fi
+if [[ "$1" == "api" && "$2" == "-X" && "$3" == "PUT" && "$4" == *"/contents/reservation-releases/"* ]]; then
+  [[ -f "$d/fail-marker-put" ]] && exit 1
+  exit 0
+fi
 if [[ "$1" == "api" && "$2" == "-X" && "$3" == "PUT" && "$4" == *"/contents/"* ]]; then
   [[ -f "$d/fail-contents" ]] && exit 1
   exit 0
 fi
 if [[ "$1" == "api" && "$2" == "-X" && "$3" == "DELETE" && "$4" == *"/git/refs/heads/"* ]]; then
+  branch="${4##*/git/refs/heads/}"
+  if [[ -f "$d/fail-delete-refs" ]]; then
+    while IFS= read -r pat; do
+      [[ -n "$pat" ]] || continue
+      [[ "$branch" == $pat ]] && exit 1
+    done < "$d/fail-delete-refs"
+  fi
+  exit 0
+fi
+if [[ "$1" == "api" && "$2" == *"/git/ref/heads/"* ]]; then
+  branch="${2##*/git/ref/heads/}"
+  absent=0
+  if [[ -f "$d/absent-refs" ]]; then
+    while IFS= read -r pat; do
+      [[ -n "$pat" ]] || continue
+      [[ "$branch" == $pat ]] && { absent=1; break; }
+    done < "$d/absent-refs"
+  fi
+  if [[ "$absent" == "1" ]]; then
+    echo '{"message":"Not Found","status":"404"}'
+    echo "gh: Not Found (HTTP 404)" >&2
+    exit 1
+  fi
+  echo '{"object":{"sha":"deadbeef"}}'
   exit 0
 fi
 if [[ "$1" == "pr" && "$2" == "create" ]]; then
@@ -182,7 +222,8 @@ export PATH="$tmp_dir:$PATH"
 
 reset_stub() {
   : > "$tmp_dir/calls"
-  rm -f "$tmp_dir/fail-refs" "$tmp_dir/fail-contents"
+  rm -f "$tmp_dir/fail-refs" "$tmp_dir/fail-contents" "$tmp_dir/fail-delete-refs" \
+    "$tmp_dir/absent-refs" "$tmp_dir/fail-marker-put"
   echo "https://github.com/o/r/pull/99" > "$tmp_dir/pr-url"
   echo "https://github.com/o/r/issues/77" > "$tmp_dir/issue-url"
   echo '[]' > "$tmp_dir/issue-list-response"
@@ -347,6 +388,64 @@ out="$(techdebt_file_debt "o/r" "T" "B" "P" "" "$gd")"; rc=$?
 assert_eq "file_debt: pr-create fails -> exit 1" "1" "$rc"
 assert_eq "  ... no output" "" "$out"
 assert_cleanup "$(reserved_id)" "  ... "
+
+# ============================================================================
+# _techdebt_unfile's own durability (TD-PPagop-26082427): a cleanup DELETE
+# that fails is not simply logged and swallowed -- it writes a marker into
+# the state repository, unless the branch is confirmed already gone.
+# ============================================================================
+
+# --- A cleanup DELETE fails and the branch is confirmed to still exist -----
+# -> a durable marker is written, under the ORDINARY login even though this
+# call itself carries a token (state_repo is a different repository than the
+# one the token was minted against). Glob patterns, not the id itself: the
+# real reserve-tech-debt-id.pl decides the id, unknowable before the call.
+remote="$(make_remote 0)"
+gd="$(a_git_dir "$remote")"
+reset_stub
+: > "$tmp_dir/pr-url"
+printf 'td/*\n' > "$tmp_dir/fail-delete-refs"
+state_repo="o/state"
+out="$(techdebt_file_debt "o/r" "T" "B" "P" "app-token-xyz" "$gd")"; rc=$?
+id="$(reserved_id)"
+unset state_repo
+assert_eq "unfile: pr-create fails, delete of td/<id> also fails -> exit 1" "1" "$rc"
+assert_eq "  ... a marker is written for the still-existing td/<id>" "1" \
+  "$(grep -c "api -X PUT repos/o/state/contents/reservation-releases/o__r/td__$id.json" "$tmp_dir/calls")"
+assert_eq "  ... the marker write used the ordinary login, not the token" "1" \
+  "$(grep -c "^<none> api -X PUT repos/o/state/contents/reservation-releases/o__r/td__$id.json" "$tmp_dir/calls")"
+assert_eq "  ... td-record/<id> (its delete succeeded) got no marker" "0" \
+  "$(grep -c "contents/reservation-releases/o__r/td-record__$id.json" "$tmp_dir/calls")"
+
+# --- A cleanup DELETE fails but the branch is confirmed already gone -------
+# (a peer already released it, or -- td-record/<id>'s own ordinary case --
+# the branch-create call itself never got that far) -> no marker.
+remote="$(make_remote 0)"
+gd="$(a_git_dir "$remote")"
+reset_stub
+: > "$tmp_dir/pr-url"
+printf 'td/*\ntd-record/*\n' > "$tmp_dir/fail-delete-refs"
+printf 'td/*\ntd-record/*\n' > "$tmp_dir/absent-refs"
+state_repo="o/state"
+out="$(techdebt_file_debt "o/r" "T" "B" "P" "" "$gd")"; rc=$?
+id="$(reserved_id)"
+unset state_repo
+assert_eq "unfile: both deletes fail but both branches confirmed absent -> exit 1" "1" "$rc"
+assert_eq "  ... td-record/<id> confirmed absent -> no marker" "0" \
+  "$(grep -c "contents/reservation-releases/o__r/td-record__$id.json" "$tmp_dir/calls")"
+assert_eq "  ... td/<id> confirmed absent -> no marker" "0" \
+  "$(grep -c "contents/reservation-releases/o__r/td__$id.json" "$tmp_dir/calls")"
+
+# --- No state_repo -> failed deletes still swallowed, no marker attempted --
+remote="$(make_remote 0)"
+gd="$(a_git_dir "$remote")"
+reset_stub
+: > "$tmp_dir/pr-url"
+out="$(techdebt_file_debt "o/r" "T" "B" "P" "" "$gd")"; rc=$?
+id="$(reserved_id)"
+assert_eq "unfile: no state_repo -> still exit 1 (function unaffected)" "1" "$rc"
+assert_eq "  ... no reservation-releases/ write attempted" "0" \
+  "$(grep -c 'contents/reservation-releases/' "$tmp_dir/calls")"
 
 # ============================================================================
 # techdebt_file_issue

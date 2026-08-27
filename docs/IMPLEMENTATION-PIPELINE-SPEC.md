@@ -7306,6 +7306,33 @@ implements.
     events, and every node may sweep concurrently: GitHub's own issue-close
     is idempotent, so the worst race outcome is two nodes both finding
     nothing left to do. Skipped on `--dry-run`.
+17g. **The reservation-release retry sweep.** A `td/<id>`/`td-record/<id>`
+    tech-debt reservation branch `_techdebt_unfile` (component 23d) could not
+    delete is not left orphaned for good: since TD-PPagop-26082427, that
+    failure writes a durable marker into the state repository instead of
+    only logging and swallowing it (component 23f), and this sweep is what
+    retries it. `scripts/release-pending-reservations.sh` walks every marker
+    under `reservation-releases/` in `state_repo`, one invocation covering
+    every configured repository at once — each marker already names its own
+    target repo, so this is not a per-repo loop the way 17b/17c are — and
+    for each: retries the branch's own delete; on success, or on a delete
+    that fails but a follow-up read confirms the branch already gone
+    (released by a peer's own concurrent retry, or by the ordinary
+    `release-td-branch.yml` path), clears the marker; on a delete that fails
+    again, leaves the marker for the next cycle's pass. Recovery therefore
+    costs no more than time — the marker survives until the transient
+    GitHub failure that first defeated `_techdebt_unfile` finally clears, or
+    until a human deletes the branch by hand and lets this sweep notice and
+    clear the stale marker on its next pass. Logged as
+    `reservation-release-retried` (`outcome: "released"|"absent"`), or a
+    `warning` naming the repo and branch a delete or a marker-clear failed
+    again on. Every node may run it concurrently: a second delete of an
+    already-gone branch is a no-op and a second clear of an already-cleared
+    marker 404s, which this sweep already treats as nothing to report — the
+    same race tolerance 17b/17c already rely on. Skipped on `--dry-run`: it
+    deletes refs and state-repo markers. A no-op — logged as nothing, since
+    there is nothing to warn about — where `state_repo` is unset, the same
+    single-node reading `lib/claim.sh`'s own claim registry gives it.
 18. When it skips a blocked item, it may cheaply verify whether the recorded
     blocker still holds; if the blocker is demonstrably gone, it reports
     that in its final message so the Script can append an `unblocked` event,
@@ -12443,11 +12470,11 @@ What exists, and the requirements each part answers to:
    in place of the inline block it replaces (#771) — the GitHub API budget
    and credential checks (2.0, 2.0b), the fleet-wide usage-limit cooldown and
    its own probe (2.1), the per-cycle claim GC and orphan-branch/closing-
-   keyword/human-visibility/Approver-restale/landing-retry/classifier-escape
-   sweeps (2.1a–2.1f, and requirement 46's own sweep between the human-
-   visibility and landing-retry ones — the call site only: the sweep itself
-   is `lib/approver.sh`, component 14c), and back-pressure across every
-   configured repository (2.2).
+   keyword/human-visibility/Approver-restale/landing-retry/classifier-escape/
+   reservation-release-retry sweeps (2.1a–2.1g, and requirement 46's own
+   sweep between the human-visibility and landing-retry ones — the call site
+   only: the sweep itself is `lib/approver.sh`, component 14c), and
+   back-pressure across every configured repository (2.2).
    Reads and writes `agent-cycle.sh`'s own cycle-state globals directly
    (`backpressure_tripped`, `open_composition`, `adjusted_open_count`,
    `counted_prs_json`, among others) rather than through return values, the
@@ -14421,14 +14448,27 @@ What exists, and the requirements each part answers to:
       lookup, the branch-create call, the contents-write call, or `gh pr
       create` itself — best-effort deletes `td-record/<id>` and then
       releases the `td/<id>` reservation (`gh api -X DELETE
-      .../git/refs/heads/<branch>`, for each; a `DELETE` that fails is
-      logged and swallowed rather than raising a second failure) before
-      returning. Neither branch is swept: `td-record/` is not a prefix
+      .../git/refs/heads/<branch>`, for each) before returning. Neither
+      branch is swept: `td-record/` is not a prefix
       `scripts/sweep-orphan-branches.sh` looks at at all, and a bare
       `td/<id>` carrying only its reservation commit is one it deliberately
       leaves alone (component 3n, issue #545), so a filing that stops part
       way would otherwise leave whatever it had already written invisible to
-      every later pass. The record branch is deleted before the reservation
+      every later pass. A `DELETE` that fails is never raised as a second
+      failure of its own — but, since TD-PPagop-26082427, it is not simply
+      logged and swallowed either: `_techdebt_release_ref` first confirms
+      whether the branch actually survived the failed `DELETE` (a direct
+      `git/ref/heads/<branch>` read), and only where that confirms the
+      branch is still there — or the confirmation itself could not be
+      trusted either — writes a durable marker into `state_repo`'s
+      `reservation-releases/` tree (`_techdebt_record_pending_release`,
+      always under the ordinary pipeline login, never `TOKEN`: `TOKEN`, when
+      given, is minted against the repository this call is filing into, not
+      against the state repository) for component 23f's sweep to retry on a
+      later cycle. A confirmed 404 — the ordinary case for `td-record/<id>`
+      whenever the failure that reached this path happened at or before its
+      own branch-create call — needs no marker, since there is nothing left
+      to retry. The record branch is deleted before the reservation
       and never after it, so a failure between the two can never release an
       id whose `td-record/<id>` still exists — which a later reservation
       would hand out again and then fail its own branch-create against. A
@@ -14465,11 +14505,18 @@ What exists, and the requirements each part answers to:
     `PR_LABEL` omitted (the `"autonomous-agent"` fallback) and with one
     supplied explicitly — the one case a passing test suite could otherwise
     hide entirely, since a filing that opens unlabelled still returns a URL
-    and reports success (agent-ops TD-PPagop-26082426). The Script's own
-    wiring — that `run_approver_stage` and `maybe_run_enabler` actually call
-    these with the right arguments, including the fleet's configured
-    `pr_label` resolved from `DEFAULTED_CONFIG` rather than the bare
-    fallback, and log the right event — is
+    and reports success (agent-ops TD-PPagop-26082426). The same suite also
+    covers `_techdebt_unfile`'s durable fallback (TD-PPagop-26082427): a
+    cleanup `DELETE` that fails while the branch is confirmed still there
+    writes a `reservation-releases/` marker under the ordinary login even
+    when the call itself carried a token; a cleanup `DELETE` that fails but
+    the branch is confirmed already gone writes no marker; and with no
+    `state_repo` configured, a failed cleanup is swallowed exactly as before,
+    with no marker attempted. The Script's own wiring — that
+    `run_approver_stage` and `maybe_run_enabler` actually call these with the
+    right arguments, including the fleet's configured `pr_label` resolved
+    from `DEFAULTED_CONFIG` rather than the bare fallback, and log the right
+    event — is
     covered separately, by `test/approver-tech-debt-file-wiring.test.sh` and
     `test/enabler-tech-debt-file-wiring.test.sh`, lifting each block out of
     `agent-cycle.sh` the same way `test/approver-wiring.test.sh` and
@@ -14505,6 +14552,33 @@ What exists, and the requirements each part answers to:
     unrelated/malformed files ignored, two records in one push each getting
     their own line, an all-zero before-SHA treated as a no-op that calls `gh`
     not at all); must pass `shellcheck`.
+23f. `scripts/release-pending-reservations.sh` implementing requirement 17g's
+    reservation-release retry sweep — the durable half of TD-PPagop-26082427,
+    behind component 23d's own marker-writing half. A no-op (exit 0, no `gh`
+    call at all) where `state_repo` is unset. Otherwise: lists every
+    directory under `reservation-releases/` in `state_repo` (one per target
+    repository, sanitized `owner__name`) and every marker file beneath each,
+    reads each marker's `{repo, branch}` body, and for each attempts `gh api
+    -X DELETE repos/<repo>/git/refs/heads/<branch>`. A `malformed` marker —
+    missing `repo` or `branch` — is reported as a `warning` and left in
+    place rather than acted on. On success, or on a delete that fails but a
+    follow-up `git/ref/heads/<branch>` read confirms the branch is already
+    gone (a peer node's own concurrent retry, or `.github/workflows/
+    release-td-branch.yml`'s ordinary path — since a marker is only ever
+    cleared once, never renewed), the marker itself is deleted from
+    `state_repo` and the outcome (`"released"`/`"absent"`) is printed; a
+    delete that fails again — or whose follow-up confirmation itself cannot
+    be trusted — leaves the marker in place for the next cycle's pass and
+    prints a `warning` naming the repo and branch. One invocation covers
+    every repository with a pending marker, never a per-repo loop: each
+    marker already names its own target repo, the same shape
+    `lib/claim.sh gc` already uses for its own state-repo-wide sweep. Always
+    exits 0. Regression-tested in `test/release-pending-reservations.test.sh`
+    (no `state_repo` configured, an empty tree, a delete that now succeeds,
+    a delete that fails against an already-absent branch, a delete that
+    fails again, a malformed marker, and two markers naming different
+    target repositories each handled independently); must pass
+    `shellcheck`.
 
 ## Acceptance checks
 
@@ -18235,6 +18309,20 @@ pull request, run the ones the change touches and any it could regress.
     push independently, and treats an all-zero before-SHA as a no-op that
     calls `gh` not at all.
 
+    `test/release-pending-reservations.test.sh` passes (requirement 17g,
+    component 23f, TD-PPagop-26082427): with no `state_repo` configured, or
+    an empty `reservation-releases/` tree, the script is a silent no-op that
+    calls `gh` not at all; a marker whose branch delete now succeeds is
+    reported `"released"` and its own marker file is cleared; a marker whose
+    branch delete fails but a follow-up read confirms the branch already
+    gone is reported `"absent"` and its marker is cleared the same way; a
+    marker whose delete fails again is reported as a `warning` and left in
+    place, unlike the two outcomes above, neither of which leaves a marker
+    behind; a malformed marker (missing `repo` or `branch`) is reported as a
+    `warning` and left untouched rather than acted on; and two markers
+    naming different target repositories, in one invocation, are each
+    handled independently.
+
     Requirements 24b and 30d are covered by
     `prompts/implementer.md`/`prompts/reviewer.md` naming
     `scripts/find-similar-tech-debt.sh` and `TECH-DEBT.md`'s "Filing
@@ -19430,3 +19518,4 @@ confident, recurring no-op.
 | A killed command destroys the work that finished before it, not just the work in flight | The Reviewer's own Bash tool kills a command still running at 10 minutes and returns nothing for it — not partial stdout, not the exit code of whatever it had already checked, nothing (requirement 29a). On agent-ops#734 the model read that as a command to retry rather than a wall to plan around: three consecutive 10-minute kills against the same unbatched `test/*.test.sh` run burned exactly a third of a 90-minute budget for zero test evidence, and a fourth hour of ad hoc re-batching still did not finish — so the review's own findings, already complete after the first 13 minutes, were never posted in time and the whole engagement was recorded as a failed attempt. | Before running anything that might be large, ask what the tool that runs it will do if it is too large — here, silently discard everything, including the part that already succeeded. Where the answer is "nothing survives," split the work into pieces sized to the limit *before* the first attempt (`scripts/run-tests.sh --list`, requirement 29a) rather than sizing down only after a kill proves the first guess wrong, and land whatever is already decided (a review's own findings, posted as formed — requirement 30a) before starting the part that risks the wall, so a kill there costs only the part still in flight. |
 | A network-layer fault surfacing behind an application-layer control | With `DOCKER_MTU` unset on a host whose egress link sits below 1500, DNS resolves, squid accepts the CONNECT — and the TLS handshake inside the tunnel hangs and resets, which reads as "the egress allowlist is blocking me" when squid already said yes. The debugging then happens at the wrong layer, in the allowlist, where nothing is wrong. | The `egress` network carries the same `DOCKER_MTU` driver_opts as the default bridge, and `doctor.sh`'s Egress fail message names the trap. Rule the MTU out (compose.yaml's own note tells you how) before touching the allowlist. |
 | A pipeline stage whose reader exits first, under `pipefail` | `do_push` took the newest cycle id with `find … | sort -r | head -n 1`. `head` closes the pipe as soon as it has its one line, `sort` — which cannot emit anything before it has read every name — is still writing, and takes `SIGPIPE`. `pipefail` promotes the 141 to the pipeline's status and `set -e` aborts the push, after the mirror lock and fetch but before the commit, writing nothing to `state-sync.log`. Whether it fires depends on whether sort's output beats `head` into the 64 KB pipe buffer, so it hit 16-17 of every 30 runs: nodes replicated their state every 11-20 minutes against a `*/5` cron entry, for a month, and the only evidence anywhere was supercronic's own `exit status 141` (#806). The identical shape one function away was harmless purely because its caller used a process substitution, whose status bash discards. | Slicing a sorted stream is not a place to save a line: `sort` must buffer the whole input anyway, so capture it and slice in the shell, or use a reader that consumes its input (`sed -n '1,Np'`, `awk 'NR<=n'`). Never `|| true` — it silences the real errors at the same site. And when auditing the pattern, read the *call shape*, not just the pipeline: the same three commands are fatal in `$(…)` and inert in `< <(…)`, which is why a survey by grep alone will mis-rank what to fix. |
+| A cleanup path that only ever runs during the very failure it exists to clean up after | `_techdebt_unfile` undid a half-finished tech-debt filing's writes on the one path that reaches it: `techdebt_file_debt`'s own failure handler, calling straight back into the GitHub API whose failure just put it there. The correlation is near-total — a transient window that fails a branch-create or contents-write call is the same window that fails the `DELETE` meant to undo it — so the cleanup was likeliest to fail exactly when it was needed and silently fine the rest of the time, which is why nothing noticed. On 2026-08-23, fourteen consecutive `td/<id>` reservations (TD-PPagop-26082407 through -26082420) orphaned in a seventy-second window, and nothing short of a human running `git push origin --delete` by hand would ever have released them: `scripts/sweep-orphan-branches.sh` deliberately leaves a bare reservation branch alone (issue #545, since it cannot tell whether the id was filed elsewhere), and the push-triggered release workflow only ever fires for an id that actually reached `main` — one that never did stays invisible to both, forever, exactly as `lib/tech-debt-file.sh`'s own header conceded before TD-PPagop-26082427 (`_techdebt_release_ref`, `scripts/release-pending-reservations.sh`) closed it. | A failure-path cleanup that calls back into the same dependency whose failure triggered it is not a backstop, because the two share a failure mode by construction — one retry, run once, in the same breath as the fault. Ask, of any "undo what I just wrote" step: what happens if the *undo* fails too, and is anything left that will ever try it again? Where the answer is "no", make the failure durable — a marker outside the failed call's own blast radius (here, a different repository's contents API) that a later, independent, periodically-retried pass can act on — rather than one best-effort attempt logged and swallowed. |
