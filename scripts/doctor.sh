@@ -77,6 +77,8 @@ source "$SCRIPT_DIR/lib/escalation-autonomy.sh"
 source "$SCRIPT_DIR/lib/merge-queue.sh"
 # shellcheck source=lib/approver-token.sh
 source "$SCRIPT_DIR/lib/approver-token.sh"
+# shellcheck source=lib/author-token.sh
+source "$SCRIPT_DIR/lib/author-token.sh"
 # shellcheck source=lib/issue-priority.sh
 source "$SCRIPT_DIR/lib/issue-priority.sh"
 # shellcheck source=lib/disk-space.sh
@@ -364,6 +366,31 @@ if (( ma_above_human )); then
   else
     warn "merge_autonomy is above human but the Approver's runtime credential is not present in this environment — PULLWRIGHT_APPROVER_APP_ID, PULLWRIGHT_APPROVER_INSTALLATION_ID and PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH (readable) must all be set where the cycle runs, or approver_token_get reports the gate unreadable and no approval is ever minted"
   fi
+fi
+
+# The forge authoring App's own identity (D18 decision 1, agent-ops#607 Phase
+# 2) — unlike the Approver above, it has no config.json declaration to
+# reconcile against: nothing in config.json gates on knowing its id ahead of
+# time, the same reason GH_TOKEN itself has none. Presence is reported here
+# purely so an operator sees which credential this node actually authors
+# with; absence never warns or fails — landing this identity with its values
+# unset (an owner act, out of this item's scope) is the expected steady
+# state until it is provisioned, and lib/forge-auth.sh's degrade to GH_TOKEN
+# means the node works exactly as it always has either way. The one live
+# check — a mint attempt, which does cost a network call — is below, in the
+# GitHub section.
+author_app_id_env="${PULLWRIGHT_AUTHOR_APP_ID:-}"
+author_installation_id_env="${PULLWRIGHT_AUTHOR_INSTALLATION_ID:-}"
+author_key_path_env="${PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH:-}"
+author_any_set=0
+[[ -n "$author_app_id_env" || -n "$author_installation_id_env" || -n "$author_key_path_env" ]] \
+  && author_any_set=1
+if author_token_credential_present; then
+  ok "the forge authoring App's runtime credential is present and its key is readable — this node prefers it over GH_TOKEN for authoring (D18 decision 1)"
+elif (( author_any_set )); then
+  warn "only some of PULLWRIGHT_AUTHOR_APP_ID, PULLWRIGHT_AUTHOR_INSTALLATION_ID and PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH are set (and/or the key file is unreadable) — a forge authoring App credential needs all three or none; this node degrades to GH_TOKEN until all three are set correctly"
+else
+  ok "no forge authoring App configured — this node authors via GH_TOKEN (D18 decision 1's degrade path, agent-ops#607)"
 fi
 
 # D18 §5.4 (requirement 2.3c): merge_budget_per_day, reported per configured
@@ -800,6 +827,28 @@ elif ! gh auth status >/dev/null 2>&1; then
 else
   gh_ready=1
   ok "gh is authenticated as $(gh api user --jq .login 2>/dev/null || echo '(login unavailable)')"
+fi
+
+# The forge authoring App's own mint path, exercised once (D18 decision 1,
+# agent-ops#607 Phase 2) — independent of gh_ready above: this identity's
+# whole point is to work on a node that carries no GH_TOKEN/`gh auth login`
+# at all, so gating this on `gh` being authenticated would refuse to check
+# the one case most worth checking. Never a `fail` for absence — landing
+# with the App unprovisioned is the expected steady state (see the
+# Configuration section above) — but a credential that is present and still
+# cannot mint is worth a loud `fail`: an expired key, a wrong installation
+# id, or a private key that no longer matches the App would otherwise be
+# discovered only mid-cycle, silently degraded to GH_TOKEN with no operator
+# ever told why.
+if ((offline)); then
+  :  # already covered by "every GitHub check (--offline)" above
+elif author_token_credential_present; then
+  if author_mint_out="$(author_token_get "" 2>/dev/null)" && [[ -n "$author_mint_out" ]]; then
+    author_login="$(author_token_identity_login "" 2>/dev/null || echo '(login unavailable)')"
+    ok "the forge authoring App installation token minted successfully — this node authors as $author_login"
+  else
+    fail "the forge authoring App's credential is present but a token could not be minted — PULLWRIGHT_AUTHOR_APP_ID/_INSTALLATION_ID may not name a real installation, or the key does not match (D18 decision 1, agent-ops#607); this node still authors via GH_TOKEN in the meantime"
+  fi
 fi
 
 if ((gh_ready)); then

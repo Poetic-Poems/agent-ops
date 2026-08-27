@@ -87,7 +87,7 @@ fi
 . "$APP_DIR/lib/author-token.sh"
 entrypoint_gh_token="${GH_TOKEN:-}"
 if [[ -z "$entrypoint_gh_token" ]] && author_token_credential_present; then
-  entrypoint_gh_token="$(author_token_get 2>/dev/null || true)"
+  entrypoint_gh_token="$(author_token_get "" 2>/dev/null || true)"
 fi
 if [[ -n "$entrypoint_gh_token" ]]; then
   # Teaches git to use this token for github.com https remotes, which is how

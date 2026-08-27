@@ -23,6 +23,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   configuration changes: `ANTHROPIC_API_KEY` is unset unless an operator
   sets it, same as every other credential in `compose.yaml`'s environment
   block.
+- A second GitHub App identity, the **forge authoring App**, distinct from
+  the Pullwright Approver (D25, agent-ops#607): every authoring act — clone,
+  push, comment, open a pull request or issue — runs under its short-lived
+  installation tokens once an owner provisions it (`PULLWRIGHT_AUTHOR_APP_ID`
+  / `_INSTALLATION_ID` / `_PRIVATE_KEY_PATH` in `.env`), degrading silently
+  to the node's own `GH_TOKEN` when unset, unreadable, or a mint fails —
+  never bricking a node. `lib/approver-token.sh`'s GitHub App token-minting
+  mechanics are generalised into a shared `lib/github-app-token.sh` core so
+  the two identities share one implementation; `lib/forge-auth.sh` resolves
+  which credential a cycle authenticates with, ahead of every GitHub call
+  including the startup credential probe. `scripts/doctor.sh` reports the
+  new identity's presence, key readability and a live mint attempt.
+  Landed with the App's own values unset — provisioning it is an owner act.
 - New `label_prefix` config key (default `pw::`, agent-ops#840) and
   `lib/labels.sh`'s `labels_reconcile`/`labels_reconcile_role`: full CRUD —
   create, reconcile colour/description drift, and delete once no longer

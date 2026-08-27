@@ -73,6 +73,20 @@ x-agent-ops-env: &agent-ops-env
   PULLWRIGHT_APPROVER_APP_ID: ${PULLWRIGHT_APPROVER_APP_ID:-}
   PULLWRIGHT_APPROVER_INSTALLATION_ID: ${PULLWRIGHT_APPROVER_INSTALLATION_ID:-}
   PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH: ${PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH:-}
+  # The forge authoring App's identity (D18 decision 1, agent-ops#607) — the
+  # second, distinct GitHub App every authoring act (clone, push, comment,
+  # open a pull request or issue) runs under when it is configured, in place
+  # of the owner's own long-lived PAT. Same shape as the Approver's own three
+  # above, for the same reasons: all optional, all three must arrive
+  # together (lib/author-token.sh's `author_token_credential_present`), and a
+  # partial or absent set simply degrades this node to authenticating with
+  # GH_TOKEN, exactly as every node did before this identity existed — never
+  # a broken node. Named here explicitly for the same reason as the
+  # Approver's own: this block is an allowlist, and a variable an operator
+  # sets in .env that is not named here is silently invisible to every cycle.
+  PULLWRIGHT_AUTHOR_APP_ID: ${PULLWRIGHT_AUTHOR_APP_ID:-}
+  PULLWRIGHT_AUTHOR_INSTALLATION_ID: ${PULLWRIGHT_AUTHOR_INSTALLATION_ID:-}
+  PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH: ${PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH:-}
   TZ: ${TZ:-Pacific/Auckland}
 
 x-agent-ops: &agent-ops
@@ -152,6 +166,12 @@ x-agent-ops: &agent-ops
     # itself is empty, so `approver_token_credential_present` returns false and
     # the credential is correctly reported absent.
     - ${PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH:-/dev/null}:${PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH:-/dev/null}:ro
+    # The forge authoring App's own private key (D18 decision 1,
+    # agent-ops#607) — the same fixed-path-both-sides pattern as the
+    # Approver's key immediately above, for the same reasons, including the
+    # /dev/null no-op fallback that keeps an unset variable reading as
+    # "not configured" rather than a confusing runtime error.
+    - ${PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH:-/dev/null}:${PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH:-/dev/null}:ro
   labels:
     # Only containers carrying this label are watchtower's business — the
     # laptop runs unrelated containers that are none of it.

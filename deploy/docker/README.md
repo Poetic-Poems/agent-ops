@@ -86,6 +86,14 @@ for the `tailnet` profile — `TS_AUTHKEY`. Leave `ROLE=standby` unless this nod
 is meant to be the one that spends; see [Which node runs the
 cycles](../../README.md#which-node-runs-the-cycles).
 
+Every credential above arrives here, as a plain `.env` value — none of them
+need an interactive step inside the running container. The forge authoring
+App (D18 decision 1, the `.env.example` section right after the Pullwright
+Approver App's own) is the same shape, entirely optional, and upgrades this
+node from the `GH_TOKEN` PAT above to short-lived App-minted tokens once an
+owner has provisioned it; leaving it unset costs nothing; the node keeps
+authenticating with `GH_TOKEN` exactly as it always has.
+
 `.env` holds this node's secrets. It is git-ignored, and if a token ever lands
 in a commit the answer is to rotate it, not to rewrite history.
 
@@ -120,7 +128,11 @@ it from the environment on every invocation, so there is no per-node login
 and no `claude-config` volume to protect.
 
 **Subscription OAuth (alternative — interactive per node, own use only):**
-leave `ANTHROPIC_API_KEY` unset in `.env` and instead log in once:
+the sole exception to this stack's non-interactive bring-up (D4) — every
+other credential, including the API key above and the forge authoring App
+in step 2, arrives as a secret or environment value at container start,
+never by `exec`-ing into a running one. Leave `ANTHROPIC_API_KEY` unset in
+`.env` and instead log in once:
 
 ```bash
 docker compose exec scheduler claude

@@ -134,9 +134,13 @@ a node updates by pulling a new image rather than by pulling a branch.
   `deploy/docker/claude-settings.json` **only when absent** (that directory is a
   persistent volume holding refreshing OAuth credentials, and the seed carries
   model/effort defaults only — no plugins and no local marketplaces), runs
-  `gh auth setup-git` when `GH_TOKEN` is present so https pushes authenticate,
-  creates `state_dir` and `workspace_root`, and then execs the service it was
-  given. It refuses to start if `state_dir` is not writable, rather than
+  `gh auth setup-git` so https pushes authenticate — whenever `GH_TOKEN` is
+  present, or, since D25/agent-ops#607, whenever the forge authoring App's
+  credential is (component 14g's `author_token_credential_present`), minting
+  one token here purely so the call has something to configure the
+  credential helper against; every cycle mints its own fresh token later
+  (component 14h) — creates `state_dir` and `workspace_root`, and then execs
+  the service it was given. It refuses to start if `state_dir` is not writable, rather than
   letting a mis-owned volume become a silent failure to record anything. It
   does *not* set the git identity: every container this image runs — including
   the dashboard services and every command a `docker run` might be given —
@@ -1346,6 +1350,19 @@ implements.
    one implementation each script calls, so the Script's refusal and
    `doctor.sh`'s `fail` can never drift on what counts as a fault.
 2. **Stand-down checks.** Each check logs its reason and exits cleanly:
+
+   Before check 0 below, and before every other check in this list: the
+   effective GitHub credential for this cycle is resolved once
+   (`forge_auth_effective_gh_token`, component 14h, D25/agent-ops#607) and
+   exported as `GH_TOKEN` for the rest of the process — the forge authoring
+   App's own minted installation token when it is configured and a mint (or
+   a cache hit) succeeds, the node's own ambient `GH_TOKEN` in every other
+   case. This has no number of its own in the list below because it never
+   itself stands the cycle down — it only decides *which* credential 0b's
+   probe two steps later, and everything after it, actually authenticates
+   with. Unnumbered rather than "0aa" or similar, since renumbering 0a–0c
+   would touch every cross-reference those letters already have elsewhere in
+   this document, and this step changes no stand-down behaviour of its own.
    0. *GitHub API budget*: before any other check, read `GET /rate_limit` and
       stand the cycle down when either metered pool is below its floor —
       `core` below `github_min_core_budget`, or `graphql` below
@@ -5781,9 +5798,11 @@ implements.
    installation token, as a leading one-invocation `GH_TOKEN="$token" gh …`
    assignment — never `export`, exactly as `approver_post_review` already
    does and for the same reason: never the pipeline's own authoring
-   identity (the owner PAT), which would collapse the two-identity audit
-   trail §5.3 exists for into the same account authoring, approving and
-   landing every pull request. A successful arm logs `landing-armed`
+   identity — the owner's `GH_TOKEN`, or, once provisioned, the forge
+   authoring App (D25, component 14g) — which would collapse the
+   two-identity audit trail §5.3 exists for into the same account
+   authoring, approving and landing every pull request. A successful arm
+   logs `landing-armed`
    exactly once, naming the `method` actually used (`enqueued` or
    `auto-merge`), and never withholds anything requirement 8b already did.
    `auto-merge` names the *call* made (`gh pr merge --auto --squash`), not a
@@ -13399,6 +13418,15 @@ What exists, and the requirements each part answers to:
     env id with no config declaration is a `warn` (wired but undeclared),
     and a level above `human` with no readable runtime credential in this
     environment is a `warn`, the wrapper failing closed either way —
+    then the forge authoring App's own presence (D25/agent-ops#607,
+    component 14g): `ok` naming which credential this node authors with
+    either way — the App's, when all three of its environment values are
+    set and the key is readable, or `GH_TOKEN`'s degrade path when none are
+    — and a `warn`, never a `fail`, for a partial set (some but not all
+    three), since that is the one shape that is not simply "not configured
+    yet" but is likely an operator mistake worth a second look; unlike the
+    Approver there is no `config.json` declaration to reconcile this
+    identity against (component 14g's own header explains why) —
     then the reserved label
     names — `blocked` on an issue-side label key, `obsolete` on any label key
     at all, each a `fail` for the reasons requirements 16.4 and 34k give
@@ -13572,6 +13600,20 @@ What exists, and the requirements each part answers to:
     `approver_token_installation_permissions` directly, against the same
     stubbed `curl` and real-JWT-signing seam its sibling functions use.
 
+    **The forge authoring App's own mint path, exercised once** (D25,
+    agent-ops#607, component 14g): independent of `gh_ready` above, since
+    this identity's whole point is to work on a node carrying no `GH_TOKEN`
+    or `gh auth login` at all — gating it on `gh` being authenticated would
+    refuse to check the one case most worth checking. Skipped under
+    `--offline`. When `author_token_credential_present` is true, one call to
+    `author_token_get` is attempted: success is `ok`, naming the identity
+    login (`author_token_identity_login`) this node now authors as; failure
+    is a `fail`, never a `warn` — a credential that is present and still
+    cannot mint (a wrong installation id, a key that no longer matches the
+    App) is worth surfacing loudly, since silence here would let it degrade
+    to `GH_TOKEN` with no operator ever told why. Absence is never a
+    `fail`/`warn` here — already covered by the presence check above.
+
     A third flag, `--unattended` (requirement 2.6a), is what
     `deploy/docker/crontab.tmpl`'s own hourly line runs unprompted: the whole
     Configuration and GitHub sections, skipping only the two checks that
@@ -13637,7 +13679,14 @@ What exists, and the requirements each part answers to:
     hand — sign a ~9-minute RS256 App JWT with `openssl` (the node image's
     own, component 7), `POST` it to
     `/app/installations/<id>/access_tokens`, take the ~1 h installation token
-    back. `approver_token_credential_present` is the identity check on its
+    back. As of D25/agent-ops#607 (component 14f) it is a thin wrapper over
+    `lib/github-app-token.sh`'s shared mechanics rather than doing the dance
+    itself — a second identity (the forge authoring App, component 14g)
+    needed the identical exchange against a different App/installation/key,
+    so the mechanics were pulled out once rather than duplicated; this file's
+    own public API (below) is unchanged by that move, and
+    `test/approver-token.test.sh` passes unmodified against it.
+    `approver_token_credential_present` is the identity check on its
     own; `approver_token_get [NOW_EPOCH]` prints a valid token on stdout and
     nothing else, taking `NOW_EPOCH` only so a test can reach an expiry
     without waiting for one.
@@ -13835,6 +13884,108 @@ What exists, and the requirements each part answers to:
     guard's integration with `maybe_run_enabler` is
     `test/enabler-verdicts.test.sh`'s own coverage instead, so the two files'
     tests do not restate each other.
+14f. `lib/github-app-token.sh` — the GitHub App installation-token minting
+    mechanics component 14b (`lib/approver-token.sh`) originally implemented
+    for itself alone, generalised (D25, agent-ops#607) once a second identity
+    — the forge authoring App, component 14g — needed the identical dance
+    against a different App/installation/key. Every function here is
+    parameterised over app id, installation id, key path, cache directory,
+    cache-file prefix, and the `curl`/`openssl` binaries (or their test
+    stubs) rather than reading a fixed set of environment variables, so it
+    carries no identity of its own: `github_app_token_credential_present`,
+    `github_app_token_get`, `github_app_token_installation_permissions`,
+    `github_app_token_installation_repositories` and
+    `github_app_token_identity_login` are the same five calls component 14b
+    exposed under its own `approver_token_*` names, minus the identity — a
+    caller's own wrapper (component 14b or 14g) supplies that and delegates.
+    The JWT-signing, the mint, the exit-status contract (`0`/`1`/`2`, "gate
+    unreadable" on `1` and `2` alike), the stdin-not-argv handling of the
+    Authorization header, and the tmpfs-only best-effort cache (mode 600,
+    `mktemp`-then-rename, ownership/symlink-checked on read, keyed by
+    installation id *and* by the caller's own cache-file prefix so two
+    identities sharing one cache directory can never collide) are all exactly
+    what component 14b already specified — nothing about the mechanics
+    changed in the generalisation, only where they live. No fallback to any
+    other credential exists anywhere in this file: it references only the
+    identity values a caller passes in, so an absent App key can never
+    silently reroute a call through some other credential — that decision
+    belongs entirely to the caller (component 14h, never here).
+    Sourced, never executed. Regression-tested indirectly, through
+    `test/approver-token.test.sh` (component 14b's own identity, exercising
+    every mechanic this file implements) and `test/author-token.test.sh`
+    (component 14g's, including that the two identities' cache files never
+    collide when pointed at the same directory). Must pass `shellcheck`.
+14g. `lib/author-token.sh` — the forge authoring App's own installation-token
+    minting wrapper (D25, agent-ops#607), the same thin-wrapper shape
+    component 14b now has: `author_token_credential_present`,
+    `author_token_get [NOW_EPOCH]` and `author_token_identity_login
+    [NOW_EPOCH]` each delegate straight to component 14f, supplying this
+    identity's own three environment variables — `PULLWRIGHT_AUTHOR_APP_ID`,
+    `PULLWRIGHT_AUTHOR_INSTALLATION_ID`, `PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH`
+    — its own cache-file prefix (`pullwright-author-token`, keyed by
+    installation id the same way component 14b's is) and its own override
+    variables (`AUTHOR_TOKEN_CURL`, `AUTHOR_TOKEN_OPENSSL`,
+    `AUTHOR_TOKEN_CACHE_DIR`), never the Approver's. This is the identity
+    every authoring act — cloning a target repository, pushing a branch,
+    opening or commenting on a pull request or issue — runs under once
+    configured (component 14h decides when), in place of the owner's own
+    `GH_TOKEN`. Never the Approver's own App: a single identity able to both
+    author and approve its own work would recreate the self-approval D18
+    already exists to retire, which is why this is a *second* App rather
+    than a second installation of the first.
+    Unlike component 14b, there is no `config.json` declaration to reconcile
+    this identity's App id against — nothing in `config.json` gates on
+    knowing it ahead of time the way `approver_app_id` gates
+    `merge_autonomy` (requirement 2.3b), the same reason `GH_TOKEN` itself
+    has no `config.json` key. `scripts/doctor.sh` (component 14) reports this
+    identity's presence, key readability, and — with one live mint attempt —
+    validity, but never fails over its absence: landing with the values
+    unset is the expected state until an owner provisions the App (D25's own
+    text on why this cannot be done by the pipeline itself).
+    Sourced, never executed. Sourced by `agent-cycle.sh` and by
+    `deploy/docker/entrypoint.sh`, ahead of the latter's `gh auth setup-git`
+    call, so a node carrying only this identity (no `GH_TOKEN` at container
+    start) still has something to configure the git credential helper with.
+    Regression-tested in `test/author-token.test.sh`, on the same terms
+    `test/approver-token.test.sh` covers component 14b's own identity — the
+    success path, the cache and its expiry/ownership/tmpfs guarantees, every
+    missing-credential shape, a mint refused or unreachable — plus the
+    cross-identity cache-isolation case component 14b's own tests do not
+    need. Must pass `shellcheck`.
+14h. `lib/forge-auth.sh` — which identity a cycle authors as (D25,
+    agent-ops#607). `forge_auth_effective_gh_token [NOW_EPOCH]` is the one
+    decision point: print `SOURCE<TAB>TOKEN` on stdout (never a bare token —
+    a caller must read the two apart with `IFS=$'\t' read -r source token
+    < <(...)`, the same shape `lib/github-limit.sh`'s `github_auth_probe`
+    already uses, and for the same reason a plain `x="$(...)"` command
+    substitution cannot hand a side-effect global back to its caller through
+    a subshell boundary). `SOURCE` is `forge-app` when component 14g's
+    `author_token_credential_present` is true and a mint (or a cache hit)
+    actually succeeds, `gh-token-degraded` when the credential is configured
+    but a mint attempt just failed, and `gh-token` when no forge authoring
+    App is configured at all — the last two both resolve `TOKEN` to whatever
+    the node's own ambient `GH_TOKEN` already held, which may itself be
+    empty (the pre-existing "no credential" case this file does not change).
+    **Never fails.** An absent, unreadable or momentarily unreachable App
+    identity always degrades to `GH_TOKEN` rather than blocking a cycle —
+    the D25 requirement that this identity never brick a node that has
+    always worked fine on its PAT alone.
+    Called from `lib/standdown.sh`'s `run_standdown_checks`, first, ahead of
+    every check that authenticates against GitHub as this cycle — including
+    2.0's `/rate_limit` budget probe and 2.0b's credential-fault probe two
+    steps later — so both validate whichever credential this cycle will
+    actually use, resolved once and exported as `GH_TOKEN` for the rest of
+    the process (`gh` reads the variable directly; plain `git` reads it
+    through `deploy/docker/entrypoint.sh`'s credential-helper wiring,
+    component 3). A `gh-token-degraded` resolution logs a `warning` once per
+    cycle; every resolution logs a `forge-auth` event naming its `source`,
+    for `scripts/publish-dashboard.sh` and any operator reading the log to
+    see which identity authored a given cycle's work.
+    Sourced, never executed; requires component 14g already sourced.
+    Regression-tested in `test/forge-auth.test.sh`: the plain-`GH_TOKEN` path
+    with and without one set, the App path (fresh mint and a cached reuse),
+    and the degraded path on both a refused mint and an unreachable API,
+    each asserting both `TOKEN` and `SOURCE`. Must pass `shellcheck`.
 15. `lib/labels.sh` implementing requirement 6a: `labels_catalogue` (what a
     repository in a given role — `target`, `review`, `escalation` — needs, as
     `name`/`colour`/`description`, with the names taken from the config as
@@ -19431,6 +19582,28 @@ requirements above, which state only what is.
   it (the private key's own configuration, for one) — but any rename or
   reshaping must land with them, while the key is still consumed by
   `scripts/doctor.sh` alone.
+- **The forge authoring App's id has no `config.json` key (D25,
+  agent-ops#607), unlike the Approver's `approver_app_id`.** The Approver's
+  id is declared in configuration because `merge_autonomy` pairing
+  (requirement 2.3b) needs to know at startup whether an identity capable of
+  approving is even configured — the id gates a decision this pipeline
+  itself makes. Nothing gates on the authoring App's id the same way: it
+  either mints a token this cycle authenticates with, or it does not, and
+  `GH_TOKEN` is right there either way (D25's own degrade guarantee) — the
+  same reason `GH_TOKEN` itself has never had a `config.json` key. Declaring
+  it would buy a second place for the same three environment values to
+  drift from, with nothing to reconcile against.
+- **`GH_TOKEN` remains every node's degrade path rather than being retired
+  once the forge authoring App exists (D25).** A single organisation-wide
+  App identity was chosen over one App per node specifically to keep the
+  shared installation's rate-limit budget and seat cost down (D25's own
+  roadmap entry) — which means a genuine GitHub outage or misconfiguration
+  affecting that one installation would otherwise strand every node at
+  once, with no independent credential behind it. `GH_TOKEN` staying live as
+  the fallback is what keeps that failure mode a per-node one instead, at
+  the cost of every node still needing a personal access token provisioned
+  regardless of whether the App is. A future decision could retire it once
+  per-node independence is judged unnecessary; this one does not.
 - **A refuse streak is counted from the reviews list, not kept as private
   state (D18 WI-5, requirement 8c).** `approver_refuse_streak` reads GitHub
   fresh, every time, rather than incrementing a counter this pipeline stores

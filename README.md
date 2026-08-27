@@ -766,7 +766,15 @@ Five things are worth knowing:
   rebuild with `--build-arg PUID=…` to match a host directory).
 - **Authenticate once per node**: `docker compose exec scheduler claude` and
   complete the login. Until then every cycle fails at its first stage; the
-  entrypoint warns about it on each start.
+  entrypoint warns about it on each start. This is the one interactive step in
+  an otherwise non-interactive bring-up (D4) — every other credential,
+  including GitHub's, arrives as a plain `.env` value read at container start,
+  never by `exec`-ing into a running one. GitHub's own identity can be
+  upgraded the same way, entirely optionally: the forge authoring App (D18
+  decision 1, `.env.example`'s "Forge authoring App" section) mints
+  short-lived tokens in place of the `GH_TOKEN` PAT once an owner provisions
+  it; unset, a node just keeps authenticating with `GH_TOKEN`, exactly as
+  before this existed.
 - **The dashboard is never reachable from a network.** The `tailnet` profile
   puts the server in the Tailscale sidecar's network namespace, so Serve can
   proxy to its loopback and nothing else can; the `local` profile publishes it
