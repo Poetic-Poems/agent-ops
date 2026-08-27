@@ -1,0 +1,50 @@
+{
+  "generated_at": "@now",
+  "node": "poetic-1",
+  "config": {
+    "repos": [{"slug": "Poetic-Poems/agent-ops"}],
+    "timeout_coordinator": 15, "timeout_implementer": 90,
+    "timeout_reviewer": 30, "timeout_enabler": 30,
+    "lock_stale_after": 4, "dashboard_refresh_seconds": 5,
+    "coordinator_model": "claude-haiku-4-5-20251001"
+  },
+  "status": {
+    "switch": {"disabled": false},
+    "limit": {"active": false},
+    "running": false, "lock": null, "current": null, "last_cycle": null
+  },
+  "counts": {
+    "spend_today_usd": 0, "spend_total_usd": 0,
+    "failures_shown": 0, "cycles_shown": 0, "prs_reached_ready": 0,
+    "by_day": [], "by_model": [], "by_actor": []
+  },
+  "cycles": [],
+  "blocked": [],
+  "void": [],
+  "github": {
+    "ok": true,
+    "fetched_at": "@ago:1m",
+    "prs": [],
+    "pr_index": {},
+    "inputs": {}
+  },
+  "fleet": {
+    "claims": [
+      {
+        "node": "ockham-container", "cycle": "20260815T000000Z-ockham-container-1",
+        "repo": "enabler", "key": "Poetic-Poems-agent-ops/822/1787782970",
+        "kind": "file", "branch": "", "sha": "",
+        "item": "822", "source": "enabler", "ts": "1970-01-01T00:00:01Z"
+      },
+      {
+        "node": "ockham-2", "cycle": "20260815T000000Z-ockham-2-1",
+        "repo": "Poetic-Poems/agent-ops", "key": "agent/342",
+        "kind": "branch", "branch": "agent/342", "sha": "e11b38aa0a1d",
+        "item": "342", "source": "issues", "ts": "@ago:20m"
+      }
+    ]
+  },
+  "log_tail": [],
+  "cron_tail": [],
+  "max_open_agent_prs": 8
+}

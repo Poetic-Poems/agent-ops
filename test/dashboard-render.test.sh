@@ -296,6 +296,24 @@ assert_contains "the raw open-PR line still counts only pull requests" \
 assert_contains "the live-claims panel still shows the pseudo-slug rows in full" \
   "Poetic-Poems-agent-ops/342/1786772746" "$bps"
 
+# --- claim-expired-tombstone.json: a backdated tombstone reads as expired, not ancient (#839) ---
+# `lib/claim.sh`'s `do_expire()` backdates a discarded Enabler/Refiner
+# tombstone's `ts` to the fixed sentinel "1970-01-01T00:00:01Z" (issue #237,
+# requirement 35c) so `gc`'s next TTL sweep retires it. Fed straight through
+# `fmtAgo`, that sentinel is ~56.65 years old — it rendered as "20692d ago",
+# a fabricated age for a claim that is in fact correctly marked for imminent
+# cleanup. The claims panel must recognise the sentinel and say so instead,
+# while a claim with a real, recent `ts` keeps rendering its ordinary age.
+cet="$(render claim-expired-tombstone.json)" || { printf 'FAIL - claim-expired-tombstone.json did not render:\n%s\n' "$cet"; exit 1; }
+assert_contains "a backdated tombstone reads as expired, pending cleanup" \
+  "expired — pending cleanup" "$cet"
+assert_not_contains "…never as a fabricated multi-thousand-day age" \
+  "20692d ago" "$cet"
+assert_not_contains "…nor any other large day-count for it" \
+  "d ago" "$cet"
+assert_contains "a claim with a real, recent ts still renders its ordinary age" \
+  "20m ago" "$cet"
+
 # Single-quoted: these are literal rendered dollar amounts, not shell
 # expansions, so the SC2016 the pinned linter raises on them is a false
 # positive.

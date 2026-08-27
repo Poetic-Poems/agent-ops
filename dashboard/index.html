@@ -1542,6 +1542,13 @@
   // an item off the fleet is exactly what an operator hunting a stuck item
   // needs to see. The back-pressure card above counts a narrower set, for the
   // reasons given there; the two are meant to differ.
+  //
+  // `lib/claim.sh`'s `do_expire()` backdates a discarded tombstone's `ts` to
+  // this fixed sentinel (issue #237, requirement 35c) so `gc`'s TTL sweep
+  // retires it on the next pass rather than waiting out its full life. Feeding
+  // that straight through `fmtAgo` prints a fabricated multi-decade age
+  // (issue #839); this row is expired by design, so say that instead.
+  var EXPIRED_CLAIM_TS = "1970-01-01T00:00:01Z";
   function claimsPanel() {
     var claims = fleetClaims();
     if (!claims.length) return el("div", {class:"panel"}, el("div", {class:"empty", text:"No live claims — nothing is mid-flight."}));
@@ -1552,7 +1559,7 @@
         el("td", {}, nodeTag(c.node)),
         el("td", {}, sourceTag(c.source)),
         el("td", {class:"wrap", text: c.item || ""}),
-        el("td", {class:"muted", text: fmtAgo(c.ts)})
+        el("td", {class:"muted", text: c.ts === EXPIRED_CLAIM_TS ? "expired — pending cleanup" : fmtAgo(c.ts)})
       ]);
     });
     return tableOf(["Repo","Claim","Node","Source","Item","Held"], rows);
