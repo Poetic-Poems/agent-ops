@@ -13537,9 +13537,17 @@ What exists, and the requirements each part answers to:
    whose function `preflight_done_reason` wraps. Unit-tested
    (`test/preflight.test.sh`); must pass `shellcheck`.
 3n. `scripts/sweep-orphan-branches.sh` implementing requirement 17b's sweep:
-   given a repo slug, examines every `td/*` and `<branch_prefix>*` ref and
+   given a repo slug, examines every `td/*`, `<branch_prefix>*` and
+   `td-record/*` ref — the last unconditionally, never gated by
+   `tech_debt_branch_prefix` — and
    prints one JSON action object per orphan handled (`recovered`, `released`,
-   `deferred`, `warning`) for the Script to log. Fail-closed on every
+   `deferred`, `warning`) for the Script to log. `td-record/*` is delete-only,
+   never recovered: a filing pull request closed without merging releases that
+   ref (`reason: "filing-declined"`) and then, once `<id>`'s record is
+   confirmed absent from the default branch, its paired `td/<id>` reservation
+   too — a pair whose two actions are reserved against the per-run cap
+   together, so a run without room for both defers it whole rather than
+   deleting the record and stranding the release. Fail-closed on every
    unanswered question; `SWEEP_GH` stubs `gh` and `AGENT_OPS_CONFIG`
    overrides the config for tests. Unit-tested
    (`test/sweep-orphan-branches.test.sh`); must pass `shellcheck`.
@@ -16631,7 +16639,22 @@ pull request, run the ones the change touches and any it could regress.
    reservation commit (fixed subject, no files touched) yields no action at
    all — neither a recovery draft nor a ref delete; and an ordinary
    one-commit `td/` branch that is not that reservation shape is still
-   recovered normally (issue #545).
+   recovered normally (issue #545). For the `td-record/*` namespace
+   (TD-PPagop-26082310): a stale record branch whose only pull request was
+   closed without merging yields a ref delete carrying
+   `reason: "filing-declined"` and, on a clean 404 for `tech-debt/<id>.md` at
+   the default branch, a second `released` for the paired `td/<id>`
+   reservation, with **no** `pr create` call ever made; a 200 for that record
+   keeps the reservation, and a contents read failing with anything but 404
+   keeps it and says so (`warning`, fail closed); a *merged* filing is
+   released by the ordinary merged-PR arm instead, never counted as declined
+   and never asked the reservation question at all; a record branch with an
+   open PR is left untouched and one with no PR at all is still recovered as
+   a draft, both by the ordinary flow; a bare `td/<ID>` lock with no
+   `td-record/` sibling still yields no action, so the issue #545 exemption is
+   unchanged; and a run with only one action of headroom left defers the
+   declined pair whole — neither ref touched — so the per-run cap holds
+   strictly rather than overshooting by the release.
 7c. **Claim visibility is deterministic, both shapes and both directions
    (requirement 3o, issue #175).** `test/claim.test.sh`'s `claims`/`branches`
    section passes: a fresh branch claim's registry entry appears in `claims`'
