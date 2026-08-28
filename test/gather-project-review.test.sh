@@ -156,6 +156,19 @@ case "\$path" in
       none)
         echo '[{"name":"README.md","type":"file"}]'
         ;;
+      walkfail)
+        # The script's own listing succeeds; lib/report-directory.sh's walk
+        # over the very same path — a second, separate call — fails, the
+        # shape a rate limit landing between two back-to-back calls produces.
+        n="\$(cat "$tmp_dir/listing-count" 2>/dev/null || echo 0)"
+        echo \$(( n + 1 )) > "$tmp_dir/listing-count"
+        if (( n == 0 )); then
+          echo '[{"name":"project-review-2026-07-01","type":"dir"},{"name":"project-review-2026-08-10","type":"dir"},{"name":"README.md","type":"file"}]'
+        else
+          echo "gh: error connecting to api.github.com" >&2
+          exit 1
+        fi
+        ;;
       404)
         echo '{"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}'
         echo "gh: Not Found (HTTP 404)" >&2
@@ -269,6 +282,67 @@ assert_eq "exits 0 even without an improvement-prompts file" "0" "$rc"
 assert_eq "recommendations are still emitted" "3" "$(jq 'length' <<<"$out")"
 assert_eq "improvement_prompt is empty rather than the array being dropped" "" \
   "$(jq -r '.[0].improvement_prompt' <<<"$out")"
+export STUB_PROMPTS=hit
+
+# --- --current-date (requirement 34n's review-superseded signal, ----------
+# --- TD-PPagop-26082309) -----------------------------------------------------
+#
+# Only the reviews/ listing runs — 03-recommendations.md/
+# 04-improvement-prompts.md are never fetched — and one JSON object is
+# printed instead of the candidate array.
+run_current_date() {  # prints stdout; stderr lands in $tmp_dir/err
+  "$GATHER" --current-date "o/r" main 2>"$tmp_dir/err"
+}
+
+export STUB_LISTING=two
+out="$(run_current_date)"; rc=$?
+assert_eq "--current-date exits 0" "0" "$rc"
+assert_eq "--current-date reports ok:true" "true" "$(jq -r '.ok' <<<"$out")"
+assert_eq "--current-date reports the latest folder's own date" \
+  "2026-08-10" "$(jq -r '.date' <<<"$out")"
+
+export STUB_LISTING=none
+out="$(run_current_date)"; rc=$?
+assert_eq "--current-date: no review folder at all still exits 0" "0" "$rc"
+assert_eq "  ... reports ok:true" "true" "$(jq -r '.ok' <<<"$out")"
+assert_eq "  ... with an empty date, a definite fact rather than a failure" \
+  "" "$(jq -r '.date' <<<"$out")"
+assert_eq "  ... and says nothing on stderr" "" "$(cat "$tmp_dir/err")"
+
+export STUB_LISTING=404
+out="$(run_current_date)"; rc=$?
+assert_eq "--current-date: a clean 404 on reviews/ is the same definite fact" \
+  "true" "$(jq -r '.ok' <<<"$out")"
+assert_eq "  ... with an empty date" "" "$(jq -r '.date' <<<"$out")"
+assert_eq "  ... silently" "" "$(cat "$tmp_dir/err")"
+
+export STUB_LISTING=error
+out="$(run_current_date)"; rc=$?
+assert_eq "--current-date: a genuine API failure reports ok:false" \
+  "false" "$(jq -r '.ok' <<<"$out")"
+assert_eq "  ... still exits 0" "0" "$rc"
+assert_eq "  ... but leaves gh's diagnosis on stderr" "1" \
+  "$( [[ -s "$tmp_dir/err" ]] && echo 1 || echo 0 )"
+
+# A failed *second* listing must not read as "no review folder at all". The
+# library's walk degrades an API failure to the same silence an empty match
+# produces, and --current-date's empty date is a definite fact that retires
+# every review ref in the repository — a retirement nothing can clear. The
+# script's own listing succeeded here and shows the folders, so the walk is
+# what failed, and the answer must decide nothing.
+export STUB_LISTING=walkfail
+rm -f "$tmp_dir/listing-count"
+out="$(run_current_date)"; rc=$?
+assert_eq "--current-date: a failed second listing decides nothing, not ok:true/empty" \
+  "false" "$(jq -r '.ok' <<<"$out")"
+assert_eq "  ... still exits 0" "0" "$rc"
+# The default mode is unchanged by any of this: it answers [] for both causes.
+rm -f "$tmp_dir/listing-count"
+out="$(run)"; rc=$?
+assert_eq "the default mode still answers [] for the same failure" "[]" "$out"
+assert_eq "  ... and still exits 0" "0" "$rc"
+
+export STUB_LISTING=two
 export STUB_PROMPTS=hit
 
 printf '\n'

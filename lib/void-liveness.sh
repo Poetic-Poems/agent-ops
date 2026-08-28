@@ -33,7 +33,14 @@
 # pre-fetched as structured data at all; for those, requirement 34i's existing
 # on-demand readers (`scripts/gather-review-status.sh`,
 # `scripts/gather-plan-status.sh`) are the actioned signal, read for the void
-# residue the same way they already are for the blocked one.
+# residue the same way they already are for the blocked one. The review ref
+# shape carries a second, liveness-shaped signal alongside that reader
+# (`review-superseded`, TD-PPagop-26082309): `review-merged` alone is defined
+# only for a ref some merged pull request names, which a voided ref never is
+# (it was voided because no Implementer ran), so `scripts/gather-project-
+# review.sh --current-date` supplies the fact that reaches the rest — the
+# review folder that minted the ref is no longer the repository's current
+# one.
 #
 # A third rule sits alongside those two, for the residue neither can reach
 # (PR #340 review, decided 2026-08-13): liveness decides nothing without the
@@ -185,11 +192,12 @@ void_liveness_actioned() {
   printf '%s' "$out"
 }
 
-# void_review_plan_actioned VOID_JSON REVIEW_STATUS_JSON PLAN_STATUS_JSON
+# void_review_plan_actioned VOID_JSON REVIEW_STATUS_JSON PLAN_STATUS_JSON REVIEW_CURRENT_JSON
 # Print, as a JSON array of `{repo, item, by}`, the actioned pairs for the two
 # shapes requirement 34n's direction assigns the *existing* on-demand readers
-# rather than a fresh liveness rule: a project-review ref backed by a merged
-# pull request, and an implementation-plan task id backed by a checked
+# (plus one liveness-shaped rule of its own, TD-PPagop-26082309): a
+# project-review ref backed by a merged pull request or by a superseded
+# review folder, and an implementation-plan task id backed by a checked
 # checkbox.
 #
 # REVIEW_STATUS_JSON and PLAN_STATUS_JSON are the same shape
@@ -201,20 +209,37 @@ void_liveness_actioned() {
 # (`WORK_GONE_REVIEW_RE`, `WORK_GONE_PLAN_RE`) — one definition, per
 # requirement 34a — so a caller must source that file first.
 #
-# All three inputs travel on stdin, never in argv (requirement 4g): VOID_JSON
-# is unbounded. Fails safe to `[]` on any malformed input.
+# REVIEW_CURRENT_JSON (TD-PPagop-26082309) is repo -> the repository's current
+# review folder's own date string, from `scripts/gather-project-review.sh
+# --current-date`:
 #
-# Known gap, tech-debt/TD-PPagop-26082309.md: the review half can only ever
-# answer for a ref some merged pull request *names*, and a voided review ref
-# is voided precisely because the work landed under a commit that named no
-# ref — so this signal is defined for the population that never gets voided,
-# and every such entry stays in the extract for ever.
-# shellcheck disable=SC2016  # jq's $void/$review/$plan/$e, not the shell's.
+#   {"o/r": "2026-08-10", "o/other": ""}
+#
+# a repo missing from this map is one whose `--current-date` read failed
+# ("unknown is not gone", same as every liveness shape above); an empty
+# string is a repo whose read succeeded and found no review folder at all —
+# a definite fact, so every review ref in that repo is superseded. A review
+# ref is actioned this way (`by: "review-superseded"`) when the repo has an
+# entry here and the ref's own embedded date (the `YYYY-MM-DD` between
+# `review-` and `-R-`) differs from it. This reaches the population
+# `review-merged` cannot: a void'd review ref is voided precisely because no
+# Implementer ran, so no merged pull request ever named it, and the
+# `review-merged` signal alone leaves such an entry in the extract for ever.
+# The reasoning is the same `void_config_actioned`'s `source-dropped` rule
+# rests on — `gather-project-review.sh` only ever reads the latest folder, so
+# a ref from a superseded one is never offered again by anything, and
+# retiring its void buys no suppression.
+#
+# All four inputs travel on stdin, never in argv (requirement 4g): VOID_JSON
+# is unbounded. Fails safe to `[]` on any malformed input, including a
+# missing or malformed fourth input — the "never retiring is the safe
+# direction" rule this whole file follows.
+# shellcheck disable=SC2016  # jq's $void/$review/$plan/$current/$e, not the shell's.
 void_review_plan_actioned() {
-  local void_json="${1:-[]}" review_json="${2:-{\}}" plan_json="${3:-{\}}" out=""
+  local void_json="${1:-[]}" review_json="${2:-{\}}" plan_json="${3:-{\}}" current_json="${4:-{\}}" out=""
   out="$(jq -c -n \
     --arg review_re "$WORK_GONE_REVIEW_RE" --arg plan_re "$WORK_GONE_PLAN_RE" '
-    input as $void | input as $review | input as $plan
+    input as $void | input as $review | input as $plan | input as $current
     | [ $void[]
         | . as $e
         | ($e.repo // "") as $repo
@@ -222,15 +247,21 @@ void_review_plan_actioned() {
         | select($repo != "" and $item != "")
         | if ($item | test($review_re)) then
             ((($review[$repo] // {})[$item] // "" | ascii_downcase) as $status
-             | select($status == "merged")
-             | {repo: $repo, item: $item, by: "review-merged"})
+             | if $status == "merged" then
+                 {repo: $repo, item: $item, by: "review-merged"}
+               elif ($current | has($repo))
+                    and ($item | capture("^review-(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2})-R-[0-9]+$") | .d) != ($current[$repo])
+               then
+                 {repo: $repo, item: $item, by: "review-superseded"}
+               else empty
+               end)
           elif ($item | test($plan_re)) then
             ((($plan[$repo] // {})[$item] // "" | ascii_downcase) as $status
              | select($status == "done")
              | {repo: $repo, item: $item, by: "plan-task-done"})
           else empty
           end ]
-  ' <<<"$void_json"$'\n'"$review_json"$'\n'"$plan_json" 2>/dev/null || true)"
+  ' <<<"$void_json"$'\n'"$review_json"$'\n'"$plan_json"$'\n'"$current_json" 2>/dev/null || true)"
   [[ -n "$out" ]] || out='[]'
   printf '%s' "$out"
 }

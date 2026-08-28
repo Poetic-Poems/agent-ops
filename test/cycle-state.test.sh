@@ -641,6 +641,42 @@ rp_actioned="$(void_review_plan_actioned "$rp_void" "$review_status" "$plan_stat
 assert_eq "review-plan liveness feeding retire_void_items: actioned and old retires" \
   "0" "$(retire_void_items "$rp_void" "$rp_actioned" 30 "$rp_now_epoch" | jq 'length')"
 
+# --- void_review_plan_actioned's fourth input, REVIEW_CURRENT_JSON ---------
+# --- (requirement 34n's review-superseded signal, TD-PPagop-26082309) ------
+#
+# The residue review-merged can never reach: a voided review ref is voided
+# precisely because no Implementer ran, so no merged pull request ever named
+# it. A repo's current review folder date (from `scripts/gather-project-
+# review.sh --current-date`) supplies the fact that reaches it instead.
+rs_void='[
+  {"repo":"o/r","item":"review-2026-07-11-R-02","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/r","item":"review-2026-08-10-R-01","ts":"2026-08-01T00:00:00Z"},
+  {"repo":"o/r","item":"review-2026-07-11-R-03","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/absent","item":"review-2026-07-11-R-01","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/nofolder","item":"review-2026-07-11-R-01","ts":"2026-07-01T00:00:00Z"}
+]'
+rs_current='{"o/r":"2026-08-10","o/nofolder":""}'
+rs_out="$(void_review_plan_actioned "$rs_void" "{}" "{}" "$rs_current")"
+
+assert_eq "a ref whose date matches the current folder is not actioned" \
+  "0" "$(jq '[.[] | select(.item == "review-2026-08-10-R-01")] | length' <<<"$rs_out")"
+assert_eq "a ref whose date is older than the current folder is actioned as review-superseded" \
+  "review-superseded" "$(jq -r '.[] | select(.item == "review-2026-07-11-R-02") | .by' <<<"$rs_out")"
+assert_eq "  ... every old ref in that repo, not just one" \
+  "review-superseded" "$(jq -r '.[] | select(.item == "review-2026-07-11-R-03") | .by' <<<"$rs_out")"
+assert_eq "a repo absent from REVIEW_CURRENT_JSON actions nothing, even for an old ref" \
+  "0" "$(jq '[.[] | select(.item == "review-2026-07-11-R-01" and .repo == "o/absent")] | length' <<<"$rs_out")"
+assert_eq "an empty-string date actions every review ref in that repo" \
+  "review-superseded" "$(jq -r '.[] | select(.item == "review-2026-07-11-R-01" and .repo == "o/nofolder") | .by' <<<"$rs_out")"
+
+rs_merged_void='[{"repo":"o/r","item":"review-2026-07-11-R-02","ts":"2026-07-01T00:00:00Z"}]'
+rs_merged_out="$(void_review_plan_actioned "$rs_merged_void" '{"o/r":{"review-2026-07-11-R-02":"merged"}}' "{}" "$rs_current")"
+assert_eq "review-merged still wins over review-superseded for a merged ref" \
+  "review-merged" "$(jq -r '.[0].by' <<<"$rs_merged_out")"
+
+assert_eq "a malformed fourth input still yields []" \
+  "[]" "$(void_review_plan_actioned "$rs_void" "{}" "{}" "not valid json")"
+
 # --- void_config_actioned (requirement 34n's config signal, PR #340 review) ---
 #
 # The residue liveness cannot reach, because liveness needs the source's own

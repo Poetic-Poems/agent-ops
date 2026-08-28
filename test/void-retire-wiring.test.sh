@@ -325,6 +325,7 @@ while IFS=$'\t' read -r want desc pattern; do
   [[ -n "$pattern" ]] || continue
   assert_eq "$desc" "$want" "$(grep -cF -- "$pattern" "$SCRIPT_DIR/lib/candidate-gather.sh")"
 done <<'PATTERNS'
+1	void_review_plan_actioned is handed the review-superseded signal as its fourth argument	void_review_plan_actioned "$void_json" "$void_review_status_json" "$void_plan_status_json" "$void_review_current_json"
 1	void_config_actioned is handed the unnarrowed all_repos_json	void_config_actioned "$void_json" "$all_repos_json"
 0	  ... and never the --repo-filtered repos_json	void_config_actioned "$void_json" "$repos_json"
 0	  ... nor the back-pressure-narrowed ordered_repos_json	void_config_actioned "$void_json" "$ordered_repos_json"
