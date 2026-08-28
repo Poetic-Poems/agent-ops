@@ -5673,8 +5673,8 @@ implements.
    tech debt filed as a GitHub issue rather than an in-repo register
    record — only a collaborator with triage can apply a label, which is
    what makes an issue's membership of the `tech-debt` work band trustable
-   even though its body stays untrusted data. It is also what lets the
-   Co-Ordinator's own
+   even though its body stays untrusted data. Ensuring against every gathered
+   repository is also what lets the Co-Ordinator's own
    `needs_refinement`/`blocked` projection (requirement 34e) and the
    Refiner's `refined_label` projection (requirement 39c) reach a fresh
    repository the moment either first fires there, rather than failing
