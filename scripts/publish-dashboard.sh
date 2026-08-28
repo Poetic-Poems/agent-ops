@@ -59,6 +59,8 @@ TEMPLATE="$SCRIPT_DIR/dashboard/index.html"
 . "$SCRIPT_DIR/lib/compose-drift.sh"
 # shellcheck source=lib/image-drift.sh
 . "$SCRIPT_DIR/lib/image-drift.sh"
+# shellcheck source=lib/updater-health.sh
+. "$SCRIPT_DIR/lib/updater-health.sh"
 # shellcheck source=lib/stage-budget.sh
 . "$SCRIPT_DIR/lib/stage-budget.sh"
 # shellcheck source=lib/merge-queue.sh
@@ -182,6 +184,18 @@ doctor_status_json="$(jq -c '.' "$doctor_status_file" 2>/dev/null || echo null)"
 # cycle since upgrading has completed.
 stage_health_file="$state_dir/.stage-health.json"
 stage_health_json="$(jq -c '.' "$stage_health_file" 2>/dev/null || echo null)"
+# This node's own updater verdict (lib/updater-health.sh, agent-ops#603),
+# recomputed here on the identical precedent compose_drift_status above
+# already sets: cheap (a directory of small local files, no network), so
+# nothing is gained by caching it the way image_drift_status's real round
+# trip is. Read under `$HOSTNAME`, the container's own identity — the same
+# one `deploy/docker/watchtower-pre-update.sh` keys its ledger by, and
+# scripts/state-sync.sh's identical call below reads it the same way, both
+# for the same reason: `node_name` (`NODE_NAME` or a bare `hostname`) may
+# name this node under a friendlier string than the container Docker
+# actually created.
+updater_stuck_after_seconds="$(( $(cfg '.updater_stuck_after_minutes') * 60 ))"
+updater_json="$(updater_status "$state_dir/updater-ledger" "$updater_stuck_after_seconds" "${HOSTNAME:-}")"
 mkdir -p "$out_dir"
 
 # Large JSON blobs (the cycles array carries full transcripts) are handed to jq
@@ -1857,10 +1871,11 @@ jq -nc --arg n "$self_node" --arg r "$(role_current)" --arg ts "$now_iso" --arg 
   --argjson image "$(image_drift_status "$self_version_json" "$image_cache")" \
   --argjson switch "$switch_json" \
   --argjson stage_health "$stage_health_json" \
+  --argjson updater "$updater_json" \
   '{node: $n, role: $r, heartbeat_ts: $ts, heartbeat_age_s: 0,
     last_cycle: (if $lc == "" then null else $lc end), self: true, stale: false,
     live: $live, version: $version, compose: $compose, image: $image, switch: $switch,
-    stage_health: $stage_health}' > "$nodes_rows"
+    stage_health: $stage_health, updater: $updater}' > "$nodes_rows"
 for hb in "$peers_dir"/*/heartbeat.json; do
   [[ -f "$hb" ]] || continue
   jq -c --argjson now "$now_epoch" --argjson live "$node_live_json" '
@@ -1896,7 +1911,13 @@ for hb in "$peers_dir"/*/heartbeat.json; do
        # agent-ops#662): only the peer itself computed it, over its own
        # log.jsonl, so a heartbeat built before this check existed yields
        # null rather than this node deriving a verdict for that peer.
-       stage_health: ($h.stage_health // null)}' \
+       stage_health: ($h.stage_health // null),
+       # And for the updater verdict (lib/updater-health.sh, agent-ops#603):
+       # only the peer itself can read the ledger for its own container, so
+       # a heartbeat built before this check existed — or from before that
+       # container had its first poll — yields null rather than this node
+       # guessing at a peer it never ran.
+       updater: ($h.updater // null)}' \
     "$hb" 2>/dev/null >> "$nodes_rows" || true
 done
 fleet_nodes_json="$(jq -sc 'sort_by([(.self | not), .node])' "$nodes_rows" 2>/dev/null)"

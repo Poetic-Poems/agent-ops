@@ -132,6 +132,46 @@ expand_home() {
 
 state_dir="$(expand_home "$(jq -r '.state_dir // "~/.local/state/poetic-agents"' "$CONFIG_FILE")")"
 
+# record_verdict allow|defer — append this invocation to the durable ledger
+# lib/updater-health.sh reads back (agent-ops#603), keyed by $HOSTNAME exactly
+# as the locks above are: the dashboard and scheduler containers on a tailnet
+# node share this state volume but not an identity, so a shared file would mix
+# their invocations the same way an unstamped lock once did (#130).
+#
+# Best-effort throughout (`|| return 0` at every step): a failure to write
+# must never change the hook's exit status, and must not add materially to the
+# one-minute pre-update-timeout, which fails *open* — a container too slow to
+# answer is rolled regardless.
+record_verdict() {
+  local verdict="$1" f=""
+  mkdir -p "$state_dir/updater-ledger" 2>/dev/null || return 0
+  f="$state_dir/updater-ledger/${HOSTNAME:-unknown}.jsonl"
+  local line=""
+  line="$(jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg v "$verdict" \
+      '{ts:$ts, verdict:$v}' 2>/dev/null)" || return 0
+  [[ -n "$line" ]] || return 0
+  printf '%s\n' "$line" >> "$f" 2>/dev/null || return 0
+
+  # Bound this file to the last 48h of invocations — comfortably beyond any
+  # legitimate defer streak (bounded by cycle_stale_after/review_stale_after,
+  # a few hours by default below) while staying trivial in size at
+  # watchtower's five-minute poll cadence.
+  local cutoff="" tmp="$f.tmp.$$"
+  cutoff="$(date -u -d '48 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" || return 0
+  if jq -c --arg cutoff "$cutoff" 'select(.ts >= $cutoff)' "$f" > "$tmp" 2>/dev/null; then
+    mv "$tmp" "$f" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+  else
+    rm -f "$tmp" 2>/dev/null
+  fi
+
+  # A retired hostname's own ledger is dead weight once this container — a
+  # different hostname — exists to read it as evidence of a roll
+  # (lib/updater-health.sh's "rolled" state); prune anything untouched for a
+  # week, best-effort.
+  find "$state_dir/updater-ledger" -maxdepth 1 -name '*.jsonl' -mtime +7 \
+    ! -name "$(basename "$f")" -delete 2>/dev/null || true
+}
+
 cycle_stale_after="$(jq -r '.lock_stale_after // 4' "$CONFIG_FILE")"
 review_stale_after="$(jq -r '.project_review.lock_stale_after // 6' "$CONFIG_FILE")"
 [[ "$cycle_stale_after"  =~ ^[0-9]+$ ]] || cycle_stale_after=4
@@ -186,9 +226,11 @@ if [[ -n "$held" ]]; then
 fi
 
 if (( defer )); then
+  record_verdict defer
   say "exit $EX_TEMPFAIL: watchtower will re-check on its next poll"
   exit "$EX_TEMPFAIL"
 fi
 
+record_verdict allow
 say "no cycle in flight — the update may proceed"
 exit 0

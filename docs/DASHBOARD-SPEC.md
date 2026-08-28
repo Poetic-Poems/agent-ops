@@ -794,6 +794,12 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                           stages: { "<stage>": {
                                             verdict, consecutive_failures,
                                             last_success, last_detail } } },
+                         updater: { status, at, seconds },  // the node's own
+                                            //   watchtower pre-update hook
+                                            //   verdict (#603): "rolled",
+                                            //   "deferring" or "stuck"; null
+                                            //   if unreported or not yet
+                                            //   determinable
                          live: { cycle, since, running, ended_at,
                                  stage, repo, item, source, title } } ],
                                             // what THAT node is doing; null
@@ -2603,6 +2609,28 @@ number's twins elsewhere on the page.
   replication, like the other local caches) holds the last answer, and
   `scripts/state-sync.sh`'s own heartbeat push shares the same file, so
   whichever of the two next crosses `IMAGE_DRIFT_TTL` pays the one query.
+- **Neither `behind` nor `image behind` can catch an update mechanism that
+  has stopped working altogether, ahead of and independent of the drift it
+  eventually causes (#603).** On 2026-08-14 watchtower tried to create two
+  replacement containers it had never stopped, hit a name collision, and
+  logged `Session done Failed=2` on every poll thereafter while the node
+  stayed on the previous image — through a fleet roll the other three nodes
+  had already taken. Every badge above still read healthy, because none of
+  them read the update mechanism's own verdict, only the staleness it
+  eventually causes. The card renders the heartbeat's updater verdict
+  (implementation spec 2.5, `lib/updater-health.sh`) as a third badge below
+  compose and image: **updater deferring**, grey, naming how long
+  `deploy/docker/watchtower-pre-update.sh` has been holding this container's
+  roll back for a cycle or review in flight — it resolves the moment that
+  ends, the same colour and reasoning as `behind`. **updater stuck**, amber,
+  `compose`'s colour for a fault only a human clears: the hook allowed a
+  roll and the container it allowed is still the one running — same
+  hostname, so watchtower never actually replaced it — and the retry that
+  follows repeats the very operation that collided, so it will not clear on
+  its own. `rolled` (the ordinary case) renders nothing, and so does an
+  absent verdict — a peer whose heartbeat predates the check, or one still
+  inside the short window before its own first poll — the same
+  absent-means-unknown rule `compose` and `image` already follow.
 - **A node-scoped disable (implementation spec 2.3, `--disable --this-node`,
   issue #379) gets its own badge beside the role badge**, not just the
   page-top switch banner. The banner (above) is keyed to *this* node's own

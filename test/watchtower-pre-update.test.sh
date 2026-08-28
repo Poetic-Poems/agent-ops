@@ -271,6 +271,43 @@ assert_contains "with lifecycle hooks enabled on watchtower" \
 assert_eq "and the script is executable, since the label execs it" \
   "1" "$([[ -x "$HOOK" ]] && echo 1 || echo 0)"
 
+# --- The ledger (agent-ops#603) -----------------------------------------------
+# Every invocation is recorded, durably, keyed by $HOSTNAME — the raw material
+# lib/updater-health.sh reads back to tell a healthy roll from a stuck one.
+
+rm -rf "$state_dir/updater-ledger"
+rm -f "$state_dir/lock.json" "$state_dir/review-lock.json"
+run_hook_as "ledger-host"
+assert_eq "an allow is recorded under this container's own name" "1" \
+  "$(test -f "$state_dir/updater-ledger/ledger-host.jsonl" && echo 1 || echo 0)"
+assert_eq "carrying the allow verdict" "allow" \
+  "$(jq -r '.verdict' "$state_dir/updater-ledger/ledger-host.jsonl")"
+
+start_sleeper
+write_lock "$state_dir/lock.json" "$sleeper_pid" 0 "ledger-host"
+run_hook_as "ledger-host"
+assert_eq "a defer is appended to the same ledger, not overwritten" "2" \
+  "$(wc -l < "$state_dir/updater-ledger/ledger-host.jsonl" | tr -d ' ')"
+assert_eq "carrying the defer verdict" "defer" \
+  "$(tail -n 1 "$state_dir/updater-ledger/ledger-host.jsonl" | jq -r '.verdict')"
+stop_sleeper
+rm -f "$state_dir/lock.json"
+rm -rf "$state_dir/updater-ledger"
+
+# A ledger write that cannot happen — the ledger path exists as a plain file,
+# so `mkdir -p` on it fails — must never change the hook's own exit status:
+# the ledger is bookkeeping, not part of the hook's contract with watchtower.
+printf 'not a directory\n' > "$state_dir/updater-ledger"
+run_hook_as "ledger-host"
+assert_eq "an idle roll still exits 0 when the ledger cannot be written" "0" "$rc"
+start_sleeper
+write_lock "$state_dir/lock.json" "$sleeper_pid" 0 "ledger-host"
+run_hook_as "ledger-host"
+assert_eq "and a deferral still exits 75 the same way" "75" "$rc"
+stop_sleeper
+rm -f "$state_dir/lock.json"
+rm -f "$state_dir/updater-ledger"
+
 # --- The writers stamp their container into the lock ---------------------------
 # The foreign-lock rule only tells anyone anything if acquire_lock writes the
 # stamp: an unstamped lock is honoured blindly until stale, costing the writer
