@@ -46,7 +46,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IMAGE="${AGENT_OPS_TEST_IMAGE:-ghcr.io/poetic-poems/agent-ops:latest}"
+IMAGE="${AGENT_OPS_TEST_IMAGE:-ghcr.io/pullwright/agent-ops:latest}"
 
 # Prints the header block whole. The `sed -n '3,/^# Exit status/p'` this
 # replaced stopped *on* the line it matched, so the rest of that paragraph —
