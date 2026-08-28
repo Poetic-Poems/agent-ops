@@ -8885,9 +8885,14 @@ implements.
 ### Logging and state
 
 33. The shared log is a single JSON Lines file, `state_dir/log.jsonl`,
-    appended only by the Script (agents report via their final messages; the
-    Script translates those into log events). The lock in requirement 1
-    guarantees a single writer. Events: `cycle-start`, `cycle-skipped`,
+    appended by the Script (agents report via their final messages; the
+    Script translates those into log events) and, for the one event class
+    that is mined outside any cycle, by `scripts/publish-revert-rate.sh`'s
+    daily pass (requirement 47's `post-merge-revert`, `cycle: null`). The
+    lock in requirement 1 guarantees a single writer among cycles; the
+    mining pass takes no cycle lock and can therefore append while a cycle
+    is running, which is safe only because each of its appends is one
+    `O_APPEND` write of one line. Events: `cycle-start`, `cycle-skipped`,
     `stand-down`, `selection`, `claim-lost`, `claim-skipped`, `none-selected`,
     `corroboration`, `stage-start`,
     `stage-end`, `pr-raised`, `pr-ready`, `attempt-failed`, `unblocked`,
@@ -8907,8 +8912,11 @@ implements.
     `landing-armed`, `landing-refused`, `classifier-escape`, `landing-audit`,
     `open-question-raised`, `open-question-adjudication`, `open-question-escalated`,
     `review-gate-checks-read`, `review-gate-checks-degraded`, `first-seen`,
-    `issues-excluded`,
-    `warning`, `cycle-end`. `classifier-escape` and `landing-audit`
+    `issues-excluded`, `rework`,
+    `warning`, `cycle-end`. `rework` is requirement 47's own record, one
+    entry per repetition, whose field-by-field contract is
+    `docs/FLOW-SCHEMA.md` rather than this list.
+    `classifier-escape` and `landing-audit`
     (requirement 8e, `scripts/detect-classifier-escapes.sh`) are the D18
     Stage 2 escape-audit's own two outcomes for a merged pull request the
     audit found no earlier record of auditing: `classifier-escape` is the

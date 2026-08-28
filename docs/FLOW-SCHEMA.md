@@ -51,7 +51,7 @@ requirement 33a's record.
 | `class` | string | One of the nine classes below. |
 | `detector` | string | The file (and, where it disambiguates, the function or event name) whose own logic decided this is a repetition — e.g. `scripts/gather-review-feedback.sh`, `lib/reconciliation-gate.sh:reconciliation_gate`, `agent-cycle.sh:review-gate-checks-read`. Never "the Script" or "the pipeline" in general — always the specific site. |
 | `evidence` | any \| null | Whatever the detector's own logic actually saw — an event id, a check name, a comment id, a `kill_reason`, a claim `cause` — never a summary and never re-derived by `rework_fields` itself. `null` only when the caller's own evidence argument was not valid JSON, which `rework_fields` degrades to rather than failing the event it may be riding alongside (the same fail-safe contract `metering_fields` keeps for `docs/METERING-SCHEMA.md`'s own record). |
-| `attributed_stage` | string \| null | Which stage this repetition is attributed to — `coordinator`, `implementer`, `reviewer`, `approver`, `enabler`, `refiner`, or `pre-selection` for a cycle that died before any stage started. `null` whenever the detector's own evidence does not name one directly; see "Attribution" below. |
+| `attributed_stage` | string \| null | Which stage this repetition is attributed to, spelled exactly as the corresponding `stage-end` event's own `stage` field spells it — `coordinator`, `implementer`, `reviewer`, `approver`, `approver-adjudicate-open-question`, `enabler`, `enabler-adjudicate`, `refiner` — plus `pre-selection`, which has no `stage-end` of its own because it names a cycle that died before any stage started. `null` whenever the detector's own evidence does not name one directly; see "Attribution" below. |
 | `repo` | string | Present where the repetition is about one repository. Omitted (never `null`) for a fleet-wide detector — crash-loop escalation foremost — that spans every configured repository at once. |
 | `item` | string | Present where the repetition is about one work item. Omitted on the same terms as `repo`, and independently: a fleet-wide stage kill (the Co-Ordinator, the Enabler, the Refiner, all of which span several items in one engagement) carries neither. |
 | `pr_url` | string | Present where a pull request already exists for the item in question. Omitted for a repetition that predates one — most of the nine classes fire only once a pull request exists, but a Co-Ordinator-stage `stage-rerun` or `refinement-bounce-back` can fire before one ever does. |
@@ -70,7 +70,7 @@ one of these fields should use `has("repo")`, not `.repo != null`.
 | `check-failure` | `agent-cycle.sh`'s `review-gate-checks-read` event carrying `ok: false` | `null` |
 | `merge-conflict` | `scripts/gather-merge-conflicts.sh`'s candidate rule, read at selection of a `merge-conflicts` work order | `null` |
 | `abandoned-draft-resumed` | `scripts/gather-abandoned-drafts.sh`'s candidate rule, read at selection of an `abandoned-drafts` work order | `null` |
-| `stage-rerun` | Either of two: a `stage-end` event carrying a non-empty `kill_reason` (requirement 4e's two backstop caps), or `lib/crash-loop.sh`'s verdict reaching `crash_loop_escalate` (requirement 2.7) | The killed/looping stage's own name (`coordinator`, `implementer`, `reviewer`, `approver`, `enabler`, `refiner`, or `pre-selection`) |
+| `stage-rerun` | Either of two: a `stage-end` event carrying a non-empty `kill_reason` (requirement 4e's two backstop caps), or `lib/crash-loop.sh`'s verdict reaching `crash_loop_escalate` (requirement 2.7) | The killed/looping stage's own name, as its `stage-end` event spells it (`coordinator`, `implementer`, `reviewer`, `approver`, `approver-adjudicate-open-question`, `enabler`, `enabler-adjudicate`, `refiner`), or `pre-selection` for a crash loop of cycles that died before any stage started |
 | `claim-race-duplicate` | A `claim-lost` event whose `cause` is `held` or `pr-held` | `null` |
 | `refinement-bounce-back` | `lib/candidate-select.sh`'s `record_needs_refinement_block` recording a fresh block on an item `refinements_json` already shows as refined | `null` |
 | `post-merge-revert` | `scripts/mine-merge-history.sh`'s 48-hour post-merge outcome detection, read by `scripts/publish-revert-rate.sh`'s daily mining pass | `null` |
@@ -108,13 +108,32 @@ Nothing in this codebase closes that residual gap today; a reader should not
 assume `human-change-request`'s absence from a given round means no human
 change request happened, only that the reconciliation gate did not catch one.
 
+One further narrowing, for the same reason: `handoff_complete_review` — the
+one gate implementation the Reviewer's handoff shares with the Enabler's
+handoff-recovery path (requirement 34a) — is also called from
+`lib/enabler.sh`, and a `dirty` reconciliation verdict there produces a
+`warning`, not a record. Only the Reviewer's own handoff site emits this
+class. A recovery pass re-observing a condition an earlier round already
+recorded is not obviously a fresh repetition, and deciding that is the
+attribution question D23 parks at Phase 2, so the narrower reading is the one
+this document states rather than one it guesses at.
+
 **check-failure.** `ok: false` on `review-gate-checks-read` means this
-particular attempt to read the pull request's required-check list failed —
+particular attempt to *read* the pull request's required-check list failed —
 the same per-attempt fact `review_gate_unknown_streak_verdict`
-(TD-PPagop-26081404) already counts a run of before escalating. The
-escalation itself, `review-gate-checks-degraded`, is never counted as a
-second repetition: it is a summary of repetitions already recorded at their
-own per-attempt site, and counting both would double the same population.
+(TD-PPagop-26081404) already counts a run of before escalating. Read the
+class name against that definition rather than the other way round: a
+required check that ran and came back red is a `gate.word` of `dirty`, not an
+unreadable list, and no class in this document records it — this one counts
+the pipeline's inability to establish the check state, which is the
+repetition it costs a cycle. The escalation of a run of these,
+`review-gate-checks-degraded`, is never counted as a second repetition: it is
+a summary of repetitions already recorded at their own per-attempt site, and
+counting both would double the same population. `lib/enabler.sh`'s
+handoff-recovery path logs its own `review-gate-checks-read` from the same
+shared `handoff_complete_review` (requirement 34a) and emits no record, on
+the same terms — and for the same parked reason — as `human-change-request`
+above.
 
 **stage-rerun.** Two different mechanisms share this one class, because both
 end the same way — a stage's work is discarded and has to run again — even
@@ -234,9 +253,13 @@ same way:
 
 ## Where it's produced and consumed
 
-- **Produced:** `lib/rework.sh`'s `rework_fields`, called from the nine sites
-  above — `agent-cycle.sh` and its sourced libraries (`lib/candidate-
-  select.sh`, `lib/enabler.sh`) for eight of the nine classes, and
+- **Produced:** `lib/rework.sh`'s `rework_fields`, called from each class's
+  own site above — `agent-cycle.sh` and the libraries it sources for eight of
+  the nine classes (`lib/candidate-select.sh` for `refinement-bounce-back`,
+  `lib/enabler.sh` for the crash-loop half of `stage-rerun`, and
+  `lib/stage-attempt.sh`, `lib/approver.sh`, `lib/landing.sh`,
+  `lib/refinement.sh` and `lib/enabler.sh` for the `stage-end` half, one call
+  per `stage-end` site that can carry a `kill_reason`), and
   `scripts/publish-revert-rate.sh` standalone for `post-merge-revert`.
 - **Consumed:** nothing yet. This document defines the record so it starts
   accumulating history from the moment it lands (D21's own reasoning for
