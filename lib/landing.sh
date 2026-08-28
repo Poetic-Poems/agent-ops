@@ -1519,9 +1519,10 @@ _landing_stage_attempt() {
   # `blocking_json` is `_handoff_blocking_reviewers`'s own return (`blocking`,
   # bound at gate 4 above) — always empty here, since a non-empty list already
   # refused at that gate and never reached this line. Carried anyway, the same
-  # way `protected-path-controls` carries `pp_paths_json` beside its verdict:
-  # the record should say what the gate examined, not merely that the code
-  # reached this line (TD-PPagop-26082312).
+  # way the record's top-level `protected_path` object already names the
+  # paths it examined beside its verdict: the record should say what the
+  # gate examined, not merely that the code reached this line
+  # (TD-PPagop-26082312).
   local blocking_json
   blocking_json="$(jq -R -s 'split("\n") | map(select(length > 0))' <<<"$blocking")"
 
