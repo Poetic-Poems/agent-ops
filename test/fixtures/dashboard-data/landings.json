@@ -231,6 +231,18 @@
         "repo": "Poetic-Poems/agent-ops",
         "pr_url": "https://github.com/Poetic-Poems/agent-ops/pull/652",
         "reason": "open-question:https://github.com/Poetic-Poems/agent-ops/pull/652 carries an unresolved open question — see the escalation issue"
+      },
+      {
+        "ts": "@ago:9h",
+        "repo": "Poetic-Poems/agent-ops",
+        "pr_url": "https://github.com/Poetic-Poems/agent-ops/pull/606",
+        "reason": "approver-review-unreadable:could not read https://github.com/Poetic-Poems/agent-ops/pull/606's own review list to confirm the Approver's review actually landed"
+      },
+      {
+        "ts": "@ago:10h",
+        "repo": "Poetic-Poems/agent-ops",
+        "pr_url": "https://github.com/Poetic-Poems/agent-ops/pull/607",
+        "reason": "approver-review-unreadable:could not read https://github.com/Poetic-Poems/agent-ops/pull/607's own review list to confirm the Approver's review actually landed"
       }
     ],
     "budget": [

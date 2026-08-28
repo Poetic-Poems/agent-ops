@@ -800,6 +800,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The Autonomous landings panel's refusal-reason grouping no longer garbles
+  a whole family of `landing-refused` reasons into one-off groups keyed on a
+  fragment of a pull request URL (TD-PPagop-26082502). The panel groups by
+  the `reason` text before its first `:` (`byReason`, `dashboard/index.html`);
+  several of `_landing_stage_attempt`'s (`lib/landing.sh`) sentence-form
+  refusals embedded `$pr_url` — itself a `https://…` string carrying its own
+  scheme colon — before any stable word boundary, so two pull requests
+  hitting the identical underlying failure (e.g. the Approver's review list
+  becoming unreadable) never accumulated into one visible count. Every
+  refusal reason that carries a `:` at all now carries it behind a class
+  word, in the same `class:detail` shape the classifier-driven refusals
+  (`ineligible:`, `kill-switch:`, `open-question:`) already used — including
+  the App-approval gate's own refusal, whose `(state: …)` parenthetical
+  grouped it under a sentence cut off mid-clause rather than under the gate
+  that refused.
 - `techdebt_file_debt` (`lib/tech-debt-file.sh`) now labels the pull request
   it opens to file a tech-debt record with the fleet's configured
   `pr_label`, rather than opening it unlabelled (TD-PPagop-26082426). Every

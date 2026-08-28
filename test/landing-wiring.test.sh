@@ -401,6 +401,10 @@ reached() { [[ -s "$tmp_dir/reached" ]] && printf 'yes' || printf 'no'; }
 count() { local f="$tmp_dir/$1"; [[ -s "$f" ]] && wc -l <"$f" | tr -d ' ' || printf '0'; }
 event_of() { grep -m1 "^$1"$'\t' "$tmp_dir/events" | cut -f2- || true; }
 refusal() { jq -r '.reason' <<<"$(event_of landing-refused)" 2>/dev/null || true; }
+# The class the dashboard's landings digest would group this refusal under:
+# the reason text before its first `:` (`byReason`, `dashboard/index.html`),
+# computed here exactly as that panel computes it (TD-PPagop-26082502).
+refusal_class() { local r; r="$(refusal)"; printf '%s' "${r%%:*}"; }
 budget_decide_args() { cat "$tmp_dir/budget_decide_args" 2>/dev/null || true; }
 armed_flag() { cat "$tmp_dir/armed_flag" 2>/dev/null || true; }
 armed_by_repo_flag() { cat "$tmp_dir/armed_by_repo_flag" 2>/dev/null || true; }
@@ -686,6 +690,11 @@ rc="$(run_case STANDING="")"
 assert_eq "an Approver review that never landed on GitHub arms nothing" "0" "$(count arms)"
 assert_contains "  ... even though this round's own verdict said approve" \
   "not standing APPROVED" "$(refusal)"
+# Its own `(state: …)` parenthetical is the first `:` the digest's split
+# would otherwise land on, cutting the group off mid-sentence rather than
+# naming the gate that refused (TD-PPagop-26082502).
+assert_eq "  ... grouping under its own class, not a truncated sentence" \
+  "approver-review-not-approved" "$(refusal_class)"
 assert_eq "  ... returning 0" "0" "$rc"
 
 rc="$(run_case STANDING="CHANGES_REQUESTED")"
@@ -824,6 +833,11 @@ assert_eq "  ... returning 0" "0" "$rc"
 rc="$(run_case PR_URL="https://github.com/Poetic-Poems/agent-ops/pull/not-a-number")"
 assert_eq "an unparseable pull request URL arms nothing" "0" "$(count arms)"
 assert_contains "  ... refusing by name" "could not parse a pull request number" "$(refusal)"
+# The reason embeds the URL itself, whose own `https:` would be the first `:`
+# the digest's split sees without the class prefix ahead of it — the shape
+# TD-PPagop-26082502 fixed across every refusal in this function.
+assert_eq "  ... grouping under its class, not the URL's own scheme" \
+  "malformed-pr-url" "$(refusal_class)"
 assert_eq "  ... returning 0" "0" "$rc"
 
 # --- The happy path through run_landing_stage never marks retry -------------
