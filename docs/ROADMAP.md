@@ -38,7 +38,7 @@ says why.
 | D5 | Licensing | **Source-available, under the Functional Source License (FSL-1.1-ALv2).** Source-available was decided July 2026; the licence itself, and what it does and does not decide, August 2026. The code is public and auditable. The licence's one restriction is FSL's *Competing Use*: nobody may build a product or service, hosted or self-hosted, that competes with Pullwright from Pullwright's code; each release converts to Apache 2.0 two years after it is published. That is all the licence decides. It is **not** a pricing promise. The earlier wording — "free to self-host for your own use" — conflated the two, and together with BYO keys (D4) and the both-paths rule it left the self-hosted path, the only path that exists until Phase 4, with nothing to charge for. What is free and what is paid is the revenue model's question (D26); FSL leaves a commercial licence and entitlement-keyed tiers open on top of it. Why the code stays public when the product exists to make money: the threat the BSL family was built against — a hyperscaler reselling the product as a service — is not this product's threat, and the companies that relicensed against it in 2023–24 have largely relicensed back (Redis and Elastic to AGPL) because the adoption it cost outweighed what it protected. Pullwright's risk is not being copied but not being found, and a public repository whose fleet visibly raises and lands its own pull requests is the only marketing D11's hours-a-week budget can afford. The product's defining act (D24) is holding write credentials while reading untrusted text; D3's first two segments — solo developers and open-source maintainers — will not hand that to a closed binary, and a mid-size organisation's security review will ask to read it. The bash engine is not the asset; the reasoning in this table is, and it is already public. And a private repository would cost the product's own development the merge queue (D17: Enterprise-only on private repositories), paid code scanning and metered Actions minutes — a regression on exactly the D18 rungs the autonomy-parity rule (Principle 8) requires the product repository to demonstrate. FSL over BSL because it has one restriction, one clock and two possible future licences (Sentry and Liquibase precedent); the Apache 2.0 future licence over MIT for its patent grant. The licence names a licensor — the entity that will sell Pullwright — settled with the trademark search (GTM) before the licence carries the name. |
 | D6 | Technology | **Strangler rewrite.** The proven bash cycle engine is retained. All *new* product surface — control plane, config APIs, packaging — is written in a proper language; engine pieces migrate across only when a change touches them anyway. |
 | D7 | Product scope | **The whole suite**: the implementation pipeline, the **repository-review** pipeline, and the dashboard. They compound — reviews feed the pipeline the work it does, and the dashboard is the product's face. The name the review pipeline carries today, *weekly project review*, is wrong twice over, and neither word survives productisation. **Weekly** is configuration, not identity: the cadence is a cron tick plus `project_review.defaults.min_days_between_reviews`, set per installation and overridable per repository, so a nightly or fortnightly installation is as ordinary as Poetic's weekly one — the Phase 1 sweep retires the word from both pipelines. **Project** overstates the scope: a run reviews *one repository*, each entry in `project_review.repos` on its own, with its own clone, branch, report set and pull request; nothing reviews a project — several repositories that deliver one thing — as a single subject. Reviewing one as a single subject is a wanted feature, deliberately deferred (Phase 3). Until then the product's term is **repository review** — and a review is instructed and contextualised per repository (Phase 1), because what a repository is for, which of its oddities are deliberate, and what is out of scope for it are not things a reviewer can reliably infer from the clone alone. |
-| D8 | Repository shape | **Split**: a new product repository in the Pullwright organisation (D13) holds the pipeline; agent-ops shrinks to Poetic's consumer configuration and deployment — the reference installation and customer zero. |
+| D8 | Repository shape | **Split, by transfer.** Amended 2026-08-28, from "a new product repository in the Pullwright organisation holds the pipeline; agent-ops shrinks to Poetic's consumer configuration and deployment": agent-ops itself — its history, its issues and pull requests, its D18 evidence — is transferred to the Pullwright organisation (D13) and becomes the product repository in place, public under D5; Poetic's consumer configuration and deployment are then extracted into a new, differently named repository in Poetic-Poems — the reference installation and customer zero. Transfer rather than extract because GitHub moves issues only within one owner and this repository's issues are overwhelmingly the pipeline's own, and because the fleet's autonomy level, Approver and evidence travel with the repository instead of being re-provisioned. GitHub retires `Poetic-Poems/agent-ops` on transfer, so the consumer repository cannot inherit the name. The move is an owner act with a runbook, `docs/PULLWRIGHT-REHOMING.md` (#912). |
 | D9 | Build mode | **Mixed.** Architectural moves happen in interactive sessions; everything decomposable is authored as agent-workable items that the fleet works down itself. The roadmap doubles as dogfooding evidence. |
 | D10 | Pacing | **Phase-gated, no dates.** Progress is gates passed, not calendar time. |
 | D11 | Go-to-market | **A parallel lightweight workstream from Phase 1**: the name is chosen early (it gates the repo split), design partners are recruited during untethering, and pricing is tested before anything launches. |
@@ -168,7 +168,9 @@ chooses:
    own home would gate the pipeline's development behind a slower rung than
    the tool it produces has already cleared — the customer-zero rule's own
    bug case. `docs/PULLWRIGHT-DAY-ONE-AUTONOMY.md` is the provisioning
-   checklist this rule cashes out to for the Pullwright product repository.
+   checklist this rule cashes out to for any repository created after the
+   transfer (D8 as amended) — the consumer repository first; the product
+   repository inherits agent-ops's level by being agent-ops.
 
 ## Phase 1 — Untether
 
@@ -179,9 +181,10 @@ configuration alone.
 
 **Exit gate:** a repository outside Poetic-Poems runs the whole suite —
 implementation cycle, review cycle, dashboard — from published artefacts
-with no code changes; agent-ops contains no pipeline code, only Poetic's
-configuration and deployment; the product repository exists in the
-Pullwright organisation and carries its licence.
+with no code changes; the product repository — agent-ops, transferred (D8) —
+exists in the Pullwright organisation and carries its licence; Poetic's
+configuration and deployment live in a repository of their own in
+Poetic-Poems, with no pipeline code in it.
 
 - [ ] Sweep the Poetic-specifics out of scripts, prompts, and config:
       hardcoded repo slugs, the owner's username, label names, branch
@@ -364,14 +367,19 @@ Pullwright organisation and carries its licence.
       block in `config.json` (provider, URL resolution, credential shape,
       or `none`), so an adopting repository declares its own arrangement
       instead of inheriting Poetic's. *[fleet]*
-- [ ] Create the product repository in the Pullwright organisation (the
-      name and org exist — D13); move the suite across — both pipelines, the
-      dashboard, and the review skill `.claude/skills/project-review/` that
-      `review-cycle.sh` stages into each clone at runtime, which stops being
-      a pinned copy of a personal authoring repo and becomes product source
-      (D7, D8); reduce agent-ops to consumer config + deployment. Provision
-      it at agent-ops's own `merge_autonomy` level from day one rather than
-      climbing from `human` a second time — Principle 8, checklist
+- [ ] Re-home agent-ops in the Pullwright organisation by transfer (D8 as
+      amended; the name and org exist — D13). The repository — both
+      pipelines, the dashboard, and the review skill
+      `.claude/skills/project-review/` that `review-cycle.sh` stages into
+      each clone at runtime, which stops being a pinned copy of a personal
+      authoring repo and becomes product source (D7) — becomes the product
+      repository in place, and its `merge_autonomy` level, Approver and D18
+      evidence move with it: Principle 8 met by construction rather than by
+      re-provisioning. Prerequisites, order and owner acts:
+      `docs/PULLWRIGHT-REHOMING.md`, tracked by #912. *[interactive]*
+- [ ] Extract Poetic's consumer configuration and deployment into a new
+      repository in Poetic-Poems (a fresh name — the transfer retires the
+      old one), leaving no pipeline code in it, and provision it per
       `docs/PULLWRIGHT-DAY-ONE-AUTONOMY.md`. *[interactive]*
 - [ ] Retire the in-repo tech-debt registers in favour of labelled issues
       (D15, revised 2026-08-28): the managed `pw::type:tech-debt` label,
