@@ -100,7 +100,19 @@ case "$args" in
     else echo "stub gh: pr list without a recognised --state: $args" >&2; exit 1
     fi
     if [[ -f "$S/fail-$st-pr-list-$(flat "$b")" ]]; then exit 1; fi
-    if [[ -f "$S/prs-$st-$(flat "$b")" ]]; then cat "$S/prs-$st-$(flat "$b")"; else echo 0; fi
+    n=0
+    [[ -f "$S/prs-$st-$(flat "$b")" ]] && n="$(cat "$S/prs-$st-$(flat "$b")")"
+    # `gh pr list --state closed` is `states: [CLOSED, MERGED]` — GitHub's
+    # own "Closed" tab, merged pull requests included. Model that faithfully,
+    # so a caller that does not filter the listing down to `.state ==
+    # "CLOSED"` itself sees this branch's merged pull requests in the count
+    # too, exactly as it would against the real `gh`.
+    if [[ "$st" == closed && "$args" != *'select(.state == "CLOSED")'* ]]; then
+      m=0
+      [[ -f "$S/prs-merged-$(flat "$b")" ]] && m="$(cat "$S/prs-merged-$(flat "$b")")"
+      n=$(( n + m ))
+    fi
+    echo "$n"
     exit 0 ;;
   "api repos/Poetic-Poems/agent-ops-state/contents/claims/x__y/"*)
     b="${args##*claims/x__y/}"; b="${b%%.json*}"
@@ -550,6 +562,34 @@ assert_eq "a contents check that fails with something other than 404 warns rathe
   "$(jq -c 'select(.branch == "td/TD-PPagop-30000005")' <<<"$out")"
 assert_not_contains "and td/<id> is never deleted" \
   "api -X DELETE repos/x/y/git/refs/heads/td/TD-PPagop-30000005" "$calls"
+
+# --- Case 18a: a merged filing is not a declined one -----------------------------
+# `gh pr list --state closed` is `states: [CLOSED, MERGED]`, so the declined-
+# filing arm has to count only the pull requests whose own state is `CLOSED`.
+# Read the merged one as declined and a landed filing would be reported
+# `filing-declined` and skip the merged arm that owns it — and, worse, would
+# put the paired reservation in front of a contents check that never should
+# have been asked. The record here landed on main, as a merged filing's
+# always has.
+c="$tmp_dir/merged-filing"; mkdir -p "$c"
+: > "$c/refs-td_tsv"
+: > "$c/refs-agent_tsv"
+printf 'td-record/TD-PPagop-30000007\tsha-merged\n' > "$c/refs-td-record_tsv"
+echo "$stale" > "$c/date-sha-merged"
+echo 1 > "$c/prs-merged-td-record_TD-PPagop-30000007"
+touch "$c/contents-TD-PPagop-30000007"
+compare_fixture "$c" td-record/TD-PPagop-30000007 1 "$stale"
+
+out="$(run_sweep "$c")"
+calls="$(cat "$c/calls.log")"
+assert_eq "a merged filing's leftover ref is released by the ordinary merged-PR arm" \
+  '{"action":"released","branch":"td-record/TD-PPagop-30000007"}' \
+  "$(jq -c 'select(.branch == "td-record/TD-PPagop-30000007")' <<<"$out")"
+assert_not_contains "never as a declined filing" "filing-declined" "$out"
+assert_not_contains "and the paired-reservation question is never even asked" \
+  "contents/tech-debt/TD-PPagop-30000007" "$calls"
+assert_not_contains "so td/<id> is never deleted" \
+  "api -X DELETE repos/x/y/git/refs/heads/td/TD-PPagop-30000007" "$calls"
 
 # --- Case 19: regression guard — a bare td/<ID> lock with no td-record/ sibling --
 # TD-PPagop-26082310's own narrowness rule: release_paired_reservation must

@@ -174,13 +174,17 @@ warn() {  # warn BRANCH DETAIL
 # was found and handled (the caller returns without falling through), 1 to
 # fall through to the ordinary flow below — a merged PR, which the ordinary
 # merged-PR check there already deletes, or none at all, a genuine
-# crash-orphan the recovery draft there lands as usual. gh's own `--state
-# closed` excludes merged PRs, so a non-zero count here is unambiguous: a
-# human declined this filing.
+# crash-orphan the recovery draft there lands as usual. `gh pr list --state
+# closed` is `states: [CLOSED, MERGED]`, exactly as GitHub's own "Closed"
+# tab is, so the merged half has to be filtered out here rather than
+# assumed away: only a pull request whose own `state` is `CLOSED` was
+# declined, and counting a merged one as declined would report a landed
+# filing as a refused one and skip the merged arm that owns it.
 sweep_record_branch() {
   local branch="$1" closed id
   closed="$("$GH" pr list -R "$slug" --head "$branch" --state closed \
-              --json number --jq 'length' 2>/dev/null)" || closed=""
+              --json state --jq '[.[] | select(.state == "CLOSED")] | length' \
+              2>/dev/null)" || closed=""
   if [[ -z "$closed" ]]; then
     warn "$branch" "could not check for a closed pull request — leaving it alone"
     return 0

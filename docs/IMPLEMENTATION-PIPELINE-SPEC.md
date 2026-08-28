@@ -7658,9 +7658,12 @@ implements.
     request a human has closed without merging means they declined that
     record, and a recovery draft would hand it straight back to them
     (TD-PPagop-26082310). The sweep asks
-    `gh pr list --head <branch> --state closed`, which excludes merged pull
-    requests, so a non-zero count is unambiguous — the filing was declined —
-    and deletes `td-record/<ID>` outright (`released`,
+    `gh pr list --head <branch> --state closed` and counts only the pull
+    requests whose own state is `CLOSED` — that listing is `[CLOSED,
+    MERGED]`, exactly as GitHub's own "Closed" tab is, so a merged filing
+    must be filtered out here rather than assumed absent — leaving a
+    non-zero count unambiguous: the filing was declined. It then
+    deletes `td-record/<ID>` outright (`released`,
     `reason: "filing-declined"`), then goes one step further than any other
     ref here: it reads `tech-debt/<ID>.md` at the default branch's own tip to
     ask whether `<ID>`'s record reached `main` some other way. A clean 404
