@@ -880,9 +880,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   pull request, and, in `scripts/gather-human-visibility-hygiene.sh`'s live
   re-check, kept indefinitely with no live signal of its own to test. It now
   has its own class in both: the log-union reduction only clears it on a
-  later nudge, and the live re-check drops it unconditionally once the pull
-  request is open, not a draft, and reachable at all — since reaching that
-  re-check already re-proves the read that failed.
+  later nudge, and the live re-check drops it only once a fresh
+  `_handoff_pr_approved` call — the same REST read that failed, not the
+  unrelated GraphQL `gh pr view` this script already re-checks with —
+  succeeds in its own right.
 - A voided `review-<date>-R-NN` project-review ref now retires instead of
   sitting in the void extract for ever (TD-PPagop-26082309). Requirement
   34n's only actioned signal for that shape was `review-merged`, which needs

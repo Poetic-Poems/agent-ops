@@ -117,20 +117,23 @@
 #                             (`lib/handoff.sh`) already reasons from the
 #                             reviews list rather than that field, read here
 #                             rather than acted on.
-#   could_not_read_reviews — no separate live signal of its own: reaching
-#                             this class's own check at all already answers
-#                             it. The `gh pr view` call at the top of
-#                             `_pr_violation_survives` requests `reviews`
-#                             among its fields, the same fact
-#                             `_handoff_pr_approved`'s own read (via
-#                             `_handoff_latest_reviews`, `lib/handoff.sh`)
-#                             failed to get when the sweep logged this
-#                             warning — so a pull request that produced a
-#                             readable `$json` just proved that read works
-#                             again, and the violation drops unconditionally.
-#                             Unlike the other four classes, there is no
-#                             follow-up action outcome to inspect: the read
-#                             failing was the whole violation.
+#   could_not_read_reviews — no follow-up *action* outcome to inspect, unlike
+#                             the other four classes: the read failing was the
+#                             whole violation. But the `gh pr view` call at the
+#                             top of `_pr_violation_survives` is a GraphQL
+#                             read, and the read that actually failed —
+#                             `_handoff_pr_approved`, via `_handoff_latest_
+#                             reviews` (`lib/handoff.sh`) — is a REST `gh api
+#                             …/reviews --paginate` call: a different API
+#                             surface, with its own rate limit and its own
+#                             breakable code path, so a readable `$json` here
+#                             proves nothing about it. This class instead
+#                             re-runs `_handoff_pr_approved` itself, keyed off
+#                             `_handoff_pr_parts`' own read of `pr_url`, and
+#                             drops the violation only on that call's exit
+#                             status (never its printed true/false, since the
+#                             question here is only whether the read
+#                             succeeded, not what it found).
 #   could_not_post_nudge   — did the nudge comment land after all: `gh pr
 #                             view --json comments`, searched for a comment
 #                             carrying both the exact `<!-- agent-ops:human-
@@ -213,6 +216,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # requires this stamp on the same comment (agent-ops#390, #428).
 # shellcheck source=lib/pipeline-marker.sh
 . "$SCRIPT_DIR/lib/pipeline-marker.sh"
+# `_handoff_pr_parts` and `_handoff_pr_approved`, for the could_not_read_reviews
+# re-check below: that class's warning is `_handoff_pr_approved`'s own read
+# failing, a REST `gh api …/reviews --paginate` call — a different API surface
+# from the GraphQL `gh pr view` this script already opened with — so only
+# re-running that same call is a definite answer that it works again.
+# shellcheck source=lib/handoff.sh
+. "$SCRIPT_DIR/lib/handoff.sh"
 
 slug="${1:-}"
 pr_label="${2:-autonomous-agent}"
@@ -301,14 +311,24 @@ _pr_violation_survives() {
       fi
       ;;
     could_not_read_reviews)
-      # This class has no separate action outcome to inspect: reaching this
-      # point at all already answers the question. The `gh pr view` call at
-      # the top of this function requests `reviews` among its fields, so a
-      # pull request that produced a non-empty $json just had its reviews
-      # read successfully — the exact fact `_handoff_pr_approved`'s own read
-      # failed on when the sweep logged this warning. No further check is
-      # needed or possible.
-      printf 'drop'
+      # No follow-up *action* outcome to inspect — the read failing was the
+      # whole violation — but the `gh pr view` call above this function opened
+      # with is a GraphQL read, and the read that actually failed,
+      # `_handoff_pr_approved` (`lib/handoff.sh`), is a REST `gh api
+      # …/reviews --paginate` call: a different API surface, with its own
+      # rate limit and its own code path, so this function's own successful
+      # `gh pr view` proves nothing about it. Re-run that same call instead —
+      # `_handoff_pr_parts` recovers the owner/repo and number this class's
+      # detail text does not carry, and `_handoff_pr_approved`'s exit status
+      # alone (never its printed true/false) says whether the read itself
+      # succeeded, which is the only question this class asks.
+      local parts
+      parts="$(_handoff_pr_parts "$pr_url")" || { printf 'keep'; return; }
+      if _handoff_pr_approved "${parts%%$'\t'*}" "${parts##*$'\t'}" >/dev/null 2>&1; then
+        printf 'drop'
+      else
+        printf 'keep'
+      fi
       ;;
     could_not_post_nudge)
       # An unanchored substring test here would fire on any comment merely

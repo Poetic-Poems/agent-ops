@@ -19,11 +19,11 @@
 #     list — never `reviewDecision`, agent-ops#391, TD-PPagop-26081505); a
 #     `could not read the pull request's reviews …` violation
 #     (`_handoff_pr_approved`'s own read failing inside the idle-nudge check)
-#     has no follow-up outcome of its own to check — reaching the live
-#     re-check at all already proves the read works again, since the `gh pr
-#     view` call it opens with requests `reviews` among its fields, so it
-#     drops unconditionally while the pull request stays open and not a
-#     draft; a
+#     has no follow-up action outcome of its own to check — the read failing
+#     was the whole violation — so it re-runs that same read instead: a fresh
+#     `_handoff_pr_approved` call, a different API surface from the `gh pr
+#     view` re-check this function already opened with, and it drops only
+#     once that fresh call succeeds in its own right; a
 #     `could not post the idle nudge comment` violation — logged only against
 #     an already-`APPROVED` pull request — clears only once a comment carrying
 #     both the exact `<!-- agent-ops:human-nudge -->` HTML-comment form and
@@ -105,7 +105,11 @@ assert_eq() {
 # merge-queue-dequeued marker comment is present instead; `$STUB_AUTHOR`
 # (default `author`) and `$STUB_REVIEWS` also steer the no-candidate-class
 # check; `$STUB_VIEW_RC` set nonzero makes the re-check itself unreadable,
-# the fail-safe case.
+# the fail-safe case. `$STUB_REVIEWS_API_RC` (default 0) steers the separate
+# `gh api …/reviews --paginate` call `_handoff_pr_approved`
+# (`lib/handoff.sh`) makes for the could_not_read_reviews class's own
+# re-check — a distinct API surface from `pr view` above, stubbed separately
+# so a test can fail one while the other stays readable.
 mkdir -p "$tmp_dir/bin"
 cat > "$tmp_dir/bin/gh" <<'STUB'
 #!/usr/bin/env bash
@@ -113,6 +117,9 @@ set -uo pipefail
 case "${1:-} ${2:-}" in
   "pr list")
     exit "${STUB_LIST_RC:-0}"
+    ;;
+  "api repos/o/a/pulls/9/reviews")
+    exit "${STUB_REVIEWS_API_RC:-0}"
     ;;
   "pr view")
     (( "${STUB_VIEW_RC:-0}" == 0 )) || exit "$STUB_VIEW_RC"
@@ -382,21 +389,37 @@ out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION=APPROVED STUB
         STUB_NUDGE_COMMENT=real "$GATHER" "o/a" <<<"$nudge_level")"
 assert_eq "a nudge-class violation is dropped once the real marker comment appears" "[]" "$out"
 
-# --- could_not_read_reviews: reaching the live re-check at all already
-# --- proves the read works again — dropped unconditionally while open and
-# --- not a draft, with no further signal to check (unlike every other class)
-out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false "$GATHER" "o/a" <<<"$reviews_read_level")"
-assert_eq "a reviews-read violation is dropped once the pull request is readable again" \
+# --- could_not_read_reviews: the actual failing read (the `gh api
+# --- …/reviews` call) succeeding again drops it, even though this is a
+# --- different API surface from the `pr view` re-check above -----------------
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEWS_API_RC=0 \
+        "$GATHER" "o/a" <<<"$reviews_read_level")"
+assert_eq "a reviews-read violation is dropped once its own failing read succeeds again" \
   "[]" "$out"
 
+# --- could_not_read_reviews: `pr view` succeeding is NOT enough on its own —
+# --- the reviews-read violation survives while its own read (the `gh api
+# --- …/reviews` call) still fails, proving the fix does not infer the
+# --- answer from the unrelated GraphQL read this function already opened
+# --- with (the defect this class exists to fix: those are separate API
+# --- surfaces with separately breakable code paths) --------------------------
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEWS_API_RC=1 \
+        "$GATHER" "o/a" <<<"$reviews_read_level")"
+assert_eq "a reviews-read violation survives while its own read still fails" \
+  "1" "$(jq 'length' <<<"$out")"
+assert_eq "  ... source is human-visibility" "human-visibility" "$(jq -r '.[0].source' <<<"$out")"
+
 # --- could_not_read_reviews: a merged/closed/draft pull request still drops
-# --- it too, the same as every other class -----------------------------------
-out="$(STUB_PR_STATE=MERGED STUB_PR_DRAFT=false "$GATHER" "o/a" <<<"$reviews_read_level")"
+# --- it too, the same as every other class — decided by `pr view`'s own
+# --- state before the class-specific reviews-read re-check is even reached --
+out="$(STUB_PR_STATE=MERGED STUB_PR_DRAFT=false STUB_REVIEWS_API_RC=1 \
+        "$GATHER" "o/a" <<<"$reviews_read_level")"
 assert_eq "a reviews-read violation is dropped on a merged pull request" "[]" "$out"
 
-# --- could_not_read_reviews: an unreadable re-check keeps it, fail-safe ----
+# --- could_not_read_reviews: an unreadable `pr view` re-check keeps it,
+# --- fail-safe, the same as every other class --------------------------------
 out="$(STUB_VIEW_RC=1 "$GATHER" "o/a" <<<"$reviews_read_level")"
-assert_eq "a reviews-read violation survives an unreadable re-check" \
+assert_eq "a reviews-read violation survives an unreadable pr-view re-check" \
   "1" "$(jq 'length' <<<"$out")"
 assert_eq "  ... source is human-visibility" "human-visibility" "$(jq -r '.[0].source' <<<"$out")"
 
