@@ -96,6 +96,7 @@ case "$args" in
     b="${args##*--head }"; b="${b%% *}"
     if [[ "$args" == *"--state open"* ]]; then st=open
     elif [[ "$args" == *"--state merged"* ]]; then st=merged
+    elif [[ "$args" == *"--state closed"* ]]; then st=closed
     else echo "stub gh: pr list without a recognised --state: $args" >&2; exit 1
     fi
     if [[ -f "$S/fail-$st-pr-list-$(flat "$b")" ]]; then exit 1; fi
@@ -106,6 +107,15 @@ case "$args" in
     if [[ -f "$S/registry-500-$b" ]]; then
       echo "gh: HTTP 500 something broke" >&2; exit 1
     elif [[ -f "$S/registry-$b" ]]; then
+      echo '{"content":"e30="}'; exit 0
+    else
+      echo "gh: Not Found (HTTP 404)" >&2; exit 1
+    fi ;;
+  "api repos/x/y/contents/tech-debt/"*)
+    id="${args##*contents/tech-debt/}"; id="${id%%.md\?ref=*}"
+    if [[ -f "$S/contents-500-$id" ]]; then
+      echo "gh: HTTP 500 something broke" >&2; exit 1
+    elif [[ -f "$S/contents-$id" ]]; then
       echo '{"content":"e30="}'; exit 0
     else
       echo "gh: Not Found (HTTP 404)" >&2; exit 1
@@ -439,6 +449,131 @@ out="$(run_sweep "$c")"
 assert_eq "a one-commit branch that is not the reservation itself is still recovered" \
   "td/TD-PPagop-26081702" \
   "$(jq -r 'select(.action == "recovered") | .branch' <<<"$out")"
+
+# --- Case 14: td-record/ delete-only — a declined filing releases both refs -----
+# TD-PPagop-26082310: a human closed the filing pull request without merging,
+# so the record was declined. Recovering it as a draft would hand back
+# exactly the record they declined — the sweep instead deletes
+# td-record/<id> outright, then (the record never having reached main any
+# other way) releases the id's paired td/<id> reservation too.
+c="$tmp_dir/declined-filing"; mkdir -p "$c"
+: > "$c/refs-td_tsv"
+: > "$c/refs-agent_tsv"
+printf 'td-record/TD-PPagop-30000001\tsha-declined\n' > "$c/refs-td-record_tsv"
+echo "$stale" > "$c/date-sha-declined"
+echo 1 > "$c/prs-closed-td-record_TD-PPagop-30000001"
+
+out="$(run_sweep "$c")"
+calls="$(cat "$c/calls.log")"
+assert_eq "a declined filing's record branch is released" \
+  '{"action":"released","branch":"td-record/TD-PPagop-30000001","reason":"filing-declined"}' \
+  "$(jq -c 'select(.branch == "td-record/TD-PPagop-30000001")' <<<"$out")"
+assert_eq "and its paired reservation is released too, since the record never landed" \
+  '{"action":"released","branch":"td/TD-PPagop-30000001"}' \
+  "$(jq -c 'select(.branch == "td/TD-PPagop-30000001")' <<<"$out")"
+assert_contains "by deleting the record ref" \
+  "api -X DELETE repos/x/y/git/refs/heads/td-record/TD-PPagop-30000001" "$calls"
+assert_contains "and the reservation ref" \
+  "api -X DELETE repos/x/y/git/refs/heads/td/TD-PPagop-30000001" "$calls"
+assert_not_contains "and no recovery draft is ever opened for it" \
+  "pr create" "$(grep 'TD-PPagop-30000001' "$c/calls.log" || true)"
+
+# --- Case 15: same, but the record landed some other way — reservation kept ------
+# The declined-filing arm still deletes td-record/<id> (its pull request was
+# still closed unmerged, regardless of how the id's record made it to main),
+# but must not release td/<id> when release-td-branch.yml already owns it.
+c="$tmp_dir/declined-filing-record-landed"; mkdir -p "$c"
+: > "$c/refs-td_tsv"
+: > "$c/refs-agent_tsv"
+printf 'td-record/TD-PPagop-30000002\tsha-declined2\n' > "$c/refs-td-record_tsv"
+echo "$stale" > "$c/date-sha-declined2"
+echo 1 > "$c/prs-closed-td-record_TD-PPagop-30000002"
+touch "$c/contents-TD-PPagop-30000002"
+
+out="$(run_sweep "$c")"
+calls="$(cat "$c/calls.log")"
+assert_eq "the record branch is still released" \
+  '{"action":"released","branch":"td-record/TD-PPagop-30000002","reason":"filing-declined"}' \
+  "$(jq -c 'select(.branch == "td-record/TD-PPagop-30000002")' <<<"$out")"
+assert_eq "but the reservation is left alone" "" \
+  "$(jq -c 'select(.branch == "td/TD-PPagop-30000002")' <<<"$out")"
+assert_not_contains "so td/<id> is never deleted" \
+  "api -X DELETE repos/x/y/git/refs/heads/td/TD-PPagop-30000002" "$calls"
+
+# --- Case 16: a td-record/ branch with an open PR is untouched -------------------
+# The ordinary open-PR guard applies to every prefix, td-record/ included.
+c="$tmp_dir/record-open-pr"; mkdir -p "$c"
+: > "$c/refs-td_tsv"
+: > "$c/refs-agent_tsv"
+printf 'td-record/TD-PPagop-30000003\tsha-open\n' > "$c/refs-td-record_tsv"
+echo 1 > "$c/prs-open-td-record_TD-PPagop-30000003"
+
+out="$(run_sweep "$c")"
+assert_eq "a td-record/ branch with an open PR is left alone" "" \
+  "$(jq -c 'select(.branch == "td-record/TD-PPagop-30000003")' <<<"$out")"
+
+# --- Case 17: a td-record/ branch with no PR at all still yields a draft ---------
+# A filing killed between its contents write and `gh pr create` is a genuine
+# crash orphan, not a declined one — the ordinary recovery-draft path lands
+# it exactly as any other orphan.
+c="$tmp_dir/record-no-pr"; mkdir -p "$c"
+: > "$c/refs-td_tsv"
+: > "$c/refs-agent_tsv"
+printf 'td-record/TD-PPagop-30000004\tsha-nopr\n' > "$c/refs-td-record_tsv"
+echo "$stale" > "$c/date-sha-nopr"
+compare_fixture "$c" td-record/TD-PPagop-30000004 1 "$stale"
+
+out="$(run_sweep "$c")"
+assert_eq "a td-record/ branch with no PR at all still gets a recovery draft" \
+  "td-record/TD-PPagop-30000004" \
+  "$(jq -r 'select(.action == "recovered") | .branch' <<<"$out")"
+
+# --- Case 18: the contents check fails with something other than 404 ------------
+# The record branch was already confirmed declined and deleted; the
+# reservation-release question is a separate read, and its own failure must
+# not be read as either a 404 or a 200 — fail closed, leave td/<id> alone.
+c="$tmp_dir/declined-filing-contents-fail"; mkdir -p "$c"
+: > "$c/refs-td_tsv"
+: > "$c/refs-agent_tsv"
+printf 'td-record/TD-PPagop-30000005\tsha-declined5\n' > "$c/refs-td-record_tsv"
+echo "$stale" > "$c/date-sha-declined5"
+echo 1 > "$c/prs-closed-td-record_TD-PPagop-30000005"
+touch "$c/contents-500-TD-PPagop-30000005"
+
+out="$(run_sweep "$c")"
+calls="$(cat "$c/calls.log")"
+assert_eq "the record branch is still released even though the contents check later fails" \
+  '{"action":"released","branch":"td-record/TD-PPagop-30000005","reason":"filing-declined"}' \
+  "$(jq -c 'select(.branch == "td-record/TD-PPagop-30000005" and .action == "released")' <<<"$out")"
+assert_eq "a contents check that fails with something other than 404 warns rather than guessing" \
+  "{\"action\":\"warning\",\"branch\":\"td/TD-PPagop-30000005\",\"detail\":\"could not confirm tech-debt/TD-PPagop-30000005.md's absence from main — leaving the paired reservation alone\"}" \
+  "$(jq -c 'select(.branch == "td/TD-PPagop-30000005")' <<<"$out")"
+assert_not_contains "and td/<id> is never deleted" \
+  "api -X DELETE repos/x/y/git/refs/heads/td/TD-PPagop-30000005" "$calls"
+
+# --- Case 19: regression guard — a bare td/<ID> lock with no td-record/ sibling --
+# TD-PPagop-26082310's own narrowness rule: release_paired_reservation must
+# only ever run from inside the declined-filing arm above, never for an
+# ordinary td/<ID> reservation branch encountered on its own — issue #545's
+# exemption stays exactly as it was for every branch with no td-record/
+# sibling to trigger it.
+c="$tmp_dir/reservation-lock-no-sibling"; mkdir -p "$c"
+printf 'td/TD-PPagop-30000006\tsha-lock-only\n' > "$c/refs-td_tsv"
+: > "$c/refs-agent_tsv"
+: > "$c/refs-td-record_tsv"
+echo "$stale" > "$c/date-sha-lock-only"
+jq -n '{ahead_by: 1, files: [],
+        commits: [{commit: {
+          message: "chore(tech-debt): reserve TD-PPagop-30000006\n\nReservation nonce: 1755391086-999-111222",
+          committer: {date: "2026-08-17T00:38:06Z"}}}]}' \
+  > "$c/compare-td_TD-PPagop-30000006.json"
+
+out="$(run_sweep "$c")"
+calls="$(cat "$c/calls.log")"
+assert_eq "a bare td/<ID> lock with no td-record/ sibling still produces no action" \
+  "" "$out"
+assert_not_contains "the new contents check is never even reached for it" \
+  "contents/tech-debt/TD-PPagop-30000006" "$calls"
 
 printf '\n'
 if (( failures )); then
