@@ -37,6 +37,17 @@
 # Sourced by agent-cycle.sh and scripts/doctor.sh. jq 1.6 compatible: nodes
 # carry 1.7, but a host running doctor.sh before installing anything may well
 # have 1.6.
+#
+# `STAGE_BUDGET_PRIORS`, `stage_budget_all_overrides` and
+# `stage_budget_lock_seconds` — needed below to floor `claim_ttl_hours` and
+# `abandoned_draft_after_hours` at a cycle's own worst-case runtime — are
+# lib/stage-budget.sh's, sourced here for the same self-containment reason
+# lib/void-guard.sh sources its own dependencies: this file works whether
+# agent-cycle.sh sources it first or a caller sources lib/config-schema.sh
+# alone.
+CONFIG_SCHEMA_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/stage-budget.sh
+. "$CONFIG_SCHEMA_DIR/lib/stage-budget.sh"
 
 # config_schema_errors CONFIG_FILE SCHEMA_FILE
 # Prints one human-readable error per line, each naming the path in the config
@@ -268,9 +279,31 @@ config_schema_errors() {
 # longer a cadence-blind one. See requirement 1d for the formula and why it
 # reads `schedule.cycle_hours` and `schedule.excluded_minutes` as well as
 # `schedule.cycle_interval_minutes`.
+#
+# `claim_ttl_hours` and `abandoned_draft_after_hours` each bound a cycle's own
+# *runtime*, not only the gap between cycle starts — `lib/claim.sh`'s `do_gc`
+# sweeps a claim registry entry (and, with it, the untouched claim branch)
+# past the first, and `scripts/gather-abandoned-drafts.sh` races the second
+# against a claim that can itself already be swept — so each also carries the
+# stage-backstop floor requirement 4f's own `lock_stale_after` derives
+# (`stage_budget_lock_seconds`): the same shape as the cadence floor above, a
+# value this derivation can only raise, never lower. Computed from
+# `STAGE_BUDGET_PRIORS` and this config's own actor overrides
+# (`stage_budget_all_overrides`) alone, with an empty budget table — never the
+# fleet's own learned per-(actor, repository, model) history, which lives in
+# an event log this function has no path to and would make it a function of
+# more than `config_file` and `schema_file`. That is the same conservative,
+# no-history baseline a fresh installation's `scripts/doctor.sh` and
+# `scripts/publish-dashboard.sh` already fall back on before any cycle has
+# run, applied here unconditionally rather than only until the first one has.
 config_defaults() {
   local config_file="$1" schema_file="$2"
-  jq -c --slurpfile schema "$schema_file" '
+  local raw_config runtime_floor_lock_sec
+  raw_config="$(jq -c . "$config_file" 2>/dev/null)" || raw_config="{}"
+  runtime_floor_lock_sec="$(stage_budget_lock_seconds "{}" \
+    "$(stage_budget_all_overrides "$raw_config")" 30 0)"
+  jq -c --slurpfile schema "$schema_file" \
+    --argjson runtime_floor_lock_sec "${runtime_floor_lock_sec:-0}" '
     ($schema[0]) as $root
 
     # Shared with config_schema_errors: a `$ref` is replaced by its target,
@@ -488,9 +521,22 @@ config_defaults() {
         (getpath([$key])) as $cfg
         | if $cfg == 0 then 0 else hour_key($key; $base_cycles) end;
 
+    # `claim_ttl_hours` and `abandoned_draft_after_hours` bound a cycle'\''s own
+    # worst-case *runtime*, not only the gap between cycle starts (see this
+    # function'\''s own header comment above `config_defaults`), so each takes a
+    # second floor beyond `hour_key`'\''s cadence-derived one: `hour_key`'\''s own
+    # result can still be raised, never lowered, by
+    # `$runtime_floor_lock_sec` — the caller'\''s already-derived
+    # `stage_budget_lock_seconds`, in whole hours, rounded up the same way the
+    # cadence term is.
+    def hour_key_runtime_floored($key; $base_cycles):
+        (hour_key($key; $base_cycles)) as $cadence_derived
+        | (($runtime_floor_lock_sec / 3600) | ceil) as $runtime_floor
+        | ([$cadence_derived, $runtime_floor] | max);
+
     $filled
-    | .claim_ttl_hours = hour_key("claim_ttl_hours"; 6)
-    | .abandoned_draft_after_hours = hour_key("abandoned_draft_after_hours"; 4)
+    | .claim_ttl_hours = hour_key_runtime_floored("claim_ttl_hours"; 6)
+    | .abandoned_draft_after_hours = hour_key_runtime_floored("abandoned_draft_after_hours"; 4)
     | .disable_default_ttl = hour_key("disable_default_ttl"; 4)
     | .none_selected_recheck_hours = hour_key_or_zero("none_selected_recheck_hours"; 24)
     | .cycles_retained = count_key("cycles_retained"; 200)

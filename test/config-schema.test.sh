@@ -362,6 +362,16 @@ CADENCE_BASE_MUTATION='
   | .schedule.excluded_minutes = []
 '
 
+# claim_ttl_hours and abandoned_draft_after_hours carry a second floor beyond
+# the cadence one: requirement 4f's own lock_stale_after quantity
+# (stage_budget_lock_seconds), computed here exactly as config_defaults
+# computes it internally — the shipped STAGE_BUDGET_PRIORS, no config
+# overrides, no fleet history (an empty table) — so the assertions below
+# compare against the real floor rather than a hand-copied constant that
+# could drift from it.
+RUNTIME_FLOOR_LOCK_SEC="$(stage_budget_lock_seconds '{}' '{}' 30 0)"
+RUNTIME_FLOOR_HOURS=$(( (RUNTIME_FLOOR_LOCK_SEC + 3599) / 3600 ))
+
 # assert_cadence_cmp DESC FIXTURE_A_MUTATION FIXTURE_B_MUTATION JQ_CHECK
 # JQ_CHECK sees $a and $b, each config_defaults' output for its own fixture —
 # the shape every comparison below needs, which a single-fixture
@@ -391,14 +401,24 @@ assert_cadence_cmp() {
 
 # Acceptance 2: halving cycle_interval_minutes (60 -> 30) shows each derived
 # timing changing as expected, and each independent one not changing.
+#
+# claim_ttl_hours and abandoned_draft_after_hours are the two exceptions:
+# their cadence-derived figure at 60 min (6 h, 4 h) already sits below the
+# runtime floor (RUNTIME_FLOOR_HOURS, ~6.3 h rounded up to 7 from the shipped
+# stage-backstop priors), so halving the interval — which can only lower the
+# cadence term further — leaves both pinned at the floor rather than moving.
+# That pinning is the fix (TD-PPagop-26082829): before it, halving actually
+# did halve them, which is exactly how a fast cadence could shorten a claim's
+# TTL, or a draft's abandoned-after threshold, below a cycle's own worst-case
+# runtime.
 # shellcheck disable=SC2016  # jq's $a/$b (assert_cadence_cmp's own), not the shell's.
-assert_cadence_cmp "halving cycle_interval_minutes halves claim_ttl_hours (6 cycles: 6 h at 60 min, 3 h at 30 min)" \
+assert_cadence_cmp "halving cycle_interval_minutes leaves claim_ttl_hours pinned to the runtime floor, not halved (6 cycles undershoots it at both 60 min and 30 min)" \
   '.schedule.cycle_interval_minutes = 60' '.schedule.cycle_interval_minutes = 30' \
-  '$a.claim_ttl_hours == 6 and $b.claim_ttl_hours == 3'
+  '$a.claim_ttl_hours == '"$RUNTIME_FLOOR_HOURS"' and $b.claim_ttl_hours == '"$RUNTIME_FLOOR_HOURS"''
 # shellcheck disable=SC2016  # jq's $a/$b, not the shell's.
-assert_cadence_cmp "...and halves abandoned_draft_after_hours (4 cycles: 4 h -> 2 h)" \
+assert_cadence_cmp "...and abandoned_draft_after_hours too (4 cycles undershoots it at both 60 min and 30 min)" \
   '.schedule.cycle_interval_minutes = 60' '.schedule.cycle_interval_minutes = 30' \
-  '$a.abandoned_draft_after_hours == 4 and $b.abandoned_draft_after_hours == 2'
+  '$a.abandoned_draft_after_hours == '"$RUNTIME_FLOOR_HOURS"' and $b.abandoned_draft_after_hours == '"$RUNTIME_FLOOR_HOURS"''
 # shellcheck disable=SC2016  # jq's $a/$b, not the shell's.
 assert_cadence_cmp "...and halves disable_default_ttl (4 cycles: 4 h -> 2 h)" \
   '.schedule.cycle_interval_minutes = 60' '.schedule.cycle_interval_minutes = 30' \
@@ -458,6 +478,50 @@ assert_cadence_cmp "...and abandoned_draft_after_hours too" \
   '.schedule.cycle_interval_minutes = 15 | .schedule.cycle_hours = "9-17"' \
   '$b.abandoned_draft_after_hours > $a.abandoned_draft_after_hours'
 
+# Acceptance 5 (TD-PPagop-26082829): claim_ttl_hours and
+# abandoned_draft_after_hours each bound a cycle's own worst-case *runtime*
+# (do_gc sweeps a live claim's registry entry past claim_ttl_hours;
+# gather-abandoned-drafts.sh races a draft's candidacy against a claim that
+# can itself already be swept), not only the scheduling gap between cycle
+# starts — so at the shipped hourly-or-faster cadence, where the cadence term
+# alone would undershoot it, both are floored at requirement 4f's own
+# lock_stale_after quantity (stage_budget_lock_seconds) instead.
+assert_defaults "claim_ttl_hours floors at the stage-backstop lock quantity, not the bare cadence, at the shipped cadence" \
+  '.schedule.cycle_interval_minutes = 60 | .schedule.cycle_hours = "*" | .schedule.excluded_minutes = []
+   | del(.claim_ttl_hours)' \
+  ".claim_ttl_hours == $RUNTIME_FLOOR_HOURS"
+assert_defaults "...and abandoned_draft_after_hours too" \
+  '.schedule.cycle_interval_minutes = 60 | .schedule.cycle_hours = "*" | .schedule.excluded_minutes = []
+   | del(.abandoned_draft_after_hours)' \
+  ".abandoned_draft_after_hours == $RUNTIME_FLOOR_HOURS"
+# A configured actor override widens the floor exactly as
+# stage_budget_lock_seconds itself would report it (requirement 4f) — raising
+# timeout_implementer past every other actor's backstop makes it the whole
+# sum's largest term, so the derived floor tracks it up by the same amount.
+# Computed the same way RUNTIME_FLOOR_HOURS is, rather than hand-copied, so
+# the assertion cannot drift from what stage_budget_lock_seconds actually
+# returns for this override.
+RAISED_FLOOR_LOCK_SEC="$(stage_budget_lock_seconds '{}' \
+  "$(stage_budget_all_overrides '{"timeout_implementer":600}')" 30 0)"
+RAISED_FLOOR_HOURS=$(( (RAISED_FLOOR_LOCK_SEC + 3599) / 3600 ))
+assert_defaults "a configured stage timeout override raises the runtime floor, and claim_ttl_hours follows it" \
+  '.schedule.cycle_interval_minutes = 60 | .schedule.cycle_hours = "*" | .schedule.excluded_minutes = []
+   | del(.claim_ttl_hours) | .timeout_implementer = 600' \
+  ".claim_ttl_hours == $RAISED_FLOOR_HOURS"
+# disable_default_ttl and none_selected_recheck_hours bound no in-flight
+# claim or draft (requirement 1d's own "independent by design" note), so
+# neither carries this second floor: the same configuration that floors
+# claim_ttl_hours at RUNTIME_FLOOR_HOURS leaves these two exactly where the
+# cadence alone would put them.
+assert_defaults "disable_default_ttl carries no runtime floor" \
+  '.schedule.cycle_interval_minutes = 60 | .schedule.cycle_hours = "*" | .schedule.excluded_minutes = []
+   | del(.disable_default_ttl)' \
+  '.disable_default_ttl == 4'
+assert_defaults "...nor does none_selected_recheck_hours" \
+  '.schedule.cycle_interval_minutes = 60 | .schedule.cycle_hours = "*" | .schedule.excluded_minutes = []
+   | del(.none_selected_recheck_hours)' \
+  '.none_selected_recheck_hours == 24'
+
 # The derivation reads three `schedule` leaves, and config_defaults validates
 # none of them (the assertion above this block is the general statement of
 # that). A wrong *type* must therefore degrade the way an unparseable
@@ -466,18 +530,22 @@ assert_cadence_cmp "...and abandoned_draft_after_hours too" \
 # tool whose job is to report that very violation — reads a defaulted config
 # to do it. The fallback is the historical hourly assumption, so a broken
 # `schedule` can only ever lengthen these thresholds, never shorten them.
+# claim_ttl_hours' own hourly-assumption cadence term (6) still sits below
+# RUNTIME_FLOOR_HOURS, so the runtime floor — not the cadence fallback —
+# is what the degraded case actually reads back as here; cycles_retained
+# carries no such floor and reads the plain hourly-assumption fallback (200).
 assert_defaults "a non-numeric schedule.cycle_interval_minutes degrades to the hourly assumption, not a failed merge" \
   '.schedule.cycle_interval_minutes = "15"' \
-  '.claim_ttl_hours == 6 and .cycles_retained == 200'
+  ".claim_ttl_hours == $RUNTIME_FLOOR_HOURS and .cycles_retained == 200"
 assert_defaults "...as does a non-array schedule.excluded_minutes" \
   '.schedule.cycle_interval_minutes = 60 | .schedule.excluded_minutes = "0"' \
-  '.claim_ttl_hours == 6 and .cycles_retained == 200'
+  ".claim_ttl_hours == $RUNTIME_FLOOR_HOURS and .cycles_retained == 200"
 assert_defaults "...and a non-string schedule.cycle_hours" \
   '.schedule.cycle_interval_minutes = 60 | .schedule.cycle_hours = 5' \
-  '.claim_ttl_hours == 6 and .cycles_retained == 200'
+  ".claim_ttl_hours == $RUNTIME_FLOOR_HOURS and .cycles_retained == 200"
 assert_defaults "...and a schedule.excluded_minutes carrying a non-numeric item" \
   '.schedule.cycle_interval_minutes = 60 | .schedule.excluded_minutes = [0, "x"]' \
-  '.claim_ttl_hours == 6 and .cycles_retained == 200'
+  ".claim_ttl_hours == $RUNTIME_FLOOR_HOURS and .cycles_retained == 200"
 
 # --- $ref resolution (issue #482): deref must resolve to a fixpoint, not one
 #     hop, and fail closed on a $ref that does not resolve. The shipped schema

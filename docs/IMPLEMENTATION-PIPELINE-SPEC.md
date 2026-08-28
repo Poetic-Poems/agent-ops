@@ -779,7 +779,7 @@ and the schema must carry every one of them.
 | `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list (requirement 17a), so alternates turn a lost race into the next-best item instead of a wasted cycle. |
 | `coordinator_prompt_max_bytes` | `350000` | The largest assembled prompt the Script will hand the Co-Ordinator (requirement 4i). The default is derived from the 200000-token window of the Co-Ordinator model this installation runs, less the ~50000 tokens of system prompt and tool definitions the Script neither assembles nor can measure, less a reserve for the verdict itself, at the ~2.35 bytes per token JSON-escaped Markdown actually costs. Stated in bytes because bytes are what the Script can count without a tokenizer....[continued below](#extended-notes-coordinator_prompt_max_bytes) |
 | `max_chained_cycles` | `3` | Finish-then-continue (requirement 39): the most cycles that may run back-to-back in one lineage — the cron-fired original plus its immediate chained continuations — bounded so a busy fleet still yields the lock periodically. `1` disables chaining. |
-| `claim_ttl_hours` | *(unset)* | Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry — far beyond a whole cycle, so only a dead node's claim ever expires. "A whole cycle" means 6 cadence firings (requirement 1d), not a fixed 6 h: derived from the worst-case gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`); a configured value floors the derivation rather than replacing it, the same shape `lock_stale_after` (requirement 4f) already uses. The branch itself...[continued below](#extended-notes-claim_ttl_hours) |
+| `claim_ttl_hours` | *(unset)* | Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry — far beyond a whole cycle, so only a dead node's claim ever expires, and beyond the cycle's own worst-case runtime, so `do_gc` cannot sweep a claim (and delete its still-untouched, PR-less branch) out from under a cycle still holding it. "A whole cycle" means 6 cadence firings (requirement 1d), not a fixed 6 h: derived from the worst-case gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`...[continued below](#extended-notes-claim_ttl_hours) |
 | `abandoned_draft_after_hours` | *(unset)* | How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. "A whole cycle" means 4 cadence firings (requirement 1d), not a fixed number of hours...[continued below](#extended-notes-abandoned_draft_after_hours) |
 | `human_nudge_idle_hours` | 24 h | Hours an approved, mergeable, CI-green pull request this system raised may sit idle before `scripts/sweep-human-visibility.sh` posts a one-time nudge comment naming `enabler_assignee` (requirement 38c). `0` disables the nudge only — the sweep's self-healing review request (requirement 38a) is unconditional. poetic-fiddle #170 sat approved and green for 6.8 days with nothing asking anyone to look; this is the backstop for whatever the live review request itself does not catch. |
 | `merge_queue_dequeue_notice_max_age_hours` | 24 h | Hours a merge-queue-dequeue notice (requirement 38f) may still fire for after `dequeued_at`, so a removal event that predates this feature (or this repository's queue adoption) is not read as fresh news merely because a sweep is only now seeing it. agent-ops#394, tech-debt/TD-PPagop-26081409.md. `0` disables the notice outright (agent-ops#429), guarded explicitly rather than left to the arithmetic threshold this bounds, since a repository with no merge queue should express...[continued below](#extended-notes-merge_queue_dequeue_notice_max_age_hours) |
@@ -892,15 +892,15 @@ Every optional key sits on the repository's own entry, beside `slug` and `source
 
 ### Extended notes: `cycles_retained`
 
-Cycle directories kept in the replicated mirror — bounds a repository that is force-pushed after every cycle. A span of history, not a literal cycle count (requirement 1d): derived from the worst-case gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`) to hold the ~8.3 days 200 cycles represented at the historical hourly cadence; a configured value floors the derivation rather than replacing it, the same shape `lock_stale_after` (requirement 4f) already uses. The node's own `state_dir` is bounded by `state_local_cycles_retained` instead.
+Cycle directories kept in the replicated mirror — bounds a repository that is force-pushed after every cycle. A span of history, not a literal cycle count (requirement 1d): derived from the worst-case gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`) to hold the ~8.3 days 200 cycles represented at the historical hourly cadence; a configured value floors the derivation rather than replacing it, the same shape `lock_stale_after` (requirement 4f) already uses. The node's own `state_dir` is bounded by `state_local_cycles_retained` instead. At the shipped 15-minute cadence this raises the derived count 200 → 800; see `state_local_streams_retained`'s own note for what that fourfold rise costs in practice.
 
 ### Extended notes: `state_local_cycles_retained`
 
-Cycle and review directories the node's *own* `state_dir` keeps; the same push that replicates prunes to it (requirement 2.5). Deliberately far above `cycles_retained`, so the local machine is always the longer record, with a floor of one protecting the cycle being recorded. A span of history, not a literal cycle count (requirement 1d): derived from the worst-case gap between cycles to hold the ~41.7 days 1000 cycles represented at the historical hourly cadence; a configured value floors the derivation rather than replacing it. `STATE_SYNC_LOCAL_RETAINED` overrides it for tests.
+Cycle and review directories the node's *own* `state_dir` keeps; the same push that replicates prunes to it (requirement 2.5). Deliberately far above `cycles_retained`, so the local machine is always the longer record, with a floor of one protecting the cycle being recorded. A span of history, not a literal cycle count (requirement 1d): derived from the worst-case gap between cycles to hold the ~41.7 days 1000 cycles represented at the historical hourly cadence; a configured value floors the derivation rather than replacing it. `STATE_SYNC_LOCAL_RETAINED` overrides it for tests. At the shipped 15-minute cadence this raises the derived count 1000 → 4000 — each retained cycle directory without its large derived files (`state_local_streams_retained` bounds those separately) is a handful of kilobytes of JSON, so the practical local-disk cost of this rise alone is on the order of tens of megabytes; see `state_local_streams_retained`'s own note for the one of these three keys whose volume is worth quantifying more precisely.
 
 ### Extended notes: `state_local_streams_retained`
 
-Cycle and review directories whose derived files are kept — the stage event streams (`<stage>.stream.jsonl`, requirement 4d) and the fleet-log snapshot (`.fleet-log.jsonl`, requirement 2.5); the push that replicates prunes to it (requirement 2.5). Far below `state_local_cycles_retained` because each is a different order of size from the record holding it — a cycle directory without them is kilobytes, one Reviewer stream megabytes, one snapshot the whole fleet's history to that moment — so they go early and their records stay. Neither reaches the state repository. A span of history, not a literal cycle count (requirement 1d): derived from the worst-case gap between cycles to hold the ~2.1 days 50 cycles represented at the historical hourly cadence; a configured value floors the derivation rather than replacing it. `STATE_SYNC_STREAMS_RETAINED` overrides it for tests.
+Cycle and review directories whose derived files are kept — the stage event streams (`<stage>.stream.jsonl`, requirement 4d) and the fleet-log snapshot (`.fleet-log.jsonl`, requirement 2.5); the push that replicates prunes to it (requirement 2.5). Far below `state_local_cycles_retained` because each is a different order of size from the record holding it — a cycle directory without them is kilobytes, one Reviewer stream megabytes, one snapshot the whole fleet's history to that moment — so they go early and their records stay. Neither reaches the state repository. A span of history, not a literal cycle count (requirement 1d): derived from the worst-case gap between cycles to hold the ~2.1 days 50 cycles represented at the historical hourly cadence; a configured value floors the derivation rather than replacing it. `STATE_SYNC_STREAMS_RETAINED` overrides it for tests. At the shipped 15-minute cadence this raises the derived count 50 → 200 (TD-PPagop-26082830) — the one of these three keys worth quantifying rather than only ratioed, since it alone bounds files this large: with each retained cycle's stream-plus-snapshot pair running from under a megabyte to several megabytes on an ordinary cycle (`scripts/state-sync.sh`'s own 'megabytes' figure), 200 retained cycles is an order-of-magnitude estimate of low hundreds of megabytes on a busy repository, against `cycles_retained`'s and `state_local_cycles_retained`'s tens of megabytes each — not a measurement of any live node's actual `state_dir`, which is what would replace this estimate with a real baseline, but still well inside `min_free_workspace_bytes`'s 2 GiB pre-clone floor, the one check a derivation raising this key could actually trip.
 
 ### Extended notes: `escalation_autonomy`
 
@@ -944,11 +944,11 @@ The largest assembled prompt the Script will hand the Co-Ordinator (requirement 
 
 ### Extended notes: `claim_ttl_hours`
 
-Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry — far beyond a whole cycle, so only a dead node's claim ever expires. "A whole cycle" means 6 cadence firings (requirement 1d), not a fixed 6 h: derived from the worst-case gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`); a configured value floors the derivation rather than replacing it, the same shape `lock_stale_after` (requirement 4f) already uses. The branch itself is deleted only if untouched and PR-less.
+Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry — far beyond a whole cycle, so only a dead node's claim ever expires, and beyond the cycle's own worst-case runtime, so `do_gc` cannot sweep a claim (and delete its still-untouched, PR-less branch) out from under a cycle still holding it. "A whole cycle" means 6 cadence firings (requirement 1d), not a fixed 6 h: derived from the worst-case gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`), and additionally floored at requirement 4f's own stage-backstop quantity (`stage_budget_lock_seconds`, the same one `lock_stale_after` derives) so neither derivation alone can undercut a live cycle's own worst case. A configured value floors both derivations rather than replacing them, the same shape `lock_stale_after` (requirement 4f) already uses. The branch itself is deleted only if untouched and PR-less.
 
 ### Extended notes: `abandoned_draft_after_hours`
 
-How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. "A whole cycle" means 4 cadence firings (requirement 1d), not a fixed number of hours: derived from the worst-case gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`); a configured value floors the derivation rather than replacing it.
+How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. "A whole cycle" means 4 cadence firings (requirement 1d), not a fixed number of hours: derived from the worst-case gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`), and additionally floored at requirement 4f's own stage-backstop quantity (`stage_budget_lock_seconds`, the same one `lock_stale_after` derives) — the candidacy race `scripts/gather-abandoned-drafts.sh` relies on presumes the claim it races against has not itself already been swept, which needs `claim_ttl_hours` at least this wide too. A configured value floors both derivations rather than replacing them.
 
 Raised 3 h → 4 h (cycles, at the historical hourly cadence) alongside the interim timeout raises of #203, which took a worst-case Implementer-plus-Reviewer cycle to 180 minutes and would otherwise have left this threshold no margin at all.
 
@@ -1563,6 +1563,53 @@ implements.
      cadence speeds up is the point of a faster cadence, not a defect in the
      count, so it keeps its plain schema default and moves on the operator's
      own terms.
+
+   **`claim_ttl_hours` and `abandoned_draft_after_hours` carry a second
+   floor beyond the cadence one.** Both bound a cycle's own worst-case
+   *runtime*, not only the gap between cycle starts — `lib/claim.sh`'s
+   `do_gc` sweeps a claim-registry entry (and, with it, the claim branch,
+   while it is still untouched and PR-less) once `claim_ttl_hours` has
+   passed, and `scripts/gather-abandoned-drafts.sh`'s own candidacy race
+   presumes the claim it races against has not already been swept, which
+   needs `claim_ttl_hours` at least as wide as `abandoned_draft_after_hours`
+   too. At a fast enough cadence the cadence term alone can undershoot that:
+   6 cadence firings at 15 minutes is 90 minutes, well under the shipped
+   Implementer backstop alone (150 minutes, `lib/stage-budget.sh`'s
+   `STAGE_BUDGET_PRIORS`), and a cycle whose Implementer has not pushed by
+   then would have its claim branch swept by another node's `do_gc` while it
+   is still being worked. So each of these two keys' `hour_key` result is
+   additionally floored at requirement 4f's own `lock_stale_after` quantity
+   (`stage_budget_lock_seconds`) — the same shape as the cadence floor
+   above, raised, never lowered. Computed from `STAGE_BUDGET_PRIORS` and
+   this configuration's own actor overrides (`stage_budget_all_overrides`)
+   alone, with an empty budget table rather than the fleet's own learned
+   per-(actor, repository, model) history: `config_defaults` remains a
+   function of `config_file` and `schema_file` alone (no reader needing an
+   event log to compute its own defaults), and this is the same
+   conservative, no-history baseline a fresh installation's
+   `scripts/doctor.sh` and `scripts/publish-dashboard.sh` already fall back
+   on before any cycle has run, applied here unconditionally rather than
+   only until the first one has. `disable_default_ttl` and
+   `none_selected_recheck_hours` bound no in-flight claim or draft, so
+   neither carries this second floor.
+
+   **The three count-valued keys' resulting volumes, at the shipped
+   15-minute cadence** (`cycles_retained` 200 → 800,
+   `state_local_cycles_retained` 1000 → 4000, `state_local_streams_retained`
+   50 → 200, all fourfold since `gap_minutes` falls from the historical 60
+   to 15; TD-PPagop-26082830): `state_local_streams_retained` is the one
+   worth quantifying rather than only ratioed, since it alone bounds files
+   large enough to matter — `scripts/state-sync.sh`'s own comment puts a
+   bare cycle directory at kilobytes and one Reviewer stream at megabytes,
+   so 200 retained cycles' worth of stream-plus-snapshot pairs is an
+   order-of-magnitude estimate of low hundreds of megabytes on a busy
+   repository, against `cycles_retained`'s and `state_local_cycles_retained`'s
+   tens of megabytes each. An estimate, not a measurement of any live node's
+   actual `state_dir` — a real baseline is exactly what a future cadence
+   change should measure instead of only ratioing again — but well inside
+   `min_free_workspace_bytes`'s 2 GiB pre-clone floor (2.0c) either way,
+   which is the one check any of these three keys' derivation could actually
+   trip.
 
    Both shapes share `lock_stale_after`'s own contract (requirement 4f): a
    configured value is a **floor under the derivation, never a ceiling**. An
