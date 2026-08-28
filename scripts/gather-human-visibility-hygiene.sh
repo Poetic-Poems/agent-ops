@@ -59,17 +59,18 @@
 # uses (an unread state is never guessed at as clean). Only a *definite* "no
 # longer true" answer drops a violation.
 #
-# ## Four warning classes, told apart
+# ## Five warning classes, told apart
 #
-# `sweep-human-visibility.sh` logs four different per-pull-request warnings —
+# `sweep-human-visibility.sh` logs five different per-pull-request warnings —
 # "could not request review from …" (the review-request POST itself failed),
-# "could not post the idle nudge comment" (the nudge comment POST itself
-# failed), "no legal review-request candidate" (no POST was even
-# attempted — `ensure_human_reviewer`'s `skip\tno-candidate`,
-# tech-debt/TD-PPagop-26081001.md), and "could not post the
-# merge-queue-dequeued notice" (the dequeue-notice comment POST itself
-# failed, requirement 38f) — and they clear on four different live
-# facts. A single shared check would get more than one of them wrong: every
+# "could not read the pull request's reviews …" (`_handoff_pr_approved`'s own
+# read failing, inside the idle-nudge check alone), "could not post the idle
+# nudge comment" (the nudge comment POST itself failed), "no legal
+# review-request candidate" (no POST was even attempted —
+# `ensure_human_reviewer`'s `skip\tno-candidate`, tech-debt/TD-PPagop-26081001.md),
+# and "could not post the merge-queue-dequeued notice" (the dequeue-notice
+# comment POST itself failed, requirement 38f) — and they clear on five
+# different live facts. A single shared check would get more than one of them wrong: every
 # pull request a nudge warning is logged against is, by the nudge's own gate,
 # already `APPROVED` — so a check that only asks "has a human reviewed this"
 # would read every nudge-class warning as resolved the moment it is created,
@@ -116,6 +117,20 @@
 #                             (`lib/handoff.sh`) already reasons from the
 #                             reviews list rather than that field, read here
 #                             rather than acted on.
+#   could_not_read_reviews — no separate live signal of its own: reaching
+#                             this class's own check at all already answers
+#                             it. The `gh pr view` call at the top of
+#                             `_pr_violation_survives` requests `reviews`
+#                             among its fields, the same fact
+#                             `_handoff_pr_approved`'s own read (via
+#                             `_handoff_latest_reviews`, `lib/handoff.sh`)
+#                             failed to get when the sweep logged this
+#                             warning — so a pull request that produced a
+#                             readable `$json` just proved that read works
+#                             again, and the violation drops unconditionally.
+#                             Unlike the other four classes, there is no
+#                             follow-up action outcome to inspect: the read
+#                             failing was the whole violation.
 #   could_not_post_nudge   — did the nudge comment land after all: `gh pr
 #                             view --json comments`, searched for a comment
 #                             carrying both the exact `<!-- agent-ops:human-
@@ -216,6 +231,7 @@ jq -e 'type == "array"' <<<"$violations_json" >/dev/null 2>&1 || violations_json
 _warning_class() {
   case "$1" in
     "could not request review from"*) printf 'could_not_request' ;;
+    "could not read the pull request's reviews"*) printf 'could_not_read_reviews' ;;
     *"idle nudge comment"*) printf 'could_not_post_nudge' ;;
     "no legal review-request candidate"*) printf 'no_candidate' ;;
     *"merge-queue-dequeued notice"*) printf 'dequeue_notice' ;;
@@ -283,6 +299,16 @@ _pr_violation_survives() {
       else
         printf 'keep'
       fi
+      ;;
+    could_not_read_reviews)
+      # This class has no separate action outcome to inspect: reaching this
+      # point at all already answers the question. The `gh pr view` call at
+      # the top of this function requests `reviews` among its fields, so a
+      # pull request that produced a non-empty $json just had its reviews
+      # read successfully — the exact fact `_handoff_pr_approved`'s own read
+      # failed on when the sweep logged this warning. No further check is
+      # needed or possible.
+      printf 'drop'
       ;;
     could_not_post_nudge)
       # An unanchored substring test here would fire on any comment merely

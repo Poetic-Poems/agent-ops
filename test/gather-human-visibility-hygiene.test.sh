@@ -12,11 +12,18 @@
 #   - **A violation that still reproduces live becomes exactly one candidate**,
 #     `source: "human-visibility"` (its own source, issue #284's decision 2 —
 #     never `register-hygiene`), with its own `human-visibility-<hash>` ref.
-#   - **The four warning classes are told apart (issue #284's decision 1).** A
+#   - **The five warning classes are told apart (issue #284's decision 1).** A
 #     `could not request review from …` violation clears only once a human
 #     review is live or already given (`reviewRequests` non-empty, or a
 #     non-bot review with state `APPROVED`/`CHANGES_REQUESTED` in the reviews
 #     list — never `reviewDecision`, agent-ops#391, TD-PPagop-26081505); a
+#     `could not read the pull request's reviews …` violation
+#     (`_handoff_pr_approved`'s own read failing inside the idle-nudge check)
+#     has no follow-up outcome of its own to check — reaching the live
+#     re-check at all already proves the read works again, since the `gh pr
+#     view` call it opens with requests `reviews` among its fields, so it
+#     drops unconditionally while the pull request stays open and not a
+#     draft; a
 #     `could not post the idle nudge comment` violation — logged only against
 #     an already-`APPROVED` pull request — clears only once a comment carrying
 #     both the exact `<!-- agent-ops:human-nudge -->` HTML-comment form and
@@ -144,6 +151,7 @@ export PATH="$tmp_dir/bin:$PATH"
 repo_level='[{"repo":"o/a","pr_url":"","detail":"could not list o/a'"'"'s open pull requests — sweeping nothing","ts":"2026-08-08T01:00:00Z"}]'
 request_level='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":"could not request review from foo","ts":"2026-08-08T02:00:00Z"}]'
 nudge_level='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":"could not post the idle nudge comment","ts":"2026-08-08T02:00:00Z"}]'
+reviews_read_level='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":"could not read the pull request'"'"'s reviews — skipping the idle-nudge check","ts":"2026-08-08T02:00:00Z"}]'
 unknown_level='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":"could not read the pull request'"'"'s state — skipping the idle check","ts":"2026-08-08T02:00:00Z"}]'
 no_candidate_level='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":"no legal review-request candidate — known reviewers are empty or only the author; enabler_assignee=author","ts":"2026-08-08T02:00:00Z"}]'
 dequeue_level='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":"could not post the merge-queue-dequeued notice","ts":"2026-08-08T02:00:00Z"}]'
@@ -373,6 +381,24 @@ assert_eq "an ordinary pipeline comment with no nudge marker survives" \
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION=APPROVED STUB_REVIEW_REQUESTS=0 \
         STUB_NUDGE_COMMENT=real "$GATHER" "o/a" <<<"$nudge_level")"
 assert_eq "a nudge-class violation is dropped once the real marker comment appears" "[]" "$out"
+
+# --- could_not_read_reviews: reaching the live re-check at all already
+# --- proves the read works again — dropped unconditionally while open and
+# --- not a draft, with no further signal to check (unlike every other class)
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false "$GATHER" "o/a" <<<"$reviews_read_level")"
+assert_eq "a reviews-read violation is dropped once the pull request is readable again" \
+  "[]" "$out"
+
+# --- could_not_read_reviews: a merged/closed/draft pull request still drops
+# --- it too, the same as every other class -----------------------------------
+out="$(STUB_PR_STATE=MERGED STUB_PR_DRAFT=false "$GATHER" "o/a" <<<"$reviews_read_level")"
+assert_eq "a reviews-read violation is dropped on a merged pull request" "[]" "$out"
+
+# --- could_not_read_reviews: an unreadable re-check keeps it, fail-safe ----
+out="$(STUB_VIEW_RC=1 "$GATHER" "o/a" <<<"$reviews_read_level")"
+assert_eq "a reviews-read violation survives an unreadable re-check" \
+  "1" "$(jq 'length' <<<"$out")"
+assert_eq "  ... source is human-visibility" "human-visibility" "$(jq -r '.[0].source' <<<"$out")"
 
 # --- dequeue_notice: absent marker survives, even while open ---------------
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_DEQUEUE_MARKER=no \

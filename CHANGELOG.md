@@ -871,6 +871,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A `human-visibility` violation logged as "could not read the pull
+  request's reviews — skipping the idle-nudge check" no longer survives
+  forever once the underlying read starts working again (requirement 38e).
+  `_handoff_pr_approved`'s own reviews-read failure, inside the idle-nudge
+  check alone, previously fell through as an unrecognised warning shape —
+  cleared, in the log-union reduction, by any unrelated success for the same
+  pull request, and, in `scripts/gather-human-visibility-hygiene.sh`'s live
+  re-check, kept indefinitely with no live signal of its own to test. It now
+  has its own class in both: the log-union reduction only clears it on a
+  later nudge, and the live re-check drops it unconditionally once the pull
+  request is open, not a draft, and reachable at all — since reaching that
+  re-check already re-proves the read that failed.
 - A voided `review-<date>-R-NN` project-review ref now retires instead of
   sitting in the void extract for ever (TD-PPagop-26082309). Requirement
   34n's only actioned signal for that shape was `review-merged`, which needs
