@@ -2803,13 +2803,22 @@ implements.
    seconds}` (the newest recorded "allow" belongs to a different hostname —
    the ordinary case), `{status: "deferring", at, seconds}` (this hostname's
    own most recent invocations have all deferred, back to `at`), `{status:
-   "stuck", at, seconds}` (this hostname's own most recent invocation
-   allowed a roll at `at`, and this same container is still running past
-   `updater_stuck_after_minutes` later — the 2026-08-14 signature: a
-   container told to go ahead that watchtower never actually replaced,
-   which the retry alone will not clear since it repeats the operation that
-   collided) or `null` (no invocation recorded under any hostname yet, or
-   the most recent "allow" is too recent to classify either way). The
+   "stuck", at, seconds}` (this hostname's own most recent invocations have
+   all allowed a roll, back to `at`, and this same container is still
+   running past `updater_stuck_after_minutes` later — the 2026-08-14
+   signature: a container told to go ahead that watchtower never actually
+   replaced, which the retry alone will not clear since it repeats the
+   operation that collided) or `null` (no invocation recorded under any
+   hostname yet, the run of "allow"s is too recent to classify either way,
+   or the threshold the caller passed is not a whole number of seconds —
+   an unanswerable question, never a default the library picks for itself).
+   Both self-states are measured from the *start* of the current run of
+   like verdicts, not from its newest entry: watchtower re-runs the hook on
+   every poll for as long as the container is still stale, so each records
+   one entry per `WATCHTOWER_POLL_INTERVAL`, and timing the newest would
+   measure the age of the last poll rather than of the condition — putting
+   `stuck`, whose threshold is many polls wide, permanently out of reach.
+   The
    threshold travels as a parameter from the caller's own config read, never
    as a literal inside the library, the same shape `image_behind_grace_hours`
    already uses one layer up from `lib/image-drift.sh`.

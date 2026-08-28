@@ -32,13 +32,13 @@
 #     invocation before it back to `at` did too — how long the hook has been
 #     protecting a cycle in flight.
 #   {status:"stuck", at, seconds}
-#     our own most recent invocation allowed the roll, at `at`, and
-#     `seconds` (now minus `at`) has already reached <stuck-after-seconds>
-#     with this exact container — same hostname, so the very container that
-#     was told to go ahead — still the one running. "Same $HOSTNAME still
-#     running after an allowed roll" is the entire signature: it needs
-#     nothing watchtower has to tell us, because it is the one thing this
-#     side of the fence can observe for itself.
+#     our own most recent invocation allowed the roll, every invocation back
+#     to `at` did too, and `seconds` (now minus `at`) has already reached
+#     <stuck-after-seconds> with this exact container — same hostname, so the
+#     very container that was told to go ahead — still the one running. "Same
+#     $HOSTNAME still running after an allowed roll" is the entire signature:
+#     it needs nothing watchtower has to tell us, because it is the one thing
+#     this side of the fence can observe for itself.
 #   null
 #     no watchtower has ever polled this container (no ledger entry under
 #     any hostname at all), or the most recent "allow" anywhere already
@@ -46,7 +46,20 @@
 #     recent to call either "rolled" or "stuck" yet. Never returns non-zero
 #     and never asserts a verdict the ledger cannot support: this runs under
 #     `set -e` inside a heartbeat push, and an unanswerable question is not a
-#     reason to abort one.
+#     reason to abort one. A <stuck-after-seconds> that is not a whole number
+#     of seconds is one such unanswerable question, and reads null rather than
+#     defaulting to a threshold this file has no business choosing.
+#
+# Both of the states this container can be in for itself are *streaks*, not
+# moments, and are measured from the streak's start. watchtower re-runs the
+# hook on every poll for as long as the container is still stale — the hook's
+# own header records `Failed=3 Scanned=3 Updated=0` "every five minutes for
+# hours", and "each poll is answered independently" — so a container that is
+# deferring, and equally one that allowed a roll that never happened, appends
+# one entry per poll. Reading only the newest would measure the age of the
+# last poll (under one `WATCHTOWER_POLL_INTERVAL`, 300s by default) rather
+# than the age of the condition, and `stuck` — whose threshold is minutes of
+# polls, not one — could then never be reached at all.
 #
 # <stuck-after-seconds> is the caller's, not a literal here — the same shape
 # `image_behind_grace_hours` already uses one layer up (config.schema.json's
@@ -61,7 +74,7 @@
 
 # updater_status <ledger-dir> <stuck-after-seconds> [<hostname>]
 updater_status() {
-  local ledger_dir="${1:-}" stuck_after="${2:-0}" host="${3:-${HOSTNAME:-}}"
+  local ledger_dir="${1:-}" stuck_after="${2:-}" host="${3:-${HOSTNAME:-}}"
   [[ -n "$ledger_dir" && -d "$ledger_dir" && -n "$host" ]] || { printf 'null'; return 0; }
 
   local now_epoch=""
@@ -80,6 +93,24 @@ updater_status() {
     printf '%s %s\n' "$verdict" "$ts"
   }
 
+  # streak_start FILE VERDICT LAST-TS — the timestamp of the earliest entry in
+  # the unbroken run of VERDICT entries that ends at the file's last line,
+  # scanning backwards from the line before it and stopping at the first entry
+  # that is anything else (or will not parse), or at the start of the file.
+  # LAST-TS — the last line's own timestamp — is the answer when the run is
+  # one entry long. See the header: both self-states are streaks, and reading
+  # only the newest entry would time the last poll rather than the condition.
+  streak_start() {
+    local f="$1" want="$2" start="$3" line="" v="" t=""
+    while IFS= read -r line; do
+      v="$(jq -r '.verdict // empty' <<<"$line" 2>/dev/null || true)"
+      t="$(jq -r '.ts // empty' <<<"$line" 2>/dev/null || true)"
+      [[ "$v" == "$want" && -n "$t" ]] || break
+      start="$t"
+    done < <(tac "$f" 2>/dev/null | tail -n +2)
+    printf '%s\n' "$start"
+  }
+
   local own_file="$ledger_dir/$host.jsonl"
   local own_entry=""
   own_entry="$(last_entry "$own_file")"
@@ -88,31 +119,28 @@ updater_status() {
     local verdict="${own_entry%% *}" ts="${own_entry#* }"
 
     if [[ "$verdict" == "defer" ]]; then
-      # The earliest contiguous "defer" reading backward from the end: the
-      # start of the current streak. A verdict other than "defer" — or the
-      # start of the file — ends the scan.
-      local streak_start="$ts" line v2 t2
-      while IFS= read -r line; do
-        v2="$(jq -r '.verdict // empty' <<<"$line" 2>/dev/null || true)"
-        t2="$(jq -r '.ts // empty' <<<"$line" 2>/dev/null || true)"
-        [[ "$v2" == "defer" && -n "$t2" ]] || break
-        streak_start="$t2"
-      done < <(tac "$own_file" 2>/dev/null | tail -n +2)
-      local start_epoch=0 elapsed=0
-      start_epoch="$(date -u -d "$streak_start" +%s 2>/dev/null || echo 0)"
+      local since="" start_epoch=0 elapsed=0
+      since="$(streak_start "$own_file" defer "$ts")"
+      start_epoch="$(date -u -d "$since" +%s 2>/dev/null || echo 0)"
       elapsed=$(( now_epoch - start_epoch ))
       (( elapsed >= 0 )) || elapsed=0
-      jq -nc --arg at "$streak_start" --argjson s "$elapsed" '{status:"deferring", at:$at, seconds:$s}'
+      jq -nc --arg at "$since" --argjson s "$elapsed" '{status:"deferring", at:$at, seconds:$s}'
       return 0
     fi
 
     if [[ "$verdict" == "allow" ]]; then
-      local ts_epoch=0 elapsed=0
-      ts_epoch="$(date -u -d "$ts" +%s 2>/dev/null || echo 0)"
+      # A threshold this function cannot read is a question it cannot answer:
+      # neither "stuck" nor "not stuck" is supportable, so say nothing. The
+      # caller owns the number (config.json's `updater_stuck_after_minutes`),
+      # and inventing one here is exactly the drift the header rules out.
+      [[ "$stuck_after" =~ ^[0-9]+$ ]] || { printf 'null'; return 0; }
+      local since="" ts_epoch=0 elapsed=0
+      since="$(streak_start "$own_file" allow "$ts")"
+      ts_epoch="$(date -u -d "$since" +%s 2>/dev/null || echo 0)"
       elapsed=$(( now_epoch - ts_epoch ))
       (( elapsed >= 0 )) || elapsed=0
       if (( elapsed >= stuck_after )); then
-        jq -nc --arg at "$ts" --argjson s "$elapsed" '{status:"stuck", at:$at, seconds:$s}'
+        jq -nc --arg at "$since" --argjson s "$elapsed" '{status:"stuck", at:$at, seconds:$s}'
       else
         printf 'null'
       fi

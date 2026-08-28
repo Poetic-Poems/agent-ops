@@ -2624,7 +2624,8 @@ number's twins elsewhere on the page.
   roll back for a cycle or review in flight — it resolves the moment that
   ends, the same colour and reasoning as `behind`. **updater stuck**, amber,
   `compose`'s colour for a fault only a human clears: the hook allowed a
-  roll and the container it allowed is still the one running — same
+  roll — on every poll since the time named, watchtower asking again each
+  time — and the container it allowed is still the one running — same
   hostname, so watchtower never actually replaced it — and the retry that
   follows repeats the very operation that collided, so it will not clear on
   its own. `rolled` (the ordinary case) renders nothing, and so does an

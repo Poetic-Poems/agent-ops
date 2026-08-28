@@ -115,6 +115,54 @@ assert_eq "an allow inside the grace window is not yet stuck" "null" \
   "$(updater_status "$ledger" "$STUCK_AFTER" "host-b")"
 rm -f "$ledger/host-b.jsonl"
 
+# The state this whole check exists for, in the shape it actually arrives in:
+# watchtower re-runs the hook on every poll for as long as the container is
+# still stale, so the container it allowed and never replaced records one
+# `allow` every WATCHTOWER_POLL_INTERVAL (300s), not one in total. Timing the
+# newest entry would measure the age of the last poll — always under one
+# interval, so never past a threshold counted in polls — and the 2026-08-14
+# signature would read as nothing at all. The streak's start is the age of the
+# condition.
+streak_start="$(ago '40 minutes')"
+{
+  entry "$streak_start" allow
+  for m in 35 30 25 20 15 10 5; do entry "$(ago "$m minutes")" allow; done
+  entry "$(ago '10 seconds')" allow
+} > "$ledger/host-b.jsonl"
+out="$(updater_status "$ledger" "$STUCK_AFTER" "host-b")"
+assert_eq "an allow repeated on every poll since is still stuck, not reset by the newest" \
+  "stuck" "$(jq -r '.status' <<<"$out")"
+assert_eq "timed from the first allow of the run, not the last" \
+  "$streak_start" "$(jq -r '.at' <<<"$out")"
+
+# And the run starts where the last non-allow entry left off: a deferral in
+# between means watchtower was told to hold off, so the clock starts again
+# with the allow that followed it.
+{
+  entry "$(ago '2 hours')" allow
+  entry "$(ago '90 minutes')" defer
+  entry "$(ago '25 minutes')" allow
+  entry "$(ago '5 minutes')" allow
+} > "$ledger/host-b.jsonl"
+assert_eq "a defer in between ends the run, so the clock starts at the allow after it" \
+  "$(ago '25 minutes')" "$(updater_status "$ledger" "$STUCK_AFTER" "host-b" | jq -r '.at')"
+rm -f "$ledger/host-b.jsonl"
+
+# --- An unusable threshold is a question this library will not answer --------
+# The number is the caller's (config.json's `updater_stuck_after_minutes`),
+# and a value that is not a whole number of seconds supports neither verdict,
+# so it reads null rather than defaulting to one this file has no business
+# choosing — an omitted argument included, which must never read as "0
+# seconds, therefore stuck".
+entry "$(ago '40 minutes')" allow > "$ledger/host-b.jsonl"
+assert_eq "an omitted threshold reads null, never instantly stuck" "null" \
+  "$(updater_status "$ledger" "" "host-b")"
+assert_eq "and a non-numeric one reads null too" "null" \
+  "$(updater_status "$ledger" "twenty" "host-b")"
+assert_eq "while the same ledger with a usable threshold still reads stuck" "stuck" \
+  "$(updater_status "$ledger" "$STUCK_AFTER" "host-b" | jq -r '.status')"
+rm -f "$ledger/host-b.jsonl"
+
 # --- Malformed data never crashes and never asserts more than it can support --
 
 printf 'not json at all\n' > "$ledger/host-b.jsonl"

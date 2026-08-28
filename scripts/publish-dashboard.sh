@@ -193,8 +193,11 @@ stage_health_json="$(jq -c '.' "$stage_health_file" 2>/dev/null || echo null)"
 # scripts/state-sync.sh's identical call below reads it the same way, both
 # for the same reason: `node_name` (`NODE_NAME` or a bare `hostname`) may
 # name this node under a friendlier string than the container Docker
-# actually created.
-updater_stuck_after_seconds="$(( $(cfg '.updater_stuck_after_minutes') * 60 ))"
+# actually created. Minutes → seconds in jq rather than `$(( ))`, for the
+# reason scripts/state-sync.sh's identical conversion sets out: the schema
+# types the key `number`, and bash arithmetic cannot evaluate a fractional
+# one at all.
+updater_stuck_after_seconds="$(cfg '.updater_stuck_after_minutes * 60 | floor')"
 updater_json="$(updater_status "$state_dir/updater-ledger" "$updater_stuck_after_seconds" "${HOSTNAME:-}")"
 mkdir -p "$out_dir"
 

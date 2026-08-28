@@ -1278,9 +1278,10 @@
     if (!u || !u.status || u.status === "rolled") return null;
     var badge = u.status === "stuck"
       ? el("span", {class:"badge b-amber", text:"updater stuck",
-          title: "watchtower allowed this container to roll " + fmtAgo(u.at) + " and it is still the " +
-                 "one running — the retry repeats the operation that collided, so this will not clear " +
-                 "on its own (agent-ops#603); investigate on that node's host"})
+          title: "the pre-update hook has been allowing this container's roll since " + fmtAgo(u.at) +
+                 ", every poll, and it is still the one running — the retry repeats the operation " +
+                 "that collided, so this will not clear on its own (agent-ops#603); investigate on " +
+                 "that node's host"})
       : el("span", {class:"badge b-grey", text:"updater deferring",
           title: "the pre-update hook has been deferring this container's roll since " + fmtAgo(u.at) +
                  " — an implementation cycle or review is in flight; it clears once that ends"});

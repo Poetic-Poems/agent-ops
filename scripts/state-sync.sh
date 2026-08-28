@@ -113,8 +113,12 @@ streams_retained="${STATE_SYNC_STREAMS_RETAINED:-$(cfg '.state_local_streams_ret
 # Minutes → seconds: lib/updater-health.sh's own contract takes a threshold
 # in seconds, never a config key of its own (agent-ops#603, following
 # image_behind_grace_hours' shape — the judgement lives one layer up from
-# the library, not baked into it).
-updater_stuck_after_seconds="$(( $(cfg '.updater_stuck_after_minutes') * 60 ))"
+# the library, not baked into it). Converted in jq rather than `$(( ))`
+# because the schema types the key `number`, so a node may legitimately
+# configure `7.5` — which bash arithmetic cannot evaluate at all, and this
+# script runs under `set -e`, so the node would stop publishing a heartbeat
+# entirely over a legal config value.
+updater_stuck_after_seconds="$(cfg '.updater_stuck_after_minutes * 60 | floor')"
 
 node_name="${NODE_NAME:-$(hostname)}"
 node_name="${node_name//[^A-Za-z0-9._-]/-}"
