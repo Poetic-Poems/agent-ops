@@ -1192,21 +1192,22 @@ run_landing_stage() {
 # lib/merge-autonomy.sh — reached only once gate 1 has already confirmed the
 # kill switch is clear and no budget freeze binds, so no fresher read is
 # needed), the protected-path verdict and the protected paths it hit
-# (`landing_protected_paths_hit`, read fresh once more here — the same "never
-# more than one function call old" discipline gate 4.5's own `landing_
-# protected_path_controls_ok` already applies to the same primitive, rather
-# than trust gate 2's now-discarded read), the Approver's
+# (`landing_protected_paths_hit`, read fresh once more here — the same
+# "never more than one function call old" discipline gate 4.5's own
+# `landing_protected_path_controls_ok` already applies to the same
+# primitive, rather than trust gate 2's now-discarded read), the Approver's
 # tier/model/verdict/adjudication and this pull request's full adjudication
 # history (`landing_approver_adjudication_history`, lib/landing.sh — the
 # fleet log's own record of every `approver-verdict` event this pull request
 # ever received, not only the one that authorised this landing), every
-# deterministic gate this function itself just passed with its own evidence —
-# including the human-veto gate's own `blocking_reviewers` list
+# deterministic gate this function itself just passed with its own
+# evidence — including the human-veto gate's own `blocking_reviewers` list
 # (`_handoff_blocking_reviewers`'s return at gate 4, empty on every arm),
-# carried the same way protected-path-controls carries the paths it
-# examined — the `merge_budget_decide` object gate 5 already computed and
-# would otherwise discard the moment `decision == "arm"` was confirmed, and
-# the landing mechanism `landing_arm` actually used. `scripts/publish-dashboard.sh`'s
+# carried beside that gate's verdict the same way the top-level
+# `protected_path` object already names the paths it examined — the
+# `merge_budget_decide` object gate 5 already computed and would otherwise
+# discard the moment `decision == "arm"` was confirmed, and the landing
+# mechanism `landing_arm` actually used. `scripts/publish-dashboard.sh`'s
 # WI-8 digest reads this record instead of re-joining `approver-verdict`
 # events against `landing-armed`, and reports a `landing-armed` with no
 # matching record as an anomaly in its own right.
