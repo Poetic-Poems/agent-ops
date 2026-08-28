@@ -33,7 +33,7 @@ Establish the basics before reading any code:
 
 1. **Locate the project.** In Claude Code or Cowork this is normally the working directory or a path the user gives. In the Claude.ai chat it is usually an uploaded archive or folder under `/mnt/user-data/uploads/` — copy it to the working directory before analysis.
 2. **Confirm scope if ambiguous.** If the repository contains multiple projects (a monorepo), or the user's request suggests a narrower focus, ask once, briefly. Otherwise proceed — the skill is manually invoked, so the user has already asked for a full review.
-3. **Check for an existing tech-debt register.** Look for `TECH-DEBT.md`, `TECH_DEBT.md`, `TECHDEBT.md`, `DEBT.md`, or similar (case-insensitive, also under `docs/`), and for a `tech-debt/` directory. A `tech-debt/` directory, or a root `TECH-DEBT.md` that declares `scope:` in its YAML frontmatter, means the project tracks tech debt in the **per-item format** (one file per item under `tech-debt/`, the root file holding only policy); an existing `TECH-DEBT.md` without either signal is the **legacy** single-file format. Either way, if a register exists it will be **updated in place, in its own format,** in Step 4 — do not create a competing file or migrate it to the other format.
+3. **Check for an existing tech-debt register.** Look for `TECH-DEBT.md`, `TECH_DEBT.md`, `TECHDEBT.md`, `DEBT.md`, or similar (case-insensitive, also under `docs/`), and for a `tech-debt/` directory. A `tech-debt/` directory, or a root `TECH-DEBT.md` that declares `scope:` in its YAML frontmatter, means the project tracks tech debt in the **per-item format** (one file per item under `tech-debt/`, the root file holding only policy); an existing `TECH-DEBT.md` without either signal is the **legacy** single-file format. A register found here is history, not a filing destination: in Step 4, **new** debt this review surfaces is always filed as a GitHub issue instead (never a competing register file, and never one invented where none exists), while an existing register item the review finds already resolved is still **updated in place, in its own format** — do not migrate it to the other format.
 4. **Decide the output location.** Default: a new folder `reviews/project-review-YYYY-MM-DD/` under the project root (today's date) — a dated subdirectory of `reviews/`, created if it does not yet exist. If a folder of that name already exists and holds a *completed* review, append `-2`, `-3`, etc. In the Claude.ai chat, where the real repository is not writable, create the folder under `/mnt/user-data/outputs/reviews/` instead and present it to the user at the end.
 5. **Create the folder and the initial `review-state.json`** as described in `references/resumability.md`. From this point on, follow that reference's checkpoint discipline: persist work to `worknotes/` the moment each unit of work finishes, and keep the state file current, so that a fresh session could resume with at most one dimension's work lost.
 
@@ -87,7 +87,27 @@ Read `references/output-templates.md` and produce the following, in the output f
 
 Supplementary documents are welcome when a dimension has enough material to warrant its own annex (for example `05-security-annex.md`); link any such document from the index.
 
-**Tech debt.** Update the existing register **in place, in its own format** (mark items the review found to be resolved, rather than deleting them): for a **per-item** register, add a `tech-debt/<id>.md` file per newly filed item and, for any item found resolved, flip its frontmatter only (`status: resolved`, `resolved:`, `ref:`) — never its body, never delete or rename the file; for a **legacy** register, edit `TECH-DEBT.md` directly, preserving its established format and any items already recorded. If no register exists in either format, create one in the per-item format given in the templates reference. In the Claude.ai chat, where the repository is not directly writable, emit the updated `TECH-DEBT.md` (and any new `tech-debt/*.md` files) alongside the review folder and tell the user where they belong.
+**Tech debt.** File every new item this review surfaces as a GitHub issue,
+labelled `pw::type:tech-debt`, in the project under review — never as a
+`tech-debt/<id>.md` file, and never by inventing a register where none
+exists. Search first (`gh issue list --label pw::type:tech-debt --search
+"<working title>" --state all`); a close match means the gap is already
+tracked, so cite its number instead of filing a second issue for it. File
+each new item with `gh issue create --label pw::type:tech-debt`, its body
+describing what, why it matters, where, and a suggested fix — the same
+content a register item's body would have carried (template in the
+templates reference) — and, where the finding mirrors a recommendation's
+whole *Intended end state*, naming that recommendation's `R-NN` and the
+review folder in the body. Where an existing register (per-item or legacy)
+still holds an item the review finds already resolved, update it **in
+place, in its own format** — a per-item register's frontmatter flip
+(`status: resolved`, `resolved:`, `ref:`), never its body, never delete or
+rename the file; a legacy register's own status update, in its established
+style — since register entries are history, never a second place new debt
+lands. In the Claude.ai chat, where neither GitHub nor the repository is
+directly writable, list each item that would be filed (title, body, and any
+recommendation it mirrors) in the summary presented to the user instead, and
+tell them where it belongs.
 
 **Language.** Match the spelling conventions of the project's existing documentation where they are evident; otherwise use British English.
 
