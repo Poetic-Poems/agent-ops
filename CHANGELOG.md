@@ -8,6 +8,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- New `project_review.defaults.report_directory` and
+  `project_review.repos[].report_directory` config keys (agent-ops#761): a
+  GNU `date`(1) format string, resolved with `date -u` relative to the
+  repository root, naming where the review pipeline writes its report set and
+  reads past ones from. Absent everywhere, resolution falls back to
+  `reviews/project-review-%Y-%m-%d` — today's layout, unchanged — so an
+  installation configuring neither key is unaffected. `review-cycle.sh`
+  resolves this per repository (requirement 342's rule) and passes it to the
+  Reviewer-Agent as `report_dir`; the skip-guard and the implementation
+  pipeline's `project-review` Refiner source (`gather-project-review.sh`,
+  requirement 3y) discover past instances of an arbitrary format string
+  through the same shared `lib/report-directory.sh`, rather than the
+  fixed-layout listing either used before. `Poetic-Poems/agent-ops`'s own
+  `project_review.repos[]` entry now sets `report_directory` to
+  `docs/reviews/project-review-%Y-%m-%d`, matching where #762 already moved
+  its most recent review — without this, the next scheduled review of this
+  repository would have written back into the pre-#762 location.
 - The BYO API-key model-credential path (D4's primary, agent-ops#684) is now
   documented alongside subscription OAuth (the existing, self-hosted
   alternative) rather than the deployment covering only the latter:

@@ -61,6 +61,11 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/model-id.sh"
 # shellcheck source=lib/config-schema.sh
 . "$SCRIPT_DIR/lib/config-schema.sh"
+# shellcheck source=lib/report-directory.sh
+# REPORT_DIRECTORY_DEFAULT (the review pipeline's own ultimate report_directory
+# fallback, issue #761): lib/eligibility.sh's prefetch_refiner_sources reads it
+# for a repository project_review does not configure at all.
+. "$SCRIPT_DIR/lib/report-directory.sh"
 # shellcheck source=lib/metering.sh
 . "$SCRIPT_DIR/lib/metering.sh"
 # shellcheck source=lib/stage-run.sh

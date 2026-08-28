@@ -94,7 +94,8 @@
       },
       {
         "slug": "Poetic-Poems/agent-ops",
-        "min_days_between_reviews": 6
+        "min_days_between_reviews": 6,
+        "report_directory": "docs/reviews/project-review-%Y-%m-%d"
       }
     ]
   },

@@ -336,7 +336,7 @@ assert_defaults "a nested object's non-defaultable properties are not fabricated
 # above), which is exactly why no per-repo project_review override may declare
 # one: an entry would be materialised carrying the key, so it would always
 # "set" it and project_review.defaults could never apply to that repository
-# again. Exact equality, so adding a `default` to any of the seven overridable
+# again. Exact equality, so adding a `default` to any of the eight overridable
 # keys under `project_review.repos[]` fails here rather than silently in a
 # review a week later.
 assert_defaults "no project_review per-repo override is fabricated into a repos entry" \
@@ -608,9 +608,19 @@ assert_rejected "a misspelt key inside a project_review repo entry is rejected" 
   '.project_review.repos[0].sluggg = "a/b"' \
   'config.project_review.repos[0]: unknown key "sluggg"'
 assert_valid "a project_review repo entry may override any of defaults' own keys" \
-  '.project_review.repos[0] += {model: "claude-opus-5", pr_label: "custom-review", branch_prefix: "custom/", timeout_review: 30, inactivity_review: 5, min_days_between_reviews: 1, not_before: "2026-01-01T00:00:00Z"}'
+  '.project_review.repos[0] += {model: "claude-opus-5", pr_label: "custom-review", branch_prefix: "custom/", timeout_review: 30, inactivity_review: 5, min_days_between_reviews: 1, not_before: "2026-01-01T00:00:00Z", report_directory: "docs/reviews/project-review-%Y-%m-%d"}'
 assert_valid "a project_review repo entry carrying only slug inherits every default" \
   '.project_review.repos = [{slug: "Poetic-Poems/poetic"}]'
+assert_rejected "a non-string report_directory is rejected" \
+  '.project_review.defaults.report_directory = 5' \
+  'config.project_review.defaults.report_directory: expected string, got number'
+assert_rejected "a non-string per-repo report_directory override is rejected" \
+  '.project_review.repos[0].report_directory = 5' \
+  'config.project_review.repos[0].report_directory: expected string, got number'
+assert_valid "report_directory may be dropped from defaults (it is optional, not required)" \
+  '.project_review.defaults.report_directory = "docs/reviews/project-review-%Y-%m-%d" | del(.project_review.defaults.report_directory)'
+assert_valid "report_directory may be dropped from a repo override too" \
+  '.project_review.repos[0].report_directory = "reviews/%Y-%m-%d" | del(.project_review.repos[0].report_directory)'
 assert_rejected "a state_repo that is not owner/name is rejected" \
   '.state_repo = "agent-ops-state"' 'config.state_repo: "agent-ops-state" does not match'
 assert_valid "an empty state_repo is accepted (single-node operation)" \
@@ -664,10 +674,22 @@ assert_project_review "a repo's own override wins over the default, for that key
 assert_project_review "a repo may override every key defaults carries" \
   '.project_review.repos = [{slug: "Poetic-Poems/poetic", model: "claude-opus-5",
      pr_label: "custom-review", branch_prefix: "custom/", min_days_between_reviews: 1,
-     not_before: "2026-01-01T00:00:00Z", timeout_review: 30, inactivity_review: 5}]' \
+     not_before: "2026-01-01T00:00:00Z", report_directory: "docs/reviews/project-review-%Y-%m-%d",
+     timeout_review: 30, inactivity_review: 5}]' \
   '.[0] == {slug: "Poetic-Poems/poetic", model: "claude-opus-5", model_key: "project_review.repos[0].model",
      pr_label: "custom-review", branch_prefix: "custom/", min_days_between_reviews: 1, not_before: "2026-01-01T00:00:00Z",
-     timeout_review: 30, inactivity_review: 5}'
+     report_directory: "docs/reviews/project-review-%Y-%m-%d", timeout_review: 30, inactivity_review: 5}'
+assert_project_review "a per-repo report_directory overrides defaults.report_directory" \
+  '.project_review.defaults.report_directory = "reviews/project-review-%Y-%m-%d" |
+   .project_review.repos = [{slug: "Poetic-Poems/poetic", report_directory: "docs/reviews/project-review-%Y-%m-%d"}]' \
+  '.[0].report_directory == "docs/reviews/project-review-%Y-%m-%d"'
+assert_project_review "a repo with no report_directory override inherits defaults.report_directory" \
+  '.project_review.defaults.report_directory = "reviews/project-review-%Y-%m-%d" |
+   .project_review.repos = [{slug: "Poetic-Poems/poetic"}]' \
+  '.[0].report_directory == "reviews/project-review-%Y-%m-%d"'
+assert_project_review "report_directory absent everywhere resolves to empty, never fabricated" \
+  '.project_review.repos = [{slug: "Poetic-Poems/poetic"}]' \
+  '.[0].report_directory == ""'
 assert_project_review "an explicit null inherits, exactly as an absent key does" \
   '.project_review.defaults = {model: "test-model-1", pr_label: "test-label-1", branch_prefix: "test-prefix/", min_days_between_reviews: 99, not_before: "2025-01-01T00:00:00Z", timeout_review: 60, inactivity_review: 7} |
    .project_review.repos = [{slug: "Poetic-Poems/poetic", model: null, min_days_between_reviews: null}]' \

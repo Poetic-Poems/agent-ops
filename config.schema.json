@@ -1493,6 +1493,15 @@
                 "spec": "Optional. A timestamp before which no review may start (R3.3). Absent or empty means no stand-down; a value `date -d` cannot read stands the pipeline down rather than running through it. Expires by itself, which is why it exists rather than raising `min_days_between_reviews`: a threshold has to be put back by hand, and a cadence left quietly throttled is not noticed for weeks. As `defaults.not_before` it gates the whole cycle before the lock, exactly as a single installation-wide value always has; a repository's own override on `repos[]` is resolved separately, per repository, once the cycle is under way (requirement 3.3).",
                 "value": "*(unset)*"
               }
+            },
+            "report_directory": {
+              "$ref": "#/$defs/reportDirectory",
+              "description": "Optional. The directory the review pipeline writes its report set into and reads past reports from, for a repository that does not override it \u2014 a GNU `date` format string, resolved with `date -u` and interpreted relative to the repository root. Absent, and absent on a repository's own override too, `reviews/project-review-%Y-%m-%d` is used \u2014 today's layout, unchanged.",
+              "x-docs": {
+                "readme": "Optional. Where the review pipeline writes its report set (`README.md`, `01-summary.md`, ...) and reads past ones from \u2014 a GNU `date` format string, resolved with `date -u +\"<format>\"` relative to the repo root, e.g. `docs/reviews/project-review-%Y-%m-%d`. Absent everywhere, `reviews/project-review-%Y-%m-%d` is used, unchanged.",
+                "spec": "Optional. The report directory, as a GNU `date`(1) format string resolved with `date -u +\"<format>\"` relative to the repository root (R4a). Absent, and absent on a repository's own override too, `reviews/project-review-%Y-%m-%d` is used \u2014 today's layout, unchanged; the fallback lives in code, not this default, so a schema-only reader sees it as genuinely unset.",
+                "value": "*(unset)*"
+              }
             }
           }
         },
@@ -1539,6 +1548,10 @@
               "not_before": {
                 "$ref": "#/$defs/notBefore",
                 "description": "Override for `defaults.not_before`, for this repository alone."
+              },
+              "report_directory": {
+                "$ref": "#/$defs/reportDirectory",
+                "description": "Override for `defaults.report_directory`, for this repository alone."
               }
             }
           },
@@ -1668,6 +1681,10 @@
     },
     "notBefore": {
       "description": "An optional timestamp string before which something may not start. Absent or empty means no stand-down; deliberately carries no `default` of its own, so the two sites that `$ref` it choose independently whether to fabricate one.",
+      "type": "string"
+    },
+    "reportDirectory": {
+      "description": "An optional GNU `date`(1) format string naming a report directory, resolved with `date -u +\"<format>\"` and interpreted relative to the repository root. Absent or empty means no override at that site; deliberately carries no `default` of its own, so the two sites that `$ref` it choose independently whether to fabricate one, and the ultimate fallback when neither is set lives in code (review-cycle.sh), not the schema.",
       "type": "string"
     },
     "sourceToken": {
