@@ -6779,9 +6779,14 @@ implements.
     winners' claims, invisible when this cycle gathered, are exactly what
     the chained cycle's fresh gather and requirement 3q's filters see, so
     the continuation is routed to the next-best item instead of the same
-    fight. The `unreachable` and `pre-claimed` stand-downs never chain: a
-    fresh cycle against the same outage, or the same selection defect,
-    buys a second engagement and the same empty-handed ending.
+    fight. The other four causes never chain: an `unreachable` or
+    `pre-claimed` stand-down against a fresh cycle buys a second engagement
+    into the same outage, or the same selection defect, and the same
+    empty-handed ending; an `untraceable` or `fabricated` stand-down (17f,
+    17g) is the Script's own construction-time check refusing to hand a
+    candidate on, which no peer's claim or absence had any part in, so a
+    fresh cycle would spend the same chain budget re-composing the same
+    broken work order rather than routing around anyone.
     Nor does it chain over an untrapped crash or a signal: the gate
     is `chain_eligible` *and* this cycle's own `exit_code == 0`, checked in
     `cleanup` (11) after everything else there has already run — the lock
@@ -7604,14 +7609,19 @@ implements.
       at all because every candidate was skipped as pre-claimed stands down
       with reason "every candidate was already claimed before this cycle's
       Co-Ordinator ran — skipped without an attempt". This `stand-down`
-      event also carries the same three-way distinction structured, as
-      `cause` — `raced`, `unreachable` or `pre-claimed` — so a reader (the
-      dashboard included) does not have to re-parse the reason text (issue
-      #245), plus `claim_skips` whenever any candidate was skipped, whatever
-      the cause. A `raced` stand-down chains another selection cycle under
-      requirement 39's ordinary bounds; `unreachable` and `pre-claimed`
-      never chain — re-running into the same outage or the same selection
-      defect buys a second Co-Ordinator engagement and the same ending.
+      event also carries the same distinction structured, as `cause` —
+      `raced`, `unreachable`, `pre-claimed`, `untraceable` or `fabricated`
+      (requirements 17f and 17g name the last two, with their own reasons
+      and their own counters) — so a reader (the dashboard included) does
+      not have to re-parse the reason text (issue #245), plus `claim_skips`
+      whenever any candidate was skipped, `trace_faults` whenever the
+      traceability check faulted one and `fab_faults` whenever the
+      fabrication check faulted one, whatever the cause. A `raced`
+      stand-down chains another selection cycle under requirement 39's
+      ordinary bounds; `unreachable`, `pre-claimed`, `untraceable` and
+      `fabricated` never chain — re-running into the same outage or the
+      same selection defect buys a second Co-Ordinator engagement and the
+      same ending.
       A win that followed one or more
       `held` losses is a *recovered* race, not an ordinary first-try
       selection: the `selection` event that names the winning candidate
@@ -16743,7 +16753,12 @@ pull request, run the ones the change touches and any it could regress.
    as it was. The claim loop is asserted to attempt the repair before
    skipping, and to count an unrescued fault separately from both the
    pre-claimed skips and the race losses, so a traceability stand-down can
-   never again be reported as `raced`.
+   never again be reported as `raced`. `test/finish-then-continue.test.sh`
+   passes, against the real stand-down block lifted out of `agent-cycle.sh`:
+   a cycle whose every candidate is untraceable stands down with
+   `cause: "untraceable"`, its own `trace_faults` count, and never chains;
+   a genuine race loss alongside one or more untraceable faults still reads
+   `raced` and chains like any other raced stand-down.
    `test/refinement-traceability.test.sh` passes, against
    `refinement_traceability_fault` (and the `_traceability_normalize` helper
    it calls) lifted verbatim from `lib/candidate-select.sh`:
@@ -16795,7 +16810,12 @@ pull request, run the ones the change touches and any it could regress.
    line, is never handed to `refinement_traceability_repair`, and a cycle
    that loses every candidate this way stands down with
    `standdown_cause="fabricated"` — distinct from both `untraceable` and
-   `raced`.
+   `raced`. `test/finish-then-continue.test.sh` passes, against the real
+   stand-down block lifted out of `agent-cycle.sh`: a cycle whose every
+   candidate is fabricated stands down with `cause: "fabricated"`, its own
+   `fab_faults` count, and never chains; a genuine race loss alongside one
+   or more fabricated faults still reads `raced` and chains like any other
+   raced stand-down.
 8. **A no-op Implementer is recorded.** Drive one cycle in which the
    Implementer reports `blocked` without opening a PR: the cycle must exit 0
    having logged an `attempt-failed` carrying that item and the stage's own

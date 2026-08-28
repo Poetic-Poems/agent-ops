@@ -230,7 +230,9 @@ assert_eq "the chained cycle inherits no ignored signals — it can still be TER
 # --- The other place chain_eligible is set: the contention stand-down (17a/39) --
 # A raced stand-down chains — the Co-Ordinator engagement bought "the fleet is
 # busy", and a fresh gather sees the winners' claims — while `unreachable`
-# (same outage again) and `pre-claimed` (same selection defect again) never
+# (same outage again), `pre-claimed` (same selection defect again), and
+# `untraceable`/`fabricated` (the Script's own construction-time checks
+# refusing to hand a candidate on, with no peer involved either way) never
 # do. Lifted verbatim like the cleanup block above, driven with the *real*
 # chain_should_continue from lib/chain.sh so the sources-remain and
 # lineage-room gates are the ones that actually run.
@@ -247,7 +249,8 @@ if [[ "$standdown_block" != *"standdown_cause="* ]]; then
   exit 1
 fi
 
-# run_standdown ATTEMPTS UNREACHABLE SKIPS RACE_LOSSES ONCE CHAIN_COUNT MAX ORDERED
+# run_standdown ATTEMPTS UNREACHABLE SKIPS RACE_LOSSES TRACE_FAULTS FAB_FAULTS \
+#   ONCE CHAIN_COUNT MAX ORDERED
 # Prints the block's own stand-down event line as "EVENT stand-down <payload>
 # chain=<chain_eligible as the block left it>".
 run_standdown() {
@@ -258,7 +261,9 @@ run_standdown() {
     # shellcheck disable=SC2034
     claim_attempts="$1" claim_unreachable="$2" claim_skips="$3" race_losses="$4"
     # shellcheck disable=SC2034
-    ONCE="$5" chain_count="$6" max_chained_cycles="$7" ordered_repos_json="$8"
+    trace_faults="$5" fab_faults="$6"
+    # shellcheck disable=SC2034
+    ONCE="$7" chain_count="$8" max_chained_cycles="$9" ordered_repos_json="${10}"
     chain_eligible=0
     # Called only from inside the eval'd block, which shellcheck cannot see.
     # shellcheck disable=SC2317
@@ -270,38 +275,62 @@ run_standdown() {
 }
 
 sources_remain='[{"slug": "o/r", "sources": ["issues"]}]'
-out="$(run_standdown 2 0 0 2 0 1 3 "$sources_remain")"
+out="$(run_standdown 2 0 0 2 0 0 0 1 3 "$sources_remain")"
 assert_eq "every attempted claim lost to a peer stands down raced" "raced" \
   "$(sed 's/^EVENT stand-down //; s/ chain=.*$//' <<<"$out" | jq -r '.cause')"
 assert_eq "…and a raced stand-down chains while sources remain" "chain=1" "${out##* }"
 assert_eq "…carrying its race losses" "2" \
   "$(sed 's/^EVENT stand-down //; s/ chain=.*$//' <<<"$out" | jq -r '.race_losses')"
 
-out="$(run_standdown 2 0 0 2 0 3 3 "$sources_remain")"
+out="$(run_standdown 2 0 0 2 0 0 0 3 3 "$sources_remain")"
 assert_eq "a raced stand-down at the lineage cap does not chain" "chain=0" "${out##* }"
-out="$(run_standdown 2 0 0 2 1 1 3 "$sources_remain")"
+out="$(run_standdown 2 0 0 2 0 0 1 1 3 "$sources_remain")"
 assert_eq "--once never chains, raced or not" "chain=0" "${out##* }"
-out="$(run_standdown 2 0 0 2 0 1 3 '[]')"
+out="$(run_standdown 2 0 0 2 0 0 0 1 3 '[]')"
 assert_eq "no sources remaining, no chain" "chain=0" "${out##* }"
 
-out="$(run_standdown 2 2 0 0 0 1 3 "$sources_remain")"
+out="$(run_standdown 2 2 0 0 0 0 0 1 3 "$sources_remain")"
 assert_eq "an outage stands down unreachable" "unreachable" \
   "$(sed 's/^EVENT stand-down //; s/ chain=.*$//' <<<"$out" | jq -r '.cause')"
 assert_eq "…and never chains into the same outage" "chain=0" "${out##* }"
 
-out="$(run_standdown 0 0 3 0 0 1 3 "$sources_remain")"
+out="$(run_standdown 0 0 3 0 0 0 0 1 3 "$sources_remain")"
 assert_eq "no attempts at all, every candidate pre-claimed" "pre-claimed" \
   "$(sed 's/^EVENT stand-down //; s/ chain=.*$//' <<<"$out" | jq -r '.cause')"
 assert_eq "…and never chains into the same selection defect" "chain=0" "${out##* }"
 assert_eq "…carrying the skip count" "3" \
   "$(sed 's/^EVENT stand-down //; s/ chain=.*$//' <<<"$out" | jq -r '.claim_skips')"
 
-out="$(run_standdown 1 0 2 1 0 1 3 "$sources_remain")"
+out="$(run_standdown 1 0 2 1 0 0 0 1 3 "$sources_remain")"
 assert_eq "skips beside a genuine loss still read as raced" "raced" \
   "$(sed 's/^EVENT stand-down //; s/ chain=.*$//' <<<"$out" | jq -r '.cause')"
 assert_eq "…with the skip count still carried" "2" \
   "$(sed 's/^EVENT stand-down //; s/ chain=.*$//' <<<"$out" | jq -r '.claim_skips')"
 assert_eq "…and the mixed shape chains like any raced stand-down" "chain=1" "${out##* }"
+
+out="$(run_standdown 0 0 0 0 3 0 0 1 3 "$sources_remain")"
+assert_eq "every candidate untraceable stands down untraceable" "untraceable" \
+  "$(sed 's/^EVENT stand-down //; s/ chain=.*$//' <<<"$out" | jq -r '.cause')"
+assert_eq "…and never chains into the same construction-time fault" "chain=0" "${out##* }"
+assert_eq "…carrying its own fault count" "3" \
+  "$(sed 's/^EVENT stand-down //; s/ chain=.*$//' <<<"$out" | jq -r '.trace_faults')"
+
+out="$(run_standdown 0 0 0 0 0 3 0 1 3 "$sources_remain")"
+assert_eq "every candidate fabricated stands down fabricated" "fabricated" \
+  "$(sed 's/^EVENT stand-down //; s/ chain=.*$//' <<<"$out" | jq -r '.cause')"
+assert_eq "…and never chains into the same construction-time fault" "chain=0" "${out##* }"
+assert_eq "…carrying its own fault count" "3" \
+  "$(sed 's/^EVENT stand-down //; s/ chain=.*$//' <<<"$out" | jq -r '.fab_faults')"
+
+out="$(run_standdown 1 0 0 1 2 0 0 1 3 "$sources_remain")"
+assert_eq "a genuine loss beside untraceable faults still reads raced" "raced" \
+  "$(sed 's/^EVENT stand-down //; s/ chain=.*$//' <<<"$out" | jq -r '.cause')"
+assert_eq "…and chains like any raced stand-down" "chain=1" "${out##* }"
+
+out="$(run_standdown 1 0 0 1 0 2 0 1 3 "$sources_remain")"
+assert_eq "a genuine loss beside fabricated faults still reads raced" "raced" \
+  "$(sed 's/^EVENT stand-down //; s/ chain=.*$//' <<<"$out" | jq -r '.cause')"
+assert_eq "…and chains like any raced stand-down" "chain=1" "${out##* }"
 
 printf '\n'
 if (( failures > 0 )); then
