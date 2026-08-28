@@ -97,6 +97,32 @@ if [[ -z "$assembly_block" || "$assembly_block" != *'Runtime input for this cycl
   exit 1
 fi
 
+# The fit's own exemption-set gate (requirement 34e's fourth refusal and
+# requirement 3x's matching exemption, agent-ops#683) — lifted separately from
+# `fit_block` above because it is its own block in agent-cycle.sh, downstream
+# of "end of requirement 4i's fit". Regression coverage for agent-ops#933: this
+# gate used to read `coordinator_fit_report_json` through a bash default that
+# silently corrupted every non-empty report, so it always read as "fit did not
+# run" and this block's `if` never took its true branch on a real cycle.
+trim_block="$(extract_block '^coordinator_fit_trimmed_json="\[\]"$' "^# --- 3b\\. No-op short-circuit" "$AGENT_CYCLE")"
+if [[ -z "$trim_block" || "$trim_block" != *'coordinator_fit_trimmed_items'* ]]; then
+  echo "FAIL - could not extract the fit-trim exemption block from agent-cycle.sh — has it moved?" >&2
+  exit 1
+fi
+
+# `coordinator_eligible_items`/`coordinator_unassessable_items` (requirement
+# 3x) live in lib/candidate-select.sh, lifted the way test/fit-trim-block-
+# refusal.test.sh already lifts functions from that file, so this test
+# exercises the same 3x accounting a real cycle would.
+eligible_items_fn="$(extract_block '^coordinator_eligible_items\(\) \{' '^\}$' "$SCRIPT_DIR/lib/candidate-select.sh")"
+unassessable_items_fn="$(extract_block '^coordinator_unassessable_items\(\) \{' '^\}$' "$SCRIPT_DIR/lib/candidate-select.sh")"
+if [[ -z "$eligible_items_fn" || -z "$unassessable_items_fn" ]]; then
+  echo "FAIL - could not extract coordinator_eligible_items/coordinator_unassessable_items from lib/candidate-select.sh" >&2
+  exit 1
+fi
+eval "$eligible_items_fn"
+eval "$unassessable_items_fn"
+
 # --- Fixtures -----------------------------------------------------------------
 
 PROMPTS_DIR="$tmp_dir/prompts"
@@ -253,6 +279,56 @@ assert_true "the event carries the human sentence a reader gets off the log" \
 # container.
 assert_true "the event carries the per-band terms breakdown" \
   "$(jq -e '.terms | has("prompt") and has("blocked") and has("refinements") and has("claimed") and has("scaffold")' <<<"$fitted" >/dev/null && echo true || echo false)"
+
+# --- agent-ops#933: the fit's own exemption-set gate reads the real fit
+#     report ---------------------------------------------------------------
+# Same fitted cycle as immediately above (`run_fit` left `ordered_repos_json`
+# and `coordinator_fit_report_json` — both globals, no `local` in `run_fit` —
+# set to a genuinely-trimmed array and a non-empty `{"applied":true,…}`
+# report). Before agent-ops#933's fix, the gate's own
+# `${coordinator_fit_report_json:-{}}` default silently corrupted that report
+# into invalid JSON and its `if` never took the true branch, so
+# `coordinator_fit_trimmed_json` stayed `"[]"` and `coordinator_fit_rung`
+# stayed `0` on every cycle that actually trimmed — exactly the shape this
+# section asserts against.
+eval "$trim_block"
+# shellcheck disable=SC2154  # Assigned by the lifted trim block just eval'd above.
+trimmed_count="$(jq 'length' <<<"$coordinator_fit_trimmed_json" 2>/dev/null || echo 0)"
+assert_ok "a fitted cycle's exemption set is non-empty (got $trimmed_count trimmed)" \
+  "$(( trimmed_count > 0 ))"
+# shellcheck disable=SC2154  # Assigned by the lifted trim block just eval'd above.
+assert_ok "…and the rung it reached is recorded, not left at 0 (got $coordinator_fit_rung)" \
+  "$(( coordinator_fit_rung > 0 ))"
+
+# Requirement 3x: every trimmed-but-eligible candidate is counted as
+# unassessable rather than demanding a needs_refinement/voided account.
+eligible_items_json="$(coordinator_eligible_items "$ordered_repos_json" "$blocked_json")"
+unassessable_json="$(coordinator_unassessable_items "$eligible_items_json" "$coordinator_fit_trimmed_json")"
+unassessable_total="$(jq 'length' <<<"$unassessable_json" 2>/dev/null || echo 0)"
+assert_ok "requirement 3x counts the trimmed candidates as unassessable (got $unassessable_total)" \
+  "$(( unassessable_total > 0 ))"
+: > "$events"
+if (( unassessable_total > 0 )); then
+  log_event "coordinator-input-fit-unassessable" "$(jq -nc \
+    --argjson n "$unassessable_total" --argjson rung "$coordinator_fit_rung" \
+    '{unassessable_total: $n, rung: $rung}')"
+fi
+assert_eq "coordinator-input-fit-unassessable is logged for this fitted cycle" \
+  "1" "$(grep -c '^coordinator-input-fit-unassessable' "$events")"
+
+# Requirement 34e's fourth refusal: a needs_refinement report naming one of
+# this cycle's actually-trimmed items is refused, on the real rung and trimmed
+# set the gate above computed — not a hand-written fixture.
+trimmed_repo="$(jq -r '.[0].repo' <<<"$coordinator_fit_trimmed_json")"
+trimmed_item="$(jq -r '.[0].item' <<<"$coordinator_fit_trimmed_json")"
+entry_933="$(jq -nc --arg r "$trimmed_repo" --arg i "$trimmed_item" \
+  '{repo: $r, item: $i, source: "issues", reason: "cannot tell what done means",
+    missing: "the trimmed body gives no acceptance criteria", evidence: "the elided extract"}')"
+refusal_reason="$(coordinator_fit_trim_refusal_reason "$entry_933" "$coordinator_fit_trimmed_json" "$coordinator_fit_rung")"
+refusal_rc=$?
+assert_eq "a needs_refinement report naming a trimmed item is refused" "1" "$refusal_rc"
+assert_true "…and the refusal names the rung it was trimmed at" \
+  "$([[ "$refusal_reason" == *"rung $coordinator_fit_rung"* ]] && echo true || echo false)"
 
 # --- An untrimmed cycle is silent --------------------------------------------
 run_fit 5000000 "$(mk_repos 3 100 1 100)" >/dev/null
