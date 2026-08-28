@@ -304,7 +304,7 @@ make_stage "$w" "$wcid" enabler 0.03 model-a
 # still has a real transcript, so its cost must still surface, unattributed.
 wcid2="${today_day}T070100Z-72"
 make_stage "$w" "$wcid2" coordinator 0.15 model-b
-make_review "$w" "${today_day}T070200Z-73" "Poetic-Poems/agent-ops" 0.07 model-a
+make_review "$w" "${today_day}T070200Z-73" "Pullwright/agent-ops" 0.07 model-a
 
 run_publish "$w"
 wdata="$(data_of "$w")"
@@ -1380,7 +1380,7 @@ vh="$(new_home nodeV)"
 vpeer="$vh/.cache/poetic-agents/workspaces/.agent-ops-peers/peerV"
 vold="$vh/.cache/poetic-agents/workspaces/.agent-ops-peers/peerOld"
 mkdir -p "$vpeer" "$vold"
-printf '{"node":"peerV","role":"active","ts":"%s","last_cycle":"","version":{"pr":88,"commit":"aa53d62f1b0c4e9a7d2839fbc5104e6a8d7b3f21","short":"aa53d62","built_at":"2026-07-26T11:21:00Z","repo":"Poetic-Poems/agent-ops","source":"image","dirty":false},"compose":{"status":"drifted","diff_lines":3},"image":{"status":"behind","registry_commit":"bb64d73a2c1d","registry_created_at":"2026-07-26T12:00:00Z","checked_at":"2026-07-26T12:05:00Z"},"stage_health":{"computed_at":"2026-07-26T12:00:00Z","threshold":3,"idle_after_hours":48,"stages":{"coordinator":{"verdict":"failing","consecutive_failures":4,"last_success":null,"last_detail":"coordinator exited 1"}}}}\n' \
+printf '{"node":"peerV","role":"active","ts":"%s","last_cycle":"","version":{"pr":88,"commit":"aa53d62f1b0c4e9a7d2839fbc5104e6a8d7b3f21","short":"aa53d62","built_at":"2026-07-26T11:21:00Z","repo":"Pullwright/agent-ops","source":"image","dirty":false},"compose":{"status":"drifted","diff_lines":3},"image":{"status":"behind","registry_commit":"bb64d73a2c1d","registry_created_at":"2026-07-26T12:00:00Z","checked_at":"2026-07-26T12:05:00Z"},"stage_health":{"computed_at":"2026-07-26T12:00:00Z","threshold":3,"idle_after_hours":48,"stages":{"coordinator":{"verdict":"failing","consecutive_failures":4,"last_success":null,"last_detail":"coordinator exited 1"}}}}\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$vpeer/heartbeat.json"
 printf '{"node":"peerOld","role":"standby","ts":"%s","last_cycle":""}\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$vold/heartbeat.json"
@@ -1486,7 +1486,7 @@ case "$1 $2" in
       # Four items say what the panel has to get right — open, in-progress,
       # resolved, and one whose blob will not answer — and four more make the
       # roster too big to read in one tick.
-      "repos/Poetic-Poems/agent-ops/contents/tech-debt")
+      "repos/Pullwright/agent-ops/contents/tech-debt")
         { printf '[{"type":"file","name":"TD-PPagop-26070101.md","sha":"aaaaaaa1"}'
           printf ',{"type":"file","name":"TD-PPagop-26070102.md","sha":"bbbbbbb2"}'
           printf ',{"type":"file","name":"TD-PPagop-26070103.md","sha":"ccccccc3"}'
@@ -1496,7 +1496,7 @@ case "$1 $2" in
           done
           printf ',{"type":"dir","name":"drafts","sha":"eeeeeee5"}]'
         } | gh_jq "$@" ;;
-      "repos/Poetic-Poems/agent-ops/git/blobs/"*)
+      "repos/Pullwright/agent-ops/git/blobs/"*)
         case "${2##*/}" in
           aaaaaaa1) td_title="An open thing";              td_status=open ;;
           bbbbbbb2) td_title="A thing already being worked"; td_status=in-progress ;;
@@ -1540,7 +1540,7 @@ for n in 201 202 203; do
 done
 xpeer="$x/.cache/poetic-agents/workspaces/.agent-ops-peers/peerX"
 mkdir -p "$xpeer"
-printf '{"node":"peerX","role":"active","ts":"%s","last_cycle":"","version":{"pr":88,"commit":"aa53d62f1b0c4e9a7d2839fbc5104e6a8d7b3f21","short":"aa53d62","built_at":"2026-07-26T11:21:00Z","repo":"Poetic-Poems/agent-ops","source":"image","dirty":false}}\n' \
+printf '{"node":"peerX","role":"active","ts":"%s","last_cycle":"","version":{"pr":88,"commit":"aa53d62f1b0c4e9a7d2839fbc5104e6a8d7b3f21","short":"aa53d62","built_at":"2026-07-26T11:21:00Z","repo":"Pullwright/agent-ops","source":"image","dirty":false}}\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$xpeer/heartbeat.json"
 
 run_gh_publish() {  # a full (stubbed) GitHub tick
@@ -1559,14 +1559,14 @@ assert_eq "with the merge commit, abbreviated for reading" "1234567" \
 assert_eq "and its labels, for the card" "autonomous-agent" \
   "$(jq -r '.github.pr_index["Poetic-Poems/poetic#201"].labels[0]' <<<"$xdata")"
 assert_eq "the version a node runs is indexed too, though no open-PR query names it" \
-  "MERGED" "$(jq -r '.github.pr_index["Poetic-Poems/agent-ops#88"].state' <<<"$xdata")"
+  "MERGED" "$(jq -r '.github.pr_index["Pullwright/agent-ops#88"].state' <<<"$xdata")"
 # Asserted by membership, not by count: this node's own version contributes a
 # reference too (whatever pull request the checkout under test last merged), and
 # a count would then be a test of this repository's git history.
 assert_eq "every reference on the page resolves" "true" \
   "$(jq -r '.github.pr_index
             | has("Poetic-Poems/poetic#201") and has("Poetic-Poems/poetic#202")
-              and has("Poetic-Poems/poetic#203") and has("Poetic-Poems/agent-ops#88")' <<<"$xdata")"
+              and has("Poetic-Poems/poetic#203") and has("Pullwright/agent-ops#88")' <<<"$xdata")"
 idx_n="$(jq '.github.pr_index | length' <<<"$xdata")"
 
 # The property that keeps this free: a merged pull request never changes, so a
@@ -1621,7 +1621,7 @@ run_w_publish() {
       DASHBOARD_GH_CMD="$gh_stub" "$PUBLISH" >/dev/null 2>&1
 }
 td_of() {  # td_of <data> <jq-suffix>
-  jq -r '.github.inputs["Poetic-Poems/agent-ops"].tech_debt'"$2" <<<"$1"
+  jq -r '.github.inputs["Pullwright/agent-ops"].tech_debt'"$2" <<<"$1"
 }
 : > "$gh_calls"
 run_w_publish
@@ -1631,7 +1631,7 @@ assert_eq "an item's row carries the title out of its own file" "An open thing" 
 assert_eq "and the status the Co-Ordinator would find" "open" \
   "$(td_of "$wdata" '[] | select(.id == "TD-PPagop-26070101") | .status')"
 assert_eq "and a link to the item file behind it" \
-  "https://github.com/Poetic-Poems/agent-ops/blob/main/tech-debt/TD-PPagop-26070101.md" \
+  "https://github.com/Pullwright/agent-ops/blob/main/tech-debt/TD-PPagop-26070101.md" \
   "$(td_of "$wdata" '[] | select(.id == "TD-PPagop-26070101") | .url')"
 assert_eq "a resolved item is no work source, and is not shown as one" "false" \
   "$(td_of "$wdata" ' | any(.id == "TD-PPagop-26070103")')"
@@ -1686,7 +1686,7 @@ assert_eq "and its findings gathering too" "answered" \
 assert_eq "a repo with no tech-debt register 404s legitimately, not a failure" \
   "answered_404" "$(jq -r '.github.inputs["Poetic-Poems/poetic"].state.tech_debt' <<<"$xdata")"
 assert_eq "the repo whose register does exist reads it as answered" "answered" \
-  "$(jq -r '.github.inputs["Poetic-Poems/agent-ops"].state.tech_debt' <<<"$xdata")"
+  "$(jq -r '.github.inputs["Pullwright/agent-ops"].state.tech_debt' <<<"$xdata")"
 
 # A second stub, parameterised by $GH_STUB_FAIL, answers every source
 # healthily except the one under test, which it fails for a reason that is
@@ -1941,13 +1941,13 @@ assert_eq "it falls back to main instead" \
 z="$(new_home nodeZ)"
 zlog="$z/.local/state/poetic-agents/log.jsonl"
 {
-  printf '{"ts":"2026-07-26T00:00:00Z","event":"attempt-failed","repo":"Poetic-Poems/agent-ops","item":"TD26072610","stage":"coordinator","detail":"a red check on the base branch"}\n'
-  printf '{"ts":"2026-07-26T00:00:00Z","event":"attempt-failed","repo":"Poetic-Poems/agent-ops","item":"TD26072611","stage":"coordinator","detail":"never specified what done means","kind":"needs-refinement","unblock_condition":"a human decision","source":"tech-debt"}\n'
+  printf '{"ts":"2026-07-26T00:00:00Z","event":"attempt-failed","repo":"Pullwright/agent-ops","item":"TD26072610","stage":"coordinator","detail":"a red check on the base branch"}\n'
+  printf '{"ts":"2026-07-26T00:00:00Z","event":"attempt-failed","repo":"Pullwright/agent-ops","item":"TD26072611","stage":"coordinator","detail":"never specified what done means","kind":"needs-refinement","unblock_condition":"a human decision","source":"tech-debt"}\n'
   # A third item, blocked and then voided: `item-void` clears no block, so this
   # is the shape every Enabler `void` verdict leaves behind, and the page must
   # show it under one heading, not two (requirement 34h).
-  printf '{"ts":"2026-07-26T00:00:00Z","event":"attempt-failed","repo":"Poetic-Poems/agent-ops","item":"TD26072612","stage":"implementer","detail":"waiting on an upstream release"}\n'
-  printf '{"ts":"2026-07-27T00:00:00Z","event":"item-void","repo":"Poetic-Poems/agent-ops","item":"TD26072612","detail":"already on main","evidence":"merged in #144"}\n'
+  printf '{"ts":"2026-07-26T00:00:00Z","event":"attempt-failed","repo":"Pullwright/agent-ops","item":"TD26072612","stage":"implementer","detail":"waiting on an upstream release"}\n'
+  printf '{"ts":"2026-07-27T00:00:00Z","event":"item-void","repo":"Pullwright/agent-ops","item":"TD26072612","detail":"already on main","evidence":"merged in #144"}\n'
 } > "$zlog"
 run_publish "$z"
 zdata="$(data_of "$z")"
@@ -2043,7 +2043,7 @@ vlog="$v/.local/state/poetic-agents/log.jsonl"
 vpad="$(printf 'x%.0s' {1..220})"
 i=0
 while (( i < 600 )); do
-  printf '{"ts":"2026-07-26T00:00:00Z","event":"item-void","repo":"Poetic-Poems/agent-ops","item":"TD-BULK-%03d","stage":"coordinator","detail":"%s","evidence":"merged in #1"}\n' \
+  printf '{"ts":"2026-07-26T00:00:00Z","event":"item-void","repo":"Pullwright/agent-ops","item":"TD-BULK-%03d","stage":"coordinator","detail":"%s","evidence":"merged in #1"}\n' \
     "$i" "$vpad" >> "$vlog"
   i=$(( i + 1 ))
 done
@@ -2316,8 +2316,8 @@ printf '%s\n' "$*" >> "$GH_CALL_LOG"
 case "$1 $2" in
   "pr list")
     case "$4" in
-      "Poetic-Poems/agent-ops")
-        printf '[{"number":300,"title":"land it via the queue","url":"https://github.com/Poetic-Poems/agent-ops/pull/300","state":"OPEN","isDraft":false,"createdAt":"2026-08-14T00:00:00Z","mergedAt":null,"closedAt":null,"mergeCommit":null,"author":{"login":"agent-ops-bot"},"labels":[{"name":"autonomous-agent"}],"reviewDecision":"APPROVED","baseRefName":"main","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefName":"agent/300","statusCheckRollup":[]},{"number":301,"title":"still a draft","url":"https://github.com/Poetic-Poems/agent-ops/pull/301","state":"OPEN","isDraft":true,"createdAt":"2026-08-14T00:00:00Z","mergedAt":null,"closedAt":null,"mergeCommit":null,"author":{"login":"agent-ops-bot"},"labels":[{"name":"autonomous-agent"}],"reviewDecision":"","baseRefName":"main","mergeable":"","mergeStateStatus":"","headRefName":"agent/301","statusCheckRollup":[]}]'
+      "Pullwright/agent-ops")
+        printf '[{"number":300,"title":"land it via the queue","url":"https://github.com/Pullwright/agent-ops/pull/300","state":"OPEN","isDraft":false,"createdAt":"2026-08-14T00:00:00Z","mergedAt":null,"closedAt":null,"mergeCommit":null,"author":{"login":"agent-ops-bot"},"labels":[{"name":"autonomous-agent"}],"reviewDecision":"APPROVED","baseRefName":"main","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefName":"agent/300","statusCheckRollup":[]},{"number":301,"title":"still a draft","url":"https://github.com/Pullwright/agent-ops/pull/301","state":"OPEN","isDraft":true,"createdAt":"2026-08-14T00:00:00Z","mergedAt":null,"closedAt":null,"mergeCommit":null,"author":{"login":"agent-ops-bot"},"labels":[{"name":"autonomous-agent"}],"reviewDecision":"","baseRefName":"main","mergeable":"","mergeStateStatus":"","headRefName":"agent/301","statusCheckRollup":[]}]'
         ;;
       *) printf '[]' ;;
     esac ;;
@@ -2424,8 +2424,8 @@ printf '%s\n' "$*" >> "$GH_CALL_LOG"
 case "$1 $2" in
   "pr list")
     case "$4" in
-      "Poetic-Poems/agent-ops")
-        printf '[{"number":400,"title":"an ordinary open pull request","url":"https://github.com/Poetic-Poems/agent-ops/pull/400","state":"OPEN","isDraft":false,"createdAt":"2026-08-14T00:00:00Z","mergedAt":null,"closedAt":null,"mergeCommit":null,"author":{"login":"agent-ops-bot"},"labels":[{"name":"autonomous-agent"}],"reviewDecision":"","baseRefName":"main","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefName":"agent/400","statusCheckRollup":[]}]'
+      "Pullwright/agent-ops")
+        printf '[{"number":400,"title":"an ordinary open pull request","url":"https://github.com/Pullwright/agent-ops/pull/400","state":"OPEN","isDraft":false,"createdAt":"2026-08-14T00:00:00Z","mergedAt":null,"closedAt":null,"mergeCommit":null,"author":{"login":"agent-ops-bot"},"labels":[{"name":"autonomous-agent"}],"reviewDecision":"","baseRefName":"main","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefName":"agent/400","statusCheckRollup":[]}]'
         ;;
       *) printf '[]' ;;
     esac ;;
@@ -2597,15 +2597,15 @@ assert_eq "  ... carrying as_of even well outside the window" \
 # the newest row per repository across every node, and joined against
 # config.repos so a repository with no publish yet still gets a bare
 # `{repo}` row rather than vanishing. This repo's own config.json names
-# Poetic-Poems/poetic, Poetic-Poems/poetic-fiddle and Poetic-Poems/agent-ops
+# Poetic-Poems/poetic, Poetic-Poems/poetic-fiddle and Pullwright/agent-ops
 # — the same three real repositories --no-github already lets this whole
 # suite run against.
 rr="$(new_home nodeRevertRate)"
 rr_old="$(date -u -d '-2 days' +%Y-%m-%dT%H:%M:%SZ)"
 rr_new="$(date -u -d '-1 hours' +%Y-%m-%dT%H:%M:%SZ)"
 {
-  printf '{"ts":"%s","node":"node-a","event":"revert-rate","repo":"Poetic-Poems/agent-ops","window_days":14,"rolling":{"n":5,"reverts":1,"follow_up_fixes":0,"rate":null,"insufficient_samples":true,"min_samples":10},"cumulative":{"n":10,"reverts":1,"follow_up_fixes":0,"rate":0.1},"baseline":{"n":120,"reverts":0,"follow_up_fixes":106,"rate":0.883},"above_baseline":false}\n' "$rr_old"
-  printf '{"ts":"%s","node":"node-b","event":"revert-rate","repo":"Poetic-Poems/agent-ops","window_days":14,"rolling":{"n":12,"reverts":0,"follow_up_fixes":3,"rate":0.25,"insufficient_samples":false,"min_samples":10},"cumulative":{"n":40,"reverts":0,"follow_up_fixes":15,"rate":0.375},"baseline":{"n":120,"reverts":0,"follow_up_fixes":106,"rate":0.883},"above_baseline":false}\n' "$rr_new"
+  printf '{"ts":"%s","node":"node-a","event":"revert-rate","repo":"Pullwright/agent-ops","window_days":14,"rolling":{"n":5,"reverts":1,"follow_up_fixes":0,"rate":null,"insufficient_samples":true,"min_samples":10},"cumulative":{"n":10,"reverts":1,"follow_up_fixes":0,"rate":0.1},"baseline":{"n":120,"reverts":0,"follow_up_fixes":106,"rate":0.883},"above_baseline":false}\n' "$rr_old"
+  printf '{"ts":"%s","node":"node-b","event":"revert-rate","repo":"Pullwright/agent-ops","window_days":14,"rolling":{"n":12,"reverts":0,"follow_up_fixes":3,"rate":0.25,"insufficient_samples":false,"min_samples":10},"cumulative":{"n":40,"reverts":0,"follow_up_fixes":15,"rate":0.375},"baseline":{"n":120,"reverts":0,"follow_up_fixes":106,"rate":0.883},"above_baseline":false}\n' "$rr_new"
 } > "$rr/.local/state/poetic-agents/revert-rate.jsonl"
 
 run_publish "$rr"
@@ -2614,11 +2614,11 @@ rr_row() { jq -c --arg r "$1" '.revert_rate[] | select(.repo == $r)' <<<"$rrdata
 
 assert_eq "one row per configured repository" "3" "$(jq '.revert_rate | length' <<<"$rrdata")"
 assert_eq "the newest row per repository wins, across nodes, by its own ts" \
-  "node-b" "$(rr_row "Poetic-Poems/agent-ops" | jq -r '.node')"
+  "node-b" "$(rr_row "Pullwright/agent-ops" | jq -r '.node')"
 assert_eq "  ... carrying that row's own rolling n" \
-  "12" "$(rr_row "Poetic-Poems/agent-ops" | jq -r '.rolling.n')"
+  "12" "$(rr_row "Pullwright/agent-ops" | jq -r '.rolling.n')"
 assert_eq "  ... not the older row's" \
-  "5" "$(jq -r --arg r "Poetic-Poems/agent-ops" 'select(.repo == $r and .node == "node-a") | .rolling.n' "$rr/.local/state/poetic-agents/revert-rate.jsonl")"
+  "5" "$(jq -r --arg r "Pullwright/agent-ops" 'select(.repo == $r and .node == "node-a") | .rolling.n' "$rr/.local/state/poetic-agents/revert-rate.jsonl")"
 assert_eq "a repository with no revert-rate row yet still appears" \
   "1" "$(jq -c '[.revert_rate[] | select(.repo == "Poetic-Poems/poetic")] | length' <<<"$rrdata")"
 assert_eq "  ... with nothing but its own slug" \
