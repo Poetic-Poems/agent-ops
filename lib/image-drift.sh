@@ -13,7 +13,7 @@
 # which is the one party that always knows what "newest" actually means,
 # because CI publishes there and nowhere else.
 #
-# A node updates by watchtower pulling `ghcr.io/poetic-poems/agent-ops:latest`
+# A node updates by watchtower pulling `ghcr.io/pullwright/agent-ops:latest`
 # (deploy/docker/compose.yaml), never by `git pull`, so the registry's `latest`
 # tag — not `origin/main` — is the correct baseline. They are not the same
 # thing: a documentation-only merge builds and publishes no image at all

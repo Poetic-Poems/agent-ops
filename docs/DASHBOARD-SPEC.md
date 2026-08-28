@@ -1652,7 +1652,7 @@ number's twins elsewhere on the page.
   (`build-info.json`) if there is one, else git `HEAD`, else nothing. Shared
   with `scripts/state-sync.sh`, which publishes the answer in every heartbeat.
 - `lib/image-drift.sh` — whether that code is the registry's newest published
-  commit (#155): `image_drift_status` reads `ghcr.io/poetic-poems/agent-ops
+  commit (#155): `image_drift_status` reads `ghcr.io/pullwright/agent-ops
   :latest`'s `org.opencontainers.image.revision`/`.created` labels anonymously
   over the OCI Distribution API and compares against `lib/version.sh`'s
   answer. Backed by a cache file (`<state_dir>/.image-drift-cache.json`,
@@ -2552,7 +2552,7 @@ number's twins elsewhere on the page.
   every node adopts the same broken image at once, as happened across
   #149/#154: four nodes, four identical commits, four green cards. The image
   badge (`lib/image-drift.sh`, via the heartbeat) instead compares each
-  node's own commit against `ghcr.io/poetic-poems/agent-ops:latest`'s own
+  node's own commit against `ghcr.io/pullwright/agent-ops:latest`'s own
   `org.opencontainers.image.revision` label — read anonymously over the
   registry's API, never `origin/main`, since a documentation-only merge
   publishes no image at all and would otherwise read as false staleness (see

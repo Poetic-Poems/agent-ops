@@ -11,7 +11,7 @@
       "implementation_plan_path": "docs/IMPLEMENTATION-PLAN.md"
     },
     {
-      "slug": "Poetic-Poems/agent-ops",
+      "slug": "Pullwright/agent-ops",
       "merge_autonomy": "agent-merges-routine",
       "merge_autonomy_routine_sources": ["register-hygiene", "tech-debt", "issues"],
       "merge_budget_per_day": 24,
@@ -47,7 +47,7 @@
   "enabler_escalation_label": "enabler-escalation",
   "escalation_autonomy": "adjudicate-first",
   "crash_loop_after": 4,
-  "crash_loop_repo": "Poetic-Poems/agent-ops",
+  "crash_loop_repo": "Pullwright/agent-ops",
   "unvoid_label": "unvoided",
   "needs_refinement_label": "needs-refinement",
   "refinement_max_per_engagement": 3,
@@ -87,7 +87,7 @@
         "not_before": "2026-09-15T12:00:00Z"
       },
       {
-        "slug": "Poetic-Poems/agent-ops",
+        "slug": "Pullwright/agent-ops",
         "min_days_between_reviews": 6,
         "report_directory": "docs/reviews/project-review-%Y-%m-%d"
       }
@@ -99,7 +99,7 @@
     "repos": [
       {"slug": "Poetic-Poems/poetic", "count": 84, "reverts": 0, "follow_up_fixes": 31},
       {"slug": "Poetic-Poems/poetic-fiddle", "count": 119, "reverts": 0, "follow_up_fixes": 44},
-      {"slug": "Poetic-Poems/agent-ops", "count": 120, "reverts": 0, "follow_up_fixes": 106}
+      {"slug": "Pullwright/agent-ops", "count": 120, "reverts": 0, "follow_up_fixes": 106}
     ]
   }
 }

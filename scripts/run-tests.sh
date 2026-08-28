@@ -46,7 +46,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IMAGE="${AGENT_OPS_TEST_IMAGE:-ghcr.io/poetic-poems/agent-ops:latest}"
+IMAGE="${AGENT_OPS_TEST_IMAGE:-ghcr.io/pullwright/agent-ops:latest}"
 
 usage() {
   sed -n '3,/^# Exit status/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
