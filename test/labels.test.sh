@@ -563,6 +563,21 @@ assert_eq "a pw::-prefixed label the catalogue still names is reconciled, not de
 assert_eq "  ... and one the catalogue no longer names is deleted" \
   "deleted	pw::stale-target" "$(grep 'pw::stale-target' <<<"$out")"
 
+# `pw::type:tech-debt` is the first catalogue entry to sit inside
+# `label_prefix`'s own namespace, so it is the first one MODE `full`'s deletion
+# pass could ever reach. Being catalogued is the whole of what protects it, and
+# it is D24's trust anchor rather than an ordinary label: a target reconcile
+# that deleted it would take the `tech-debt` band's own membership test out of
+# the repository. Asserted against a repository that already carries it, since
+# an absent label is created rather than considered for deletion and so proves
+# nothing about the deletion pass.
+reset_stub $'pw::type:tech-debt\t5319e7\tTech debt: a known gap or shortcut with a knowable fix. Managed by Pullwright.'
+out="$(labels_reconcile_role "$tmp/config.json" "$SCHEMA" "Owner/repo" target)"
+assert_eq "the catalogued pw::type:tech-debt label survives target's own full-mode deletion pass" \
+  "" "$(grep 'pw::type:tech-debt' <<<"$out")"
+assert_eq "  ... and no DELETE is issued for it" "0" \
+  "$(grep -c '^api -X DELETE' "$tmp/log")"
+
 reset_stub $'pw::stale-escalation\t1d76db\tstale'
 out="$(labels_reconcile_role "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation)"
 assert_eq "the escalation role, a partial subset of target's own catalogue, never deletes" \
