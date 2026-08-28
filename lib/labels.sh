@@ -122,9 +122,9 @@ labels_catalogue() {
          entry("blocked:needs-refinement"; "fbca04";
                "Projected alongside `blocked`: too under-specified to work on, say what done looks like (38b)"),
          entry("obsolete"; "cfd3d7";
-               "Apply to a still-open, still-diff-carrying draft pull request the pipeline raised to say it is no longer wanted; no pipeline stage ever applies this"),
+               "Hand-applied to say a still-open, diff-carrying draft PR is unwanted; no pipeline stage applies this"),
          entry("open-question"; "d4c5f9";
-               "Projected by the Reviewer: an open question about the work order or its scope blocks unattended landing until adjudicated or a human acts (D18 #668)"),
+               "Reviewer-projected: an open scope question blocks unattended landing until adjudicated (D18 #668)"),
          entry("complexity:low"; "c2e0c6";
                "Graded by the Implementer; picks the Reviewer tier"),
          entry("complexity:medium"; "fef2c0";
