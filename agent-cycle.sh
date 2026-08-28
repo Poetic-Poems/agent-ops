@@ -1665,6 +1665,18 @@ coordinator_base_prompt="${coordinator_base_prompt//@@WORK_SOURCES_TABLE@@/$coor
 # Initialised ahead of the guard because `set -u` is in force and the second
 # `if` below reads it whichever way the first one went.
 coordinator_fit_allowance=0
+# Same reason, and the same `set -u` constraint, but initialised to a real
+# empty-object value rather than left unset: the exemption-set gate far below
+# (`coordinator_fit_trimmed_json`'s own `if`) has to read this whichever way
+# the fit ran, and a bash parameter-expansion default of a bare pair of braces
+# cannot stand in for that safely — `${parameter:-word}` closes on the *first*
+# unquoted closing brace, so a bare-braces default reads as an open brace with
+# a stray closing brace appended, and on every path where this variable
+# actually was assigned a real fit report, that stray brace corrupted it into
+# invalid JSON the gate silently read as "fit did not run" (agent-ops#933).
+# Initialising here removes the default (and the trap) entirely: every reader
+# below can use the value unconditionally.
+coordinator_fit_report_json='{}'
 
 # The Co-Ordinator's view of `refinements` (requirement 4j/issue #643),
 # computed once, here, and spent unchanged by both the overhead measurement
@@ -1814,7 +1826,7 @@ fi
 # pass for an empty answer on every ordinary cycle.
 coordinator_fit_trimmed_json="[]"
 coordinator_fit_rung=0
-if jq -e '.applied == true' <<<"${coordinator_fit_report_json:-{}}" >/dev/null 2>&1; then
+if jq -e '.applied == true' <<<"$coordinator_fit_report_json" >/dev/null 2>&1; then
   coordinator_fit_trimmed_json="$(coordinator_fit_trimmed_items <<<"$ordered_repos_json")"
   coordinator_fit_rung="$(jq -r '.rung // 0' <<<"$coordinator_fit_report_json" 2>/dev/null || echo 0)"
 fi
