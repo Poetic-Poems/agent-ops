@@ -2360,11 +2360,15 @@ if [[ -z "$claimed_json" ]]; then
   # now in a way they were not when this cycle gathered, so the chained
   # cycle's own deterministic filters route it to the next-best item
   # instead of the same fight. The same bounded price (`max_chained_cycles`)
-  # a productive chain pays. The other two causes never chain: against an
+  # a productive chain pays. The other four causes never chain: against an
   # `unreachable` GitHub a fresh cycle buys a second Co-Ordinator engagement
-  # and the same empty-handed ending, and after a `pre-claimed` stand-down —
-  # a selection defect, not contention — an identical re-run is more likely
-  # to repeat the defect than to route around it.
+  # and the same empty-handed ending; after a `pre-claimed` stand-down — a
+  # selection defect, not contention — an identical re-run is more likely to
+  # repeat the defect than to route around it; and an `untraceable` or
+  # `fabricated` stand-down is the Script's own construction-time check
+  # refusing to hand a candidate on — no peer's claim or absence explains
+  # either fault, so a fresh cycle would spend its chain budget re-composing
+  # the same broken work order rather than routing around a peer.
   if [[ "$standdown_cause" == "raced" ]] \
       && ! (( ONCE )) \
       && chain_should_continue "$chain_count" "$max_chained_cycles" "$ordered_repos_json"; then
@@ -2372,8 +2376,11 @@ if [[ -z "$claimed_json" ]]; then
   fi
   log_event "stand-down" "$(jq -nc --argjson n "$n_cand" --arg r "$standdown_reason" --arg c "$standdown_cause" \
     --argjson rl "$race_losses" --argjson sk "$claim_skips" \
+    --argjson tf "$trace_faults" --argjson ff "$fab_faults" \
     '{reason: $r, candidates: $n, cause: $c, race_losses: $rl}
-     + (if $sk > 0 then {claim_skips: $sk} else {} end)')"
+     + (if $sk > 0 then {claim_skips: $sk} else {} end)
+     + (if $tf > 0 then {trace_faults: $tf} else {} end)
+     + (if $ff > 0 then {fab_faults: $ff} else {} end)')"
   exit 0
 fi
 

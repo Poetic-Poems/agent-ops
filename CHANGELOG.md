@@ -889,6 +889,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The stand-down classifier's own documentation now names all five causes
+  it can report — `raced`, `unreachable`, `pre-claimed`, `untraceable` and
+  `fabricated` — rather than describing a "three-way distinction" and
+  reasoning about chaining for only `unreachable`/`pre-claimed`
+  (TD-PPagop-26082313). `agent-cycle.sh`'s own comment above the
+  `chain_eligible` test, and requirement 17a's and requirement 39's
+  accounts in `docs/IMPLEMENTATION-PIPELINE-SPEC.md`, now give
+  `untraceable` and `fabricated` their own reason for never chaining: both
+  are the Script's own construction-time checks refusing to hand a
+  candidate on, with no peer's claim or absence involved either way, so a
+  fresh cycle would spend its chain budget re-composing the same broken
+  work order rather than routing around anyone. The `stand-down` event
+  itself now carries `trace_faults`/`fab_faults`, when non-zero, the same
+  way `claim_skips` already is, so an `untraceable` or `fabricated`
+  stand-down's own fault count is visible without cross-referencing
+  `claim-skipped` lines. No change to which causes chain — only `raced`
+  does, as before.
 - A `human-visibility` violation logged as "could not read the pull
   request's reviews — skipping the idle-nudge check" no longer survives
   forever once the underlying read starts working again (requirement 38e).
