@@ -194,6 +194,12 @@ assert_eq "a *.env.old sibling fails" "1" "$rc"
 assert_contains "naming that file too" "prod.env.old" "$out"
 rm -f "$stack/prod.env.old"
 
+touch "$stack/.env.old"
+run_check
+assert_eq "a bare .env.old sibling fails" "1" "$rc"
+assert_contains "naming the dotted backup too" ".env.old" "$out"
+rm -f "$stack/.env.old"
+
 run_check
 assert_eq "a 0600 .env with no backups passes again" "0" "$rc"
 

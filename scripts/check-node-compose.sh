@@ -105,9 +105,9 @@ else
   info "no .env in $stack_dir — skipping its permission and backup checks"
 fi
 
-shopt -s nullglob
+shopt -s nullglob dotglob
 env_backups=("$stack_dir"/.env.bak* "$stack_dir"/*.env.old)
-shopt -u nullglob
+shopt -u nullglob dotglob
 if (( ${#env_backups[@]} == 0 )); then
   ok "no stale .env backup files beside .env"
 else
