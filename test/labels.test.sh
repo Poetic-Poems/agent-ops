@@ -93,6 +93,14 @@ if [[ "$1" == "api" && "$2" == "-X" && "$3" == "POST" ]]; then
     echo "gh: HTTP 422 already_exists" >&2
     exit 1
   fi
+  # GitHub's real API refuses a description over 100 characters (issue #888)
+  # — enforced here too, so a catalogue entry that regresses past the limit
+  # fails this stub exactly as it would fail for real, rather than the stub
+  # silently accepting whatever it is handed.
+  if (( ${#description} > 100 )); then
+    echo "gh: HTTP 422 Validation Failed (description too long)" >&2
+    exit 1
+  fi
   printf '%s\t%s\t%s\n' "$name" "$colour" "$description" >> "$GH_LABELS"
   exit 0
 fi
@@ -206,6 +214,23 @@ assert_eq "a label switched off by an empty value is not created" \
 config
 incomplete="$(labels_catalogue "$tmp/config.json" "$SCHEMA" target | awk -F'\t' 'NF != 3 || $2 == "" || $3 == "" {print $1}')"
 assert_eq "every catalogue entry carries a colour and a description" "" "$incomplete"
+
+# GitHub's label API caps `description` at 100 characters; a longer value is
+# refused outright, so a catalogue entry over the limit can never be created
+# in any repository, by any node, ever (issue #888 — `obsolete` and
+# `open-question` were both 148 characters and could never be created at
+# all). Read straight from labels_catalogue's own output, for every role, so
+# a future entry that regresses past the limit fails here regardless of
+# which label it is.
+config
+for role in target review escalation; do
+  review_label=""
+  [[ "$role" == "review" ]] && review_label="project-review"
+  too_long="$(labels_catalogue "$tmp/config.json" "$SCHEMA" "$role" "$review_label" \
+    | awk -F'\t' 'length($3) > 100 {print $1 "=" length($3) " chars"}')"
+  assert_eq "every $role-role description is at most 100 characters (GitHub's own limit)" \
+    "" "$too_long"
+done
 
 # --- Ensuring: create what is absent, touch nothing else. ---
 config

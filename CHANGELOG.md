@@ -841,6 +841,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   refuse streak whose earlier rounds ran on a peer node left those refusals
   out of a first-approval round's own history. It now reads the
   deduplicated union of both on either round.
+- `labels_catalogue`'s (`lib/labels.sh`) `obsolete` and `open-question`
+  entries carried 148-character descriptions against GitHub's 100-character
+  limit on a label's `description` field (issue #888), so the create call
+  was refused outright and `labels_ensure` reported `failed` for both, on
+  every cycle, in every repository, indefinitely — neither label could ever
+  be created by the pipeline. Both descriptions are now within the limit;
+  `test/labels.test.sh` asserts every role's catalogue descriptions stay
+  under it, reading `labels_catalogue`'s own output rather than a fixture
+  list, so a future entry that regresses past the limit is caught the same
+  way.
 - The Autonomous landings panel's refusal-reason grouping no longer garbles
   a whole family of `landing-refused` reasons into one-off groups keyed on a
   fragment of a pull request URL (TD-PPagop-26082502). The panel groups by
