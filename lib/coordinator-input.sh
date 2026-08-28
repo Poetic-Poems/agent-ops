@@ -171,7 +171,7 @@ def issue_rank: {Urgent: 4, High: 3, Medium: 2, Low: 1}[(.priority // "Medium") 
 # order rather than two sorts relying on jq's tie-breaking: highest band first,
 # and freshest thread first within a band.
 def keep_order_issues: sort_by([issue_rank, ((.updated_at // "") | tostring)]) | reverse;
-def keep_order_tech_debt: sort_by((.filed // "") | tostring);
+def keep_order_tech_debt: sort_by(.number // 0);
 
 # Reordering and capping are one step, applied only when there is a cap to
 # apply: with no entries to drop the order the gatherer produced is the order

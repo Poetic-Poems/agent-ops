@@ -1878,19 +1878,21 @@ gather_issues_excluded() {
   fi
 }
 
-# Pre-fetch the repo's open tech-debt register items (requirement 3t, issue
-# #310) — the same move issues, findings, review-feedback, merge-conflicts,
-# abandoned-drafts and register-hygiene already got: a source the model could
-# silently misdescribe or decline to re-derive becomes an input instead of an
-# errand. Claimed-item exclusion is applied by the caller via
-# exclude_claimed_items, like every other pre-fetched array; blocked/void
-# exclusion is applied by a second pass once blocked_json/void_json exist (see
-# "3c/3u. Pre-fetched-band eligibility" below) — this function only ever
-# returns the raw open set.
+# Pre-fetch the repo's open `pw::type:tech-debt`-labelled issues (requirement
+# 3t, issue #310; D15 as revised, #869/#875) — the same move issues, findings,
+# review-feedback, merge-conflicts, abandoned-drafts and register-hygiene
+# already got: a source the model could silently misdescribe or decline to
+# re-derive becomes an input instead of an errand. Claimed-item exclusion is
+# applied by the caller via exclude_claimed_items, like every other
+# pre-fetched array; blocked/void exclusion is applied by a second pass once
+# blocked_json/void_json exist (see "3c/3u. Pre-fetched-band eligibility"
+# below) — this function only ever returns the raw candidate set. No
+# `default_branch` argument: unlike the register-backed gatherer this
+# replaced, an issue is not read off a branch.
 gather_tech_debt() {
-  local slug="$1" branch="$2" out safe
+  local slug="$1" out safe
   safe="${slug//\//_}"
-  out="$("$SCRIPT_DIR/scripts/gather-tech-debt.sh" "$slug" "$branch" \
+  out="$("$SCRIPT_DIR/scripts/gather-tech-debt.sh" "$slug" \
         2>"$cycle_dir/tech-debt-$safe.err" || true)"
   if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
     printf '%s\n' "$out" > "$cycle_dir/tech-debt-$safe.json"

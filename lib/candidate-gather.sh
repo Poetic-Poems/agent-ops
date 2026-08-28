@@ -347,7 +347,7 @@ while IFS=$'\t' read -r _ slug default_branch; do
   fi
   tech_debt="[]"
   if jq -e 'any(.[]; . == "tech-debt")' <<<"$sources" >/dev/null 2>&1; then
-    tech_debt_raw="$(gather_tech_debt "$slug" "$default_branch")"
+    tech_debt_raw="$(gather_tech_debt "$slug")"
     emit_first_seen "$slug" tech-debt "$tech_debt_raw"
     tech_debt="$(exclude_claimed_items "$tech_debt_raw" "$claimed_item_refs_json")"
   fi

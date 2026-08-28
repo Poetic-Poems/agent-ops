@@ -150,7 +150,12 @@ cat >"$STUB_ISSUES" <<'EOF'
    "user": {"login": "warwick"}, "labels": [], "assignees": [],
    "created_at": "2026-07-19T08:00:00Z", "updated_at": "2026-07-20T09:00:00Z",
    "body": "A malformed Priority field value with single_select_option explicitly null.",
-   "issue_field_values": [{"issue_field_name": "Priority", "single_select_option": null}]}
+   "issue_field_values": [{"issue_field_name": "Priority", "single_select_option": null}]},
+  {"number": 14, "html_url": "https://github.com/o/r/issues/14", "title": "Debt mislabelled into this band",
+   "user": {"login": "warwick"}, "labels": [{"name": "pw::type:tech-debt"}], "assignees": [],
+   "created_at": "2026-07-19T08:00:00Z", "updated_at": "2026-07-20T09:00:00Z",
+   "body": "This belongs to the tech-debt band instead (issue #875).",
+   "issue_field_values": [{"issue_field_name": "Priority", "single_select_option": {"name": "High"}}]}
 ]
 EOF
 cat >"$STUB_COMMENTS_DIR/5.json" <<'EOF'
@@ -173,6 +178,10 @@ assert_eq "the Blocked-labelled issue is dropped, case notwithstanding" \
   "false" "$(jq 'any(.[]; .number == 7)' <<<"$candidates_json")"
 assert_eq "the pull request is dropped" \
   "false" "$(jq 'any(.[]; .number == 8)' <<<"$candidates_json")"
+assert_eq "a pw::type:tech-debt-labelled issue is dropped (issue #875)" \
+  "false" "$(jq 'any(.[]; .number == 14)' <<<"$candidates_json")"
+assert_eq "  ... and never reported as excluded either — it belongs to the other band" \
+  "false" "$(jq 'any(.[]; .number == 14)' <<<"$excluded_json")"
 
 # --- The exclusion report: what was dropped, and why (agent-ops#447) ---
 assert_eq "exactly the two deterministic drops are reported" \

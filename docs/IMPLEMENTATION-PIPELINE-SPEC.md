@@ -3874,6 +3874,12 @@ implements.
      blocked issue carrying fresh evidence stays, because requirement 18a's
      mandatory re-check needs the thread and `updated_at` in front of the
      Co-Ordinator to decide whether that evidence unblocks it.
+   - **A `pw::type:tech-debt`-labelled issue is dropped too, unreported** (D15
+     as revised, #869; issue #875), on the same terms as the pull requests the
+     issues endpoint interleaves: it belongs to the `tech-debt` band instead
+     (requirement 3t), so it was never an `issues` candidate to begin with,
+     and keeping the two bands disjoint is not a deterministic-filter drop
+     `issues_excluded` needs to explain.
    - **The deterministic drop is reported, not lost** (agent-ops#447). Before
      this, the three drops above left nothing behind anywhere — no line on
      stdout, no line on stderr, no event in the shared log — so an issue an
@@ -4032,17 +4038,34 @@ implements.
    window, and 17a's pre-claim skip is the same principle applied on the
    claim side for the derived sources this filter cannot reach.
 3t. **Tech-debt pre-fetch, and deterministic blocked/void exclusion (issue
-   #310).** For each configured repo whose `sources` include `tech-debt`, run
-   `scripts/gather-tech-debt.sh <slug> <default-branch>` and attach the array
-   to that repo's entry as `tech_debt`. Each entry is one candidate: every
-   `status: open` row in the repo's tech-debt register, `source: "tech-debt"`,
-   the item's own id as `ref` (and as `id`), `title`, `filed`, `url`, and the
-   whole item file — frontmatter and body — verbatim as `body`. Sorted by id
+   #310; the store moved from the in-repo register to labelled issues by D15
+   as revised, #869/#875).** For each configured repo whose `sources` include
+   `tech-debt`, run `scripts/gather-tech-debt.sh <slug>` and attach the array
+   to that repo's entry as `tech_debt`. Each entry is one candidate: an open
+   GitHub issue carrying the product-managed label `pw::type:tech-debt` — the
+   D24 trust anchor, since only a collaborator with triage can apply it, so an
+   issue's membership of this band is trustable even though its body stays
+   framed as untrusted data — that has also survived the same deterministic
+   filter requirement 3j applies to the `issues` band: not assigned, not
+   labelled `blocked`, and naming no still-open `Blocked-by:` reference
+   (requirement 34j), shared between the two gatherers via
+   `lib/issue-prefetch.sh` rather than re-derived. `source: "tech-debt"`, the
+   bare issue number as `ref` (and as `number`), `title`, `url`, `labels`,
+   `author`, `created_at`, `updated_at`, and the whole issue thread — body and
+   every comment, verbatim — as `body`/`comments`. Sorted by issue number
    ascending. Degrades to `[]` (exit 0) on any failure, like requirements 3a
    and 3j: this array is *given to* the Co-Ordinator, so an empty array
    faithfully records what it saw, and the repo's `head_sha` (already in the
    no-op fingerprint, requirement 3b) still busts the fingerprint when a real
-   commit changes the register out from under a transient failure.
+   commit changes the candidate set out from under a transient failure.
+
+   **Transition note, accepted deliberately (issue #875).** Between this
+   gatherer landing and a repo's own register migration (#880 and its
+   siblings in the other target repos), that repo's unmigrated register items
+   are invisible to this band: `scripts/gather-tech-debt.sh` never reads a
+   register file, only the label. A repo with no `pw::type:tech-debt` issues
+   yet contributes `[]`, indistinguishable from one with no open debt at all
+   — debt is a low-urgency band, and the gap closes as each repo migrates.
 
    Claimed-item exclusion is applied the same way as for every other
    pre-fetched array (requirement 3q, above) — `exclude_claimed_items` against
@@ -4060,17 +4083,17 @@ implements.
    `blocked`/`void` always has been (a blank `repo` on an old, pre-scoping
    event still matches every repo). This is safe to do deterministically in
    full, unlike the `issues` source's blocked exclusion (requirement 3j),
-   because requirement 34i's work-gone reconciliation already clears a
-   tech-debt block whose register row has actually flipped to
-   `resolved`/`not-debt` before `blocked_json` is computed, reading the very
-   same register this array is drawn from: nothing filtered out here is ever
-   a block that needed a second look. `issues` still keeps a live re-check for
+   because a `tech_debt` ref is now a bare issue number, so requirement 34i's
+   work-gone reconciliation clears a stale block the same way it clears one
+   for `issues` — the number is absent from the repo's open-issue digest —
+   and a still-open issue naming an unresolved `Blocked-by:` reference never
+   reaches this array to begin with: nothing filtered out here is ever a
+   block that needed a second look. `issues` still keeps a live re-check for
    a blocked entry carrying fresh evidence — requirement 18a needs the thread
-   itself, which no register re-derives — but every other pre-fetched band,
-   including `issues`' own stale blocks and every band's void entries, gets
-   this identical second pass or the purpose-built variant requirement 3u
-   describes, once `blocked_json`/`void_json` are final at this same point in
-   the cycle.
+   itself — but every other pre-fetched band, including `issues`' own stale
+   blocks and every band's void entries, gets this identical second pass or
+   the purpose-built variant requirement 3u describes, once
+   `blocked_json`/`void_json` are final at this same point in the cycle.
 
    What remains in each repo's `tech_debt` array after both passes is the
    Script's complete, no-per-item-judgement-required answer to
@@ -7068,8 +7091,11 @@ implements.
       *stale* blocked entry; only a blocked issue carrying evidence fresh
       enough to warrant requirement 18a's live re-check ever reaches the
       Co-Ordinator;
-    - a tech-debt item whose status is `in-progress` (its item file's
-      `status:` frontmatter);
+    - a tech-debt item that is assigned, labelled `blocked`, or names an
+      unresolved `Blocked-by:` dependency (requirement 34j) — the same three
+      deterministic drops the `issues` bullet below describes, applied by
+      `scripts/gather-tech-debt.sh` before the runtime input is assembled
+      (requirement 3t);
     - already referenced by any open PR or draft (a claim, per the repos'
       claiming workflow), or its repo+item appears in the pre-fetched
       `claimed` array (requirement 3o) — a peer node's claim, by either shape,
