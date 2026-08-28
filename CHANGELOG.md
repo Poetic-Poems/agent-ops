@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- The product-managed `pw::type:tech-debt` label is now part of the `target`
+  role's catalogue (agent-ops#872), so the pipeline creates it in every
+  repository it gathers data for, at most once per
+  `labels_ensure_interval_hours`, the same create-only, never-fatal way as
+  every other catalogue entry. It is D15's (revised 2026-08-28) store for tech
+  debt filed as a GitHub issue rather than an in-repo register record, and its
+  name is fixed rather than configurable because it is D24's trust anchor:
+  only a collaborator with triage can apply a label, which is what makes an
+  issue's membership of the `tech-debt` work band trustable even though its
+  body stays untrusted data. Nothing selects on it yet — the issue-backed band
+  itself is still to come.
 - New `project_review.defaults.report_directory` and
   `project_review.repos[].report_directory` config keys (agent-ops#761): a
   GNU `date`(1) format string, resolved with `date -u` relative to the
@@ -72,9 +83,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   catalogue call that is a repository's complete desired label set; `review`
   and `escalation` reconcile drift without ever deleting, since each is a
   partial subset whose own deletion pass would remove labels the other role
-  still wants. No call site uses either function yet — the pipeline's own
-  catalogue entries are still unprefixed, and renaming them is a live
-  migration recorded as TD-PPagop-26082809.
+  still wants. No call site uses either function yet — every call site still
+  goes through `labels_ensure_role`/`labels_ensure_stamped`, so
+  `pw::type:tech-debt`, the one catalogue entry that carries the prefix,
+  takes the same create-only path as the rest until a call site is wired
+  across; that migration is recorded as TD-PPagop-26082809.
 - An abandoned tech-debt reservation branch is no longer left orphaned for
   good when its own release attempt fails (TD-PPagop-26082427). A `td/<id>`
   or `td-record/<id>` branch `lib/tech-debt-file.sh`'s `_techdebt_unfile`

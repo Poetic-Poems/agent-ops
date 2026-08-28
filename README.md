@@ -894,10 +894,11 @@ is a container: Docker and the `.env` above are the whole of it.
 4. **Labels: nothing to do.** The pipeline creates the labels it uses — the PR
    label, the Enabler's escalation label, `needs-refinement`, `refined`,
    `unvoided`, the `complexity:*` grades, `blocked`, `blocked:needs-refinement`,
-   and `obsolete` — in every repository it gathers data for, not only the one
-   it happens to work, at most once per `labels_ensure_interval_hours` (default
-   24h), and puts back any you later delete within that interval. It only ever
-   *creates*: a label you have recoloured or re-described keeps your version.
+   `obsolete` and `pw::type:tech-debt` — in every repository it gathers data
+   for, not only the one it happens to work, at most once per
+   `labels_ensure_interval_hours` (default 24h), and puts back any you later
+   delete within that interval. It only ever *creates*: a label you have
+   recoloured or re-described keeps your version.
 
    All the token needs is permission to create them. If one is still missing
    after `labels_ensure_interval_hours` has passed since a cycle last gathered

@@ -187,7 +187,7 @@ config() { jq "${1:-.}" "$SCRIPT_DIR/config.json" > "$tmp/config.json"; }
 #     rather than from this library. ---
 config
 assert_eq "the target role wants every label the pipeline applies" \
-  "autonomous-agent enabler-escalation needs-refinement refined unvoided blocked blocked:needs-refinement obsolete open-question complexity:low complexity:medium complexity:high" \
+  "autonomous-agent enabler-escalation needs-refinement refined unvoided blocked blocked:needs-refinement obsolete pw::type:tech-debt open-question complexity:low complexity:medium complexity:high" \
   "$(labels_catalogue "$tmp/config.json" "$SCHEMA" target | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
 assert_eq "the review role wants only the caller's resolved review pull request label" \
   "project-review" \
@@ -213,7 +213,7 @@ assert_eq "a renamed label is created under the name the config gives it" \
 # anyway would put a label in the repository that nothing will ever apply.
 config '.needs_refinement_label = "" | .unvoid_label = "" | .refined_label = ""'
 assert_eq "a label switched off by an empty value is not created" \
-  "autonomous-agent enabler-escalation blocked blocked:needs-refinement obsolete open-question complexity:low complexity:medium complexity:high" \
+  "autonomous-agent enabler-escalation blocked blocked:needs-refinement obsolete pw::type:tech-debt open-question complexity:low complexity:medium complexity:high" \
   "$(labels_catalogue "$tmp/config.json" "$SCHEMA" target | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
 
 # Every catalogue entry must be complete: a create with an empty colour is
@@ -244,7 +244,7 @@ config
 reset_stub
 out="$(labels_catalogue "$tmp/config.json" "$SCHEMA" target | labels_ensure "Owner/repo")"
 assert_eq "an empty repository gets every label, each reported created" \
-  "autonomous-agent enabler-escalation needs-refinement refined unvoided blocked blocked:needs-refinement obsolete open-question complexity:low complexity:medium complexity:high" \
+  "autonomous-agent enabler-escalation needs-refinement refined unvoided blocked blocked:needs-refinement obsolete pw::type:tech-debt open-question complexity:low complexity:medium complexity:high" \
   "$(cut -f2 <<<"$out" | tr '\n' ' ' | sed 's/ $//')"
 assert_eq "and every line reports a creation" "" \
   "$(grep -v '^created' <<<"$out")"
@@ -256,7 +256,7 @@ assert_eq "a second pass over the same repository reports nothing" "" "$out"
 reset_stub autonomous-agent blocked obsolete complexity:low complexity:medium complexity:high
 out="$(labels_catalogue "$tmp/config.json" "$SCHEMA" target | labels_ensure "Owner/repo")"
 assert_eq "a partly-labelled repository gets only what it is missing" \
-  "enabler-escalation needs-refinement refined unvoided blocked:needs-refinement open-question" \
+  "enabler-escalation needs-refinement refined unvoided blocked:needs-refinement pw::type:tech-debt open-question" \
   "$(cut -f2 <<<"$out" | tr '\n' ' ' | sed 's/ $//')"
 
 # GitHub compares label names case-insensitively, so a differently-cased match
@@ -283,7 +283,7 @@ rc=$?
 assert_eq "a label the token may not create is reported failed" \
   "failed	unvoided" "$(grep '^failed' <<<"$out")"
 assert_eq "and the labels either side of it are still created" \
-  "autonomous-agent enabler-escalation needs-refinement refined blocked blocked:needs-refinement obsolete open-question complexity:low complexity:medium complexity:high" \
+  "autonomous-agent enabler-escalation needs-refinement refined blocked blocked:needs-refinement obsolete pw::type:tech-debt open-question complexity:low complexity:medium complexity:high" \
   "$(grep '^created' <<<"$out" | cut -f2 | tr '\n' ' ' | sed 's/ $//')"
 assert_eq "and one refused create does not fail the pass" "0" "$rc"
 
@@ -551,8 +551,8 @@ assert_eq "an empty repository slug is refused rather than guessed at" "1" \
 config
 reset_stub
 out="$(labels_reconcile_role "$tmp/config.json" "$SCHEMA" "Owner/repo" target)"
-assert_eq "the target role reconciles with today's unprefixed catalogue, unaffected (nothing to reconcile or delete)" \
-  "autonomous-agent enabler-escalation needs-refinement refined unvoided blocked blocked:needs-refinement obsolete open-question complexity:low complexity:medium complexity:high" \
+assert_eq "the target role reconciles against an empty repository the same as labels_ensure would (nothing to reconcile or delete yet)" \
+  "autonomous-agent enabler-escalation needs-refinement refined unvoided blocked blocked:needs-refinement obsolete pw::type:tech-debt open-question complexity:low complexity:medium complexity:high" \
   "$(cut -f2 <<<"$out" | tr '\n' ' ' | sed 's/ $//')"
 
 reset_stub $'pw::stale-target\t1d76db\tstale\npw::wanted\t1d76db\told desc'
@@ -562,6 +562,21 @@ assert_eq "a pw::-prefixed label the catalogue still names is reconciled, not de
   "updated	pw::wanted" "$(grep 'pw::wanted' <<<"$out")"
 assert_eq "  ... and one the catalogue no longer names is deleted" \
   "deleted	pw::stale-target" "$(grep 'pw::stale-target' <<<"$out")"
+
+# `pw::type:tech-debt` is the first catalogue entry to sit inside
+# `label_prefix`'s own namespace, so it is the first one MODE `full`'s deletion
+# pass could ever reach. Being catalogued is the whole of what protects it, and
+# it is D24's trust anchor rather than an ordinary label: a target reconcile
+# that deleted it would take the `tech-debt` band's own membership test out of
+# the repository. Asserted against a repository that already carries it, since
+# an absent label is created rather than considered for deletion and so proves
+# nothing about the deletion pass.
+reset_stub $'pw::type:tech-debt\t5319e7\tTech debt: a known gap or shortcut with a knowable fix. Managed by Pullwright.'
+out="$(labels_reconcile_role "$tmp/config.json" "$SCHEMA" "Owner/repo" target)"
+assert_eq "the catalogued pw::type:tech-debt label survives target's own full-mode deletion pass" \
+  "" "$(grep 'pw::type:tech-debt' <<<"$out")"
+assert_eq "  ... and no DELETE is issued for it" "0" \
+  "$(grep -c '^api -X DELETE' "$tmp/log")"
 
 reset_stub $'pw::stale-escalation\t1d76db\tstale'
 out="$(labels_reconcile_role "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation)"

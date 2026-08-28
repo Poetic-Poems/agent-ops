@@ -77,6 +77,13 @@
 # still-open, still-diff-carrying `pr-<n>-abandoned-…`/`pr-<n>-review-…` draft
 # is genuinely unwanted, and a stage that could apply the label itself could
 # corroborate its own judgement with it (TD-PPagop-26081308).
+# `pw::type:tech-debt` is a fixed name too, for a third reason: it is D24's
+# trust anchor for tech debt filed as an issue rather than an in-repo
+# register record (D15, agent-ops#872) — only a collaborator with triage can
+# apply a label, so an issue's membership of the `tech-debt` work band is
+# trustable even though its body stays untrusted data. A configurable name
+# would let anything in the untrusted band claim membership by renaming
+# itself to whatever the operator picked.
 
 # labels_catalogue CONFIG_FILE SCHEMA_FILE ROLE [REVIEW_PR_LABEL]
 # Print the labels a repository in ROLE needs, one per line, as
@@ -123,6 +130,8 @@ labels_catalogue() {
                "Projected alongside `blocked`: too under-specified to work on, say what done looks like (38b)"),
          entry("obsolete"; "cfd3d7";
                "Hand-applied to say a still-open, diff-carrying draft PR is unwanted; no pipeline stage applies this"),
+         entry("pw::type:tech-debt"; "5319e7";
+               "Tech debt: a known gap or shortcut with a knowable fix. Managed by Pullwright."),
          entry("open-question"; "d4c5f9";
                "Reviewer-projected: an open scope question blocks unattended landing until adjudicated (D18 #668)"),
          entry("complexity:low"; "c2e0c6";
