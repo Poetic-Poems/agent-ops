@@ -46,11 +46,11 @@ forge_auth_effective_gh_token() {
   if author_token_credential_present; then
     local token
     if token="$(author_token_get "$now")" && [[ -n "$token" ]]; then
-      printf 'forge-app\t%s' "$token"
+      printf 'forge-app\t%s\n' "$token"
       return 0
     fi
-    printf 'gh-token-degraded\t%s' "${GH_TOKEN:-}"
+    printf 'gh-token-degraded\t%s\n' "${GH_TOKEN:-}"
     return 0
   fi
-  printf 'gh-token\t%s' "${GH_TOKEN:-}"
+  printf 'gh-token\t%s\n' "${GH_TOKEN:-}"
 }
