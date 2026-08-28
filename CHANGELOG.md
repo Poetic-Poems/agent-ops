@@ -891,6 +891,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   same silence an empty listing produces. Requirement 34n's retirements are
   facts nothing clears, so that distinction is what keeps a rate limit from
   minting a `review-superseded` no later cycle could take back.
+- A Reviewer round that raised an open question against a repository where
+  the `open-question` label could not be projected no longer kills the
+  cycle before the Approver ever runs (agent-ops#889). `landing_open_
+  question_label_project` (`lib/landing.sh`) documents exit 1 for its own
+  `unrecorded` and `failed` words as ordinary outcomes, but `agent-cycle.sh`
+  assigned its output unguarded under `set -euo pipefail`, so that exit
+  status ended the cycle at requirement 8f — six fleet cycles hit this for
+  real, each stranding a green, ready pull request with no Approver review
+  and no landing arming. Both call sites now guard the assignment with
+  `|| true`, so a projection failure costs only the landing gate's
+  label-based hold, never the round itself.
 - The landing audit record's adjudication history (`approver.history`,
   requirement 8x) now carries every `approver-verdict` event a pull request
   received, including a peer node's refusal (TD-PPagop-26082308).

@@ -6338,6 +6338,17 @@ implements.
     could not settle it, and the PR comment stating it in the Reviewer's own
     words (requirement 30).
 
+    `landing_open_question_label_project` documents exit 1 for its own
+    `unrecorded` and `failed` words as ordinary outcomes, never a fault — a
+    repository the pipeline has not created the label in yet is the
+    practical case for `failed`. Its two call sites capture that outcome
+    with `oq_proj="$(landing_open_question_label_project …)" || true`
+    (agent-ops#889): a projection failure costs only the landing gate's
+    label-based hold — logged truthfully in `label_projection` and warned
+    on immediately below — and never the round itself, which reaches the
+    Approver stage (requirement 8b) and the landing arming step
+    (requirement 8d) exactly as a successful projection does.
+
     A further gate in `_landing_stage_attempt`, inserted between gate 2
     (eligibility) and gate 3 (the review gate), on the same terms as every
     gate beside it: `landing_open_question_hit` reads the label fresh from
@@ -19200,6 +19211,20 @@ pull request, run the ones the change touches and any it could regress.
    raised`, `open-question-adjudication`, `open-question-escalated` and
    `approver-adjudicate-open-question.md` all name the question, never
    where it goes.
+
+   `test/open-question-cycle-wiring.test.sh` lifts `agent-cycle.sh`'s own
+   requirement 8f block verbatim — from the `open_questions` read through
+   the landing arming call — and proves the regression agent-ops#889 found:
+   with `landing_open_question_label_project` stubbed to print `failed` (or
+   `unrecorded`) and exit 1 on every call, the block still logs
+   `open-question-raised` with the truthful `label_projection`, still runs
+   the `failed` branch's self-heal (`refinement_label_ensure_one`,
+   agent-ops#687), and still reaches both `run_approver_stage` and
+   `run_landing_stage` — an unguarded `oq_proj="$(…)"` regressing to the
+   pre-#889 behaviour would abort the block before either stage call and
+   this test would fail with no `run_approver_stage`/`run_landing_stage`
+   call recorded and no trailing marker proving the block ran to its own
+   end.
 
 10. **The egress fence holds its shape (D24).** `test/egress-fence.test.sh`
     passes: the baked allowlist carries every domain the cycles need
