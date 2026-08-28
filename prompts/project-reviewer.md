@@ -223,12 +223,12 @@ All target repos follow these rules:
      - Title (Conventional Commits; becomes the squash commit on `main`):
        `docs(review): repository review <review_date>`.
      - Body: a short verdict summary and a link to the review index
-       (`report_dir/README.md`); note that the recommendations feed the
-       implementation pipeline's `issues` source and the
-       `project-remediation` skill. Where step 2 filed any issues, list
-       every one of them under a `Defers:` section (number and title), so a
-       human reading the pull request sees the debt this review deferred
-       without opening every issue.
+       (`report_dir/README.md`); note that the issues step 2 filed feed the
+       implementation pipeline's `issues` source, and that the
+       recommendations feed the `project-remediation` skill. Where step 2
+       filed any issues, list every one of them under a `Defers:` section
+       (number and title), so a human reading the pull request sees the debt
+       this review deferred without opening every issue.
      - Label it `pr_label`.
    - **Immediately** after the PR exists, record its URL where the Script can
      find it even if this session ends before your final message does:
