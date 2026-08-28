@@ -105,6 +105,48 @@ abort_probe="$(bash -euo pipefail -c '
 assert_eq "a rejected qualifier aborts the script when assigned under set -e" \
   "before" "$abort_probe"
 
+# --- Model-tier ordering (requirement 1c; agent-ops#822): the fleet's four
+#     currently configured models, ranked haiku < sonnet < opus < fable. ---
+assert_eq "haiku ranks below sonnet" "1" "$(model_tier_rank claude-haiku-4-5-20251001)"
+assert_eq "sonnet ranks above haiku, below opus" "2" "$(model_tier_rank claude-sonnet-5)"
+assert_eq "opus ranks above sonnet, below fable" "3" "$(model_tier_rank claude-opus-5)"
+assert_eq "fable ranks highest" "4" "$(model_tier_rank claude-fable-5)"
+assert_false "an unranked model prints nothing and fails" \
+  model_tier_rank claude-nonexistent-9
+assert_eq "an unranked model's rank is empty" "" \
+  "$(model_tier_rank claude-nonexistent-9 2>/dev/null)"
+# An empty id must return 1 the ordinary way rather than abort the caller:
+# bash rejects an empty associative-array subscript ("bad array subscript"),
+# which under the `set -e` every script sourcing this file runs with would
+# take the whole cycle down instead. Probed in a subshell that would print
+# nothing at all if the lookup aborted.
+assert_false "an empty model id is not ranked" model_tier_rank ""
+assert_eq "an empty model id fails cleanly under set -e rather than aborting the caller" \
+  "survived" \
+  "$(bash -euo pipefail -c '
+      . "$1/lib/model-id.sh"
+      model_tier_rank "" || true
+      model_tier_rank || true
+      printf survived
+    ' _ "$SCRIPT_DIR" 2>/dev/null)"
+
+assert_true "model_tier_known accepts empty (a disabled stage)" model_tier_known ""
+assert_true "model_tier_known accepts a ranked model" model_tier_known claude-sonnet-5
+assert_false "model_tier_known rejects an unranked model" model_tier_known claude-nonexistent-9
+
+assert_true "haiku is below sonnet" model_tier_below claude-haiku-4-5-20251001 claude-sonnet-5
+assert_false "sonnet is not below sonnet (equal tier clears the floor)" \
+  model_tier_below claude-sonnet-5 claude-sonnet-5
+assert_false "opus is not below sonnet" model_tier_below claude-opus-5 claude-sonnet-5
+assert_false "an empty candidate never reports below (a different check's business)" \
+  model_tier_below "" claude-sonnet-5
+assert_false "an empty floor never reports below (a different check's business)" \
+  model_tier_below claude-haiku-4-5-20251001 ""
+assert_false "an unranked candidate never reports below — 'cannot verify', not 'fails'" \
+  model_tier_below claude-nonexistent-9 claude-sonnet-5
+assert_false "an unranked floor never reports below either" \
+  model_tier_below claude-haiku-4-5-20251001 claude-nonexistent-9
+
 echo
 if (( failures == 0 )); then
   echo "All model-id assertions passed."

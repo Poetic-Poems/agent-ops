@@ -19,14 +19,20 @@
 # uniqueItems, contains, properties, required, additionalProperties (false
 # only), items, and local `$ref`s into `#/$defs`.
 #
-# Also holds three cross-key rules the schema itself cannot state — each
-# holds *between* two keys (or two array entries) rather than about one,
-# which is outside what `additionalProperties`/`required`/etc. on a single
-# object can express. `config_enabler_assignee_ok` and
-# `config_missing_plan_path_repos` are `agent-cycle.sh`'s own startup
-# guards; `config_duplicate_project_review_slugs` is `review-cycle.sh`'s.
-# `scripts/doctor.sh` calls all three so no pipeline's refusal can ever drift
-# from what `doctor.sh` reports.
+# Also holds cross-key rules the schema itself cannot state — each holds
+# *between* two keys (or two array entries) rather than about one, which is
+# outside what `additionalProperties`/`required`/etc. on a single object can
+# express. `config_enabler_assignee_ok`, `config_missing_plan_path_repos`,
+# `config_model_tier_floor_violations` and
+# `config_required_refinement_sources_without_refiner` are `agent-cycle.sh`'s
+# own startup guards; `config_duplicate_project_review_slugs` is
+# `review-cycle.sh`'s. `scripts/doctor.sh` calls all five so no pipeline's
+# refusal can ever drift from what `doctor.sh` reports.
+#
+# `config_model_tier_floor_violations` reads `lib/model-id.sh`'s
+# `MODEL_TIER_RANK` table, through `model_tier_below`; both scripts that
+# source this file also source that one, in whichever order, before either is
+# ever called.
 #
 # Sourced by agent-cycle.sh and scripts/doctor.sh. jq 1.6 compatible: nodes
 # carry 1.7, but a host running doctor.sh before installing anything may well
@@ -322,6 +328,59 @@ config_missing_plan_path_repos() {
   jq -r '[.[] | select((.sources // []) | any(. == "implementation-plan"))
               | select((.implementation_plan_path // "") == "") | .slug]
          | join(", ")' <<<"$repos_json"
+}
+
+# config_model_tier_floor_violations REFINER_MODEL ENABLER_MODEL IMPLEMENTER_MODEL_DEFAULT IMPLEMENTER_MODEL_TRIVIAL
+# Prints one "author_key<TAB>floor_key<TAB>author_id<TAB>floor_id" line per
+# pair where refiner_model or enabler_model — the two stages that can author a
+# work order's context/acceptance directly rather than relay text a human or
+# the Script already wrote (docs/IMPLEMENTATION-PIPELINE-SPEC.md requirements
+# 39 and 36b) — ranks below an implementer tier it might write for
+# (requirement 1c, "the floor"; agent-ops#822). Empty when every rankable pair
+# clears it. Takes already-resolved bare model ids, as every caller has
+# already resolved them for its own purposes (requirement 1a); an empty value
+# on either side of a pair is skipped (an empty model means that stage is
+# disabled — a different check's business), and so is a pair `model_tier_below`
+# cannot rank on one side or the other — an unranked model is `scripts/doctor.sh`'s
+# own warning, not a floor violation, because this predicate cannot tell
+# "definitely clears it" from "cannot tell" and must never report the latter
+# as the former.
+config_model_tier_floor_violations() {
+  local refiner="$1" enabler="$2" impl_default="$3" impl_trivial="$4"
+  local author author_key floor floor_key
+  for author_key in refiner_model enabler_model; do
+    case "$author_key" in
+      refiner_model) author="$refiner" ;;
+      enabler_model) author="$enabler" ;;
+    esac
+    [[ -n "$author" ]] || continue
+    for floor_key in implementer_model_default implementer_model_trivial; do
+      case "$floor_key" in
+        implementer_model_default) floor="$impl_default" ;;
+        implementer_model_trivial) floor="$impl_trivial" ;;
+      esac
+      [[ -n "$floor" ]] || continue
+      if model_tier_below "$author" "$floor"; then
+        printf '%s\t%s\t%s\t%s\n' "$author_key" "$floor_key" "$author" "$floor"
+      fi
+    done
+  done
+}
+
+# config_required_refinement_sources_without_refiner REFINEMENT_POLICY_JSON REFINER_MODEL
+# Prints the comma-joined source names whose effective `refinement_policy`
+# (config) is `"required"` while REFINER_MODEL is empty — a configuration
+# nobody can act on, since `prompts/coordinator.md`'s "Per-source refinement
+# policy" never selects an unrefined item from a `"required"` source, and with
+# no Refiner ever engaging (requirement 39's own gate on `refiner_model` being
+# set) nothing ever refines one either: the source's items wait forever
+# (requirement 1c; agent-ops#822, resolving `refiner_model`'s optionality).
+# Empty when REFINER_MODEL is set, or no source resolves to `"required"`.
+config_required_refinement_sources_without_refiner() {
+  local policy_json="${1:-{\}}" refiner_model="$2"
+  [[ -z "$refiner_model" ]] || { printf ''; return; }
+  jq -r '(. // {}) | to_entries | map(select(.value == "required") | .key) | join(", ")' \
+    <<<"$policy_json" 2>/dev/null || true
 }
 
 # config_duplicate_project_review_slugs PROJECT_REVIEW_REPOS_JSON
