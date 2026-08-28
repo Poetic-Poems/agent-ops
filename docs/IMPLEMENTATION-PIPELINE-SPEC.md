@@ -7633,7 +7633,10 @@ implements.
     to recover. So after the gc (2.1a), every cycle runs
     `scripts/sweep-orphan-branches.sh` over each configured repo's
     `<tech_debt_branch_prefix>*` (default `td/`; empty disables that
-    namespace) and `<branch_prefix>*` refs. A ref is a provable orphan only when **all
+    namespace), `<branch_prefix>*`, and `td-record/*` refs — the last swept
+    unconditionally rather than gated by `tech_debt_branch_prefix`, since
+    `techdebt_file_debt` (`lib/tech-debt-file.sh`) mints a filing's record
+    branch there regardless of that setting. A ref is a provable orphan only when **all
     three** hold: no open PR uses it, no registry entry stands for it (only
     a clean 404 proves absence — any other failure skips the ref, fail
     closed), and its tip commit is older than `abandoned_draft_after_hours`
@@ -7650,7 +7653,33 @@ implements.
     commit's own shape needs no lookup into that at all (issue #545). Such a
     ref is swept as neither recovered nor deleted: the sweep leaves it
     exactly as found, a spent lock cleared by hand once its ID's fate is
-    settled elsewhere. For each other orphan the sweep restores a state the
+    settled elsewhere. `td-record/<ID>` is swept differently again, and is
+    the one prefix that is delete-only, never recovered: a filing pull
+    request a human has closed without merging means they declined that
+    record, and a recovery draft would hand it straight back to them
+    (TD-PPagop-26082310). The sweep asks
+    `gh pr list --head <branch> --state closed`, which excludes merged pull
+    requests, so a non-zero count is unambiguous — the filing was declined —
+    and deletes `td-record/<ID>` outright (`released`,
+    `reason: "filing-declined"`), then goes one step further than any other
+    ref here: it reads `tech-debt/<ID>.md` at the default branch's own tip to
+    ask whether `<ID>`'s record reached `main` some other way. A clean 404
+    means it never did, so the id is spent with nothing to show for it and
+    its `td/<ID>` reservation is released alongside it (a second `released`);
+    a 200 means the record landed some other way, so
+    `release-td-branch.yml` already owns that reservation and the sweep
+    leaves it alone; any other failure answers nothing, so — fail closed,
+    like every guard here — it is left alone too. This is a narrow exception
+    to the reservation-lock exemption two sentences above, not a relaxation
+    of it: a `td/<ID>` reservation is only ever released this way from inside
+    the declined-filing arm, immediately after its own `td-record/<ID>`
+    sibling was confirmed declined, never for a bare reservation encountered
+    with no such sibling. A `td-record/<ID>` whose pull request merged needs
+    no separate handling — the ordinary merged-PR check below already
+    deletes a merged head's leftover ref — and one with no pull request at
+    all, a filing killed between its contents write and `gh pr create`, falls
+    through to the ordinary recovery-draft path unchanged, since that is a
+    genuine crash orphan, not a declined one. For each other orphan the sweep restores a state the
     pipeline already handles: commits ahead of
     the default branch become a **draft PR** (labelled `pr_label`, so the
     abandoned-drafts machinery recovers the work exactly as it recovers any
