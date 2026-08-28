@@ -643,13 +643,16 @@ refinements_map() {
 #                     is what re-starts the work (requirement 36a). Ordinarily
 #                     that means the escalation was raised after B (the block
 #                     it answers is still the current one); but when B is a
-#                     `needs-refinement` re-flag raised *after* the escalation
-#                     and no `item-refined` event has landed since the
-#                     escalation, the re-flag disputes the same specification
-#                     the escalation was about, so the human's close answers
-#                     it too — TD-PPagop-26082901's race, where a re-flag
-#                     between the raise and the next Enabler pass would
-#                     otherwise strand the close.
+#                     `needs-refinement` re-flag whose `refined_before` (the
+#                     item's latest `item-refined`) both exists and predates
+#                     the escalation, the re-flag disputes the same
+#                     specification the escalation was about, so the human's
+#                     close answers it too — TD-PPagop-26082901's race, where
+#                     a re-flag between the raise and the next Enabler pass
+#                     would otherwise strand the close. A re-flag with no
+#                     prior refinement is outside this on purpose: the thrash
+#                     guard does not bite without one, so `threshold` already
+#                     delivers that item its first refinement.
 #      recheck      — the newest examination of it is older than RECHECK_HOURS
 #                     (0 disables). This is the path by which evidence that
 #                     arrived after an examination — a diagnosis posted into

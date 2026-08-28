@@ -10788,11 +10788,16 @@ implements.
          36a promised them that closing the issue is what restarts the work.
          Ordinarily this means the escalation was raised after *B* — the block
          it answers is still the current one — but when *B* is instead a
-         `needs-refinement` re-flag raised *after* the escalation, with no
-         `item-refined` event landing since the escalation, the exemption
-         still applies: the re-flag disputes the same, unchanged
-         specification the escalation was about, so the human's close answers
-         it too. Without this, a re-flag landing between the raise and the
+         `needs-refinement` re-flag whose `refined_before` (the item's latest
+         `item-refined`, requirement 36b) both exists and predates the
+         escalation, the exemption still applies: the re-flag disputes the
+         same, unchanged specification the escalation was about, so the
+         human's close answers it too. A re-flag carrying no prior refinement
+         at all is deliberately outside this: there is no specification the
+         escalation can have been raised against, and the thrash guard does
+         not bite without one, so the ordinary `threshold` path already
+         delivers that item its first refinement. Without this, a re-flag
+         landing between the raise and the
          next Enabler pass — observed in every case as a Co-Ordinator
          `needs-refinement` re-flag — strands the close: it satisfies neither
          this reason (keyed on the raise time) nor `threshold` (the thrash
@@ -17523,7 +17528,12 @@ pull request, run the ones the change touches and any it could regress.
     catches a rule keyed on an event nobody emits, which would engage nothing,
     forever, while reading correctly. An examined item is not re-examined; an
     `item-void` for the same item excludes it; a re-block re-enters via
-    `threshold`; and every boundary is asserted on both sides of itself, because
+    `threshold` — except the one shape that must not, a `needs-refinement`
+    re-flag landing after an already-closed escalation the item was refined
+    before, which stays `issue-closed` so the human's close is not stranded
+    (TD-PPagop-26082901), while an examination since that escalation, an
+    ordinary re-flag, and a re-flag with no prior refinement each get no such
+    exemption; and every boundary is asserted on both sides of itself, because
     too permissive spends Opus in a loop and too strict never escalates at all,
     and both look like a quiet pipeline.
 11a. **The fingerprint wakes a quiet fleet at the threshold, and lets it go
