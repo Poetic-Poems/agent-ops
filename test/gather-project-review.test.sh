@@ -156,6 +156,19 @@ case "\$path" in
       none)
         echo '[{"name":"README.md","type":"file"}]'
         ;;
+      walkfail)
+        # The script's own listing succeeds; lib/report-directory.sh's walk
+        # over the very same path — a second, separate call — fails, the
+        # shape a rate limit landing between two back-to-back calls produces.
+        n="\$(cat "$tmp_dir/listing-count" 2>/dev/null || echo 0)"
+        echo \$(( n + 1 )) > "$tmp_dir/listing-count"
+        if (( n == 0 )); then
+          echo '[{"name":"project-review-2026-07-01","type":"dir"},{"name":"project-review-2026-08-10","type":"dir"},{"name":"README.md","type":"file"}]'
+        else
+          echo "gh: error connecting to api.github.com" >&2
+          exit 1
+        fi
+        ;;
       404)
         echo '{"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}'
         echo "gh: Not Found (HTTP 404)" >&2
@@ -310,6 +323,24 @@ assert_eq "--current-date: a genuine API failure reports ok:false" \
 assert_eq "  ... still exits 0" "0" "$rc"
 assert_eq "  ... but leaves gh's diagnosis on stderr" "1" \
   "$( [[ -s "$tmp_dir/err" ]] && echo 1 || echo 0 )"
+
+# A failed *second* listing must not read as "no review folder at all". The
+# library's walk degrades an API failure to the same silence an empty match
+# produces, and --current-date's empty date is a definite fact that retires
+# every review ref in the repository — a retirement nothing can clear. The
+# script's own listing succeeded here and shows the folders, so the walk is
+# what failed, and the answer must decide nothing.
+export STUB_LISTING=walkfail
+rm -f "$tmp_dir/listing-count"
+out="$(run_current_date)"; rc=$?
+assert_eq "--current-date: a failed second listing decides nothing, not ok:true/empty" \
+  "false" "$(jq -r '.ok' <<<"$out")"
+assert_eq "  ... still exits 0" "0" "$rc"
+# The default mode is unchanged by any of this: it answers [] for both causes.
+rm -f "$tmp_dir/listing-count"
+out="$(run)"; rc=$?
+assert_eq "the default mode still answers [] for the same failure" "[]" "$out"
+assert_eq "  ... and still exits 0" "0" "$rc"
 
 export STUB_LISTING=two
 export STUB_PROMPTS=hit

@@ -10251,7 +10251,7 @@ implements.
         date is actioned; one that agrees is not, and a repo the
         `--current-date` read could not resolve actions no ref in it either;
         and
-      - **the configuration itself**, for the residue none of the four above
+      - **the configuration itself**, for the residue none of the five above
         can reach (`void_config_actioned`, decided on PR #340's review,
         2026-08-13). Liveness decides nothing without the source's own
         successful gather, and a source is gathered only for a repo whose
@@ -13016,7 +13016,14 @@ What exists, and the requirements each part answers to:
    folder resolves, `{"ok": true, "date": ""}` when the listing succeeds and
    offers none at all (including a clean 404 on `reviews/` itself — a
    definite fact), or `{"ok": false}` for any other failure, which decides
-   nothing. This is requirement 34n's `review-superseded` signal
+   nothing. The empty date is read off this script's own successful listing,
+   never off `report_directory_most_recent` coming back empty:
+   `lib/report-directory.sh`'s walk makes a *second* call over the same path
+   and degrades a failed one to the same silence an unmatched listing
+   produces, so a listing that shows a directory of the format's shape while
+   the walk yields nothing is `{"ok": false}` — the answer decides nothing
+   rather than retiring, on a rate limit, refs whose retirement nothing can
+   clear. This is requirement 34n's `review-superseded` signal
    (TD-PPagop-26082309): `lib/candidate-gather.sh` calls it once per repo
    already carrying unretired review-shaped void residue, and
    `void_review_plan_actioned` (`lib/void-liveness.sh`) reads the date back
@@ -16967,9 +16974,18 @@ pull request, run the ones the change touches and any it could regress.
    shaped like none of the six is ignored; and malformed `VOID_JSON` or
    `GATHER_JSON` fails safe to `[]`. The `void_review_plan_actioned` section
    passes the same way for the two on-demand-reader shapes: a project-review
-   ref is actioned only once a status map reports `"merged"`, an
+   ref is actioned once a status map reports `"merged"`, an
    implementation-plan task id only once it reports `"done"`, anything else
-   (including a malformed status map) decides nothing. Both sections also
+   (including a malformed status map) decides nothing. The same section pins
+   the `review-superseded` signal (TD-PPagop-26082309) against
+   `REVIEW_CURRENT_JSON`, the fourth input: a review ref whose embedded date
+   matches the repo's current review folder is not actioned however old, one
+   whose date differs is actioned as `review-superseded` — every such ref in
+   the repo, not just one — an empty-string date (no review folder at all)
+   actions every review ref in that repo, a repo the map carries no entry for
+   at all actions none of its refs, `review-merged` still wins for a ref a
+   merged pull request names, and a malformed fourth input decides nothing.
+   Both sections also
    pin the two remaining halves of the requirement: an actioned-and-old
    liveness or review/plan pair reaches `retire_void_items` and is dropped
    exactly like an object-closed or register-resolved one, an
@@ -17117,7 +17133,14 @@ pull request, run the ones the change touches and any it could regress.
     folder, mints `review-<date>-R-NN` refs, carries each recommendation's own
     section and its matching improvement prompt — whole, including a nested
     code block of the prompt's own and the fence lines around it — and prints
-    `[]` for a repo with no `reviews/` tree; the plan gatherer returns open
+    `[]` for a repo with no `reviews/` tree; `--current-date` reports the
+    latest folder's own date, distinguishes a listing that offers no folder
+    (and a clean 404) as `{"ok": true, "date": ""}` from an API failure as
+    `{"ok": false}`, counts a failed *second* listing — the library walk's own
+    call, which degrades to the same silence an unmatched listing produces —
+    among the failures rather than the definite emptiness that would retire
+    every review ref in the repository, and leaves the default mode's `[]`
+    unchanged for both; the plan gatherer returns open
     tasks in document order, skips checked ones and lines whose leading token
     is not a `WORK_GONE_PLAN_RE` id, and prints `[]` for a missing document.
     Neither ever exits non-zero.

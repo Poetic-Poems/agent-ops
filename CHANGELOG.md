@@ -832,6 +832,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A voided `review-<date>-R-NN` project-review ref now retires instead of
+  sitting in the void extract for ever (TD-PPagop-26082309). Requirement
+  34n's only actioned signal for that shape was `review-merged`, which needs
+  a merged pull request *naming* the ref — and such a ref is voided precisely
+  when a stage finds the work already done, so no Implementer ran and no
+  merged pull request ever named it: the signal was defined for exactly the
+  population that never gets voided. On 2026-08-23 the only four entries in
+  the whole 135-entry extract past `void_retire_after_days` were of this one
+  shape. A second signal, `review-superseded`, now reaches them: a ref whose
+  review folder is no longer the repository's current one. Retiring it costs
+  nothing, because `scripts/gather-project-review.sh` (and the Co-Ordinator's
+  own live read) only ever reads the latest folder, so a recommendation from
+  a superseded one is never offered again by anything — the same reasoning
+  `void_config_actioned`'s `source-dropped` rule already rests on. That
+  script gains a `--current-date` mode reporting the current folder's own
+  date, called once per repository already walked for review-shaped void
+  residue, so a repository carrying none pays nothing;
+  `void_review_plan_actioned` (`lib/void-liveness.sh`) reads it back as a
+  fourth stdin input.
+  A read that fails decides nothing rather than retiring — including the case
+  where the script's own listing succeeds but `lib/report-directory.sh`'s
+  second call over the same path does not, which the library degrades to the
+  same silence an empty listing produces. Requirement 34n's retirements are
+  facts nothing clears, so that distinction is what keeps a rate limit from
+  minting a `review-superseded` no later cycle could take back.
 - The landing audit record's adjudication history (`approver.history`,
   requirement 8x) now carries every `approver-verdict` event a pull request
   received, including a peer node's refusal (TD-PPagop-26082308).

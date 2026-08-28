@@ -170,6 +170,36 @@ fi
 
 review_date_and_dir="$(report_directory_most_recent "$slug" "$default_branch" "$report_directory_format" 2>/dev/null)"
 if [[ -z "$review_date_and_dir" ]]; then
+  # An empty result here has two causes the library cannot tell apart, because
+  # `_report_directory_walk` degrades a failed `gh api` to the same silence a
+  # directory listing with no match produces — its own second call over the
+  # path the listing above already read. The default mode answers both with
+  # `[]` and loses nothing by it; --current-date must not, because its
+  # `{"ok": true, "date": ""}` is a *definite* fact that retires every review
+  # ref in the repository, and requirement 34n's retirements are facts nothing
+  # clears. A rate limit landing between two back-to-back calls would
+  # otherwise mint a `review-superseded` that could never be taken back —
+  # the same shape of defect the shared-filename `.ok` marker caused for the
+  # `register-hygiene` shape.
+  #
+  # The listing above succeeded, so it decides instead: no directory matching
+  # the format's first dynamic segment means nothing can exist beneath it, a
+  # definite `none`. One that does exist means the walk, not the repository,
+  # is why nothing came back — decide nothing. For a format whose dynamic
+  # part spans more than one segment this errs toward deciding nothing (an
+  # existing first segment says nothing about the rest), which is the safe
+  # direction; anything but a definite `false` — an unparseable listing
+  # included — is read the same way.
+  if [[ "$mode" == "current-date" ]]; then
+    _rd_candidate_exists="$(jq -r \
+      --arg re "^$(report_directory_regex "${_rd_segments[$_rd_i]}")\$" \
+      'any(.[]?; .type == "dir" and (.name | test($re)))' \
+      <<<"$listing_json" 2>/dev/null || true)"
+    if [[ "$_rd_candidate_exists" != "false" ]]; then
+      fail_out
+      exit 0
+    fi
+  fi
   none_out
   exit 0
 fi
