@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Poetic-Poems/agent-ops/config.schema.json",
   "title": "agent-ops installation configuration",
-  "description": "The shape of config.json: every key an installation may set, its type, its constraints, and \u2014 where the code has one \u2014 the value used when the key is absent. This file is the machine-readable half of the configuration tables in docs/IMPLEMENTATION-PIPELINE-SPEC.md, docs/REVIEW-PIPELINE-SPEC.md and README.md, which remain the prose authority on what each key means. `default` here records what the code actually falls back to; a key listed in `required` has no fallback anywhere and must be set. Values in this file are the product's, not this installation's: Poetic's own choices live in config.json. A leaf's `x-docs.value`, where present, carries the two documents' own value cell (scripts/render-config-table.sh) \u2014 and doubles as a claim about which installation it describes: equal to this key's own `default`, it documents the product's shipped behaviour, and no installation's config.json is checked against it; differing from the default, it documents Poetic's own choice for this key, and scripts/doctor.sh (lib/config-schema.sh's config_documented_value_mismatches) warns if a live config.json ever resolves that key to something else (issue #567).",
+  "description": "The shape of config.json: every key an installation may set, its type, its constraints, and — where the code has one — the value used when the key is absent. This file is the machine-readable half of the configuration tables in docs/IMPLEMENTATION-PIPELINE-SPEC.md, docs/REVIEW-PIPELINE-SPEC.md and README.md, which remain the prose authority on what each key means. `default` here records what the code actually falls back to; a key listed in `required` has no fallback anywhere and must be set. Values in this file are the product's, not this installation's: Poetic's own choices live in config.json. A leaf's `x-docs.value`, where present, carries the two documents' own value cell (scripts/render-config-table.sh) — and doubles as a claim about which installation it describes: equal to this key's own `default`, it documents the product's shipped behaviour, and no installation's config.json is checked against it; differing from the default, it documents Poetic's own choice for this key, and scripts/doctor.sh (lib/config-schema.sh's config_documented_value_mismatches) warns if a live config.json ever resolves that key to something else (issue #567).",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -48,7 +48,7 @@
             }
           },
           "implementation_plan_path": {
-            "description": "Path, relative to this repository's root, of its implementation-plan document. Required whenever `sources` lists `implementation-plan` \u2014 that source has no path of its own outside this config, and agent-cycle.sh refuses to start without it.",
+            "description": "Path, relative to this repository's root, of its implementation-plan document. Required whenever `sources` lists `implementation-plan` — that source has no path of its own outside this config, and agent-cycle.sh refuses to start without it.",
             "type": "string",
             "minLength": 1
           },
@@ -116,7 +116,12 @@
           "merge_autonomy": {
             "description": "Override for the top-level merge_autonomy key, for this repository only. Absent means this repository follows the top-level key.",
             "type": "string",
-            "enum": ["human", "agent-approves", "agent-merges-routine", "agent-merges-all"]
+            "enum": [
+              "human",
+              "agent-approves",
+              "agent-merges-routine",
+              "agent-merges-all"
+            ]
           },
           "merge_budget_per_day": {
             "description": "Override for the top-level merge_budget_per_day key, for this repository only. Absent means this repository follows the top-level key.",
@@ -146,7 +151,11 @@
             "uniqueItems": true,
             "items": {
               "type": "string",
-              "enum": ["low", "medium", "high"]
+              "enum": [
+                "low",
+                "medium",
+                "high"
+              ]
             }
           },
           "landing_cool_off_hours": {
@@ -157,7 +166,10 @@
           "escalation_autonomy": {
             "description": "Override for the top-level escalation_autonomy key, for this repository only. Absent means this repository follows the top-level key.",
             "type": "string",
-            "enum": ["always-escalate", "adjudicate-first"]
+            "enum": [
+              "always-escalate",
+              "adjudicate-first"
+            ]
           }
         }
       },
@@ -168,19 +180,19 @@
             "list": [
               "`security` (open Dependabot + security code-scanning alerts) is always first, and any security-related item is prioritised ahead of all non-security work.",
               "`issues:urgent` comes second and likewise outranks the repo walk, because an issue you have marked `Urgent` is the strongest thing you can say short of a security alert.",
-              "`review-feedback` (agent PRs where you asked for changes we haven't answered yet) comes third and also outranks the repo walk \u2014 finishing beats starting, and a stuck PR otherwise occupies a back-pressure slot forever.",
-              "`merge-conflicts` (agent PRs otherwise ready for review or merge but conflicting with their base) comes fourth for the same reason \u2014 a rebase-and-resolve unblocks a PR you are waiting to land, and nothing else on it can proceed until it merges cleanly.",
+              "`review-feedback` (agent PRs where you asked for changes we haven't answered yet) comes third and also outranks the repo walk — finishing beats starting, and a stuck PR otherwise occupies a back-pressure slot forever.",
+              "`merge-conflicts` (agent PRs otherwise ready for review or merge but conflicting with their base) comes fourth for the same reason — a rebase-and-resolve unblocks a PR you are waiting to land, and nothing else on it can proceed until it merges cleanly.",
               "`dequeued` (agent PRs GitHub's merge queue removed over a merge-group checks failure without merging) comes fifth, alongside `merge-conflicts`: a real defect in the pull request itself, of the same \"finishing beats starting\" kind, just surfaced by the queue's speculative merge rather than by git.",
               "`human-visibility` (an agent PR the sweep could not confirm a human was actually asked to review, or nudge, after `human_nudge_idle_hours` idle) comes sixth, ranked with the sources around it rather than beside `register-hygiene`: finished work invisible to the human whose merge everything waits on is the same \"finishing beats starting\" gap, not a cosmetic repair.",
-              "`abandoned-drafts` (draft PRs this system raised and then left untouched past `abandoned_draft_after_hours`) comes seventh for the same reason \u2014 finishing a stalled draft of ours turns a slot silted with a dead draft into a PR you can merge.",
+              "`abandoned-drafts` (draft PRs this system raised and then left untouched past `abandoned_draft_after_hours`) comes seventh for the same reason — finishing a stalled draft of ours turns a slot silted with a dead draft into a PR you can merge.",
               "`project-review` (the latest repository review's recommendations that aren't already tech-debt or issues) sits just above `issues:low` and `code-quality` (non-security code-scanning findings).",
-              "`register-hygiene` (the repo's tech-debt register failing its own consistency check \u2014 an item file whose frontmatter disagrees with its filename, its declared scope, or itself) is last, because a deterministic cosmetic repair must never outrank real work, and each repo's `tech-debt-register` CI check keeps its volume near zero anyway."
+              "`register-hygiene` (the repo's tech-debt register failing its own consistency check — an item file whose frontmatter disagrees with its filename, its declared scope, or itself) is last, because a deterministic cosmetic repair must never outrank real work, and each repo's `tech-debt-register` CI check keeps its volume near zero anyway."
             ]
           },
-          "The four `issues:<band>` tokens are the *same* source at four ranks, banded by each issue's `Priority` field \u2014 see \"Issue priority\" below; list a subset to have the pipeline see only those bands, or none to turn issues off for that repo. Adding a repo or source is a config-only change.",
-          "At runtime, repos are ordered most-overdue first \u2014 each repo's default-branch staleness age scaled by `1.25^(-nice)` \u2014 ahead of this list order; with no `nice` set anywhere that is least-recently-updated first, exactly as before.",
-          "A repo entry that lists `implementation-plan` must also carry `implementation_plan_path` \u2014 the path, relative to that repo's root, of its plan document (poetic-fiddle's is `docs/IMPLEMENTATION-PLAN.md`); the Co-Ordinator reads whatever this says, so a repo with a differently named or located plan needs no prompt change, only its own path. The Script refuses to start a cycle if a repo lists the source without it \u2014 a repo that doesn't list `implementation-plan` needs no such key.",
-          "A repo entry may also carry `nice` \u2014 an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo \u2014 the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range.",
+          "The four `issues:<band>` tokens are the *same* source at four ranks, banded by each issue's `Priority` field — see \"Issue priority\" below; list a subset to have the pipeline see only those bands, or none to turn issues off for that repo. Adding a repo or source is a config-only change.",
+          "At runtime, repos are ordered most-overdue first — each repo's default-branch staleness age scaled by `1.25^(-nice)` — ahead of this list order; with no `nice` set anywhere that is least-recently-updated first, exactly as before.",
+          "A repo entry that lists `implementation-plan` must also carry `implementation_plan_path` — the path, relative to that repo's root, of its plan document (poetic-fiddle's is `docs/IMPLEMENTATION-PLAN.md`); the Co-Ordinator reads whatever this says, so a repo with a differently named or located plan needs no prompt change, only its own path. The Script refuses to start a cycle if a repo lists the source without it — a repo that doesn't list `implementation-plan` needs no such key.",
+          "A repo entry may also carry `nice` — an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo — the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range.",
           "A non-zero `nice` shows as a badge against that repo in the dashboard's work-sources panel, naming the value and the weighting it buys; a repo at `0` or with no key shows nothing there, so a fleet that has set none sees the panel unchanged.",
           "A repo entry may also carry `stage_timeouts` and `stage_inactivity` — the per-repo form of the `timeout_<actor>` and `inactivity_<actor>` keys below, each an object in minutes keyed `coordinator`, `implementer`, `reviewer`, `approver` and `enabler`, any subset of them. The Refiner spans repos, so it has no per-repo form and takes `timeout_refiner` / `inactivity_refiner` only. A repo's entry is the most specific level of the precedence — this entry, then the fleet-wide key, then the derived value — so set one only to insist on a number for one repo; omit them and both the backstop and the watchdog tune themselves. `scripts/doctor.sh`'s pinned-cap warning covers every level, naming the repo for a per-repo override.",
           "A repo entry may also carry `merge_autonomy` — the per-repo override of the top-level key of the same name, on the same precedence: this entry wins when present, the top-level key otherwise. Omit it and the repository follows the fleet-wide default.",
@@ -199,17 +211,17 @@
         ],
         "spec": [
           "Work-source lists per repo as in the table above (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `dequeued`, `human-visibility`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`); structure the config so a repo or source can be added without code changes.",
-          "The `issues:<band>` tokens are the one source that appears more than once \u2014 the same `issues` source at four ranks (requirement 15e). A repo that lists none of them has the issues source off; one that lists a subset sees only issues in those bands.",
-          "A repo entry may also carry `implementation_plan_path` \u2014 the path, relative to that repo's root, of its plan document; required whenever `sources` lists `implementation-plan` (requirement 3k), since that source has no path of its own outside this config. poetic-fiddle's is `docs/IMPLEMENTATION-PLAN.md`.",
-          "A repo entry may also carry `nice` \u2014 an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo \u2014 the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range.",
-          "A repo entry may also carry `stage_timeouts` and `stage_inactivity` \u2014 per-actor overrides in minutes, keyed `coordinator`, `implementer`, `reviewer`, `approver` and `enabler`, for that repository alone. They are the most specific level of requirement 4f's precedence, ahead of the plain `timeout_<actor>` / `inactivity_<actor>` key and ahead of the derivation; the Refiner, spanning repositories, has no per-repository form. Configuration is read, never written: requirement 4f's derivation never writes back to `config.json`.",
-          "A repo entry may also carry `merge_autonomy` \u2014 the per-repository override of the top-level key of the same name (D18, requirement 2.3b), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
-          "A repo entry may also carry `merge_budget_per_day` \u2014 the per-repository override of the top-level key of the same name (D18, requirement 2.3c), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
-          "A repo entry may also carry `merge_autonomy_routine_sources` \u2014 the per-repository override of the top-level key of the same name (D18 WI-7, requirement 8d), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
-          "A repo entry may also carry `merge_autonomy_protected_paths` \u2014 the per-repository override of the top-level key of the same name (D18 Stage 3, agent-ops#724), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise. The top-level default is agent-ops's own nine gate paths, which govern nothing outside agent-ops itself \u2014 a repository landing routine-tier pull requests should declare the paths that actually gate *its* release rather than inherit agent-ops's.",
-          "A repo entry may also carry `merge_autonomy_routine_complexity` \u2014 the per-repository override of the top-level key of the same name (D18 Stage 3, requirement 8d, agent-ops#725), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
-          "A repo entry may also carry `landing_cool_off_hours` \u2014 the per-repository override of the top-level key of the same name (D18 WI-12, agent-ops#415), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
-          "A repo entry may also carry `escalation_autonomy` \u2014 the per-repository override of the top-level key of the same name (D18, agent-ops#627), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
+          "The `issues:<band>` tokens are the one source that appears more than once — the same `issues` source at four ranks (requirement 15e). A repo that lists none of them has the issues source off; one that lists a subset sees only issues in those bands.",
+          "A repo entry may also carry `implementation_plan_path` — the path, relative to that repo's root, of its plan document; required whenever `sources` lists `implementation-plan` (requirement 3k), since that source has no path of its own outside this config. poetic-fiddle's is `docs/IMPLEMENTATION-PLAN.md`.",
+          "A repo entry may also carry `nice` — an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo — the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range.",
+          "A repo entry may also carry `stage_timeouts` and `stage_inactivity` — per-actor overrides in minutes, keyed `coordinator`, `implementer`, `reviewer`, `approver` and `enabler`, for that repository alone. They are the most specific level of requirement 4f's precedence, ahead of the plain `timeout_<actor>` / `inactivity_<actor>` key and ahead of the derivation; the Refiner, spanning repositories, has no per-repository form. Configuration is read, never written: requirement 4f's derivation never writes back to `config.json`.",
+          "A repo entry may also carry `merge_autonomy` — the per-repository override of the top-level key of the same name (D18, requirement 2.3b), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
+          "A repo entry may also carry `merge_budget_per_day` — the per-repository override of the top-level key of the same name (D18, requirement 2.3c), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
+          "A repo entry may also carry `merge_autonomy_routine_sources` — the per-repository override of the top-level key of the same name (D18 WI-7, requirement 8d), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
+          "A repo entry may also carry `merge_autonomy_protected_paths` — the per-repository override of the top-level key of the same name (D18 Stage 3, agent-ops#724), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise. The top-level default is agent-ops's own nine gate paths, which govern nothing outside agent-ops itself — a repository landing routine-tier pull requests should declare the paths that actually gate *its* release rather than inherit agent-ops's.",
+          "A repo entry may also carry `merge_autonomy_routine_complexity` — the per-repository override of the top-level key of the same name (D18 Stage 3, requirement 8d, agent-ops#725), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
+          "A repo entry may also carry `landing_cool_off_hours` — the per-repository override of the top-level key of the same name (D18 WI-12, agent-ops#415), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
+          "A repo entry may also carry `escalation_autonomy` — the per-repository override of the top-level key of the same name (D18, agent-ops#627), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
           "Every optional key sits on the repository's own entry, beside `slug` and `sources`:",
           {
             "code": "\"repos\": [\n  {\n    \"slug\": \"Poetic-Poems/poetic\",\n    \"sources\": [\"security\", \"issues:urgent\", \"tech-debt\", \"issues:low\"]\n  },\n  {\n    \"slug\": \"Poetic-Poems/poetic-fiddle\",\n    \"sources\": [\"security\", \"issues:urgent\", \"implementation-plan\", \"issues:low\"],\n    \"implementation_plan_path\": \"docs/IMPLEMENTATION-PLAN.md\",\n    \"nice\": -5,\n    \"stage_timeouts\": { \"implementer\": 90 },\n    \"stage_inactivity\": { \"implementer\": 20 }\n  }\n]",
@@ -248,42 +260,51 @@
       "pattern": "^$|^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
       "default": "",
       "x-docs": {
-        "readme": "Private repository through which `state_dir` replicates between nodes. See [Keeping every node warm](#keeping-every-node-warm). Leave it out and nothing syncs \u2014 a single-node install behaves exactly as before.",
+        "readme": "Private repository through which `state_dir` replicates between nodes. See [Keeping every node warm](#keeping-every-node-warm). Leave it out and nothing syncs — a single-node install behaves exactly as before.",
         "spec": "The private repository through which `state_dir` replicates between nodes (requirement 2.5). Its `main` carries the small shared surface: the claim registry (requirement 17a) and the fleet flags `fleet/disabled.json` and `fleet/limit.json` (requirements 2.3a and 2.1). Unset means a single-node operation: every mode of `scripts/state-sync.sh` becomes a no-op, and the fleet-flag reads and writes quietly do nothing.",
         "value": "`Poetic-Poems/agent-ops-state`"
       }
     },
     "cycles_retained": {
-      "description": "Cycle directories kept in the replicated mirror. Bounds a repository that is force-pushed after every cycle.",
+      "description": "Cycle directories kept in the replicated mirror, bounding a repository that is force-pushed after every cycle. A span of history, not a literal count (requirement 1c): absent, it is derived from `schedule.cycle_interval_minutes` (and `cycle_hours`/`excluded_minutes`) to hold the same ~8.3 days 200 cycles was sized for at the historical hourly cadence; a configured value is a floor under that derivation, never a ceiling, so it can still be raised by a faster cadence but never lowered by one.",
       "type": "integer",
       "minimum": 1,
-      "default": 200,
       "x-docs": {
-        "readme": "Cycle directories kept in the replicated copy \u2014 bounds disk use at whatever cadence `schedule.cycle_interval_minutes` sets (about eight days' worth at the historical hourly default). Your own `state_dir` is not pruned.",
-        "spec": "Cycle directories kept in the replicated mirror \u2014 bounds disk use at whatever cadence `schedule.cycle_interval_minutes` sets (about eight days' worth at the historical hourly default). Bounds a repository that is force-pushed after every cycle. The node's own `state_dir` is bounded by `state_local_cycles_retained` instead."
+        "readme": "Cycle directories kept in the replicated copy — bounds disk use, derived from `schedule.cycle_interval_minutes` to hold ~8.3 days of history regardless of cadence (requirement 1c); a configured value floors it, never caps it. Your own `state_dir` is not pruned.",
+        "spec": "Cycle directories kept in the replicated mirror — bounds a repository that is force-pushed after every cycle. A span of history, not a literal cycle count (requirement 1c): derived from the worst-case gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`) to hold the ~8.3 days 200 cycles represented at the historical hourly cadence; a configured value floors the derivation rather than replacing it, the same shape `lock_stale_after` (requirement 4f) already uses. The node's own `state_dir` is bounded by `state_local_cycles_retained` instead.",
+        "value": {
+          "readme": "*(unset)*",
+          "spec": "*(unset)*"
+        }
       }
     },
     "state_local_cycles_retained": {
-      "description": "Cycle and review directories the node's own `state_dir` keeps; the same push that replicates prunes to it. Deliberately far above `cycles_retained`, so the local machine is always the longer record.",
+      "description": "Cycle and review directories the node's own `state_dir` keeps; the same push that replicates prunes to it. Deliberately far above `cycles_retained`, so the local machine is always the longer record. A span of history, not a literal count (requirement 1c): absent, it is derived from `schedule.cycle_interval_minutes` to hold the same ~41.7 days 1000 cycles was sized for at the historical hourly cadence; a configured value is a floor under that derivation, never a ceiling.",
       "type": "integer",
       "minimum": 1,
-      "default": 1000,
       "x-docs": {
-        "spec": "Cycle and review directories the node's *own* `state_dir` keeps \u2014 bounds disk use at whatever cadence `schedule.cycle_interval_minutes` sets (about six weeks' worth at the historical hourly default); the same push that replicates prunes to it (requirement 2.5). Deliberately far above `cycles_retained`, so the local machine is always the longer record, with a floor of one protecting the cycle being recorded. `STATE_SYNC_LOCAL_RETAINED` overrides it for tests."
+        "spec": "Cycle and review directories the node's *own* `state_dir` keeps; the same push that replicates prunes to it (requirement 2.5). Deliberately far above `cycles_retained`, so the local machine is always the longer record, with a floor of one protecting the cycle being recorded. A span of history, not a literal cycle count (requirement 1c): derived from the worst-case gap between cycles to hold the ~41.7 days 1000 cycles represented at the historical hourly cadence; a configured value floors the derivation rather than replacing it. `STATE_SYNC_LOCAL_RETAINED` overrides it for tests.",
+        "value": {
+          "readme": "*(unset)*",
+          "spec": "*(unset)*"
+        }
       }
     },
     "state_local_streams_retained": {
-      "description": "Cycle and review directories whose derived files (the stage event streams `*.stream.jsonl` and the fleet-log snapshot `.fleet-log.jsonl`) the node keeps. Far below state_local_cycles_retained because each is orders of magnitude larger than the record holding it; the records themselves are unaffected.",
+      "description": "Cycle and review directories whose derived files (the stage event streams `*.stream.jsonl` and the fleet-log snapshot `.fleet-log.jsonl`) the node keeps. Far below state_local_cycles_retained because each is orders of magnitude larger than the record holding it; the records themselves are unaffected. A span of history, not a literal count (requirement 1c): absent, it is derived from `schedule.cycle_interval_minutes` to hold the same ~2.1 days 50 cycles was sized for at the historical hourly cadence; a configured value is a floor under that derivation, never a ceiling.",
       "type": "integer",
       "minimum": 1,
-      "default": 50,
       "x-docs": {
-        "readme": "Cycle and review directories whose derived files are kept \u2014 the stage event streams (`<stage>.stream.jsonl`) and the fleet-log snapshot (`.fleet-log.jsonl`). Both are large and local-only \u2014 never replicated \u2014 so they are bounded well below `state_local_cycles_retained`; the records themselves are untouched.",
-        "spec": "Cycle and review directories whose derived files are kept \u2014 the stage event streams (`<stage>.stream.jsonl`, requirement 4d) and the fleet-log snapshot (`.fleet-log.jsonl`, requirement 2.5); the push that replicates prunes to it (requirement 2.5). Far below `state_local_cycles_retained` because each is a different order of size from the record holding it \u2014 a cycle directory without them is kilobytes, one Reviewer stream megabytes, one snapshot the whole fleet's history to that moment \u2014 so they go early and their records stay. Neither reaches the state repository. `STATE_SYNC_STREAMS_RETAINED` overrides it for tests."
+        "readme": "Cycle and review directories whose derived files are kept — the stage event streams (`<stage>.stream.jsonl`) and the fleet-log snapshot (`.fleet-log.jsonl`). Both are large and local-only — never replicated — so they are bounded well below `state_local_cycles_retained`; the records themselves are untouched. Derived from `schedule.cycle_interval_minutes` to hold ~2.1 days regardless of cadence (requirement 1c); a configured value floors it, never caps it.",
+        "spec": "Cycle and review directories whose derived files are kept — the stage event streams (`<stage>.stream.jsonl`, requirement 4d) and the fleet-log snapshot (`.fleet-log.jsonl`, requirement 2.5); the push that replicates prunes to it (requirement 2.5). Far below `state_local_cycles_retained` because each is a different order of size from the record holding it — a cycle directory without them is kilobytes, one Reviewer stream megabytes, one snapshot the whole fleet's history to that moment — so they go early and their records stay. Neither reaches the state repository. A span of history, not a literal cycle count (requirement 1c): derived from the worst-case gap between cycles to hold the ~2.1 days 50 cycles represented at the historical hourly cadence; a configured value floors the derivation rather than replacing it. `STATE_SYNC_STREAMS_RETAINED` overrides it for tests.",
+        "value": {
+          "readme": "*(unset)*",
+          "spec": "*(unset)*"
+        }
       }
     },
     "log_retained_bytes": {
-      "description": "Size at which scripts/rotate-logs.sh rotates dashboard.log, state-sync.log, doctor.log, revert-rate.log, cron.log and review-cron.log. log.jsonl, review-log.jsonl and revert-rate.jsonl are never rotated regardless of size.",
+      "description": "Size at which scripts/rotate-logs.sh rotates dashboard.log, state-sync.log, doctor.log, revert-rate.log, cron.log and review-cron.log. log.jsonl, review-log.jsonl and revert-rate.jsonl are never rotated regardless of size. Independent of `schedule.cycle_interval_minutes` (requirement 1c): rotation triggers on size, which self-corrects regardless of how often the log is written to.",
       "type": "integer",
       "minimum": 1,
       "default": 2000000,
@@ -293,13 +314,13 @@
       }
     },
     "log_generations": {
-      "description": "Rotated generations of each log kept beside the live file (`<name>.1` \u2026 `<name>.<log_generations>`).",
+      "description": "Rotated generations of each log kept beside the live file (`<name>.1` … `<name>.<log_generations>`).",
       "type": "integer",
       "minimum": 1,
       "default": 3,
       "x-docs": {
-        "readme": "Rotated generations kept beside each live log (`<name>.1` \u2026 `<name>.<log_generations>`).",
-        "spec": "Rotated generations of each log kept beside the live file (`<name>.1` \u2026 `<name>.<log_generations>`), floored at one. `ROTATE_LOGS_GENERATIONS` overrides it for tests."
+        "readme": "Rotated generations kept beside each live log (`<name>.1` … `<name>.<log_generations>`).",
+        "spec": "Rotated generations of each log kept beside the live file (`<name>.1` … `<name>.<log_generations>`), floored at one. `ROTATE_LOGS_GENERATIONS` overrides it for tests."
       }
     },
     "coordinator_model": {
@@ -343,7 +364,7 @@
       "description": "The Reviewer's model for work graded `complexity:high`. Empty falls back to `reviewer_model_default`, which switches the escalation off.",
       "default": "",
       "x-docs": {
-        "readme": "The same gate for work graded `complexity:high` \u2014 the Implementer grades each PR ex post and labels it; the higher of that grade and the PR's existing label picks the tier. Leave it empty to review everything on `reviewer_model_default`.",
+        "readme": "The same gate for work graded `complexity:high` — the Implementer grades each PR ex post and labels it; the higher of that grade and the PR's existing label picks the tier. Leave it empty to review everything on `reviewer_model_default`.",
         "spec": "Reviews of `high`-complexity work (requirement 8a). Empty falls back to `reviewer_model_default`, which switches the escalation off.",
         "value": "`claude-opus-5`"
       }
@@ -379,13 +400,13 @@
       }
     },
     "approver_restale_escalate_after_hours": {
-      "description": "Hours a pull request may carry a standing Approver CHANGES_REQUESTED whose commit_id is stale (a push landed since, but with no commit authored after the review \u2014 a rebase-only push, never genuine progress) before the fleet-wide restale sweep escalates it instead of retrying. Bounds a rebase-only cycle from masquerading as progress and looping forever between the sweep and a peer's own force-push.",
+      "description": "Hours a pull request may carry a standing Approver CHANGES_REQUESTED whose commit_id is stale (a push landed since, but with no commit authored after the review — a rebase-only push, never genuine progress) before the fleet-wide restale sweep escalates it instead of retrying. Bounds a rebase-only cycle from masquerading as progress and looping forever between the sweep and a peer's own force-push.",
       "type": "number",
       "minimum": 0,
       "default": 24,
       "x-docs": {
-        "readme": "Hours a pull request may sit with a stale Approver `CHANGES_REQUESTED` \u2014 its `commit_id` no longer matching the head, but with no commit authored since (a rebase-only push, never a fix) \u2014 before the restale sweep escalates it to `enabler_assignee` instead of retrying forever.",
-        "spec": "Requirement 46: how long the restale sweep (agent-ops#682) tolerates a rebase-only-stale Approver review \u2014 its standing `CHANGES_REQUESTED` `commit_id` mismatched against the pull request's head, but its most recently authored commit no older than the review itself \u2014 before escalating rather than leaving it to retry every cycle indefinitely. Measured from the standing review's own `submitted_at`, which a rebase does not move.",
+        "readme": "Hours a pull request may sit with a stale Approver `CHANGES_REQUESTED` — its `commit_id` no longer matching the head, but with no commit authored since (a rebase-only push, never a fix) — before the restale sweep escalates it to `enabler_assignee` instead of retrying forever.",
+        "spec": "Requirement 46: how long the restale sweep (agent-ops#682) tolerates a rebase-only-stale Approver review — its standing `CHANGES_REQUESTED` `commit_id` mismatched against the pull request's head, but its most recently authored commit no older than the review itself — before escalating rather than leaving it to retry every cycle indefinitely. Measured from the standing review's own `submitted_at`, which a rebase does not move.",
         "value": {
           "readme": "`24`",
           "spec": "24 h"
@@ -394,10 +415,10 @@
     },
     "enabler_model": {
       "$ref": "#/$defs/modelIdOrEmpty",
-      "description": "The Enabler's model \u2014 the highest tier this system runs, affordable only because the eligibility rule engages it rarely. Empty disables the stage.",
+      "description": "The Enabler's model — the highest tier this system runs, affordable only because the eligibility rule engages it rarely. Empty disables the stage.",
       "default": "",
       "x-docs": {
-        "readme": "The Enabler: re-examines long-blocked items and escalates the ones needing you. The most expensive model here, engaged rarely \u2014 see [Blocked items and the Enabler](#blocked-items-and-the-enabler). Leave it empty to switch the stage off.",
+        "readme": "The Enabler: re-examines long-blocked items and escalates the ones needing you. The most expensive model here, engaged rarely — see [Blocked items and the Enabler](#blocked-items-and-the-enabler). Leave it empty to switch the stage off.",
         "spec": "The Enabler (requirement 35). The highest-tier model this system runs, affordable only because the eligibility rule of 35a engages it rarely and the claims of 35c stop it being engaged twice. Empty disables the stage.",
         "value": "`claude-opus-5`"
       }
@@ -407,7 +428,7 @@
       "type": "string",
       "default": "",
       "x-docs": {
-        "readme": "GitHub login every Enabler escalation is assigned to. Required whenever `enabler_model` is set \u2014 the Script refuses to start a cycle rather than raise an unassigned escalation, since the assignment is what excludes the issue from the pipeline's own `issues` source (see [Issue priority](#issue-priority) and requirement 16.4 in the spec).",
+        "readme": "GitHub login every Enabler escalation is assigned to. Required whenever `enabler_model` is set — the Script refuses to start a cycle rather than raise an unassigned escalation, since the assignment is what excludes the issue from the pipeline's own `issues` source (see [Issue priority](#issue-priority) and requirement 16.4 in the spec).",
         "spec": "GitHub login assigned to every escalation issue the Enabler raises (requirement 36a). Required whenever `enabler_model` is set: the Script exits with an error at startup rather than run with it unset, since an unassigned escalation would not be excluded by requirement 16.4 and could be selected as work by the pipeline itself.",
         "value": "`warwickallen`"
       }
@@ -436,13 +457,13 @@
       }
     },
     "enabler_recheck_hours": {
-      "description": "How long after an examination the Enabler may examine the same item again. 0 disables re-examination.",
+      "description": "How long after an examination the Enabler may examine the same item again. 0 disables re-examination. Independent of `schedule.cycle_interval_minutes` (requirement 1c): it measures human-world time — how long before a person is expected to have re-looked at a blocked item — which does not shrink because the pipeline itself runs more often.",
       "type": "number",
       "minimum": 0,
       "default": 72,
       "x-docs": {
-        "readme": "Hours before the Enabler re-examines an item it has already examined. This is the bound on how long new evidence \u2014 a diagnosis posted into the very thread whose absence blocked the item \u2014 can sit unread. `0` switches re-examination off.",
-        "spec": "How long after an examination the Enabler may examine the same item again (requirement 35a). Requirement 18a catches most of the failure mode `TECH-DEBT.md` TD26072101 recorded \u2014 a GitHub issue gaining evidence after it was blocked \u2014 same-cycle, off the issue's own `updated_at`; this bound is the lever for everything that leaves no such signal: every non-issue blocked source, and a blocker that clears without a comment landing on the issue. `0` disables re-examination."
+        "readme": "Hours before the Enabler re-examines an item it has already examined. This is the bound on how long new evidence — a diagnosis posted into the very thread whose absence blocked the item — can sit unread. `0` switches re-examination off.",
+        "spec": "How long after an examination the Enabler may examine the same item again (requirement 35a). Requirement 18a catches most of the failure mode `TECH-DEBT.md` TD26072101 recorded — a GitHub issue gaining evidence after it was blocked — same-cycle, off the issue's own `updated_at`; this bound is the lever for everything that leaves no such signal: every non-issue blocked source, and a blocker that clears without a comment landing on the issue. `0` disables re-examination."
       }
     },
     "enabler_escalation_label": {
@@ -456,7 +477,10 @@
     },
     "escalation_autonomy": {
       "type": "string",
-      "enum": ["always-escalate", "adjudicate-first"],
+      "enum": [
+        "always-escalate",
+        "adjudicate-first"
+      ],
       "default": "always-escalate",
       "description": "The D18 escalation-autonomy ladder: whether an Enabler refinement-disagreement escalation (requirement 36b) goes straight to a human (`always-escalate`) or is adjudicated once first (`adjudicate-first`) by one bounded Enabler adjudication pass, which either confirms the earlier refinement (recorded exactly as an ordinary `unblocked` refinement) or escalates anyway. One pass per item, per human touch: a second disagreement over the same item escalates without adjudicating. A `repos[]` entry's own `escalation_autonomy` overrides this key for that repository alone. `scripts/doctor.sh` warns when a configured level of `adjudicate-first` has no `enabler_model` to run the adjudication pass with. The same level also governs a Reviewer's own open question against a pull request (requirement 8f, agent-ops#668): a distinct adjudication, at the Approver's own critical tier rather than `enabler_model`, sharing the ladder word but not the actor, tier, prompt or event.",
       "x-docs": {
@@ -477,16 +501,16 @@
       "default": "needs-refinement",
       "x-docs": {
         "readme": [
-          "Label put on an **issue** while the pipeline has it recorded as too under-specified to work on, and taken off again when that clears \u2014 see [Items nobody has specified](#items-nobody-has-specified). You can also apply it yourself to flag one directly; the pipeline reads that back the same way.",
-          "The pipeline creates it in every repository it gathers data for, not only the one it happens to work, at most once per `labels_ensure_interval_hours` \u2014 so there is nothing to set up; without it the item is still recorded and still reaches the Enabler, you just do not see it in the issue list, and a label you apply yourself does nothing.",
+          "Label put on an **issue** while the pipeline has it recorded as too under-specified to work on, and taken off again when that clears — see [Items nobody has specified](#items-nobody-has-specified). You can also apply it yourself to flag one directly; the pipeline reads that back the same way.",
+          "The pipeline creates it in every repository it gathers data for, not only the one it happens to work, at most once per `labels_ensure_interval_hours` — so there is nothing to set up; without it the item is still recorded and still reaches the Enabler, you just do not see it in the issue list, and a label you apply yourself does nothing.",
           "Leave it empty to switch the labelling off in both directions.",
           "Do not set it to `blocked`, which is a label that excludes an issue from the pipeline's work source, nor to `obsolete`, which is reserved for a human to mark one of the pipeline's own draft pull requests as unwanted."
         ],
         "spec": [
           "The label the Script projects onto an issue-type item while its refinement block is open (requirement 34e), and removes when the block clears.",
-          "Also the label a human applies by hand to flag an item themselves, which the Script scans every repo's issues for and records as the same kind of block (requirement 34g) \u2014 removing it while that block is open clears it the same way.",
+          "Also the label a human applies by hand to flag an item themselves, which the Script scans every repo's issues for and records as the same kind of block (requirement 34g) — removing it while that block is open clears it the same way.",
           "Empty disables both directions: the log is the record, so the mechanism is unaffected and the item still reaches the Enabler, but there is nothing to scan for and a human's label does nothing.",
-          "It must not be `blocked` \u2014 that label is an exclusion criterion for the `issues` source (requirement 16.4), so projecting it would make the item unselectable even after the refinement landed, the same trap noted against `enabler_escalation_label`. Nor `obsolete`, for the reason given there too."
+          "It must not be `blocked` — that label is an exclusion criterion for the `issues` source (requirement 16.4), so projecting it would make the item unselectable even after the refinement landed, the same trap noted against `enabler_escalation_label`. Nor `obsolete`, for the reason given there too."
         ]
       }
     },
@@ -497,7 +521,7 @@
       "default": 3,
       "x-docs": {
         "readme": "How many under-specified items one Enabler engagement will take on. Ordinary blocked items are never displaced by them, and items over the cap simply wait for a later engagement. `0` switches the refinement work off while still recording it.",
-        "spec": "How many refinement-class items one Enabler engagement takes on (requirement 35d); ordinary blocked items are uncapped and are never displaced by them. The cap exists because the backlog of items silently skipped before requirement 16a existed is unbounded, and an engagement spent entirely on old vagueness would delay the pull request nobody can see. `0` removes the class from engagements entirely \u2014 blocks are still recorded, and the items wait."
+        "spec": "How many refinement-class items one Enabler engagement takes on (requirement 35d); ordinary blocked items are uncapped and are never displaced by them. The cap exists because the backlog of items silently skipped before requirement 16a existed is unbounded, and an engagement spent entirely on old vagueness would delay the pull request nobody can see. `0` removes the class from engagements entirely — blocks are still recorded, and the items wait."
       }
     },
     "refiner_model": {
@@ -547,18 +571,42 @@
         "tech-debt": "preferred"
       },
       "properties": {
-        "security": { "$ref": "#/$defs/refinementPolicyValue" },
-        "review-feedback": { "$ref": "#/$defs/refinementPolicyValue" },
-        "merge-conflicts": { "$ref": "#/$defs/refinementPolicyValue" },
-        "dequeued": { "$ref": "#/$defs/refinementPolicyValue" },
-        "abandoned-drafts": { "$ref": "#/$defs/refinementPolicyValue" },
-        "failed-runs": { "$ref": "#/$defs/refinementPolicyValue" },
-        "tech-debt": { "$ref": "#/$defs/refinementPolicyValue" },
-        "issues": { "$ref": "#/$defs/refinementPolicyValue" },
-        "implementation-plan": { "$ref": "#/$defs/refinementPolicyValue" },
-        "project-review": { "$ref": "#/$defs/refinementPolicyValue" },
-        "code-quality": { "$ref": "#/$defs/refinementPolicyValue" },
-        "register-hygiene": { "$ref": "#/$defs/refinementPolicyValue" }
+        "security": {
+          "$ref": "#/$defs/refinementPolicyValue"
+        },
+        "review-feedback": {
+          "$ref": "#/$defs/refinementPolicyValue"
+        },
+        "merge-conflicts": {
+          "$ref": "#/$defs/refinementPolicyValue"
+        },
+        "dequeued": {
+          "$ref": "#/$defs/refinementPolicyValue"
+        },
+        "abandoned-drafts": {
+          "$ref": "#/$defs/refinementPolicyValue"
+        },
+        "failed-runs": {
+          "$ref": "#/$defs/refinementPolicyValue"
+        },
+        "tech-debt": {
+          "$ref": "#/$defs/refinementPolicyValue"
+        },
+        "issues": {
+          "$ref": "#/$defs/refinementPolicyValue"
+        },
+        "implementation-plan": {
+          "$ref": "#/$defs/refinementPolicyValue"
+        },
+        "project-review": {
+          "$ref": "#/$defs/refinementPolicyValue"
+        },
+        "code-quality": {
+          "$ref": "#/$defs/refinementPolicyValue"
+        },
+        "register-hygiene": {
+          "$ref": "#/$defs/refinementPolicyValue"
+        }
       },
       "x-docs": {
         "readme": "Per source: `required` (never select unrefined), `preferred` (rank refined items first, but an unrefined one may still be picked), or `exempt` (no refinement dimension — the default for every source not listed). Shipped default: `issues` and `tech-debt` both `preferred` — the two sources whose items can otherwise carry a specification the Co-Ordinator composed itself rather than one already written elsewhere (a merge conflict, a review comment, a security finding). See [Refined items and the Refiner](#refined-items-and-the-refiner). Every source the Refiner's own candidate gathering reads — `issues`, `security`, `code-quality`, `review-feedback`, `abandoned-drafts`, `merge-conflicts`, `dequeued`, `register-hygiene`, `tech-debt`, `project-review` and `implementation-plan` — reaches an engagement; the latter two are read only for a repo whose `sources` lists them and whose policy for them is not itself `exempt`. A `required` source with `refiner_model` empty is refused at startup (requirement 1c).",
@@ -571,7 +619,7 @@
       "description": "The label a human applies on GitHub to ask for a void to be reopened. No stage ever applies it, so 'only a human may clear a void' is unchanged; what it gives them is a way to say so from where they are.",
       "default": "unvoided",
       "x-docs": {
-        "readme": "The label you apply on GitHub to ask for a voided item to be reopened \u2014 see [Blocked and void items](#blocked-and-void-items). No stage ever applies it, so \"only a human may clear a void\" still holds; this is just a way to say so from the issue itself. The pipeline creates it in every repository it gathers data for, not only the one it happens to work, at most once per `labels_ensure_interval_hours`; `scripts/doctor.sh` warns while a repo has not got it yet. Do not set it to `blocked` or `obsolete`.",
+        "readme": "The label you apply on GitHub to ask for a voided item to be reopened — see [Blocked and void items](#blocked-and-void-items). No stage ever applies it, so \"only a human may clear a void\" still holds; this is just a way to say so from the issue itself. The pipeline creates it in every repository it gathers data for, not only the one it happens to work, at most once per `labels_ensure_interval_hours`; `scripts/doctor.sh` warns while a repo has not got it yet. Do not set it to `blocked` or `obsolete`.",
         "spec": "The label a human applies on GitHub to ask for a void to be reopened (requirement 34f). No stage here ever applies it, so requirement 34c's \"only a human may clear a void\" is unchanged; what it adds is a way to say so from the issue itself. It must not be `blocked`, for the reason given against `enabler_escalation_label`. Nor `obsolete`: the label a human applied to ask for a voided pull request to be reopened would itself corroborate requirement 34k closing it."
       }
     },
@@ -597,7 +645,7 @@
       }
     },
     "void_retire_after_days": {
-      "description": "How old a fully-actioned void (its GitHub object closed, or its register row read resolved/not-debt) must be before it is dropped from the extract. 0 disables retirement.",
+      "description": "How old a fully-actioned void (its GitHub object closed, or its register row read resolved/not-debt) must be before it is dropped from the extract. 0 disables retirement. Independent of `schedule.cycle_interval_minutes` (requirement 1c): it measures human-world time — how long a voided item stays worth a human reopening — which does not shrink because the pipeline itself runs more often.",
       "type": "integer",
       "minimum": 0,
       "default": 30,
@@ -648,7 +696,7 @@
       }
     },
     "branch_prefix": {
-      "description": "Branch naming for the implementation pipeline: `<branch_prefix><item-slug>`. Branches outside it belong to humans \u2014 the Landing Gate reads this to tell ours from theirs, so it must not be empty.",
+      "description": "Branch naming for the implementation pipeline: `<branch_prefix><item-slug>`. Branches outside it belong to humans — the Landing Gate reads this to tell ours from theirs, so it must not be empty.",
       "type": "string",
       "minLength": 1,
       "x-docs": {
@@ -662,7 +710,7 @@
       "type": "string",
       "default": "td/",
       "x-docs": {
-        "readme": "Branch naming for the human tech-debt-claim protocol (`TECH-DEBT.md`): `<tech_debt_branch_prefix><ID>`. Leave it empty for a repository that does not follow that convention \u2014 the affected scripts then match only `branch_prefix`.",
+        "readme": "Branch naming for the human tech-debt-claim protocol (`TECH-DEBT.md`): `<tech_debt_branch_prefix><ID>`. Leave it empty for a repository that does not follow that convention — the affected scripts then match only `branch_prefix`.",
         "spec": "Branch name `<tech_debt_branch_prefix><ID>`, e.g. `td/TD26051201`, read wherever `lib/claim.sh` and the gatherer/sweep scripts of requirements 3c/3e/3g/3z/17b must tell a human's tech-debt claim branch from their own agent's. Empty disables the tech-debt namespace: those scripts then match only `branch_prefix`.",
         "value": "`td/`"
       }
@@ -688,12 +736,12 @@
       }
     },
     "coordinator_prompt_max_bytes": {
-      "description": "The largest assembled prompt the Script will hand the Co-Ordinator. What overflows a context window is the whole prompt, not the runtime input alone, so the Script measures the rendered base prompt, subtracts it, and trims the two whole-document bands (issues threads and tech-debt item files) into what is left \u2014 shedding prose, never candidacy, and marking every cut with where the whole of it can be read. 0 disables the bound.",
+      "description": "The largest assembled prompt the Script will hand the Co-Ordinator. What overflows a context window is the whole prompt, not the runtime input alone, so the Script measures the rendered base prompt, subtracts it, and trims the two whole-document bands (issues threads and tech-debt item files) into what is left — shedding prose, never candidacy, and marking every cut with where the whole of it can be read. 0 disables the bound.",
       "type": "integer",
       "minimum": 0,
       "default": 350000,
       "x-docs": {
-        "readme": "The largest assembled prompt the Script will hand the Co-Ordinator. What a context window rejects is the whole prompt, not the runtime input alone, so the Script measures the rendered base prompt, subtracts it, and trims the two bands that carry a whole document each \u2014 an issue's entire thread and a tech-debt item's entire file \u2014 into what is left. Prose is shed and candidacy is not: every entry stays selectable, and every cut carries a marker naming how many bytes went and the URL to read it whole. Raise it for a Co-Ordinator model with a larger context window; `0` disables the bound, which is how every release before this key behaved.",
+        "readme": "The largest assembled prompt the Script will hand the Co-Ordinator. What a context window rejects is the whole prompt, not the runtime input alone, so the Script measures the rendered base prompt, subtracts it, and trims the two bands that carry a whole document each — an issue's entire thread and a tech-debt item's entire file — into what is left. Prose is shed and candidacy is not: every entry stays selectable, and every cut carries a marker naming how many bytes went and the URL to read it whole. Raise it for a Co-Ordinator model with a larger context window; `0` disables the bound, which is how every release before this key behaved.",
         "spec": "The largest assembled prompt the Script will hand the Co-Ordinator (requirement 4i). The default is derived from the 200000-token window of the Co-Ordinator model this installation runs, less the ~50000 tokens of system prompt and tool definitions the Script neither assembles nor can measure, less a reserve for the verdict itself, at the ~2.35 bytes per token JSON-escaped Markdown actually costs. Stated in bytes because bytes are what the Script can count without a tokenizer. `0` disables the bound."
       }
     },
@@ -708,34 +756,36 @@
       }
     },
     "claim_ttl_hours": {
-      "description": "Age beyond which lib/claim.sh sweeps a claim-registry entry. Set it far beyond a whole cycle, so only a dead node's claim ever expires.",
+      "description": "Age beyond which lib/claim.sh sweeps a claim-registry entry. Set it far beyond a whole cycle, so only a dead node's claim ever expires. \"A whole cycle\" is 6 cadence firings, not a literal count of hours (requirement 1c): absent, it is derived from schedule.cycle_interval_minutes (and cycle_hours/excluded_minutes) so it stays 6 firings wide at whatever cadence is configured; a configured value is a floor under that derivation, never a ceiling.",
       "type": "number",
       "exclusiveMinimum": 0,
-      "default": 6,
       "x-docs": {
-        "readme": "Hours before a dead node's claim-registry entry is swept (`lib/claim.sh gc`); far beyond one full cycle.",
-        "spec": "Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry \u2014 far beyond a whole cycle (120 min Implementer + 60 min Reviewer), so only a dead node's claim ever expires. The branch itself is deleted only if untouched and PR-less."
+        "readme": "Hours before a dead node's claim-registry entry is swept (`lib/claim.sh gc`) — derived from `schedule.cycle_interval_minutes` to stay 6 firings wide at whatever cadence is configured (requirement 1c); a configured value floors it, never caps it.",
+        "spec": "Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry — far beyond a whole cycle, so only a dead node's claim ever expires. \"A whole cycle\" means 6 cadence firings (requirement 1c), not a fixed 6 h: derived from the worst-case gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`); a configured value floors the derivation rather than replacing it, the same shape `lock_stale_after` (requirement 4f) already uses. The branch itself is deleted only if untouched and PR-less.",
+        "value": {
+          "readme": "*(unset)*",
+          "spec": "*(unset)*"
+        }
       }
     },
     "abandoned_draft_after_hours": {
-      "description": "How long a draft pull request this system raised may sit without real activity before it counts as abandoned and finishing it becomes selectable work. Beyond a whole cycle, so a draft merely being worked never qualifies.",
+      "description": "How long a draft pull request this system raised may sit without real activity before it counts as abandoned and finishing it becomes selectable work. Beyond a whole cycle, so a draft merely being worked never qualifies. \"A whole cycle\" is 4 cadence firings, not a literal count of hours (requirement 1c): absent, it is derived from schedule.cycle_interval_minutes (and cycle_hours/excluded_minutes) so it stays 4 firings wide at whatever cadence is configured; a configured value is a floor under that derivation, never a ceiling.",
       "type": "number",
       "exclusiveMinimum": 0,
-      "default": 3,
       "x-docs": {
-        "readme": "Hours a draft PR this system raised may sit untouched before it counts as abandoned and finishing it becomes selectable work (the `abandoned-drafts` source). Beyond one full cycle, so a draft still being worked never qualifies. Also the staleness threshold `scripts/sweep-orphan-branches.sh` uses.",
+        "readme": "Hours a draft PR this system raised may sit untouched before it counts as abandoned and finishing it becomes selectable work (the `abandoned-drafts` source) — derived from `schedule.cycle_interval_minutes` to stay 4 firings wide at whatever cadence is configured (requirement 1c); a configured value floors it, never caps it. Also the staleness threshold `scripts/sweep-orphan-branches.sh` uses.",
         "spec": [
-          "How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day.",
-          "Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case Implementer-plus-Reviewer cycle to 180 minutes and would otherwise have left this threshold no margin at all."
+          "How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. \"A whole cycle\" means 4 cadence firings (requirement 1c), not a fixed number of hours: derived from the worst-case gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`); a configured value floors the derivation rather than replacing it.",
+          "Raised 3 h → 4 h (cycles, at the historical hourly cadence) alongside the interim timeout raises of #203, which took a worst-case Implementer-plus-Reviewer cycle to 180 minutes and would otherwise have left this threshold no margin at all."
         ],
         "value": {
-          "readme": "`4`",
-          "spec": "4 h"
+          "readme": "*(unset)*",
+          "spec": "*(unset)*"
         }
       }
     },
     "human_nudge_idle_hours": {
-      "description": "Hours an approved, green, mergeable pull request this system raised may sit with nothing further to do before scripts/sweep-human-visibility.sh posts a one-time nudge comment. 0 disables the nudge (the live review request keeps being ensured regardless).",
+      "description": "Hours an approved, green, mergeable pull request this system raised may sit with nothing further to do before scripts/sweep-human-visibility.sh posts a one-time nudge comment. 0 disables the nudge (the live review request keeps being ensured regardless). Independent of `schedule.cycle_interval_minutes` (requirement 1c): it measures human-world time — how long before a person is expected to have looked at an idle, ready pull request — which does not shrink because the pipeline itself runs more often.",
       "type": "number",
       "minimum": 0,
       "default": 24,
@@ -749,7 +799,7 @@
       }
     },
     "merge_queue_dequeue_notice_max_age_hours": {
-      "description": "Hours a merge-queue-dequeue notice comment (requirement 38f) may still fire for after the removal event's own dequeued_at. Bounds the notice to genuinely new information, so a removal event that predates this feature is not read as fresh merely because a sweep is only now seeing it for the first time. 0 disables the notice entirely — a repository running without a merge queue loses the only human signal for a merge-group failure and should say so explicitly rather than via a near-zero value.",
+      "description": "Hours a merge-queue-dequeue notice comment (requirement 38f) may still fire for after the removal event's own dequeued_at. Bounds the notice to genuinely new information, so a removal event that predates this feature is not read as fresh merely because a sweep is only now seeing it for the first time. 0 disables the notice entirely — a repository running without a merge queue loses the only human signal for a merge-group failure and should say so explicitly rather than via a near-zero value. Independent of `schedule.cycle_interval_minutes` (requirement 1c): it bounds a notice to genuinely new information for a human, which does not shrink because the pipeline itself runs more often.",
       "type": "number",
       "minimum": 0,
       "default": 24,
@@ -765,7 +815,12 @@
     "merge_autonomy": {
       "description": "The D18 merge-autonomy trust ladder — human, agent-approves, agent-merges-routine, agent-merges-all — naming who approves and who lands a pull request this pipeline raises. `human` is today's behaviour, byte-for-byte: a human approves and a human merges. Every level above it needs a non-author Approver identity (`approver_app_id`) able to hold review rights, since GitHub refuses self-approval and this pipeline authors as its own configured owner. A `repos[]` entry's own `merge_autonomy` overrides this key for that repository alone. `scripts/doctor.sh` fails a level above `human` with no `approver_app_id` or no `approver_model_default` configured, `agent-merges-routine` or above while the repository's own branch ruleset still requires code-owner review, and `agent-merges-routine` or above with no merge queue on the default branch while either of the repository's own `allow_auto_merge` and `allow_squash_merge` is off — `landing_arm`'s no-queue fallback (`gh pr merge --auto --squash`) needs both, and is refused outright when either is missing. `scripts/doctor.sh` also fails `agent-merges-routine` or above where the repository's own default-branch ruleset does not dismiss stale reviews on push or names any bypass actor, and fails an Approver App installation whose live granted permissions are not exactly `contents: write`, `metadata: read` and `pull_requests: write`; all of them are gathered into one autonomy-readiness verdict per repository, naming every unmet precondition as an owner act or a configuration error (agent-ops#575). At `agent-approves` and above, the Approver stage reviews every eligible pull request and posts a real GitHub review; a human still merges at `agent-approves`. At `agent-merges-routine`/`agent-merges-all`, the Script itself lands an eligible pull request (requirement 8d) — a `complexity:*` grade in `merge_autonomy_routine_complexity`, a source in `merge_autonomy_routine_sources`, no protected path touched, every gate re-read clean at the moment of decision — and a human's residual act narrows to whatever the classifier refused.",
       "type": "string",
-      "enum": ["human", "agent-approves", "agent-merges-routine", "agent-merges-all"],
+      "enum": [
+        "human",
+        "agent-approves",
+        "agent-merges-routine",
+        "agent-merges-all"
+      ],
       "default": "human",
       "x-docs": {
         "readme": "The D18 merge-autonomy trust ladder: `human` (today's behaviour — a human approves and merges), `agent-approves` (the Approver App reviews; a human still merges), `agent-merges-routine`/`agent-merges-all` (the Script itself lands an eligible pull request — see `merge_autonomy_routine_sources` — and a human's residual act narrows to whatever the classifier refused). A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Every level above `human` needs `approver_app_id` and `approver_model_default` set, and a human `CHANGES_REQUESTED` blocks landing regardless of level.",
@@ -788,7 +843,10 @@
       "description": "D18 WI-7 (requirement 8d): which work sources may be armed automatically at `agent-merges-routine` and above — an eligible pull request also needs a `complexity:*` grade in `merge_autonomy_routine_complexity`, and — below `agent-merges-all` — to touch no protected path; at `agent-merges-all` a protected-path hit is deferred to D18 WI-12's own compensating controls rather than refused (`lib/landing.sh`'s `landing_eligible`). A `repos[]` entry's own `merge_autonomy_routine_sources` overrides this key for that repository alone, on the same precedence `merge_autonomy` uses. Compared against a pull request's own `source` field by exact string equality, over the `landingSourceToken` vocabulary — `repos[].sources` uses `sourceToken` instead, and the two differ in exactly one place: issue work is the plain `issues` here and one of the four `issues:<band>` ranks there, because `scripts/gather-issues.sh` spends the band at gathering time and stamps every resulting work order `\"source\": \"issues\"`. A banded token here is a schema error (agent-ops#558); before that it validated and then silently matched nothing, while `scripts/doctor.sh`'s own warning (agent-ops#519) told the operator to list `issues` itself — advice the shared enum rejected, so issue work had no valid spelling at all. `scripts/doctor.sh` also warns when an entry names a source the repository's own `sources` list never gathers, counting a bare `issues` as gathered when the repository lists any `issues:<band>`.",
       "type": "array",
       "uniqueItems": true,
-      "default": ["register-hygiene", "tech-debt"],
+      "default": [
+        "register-hygiene",
+        "tech-debt"
+      ],
       "items": {
         "$ref": "#/$defs/landingSourceToken"
       },
@@ -803,8 +861,15 @@
       "type": "array",
       "uniqueItems": true,
       "default": [
-        ".github/*", "deploy/*", "prompts/*", "lib/*", "config.schema.json",
-        "config.json", "agent-cycle.sh", "review-cycle.sh", "CODEOWNERS"
+        ".github/*",
+        "deploy/*",
+        "prompts/*",
+        "lib/*",
+        "config.schema.json",
+        "config.json",
+        "agent-cycle.sh",
+        "review-cycle.sh",
+        "CODEOWNERS"
       ],
       "items": {
         "type": "string",
@@ -820,10 +885,17 @@
       "description": "D18 Stage 3 (requirement 8d, agent-ops#725): which `complexity:*` grades may be armed automatically at `agent-merges-routine` and above — an eligible pull request also needs a `source` in `merge_autonomy_routine_sources`, and — below `agent-merges-all` — to touch no protected path (`lib/landing.sh`'s `landing_eligible`). A `repos[]` entry's own `merge_autonomy_routine_complexity` overrides this key for that repository alone, on the same precedence `merge_autonomy` uses. Compared against a pull request's own already-resolved complexity by exact string equality; an empty or unrecognised complexity is ineligible, never eligible by omission. `scripts/detect-classifier-escapes.sh` reads the same effective list, independently resolved, when recomputing whether a landed pull request was actually eligible. Widening this past `[\"low\", \"medium\"]` to include `high` is a larger step than it looks: requirement 26a already forces `complexity:high` onto any diff touching concurrency/locking, security, CI/workflow machinery or shared library code, so admitting `high` here routes the riskiest class of diff through automatic landing. The protected-path list (`lib/landing.sh`'s nine prefixes) is the belt-and-braces control that stays in force either way.",
       "type": "array",
       "uniqueItems": true,
-      "default": ["low", "medium"],
+      "default": [
+        "low",
+        "medium"
+      ],
       "items": {
         "type": "string",
-        "enum": ["low", "medium", "high"]
+        "enum": [
+          "low",
+          "medium",
+          "high"
+        ]
       },
       "x-docs": {
         "readme": "D18 Stage 3: which `complexity:*` grades may be armed automatically at `agent-merges-routine` and above — a pull request also needs a `source` in `merge_autonomy_routine_sources`, and — below `agent-merges-all` — to touch no protected path. A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Widening past the default to include `high` is a bigger step than it looks: requirement 26a already forces `high` onto the riskiest class of diff (concurrency/locking, security, CI/workflow machinery, shared library code), so admitting it here routes exactly that class through automatic landing, with the protected-path list as the remaining belt-and-braces control.",
@@ -859,24 +931,24 @@
       }
     },
     "crash_loop_after": {
-      "description": "Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue \u2014 either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. 0 disables both checks.",
+      "description": "Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. 0 disables both checks. A literal count of consecutive failures, not a span of history (requirement 1c): the count is the whole of its intent, so it is not derived from `schedule.cycle_interval_minutes` — a faster cadence reaching that count sooner is the point of a faster cadence, not a defect in the count.",
       "type": "integer",
       "minimum": 0,
       "default": 0,
       "x-docs": {
-        "readme": "Consecutive fleet-wide failures, with no intervening recovery, before the Script files a crash-loop escalation issue \u2014 either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. Neither class blames a repo or an item, so without this nothing ever surfaces a deterministic fleet-wide failure \u2014 the dashboard shows a healthy idle fleet. `0` (or absent) disables both checks.",
-        "spec": "Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue (requirement 2.7) \u2014 either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. At four nodes each hitting the same deterministic failure once per cycle, this crosses within about one `schedule.cycle_interval_minutes` interval. `0` (or absent) disables both checks.",
+        "readme": "Consecutive fleet-wide failures, with no intervening recovery, before the Script files a crash-loop escalation issue — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. Neither class blames a repo or an item, so without this nothing ever surfaces a deterministic fleet-wide failure — the dashboard shows a healthy idle fleet. `0` (or absent) disables both checks.",
+        "spec": "Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue (requirement 2.7) — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. At four nodes each hitting the same deterministic failure once per cycle, this crosses within about one `schedule.cycle_interval_minutes` interval. `0` (or absent) disables both checks.",
         "value": "`4`"
       }
     },
     "crash_loop_repo": {
-      "description": "Where the crash-loop escalation issues are filed, as `owner/name` \u2014 the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks.",
+      "description": "Where the crash-loop escalation issues are filed, as `owner/name` — the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks.",
       "type": "string",
       "pattern": "^$|^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
       "default": "",
       "x-docs": {
-        "readme": "Where the crash-loop escalation issues are filed \u2014 the pipeline's own repository. Deduplicated like an Enabler escalation and assigned to `enabler_assignee`, so the pipeline never selects its own SOS as work. Empty disables both checks.",
-        "spec": "Where requirement 2.7's escalation issues are filed \u2014 the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks.",
+        "readme": "Where the crash-loop escalation issues are filed — the pipeline's own repository. Deduplicated like an Enabler escalation and assigned to `enabler_assignee`, so the pipeline never selects its own SOS as work. Empty disables both checks.",
+        "spec": "Where requirement 2.7's escalation issues are filed — the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks.",
         "value": "`Poetic-Poems/agent-ops`"
       }
     },
@@ -898,7 +970,7 @@
       "$ref": "#/$defs/timeoutMinutes",
       "description": "Override for the Co-Ordinator's wall-clock backstop, in minutes. Omit it: the backstop is derived per (actor, repository, model) and starts at a shipped prior.",
       "x-docs": {
-        "readme": "Minutes, and an override. Leave it out \u2014 the backstop tunes itself, and a key set here outranks the derivation for as long as it is there. A repo entry's own `stage_timeouts` outranks this key in turn, for that repo alone \u2014 see [`repos`](#extended-notes-repos).",
+        "readme": "Minutes, and an override. Leave it out — the backstop tunes itself, and a key set here outranks the derivation for as long as it is there. A repo entry's own `stage_timeouts` outranks this key in turn, for that repo alone — see [`repos`](#extended-notes-repos).",
         "spec": "An override for the wall-clock backstop of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case and the intended one: a configured value wins permanently, so setting it turns the self-tuning off for that actor.",
         "value": {
           "readme": "*(unset)*",
@@ -923,7 +995,7 @@
       "description": "Override for the Reviewer's wall-clock backstop, in minutes. Omit it: the backstop is derived per (actor, repository, model) and starts at a shipped prior.",
       "x-docs": {
         "readme": "Minutes, and an override. As above.",
-        "spec": "As `timeout_coordinator`, for the Reviewer. This is the key #203 was opened about: it was raised 30 \u2192 45 \u2192 60 in two days, and 45 lasted six hours before a complex-model review of a 16-file diff consumed all of it. Complex-model reviews are killed roughly six times as often as default-model ones, so a single fixed number spans two quite different populations \u2014 which is why the derivation keys on the model.",
+        "spec": "As `timeout_coordinator`, for the Reviewer. This is the key #203 was opened about: it was raised 30 → 45 → 60 in two days, and 45 lasted six hours before a complex-model review of a 16-file diff consumed all of it. Complex-model reviews are killed roughly six times as often as default-model ones, so a single fixed number spans two quite different populations — which is why the derivation keys on the model.",
         "value": {
           "readme": "*(unset)*",
           "spec": "*(unset)*"
@@ -935,7 +1007,7 @@
       "description": "Override for the Enabler's wall-clock backstop, in minutes. Omit it: the backstop is derived per (actor, repository, model) and starts at a shipped prior.",
       "x-docs": {
         "readme": "Minutes, and an override. As above.",
-        "spec": "As `timeout_coordinator`, for the Enabler \u2014 which, spanning repositories, has a single `(enabler, *, model)` cell.",
+        "spec": "As `timeout_coordinator`, for the Enabler — which, spanning repositories, has a single `(enabler, *, model)` cell.",
         "value": {
           "readme": "*(unset)*",
           "spec": "*(unset)*"
@@ -970,7 +1042,7 @@
       "$ref": "#/$defs/inactivityMinutes",
       "description": "Override for the Co-Ordinator's liveness-watchdog threshold, in minutes. Omit it: the threshold is derived from the gaps this stage really leaves.",
       "x-docs": {
-        "readme": "Minutes of total silence before the stage is treated as wedged, and an override. Omit it \u2014 the threshold is derived; `0` disables the watchdog. A repo entry's own `stage_inactivity` outranks this key in turn, for that repo alone \u2014 see [`repos`](#extended-notes-repos).",
+        "readme": "Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. A repo entry's own `stage_inactivity` outranks this key in turn, for that repo alone — see [`repos`](#extended-notes-repos).",
         "spec": "An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog for that actor and leaves the backstop as the only cap.",
         "value": {
           "readme": "*(unset)*",
@@ -982,7 +1054,7 @@
       "$ref": "#/$defs/inactivityMinutes",
       "description": "Override for the Implementer's liveness-watchdog threshold, in minutes. Omit it: the threshold is derived from the gaps this stage really leaves.",
       "x-docs": {
-        "readme": "Minutes of total silence before the stage is treated as wedged, and an override. Omit it \u2014 the threshold is derived; `0` disables the watchdog.",
+        "readme": "Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog.",
         "spec": "An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog for that actor and leaves the backstop as the only cap.",
         "value": {
           "readme": "*(unset)*",
@@ -994,7 +1066,7 @@
       "$ref": "#/$defs/inactivityMinutes",
       "description": "Override for the Reviewer's liveness-watchdog threshold, in minutes. Omit it: the threshold is derived from the gaps this stage really leaves.",
       "x-docs": {
-        "readme": "Minutes of total silence before the stage is treated as wedged, and an override. Omit it \u2014 the threshold is derived; `0` disables the watchdog.",
+        "readme": "Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog.",
         "spec": "An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog for that actor and leaves the backstop as the only cap.",
         "value": {
           "readme": "*(unset)*",
@@ -1006,7 +1078,7 @@
       "$ref": "#/$defs/inactivityMinutes",
       "description": "Override for the Enabler's liveness-watchdog threshold, in minutes. Omit it: the threshold is derived from the gaps this stage really leaves.",
       "x-docs": {
-        "readme": "Minutes of total silence before the stage is treated as wedged, and an override. Omit it \u2014 the threshold is derived; `0` disables the watchdog.",
+        "readme": "Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog.",
         "spec": "An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog for that actor and leaves the backstop as the only cap.",
         "value": {
           "readme": "*(unset)*",
@@ -1039,12 +1111,12 @@
       }
     },
     "lock_stale_after": {
-      "description": "A floor, in hours, under the derived staleness threshold for a held cycle lock. Omit it: the threshold is derived from the backstops in force plus slack.",
+      "description": "A floor, in hours, under the derived staleness threshold for a held cycle lock. Omit it: the threshold is derived from the backstops in force plus slack. Requirement 1c's audit already answers the roadmap's \"lock staleness\" candidate: independent of `schedule.cycle_interval_minutes` by construction, since a stuck lock must outlast a cycle's own worst-case runtime (the stage backstops summed above), not the scheduling interval between cycle starts.",
       "type": "number",
       "exclusiveMinimum": 0,
       "x-docs": {
         "readme": "Hours, and a floor rather than the value. The threshold is derived from the stage backstops plus slack, so it moves with them; set this only to insist on something longer.",
-        "spec": "A floor under the derived value of requirement 4f, not the value itself: the threshold is the sum, over the six actors, of the widest backstop each could draw this cycle, plus slack. Deriving it is the point \u2014 an assertion checked against fixed caps had to be re-derived by hand every time any of them moved, three times in two days. Erring long is close to free: a dead holder is taken over on its pid rather than its age, so this bounds only how long a live but hung cycle may hold on.",
+        "spec": "A floor under the derived value of requirement 4f, not the value itself: the threshold is the sum, over the six actors, of the widest backstop each could draw this cycle, plus slack. Deriving it is the point — an assertion checked against fixed caps had to be re-derived by hand every time any of them moved, three times in two days. Erring long is close to free: a dead holder is taken over on its pid rather than its age, so this bounds only how long a live but hung cycle may hold on.",
         "value": {
           "readme": "*(unset)*",
           "spec": "*(unset)*"
@@ -1069,13 +1141,13 @@
           "default": 20
         },
         "window_days": {
-          "description": "How far back the derivation looks.",
+          "description": "How far back the derivation looks. Independent of `schedule.cycle_interval_minutes` (requirement 1c): a statistical window over runs, which a faster cadence fills with more data without changing what the window means.",
           "type": "integer",
           "minimum": 1,
           "default": 30
         },
         "window_runs": {
-          "description": "How many runs per cell the derivation looks at, whatever the window holds.",
+          "description": "How many runs per cell the derivation looks at, whatever the window holds. Independent of `schedule.cycle_interval_minutes` (requirement 1c): a statistical window over runs, which a faster cadence fills with more data without changing what the window means.",
           "type": "integer",
           "minimum": 1,
           "default": 200
@@ -1124,7 +1196,7 @@
       "exclusiveMinimum": 0,
       "x-docs": {
         "readme": "Hours. Stand-down after a usage-limit error.",
-        "spec": "Stand-down period after an ordinary/transient usage-limit error whose reset time cannot be parsed. A weekly/monthly match with no parseable reset time uses the longer `LIMIT_LONG_COOLDOWN_HOURS` fallback in `lib/limit-detect.sh` instead (see requirement 10) \u2014 not this key.",
+        "spec": "Stand-down period after an ordinary/transient usage-limit error whose reset time cannot be parsed. A weekly/monthly match with no parseable reset time uses the longer `LIMIT_LONG_COOLDOWN_HOURS` fallback in `lib/limit-detect.sh` instead (see requirement 10) — not this key.",
         "value": {
           "readme": "`3`",
           "spec": "3 h"
@@ -1132,7 +1204,7 @@
       }
     },
     "limit_escalate_after_hours": {
-      "description": "Hours an automatic usage-limit stand-down may run, aged from the first limit-hit of the current freeze, before the Script files an escalation issue (label `enabler_escalation_label`, assignee `enabler_assignee`, in `crash_loop_repo`). 0 turns the escalation off. Manual stand-downs never escalate.",
+      "description": "Hours an automatic usage-limit stand-down may run, aged from the first limit-hit of the current freeze, before the Script files an escalation issue (label `enabler_escalation_label`, assignee `enabler_assignee`, in `crash_loop_repo`). 0 turns the escalation off. Manual stand-downs never escalate. Independent of `schedule.cycle_interval_minutes` (requirement 1c): bounded by the account provider's own reset clock, not this installation's cadence.",
       "type": "number",
       "minimum": 0,
       "default": 24,
@@ -1197,33 +1269,33 @@
       }
     },
     "disable_default_ttl": {
-      "description": "Hours `--disable` lasts when `--for` does not say. Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one.",
+      "description": "Hours `--disable` lasts when `--for` does not say. Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one. \"A few cycles\" is 4 cadence firings, not a literal count of hours (requirement 1c): absent, it is derived from schedule.cycle_interval_minutes (and cycle_hours/excluded_minutes) so it stays 4 firings wide at whatever cadence is configured; a configured value is a floor under that derivation, never a ceiling.",
       "type": "number",
       "exclusiveMinimum": 0,
-      "default": 4,
       "x-docs": {
-        "readme": "Hours. How long `--disable` lasts when neither `--for` nor `--until` says. See [Pausing the pipelines](#pausing-the-pipelines).",
-        "spec": "How long `--disable` lasts when neither `--for` nor `--until` says (requirement 2.3). Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one.",
+        "readme": "Hours. How long `--disable` lasts when neither `--for` nor `--until` says, derived from `schedule.cycle_interval_minutes` to stay 4 firings wide at whatever cadence is configured (requirement 1c); a configured value floors it, never caps it. See [Pausing the pipelines](#pausing-the-pipelines).",
+        "spec": "How long `--disable` lasts when neither `--for` nor `--until` says (requirement 2.3). Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one. \"A few cycles\" means 4 cadence firings (requirement 1c), not a fixed 4 h: derived from the worst-case gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`); a configured value floors the derivation rather than replacing it.",
         "value": {
-          "spec": "4 h"
+          "readme": "*(unset)*",
+          "spec": "*(unset)*"
         }
       }
     },
     "none_selected_recheck_hours": {
-      "description": "The no-op short-circuit's safety valve: the Co-Ordinator is engaged regardless once the last `none-selected` is this old, even if nothing changed. 0 disables the valve \u2014 don't.",
+      "description": "The no-op short-circuit's safety valve: the Co-Ordinator is engaged regardless once the last `none-selected` is this old, even if nothing changed. 0 disables the valve — don't. \"This old\" is 24 cadence firings, not a literal count of hours (requirement 1c): absent, it is derived from schedule.cycle_interval_minutes (and cycle_hours/excluded_minutes) so it stays 24 firings wide at whatever cadence is configured; a configured non-zero value is a floor under that derivation, never a ceiling. An explicit 0 is never raised by the derivation — it disables the valve outright, exactly as configured.",
       "type": "number",
       "minimum": 0,
-      "default": 24,
       "x-docs": {
-        "readme": "Hours. The Co-Ordinator is engaged at least this often even when nothing has changed. See [Skipping no-op cycles](#skipping-no-op-cycles). `0` disables that safety net entirely \u2014 not recommended.",
-        "spec": "The no-op short-circuit's safety valve (requirement 3b): the Co-Ordinator is engaged regardless once the last `none-selected` is this old, even if nothing changed. Bounds how long a gap in fingerprint coverage can stall the pipeline. `0` disables the valve \u2014 don't.",
+        "readme": "Hours. The Co-Ordinator is engaged at least this often even when nothing has changed — derived from `schedule.cycle_interval_minutes` to stay 24 firings wide at whatever cadence is configured (requirement 1c); a configured non-zero value floors it, never caps it. See [Skipping no-op cycles](#skipping-no-op-cycles). `0` disables that safety net entirely — not recommended — and is never raised by the derivation.",
+        "spec": "The no-op short-circuit's safety valve (requirement 3b): the Co-Ordinator is engaged regardless once the last `none-selected` is this old, even if nothing changed. Bounds how long a gap in fingerprint coverage can stall the pipeline. \"This old\" means 24 cadence firings (requirement 1c), not a fixed 24 h: derived from the worst-case gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`); a configured non-zero value floors the derivation rather than replacing it. `0` disables the valve — don't — and, unlike a non-zero override, is never raised by the derivation: the valve stays off exactly as configured.",
         "value": {
-          "spec": "24 h"
+          "readme": "*(unset)*",
+          "spec": "*(unset)*"
         }
       }
     },
     "image_behind_grace_hours": {
-      "description": "How long a node may sit behind the registry's newest image before the dashboard badge turns amber and scripts/check-node-image.sh fails. A roll defers while a cycle is in flight, so being behind a more recent image than this is the ordinary mid-roll state, not a fault.",
+      "description": "How long a node may sit behind the registry's newest image before the dashboard badge turns amber and scripts/check-node-image.sh fails. A roll defers while a cycle is in flight, so being behind a more recent image than this is the ordinary mid-roll state, not a fault. Independent of `schedule.cycle_interval_minutes` (requirement 1c): bounds how long a node may run behind a published image mid-roll, a property of the deploy pipeline, not the cycle cadence.",
       "type": "number",
       "minimum": 0,
       "default": 3,
@@ -1292,7 +1364,7 @@
           "description": "Free text recording why `excluded_minutes` excludes what it does. Read by nothing; kept for the next reader.",
           "type": "string",
           "x-docs": {
-            "readme": "Free-text note on *why* `excluded_minutes` excludes what it does \u2014 documentation only, read by nobody.",
+            "readme": "Free-text note on *why* `excluded_minutes` excludes what it does — documentation only, read by nobody.",
             "spec": "Free text recording *why* `excluded_minutes` excludes what it does; read by nothing, kept for the next reader.",
             "value": {
               "readme": "see `config.json`",
@@ -1312,7 +1384,7 @@
           }
         },
         "review_offset_minutes": {
-          "description": "Minutes past the node's cycle minute (mod 60) the review tick's minute is set to, keeping one node's two heavy pipelines apart within the hour.",
+          "description": "Minutes past the node's cycle minute (mod 60) the review tick's minute is set to, keeping one node's two heavy pipelines apart within the hour. Independent of `schedule.cycle_interval_minutes` (requirement 1c): the review tick runs on its own cadence (`review_hour`, and the review pipeline's own `min_days_between_reviews`), regardless of how often the implementation cycle fires.",
           "type": "integer",
           "minimum": 0,
           "maximum": 59,
@@ -1323,7 +1395,7 @@
           }
         },
         "heartbeat_minutes": {
-          "description": "Interval, in minutes, of the dashboard heartbeat cron line.",
+          "description": "Interval, in minutes, of the dashboard heartbeat cron line. Independent of `schedule.cycle_interval_minutes` (requirement 1c): the dashboard heartbeat has its own crontab line and runs on its own terms.",
           "type": "integer",
           "minimum": 1,
           "maximum": 59,
@@ -1334,7 +1406,7 @@
           }
         },
         "state_sync_push_minutes": {
-          "description": "Interval, in minutes, of `state-sync.sh push`.",
+          "description": "Interval, in minutes, of `state-sync.sh push`. Independent of `schedule.cycle_interval_minutes` (requirement 1c): state-sync push has its own crontab line and runs on its own terms.",
           "type": "integer",
           "minimum": 1,
           "maximum": 59,
@@ -1345,7 +1417,7 @@
           }
         },
         "state_sync_fetch_minutes": {
-          "description": "Interval, in minutes, of `state-sync.sh fetch`.",
+          "description": "Interval, in minutes, of `state-sync.sh fetch`. Independent of `schedule.cycle_interval_minutes` (requirement 1c): state-sync fetch has its own crontab line and runs on its own terms.",
           "type": "integer",
           "minimum": 1,
           "maximum": 59,
@@ -1356,7 +1428,7 @@
           }
         },
         "log_rotation_minute": {
-          "description": "The minute past every hour scripts/rotate-logs.sh runs.",
+          "description": "The minute past every hour scripts/rotate-logs.sh runs. Independent of `schedule.cycle_interval_minutes` (requirement 1c): log rotation has its own crontab line and runs on its own terms.",
           "type": "integer",
           "minimum": 0,
           "maximum": 59,
@@ -1367,7 +1439,7 @@
           }
         },
         "doctor_offset_minutes": {
-          "description": "Minutes past the node's cycle minute (mod 60) the hourly `doctor.sh --unattended` pass's minute is set to, jittering it across the fleet the same way review_offset_minutes jitters the review tick.",
+          "description": "Minutes past the node's cycle minute (mod 60) the hourly `doctor.sh --unattended` pass's minute is set to, jittering it across the fleet the same way review_offset_minutes jitters the review tick. Independent of `schedule.cycle_interval_minutes` (requirement 1c): the unattended doctor pass runs hourly on its own crontab line regardless of how often the implementation cycle fires.",
           "type": "integer",
           "minimum": 0,
           "maximum": 59,
@@ -1411,7 +1483,7 @@
       ],
       "properties": {
         "lock_stale_after": {
-          "description": "A floor, in hours, under the derived staleness threshold for a held review lock. Omit it: the threshold is derived from the Reviewer-Agent's backstop. Installation-wide only \u2014 the lock covers whichever repositories a run touches, so it is not part of `defaults` and has no per-repo override.",
+          "description": "A floor, in hours, under the derived staleness threshold for a held review lock. Omit it: the threshold is derived from the Reviewer-Agent's backstop. Installation-wide only — the lock covers whichever repositories a run touches, so it is not part of `defaults` and has no per-repo override. Requirement 1c's audit already answers the roadmap's \"lock staleness\" candidate for the review pipeline too: independent of `schedule.cycle_interval_minutes` by construction, since a stuck review lock must outlast the Reviewer backstop summed across configured repositories, not the implementation cycle's scheduling interval.",
           "type": "number",
           "exclusiveMinimum": 0,
           "x-docs": {
@@ -1433,10 +1505,10 @@
           "properties": {
             "model": {
               "$ref": "#/$defs/modelId",
-              "description": "The Reviewer-Agent's model \u2014 the lead that drives the skill, which delegates well-scoped sub-tasks to lower-cost subagents of its own.",
+              "description": "The Reviewer-Agent's model — the lead that drives the skill, which delegates well-scoped sub-tasks to lower-cost subagents of its own.",
               "x-docs": {
-                "readme": "The lead model driving the review skill (which delegates to lower-cost subagents itself). Accepts the provider-qualified form (`anthropic/claude-sonnet-5`) as well as the bare id \u2014 see [Configuration](#configuration).",
-                "spec": "The Reviewer-Agent's model \u2014 the lead that drives the skill. The skill itself delegates well-scoped sub-tasks to lower-cost subagents, so this is the only model to pin here. A deeper review can be dialled up to a higher-capability model without other changes.",
+                "readme": "The lead model driving the review skill (which delegates to lower-cost subagents itself). Accepts the provider-qualified form (`anthropic/claude-sonnet-5`) as well as the bare id — see [Configuration](#configuration).",
+                "spec": "The Reviewer-Agent's model — the lead that drives the skill. The skill itself delegates well-scoped sub-tasks to lower-cost subagents, so this is the only model to pin here. A deeper review can be dialled up to a higher-capability model without other changes.",
                 "value": "`claude-sonnet-5`"
               }
             },
@@ -1463,7 +1535,7 @@
               "$ref": "#/$defs/timeoutMinutes",
               "description": "Override for the Reviewer-Agent's wall-clock backstop, in minutes. Omit it: the backstop is derived like every other stage's.",
               "x-docs": {
-                "readme": "Minutes, and an override. Leave it out \u2014 the backstop tunes itself.",
+                "readme": "Minutes, and an override. Leave it out — the backstop tunes itself.",
                 "spec": "An override for the Reviewer-Agent's backstop, on the same terms as `timeout_coordinator` and through the same derivation (requirement 4f). Absent is the normal case.",
                 "value": "*(unset)*"
               }
@@ -1472,7 +1544,7 @@
               "$ref": "#/$defs/inactivityMinutes",
               "description": "Override for the Reviewer-Agent's liveness-watchdog threshold, in minutes. Omit it: the threshold is derived from the gaps this stage really leaves.",
               "x-docs": {
-                "readme": "Minutes of total silence before the review stage is treated as wedged, and an override. Omit it \u2014 the threshold is derived; `0` disables the watchdog.",
+                "readme": "Minutes of total silence before the review stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog.",
                 "spec": "An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog and leaves the backstop as the only cap.",
                 "value": "*(unset)*"
               }
@@ -1491,7 +1563,7 @@
               "description": "Optional timestamp before which no review may start. Absent or empty means no stand-down. It expires by itself, which is why it exists rather than raising `min_days_between_reviews`: a threshold has to be put back by hand, and a cadence left quietly throttled is not noticed for weeks.",
               "default": "",
               "x-docs": {
-                "readme": "Optional. Hold reviews until this timestamp \u2014 e.g. `2026-07-30T16:00:00Z` \u2014 while the implementation pipeline carries on. Use this rather than `agent-cycle.sh --disable`, which is shared and would stop the cycles too, and rather than raising `min_days_between_reviews`, which has to be lowered again afterwards. It expires by itself; leaving the key in place once the date has passed does nothing. An unparseable value stands reviews down rather than running through it. As `defaults.not_before` it holds every configured repository off before the pipeline even takes its lock; a repository's own `not_before` override additionally holds that repository off for longer (or shorter) than the installation-wide value, checked per repository once the cycle is under way.",
+                "readme": "Optional. Hold reviews until this timestamp — e.g. `2026-07-30T16:00:00Z` — while the implementation pipeline carries on. Use this rather than `agent-cycle.sh --disable`, which is shared and would stop the cycles too, and rather than raising `min_days_between_reviews`, which has to be lowered again afterwards. It expires by itself; leaving the key in place once the date has passed does nothing. An unparseable value stands reviews down rather than running through it. As `defaults.not_before` it holds every configured repository off before the pipeline even takes its lock; a repository's own `not_before` override additionally holds that repository off for longer (or shorter) than the installation-wide value, checked per repository once the cycle is under way.",
                 "spec": "Optional. A timestamp before which no review may start (R3.3). Absent or empty means no stand-down; a value `date -d` cannot read stands the pipeline down rather than running through it. Expires by itself, which is why it exists rather than raising `min_days_between_reviews`: a threshold has to be put back by hand, and a cadence left quietly throttled is not noticed for weeks. As `defaults.not_before` it gates the whole cycle before the lock, exactly as a single installation-wide value always has; a repository's own override on `repos[]` is resolved separately, per repository, once the cycle is under way (requirement 3.3).",
                 "value": "*(unset)*"
               }
@@ -1499,7 +1571,7 @@
           }
         },
         "repos": {
-          "description": "The repositories to review. Each entry's `slug` is required; every other key, when present and non-null, overrides the same-named key in `defaults` for that repository alone (requirement 342) \u2014 an entry carrying only `slug` inherits every default.",
+          "description": "The repositories to review. Each entry's `slug` is required; every other key, when present and non-null, overrides the same-named key in `defaults` for that repository alone (requirement 342) — an entry carrying only `slug` inherits every default.",
           "type": "array",
           "items": {
             "type": "object",
@@ -1628,7 +1700,11 @@
     "refinementPolicyValue": {
       "description": "Whether an unrefined item from a source may be selected: never (`required`), only by preference (`preferred`), or the dimension does not apply (`exempt`).",
       "type": "string",
-      "enum": ["required", "preferred", "exempt"]
+      "enum": [
+        "required",
+        "preferred",
+        "exempt"
+      ]
     },
     "timeoutMinutes": {
       "description": "A per-stage wall-clock timeout, in whole minutes.",

@@ -1596,6 +1596,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Seven timings sized against a once-an-hour cycle now derive from
+  `schedule.cycle_interval_minutes` instead (requirement 1c, agent-ops#591):
+  `claim_ttl_hours`, `abandoned_draft_after_hours`, `disable_default_ttl` and
+  `none_selected_recheck_hours` re-express their old "a few cycles" intent
+  against the actual cadence (accounting for `schedule.cycle_hours` and
+  `excluded_minutes` too, since either can widen the real gap between cycles
+  past the bare interval), and `cycles_retained`,
+  `state_local_cycles_retained` and `state_local_streams_retained` hold their
+  wall-clock retention window constant as that cadence moves rather than
+  quietly shrinking it. `crash_loop_after`'s intent is a literal count of
+  consecutive failures, not a span of history, so it is unaffected and keeps
+  its plain default. None of the seven carries a schema `default` any more —
+  absent, each is derived; a configured value is a floor under the
+  derivation, never a ceiling, the same shape `lock_stale_after` already
+  uses. On Poetic's own 15-minute installation this moves the effective
+  `claim_ttl_hours` from a flat 6 h to 2 h and `abandoned_draft_after_hours`
+  from 4 h to 1 h — both now sized to a handful of *cycles* at the cadence
+  this installation actually runs, rather than to an hour count chosen when
+  a cycle and an hour were the same thing — while `cycles_retained` grows
+  from 200 to 800 to hold the same ~8.3 days of mirror history it always
+  meant to.
 - The Co-Ordinator no longer treats a documentation-only item as a separate,
   lower-priority track (agent-ops#582, owner decision S1 on agent-ops#633).
   `prompts/coordinator.md` now states plainly, beside the existing

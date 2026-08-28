@@ -252,6 +252,22 @@ config_schema_errors() {
 # passes through unchanged. This performs no validation of its own — a config invalid against
 # the schema is still merged, defaults and all, since a caller that wants the
 # gate calls config_schema_errors first.
+#
+# A second pass follows the schema fill above, for the handful of keys whose
+# intent was always "a few cycles", never a literal number of hours (or of
+# cycle directories): `claim_ttl_hours`, `abandoned_draft_after_hours`,
+# `disable_default_ttl`, `none_selected_recheck_hours`, `cycles_retained`,
+# `state_local_cycles_retained` and `state_local_streams_retained` carry no
+# schema `default` of their own any more, on the same "absent means derive"
+# convention `lock_stale_after` already established (requirement 4f) — a jq
+# `default` is a fixed literal and cannot express "derived from
+# `schedule.cycle_interval_minutes`". Deriving here, once, is what requirement
+# 1c calls "one defined home": every existing reader of this function's
+# output — `lib/claim.sh`, `agent-cycle.sh`, the gatherers — keeps working
+# unchanged, because what it reads is still a plain resolved number, just no
+# longer a cadence-blind one. See requirement 1c for the formula and why it
+# reads `schedule.cycle_hours` and `schedule.excluded_minutes` as well as
+# `schedule.cycle_interval_minutes`.
 config_defaults() {
   local config_file="$1" schema_file="$2"
   jq -c --slurpfile schema "$schema_file" '
@@ -302,7 +318,168 @@ config_defaults() {
             $v
           end;
 
-    fill($root; .)
+    # --- Requirement 1c: cadence-derived timings ---
+    #
+    # A cron hour field (`schedule.cycle_hours`) into the set of hours 0..23
+    # it allows: `*` (all), `*/N` (every Nth hour), `a-b` and `a-b/N` (an
+    # ascending range, whole or stepped) and a plain number, comma-separated
+    # and combined freely — the forms a `cycle_hours` an installation would
+    # actually write. A token outside that grammar (or one naming an
+    # inverted range, `b` before `a`) contributes no hours rather than
+    # failing the whole derivation: this function validates nothing (that is
+    # `config_schema_errors`'\'' job, and `cycle_hours` carries no `pattern` for
+    # it to check), so an unparseable field degrades to "no restriction
+    # assumed" — the same direction `deref`'\''s own unresolved-`$ref` fallback
+    # degrades in, and safe here for the same reason: it can only *shorten*
+    # the derived gap this feeds, never lengthen it past what the config
+    # actually restricts.
+    def parse_hour_token($t):
+        if $t == "*" then [range(0;24)]
+        elif ($t | test("^\\*/[0-9]+$")) then
+          ($t | sub("^\\*/"; "") | tonumber) as $step
+          | (if $step > 0 then [range(0;24;$step)] else [range(0;24)] end)
+        elif ($t | test("^[0-9]+-[0-9]+/[0-9]+$")) then
+          ($t | capture("^(?<a>[0-9]+)-(?<b>[0-9]+)/(?<s>[0-9]+)$")) as $c
+          | ($c.a | tonumber) as $a | ($c.b | tonumber) as $b | ($c.s | tonumber) as $s
+          | (if $a <= $b and $a < 24 and $s > 0 then [range($a; ([$b+1,24] | min); $s)] else [] end)
+        elif ($t | test("^[0-9]+-[0-9]+$")) then
+          ($t | capture("^(?<a>[0-9]+)-(?<b>[0-9]+)$")) as $c
+          | ($c.a | tonumber) as $a | ($c.b | tonumber) as $b
+          | (if $a <= $b and $a < 24 then [range($a; ([$b+1,24] | min))] else [] end)
+        elif ($t | test("^[0-9]+$")) then
+          ($t | tonumber) as $n | (if $n >= 0 and $n < 24 then [$n] else [] end)
+        else []
+        end;
+    def parse_cycle_hours($s):
+        ( ($s // "*") | split(",") | map(parse_hour_token(.)) | add // [] )
+        | unique | sort;
+
+    # The longest run of consecutive disallowed hours, circularly (hour 23
+    # butts against hour 0) — 0 when every hour is allowed, `*`'\''s own case
+    # and the fully-unparseable-field fallback alike. `cycle_minute` recurs
+    # on the same allowed hours every day, so this is exactly how many whole
+    # hours a firing can be delayed past the historical hourly cadence when
+    # `cycle_hours` restricts which hours the crontab line fires in at all.
+    def max_disallowed_hours_run($allowed):
+        ($allowed | unique | sort) as $s | ($s | length) as $n
+        | if $n == 0 or $n >= 24 then 0
+          else
+            [ range(0; $n) as $i
+              | (if ($i + 1) < $n then $s[$i + 1] else $s[0] + 24 end) - $s[$i] - 1 ]
+            | max
+          end;
+
+    # Firing minutes within one allowed hour, for a hypothetical base minute
+    # $s (`deploy/docker/render-crontab.sh`'\''s own `cycle_minute`): $s,
+    # $s+$interval, $s+2*$interval, ... while still under 60 — restarting at
+    # $s every hour rather than carrying an overflow into the next one,
+    # mirroring that script'\''s own loop exactly — with any minute
+    # `schedule.excluded_minutes` names dropped, never shifted.
+    def kept_minutes($s; $interval; $excluded):
+        [range($s; 60; $interval)] - $excluded;
+
+    # The worst gap, in minutes, between two kept firings for base minute
+    # $s — including the wrap from this hour'\''s last kept firing to $s
+    # recurring next hour, since every allowed hour repeats the identical
+    # pattern. $s itself is never excluded by construction (the renderer
+    # only ever chooses an allowed minute), so this always has at least one
+    # kept firing to measure from.
+    def gap_for_start($s; $interval; $excluded):
+        (kept_minutes($s; $interval; $excluded) | unique | sort) as $k | ($k | length) as $n
+        | if $n == 0 then 60
+          else
+            [ range(0; $n) as $i
+              | (if ($i + 1) < $n then $k[$i + 1] else $k[0] + 60 end) - $k[$i] ]
+            | max
+          end;
+
+    # The per-hour gap this function reports, for the earliest minute
+    # `schedule.excluded_minutes` allows — a stand-in for `cycle_minute`
+    # (`deploy/docker/render-crontab.sh`'\''s per-node hash), whichever minute a
+    # given node actually lands on. Not a worst case over every possible
+    # base minute: `cycle_minute` restarts the occurrence grid at itself each
+    # hour rather than carrying an overflow, so a base minute chosen late in
+    # the hour (say 50, with a 15-minute interval) can genuinely fire only
+    # once that hour — a real property of the renderer, not a flaw in this
+    # analysis — and worst-casing over *every* such minute collapses this
+    # derivation to a fixed ~60 minutes regardless of `cycle_interval_minutes`,
+    # defeating the reason it exists. The fleet'\''s actual `cycle_minute`
+    # values are hash-distributed across the allowed minutes, not adversarial,
+    # so the earliest allowed one is a representative case: `excluded_minutes`
+    # still widens the gap it reports whenever it drops a reachable
+    # occurrence, which is the effect this derivation needs to track.
+    def worst_minute_gap($interval; $excluded):
+        ([range(0;60)] - $excluded) as $starts
+        | if ($starts | length) == 0 then 60
+          else gap_for_start($starts[0]; $interval; $excluded)
+          end;
+
+    # The worst-case gap, in minutes, between two implementation-cycle
+    # firings this installation'\''s `schedule` can produce — the quantity
+    # every key below is actually sized against, not
+    # `cycle_interval_minutes` alone (requirement 1c). Hours `cycle_hours`
+    # excludes contribute whole 60-minute penalties on top of the ordinary
+    # per-hour gap, which already accounts for `excluded_minutes` dropping a
+    # would-be firing rather than shifting it.
+    def cadence_gap_minutes($sched):
+        (parse_cycle_hours($sched.cycle_hours)) as $allowed
+        | ((max_disallowed_hours_run($allowed) * 60)) as $hour_penalty
+        | ($sched.cycle_interval_minutes) as $interval
+        | ($sched.excluded_minutes) as $excluded
+        | $hour_penalty + worst_minute_gap($interval; $excluded);
+
+    fill($root; .) as $filled
+    | cadence_gap_minutes($filled.schedule) as $gap_min
+
+    # A hours-valued key'\''s intent, before this requirement, was always "N
+    # cycles" expressed as though a cycle were an hour long; derived is that
+    # same N re-expressed against the actual worst-case gap, rounded up to a
+    # whole hour — every reader of these keys (`lib/claim.sh`'\''s
+    # `$(( claim_ttl_hours * 3600 ))`, `scripts/sweep-orphan-branches.sh`'\''s
+    # `^[0-9]+$` guard) is bash integer arithmetic, never a float, and that is
+    # a wider contract than this one derivation to take on reshaping. A
+    # configured value is a floor under the derivation, never a ceiling —
+    # `lock_stale_after`'\''s own shape (requirement 4f) — so an operator'\''s
+    # explicit hours can still be *raised* by the derivation but never
+    # lowered by it: the implementation note this requirement is built from
+    # names exactly the failure a bare override would risk — a
+    # `claim_ttl_hours` set to cover the ordinary case, then a restrictive
+    # `cycle_hours` widening the true gap past what that number covers.
+    # Rounding applies to the derived term alone, never to an operator'\''s own
+    # floor, so an explicit fractional override still reads back exactly as
+    # configured.
+    | def hour_key($key; $base_cycles):
+        (getpath([$key])) as $cfg
+        | (if ($cfg | type) == "number" then $cfg else 0 end) as $floor
+        | ([$floor, (($base_cycles * $gap_min / 60) | ceil)] | max);
+
+    # A count-valued key'\''s intent is a span of wall-clock history, not a
+    # literal number of cycle directories; derived keeps that span constant
+    # as the gap between cycles moves, rounding up so the window is never
+    # shorter than intended. Same floor shape as `hour_key`: a configured
+    # count can still be *raised* by the derivation, never lowered.
+    def count_key($key; $base_cycles):
+        (getpath([$key])) as $cfg
+        | (if ($cfg | type) == "number" then $cfg else 0 end) as $floor
+        | ([$floor, (($base_cycles * 60 / $gap_min) | ceil)] | max);
+
+    # `none_selected_recheck_hours` alone carries a "0 disables the valve"
+    # convention (`minimum: 0`, not `exclusiveMinimum`) — an explicit 0 must
+    # stay exactly 0, never raised by the derivation the way a genuine floor
+    # would be, or an operator'\''s deliberate "don'\''t" turns back on by itself
+    # under a fast enough cadence.
+    def hour_key_or_zero($key; $base_cycles):
+        (getpath([$key])) as $cfg
+        | if $cfg == 0 then 0 else hour_key($key; $base_cycles) end;
+
+    $filled
+    | .claim_ttl_hours = hour_key("claim_ttl_hours"; 6)
+    | .abandoned_draft_after_hours = hour_key("abandoned_draft_after_hours"; 4)
+    | .disable_default_ttl = hour_key("disable_default_ttl"; 4)
+    | .none_selected_recheck_hours = hour_key_or_zero("none_selected_recheck_hours"; 24)
+    | .cycles_retained = count_key("cycles_retained"; 200)
+    | .state_local_cycles_retained = count_key("state_local_cycles_retained"; 1000)
+    | .state_local_streams_retained = count_key("state_local_streams_retained"; 50)
   ' "$config_file"
 }
 

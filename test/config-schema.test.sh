@@ -345,6 +345,119 @@ assert_defaults "no project_review per-repo override is fabricated into a repos 
 assert_defaults "config_defaults performs no schema validation of its own" \
   '.pr_labell = "x"' '.pr_labell == "x"'
 
+# --- Requirement 1c: cadence-derived timings ---
+#
+# CADENCE_BASE_MUTATION clears every one of the seven cadence-derived keys
+# (so each fixture below is a pure "absent, let it derive" case) and pins an
+# unrestricted schedule an assertion can then narrow. 60 minutes is the
+# historical-hourly baseline every one of these keys was originally sized
+# against, and divides every base cycle-count below without a remainder, so a
+# derived hour or cycle-directory count is exact — no rounding to obscure
+# what moved.
+CADENCE_BASE_MUTATION='
+  del(.claim_ttl_hours, .abandoned_draft_after_hours, .disable_default_ttl,
+      .none_selected_recheck_hours, .cycles_retained,
+      .state_local_cycles_retained, .state_local_streams_retained)
+  | .schedule.cycle_hours = "*"
+  | .schedule.excluded_minutes = []
+'
+
+# assert_cadence_cmp DESC FIXTURE_A_MUTATION FIXTURE_B_MUTATION JQ_CHECK
+# JQ_CHECK sees $a and $b, each config_defaults' output for its own fixture —
+# the shape every comparison below needs, which a single-fixture
+# assert_defaults call cannot express.
+assert_cadence_cmp() {
+  local desc="$1" mutation_a="$2" mutation_b="$3" jq_check="$4" out_a out_b
+  jq "$CADENCE_BASE_MUTATION | ($mutation_a)" "$CONFIG" > "$tmp/cadence-a.json" \
+    || { bad "$desc (fixture A did not apply)"; return; }
+  jq "$CADENCE_BASE_MUTATION | ($mutation_b)" "$CONFIG" > "$tmp/cadence-b.json" \
+    || { bad "$desc (fixture B did not apply)"; return; }
+  if ! out_a="$(config_defaults "$tmp/cadence-a.json" "$SCHEMA")"; then
+    printf 'FAIL - %s\n     config_defaults itself failed on fixture A\n' "$desc"
+    failures=$(( failures + 1 )); return
+  fi
+  if ! out_b="$(config_defaults "$tmp/cadence-b.json" "$SCHEMA")"; then
+    printf 'FAIL - %s\n     config_defaults itself failed on fixture B\n' "$desc"
+    failures=$(( failures + 1 )); return
+  fi
+  if jq -en --argjson a "$out_a" --argjson b "$out_b" "$jq_check" >/dev/null 2>&1; then
+    pass "$desc"
+  else
+    printf 'FAIL - %s\n     check: %s\n     fixture A: %s\n     fixture B: %s\n' \
+      "$desc" "$jq_check" "$out_a" "$out_b"
+    failures=$(( failures + 1 ))
+  fi
+}
+
+# Acceptance 2: halving cycle_interval_minutes (60 -> 30) shows each derived
+# timing changing as expected, and each independent one not changing.
+# shellcheck disable=SC2016  # jq's $a/$b (assert_cadence_cmp's own), not the shell's.
+assert_cadence_cmp "halving cycle_interval_minutes halves claim_ttl_hours (6 cycles: 6 h at 60 min, 3 h at 30 min)" \
+  '.schedule.cycle_interval_minutes = 60' '.schedule.cycle_interval_minutes = 30' \
+  '$a.claim_ttl_hours == 6 and $b.claim_ttl_hours == 3'
+# shellcheck disable=SC2016  # jq's $a/$b, not the shell's.
+assert_cadence_cmp "...and halves abandoned_draft_after_hours (4 cycles: 4 h -> 2 h)" \
+  '.schedule.cycle_interval_minutes = 60' '.schedule.cycle_interval_minutes = 30' \
+  '$a.abandoned_draft_after_hours == 4 and $b.abandoned_draft_after_hours == 2'
+# shellcheck disable=SC2016  # jq's $a/$b, not the shell's.
+assert_cadence_cmp "...and halves disable_default_ttl (4 cycles: 4 h -> 2 h)" \
+  '.schedule.cycle_interval_minutes = 60' '.schedule.cycle_interval_minutes = 30' \
+  '$a.disable_default_ttl == 4 and $b.disable_default_ttl == 2'
+# shellcheck disable=SC2016  # jq's $a/$b, not the shell's.
+assert_cadence_cmp "...and halves none_selected_recheck_hours (24 cycles: 24 h -> 12 h)" \
+  '.schedule.cycle_interval_minutes = 60' '.schedule.cycle_interval_minutes = 30' \
+  '$a.none_selected_recheck_hours == 24 and $b.none_selected_recheck_hours == 12'
+# shellcheck disable=SC2016  # jq's $a/$b, not the shell's.
+assert_cadence_cmp "...and doubles cycles_retained, holding its ~8.3-day window constant (200 -> 400)" \
+  '.schedule.cycle_interval_minutes = 60' '.schedule.cycle_interval_minutes = 30' \
+  '$a.cycles_retained == 200 and $b.cycles_retained == 400'
+# shellcheck disable=SC2016  # jq's $a/$b, not the shell's.
+assert_cadence_cmp "...and doubles state_local_cycles_retained, holding its ~41.7-day window constant (1000 -> 2000)" \
+  '.schedule.cycle_interval_minutes = 60' '.schedule.cycle_interval_minutes = 30' \
+  '$a.state_local_cycles_retained == 1000 and $b.state_local_cycles_retained == 2000'
+# shellcheck disable=SC2016  # jq's $a/$b, not the shell's.
+assert_cadence_cmp "...and doubles state_local_streams_retained, holding its ~2.1-day window constant (50 -> 100)" \
+  '.schedule.cycle_interval_minutes = 60' '.schedule.cycle_interval_minutes = 30' \
+  '$a.state_local_streams_retained == 50 and $b.state_local_streams_retained == 100'
+# shellcheck disable=SC2016  # jq's $a/$b, not the shell's.
+assert_cadence_cmp "an independent key (enabler_recheck_hours, human-world time) does not move with the interval" \
+  '.schedule.cycle_interval_minutes = 60' '.schedule.cycle_interval_minutes = 30' \
+  '$a.enabler_recheck_hours == $b.enabler_recheck_hours'
+# shellcheck disable=SC2016  # jq's $a/$b, not the shell's.
+assert_cadence_cmp "...nor does crash_loop_after (a literal count, not a span of history)" \
+  '.schedule.cycle_interval_minutes = 60' '.schedule.cycle_interval_minutes = 30' \
+  '$a.crash_loop_after == $b.crash_loop_after'
+
+# Acceptance 3: an explicitly configured value still wins over the
+# derivation — raised by it when the derivation is larger (the floor shape
+# lock_stale_after already uses), and an explicit 0 stays exactly 0 for the
+# one key that convention applies to.
+assert_defaults "an explicitly configured value still wins over the derivation (hour-valued key)" \
+  '.schedule.cycle_interval_minutes = 60 | .claim_ttl_hours = 10' \
+  '.claim_ttl_hours == 10'
+assert_defaults "...and for a count-valued key too" \
+  '.schedule.cycle_interval_minutes = 60 | .cycles_retained = 999' \
+  '.cycles_retained == 999'
+assert_defaults "an explicit 0 for none_selected_recheck_hours stays 0, never raised by the derivation" \
+  '.schedule.cycle_interval_minutes = 60 | .none_selected_recheck_hours = 0' \
+  '.none_selected_recheck_hours == 0'
+
+# Acceptance 4: an installation with schedule.cycle_hours restricted to
+# business hours (9 allowed hours; 15 disallowed hours, 18-8, between them)
+# derives claim and abandoned-draft thresholds longer than the bare interval
+# alone implies — the overnight-expiry failure requirement 1c's own
+# implementation note names.
+# shellcheck disable=SC2016  # jq's $a/$b, not the shell's.
+assert_cadence_cmp "restricted schedule.cycle_hours derives claim_ttl_hours longer than the bare interval implies" \
+  '.schedule.cycle_interval_minutes = 15' \
+  '.schedule.cycle_interval_minutes = 15 | .schedule.cycle_hours = "9-17"' \
+  '$b.claim_ttl_hours > $a.claim_ttl_hours'
+# shellcheck disable=SC2016  # jq's $a/$b, not the shell's.
+assert_cadence_cmp "...and abandoned_draft_after_hours too" \
+  '.schedule.cycle_interval_minutes = 15' \
+  '.schedule.cycle_interval_minutes = 15 | .schedule.cycle_hours = "9-17"' \
+  '$b.abandoned_draft_after_hours > $a.abandoned_draft_after_hours'
+
 # --- $ref resolution (issue #482): deref must resolve to a fixpoint, not one
 #     hop, and fail closed on a $ref that does not resolve. The shipped schema
 #     has no chained $def today (`pr_label` itself $refs `#/$defs/label` in one
@@ -783,7 +896,7 @@ assert_doctor "doctor warns when a repo's project_review label collides with the
   '.project_review.repos[0].pr_label = .pr_label' 0 \
   "Poetic-Poems/poetic's project_review pr_label ($(jq -r '.pr_label' "$CONFIG")) equals pr_label"
 assert_doctor "doctor warns when the mirror would outlive the node that writes it" \
-  '.state_local_cycles_retained = 10' 0 'is below cycles_retained'
+  '.cycles_retained = 5000 | .state_local_cycles_retained = 10' 0 'is below cycles_retained'
 assert_doctor "doctor warns when crash-loop escalation is configured with nowhere to file" \
   '.crash_loop_after = 4 | .crash_loop_repo = ""' 0 'crash_loop_after is set but crash_loop_repo is empty'
 assert_doctor "doctor reports a schema violation as a failure, naming the path" \

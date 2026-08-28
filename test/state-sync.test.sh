@@ -37,6 +37,8 @@ SYNC="$SCRIPT_DIR/scripts/state-sync.sh"
 
 # shellcheck source=lib/fleet.sh
 . "$SCRIPT_DIR/lib/fleet.sh"
+# shellcheck source=lib/config-schema.sh
+. "$SCRIPT_DIR/lib/config-schema.sh"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -70,7 +72,11 @@ git init --quiet --bare --initial-branch=main "$remote"
 # --- A node ------------------------------------------------------------------
 # Each node is a HOME: config.json's state_dir and workspace_root are
 # ~-relative, so a throwaway home is a throwaway node.
-cycles_retained="$(jq -r '.cycles_retained' "$SCRIPT_DIR/config.json")"
+# cycles_retained (requirement 1c) is no longer a literal in config.json — it
+# derives from schedule.cycle_interval_minutes — so the effective value this
+# test asserts against has to be resolved the same way scripts/state-sync.sh
+# itself resolves it, not read off the raw file.
+cycles_retained="$(config_defaults "$SCRIPT_DIR/config.json" "$SCRIPT_DIR/config.schema.json" | jq -r '.cycles_retained')"
 
 new_node() {  # new_node <name> -> prints its HOME
   local home="$tmp_dir/$1"
