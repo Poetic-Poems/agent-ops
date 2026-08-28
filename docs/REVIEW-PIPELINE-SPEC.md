@@ -852,9 +852,11 @@ a pull request, run the ones the change touches and any it could regress.
 3. A second invocation while the review lock is held exits without acting; and
    while the implementation `lock.json` is held by a live process, the Review
    Script stands down.
-4. Skip-guard: with a `reviews/project-review-<today>/` folder present on a
-   repo's default branch (or an open `project-review`-labelled PR for it), that
-   repo is skipped, and the `min_days_between_reviews` boundary is respected.
+4. Skip-guard: with today's report directory present on a repo's default
+   branch — `reviews/project-review-<today>/` under the shipped fallback, or
+   whatever that repo's own resolved `report_directory` names (R4a) — (or an
+   open `project-review`-labelled PR for it), that repo is skipped, and the
+   `min_days_between_reviews` boundary is respected.
 4b. **The role guard stands this pipeline down too (R2b).** `test/role.test.sh`
    passes: a `review-cycle.sh` with `AGENT_OPS_ROLE` unset or standby exits 0
    with one line and writes nothing under `state_dir`, while `--dry-run` runs
@@ -917,6 +919,24 @@ a pull request, run the ones the change touches and any it could regress.
    quietly stayed cycle-wide passes every other assertion in that file and
    fails only this one, and the failure it stands for is a repository nobody
    asked to hold being held by its neighbour's date.
+4g. **The report directory is configurable, and unset is unchanged (R4a).**
+   `test/report-directory.test.sh` passes: against a stubbed `gh`,
+   `report_directory_find_dirs` discovers a format string's existing
+   instances — folding a leading static segment (`docs/`) into the one
+   listing the fixed layout always made, and still resolving a format whose
+   date component sits in a middle segment — and
+   `report_directory_most_recent` names the latest of them with its own date,
+   printing nothing where none exist. `report_directory_regex` escapes
+   literal regex metacharacters in a format's surrounding text and degrades
+   an unrecognised specifier to a wildcard rather than failing.
+   `test/config-schema.test.sh` covers the resolution: a repository's own
+   `report_directory` wins over `project_review.defaults`', absent it
+   inherits, and absent from both it resolves empty rather than fabricated —
+   which is what leaves `REPORT_DIRECTORY_DEFAULT` the single fallback.
+   Check the unset case against a test that names no directory of its own:
+   `test/gather-project-review.test.sh` passes **unmodified**, which is what
+   proves an installation configuring neither key reads and writes exactly
+   the paths it did before this requirement existed.
 5. **Injected-skill isolation:** after a real `--once --repo poetic` run, the
    review PR's diff contains the new `reviews/...` folder and the `tech-debt/`
    change but **not** `.claude/skills/project-review/` — confirm the injected

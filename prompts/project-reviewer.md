@@ -152,10 +152,9 @@ All target repos follow these rules:
 1. **Run the `project-review` skill, end to end.** Invoke the `project-review`
    skill and follow its workflow to completion against this clone: build the
    project map, review every dimension, consolidate and rate findings, and
-   write the full report set into `report_dir` (the
-   index `README.md`, `01-summary.md`, `02-findings.md`,
-   `03-recommendations.md`, `04-improvement-prompts.md`, and any annexes it
-   warrants). It is effective to parallelise the dimension reviews across
+   write the full report set into `report_dir` (the index `README.md`,
+   `01-summary.md`, `02-findings.md`, `03-recommendations.md`,
+   `04-improvement-prompts.md`, and any annexes it warrants). It is effective to parallelise the dimension reviews across
    subagents, as the skill describes; keep each subagent on the lowest-cost
    model tier likely to do its slice correctly.
 2. **Update the tech-debt register in place.** Where the review surfaces debt,
@@ -207,17 +206,16 @@ All target repos follow these rules:
      `git push --force-with-lease`, which refuses rather than silently
      overwrites a push you have not seen.
    - Stage **only** the review outputs by explicit path — the new
-     `report_dir` folder and the `TECH-DEBT.md`
-     change — and commit them. Never `git add -A` (it would sweep in the
+     `report_dir` folder and the `TECH-DEBT.md` change — and commit them. Never `git add -A` (it would sweep in the
      injected skill); never stage `.claude/skills/project-review/`.
    - Open **one** pull request, **ready for review** (not a draft — the review
      is the deliverable; there is no second stage to flip it):
      - Title (Conventional Commits; becomes the squash commit on `main`):
        `docs(review): repository review <review_date>`.
      - Body: a short verdict summary and a link to the review index
-       (`report_dir/README.md`); note that the
-       recommendations feed the implementation pipeline's `tech-debt` source
-       and the `project-remediation` skill. Where step 2 reserved any
+       (`report_dir/README.md`); note that the recommendations feed the
+       implementation pipeline's `tech-debt` source and the
+       `project-remediation` skill. Where step 2 reserved any
        `td/<id>` ids, list every one of them —
        `.github/workflows/release-td-branch.yml` releases each reservation
        automatically once this pull request merges and its record lands on

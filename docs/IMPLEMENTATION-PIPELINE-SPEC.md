@@ -12821,9 +12821,18 @@ What exists, and the requirements each part answers to:
    regression-tested in `test/gather-tech-debt.test.sh`; must pass
    `shellcheck`.
 3y. `scripts/gather-project-review.sh` implementing requirement 3y's
-   project-review half: given a repo slug and default branch, reads the
-   latest `reviews/project-review-YYYY-MM-DD/` folder — the only one ever
-   live — and prints the JSON array of that review's recommendations, one per
+   project-review half: given a repo slug, default branch and — optionally —
+   that repository's own resolved `report_directory`
+   (`docs/REVIEW-PIPELINE-SPEC.md` R4a: a GNU `date`(1) format string,
+   defaulting here to `reviews/project-review-%Y-%m-%d`, so a caller passing
+   only the first two arguments reads the shipped layout), reads the latest
+   existing directory that format names — the only one ever live, discovered
+   through the shared `lib/report-directory.sh` rather than a fixed pattern,
+   so this gatherer and `review-cycle.sh`'s own skip-guard cannot answer
+   "which review is current" two different ways for the same repository. The
+   resolved directory is what `lib/eligibility.sh`'s Refiner pre-fetch passes
+   (per repository, resolved by `config_project_review_repos`). Prints the
+   JSON array of that review's recommendations, one per
    `## R-NN` section of `03-recommendations.md`, each carrying
    `review-<date>-R-NN` as `ref`, its `id`, `review_date`, `title`, `url`,
    the section verbatim as `body`, and the fenced prompt body for the same id
@@ -12831,8 +12840,9 @@ What exists, and the requirements each part answers to:
    between the first and the last fence line of that prompt's section, so a
    prompt with a nested code block of its own arrives whole rather than
    truncated at it; sorted by recommendation number ascending, the review's
-   own priority order. A repo with no `reviews/` tree, no dated folder in it,
-   or no `03-recommendations.md` prints `[]` silently; an API failure prints
+   own priority order. A repo with no report directory at all, none the
+   format's own past instances match, or no `03-recommendations.md` in the
+   latest prints `[]` silently; an API failure prints
    `[]` with `gh`'s diagnosis on stderr. Fails safe to `[]` (exit 0). Its
    shape is regression-tested in
    `test/gather-project-review.test.sh`; must pass `shellcheck`.
