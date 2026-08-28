@@ -157,12 +157,13 @@ approver_stage_adjudicating="$ADJUDICATING"
 approver_stage_tier="${APPROVER_STAGE_TIER:-critical}"
 union_log="$T/union.jsonl"
 # `log_file` (requirement 8x, agent-ops#578) — the landing audit record's
-# `approver.history` field reads this on the round that first approves a
-# pull request, exactly as production's own `log_event` already appends
-# every event to it; `log_event` is stubbed above to append to `$T/events`
-# instead, so this file starts (and, unless a case seeds it, stays) empty,
-# reading as "no prior approver-verdict for this pull request" — the
-# ordinary case for a pull request approved once and landed.
+# `approver.history` field reads the union of this and `$union_log`
+# (TD-PPagop-26082308), exactly as production's own `log_event` already
+# appends every event to it; `log_event` is stubbed above to append to
+# `$T/events` instead, so this file starts (and, unless a case seeds it,
+# stays) empty — as does `$union_log` below — reading as "no prior
+# approver-verdict for this pull request" — the ordinary case for a pull
+# request approved once and landed.
 log_file="$T/state/log.jsonl"
 mkdir -p "$state_dir"
 : > "$union_log"

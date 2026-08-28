@@ -18581,9 +18581,12 @@ pull request, run the ones the change touches and any it could regress.
     Approver's tier/model/verdict/adjudication and this pull request's full
     adjudication history (`landing_approver_adjudication_history`,
     lib/landing.sh — every `approver-verdict` event this pull request ever
-    received, not only the one that authorised this landing, read from
-    `$log_file` on the round that first approves a pull request or
-    `$union_log` on a 2.1e landing-retry re-arm), every deterministic gate
+    received, not only the one that authorised this landing, read from the
+    union of `$union_log` and `${log_file:-}`, deduplicated — on both the
+    round that first approves a pull request and a 2.1e landing-retry
+    re-arm, so that a peer node's refusal recorded only in `$union_log`
+    still appears in the history a first-approval round writes), every
+    deterministic gate
     this function itself just passed with its own evidence, the
     `merge_budget_decide` object gate 5 already computed
     (`cap`/`count`/`anomaly`/`waiting_backlog`) and would otherwise discard

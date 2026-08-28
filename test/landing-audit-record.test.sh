@@ -284,8 +284,42 @@ assert_eq "  ... and the record's own approver object is the newest entry, not t
   '"critical"' "$(jq -c '.approver.tier' <<<"$audit")"
 assert_eq "  ... its own model too" '"claude-opus-5"' "$(jq -c '.approver.model' <<<"$audit")"
 assert_eq "  ... and its adjudication flag" "true" "$(jq -c '.approver.adjudication' <<<"$audit")"
+assert_eq "  ... with no union log seeded, the local-only history is still what is produced (TD-PPagop-26082308: an absent/empty union log still degrades to the local one)" \
+  "0" "$([[ -s "$tmp_dir/union.jsonl" ]] && echo 1 || echo 0)"
 
-# --- A retry arm reads history from $union_log, not $log_file --------------
+# --- TD-PPagop-26082308: the first-approval round's history is the union ---
+# --- of $union_log and $log_file, not $log_file alone — a peer node's own --
+# --- refusal, recorded only in the fleet's union snapshot, must still show -
+
+cat >"$tmp_dir/log-seed-own.jsonl" <<EOF
+{"ts":"2026-08-22T09:00:00Z","event":"approver-verdict","pr_url":"$URL","repo":"Poetic-Poems/agent-ops","tier":"critical","model":"claude-opus-5","verdict":"land","refuse_streak":1,"adjudication":true,"posted":true}
+EOF
+cat >"$tmp_dir/union-seed-peer.jsonl" <<EOF
+{"ts":"2026-08-19T09:00:00Z","event":"approver-verdict","pr_url":"$URL","repo":"Poetic-Poems/agent-ops","tier":"critical","model":"claude-sonnet-5","verdict":"refuse","refuse_streak":1,"adjudication":false,"posted":true}
+EOF
+rc="$(run_case LOG_SEED_FILE="$tmp_dir/log-seed-own.jsonl" UNION_SEED_FILE="$tmp_dir/union-seed-peer.jsonl")"
+assert_eq "a first-approval round with a peer refusal only in union_log still arms and returns 0" "0" "$rc"
+audit="$(event_of landing-audit-record)"
+assert_eq "the first-approval round's history is the union of union_log and log_file" \
+  "2" "$(jq -c '.approver.history | length' <<<"$audit")"
+assert_eq "  ... the peer's refusal (union_log only), oldest first" \
+  '"refuse"' "$(jq -c '.approver.history[0].verdict' <<<"$audit")"
+assert_eq "  ... then this round's own verdict (log_file only)" \
+  '"land"' "$(jq -c '.approver.history[1].verdict' <<<"$audit")"
+assert_eq "  ... and the record's own approver object is still the newest entry" \
+  '"land"' "$(jq -c '.approver.verdict' <<<"$audit")"
+
+# --- TD-PPagop-26082308: the same event present in both sources (this ------
+# --- node's own events reach $union_log too) is not duplicated -------------
+
+rc="$(run_case LOG_SEED_FILE="$tmp_dir/log-seed-own.jsonl" UNION_SEED_FILE="$tmp_dir/log-seed-own.jsonl")"
+assert_eq "an event duplicated across union_log and log_file still arms and returns 0" "0" "$rc"
+audit="$(event_of landing-audit-record)"
+assert_eq "the duplicate is collapsed to a single history entry" \
+  "1" "$(jq -c '.approver.history | length' <<<"$audit")"
+
+# --- A retry arm's history is the same union — the approving round's own ---
+# --- event, recorded only in $union_log, still comes through ---------------
 
 cat >"$tmp_dir/union-seed.jsonl" <<EOF
 {"ts":"2026-08-18T09:00:00Z","event":"approver-verdict","pr_url":"$URL","repo":"Poetic-Poems/agent-ops","tier":"critical","model":"claude-sonnet-5","verdict":"approve","refuse_streak":0,"adjudication":false,"posted":true}
@@ -294,7 +328,7 @@ rc="$(run_case RETRY="retry" UNION_SEED_FILE="$tmp_dir/union-seed.jsonl")"
 assert_eq "a retry attempt still arms and returns 0" "0" "$rc"
 audit="$(event_of landing-audit-record)"
 assert_eq "the retry's own audit record carries retry:true" "true" "$(jq -c '.retry' <<<"$audit")"
-assert_eq "  ... and reads adjudication history from union_log, the retry's own fleet-log source" \
+assert_eq "  ... and its history still comes from union_log with no local log seeded" \
   "1" "$(jq -c '.approver.history | length' <<<"$audit")"
 assert_eq "  ... naming the approving round's own model" \
   '"claude-sonnet-5"' "$(jq -c '.approver.model' <<<"$audit")"
