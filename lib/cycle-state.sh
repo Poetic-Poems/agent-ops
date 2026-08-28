@@ -636,11 +636,20 @@ refinements_map() {
 #                     chances to clear this itself": a fleet standing down on
 #                     a usage limit, or a switch, logs no coordinator
 #                     stage-end and so ages nothing.
-#      issue-closed — an escalation raised after B is no longer open and no
-#                     examination has followed it. This bypasses the threshold
-#                     deliberately: the human acted, and the whole protocol
-#                     promised them that closing the issue is what re-starts
-#                     the work (requirement 36a).
+#      issue-closed — the item's latest escalation is no longer open and no
+#                     examination has followed it since it was raised. This
+#                     bypasses the threshold deliberately: the human acted, and
+#                     the whole protocol promised them that closing the issue
+#                     is what re-starts the work (requirement 36a). Ordinarily
+#                     that means the escalation was raised after B (the block
+#                     it answers is still the current one); but when B is a
+#                     `needs-refinement` re-flag raised *after* the escalation
+#                     and no `item-refined` event has landed since the
+#                     escalation, the re-flag disputes the same specification
+#                     the escalation was about, so the human's close answers
+#                     it too — TD-PPagop-26082901's race, where a re-flag
+#                     between the raise and the next Enabler pass would
+#                     otherwise strand the close.
 #      recheck      — the newest examination of it is older than RECHECK_HOURS
 #                     (0 disables). This is the path by which evidence that
 #                     arrived after an examination — a diagnosis posted into
@@ -650,7 +659,10 @@ refinements_map() {
 #
 # A re-block after an examination re-enters through `threshold`, because every
 # guard above is measured from B: a fresh attempt-failed moves B forward, which
-# leaves the old examination behind it and starts the count again.
+# leaves the old examination behind it and starts the count again — except for
+# the `needs-refinement` shape of `issue-closed` just described, which is
+# measured from the escalation instead precisely so that re-block does not
+# strand an already-closed escalation.
 #
 # An `enabler-examined` whose outcome is `escalation-failed` is deliberately not
 # an examination. The engagement reached a verdict it could not act on, so the
@@ -692,6 +704,11 @@ ENABLER_ELIGIBLE_JQ='
                     and .ts > $b.ts) ]
          | sort_by(.ts)) as $examined
       | ([ $all[]
+           | select(.event == "enabler-examined" and same_item($b)
+                    and (.outcome // "") != "escalation-failed"
+                    and $escalation != null and .ts > $escalation.ts) ]
+         | sort_by(.ts)) as $examined_since_escalation
+      | ([ $all[]
            | select(.event == "item-refined" and same_item($b)) ]
          | sort_by(.ts) | last) as $refined
       | ([ $all[]
@@ -708,8 +725,11 @@ ENABLER_ELIGIBLE_JQ='
          end) as $issue_state
       | (if $issue_state == "open" or $issue_state == "unknown" then null
          elif $issue_state == "closed"
-              and $escalation.ts > $b.ts
-              and ([ $examined[] | select(.ts > $escalation.ts) ] | length) == 0
+              and ($examined_since_escalation | length) == 0
+              and ($escalation.ts > $b.ts
+                   or (($b.kind // "") == "needs-refinement"
+                       and $refined != null
+                       and $refined.ts < $escalation.ts))
            then "issue-closed"
          elif ($examined | length) == 0
            then ((if ($b.kind // "") == "needs-refinement"

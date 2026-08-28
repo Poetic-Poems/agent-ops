@@ -1746,6 +1746,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and the spec; disagreeing with an existing specification is unaffected and
   still declines `needs-refinement`, escalating rather than being settled
   here.
+- The Enabler's `issue-closed` eligibility (requirement 35a) no longer strands
+  a human's close when a `needs-refinement` re-flag lands between the raise
+  and the next Enabler pass (TD-PPagop-26082901). The reason was granted only
+  when the item's latest escalation was raised after its latest block, so a
+  fresh re-flag — cheap and frequent (agent-ops#683) — moved the block past
+  the escalation and left the close unable to satisfy either `issue-closed`
+  (keyed on the raise) or `threshold` (requirement 36b's thrash guard refuses
+  a second refinement without a human touch); the only exit was a second
+  escalation asking the human to say again what they had already said (#849
+  → #905, #784 → #906, #813 → #910). `ENABLER_ELIGIBLE_JQ`
+  (`lib/cycle-state.sh`) now also grants `issue-closed` when the current block
+  is a `needs-refinement` re-flag raised after the escalation and no
+  `item-refined` event has landed since — the re-flag disputes the same,
+  unchanged specification the escalation was about, so the human's close
+  answers it too. The exemption still only grants an *examination*, not an
+  unblock: `prompts/enabler.md` already has the engagement verify the closed
+  issue's claim against reality either way.
 
 ### Changed
 

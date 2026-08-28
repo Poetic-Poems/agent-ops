@@ -10782,10 +10782,23 @@ implements.
          "the pipeline has had several honest chances to clear this itself":
          every stand-down — switch, cooldown, no-op short-circuit,
          back-pressure — logs no coordinator `stage-end` and so ages nothing.
-       - **`issue-closed`** — an escalation raised after *B* is no longer open,
-         and no examination has followed it. This bypasses the threshold
-         deliberately: the human acted, and requirement 36a promised them that
-         closing the issue is what restarts the work.
+       - **`issue-closed`** — the item's latest escalation is no longer open,
+         and no examination has followed it *since it was raised*. This
+         bypasses the threshold deliberately: the human acted, and requirement
+         36a promised them that closing the issue is what restarts the work.
+         Ordinarily this means the escalation was raised after *B* — the block
+         it answers is still the current one — but when *B* is instead a
+         `needs-refinement` re-flag raised *after* the escalation, with no
+         `item-refined` event landing since the escalation, the exemption
+         still applies: the re-flag disputes the same, unchanged
+         specification the escalation was about, so the human's close answers
+         it too. Without this, a re-flag landing between the raise and the
+         next Enabler pass — observed in every case as a Co-Ordinator
+         `needs-refinement` re-flag — strands the close: it satisfies neither
+         this reason (keyed on the raise time) nor `threshold` (the thrash
+         guard of requirement 36b refuses a second refinement without a human
+         touch), and the only way out was a second escalation asking the human
+         to say again what they had already said.
        - **`recheck`** — the newest examination of the item is older than
          `enabler_recheck_hours` (`0` disables). For a GitHub issue,
          requirement 18a already catches new evidence posted into its own
@@ -10796,7 +10809,10 @@ implements.
          landing (nothing then moves `updated_at`).
     A re-block re-enters through `threshold`, because every clause above is
     measured from *B*: a fresh `attempt-failed` moves *B* forward, leaving the
-    old examination behind it and restarting the count.
+    old examination behind it and restarting the count — except the
+    `needs-refinement` shape of `issue-closed` above, which is deliberately
+    measured from the escalation instead, precisely so that re-block does not
+    strand an already-closed escalation.
 
     An `enabler-examined` whose outcome is `escalation-failed` is **not** an
     examination for any of the above. That engagement reached a verdict it could
@@ -20379,3 +20395,4 @@ confident, recurring no-op.
 | A network-layer fault surfacing behind an application-layer control | With `DOCKER_MTU` unset on a host whose egress link sits below 1500, DNS resolves, squid accepts the CONNECT — and the TLS handshake inside the tunnel hangs and resets, which reads as "the egress allowlist is blocking me" when squid already said yes. The debugging then happens at the wrong layer, in the allowlist, where nothing is wrong. | The `egress` network carries the same `DOCKER_MTU` driver_opts as the default bridge, and `doctor.sh`'s Egress fail message names the trap. Rule the MTU out (compose.yaml's own note tells you how) before touching the allowlist. |
 | A pipeline stage whose reader exits first, under `pipefail` | `do_push` took the newest cycle id with `find … | sort -r | head -n 1`. `head` closes the pipe as soon as it has its one line, `sort` — which cannot emit anything before it has read every name — is still writing, and takes `SIGPIPE`. `pipefail` promotes the 141 to the pipeline's status and `set -e` aborts the push, after the mirror lock and fetch but before the commit, writing nothing to `state-sync.log`. Whether it fires depends on whether sort's output beats `head` into the 64 KB pipe buffer, so it hit 16-17 of every 30 runs: nodes replicated their state every 11-20 minutes against a `*/5` cron entry, for a month, and the only evidence anywhere was supercronic's own `exit status 141` (#806). The identical shape one function away was harmless purely because its caller used a process substitution, whose status bash discards. | Slicing a sorted stream is not a place to save a line: `sort` must buffer the whole input anyway, so capture it and slice in the shell, or use a reader that consumes its input (`sed -n '1,Np'`, `awk 'NR<=n'`). Never `|| true` — it silences the real errors at the same site. And when auditing the pattern, read the *call shape*, not just the pipeline: the same three commands are fatal in `$(…)` and inert in `< <(…)`, which is why a survey by grep alone will mis-rank what to fix. |
 | A cleanup path that only ever runs during the very failure it exists to clean up after | `_techdebt_unfile` undid a half-finished tech-debt filing's writes on the one path that reaches it: `techdebt_file_debt`'s own failure handler, calling straight back into the GitHub API whose failure just put it there. The correlation is near-total — a transient window that fails a branch-create or contents-write call is the same window that fails the `DELETE` meant to undo it — so the cleanup was likeliest to fail exactly when it was needed and silently fine the rest of the time, which is why nothing noticed. On 2026-08-23, fourteen consecutive `td/<id>` reservations (TD-PPagop-26082407 through -26082420) orphaned in a seventy-second window, and nothing short of a human running `git push origin --delete` by hand would ever have released them: `scripts/sweep-orphan-branches.sh` deliberately leaves a bare reservation branch alone (issue #545, since it cannot tell whether the id was filed elsewhere), and the push-triggered release workflow only ever fires for an id that actually reached `main` — one that never did stays invisible to both, forever, exactly as `lib/tech-debt-file.sh`'s own header conceded before TD-PPagop-26082427 (`_techdebt_release_ref`, `scripts/release-pending-reservations.sh`) closed it. | A failure-path cleanup that calls back into the same dependency whose failure triggered it is not a backstop, because the two share a failure mode by construction — one retry, run once, in the same breath as the fault. Ask, of any "undo what I just wrote" step: what happens if the *undo* fails too, and is anything left that will ever try it again? Where the answer is "no", make the failure durable — a marker outside the failed call's own blast radius (here, a different repository's contents API) that a later, independent, periodically-retried pass can act on — rather than one best-effort attempt logged and swallowed. |
+| A promise measured from the wrong event lets a later one silently outrun it | Requirement 35a's `issue-closed` reason compared the item's latest escalation against its latest block *B* (`$escalation.ts > $b.ts`) — the raise time, not the human's act. That held only as long as nothing re-blocked the item between the raise and the next Enabler pass; a Co-Ordinator `needs-refinement` re-flag is cheap and frequent (agent-ops#683, TD-PPagop-26082816) and moved *B* past the escalation on three items in one run on 2026-08-27 (#706, #779, #810). Each stranded close then satisfied neither `issue-closed` (keyed on the raise) nor `threshold` (requirement 36b's thrash guard refuses a second refinement without a human touch), so the only exit was a second escalation asking the human to say again what they had already said (#849→#905, #784→#906, #813→#910) plus an Opus engagement to establish that nothing had changed — the exact cost agent-ops#627 exists to remove (TD-PPagop-26082901). | When a rule promises to react to a human act (closing an issue, approving a review), key it on evidence of the act and what it answered, not on a timestamp from *before* the act that something else can silently move past. Where the something-else is itself cheap and frequent, assume it will race the human, and give the exemption a second, narrower path keyed on "this later event still refers to what the act already settled" (here: a `needs-refinement` re-flag with no `item-refined` since the escalation) rather than widening the original comparison until it drifts from what it was measuring. |

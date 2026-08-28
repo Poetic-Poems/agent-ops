@@ -274,6 +274,75 @@ printf '%s\n' '{"ts":"2026-07-24T09:00:00Z","cycle":"c9","event":"enabler-examin
 assert_eq "an examination after the closure retires the verification" "" \
   "$(reason_for TD1 3 0 "$open_none")"
 
+# --- The #706 race: a needs-refinement re-flag after the close (TD-PPagop-26082901) ---
+#
+# A fresh block landing *after* the escalation was raised — observed in every
+# case as a Co-Ordinator needs-refinement re-flag — used to move B past the
+# escalation and strand the human's close: it satisfied none of `threshold`
+# (the thrash guard refuses a second refinement without a human touch),
+# `issue-closed` (keyed on the raise time) or `recheck` (nothing has examined
+# it yet to grow stale). The exemption is keyed on the block the escalation was
+# raised for instead: a re-flag disputing the same, unchanged specification is
+# answered by the same close.
+
+reflag_after_close_log() {  # escalation raised, closed, *then* re-blocked needs-refinement
+  cat > "$log" <<'EOF'
+{"ts":"2026-07-20T08:00:00Z","cycle":"c-1","event":"item-refined","repo":"o/r","item":"TD1","spec":"original spec"}
+{"ts":"2026-07-22T09:00:00Z","cycle":"c0","event":"attempt-failed","stage":"implementer","repo":"o/r","item":"TD1","detail":"needs repo secrets","unblock_condition":"a human adds SENTRY_DSN"}
+EOF
+  coord_cycles 3 >> "$log"
+  cat >> "$log" <<'EOF'
+{"ts":"2026-07-23T09:00:00Z","cycle":"c4","event":"enabler-examined","repo":"o/r","item":"TD1","blocked_ts":"2026-07-22T09:00:00Z","outcome":"escalate","detail":"needs a human decision"}
+{"ts":"2026-07-23T09:00:01Z","cycle":"c4","event":"escalated","repo":"o/r","item":"TD1","issue_number":52,"issue_url":"https://github.com/o/r/issues/52","blocked_ts":"2026-07-22T09:00:00Z"}
+{"ts":"2026-07-23T12:18:06Z","cycle":"c5","event":"attempt-failed","stage":"coordinator","repo":"o/r","item":"TD1","kind":"needs-refinement","detail":"re-flagged after the close","unblock_condition":"a human clarifies again"}
+EOF
+}
+
+reflag_after_close_log
+assert_eq "a needs-refinement re-flag raised after an already-closed escalation is still issue-closed" \
+  "issue-closed" "$(reason_for TD1 3 0 "$open_none")"
+assert_eq "the entry still carries the needs-refinement kind and the prior refinement" \
+  "needs-refinement|2026-07-20T08:00:00Z" \
+  "$(eligible 3 0 "$open_none" | jq -r '.[0] | [.kind, .refined_before.ts] | join("|")')"
+
+# The negative the fix's own scope excludes: an examination that already
+# consumed the close — whether before or after the re-flag — must not be
+# re-granted through the needs-refinement exemption. That close was already
+# looked at, so nothing here is "an escalation nobody has acted on since".
+reflag_after_close_log
+printf '%s\n' '{"ts":"2026-07-23T10:00:00Z","cycle":"c4","event":"enabler-examined","repo":"o/r","item":"TD1","blocked_ts":"2026-07-22T09:00:00Z","outcome":"still-blocked","detail":"already looked at the closed issue"}' >> "$log"
+assert_eq "an examination after the close, even before the re-flag, is not issue-closed" \
+  "" "$(reason_for TD1 3 0 "$open_none")"
+
+# An ordinary (non-refinement) re-flag after the close gets no such exemption:
+# only a needs-refinement re-flag disputes "the same specification" the
+# escalation was about.
+cat > "$log" <<'EOF'
+{"ts":"2026-07-22T09:00:00Z","cycle":"c0","event":"attempt-failed","stage":"implementer","repo":"o/r","item":"TD1","detail":"needs repo secrets","unblock_condition":"a human adds SENTRY_DSN"}
+EOF
+coord_cycles 3 >> "$log"
+cat >> "$log" <<'EOF'
+{"ts":"2026-07-23T09:00:00Z","cycle":"c4","event":"enabler-examined","repo":"o/r","item":"TD1","blocked_ts":"2026-07-22T09:00:00Z","outcome":"escalate","detail":"needs a human decision"}
+{"ts":"2026-07-23T09:00:01Z","cycle":"c4","event":"escalated","repo":"o/r","item":"TD1","issue_number":52,"issue_url":"https://github.com/o/r/issues/52","blocked_ts":"2026-07-22T09:00:00Z"}
+{"ts":"2026-07-23T12:18:06Z","cycle":"c5","event":"attempt-failed","stage":"implementer","repo":"o/r","item":"TD1","detail":"blocked again, differently"}
+EOF
+assert_eq "an ordinary re-flag after the close is not exempted, and re-enters through the threshold" \
+  "" "$(reason_for TD1 3 0 "$open_none")"
+
+# Without a prior refinement at all, `refined_before` is null and the
+# exemption cannot fire — there is no "same specification" to point to.
+cat > "$log" <<'EOF'
+{"ts":"2026-07-22T09:00:00Z","cycle":"c0","event":"attempt-failed","stage":"coordinator","repo":"o/r","item":"TD1","kind":"needs-refinement","detail":"under-specified","unblock_condition":"a human writes acceptance criteria"}
+EOF
+coord_cycles 3 >> "$log"
+cat >> "$log" <<'EOF'
+{"ts":"2026-07-23T09:00:00Z","cycle":"c4","event":"enabler-examined","repo":"o/r","item":"TD1","blocked_ts":"2026-07-22T09:00:00Z","outcome":"escalate","detail":"needs a human decision"}
+{"ts":"2026-07-23T09:00:01Z","cycle":"c4","event":"escalated","repo":"o/r","item":"TD1","issue_number":52,"issue_url":"https://github.com/o/r/issues/52","blocked_ts":"2026-07-22T09:00:00Z"}
+{"ts":"2026-07-23T12:18:06Z","cycle":"c5","event":"attempt-failed","stage":"coordinator","repo":"o/r","item":"TD1","kind":"needs-refinement","detail":"re-flagged after the close","unblock_condition":"a human clarifies again"}
+EOF
+assert_eq "a needs-refinement re-flag with no prior item-refined event gets no exemption" \
+  "" "$(reason_for TD1 3 0 "$open_none")"
+
 # A repo whose source state could not be sampled has no digest, and an
 # escalation there might still be open. "Cannot tell" resolves to ineligible:
 # the cheap mistake is a delayed engagement, the expensive one is a duplicate
