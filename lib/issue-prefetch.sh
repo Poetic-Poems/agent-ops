@@ -33,6 +33,7 @@
 #
 # Defined once so gather-issues.sh's own three drops and gather-tech-debt.sh's
 # copy of them cannot drift apart.
+# shellcheck disable=SC2034  # read by scripts/gather-issues.sh and scripts/gather-tech-debt.sh, which source this file
 read -r -d '' ISSUE_DETERMINISTIC_FILTER_JQ <<'JQ' || true
 def issue_deterministic_ok:
   (has("pull_request") | not)
