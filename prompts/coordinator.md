@@ -1050,8 +1050,9 @@ well it is done.
 repos/<slug>/contents/reviews` and take the latest date). A recommendation
 `R-NN` from that folder is a candidate unless:
 
-- the review already mirrored it into `TECH-DEBT.md` or filed it as an issue —
-  the tech-debt entry or issue cross-references the `R-NN`, and that curated,
+- the review already filed it as a `pw::type:tech-debt`-labelled issue (or, in
+  a repository whose own register still carries one, mirrored it there) — that
+  issue or tech-debt entry cross-references the `R-NN`, and that curated,
   status-tracked channel owns it, so skip it here (this is the dedup that keeps
   the same work from being picked twice);
 - an open PR already references its ref `review-<date>-R-NN` (claimed), or a

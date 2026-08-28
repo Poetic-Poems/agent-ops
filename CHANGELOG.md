@@ -1758,6 +1758,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and carries that list as a new `blocking_reviewers` field beside its
   verdict, the same way the `protected_path` field already names the paths it
   examined. The observable verdict does not change on any arm.
+- The repository-review pipeline now files the debt it surfaces as
+  `pw::type:tech-debt`-labelled GitHub issues in the repository under review,
+  rather than as `tech-debt/*.md` register files committed inside the review
+  pull request (agent-ops#876; D15 as revised 2026-08-28). Each issue is
+  dedup-searched before it is filed (`gh issue list --label
+  pw::type:tech-debt --search …`) and, where it mirrors a recommendation's
+  whole *Intended end state*, names that recommendation's `R-NN` and the
+  review folder in its body — the cross-reference the Co-Ordinator's
+  `project-review` dedup reads (requirement 16). The review pull request
+  lists every issue filed under a `Defers:` section instead of carrying a
+  register diff, so it adds no `tech-debt/` file at all; the only register
+  edit it may still carry is an existing item's frontmatter flip where the
+  review found that item already resolved. The debt therefore reaches the
+  implementation pipeline's `issues` source as soon as it is filed, instead
+  of waiting for the review pull request to merge, and the `td/<id>`
+  reservation bookkeeping the review used to do disappears with it.
+  `docs/REVIEW-PIPELINE-SPEC.md` R12/R12a/R13 and acceptance checks 5, 7 and
+  8, `prompts/project-reviewer.md` and the vendored `project-review` skill
+  all move together.
 - Seven timings sized against a once-an-hour cycle now derive from
   `schedule.cycle_interval_minutes` instead (requirement 1d, agent-ops#591):
   `claim_ttl_hours`, `abandoned_draft_after_hours`, `disable_default_ttl` and

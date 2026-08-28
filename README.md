@@ -1665,10 +1665,13 @@ branch, report set and pull request — runs a full **project review** of that
 repo on a configured cadence
 (`project_review.defaults.min_days_between_reviews`) and opens a pull
 request with the results — a set of Markdown reports (summary, findings,
-prioritised recommendations, ready-to-use improvement prompts) plus an
-updated tech-debt register. Merging that PR feeds the implementation
-pipeline above: its Co-Ordinator picks up the new tech-debt items, and you
-can hand the improvement prompts to the `project-remediation` skill.
+prioritised recommendations, ready-to-use improvement prompts). Debt the
+review surfaces is filed straight to GitHub as `pw::type:tech-debt`-labelled
+issues while the run is under way, listed under the pull request's `Defers:`
+section rather than committed alongside it, so the implementation pipeline's
+Co-Ordinator can pick those issues up through its own `issues` source without
+waiting for the review PR to land; merging that PR then lands the improvement
+prompts, which you can hand to the `project-remediation` skill.
 
 It reuses the implementation pipeline's machinery (ephemeral clones, the
 shared usage-limit stand-down, the same lock/timeout discipline) but has its

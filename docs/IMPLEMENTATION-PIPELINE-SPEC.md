@@ -7089,10 +7089,12 @@ implements.
       to this judgement call;
     - a `project-review` recommendation that is already **done** — a *merged*
       PR references its ref (`review-<date>-R-NN`) — or that is already owned
-      by a higher-priority source: the review mirrors debt-shaped
-      recommendations into the tech-debt register (or files them as issues)
-      cross-referencing the `R-NN`, so a recommendation cross-referenced by a
-      current tech-debt entry or open issue is left to that source and skipped
+      by a higher-priority source: the review files debt-shaped
+      recommendations as `pw::type:tech-debt`-labelled issues
+      cross-referencing the `R-NN` (`docs/REVIEW-PIPELINE-SPEC.md`, R12/R12a),
+      so a recommendation cross-referenced by such an issue — or by a current
+      tech-debt entry a repository's own register still carries — is left to
+      that source and skipped
       here. (A single `gh` PR search per repo for the review date surfaces the
       open/merged/closed PRs referencing that review; match refs against it.)
       Note that a merged PR is a *floor*, not a proof: work that landed as a
@@ -19756,23 +19758,25 @@ requirements above, which state only what is.
   code-quality findings). User stories and road maps were dropped — neither
   repo has them; the config structure accepts new sources when they appear.
 - **The weekly project review feeds the pipeline as a work source.** The
-  review pipeline (`docs/REVIEW-PIPELINE-SPEC.md`) lands, in each repo, both an
-  updated tech-debt register — the primary, status-tracked channel (picked up
-  by the `tech-debt` source) — and a `reviews/project-review-*/` folder of
-  prioritised
-  recommendations with ready-to-run improvement prompts. The
+  review pipeline (`docs/REVIEW-PIPELINE-SPEC.md`) produces, for each repo,
+  two channels: the debt it surfaces, filed straight to GitHub as
+  `pw::type:tech-debt`-labelled issues as the run goes (R12) — the primary,
+  status-tracked channel, picked up by the `issues` source — and a
+  `reviews/project-review-*/` folder of prioritised
+  recommendations with ready-to-run improvement prompts, landed by the review
+  pull request. The
   `project-review` source consumes the latter so that recommendations *not*
-  also filed as tech-debt or an issue are still actioned rather than left to
+  also filed as an issue are still actioned rather than left to
   rot in a folder. It sits just above `code-quality` (a human-approved
   recommendation beats an automated one) and below the curated channels, and
   dedups against them via the `R-NN` cross-reference the review writes into
-  each mirrored tech-debt entry (required of the review by R12a of
+  each mirrored issue's body (required of the review by R12a of
   `docs/REVIEW-PIPELINE-SPEC.md` — for a long time this bullet merely *assumed*
   it, which is why the dedup silently didn't work; see Gotchas). Because the recommendations file is
   regenerated each week (its `R-NN` IDs are per-review, so a ref is
   review-dated), an un-actioned recommendation is simply re-offered under a new
-  ref by the next review; persistent items live in the tech-debt register,
-  which has stable IDs — so the regeneration doesn't strand work. Done-ness is tracked by
+  ref by the next review; persistent items live as issues, whose numbers are
+  stable — so the regeneration doesn't strand work. Done-ness is tracked by
   the PR referencing the ref (open = claimed, merged = done), the same
   PR-as-source-of-truth pattern the findings sources use, so the review folder
   stays an immutable point-in-time record.
