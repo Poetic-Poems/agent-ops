@@ -1689,6 +1689,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Seven timings sized against a once-an-hour cycle now derive from
+  `schedule.cycle_interval_minutes` instead (requirement 1d, agent-ops#591):
+  `claim_ttl_hours`, `abandoned_draft_after_hours`, `disable_default_ttl` and
+  `none_selected_recheck_hours` re-express their old "a few cycles" intent
+  against the actual cadence (accounting for `schedule.cycle_hours` and
+  `excluded_minutes` too, since either can widen the real gap between cycles
+  past the bare interval), and `cycles_retained`,
+  `state_local_cycles_retained` and `state_local_streams_retained` hold their
+  wall-clock retention window constant as that cadence moves rather than
+  quietly shrinking it. The four thresholds take the *worst-case* gap between
+  firings, since each has to outlast a quiet stretch; the three retention
+  counts take the *mean* gap, since a cycle directory is written per firing —
+  a distinction that matters only where `cycle_hours` or `excluded_minutes`
+  restrict the schedule, and there it is the difference between a `9-17`,
+  15-minute installation keeping the 300 cycle directories its ~8.3-day
+  window means and keeping 14. `crash_loop_after`'s intent is a literal count of
+  consecutive failures, not a span of history, so it is unaffected and keeps
+  its plain default. None of the seven carries a schema `default` any more —
+  absent, each is derived; a configured value is a floor under the
+  derivation, never a ceiling, the same shape `lock_stale_after` already
+  uses. `claim_ttl_hours` and `abandoned_draft_after_hours` carry a second
+  floor beyond the cadence one (TD-PPagop-26082829): each also bounds a
+  cycle's own worst-case *runtime*, not only the gap between cycle starts —
+  `do_gc` sweeps a claim (and its still-untouched, PR-less branch) past
+  `claim_ttl_hours` regardless of whether the cycle holding it is still
+  running, and `gather-abandoned-drafts.sh`'s own candidacy race presumes
+  that claim has not already been swept — so a fast cadence can raise either
+  key's cadence term but can no longer derive either below requirement 4f's
+  own stage-backstop quantity (`stage_budget_lock_seconds`, the one
+  `lock_stale_after` already derives). On Poetic's own 15-minute
+  installation the cadence term alone would put `claim_ttl_hours` at 2 h and
+  `abandoned_draft_after_hours` at 1 h — both well under a cycle's own
+  worst-case runtime — so the runtime floor is what actually governs there:
+  both derive to 7 h, higher than either key's original flat default (6 h,
+  4 h), which is the fix working as intended rather than a regression.
+  `cycles_retained` grows from 200 to 800 on the same installation to hold
+  the same ~8.3 days of mirror history it always meant to, and
+  `state_local_cycles_retained`/`state_local_streams_retained` grow
+  1000 → 4000 and 50 → 200 the same way (TD-PPagop-26082830) — the last of
+  which is the one whose retained volume is worth an order-of-magnitude
+  estimate rather than only a ratio: roughly low hundreds of megabytes on a
+  busy repository, comfortably inside `min_free_workspace_bytes`'s 2 GiB
+  pre-clone floor.
 - The Co-Ordinator no longer treats a documentation-only item as a separate,
   lower-priority track (agent-ops#582, owner decision S1 on agent-ops#633).
   `prompts/coordinator.md` now states plainly, beside the existing

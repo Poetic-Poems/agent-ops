@@ -76,15 +76,17 @@
 #         told it may use either (`prompts/reviewer.md` step 5), so both are
 #         matched against the marker. A human's review — an approval, a
 #         change request, an inline note — carries no marker either way.
-#     The threshold is `abandoned_draft_after_hours` (4 h), comfortably beyond a
-#     whole cycle (120 min Implementer + 60 min Reviewer) so a draft that is
-#     merely being worked never qualifies. It was 3 h until #203's interim
-#     timeout raises took a worst-case cycle to exactly 180 minutes and left it
-#     no margin at all; the two must move together, which is one of the reasons
-#     #203 derives such thresholds rather than fixing them. Where the margin
-#     does run out, it costs little: candidacy is not selection, and a draft
-#     another node is genuinely working is claimed, so a premature candidate
-#     loses the claim race (requirement 17a) rather than duplicating the work.
+#     The threshold is `abandoned_draft_after_hours`, comfortably beyond a whole
+#     cycle so a draft that is merely being worked never qualifies. "A whole
+#     cycle" is 4 cadence firings, not a fixed number of hours (requirement 1d):
+#     absent, the threshold is derived from `schedule.cycle_interval_minutes`
+#     so it stays 4 firings wide at whatever cadence is configured, rather than
+#     needing to move by hand every time a stage timeout or the cadence itself
+#     changes the way #203's interim raise (3 h to 4 h) once had to. Where the
+#     margin does run out, it costs little: candidacy is not selection, and a
+#     draft another node is genuinely working is claimed, so a premature
+#     candidate loses the claim race (requirement 17a) rather than duplicating
+#     the work.
 #
 # ## Why the clock is "last real activity", not GitHub's `updatedAt`
 #

@@ -345,6 +345,235 @@ assert_defaults "no project_review per-repo override is fabricated into a repos 
 assert_defaults "config_defaults performs no schema validation of its own" \
   '.pr_labell = "x"' '.pr_labell == "x"'
 
+# --- Requirement 1d: cadence-derived timings ---
+#
+# CADENCE_BASE_MUTATION clears every one of the seven cadence-derived keys
+# (so each fixture below is a pure "absent, let it derive" case) and pins an
+# unrestricted schedule an assertion can then narrow. 60 minutes is the
+# historical-hourly baseline every one of these keys was originally sized
+# against, and divides every base cycle-count below without a remainder, so a
+# derived hour or cycle-directory count is exact — no rounding to obscure
+# what moved.
+CADENCE_BASE_MUTATION='
+  del(.claim_ttl_hours, .abandoned_draft_after_hours, .disable_default_ttl,
+      .none_selected_recheck_hours, .cycles_retained,
+      .state_local_cycles_retained, .state_local_streams_retained)
+  | .schedule.cycle_hours = "*"
+  | .schedule.excluded_minutes = []
+'
+
+# claim_ttl_hours and abandoned_draft_after_hours carry a second floor beyond
+# the cadence one: requirement 4f's own lock_stale_after quantity
+# (stage_budget_lock_seconds), computed here exactly as config_defaults
+# computes it internally — the shipped STAGE_BUDGET_PRIORS, no config
+# overrides, no fleet history (an empty table) — so the assertions below
+# compare against the real floor rather than a hand-copied constant that
+# could drift from it.
+RUNTIME_FLOOR_LOCK_SEC="$(stage_budget_lock_seconds '{}' '{}' 30 0)"
+RUNTIME_FLOOR_HOURS=$(( (RUNTIME_FLOOR_LOCK_SEC + 3599) / 3600 ))
+
+# assert_cadence_cmp DESC FIXTURE_A_MUTATION FIXTURE_B_MUTATION JQ_CHECK
+# JQ_CHECK sees $a and $b, each config_defaults' output for its own fixture —
+# the shape every comparison below needs, which a single-fixture
+# assert_defaults call cannot express.
+assert_cadence_cmp() {
+  local desc="$1" mutation_a="$2" mutation_b="$3" jq_check="$4" out_a out_b
+  jq "$CADENCE_BASE_MUTATION | ($mutation_a)" "$CONFIG" > "$tmp/cadence-a.json" \
+    || { bad "$desc (fixture A did not apply)"; return; }
+  jq "$CADENCE_BASE_MUTATION | ($mutation_b)" "$CONFIG" > "$tmp/cadence-b.json" \
+    || { bad "$desc (fixture B did not apply)"; return; }
+  if ! out_a="$(config_defaults "$tmp/cadence-a.json" "$SCHEMA")"; then
+    printf 'FAIL - %s\n     config_defaults itself failed on fixture A\n' "$desc"
+    failures=$(( failures + 1 )); return
+  fi
+  if ! out_b="$(config_defaults "$tmp/cadence-b.json" "$SCHEMA")"; then
+    printf 'FAIL - %s\n     config_defaults itself failed on fixture B\n' "$desc"
+    failures=$(( failures + 1 )); return
+  fi
+  if jq -en --argjson a "$out_a" --argjson b "$out_b" "$jq_check" >/dev/null 2>&1; then
+    pass "$desc"
+  else
+    printf 'FAIL - %s\n     check: %s\n     fixture A: %s\n     fixture B: %s\n' \
+      "$desc" "$jq_check" "$out_a" "$out_b"
+    failures=$(( failures + 1 ))
+  fi
+}
+
+# Acceptance 2: halving cycle_interval_minutes (60 -> 30) shows each derived
+# timing changing as expected, and each independent one not changing.
+#
+# claim_ttl_hours and abandoned_draft_after_hours are the two exceptions:
+# their cadence-derived figure at 60 min (6 h, 4 h) already sits below the
+# runtime floor (RUNTIME_FLOOR_HOURS, ~6.3 h rounded up to 7 from the shipped
+# stage-backstop priors), so halving the interval — which can only lower the
+# cadence term further — leaves both pinned at the floor rather than moving.
+# That pinning is the fix (TD-PPagop-26082829): before it, halving actually
+# did halve them, which is exactly how a fast cadence could shorten a claim's
+# TTL, or a draft's abandoned-after threshold, below a cycle's own worst-case
+# runtime.
+# shellcheck disable=SC2016  # jq's $a/$b (assert_cadence_cmp's own), not the shell's.
+assert_cadence_cmp "halving cycle_interval_minutes leaves claim_ttl_hours pinned to the runtime floor, not halved (6 cycles undershoots it at both 60 min and 30 min)" \
+  '.schedule.cycle_interval_minutes = 60' '.schedule.cycle_interval_minutes = 30' \
+  '$a.claim_ttl_hours == '"$RUNTIME_FLOOR_HOURS"' and $b.claim_ttl_hours == '"$RUNTIME_FLOOR_HOURS"''
+# shellcheck disable=SC2016  # jq's $a/$b, not the shell's.
+assert_cadence_cmp "...and abandoned_draft_after_hours too (4 cycles undershoots it at both 60 min and 30 min)" \
+  '.schedule.cycle_interval_minutes = 60' '.schedule.cycle_interval_minutes = 30' \
+  '$a.abandoned_draft_after_hours == '"$RUNTIME_FLOOR_HOURS"' and $b.abandoned_draft_after_hours == '"$RUNTIME_FLOOR_HOURS"''
+# shellcheck disable=SC2016  # jq's $a/$b, not the shell's.
+assert_cadence_cmp "...and halves disable_default_ttl (4 cycles: 4 h -> 2 h)" \
+  '.schedule.cycle_interval_minutes = 60' '.schedule.cycle_interval_minutes = 30' \
+  '$a.disable_default_ttl == 4 and $b.disable_default_ttl == 2'
+# shellcheck disable=SC2016  # jq's $a/$b, not the shell's.
+assert_cadence_cmp "...and halves none_selected_recheck_hours (24 cycles: 24 h -> 12 h)" \
+  '.schedule.cycle_interval_minutes = 60' '.schedule.cycle_interval_minutes = 30' \
+  '$a.none_selected_recheck_hours == 24 and $b.none_selected_recheck_hours == 12'
+# shellcheck disable=SC2016  # jq's $a/$b, not the shell's.
+assert_cadence_cmp "...and doubles cycles_retained, holding its ~8.3-day window constant (200 -> 400)" \
+  '.schedule.cycle_interval_minutes = 60' '.schedule.cycle_interval_minutes = 30' \
+  '$a.cycles_retained == 200 and $b.cycles_retained == 400'
+# shellcheck disable=SC2016  # jq's $a/$b, not the shell's.
+assert_cadence_cmp "...and doubles state_local_cycles_retained, holding its ~41.7-day window constant (1000 -> 2000)" \
+  '.schedule.cycle_interval_minutes = 60' '.schedule.cycle_interval_minutes = 30' \
+  '$a.state_local_cycles_retained == 1000 and $b.state_local_cycles_retained == 2000'
+# shellcheck disable=SC2016  # jq's $a/$b, not the shell's.
+assert_cadence_cmp "...and doubles state_local_streams_retained, holding its ~2.1-day window constant (50 -> 100)" \
+  '.schedule.cycle_interval_minutes = 60' '.schedule.cycle_interval_minutes = 30' \
+  '$a.state_local_streams_retained == 50 and $b.state_local_streams_retained == 100'
+# shellcheck disable=SC2016  # jq's $a/$b, not the shell's.
+assert_cadence_cmp "an independent key (enabler_recheck_hours, human-world time) does not move with the interval" \
+  '.schedule.cycle_interval_minutes = 60' '.schedule.cycle_interval_minutes = 30' \
+  '$a.enabler_recheck_hours == $b.enabler_recheck_hours'
+# shellcheck disable=SC2016  # jq's $a/$b, not the shell's.
+assert_cadence_cmp "...nor does crash_loop_after (a literal count, not a span of history)" \
+  '.schedule.cycle_interval_minutes = 60' '.schedule.cycle_interval_minutes = 30' \
+  '$a.crash_loop_after == $b.crash_loop_after'
+
+# Acceptance 3: an explicitly configured value still wins over the
+# derivation — raised by it when the derivation is larger (the floor shape
+# lock_stale_after already uses), and an explicit 0 stays exactly 0 for the
+# one key that convention applies to.
+assert_defaults "an explicitly configured value still wins over the derivation (hour-valued key)" \
+  '.schedule.cycle_interval_minutes = 60 | .claim_ttl_hours = 10' \
+  '.claim_ttl_hours == 10'
+assert_defaults "...and for a count-valued key too" \
+  '.schedule.cycle_interval_minutes = 60 | .cycles_retained = 999' \
+  '.cycles_retained == 999'
+assert_defaults "an explicit 0 for none_selected_recheck_hours stays 0, never raised by the derivation" \
+  '.schedule.cycle_interval_minutes = 60 | .none_selected_recheck_hours = 0' \
+  '.none_selected_recheck_hours == 0'
+
+# Acceptance 4: an installation with schedule.cycle_hours restricted to
+# business hours (9 allowed hours; 15 disallowed hours, 18-8, between them)
+# derives claim and abandoned-draft thresholds longer than the bare interval
+# alone implies — the overnight-expiry failure requirement 1d's own
+# implementation note names.
+# shellcheck disable=SC2016  # jq's $a/$b, not the shell's.
+assert_cadence_cmp "restricted schedule.cycle_hours derives claim_ttl_hours longer than the bare interval implies" \
+  '.schedule.cycle_interval_minutes = 15' \
+  '.schedule.cycle_interval_minutes = 15 | .schedule.cycle_hours = "9-17"' \
+  '$b.claim_ttl_hours > $a.claim_ttl_hours'
+# shellcheck disable=SC2016  # jq's $a/$b, not the shell's.
+assert_cadence_cmp "...and abandoned_draft_after_hours too" \
+  '.schedule.cycle_interval_minutes = 15' \
+  '.schedule.cycle_interval_minutes = 15 | .schedule.cycle_hours = "9-17"' \
+  '$b.abandoned_draft_after_hours > $a.abandoned_draft_after_hours'
+
+# ...and the same restriction must *not* shrink the count-valued keys, which
+# are sized against the mean gap between firings rather than the worst one:
+# a cycle directory is written per firing, so the wall-clock span a count
+# covers follows how often this installation fires. The same 9-17, 15-minute
+# schedule fires 9 x 4 = 36 times a day — a mean gap of 40 minutes — so
+# cycles_retained derives 200 * 60 / 40 = 300, holding the same ~8.3 days a
+# flat 200 held at the historical hourly cadence, and the other two scale
+# with it. Against the worst gap (915 min: the 15-hour overnight run plus one
+# interval) the same key would derive 14, about three hours of history, which
+# is both shorter than the window it means to hold and shorter than the flat
+# count it replaced.
+assert_defaults "a restricted schedule.cycle_hours holds the count-valued keys' window rather than shrinking it" \
+  '.schedule.cycle_hours = "9-17" | .schedule.cycle_interval_minutes = 15 | .schedule.excluded_minutes = []
+   | del(.cycles_retained, .state_local_cycles_retained, .state_local_streams_retained)' \
+  '.cycles_retained == 300 and .state_local_cycles_retained == 1500
+   and .state_local_streams_retained == 75'
+# An excluded minute that drops a reachable occurrence is the other way the
+# two gaps part company, and it moves the count keys the same way: excluding
+# every quarter-hour but the base minute leaves one firing an hour, so the
+# mean gap is 60 minutes and cycles_retained derives its historical 200 —
+# not the 400 the bare 30-minute interval would suggest.
+assert_defaults "schedule.excluded_minutes dropping occurrences lowers the derived counts to match" \
+  '.schedule.cycle_hours = "*" | .schedule.cycle_interval_minutes = 30
+   | .schedule.excluded_minutes = [30]
+   | del(.cycles_retained)' \
+  '.cycles_retained == 200'
+
+# Acceptance 5 (TD-PPagop-26082829): claim_ttl_hours and
+# abandoned_draft_after_hours each bound a cycle's own worst-case *runtime*
+# (do_gc sweeps a live claim's registry entry past claim_ttl_hours;
+# gather-abandoned-drafts.sh races a draft's candidacy against a claim that
+# can itself already be swept), not only the scheduling gap between cycle
+# starts — so at the shipped hourly-or-faster cadence, where the cadence term
+# alone would undershoot it, both are floored at requirement 4f's own
+# lock_stale_after quantity (stage_budget_lock_seconds) instead.
+assert_defaults "claim_ttl_hours floors at the stage-backstop lock quantity, not the bare cadence, at the shipped cadence" \
+  '.schedule.cycle_interval_minutes = 60 | .schedule.cycle_hours = "*" | .schedule.excluded_minutes = []
+   | del(.claim_ttl_hours)' \
+  ".claim_ttl_hours == $RUNTIME_FLOOR_HOURS"
+assert_defaults "...and abandoned_draft_after_hours too" \
+  '.schedule.cycle_interval_minutes = 60 | .schedule.cycle_hours = "*" | .schedule.excluded_minutes = []
+   | del(.abandoned_draft_after_hours)' \
+  ".abandoned_draft_after_hours == $RUNTIME_FLOOR_HOURS"
+# A configured actor override widens the floor exactly as
+# stage_budget_lock_seconds itself would report it (requirement 4f) — raising
+# timeout_implementer past every other actor's backstop makes it the whole
+# sum's largest term, so the derived floor tracks it up by the same amount.
+# Computed the same way RUNTIME_FLOOR_HOURS is, rather than hand-copied, so
+# the assertion cannot drift from what stage_budget_lock_seconds actually
+# returns for this override.
+RAISED_FLOOR_LOCK_SEC="$(stage_budget_lock_seconds '{}' \
+  "$(stage_budget_all_overrides '{"timeout_implementer":600}')" 30 0)"
+RAISED_FLOOR_HOURS=$(( (RAISED_FLOOR_LOCK_SEC + 3599) / 3600 ))
+assert_defaults "a configured stage timeout override raises the runtime floor, and claim_ttl_hours follows it" \
+  '.schedule.cycle_interval_minutes = 60 | .schedule.cycle_hours = "*" | .schedule.excluded_minutes = []
+   | del(.claim_ttl_hours) | .timeout_implementer = 600' \
+  ".claim_ttl_hours == $RAISED_FLOOR_HOURS"
+# disable_default_ttl and none_selected_recheck_hours bound no in-flight
+# claim or draft (requirement 1d's own "independent by design" note), so
+# neither carries this second floor: the same configuration that floors
+# claim_ttl_hours at RUNTIME_FLOOR_HOURS leaves these two exactly where the
+# cadence alone would put them.
+assert_defaults "disable_default_ttl carries no runtime floor" \
+  '.schedule.cycle_interval_minutes = 60 | .schedule.cycle_hours = "*" | .schedule.excluded_minutes = []
+   | del(.disable_default_ttl)' \
+  '.disable_default_ttl == 4'
+assert_defaults "...nor does none_selected_recheck_hours" \
+  '.schedule.cycle_interval_minutes = 60 | .schedule.cycle_hours = "*" | .schedule.excluded_minutes = []
+   | del(.none_selected_recheck_hours)' \
+  '.none_selected_recheck_hours == 24'
+
+# The derivation reads three `schedule` leaves, and config_defaults validates
+# none of them (the assertion above this block is the general statement of
+# that). A wrong *type* must therefore degrade the way an unparseable
+# `cycle_hours` token already does, not abandon the merge: a jq error inside
+# the derivation would return nothing at all, and scripts/doctor.sh — the one
+# tool whose job is to report that very violation — reads a defaulted config
+# to do it. The fallback is the historical hourly assumption, so a broken
+# `schedule` can only ever lengthen these thresholds, never shorten them.
+# claim_ttl_hours' own hourly-assumption cadence term (6) still sits below
+# RUNTIME_FLOOR_HOURS, so the runtime floor — not the cadence fallback —
+# is what the degraded case actually reads back as here; cycles_retained
+# carries no such floor and reads the plain hourly-assumption fallback (200).
+assert_defaults "a non-numeric schedule.cycle_interval_minutes degrades to the hourly assumption, not a failed merge" \
+  '.schedule.cycle_interval_minutes = "15"' \
+  ".claim_ttl_hours == $RUNTIME_FLOOR_HOURS and .cycles_retained == 200"
+assert_defaults "...as does a non-array schedule.excluded_minutes" \
+  '.schedule.cycle_interval_minutes = 60 | .schedule.excluded_minutes = "0"' \
+  ".claim_ttl_hours == $RUNTIME_FLOOR_HOURS and .cycles_retained == 200"
+assert_defaults "...and a non-string schedule.cycle_hours" \
+  '.schedule.cycle_interval_minutes = 60 | .schedule.cycle_hours = 5' \
+  ".claim_ttl_hours == $RUNTIME_FLOOR_HOURS and .cycles_retained == 200"
+assert_defaults "...and a schedule.excluded_minutes carrying a non-numeric item" \
+  '.schedule.cycle_interval_minutes = 60 | .schedule.excluded_minutes = [0, "x"]' \
+  ".claim_ttl_hours == $RUNTIME_FLOOR_HOURS and .cycles_retained == 200"
+
 # --- $ref resolution (issue #482): deref must resolve to a fixpoint, not one
 #     hop, and fail closed on a $ref that does not resolve. The shipped schema
 #     has no chained $def today (`pr_label` itself $refs `#/$defs/label` in one
@@ -805,7 +1034,7 @@ assert_doctor "doctor warns when a repo's project_review label collides with the
   '.project_review.repos[0].pr_label = .pr_label' 0 \
   "Poetic-Poems/poetic's project_review pr_label ($(jq -r '.pr_label' "$CONFIG")) equals pr_label"
 assert_doctor "doctor warns when the mirror would outlive the node that writes it" \
-  '.state_local_cycles_retained = 10' 0 'is below cycles_retained'
+  '.cycles_retained = 5000 | .state_local_cycles_retained = 10' 0 'is below cycles_retained'
 assert_doctor "doctor warns when crash-loop escalation is configured with nowhere to file" \
   '.crash_loop_after = 4 | .crash_loop_repo = ""' 0 'crash_loop_after is set but crash_loop_repo is empty'
 assert_doctor "doctor reports a schema violation as a failure, naming the path" \
@@ -1012,14 +1241,19 @@ merge_autonomy_out="$(bash "$SCRIPT_DIR/scripts/doctor.sh" --offline --config "$
 assert_not_contains "doctor never reports merge_autonomy as a documented-value mismatch, at any rung" \
   "merge_autonomy is documented" "$merge_autonomy_out"
 
-# A key with no `x-docs.value` at all, and one whose `x-docs.value` is an
-# object keyed readme/spec (the two documents assert different things there —
-# there is no single value to check the live config against), are both
-# skipped without error even when set far from their own default.
-jq '.cycles_retained = 999999 | .approver_app_id = "999999999" | .void_retire_after_days = 1
+# A key with no `x-docs.value` at all, one whose `x-docs.value` is an object
+# keyed readme/spec (the two documents assert different things there — there
+# is no single value to check the live config against), and one with no
+# schema `default` to differ from in the first place (requirement 1d's seven
+# derived keys are all of that third shape) are each skipped without error
+# even when set far from what is documented.
+jq '.log_generations = 99 | .cycles_retained = 999999 | .approver_app_id = "999999999"
+    | .void_retire_after_days = 1
     | .approver_model_default = "claude-sonnet-5"' "$CONFIG" > "$tmp/c.json"
 skip_out="$(bash "$SCRIPT_DIR/scripts/doctor.sh" --offline --config "$tmp/c.json" 2>&1)"
-assert_not_contains "a key with no x-docs.value is never reported (cycles_retained)" \
+assert_not_contains "a key with no x-docs.value is never reported (log_generations)" \
+  "log_generations is documented" "$skip_out"
+assert_not_contains "a key with no schema default is never reported (cycles_retained, requirement 1d)" \
   "cycles_retained is documented" "$skip_out"
 assert_not_contains "a key whose x-docs.value is an object keyed readme/spec is never reported (approver_app_id)" \
   "approver_app_id is documented" "$skip_out"

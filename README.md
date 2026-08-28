@@ -386,9 +386,9 @@ Keys:
 | `state_dir` | `~/.local/state/poetic-agents` | Lock, shared log, stage transcripts. |
 | `workspace_root` | `~/.cache/poetic-agents/workspaces` | Ephemeral clones. Each cycle gets its own subdirectory, and the state repository keeps its mirror here. |
 | `state_repo` | `Poetic-Poems/agent-ops-state` | Private repository through which `state_dir` replicates between nodes. See [Keeping every node warm](#keeping-every-node-warm). Leave it out and nothing syncs — a single-node install behaves exactly as before. |
-| `cycles_retained` | `200` | Cycle directories kept in the replicated copy — bounds disk use at whatever cadence `schedule.cycle_interval_minutes` sets (about eight days' worth at the historical hourly default). Your own `state_dir` is not pruned. |
-| `state_local_cycles_retained` | `1000` | Cycle and review directories the node's own `state_dir` keeps; the same push that replicates prunes to it. Deliberately far above `cycles_retained`, so the local machine is always the longer record. |
-| `state_local_streams_retained` | `50` | Cycle and review directories whose derived files are kept — the stage event streams (`<stage>.stream.jsonl`) and the fleet-log snapshot (`.fleet-log.jsonl`). Both are large and local-only — never replicated — so they are bounded well below `state_local_cycles_retained`; the records themselves are untouched. |
+| `cycles_retained` | *(unset)* | Cycle directories kept in the replicated copy — bounds disk use, derived from `schedule.cycle_interval_minutes` to hold ~8.3 days of history regardless of cadence (requirement 1d); a configured value floors it, never caps it. Your own `state_dir` is not pruned. |
+| `state_local_cycles_retained` | *(unset)* | Cycle and review directories the node's own `state_dir` keeps; the same push that replicates prunes to it. Deliberately far above `cycles_retained`, so the local machine is always the longer record. A span of history, not a literal count (requirement 1d): absent, it is derived from `schedule.cycle_interval_minutes` to hold the same ~41.7 days 1000 cycles was sized for at the historical hourly cadence; a configured value is a floor under that derivation, never a ceiling. |
+| `state_local_streams_retained` | *(unset)* | Cycle and review directories whose derived files are kept — the stage event streams (`<stage>.stream.jsonl`) and the fleet-log snapshot (`.fleet-log.jsonl`). Both are large and local-only — never replicated — so they are bounded well below `state_local_cycles_retained`; the records themselves are untouched. Derived from `schedule.cycle_interval_minutes` to hold ~2.1 days regardless of cadence (requirement 1d); a configured value floors it, never caps it. |
 | `log_retained_bytes` | `2000000` | Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `doctor.log`, `revert-rate.log`, `cron.log` and `review-cron.log`. `log.jsonl`, `review-log.jsonl` and `revert-rate.jsonl` are never rotated. |
 | `log_generations` | `3` | Rotated generations kept beside each live log (`<name>.1` … `<name>.<log_generations>`). |
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
@@ -425,8 +425,8 @@ Keys:
 | `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list, so a lost race costs the next-best item rather than the cycle. |
 | `coordinator_prompt_max_bytes` | `350000` | The largest assembled prompt the Script will hand the Co-Ordinator. What a context window rejects is the whole prompt, not the runtime input alone, so the Script measures the rendered base prompt, subtracts it, and trims the two bands that carry a whole document each — an issue's entire thread and a tech-debt item's entire file — into what is left. Prose is shed and candidacy is not: every entry stays selectable, and every cut carries a marker naming how many bytes went and...[continued below](#extended-notes-coordinator_prompt_max_bytes) |
 | `max_chained_cycles` | `3` | The most cycles that may run back-to-back in one lineage — the cron-fired original plus its immediate continuations, instead of each waiting for the next cron firing. A productive cycle chains to this cap regardless of remaining work (the remaining-sources gate counts enabled source categories, which back-pressure never empties) — up to `max_chained_cycles − 1` further full Co-Ordinator passes, the accepted price of the drain rate. `1` disables chaining. |
-| `claim_ttl_hours` | `6` | Hours before a dead node's claim-registry entry is swept (`lib/claim.sh gc`); far beyond one full cycle. |
-| `abandoned_draft_after_hours` | `4` | Hours a draft PR this system raised may sit untouched before it counts as abandoned and finishing it becomes selectable work (the `abandoned-drafts` source). Beyond one full cycle, so a draft still being worked never qualifies. Also the staleness threshold `scripts/sweep-orphan-branches.sh` uses. |
+| `claim_ttl_hours` | *(unset)* | Hours before a dead node's claim-registry entry is swept (`lib/claim.sh gc`) — derived from `schedule.cycle_interval_minutes` to stay 6 firings wide at whatever cadence is configured, floored at a cycle's own worst-case runtime so a fast cadence cannot derive it below that (requirement 1d); a configured value floors it, never caps it. |
+| `abandoned_draft_after_hours` | *(unset)* | Hours a draft PR this system raised may sit untouched before it counts as abandoned and finishing it becomes selectable work (the `abandoned-drafts` source) — derived from `schedule.cycle_interval_minutes` to stay 4 firings wide at whatever cadence is configured, floored at a cycle's own worst-case runtime so a fast cadence cannot derive it below that (requirement 1d); a configured value floors it, never caps it. Also the staleness threshold `scripts/sweep-orphan-branches.sh` uses. |
 | `human_nudge_idle_hours` | `24` | Hours an approved, green pull request may sit idle — nothing left for the pipeline to do, only a merge click nobody was asked for — before `scripts/sweep-human-visibility.sh` posts one nudge comment naming `enabler_assignee`. `0` disables the nudge; the sweep still keeps a live review request on every such PR regardless (see [Configuration](#configuration) → `enabler_assignee`). |
 | `merge_queue_dequeue_notice_max_age_hours` | `24` | Hours a merge-queue-dequeue notice comment (`scripts/sweep-human-visibility.sh`, requirement 38f) may still fire for after the removal event's own time — bounds the notice to genuinely new information rather than an event a sweep is only now seeing for the first time. `0` disables the notice entirely, at the cost of losing the only human signal this pipeline raises for a merge-group failure. |
 | `merge_autonomy` | `human` | The D18 merge-autonomy trust ladder: `human` (today's behaviour — a human approves and merges), `agent-approves` (the Approver App reviews; a human still merges), `agent-merges-routine`/`agent-merges-all` (the Script itself lands an eligible pull request — see `merge_autonomy_routine_sources` — and a human's residual act narrows to whatever the classifier refused). A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Every...[continued below](#extended-notes-merge_autonomy) |
@@ -459,8 +459,8 @@ Keys:
 | `github_min_graphql_budget` | `100` | GitHub GraphQL points a cycle must have left before it starts. `0` turns the check off for this resource. |
 | `github_retry_max_wait_seconds` | `60` | Seconds. How long a single `gh` call may wait out a rate-limit refusal before failing; a process may spend twice this in total. `0` turns retrying off. |
 | `min_free_workspace_bytes` | `2147483648` | Bytes. Free space `workspace_root` must have before a cycle starts one; below it the cycle stands down before cloning. `scripts/doctor.sh` warns on the same floor. `0` turns the check off. |
-| `disable_default_ttl` | `4` | Hours. How long `--disable` lasts when neither `--for` nor `--until` says. See [Pausing the pipelines](#pausing-the-pipelines). |
-| `none_selected_recheck_hours` | `24` | Hours. The Co-Ordinator is engaged at least this often even when nothing has changed. See [Skipping no-op cycles](#skipping-no-op-cycles). `0` disables that safety net entirely — not recommended. |
+| `disable_default_ttl` | *(unset)* | Hours. How long `--disable` lasts when neither `--for` nor `--until` says, derived from `schedule.cycle_interval_minutes` to stay 4 firings wide at whatever cadence is configured (requirement 1d); a configured value floors it, never caps it. See [Pausing the pipelines](#pausing-the-pipelines). |
+| `none_selected_recheck_hours` | *(unset)* | Hours. The Co-Ordinator is engaged at least this often even when nothing has changed — derived from `schedule.cycle_interval_minutes` to stay 24 firings wide at whatever cadence is configured (requirement 1d); a configured non-zero value floors it, never caps it. See [Skipping no-op cycles](#skipping-no-op-cycles). `0` disables that safety net entirely — not recommended — and is never raised by the derivation. |
 | `image_behind_grace_hours` | `3` | Hours a node may sit behind the newest published image before the dashboard's **image behind** badge turns amber and `scripts/check-node-image.sh` exits non-zero. A roll defers while a cycle is in flight, so being behind an image published more recently than this is the ordinary mid-roll state. See [Is this node on the newest image](deploy/docker/README.md#is-this-node-on-the-newest-image). |
 | `dashboard_refresh_seconds` | `5` | Seconds. How often an open dashboard tab reloads to pick up freshly-written data, matching the [heartbeat](#keep-it-fresh) cadence. Untick the page's *auto-refresh* box to pause it while reading. |
 | `schedule.cycle_hours` | `*` | The hour field of the containerised node's implementation-cycle crontab line (`deploy/docker/render-crontab.sh`); `*` means every hour. |
@@ -1045,7 +1045,7 @@ that would otherwise roll a node mid-cycle, or simply to stop spend. It does
 so everywhere at once. On a container node you drive it through the scheduler:
 
 ```bash
-docker compose exec scheduler /app/agent-cycle.sh --disable "rolling out PR #NN"  # expires after disable_default_ttl (4 h)
+docker compose exec scheduler /app/agent-cycle.sh --disable "rolling out PR #NN"  # expires after disable_default_ttl
 docker compose exec scheduler /app/agent-cycle.sh --disable "big refactor" --for 8h  # or 90m, 2d, or `forever`
 docker compose exec scheduler /app/agent-cycle.sh --disable "code freeze" --until "2026-08-10 18:00"  # or any GNU date -d string
 docker compose exec scheduler /app/agent-cycle.sh --status   # what's set, and is anything running?
@@ -1239,9 +1239,9 @@ price of a few `gh` calls.
 
 The claim is only ever "nothing changed", never "there is no work". If anything
 at all is different — including a repo the Script couldn't read cleanly — the
-Co-Ordinator runs. And `none_selected_recheck_hours` (24 h) forces it to run
-anyway once a day regardless, so if some future work source is ever missed by
-the fingerprint, the cost is a day's delay rather than a pipeline that has
+Co-Ordinator runs. And `none_selected_recheck_hours` forces it to run anyway
+once that long regardless, so if some future work source is ever missed by
+the fingerprint, the cost is a bounded delay rather than a pipeline that has
 quietly stopped picking up work forever.
 
 `--dry-run` and `--once` always ask the Co-Ordinator: a human asking for a
@@ -2056,8 +2056,9 @@ sweeping stale claims as well as stops working.
 running. Stopping or recreating a container kills a running cycle's whole
 process group, which leaves an orphaned clone under `workspace_root`, a lock
 to be taken over as stale, and a claim that stands until the GC sweeps it
-(`claim_ttl_hours`, 6 h). So wait — or stop this node alone from starting
-another one while you do:
+(`claim_ttl_hours`, derived from `schedule.cycle_interval_minutes` — see
+[Configuration](#configuration)). So wait — or stop this node alone from
+starting another one while you do:
 
 ```bash
 docker compose exec scheduler /app/agent-cycle.sh --disable 'decommissioning' --this-node --for 2h

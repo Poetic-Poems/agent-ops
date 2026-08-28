@@ -580,10 +580,12 @@ while IFS=$'\t' read -r review_slug review_label; do
   fi
 done < <(jq -r '.[] | [.slug, (.pr_label // "")] | @tsv' <<<"$project_review_repos_json")
 
-# cycles_retained and state_local_cycles_retained both carry real schema
-# defaults (200, 1000); the `0` here is pure arithmetic safety against a
+# cycles_retained and state_local_cycles_retained are both resolved by
+# config_defaults — derived from the cadence when absent, floored by whatever
+# the config sets (requirement 1d) — so both are numbers here whether or not
+# config.json mentions them; the `0` is pure arithmetic safety against a
 # config that failed validation above and reached here with a non-numeric
-# value, not a restatement of either default.
+# value, not a restatement of either resolved value.
 read -r cycles_retained local_retained < <(jq -r '
   def num($v): if ($v | type) == "number" then ($v | floor) else 0 end;
   [num(.cycles_retained), num(.state_local_cycles_retained)] | @tsv' <<<"$DEFAULTED_CONFIG")

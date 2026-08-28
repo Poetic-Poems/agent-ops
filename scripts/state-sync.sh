@@ -163,9 +163,9 @@ peers_dir="$(fleet_peers_dir "$workspace_root")"
 #                   cycle's own directory (`fleet_logs`, lib/fleet.sh) and
 #                   read only by the cycle that wrote it. Publishing it would
 #                   send a peer a derivative of the very logs it is already
-#                   being sent — and 200 copies of it, one per retained
-#                   cycle, each the size of the whole fleet's history to
-#                   that point (agent-ops#763).
+#                   being sent — and one copy of it per retained cycle,
+#                   `cycles_retained` of them, each the size of the whole
+#                   fleet's history to that point (agent-ops#763).
 #   .git            the mirror's own repository, which lives at the same root.
 #
 # Everything else — log.jsonl, review-log.jsonl, revert-rate.jsonl, cycles/,
@@ -326,7 +326,7 @@ prune_local() {
 # order of size: a cycle directory without them is a handful of kilobytes of
 # JSON, while one 47-turn Reviewer stream alone can be megabytes and the
 # fleet-log snapshot beside it is the whole fleet's history to that moment.
-# Keeping `state_local_cycles_retained` (1000) cycles' worth of those would
+# Keeping `state_local_cycles_retained` cycles' worth of those would
 # trade the node's whole disk for forensics nobody reads past the day of the
 # incident, so they go early and the records they belong to stay.
 #
