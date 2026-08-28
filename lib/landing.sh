@@ -891,7 +891,7 @@ landing_retry_tier() {
   printf '%s' "$out"
 }
 
-# landing_approver_adjudication_history PR_URL [LOG_FILE]
+# landing_approver_adjudication_history PR_URL [SRC1] [SRC2]
 # Every `approver-verdict` event for PR_URL, oldest first — a compact JSON
 # array of `{ts, tier, model, verdict, adjudication, refuse_streak, posted}` —
 # the D18 landing audit record's own "adjudication history" field
@@ -904,31 +904,51 @@ landing_retry_tier() {
 # request and a later 2.1e landing-retry re-arm without the two ever risking
 # disagreement.
 #
-# LOG_FILE follows `landing_retry_tier`'s own convention: `$log_file` on the
-# round that first approves a pull request (this process's own just-written
-# `approver-verdict` event is already there — `log_event` appends
-# synchronously, before `_landing_stage_attempt` ever runs) or `$union_log`
-# on a re-arm (the approving round belongs to an earlier cycle, possibly a
-# peer node's — the same reasoning `landing_retry_tier` already applies to
-# TIER alone), or stdin if omitted or "-", matching every reader in
-# lib/cycle-state.sh. Malformed lines are skipped, not fatal. Always prints a
-# JSON array, `[]` rather than empty output, so a caller can `--argjson` it
-# straight into the audit record with no fallback of its own.
+# Reads the union of SRC1 and SRC2, deduplicated — never either alone. On the
+# round that first approves a pull request, `$log_file` (this process's own
+# just-written `approver-verdict` event is already there — `log_event`
+# appends synchronously, before `_landing_stage_attempt` ever runs) misses
+# any peer node's refusal that only ever reached the fleet's `$union_log`
+# snapshot (built once at cycle start, so it never carries this round's own
+# just-written event either); on a 2.1e landing-retry re-arm, `$union_log`
+# alone would equally miss nothing new, since the approving round belongs to
+# an earlier cycle and is already folded into it. Neither source alone is
+# ever the full history for either round, which is why both callers now pass
+# `$union_log` as SRC1 and `${log_file:-}` as SRC2 unconditionally. SRC1 may
+# be "-" for stdin (matching every reader in lib/cycle-state.sh); SRC2, if
+# given, is always a path, never stdin. Either argument may be a missing,
+# empty or unreadable path — that source simply contributes nothing. Rows
+# are deduplicated on the whole emitted object (SRC1 and SRC2 commonly
+# overlap on this node's own events), not `.ts` alone, since two distinct
+# events can share a timestamp. Malformed lines are skipped, not fatal.
+# Always prints a JSON array, `[]` rather than empty output, so a caller can
+# `--argjson` it straight into the audit record with no fallback of its own.
 landing_approver_adjudication_history() {
-  local pr_url="$1" src="${2:--}" out=""
+  local pr_url="$1" src1="${2:--}" src2="${3:-}" out=""
   # shellcheck disable=SC2016  # $pr_url is jq's own --arg variable, not the shell's.
   local jq_prog='
     [ .[] | select(.event == "approver-verdict" and (.pr_url // "") == $u)
       | {ts: (.ts // ""), tier: (.tier // null), model: (.model // null),
          verdict: (.verdict // null), adjudication: (.adjudication // false),
          refuse_streak: (.refuse_streak // null), posted: (.posted // null)} ]
+    | unique_by([.ts, .tier, .model, .verdict, .adjudication, .refuse_streak, .posted])
     | sort_by(.ts)'
-  if [[ "$src" == "-" ]]; then
-    out="$(jq -c -R 'fromjson? // empty' 2>/dev/null \
-      | jq -cs --arg u "$pr_url" "$jq_prog" 2>/dev/null || true)"
-  elif [[ -s "$src" ]]; then
-    out="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null \
-      | jq -cs --arg u "$pr_url" "$jq_prog" 2>/dev/null || true)"
+  if [[ "$src1" == "-" ]]; then
+    if [[ -n "$src2" && -s "$src2" ]]; then
+      out="$(cat - "$src2" 2>/dev/null | jq -c -R 'fromjson? // empty' 2>/dev/null \
+        | jq -cs --arg u "$pr_url" "$jq_prog" 2>/dev/null || true)"
+    else
+      out="$(jq -c -R 'fromjson? // empty' 2>/dev/null \
+        | jq -cs --arg u "$pr_url" "$jq_prog" 2>/dev/null || true)"
+    fi
+  else
+    local -a files=()
+    if [[ -s "$src1" ]]; then files+=("$src1"); fi
+    if [[ -n "$src2" && -s "$src2" ]]; then files+=("$src2"); fi
+    if [[ "${#files[@]}" -gt 0 ]]; then
+      out="$(cat "${files[@]}" 2>/dev/null | jq -c -R 'fromjson? // empty' 2>/dev/null \
+        | jq -cs --arg u "$pr_url" "$jq_prog" 2>/dev/null || true)"
+    fi
   fi
   [[ -n "$out" ]] || out='[]'
   printf '%s' "$out"
@@ -1485,11 +1505,7 @@ _landing_stage_attempt() {
   fi
 
   local approver_history_json approver_latest_json
-  if [[ -n "$retry" ]]; then
-    approver_history_json="$(landing_approver_adjudication_history "$pr_url" "$union_log")"
-  else
-    approver_history_json="$(landing_approver_adjudication_history "$pr_url" "${log_file:-}")"
-  fi
+  approver_history_json="$(landing_approver_adjudication_history "$pr_url" "$union_log" "${log_file:-}")"
   [[ -n "$approver_history_json" ]] || approver_history_json='[]'
   approver_latest_json="$(jq -c 'if length > 0 then .[-1] else {} end' <<<"$approver_history_json" 2>/dev/null)"
   [[ -n "$approver_latest_json" ]] || approver_latest_json='{}'

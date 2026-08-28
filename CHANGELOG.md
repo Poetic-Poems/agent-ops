@@ -832,6 +832,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The landing audit record's adjudication history (`approver.history`,
+  requirement 8x) now carries every `approver-verdict` event a pull request
+  received, including a peer node's refusal (TD-PPagop-26082308).
+  `landing_approver_adjudication_history` (`lib/landing.sh`) previously read
+  `$log_file` alone on the round that first approves a pull request and
+  `$union_log` alone on a 2.1e landing-retry re-arm — never both — so a
+  refuse streak whose earlier rounds ran on a peer node left those refusals
+  out of a first-approval round's own history. It now reads the
+  deduplicated union of both on either round.
 - The Autonomous landings panel's refusal-reason grouping no longer garbles
   a whole family of `landing-refused` reasons into one-off groups keyed on a
   fragment of a pull request URL (TD-PPagop-26082502). The panel groups by
