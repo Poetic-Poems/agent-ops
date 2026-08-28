@@ -1520,6 +1520,16 @@ implements.
    `cycle_hours` would risk: a `claim_ttl_hours` sized to the bare interval
    expiring a live node's claim overnight.
 
+   The derivation validates none of the three `schedule` leaves it reads,
+   because `config_defaults` validates nothing (requirement 1b): a
+   wrong-typed or unparseable one degrades to the historical hourly
+   assumption — the longest gap, so the conservative answer for the four
+   hour-valued keys — rather than raising an error that would abandon the
+   merge and hand every caller an empty configuration. `scripts/doctor.sh` is
+   why that distinction matters: the tool whose job is to report exactly such
+   a violation reads a defaulted config to do it, so the derivation must
+   survive the configurations it is run to diagnose.
+
    Two shapes of key are re-expressed against that gap, both keeping the
    key's *name*, *type* and *unit* unchanged — this is a derivation, not the
    breaking rename a `claim_ttl_cycles` would be:

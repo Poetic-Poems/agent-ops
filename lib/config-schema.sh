@@ -421,11 +421,27 @@ config_defaults() {
     # excludes contribute whole 60-minute penalties on top of the ordinary
     # per-hour gap, which already accounts for `excluded_minutes` dropping a
     # would-be firing rather than shifting it.
+    #
+    # Each of the three inputs is taken only when it is the type this
+    # arithmetic needs, for the reason the whole function already gives: this
+    # performs no validation, so a config that would fail
+    # `config_schema_errors` still has to *merge*, and a jq error here would
+    # instead abandon the merge and return nothing — leaving every caller
+    # (`scripts/doctor.sh` above all, which exists to report exactly that
+    # violation) with an empty configuration rather than a defaulted one. A
+    # wrong-typed field therefore degrades the same way an unparseable
+    # `cycle_hours` token does: to the historical hourly assumption these
+    # keys carried before this requirement, which is the longest gap and so
+    # the conservative answer for the four hour-valued keys.
     def cadence_gap_minutes($sched):
-        (parse_cycle_hours($sched.cycle_hours)) as $allowed
+        (if ($sched | type) == "object" then $sched else {} end) as $s
+        | (if ($s.cycle_hours | type) == "string" then $s.cycle_hours else "*" end) as $hours
+        | (if ($s.cycle_interval_minutes | type) == "number" and $s.cycle_interval_minutes > 0
+           then $s.cycle_interval_minutes else 60 end) as $interval
+        | (if ($s.excluded_minutes | type) == "array"
+           then ($s.excluded_minutes | map(select(type == "number"))) else [] end) as $excluded
+        | (parse_cycle_hours($hours)) as $allowed
         | ((max_disallowed_hours_run($allowed) * 60)) as $hour_penalty
-        | ($sched.cycle_interval_minutes) as $interval
-        | ($sched.excluded_minutes) as $excluded
         | $hour_penalty + worst_minute_gap($interval; $excluded);
 
     fill($root; .) as $filled

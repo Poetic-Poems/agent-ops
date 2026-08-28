@@ -458,6 +458,27 @@ assert_cadence_cmp "...and abandoned_draft_after_hours too" \
   '.schedule.cycle_interval_minutes = 15 | .schedule.cycle_hours = "9-17"' \
   '$b.abandoned_draft_after_hours > $a.abandoned_draft_after_hours'
 
+# The derivation reads three `schedule` leaves, and config_defaults validates
+# none of them (the assertion above this block is the general statement of
+# that). A wrong *type* must therefore degrade the way an unparseable
+# `cycle_hours` token already does, not abandon the merge: a jq error inside
+# the derivation would return nothing at all, and scripts/doctor.sh — the one
+# tool whose job is to report that very violation — reads a defaulted config
+# to do it. The fallback is the historical hourly assumption, so a broken
+# `schedule` can only ever lengthen these thresholds, never shorten them.
+assert_defaults "a non-numeric schedule.cycle_interval_minutes degrades to the hourly assumption, not a failed merge" \
+  '.schedule.cycle_interval_minutes = "15"' \
+  '.claim_ttl_hours == 6 and .cycles_retained == 200'
+assert_defaults "...as does a non-array schedule.excluded_minutes" \
+  '.schedule.cycle_interval_minutes = 60 | .schedule.excluded_minutes = "0"' \
+  '.claim_ttl_hours == 6 and .cycles_retained == 200'
+assert_defaults "...and a non-string schedule.cycle_hours" \
+  '.schedule.cycle_interval_minutes = 60 | .schedule.cycle_hours = 5' \
+  '.claim_ttl_hours == 6 and .cycles_retained == 200'
+assert_defaults "...and a schedule.excluded_minutes carrying a non-numeric item" \
+  '.schedule.cycle_interval_minutes = 60 | .schedule.excluded_minutes = [0, "x"]' \
+  '.claim_ttl_hours == 6 and .cycles_retained == 200'
+
 # --- $ref resolution (issue #482): deref must resolve to a fixpoint, not one
 #     hop, and fail closed on a $ref that does not resolve. The shipped schema
 #     has no chained $def today (`pr_label` itself $refs `#/$defs/label` in one
@@ -1103,14 +1124,19 @@ merge_autonomy_out="$(bash "$SCRIPT_DIR/scripts/doctor.sh" --offline --config "$
 assert_not_contains "doctor never reports merge_autonomy as a documented-value mismatch, at any rung" \
   "merge_autonomy is documented" "$merge_autonomy_out"
 
-# A key with no `x-docs.value` at all, and one whose `x-docs.value` is an
-# object keyed readme/spec (the two documents assert different things there —
-# there is no single value to check the live config against), are both
-# skipped without error even when set far from their own default.
-jq '.cycles_retained = 999999 | .approver_app_id = "999999999" | .void_retire_after_days = 1
+# A key with no `x-docs.value` at all, one whose `x-docs.value` is an object
+# keyed readme/spec (the two documents assert different things there — there
+# is no single value to check the live config against), and one with no
+# schema `default` to differ from in the first place (requirement 1c's seven
+# derived keys are all of that third shape) are each skipped without error
+# even when set far from what is documented.
+jq '.log_generations = 99 | .cycles_retained = 999999 | .approver_app_id = "999999999"
+    | .void_retire_after_days = 1
     | .approver_model_default = "claude-sonnet-5"' "$CONFIG" > "$tmp/c.json"
 skip_out="$(bash "$SCRIPT_DIR/scripts/doctor.sh" --offline --config "$tmp/c.json" 2>&1)"
-assert_not_contains "a key with no x-docs.value is never reported (cycles_retained)" \
+assert_not_contains "a key with no x-docs.value is never reported (log_generations)" \
+  "log_generations is documented" "$skip_out"
+assert_not_contains "a key with no schema default is never reported (cycles_retained, requirement 1c)" \
   "cycles_retained is documented" "$skip_out"
 assert_not_contains "a key whose x-docs.value is an object keyed readme/spec is never reported (approver_app_id)" \
   "approver_app_id is documented" "$skip_out"
