@@ -42,7 +42,7 @@
 # config_defaults and read as a configured override, permanently hiding the
 # distinction between "genuinely unset" and "set to this value" that
 # render-config-table.sh's "*(unset)*" cells depend on.
-# shellcheck disable=SC2034  # read by review-cycle.sh and lib/eligibility.sh, which source this file
+# shellcheck disable=SC2034  # read by review-cycle.sh, lib/eligibility.sh and scripts/gather-project-review.sh, which source this file
 REPORT_DIRECTORY_DEFAULT="reviews/project-review-%Y-%m-%d"
 
 # report_directory_regex FORMAT

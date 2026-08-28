@@ -154,9 +154,10 @@ All target repos follow these rules:
    project map, review every dimension, consolidate and rate findings, and
    write the full report set into `report_dir` (the index `README.md`,
    `01-summary.md`, `02-findings.md`, `03-recommendations.md`,
-   `04-improvement-prompts.md`, and any annexes it warrants). It is effective to parallelise the dimension reviews across
-   subagents, as the skill describes; keep each subagent on the lowest-cost
-   model tier likely to do its slice correctly.
+   `04-improvement-prompts.md`, and any annexes it warrants). It is effective
+   to parallelise the dimension reviews across subagents, as the skill
+   describes; keep each subagent on the lowest-cost model tier likely to do
+   its slice correctly.
 2. **Update the tech-debt register in place.** Where the review surfaces debt,
    record it via `TECH-DEBT.md`'s "Filing alongside other work" variant, not
    its "Filing an item" single-item shape where the `td/<id>` branch is both
@@ -206,8 +207,9 @@ All target repos follow these rules:
      `git push --force-with-lease`, which refuses rather than silently
      overwrites a push you have not seen.
    - Stage **only** the review outputs by explicit path — the new
-     `report_dir` folder and the `TECH-DEBT.md` change — and commit them. Never `git add -A` (it would sweep in the
-     injected skill); never stage `.claude/skills/project-review/`.
+     `report_dir` folder and the `TECH-DEBT.md` change — and commit them.
+     Never `git add -A` (it would sweep in the injected skill); never stage
+     `.claude/skills/project-review/`.
    - Open **one** pull request, **ready for review** (not a draft — the review
      is the deliverable; there is no second stage to flip it):
      - Title (Conventional Commits; becomes the squash commit on `main`):
