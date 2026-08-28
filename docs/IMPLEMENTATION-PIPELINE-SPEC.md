@@ -10114,7 +10114,7 @@ implements.
 
     An entry retires once it is both:
 
-    - **actioned** — one of six signals, one per class of void shape, none
+    - **actioned** — one of seven signals, one per class of void shape, none
       of them a model's judgement:
 
       - an issue or pull request GitHub itself reports closed
@@ -10223,7 +10223,34 @@ implements.
         34i already calls for the blocked set
         (`scripts/gather-review-status.sh`, `scripts/gather-plan-status.sh`),
         called here for the void residue of those two shapes instead, since
-        neither is pre-fetched as structured data at all; and
+        neither is pre-fetched as structured data at all;
+      - a project-review ref whose review folder is no longer the
+        repository's current one (`by: "review-superseded"`,
+        TD-PPagop-26082309) — the residue `review-merged` can never reach,
+        because a `review-<date>-R-NN` ref is voided precisely when the work
+        was found already done and so no Implementer ran, which means no
+        merged pull request ever named it: the signal above is defined for
+        exactly the population that never gets voided. A recommendation
+        lives in a point-in-time review document, and
+        `scripts/gather-project-review.sh` (and the Co-Ordinator's own live
+        read) only ever reads the repository's *latest*
+        `reviews/project-review-YYYY-MM-DD/` folder, so a ref minted by a
+        superseded folder is never offered again by anything and retiring
+        its void costs nothing — the same reasoning `void_config_actioned`'s
+        `source-dropped` rule already rests on. `scripts/gather-project-
+        review.sh --current-date` reads only the `reviews/` listing (never
+        the recommendation/prompt files) and reports the current folder's own
+        date, one call per repo already walked for review-shaped void
+        residue: `{"ok": true, "date": "2026-08-10"}` when a folder resolves,
+        `{"ok": true, "date": ""}` when the listing succeeds and offers none
+        at all (including a clean 404 on `reviews/` itself — a definite
+        fact), or `{"ok": false}` for any other failure, which decides
+        nothing, the same "unknown is not gone" rule every liveness shape
+        above observes. A ref's own embedded date (the `YYYY-MM-DD` between
+        `review-` and `-R-`) that disagrees with the repo's current folder's
+        date is actioned; one that agrees is not, and a repo the
+        `--current-date` read could not resolve actions no ref in it either;
+        and
       - **the configuration itself**, for the residue none of the four above
         can reach (`void_config_actioned`, decided on PR #340's review,
         2026-08-13). Liveness decides nothing without the source's own
@@ -10281,15 +10308,17 @@ implements.
         clearance;
 
       `lib/void-liveness.sh`'s `void_liveness_actioned` (the four
-      structured-gather shapes), `void_review_plan_actioned` (the two
-      on-demand-reader shapes) and `void_config_actioned` (the config
-      residue) are the three pure functions this cycle folds into the
-      actioned set alongside `void_object_closed_items` and the
-      register-status read, all five concatenated before `retire_void_items`
-      ever sees them. A void naming no repo (the hand-appended form
-      requirement 34c allows) matches none of the six signals — the config
-      rule skips an empty repo explicitly — so it is left, as it always was,
-      for a human to retract; and
+      structured-gather shapes), `void_review_plan_actioned` (the
+      on-demand-reader shapes, plus the review-superseded signal alongside
+      them) and `void_config_actioned` (the config residue) are the three
+      pure functions this cycle folds into the actioned set alongside
+      `void_object_closed_items` and the register-status read, all five
+      concatenated before `retire_void_items` ever sees them. A void naming
+      no repo (the hand-appended form requirement 34c allows) matches none of
+      the seven signals — the config rule skips an empty repo explicitly, and
+      `void_review_plan_actioned`'s fourth input skips a repo absent from
+      its own map — so it is left, as it always was, for a human to
+      retract; and
     - **old** — its `item-void` event's own `ts` is at least
       `void_retire_after_days` old (default 30; `0` disables retirement
       outright).
@@ -10297,8 +10326,8 @@ implements.
     A retirement, once decided, is **recorded**: a `void-retired` event per
     entry — `{repo, item, void_ts, by}`, `by` naming the actioned signal
     (`object-closed`, `register-resolved`, `liveness-<shape>`,
-    `review-merged`, `plan-task-done`, `source-dropped` or `repo-dropped`) —
-    a fact rather than a state,
+    `review-merged`, `review-superseded`, `plan-task-done`, `source-dropped`
+    or `repo-dropped`) — a fact rather than a state,
     exactly as requirement 34k's `void-object-closed` is: nothing clears it.
     The next cycle reads the recorded set back (`void_retired_items`,
     `lib/cycle-state.sh`) and subtracts it from the extract
@@ -12664,7 +12693,8 @@ What exists, and the requirements each part answers to:
    `gather_project_review_candidates`, `gather_implementation_plan_candidates`,
    `gather_unvoid_requests`, `gather_hand_flagged_refinements`,
    `gather_source_state`, `gather_register_status`, `gather_review_status`,
-   `gather_plan_status`, `gather_workflow_basenames`), the claim exclusion and
+   `gather_review_current`, `gather_plan_status`, `gather_workflow_basenames`),
+   the claim exclusion and
    blocked/void filters (`exclude_claimed_prs`, `exclude_claimed_items`,
    `exclude_blocked_or_void_items`, `exclude_blocked_or_void_issues`,
    `candidate_preclaimed`, `pr_number_for_candidate`), `emit_first_seen`,
@@ -12978,6 +13008,21 @@ What exists, and the requirements each part answers to:
    `[]` with `gh`'s diagnosis on stderr. Fails safe to `[]` (exit 0). Its
    shape is regression-tested in
    `test/gather-project-review.test.sh`; must pass `shellcheck`.
+
+   Given `--current-date` before the repo slug, performs only the `reviews/`
+   listing — never fetching `03-recommendations.md`/
+   `04-improvement-prompts.md` — and prints one JSON object instead of the
+   candidate array: `{"ok": true, "date": "2026-08-10"}` when a review
+   folder resolves, `{"ok": true, "date": ""}` when the listing succeeds and
+   offers none at all (including a clean 404 on `reviews/` itself — a
+   definite fact), or `{"ok": false}` for any other failure, which decides
+   nothing. This is requirement 34n's `review-superseded` signal
+   (TD-PPagop-26082309): `lib/candidate-gather.sh` calls it once per repo
+   already carrying unretired review-shaped void residue, and
+   `void_review_plan_actioned` (`lib/void-liveness.sh`) reads the date back
+   to tell a void'd `review-<date>-R-NN` ref whose folder is still current
+   from one whose folder has been superseded. The default mode's own
+   behaviour is unchanged by this flag's presence.
 3y. `scripts/gather-implementation-plan.sh` implementing requirement 3y's
    implementation-plan half: given a repo slug, default branch and
    `implementation_plan_path`, prints the JSON array of the document's open
@@ -13131,14 +13176,20 @@ What exists, and the requirements each part answers to:
    above is asked for those and no others. Pure — it reads nothing itself — and
    every unknown resolves to no clearance. Unit-tested (`test/work-gone.test.sh`);
    must pass `shellcheck`.
-3w. `lib/void-liveness.sh` implementing requirement 34n's third, fourth and
-   sixth actioned signals: `void_liveness_actioned`, which given the void
-   extract and
+3w. `lib/void-liveness.sh` implementing requirement 34n's third, fourth,
+   fifth and seventh actioned signals: `void_liveness_actioned`, which given
+   the void extract and
    this cycle's own per-repo, per-shape gather (`{ok, ids}` for `alert`,
    `register-hygiene`, `failed-run` and `merge-conflict`) prints one
    `{repo, item, by}` per void whose id its source no longer yields;
    `void_review_plan_actioned`, which does the same for a project-review ref a
-   merged pull request names and an implementation-plan task id a checked box
+   merged pull request names (`review-merged`) or whose review folder is no
+   longer the repository's current one (`review-superseded`,
+   TD-PPagop-26082309 — the fourth input, `REVIEW_CURRENT_JSON`, is repo ->
+   the repo's current review folder's own date string from
+   `scripts/gather-project-review.sh --current-date`, absent for a repo whose
+   read failed and empty-string for one whose read found no folder at all),
+   and an implementation-plan task id a checked box
    names, reading the status maps `scripts/gather-review-status.sh` (3o) and
    `scripts/gather-plan-status.sh` (3p) already print; and
    `void_config_actioned`, which given the extract and the **unnarrowed**

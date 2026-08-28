@@ -271,6 +271,49 @@ assert_eq "improvement_prompt is empty rather than the array being dropped" "" \
   "$(jq -r '.[0].improvement_prompt' <<<"$out")"
 export STUB_PROMPTS=hit
 
+# --- --current-date (requirement 34n's review-superseded signal, ----------
+# --- TD-PPagop-26082309) -----------------------------------------------------
+#
+# Only the reviews/ listing runs — 03-recommendations.md/
+# 04-improvement-prompts.md are never fetched — and one JSON object is
+# printed instead of the candidate array.
+run_current_date() {  # prints stdout; stderr lands in $tmp_dir/err
+  "$GATHER" --current-date "o/r" main 2>"$tmp_dir/err"
+}
+
+export STUB_LISTING=two
+out="$(run_current_date)"; rc=$?
+assert_eq "--current-date exits 0" "0" "$rc"
+assert_eq "--current-date reports ok:true" "true" "$(jq -r '.ok' <<<"$out")"
+assert_eq "--current-date reports the latest folder's own date" \
+  "2026-08-10" "$(jq -r '.date' <<<"$out")"
+
+export STUB_LISTING=none
+out="$(run_current_date)"; rc=$?
+assert_eq "--current-date: no review folder at all still exits 0" "0" "$rc"
+assert_eq "  ... reports ok:true" "true" "$(jq -r '.ok' <<<"$out")"
+assert_eq "  ... with an empty date, a definite fact rather than a failure" \
+  "" "$(jq -r '.date' <<<"$out")"
+assert_eq "  ... and says nothing on stderr" "" "$(cat "$tmp_dir/err")"
+
+export STUB_LISTING=404
+out="$(run_current_date)"; rc=$?
+assert_eq "--current-date: a clean 404 on reviews/ is the same definite fact" \
+  "true" "$(jq -r '.ok' <<<"$out")"
+assert_eq "  ... with an empty date" "" "$(jq -r '.date' <<<"$out")"
+assert_eq "  ... silently" "" "$(cat "$tmp_dir/err")"
+
+export STUB_LISTING=error
+out="$(run_current_date)"; rc=$?
+assert_eq "--current-date: a genuine API failure reports ok:false" \
+  "false" "$(jq -r '.ok' <<<"$out")"
+assert_eq "  ... still exits 0" "0" "$rc"
+assert_eq "  ... but leaves gh's diagnosis on stderr" "1" \
+  "$( [[ -s "$tmp_dir/err" ]] && echo 1 || echo 0 )"
+
+export STUB_LISTING=two
+export STUB_PROMPTS=hit
+
 printf '\n'
 if (( failures > 0 )); then
   printf '%d assertion(s) failed\n' "$failures"

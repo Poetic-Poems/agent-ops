@@ -2040,6 +2040,30 @@ gather_review_status() {
   fi
 }
 
+# Whether this repo's current review folder still matches the one that
+# minted a given void'd project-review ref (requirement 34n's
+# review-superseded signal, TD-PPagop-26082309) — the residue `review-merged`
+# above can never reach, because a voided ref is voided precisely because no
+# Implementer ran, so no merged pull request ever named it.
+# `{"ok": true, "date": "2026-08-10"}` / `{"ok": true, "date": ""}` (no
+# folder at all) / `{"ok": false}` (the read failed — decides nothing), from
+# scripts/gather-project-review.sh --current-date. Called only for a repo
+# already carrying unretired review-shaped void residue (the same
+# `work_gone_review_refs` gate `gather_review_status` above is called under),
+# so this pays no `gh` call a repo with none would not have paid anyway.
+gather_review_current() {
+  local slug="$1" branch="$2" report_directory="$3" out safe
+  safe="${slug//\//_}"
+  out="$("$SCRIPT_DIR/scripts/gather-project-review.sh" --current-date "$slug" "$branch" "$report_directory" \
+        2>"$cycle_dir/review-current-$safe.err" || true)"
+  if [[ -n "$out" ]] && jq -e 'type == "object" and has("ok")' <<<"$out" >/dev/null 2>&1; then
+    printf '%s\n' "$out" > "$cycle_dir/review-current-$safe.json"
+    printf '%s' "$out"
+  else
+    printf '{"ok":false}'
+  fi
+}
+
 # What the implementation-plan document's own checkboxes say about specific
 # blocked plan-task ids (requirement 34i). Same shape and same reason as
 # gather_register_status above, including PURPOSE.

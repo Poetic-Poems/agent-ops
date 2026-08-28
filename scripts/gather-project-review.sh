@@ -4,7 +4,30 @@
 # repository review's recommendations, for the Refiner
 # (docs/IMPLEMENTATION-PIPELINE-SPEC.md, requirement 3y; TD-PPagop-26081307).
 #
-# Usage: gather-project-review.sh <owner/repo> [default-branch] [report-directory-format]
+# Usage: gather-project-review.sh [--current-date] <owner/repo> [default-branch] [report-directory-format]
+#
+# ## --current-date (requirement 34n's review-superseded signal, TD-PPagop-26082309)
+#
+# With this flag first, the script performs only the `reviews/` listing —
+# never fetching `03-recommendations.md`/`04-improvement-prompts.md` — and
+# prints one JSON object instead of the candidate array, then exits 0:
+#
+#   {"ok": true, "date": "2026-08-10"}   # a review folder was resolved
+#   {"ok": true, "date": ""}             # the listing succeeded and offered
+#                                         # no project-review-YYYY-MM-DD
+#                                         # folder at all, including a clean
+#                                         # 404 on reviews/ itself
+#   {"ok": false}                        # any other failure (API error,
+#                                         # unparseable listing) — decides
+#                                         # nothing
+#
+# This reuses the default mode's own latest-folder resolution
+# (`report_directory_most_recent`) rather than a second implementation, so
+# `void_review_plan_actioned` (lib/void-liveness.sh) can tell a review ref
+# from a superseded folder — never re-offered by anything, since this script
+# only ever reads the latest one — from one whose folder is still current.
+# The default mode's own behaviour (the candidate array below) is unchanged
+# by this flag's presence.
 #
 # report-directory-format is the repository's own resolved
 # project_review.repos[].report_directory (or project_review.defaults', or
@@ -64,17 +87,47 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/report-directory.sh
 . "$SCRIPT_DIR/../lib/report-directory.sh"
 
+mode=default
+if [[ "${1:-}" == "--current-date" ]]; then
+  mode=current-date
+  shift
+fi
+
 slug="${1:-}"
 default_branch="${2:-main}"
 report_directory_format="${3:-$REPORT_DIRECTORY_DEFAULT}"
 if [[ -z "$slug" ]]; then
-  echo "usage: gather-project-review.sh <owner/repo> [default-branch] [report-directory-format]" >&2
+  echo "usage: gather-project-review.sh [--current-date] <owner/repo> [default-branch] [report-directory-format]" >&2
   exit 64
 fi
 
+# fail_out — the mode-appropriate "nothing decided/found" answer for a
+# genuine failure (an unreadable repo, an API error). The default mode's own
+# `[]` on every such path is byte-for-byte unchanged.
+fail_out() {
+  if [[ "$mode" == "current-date" ]]; then
+    printf '{"ok":false}\n'
+  else
+    printf '[]\n'
+  fi
+}
+
+# none_out — the mode-appropriate "no review folder exists" answer: a clean
+# 404, or a listing with no matching folder. Distinct from fail_out because
+# --current-date tells the two apart (a listing that succeeds and finds
+# nothing is a definite fact, not a failure), while the default mode answers
+# both the same way.
+none_out() {
+  if [[ "$mode" == "current-date" ]]; then
+    printf '{"ok":true,"date":""}\n'
+  else
+    printf '[]\n'
+  fi
+}
+
 degrade() {
   echo "gather-project-review: $slug: $*" >&2
-  printf '[]\n'
+  fail_out
   exit 0
 }
 
@@ -107,21 +160,26 @@ fi
 rc=$?
 if (( rc != 0 )); then
   if [[ "$(jq -r '.status // ""' <<<"$listing_json" 2>/dev/null)" == "404" ]]; then
-    printf '[]\n'
+    none_out
     exit 0
   fi
   cat "$work/gh.err" >&2
-  printf '[]\n'
+  fail_out
   exit 0
 fi
 
 review_date_and_dir="$(report_directory_most_recent "$slug" "$default_branch" "$report_directory_format" 2>/dev/null)"
 if [[ -z "$review_date_and_dir" ]]; then
-  printf '[]\n'
+  none_out
   exit 0
 fi
 review_date="$(cut -f1 <<<"$review_date_and_dir")"
 report_dir="$(cut -f2 <<<"$review_date_and_dir")"
+
+if [[ "$mode" == "current-date" ]]; then
+  jq -nc --arg d "$review_date" '{ok: true, date: $d}'
+  exit 0
+fi
 
 fetch_file() {  # fetch_file PATH -> decoded content on stdout, "" on 404
   local path="$1" content_json rc

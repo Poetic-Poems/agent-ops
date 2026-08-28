@@ -1044,7 +1044,17 @@ if (( void_retire_after_days > 0 )); then
   # unretired ids of those two shapes — same cost shape as the register read
   # above, `purpose void` so the diagnostic files don't collide with 34i's own
   # blocked-set read of the same repo.
+  #
+  # This repo's own resolved report_directory (its override in
+  # project_review.repos, or project_review.defaults' otherwise, requirement
+  # 342) — or, absent from project_review entirely, the same ultimate
+  # fallback review-cycle.sh itself falls back to (issue #761). Computed once,
+  # outside the loop, the same way lib/eligibility.sh's own
+  # `refiner_project_review_repos_json` is: every repository's resolved value
+  # is a lookup against this, not a fresh derivation.
+  void_review_current_repos_json="$(config_project_review_repos "$DEFAULTED_CONFIG")"
   void_review_status_json='{}'
+  void_review_current_json='{}'
   while IFS=$'\t' read -r vrv_slug vrv_refs; do
     [[ -n "$vrv_slug" && -n "$vrv_refs" ]] || continue
     vrv_branch="$(jq -r --arg s "$vrv_slug" 'map(select(.slug == $s)) | .[0].default_branch // ""' \
@@ -1054,6 +1064,22 @@ if (( void_retire_after_days > 0 )); then
     vrv_map="$(gather_review_status "$vrv_slug" "$vrv_branch" void $vrv_refs)"
     void_review_status_json="$(jq -c --arg s "$vrv_slug" --argjson m "$vrv_map" '. + {($s): $m}' \
       <<<"$void_review_status_json" 2>/dev/null || printf '%s' "$void_review_status_json")" # TD-PPagop-26081407: passes test 2 -- falls back to the unchanged prior aggregate, not a fabricated empty
+    # The review-superseded signal (TD-PPagop-26082309): one `--current-date`
+    # call per repo already walked above, so this residue pays no `gh` call
+    # a repo with none of it would not have paid anyway. An `ok: false` read
+    # contributes no entry — a repo absent from void_review_current_json
+    # decides nothing, same "unknown is not gone" rule as every other
+    # liveness shape.
+    vrv_report_directory="$(jq -r --arg s "$vrv_slug" \
+      'map(select(.slug == $s)) | .[0].report_directory // ""' \
+      <<<"$void_review_current_repos_json" 2>/dev/null || true)"
+    [[ -n "$vrv_report_directory" ]] || vrv_report_directory="$REPORT_DIRECTORY_DEFAULT"
+    vrv_current="$(gather_review_current "$vrv_slug" "$vrv_branch" "$vrv_report_directory")"
+    if [[ "$(jq -r '.ok // false' <<<"$vrv_current" 2>/dev/null || true)" == "true" ]]; then
+      vrv_date="$(jq -r '.date // ""' <<<"$vrv_current" 2>/dev/null || true)"
+      void_review_current_json="$(jq -c --arg s "$vrv_slug" --arg d "$vrv_date" '. + {($s): $d}' \
+        <<<"$void_review_current_json" 2>/dev/null || printf '%s' "$void_review_current_json")" # TD-PPagop-26081407: passes test 2 -- falls back to the unchanged prior aggregate, not a fabricated empty
+    fi
   done < <(jq -r 'to_entries[] | .key + "\t" + (.value | join(" "))' \
            <<<"$(work_gone_review_refs "$void_json")" 2>/dev/null || true)
 
@@ -1188,7 +1214,7 @@ if (( void_retire_after_days > 0 )); then
   # shellcheck disable=SC2016  # jq's $void/$closed/$reg et al., not the shell's.
   void_actioned_json="$(jq -c -n --argjson reg "$void_register_status_json" \
     --argjson liveness "$(void_liveness_actioned "$void_json" "$void_liveness_gather_json")" \
-    --argjson revplan "$(void_review_plan_actioned "$void_json" "$void_review_status_json" "$void_plan_status_json")" \
+    --argjson revplan "$(void_review_plan_actioned "$void_json" "$void_review_status_json" "$void_plan_status_json" "$void_review_current_json")" \
     --argjson config "$(void_config_actioned "$void_json" "$all_repos_json")" '
     input as $void | input as $closed
     | ($void | map((.repo // "") + "|" + (.item // ""))) as $pairs
