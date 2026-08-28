@@ -3034,13 +3034,19 @@ if [[ "$rev_status" == "ready" ]]; then
   if [[ "$(jq 'length' <<<"$oq_json" 2>/dev/null || echo 0)" != "0" ]]; then
     if [[ "$impl_pr_url" =~ /pull/([0-9]+)$ ]]; then
       oq_number="${BASH_REMATCH[1]}"
-      oq_proj="$(landing_open_question_label_project "$selected_repo" "$oq_number")"
+      # `landing_open_question_label_project` documents exit 1 for its own
+      # `unrecorded` and `failed` words (lib/landing.sh) as ordinary outcomes,
+      # never a fault — under this script's `set -euo pipefail`, an unguarded
+      # `var=$(cmd)` takes that exit status and would abort the cycle before
+      # the Approver or landing stage ever ran (agent-ops#889). `|| true` on
+      # both calls keeps the captured word regardless of which one printed.
+      oq_proj="$(landing_open_question_label_project "$selected_repo" "$oq_number")" || true
       if [[ "$oq_proj" == "failed" ]]; then
         # Self-heal, once: the common cause is a repository this pipeline has
         # not created the label in yet, the same gap
         # `refinement_label_add`'s own retry (agent-ops#687) exists to close.
         refinement_label_ensure_one "$selected_repo" "$LANDING_OPEN_QUESTION_LABEL" >/dev/null 2>&1 || true
-        oq_proj="$(landing_open_question_label_project "$selected_repo" "$oq_number")"
+        oq_proj="$(landing_open_question_label_project "$selected_repo" "$oq_number")" || true
       fi
       log_event "open-question-raised" "$(jq -nc --arg u "$impl_pr_url" --arg r "$selected_repo" \
         --arg proj "$oq_proj" --argjson qs "$oq_json" \
