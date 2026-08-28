@@ -66,7 +66,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 slug="${1:-}"
 default_branch="${2:-main}"
-report_directory_format="${3:-reviews/project-review-%Y-%m-%d}"
+report_directory_format="${3:-$REPORT_DIRECTORY_DEFAULT}"
 if [[ -z "$slug" ]]; then
   echo "usage: gather-project-review.sh <owner/repo> [default-branch] [report-directory-format]" >&2
   exit 64

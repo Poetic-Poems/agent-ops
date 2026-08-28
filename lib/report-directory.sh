@@ -135,6 +135,13 @@ report_directory_find_dirs() {
 # (default 400). See the file header for why the date is found by testing
 # candidates against each of the last LOOKBACK_DAYS days rather than parsed
 # back out of the directory name.
+#
+# Each probe below resolves FORMAT with the *current* time of day
+# (`date -u -d "-$d day"`), so FORMAT must be day-granular — the
+# `reportDirectory` schema $def documents this requirement. A format
+# embedding a time-of-day specifier (%H/%M/%S) essentially never matches the
+# time-of-day baked into an existing directory's name, and discovery
+# silently returns nothing.
 report_directory_most_recent() {
   local slug="$1" branch="$2" format="$3" lookback="${4:-400}"
   local candidates

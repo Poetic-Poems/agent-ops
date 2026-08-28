@@ -1684,7 +1684,7 @@
       "type": "string"
     },
     "reportDirectory": {
-      "description": "An optional GNU `date`(1) format string naming a report directory, resolved with `date -u +\"<format>\"` and interpreted relative to the repository root. Absent or empty means no override at that site; deliberately carries no `default` of its own, so the two sites that `$ref` it choose independently whether to fabricate one, and the ultimate fallback when neither is set lives in code (review-cycle.sh), not the schema.",
+      "description": "An optional GNU `date`(1) format string naming a report directory, resolved with `date -u +\"<format>\"` and interpreted relative to the repository root. Absent or empty means no override at that site; deliberately carries no `default` of its own, so the two sites that `$ref` it choose independently whether to fabricate one, and the ultimate fallback when neither is set lives in code (review-cycle.sh), not the schema. Must be day-granular: `lib/report-directory.sh`'s discovery probes one calendar day at a time, so a format including a time-of-day specifier (`%H`, `%M`, `%S`) resolves differently at discovery time than it did at write time and is never found again — use only date-level specifiers (`%Y`, `%y`, `%m`, `%d`, `%j`) and literal text.",
       "type": "string"
     },
     "sourceToken": {

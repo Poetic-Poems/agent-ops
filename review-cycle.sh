@@ -869,7 +869,11 @@ review_one() {
   # `entry.report_directory` is already fallback-applied (the pre-loop
   # resolution above), so this is a straight read, not a re-derivation.
   report_directory_format="$(jq -r '.report_directory' <<<"$entry")"
-  report_dir="$(date -u +"$report_directory_format")"
+  # Derived from review_date (pinned once at script start), never a fresh
+  # `date -u` call here: repos are reviewed sequentially and a run can cross
+  # midnight UTC, which would otherwise write a later repo's report set into
+  # a folder dated a day after its own branch, claim and PR title.
+  report_dir="$(date -u -d "$review_date" +"$report_directory_format")"
 
   local safe branch out_file result status_json pr_url rc claim_rc
 
