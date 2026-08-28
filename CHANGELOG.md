@@ -1736,6 +1736,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The landing audit record's `head_sha` field is renamed `review_commit_sha`
+  (requirement 8x, TD-PPagop-26082312): the value is unchanged — still the
+  Approver's standing review's own `commit_id` — but the old name read as the
+  commit that landed, which it is not on every path. The record's
+  `human-veto` gate entry is now derived from `_handoff_blocking_reviewers`'s
+  own return (empty on every arm) rather than a hardcoded `"clear"` literal,
+  and carries that list as a new `blocking_reviewers` field beside its
+  verdict, the same way the `protected_path` field already names the paths it
+  examined. The observable verdict does not change on any arm.
 - Seven timings sized against a once-an-hour cycle now derive from
   `schedule.cycle_interval_minutes` instead (requirement 1d, agent-ops#591):
   `claim_ttl_hours`, `abandoned_draft_after_hours`, `disable_default_ttl` and

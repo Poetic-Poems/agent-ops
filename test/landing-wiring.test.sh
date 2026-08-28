@@ -457,8 +457,8 @@ assert_eq "  ... with only the pull request's own URL, no NOT_AFTER" \
 
 audit="$(event_of landing-audit-record)"
 assert_eq "  ... naming the pull request's own number" "512" "$(jq -c '.number' <<<"$audit")"
-assert_eq "  ... and its head SHA, from the Approver's own standing review" \
-  '"sha-approved-head"' "$(jq -c '.head_sha' <<<"$audit")"
+assert_eq "  ... and its review_commit_sha, from the Approver's own standing review" \
+  '"sha-approved-head"' "$(jq -c '.review_commit_sha' <<<"$audit")"
 assert_eq "  ... the effective autonomy level" \
   '"agent-merges-routine"' "$(jq -c '.autonomy.level' <<<"$audit")"
 assert_eq "  ... and its resolution source (DEFAULTED_CONFIG names no repo override)" \
