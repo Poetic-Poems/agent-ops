@@ -30,11 +30,13 @@ pipeline, on its own configured cadence
 (`project_review.defaults.min_days_between_reviews`). For each run it takes
 one target repository and produces a full project review — via the vendored
 `project-review` skill — against a fresh ephemeral clone, and leaves **one**
-mergeable pull request carrying the review reports and an updated tech-debt
-register. A human merges it. The review's new tech-debt entries and
-improvement prompts then feed the implementation pipeline (and/or the
-`project-remediation` skill). The only human involvement is merging the
-review pull request.
+mergeable pull request carrying the review reports. Debt the review surfaces
+is filed straight to GitHub as `pw::type:tech-debt`-labelled issues as the
+review runs (R12), named under the pull request's `Defers:` section rather
+than committed alongside it. A human merges the pull request. The filed
+issues and the review's improvement prompts then feed the implementation
+pipeline (and/or the `project-remediation` skill). The only human
+involvement is merging the review pull request.
 
 ```
 cron (project_review.defaults.min_days_between_reviews; a daily tick with a
@@ -94,10 +96,14 @@ cron (project_review.defaults.min_days_between_reviews; a daily tick with a
 Identical to `docs/IMPLEMENTATION-PIPELINE-SPEC.md` ("Environment" and "Target
 repositories"); not repeated here. The two target repositories are the same
 `Poetic-Poems/poetic` and `Poetic-Poems/poetic-fiddle`, and their shared
-conventions (protected `main`, squash-merge so the PR title becomes the commit,
-Conventional Commits, the per-item tech-debt register (`tech-debt/`, with
-`scripts/reserve-tech-debt-id.pl` allocating new IDs) bind the Reviewer-Agent
-exactly as they bind the Implementer.
+conventions (protected `main`, squash-merge so the PR title becomes the
+commit, Conventional Commits) bind the Reviewer-Agent exactly as they bind
+the Implementer. Where either repository still carries a per-item tech-debt
+register (`tech-debt/`, with `scripts/reserve-tech-debt-id.pl` allocating new
+IDs), that register binds the Implementer's own filing as it always has; the
+Reviewer-Agent only ever reads it, to update an item it finds already
+resolved (R12) — new debt this review surfaces is filed as a labelled GitHub
+issue instead, never into that register.
 
 One repository-specific fact worth noting: `poetic` already stores prior
 reviews under `reviews/project-review-YYYY-MM-DD/`; `poetic-fiddle` does not
@@ -241,13 +247,13 @@ Review PRs join that ladder when an Approver is wired into this pipeline —
 work no item covers yet, named here so the gap is a stated one rather than
 a silent one.
 
-The point of the pipeline is the *loop*, not the report. When a review PR
-merges, its updated tech-debt register and its `04-improvement-prompts.md`
-land on `main`, where:
+The point of the pipeline is the *loop*, not the report. Debt the review
+surfaces is filed straight to GitHub, as labelled issues, while the review
+runs (R12) — not held for the pull request to land; once the pull request
+merges, its `04-improvement-prompts.md` lands on `main` too, where:
 
-- the **implementation pipeline's** Co-Ordinator picks up the new
-  tech-debt items on its next cycle (its `tech-debt` work source reads
-  exactly that register); and/or
+- the **implementation pipeline's** Co-Ordinator can pick up any issue the
+  review filed through its own `issues` work source; and/or
 - the human runs the **`project-remediation`** skill (the review's
   counterpart) to work down the recommendations deliberately.
 
@@ -709,46 +715,51 @@ R10. **Obey the repo.** Runs inside the clone. First reads the repo's
 R11. **Run the skill end-to-end.** Invoke the vendored `project-review` skill
    and follow it to completion: produce the report set (index, summary,
    findings, recommendations, improvement prompts) in `report_dir` — the
-   directory the runtime input names (R4a) — and update the tech-debt
-   register **in place**. The injected skill under
+   directory the runtime input names (R4a) — and file the debt it surfaces
+   per R12. The injected skill under
    `.claude/skills/project-review/` is *tooling staged for this run*, **not**
    part of the repository under review: exclude it from the review's scope and
    findings, and never `git add` it (R5b also git-excludes it as a backstop).
    Complete the skill's own resumability book-keeping (delete `worknotes/` and
    `review-state.json`) so only the finished reports remain.
 
-R12. **Tech-debt conventions.** The review's own filing does not fit the
-   register's single-item shape — one `td/<id>` branch that is both the
-   reservation and the filing branch — because R13 requires every item the
-   review surfaces to land in **one** pull request rather than one per item.
-   So reservation and filing are two separate steps: reserve one ID per item
-   atomically with `scripts/reserve-tech-debt-id.pl` (the "Filing an item"
-   workflow's reservation step, built on `scripts/next-tech-debt-id.pl`'s
-   scan), but never check out or commit to the `td/<id>` branch it creates —
-   that branch is the reservation, standing only as a lock against a
-   concurrent filing minting the same ID. Instead add each record as a new
-   `tech-debt/<id>.md` item file (frontmatter plus a Markdown body) on the
-   review's own branch (R13), preserving the existing per-item conventions
-   rather than inventing a competing structure. A reservation's `td/<id>`
-   branch stands until R13's pull request merges; nothing deletes it
-   automatically, so R13's pull request body is where that deletion is
-   handed to the human who merges it. Mark items the review finds already
-   resolved per the register's own rules, not by deleting their history: a
-   frontmatter status
-   flip, with the item file never deleted or renamed and its body kept in
-   place. The skill updates the register in place; this requirement pins it
-   to *this* repo's conventions.
+R12. **File review-sourced debt as labelled issues.** New debt this review
+   surfaces does not go into the register: it is filed as a GitHub issue in
+   the repository under review, labelled `pw::type:tech-debt` (the label the
+   implementation pipeline's own label catalogue already ensures exists there
+   — `docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement 6a), never as a
+   `tech-debt/<id>.md` file. Search first — `gh issue list --label
+   pw::type:tech-debt --search "<working title>" --state all` against the
+   repository under review — and a close match means the gap is already
+   tracked: cite its number instead of filing a second issue for it. File
+   each new item with `gh issue create --label pw::type:tech-debt`, its body
+   describing what, why it matters, where, and a suggested fix — the same
+   content a register item's body would have carried. Filing an issue is one
+   API call, not a commit: keep the list of every issue filed this run, since
+   R13's pull request body is the only record connecting the review to what
+   it found, under a `Defers:` section rather than a git diff.
 
-R12a. **Cross-reference every mirrored recommendation.** Where a tech-debt
-   item the review files — or a GitHub issue it opens — covers the whole of a
-   recommendation's *Intended end state*, record that recommendation's `R-NN`
-   against the item, somewhere a reader and a `grep` of the register will
-   find it (a `review:` frontmatter line on the item). Do it when the item is
-   filed, not when it is resolved.
+   Where the repository under review still carries an existing tech-debt
+   register (per-item or legacy — either predating this requirement, or kept
+   in place as history once a repository migrates to issue-based filing),
+   never file new debt into it and never migrate it to the other format.
+   Where the review finds one of its existing items already resolved, still
+   update that item in place, in its own format — a per-item register's
+   frontmatter status flip (`status: resolved`, `resolved:`, `ref:`), never
+   its body, never deleting or renaming the file; a legacy register's own
+   status update, in its established style — since that is an edit to a file
+   already there, never a new one the review adds.
 
-   This is not book-keeping. A recommendation and its mirrored register entry
-   are two channels onto one piece of work, and the implementation
-   pipeline's Co-Ordinator can tell only by finding this cross-reference
+R12a. **Cross-reference every mirrored recommendation.** Where a GitHub issue
+   R12 files covers the whole of a recommendation's *Intended end state*,
+   name that recommendation's `R-NN` and this run's `report_dir` in the
+   issue's own body, somewhere a reader — and a `gh issue view --json body`
+   grep — will find it (e.g. a line `Review: <report_dir> R-<NN>`). Do it
+   when the issue is filed, not when it is resolved.
+
+   This is not book-keeping. A recommendation and its mirrored issue are two
+   channels onto one piece of work, and the implementation pipeline's
+   Co-Ordinator can tell only by finding this cross-reference
    (`docs/IMPLEMENTATION-PIPELINE-SPEC.md`, requirement 16). Absent
    it, that Co-Ordinator has one remaining test for whether a recommendation
    is done — a merged PR referencing it — which work that landed as a direct
@@ -758,28 +769,27 @@ R12a. **Cross-reference every mirrored recommendation.** Where a tech-debt
    `poetic`'s 2026-07-11 review did, nine times in two days, for a licence
    that had been committed before the review was even written.
 
-   Record the mapping **only** where the item genuinely covers the
-   recommendation's whole end state. A recommendation broader than the item
+   Record the mapping **only** where the issue genuinely covers the
+   recommendation's whole end state. A recommendation broader than the issue
    mirroring it keeps its remainder in the review channel, where it stays
    visible; claiming it here would silently retire work nobody has done.
 
 R13. **Raise one pull request.** Create the branch
    `<branch_prefix><date>` (`review/<date>` by default; this repository's own
    resolved `branch_prefix`) from the
-   default branch; commit the review folder and the updated tech-debt
-   register — including every item R12 reserved an ID for, filed here on this
-   branch rather than on its own `td/<id>` reservation branch; open **one**
+   default branch; commit the review folder — plus, only where R12's
+   resolved-item bookkeeping touched an existing register, that edit
+   alongside it, never a *new* `tech-debt/` file; open **one**
    pull request, **ready for review** (not draft),
    labelled with this repository's own resolved `project_review` pr_label,
    with a Conventional-Commits title
    (`docs(review): repository review <date>` — it becomes the squash commit
    on `main`) and a body that summarises the verdict, links the review
-   index, and — where R12 reserved any ids — lists every `td/<id>` it
-   reserved and the command to release them once this pull request merges
-   (`git push origin --delete td/<id1> td/<id2> …`), since nothing else
-   deletes those reservation branches. Record the PR URL to
-   `.git/agent-ops-review-pr-url` immediately on
-   opening it (the breadcrumb R5d relies on).
+   index, and — where R12 filed any issues — lists every one of them, its
+   number and title, under a `Defers:` section, so a human reading the pull
+   request sees the debt this review deferred without opening every issue.
+   Record the PR URL to `.git/agent-ops-review-pr-url` immediately on opening
+   it (the breadcrumb R5d relies on).
 
 R14. **Prove it is landable.** Run the repo's own checks (as its `CLAUDE.md`
    and workflow files define — for a docs-only change this is chiefly the
@@ -963,22 +973,25 @@ a pull request, run the ones the change touches and any it could regress.
    where the second repository's report folder is dated a day after the
    branch, claim and PR title of the same review.
 5. **Injected-skill isolation:** after a real `--once --repo poetic` run, the
-   review PR's diff contains the new `reviews/...` folder and the `tech-debt/`
-   change but **not** `.claude/skills/project-review/` — confirm the injected
-   skill is git-excluded and absent from the PR.
+   review PR's diff contains the new `reviews/...` folder but **never** a
+   *new* `tech-debt/*.md` file (only an existing item's frontmatter, where
+   R12's resolved-item bookkeeping touched one) and **not**
+   `.claude/skills/project-review/` — confirm the injected skill is
+   git-excluded and absent from the PR, and confirm any debt the review
+   surfaced landed as issues instead: `gh issue list --repo Poetic-Poems/poetic
+   --label pw::type:tech-debt --state all` shows a fresh issue per finding,
+   each named under the PR body's `Defers:` section.
 6. Usage-limit: an injected future `limit-hit` on `log.jsonl` stands the review
    down; and a simulated limit phrase in a transcript causes a `limit-hit` to
    be written to `log.jsonl`.
 7. One supervised full run (`--once`): for each non-skipped repo it produces a
-   labelled, ready, mergeable review PR, with its tech-debt register updated
-   per that repo's own per-item conventions (frontmatter on the item file)
-   and a clean `review-log.jsonl` trail. Report the PR URL(s) to the human;
-   merge nothing.
-8. **Cross-references land (R12a):** in that run's tech-debt register diff,
-   every item mirroring a recommendation names its `R-NN` — it lands in a
-   `review:` frontmatter line of the item file, so the check greps the
-   `tech-debt/` diff (`grep -rc 'R-[0-9]' tech-debt/` non-zero whenever the
-   review mirrored anything). Check this explicitly: it is invisible in the
+   labelled, ready, mergeable review PR, with every item of debt it surfaced
+   filed as a `pw::type:tech-debt`-labelled GitHub issue in that repo (R12),
+   named under the PR's `Defers:` section, and a clean `review-log.jsonl`
+   trail. Report the PR URL(s) to the human; merge nothing.
+8. **Cross-references land (R12a):** for every issue that run filed which
+   mirrors a recommendation, `gh issue view <n> --json body --jq .body`
+   contains its `R-NN`. Check this explicitly: it is invisible in the
    review's own output — the reports look complete either way — and only
    shows up weeks later as the implementation pipeline paying to
    re-investigate recommendations that are already done.
@@ -1060,11 +1073,23 @@ state only what is.
 - **"Once a week" is implemented as a daily tick plus a skip-guard**, because a
   strict weekly cron on a machine that sleeps can miss its one tick and lose a
   whole week. The guard also makes re-runs idempotent.
-- **The outputs feed the existing pipelines by design.** The review updates
-  the same per-item tech-debt register the hourly Co-Ordinator already
-  reads, and writes the improvement prompts the `project-remediation` skill
-  consumes — so the review is the front of an existing loop, not a parallel
-  dead-end.
+- **The outputs feed the existing pipelines by design.** The review files
+  debt straight to GitHub as labelled issues the hourly Co-Ordinator's
+  `issues` work source can already pick up, and writes the improvement
+  prompts the `project-remediation` skill consumes — so the review is the
+  front of an existing loop, not a parallel dead-end.
+- **Review-sourced debt is filed as GitHub issues, not register entries
+  (agent-ops#876, D15).** The register served this well while an item's ID
+  needed to be race-safe across concurrent human and agent writers and its
+  filing needed to survive as an immutable per-item file; GitHub issues give
+  both natively — an issue number allocates atomically, and a labelled issue
+  cannot silently conflict with another. Filing therefore costs one API call
+  (`gh issue create --label pw::type:tech-debt`) instead of an ID
+  reservation and a commit, and the review PR's `Defers:` section is the
+  record connecting the review to what it found, in place of a register diff
+  the pull request used to carry. A repository's existing register, where it
+  still has one, is left exactly as it was: history, never a second place
+  new debt lands (R12).
 - **`min_days_between_reviews` is 6, not 7**, so a review that lands a day late
   one week is not deferred a full extra week the next.
 

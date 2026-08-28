@@ -3,8 +3,9 @@
 # review-cycle.sh — orchestrates one repository-review run across the
 # configured target repositories. For each repo not skipped by the idempotency
 # guard, it clones the repo fresh, stages the vendored project-review skill into
-# the clone, runs the Reviewer-Agent (which produces the review reports, updates
-# TECH-DEBT.md, and raises one ready-for-review PR), then cleans up.
+# the clone, runs the Reviewer-Agent (which produces the review reports, files
+# the debt it surfaces as pw::type:tech-debt-labelled issues, and raises one
+# ready-for-review PR), then cleans up.
 #
 # Full specification: docs/REVIEW-PIPELINE-SPEC.md. Config: config.json
 # (.project_review).

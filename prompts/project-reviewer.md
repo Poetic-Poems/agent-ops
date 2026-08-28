@@ -133,13 +133,15 @@ All target repos follow these rules:
   [Conventional Commits](https://www.conventionalcommits.org/) format
   (`<type>[(scope)]: <description>`). CI checks **both** the PR title and every
   individual commit on the branch, so write every commit in that format too.
-- The tech-debt register is per-item: one `tech-debt/<id>.md` file per
-  record (frontmatter status plus a permanent body), `TECH-DEBT.md` holding
-  only policy and the repository's scope. A new ID is allocated atomically by
-  `scripts/reserve-tech-debt-id.pl` (the "Filing an item" workflow's
-  reservation step), which builds on `scripts/next-tech-debt-id.pl`'s scan;
-  `scripts/get-tech-debt-record.pl` resolves one. Never reuse an ID or
-  hand-count them; item files are never deleted or renamed.
+- Where a repository still carries a per-item tech-debt register, it is one
+  `tech-debt/<id>.md` file per record (frontmatter status plus a permanent
+  body), `TECH-DEBT.md` holding only policy and the repository's scope; item
+  files are never deleted or renamed. This binds only the resolved-item
+  bookkeeping step 2 describes — new debt this review surfaces is filed as a
+  `pw::type:tech-debt`-labelled issue instead (step 2), never a register
+  file, so the register's own ID-reservation tooling
+  (`scripts/reserve-tech-debt-id.pl`, `scripts/next-tech-debt-id.pl`,
+  `scripts/get-tech-debt-record.pl`) plays no part in this prompt.
 - CI runs on every PR: the repo's build/lint/typecheck/format/test workflow,
   CodeQL, and a commit-format check — plus a trailing-whitespace check
   (`npm run check`). Read `.github/workflows/` to see exactly what runs.
@@ -158,36 +160,41 @@ All target repos follow these rules:
    to parallelise the dimension reviews across subagents, as the skill
    describes; keep each subagent on the lowest-cost model tier likely to do
    its slice correctly.
-2. **Update the tech-debt register in place.** Where the review surfaces debt,
-   record it via `TECH-DEBT.md`'s "Filing alongside other work" variant, not
-   its "Filing an item" single-item shape where the `td/<id>` branch is both
-   the reservation and the filing branch: this review files every item it
-   surfaces in **one** pull request (step 4), so for each item, reserve an ID
-   with `scripts/reserve-tech-debt-id.pl` (after checking
-   `scripts/find-similar-tech-debt.sh` for an existing record covering the
-   same gap), but do **not** check out or commit to the `td/<id>` branch it
-   creates — add the record as a new `tech-debt/<id>.md` item file
-   (frontmatter plus body) on **this review's own branch** instead. Keep the
-   list of every id you reserve — step 4's pull request body must name all
-   of them, since `.github/workflows/release-td-branch.yml` releases each
-   `td/<id>` reservation automatically once this pull request merges and the
-   record lands on `main`; naming them is a courtesy for a human scanning the
-   pull request, not the release mechanism itself.
-   Mark items the review finds already resolved with a frontmatter status
-   flip rather than deleting their history — item files are never deleted
-   or renamed. Do not create a competing tech-debt file.
+2. **File review-sourced debt as labelled issues.** Where the review surfaces
+   debt, file it as a GitHub issue in the repository under review, labelled
+   `pw::type:tech-debt` — never as a `tech-debt/<id>.md` file. Search first:
+   `gh issue list --repo <repo> --label pw::type:tech-debt --search "<working
+   title>" --state all` — a close match means the gap is already tracked, so
+   cite its number instead of filing a second issue for it. File each new
+   item with `gh issue create --repo <repo> --label pw::type:tech-debt
+   --title "<title>" --body "<body>"`, its body describing what, why it
+   matters, where, and a suggested fix — the same content a register item's
+   body would have carried. Keep the list of every issue you file this run —
+   step 4's pull request body must name all of them under a `Defers:`
+   section, since that list, not a git diff, is now the only record
+   connecting this review to the debt it surfaced.
 
-   **Cross-reference each mirrored recommendation.** Where an item you file
-   covers the whole of a recommendation's *Intended end state*, record that
-   recommendation's `R-NN` against it in the item's `review:` frontmatter
-   line, where a `grep` of the register will find it. The implementation
+   Where the repository under review still carries an existing tech-debt
+   register (per-item or legacy), leave it exactly as it is except where the
+   review finds one of its items already resolved: update that item in
+   place, in its own format (a per-item register's frontmatter flip —
+   `status: resolved`, `resolved:`, `ref:` — never its body, never deleting
+   or renaming the file), the same as before this requirement changed. Never
+   file new debt into the register, and never migrate it to the other
+   format or to issues as a side effect of this review.
+
+   **Cross-reference each mirrored recommendation.** Where an issue you file
+   covers the whole of a recommendation's *Intended end state*, name that
+   recommendation's `R-NN` and this run's `report_dir` in the issue's body,
+   in a form a reader — and a `gh issue view --json body` grep — will find
+   (e.g. a line `Review: <report_dir> R-<NN>`). The implementation
    pipeline's Co-Ordinator uses exactly this cross-reference to tell that
-   the register entry and the recommendation are the same work; without it,
+   the filed issue and the recommendation are the same work; without it,
    it re-selects and re-investigates the recommendation every cycle unless a
    *merged* PR happens to reference it — which work that lands as a direct
    commit never will.
 
-   Record the mapping only where the item covers the recommendation's whole
+   Record the mapping only where the issue covers the recommendation's whole
    end state. Where the recommendation is broader, leave the remainder to the
    review channel rather than claiming — and so silently retiring — work
    nobody has done.
@@ -207,23 +214,21 @@ All target repos follow these rules:
      `git push --force-with-lease`, which refuses rather than silently
      overwrites a push you have not seen.
    - Stage **only** the review outputs by explicit path — the new
-     `report_dir` folder and the `TECH-DEBT.md` change — and commit them.
-     Never `git add -A` (it would sweep in the injected skill); never stage
-     `.claude/skills/project-review/`.
+     `report_dir` folder, plus any existing register file step 2's
+     resolved-item bookkeeping edited (never a *new* `tech-debt/` file) —
+     and commit them. Never `git add -A` (it would sweep in the injected
+     skill); never stage `.claude/skills/project-review/`.
    - Open **one** pull request, **ready for review** (not a draft — the review
      is the deliverable; there is no second stage to flip it):
      - Title (Conventional Commits; becomes the squash commit on `main`):
        `docs(review): repository review <review_date>`.
      - Body: a short verdict summary and a link to the review index
-       (`report_dir/README.md`); note that the recommendations feed the
-       implementation pipeline's `tech-debt` source and the
-       `project-remediation` skill. Where step 2 reserved any
-       `td/<id>` ids, list every one of them —
-       `.github/workflows/release-td-branch.yml` releases each reservation
-       automatically once this pull request merges and its record lands on
-       `main`, but naming them here still gives a human a fallback
-       (`git push origin --delete td/<id1> td/<id2> …`) if that workflow
-       cannot run.
+       (`report_dir/README.md`); note that the issues step 2 filed feed the
+       implementation pipeline's `issues` source, and that the
+       recommendations feed the `project-remediation` skill. Where step 2
+       filed any issues, list every one of them under a `Defers:` section
+       (number and title), so a human reading the pull request sees the debt
+       this review deferred without opening every issue.
      - Label it `pr_label`.
    - **Immediately** after the PR exists, record its URL where the Script can
      find it even if this session ends before your final message does:

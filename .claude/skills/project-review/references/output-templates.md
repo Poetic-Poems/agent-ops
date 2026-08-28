@@ -19,7 +19,7 @@ All outputs are Markdown. Follow these templates in structure; adapt headings on
 | [Findings](02-findings.md) | <One or two sentences, including the finding count by severity, e.g., "31 findings: 2 critical, 7 high, 14 medium, 8 low.".> |
 | [Recommendations](03-recommendations.md) | <One or two sentences, including the number of recommendations.> |
 | [Improvement prompts](04-improvement-prompts.md) | <One or two sentences.> |
-| [Tech debt register](<relative path to TECH-DEBT.md, or to tech-debt/ for a per-item register>) | <One or two sentences; note whether it was updated or newly created.> |
+| [Tech debt filed](<the `pw::type:tech-debt` issue search URL for this repository, or the register's own path if the project still has one>) | <One or two sentences: how many new issues this review filed, and whether any existing register item was marked resolved.> |
 ```
 
 Add rows for any supplementary annexes.
@@ -114,81 +114,53 @@ Every `Critical` and `High` finding must appear in some recommendation's **Addre
 ​```
 ```
 
-## Tech-debt register
+## Tech debt
 
-Registers come in two formats: **per-item** — a `tech-debt/` directory exists, or the project's own `TECH-DEBT.md` declares `scope:` in its YAML frontmatter, and each item lives in its own `tech-debt/<id>.md` file, with `TECH-DEBT.md` holding only policy — or **legacy**: a single `TECH-DEBT.md` holding `### <id> <title>` sections under a "Current Items" heading plus a permanent "Ledger" table. If the project already has a register, in **either** format, **preserve that format and update it in place**: never migrate a register to the other format as a side effect of a review.
-
-For an existing **per-item** register: add a new `tech-debt/<id>.md` file (template below) per newly filed item, and mark any item the review found to be resolved by editing only its frontmatter (`status: resolved`, `resolved:` date, `ref:`) — never its body, and never delete or rename the file. For an existing **legacy** register: update statuses, mark items the review found to be resolved (do not delete them), and append newly found debt in the file's own style, noting the review date.
-
-Only if the project has no register in either format, create one — **per-item is the default format for a new register**. Choose a scope: two characters of `[A-Z0-9]` for the org, four of `[a-z0-9]` for the repo (e.g. `PPpoet`), declared once as `scope:` in `TECH-DEBT.md`'s frontmatter — and record it in the project's scope-code registry if one exists (a governance repo, or its own `docs/TECH-DEBT-REGISTER.md`); if there is nowhere to register it, say so in the review and let the user record it.
-
-`TECH-DEBT.md` holds only policy — no items live here:
-
-```markdown
----
-scope: <ORG><repo>              # e.g. PPpoet: two-char org code + four-char repo code
----
-
-# Tech debt register
-
-Deferred work and known compromises. One file per item under `tech-debt/`; this file holds only policy. IDs: `TD-<scope>-<YYMMDD><NN>`, allocated in filing order for that date (`01`–`99`, then `a0`–`z9`, never `00`). Statuses: `open` / `in-progress` / `resolved` / `not-debt`. Last reviewed: <YYYY-MM-DD> (project-review).
-```
-
-One `tech-debt/<id>.md` per filed item, filename equal to `id`:
+**New debt is always filed as a GitHub issue**, labelled `pw::type:tech-debt`,
+in the project under review — never as a register file, whether or not the
+project has a register in either format below, and never by inventing a
+register where none exists. Search first:
+`gh issue list --label pw::type:tech-debt --search "<working title>" --state
+all` — a close match means the gap is already tracked, so cite its number
+instead of filing a second issue for it. File each new item with
+`gh issue create --label pw::type:tech-debt --title "<title>" --body
+"<body>"`:
 
 ```markdown
----
-id: TD-<scope>-<YYMMDD><NN>
-title: <short title>
-status: open
-filed: <YYYY-MM-DD>
-review: project-review-<YYYY-MM-DD> R-<NN> F-<CODE>-<NN>
-resolved:
-ref:
----
-
 **Severity:** <Critical / High / Medium / Low>
 
-<Free prose: what the compromise is, with paths; why it exists, if discernible, otherwise "Unknown — predates this register."; its ongoing cost — what it slows, risks, or breaks; and a suggested remedy, cross-referencing R-<NN> / F-<CODE>-<NN> where applicable.>
+<Free prose: what the compromise is, with paths; why it exists, if discernible, otherwise "Unknown"; its ongoing cost — what it slows, risks, or breaks; and a suggested remedy.>
+
+Review: <report_dir> R-<NN> F-<CODE>-<NN>
 ```
 
-The `review:` line is the item's provenance — where a legacy register keeps a separate two-column table, a per-item register carries it inline, one line per item. The severity/what/why/cost/remedy prompts above shape the body's free prose; they are not frontmatter fields. The body **stays when the item is resolved**: resolving is a frontmatter-only edit (`status: resolved`, `resolved:` date, `ref:` the PR), never a body rewrite, and the file is never deleted or renamed once committed.
+The `Review:` line is the item's provenance, in the same place a register's
+`review:` frontmatter line or Ledger table would have carried it — write it
+whenever the item mirrors a recommendation's whole *Intended end state*
+(never for a partial match, which stays visible in the review channel
+instead). In the Claude.ai chat, where GitHub is not directly reachable,
+list each item that would be filed — title, body, and any recommendation it
+mirrors — in the summary presented to the user instead, and tell them where
+to file it.
 
-Follow this template only when updating an existing **legacy** register (per-item is the default for a new one, above):
+**An existing register is history, not a filing destination.** Registers
+come in two formats: **per-item** — a `tech-debt/` directory exists, or the
+project's own `TECH-DEBT.md` declares `scope:` in its YAML frontmatter, and
+each item lives in its own `tech-debt/<id>.md` file, with `TECH-DEBT.md`
+holding only policy — or **legacy**: a single `TECH-DEBT.md` holding
+`### <id> <title>` sections under a "Current Items" heading plus a permanent
+"Ledger" table. Never file new debt into either format, and never migrate
+one to the other as a side effect of a review. Where the review finds an
+existing item already resolved, still update it **in place, in its own
+format**:
 
-```markdown
-# Tech debt register
+- **Per-item:** flip the item's frontmatter only (`status: resolved`,
+  `resolved:` date, `ref:`) — never its body, and never delete or rename the
+  file.
+- **Legacy:** update the item's status in `TECH-DEBT.md` directly, in the
+  file's own established style (do not delete the entry).
 
-Deferred work and known compromises, most severe first. Each live item is a level-three `### <id> <title>` section under the "Current Items" heading; when an item is resolved its `### ` section is removed but its Ledger row is kept forever, so IDs are never reused. Last reviewed: <YYYY-MM-DD> (project-review).
-
-`<id>` is `TD<YYMMDD><NN>`: a "TD" prefix, the date, then a zero-padded per-day sequence number — one more than the highest `NN` for that date in the Ledger (use the repo's `next-tech-debt-id` helper if it has one, otherwise count from the Ledger, which is the source of truth for the next free ID).
-
-## Review provenance
-
-Where an item mirrors a recommendation, map it here so the review and the register are not double-counted.
-
-| Recommendation | Ledger ID |
-|----------------|-----------|
-| R-<NN> — <short title> | <id> |
-
-## Current Items
-
-The open items, each as a `### <id> <title>` section. This heading is permanent: when there are no current items it stays here (empty), so it is always obvious where a new item's body belongs.
-
-### <id> <short title>
-- **Severity:** <Critical / High / Medium / Low>
-- **What:** <The compromise, with paths.>
-- **Why it exists:** <The reason, if discernible; otherwise "Unknown — predates this register.".>
-- **Ongoing cost:** <What it slows, risks, or breaks.>
-- **Suggested remedy:** <One or two lines; cross-reference R-<NN> / F-<CODE>-<NN> where applicable.>
-
-## Ledger
-
-Every tech-debt ID ever allocated, in ID order. A row is never removed — even after its `### ` body is — so a resolved item's ID is never reused.
-
-| ID | Title | Status | Resolved | Ref |
-|----|-------|--------|----------|-----|
-| <id> | <short title> | open | | |
-```
-
-Tech debt overlaps with, but is not identical to, the findings: debt is a known compromise that lives with the project; the register is the durable file that survives after the dated review folder is archived. Duplication between the two is acceptable and expected.
+Tech debt overlaps with, but is not identical to, the findings: debt is a
+known compromise that lives with the project; a filed issue (or an existing
+register entry) is the durable record that survives after the dated review
+folder is archived. Duplication between the two is acceptable and expected.
