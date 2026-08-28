@@ -133,13 +133,15 @@ All target repos follow these rules:
   [Conventional Commits](https://www.conventionalcommits.org/) format
   (`<type>[(scope)]: <description>`). CI checks **both** the PR title and every
   individual commit on the branch, so write every commit in that format too.
-- The tech-debt register is per-item: one `tech-debt/<id>.md` file per
-  record (frontmatter status plus a permanent body), `TECH-DEBT.md` holding
-  only policy and the repository's scope. A new ID is allocated atomically by
-  `scripts/reserve-tech-debt-id.pl` (the "Filing an item" workflow's
-  reservation step), which builds on `scripts/next-tech-debt-id.pl`'s scan;
-  `scripts/get-tech-debt-record.pl` resolves one. Never reuse an ID or
-  hand-count them; item files are never deleted or renamed.
+- Where a repository still carries a per-item tech-debt register, it is one
+  `tech-debt/<id>.md` file per record (frontmatter status plus a permanent
+  body), `TECH-DEBT.md` holding only policy and the repository's scope; item
+  files are never deleted or renamed. This binds only the resolved-item
+  bookkeeping step 2 describes — new debt this review surfaces is filed as a
+  `pw::type:tech-debt`-labelled issue instead (step 2), never a register
+  file, so the register's own ID-reservation tooling
+  (`scripts/reserve-tech-debt-id.pl`, `scripts/next-tech-debt-id.pl`,
+  `scripts/get-tech-debt-record.pl`) plays no part in this prompt.
 - CI runs on every PR: the repo's build/lint/typecheck/format/test workflow,
   CodeQL, and a commit-format check — plus a trailing-whitespace check
   (`npm run check`). Read `.github/workflows/` to see exactly what runs.
