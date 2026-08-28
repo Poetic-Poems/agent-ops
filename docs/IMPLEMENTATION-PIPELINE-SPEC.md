@@ -12949,6 +12949,97 @@ with the Reviewer's own.
     failure at any step logs a `warning` and leaves the pull request exactly
     as it was, for the sweep to find again next cycle.
 
+47. **Rework record.** D23 of `docs/ROADMAP.md` names nine classes of
+    repetition, the pipeline's only honest quality signal, and this
+    requirement is where each one is actually recorded: one `rework` event
+    per repetition, logged the moment the detector that already exists for it
+    fires, never inferred afterwards and never classified by a model.
+    `lib/rework.sh`'s `rework_fields` is the one shaping function every site
+    below calls, on the same terms `lib/metering.sh`'s `metering_fields`
+    already established for requirement 33a: a caller hands it the class, the
+    detector's own name, the detector's own raw evidence, and, only where the
+    evidence itself names one, the stage the repetition is attributed to;
+    `rework_fields` degrades an unparseable evidence argument to
+    `evidence: null` rather than failing, the same fail-safe contract
+    requirement 33a's own record keeps. `docs/FLOW-SCHEMA.md` is the
+    field-by-field contract, the class enumeration and each class's detector
+    site, under the same stability policy `docs/METERING-SCHEMA.md` already
+    established.
+
+    Nine classes, nine sites, none of them a new detector: each already
+    existed for its own reason before this requirement gave its firing a
+    record.
+
+    - **review-round-trip** — a `review-feedback` candidate's own selection
+      (requirement 3c's own gatherer, `scripts/gather-review-feedback.sh`, is
+      the detector; the Script's selection event, where `{repo, item,
+      pr_url}` are already in hand, is where the record is emitted).
+    - **human-change-request** — requirement 31c's reconciliation gate going
+      `dirty` at the Reviewer's own handoff. Attributed to `reviewer`: this
+      is the one class whose evidence names its stage directly, since the
+      gate fires at that stage's own handoff and nowhere else.
+    - **check-failure** — a `review-gate-checks-read` event carrying
+      `ok: false` (the per-attempt read TD-PPagop-26081404's own streak
+      bookkeeping already counts). Its escalation, `review-gate-checks-
+      degraded`, is deliberately never counted a second time: it summarises
+      repetitions already recorded at their own per-attempt site.
+    - **merge-conflict** — a `merge-conflicts` candidate's own selection
+      (`scripts/gather-merge-conflicts.sh` is the detector), the same
+      selection-time site as review-round-trip.
+    - **abandoned-draft-resumed** — an `abandoned-drafts` candidate's own
+      selection (`scripts/gather-abandoned-drafts.sh` is the detector), the
+      same selection-time site again.
+    - **stage-rerun** — two detectors, because a killed-by-backstop stage and
+      a deterministic crash loop are different mechanisms: every `stage-end`
+      site that can carry requirement 4e's `kill_reason` logs one record per
+      non-empty `kill_reason` (`lib/rework.sh`'s `rework_stage_rerun_maybe`,
+      called from every such site in this Script and its libraries), and
+      requirement 2.7's `crash-loop-escalated` event logs one record per
+      escalated run — a `count`-many-in-one entry, not `count` separate ones,
+      since the individual failures a run comprises were never a repetition
+      this system could see at the time.
+    - **claim-race-duplicate** — a `claim-lost` event whose `cause` is `held`
+      or `pr-held`, never a bare `claim-lost`: `scripts/pickup-metrics.sh`'s
+      own header already draws this distinction (healthy contention against
+      an outage or a selection defect), and this requirement reuses it
+      rather than restating it.
+    - **refinement-bounce-back** — `record_needs_refinement_block`
+      (`lib/candidate-select.sh`, requirement 34e's own single recorder)
+      logging a fresh block for an item `refinements_json` already shows as
+      refined — the same lookup its own `refined_label` cleanup already
+      reads, so this class costs no new read.
+    - **post-merge-revert** — the one class mined after the fact rather than
+      emitted in-cycle, since a merge's own 48-hour observation window is
+      inherent latency no in-cycle detector can shorten.
+      `scripts/publish-revert-rate.sh`'s daily pass already mines each
+      repository's `post_merge.detail[]` (`scripts/mine-merge-history.sh`'s
+      own per-pull-request outcome list, D18 issue #579) to compute the
+      aggregate rate it publishes; this requirement has that same pass log
+      one record per not-yet-seen entry, memoised in this node's own
+      `<state_dir>/rework-post-merge-revert-seen.json` so the same rolling
+      14-day window does not re-emit an already-recorded outcome on every
+      run.
+
+    Attribution is never arbitrated: `attributed_stage` is set only where a
+    class's own detector evidence names a stage directly — today, only
+    human-change-request (`reviewer`) and stage-rerun (the stage that was
+    killed) do. Every other class records `attributed_stage: null` rather
+    than a model's or a script's guess at which stage is really at fault; D23
+    parks that arbitration at Phase 2, with the rework panel, and this
+    requirement's whole discipline is that a repetition's cause is the
+    detector's own evidence or nothing.
+
+    Before requirement 31c's reconciliation gate existed (2026-08-20), a
+    human change request arriving as a plain pull request comment was
+    invisible to the review gate entirely — the blind spot agent-ops#533
+    named. That gate now catches it, at the Reviewer's own handoff, but only
+    there: a change request posted after a pull request is already ready, or
+    one a human acts on directly without a further Script handoff ever
+    running, is still outside what this class's detector can see.
+    `docs/FLOW-SCHEMA.md` states that residual coverage plainly, rather than
+    letting a later reader assume the class covers every human change
+    request there is.
+
 ## Components
 
 What exists, and the requirements each part answers to:
@@ -19229,6 +19320,21 @@ pull request, run the ones the change touches and any it could regress.
     block exactly once, and every copy is byte-identical with requirement
     45a's canonical one, which the test lifts from this document at run
     time rather than restating.
+
+47. **The rework record matches `docs/FLOW-SCHEMA.md` and is emitted at
+    every one of the nine classes' own detector sites (requirement 47).**
+    `test/rework-record.test.sh` drives `lib/rework.sh`'s `rework_fields`
+    directly — a well-formed evidence object, an unparseable one (degrades to
+    `evidence: null` rather than failing), a supplied `attributed_stage` and
+    an omitted one (`null`), and `repo`/`item`/`pr_url` present versus
+    omitted — and separately exercises each detector's own reduction against
+    a canned event stream: `review-gate-checks-read {ok: false}` yields a
+    `check-failure` record and `review-gate-checks-degraded` yields none; a
+    `claim-lost` with `cause: held`/`pr-held` yields a `claim-race-duplicate`
+    record and a `claim-lost` with no `cause` at all, or `cause:
+    unreachable`, yields none; a malformed event line in the stream is
+    skipped rather than fatal to the reduction. `scripts/lint-shell.sh` is
+    clean on every file this requirement touches.
 
 9. **An open question the Reviewer could not settle holds unattended landing,
    resolves through the configured ladder, and never through a new commit

@@ -270,6 +270,18 @@ CRASH_LOOP_BODY
     log_event "crash-loop-escalated" "$(jq -c \
       --argjson n "${cl_created%%$'\t'*}" --arg u "${cl_created#*$'\t'}" \
       '. + {issue_number: $n, issue_url: $u}' <<<"$verdict_json")"
+    # stage-rerun's other detector (docs/FLOW-SCHEMA.md, D23): the deterministic-
+    # failure and pre-selection-death classes `crash_loop_verdict`/
+    # `crash_loop_preselection_verdict` catch never carried a `kill_reason` —
+    # a killed-by-backstop stage and a deterministic crash loop are different
+    # mechanisms, which is why `rework_stage_rerun_maybe` above cannot see this
+    # one. One record per escalated *run*, not per failure it counted: the
+    # individual failures a run comprises were never a repetition this system
+    # could see at the time (no per-item block, nothing pinned a repo/item),
+    # so `verdict_json`'s own `count` is carried as evidence rather than
+    # expanded into that many synthetic entries. Fleet-wide, like the run
+    # itself: no repo/item.
+    log_event "rework" "$(rework_crash_loop_fields "$verdict_json")"
   else
     log_event "warning" "$(jq -nc --arg d "crash loop detected ($cl_detail) but the escalation issue could not be filed — will retry next cycle" '{detail: $d}')"
   fi
@@ -366,6 +378,8 @@ $(jq . <<<"$input")
   log_event "stage-end" "$(jq -nc --argjson rc "$rc" --arg kr "$stage_kill_reason" \
     --argjson m "$(metering_fields "$enabler_model" "$out" "$stage_gaps_json")" \
     '{stage: "enabler-adjudicate", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m')"
+  rework_stage_rerun_maybe "enabler-adjudicate" "$stage_kill_reason" "$repo" "$item" \
+    "$(jq -r '.pr_url // ""' <<<"$claimed_entry")"
 
   result="$(jq -r '.result // empty' "$out" 2>/dev/null || true)"
   parsed="$(extract_json_result "$result" 2>/dev/null || true)"
@@ -516,6 +530,8 @@ $(jq . <<<"$input")
   fi
   log_event "stage-end" "$(jq -nc --argjson rc "$rc" --arg kr "$stage_kill_reason" --argjson m "$(metering_fields "$enabler_model" "$out" "$stage_gaps_json")" \
     '{stage: "enabler", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m')"
+  # No repo/item: the Enabler spans repositories by construction (see above).
+  rework_stage_rerun_maybe "enabler" "$stage_kill_reason"
   # `if`, not `&&`: an empty warning is the common case, and a trailing
   # `&&` whose test fails is a non-zero status at exactly the place
   # `set -e` acts on — the same trap that cost a --once cycle its

@@ -68,6 +68,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/report-directory.sh"
 # shellcheck source=lib/metering.sh
 . "$SCRIPT_DIR/lib/metering.sh"
+# shellcheck source=lib/rework.sh
+. "$SCRIPT_DIR/lib/rework.sh"
 # shellcheck source=lib/stage-run.sh
 . "$SCRIPT_DIR/lib/stage-run.sh"
 # shellcheck source=lib/stage-budget.sh
@@ -2314,6 +2316,15 @@ for (( ci = 0; ci < n_cand; ci++ )); do
   log_event "claim-lost" "$(jq -nc --arg r "$c_repo" --arg i "$c_item" --arg b "$c_branch" \
     --argjson rc "$claim_rc" --arg cause "$claim_cause" --arg pr "$c_pr_key" \
     '{repo: $r, item: $i, branch: $b, rc: $rc, cause: $cause} + (if $pr == "" then {} else {pr_claim_key: $pr} end)')"
+  # claim-race-duplicate (docs/FLOW-SCHEMA.md, D23): only `held`/`pr-held` —
+  # healthy contention, a peer genuinely already working this item — is a
+  # repetition; `unreachable` is an outage and any other cause is a selection
+  # defect, neither of which is "work duplicated by a race". The same
+  # distinction scripts/pickup-metrics.sh's own header draws and reuses
+  # (issue #596's own instruction: reuse that rule, do not restate it
+  # differently).
+  rework_claim_race_json="$(rework_claim_race_duplicate_fields "$claim_cause" "$claim_rc" "$c_repo" "$c_item")"
+  [[ -n "$rework_claim_race_json" ]] && log_event "rework" "$rework_claim_race_json"
 done
 
 if [[ -z "$claimed_json" ]]; then
@@ -2394,6 +2405,15 @@ log_event "selection" "$(jq -c --argjson n "$race_losses" --argjson fb "$selecte
   '{repo, item, source, model, title, branch} + (if $n > 0 then {race_losses: $n} else {} end)
    + (if $fb == 1 then {selected_by: "script-fallback"} else {} end)' \
   <<<"$work_order_json")"
+
+# Rework record (docs/FLOW-SCHEMA.md, D23, issue #596): three of the nine
+# classes are detected the moment a finishing source is selected — the
+# candidate itself (gather-review-feedback.sh, gather-merge-conflicts.sh,
+# gather-abandoned-drafts.sh) is the detector, and selection is this cycle's
+# own commitment to reworking it, tied to {repo, item, pr_url}.
+# `rework_selection_fields` prints nothing for any other source.
+rework_selection_fields_json="$(rework_selection_fields "$work_order_json")"
+[[ -n "$rework_selection_fields_json" ]] && log_event "rework" "$rework_selection_fields_json"
 
 # Finish-then-continue (requirement 39): a claim just won is real work, and
 # `ordered_repos_json` — gathered once, ahead of the Co-Ordinator, and
@@ -2533,6 +2553,7 @@ fi
 # shellcheck disable=SC2154  # stage_kill_reason/stage_gaps_json: run_claude_stage (lib/stage-run.sh) assigns both.
 log_event "stage-end" "$(jq -nc --argjson rc "$impl_rc" --arg kr "$stage_kill_reason" --argjson m "$(metering_fields "$impl_model" "$impl_out" "$stage_gaps_json")" \
   '{stage: "implementer", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m')"
+rework_stage_rerun_maybe "implementer" "$stage_kill_reason" "$selected_repo" "$selected_item"
 # `if`, not `&&`: an empty warning is the common case, and a trailing
 # `&&` whose test fails is a non-zero status at exactly the place
 # `set -e` acts on — the same trap that cost a --once cycle its
@@ -2786,6 +2807,7 @@ fi
 # shellcheck disable=SC2154  # stage_kill_reason/stage_gaps_json: run_claude_stage (lib/stage-run.sh) assigns both.
 log_event "stage-end" "$(jq -nc --argjson rc "$rev_rc" --arg kr "$stage_kill_reason" --argjson m "$(metering_fields "$rev_model" "$rev_out" "$stage_gaps_json")" \
   '{stage: "reviewer", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m')"
+rework_stage_rerun_maybe "reviewer" "$stage_kill_reason" "$selected_repo" "$selected_item" "$impl_pr_url"
 # `if`, not `&&`: an empty warning is the common case, and a trailing
 # `&&` whose test fails is a non-zero status at exactly the place
 # `set -e` acts on — the same trap that cost a --once cycle its
@@ -2842,6 +2864,16 @@ if [[ "$rev_status" == "ready" ]]; then
   gate_checks_ok=true
   [[ "$gate_checks_unreadable" == "true" ]] && gate_checks_ok=false
   log_event "review-gate-checks-read" "$(jq -nc --argjson ok "$gate_checks_ok" '{ok: $ok}')"
+  # check-failure (docs/FLOW-SCHEMA.md, D23, issue #596's own detector
+  # naming): `ok: false` here is this per-attempt read failing — the same
+  # node/API fact `review_gate_unknown_streak_verdict` counts a run of
+  # (`gate_checks_unreadable`, `handoff_complete_review`'s exit 2). The
+  # *escalation* of a run of these, `review-gate-checks-degraded`, is
+  # deliberately never counted here too: it is a summary of repetitions
+  # already recorded at their own per-attempt site, not a fresh one.
+  rework_check_failure_json="$(rework_check_failure_fields "$gate_checks_ok" "$gate_reason" \
+    "$selected_repo" "$selected_item" "$impl_pr_url")"
+  [[ -n "$rework_check_failure_json" ]] && log_event "rework" "$rework_check_failure_json"
 
   if [[ "$review_safe" != "true" ]]; then
     if [[ "$gate_word" == "dirty" ]]; then
@@ -2895,6 +2927,16 @@ if [[ "$rev_status" == "ready" ]]; then
       # pipeline comment since cites a `<!-- agent-ops:reconciles
       # comment=<id> -->` line naming it — a requested change silently
       # dropped rather than implemented or contested (PR #512).
+      #
+      # human-change-request (docs/FLOW-SCHEMA.md, D23, issue #596): this is
+      # the class #533 used to leave undetected entirely (a plain PR comment
+      # is invisible to the review gate) — now caught here, at this same
+      # refusal, and given its own machine-legible class rather than living
+      # only in the `attempt-failed` `detail` string `log_reviewer_handback`
+      # writes below. Attributed to the Reviewer: this refusal fires at its
+      # own handoff, the one place this class is detected today.
+      log_event "rework" "$(rework_human_change_request_fields "$rc_reason" \
+        "$selected_repo" "$selected_item" "$impl_pr_url")"
       #
       # agent-ops#539: `handoff_complete_review` does not merely refuse this
       # handoff any more — it also reverts the pull request to draft

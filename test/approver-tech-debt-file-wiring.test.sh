@@ -85,8 +85,14 @@ set -euo pipefail
 
 . "$SCRIPT_DIR/lib/approver.sh"
 . "$SCRIPT_DIR/lib/cycle-state.sh"
+# docs/FLOW-SCHEMA.md, requirement 47, issue #596: run_approver_stage's own
+# stage-end site calls lib/rework.sh's rework_stage_rerun_maybe. Sourced for
+# real (it is pure and cheap) rather than stubbed, so this file keeps
+# verifying the shipped wiring rather than a stand-in for it.
+. "$SCRIPT_DIR/lib/rework.sh"
 
 selected_repo="Poetic-Poems/agent-ops"
+selected_item="631"
 state_repo="Poetic-Poems/agent-ops"
 state_dir="$T/state"
 DEFAULTED_CONFIG='{"pr_label":"custom-agent-label"}'

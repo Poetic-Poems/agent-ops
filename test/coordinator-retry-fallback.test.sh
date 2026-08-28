@@ -120,6 +120,10 @@ calls_log=""
 record() { printf '%s\n' "$*" >> "$calls_log"; }
 
 log_event() { record "event $1 $2"; }
+# docs/FLOW-SCHEMA.md, requirement 47, issue #596: the extracted coordinator
+# stage-end site calls lib/rework.sh's rework_stage_rerun_maybe — out of this
+# file's own scope (test/rework-record.test.sh covers it directly).
+rework_stage_rerun_maybe() { :; }
 record_needs_refinement_block() { record "record_needs_refinement_block $(jq -r '.item' <<<"$1")"; return 0; }
 void_guard_reason() { record "void_guard_reason $(jq -r '.item' <<<"$1")"; return 0; }
 # The machine `obsolete` alternative's ctx (issue #413, WI-10) is lib/merge-

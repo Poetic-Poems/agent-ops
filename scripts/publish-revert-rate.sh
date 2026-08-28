@@ -113,6 +113,14 @@
 # cache per repository (see "GitHub API quota" above) — local memoisation,
 # not published output.
 #
+# Every run also appends one `rework` event (docs/FLOW-SCHEMA.md, D23, issue
+# #596) to `<state_dir>/log.jsonl` itself — never revert-rate.jsonl — per
+# newly detected post-merge revert or follow-up fix the rolling-window mining
+# pass finds, memoised in `<state_dir>/rework-post-merge-revert-seen.json` so
+# the same outcome is not re-emitted on tomorrow's run of the same 14-day
+# window. This is the one rework class docs/FLOW-SCHEMA.md documents as mined
+# after the fact rather than emitted in-cycle.
+#
 # Exit status: 0 iff every configured repository's rolling figure was
 # published; 1 if any repository's mining passes failed (its row is still
 # skipped, not fabricated) — the same "loud, not silent" posture
@@ -123,6 +131,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib/config-schema.sh
 . "$SCRIPT_DIR/lib/config-schema.sh"
+# shellcheck source=lib/rework.sh
+. "$SCRIPT_DIR/lib/rework.sh"
 
 CONFIG_FILE="$SCRIPT_DIR/config.json"
 SCHEMA_FILE="$SCRIPT_DIR/config.schema.json"
@@ -198,6 +208,44 @@ mkdir -p "$state_dir"
 out_file="$state_dir/revert-rate.jsonl"
 cum_state_file="$state_dir/revert-rate-cumulative-state.json"
 [[ -s "$cum_state_file" ]] || printf '{}' > "$cum_state_file"
+# post-merge-revert rework records (docs/FLOW-SCHEMA.md, D23, issue #596):
+# the one class that is mined after the fact rather than emitted in-cycle, so
+# this is where it is emitted — the daily pass that already computes
+# `window_stats.post_merge.detail[]` (mine-merge-history.sh's own per-PR
+# outcome list) below. `rework_seen_file` is this node's own memo of which
+# `repo#number` outcomes it has already appended to the union log: the
+# 14-day rolling window re-mines the same settled outcomes on every run, and
+# without a memo every one of those would re-emit as a fresh "repetition" it
+# is not (see "Do not double-count", docs/FLOW-SCHEMA.md). Appended to the
+# same `<state_dir>/log.jsonl` `log_event` writes (lib/fleet.sh's `fleet_logs`
+# unions it fleet-wide identically), never to `revert-rate.jsonl`, which is
+# an aggregate rate, not the union log this record belongs in.
+rework_seen_file="$state_dir/rework-post-merge-revert-seen.json"
+[[ -s "$rework_seen_file" ]] || printf '{}' > "$rework_seen_file"
+log_file="$state_dir/log.jsonl"
+
+# rework_log_post_merge_reverts SLUG STATS_JSON — append one `rework` event
+# per not-yet-seen entry in STATS_JSON's `post_merge.detail[]`, and record
+# each as seen. No `cycle`: this runs outside any cycle, and a null cycle is
+# an honest field rather than a fabricated one (the same "never a guess"
+# discipline `rework_fields`'s own ATTRIBUTED_STAGE keeps for its field).
+rework_log_post_merge_reverts() {
+  local slug="$1" stats="$2" seen entry number key fields row
+  seen="$(cat "$rework_seen_file" 2>/dev/null || printf '{}')"
+  jq -e . <<<"$seen" >/dev/null 2>&1 || seen='{}'
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    number="$(jq -r '.number' <<<"$entry")"
+    key="${slug}#${number}"
+    [[ "$(jq -r --arg k "$key" '.[$k] // false' <<<"$seen")" == "true" ]] && continue
+    fields="$(rework_post_merge_revert_fields "$slug" "$entry")"
+    row="$(jq -nc --arg ts "$now_iso" --arg node "$node_name" --argjson f "$fields" \
+      '{ts: $ts, cycle: null, node: $node, event: "rework"} + $f')"
+    printf '%s\n' "$row" >> "$log_file"
+    seen="$(jq -c --arg k "$key" '.[$k] = true' <<<"$seen")"
+  done < <(jq -c '.post_merge.detail[]?' <<<"$stats" 2>/dev/null || true)
+  printf '%s' "$seen" > "$rework_seen_file"
+}
 
 now_iso="${now_override:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 jq -n --arg n "$now_iso" '$n | fromdateiso8601' >/dev/null 2>&1 \
@@ -313,6 +361,7 @@ for slug in "${REPOS[@]}"; do
     echo "publish-revert-rate: $slug: rolling-window mining pass failed; skipping this repo" >&2
     rc=1; continue
   }
+  rework_log_post_merge_reverts "$slug" "$window_stats"
   recent_stats="$(mine_window "$slug" "$since_recent")" || {
     echo "publish-revert-rate: $slug: last-48h mining pass failed; skipping this repo" >&2
     rc=1; continue
