@@ -92,6 +92,14 @@
 # App identity of its own and always omits TOKEN, filing under the ordinary
 # pipeline login exactly as create_escalation_issue already does.
 
+# TECHDEBT_RECORD_BRANCH_PREFIX — where techdebt_file_debt mints a filing's
+# record branch (td-record/<id>), fixed regardless of
+# tech_debt_branch_prefix — reserve-tech-debt-id.pl always mints its own
+# reservation as td/<ID> for the same reason (requirement 17b).
+# scripts/sweep-orphan-branches.sh sources this file for the constant rather
+# than typing the string a second time (TD-PPagop-26082310).
+readonly TECHDEBT_RECORD_BRANCH_PREFIX="td-record/"
+
 # _techdebt_gh TOKEN ARGS...
 # Run `gh` ARGS..., under TOKEN's identity if non-empty, the ordinary
 # pipeline login otherwise — explicitly unset for that call (`env -u
@@ -249,7 +257,7 @@ _techdebt_release_ref() {
 # raised as a second failure of its own.
 _techdebt_unfile() {
   local token="$1" repo="$2" id="$3" errlog="$4"
-  _techdebt_release_ref "$token" "$repo" "td-record/$id" "$errlog"
+  _techdebt_release_ref "$token" "$repo" "${TECHDEBT_RECORD_BRANCH_PREFIX}$id" "$errlog"
   _techdebt_release_ref "$token" "$repo" "td/$id" "$errlog"
 }
 
@@ -300,7 +308,7 @@ techdebt_file_debt() {
     return 1
   fi
 
-  branch="td-record/$id"
+  branch="${TECHDEBT_RECORD_BRANCH_PREFIX}$id"
   record_file="tech-debt/$id.md"
   content="$(techdebt_record_body "$id" "$title" "$body" "$provenance")"
 

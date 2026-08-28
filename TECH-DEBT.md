@@ -41,7 +41,10 @@ rather than let a permanent record change quietly), and no old-format
    "Claiming an item" would later reuse to work the item once merged,
    deleted, and re-created; abandoning the filing (closing the PR without
    merging and deleting the branch) simply releases the reservation, the
-   same way abandoning a claim does.
+   same way abandoning a claim does. That is true for this direct workflow,
+   where the record commit lands on `td/<id>` itself; a filing with no
+   branch of its own to commit on instead follows "Filing alongside other
+   work" below, where the same abandonment releases two branches, not one.
    (`legacy-id:` appears only on items migrated from the old single-file
    register; segments of either ID resolve via
    `scripts/get-tech-debt-record.pl`.)
@@ -81,6 +84,22 @@ carries (or is about to).
    call failed, or the record was filed some other way it does not recognise
    — delete the branch by hand instead: `git push origin --delete td/<id>`,
    the fallback "Claiming an item" has always needed for an abandoned claim.
+5. A stage with no branch of its own to ride on — the Approver, the Enabler,
+   neither of which ever writes code or pushes — cannot add
+   `tech-debt/<id>.md` to "the current branch" as step 3 above describes,
+   since it has none. `lib/tech-debt-file.sh`'s `techdebt_file_debt` follows
+   this same reservation-and-record shape on their behalf, except the record
+   commit lands on a `td-record/<id>` branch minted for it alone, carried by
+   a small pull request of its own (labelled `pr_label`) rather than riding
+   on anyone else's. Abandoning *that* filing — a human closing the
+   `td-record/<id>` pull request without merging it, because the record is a
+   duplicate, unwanted, or superseded — releases two branches, not one:
+   `td-record/<id>`, carrying the record commit, and `td/<id>`, the
+   reservation behind it. `scripts/sweep-orphan-branches.sh` clears both
+   unattended once that pull request is closed — for `td/<id>`, only once it
+   has confirmed `<id>`'s record never reached `main` some other way — so
+   nothing needs to be done by hand; where the sweep cannot run, delete both
+   directly instead: `git push origin --delete td-record/<id> td/<id>`.
 
 This is the same reservation lock "Claiming an item" and "Filing an item"
 both use; only where the filing commit lands changes.

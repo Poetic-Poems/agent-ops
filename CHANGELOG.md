@@ -19,6 +19,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   issue's membership of the `tech-debt` work band trustable even though its
   body stays untrusted data. Nothing selects on it yet — the issue-backed band
   itself is still to come.
+- A tech-debt filing a human declines no longer leaves its branches behind
+  for good (TD-PPagop-26082310). `scripts/sweep-orphan-branches.sh` now
+  sweeps a third prefix, `td-record/*` — unconditionally, since
+  `techdebt_file_debt` mints a filing's record branch there whatever
+  `tech_debt_branch_prefix` says — and treats it as delete-only, never
+  recovered: where the branch's own filing pull request was closed without
+  merging, a recovery draft would hand the human back exactly the record
+  they declined, so the sweep deletes `td-record/<id>` outright
+  (`released`, `reason: "filing-declined"`) and then, only once it has
+  confirmed `tech-debt/<id>.md` never reached the default branch some other
+  way, releases the paired `td/<id>` reservation too — reserving headroom
+  for both actions up front against the sweep's per-run cap, so a run one
+  action short of the cap defers the whole pair rather than deleting the
+  record and stranding the reservation release. A merged filing, and
+  one with no pull request at all, are unaffected; the issue #545 exemption
+  that leaves a bare `td/<ID>` lock alone is unchanged for every reservation
+  with no `td-record/` sibling. `TECH-DEBT.md` documents the same two-branch
+  cleanup as the by-hand fallback.
 - New `project_review.defaults.report_directory` and
   `project_review.repos[].report_directory` config keys (agent-ops#761): a
   GNU `date`(1) format string, resolved with `date -u` relative to the
