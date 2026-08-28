@@ -14,8 +14,11 @@
 # entry was lost (a best-effort write that never landed), wedging its item the
 # same way with nothing to recover at all.
 #
-# For one repository, this sweeps every `<tech_debt_branch_prefix>*` and
-# `<branch_prefix>*` ref and, for each one that is provably an orphan — **no
+# For one repository, this sweeps every `<tech_debt_branch_prefix>*`,
+# `<branch_prefix>*`, and `td-record/*` ref — the last unconditionally,
+# never gated by `tech_debt_branch_prefix`, since `techdebt_file_debt`
+# (`lib/tech-debt-file.sh`) mints a filing's record branch there regardless
+# of that setting — and, for each one that is provably an orphan — **no
 # open PR** uses it, **no registry entry** stands for it, and its tip commit
 # is **older than `abandoned_draft_after_hours`** (the same judgement that
 # makes a draft abandoned) — does the one thing that makes the state
@@ -54,6 +57,20 @@
 #                                         has, regardless of which branch that
 #                                         filing actually landed on
 #                                         (issue #545)
+#   a `td-record/<id>` branch whose only
+#   pull request was closed without
+#   merging                               delete the ref: a human declined
+#                                         that filing, so a recovery draft
+#                                         would hand back exactly the record
+#                                         they declined — never recovered,
+#                                         only deleted, for this prefix
+#                                         alone; then, once the delete lands,
+#                                         additionally release the paired
+#                                         `td/<id>` reservation, but only if
+#                                         `<id>`'s record is confirmed absent
+#                                         from the default branch, since it
+#                                         may have landed some other way
+#                                         (TD-PPagop-26082310)
 #
 # Fail-closed everywhere: any answer this script cannot get (a PR list that
 # errors, a registry read that fails with anything but 404, an undatable tip)
@@ -68,6 +85,7 @@
 #   {"action":"recovered","branch":…,"pr_url":…,"ahead_by":…}
 #   {"action":"released","branch":…}
 #   {"action":"released","branch":…,"reason":"superseded","superseded_by":…}
+#   {"action":"released","branch":…,"reason":"filing-declined"}
 #   {"action":"deferred","remaining":N}     (the per-run cap, so a pathological
 #                                            backlog surfaces over several
 #                                            cycles instead of as a PR flood)
@@ -93,6 +111,11 @@ GH="${SWEEP_GH:-gh}"
 
 # shellcheck source=lib/config-schema.sh
 . "$SCRIPT_DIR/lib/config-schema.sh"
+# TECHDEBT_RECORD_BRANCH_PREFIX (td-record/), for the third ref-walk prefix
+# below — sourced rather than typed a second time so the two files can never
+# drift (TD-PPagop-26082310).
+# shellcheck source=lib/tech-debt-file.sh
+. "$SCRIPT_DIR/lib/tech-debt-file.sh"
 
 slug="${1:-}"
 if [[ -z "$slug" ]]; then
@@ -144,6 +167,64 @@ stem() {
 
 warn() {  # warn BRANCH DETAIL
   jq -nc --arg b "$1" --arg d "$2" '{action: "warning", branch: $b, detail: $d}'
+}
+
+# sweep_record_branch BRANCH — the td-record/ delete-only path
+# (TD-PPagop-26082310): 0 if BRANCH's own closed-but-unmerged pull request
+# was found and handled (the caller returns without falling through), 1 to
+# fall through to the ordinary flow below — a merged PR, which the ordinary
+# merged-PR check there already deletes, or none at all, a genuine
+# crash-orphan the recovery draft there lands as usual. gh's own `--state
+# closed` excludes merged PRs, so a non-zero count here is unambiguous: a
+# human declined this filing.
+sweep_record_branch() {
+  local branch="$1" closed id
+  closed="$("$GH" pr list -R "$slug" --head "$branch" --state closed \
+              --json number --jq 'length' 2>/dev/null)" || closed=""
+  if [[ -z "$closed" ]]; then
+    warn "$branch" "could not check for a closed pull request — leaving it alone"
+    return 0
+  fi
+  [[ "$closed" != "0" ]] || return 1
+
+  if "$GH" api -X DELETE "repos/$slug/git/refs/heads/$branch" >/dev/null 2>&1; then
+    jq -nc --arg b "$branch" '{action: "released", branch: $b, reason: "filing-declined"}'
+    actions=$(( actions + 1 ))
+  else
+    warn "$branch" "could not delete the declined-filing record ref"
+    return 0
+  fi
+
+  id="${branch#"$TECHDEBT_RECORD_BRANCH_PREFIX"}"
+  release_paired_reservation "$id"
+  return 0
+}
+
+# release_paired_reservation ID — having just deleted a declined filing's
+# td-record/<ID>, ask whether <ID>'s record reached the default branch some
+# other way. A clean 404 proves it never did, so the id is spent with
+# nothing to show for it and its td/<ID> reservation is released alongside
+# it; a 200 means the record landed some other way, so
+# release-td-branch.yml already owns that reservation; any other failure
+# answers nothing, so — fail closed, like every guard above — it is left
+# alone. Deliberately narrower than the issue #545 reservation-lock
+# exemption above: this only ever runs for a td/<ID> whose td-record/<ID>
+# sibling was just confirmed declined, never for a bare reservation with no
+# sibling at all.
+release_paired_reservation() {
+  local id="$1" content_err
+  content_err="$("$GH" api "repos/$slug/contents/tech-debt/$id.md?ref=$default_branch" \
+    2>&1 >/dev/null)" && return 0
+  if [[ "$content_err" != *"HTTP 404"* ]]; then
+    warn "td/$id" "could not confirm tech-debt/$id.md's absence from $default_branch — leaving the paired reservation alone"
+    return 0
+  fi
+  if "$GH" api -X DELETE "repos/$slug/git/refs/heads/td/$id" >/dev/null 2>&1; then
+    jq -nc --arg b "td/$id" '{action: "released", branch: $b}'
+    actions=$(( actions + 1 ))
+  else
+    warn "td/$id" "could not delete the reservation paired with a declined filing"
+  fi
 }
 
 default_branch="$("$GH" api "repos/$slug" --jq '.default_branch' 2>/dev/null)" || default_branch=""
@@ -204,6 +285,14 @@ sweep_branch() {  # <branch> <tip-sha>
   if (( actions >= max_actions )); then
     deferred=$(( deferred + 1 ))
     return 0
+  fi
+
+  # td-record/ is delete-only — never recovered (TD-PPagop-26082310): check
+  # this before anything the generic flow below needs (ahead_by, the
+  # merged-PR list), since a declined filing is answered by its own
+  # closed-but-unmerged PR alone.
+  if [[ "$branch" == "${TECHDEBT_RECORD_BRANCH_PREFIX}"* ]]; then
+    sweep_record_branch "$branch" && return 0
   fi
 
   # The full payload, not just `.ahead_by`: the superseded-branch check below
@@ -371,9 +460,13 @@ ORPHAN_BODY
   return 0
 }
 
-# Both claim namespaces, prefix-listed server-side. A failed listing is an
-# unanswered question about the whole namespace: warn and move on.
-for prefix in "$tech_debt_branch_prefix" "$branch_prefix"; do
+# Both claim namespaces, prefix-listed server-side, plus td-record/ —
+# unconditional, never gated by tech_debt_branch_prefix, since
+# techdebt_file_debt mints a filing's record branch there regardless of that
+# setting (TECHDEBT_RECORD_BRANCH_PREFIX, lib/tech-debt-file.sh). A failed
+# listing is an unanswered question about the whole namespace: warn and move
+# on.
+for prefix in "$tech_debt_branch_prefix" "$branch_prefix" "$TECHDEBT_RECORD_BRANCH_PREFIX"; do
   [[ -n "$prefix" ]] || continue
   refs="$("$GH" api "repos/$slug/git/matching-refs/heads/$prefix" \
     --jq '.[] | [(.ref | sub("^refs/heads/"; "")), .object.sha] | @tsv' 2>/dev/null)" || {
