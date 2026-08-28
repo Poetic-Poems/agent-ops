@@ -20,7 +20,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   pipeline's `project-review` Refiner source (`gather-project-review.sh`,
   requirement 3y) discover past instances of an arbitrary format string
   through the same shared `lib/report-directory.sh`, rather than the
-  fixed-layout listing either used before. `Poetic-Poems/agent-ops`'s own
+  fixed-layout listing either used before. The write path is resolved for the
+  run's own pinned `review_date`, so the folder, the branch, the claim and the
+  PR title still name the same day when a sequential run crosses midnight UTC;
+  a format string must be day-granular (date-level specifiers and literal text
+  only), because discovery probes one calendar day at a time.
+  `Poetic-Poems/agent-ops`'s own
   `project_review.repos[]` entry now sets `report_directory` to
   `docs/reviews/project-review-%Y-%m-%d`, matching where #762 already moved
   its most recent review — without this, the next scheduled review of this

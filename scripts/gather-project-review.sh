@@ -9,9 +9,11 @@
 # report-directory-format is the repository's own resolved
 # project_review.repos[].report_directory (or project_review.defaults', or
 # the pipeline's ultimate fallback) — a GNU date(1) format string, exactly as
-# review-cycle.sh resolves and passes it. Defaults to
-# `reviews/project-review-%Y-%m-%d` — today's layout — so an existing caller
-# passing only the first two arguments is unaffected (issue #761).
+# review-cycle.sh resolves and passes it. Defaults to the one shared
+# `REPORT_DIRECTORY_DEFAULT` (`reviews/project-review-%Y-%m-%d` — today's
+# layout), so an existing caller passing only the first two arguments — or an
+# empty third one — is unaffected (issue #761). Must be day-granular; see
+# lib/report-directory.sh.
 #
 # Prints a JSON array; each entry is one candidate recommendation:
 #
