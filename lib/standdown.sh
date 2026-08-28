@@ -20,6 +20,27 @@
 # replaces. `exit 0` inside it ends the cycle exactly as it did inline: nothing
 # here runs inside a subshell.
 run_standdown_checks() {
+# --- 1.9 Forge authoring identity (D18 decision 1, agent-ops#607). Resolved
+# first, ahead of every check below that authenticates against GitHub as
+# this cycle — starting with 2.0's own budget probe and 2.0b's credential
+# probe right after it — so both validate the credential this cycle will
+# actually use: the forge authoring App's own minted installation token
+# when configured, or the node's own ambient GH_TOKEN otherwise
+# (lib/forge-auth.sh). Cheap either way — a cache hit costs nothing, and a
+# fresh mint is one HTTPS call, the same cost class as 2.0's own
+# /rate_limit probe two lines down — and never blocking: an absent or
+# broken App credential degrades silently rather than standing the cycle
+# down, so nothing here can turn "the App isn't configured yet" into a
+# stand-down a bare GH_TOKEN would not have hit.
+IFS=$'\t' read -r forge_auth_source forge_auth_gh_token < <(forge_auth_effective_gh_token)
+[[ -n "$forge_auth_gh_token" ]] && export GH_TOKEN="$forge_auth_gh_token"
+log_event "forge-auth" "$(jq -nc --arg s "$forge_auth_source" '{source: $s}')"
+if [[ "$forge_auth_source" == "gh-token-degraded" ]]; then
+  log_event "warning" "$(jq -nc \
+    --arg d "the forge authoring App credential (PULLWRIGHT_AUTHOR_APP_ID/_INSTALLATION_ID/_PRIVATE_KEY_PATH) is configured but no token could be minted this cycle — degraded to GH_TOKEN, exactly as a node with none of the three configured" \
+    '{detail: $d}')"
+fi
+
 # --- 2. Stand-down checks ---
 # 2.0 GitHub API budget (requirement 2.0). First of the stand-down checks
 # because it is the only free one: `GET /rate_limit` is exempt from the limits

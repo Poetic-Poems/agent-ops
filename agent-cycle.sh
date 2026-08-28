@@ -99,10 +99,18 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/merge-budget.sh"
 # shellcheck source=lib/merge-autonomy.sh
 . "$SCRIPT_DIR/lib/merge-autonomy.sh"
+# shellcheck source=lib/github-app-token.sh
+. "$SCRIPT_DIR/lib/github-app-token.sh"
 # shellcheck source=lib/approver-token.sh
 . "$SCRIPT_DIR/lib/approver-token.sh"
 # shellcheck source=lib/approver.sh
 . "$SCRIPT_DIR/lib/approver.sh"
+# shellcheck source=lib/author-token.sh
+. "$SCRIPT_DIR/lib/author-token.sh"
+# shellcheck source=lib/forge-auth.sh
+# Depends on lib/author-token.sh above; called from run_standdown_checks
+# (lib/standdown.sh), ahead of every check that authenticates as this cycle.
+. "$SCRIPT_DIR/lib/forge-auth.sh"
 # shellcheck source=lib/merge-queue.sh
 . "$SCRIPT_DIR/lib/merge-queue.sh"
 # shellcheck source=lib/landing.sh

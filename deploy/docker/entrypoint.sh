@@ -74,17 +74,36 @@ fi
 # those invocations, over an identity they never use. agent-cycle.sh and
 # review-cycle.sh require and configure it themselves, right before a cycle
 # that might actually commit — see lib/git-identity.sh.
-if [[ -n "${GH_TOKEN:-}" ]]; then
-  # Teaches git to use GH_TOKEN for github.com https remotes, which is how the
-  # cycles push their branches — they clone over https into workspace_root and
-  # never see an ssh key.
-  if gh auth setup-git 2>/dev/null; then
-    say "git credential helper configured from GH_TOKEN"
+#
+# The credential helper needs *something* to wire up, not necessarily
+# GH_TOKEN itself: a node carrying only the forge authoring App's identity
+# (PULLWRIGHT_AUTHOR_APP_ID/_INSTALLATION_ID/_PRIVATE_KEY_PATH, D18 decision
+# 1, agent-ops#607) mints one here purely so `gh auth setup-git` has a
+# credential to configure against. This mint is never reused past this setup
+# step — every cycle mints (or reuses its own cache of) a fresh token of its
+# own via lib/forge-auth.sh, which is what every later `git`/`gh` call in a
+# cycle's own process actually authenticates with.
+# shellcheck source=lib/author-token.sh
+. "$APP_DIR/lib/author-token.sh"
+entrypoint_gh_token="${GH_TOKEN:-}"
+if [[ -z "$entrypoint_gh_token" ]] && author_token_credential_present; then
+  entrypoint_gh_token="$(author_token_get "" 2>/dev/null || true)"
+fi
+if [[ -n "$entrypoint_gh_token" ]]; then
+  # Teaches git to use this token for github.com https remotes, which is how
+  # the cycles push their branches — they clone over https into
+  # workspace_root and never see an ssh key.
+  if GH_TOKEN="$entrypoint_gh_token" gh auth setup-git 2>/dev/null; then
+    if [[ -n "${GH_TOKEN:-}" ]]; then
+      say "git credential helper configured from GH_TOKEN"
+    else
+      say "git credential helper configured for the forge authoring App"
+    fi
   else
     say "WARNING: gh auth setup-git failed — pushes will not authenticate"
   fi
 else
-  say "WARNING: GH_TOKEN is unset — this node can read nothing from GitHub and push nothing to it"
+  say "WARNING: neither GH_TOKEN nor the forge authoring App's credentials (PULLWRIGHT_AUTHOR_APP_ID/_INSTALLATION_ID/_PRIVATE_KEY_PATH) are set — this node can read nothing from GitHub and push nothing to it"
 fi
 
 # --- State and workspace ---
