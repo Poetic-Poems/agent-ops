@@ -220,6 +220,14 @@ prefetch_refiner_sources() {
 # (the same startup guard that requires it already refused to run otherwise).
 refiner_repos_json="$ordered_repos_json"
 if [[ -n "$refiner_model" ]]; then
+  # This repository's own resolved report_directory (its override in
+  # project_review.repos, or project_review.defaults' otherwise, requirement
+  # 342) — or, absent from project_review entirely (this repo may not even be
+  # one review-cycle.sh reviews), the same ultimate fallback review-cycle.sh
+  # itself falls back to (issue #761). Computed once, outside the loop: every
+  # repository's own resolved value is a lookup against this, not a fresh
+  # derivation.
+  refiner_project_review_repos_json="$(config_project_review_repos "$DEFAULTED_CONFIG")"
   while IFS=$'\t' read -r rp_slug rp_branch; do
     [[ -n "$rp_slug" ]] || continue
     rp_entry="$(jq -c --arg s "$rp_slug" 'map(select(.slug == $s)) | .[0] // {}' \
@@ -229,7 +237,11 @@ if [[ -n "$refiner_model" ]]; then
     rp_pr='[]'
     if jq -e 'any(.[]; . == "project-review")' <<<"$rp_sources" >/dev/null 2>&1 \
        && [[ "$(refiner_policy_value "project-review" "$refinement_policy_json")" != "exempt" ]]; then
-      rp_pr="$(gather_project_review_candidates "$rp_slug" "$rp_branch")"
+      rp_report_directory="$(jq -r --arg s "$rp_slug" \
+        'map(select(.slug == $s)) | .[0].report_directory // ""' \
+        <<<"$refiner_project_review_repos_json" 2>/dev/null || true)"
+      [[ -n "$rp_report_directory" ]] || rp_report_directory="$REPORT_DIRECTORY_DEFAULT"
+      rp_pr="$(gather_project_review_candidates "$rp_slug" "$rp_branch" "$rp_report_directory")"
     fi
     rp_ip='[]'
     rp_path="$(jq -r '.implementation_plan_path // ""' <<<"$rp_entry" 2>/dev/null || true)"

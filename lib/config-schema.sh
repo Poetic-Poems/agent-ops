@@ -532,6 +532,7 @@ config_project_review_repos() {
         branch_prefix: ($r.branch_prefix // $d.branch_prefix),
         min_days_between_reviews: ($r.min_days_between_reviews // $d.min_days_between_reviews),
         not_before: ($r.not_before // $d.not_before // ""),
+        report_directory: ($r.report_directory // $d.report_directory // ""),
         timeout_review: ($r.timeout_review // $d.timeout_review),
         inactivity_review: ($r.inactivity_review // $d.inactivity_review) } ]
   ' <<<"$defaulted_config" 2>/dev/null || printf '[]'

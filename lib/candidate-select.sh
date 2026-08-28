@@ -1908,9 +1908,9 @@ gather_tech_debt() {
 # `project-review` is not exempt, the same "pay nothing unless it's wanted"
 # rule tech_debt's own pre-fetch already follows for its `sources` gate.
 gather_project_review_candidates() {
-  local slug="$1" branch="$2" out safe
+  local slug="$1" branch="$2" report_directory="${3:-}" out safe
   safe="${slug//\//_}"
-  out="$("$SCRIPT_DIR/scripts/gather-project-review.sh" "$slug" "$branch" \
+  out="$("$SCRIPT_DIR/scripts/gather-project-review.sh" "$slug" "$branch" "$report_directory" \
         2>"$cycle_dir/project-review-candidates-$safe.err" || true)"
   if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
     printf '%s\n' "$out" > "$cycle_dir/project-review-candidates-$safe.json"

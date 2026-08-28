@@ -26,14 +26,17 @@ heading, the Script gives you one JSON object:
   "default_branch": "main",
   "review_date": "2026-07-20",
   "branch": "review/2026-07-20",
-  "pr_label": "project-review"
+  "pr_label": "project-review",
+  "report_dir": "reviews/project-review-2026-07-20"
 }
 ```
 
-Use `review_date` as the review's date **throughout** — the output folder
-`reviews/project-review-<review_date>/`, the branch, and the PR title — so the
-branch, the folder, and the PR all line up. Use `branch` as the branch name and
-`pr_label` as the PR label exactly as given.
+Use `review_date` as the review's date **throughout** — the branch and the PR
+title — and `report_dir` as the output folder, exactly as given: the Script has
+already resolved it (a GNU `date` format string, configurable per repository,
+`docs/REVIEW-PIPELINE-SPEC.md` requirement R4a) — never derive a folder name of
+your own from `review_date`. Use `branch` as the branch name and `pr_label` as
+the PR label exactly as given.
 
 ## Untrusted external content
 
@@ -149,10 +152,9 @@ All target repos follow these rules:
 1. **Run the `project-review` skill, end to end.** Invoke the `project-review`
    skill and follow its workflow to completion against this clone: build the
    project map, review every dimension, consolidate and rate findings, and
-   write the full report set into `reviews/project-review-<review_date>/` (the
-   index `README.md`, `01-summary.md`, `02-findings.md`,
-   `03-recommendations.md`, `04-improvement-prompts.md`, and any annexes it
-   warrants). It is effective to parallelise the dimension reviews across
+   write the full report set into `report_dir` (the index `README.md`,
+   `01-summary.md`, `02-findings.md`, `03-recommendations.md`,
+   `04-improvement-prompts.md`, and any annexes it warrants). It is effective to parallelise the dimension reviews across
    subagents, as the skill describes; keep each subagent on the lowest-cost
    model tier likely to do its slice correctly.
 2. **Update the tech-debt register in place.** Where the review surfaces debt,
@@ -204,17 +206,16 @@ All target repos follow these rules:
      `git push --force-with-lease`, which refuses rather than silently
      overwrites a push you have not seen.
    - Stage **only** the review outputs by explicit path — the new
-     `reviews/project-review-<review_date>/` folder and the `TECH-DEBT.md`
-     change — and commit them. Never `git add -A` (it would sweep in the
+     `report_dir` folder and the `TECH-DEBT.md` change — and commit them. Never `git add -A` (it would sweep in the
      injected skill); never stage `.claude/skills/project-review/`.
    - Open **one** pull request, **ready for review** (not a draft — the review
      is the deliverable; there is no second stage to flip it):
      - Title (Conventional Commits; becomes the squash commit on `main`):
        `docs(review): repository review <review_date>`.
      - Body: a short verdict summary and a link to the review index
-       (`reviews/project-review-<review_date>/README.md`); note that the
-       recommendations feed the implementation pipeline's `tech-debt` source
-       and the `project-remediation` skill. Where step 2 reserved any
+       (`report_dir/README.md`); note that the recommendations feed the
+       implementation pipeline's `tech-debt` source and the
+       `project-remediation` skill. Where step 2 reserved any
        `td/<id>` ids, list every one of them —
        `.github/workflows/release-td-branch.yml` releases each reservation
        automatically once this pull request merges and its record lands on

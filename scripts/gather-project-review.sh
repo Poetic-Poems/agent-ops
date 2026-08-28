@@ -4,7 +4,14 @@
 # repository review's recommendations, for the Refiner
 # (docs/IMPLEMENTATION-PIPELINE-SPEC.md, requirement 3y; TD-PPagop-26081307).
 #
-# Usage: gather-project-review.sh <owner/repo> [default-branch]
+# Usage: gather-project-review.sh <owner/repo> [default-branch] [report-directory-format]
+#
+# report-directory-format is the repository's own resolved
+# project_review.repos[].report_directory (or project_review.defaults', or
+# the pipeline's ultimate fallback) — a GNU date(1) format string, exactly as
+# review-cycle.sh resolves and passes it. Defaults to
+# `reviews/project-review-%Y-%m-%d` — today's layout — so an existing caller
+# passing only the first two arguments is unaffected (issue #761).
 #
 # Prints a JSON array; each entry is one candidate recommendation:
 #
@@ -34,12 +41,12 @@
 #
 # ## Only the most recent review folder
 #
-# `reviews/project-review-YYYY-MM-DD/` folders accumulate one per week; only
-# the latest is ever live, so only it is read (same rule the Co-Ordinator's
-# own live read already applies).
+# Report directories accumulate one per week; only the latest is ever live,
+# so only it is read (same rule the Co-Ordinator's own live read already
+# applies).
 #
 # Degrades to `[]` (exit 0) on any failure, like gather-tech-debt.sh:
-# a repository with no `reviews/` folder at all, or whose latest folder is
+# a repository with no report directory at all, or whose latest one is
 # missing `03-recommendations.md`, contributes `[]` silently — a project
 # without this pipeline stage yet is normal, not an error. A genuine API
 # failure still prints `[]` but is loud on stderr.
@@ -52,11 +59,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # this source to nothing. See lib/github-limit.sh.
 # shellcheck source=lib/github-limit.sh
 . "$SCRIPT_DIR/../lib/github-limit.sh"
+# report_directory_most_recent, for the configurable report_directory
+# (issue #761) — see the file header for what discovery this replaced.
+# shellcheck source=lib/report-directory.sh
+. "$SCRIPT_DIR/../lib/report-directory.sh"
 
 slug="${1:-}"
 default_branch="${2:-main}"
+report_directory_format="${3:-$REPORT_DIRECTORY_DEFAULT}"
 if [[ -z "$slug" ]]; then
-  echo "usage: gather-project-review.sh <owner/repo> [default-branch]" >&2
+  echo "usage: gather-project-review.sh <owner/repo> [default-branch] [report-directory-format]" >&2
   exit 64
 fi
 
@@ -69,10 +81,29 @@ degrade() {
 work="$(mktemp -d)" || degrade "could not create a scratch directory"
 trap 'rm -rf "$work"' EXIT
 
-# One directory listing answers "is there a review at all?" — a repo with
-# none contributes [] silently, the same normal answer gather-tech-debt.sh
-# gives for a missing register.
-listing_json="$(gh api "repos/$slug/contents/reviews?ref=$default_branch" 2>"$work/gh.err")"
+# The same static-prefix fold report_directory_find_dirs applies internally
+# (every leading path segment free of a `%` specifier, joined into one) —
+# duplicated here, rather than left entirely to the library, so this one
+# directory listing can answer "is there a report directory at all?" with the
+# loud-on-real-failure/silent-on-404 distinction the rest of this script
+# already gave every other listing: a repo with none contributes [] silently,
+# the same normal answer gather-tech-debt.sh gives for a missing register,
+# while a genuine API failure still surfaces on stderr. The library's own walk
+# (below) repeats this one call — a second point of network cost this script
+# accepts in exchange for one shared discovery implementation with
+# review-cycle.sh, rather than two that could drift apart.
+IFS='/' read -r -a _rd_segments <<<"$report_directory_format"
+_rd_prefix=""
+_rd_i=0
+while (( _rd_i < ${#_rd_segments[@]} - 1 )) && [[ "${_rd_segments[$_rd_i]}" != *%* ]]; do
+  if [[ -z "$_rd_prefix" ]]; then _rd_prefix="${_rd_segments[$_rd_i]}"; else _rd_prefix+="/${_rd_segments[$_rd_i]}"; fi
+  _rd_i=$(( _rd_i + 1 ))
+done
+if [[ -z "$_rd_prefix" ]]; then
+  listing_json="$(gh api "repos/$slug/contents?ref=$default_branch" 2>"$work/gh.err")"
+else
+  listing_json="$(gh api "repos/$slug/contents/$_rd_prefix?ref=$default_branch" 2>"$work/gh.err")"
+fi
 rc=$?
 if (( rc != 0 )); then
   if [[ "$(jq -r '.status // ""' <<<"$listing_json" 2>/dev/null)" == "404" ]]; then
@@ -84,15 +115,13 @@ if (( rc != 0 )); then
   exit 0
 fi
 
-folder="$(jq -r '[ .[] | select(.type == "dir")
-                       | .name
-                       | select(test("^project-review-[0-9]{4}-[0-9]{2}-[0-9]{2}$")) ]
-                  | sort | last // ""' <<<"$listing_json" 2>/dev/null || true)"
-if [[ -z "$folder" ]]; then
+review_date_and_dir="$(report_directory_most_recent "$slug" "$default_branch" "$report_directory_format" 2>/dev/null)"
+if [[ -z "$review_date_and_dir" ]]; then
   printf '[]\n'
   exit 0
 fi
-review_date="${folder#project-review-}"
+review_date="$(cut -f1 <<<"$review_date_and_dir")"
+report_dir="$(cut -f2 <<<"$review_date_and_dir")"
 
 fetch_file() {  # fetch_file PATH -> decoded content on stdout, "" on 404
   local path="$1" content_json rc
@@ -107,12 +136,12 @@ fetch_file() {  # fetch_file PATH -> decoded content on stdout, "" on 404
   jq -r '.content // ""' <<<"$content_json" 2>/dev/null | tr -d '\n' | base64 -d 2>/dev/null || true
 }
 
-recommendations_md="$(fetch_file "reviews/$folder/03-recommendations.md")"
+recommendations_md="$(fetch_file "$report_dir/03-recommendations.md")"
 if [[ -z "$recommendations_md" ]]; then
   printf '[]\n'
   exit 0
 fi
-prompts_md="$(fetch_file "reviews/$folder/04-improvement-prompts.md")"
+prompts_md="$(fetch_file "$report_dir/04-improvement-prompts.md")"
 
 # Split 03-recommendations.md into one file per `## R-<NN> — …` section,
 # named by the recommendation's own id (the header line's second
@@ -192,7 +221,7 @@ for f in "$recs_dir"/R-*.md; do
   prompt_body="$(fence_body "$prompts_dir/$id.md")"
   entry="$(jq -nc --arg id "$id" --arg ref "$ref" --arg rd "$review_date" \
     --arg title "$title" \
-    --arg url "https://github.com/$slug/blob/$default_branch/reviews/$folder/03-recommendations.md" \
+    --arg url "https://github.com/$slug/blob/$default_branch/$report_dir/03-recommendations.md" \
     --arg body "$body" --arg prompt "$prompt_body" \
     '{source: "project-review", ref: $ref, id: $id, review_date: $rd, title: $title,
       url: $url, body: $body, improvement_prompt: $prompt}')" \

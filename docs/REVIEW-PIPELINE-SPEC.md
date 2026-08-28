@@ -195,6 +195,7 @@ the one long enough for that today.
 | `project_review.defaults.inactivity_review` | *(unset)* | An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog and leaves the backstop as the only cap. |
 | `project_review.defaults.min_days_between_reviews` | `6` | The skip-guard threshold (R4). A repo reviewed within this many days is skipped. Six (not seven) leaves a day of slack, so a review that lands late one week is not pushed a full extra week the next. |
 | `project_review.defaults.not_before` | *(unset)* | Optional. A timestamp before which no review may start (R3.3). Absent or empty means no stand-down; a value `date -d` cannot read stands the pipeline down rather than running through it. Expires by itself, which is why it exists rather than raising `min_days_between_reviews`: a threshold has to be put back by hand, and a cadence left quietly throttled is not noticed for weeks. As `defaults.not_before` it gates the whole cycle before the lock, exactly as a single...[continued below](#extended-notes-project_reviewdefaultsnot_before) |
+| `project_review.defaults.report_directory` | *(unset)* | Optional. The report directory, as a GNU `date`(1) format string resolved with `date -u +"<format>"` relative to the repository root (R4a). Absent, and absent on a repository's own override too, `reviews/project-review-%Y-%m-%d` is used — today's layout, unchanged; the fallback lives in code, not this default, so a schema-only reader sees it as genuinely unset. |
 | `project_review.repos` | `[{"slug": "Poetic-Poems/poetic"}, {"slug": "Poetic-Poems/poetic-fiddle"}]` | The repositories to review. Each entry's `slug` is required; every other key overrides the same-named key in `defaults` for that repository alone (requirement 342), and an entry carrying only `slug` inherits every default. A review has no per-repo work-source structure beyond these overrides. Adding a repo is a config-only change. |
 <!-- config-table:end -->
 
@@ -438,10 +439,9 @@ R4. **Per-repo skip-guard (idempotency; this is how "once a week" is
    - an open pull request labelled with its own resolved `project_review`
      pr_label already exists for it (a review is in-flight or awaiting
      merge); **or**
-   - its default branch already contains a `reviews/project-review-YYYY-MM-DD/`
-     folder dated within the last `min_days_between_reviews` days (its own
-     resolved value) (read best-effort via `gh`, e.g. the contents of
-     `reviews/` on the default branch).
+   - its default branch already contains a report directory (R4a) dated
+     within the last `min_days_between_reviews` days (its own resolved
+     value) (read best-effort via `gh`).
 
    Log `review-skipped` with the reason. This guard is what makes a **daily**
    cron tick safe and preferable to a strict weekly one: the Script only
@@ -449,6 +449,44 @@ R4. **Per-repo skip-guard (idempotency; this is how "once a week" is
    passed, so a tick missed because the machine was asleep simply catches up on
    the next day instead of losing a whole week (compare requirement note that
    "a missed cycle simply waits for the next tick").
+
+R4a. **Report directory (issue #761).** Where a report set (R11) is written,
+   and where R4's own skip-guard and the implementation pipeline's
+   `project-review` Refiner source (`docs/IMPLEMENTATION-PIPELINE-SPEC.md`
+   requirement 3y) look for the most recent one, is a GNU `date`(1) format
+   string, resolved with `date -u +"<format>"` relative to the repository
+   root — never a fixed path. Resolution, per repository (requirement 342's
+   rule): its own `project_review.repos[].report_directory` override when
+   set, else `project_review.defaults.report_directory`, else
+   `reviews/project-review-%Y-%m-%d` — today's layout, fixed in code
+   (`REPORT_DIRECTORY_DEFAULT` in `lib/report-directory.sh`) rather than the
+   schema, so a repository configuring neither key is byte-for-byte
+   unaffected by this requirement's existence. `review-cycle.sh` resolves
+   this once per repository (alongside `model`, `pr_label`, `branch_prefix`
+   and the rest of requirement 342's overridable keys) and passes the
+   resolved directory as `report_dir` in the Reviewer-Agent's runtime input
+   (R5.3) — the prompt writes into `report_dir` exactly as given, never
+   re-deriving a layout of its own.
+
+   Discovering which of a format string's past instances already exist —
+   needed by R4's skip-guard and by `gather-project-review.sh` — cannot
+   reuse a single hardcoded pattern the way the fixed layout could, because
+   an installation's format string can place its date component anywhere in
+   the path. `lib/report-directory.sh` answers it generically: fold every
+   leading path segment free of a `%` specifier into one static prefix (the
+   common case — the whole dynamic part is the format's final segment, as
+   both the shipped default and every example in the issue are shaped —
+   costs exactly the one directory listing the fixed layout always made),
+   list it, and match the remaining segment(s) against a regular expression
+   built from the format string's own specifiers; then find which day each
+   surviving candidate belongs to not by parsing its name back into a date,
+   but by resolving the format string for each of the last 400 days and
+   checking whether that resolved string is one of the candidates — every
+   check a local `date` call, no further network cost. Both `review-cycle.sh`
+   and `agent-cycle.sh` (via `lib/eligibility.sh`'s Refiner pre-fetch, which
+   passes the resolved directory to `gather-project-review.sh` as its third
+   argument) resolve through this one shared implementation, so the two
+   pipelines cannot discover two different answers for the same repository.
 
 R5. **Per non-skipped repo** (processed **sequentially**, so a failure of one
    never blocks the other and only one heavy `claude` runs at a time):
@@ -651,9 +689,10 @@ R10. **Obey the repo.** Runs inside the clone. First reads the repo's
    `npm run check` whitespace gate, etc.).
 
 R11. **Run the skill end-to-end.** Invoke the vendored `project-review` skill
-   and follow it to completion: produce the `reviews/project-review-YYYY-MM-DD/`
-   report set (index, summary, findings, recommendations, improvement prompts)
-   and update the tech-debt register **in place**. The injected skill under
+   and follow it to completion: produce the report set (index, summary,
+   findings, recommendations, improvement prompts) in `report_dir` — the
+   directory the runtime input names (R4a) — and update the tech-debt
+   register **in place**. The injected skill under
    `.claude/skills/project-review/` is *tooling staged for this run*, **not**
    part of the repository under review: exclude it from the review's scope and
    findings, and never `git add` it (R5b also git-excludes it as a backstop).
@@ -813,9 +852,11 @@ a pull request, run the ones the change touches and any it could regress.
 3. A second invocation while the review lock is held exits without acting; and
    while the implementation `lock.json` is held by a live process, the Review
    Script stands down.
-4. Skip-guard: with a `reviews/project-review-<today>/` folder present on a
-   repo's default branch (or an open `project-review`-labelled PR for it), that
-   repo is skipped, and the `min_days_between_reviews` boundary is respected.
+4. Skip-guard: with today's report directory present on a repo's default
+   branch — `reviews/project-review-<today>/` under the shipped fallback, or
+   whatever that repo's own resolved `report_directory` names (R4a) — (or an
+   open `project-review`-labelled PR for it), that repo is skipped, and the
+   `min_days_between_reviews` boundary is respected.
 4b. **The role guard stands this pipeline down too (R2b).** `test/role.test.sh`
    passes: a `review-cycle.sh` with `AGENT_OPS_ROLE` unset or standby exits 0
    with one line and writes nothing under `state_dir`, while `--dry-run` runs
@@ -878,6 +919,24 @@ a pull request, run the ones the change touches and any it could regress.
    quietly stayed cycle-wide passes every other assertion in that file and
    fails only this one, and the failure it stands for is a repository nobody
    asked to hold being held by its neighbour's date.
+4g. **The report directory is configurable, and unset is unchanged (R4a).**
+   `test/report-directory.test.sh` passes: against a stubbed `gh`,
+   `report_directory_find_dirs` discovers a format string's existing
+   instances — folding a leading static segment (`docs/`) into the one
+   listing the fixed layout always made, and still resolving a format whose
+   date component sits in a middle segment — and
+   `report_directory_most_recent` names the latest of them with its own date,
+   printing nothing where none exist. `report_directory_regex` escapes
+   literal regex metacharacters in a format's surrounding text and degrades
+   an unrecognised specifier to a wildcard rather than failing.
+   `test/config-schema.test.sh` covers the resolution: a repository's own
+   `report_directory` wins over `project_review.defaults`', absent it
+   inherits, and absent from both it resolves empty rather than fabricated —
+   which is what leaves `REPORT_DIRECTORY_DEFAULT` the single fallback.
+   Check the unset case against a test that names no directory of its own:
+   `test/gather-project-review.test.sh` passes **unmodified**, which is what
+   proves an installation configuring neither key reads and writes exactly
+   the paths it did before this requirement existed.
 5. **Injected-skill isolation:** after a real `--once --repo poetic` run, the
    review PR's diff contains the new `reviews/...` folder and the `tech-debt/`
    change but **not** `.claude/skills/project-review/` — confirm the injected

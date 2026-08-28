@@ -83,6 +83,12 @@ SKILL_SRC="$SCRIPT_DIR/.claude/skills/project-review"
 . "$SCRIPT_DIR/lib/labels.sh"
 # shellcheck source=lib/pipeline-marker.sh
 . "$SCRIPT_DIR/lib/pipeline-marker.sh"
+# shellcheck source=lib/report-directory.sh
+# REPORT_DIRECTORY_DEFAULT (the ultimate report_directory fallback, issue
+# #761) is defined here — shared with agent-cycle.sh's own use through
+# lib/eligibility.sh, so the two pipelines cannot fall back to two different
+# layouts.
+. "$SCRIPT_DIR/lib/report-directory.sh"
 
 # --- Flags ---
 DRY_RUN=0
@@ -159,8 +165,9 @@ cfg_json() { jq -c "$1" <<<"$DEFAULTED_CONFIG"; }
 state_dir="$(expand_home "$(cfg '.state_dir')")"
 workspace_root="$(expand_home "$(cfg '.workspace_root')")"
 # Every per-repository tunable (model, pr_label, branch_prefix,
-# min_days_between_reviews, not_before, timeout_review, inactivity_review) is
-# resolved once here, against project_review.defaults and each repository's
+# min_days_between_reviews, not_before, report_directory, timeout_review,
+# inactivity_review) is resolved once here, against project_review.defaults
+# and each repository's
 # own override in project_review.repos — lib/config-schema.sh's
 # config_project_review_repos is the one implementation, shared with
 # scripts/doctor.sh, so the two scripts cannot resolve the same repository two
@@ -724,7 +731,7 @@ fi
 # — passed in rather than read off a global, since none of them is
 # installation-wide any more.
 skip_reason() {
-  local slug="$1" default_branch="$2" pr_label="$3" min_days="$4" not_before="$5" \
+  local slug="$1" default_branch="$2" pr_label="$3" min_days="$4" not_before="$5" report_directory="$6" \
         open_prs recent_date days not_before_epoch now_epoch
   # A repository's own `not_before` (its override, or project_review.defaults'
   # own value — the same one already checked once, cycle-wide, before the lock
@@ -753,7 +760,7 @@ skip_reason() {
     printf 'an open %s PR already exists' "$pr_label"
     return 0
   fi
-  recent_date="$(most_recent_review_date "$slug" "$default_branch")"
+  recent_date="$(most_recent_review_date "$slug" "$default_branch" "$report_directory")"
   if [[ -n "$recent_date" ]]; then
     days="$(days_since "$recent_date")"
     if [[ "$days" =~ ^[0-9]+$ ]] && (( days < min_days )); then
@@ -764,14 +771,18 @@ skip_reason() {
   return 0
 }
 
-# Most recent reviews/project-review-YYYY-MM-DD folder on the default branch, as
-# a bare YYYY-MM-DD (or empty). 404 (no reviews/ dir) degrades to empty.
+# Most recent report directory's own date on the default branch, as a bare
+# YYYY-MM-DD (or empty) — REPORT_DIRECTORY (this repository's own resolved
+# report_directory, or REPORT_DIRECTORY_DEFAULT when neither it nor
+# project_review.defaults.report_directory is configured) is a GNU date(1)
+# format string; lib/report-directory.sh resolves which of its past instances
+# exist on the default branch. Degrades to empty on any discovery failure
+# (no report directory ever written, an unreadable repository), the same as
+# the fixed-layout lookup this generalises.
 most_recent_review_date() {
-  local slug="$1" default_branch="$2"
-  gh api "repos/$slug/contents/reviews?ref=$default_branch" --jq '.[].name' 2>/dev/null \
-    | grep -oE 'project-review-[0-9]{4}-[0-9]{2}-[0-9]{2}' \
-    | sed 's/^project-review-//' \
-    | sort | tail -n1 || true
+  local slug="$1" default_branch="$2" report_directory="${3:-$REPORT_DIRECTORY_DEFAULT}"
+  [[ -n "$report_directory" ]] || report_directory="$REPORT_DIRECTORY_DEFAULT"
+  report_directory_most_recent "$slug" "$default_branch" "$report_directory" | cut -f1
 }
 
 days_since() {
@@ -784,23 +795,27 @@ days_since() {
 
 # Resolve default branch + skip decision for each repo up front. `entry`
 # already carries this repository's own resolved model, pr_label,
-# branch_prefix, min_days_between_reviews, not_before, timeout_review and
-# inactivity_review (project_review_repos_json above) — review_one reads them
-# straight off `to_review_json` rather than re-deriving anything.
+# branch_prefix, min_days_between_reviews, not_before, report_directory,
+# timeout_review and inactivity_review (project_review_repos_json above) —
+# review_one reads them straight off `to_review_json` rather than
+# re-deriving anything.
 to_review_json="[]"
 while IFS= read -r entry; do
   slug="$(jq -r '.slug' <<<"$entry")"
   entry_pr_label="$(jq -r '.pr_label' <<<"$entry")"
   entry_min_days="$(jq -r '.min_days_between_reviews' <<<"$entry")"
   entry_not_before="$(jq -r '.not_before // ""' <<<"$entry")"
+  entry_report_directory="$(jq -r '.report_directory // ""' <<<"$entry")"
+  [[ -n "$entry_report_directory" ]] || entry_report_directory="$REPORT_DIRECTORY_DEFAULT"
   default_branch="$(gh api "repos/$slug" --jq '.default_branch' 2>/dev/null || echo "main")"
-  reason="$(skip_reason "$slug" "$default_branch" "$entry_pr_label" "$entry_min_days" "$entry_not_before")"
+  reason="$(skip_reason "$slug" "$default_branch" "$entry_pr_label" "$entry_min_days" "$entry_not_before" "$entry_report_directory")"
   if [[ -n "$reason" ]]; then
     log_event "review-skipped" "$(jq -nc --arg r "$slug" --arg d "$reason" '{repo: $r, detail: $d}')"
     (( ONCE || DRY_RUN )) && echo "skip $slug — $reason"
     continue
   fi
-  full_entry="$(jq -c --arg db "$default_branch" '. + {default_branch: $db}' <<<"$entry")"
+  full_entry="$(jq -c --arg db "$default_branch" --arg rd "$entry_report_directory" \
+    '. + {default_branch: $db, report_directory: $rd}' <<<"$entry")"
   to_review_json="$(jq -c --argjson e "$full_entry" '. + [$e]' <<<"$to_review_json")"
   (( ONCE || DRY_RUN )) && echo "review $slug (base $default_branch)"
 done < <(jq -c '.[]' <<<"$repos_json")
@@ -841,7 +856,7 @@ release_review_claim() {
 
 review_one() {
   local entry="$1"
-  local slug default_branch model pr_label branch_prefix
+  local slug default_branch model pr_label branch_prefix report_directory_format report_dir
   slug="$(jq -r '.slug' <<<"$entry")"
   default_branch="$(jq -r '.default_branch' <<<"$entry")"
   # This repository's own resolved settings (requirement 342) — its override
@@ -851,6 +866,14 @@ review_one() {
   model="$(resolve_model_id "$(jq -r '.model_key' <<<"$entry")" "$(jq -r '.model' <<<"$entry")")"
   pr_label="$(jq -r '.pr_label' <<<"$entry")"
   branch_prefix="$(jq -r '.branch_prefix' <<<"$entry")"
+  # `entry.report_directory` is already fallback-applied (the pre-loop
+  # resolution above), so this is a straight read, not a re-derivation.
+  report_directory_format="$(jq -r '.report_directory' <<<"$entry")"
+  # Derived from review_date (pinned once at script start), never a fresh
+  # `date -u` call here: repos are reviewed sequentially and a run can cross
+  # midnight UTC, which would otherwise write a later repo's report set into
+  # a folder dated a day after its own branch, claim and PR title.
+  report_dir="$(date -u -d "$review_date" +"$report_directory_format")"
 
   local safe branch out_file result status_json pr_url rc claim_rc
 
@@ -941,8 +964,8 @@ review_one() {
 
   local reviewer_input
   reviewer_input="$(jq -nc --arg repo "$slug" --arg db "$default_branch" --arg date "$review_date" \
-    --arg branch "$branch" --arg label "$pr_label" \
-    '{repo: $repo, default_branch: $db, review_date: $date, branch: $branch, pr_label: $label}')"
+    --arg branch "$branch" --arg label "$pr_label" --arg report_dir "$report_dir" \
+    '{repo: $repo, default_branch: $db, review_date: $date, branch: $branch, pr_label: $label, report_dir: $report_dir}')"
   local reviewer_prompt
   reviewer_prompt="$(cat "$PROMPTS_DIR/project-reviewer.md")
 
