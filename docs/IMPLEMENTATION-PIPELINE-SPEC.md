@@ -2802,7 +2802,7 @@ implements.
    blocked → Enabler → escalation ladder that covers item failures never
    sees it — and the cycle still ends 0, so the dashboard shows a healthy
    idle fleet. When such a failure is deterministic and ships in the image,
-   every node fails identically every hour and the record diverges
+   every node fails identically, cycle after cycle, and the record diverges
    completely from reality: the 2026-08-01 argv-cap outage ran ~15 hours ×
    4 nodes before a human noticed, and nothing in the system would ever
    have said so. So the Script reads the one signal that class does leave.
@@ -6743,7 +6743,7 @@ implements.
     repo-then-source walk: any selectable `abandoned_drafts` candidate in any repo
     is taken before any fresh work in a more-overdue repo. A previous cycle already
     implemented most of the work behind that draft, so finishing beats starting;
-    and every hour it sits stalled it holds a back-pressure slot that throttles new
+    and every cycle it sits stalled it holds a back-pressure slot that throttles new
     work fleet-wide. As with review-feedback, the Co-Ordinator must **not** apply
     requirement 16's claim exclusion to this source — the open draft PR *is* the
     item, and the pre-fetch (requirement 3e) has already established it is stale
@@ -9167,9 +9167,9 @@ implements.
     - The Co-Ordinator may *create* voids (requirement 18) for candidates it
       can see conclusively are already done, and should: that is one cheap read
       instead of a full Implementer run reaching the same answer. Creating is
-      safe where clearing is not — a wrong unvoid costs a cycle every hour until
-      someone notices — but it is not free, and requirement 34d is what makes it
-      safe enough to keep.
+      safe where clearing is not — a wrong unvoid costs a full cycle, cycle after
+      cycle, until someone notices — but it is not free, and requirement 34d is
+      what makes it safe enough to keep.
 34d. **Every `item-void` a stage writes is corroborated before it is made
     permanent.** `void_guard_reason` in `lib/void-guard.sh` is the one
     entry point the Co-Ordinator (requirement 18), the Enabler (requirement
@@ -19413,7 +19413,7 @@ requirements above, which state only what is.
   re-stamps that date to push time with no review of its own having occurred,
   which silently satisfied the comparison on PR #205 (agent-ops#239). That
   single clause is the difference between a source that converges and one
-  that re-fixes the same PR every hour forever while looking productive.
+  that re-fixes the same PR cycle after cycle, for ever, while looking productive.
 - **The switch is one shared, expiring file** (requirement 2.3). Shared because
   the hazard is an agent editing the agent-ops tree, and *both* pipelines run
   out of that tree and source the same `lib/` — a per-pipeline switch would let
