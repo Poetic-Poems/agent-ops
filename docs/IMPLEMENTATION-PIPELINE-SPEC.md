@@ -740,8 +740,8 @@ and the schema must carry every one of them.
 | `state_dir` | `~/.local/state/poetic-agents` | Lock, shared log, per-cycle stage transcripts. |
 | `workspace_root` | `~/.cache/poetic-agents/workspaces` | Ephemeral clones live and die here, including the state repository's mirror. |
 | `state_repo` | `Poetic-Poems/agent-ops-state` | The private repository through which `state_dir` replicates between nodes (requirement 2.5). Its `main` carries the small shared surface: the claim registry (requirement 17a) and the fleet flags `fleet/disabled.json` and `fleet/limit.json` (requirements 2.3a and 2.1). Unset means a single-node operation: every mode of `scripts/state-sync.sh` becomes a no-op, and the fleet-flag reads and writes quietly do nothing. |
-| `cycles_retained` | *(unset)* | Cycle directories kept in the replicated mirror — bounds a repository that is force-pushed after every cycle. A span of history, not a literal cycle count (requirement 1d): derived from the worst-case gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`) to hold the ~8.3 days 200 cycles represented at the historical hourly cadence; a configured value floors the derivation rather than replacing it, the same shape `lock_stale_after`...[continued below](#extended-notes-cycles_retained) |
-| `state_local_cycles_retained` | *(unset)* | Cycle and review directories the node's *own* `state_dir` keeps; the same push that replicates prunes to it (requirement 2.5). Deliberately far above `cycles_retained`, so the local machine is always the longer record, with a floor of one protecting the cycle being recorded. A span of history, not a literal cycle count (requirement 1d): derived from the worst-case gap between cycles to hold the ~41.7 days 1000 cycles represented at the historical hourly cadence; a configured...[continued below](#extended-notes-state_local_cycles_retained) |
+| `cycles_retained` | *(unset)* | Cycle directories kept in the replicated mirror — bounds a repository that is force-pushed after every cycle. A span of history, not a literal cycle count (requirement 1d): derived from the mean gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`) to hold the ~8.3 days 200 cycles represented at the historical hourly cadence; a configured value floors the derivation rather than replacing it, the same shape `lock_stale_after` (requirement...[continued below](#extended-notes-cycles_retained) |
+| `state_local_cycles_retained` | *(unset)* | Cycle and review directories the node's *own* `state_dir` keeps; the same push that replicates prunes to it (requirement 2.5). Deliberately far above `cycles_retained`, so the local machine is always the longer record, with a floor of one protecting the cycle being recorded. A span of history, not a literal cycle count (requirement 1d): derived from the mean gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`) to hold the ~41.7 days 1000...[continued below](#extended-notes-state_local_cycles_retained) |
 | `state_local_streams_retained` | *(unset)* | Cycle and review directories whose derived files are kept — the stage event streams (`<stage>.stream.jsonl`, requirement 4d) and the fleet-log snapshot (`.fleet-log.jsonl`, requirement 2.5); the push that replicates prunes to it (requirement 2.5). Far below `state_local_cycles_retained` because each is a different order of size from the record holding it — a cycle directory without them is kilobytes, one Reviewer stream megabytes, one snapshot the whole fleet's history to...[continued below](#extended-notes-state_local_streams_retained) |
 | `log_retained_bytes` | `2000000` | Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `doctor.log`, `revert-rate.log`, `cron.log` and `review-cron.log` (requirement 2.6). `log.jsonl`, `review-log.jsonl` and `revert-rate.jsonl` are never rotated regardless of size. `ROTATE_LOGS_RETAINED_BYTES` overrides it for tests. |
 | `log_generations` | `3` | Rotated generations of each log kept beside the live file (`<name>.1` … `<name>.<log_generations>`), floored at one. `ROTATE_LOGS_GENERATIONS` overrides it for tests. |
@@ -892,15 +892,15 @@ Every optional key sits on the repository's own entry, beside `slug` and `source
 
 ### Extended notes: `cycles_retained`
 
-Cycle directories kept in the replicated mirror — bounds a repository that is force-pushed after every cycle. A span of history, not a literal cycle count (requirement 1d): derived from the worst-case gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`) to hold the ~8.3 days 200 cycles represented at the historical hourly cadence; a configured value floors the derivation rather than replacing it, the same shape `lock_stale_after` (requirement 4f) already uses. The node's own `state_dir` is bounded by `state_local_cycles_retained` instead. At the shipped 15-minute cadence this raises the derived count 200 → 800; see `state_local_streams_retained`'s own note for what that fourfold rise costs in practice.
+Cycle directories kept in the replicated mirror — bounds a repository that is force-pushed after every cycle. A span of history, not a literal cycle count (requirement 1d): derived from the mean gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`) to hold the ~8.3 days 200 cycles represented at the historical hourly cadence; a configured value floors the derivation rather than replacing it, the same shape `lock_stale_after` (requirement 4f) already uses. The mean gap, not the worst-case one the hour-valued keys take: a directory is written per firing, so a restricted `cycle_hours` must widen the four thresholds and leave this window alone rather than collapsing it. The node's own `state_dir` is bounded by `state_local_cycles_retained` instead. At the shipped 15-minute cadence this raises the derived count 200 → 800; see `state_local_streams_retained`'s own note for what that fourfold rise costs in practice.
 
 ### Extended notes: `state_local_cycles_retained`
 
-Cycle and review directories the node's *own* `state_dir` keeps; the same push that replicates prunes to it (requirement 2.5). Deliberately far above `cycles_retained`, so the local machine is always the longer record, with a floor of one protecting the cycle being recorded. A span of history, not a literal cycle count (requirement 1d): derived from the worst-case gap between cycles to hold the ~41.7 days 1000 cycles represented at the historical hourly cadence; a configured value floors the derivation rather than replacing it. `STATE_SYNC_LOCAL_RETAINED` overrides it for tests. At the shipped 15-minute cadence this raises the derived count 1000 → 4000 — each retained cycle directory without its large derived files (`state_local_streams_retained` bounds those separately) is a handful of kilobytes of JSON, so the practical local-disk cost of this rise alone is on the order of tens of megabytes; see `state_local_streams_retained`'s own note for the one of these three keys whose volume is worth quantifying more precisely.
+Cycle and review directories the node's *own* `state_dir` keeps; the same push that replicates prunes to it (requirement 2.5). Deliberately far above `cycles_retained`, so the local machine is always the longer record, with a floor of one protecting the cycle being recorded. A span of history, not a literal cycle count (requirement 1d): derived from the mean gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`) to hold the ~41.7 days 1000 cycles represented at the historical hourly cadence; a configured value floors the derivation rather than replacing it. `STATE_SYNC_LOCAL_RETAINED` overrides it for tests. At the shipped 15-minute cadence this raises the derived count 1000 → 4000 — each retained cycle directory without its large derived files (`state_local_streams_retained` bounds those separately) is a handful of kilobytes of JSON, so the practical local-disk cost of this rise alone is on the order of tens of megabytes; see `state_local_streams_retained`'s own note for the one of these three keys whose volume is worth quantifying more precisely.
 
 ### Extended notes: `state_local_streams_retained`
 
-Cycle and review directories whose derived files are kept — the stage event streams (`<stage>.stream.jsonl`, requirement 4d) and the fleet-log snapshot (`.fleet-log.jsonl`, requirement 2.5); the push that replicates prunes to it (requirement 2.5). Far below `state_local_cycles_retained` because each is a different order of size from the record holding it — a cycle directory without them is kilobytes, one Reviewer stream megabytes, one snapshot the whole fleet's history to that moment — so they go early and their records stay. Neither reaches the state repository. A span of history, not a literal cycle count (requirement 1d): derived from the worst-case gap between cycles to hold the ~2.1 days 50 cycles represented at the historical hourly cadence; a configured value floors the derivation rather than replacing it. `STATE_SYNC_STREAMS_RETAINED` overrides it for tests. At the shipped 15-minute cadence this raises the derived count 50 → 200 (TD-PPagop-26082830) — the one of these three keys worth quantifying rather than only ratioed, since it alone bounds files this large: with each retained cycle's stream-plus-snapshot pair running from under a megabyte to several megabytes on an ordinary cycle (`scripts/state-sync.sh`'s own 'megabytes' figure), 200 retained cycles is an order-of-magnitude estimate of low hundreds of megabytes on a busy repository, against `cycles_retained`'s and `state_local_cycles_retained`'s tens of megabytes each — not a measurement of any live node's actual `state_dir`, which is what would replace this estimate with a real baseline, but still well inside `min_free_workspace_bytes`'s 2 GiB pre-clone floor, the one check a derivation raising this key could actually trip.
+Cycle and review directories whose derived files are kept — the stage event streams (`<stage>.stream.jsonl`, requirement 4d) and the fleet-log snapshot (`.fleet-log.jsonl`, requirement 2.5); the push that replicates prunes to it (requirement 2.5). Far below `state_local_cycles_retained` because each is a different order of size from the record holding it — a cycle directory without them is kilobytes, one Reviewer stream megabytes, one snapshot the whole fleet's history to that moment — so they go early and their records stay. Neither reaches the state repository. A span of history, not a literal cycle count (requirement 1d): derived from the mean gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`) to hold the ~2.1 days 50 cycles represented at the historical hourly cadence; a configured value floors the derivation rather than replacing it. `STATE_SYNC_STREAMS_RETAINED` overrides it for tests. At the shipped 15-minute cadence this raises the derived count 50 → 200 (TD-PPagop-26082830) — the one of these three keys worth quantifying rather than only ratioed, since it alone bounds files this large: with each retained cycle's stream-plus-snapshot pair running from under a megabyte to several megabytes on an ordinary cycle (`scripts/state-sync.sh`'s own 'megabytes' figure), 200 retained cycles is an order-of-magnitude estimate of low hundreds of megabytes on a busy repository, against `cycles_retained`'s and `state_local_cycles_retained`'s tens of megabytes each — not a measurement of any live node's actual `state_dir`, which is what would replace this estimate with a real baseline, but still well inside `min_free_workspace_bytes`'s 2 GiB pre-clone floor, the one check a derivation raising this key could actually trip.
 
 ### Extended notes: `escalation_autonomy`
 
@@ -1499,9 +1499,13 @@ implements.
 
    `config_defaults` (requirement 1b) is where the fix lives, as a
    post-fill derivation over the same merged object every one of its
-   callers already reads — no reader needed to change. It resolves a
-   **worst-case gap between cycles**, in minutes, from the already-defaulted
-   `schedule` block: `cycle_hours` (a cron hour field — `*`, `*/N`, `a-b`,
+   callers already reads — no reader needed to change. It resolves **two
+   gaps between cycles**, both in minutes, from the already-defaulted
+   `schedule` block, and the two shapes of key below take one each.
+
+   The **worst-case gap** — the longest an installation can go between two
+   firings, which is what a threshold that must outlast a quiet stretch is
+   sized against: `cycle_hours` (a cron hour field — `*`, `*/N`, `a-b`,
    `a-b/N` and plain numbers, comma-combined) contributes the longest run of
    consecutive disallowed hours, circularly, times 60; `cycle_interval_minutes`
    and `excluded_minutes` contribute the widest gap between two kept firings
@@ -1520,17 +1524,29 @@ implements.
    `cycle_hours` would risk: a `claim_ttl_hours` sized to the bare interval
    expiring a live node's claim overnight.
 
+   The **mean gap** — a day divided by the number of firings in it, which is
+   what a *count* of retained cycle directories is sized against: every
+   allowed hour repeats the identical kept-minute pattern, so the firings are
+   the allowed hours times the kept minutes within one, and the mean gap is
+   `1440 / firings_per_day`. It equals the worst-case gap for any
+   installation that has restricted neither `cycle_hours` nor
+   `excluded_minutes`, and only where they part company does the distinction
+   bite — see the count-valued keys below for why the worst-case gap is the
+   wrong denominator there.
+
    The derivation validates none of the three `schedule` leaves it reads,
    because `config_defaults` validates nothing (requirement 1b): a
    wrong-typed or unparseable one degrades to the historical hourly
-   assumption — the longest gap, so the conservative answer for the four
-   hour-valued keys — rather than raising an error that would abandon the
+   assumption, under which both gaps are 60 minutes — the longest gap, so
+   the conservative answer for the four hour-valued keys, and the flat count
+   each of the three count-valued keys carried before this requirement —
+   rather than raising an error that would abandon the
    merge and hand every caller an empty configuration. `scripts/doctor.sh` is
    why that distinction matters: the tool whose job is to report exactly such
    a violation reads a defaulted config to do it, so the derivation must
    survive the configurations it is run to diagnose.
 
-   Two shapes of key are re-expressed against that gap, both keeping the
+   Two shapes of key are re-expressed against these gaps, both keeping the
    key's *name*, *type* and *unit* unchanged — this is a derivation, not the
    breaking rename a `claim_ttl_cycles` would be:
 
@@ -1551,11 +1567,22 @@ implements.
      `cycles_retained` (200), `state_local_cycles_retained` (1000) and
      `state_local_streams_retained` (50) each bounded roughly how many
      *days* of history a fleet running hourly kept, not literally that many
-     cycle directories. Absent, each is now `ceil(N * 60 / gap_minutes)`,
-     preserving the same wall-clock span (~8.3 days, ~41.7 days and ~2.1 days
-     respectively) as the gap between cycles moves, rather than letting a
-     faster cadence quietly shrink the retained window fourfold the way a
-     flat count already had. `crash_loop_after` is the fourth key issue
+     cycle directories. Absent, each is now
+     `ceil(N * 60 / mean_gap_minutes)`, preserving the same wall-clock span
+     (~8.3 days, ~41.7 days and ~2.1 days respectively) as the gap between
+     cycles moves, rather than letting a faster cadence quietly shrink the
+     retained window fourfold the way a flat count already had. Against the
+     **mean** gap, not the worst-case one the four hour-valued keys take: a
+     cycle directory is written per firing, so how many of them a span holds
+     follows how often this installation fires, not how long its longest
+     quiet stretch is. The two coincide unless `cycle_hours` disallows an
+     hour or `excluded_minutes` drops a reachable occurrence, and where they
+     part company only the mean preserves the window: a `9-17` installation
+     firing every 15 minutes fires 36 times a day (a mean gap of 40 minutes)
+     and so keeps 300 cycle directories, where the worst-case gap of 915
+     minutes would keep 14 — about three hours of history in place of eight
+     days, and fewer than the flat 200 this derivation replaced.
+     `crash_loop_after` is the fourth key issue
      #591's audit considered under this same "counted in cycles already"
      heading and decided *against* deriving: its four carries the
      count of *consecutive failures* before a crash-loop escalation fires,

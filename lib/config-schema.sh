@@ -447,13 +447,43 @@ config_defaults() {
           else gap_for_start($starts[0]; $interval; $excluded)
           end;
 
-    # The worst-case gap, in minutes, between two implementation-cycle
-    # firings this installation'\''s `schedule` can produce — the quantity
-    # every key below is actually sized against, not
-    # `cycle_interval_minutes` alone (requirement 1d). Hours `cycle_hours`
-    # excludes contribute whole 60-minute penalties on top of the ordinary
-    # per-hour gap, which already accounts for `excluded_minutes` dropping a
-    # would-be firing rather than shifting it.
+    # How many implementation-cycle firings this `schedule` produces in a
+    # day. Every allowed hour repeats the identical kept-minute pattern
+    # (`cycle_minute` restarts the grid each hour), so it is one hour'\''s worth
+    # times the number of allowed hours. An empty allowed set is
+    # `parse_cycle_hours`'\''s own "no restriction assumed" degradation, and a
+    # base minute always keeps at least its own firing; both are floored so
+    # that the mean gap below can never divide by zero.
+    def firings_per_day($allowed; $interval; $excluded):
+        (if ($allowed | length) == 0 then 24 else ($allowed | length) end) as $allowed_hours
+        | ([range(0;60)] - $excluded) as $starts
+        | (if ($starts | length) == 0 then 1
+           else ([1, (kept_minutes($starts[0]; $interval; $excluded) | unique | length)] | max)
+           end) as $per_hour
+        | $allowed_hours * $per_hour;
+
+    # The two gaps, in minutes, between implementation-cycle firings this
+    # installation'\''s `schedule` can produce. Neither is
+    # `cycle_interval_minutes` alone (requirement 1d), and the keys below take
+    # one each, because they are sized against different quantities:
+    #
+    #   `worst` — the longest an installation can go between two firings.
+    #     Hours `cycle_hours` excludes contribute whole 60-minute penalties on
+    #     top of the ordinary per-hour gap, which already accounts for
+    #     `excluded_minutes` dropping a would-be firing rather than shifting
+    #     it. This is what a threshold that must outlast a quiet stretch is
+    #     sized against (`hour_key`).
+    #   `mean` — a day divided by the number of firings in it. This is what a
+    #     *count* of retained cycle directories is sized against
+    #     (`count_key`): directories accrue at the installation'\''s throughput,
+    #     so the wall-clock span a count covers follows the average gap, not
+    #     the longest one. Sizing a retention count against `worst` would
+    #     shrink the window exactly where `cycle_hours` is most restrictive —
+    #     a `9-17` installation firing every 15 minutes would keep 14 cycle
+    #     directories, some three hours of the eight days `cycles_retained`
+    #     means to hold. The two coincide whenever `cycle_hours` allows every
+    #     hour and `excluded_minutes` drops no reachable occurrence, which is
+    #     every installation that has not restricted its schedule.
     #
     # Each of the three inputs is taken only when it is the type this
     # arithmetic needs, for the reason the whole function already gives: this
@@ -464,9 +494,10 @@ config_defaults() {
     # violation) with an empty configuration rather than a defaulted one. A
     # wrong-typed field therefore degrades the same way an unparseable
     # `cycle_hours` token does: to the historical hourly assumption these
-    # keys carried before this requirement, which is the longest gap and so
-    # the conservative answer for the four hour-valued keys.
-    def cadence_gap_minutes($sched):
+    # keys carried before this requirement, under which both gaps are 60
+    # minutes — the longest gap, and so the conservative answer for the four
+    # hour-valued keys.
+    def cadence_gaps($sched):
         (if ($sched | type) == "object" then $sched else {} end) as $s
         | (if ($s.cycle_hours | type) == "string" then $s.cycle_hours else "*" end) as $hours
         | (if ($s.cycle_interval_minutes | type) == "number" and $s.cycle_interval_minutes > 0
@@ -475,10 +506,15 @@ config_defaults() {
            then ($s.excluded_minutes | map(select(type == "number"))) else [] end) as $excluded
         | (parse_cycle_hours($hours)) as $allowed
         | ((max_disallowed_hours_run($allowed) * 60)) as $hour_penalty
-        | $hour_penalty + worst_minute_gap($interval; $excluded);
+        | {
+            worst: ($hour_penalty + worst_minute_gap($interval; $excluded)),
+            mean: (1440 / firings_per_day($allowed; $interval; $excluded))
+          };
 
     fill($root; .) as $filled
-    | cadence_gap_minutes($filled.schedule) as $gap_min
+    | cadence_gaps($filled.schedule) as $gaps
+    | $gaps.worst as $gap_min
+    | $gaps.mean as $mean_gap_min
 
     # A hours-valued key'\''s intent, before this requirement, was always "N
     # cycles" expressed as though a cycle were an hour long; derived is that
@@ -505,12 +541,17 @@ config_defaults() {
     # A count-valued key'\''s intent is a span of wall-clock history, not a
     # literal number of cycle directories; derived keeps that span constant
     # as the gap between cycles moves, rounding up so the window is never
-    # shorter than intended. Same floor shape as `hour_key`: a configured
-    # count can still be *raised* by the derivation, never lowered.
+    # shorter than intended. Against the *mean* gap, not the worst one
+    # `hour_key` takes: a directory is written per firing, so how many of them
+    # a given span holds follows how often this installation fires, and
+    # `worst` would make the window collapse under exactly the restricted
+    # `cycle_hours` that widens it (see `cadence_gaps`). Same floor shape as
+    # `hour_key`: a configured count can still be *raised* by the derivation,
+    # never lowered.
     def count_key($key; $base_cycles):
         (getpath([$key])) as $cfg
         | (if ($cfg | type) == "number" then $cfg else 0 end) as $floor
-        | ([$floor, (($base_cycles * 60 / $gap_min) | ceil)] | max);
+        | ([$floor, (($base_cycles * 60 / $mean_gap_min) | ceil)] | max);
 
     # `none_selected_recheck_hours` alone carries a "0 disables the valve"
     # convention (`minimum: 0`, not `exclusiveMinimum`) — an explicit 0 must

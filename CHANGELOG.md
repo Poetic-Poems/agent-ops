@@ -1605,7 +1605,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   past the bare interval), and `cycles_retained`,
   `state_local_cycles_retained` and `state_local_streams_retained` hold their
   wall-clock retention window constant as that cadence moves rather than
-  quietly shrinking it. `crash_loop_after`'s intent is a literal count of
+  quietly shrinking it. The four thresholds take the *worst-case* gap between
+  firings, since each has to outlast a quiet stretch; the three retention
+  counts take the *mean* gap, since a cycle directory is written per firing —
+  a distinction that matters only where `cycle_hours` or `excluded_minutes`
+  restrict the schedule, and there it is the difference between a `9-17`,
+  15-minute installation keeping the 300 cycle directories its ~8.3-day
+  window means and keeping 14. `crash_loop_after`'s intent is a literal count of
   consecutive failures, not a span of history, so it is unaffected and keeps
   its plain default. None of the seven carries a schema `default` any more —
   absent, each is derived; a configured value is a floor under the

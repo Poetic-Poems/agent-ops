@@ -478,6 +478,33 @@ assert_cadence_cmp "...and abandoned_draft_after_hours too" \
   '.schedule.cycle_interval_minutes = 15 | .schedule.cycle_hours = "9-17"' \
   '$b.abandoned_draft_after_hours > $a.abandoned_draft_after_hours'
 
+# ...and the same restriction must *not* shrink the count-valued keys, which
+# are sized against the mean gap between firings rather than the worst one:
+# a cycle directory is written per firing, so the wall-clock span a count
+# covers follows how often this installation fires. The same 9-17, 15-minute
+# schedule fires 9 x 4 = 36 times a day — a mean gap of 40 minutes — so
+# cycles_retained derives 200 * 60 / 40 = 300, holding the same ~8.3 days a
+# flat 200 held at the historical hourly cadence, and the other two scale
+# with it. Against the worst gap (915 min: the 15-hour overnight run plus one
+# interval) the same key would derive 14, about three hours of history, which
+# is both shorter than the window it means to hold and shorter than the flat
+# count it replaced.
+assert_defaults "a restricted schedule.cycle_hours holds the count-valued keys' window rather than shrinking it" \
+  '.schedule.cycle_hours = "9-17" | .schedule.cycle_interval_minutes = 15 | .schedule.excluded_minutes = []
+   | del(.cycles_retained, .state_local_cycles_retained, .state_local_streams_retained)' \
+  '.cycles_retained == 300 and .state_local_cycles_retained == 1500
+   and .state_local_streams_retained == 75'
+# An excluded minute that drops a reachable occurrence is the other way the
+# two gaps part company, and it moves the count keys the same way: excluding
+# every quarter-hour but the base minute leaves one firing an hour, so the
+# mean gap is 60 minutes and cycles_retained derives its historical 200 —
+# not the 400 the bare 30-minute interval would suggest.
+assert_defaults "schedule.excluded_minutes dropping occurrences lowers the derived counts to match" \
+  '.schedule.cycle_hours = "*" | .schedule.cycle_interval_minutes = 30
+   | .schedule.excluded_minutes = [30]
+   | del(.cycles_retained)' \
+  '.cycles_retained == 200'
+
 # Acceptance 5 (TD-PPagop-26082829): claim_ttl_hours and
 # abandoned_draft_after_hours each bound a cycle's own worst-case *runtime*
 # (do_gc sweeps a live claim's registry entry past claim_ttl_hours;
