@@ -265,7 +265,7 @@ config_schema_errors() {
 # 1c calls "one defined home": every existing reader of this function's
 # output — `lib/claim.sh`, `agent-cycle.sh`, the gatherers — keeps working
 # unchanged, because what it reads is still a plain resolved number, just no
-# longer a cadence-blind one. See requirement 1c for the formula and why it
+# longer a cadence-blind one. See requirement 1d for the formula and why it
 # reads `schedule.cycle_hours` and `schedule.excluded_minutes` as well as
 # `schedule.cycle_interval_minutes`.
 config_defaults() {
@@ -318,7 +318,7 @@ config_defaults() {
             $v
           end;
 
-    # --- Requirement 1c: cadence-derived timings ---
+    # --- Requirement 1d: cadence-derived timings ---
     #
     # A cron hour field (`schedule.cycle_hours`) into the set of hours 0..23
     # it allows: `*` (all), `*/N` (every Nth hour), `a-b` and `a-b/N` (an
@@ -417,7 +417,7 @@ config_defaults() {
     # The worst-case gap, in minutes, between two implementation-cycle
     # firings this installation'\''s `schedule` can produce — the quantity
     # every key below is actually sized against, not
-    # `cycle_interval_minutes` alone (requirement 1c). Hours `cycle_hours`
+    # `cycle_interval_minutes` alone (requirement 1d). Hours `cycle_hours`
     # excludes contribute whole 60-minute penalties on top of the ordinary
     # per-hour gap, which already accounts for `excluded_minutes` dropping a
     # would-be firing rather than shifting it.

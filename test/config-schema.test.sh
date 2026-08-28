@@ -345,7 +345,7 @@ assert_defaults "no project_review per-repo override is fabricated into a repos 
 assert_defaults "config_defaults performs no schema validation of its own" \
   '.pr_labell = "x"' '.pr_labell == "x"'
 
-# --- Requirement 1c: cadence-derived timings ---
+# --- Requirement 1d: cadence-derived timings ---
 #
 # CADENCE_BASE_MUTATION clears every one of the seven cadence-derived keys
 # (so each fixture below is a pure "absent, let it derive" case) and pins an
@@ -445,7 +445,7 @@ assert_defaults "an explicit 0 for none_selected_recheck_hours stays 0, never ra
 # Acceptance 4: an installation with schedule.cycle_hours restricted to
 # business hours (9 allowed hours; 15 disallowed hours, 18-8, between them)
 # derives claim and abandoned-draft thresholds longer than the bare interval
-# alone implies — the overnight-expiry failure requirement 1c's own
+# alone implies — the overnight-expiry failure requirement 1d's own
 # implementation note names.
 # shellcheck disable=SC2016  # jq's $a/$b, not the shell's.
 assert_cadence_cmp "restricted schedule.cycle_hours derives claim_ttl_hours longer than the bare interval implies" \
@@ -1127,7 +1127,7 @@ assert_not_contains "doctor never reports merge_autonomy as a documented-value m
 # A key with no `x-docs.value` at all, one whose `x-docs.value` is an object
 # keyed readme/spec (the two documents assert different things there — there
 # is no single value to check the live config against), and one with no
-# schema `default` to differ from in the first place (requirement 1c's seven
+# schema `default` to differ from in the first place (requirement 1d's seven
 # derived keys are all of that third shape) are each skipped without error
 # even when set far from what is documented.
 jq '.log_generations = 99 | .cycles_retained = 999999 | .approver_app_id = "999999999"
@@ -1136,7 +1136,7 @@ jq '.log_generations = 99 | .cycles_retained = 999999 | .approver_app_id = "9999
 skip_out="$(bash "$SCRIPT_DIR/scripts/doctor.sh" --offline --config "$tmp/c.json" 2>&1)"
 assert_not_contains "a key with no x-docs.value is never reported (log_generations)" \
   "log_generations is documented" "$skip_out"
-assert_not_contains "a key with no schema default is never reported (cycles_retained, requirement 1c)" \
+assert_not_contains "a key with no schema default is never reported (cycles_retained, requirement 1d)" \
   "cycles_retained is documented" "$skip_out"
 assert_not_contains "a key whose x-docs.value is an object keyed readme/spec is never reported (approver_app_id)" \
   "approver_app_id is documented" "$skip_out"

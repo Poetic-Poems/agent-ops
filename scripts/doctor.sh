@@ -555,7 +555,7 @@ done < <(jq -r '.[] | [.slug, (.pr_label // "")] | @tsv' <<<"$project_review_rep
 
 # cycles_retained and state_local_cycles_retained are both resolved by
 # config_defaults — derived from the cadence when absent, floored by whatever
-# the config sets (requirement 1c) — so both are numbers here whether or not
+# the config sets (requirement 1d) — so both are numbers here whether or not
 # config.json mentions them; the `0` is pure arithmetic safety against a
 # config that failed validation above and reached here with a non-numeric
 # value, not a restatement of either resolved value.

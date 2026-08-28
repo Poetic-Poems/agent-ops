@@ -106,7 +106,7 @@ limit_parse_human_reset() {
 # it must never do is present the guess as a deadline — see `reset_known`
 # below.
 #
-# Independent of `schedule.cycle_interval_minutes` (requirement 1c): bounded
+# Independent of `schedule.cycle_interval_minutes` (requirement 1d): bounded
 # by the account provider's own weekly/monthly reset clock, not this
 # installation's cadence.
 LIMIT_LONG_COOLDOWN_HOURS=24

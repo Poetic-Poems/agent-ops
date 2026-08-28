@@ -72,7 +72,7 @@ git init --quiet --bare --initial-branch=main "$remote"
 # --- A node ------------------------------------------------------------------
 # Each node is a HOME: config.json's state_dir and workspace_root are
 # ~-relative, so a throwaway home is a throwaway node.
-# cycles_retained (requirement 1c) is no longer a literal in config.json — it
+# cycles_retained (requirement 1d) is no longer a literal in config.json — it
 # derives from schedule.cycle_interval_minutes — so the effective value this
 # test asserts against has to be resolved the same way scripts/state-sync.sh
 # itself resolves it, not read off the raw file.

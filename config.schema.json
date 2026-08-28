@@ -266,12 +266,12 @@
       }
     },
     "cycles_retained": {
-      "description": "Cycle directories kept in the replicated mirror, bounding a repository that is force-pushed after every cycle. A span of history, not a literal count (requirement 1c): absent, it is derived from `schedule.cycle_interval_minutes` (and `cycle_hours`/`excluded_minutes`) to hold the same ~8.3 days 200 cycles was sized for at the historical hourly cadence; a configured value is a floor under that derivation, never a ceiling, so it can still be raised by a faster cadence but never lowered by one.",
+      "description": "Cycle directories kept in the replicated mirror, bounding a repository that is force-pushed after every cycle. A span of history, not a literal count (requirement 1d): absent, it is derived from `schedule.cycle_interval_minutes` (and `cycle_hours`/`excluded_minutes`) to hold the same ~8.3 days 200 cycles was sized for at the historical hourly cadence; a configured value is a floor under that derivation, never a ceiling, so it can still be raised by a faster cadence but never lowered by one.",
       "type": "integer",
       "minimum": 1,
       "x-docs": {
-        "readme": "Cycle directories kept in the replicated copy — bounds disk use, derived from `schedule.cycle_interval_minutes` to hold ~8.3 days of history regardless of cadence (requirement 1c); a configured value floors it, never caps it. Your own `state_dir` is not pruned.",
-        "spec": "Cycle directories kept in the replicated mirror — bounds a repository that is force-pushed after every cycle. A span of history, not a literal cycle count (requirement 1c): derived from the worst-case gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`) to hold the ~8.3 days 200 cycles represented at the historical hourly cadence; a configured value floors the derivation rather than replacing it, the same shape `lock_stale_after` (requirement 4f) already uses. The node's own `state_dir` is bounded by `state_local_cycles_retained` instead.",
+        "readme": "Cycle directories kept in the replicated copy — bounds disk use, derived from `schedule.cycle_interval_minutes` to hold ~8.3 days of history regardless of cadence (requirement 1d); a configured value floors it, never caps it. Your own `state_dir` is not pruned.",
+        "spec": "Cycle directories kept in the replicated mirror — bounds a repository that is force-pushed after every cycle. A span of history, not a literal cycle count (requirement 1d): derived from the worst-case gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`) to hold the ~8.3 days 200 cycles represented at the historical hourly cadence; a configured value floors the derivation rather than replacing it, the same shape `lock_stale_after` (requirement 4f) already uses. The node's own `state_dir` is bounded by `state_local_cycles_retained` instead.",
         "value": {
           "readme": "*(unset)*",
           "spec": "*(unset)*"
@@ -279,11 +279,11 @@
       }
     },
     "state_local_cycles_retained": {
-      "description": "Cycle and review directories the node's own `state_dir` keeps; the same push that replicates prunes to it. Deliberately far above `cycles_retained`, so the local machine is always the longer record. A span of history, not a literal count (requirement 1c): absent, it is derived from `schedule.cycle_interval_minutes` to hold the same ~41.7 days 1000 cycles was sized for at the historical hourly cadence; a configured value is a floor under that derivation, never a ceiling.",
+      "description": "Cycle and review directories the node's own `state_dir` keeps; the same push that replicates prunes to it. Deliberately far above `cycles_retained`, so the local machine is always the longer record. A span of history, not a literal count (requirement 1d): absent, it is derived from `schedule.cycle_interval_minutes` to hold the same ~41.7 days 1000 cycles was sized for at the historical hourly cadence; a configured value is a floor under that derivation, never a ceiling.",
       "type": "integer",
       "minimum": 1,
       "x-docs": {
-        "spec": "Cycle and review directories the node's *own* `state_dir` keeps; the same push that replicates prunes to it (requirement 2.5). Deliberately far above `cycles_retained`, so the local machine is always the longer record, with a floor of one protecting the cycle being recorded. A span of history, not a literal cycle count (requirement 1c): derived from the worst-case gap between cycles to hold the ~41.7 days 1000 cycles represented at the historical hourly cadence; a configured value floors the derivation rather than replacing it. `STATE_SYNC_LOCAL_RETAINED` overrides it for tests.",
+        "spec": "Cycle and review directories the node's *own* `state_dir` keeps; the same push that replicates prunes to it (requirement 2.5). Deliberately far above `cycles_retained`, so the local machine is always the longer record, with a floor of one protecting the cycle being recorded. A span of history, not a literal cycle count (requirement 1d): derived from the worst-case gap between cycles to hold the ~41.7 days 1000 cycles represented at the historical hourly cadence; a configured value floors the derivation rather than replacing it. `STATE_SYNC_LOCAL_RETAINED` overrides it for tests.",
         "value": {
           "readme": "*(unset)*",
           "spec": "*(unset)*"
@@ -291,12 +291,12 @@
       }
     },
     "state_local_streams_retained": {
-      "description": "Cycle and review directories whose derived files (the stage event streams `*.stream.jsonl` and the fleet-log snapshot `.fleet-log.jsonl`) the node keeps. Far below state_local_cycles_retained because each is orders of magnitude larger than the record holding it; the records themselves are unaffected. A span of history, not a literal count (requirement 1c): absent, it is derived from `schedule.cycle_interval_minutes` to hold the same ~2.1 days 50 cycles was sized for at the historical hourly cadence; a configured value is a floor under that derivation, never a ceiling.",
+      "description": "Cycle and review directories whose derived files (the stage event streams `*.stream.jsonl` and the fleet-log snapshot `.fleet-log.jsonl`) the node keeps. Far below state_local_cycles_retained because each is orders of magnitude larger than the record holding it; the records themselves are unaffected. A span of history, not a literal count (requirement 1d): absent, it is derived from `schedule.cycle_interval_minutes` to hold the same ~2.1 days 50 cycles was sized for at the historical hourly cadence; a configured value is a floor under that derivation, never a ceiling.",
       "type": "integer",
       "minimum": 1,
       "x-docs": {
-        "readme": "Cycle and review directories whose derived files are kept — the stage event streams (`<stage>.stream.jsonl`) and the fleet-log snapshot (`.fleet-log.jsonl`). Both are large and local-only — never replicated — so they are bounded well below `state_local_cycles_retained`; the records themselves are untouched. Derived from `schedule.cycle_interval_minutes` to hold ~2.1 days regardless of cadence (requirement 1c); a configured value floors it, never caps it.",
-        "spec": "Cycle and review directories whose derived files are kept — the stage event streams (`<stage>.stream.jsonl`, requirement 4d) and the fleet-log snapshot (`.fleet-log.jsonl`, requirement 2.5); the push that replicates prunes to it (requirement 2.5). Far below `state_local_cycles_retained` because each is a different order of size from the record holding it — a cycle directory without them is kilobytes, one Reviewer stream megabytes, one snapshot the whole fleet's history to that moment — so they go early and their records stay. Neither reaches the state repository. A span of history, not a literal cycle count (requirement 1c): derived from the worst-case gap between cycles to hold the ~2.1 days 50 cycles represented at the historical hourly cadence; a configured value floors the derivation rather than replacing it. `STATE_SYNC_STREAMS_RETAINED` overrides it for tests.",
+        "readme": "Cycle and review directories whose derived files are kept — the stage event streams (`<stage>.stream.jsonl`) and the fleet-log snapshot (`.fleet-log.jsonl`). Both are large and local-only — never replicated — so they are bounded well below `state_local_cycles_retained`; the records themselves are untouched. Derived from `schedule.cycle_interval_minutes` to hold ~2.1 days regardless of cadence (requirement 1d); a configured value floors it, never caps it.",
+        "spec": "Cycle and review directories whose derived files are kept — the stage event streams (`<stage>.stream.jsonl`, requirement 4d) and the fleet-log snapshot (`.fleet-log.jsonl`, requirement 2.5); the push that replicates prunes to it (requirement 2.5). Far below `state_local_cycles_retained` because each is a different order of size from the record holding it — a cycle directory without them is kilobytes, one Reviewer stream megabytes, one snapshot the whole fleet's history to that moment — so they go early and their records stay. Neither reaches the state repository. A span of history, not a literal cycle count (requirement 1d): derived from the worst-case gap between cycles to hold the ~2.1 days 50 cycles represented at the historical hourly cadence; a configured value floors the derivation rather than replacing it. `STATE_SYNC_STREAMS_RETAINED` overrides it for tests.",
         "value": {
           "readme": "*(unset)*",
           "spec": "*(unset)*"
@@ -304,7 +304,7 @@
       }
     },
     "log_retained_bytes": {
-      "description": "Size at which scripts/rotate-logs.sh rotates dashboard.log, state-sync.log, doctor.log, revert-rate.log, cron.log and review-cron.log. log.jsonl, review-log.jsonl and revert-rate.jsonl are never rotated regardless of size. Independent of `schedule.cycle_interval_minutes` (requirement 1c): rotation triggers on size, which self-corrects regardless of how often the log is written to.",
+      "description": "Size at which scripts/rotate-logs.sh rotates dashboard.log, state-sync.log, doctor.log, revert-rate.log, cron.log and review-cron.log. log.jsonl, review-log.jsonl and revert-rate.jsonl are never rotated regardless of size. Independent of `schedule.cycle_interval_minutes` (requirement 1d): rotation triggers on size, which self-corrects regardless of how often the log is written to.",
       "type": "integer",
       "minimum": 1,
       "default": 2000000,
@@ -457,7 +457,7 @@
       }
     },
     "enabler_recheck_hours": {
-      "description": "How long after an examination the Enabler may examine the same item again. 0 disables re-examination. Independent of `schedule.cycle_interval_minutes` (requirement 1c): it measures human-world time — how long before a person is expected to have re-looked at a blocked item — which does not shrink because the pipeline itself runs more often.",
+      "description": "How long after an examination the Enabler may examine the same item again. 0 disables re-examination. Independent of `schedule.cycle_interval_minutes` (requirement 1d): it measures human-world time — how long before a person is expected to have re-looked at a blocked item — which does not shrink because the pipeline itself runs more often.",
       "type": "number",
       "minimum": 0,
       "default": 72,
@@ -645,7 +645,7 @@
       }
     },
     "void_retire_after_days": {
-      "description": "How old a fully-actioned void (its GitHub object closed, or its register row read resolved/not-debt) must be before it is dropped from the extract. 0 disables retirement. Independent of `schedule.cycle_interval_minutes` (requirement 1c): it measures human-world time — how long a voided item stays worth a human reopening — which does not shrink because the pipeline itself runs more often.",
+      "description": "How old a fully-actioned void (its GitHub object closed, or its register row read resolved/not-debt) must be before it is dropped from the extract. 0 disables retirement. Independent of `schedule.cycle_interval_minutes` (requirement 1d): it measures human-world time — how long a voided item stays worth a human reopening — which does not shrink because the pipeline itself runs more often.",
       "type": "integer",
       "minimum": 0,
       "default": 30,
@@ -756,12 +756,12 @@
       }
     },
     "claim_ttl_hours": {
-      "description": "Age beyond which lib/claim.sh sweeps a claim-registry entry. Set it far beyond a whole cycle, so only a dead node's claim ever expires. \"A whole cycle\" is 6 cadence firings, not a literal count of hours (requirement 1c): absent, it is derived from schedule.cycle_interval_minutes (and cycle_hours/excluded_minutes) so it stays 6 firings wide at whatever cadence is configured; a configured value is a floor under that derivation, never a ceiling.",
+      "description": "Age beyond which lib/claim.sh sweeps a claim-registry entry. Set it far beyond a whole cycle, so only a dead node's claim ever expires. \"A whole cycle\" is 6 cadence firings, not a literal count of hours (requirement 1d): absent, it is derived from schedule.cycle_interval_minutes (and cycle_hours/excluded_minutes) so it stays 6 firings wide at whatever cadence is configured; a configured value is a floor under that derivation, never a ceiling.",
       "type": "number",
       "exclusiveMinimum": 0,
       "x-docs": {
-        "readme": "Hours before a dead node's claim-registry entry is swept (`lib/claim.sh gc`) — derived from `schedule.cycle_interval_minutes` to stay 6 firings wide at whatever cadence is configured (requirement 1c); a configured value floors it, never caps it.",
-        "spec": "Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry — far beyond a whole cycle, so only a dead node's claim ever expires. \"A whole cycle\" means 6 cadence firings (requirement 1c), not a fixed 6 h: derived from the worst-case gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`); a configured value floors the derivation rather than replacing it, the same shape `lock_stale_after` (requirement 4f) already uses. The branch itself is deleted only if untouched and PR-less.",
+        "readme": "Hours before a dead node's claim-registry entry is swept (`lib/claim.sh gc`) — derived from `schedule.cycle_interval_minutes` to stay 6 firings wide at whatever cadence is configured (requirement 1d); a configured value floors it, never caps it.",
+        "spec": "Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry — far beyond a whole cycle, so only a dead node's claim ever expires. \"A whole cycle\" means 6 cadence firings (requirement 1d), not a fixed 6 h: derived from the worst-case gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`); a configured value floors the derivation rather than replacing it, the same shape `lock_stale_after` (requirement 4f) already uses. The branch itself is deleted only if untouched and PR-less.",
         "value": {
           "readme": "*(unset)*",
           "spec": "*(unset)*"
@@ -769,13 +769,13 @@
       }
     },
     "abandoned_draft_after_hours": {
-      "description": "How long a draft pull request this system raised may sit without real activity before it counts as abandoned and finishing it becomes selectable work. Beyond a whole cycle, so a draft merely being worked never qualifies. \"A whole cycle\" is 4 cadence firings, not a literal count of hours (requirement 1c): absent, it is derived from schedule.cycle_interval_minutes (and cycle_hours/excluded_minutes) so it stays 4 firings wide at whatever cadence is configured; a configured value is a floor under that derivation, never a ceiling.",
+      "description": "How long a draft pull request this system raised may sit without real activity before it counts as abandoned and finishing it becomes selectable work. Beyond a whole cycle, so a draft merely being worked never qualifies. \"A whole cycle\" is 4 cadence firings, not a literal count of hours (requirement 1d): absent, it is derived from schedule.cycle_interval_minutes (and cycle_hours/excluded_minutes) so it stays 4 firings wide at whatever cadence is configured; a configured value is a floor under that derivation, never a ceiling.",
       "type": "number",
       "exclusiveMinimum": 0,
       "x-docs": {
-        "readme": "Hours a draft PR this system raised may sit untouched before it counts as abandoned and finishing it becomes selectable work (the `abandoned-drafts` source) — derived from `schedule.cycle_interval_minutes` to stay 4 firings wide at whatever cadence is configured (requirement 1c); a configured value floors it, never caps it. Also the staleness threshold `scripts/sweep-orphan-branches.sh` uses.",
+        "readme": "Hours a draft PR this system raised may sit untouched before it counts as abandoned and finishing it becomes selectable work (the `abandoned-drafts` source) — derived from `schedule.cycle_interval_minutes` to stay 4 firings wide at whatever cadence is configured (requirement 1d); a configured value floors it, never caps it. Also the staleness threshold `scripts/sweep-orphan-branches.sh` uses.",
         "spec": [
-          "How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. \"A whole cycle\" means 4 cadence firings (requirement 1c), not a fixed number of hours: derived from the worst-case gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`); a configured value floors the derivation rather than replacing it.",
+          "How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. \"A whole cycle\" means 4 cadence firings (requirement 1d), not a fixed number of hours: derived from the worst-case gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`); a configured value floors the derivation rather than replacing it.",
           "Raised 3 h → 4 h (cycles, at the historical hourly cadence) alongside the interim timeout raises of #203, which took a worst-case Implementer-plus-Reviewer cycle to 180 minutes and would otherwise have left this threshold no margin at all."
         ],
         "value": {
@@ -785,7 +785,7 @@
       }
     },
     "human_nudge_idle_hours": {
-      "description": "Hours an approved, green, mergeable pull request this system raised may sit with nothing further to do before scripts/sweep-human-visibility.sh posts a one-time nudge comment. 0 disables the nudge (the live review request keeps being ensured regardless). Independent of `schedule.cycle_interval_minutes` (requirement 1c): it measures human-world time — how long before a person is expected to have looked at an idle, ready pull request — which does not shrink because the pipeline itself runs more often.",
+      "description": "Hours an approved, green, mergeable pull request this system raised may sit with nothing further to do before scripts/sweep-human-visibility.sh posts a one-time nudge comment. 0 disables the nudge (the live review request keeps being ensured regardless). Independent of `schedule.cycle_interval_minutes` (requirement 1d): it measures human-world time — how long before a person is expected to have looked at an idle, ready pull request — which does not shrink because the pipeline itself runs more often.",
       "type": "number",
       "minimum": 0,
       "default": 24,
@@ -799,7 +799,7 @@
       }
     },
     "merge_queue_dequeue_notice_max_age_hours": {
-      "description": "Hours a merge-queue-dequeue notice comment (requirement 38f) may still fire for after the removal event's own dequeued_at. Bounds the notice to genuinely new information, so a removal event that predates this feature is not read as fresh merely because a sweep is only now seeing it for the first time. 0 disables the notice entirely — a repository running without a merge queue loses the only human signal for a merge-group failure and should say so explicitly rather than via a near-zero value. Independent of `schedule.cycle_interval_minutes` (requirement 1c): it bounds a notice to genuinely new information for a human, which does not shrink because the pipeline itself runs more often.",
+      "description": "Hours a merge-queue-dequeue notice comment (requirement 38f) may still fire for after the removal event's own dequeued_at. Bounds the notice to genuinely new information, so a removal event that predates this feature is not read as fresh merely because a sweep is only now seeing it for the first time. 0 disables the notice entirely — a repository running without a merge queue loses the only human signal for a merge-group failure and should say so explicitly rather than via a near-zero value. Independent of `schedule.cycle_interval_minutes` (requirement 1d): it bounds a notice to genuinely new information for a human, which does not shrink because the pipeline itself runs more often.",
       "type": "number",
       "minimum": 0,
       "default": 24,
@@ -931,7 +931,7 @@
       }
     },
     "crash_loop_after": {
-      "description": "Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. 0 disables both checks. A literal count of consecutive failures, not a span of history (requirement 1c): the count is the whole of its intent, so it is not derived from `schedule.cycle_interval_minutes` — a faster cadence reaching that count sooner is the point of a faster cadence, not a defect in the count.",
+      "description": "Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. 0 disables both checks. A literal count of consecutive failures, not a span of history (requirement 1d): the count is the whole of its intent, so it is not derived from `schedule.cycle_interval_minutes` — a faster cadence reaching that count sooner is the point of a faster cadence, not a defect in the count.",
       "type": "integer",
       "minimum": 0,
       "default": 0,
@@ -1111,7 +1111,7 @@
       }
     },
     "lock_stale_after": {
-      "description": "A floor, in hours, under the derived staleness threshold for a held cycle lock. Omit it: the threshold is derived from the backstops in force plus slack. Requirement 1c's audit already answers the roadmap's \"lock staleness\" candidate: independent of `schedule.cycle_interval_minutes` by construction, since a stuck lock must outlast a cycle's own worst-case runtime (the stage backstops summed above), not the scheduling interval between cycle starts.",
+      "description": "A floor, in hours, under the derived staleness threshold for a held cycle lock. Omit it: the threshold is derived from the backstops in force plus slack. Requirement 1d's audit already answers the roadmap's \"lock staleness\" candidate: independent of `schedule.cycle_interval_minutes` by construction, since a stuck lock must outlast a cycle's own worst-case runtime (the stage backstops summed above), not the scheduling interval between cycle starts.",
       "type": "number",
       "exclusiveMinimum": 0,
       "x-docs": {
@@ -1141,13 +1141,13 @@
           "default": 20
         },
         "window_days": {
-          "description": "How far back the derivation looks. Independent of `schedule.cycle_interval_minutes` (requirement 1c): a statistical window over runs, which a faster cadence fills with more data without changing what the window means.",
+          "description": "How far back the derivation looks. Independent of `schedule.cycle_interval_minutes` (requirement 1d): a statistical window over runs, which a faster cadence fills with more data without changing what the window means.",
           "type": "integer",
           "minimum": 1,
           "default": 30
         },
         "window_runs": {
-          "description": "How many runs per cell the derivation looks at, whatever the window holds. Independent of `schedule.cycle_interval_minutes` (requirement 1c): a statistical window over runs, which a faster cadence fills with more data without changing what the window means.",
+          "description": "How many runs per cell the derivation looks at, whatever the window holds. Independent of `schedule.cycle_interval_minutes` (requirement 1d): a statistical window over runs, which a faster cadence fills with more data without changing what the window means.",
           "type": "integer",
           "minimum": 1,
           "default": 200
@@ -1204,7 +1204,7 @@
       }
     },
     "limit_escalate_after_hours": {
-      "description": "Hours an automatic usage-limit stand-down may run, aged from the first limit-hit of the current freeze, before the Script files an escalation issue (label `enabler_escalation_label`, assignee `enabler_assignee`, in `crash_loop_repo`). 0 turns the escalation off. Manual stand-downs never escalate. Independent of `schedule.cycle_interval_minutes` (requirement 1c): bounded by the account provider's own reset clock, not this installation's cadence.",
+      "description": "Hours an automatic usage-limit stand-down may run, aged from the first limit-hit of the current freeze, before the Script files an escalation issue (label `enabler_escalation_label`, assignee `enabler_assignee`, in `crash_loop_repo`). 0 turns the escalation off. Manual stand-downs never escalate. Independent of `schedule.cycle_interval_minutes` (requirement 1d): bounded by the account provider's own reset clock, not this installation's cadence.",
       "type": "number",
       "minimum": 0,
       "default": 24,
@@ -1269,12 +1269,12 @@
       }
     },
     "disable_default_ttl": {
-      "description": "Hours `--disable` lasts when `--for` does not say. Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one. \"A few cycles\" is 4 cadence firings, not a literal count of hours (requirement 1c): absent, it is derived from schedule.cycle_interval_minutes (and cycle_hours/excluded_minutes) so it stays 4 firings wide at whatever cadence is configured; a configured value is a floor under that derivation, never a ceiling.",
+      "description": "Hours `--disable` lasts when `--for` does not say. Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one. \"A few cycles\" is 4 cadence firings, not a literal count of hours (requirement 1d): absent, it is derived from schedule.cycle_interval_minutes (and cycle_hours/excluded_minutes) so it stays 4 firings wide at whatever cadence is configured; a configured value is a floor under that derivation, never a ceiling.",
       "type": "number",
       "exclusiveMinimum": 0,
       "x-docs": {
-        "readme": "Hours. How long `--disable` lasts when neither `--for` nor `--until` says, derived from `schedule.cycle_interval_minutes` to stay 4 firings wide at whatever cadence is configured (requirement 1c); a configured value floors it, never caps it. See [Pausing the pipelines](#pausing-the-pipelines).",
-        "spec": "How long `--disable` lasts when neither `--for` nor `--until` says (requirement 2.3). Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one. \"A few cycles\" means 4 cadence firings (requirement 1c), not a fixed 4 h: derived from the worst-case gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`); a configured value floors the derivation rather than replacing it.",
+        "readme": "Hours. How long `--disable` lasts when neither `--for` nor `--until` says, derived from `schedule.cycle_interval_minutes` to stay 4 firings wide at whatever cadence is configured (requirement 1d); a configured value floors it, never caps it. See [Pausing the pipelines](#pausing-the-pipelines).",
+        "spec": "How long `--disable` lasts when neither `--for` nor `--until` says (requirement 2.3). Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one. \"A few cycles\" means 4 cadence firings (requirement 1d), not a fixed 4 h: derived from the worst-case gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`); a configured value floors the derivation rather than replacing it.",
         "value": {
           "readme": "*(unset)*",
           "spec": "*(unset)*"
@@ -1282,12 +1282,12 @@
       }
     },
     "none_selected_recheck_hours": {
-      "description": "The no-op short-circuit's safety valve: the Co-Ordinator is engaged regardless once the last `none-selected` is this old, even if nothing changed. 0 disables the valve — don't. \"This old\" is 24 cadence firings, not a literal count of hours (requirement 1c): absent, it is derived from schedule.cycle_interval_minutes (and cycle_hours/excluded_minutes) so it stays 24 firings wide at whatever cadence is configured; a configured non-zero value is a floor under that derivation, never a ceiling. An explicit 0 is never raised by the derivation — it disables the valve outright, exactly as configured.",
+      "description": "The no-op short-circuit's safety valve: the Co-Ordinator is engaged regardless once the last `none-selected` is this old, even if nothing changed. 0 disables the valve — don't. \"This old\" is 24 cadence firings, not a literal count of hours (requirement 1d): absent, it is derived from schedule.cycle_interval_minutes (and cycle_hours/excluded_minutes) so it stays 24 firings wide at whatever cadence is configured; a configured non-zero value is a floor under that derivation, never a ceiling. An explicit 0 is never raised by the derivation — it disables the valve outright, exactly as configured.",
       "type": "number",
       "minimum": 0,
       "x-docs": {
-        "readme": "Hours. The Co-Ordinator is engaged at least this often even when nothing has changed — derived from `schedule.cycle_interval_minutes` to stay 24 firings wide at whatever cadence is configured (requirement 1c); a configured non-zero value floors it, never caps it. See [Skipping no-op cycles](#skipping-no-op-cycles). `0` disables that safety net entirely — not recommended — and is never raised by the derivation.",
-        "spec": "The no-op short-circuit's safety valve (requirement 3b): the Co-Ordinator is engaged regardless once the last `none-selected` is this old, even if nothing changed. Bounds how long a gap in fingerprint coverage can stall the pipeline. \"This old\" means 24 cadence firings (requirement 1c), not a fixed 24 h: derived from the worst-case gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`); a configured non-zero value floors the derivation rather than replacing it. `0` disables the valve — don't — and, unlike a non-zero override, is never raised by the derivation: the valve stays off exactly as configured.",
+        "readme": "Hours. The Co-Ordinator is engaged at least this often even when nothing has changed — derived from `schedule.cycle_interval_minutes` to stay 24 firings wide at whatever cadence is configured (requirement 1d); a configured non-zero value floors it, never caps it. See [Skipping no-op cycles](#skipping-no-op-cycles). `0` disables that safety net entirely — not recommended — and is never raised by the derivation.",
+        "spec": "The no-op short-circuit's safety valve (requirement 3b): the Co-Ordinator is engaged regardless once the last `none-selected` is this old, even if nothing changed. Bounds how long a gap in fingerprint coverage can stall the pipeline. \"This old\" means 24 cadence firings (requirement 1d), not a fixed 24 h: derived from the worst-case gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`); a configured non-zero value floors the derivation rather than replacing it. `0` disables the valve — don't — and, unlike a non-zero override, is never raised by the derivation: the valve stays off exactly as configured.",
         "value": {
           "readme": "*(unset)*",
           "spec": "*(unset)*"
@@ -1295,7 +1295,7 @@
       }
     },
     "image_behind_grace_hours": {
-      "description": "How long a node may sit behind the registry's newest image before the dashboard badge turns amber and scripts/check-node-image.sh fails. A roll defers while a cycle is in flight, so being behind a more recent image than this is the ordinary mid-roll state, not a fault. Independent of `schedule.cycle_interval_minutes` (requirement 1c): bounds how long a node may run behind a published image mid-roll, a property of the deploy pipeline, not the cycle cadence.",
+      "description": "How long a node may sit behind the registry's newest image before the dashboard badge turns amber and scripts/check-node-image.sh fails. A roll defers while a cycle is in flight, so being behind a more recent image than this is the ordinary mid-roll state, not a fault. Independent of `schedule.cycle_interval_minutes` (requirement 1d): bounds how long a node may run behind a published image mid-roll, a property of the deploy pipeline, not the cycle cadence.",
       "type": "number",
       "minimum": 0,
       "default": 3,
@@ -1384,7 +1384,7 @@
           }
         },
         "review_offset_minutes": {
-          "description": "Minutes past the node's cycle minute (mod 60) the review tick's minute is set to, keeping one node's two heavy pipelines apart within the hour. Independent of `schedule.cycle_interval_minutes` (requirement 1c): the review tick runs on its own cadence (`review_hour`, and the review pipeline's own `min_days_between_reviews`), regardless of how often the implementation cycle fires.",
+          "description": "Minutes past the node's cycle minute (mod 60) the review tick's minute is set to, keeping one node's two heavy pipelines apart within the hour. Independent of `schedule.cycle_interval_minutes` (requirement 1d): the review tick runs on its own cadence (`review_hour`, and the review pipeline's own `min_days_between_reviews`), regardless of how often the implementation cycle fires.",
           "type": "integer",
           "minimum": 0,
           "maximum": 59,
@@ -1395,7 +1395,7 @@
           }
         },
         "heartbeat_minutes": {
-          "description": "Interval, in minutes, of the dashboard heartbeat cron line. Independent of `schedule.cycle_interval_minutes` (requirement 1c): the dashboard heartbeat has its own crontab line and runs on its own terms.",
+          "description": "Interval, in minutes, of the dashboard heartbeat cron line. Independent of `schedule.cycle_interval_minutes` (requirement 1d): the dashboard heartbeat has its own crontab line and runs on its own terms.",
           "type": "integer",
           "minimum": 1,
           "maximum": 59,
@@ -1406,7 +1406,7 @@
           }
         },
         "state_sync_push_minutes": {
-          "description": "Interval, in minutes, of `state-sync.sh push`. Independent of `schedule.cycle_interval_minutes` (requirement 1c): state-sync push has its own crontab line and runs on its own terms.",
+          "description": "Interval, in minutes, of `state-sync.sh push`. Independent of `schedule.cycle_interval_minutes` (requirement 1d): state-sync push has its own crontab line and runs on its own terms.",
           "type": "integer",
           "minimum": 1,
           "maximum": 59,
@@ -1417,7 +1417,7 @@
           }
         },
         "state_sync_fetch_minutes": {
-          "description": "Interval, in minutes, of `state-sync.sh fetch`. Independent of `schedule.cycle_interval_minutes` (requirement 1c): state-sync fetch has its own crontab line and runs on its own terms.",
+          "description": "Interval, in minutes, of `state-sync.sh fetch`. Independent of `schedule.cycle_interval_minutes` (requirement 1d): state-sync fetch has its own crontab line and runs on its own terms.",
           "type": "integer",
           "minimum": 1,
           "maximum": 59,
@@ -1428,7 +1428,7 @@
           }
         },
         "log_rotation_minute": {
-          "description": "The minute past every hour scripts/rotate-logs.sh runs. Independent of `schedule.cycle_interval_minutes` (requirement 1c): log rotation has its own crontab line and runs on its own terms.",
+          "description": "The minute past every hour scripts/rotate-logs.sh runs. Independent of `schedule.cycle_interval_minutes` (requirement 1d): log rotation has its own crontab line and runs on its own terms.",
           "type": "integer",
           "minimum": 0,
           "maximum": 59,
@@ -1439,7 +1439,7 @@
           }
         },
         "doctor_offset_minutes": {
-          "description": "Minutes past the node's cycle minute (mod 60) the hourly `doctor.sh --unattended` pass's minute is set to, jittering it across the fleet the same way review_offset_minutes jitters the review tick. Independent of `schedule.cycle_interval_minutes` (requirement 1c): the unattended doctor pass runs hourly on its own crontab line regardless of how often the implementation cycle fires.",
+          "description": "Minutes past the node's cycle minute (mod 60) the hourly `doctor.sh --unattended` pass's minute is set to, jittering it across the fleet the same way review_offset_minutes jitters the review tick. Independent of `schedule.cycle_interval_minutes` (requirement 1d): the unattended doctor pass runs hourly on its own crontab line regardless of how often the implementation cycle fires.",
           "type": "integer",
           "minimum": 0,
           "maximum": 59,
@@ -1483,7 +1483,7 @@
       ],
       "properties": {
         "lock_stale_after": {
-          "description": "A floor, in hours, under the derived staleness threshold for a held review lock. Omit it: the threshold is derived from the Reviewer-Agent's backstop. Installation-wide only — the lock covers whichever repositories a run touches, so it is not part of `defaults` and has no per-repo override. Requirement 1c's audit already answers the roadmap's \"lock staleness\" candidate for the review pipeline too: independent of `schedule.cycle_interval_minutes` by construction, since a stuck review lock must outlast the Reviewer backstop summed across configured repositories, not the implementation cycle's scheduling interval.",
+          "description": "A floor, in hours, under the derived staleness threshold for a held review lock. Omit it: the threshold is derived from the Reviewer-Agent's backstop. Installation-wide only — the lock covers whichever repositories a run touches, so it is not part of `defaults` and has no per-repo override. Requirement 1d's audit already answers the roadmap's \"lock staleness\" candidate for the review pipeline too: independent of `schedule.cycle_interval_minutes` by construction, since a stuck review lock must outlast the Reviewer backstop summed across configured repositories, not the implementation cycle's scheduling interval.",
           "type": "number",
           "exclusiveMinimum": 0,
           "x-docs": {

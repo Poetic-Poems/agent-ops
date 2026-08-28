@@ -1597,7 +1597,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - Seven timings sized against a once-an-hour cycle now derive from
-  `schedule.cycle_interval_minutes` instead (requirement 1c, agent-ops#591):
+  `schedule.cycle_interval_minutes` instead (requirement 1d, agent-ops#591):
   `claim_ttl_hours`, `abandoned_draft_after_hours`, `disable_default_ttl` and
   `none_selected_recheck_hours` re-express their old "a few cycles" intent
   against the actual cadence (accounting for `schedule.cycle_hours` and

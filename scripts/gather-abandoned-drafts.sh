@@ -78,7 +78,7 @@
 #         change request, an inline note — carries no marker either way.
 #     The threshold is `abandoned_draft_after_hours`, comfortably beyond a whole
 #     cycle so a draft that is merely being worked never qualifies. "A whole
-#     cycle" is 4 cadence firings, not a fixed number of hours (requirement 1c):
+#     cycle" is 4 cadence firings, not a fixed number of hours (requirement 1d):
 #     absent, the threshold is derived from `schedule.cycle_interval_minutes`
 #     so it stays 4 firings wide at whatever cadence is configured, rather than
 #     needing to move by hand every time a stage timeout or the cadence itself
