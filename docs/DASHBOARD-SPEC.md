@@ -393,6 +393,23 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   forward (see the Publisher below), so only a fetch that was *attempted and
   failed* ever shows as unavailable.
 
+  `github.error` is a classified, collapsed summary, not the raw failures
+  concatenated: every failed call's own message (`<source> failed for
+  <slug>: <gh's own diagnosis>`) is classified by its embedded cause — 401 or
+  "Bad credentials" as auth, 403 or a rate-limit phrase (`LIMIT_PHRASE_REGEX`,
+  shared with `lib/limit-detect.sh`) as rate-limit, a connection/timeout
+  string as network, anything else as other — and same-cause failures
+  collapse into one line naming the cause with a call and repo count (e.g.
+  "GitHub authentication failed (HTTP 401) — GH_TOKEN is invalid or expired ·
+  15 calls across 3 repos"); a tick that fails more than one way gets one
+  line per cause. This is what keeps the banner readable through an outage
+  that touches every source of every repo — during the 2026-08-22 token
+  expiry it was fifteen semicolon-joined "Bad credentials" bodies with the
+  one fact that mattered, the token being dead, stated nowhere in the text.
+  The full uncollapsed list still reaches `dashboard.log` (the launcher
+  already tees the Publisher's own stderr there), and `github.error` names
+  the log rather than inlining every message.
+
 **Usage-limit detection.** The pipeline's own detector and the Publisher share
 one phrase pattern and reset-time parser (`lib/limit-detect.sh`), so a
 weekly-limit message ("resets Jul 17, 4am …") or a monthly spend-cap message

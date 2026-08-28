@@ -1762,7 +1762,15 @@ fdata="$(data_of "$f")"
 assert_eq "a failed issues listing is marked failed, not answered emptily" "failed" \
   "$(jq -r '.github.inputs["Poetic-Poems/poetic"].state.issues' <<<"$fdata")"
 assert_eq "and the page-wide alarm fires for it" "false" "$(jq -r '.github.ok' <<<"$fdata")"
-assert_contains "naming what failed" "issues" "$(jq -r '.github.error' <<<"$fdata")"
+# github.error is the classified cause (#695), not the raw per-source
+# message: "issues listing failed for …" concatenated across repos gave a
+# reader nothing to act on, where "rate limit hit" does.
+assert_contains "naming the classified cause, not the raw per-source message" \
+  "GitHub rate limit hit (HTTP 403)" "$(jq -r '.github.error' <<<"$fdata")"
+assert_contains "with a call/repo count (all 3 configured repos fail this one source)" \
+  "3 calls across 3 repos" "$(jq -r '.github.error' <<<"$fdata")"
+assert_contains "pointing at dashboard.log rather than inlining every message" \
+  "dashboard.log" "$(jq -r '.github.error' <<<"$fdata")"
 
 f="$(new_home nodeFail2)"
 run_fail_publish "$f" runs
@@ -1786,7 +1794,123 @@ f="$(new_home nodeFail5)"
 run_fail_publish "$f" prs
 fdata="$(data_of "$f")"
 assert_eq "a failed pr list still raises the page-wide alarm" "false" "$(jq -r '.github.ok' <<<"$fdata")"
-assert_contains "naming pr list, not a source it never touched" "pr list" "$(jq -r '.github.error' <<<"$fdata")"
+assert_contains "classified here too, not naming pr list specifically" \
+  "GitHub rate limit hit (HTTP 403)" "$(jq -r '.github.error' <<<"$fdata")"
+
+# --- The unavailable banner classifies and collapses gh_fail_msgs (#695) --------
+# Before this, the banner concatenated every raw gh_fail_msgs entry verbatim —
+# during the 2026-08-22 token expiry that was fifteen semicolon-joined "Bad
+# credentials" bodies, one per source per repo, with the one fact that
+# mattered (the token is dead) nowhere in the text. These three stubs
+# reproduce that shape and its siblings: every source failing the same way,
+# a genuine mix, and the raw list still reaching dashboard.log.
+gh_401_stub="$tmp_dir/stub-gh-401.sh"
+cat > "$gh_401_stub" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_CALL_LOG"
+auth_failed() {
+  printf '{"message":"Bad credentials","documentation_url":"https://docs.github.com/rest","status":"401"}'
+  echo "gh: HTTP 401: Bad credentials (https://docs.github.com/rest)" >&2
+  exit 1
+}
+case "$1 $2" in
+  "pr list")  auth_failed ;;
+  "run list") auth_failed ;;
+  "api --paginate")
+    case "$3" in
+      "repos/"*"/dependabot/alerts"*|"repos/"*"/code-scanning/alerts"*) auth_failed ;;
+      *) exit 1 ;;
+    esac ;;
+  "api "*)
+    case "$2" in
+      "repos/"*"/issues?"*)         auth_failed ;;
+      "repos/"*"/contents/tech-debt") auth_failed ;;
+      *)
+        # The filter program is $4, not $3 (--jq itself) — see the healthy
+        # stub above. Deliberately not one of #695's five sources: this
+        # default-branch lookup succeeds so the 15-call, all-auth shape below
+        # stays exactly the five sources it names.
+        case "$4" in
+          *default_branch*) printf 'main' ;;
+          *) exit 1 ;;
+        esac ;;
+    esac ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "$gh_401_stub"
+
+# Every one of the five sources fails, for all three configured repos: the
+# exact 5-sources-by-3-repos shape #695 was filed against.
+n="$(new_home node401)"
+n_log="$n/.local/state/poetic-agents/dashboard.log"
+env HOME="$n" NODE_NAME=node401-self GH_CALL_LOG="$gh_calls" \
+    DASHBOARD_GH_CMD="$gh_401_stub" "$PUBLISH" >/dev/null 2>"$n_log"
+ndata="$(data_of "$n")"
+assert_eq "an all-401 tick still raises the page-wide alarm" "false" "$(jq -r '.github.ok' <<<"$ndata")"
+assert_contains "collapses to one auth line, not fifteen raw messages" \
+  "GitHub authentication failed (HTTP 401) — GH_TOKEN is invalid or expired · 15 calls across 3 repos" \
+  "$(jq -r '.github.error' <<<"$ndata")"
+assert_eq "github.error carries exactly one line — every failure shared one cause" "1" \
+  "$(jq -r '.github.error' <<<"$ndata" | tr ';' '\n' | grep -c 'GitHub ')"
+assert_eq "all fifteen raw failures still reach dashboard.log" "15" \
+  "$(grep -c 'publish-dashboard: gh failure:' "$n_log")"
+assert_contains "including the raw 401 body, for anyone debugging from the log" \
+  "Bad credentials" "$(cat "$n_log")"
+
+# A genuine mix: pr list fails 401, issues fails 403 — one line per cause,
+# each with its own count, in a fixed order (auth, then rate-limit).
+gh_mixed_stub="$tmp_dir/stub-gh-mixed.sh"
+cat > "$gh_mixed_stub" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_CALL_LOG"
+case "$1 $2" in
+  "pr list")
+    printf '{"message":"Bad credentials","documentation_url":"https://docs.github.com/rest","status":"401"}'
+    echo "gh: HTTP 401: Bad credentials (https://docs.github.com/rest)" >&2
+    exit 1 ;;
+  "run list") printf '[]' ;;
+  "api --paginate")
+    case "$3" in
+      "repos/"*"/dependabot/alerts"*|"repos/"*"/code-scanning/alerts"*) printf '[]' ;;
+      *) exit 1 ;;
+    esac ;;
+  "api "*)
+    case "$2" in
+      "repos/"*"/issues?"*)
+        printf '{"message":"API rate limit exceeded for user ID 1.","status":"403"}'
+        echo "gh: API rate limit exceeded (HTTP 403)" >&2
+        exit 1 ;;
+      "repos/"*"/contents/tech-debt")
+        printf '{"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}'
+        echo "gh: Not Found (HTTP 404)" >&2
+        exit 1 ;;
+      *)
+        # The filter program is $4, not $3 (--jq itself) — see the healthy
+        # stub above.
+        case "$4" in
+          *default_branch*) printf 'main' ;;
+          *) exit 1 ;;
+        esac ;;
+    esac ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "$gh_mixed_stub"
+
+m="$(new_home nodeMixed)"
+env HOME="$m" NODE_NAME=nodeMixed-self GH_CALL_LOG="$gh_calls" \
+    DASHBOARD_GH_CMD="$gh_mixed_stub" "$PUBLISH" >/dev/null 2>&1
+mdata="$(data_of "$m")"
+merr="$(jq -r '.github.error' <<<"$mdata")"
+assert_contains "the auth line" \
+  "GitHub authentication failed (HTTP 401) — GH_TOKEN is invalid or expired · 3 calls across 3 repos" "$merr"
+assert_contains "the rate-limit line" \
+  "GitHub rate limit hit (HTTP 403) — wait for it to reset · 3 calls across 3 repos" "$merr"
+assert_eq "auth is named ahead of rate-limit, a stable order across ticks" "true" \
+  "$([[ "$merr" == "GitHub authentication failed"* ]] && echo true || echo false)"
+assert_eq "github.error carries exactly two lines — the two distinct causes, no more" "2" \
+  "$(tr ';' '\n' <<<"$merr" | grep -c 'GitHub ')"
 
 # A failed default-branch lookup (issue #692) used to hand gh's own JSON error
 # body through as the run-list query's `--branch` parameter, since `gh_json`
@@ -1799,8 +1923,11 @@ run_fail_publish "$f" default_branch
 fdata="$(data_of "$f")"
 assert_eq "a failed default-branch lookup raises the page-wide alarm" "false" \
   "$(jq -r '.github.ok' <<<"$fdata")"
-assert_contains "naming the default-branch lookup, not a source it never touched" \
-  "default branch lookup" "$(jq -r '.github.error' <<<"$fdata")"
+# github.error is the classified cause (#695), not the raw per-source
+# message — see the "issues"/"prs" cases above; the raw "default branch
+# lookup failed for …" text still reaches dashboard.log via gh_fail_summary.
+assert_contains "classified here too, not naming the default-branch lookup specifically" \
+  "GitHub rate limit hit (HTTP 403)" "$(jq -r '.github.error' <<<"$fdata")"
 assert_lacks "the run-list query never receives gh's own error body as its branch" \
   "rate limit exceeded" "$(cat "$gh_calls")"
 assert_eq "it falls back to main instead" \

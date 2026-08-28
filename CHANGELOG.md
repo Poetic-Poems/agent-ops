@@ -830,6 +830,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the App-approval gate's own refusal, whose `(state: …)` parenthetical
   grouped it under a sentence cut off mid-clause rather than under the gate
   that refused.
+- The dashboard's "GitHub data unavailable" banner (`scripts/publish-dashboard.sh`)
+  now classifies and collapses `gh_fail_msgs` by cause instead of
+  concatenating every raw failure (agent-ops#695). During the 2026-08-22
+  token expiry the banner carried fifteen semicolon-joined "Bad credentials"
+  bodies — one per source per repo — with the one fact that mattered, the
+  token being dead, stated nowhere in the text. Each failure is now
+  classified as auth (401/"Bad credentials"), rate-limit (403 or a
+  rate-limit phrase), network (a connection/timeout string) or other, and
+  same-cause failures collapse into one line with a call/repo count; a tick
+  that fails more than one way gets one line per cause. The full raw list
+  still reaches `dashboard.log`, which the collapsed banner now names.
 - `techdebt_file_debt` (`lib/tech-debt-file.sh`) now labels the pull request
   it opens to file a tech-debt record with the fleet's configured
   `pr_label`, rather than opening it unlabelled (TD-PPagop-26082426). Every
