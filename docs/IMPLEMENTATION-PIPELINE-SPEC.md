@@ -7672,7 +7672,13 @@ implements.
     a 200 means the record landed some other way, so
     `release-td-branch.yml` already owns that reservation and the sweep
     leaves it alone; any other failure answers nothing, so — fail closed,
-    like every guard here — it is left alone too. This is a narrow exception
+    like every guard here — it is left alone too. Because this delete and
+    release together can cost two actions against the per-run cap below, the
+    sweep reserves both up front rather than checking once per branch: a run
+    with only one action of headroom left defers the whole pair instead of
+    deleting `td-record/<ID>` and stranding the reservation release for a
+    later pass — neither ref is touched, and the branch is found again,
+    unchanged, next run (TD-PPagop-26082310). This is a narrow exception
     to the reservation-lock exemption two sentences above, not a relaxation
     of it: a `td/<ID>` reservation is only ever released this way from inside
     the declined-filing arm, immediately after its own `td-record/<ID>`

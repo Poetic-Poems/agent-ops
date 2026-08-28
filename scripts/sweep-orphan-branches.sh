@@ -191,6 +191,16 @@ sweep_record_branch() {
   fi
   [[ "$closed" != "0" ]] || return 1
 
+  # The delete-plus-release pair below is atomic and can cost up to two
+  # actions; reserve both up front rather than checking once on entry to
+  # sweep_branch; a run that has only one slot left must defer the whole
+  # pair, never delete the record and strand the reservation release for a
+  # later pass — either the cap holds or nothing here happens at all.
+  if (( actions + 2 > max_actions )); then
+    deferred=$(( deferred + 1 ))
+    return 0
+  fi
+
   if "$GH" api -X DELETE "repos/$slug/git/refs/heads/$branch" >/dev/null 2>&1; then
     jq -nc --arg b "$branch" '{action: "released", branch: $b, reason: "filing-declined"}'
     actions=$(( actions + 1 ))
@@ -286,6 +296,9 @@ sweep_branch() {  # <branch> <tip-sha>
   fi
   (( now_epoch - tip_epoch >= stale_hours * 3600 )) || return 0
 
+  # Bounds every arm below that costs exactly one action (release, recover).
+  # The td-record/ arm below can cost two, so it reserves its own headroom
+  # separately rather than relying on this check alone (TD-PPagop-26082310).
   if (( actions >= max_actions )); then
     deferred=$(( deferred + 1 ))
     return 0

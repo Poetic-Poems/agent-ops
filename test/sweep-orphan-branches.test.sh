@@ -615,6 +615,36 @@ assert_eq "a bare td/<ID> lock with no td-record/ sibling still produces no acti
 assert_not_contains "the new contents check is never even reached for it" \
   "contents/tech-debt/TD-PPagop-30000006" "$calls"
 
+# --- Case 20: the declined-filing pair defers whole, never straddling the cap ----
+# Review feedback on PR #907: the entry-level `actions >= max_actions` check
+# alone let a declined filing's own delete push `actions` to the cap and then
+# its paired reservation release push it one past — two ordinary orphans
+# already spend two of the run's three actions here, leaving one slot, which
+# is not enough for the pair, so the record must be deferred untouched rather
+# than deleted with its reservation stranded.
+c="$tmp_dir/cap-declined-pair"; mkdir -p "$c"
+printf 'agent/spend-1\tsha-spend-1\nagent/spend-2\tsha-spend-2\n' > "$c/refs-agent_tsv"
+: > "$c/refs-td_tsv"
+printf 'td-record/TD-PPagop-30000008\tsha-declined8\n' > "$c/refs-td-record_tsv"
+echo "$stale" > "$c/date-sha-spend-1"
+echo "$stale" > "$c/date-sha-spend-2"
+compare_fixture "$c" agent/spend-1 0
+compare_fixture "$c" agent/spend-2 0
+echo "$stale" > "$c/date-sha-declined8"
+echo 1 > "$c/prs-closed-td-record_TD-PPagop-30000008"
+
+out="$(run_sweep "$c")"
+calls="$(cat "$c/calls.log")"
+assert_eq "the two ordinary orphans still spend their actions" \
+  "2" "$(jq -c 'select(.action == "released" and (.branch | startswith("agent/")))' <<<"$out" | wc -l | tr -d ' ')"
+assert_eq "the declined filing's pair is deferred, not split" \
+  '{"action":"deferred","remaining":1}' \
+  "$(jq -c 'select(.action == "deferred")' <<<"$out")"
+assert_not_contains "so the record ref is never deleted" \
+  "api -X DELETE repos/x/y/git/refs/heads/td-record/TD-PPagop-30000008" "$calls"
+assert_not_contains "and the reservation question is never even asked" \
+  "contents/tech-debt/TD-PPagop-30000008" "$calls"
+
 printf '\n'
 if (( failures )); then
   printf '%d assertion(s) failed\n' "$failures"
