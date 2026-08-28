@@ -190,8 +190,8 @@ assert_eq "the record names the pull request's own url" \
   "\"$URL\"" "$(jq -c '.pr_url' <<<"$audit")"
 assert_eq "  ... and repo" '"Poetic-Poems/agent-ops"' "$(jq -c '.repo' <<<"$audit")"
 assert_eq "  ... and number, parsed from the url" "900" "$(jq -c '.number' <<<"$audit")"
-assert_eq "  ... and head SHA, the Approver's own standing-review commit_id" \
-  '"sha-approved-head"' "$(jq -c '.head_sha' <<<"$audit")"
+assert_eq "  ... and review_commit_sha, the Approver's own standing-review commit_id" \
+  '"sha-approved-head"' "$(jq -c '.review_commit_sha' <<<"$audit")"
 assert_eq "  ... source and complexity, carried forward unchanged" \
   '"tech-debt"' "$(jq -c '.source' <<<"$audit")"
 assert_eq "  ... complexity" '"medium"' "$(jq -c '.complexity' <<<"$audit")"
@@ -216,6 +216,10 @@ assert_eq "  ... the review gate" \
   '"clean"' "$(jq -c '.gates[] | select(.gate == "review-gate") | .verdict' <<<"$audit")"
 assert_eq "  ... the Approver's own standing review" \
   '"APPROVED"' "$(jq -c '.gates[] | select(.gate == "approver-standing-review") | .verdict' <<<"$audit")"
+assert_eq "  ... the human-veto gate, derived from _handoff_blocking_reviewers rather than a literal" \
+  '"clear"' "$(jq -c '.gates[] | select(.gate == "human-veto") | .verdict' <<<"$audit")"
+assert_eq "  ... carrying the empty blocking_reviewers list beside its verdict (TD-PPagop-26082312)" \
+  "[]" "$(jq -c '.gates[] | select(.gate == "human-veto") | .blocking_reviewers' <<<"$audit")"
 assert_eq "  ... and the merge-queue probe" \
   '"clear"' "$(jq -c '.gates[] | select(.gate == "merge-queue") | .verdict' <<<"$audit")"
 assert_eq "  ... and gate 4's own comment-reconciliation read (agent-ops#672)" \

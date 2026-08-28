@@ -19037,9 +19037,13 @@ pull request, run the ones the change touches and any it could regress.
     once, in the same call that logs `landing-armed`, on every successful
     arm — assembled at the moment of arming, never reconstructed later by
     joining separate events at report time. It carries the pull request's
-    own number and head SHA (the Approver's standing review's own
+    own number and `review_commit_sha` (the Approver's standing review's own
     `commit_id`, already read at gate 4 — never a fresh read for a fact this
-    cheap to reuse), the effective `merge_autonomy` level and whether SLUG's
+    cheap to reuse; the commit the Approver approved, not necessarily the
+    commit that actually merged — `landing_protected_path_controls_ok`
+    compares the two against a fresh head read on the paths it runs, but
+    that check is tier- and level-conditional, so this field alone cannot be
+    read as the commit that landed), the effective `merge_autonomy` level and whether SLUG's
     own `repos[]` entry or the top-level key produced it
     (`merge_autonomy_resolution_source`, lib/merge-autonomy.sh), the work
     `source` and `complexity` label, the protected-path verdict
@@ -19059,7 +19063,12 @@ pull request, run the ones the change touches and any it could regress.
     re-arm, so that a peer node's refusal recorded only in `$union_log`
     still appears in the history a first-approval round writes), every
     deterministic gate
-    this function itself just passed with its own evidence, the
+    this function itself just passed with its own evidence — including the
+    human-veto gate's own `blocking_reviewers` list
+    (`_handoff_blocking_reviewers`'s return at gate 4, always empty here: a
+    non-empty list already refused before this line), carried beside its
+    verdict the same way `protected_path` already names the paths it
+    examined, rather than only the verdict alone — the
     `merge_budget_decide` object gate 5 already computed
     (`cap`/`count`/`anomaly`/`waiting_backlog`) and would otherwise discard
     the moment `decision == "arm"` was confirmed, and the landing mechanism
@@ -19092,12 +19101,14 @@ pull request, run the ones the change touches and any it could regress.
     landings in the window carry no audit record.
 
     `test/landing-wiring.test.sh`'s happy path asserts the audit record is
-    logged alongside `landing-armed`, naming the pull request number, head
-    SHA, autonomy level/source, protected-path verdict, empty adjudication
-    history (nothing seeded), a passing gate's own evidence, the budget
-    object, and the mechanism. `test/landing-audit-record.test.sh` pins the
-    record's full shape — every field, a protected-path hit, and a
-    non-empty adjudication history across a refuse streak — and proves
+    logged alongside `landing-armed`, naming the pull request number,
+    `review_commit_sha`, autonomy level/source, protected-path verdict, empty
+    adjudication history (nothing seeded), a passing gate's own evidence, the
+    budget object, and the mechanism. `test/landing-audit-record.test.sh` pins
+    the record's full shape — every field, a protected-path hit, the
+    human-veto gate's own empty `blocking_reviewers` list beside its `clear`
+    verdict, and a non-empty adjudication history across a refuse streak — and
+    proves
     `publish-dashboard.sh`'s own digest-assembly `jq` reads it correctly
     from a raw synthetic `log.jsonl`: a landing with a matching record
     renders its tier/verdict, and one without is `anomaly: true`.

@@ -1183,25 +1183,30 @@ run_landing_stage() {
 # here rather than reconstructed later by joining separate events at report
 # time (the WI-8 digest's own former failure mode: a landing whose verdict
 # could not be found rendered with nulls rather than saying so). It carries
-# the pull request's own number and head SHA (the Approver's standing
-# review's own `commit_id`, already in hand from gate 4 — never a fresh read
-# for a fact this cheap to reuse), the effective `merge_autonomy` level and
-# whether SLUG's own `repos[]` entry or the top-level key produced it
-# (`merge_autonomy_resolution_source`, lib/merge-autonomy.sh — reached only
-# once gate 1 has already confirmed the kill switch is clear and no budget
-# freeze binds, so no fresher read is needed), the protected-path verdict and
-# the protected paths it hit (`landing_protected_paths_hit`, read fresh once
-# more here — the same "never more than one function call old" discipline gate
-# 4.5's own `landing_protected_path_controls_ok` already applies to the same
-# primitive, rather than trust gate 2's now-discarded read), the Approver's
+# the pull request's own number and `review_commit_sha` (the Approver's
+# standing review's own `commit_id`, already in hand from gate 4 — never a
+# fresh read for a fact this cheap to reuse; the commit the Approver approved,
+# not necessarily the commit that actually merged), the effective
+# `merge_autonomy` level and whether SLUG's own `repos[]` entry or the
+# top-level key produced it (`merge_autonomy_resolution_source`,
+# lib/merge-autonomy.sh — reached only once gate 1 has already confirmed the
+# kill switch is clear and no budget freeze binds, so no fresher read is
+# needed), the protected-path verdict and the protected paths it hit
+# (`landing_protected_paths_hit`, read fresh once more here — the same "never
+# more than one function call old" discipline gate 4.5's own `landing_
+# protected_path_controls_ok` already applies to the same primitive, rather
+# than trust gate 2's now-discarded read), the Approver's
 # tier/model/verdict/adjudication and this pull request's full adjudication
 # history (`landing_approver_adjudication_history`, lib/landing.sh — the
 # fleet log's own record of every `approver-verdict` event this pull request
 # ever received, not only the one that authorised this landing), every
-# deterministic gate this function itself just passed and its evidence, the
-# `merge_budget_decide` object gate 5 already computed and would otherwise
-# discard the moment `decision == "arm"` was confirmed, and the landing
-# mechanism `landing_arm` actually used. `scripts/publish-dashboard.sh`'s
+# deterministic gate this function itself just passed with its own evidence —
+# including the human-veto gate's own `blocking_reviewers` list
+# (`_handoff_blocking_reviewers`'s return at gate 4, empty on every arm),
+# carried the same way protected-path-controls carries the paths it
+# examined — the `merge_budget_decide` object gate 5 already computed and
+# would otherwise discard the moment `decision == "arm"` was confirmed, and
+# the landing mechanism `landing_arm` actually used. `scripts/publish-dashboard.sh`'s
 # WI-8 digest reads this record instead of re-joining `approver-verdict`
 # events against `landing-armed`, and reports a `landing-armed` with no
 # matching record as an anomaly in its own right.
@@ -1510,19 +1515,31 @@ _landing_stage_attempt() {
   approver_latest_json="$(jq -c 'if length > 0 then .[-1] else {} end' <<<"$approver_history_json" 2>/dev/null)"
   [[ -n "$approver_latest_json" ]] || approver_latest_json='{}'
 
+  # `blocking_json` is `_handoff_blocking_reviewers`'s own return (`blocking`,
+  # bound at gate 4 above) — always empty here, since a non-empty list already
+  # refused at that gate and never reached this line. Carried anyway, the same
+  # way `protected-path-controls` carries `pp_paths_json` beside its verdict:
+  # the record should say what the gate examined, not merely that the code
+  # reached this line (TD-PPagop-26082312).
+  local blocking_json
+  blocking_json="$(jq -R -s 'split("\n") | map(select(length > 0))' <<<"$blocking")"
+
   local gates_json
   gates_json="$(jq -nc \
     --arg level "$level" --arg elig "$elig" --arg gate_word "$gate_word" \
     --arg standing "$standing" --arg pp_ctl "${pp_ctl:-n/a}" \
     --arg rc_word "${rc_word:-}" --arg oq "${oq_word:-clear}" \
     --arg budget_decision "$budget_decision" --arg queued "$queued" \
+    --argjson blocking_reviewers "$blocking_json" \
     '[
       {gate: "autonomy-level", verdict: $level},
       {gate: "eligibility", verdict: $elig},
       {gate: "open-question", verdict: $oq},
       {gate: "review-gate", verdict: $gate_word},
       {gate: "approver-standing-review", verdict: $standing},
-      {gate: "human-veto", verdict: "clear"},
+      {gate: "human-veto",
+       verdict: (if ($blocking_reviewers | length) == 0 then "clear" else "blocking" end),
+       blocking_reviewers: $blocking_reviewers},
       {gate: "comment-reconciliation",
        verdict: (if $rc_word == "" then "unknown" else $rc_word end)},
       {gate: "protected-path-controls", verdict: $pp_ctl},
@@ -1538,7 +1555,7 @@ _landing_stage_attempt() {
     --argjson gates "$gates_json" --argjson budget "$budget_json" \
     --arg m "$method" --argjson retry "$retry_bool" \
     '{
-      pr_url: $u, repo: $r, number: $n, head_sha: (if $sha == "" then null else $sha end),
+      pr_url: $u, repo: $r, number: $n, review_commit_sha: (if $sha == "" then null else $sha end),
       source: $src, complexity: $c,
       autonomy: {level: $level, source: $asrc},
       protected_path: {verdict: $ppv, paths: $pp_paths},
