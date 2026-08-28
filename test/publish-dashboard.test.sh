@@ -1826,7 +1826,11 @@ case "$1 $2" in
       "repos/"*"/issues?"*)         auth_failed ;;
       "repos/"*"/contents/tech-debt") auth_failed ;;
       *)
-        case "$3" in
+        # The filter program is $4, not $3 (--jq itself) — see the healthy
+        # stub above. Deliberately not one of #695's five sources: this
+        # default-branch lookup succeeds so the 15-call, all-auth shape below
+        # stays exactly the five sources it names.
+        case "$4" in
           *default_branch*) printf 'main' ;;
           *) exit 1 ;;
         esac ;;
@@ -1882,7 +1886,9 @@ case "$1 $2" in
         echo "gh: Not Found (HTTP 404)" >&2
         exit 1 ;;
       *)
-        case "$3" in
+        # The filter program is $4, not $3 (--jq itself) — see the healthy
+        # stub above.
+        case "$4" in
           *default_branch*) printf 'main' ;;
           *) exit 1 ;;
         esac ;;
@@ -1917,8 +1923,11 @@ run_fail_publish "$f" default_branch
 fdata="$(data_of "$f")"
 assert_eq "a failed default-branch lookup raises the page-wide alarm" "false" \
   "$(jq -r '.github.ok' <<<"$fdata")"
-assert_contains "naming the default-branch lookup, not a source it never touched" \
-  "default branch lookup" "$(jq -r '.github.error' <<<"$fdata")"
+# github.error is the classified cause (#695), not the raw per-source
+# message — see the "issues"/"prs" cases above; the raw "default branch
+# lookup failed for …" text still reaches dashboard.log via gh_fail_summary.
+assert_contains "classified here too, not naming the default-branch lookup specifically" \
+  "GitHub rate limit hit (HTTP 403)" "$(jq -r '.github.error' <<<"$fdata")"
 assert_lacks "the run-list query never receives gh's own error body as its branch" \
   "rate limit exceeded" "$(cat "$gh_calls")"
 assert_eq "it falls back to main instead" \
