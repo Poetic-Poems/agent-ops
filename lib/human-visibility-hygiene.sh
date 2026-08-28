@@ -39,6 +39,18 @@
 # from …` warning, invisible until the human noticed the review was never
 # actually requested (agent-ops#393).
 #
+# "could not read the pull request's reviews …" — `_handoff_pr_approved`'s
+# own read failing, inside the idle-nudge check alone — joins the `nudge`
+# family: it gates nothing else the sweep does for that pull request (the
+# review-request and dequeue-notice logic above it in the loop read
+# different data and have already run by the time this read is attempted),
+# so only a later `human-nudged` event for the same identity proves that
+# read now works, the same as a `could not post the idle nudge comment`
+# warning already required. Treating it as `generic` would over-clear: an
+# unrelated review-request success earlier in the same pass says nothing
+# about whether the reviews read that gates the nudge check would now
+# succeed.
+#
 # A warning shape none of the three families recognises — most often "could
 # not read the pull request's state …", the read that gates every
 # downstream check this sweep makes for that pull request — keeps the
@@ -71,7 +83,9 @@ HUMAN_VISIBILITY_VIOLATIONS_JQ='
        or startswith("could not re-request review after an answered round")
        or startswith("could not tell whether the blocking review round was answered")
       then "review-request"
-    elif startswith("could not post the idle nudge comment") then "nudge"
+    elif startswith("could not post the idle nudge comment")
+       or startswith("could not read the pull request'"'"'s reviews")
+      then "nudge"
     elif startswith("could not post the merge-queue-dequeued notice") then "dequeue-notice"
     else "generic"
     end;

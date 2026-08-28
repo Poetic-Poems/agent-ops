@@ -17,10 +17,13 @@
 #   - **Too eager** keeps a violation a later, *same-family* success already
 #     answered. A later `human-review-requested` clears a same-`pr_url`
 #     `could not request review from …` warning; a later `human-nudged`
-#     clears a same-`pr_url` `could not post the idle nudge comment` warning;
-#     a later `human-dequeue-notice` clears a same-`pr_url`
-#     `could not post the merge-queue-dequeued notice` warning; and any of
-#     the three clears a same-`pr_url` warning shape none of the three
+#     clears a same-`pr_url` `could not post the idle nudge comment` warning,
+#     and likewise a same-`pr_url` `could not read the pull request's
+#     reviews …` warning (`_handoff_pr_approved`'s own read failing inside
+#     the idle-nudge check alone, so it joins the nudge family rather than
+#     the wider fail-safe default); a later `human-dequeue-notice` clears a
+#     same-`pr_url` `could not post the merge-queue-dequeued notice` warning;
+#     and any of the three clears a same-`pr_url` warning shape none of the
 #     families recognises (the fail-safe default for a read failure that
 #     gates every downstream check).
 #   - **Too shy** drops a violation nothing has actually resolved: an
@@ -101,6 +104,32 @@ assert_eq "a later success clears the same pr_url's warning" \
 } > "$log"
 assert_eq "a later nudge clears the same pr_url's warning" \
   "0" "$(jq 'length' <<<"$(human_visibility_violations "$log")")"
+
+# --- A "could not read the pull request's reviews" warning joins the nudge
+# --- family: only a later nudge clears it, not an unrelated review-request -
+{
+  warning_line "o/a" "https://github.com/o/a/pull/9" \
+    "could not read the pull request's reviews — skipping the idle-nudge check"
+  jq -nc '{ts: "2026-08-08T01:00:00Z", cycle: "c", node: "n",
+            event: "human-nudged", repo: "o/a",
+            pr_url: "https://github.com/o/a/pull/9", reviewer: "foo"}'
+} > "$log"
+assert_eq "a later nudge clears a same-pr_url reviews-read warning" \
+  "0" "$(jq 'length' <<<"$(human_visibility_violations "$log")")"
+
+{
+  warning_line "o/a" "https://github.com/o/a/pull/9" \
+    "could not read the pull request's reviews — skipping the idle-nudge check"
+  jq -nc '{ts: "2026-08-08T01:00:00Z", cycle: "c", node: "n",
+            event: "human-review-requested", repo: "o/a",
+            pr_url: "https://github.com/o/a/pull/9", reviewers: ["foo"]}'
+} > "$log"
+out="$(human_visibility_violations "$log")"
+assert_eq "a review-request success does not mask a reviews-read warning" \
+  "1" "$(jq 'length' <<<"$out")"
+assert_eq "  ... the reviews-read warning survives verbatim" \
+  "could not read the pull request's reviews — skipping the idle-nudge check" \
+  "$(jq -r '.[0].detail' <<<"$out")"
 
 # --- A dequeue notice, its own family, also clears its own warning ---------
 {

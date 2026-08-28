@@ -13222,6 +13222,14 @@ What exists, and the requirements each part answers to:
    counted — tech-debt/TD-PPagop-26081403.md) and no non-bot review with
    state `APPROVED` or `CHANGES_REQUESTED` yet given — never read from
    `reviewDecision` (agent-ops#391, TD-PPagop-26081505); a
+   `could not read the pull request's reviews …` warning
+   (`_handoff_pr_approved`'s own read failing inside the idle-nudge check)
+   only while re-running that same call — `_handoff_pr_approved`
+   (`lib/handoff.sh`), keyed off `_handoff_pr_parts`' own read of the
+   warning's `pr_url` — still fails; the `gh pr view` call this re-check
+   opens with is a different API surface (GraphQL, versus that call's own
+   REST `gh api …/reviews --paginate`) and proves nothing about it on its
+   own; a
    `could not post the idle nudge comment` warning only while no comment
    carries both the exact `agent-ops:human-nudge` HTML-comment form and the
    pipeline-marker stamp on the same comment (agent-ops#390, #428); a `no legal
@@ -18166,13 +18174,20 @@ pull request, run the ones the change touches and any it could regress.
     with nothing to clear it; a later `human-review-requested` event clears a
     same-`pr_url` `could not request review from …` warning, and a later
     `human-nudged` event likewise clears a same-`pr_url` `could not post the
-    idle nudge comment` warning, but a `human-dequeue-notice` event for that
-    same `pr_url` does *not* clear either of those two — nor does a
+    idle nudge comment` warning and, separately, a same-`pr_url` `could not
+    read the pull request's reviews …` warning (`_handoff_pr_approved`'s own
+    read failing inside the idle-nudge check alone joins the nudge family,
+    since nothing else the sweep does for that pull request depends on that
+    same read), but a `human-dequeue-notice` event for that same `pr_url`
+    does *not* clear any of those three — nor does a
     `human-nudged`/`human-review-requested` event clear a `could not post the
     merge-queue-dequeued notice` warning — proving the family split rather
-    than assuming it (agent-ops#393); a later event for a different `pr_url`
-    or a different sweep leaves an identity's warning untouched; an
-    unrecognised warning shape is cleared by any of the three success events,
+    than assuming it (agent-ops#393); separately, a `human-review-requested`
+    event does *not* clear a `could not read the pull request's reviews …`
+    warning, confirming it is not read under the wider fail-safe default; a
+    later event for a different `pr_url` or a different sweep leaves an
+    identity's warning untouched; an unrecognised warning shape (one none of
+    the classes above match) is cleared by any of the three success events,
     the fail-safe default for a warning with no family of its own; a repeated
     identity keeps only its latest detail regardless of family; and a torn
     log line is skipped, not fatal.
@@ -18218,8 +18233,19 @@ pull request, run the ones the change touches and any it could regress.
     Bot-typed/`[bot]`-suffixed-only `reviewRequests` entry (defensive, as
     above) and is dropped by a
     requested-team-only one, and is dropped separately once the assignee
-    named in its own detail text no longer names the pull request's author;
-    an unrecognised warning shape
+    named in its own detail text no longer names the pull request's author; a
+    `could not read the pull request's reviews …` violation
+    (`_handoff_pr_approved`'s own read failing inside the idle-nudge check)
+    has no follow-up action outcome of its own to inspect — the read failing
+    was the whole violation — so it re-runs that same read instead: dropped
+    only once a fresh `_handoff_pr_approved` call (`lib/handoff.sh`, keyed off
+    `_handoff_pr_parts`' own read of the warning's `pr_url`) exits
+    successfully, judged on its exit status alone, never its printed
+    true/false, since the question here is only whether the read now
+    succeeds; survives while that same call still fails, even though the
+    outer `gh pr view` re-check — a different API surface — succeeds, proving
+    the fix does not infer the answer from that unrelated read; an
+    unrecognised warning shape
     survives for as long as its pull request
     stays open and not a draft; an unreadable live re-check keeps the
     violation rather than dropping it; a repo-level and a pull-request

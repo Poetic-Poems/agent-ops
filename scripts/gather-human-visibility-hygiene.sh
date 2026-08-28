@@ -59,17 +59,18 @@
 # uses (an unread state is never guessed at as clean). Only a *definite* "no
 # longer true" answer drops a violation.
 #
-# ## Four warning classes, told apart
+# ## Five warning classes, told apart
 #
-# `sweep-human-visibility.sh` logs four different per-pull-request warnings —
+# `sweep-human-visibility.sh` logs five different per-pull-request warnings —
 # "could not request review from …" (the review-request POST itself failed),
-# "could not post the idle nudge comment" (the nudge comment POST itself
-# failed), "no legal review-request candidate" (no POST was even
-# attempted — `ensure_human_reviewer`'s `skip\tno-candidate`,
-# tech-debt/TD-PPagop-26081001.md), and "could not post the
-# merge-queue-dequeued notice" (the dequeue-notice comment POST itself
-# failed, requirement 38f) — and they clear on four different live
-# facts. A single shared check would get more than one of them wrong: every
+# "could not read the pull request's reviews …" (`_handoff_pr_approved`'s own
+# read failing, inside the idle-nudge check alone), "could not post the idle
+# nudge comment" (the nudge comment POST itself failed), "no legal
+# review-request candidate" (no POST was even attempted —
+# `ensure_human_reviewer`'s `skip\tno-candidate`, tech-debt/TD-PPagop-26081001.md),
+# and "could not post the merge-queue-dequeued notice" (the dequeue-notice
+# comment POST itself failed, requirement 38f) — and they clear on five
+# different live facts. A single shared check would get more than one of them wrong: every
 # pull request a nudge warning is logged against is, by the nudge's own gate,
 # already `APPROVED` — so a check that only asks "has a human reviewed this"
 # would read every nudge-class warning as resolved the moment it is created,
@@ -116,6 +117,23 @@
 #                             (`lib/handoff.sh`) already reasons from the
 #                             reviews list rather than that field, read here
 #                             rather than acted on.
+#   could_not_read_reviews — no follow-up *action* outcome to inspect, unlike
+#                             the other four classes: the read failing was the
+#                             whole violation. But the `gh pr view` call at the
+#                             top of `_pr_violation_survives` is a GraphQL
+#                             read, and the read that actually failed —
+#                             `_handoff_pr_approved`, via `_handoff_latest_
+#                             reviews` (`lib/handoff.sh`) — is a REST `gh api
+#                             …/reviews --paginate` call: a different API
+#                             surface, with its own rate limit and its own
+#                             breakable code path, so a readable `$json` here
+#                             proves nothing about it. This class instead
+#                             re-runs `_handoff_pr_approved` itself, keyed off
+#                             `_handoff_pr_parts`' own read of `pr_url`, and
+#                             drops the violation only on that call's exit
+#                             status (never its printed true/false, since the
+#                             question here is only whether the read
+#                             succeeded, not what it found).
 #   could_not_post_nudge   — did the nudge comment land after all: `gh pr
 #                             view --json comments`, searched for a comment
 #                             carrying both the exact `<!-- agent-ops:human-
@@ -198,6 +216,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # requires this stamp on the same comment (agent-ops#390, #428).
 # shellcheck source=lib/pipeline-marker.sh
 . "$SCRIPT_DIR/lib/pipeline-marker.sh"
+# `_handoff_pr_parts` and `_handoff_pr_approved`, for the could_not_read_reviews
+# re-check below: that class's warning is `_handoff_pr_approved`'s own read
+# failing, a REST `gh api …/reviews --paginate` call — a different API surface
+# from the GraphQL `gh pr view` this script already opened with — so only
+# re-running that same call is a definite answer that it works again.
+# shellcheck source=lib/handoff.sh
+. "$SCRIPT_DIR/lib/handoff.sh"
 
 slug="${1:-}"
 pr_label="${2:-autonomous-agent}"
@@ -216,6 +241,7 @@ jq -e 'type == "array"' <<<"$violations_json" >/dev/null 2>&1 || violations_json
 _warning_class() {
   case "$1" in
     "could not request review from"*) printf 'could_not_request' ;;
+    "could not read the pull request's reviews"*) printf 'could_not_read_reviews' ;;
     *"idle nudge comment"*) printf 'could_not_post_nudge' ;;
     "no legal review-request candidate"*) printf 'no_candidate' ;;
     *"merge-queue-dequeued notice"*) printf 'dequeue_notice' ;;
@@ -279,6 +305,26 @@ _pr_violation_survives() {
                            | select(((.author.login // "") | endswith("[bot]")) | not)]
                           | length' <<<"$json" 2>/dev/null || echo 0)"
       if [[ "$requests" != "0" || "$reviewed" != "0" ]]; then
+        printf 'drop'
+      else
+        printf 'keep'
+      fi
+      ;;
+    could_not_read_reviews)
+      # No follow-up *action* outcome to inspect — the read failing was the
+      # whole violation — but the `gh pr view` call above this function opened
+      # with is a GraphQL read, and the read that actually failed,
+      # `_handoff_pr_approved` (`lib/handoff.sh`), is a REST `gh api
+      # …/reviews --paginate` call: a different API surface, with its own
+      # rate limit and its own code path, so this function's own successful
+      # `gh pr view` proves nothing about it. Re-run that same call instead —
+      # `_handoff_pr_parts` recovers the owner/repo and number this class's
+      # detail text does not carry, and `_handoff_pr_approved`'s exit status
+      # alone (never its printed true/false) says whether the read itself
+      # succeeded, which is the only question this class asks.
+      local parts
+      parts="$(_handoff_pr_parts "$pr_url")" || { printf 'keep'; return; }
+      if _handoff_pr_approved "${parts%%$'\t'*}" "${parts##*$'\t'}" >/dev/null 2>&1; then
         printf 'drop'
       else
         printf 'keep'
