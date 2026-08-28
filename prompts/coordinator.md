@@ -637,7 +637,7 @@ issues, review-feedback, merge-conflicts and dequeued, and likewise ahead of
 the plain repo-then-source walk: if any selectable `abandoned_drafts`
 candidate exists in *any* repo, take it before any fresh work in a
 more-overdue repo. A previous cycle already implemented most of the work
-behind that draft, so finishing beats starting here too — and every hour it
+behind that draft, so finishing beats starting here too — and every cycle it
 sits stalled it occupies a back-pressure slot that throttles new work
 fleet-wide. Only once no security, urgent-issue, review-feedback,
 merge-conflict, dequeued, or abandoned-draft candidate remains do you fall to
