@@ -5659,16 +5659,22 @@ implements.
    only those that are absent: `pr_label`, `enabler_escalation_label`,
    `needs_refinement_label`, `refined_label`, `unvoid_label`,
    `complexity:low|medium|high`, `blocked`, `blocked:needs-refinement`,
-   `obsolete` and `open-question` (the Reviewer's own projection,
-   requirement 8f) — `blocked` and `obsolete` being human-only controls no
-   pipeline stage ever applies itself: `blocked` excludes an issue from
-   selection (requirement 16.4), and `obsolete` corroborates closing a
-   still-open, still-diff-carrying `pr-<n>-abandoned-…`/`pr-<n>-review-…`
-   draft (requirements 34d, 34k; TD-PPagop-26081308) — a repository without
-   either label does not offer the human either control at all, and
-   ensuring against every gathered repository rather than only a selected
-   one is what gives that control to a repository no cycle has chosen to
-   work in yet. It is also what lets the Co-Ordinator's own
+   `obsolete`, `open-question` (the Reviewer's own projection,
+   requirement 8f) and `pw::type:tech-debt` — `blocked` and `obsolete` being
+   human-only controls no pipeline stage ever applies itself: `blocked`
+   excludes an issue from selection (requirement 16.4), and `obsolete`
+   corroborates closing a still-open, still-diff-carrying
+   `pr-<n>-abandoned-…`/`pr-<n>-review-…` draft (requirements 34d, 34k;
+   TD-PPagop-26081308) — a repository without either label does not offer
+   the human either control at all, and ensuring against every gathered
+   repository rather than only a selected one is what gives that control to
+   a repository no cycle has chosen to work in yet. `pw::type:tech-debt` is
+   a third fixed name, also not configurable: D15's trust anchor (D24) for
+   tech debt filed as a GitHub issue rather than an in-repo register
+   record — only a collaborator with triage can apply a label, which is
+   what makes an issue's membership of the `tech-debt` work band trustable
+   even though its body stays untrusted data. It is also what lets the
+   Co-Ordinator's own
    `needs_refinement`/`blocked` projection (requirement 34e) and the
    Refiner's `refined_label` projection (requirement 39c) reach a fresh
    repository the moment either first fires there, rather than failing
@@ -5777,10 +5783,13 @@ implements.
    `target`'s own catalogue, and a delete scoped to a subset would remove
    labels the other role still wants; both reconcile colour/description drift
    under MODE `additive` without ever deleting. No call site uses either
-   function yet: every catalogue entry above is still unprefixed, and
-   `agent-cycle.sh`, `review-cycle.sh`, `lib/enabler.sh` and
+   function yet: `agent-cycle.sh`, `review-cycle.sh`, `lib/enabler.sh` and
    `lib/candidate-gather.sh` still call `labels_ensure_role`/
-   `labels_ensure_stamped`, which is recorded as TD-PPagop-26082809.
+   `labels_ensure_stamped`, which is recorded as TD-PPagop-26082809 —
+   `pw::type:tech-debt` carries `label_prefix`'s own default namespace
+   already, but that is inert until that item wires a call site onto
+   `labels_reconcile_role`; until then it takes the create-only path every
+   other catalogue entry does.
 7. **Implementer stage.** Launch the Implementer in the clone (model from
    the work order, `--dangerously-skip-permissions`, stage timeout), passing
    the implementer prompt plus the work order, and this cycle's `cycle` id and
