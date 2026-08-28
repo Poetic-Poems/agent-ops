@@ -95,6 +95,7 @@ fi
 # print nothing, the same "does not fire" shape the real function returns
 # whenever refinements_json (defined below, always "{}" here) carries no
 # prior refinement for the item.
+# shellcheck disable=SC2317  # invoked only by the eval'd record_needs_refinement_block
 rework_refinement_bounce_back_fields() { :; }
 eval "$record_needs_refinement_block_fn"
 
