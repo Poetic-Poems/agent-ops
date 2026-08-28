@@ -54,7 +54,7 @@ for path in \
   docs/METERING-SCHEMA.md \
   docs/ROADMAP.md \
 ; do
-  url="https://github.com/Poetic-Poems/agent-ops/blob/main/$path"
+  url="https://github.com/Pullwright/agent-ops/blob/main/$path"
   if grep -qF "$url" "$INDEX_HTML"; then
     printf 'ok   - the docs nav links %s\n' "$path"
   else
