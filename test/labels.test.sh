@@ -121,6 +121,13 @@ if [[ "$1" == "api" && "$2" == "-X" && "$3" == "PATCH" ]]; then
       description=*) description="${arg#description=}" ;;
     esac
   done
+  # The same 100-character cap the create path above carries: GitHub applies
+  # it to an update too, so labels_reconcile's own PATCH would be refused by
+  # an over-long catalogue description exactly as a create is.
+  if (( ${#description} > 100 )); then
+    echo "gh: HTTP 422 Validation Failed (description too long)" >&2
+    exit 1
+  fi
   awk -F'\t' -v n="$name" -v c="$colour" -v d="$description" \
     'BEGIN{OFS="\t"} tolower($1)==tolower(n){$2=c; $3=d} {print}' \
     "$GH_LABELS" > "$GH_LABELS.tmp" && mv "$GH_LABELS.tmp" "$GH_LABELS"
