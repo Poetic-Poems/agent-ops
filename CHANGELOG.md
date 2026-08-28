@@ -25,6 +25,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `docs/reviews/project-review-%Y-%m-%d`, matching where #762 already moved
   its most recent review — without this, the next scheduled review of this
   repository would have written back into the pre-#762 location.
+- Node host hygiene for `.env` (agent-ops#696): the deploy runbook
+  (`deploy/docker/README.md`, `deploy/docker/.env.example`) now states `.env`
+  must be `chmod 600`, the same protection the Approver App's private key
+  already gets, and that token rotation must edit `.env` in place or swap in
+  a `0600` temp file rather than leave a dated backup beside it.
+  `scripts/check-node-compose.sh` flags, host-side and without touching
+  anything, a `.env` that is not `0600` and any `.env.bak*`/`*.env.old`
+  sibling found beside it.
 - The BYO API-key model-credential path (D4's primary, agent-ops#684) is now
   documented alongside subscription OAuth (the existing, self-hosted
   alternative) rather than the deployment covering only the latter:

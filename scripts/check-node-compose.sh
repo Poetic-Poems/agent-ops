@@ -21,6 +21,11 @@
 # to allow-list wholesale, like watch-node.sh.
 #
 # The checks, each a property that has actually been lost in the field:
+#   env perms  .env is 0600, and no .env.bak*/*.env.old backup sits beside it
+#              (#696) — .env carries this node's live tokens in plaintext, and
+#              a world- or group-readable copy, or a stale dated backup, hands
+#              them to any other account on the host. Host filesystem only, no
+#              Docker socket needed; flagging only, never chmod or delete.
 #   file       the stack's compose.yaml against the copy inside the running
 #              image (comments and blank lines aside) — has the merged change
 #              reached this host's file at all?
@@ -80,6 +85,36 @@ info() { printf 'info - %s\n' "$1"; }
 # The same normalisation lib/compose-drift.sh applies, for the same reason:
 # comments drift constantly and change nothing a container runs.
 material() { grep -vE '^[[:space:]]*(#|$)' "$@"; }
+
+# --- .env's own permissions and backup siblings (#696) ------------------------
+# .env carries this node's live GH_TOKEN and VERCEL_TOKEN in plaintext; unlike
+# the Approver's private key (0600 by the deploy docs already), a world- or
+# group-readable .env, or a dated backup left beside it after an edit, hands
+# every token in it to any other account on the host. Host filesystem only —
+# ahead of every other check below, none of which need the stack to be up.
+# Flagging only, never chmod or delete.
+env_file="$stack_dir/.env"
+if [[ -e "$env_file" ]]; then
+  env_mode="$(stat -c '%a' -- "$env_file" 2>/dev/null || stat -f '%Lp' -- "$env_file" 2>/dev/null)"
+  if [[ "$env_mode" == "600" ]]; then
+    ok ".env is 0600"
+  else
+    bad ".env is mode 0${env_mode:-?} instead of 0600 — chmod 600 $env_file"
+  fi
+else
+  info "no .env in $stack_dir — skipping its permission and backup checks"
+fi
+
+shopt -s nullglob dotglob
+env_backups=("$stack_dir"/.env.bak* "$stack_dir"/*.env.old)
+shopt -u nullglob dotglob
+if (( ${#env_backups[@]} == 0 )); then
+  ok "no stale .env backup files beside .env"
+else
+  for f in "${env_backups[@]}"; do
+    bad "stale env backup beside the live file: $f — rotate tokens by editing .env in place, or via a 0600 temp file, never a dated copy"
+  done
+fi
 
 # --- The file, against the copy the running image carries ---------------------
 # The image is built from `main` by CI, so its /app copy is what the
