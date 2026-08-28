@@ -5424,8 +5424,9 @@ implements.
    Script ensures every label this system applies exists there, creating
    only those that are absent: `pr_label`, `enabler_escalation_label`,
    `needs_refinement_label`, `refined_label`, `unvoid_label`,
-   `complexity:low|medium|high`, `blocked`, `blocked:needs-refinement` and
-   `obsolete` — `blocked` and `obsolete` being human-only controls no
+   `complexity:low|medium|high`, `blocked`, `blocked:needs-refinement`,
+   `obsolete` and `open-question` (the Reviewer's own projection,
+   requirement 8f) — `blocked` and `obsolete` being human-only controls no
    pipeline stage ever applies itself: `blocked` excludes an issue from
    selection (requirement 16.4), and `obsolete` corroborates closing a
    still-open, still-diff-carrying `pr-<n>-abandoned-…`/`pr-<n>-review-…`
@@ -5459,9 +5460,8 @@ implements.
    emits, for every role, is at most 100 characters — GitHub's own limit on a
    label's `description` field; a longer value is refused outright by the
    create call, so a catalogue entry past the limit could never be created in
-   any repository, on any node, ever (issue #888, where `obsolete` and
-   `open-question` were both 148 characters and neither could ever be
-   created). `test/labels.test.sh` asserts the limit by reading
+   any repository, on any node, ever (issue #888).
+   `test/labels.test.sh` asserts the limit by reading
    `labels_catalogue`'s own output for every role rather than a fixture list,
    so a future entry that regresses past it fails there before it ever
    reaches GitHub.
