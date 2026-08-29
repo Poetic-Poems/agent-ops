@@ -692,19 +692,28 @@ refinements_map() {
 # (`refinement_record_fields`, `lib/refinement.sh`) validated its shape, the
 # same phantom shape #818's and #874's events both carried — is skipped here
 # rather than trusted, so `$refined` derives to the latest event that really
-# is corroborated (or `null`, if none is). `$phantom_ts` is the caller's own
-# pre-computed set of such events' timestamps, over the same `$all` (see
+# is corroborated (or `null`, if none is). `$phantom` is the caller's own
+# pre-computed set of such events, over the same `$all` (see
 # `enabler_eligible_items`'s own comment on why the check lives there and not
 # inline here): every candidate for `$refined` is drawn from the same
-# `$all[]` this file already scans, so filtering by timestamp — rather than
-# re-testing the URL's shape a second time in this jq program — keeps
-# `refinement_comment_url_valid` (`lib/refinement.sh`) the one place that
-# predicate is evaluated, on the same "one predicate, one rule" terms
+# `$all[]` this file already scans, so matching an event against that set —
+# rather than re-testing the URL's shape a second time in this jq program —
+# keeps `refinement_comment_url_valid` (`lib/refinement.sh`) the one place
+# that predicate is evaluated, on the same "one predicate, one rule" terms
 # TD-PPagop-26082603 asks for.
-# shellcheck disable=SC2016  # jq's $ vars ($all/$b/$open/$phantom_ts/…), not the shell's.
+#
+# The match is on the whole `{repo, item, ts}` triple, never `ts` alone.
+# `log_event` (`agent-cycle.sh`) stamps whole-second UTC timestamps and this
+# runs over the fleet-wide *union* log, so two `item-refined` events sharing
+# a second across different items is ordinary traffic — keying on `ts` alone
+# would let one item's phantom suppress another item's genuine refinement,
+# silently disarming requirement 36b's thrash guard for an item that really
+# was refined and discarding the `spec`/`comment_url` `lib/enabler.sh`'s
+# adjudication path reads back out of `refined_before`.
+# shellcheck disable=SC2016  # jq's $ vars ($all/$b/$open/$phantom/…), not the shell's.
 
-# $all and $phantom_ts are bound by the caller, via `input as $all`/`input as
-# $phantom_ts` (requirement 4g) — never a leading `. as $all` here, since the
+# $all and $phantom are bound by the caller, via `input as $all`/`input as
+# $phantom` (requirement 4g) — never a leading `. as $all` here, since the
 # caller runs this body with `jq -n`.
 ENABLER_ELIGIBLE_JQ='
   def same_item($e): (.item // "") == ($e.item // "")
@@ -729,7 +738,12 @@ ENABLER_ELIGIBLE_JQ='
          | sort_by(.ts)) as $examined_since_escalation
       | ([ $all[]
            | select(.event == "item-refined" and same_item($b))
-           | select((.ts // "") as $ts | ($phantom_ts | index($ts)) == null) ]
+           | . as $e
+           | select($phantom
+                    | any(.ts == ($e.ts // "")
+                          and .repo == ($e.repo // "")
+                          and .item == (($e.item // "") | tostring))
+                    | not) ]
          | sort_by(.ts) | last) as $refined
       | ([ $all[]
            | select(.event == "stage-end" and (.stage // "") == "coordinator"
@@ -803,7 +817,7 @@ ENABLER_ELIGIBLE_JQ='
 enabler_eligible_items() {
   local src="${1:--}" min_coord="${2:-}" recheck_hours="${3:-0}" open_issues="${4:-{\}}" now="${5:-}" refinement_min_coord="${6:-}"
   local out="" all_json="" docs
-  local phantom_blocked phantom_json phantom_ts_json phantom_n
+  local phantom_blocked="" phantom_json='[]' phantom_n=0
   # Falls back to a literal copy of lib/refinement.sh's own pattern rather
   # than an unbound-variable abort under `set -u` when that file has not been
   # sourced (a caller testing this file in isolation): the two must still
@@ -821,7 +835,6 @@ enabler_eligible_items() {
   elif [[ -s "$src" ]]; then
     all_json="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null | jq -sc '.' 2>/dev/null || true)"
   fi
-  phantom_ts_json='[]'
   if [[ -n "$all_json" ]]; then
     # TD-PPagop-26082819: an `item-refined` event logged before the recording
     # seam (`refinement_record_fields`, `lib/refinement.sh`) validated
@@ -855,18 +868,17 @@ enabler_eligible_items() {
         --arg d "enabler-eligibility: ignoring phantom item-refined event(s) whose comment_url does not actually name a comment — the block(s) they claimed to refine are treated as still unrefined (TD-PPagop-26082819)" \
         '{detail: $d, phantom: $p}')"
     fi
-    phantom_ts_json="$(jq -c '[.[].ts]' <<<"$phantom_json" 2>/dev/null || printf '[]')"
-    [[ -n "$phantom_ts_json" ]] || phantom_ts_json='[]'
-
     # $all (the log, arbitrary in length), $open (the open-issues map, one
-    # number per open issue per repo) and $phantom_ts (TD-PPagop-26082819's
-    # phantom timestamps, computed above) arrive on stdin, one document per
-    # line, bound positionally with `input as $name` in the order printed
+    # number per open issue per repo) and $phantom (TD-PPagop-26082819's
+    # phantom events, computed above — the whole `{repo, item, ts}` triple,
+    # since `ts` alone does not identify an event on a fleet-wide log stamped
+    # to the second) arrive on stdin, one document per line, bound
+    # positionally with `input as $name` in the order printed
     # (requirement 4g) — never in argv.
-    docs="$all_json"$'\n'"$open_issues"$'\n'"$phantom_ts_json"
+    docs="$all_json"$'\n'"$open_issues"$'\n'"$phantom_json"
     out="$(jq -nc --argjson min_coord "$min_coord" --argjson recheck_hours "$recheck_hours" \
         --argjson now "$now" --argjson refinement_min_coord "$refinement_min_coord" \
-        'input as $all | input as $open | input as $phantom_ts | ('"$ENABLER_ELIGIBLE_JQ"')' \
+        'input as $all | input as $open | input as $phantom | ('"$ENABLER_ELIGIBLE_JQ"')' \
         <<<"$docs" 2>/dev/null || true)"
   fi
   [[ -n "$out" ]] || out='[]'

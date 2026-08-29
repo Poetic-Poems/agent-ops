@@ -17784,9 +17784,13 @@ pull request, run the ones the change touches and any it could regress.
     `#issuecomment-`/REST-API comment anchor — #818's and #874's own shape,
     TD-PPagop-26082819) derives a `null` `refined_before` and logs a warning
     naming the phantom's timestamp and repo+item; a genuine refinement is
-    still found behind an earlier or a later phantom, in either order; and a
+    still found behind an earlier or a later phantom, in either order; a
     spec-carrying (non-issue) event, which has no `comment_url` to test at
-    all, is never treated as phantom.
+    all, is never treated as phantom; and one item's phantom does not
+    suppress a *different* item's genuine refinement stamped in the same
+    second, since the log is fleet-wide and `log_event`'s timestamps are
+    whole-second, so the phantom set is matched on the whole
+    `{repo, item, ts}` triple rather than on `ts` alone.
 11a. **The fingerprint wakes a quiet fleet at the threshold, and lets it go
     quiet again (requirement 35b).** In `test/noop-skip.test.sh`, per the same
     discipline as the abandoned-drafts trap: an item entering the eligible set

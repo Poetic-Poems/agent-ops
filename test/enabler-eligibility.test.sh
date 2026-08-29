@@ -460,6 +460,30 @@ assert_eq "a spec-carrying item-refined event is never treated as phantom" \
   "2026-07-20T08:00:00Z" "$(eligible 3 0 "$open_none" | jq -r '.[0].refined_before.ts // "null"')"
 assert_eq "…and earns no phantom warning" "0" "$(log_event_calls)"
 
+# One item's phantom must not suppress another item's genuine refinement.
+# `log_event` stamps whole-second UTC timestamps and this rule runs over the
+# fleet-wide *union* log, so two `item-refined` events sharing a second across
+# different items is ordinary traffic, not a contrivance — which is why the
+# phantom set is matched on the whole {repo, item, ts} triple and never on
+# `ts` alone. Keyed on `ts` alone, TD1's real refinement below derives to
+# null: the thrash guard silently disarms for an item that genuinely was
+# refined, and the spec/comment_url lib/enabler.sh's adjudication path reads
+# back out of `refined_before` is discarded with it.
+reset_log_event_calls
+cat > "$log" <<'EOF'
+{"ts":"2026-08-26T08:45:09Z","cycle":"cA","event":"item-refined","repo":"o/r","item":"TD1","by":"refiner","comment_url":"https://github.com/o/r/issues/818#issuecomment-99"}
+{"ts":"2026-08-26T08:45:09Z","cycle":"cB","event":"item-refined","repo":"o/r","item":"TD2","by":"refiner","comment_url":"https://github.com/o/r/issues/874"}
+{"ts":"2026-08-26T09:00:00Z","cycle":"c0","event":"attempt-failed","stage":"coordinator","repo":"o/r","item":"TD1","kind":"needs-refinement","detail":"under-specified","unblock_condition":"a human clarifies"}
+{"ts":"2026-08-26T09:00:00Z","cycle":"c0","event":"attempt-failed","stage":"coordinator","repo":"o/r","item":"TD2","kind":"needs-refinement","detail":"under-specified","unblock_condition":"a human clarifies"}
+EOF
+coord_cycles_after "2026-08-26T09:00:00Z" 3 >> "$log"
+assert_eq "a phantom does not suppress another item's refinement sharing its timestamp" \
+  "2026-08-26T08:45:09Z" \
+  "$(eligible 3 0 "$open_none" | jq -r '.[] | select(.item == "TD1") | .refined_before.ts // "null"')"
+assert_eq "…and the same-second phantom is still skipped for the item that owns it" \
+  "null" \
+  "$(eligible 3 0 "$open_none" | jq -r '.[] | select(.item == "TD2") | .refined_before.ts // "null"')"
+
 # A repo whose source state could not be sampled has no digest, and an
 # escalation there might still be open. "Cannot tell" resolves to ineligible:
 # the cheap mistake is a delayed engagement, the expensive one is a duplicate
