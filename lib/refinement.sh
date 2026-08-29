@@ -611,9 +611,51 @@ refinement_engagement_set() {
     <<<"$eligible" 2>/dev/null || printf '%s' "$eligible"
 }
 
+# The one pattern that decides whether a `comment_url` — or a Refiner
+# verdict's raw `comments_posted[0]` — actually names a GitHub comment,
+# shared by every caller that has to ask that question: this file's own
+# recording seam just below (`refinement_record_fields`, read by both the
+# Refiner's own corroboration check in `maybe_run_refiner` and the Enabler's
+# `unblocked` path in `lib/enabler.sh`), the reading seam that re-validates
+# an already-logged `item-refined` event's `comment_url`
+# (`refined_before`'s derivation, `lib/cycle-state.sh`'s `ENABLER_ELIGIBLE_JQ`),
+# and the traceability check that fetches the comment back
+# (`refinement_traceability_fault`, `lib/candidate-select.sh`,
+# TD-PPagop-26082603). GitHub's own two shapes: the HTML permalink anchor
+# (`…/issues/<n>#issuecomment-<id>`) and the REST API form
+# (`https://api.github.com/repos/<owner>/<repo>/issues/comments/<id>`). A bare
+# issue URL — no anchor at all — matches neither, which is exactly the shape
+# both #818's and #874's phantom refinements recorded (TD-PPagop-26082819).
+#
+# Bash's `[[ =~ ]]` and jq's `test()` both read POSIX/Oniguruma extended
+# regex closely enough that one string serves both engines: every caller
+# matches against this same pattern rather than keeping its own copy, so a
+# comment URL is valid in exactly one place in this codebase.
+REFINEMENT_COMMENT_URL_RE='(#issuecomment-[0-9]+|/issues/comments/[0-9]+)$'
+
+# refinement_comment_url_valid URL
+# True (exit 0) iff URL actually names a comment, by REFINEMENT_COMMENT_URL_RE
+# above — the one question most callers of the shared predicate need answered.
+refinement_comment_url_valid() {
+  [[ "$1" =~ $REFINEMENT_COMMENT_URL_RE ]]
+}
+
+# refinement_comment_url_id URL
+# Print the numeric comment id URL names, in either recognised shape, or
+# nothing (and fail) when URL matches neither. `refinement_traceability_fault`
+# (`lib/candidate-select.sh`) is the one caller that needs the id itself, to
+# fetch the comment back and confirm its text; every other caller only needs
+# `refinement_comment_url_valid`'s boolean.
+refinement_comment_url_id() {
+  refinement_comment_url_valid "$1" || return 1
+  printf '%s' "$1" | sed -n \
+    -e 's|.*#issuecomment-\([0-9][0-9]*\)$|\1|p' \
+    -e 's|.*/issues/comments/\([0-9][0-9]*\)$|\1|p'
+}
+
 # refinement_record_fields VERDICT_JSON
-# Print the payload of the `item-refined` event this `unblocked` verdict earns
-# (requirement 36b), or nothing when it earns none.
+# Print the payload of the `item-refined` event this `unblocked`/`refined`
+# verdict earns (requirements 36b, 39c), or nothing when it earns none.
 #
 # Two shapes, because refinement has to land where a *future* Co-Ordinator will
 # read it and that place differs by item type. For an issue the Enabler posts
@@ -623,15 +665,27 @@ refinement_engagement_set() {
 # the spec itself travels in the log and requirement 3h injects it into the
 # Co-Ordinator's runtime input.
 #
-# Nothing at all means the Enabler unblocked a refinement item without refining
-# it, which the caller records as a warning: the block clears, the item returns
-# to the pool exactly as under-specified as before, and the next Co-Ordinator
-# reports it again.
+# TD-PPagop-26082819: a `comments_posted[0]` that does not actually name a
+# comment — REFINEMENT_COMMENT_URL_RE false for it, a bare issue URL being the
+# shape both #818 and #874 recorded — is treated exactly as absent, on the
+# same terms as an empty `refined_spec`: it earns no `comment_url` field, so
+# every caller's own corroboration check sees nothing to record rather than a
+# URL that can never be traced back to a real comment.  TD-PPagop-26082603's
+# `comments_posted[0]`-is-an-array case reaches the same outcome by the same
+# route: a non-string value is rejected outright, before the pattern test ever
+# runs, rather than stringified into something that could coincidentally pass
+# it.
+#
+# Nothing at all means the item was unblocked/refined without actually being
+# refined, which the caller records as a warning: the block clears (or is
+# never recorded), the item returns to the pool exactly as under-specified as
+# before, and the next Co-Ordinator (or Refiner) reports it again.
 refinement_record_fields() {
-  jq -c '
+  jq -c --arg re "$REFINEMENT_COMMENT_URL_RE" '
     ((.refined_spec // "") | if type == "string" then . else tojson end) as $spec
     | (((.comments_posted // []) | if type == "array" then (.[0] // "") else "" end)
-       | tostring) as $url
+       | if type == "string" then . else "" end) as $raw_url
+    | (if $raw_url != "" and ($raw_url | test($re)) then $raw_url else "" end) as $url
     | if $spec == "" and $url == "" then empty
       else (if $spec == "" then {} else {spec: $spec} end)
            + (if $url == "" then {} else {comment_url: $url} end)
@@ -1250,7 +1304,7 @@ $(jq . <<<"$input")
           e_refined_fields="$(refinement_record_fields "$ex")"
           if [[ "$e_source" == "issues" ]]; then
             if [[ -z "$(jq -r '.comment_url // ""' <<<"$e_refined_fields")" ]]; then
-              log_event "warning" "$(jq -nc --arg d "refiner: refined $e_repo#$e_item carries no comment — nothing was posted for the Co-Ordinator to find; not recorded as refined" \
+              log_event "warning" "$(jq -nc --arg d "refiner: refined $e_repo#$e_item carries no comment that names a real GitHub comment — nothing was posted for the Co-Ordinator to find, or comments_posted[0] does not point at one (no #issuecomment- anchor or REST API comment URL); not recorded as refined" \
                 '{detail: $d}')"
               outcome="refined-uncorroborated"
             fi

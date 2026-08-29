@@ -1071,7 +1071,7 @@ assert_eq "skipped: no mutation reached gh" "0" \
 jq -nc '{node_id: "I_c55", issue_field_values: [{issue_field_name:"Priority", single_select_option:{name:"Critical"}}]}' \
   > "$gh_c/current-response.json"
 verdicts='[{"repo":"o/r","item":"55","verdict":"refined","reason":"already specified",
-            "comments_posted":["https://github.com/o/r/issues/55#issuecomment-2b"],
+            "comments_posted":["https://github.com/o/r/issues/55#issuecomment-21"],
             "priority":"Urgent"}]'
 calls="$(run_case_c "priority outside the four names: skipped as unrankable" "$issue_candidates_c" "$verdicts")"
 
@@ -1102,7 +1102,7 @@ EOF
 jq -nc '{node_id: "I_c55", issue_field_values: [{issue_field_name:"Priority", single_select_option:{name:"Critical"}}]}' \
   > "$gh_c/current-response.json"
 verdicts='[{"repo":"o/r","item":"55","verdict":"refined","reason":"already specified",
-            "comments_posted":["https://github.com/o/r/issues/55#issuecomment-2c"],
+            "comments_posted":["https://github.com/o/r/issues/55#issuecomment-22"],
             "priority":"Urgent"}]'
 calls="$(run_case_c "unrankable after a fallback: requested still travels" "$issue_candidates_c" "$verdicts")"
 
@@ -1159,7 +1159,7 @@ EOF
 jq -nc '{node_id: "I_c55", issue_field_values: []}' > "$gh_c/current-response.json"
 touch "$gh_c/fail-mutation"
 verdicts='[{"repo":"o/r","item":"55","verdict":"refined","reason":"specified fine, band fails, and is missing",
-            "comments_posted":["https://github.com/o/r/issues/55#issuecomment-3b"],
+            "comments_posted":["https://github.com/o/r/issues/55#issuecomment-31"],
             "priority":"Low"}]'
 calls="$(run_case_c "mutation fails after a fallback: warning names both bands" "$issue_candidates_c" "$verdicts")"
 rm -f "$gh_c/fail-mutation"

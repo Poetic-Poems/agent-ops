@@ -739,6 +739,53 @@ assert_eq "an unblock carrying neither records nothing at all" "" \
 assert_eq "an empty spec is not a refinement" "" \
   "$(refinement_record_fields '{"verdict": "unblocked", "refined_spec": "", "comments_posted": []}')"
 
+# --- TD-PPagop-26082819/TD-PPagop-26082603: refinement_comment_url_valid/_id ---
+# The shared predicate every corroboration and re-validation call in this file
+# (and lib/candidate-select.sh's refinement_traceability_fault/_repair) tests
+# a comment_url's shape against.
+
+assert_eq "the HTML permalink anchor form is valid" "0" \
+  "$(refinement_comment_url_valid 'https://github.com/o/r/issues/52#issuecomment-1' >/dev/null; echo $?)"
+assert_eq "the REST API form is valid" "0" \
+  "$(refinement_comment_url_valid 'https://api.github.com/repos/o/r/issues/comments/1' >/dev/null; echo $?)"
+assert_eq "a bare issue URL — no anchor — is not valid" "1" \
+  "$(refinement_comment_url_valid 'https://github.com/o/r/issues/818' >/dev/null; echo $?)"
+assert_eq "an empty string is not valid" "1" \
+  "$(refinement_comment_url_valid '' >/dev/null; echo $?)"
+assert_eq "refinement_comment_url_id extracts the id from the HTML form" "1" \
+  "$(refinement_comment_url_id 'https://github.com/o/r/issues/52#issuecomment-1')"
+assert_eq "…and from the REST API form" "42" \
+  "$(refinement_comment_url_id 'https://api.github.com/repos/o/r/issues/comments/42')"
+assert_empty "…and prints nothing for a bare issue URL" \
+  "$(refinement_comment_url_id 'https://github.com/o/r/issues/818')"
+
+# --- TD-PPagop-26082819: a bare-issue-URL comments_posted[0] is not recorded --
+# #818's and #874's own phantom item-refined events both carried exactly this
+# shape: comments_posted[0] is the issue's own URL, with no #issuecomment-
+# anchor, so it cannot name any comment at all.
+
+assert_eq "a bare issue URL in comments_posted[0] records nothing, same as an empty one" "" \
+  "$(refinement_record_fields '{"verdict": "unblocked",
+       "comments_posted": ["https://github.com/o/r/issues/818"]}')"
+assert_eq "…the exact #818 shape" "" \
+  "$(refinement_record_fields '{"verdict": "refined",
+       "comments_posted": ["https://github.com/Poetic-Poems/agent-ops/issues/818"]}')"
+
+# TD-PPagop-26082603's own second half: comments_posted[0] itself an array
+# (rather than a string) must not be stringified into something that could
+# coincidentally pass the pattern test — it is rejected outright, on the same
+# "records nothing" terms.
+assert_eq "comments_posted[0] being an array records nothing, not a stringified fake URL" "" \
+  "$(refinement_record_fields '{"verdict": "unblocked",
+       "comments_posted": [["https://github.com/o/r/issues/52#issuecomment-1"]]}')"
+
+# A comment_url that fails the shape check never displaces a spec that *is*
+# present — the two fields are independent, and a malformed comments_posted
+# must not cost a valid refined_spec its own recording.
+assert_eq "a spec survives a sibling bare-issue-URL comments_posted[0]" '{"spec":"the spec"}' \
+  "$(refinement_record_fields '{"verdict": "unblocked", "refined_spec": "the spec",
+       "comments_posted": ["https://github.com/o/r/issues/818"]}')"
+
 # --- Requirements 3h: the refinement reaches the next Co-Ordinator ---------------
 
 cat > "$log" <<'EOF'

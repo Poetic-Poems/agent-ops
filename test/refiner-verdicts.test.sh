@@ -350,7 +350,7 @@ assert_contains "refined issue: the label reached gh" "gh-label add o/r 55 refin
 # nothing).
 # ============================================================================
 verdicts='[{"repo":"o/r","item":"55","verdict":"refined","reason":"already adequately specified by the Enabler; nothing changed since — re-affirming",
-            "comments_posted":["https://github.com/o/r/issues/55#issuecomment-0-from-a-prior-cycle"]}]'
+            "comments_posted":["https://github.com/o/r/issues/55#issuecomment-99000001"]}]'
 calls="$(run_case "refined issue, re-affirmation" "$issue_candidates" "$verdicts")"
 
 assert_eq "re-affirmation: exactly one item-refined event" "1" \
@@ -358,7 +358,7 @@ assert_eq "re-affirmation: exactly one item-refined event" "1" \
 ir_evt="$(events_named "$calls" item-refined | head -n1)"
 assert_eq "re-affirmation: item-refined is attributed by: refiner" "refiner" "$(jq -r '.by' <<<"$ir_evt")"
 assert_eq "re-affirmation: item-refined carries the pre-existing comment URL" \
-  "https://github.com/o/r/issues/55#issuecomment-0-from-a-prior-cycle" "$(jq -r '.comment_url' <<<"$ir_evt")"
+  "https://github.com/o/r/issues/55#issuecomment-99000001" "$(jq -r '.comment_url' <<<"$ir_evt")"
 xmn_evt="$(events_named "$calls" refiner-examined | head -n1)"
 assert_eq "re-affirmation: refiner-examined outcome is refined, not needs-refinement" \
   "refined" "$(jq -r '.outcome' <<<"$xmn_evt")"
