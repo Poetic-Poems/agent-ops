@@ -301,20 +301,23 @@ assert_ok "…and the rung it reached is recorded, not left at 0 (got $coordinat
   "$(( coordinator_fit_rung > 0 ))"
 
 # Requirement 3x: every trimmed-but-eligible candidate is counted as
-# unassessable rather than demanding a needs_refinement/voided account.
-eligible_items_json="$(coordinator_eligible_items "$ordered_repos_json" "$blocked_json")"
-unassessable_json="$(coordinator_unassessable_items "$eligible_items_json" "$coordinator_fit_trimmed_json")"
-unassessable_total="$(jq 'length' <<<"$unassessable_json" 2>/dev/null || echo 0)"
-assert_ok "requirement 3x counts the trimmed candidates as unassessable (got $unassessable_total)" \
-  "$(( unassessable_total > 0 ))"
-: > "$events"
-if (( unassessable_total > 0 )); then
-  log_event "coordinator-input-fit-unassessable" "$(jq -nc \
-    --argjson n "$unassessable_total" --argjson rung "$coordinator_fit_rung" \
-    '{unassessable_total: $n, rung: $rung}')"
-fi
-assert_eq "coordinator-input-fit-unassessable is logged for this fitted cycle" \
+# unassessable rather than demanding a needs_refinement/voided account — and
+# the block says so on the log. Both come off the block just eval'd above:
+# `trim_block` reaches to "3b. No-op short-circuit", so it carries requirement
+# 3x's own accounting and its own `log_event` call, and the assertions here
+# read those rather than recomputing them. A test that recomputed the count
+# and logged the event itself could not tell a working block from a broken one
+# — it would pass against the very pre-fix gate this section exists to catch.
+# shellcheck disable=SC2154  # Assigned by the lifted trim block eval'd above.
+assert_ok "requirement 3x counts the trimmed candidates as unassessable (got $coordinator_unassessable_total)" \
+  "$(( coordinator_unassessable_total > 0 ))"
+assert_eq "…and the block logs coordinator-input-fit-unassessable for this fitted cycle" \
   "1" "$(grep -c '^coordinator-input-fit-unassessable' "$events")"
+unassessable_event="$(grep '^coordinator-input-fit-unassessable' "$events" | cut -f2-)"
+assert_true "…carrying the count, the rung, and the sentence a reader gets off the log" \
+  "$(jq -e --argjson n "$coordinator_unassessable_total" --argjson rung "$coordinator_fit_rung" \
+      '.unassessable_total == $n and .rung == $rung and (.detail | test("rung \($rung)"))' \
+      <<<"$unassessable_event" >/dev/null && echo true || echo false)"
 
 # Requirement 34e's fourth refusal: a needs_refinement report naming one of
 # this cycle's actually-trimmed items is refused, on the real rung and trimmed
