@@ -1,27 +1,34 @@
 #!/usr/bin/env bash
 #
 # test/gather-tech-debt.test.sh — regression test for
-# scripts/gather-tech-debt.sh (requirement 3t, issue #310): the source that
-# hands the Co-Ordinator every open tech-debt register item pre-fetched,
-# replacing the live tarball-and-grep read the prompt used to ask for.
+# scripts/gather-tech-debt.sh (requirement 3t, issue #310; store moved to
+# labelled issues by D15 as revised, #869/#875): the source that hands the
+# Co-Ordinator every open `pw::type:tech-debt`-labelled issue pre-fetched,
+# whole thread included.
 #
 # Behaviours asserted, each of which fails silently if broken:
 #
-#   - **Only `status: open` items are candidates.** `in-progress`, `resolved`
-#     and `not-debt` rows are never selectable and must not appear.
-#   - **Each candidate carries the whole item file verbatim as `body`**, plus
-#     `id`/`ref` (the same string, the item's own id), `title`, `filed` and
-#     `url` — everything the Co-Ordinator needs with no second read.
-#   - **Sorted by id ascending** — "lowest tech-debt ID first" (the prompt's
-#     own "Selection algorithm").
-#   - **A repository with no register, or an unreadable one, contributes `[]`,
-#     silently** for the former and loudly (stderr) for the latter — the same
-#     distinction scripts/gather-register-hygiene.sh makes and the same trap
-#     ("no register" indistinguishable from "no answer") that cost its sibling
-#     gatherers a debugging round.
+#   - **Only issues carrying `pw::type:tech-debt` are candidates.** The
+#     labels-scoped listing call is trusted to have done that filtering; this
+#     test asserts the gatherer does not additionally require anything else.
+#   - **The deterministic filter, shared with scripts/gather-issues.sh via
+#     lib/issue-prefetch.sh, still applies**: an assigned issue, an issue
+#     labelled `blocked`, and an issue naming a still-open `Blocked-by:`
+#     reference (requirement 34j) are all dropped.
+#   - **Each candidate carries the whole issue thread verbatim** — `body` and
+#     every comment — plus `source`, `ref` (the bare issue number, as a
+#     string), `number`, `url`, `title`, `labels`, `author`, `created_at` and
+#     `updated_at`.
+#   - **Sorted by issue number ascending** — "the oldest item is kept first"
+#     (lib/coordinator-input.sh's own `keep_order_tech_debt`).
+#   - **Degrades to `[]` (exit 0) on any failure**, silently for none of the
+#     old register-specific cases (there is no register left to read) but
+#     always loudly on stderr for a genuine API failure — matching
+#     scripts/gather-issues.sh's own degrade contract, which this gatherer
+#     now shares in spirit.
 #
-# The gatherer is run for real against a stubbed `gh` and the same fixtures
-# test/register-hygiene.test.sh uses (test/fixtures/tech-debt-items-*), so the
+# The gatherer is run for real against a stubbed `gh`, the same stub shape
+# test/issues-prefetch.test.sh uses for scripts/gather-issues.sh, so the
 # assertions are about the shipped script rather than a copy of its logic.
 #
 # No test framework is used (none exists elsewhere in this repo). Run
@@ -35,7 +42,6 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GATHER="$SCRIPT_DIR/scripts/gather-tech-debt.sh"
-FIXTURES_DIR="$SCRIPT_DIR/test/fixtures"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -52,134 +58,156 @@ assert_eq() {
   fi
 }
 
-# --- A stub `gh`, the same shape test/register-hygiene.test.sh uses ------------
+# --- A stub `gh`, the same shape test/issues-prefetch.test.sh uses for
+#     scripts/gather-issues.sh: it answers the labelled-issues listing (fetched
+#     raw) and per-issue comments (fetched with `--jq`). Comments must be
+#     matched before the listing: both paths contain `/issues`. ---
 mkdir -p "$tmp_dir/bin"
 cat >"$tmp_dir/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 set -uo pipefail
-[[ "${1:-}" == "api" ]] || { echo "stub gh: unexpected call: $*" >&2; exit 1; }
-case "${2:-}" in
-  */git/trees/*)
-    case "${STUB_MODE:-hit}" in
-      hit)
-        case "${STUB_FORMAT:-peritem}" in
-          peritem)
-            printf '{"tree":[{"path":"TECH-DEBT.md","type":"blob","sha":"%s"},{"path":"tech-debt","type":"tree","sha":"%s"}]}\n' \
-              "$STUB_POLICY_SHA" "$STUB_TREE_SHA"
-            ;;
-          none)
-            printf '{"tree":[{"path":"README.md","type":"blob","sha":"%s"}]}\n' \
-              "$STUB_BLOB_SHA"
-            ;;
-        esac
-        ;;
-      404)
-        echo '{"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}'
-        echo "gh: Not Found (HTTP 404)" >&2
-        exit 1
-        ;;
-      *)
-        echo "gh: error connecting to api.github.com" >&2
-        exit 1
-        ;;
-    esac
+[[ "${1:-}" == "api" ]] || { echo "stub gh: unexpected command: $*" >&2; exit 1; }
+path="$2"; shift 2
+filter='.'
+while [[ $# -gt 0 ]]; do
+  case "$1" in --jq) filter="$2"; shift 2;; *) shift;; esac
+done
+case "$path" in
+  */issues/*/comments*)
+    n="${path##*/issues/}"; n="${n%%/*}"
+    if [[ -f "$STUB_COMMENTS_DIR/$n.json" ]]; then
+      body="$(cat "$STUB_COMMENTS_DIR/$n.json")"
+    else
+      body='[]'
+    fi
     ;;
-  */tarball/*)
-    cat "$STUB_TARBALL"
+  */issues*labels=pw*) body="$(cat "$STUB_ISSUES")";;
+  */issues/*)
+    # A Blocked-by live-check reading one referenced issue's state.
+    n="${path##*/issues/}"
+    if [[ -f "$STUB_REFS_DIR/$n.json" ]]; then
+      body="$(cat "$STUB_REFS_DIR/$n.json")"
+    else
+      body='{"state":"open"}'
+    fi
     ;;
-  *)
-    echo "stub gh: unexpected call: $*" >&2
-    exit 1
-    ;;
+  *) echo "stub gh: unexpected path: $path" >&2; exit 1;;
 esac
+jq -rc "$filter" <<<"$body"
 STUB
 chmod +x "$tmp_dir/bin/gh"
 export PATH="$tmp_dir/bin:$PATH"
 
-make_tarball() {
-  local fixture="$1" out="$2" staging
-  staging="$(mktemp -d)"
-  mkdir -p "$staging/Poetic-Poems-poetic-abc1234"
-  cp -r "$fixture"/. "$staging/Poetic-Poems-poetic-abc1234/"
-  tar -czf "$out" -C "$staging" Poetic-Poems-poetic-abc1234
-  rm -rf "$staging"
-}
-
-export STUB_BLOB_SHA="413128de0d60d9502bf469348bc70fbbacccf569"
-export STUB_POLICY_SHA="9f2c11d34d5f0b6ba7a1c56d2e8f4a0b1c2d3e4f"
-export STUB_TREE_SHA="5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f"
-export STUB_TARBALL="$tmp_dir/register.tar.gz"
-export STUB_MODE=hit
-export STUB_FORMAT=peritem
-
-run() {  # prints stdout; stderr lands in $tmp_dir/err
-  "$GATHER" "Poetic-Poems/poetic" main 2>"$tmp_dir/err"
-}
-
-# --- Only status:open items are candidates, whole file verbatim -----------------
+# --- The fixture: one issue per way an entry can qualify or be dropped ---
 #
-# tech-debt-items-consistent carries one open item (TD-PPtest-26071501) and one
-# resolved item (TD-PPtest-26071502, which must never appear).
-make_tarball "$FIXTURES_DIR/tech-debt-items-consistent" "$STUB_TARBALL"
-out="$(run)"; rc=$?
+# #20 is clean, labelled `pw::type:tech-debt` plus an extra label, with a
+# two-comment thread; #21 is assigned; #22 is labelled `Blocked` (upper case,
+# proving the drop case-insensitive); #23 names an unresolved `Blocked-by:
+# #24` (still open); #19 is clean and commentless, the lowest number, to
+# prove ascending sort.
+export STUB_ISSUES="$tmp_dir/issues.json"
+export STUB_COMMENTS_DIR="$tmp_dir/comments"
+export STUB_REFS_DIR="$tmp_dir/refs"
+mkdir -p "$STUB_COMMENTS_DIR" "$STUB_REFS_DIR"
+cat >"$STUB_ISSUES" <<'EOF'
+[
+  {"number": 20, "html_url": "https://github.com/o/r/issues/20", "title": "Untangle the frobnicator",
+   "user": {"login": "warwick"}, "labels": [{"name": "pw::type:tech-debt"}, {"name": "backend"}],
+   "assignees": [], "created_at": "2026-07-19T08:00:00Z", "updated_at": "2026-07-20T09:00:00Z",
+   "body": "The body of twenty."},
+  {"number": 21, "html_url": "https://github.com/o/r/issues/21", "title": "Assigned debt",
+   "user": {"login": "warwick"}, "labels": [{"name": "pw::type:tech-debt"}],
+   "assignees": [{"login": "somebody"}], "created_at": "2026-07-19T08:00:00Z", "updated_at": "2026-07-20T09:00:00Z",
+   "body": "Assigned, so not a candidate."},
+  {"number": 22, "html_url": "https://github.com/o/r/issues/22", "title": "Blocked debt",
+   "user": {"login": "warwick"}, "labels": [{"name": "pw::type:tech-debt"}, {"name": "Blocked"}],
+   "assignees": [], "created_at": "2026-07-19T08:00:00Z", "updated_at": "2026-07-20T09:00:00Z",
+   "body": "Labelled Blocked, so not a candidate."},
+  {"number": 23, "html_url": "https://github.com/o/r/issues/23", "title": "Debt with an open dependency",
+   "user": {"login": "warwick"}, "labels": [{"name": "pw::type:tech-debt"}],
+   "assignees": [], "created_at": "2026-07-19T08:00:00Z", "updated_at": "2026-07-20T09:00:00Z",
+   "body": "Blocked-by: #24"},
+  {"number": 19, "html_url": "https://github.com/o/r/issues/19", "title": "The oldest debt",
+   "user": {"login": "warwick"}, "labels": [{"name": "pw::type:tech-debt"}],
+   "assignees": [], "created_at": "2026-07-18T08:00:00Z", "updated_at": "2026-07-18T08:00:00Z",
+   "body": "No comments, no labels but the one that matters."}
+]
+EOF
+cat >"$STUB_COMMENTS_DIR/20.json" <<'EOF'
+[
+  {"user": {"login": "warwick"}, "created_at": "2026-07-19T10:00:00Z", "body": "Acceptance: it untangles."},
+  {"user": {"login": "reviewer"}, "created_at": "2026-07-20T09:00:00Z", "body": "Scope cut: skip the UI."}
+]
+EOF
+cat >"$STUB_REFS_DIR/24.json" <<'EOF'
+{"state": "open"}
+EOF
+
+out="$("$GATHER" o/r 2>"$tmp_dir/err")"; rc=$?
+
+# --- The filter: what arrives, and what never does ---
 assert_eq "exits 0" "0" "$rc"
-assert_eq "exactly the one open item is a candidate" "1" "$(jq 'length' <<<"$out")"
-assert_eq "the resolved item is dropped" "0" \
-  "$(jq '[.[] | select(.id == "TD-PPtest-26071502")] | length' <<<"$out")"
-assert_eq "source is tech-debt" "tech-debt" "$(jq -r '.[0].source' <<<"$out")"
-assert_eq "ref is the item's own id" "TD-PPtest-26071501" "$(jq -r '.[0].ref' <<<"$out")"
-assert_eq "id is the item's own id" "TD-PPtest-26071501" "$(jq -r '.[0].id' <<<"$out")"
-assert_eq "title is read from frontmatter" \
-  "An open item carried over from the legacy register" "$(jq -r '.[0].title' <<<"$out")"
-assert_eq "filed is read from frontmatter" "2026-07-15" "$(jq -r '.[0].filed' <<<"$out")"
-assert_eq "url points at the item file on the default branch" \
-  "https://github.com/Poetic-Poems/poetic/blob/main/tech-debt/TD-PPtest-26071501.md" \
-  "$(jq -r '.[0].url' <<<"$out")"
-expected_body="$(cat "$FIXTURES_DIR/tech-debt-items-consistent/tech-debt/TD-PPtest-26071501.md")"
-assert_eq "body is the whole item file verbatim, frontmatter included" "$expected_body" \
-  "$(jq -r '.[0].body' <<<"$out")"
+assert_eq "exactly the two clean labelled issues arrive" \
+  "2" "$(jq 'length' <<<"$out")"
+assert_eq "the assigned issue is dropped" \
+  "false" "$(jq 'any(.[]; .number == 21)' <<<"$out")"
+assert_eq "the Blocked-labelled issue is dropped, case notwithstanding" \
+  "false" "$(jq 'any(.[]; .number == 22)' <<<"$out")"
+assert_eq "the issue with an unresolved Blocked-by reference is dropped" \
+  "false" "$(jq 'any(.[]; .number == 23)' <<<"$out")"
+assert_eq "nothing on stderr on the success path" "" "$(cat "$tmp_dir/err")"
 
-# --- Multiple open items, sorted by id ascending ---------------------------------
-#
-# tech-debt-items-drifted carries three open items (a register-hygiene fixture,
-# reused here purely for its open rows — this gatherer does not run td-check.pl
-# and does not care that the register disagrees with itself).
-make_tarball "$FIXTURES_DIR/tech-debt-items-drifted" "$STUB_TARBALL"
-out="$(run)"; rc=$?
-assert_eq "  ... still exits 0" "0" "$rc"
-assert_eq "every open item in the fixture is a candidate" "3" "$(jq 'length' <<<"$out")"
-assert_eq "sorted by id ascending" \
-  "TD-PPtest-26071501 TD-PPtest-26071599 TD-XXwron-26071601" \
-  "$(jq -r '[.[].id] | join(" ")' <<<"$out")"
+# --- Sorted by issue number ascending ---
+assert_eq "sorted by issue number ascending, oldest first" \
+  "19 20" "$(jq -r '[.[].number] | join(" ")' <<<"$out")"
 
-# --- A repository with no register is a normal, silent [] -----------------------
-export STUB_FORMAT=none
-out="$(run)"; rc=$?
-assert_eq "a repository with no register contributes []" "[]" "$out"
-assert_eq "  ... and exits 0" "0" "$rc"
-assert_eq "  ... and says nothing on stderr — a missing register is not an error" \
-  "" "$(cat "$tmp_dir/err")"
-export STUB_FORMAT=peritem
+# --- The entry shape: everything the Co-Ordinator selects on ---
+entry20="$(jq -c '.[] | select(.number == 20)' <<<"$out")"
+assert_eq "the entry's source is tech-debt" "tech-debt" "$(jq -r '.source' <<<"$entry20")"
+assert_eq "the ref is the bare issue number, as a string" "20" "$(jq -r '.ref' <<<"$entry20")"
+assert_eq "labels arrive sorted" '["backend","pw::type:tech-debt"]' "$(jq -c '.labels' <<<"$entry20")"
+assert_eq "the body arrives verbatim" "The body of twenty." "$(jq -r '.body' <<<"$entry20")"
+assert_eq "the whole thread arrives" "2" "$(jq '.comments | length' <<<"$entry20")"
+assert_eq "a comment keeps its author, timestamp and body" \
+  '{"author":"reviewer","created_at":"2026-07-20T09:00:00Z","body":"Scope cut: skip the UI."}' \
+  "$(jq -c '.comments[1]' <<<"$entry20")"
+assert_eq "the url is the issue's own html_url" \
+  "https://github.com/o/r/issues/20" "$(jq -r '.url' <<<"$entry20")"
 
-export STUB_MODE=404
-out="$(run)"; rc=$?
-assert_eq "a repository that is gone (404) contributes []" "[]" "$out"
-assert_eq "  ... and exits 0" "0" "$rc"
-assert_eq "  ... and silently — the API body said 404, not error" \
-  "" "$(cat "$tmp_dir/err")"
+entry19="$(jq -c '.[] | select(.number == 19)' <<<"$out")"
+assert_eq "a commentless issue carries an empty comments array, not null" \
+  "[]" "$(jq -c '.comments' <<<"$entry19")"
 
-# --- An API failure is [] as well, but a loud one -------------------------------
-export STUB_MODE=error
-out="$(run)"; rc=$?
-assert_eq "an API failure contributes [] too" "[]" "$out"
-assert_eq "  ... and still exits 0" "0" "$rc"
-assert_eq "  ... but leaves gh's diagnosis on stderr, unlike the 404" \
-  "1" "$( [[ -s "$tmp_dir/err" ]] && echo 1 || echo 0 )"
-export STUB_MODE=hit
+# --- Once the dependency closes, the issue is no longer dropped ---
+cat >"$STUB_REFS_DIR/24.json" <<'EOF'
+{"state": "closed"}
+EOF
+out_resolved="$("$GATHER" o/r 2>"$tmp_dir/err2")"
+assert_eq "a resolved Blocked-by reference stops excluding the issue" \
+  "true" "$(jq 'any(.[]; .number == 23)' <<<"$out_resolved")"
 
-# --- The gatherer fails safe against the real API too ---------------------------
+# --- Degrading: a failing API yields [], exit 0, and is loud on stderr ---
+cat >"$tmp_dir/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+echo "stub gh: HTTP 500" >&2
+exit 1
+STUB
+chmod +x "$tmp_dir/bin/gh"
+
+degraded="$("$GATHER" o/r 2>"$tmp_dir/degrade.err")"
+degraded_rc=$?
+assert_eq "a failing API degrades to []" "[]" "$degraded"
+assert_eq "  ... and still exits 0" "0" "$degraded_rc"
+if [[ -s "$tmp_dir/degrade.err" ]]; then
+  printf 'ok   - %s\n' "and the failure is loud on stderr"
+else
+  printf 'FAIL - %s\n' "and the failure is loud on stderr (stderr was empty)"
+  failures=$(( failures + 1 ))
+fi
+
+# --- The gatherer fails safe against the real API too ---
 assert_eq "an unknown repo yields [] and exit 0, never a broken cycle" "[]" \
-  "$(PATH="${PATH#"$tmp_dir/bin:"}" "$GATHER" "Poetic-Poems/does-not-exist" main 2>/dev/null)"
+  "$(PATH="${PATH#"$tmp_dir/bin:"}" "$GATHER" "Poetic-Poems/does-not-exist" 2>/dev/null)"
 assert_eq "  ... and exits 0" "0" "$?"
 
 printf '\n'

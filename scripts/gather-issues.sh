@@ -40,6 +40,13 @@
 # which a failed or partial gather does not know to be true (review decision
 # on agent-ops#452 concern 3).
 #
+# An issue labelled `pw::type:tech-debt` is dropped from `candidates` too
+# (D15 as revised, #869; issue #875), on the same unreported terms as a pull
+# request: it belongs to the `tech-debt` band instead
+# (scripts/gather-tech-debt.sh), so it was never an `issues` candidate to
+# begin with, and keeping the two bands disjoint is not a deterministic-filter
+# drop `excluded` needs to explain.
+#
 # ## Why issues are pre-fetched at all
 #
 # The issues source used to be the Co-Ordinator's own read: the prompt said
@@ -122,6 +129,10 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib/dependency-gate.sh
 . "$SCRIPT_DIR/lib/dependency-gate.sh"
+# The deterministic filter and the Blocked-by live-check, shared with
+# scripts/gather-tech-debt.sh — see lib/issue-prefetch.sh.
+# shellcheck source=lib/issue-prefetch.sh
+. "$SCRIPT_DIR/lib/issue-prefetch.sh"
 # Rate-limit-aware `gh`: sourcing this wraps every `gh` call below so a
 # refusal GitHub will lift in seconds is waited out rather than degrading
 # this source to nothing. See lib/github-limit.sh.
@@ -148,21 +159,28 @@ issues_raw="$(gh api "repos/$slug/issues?state=open&per_page=100")" \
 jq -e 'type == "array"' <<<"$issues_raw" >/dev/null 2>&1 \
   || degrade "issues list payload is not an array"
 
-# The deterministic filter and the entry shape. `has("pull_request")` drops
-# the PRs the issues endpoint interleaves — never reported in `excluded`,
-# since a PR was never a candidate issue to begin with; the assignees check
-# drops assigned issues (requirement 16.4's deterministic half — this also
-# covers the Enabler's escalation issues, which are always assigned); the
-# label check drops `blocked` whatever its case. `priority`'s parse mirrors
-# gather-source-state.sh verbatim; `priority_set` reads the same field more
-# broadly, from the raw option names (`$priority_names`) rather than the
-# filtered `$priority_values`, so it is true for any single-select option at
-# all, not only the four ranked names — but not for a `Priority` value with
-# no `single_select_option` at all, which `$priority_names` drops.
+# The deterministic filter and the entry shape. `issue_deterministic_ok`
+# (lib/issue-prefetch.sh, shared with scripts/gather-tech-debt.sh) drops the
+# PRs the issues endpoint interleaves — never reported in `excluded`, since a
+# PR was never a candidate issue to begin with — assigned issues (requirement
+# 16.4's deterministic half — this also covers the Enabler's escalation
+# issues, which are always assigned), and issues labelled `blocked` whatever
+# their case. A `pw::type:tech-debt`-labelled issue is dropped too, the same
+# way a PR is: it belongs to the `tech-debt` band instead (scripts/
+# gather-tech-debt.sh), so keeping the two bands disjoint (D15 as revised,
+# #869) is not a candidacy exclusion to report in `excluded` any more than a
+# PR's own drop is — it was never an `issues` candidate to begin with.
+# `priority`'s parse mirrors gather-source-state.sh verbatim; `priority_set`
+# reads the same field more broadly, from the raw option names
+# (`$priority_names`) rather than the filtered `$priority_values`, so it is
+# true for any single-select option at all, not only the four ranked names —
+# but not for a `Priority` value with no `single_select_option` at all, which
+# `$priority_names` drops.
 #
-# `excluded` mirrors the same two drops, reason-tagged (agent-ops#447):
-# assigned wins the tag when an issue is somehow both assigned and
-# `blocked`-labelled, matching the order the filter below checks them in.
+# `excluded` mirrors the assigned/blocked-label drops only, reason-tagged
+# (agent-ops#447): assigned wins the tag when an issue is somehow both
+# assigned and `blocked`-labelled, matching the order `issue_exclude_reason`
+# checks them in.
 #
 # A third, structured drop happens below, once each candidate's whole thread
 # is in hand: a `Blocked-by:` reference (requirement 34j) naming a still-open
@@ -171,11 +189,10 @@ jq -e 'type == "array"' <<<"$issues_raw" >/dev/null 2>&1 \
 # declaring a dependency never earns a judgement, or an `attempt-failed`,
 # while that dependency stands. It is appended to `excluded` in the loop
 # below, once the unresolved reference is known.
-candidates="$(jq -c '
+candidates="$(jq -c "$ISSUE_DETERMINISTIC_FILTER_JQ"'
   [.[]
-   | select(has("pull_request") | not)
-   | select(((.assignees // []) | length) == 0)
-   | select(([.labels[]?.name | ascii_downcase] | index("blocked")) | not)
+   | select(issue_deterministic_ok)
+   | select(([.labels[]?.name] | index("pw::type:tech-debt")) == null)
    | ([.issue_field_values[]? | select(.issue_field_name == "Priority")
                               | .single_select_option.name
                               | select(. != null)]) as $priority_names
@@ -194,13 +211,11 @@ candidates="$(jq -c '
   | sort_by(.number)' <<<"$issues_raw" 2>/dev/null)" \
   || degrade "issues filter failed"
 
-excluded="$(jq -c '
+excluded="$(jq -c "$ISSUE_DETERMINISTIC_FILTER_JQ"'
   [.[]
    | select(has("pull_request") | not)
-   | select(((.assignees // []) | length) > 0
-            or (([.labels[]?.name | ascii_downcase] | index("blocked")) != null))
-   | {number: .number,
-      reason: (if ((.assignees // []) | length) > 0 then "assigned" else "blocked-label" end)}]
+   | select(issue_exclude_reason != null)
+   | {number: .number, reason: issue_exclude_reason}]
   | sort_by(.number)' <<<"$issues_raw" 2>/dev/null)" \
   || degrade "issues excluded-filter failed"
 
@@ -217,44 +232,19 @@ while IFS= read -r candidate; do
   # Requirement 34j: a `Blocked-by:` reference, in the body or any comment,
   # holds this candidate back until every reference it names is closed —
   # checked live, right here, because this is the one place that has both
-  # the whole thread and a `gh` budget for it. Any reference still open (or
-  # unreadable — an unknown reference decides nothing, the same direction
-  # every other deterministic exclusion here fails safe in) drops the
-  # candidate entirely, before the comparatively expensive comments payload
-  # above is put to any other use.
+  # the whole thread and a `gh` budget for it. `issue_blocked_by_ref`
+  # (lib/issue-prefetch.sh, shared with scripts/gather-tech-debt.sh) is the
+  # live check; a printed reference drops the candidate entirely, before the
+  # comparatively expensive comments payload above is put to any other use.
   thread_text="$(jq -r '.body' <<<"$candidate")
 $(jq -r '[.[].body] | join("\n")' <<<"$comments")"
-  dep_refs="$(dependency_refs "$thread_text")"
-  if [[ "$(jq 'length' <<<"$dep_refs" 2>/dev/null || echo 0)" != "0" ]]; then
-    dep_unresolved=0
-    while IFS= read -r ref; do
-      [[ -n "$ref" ]] || continue
-      if [[ "$ref" == */* ]]; then
-        ref_repo="${ref%%#*}"
-        ref_n="${ref##*#}"
-      else
-        ref_repo="$slug"
-        ref_n="$ref"
-      fi
-      ref_state="$(gh api "repos/$ref_repo/issues/$ref_n" --jq '.state' 2>/dev/null || true)"
-      if [[ "$ref_state" != "closed" ]]; then
-        dep_unresolved=1
-        break
-      fi
-    done < <(jq -r '.[]' <<<"$dep_refs")
-    if (( dep_unresolved == 1 )); then
-      # $ref still names the one unresolved reference the loop above broke
-      # on — bash keeps a loop variable's value past its own `break`. It is
-      # bare (`195`) for a same-repo reference and already qualified
-      # (`owner/repo#42`) for a cross-repo one (see dependency_refs); a
-      # display form always carries the `#` a reader expects.
-      ref_display="$ref"; [[ "$ref_display" == */* ]] || ref_display="#$ref_display"
-      excl_entry="$(jq -nc --argjson n "$n" --arg ref "$ref_display" \
-        '{number: $n, reason: ("blocked-by: " + $ref)}')" || degrade "excluded entry assembly failed for issue #$n"
-      excluded="$(jq -nc 'input as $arr | input as $e | $arr + [$e]' <<<"$excluded"$'\n'"$excl_entry")" \
-        || degrade "excluded array assembly failed at issue #$n"
-      continue
-    fi
+  ref_display="$(issue_blocked_by_ref "$slug" "$thread_text")"
+  if [[ -n "$ref_display" ]]; then
+    excl_entry="$(jq -nc --argjson n "$n" --arg ref "$ref_display" \
+      '{number: $n, reason: ("blocked-by: " + $ref)}')" || degrade "excluded entry assembly failed for issue #$n"
+    excluded="$(jq -nc 'input as $arr | input as $e | $arr + [$e]' <<<"$excluded"$'\n'"$excl_entry")" \
+      || degrade "excluded array assembly failed at issue #$n"
+    continue
   fi
 
   # $comments is a whole issue thread — requirement 3d/#118 pre-fetches every

@@ -17,8 +17,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   name is fixed rather than configurable because it is D24's trust anchor:
   only a collaborator with triage can apply a label, which is what makes an
   issue's membership of the `tech-debt` work band trustable even though its
-  body stays untrusted data. Nothing selects on it yet — the issue-backed band
-  itself is still to come.
+  body stays untrusted data. The issue-backed band itself is agent-ops#875,
+  below.
 - A tech-debt filing a human declines no longer leaves its branches behind
   for good (TD-PPagop-26082310). `scripts/sweep-orphan-branches.sh` now
   sweeps a third prefix, `td-record/*` — unconditionally, since
@@ -37,6 +37,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   that leaves a bare `td/<ID>` lock alone is unchanged for every reservation
   with no `td-record/` sibling. `TECH-DEBT.md` documents the same two-branch
   cleanup as the by-hand fallback.
+- The `tech-debt` work band now selects from open GitHub issues labelled
+  `pw::type:tech-debt` instead of the in-repo register (agent-ops#875, D15 as
+  revised #869): `scripts/gather-tech-debt.sh` fetches those issues, sharing
+  `scripts/gather-issues.sh`'s deterministic exclusions (assigned, labelled
+  `blocked`, an unresolved `Blocked-by:` reference) via new
+  `lib/issue-prefetch.sh`, and `gather-issues.sh` itself now excludes
+  `pw::type:tech-debt`-labelled issues so the two bands stay disjoint. Between
+  this landing and a repository's own register migration, that repository's
+  unmigrated register items are invisible to the band — a low-urgency,
+  deliberately accepted gap the migrations (agent-ops#880 and siblings) close.
 - New `project_review.defaults.report_directory` and
   `project_review.repos[].report_directory` config keys (agent-ops#761): a
   GNU `date`(1) format string, resolved with `date -u` relative to the
