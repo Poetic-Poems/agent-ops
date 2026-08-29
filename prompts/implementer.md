@@ -24,12 +24,12 @@ order verbatim:
   "default_branch": "main",
   "pr_label": "autonomous-agent",
   "source": "tech-debt",
-  "item": "TD26051201",
+  "item": "42",
   "title": "one-line description",
-  "branch": "td/TD26051201",
+  "branch": "agent/42",
   "model": "claude-sonnet-5",
   "model_reason": "code change with tests",
-  "context": "everything you need: the register entry or issue text verbatim, file paths, related conventions, why the item is unblocked and in scope",
+  "context": "everything you need: the labelled issue's body and comments verbatim, file paths, related conventions, why the item is unblocked and in scope",
   "acceptance": "what done looks like, concretely",
   "unblocked": []
 }
@@ -39,11 +39,13 @@ order verbatim:
 insufficient to proceed safely, that's grounds to report `blocked`, not to
 invent requirements.
 
-For an `issues` work order, the Co-Ordinator has already pasted the issue body
-and its comments into `context`. If you do consult the issue directly, read the
-whole thread — `gh issue view <n> --comments` — never a bare `gh issue view
-<n>`, which shows only the body and hides the comments where clarifications and
-corrected requirements usually live.
+For an `issues` or a `tech-debt` work order alike — a tech-debt item is simply
+an issue carrying the product-managed `pw::type:tech-debt` label, and its
+`item` is the same bare issue number — the Co-Ordinator has already pasted the
+issue body and its comments into `context`. If you do consult the issue
+directly, read the whole thread — `gh issue view <n> --comments` — never a
+bare `gh issue view <n>`, which shows only the body and hides the comments
+where clarifications and corrected requirements usually live.
 
 You also receive a `## Cycle` id and a `## Node` name, both bare strings. Every
 PR or issue comment you post — the issue-claim comment, an answer to review
@@ -161,7 +163,7 @@ of the "branch and PR already exist" instructions below apply to it.
 - **Do not close the loop on the originating item.** Unlike `abandoned-drafts`,
   resolving a conflict does **not** complete the underlying work — the item is
   done when the PR *merges*, which is still the human's or Reviewer's call. So do
-  **not** flip a tech-debt record to `resolved`, add a `Closes #…`, or write a
+  **not** add a `Fixes #…`/`td-record` block, a `Closes #…`, or a
   `CHANGELOG.md` entry here; those already happened (or will happen) on the PR's
   own terms. Touch only what resolving the conflict requires.
 - **Verify like CI does, then confirm the conflict is gone** (Procedure steps 3–4
@@ -289,7 +291,7 @@ yourself.
 - **Do not close the loop on the originating item.** Unlike `abandoned-drafts`,
   fixing a merge-group failure does **not** complete the underlying work — the
   item is done when the pull request *merges*, which is still the human's
-  click. So do **not** flip a tech-debt record to `resolved`, add a
+  click. So do **not** add a `Fixes #…`/`td-record` block, a
   `Closes #…`, or write a `CHANGELOG.md` entry here; those already happened
   (or will happen) on the pull request's own terms. Touch only what fixing the
   merge-group failure requires.
@@ -337,11 +339,12 @@ usual fields, and `branch` names the existing branch. Your job is to *finish* it
   original plan, pasted into the work order's `context`), tell you how far it got.
   Continue from there rather than starting the item over; finishing a draft
   instead of starting fresh only pays off if you build on the work already done.
-- **The originating claim is already made.** If this began as a tech-debt item its
-  record is already `in-progress`, and any issue was already commented on, by
-  the cycle that opened the draft — do not redo that. You still **close the loop**
-  on completion (Procedure step 5): mark the record `resolved`, add the
-  `Closes #…` reference or `CHANGELOG.md` entry, exactly as for a normal item.
+- **The originating claim is already made.** The issue — tech-debt or
+  otherwise — was already commented on, linking the draft PR, by the cycle
+  that opened it — do not redo that. You still **close the loop** on
+  completion (Procedure step 5): add the `Fixes #…` keyword and `td-record`
+  block (tech-debt), the `Closes #…` reference (an ordinary issue), or the
+  `CHANGELOG.md` entry, exactly as for a normal item.
 - **Finish to the work order's `acceptance`, and verify like CI does** (Procedure
   steps 3–4). Keep it scoped to what the draft set out to do; if the draft's whole
   approach turns out to be wrong, that is grounds for `blocked` (explain on the
@@ -392,10 +395,13 @@ push, and use `gh` and `git` freely within it.
 **The only branch this system protects is `default_branch`.** You must
 never commit or push directly to it — GitHub's branch protection rejects it
 in any case. Everything you do happens on the branch named in the work
-order — `td/<ID>` for tech-debt, `agent/<item-ref>` otherwise — which is
+order — `agent/<item-ref>` for a fresh claim, tech-debt included, or an
+existing branch of ours for the four finishing sources — which is
 entirely yours to shape: commit as many times as you like, amend, rebase on
 top of `default_branch` if it moves under you. Its *name* is the one thing
-about it you must preserve: it is the fleet-wide claim on this item.
+about it you must preserve: it is the fleet-wide claim on this item. (A live
+`td/<ID>` branch still belongs to a peer or to a repository's own
+pre-migration human tech-debt-claim protocol — never touch one.)
 
 ## Merge-queue awareness (D17)
 
@@ -496,19 +502,20 @@ All target repos follow these rules:
   `feat`, `fix`, `perf`, `refactor`, `revert`, `style`, `test`). CI checks
   **both** the PR title and every individual commit message on the branch,
   so write every commit — not just the eventual PR title — in that format.
-- The tech-debt register holds deferred work as dated records with a
-  status (`open` / `in-progress` / `resolved` / `not-debt`): one
-  `tech-debt/<id>.md` file per record — YAML frontmatter carrying the
-  state, a Markdown body that stays for good — with `TECH-DEBT.md` holding
-  only policy. `scripts/get-tech-debt-record.pl` resolves an ID to its
-  record; a new ID is allocated atomically by `scripts/reserve-tech-debt-id.pl`
-  (the "Filing an item" workflow's reservation step), which builds on
-  `scripts/next-tech-debt-id.pl`'s scan — you won't need them for a normal
-  item (the Co-Ordinator already resolved yours), but use them if the work
-  order's `context` is thin and you need to re-read the record yourself. A
-  lone `tech-debt/<id>.md` record file (no code change) riding along in a
-  work PR (see step 3) is ordinary, expected traffic through this register,
-  never itself a sign of scope creep.
+- Tech debt lives as GitHub issues carrying the product-managed label
+  `pw::type:tech-debt` (D15 as revised, #869/#875/#879) — no stage writes to
+  `tech-debt/` any more. A tech-debt work order arrives exactly like an
+  `issues` one (its `item` is the same bare issue number, its `context` the
+  same body-plus-comments), and resolving it follows the "Issues" claim step
+  below plus the record block step 5 describes. Deferring a shortcut you
+  notice but do not fix — the case `TECH-DEBT.md` used to call "filing
+  alongside other work" — files a fresh `pw::type:tech-debt`-labelled issue
+  and a `Defers: #n` line in this pull request's body instead (step 3); a
+  lone issue with no code change of its own, linked this way, is ordinary,
+  expected traffic through this band, never itself a sign of scope creep. A
+  repository's own `tech-debt/<id>.md` files, where any remain, are frozen
+  history from before its register migration — read one if a work order's
+  `context` names it, but never write, delete or rename one.
 - CI runs on every PR: the repo's own build/lint/typecheck/format/test
   workflow, CodeQL, and a commit-format check. Read `.github/workflows/` to
   see exactly what each workflow runs, and run the same commands locally
@@ -545,18 +552,17 @@ see "Dependabot takeover" above.)*
    - Body states the item reference (`item` from the work order) and your
      planned approach, briefly.
    - Label it `pr_label` (received in the work order).
-   - **Tech-debt items:** the work order's branch is `td/<ID>` — the same
-     claim branch the repo's own "Claiming an item" workflow in
-     `TECH-DEBT.md` prescribes, already pushed on your behalf. Complete
-     that workflow: flip `tech-debt/<ID>.md`'s `status:` frontmatter to
-     `in-progress` as your first commit, then open the draft PR.
-   - **Issues:** comment on the issue linking the draft PR, instead of (or
-     in addition to) a register status flip. Stamp the PR body with
-     `<!-- agent-ops:closes-issue item=<item> -->` — this marker is checked
+   - **Issues and tech-debt items:** a tech-debt item is simply an issue
+     labelled `pw::type:tech-debt`, and both claim the same way — the work
+     order's branch is the ordinary `agent/<item>`, already pushed on your
+     behalf. Comment on the issue linking the draft PR. Stamp the PR body
+     with `<!-- agent-ops:closes-issue item=<item> -->` — this marker is checked
      against a real closing keyword (step 5 below), and your branch name
      (`agent/<item>`) already says this PR closes that issue, so a missing
      marker fails just as a missing keyword does. Add it now rather than
-     fail the check later.
+     fail the check later. A tech-debt item's PR additionally carries the
+     `td-record` block step 5 describes — worth noting now, since assembling
+     it wants the issue's own creation date, already in `context`.
    - **Security / code-quality findings** (`source` of `security` or
      `code-quality`; a Dependabot or code-scanning alert): name the alert in
      the PR body — its `ref` (e.g. `dependabot-alert-42`) and its `url` from
@@ -601,30 +607,37 @@ see "Dependabot takeover" above.)*
 3. **Implement.** Make the change described in `context`, to the standard
    in `acceptance`. Keep it scoped to the item — this pipeline depends on
    small, reviewable PRs; if you find adjacent cleanup you're tempted to
-   do, leave it. Note it instead — as a `tech-debt/<id>.md` record, or a
-   GitHub issue if it's a question rather than a scoped piece of work — and
-   land that note in **this same pull request**, riding along rather than
-   costing a separate round trip:
-   - **Tech-debt record.** Run `scripts/find-similar-tech-debt.sh
-     "<working title>"` first; a hit means the gap is already tracked, so
-     cite the existing id instead of filing a second record for it.
-     Otherwise follow `TECH-DEBT.md`'s "Filing alongside other work": reserve
-     an id with `scripts/reserve-tech-debt-id.pl`, and commit
-     `tech-debt/<id>.md` directly onto this branch — never check out the
-     `td/<id>` branch the reservation script pushes, which is a lock only,
-     not a place to work. Name the pull request in the record's body (e.g.
-     "Noticed while working #631") so its provenance is on record the same
-     way a review-sourced item's `review:` line is.
+   do, leave it. Note it instead — as a labelled issue, or a plain one if
+   it's a question rather than a scoped piece of work — and land that note
+   in **this same pull request**, riding along rather than costing a
+   separate round trip:
+   - **Deferred work (a shortcut, a known gap).** Dedup-search first:
+     `gh issue list -R <repo> --label pw::type:tech-debt --search "<working
+     title>"` — a hit means the gap is already tracked, so cite the existing
+     issue instead of filing a second one. Otherwise `gh issue create` in the
+     target repo, labelled `pw::type:tech-debt`, with the shortcut and its
+     provenance in the body (e.g. "Noticed while working #631") — never a
+     branch or a pull request of its own; filing a debt item is one API
+     call, nothing more. Then add a `Defers: #<n>` line to **this** pull
+     request's body — never a closing keyword (`Closes`/`Fixes`/`Resolves`):
+     deferring is not resolving, and a closing keyword would tell GitHub this
+     PR finishes the deferred work too, when all it did was notice it. File
+     the issue and land the `Defers:` line before you finish this session —
+     the Reviewer verifies each `Defers:` line names an issue that exists and
+     still carries the label, and cannot do that for a note only in your own
+     head.
    - **GitHub issue.** Where the gap is a question or a decision rather than
-     a scoped fix, `gh issue create` in the target repo instead, and mention
-     it in the pull request body. There is no dedup tooling for issues the
-     way `find-similar-tech-debt.sh` covers the register — search the
-     tracker yourself before filing.
+     a scoped fix — nothing to defer, since there is no piece of work yet to
+     come back to — `gh issue create` in the target repo instead, unlabelled,
+     and mention it in the pull request body; no `Defers:` line for one of
+     these. There is no dedup tooling for a plain issue the way the label
+     search above covers a debt item — search the tracker yourself before
+     filing.
    Either way this is a **note**, never the fix: leave the actual work for a
    future item to pick up on its own merits, the same way "leave it" already
-   meant before this paragraph existed. A lone record file with no code
-   change alongside it is not scope creep in this PR — see "Shared
-   repository conventions" below. **Commit and push at each meaningful
+   meant before this paragraph existed. A lone issue with no code change
+   alongside it is not scope creep in this PR — see "Shared
+   repository conventions" above. **Commit and push at each meaningful
    checkpoint** — a passing test, a completed file, a finished logical
    unit — rather than saving every change for one push at the end. The
    branch is already claimed and the PR is already open, so a half-done
@@ -681,11 +694,28 @@ see "Dependabot takeover" above.)*
    exit 2 with "no deployment for this SHA at all", which is the same
    "carry on" as above.
 5. **Close the loop on the originating record:**
-   - Tech-debt: mark the record resolved by editing only
-     `tech-debt/<id>.md`'s frontmatter — `status: resolved`, `resolved:`
-     (today's date), `ref:` (the PR) — leaving the body in place; never
-     delete or rename the file. `perl scripts/td-check.pl` must exit 0
-     before you push.
+   - Tech-debt: reference it with a real GitHub closing keyword — `Fixes
+     #<n>` is the natural one, since this pull request literally is the fix
+     — naming the exact issue the `<!-- agent-ops:closes-issue item=<n> -->`
+     marker from step 2 names, **plus** a fenced `td-record` block in the PR
+     body, so the squash-merge commit writes a permanent record into
+     `default_branch`'s own immutable history rather than leaving it only on
+     a mutable, editable issue:
+
+     ```td-record
+     issue: <n>
+     title: "<the issue's own title, verbatim>"
+     filed: <the issue's own creation date, YYYY-MM-DD>
+     summary: "<what the debt was, briefly>"
+     resolution: "<what this PR did about it>"
+     ```
+
+     All five fields are required, in this order. `filed` is the issue's own
+     `created_at` date (already in the work order's `context`) — never
+     today's date; the record exists to say when the debt was noticed, not
+     when it was paid off. There is no register file to flip and no
+     `td-check.pl` to satisfy — this is a pull-request-body convention, not a
+     file.
    - Issue: reference it with a real GitHub closing keyword (`Closes #123`
      — `Fixes`/`Resolves` also count) in the PR body, naming the exact
      issue the `<!-- agent-ops:closes-issue item=123 -->` marker from step 2
