@@ -88,8 +88,21 @@ reviewer_merge_observed() {
           --arg d "reviewer set file_debt for $pr_url with no default_fix and no owner_decision — filed with '## Default: not stated'" \
           '{detail: $d, pr_url: $u}')"
       fi
+      # GIT_DIR is `clone_dir` — an actual clone of `$selected_repo`, which is
+      # what techdebt_file_debt fetches `origin/main` in and runs the id
+      # reservation against. The cycle's own `cycle_dir` is a state directory,
+      # not a repository, and passing it here would fail the filing outright at
+      # that fetch (returning 1, so the leftovers this whole path exists to
+      # save would be lost with only a warning to show for it). Reused as-is
+      # for the same reason `lib/approver.sh` reuses it: it is still on disk at
+      # this point in the cycle — torn down only in the EXIT trap — and
+      # techdebt_file_debt never reads or writes its checked-out branch or
+      # working tree, only `origin/main`, so whatever the merged pull request's
+      # own branch happens to be checked out to is immaterial. Empty (this file
+      # sourced standalone, as the test suite does) simply falls back to
+      # techdebt_file_debt's own throwaway directory, the Enabler's case.
       if fd_result="$(techdebt_file_debt "$selected_repo" "$fd_title" "$fd_body" \
-             "while the Reviewer was examining $pr_url, whose subject merged mid-pass" "" "${cycle_dir:-}" "$fd_pr_label" \
+             "while the Reviewer was examining $pr_url, whose subject merged mid-pass" "" "${clone_dir:-}" "$fd_pr_label" \
              "$fd_default_fix" "$fd_owner_decision")" \
              && [[ -n "$fd_result" ]]; then
         IFS=$'\t' read -r fd_id fd_pr_url <<<"$fd_result"
