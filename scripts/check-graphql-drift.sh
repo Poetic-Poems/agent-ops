@@ -60,7 +60,7 @@
 # `variableMismatch`, and was confirmed so live.
 #
 # DISCOVERY IS A SEARCH, NEVER A LIST. The documents are found by scanning
-# every tracked file for `-f query='`, the one form all of them use, rather
+# every file in the tree for `-f query='`, the one form all of them use, rather
 # than from a list somebody maintains — for the reason
 # `.github/workflows/td-tooling-drift.yml` gives about its own manifest: a
 # hard-coded list can only cover what someone already thought to add to it, so
@@ -79,8 +79,8 @@
 #
 # Exit 0: every document validates. 1: at least one does not — drift, or a
 # document this checker could not build variables for. 2: could not check —
-# no `gh`, no credentials, no tracked files, or GitHub unreachable. Unable is
-# never reported as clean.
+# no `gh`, no credentials, no documents in the tree, or GitHub unreachable.
+# Unable is never reported as clean.
 
 set -uo pipefail
 

@@ -14224,7 +14224,7 @@ What exists, and the requirements each part answers to:
     against a `gh` stub it writes itself, and a stub answers in whatever shape
     its own fixture declares, so a field GitHub renames or moves cannot fail a
     test; this asks GitHub instead. The documents are **discovered**, by
-    scanning tracked files for `-f query='` — the one form all of them use —
+    walking the tree for `-f query='` — the one form all of them use —
     rather than read from a list, for the reason component 10 and
     `td-tooling-drift.yml` both give about their own file sets. Three kinds of
     file carry the delimiter without sending anything and are excluded:

@@ -142,6 +142,7 @@ assert_eq "every document reached gh wrapped in the skip fragment" \
 # ran what it checks would enqueue a pull request and write an issue's
 # Priority every night. Assert the wrapper sits between the operation and the
 # mutation field, not merely somewhere in the document.
+# shellcheck disable=SC2016  # GraphQL's own $id variable, matched literally.
 assert_eq "enqueuePullRequest is inside the skipped fragment, never at the top level" \
   "yes" "$(if grep -q 'mutation($id:ID!){ \.\.\. @skip(if:true) {enqueuePullRequest' "$tmp_dir/queries.log"; then echo yes; else echo no; fi)"
 assert_eq "no mutation reaches gh with its field still collectable" \
@@ -237,6 +238,7 @@ c() { gh api graphql -f query='query($state:PullRequestState!){ viewer{ login } 
 FIX
 out="$(run_check "$repo")"; rc=$?
 assert_eq "a variable type with no placeholder fails the run rather than being guessed" "1" "$rc"
+# shellcheck disable=SC2016  # the message names GraphQL's $state, matched literally.
 assert_eq "…naming the variable and its type, so the fix is obvious" \
   "yes" "$(if grep -q '\$state is declared PullRequestState, a type check-graphql-drift.sh cannot synthesise' <<<"$out"; then echo yes; else echo no; fi)"
 
@@ -256,8 +258,8 @@ assert_eq "…saying plainly that nothing is checking it" \
 
 repo="$(make_repo prose)"
 mkdir -p "$repo/docs" "$repo/prompts"
-printf 'Run `gh api graphql -f query=%s{ viewer{ login } }%s`.\n' "'" "'" > "$repo/docs/how.md"
-printf 'Run `gh api graphql -f query=%s{ viewer{ login } }%s`.\n' "'" "'" > "$repo/prompts/x.md"
+printf 'Run: gh api graphql -f query=%s{ viewer{ login } }%s\n' "'" "'" > "$repo/docs/how.md"
+printf 'Run: gh api graphql -f query=%s{ viewer{ login } }%s\n' "'" "'" > "$repo/prompts/x.md"
 out="$(run_check "$repo")"; rc=$?
 assert_eq "a tree whose only documents are prose and a prompt still checks the prompt" "0" "$rc"
 assert_eq "…the prompt is checked" \
