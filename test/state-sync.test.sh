@@ -265,6 +265,23 @@ assert_eq "a drifted compose.yaml is published in the heartbeat" "drifted" \
 assert_eq "with the count of differing lines" "2" \
   "$(jq -r '.compose.diff_lines' "$drift_pushed/heartbeat.json" 2>/dev/null)"
 
+# --- The heartbeat carries the updater verdict (agent-ops#603) ----------------
+# lib/updater-health.sh's own suite (test/updater-health.test.sh) covers what
+# the verdict says; what belongs here is that a ledger deploy/docker/
+# watchtower-pre-update.sh wrote reaches the heartbeat, keyed by the
+# container's own $HOSTNAME rather than NODE_NAME — the two need not match —
+# and that the raw ledger itself does not replicate.
+mkdir -p "$state/updater-ledger"
+printf '{"ts":"2026-07-20T00:00:00Z","verdict":"allow"}\n' > "$state/updater-ledger/updater-host.jsonl"
+sync_as "$active_home" active push HOSTNAME=updater-host >/dev/null
+assert_eq "the updater-carrying push exits 0" "0" "$?"
+updater_pushed="$tmp_dir/pushed-updater"
+git clone --quiet --branch nodes/active-node "$remote" "$updater_pushed"
+assert_eq "a container that never rolled after an allow is published as stuck" "stuck" \
+  "$(jq -r '.updater.status' "$updater_pushed/heartbeat.json" 2>/dev/null)"
+assert_eq "the raw ledger does not replicate" "0" \
+  "$(test -e "$updater_pushed/updater-ledger" && echo 1 || echo 0)"
+
 # --- A second push amends rather than accumulating history ---
 printf '{"ts":"2026-07-20T01:00:00Z","event":"cycle-end"}\n' >> "$state/log.jsonl"
 sync_as "$active_home" active push >/dev/null
@@ -286,6 +303,8 @@ sb_pushed="$tmp_dir/pushed-standby"
 git clone --quiet --branch nodes/standby-node "$remote" "$sb_pushed"
 assert_eq "a node with no .stage-health.json yet publishes a null stage_health, not a guess" "null" \
   "$(jq -c '.stage_health' "$sb_pushed/heartbeat.json")"
+assert_eq "a node with no updater-ledger/ yet publishes a null updater, not a guess" "null" \
+  "$(jq -c '.updater' "$sb_pushed/heartbeat.json")"
 
 # --- Mirror retention ---
 # One more cycle directory than the configured retention, so the oldest must

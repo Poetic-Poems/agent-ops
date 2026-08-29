@@ -1254,6 +1254,52 @@
     return el("div", {class:"ver"}, badge);
   }
 
+  // Whether watchtower's own pre-update hook is doing what it says
+  // (lib/updater-health.sh, agent-ops#603) — a fact independent of
+  // versionLine's "behind" and imageLine's "image behind" above, and one
+  // that can fire before either: on 2026-08-14 a node stayed on its
+  // previous image through a whole fleet roll while every other signal on
+  // this page still read healthy, because nothing read the update
+  // mechanism's own verdict rather than the drift it eventually causes.
+  //
+  // "rolled" is the ordinary case (a roll happened; nothing to say) and
+  // renders nothing, the same as compose's "in-sync" and image's "current".
+  // "deferring" is grey, versionLine's own "behind" colour: it resolves
+  // itself the moment the cycle or review holding it ends, so it is named
+  // rather than warned about, for how long. "stuck" is amber, composeLine's
+  // colour for "this wants a human" — either because an allowed roll never
+  // happened (`u.reason === "allow"`) and the retry that follows repeats the
+  // very thing that collided, or because a defer streak has itself outlived
+  // what any lock this hook honours could still legitimately hold
+  // (`u.reason === "defer"`); neither clears by itself. Every other status —
+  // absent (a peer whose heartbeat predates this check, or one still inside
+  // the short window before its own first poll), or one this page does not
+  // recognise (a future release, or a truncated/corrupt heartbeat field) —
+  // renders nothing, same as an old version/compose/image verdict:
+  // imageLine's own "unverified" branch is the precedent for naming a status
+  // explicitly rather than folding every non-default case into the same
+  // benign badge, which would misdescribe whatever the fold caught next.
+  function updaterLine(n) {
+    var u = n.updater;
+    if (!u || !u.status) return null;
+    if (u.status === "stuck") {
+      var title = u.reason === "defer"
+        ? "the pre-update hook has been deferring this container's roll since " + fmtAgo(u.at) +
+          " — longer than any implementation cycle or review lock could still legitimately hold it, " +
+          "so this is no longer a cycle in flight (agent-ops#603); investigate on that node's host"
+        : "the pre-update hook has been allowing this container's roll since " + fmtAgo(u.at) +
+          ", every poll, and it is still the one running — the retry repeats the operation that " +
+          "collided, so this will not clear on its own (agent-ops#603); investigate on that node's host";
+      return el("div", {class:"ver"}, el("span", {class:"badge b-amber", text:"updater stuck", title: title}));
+    }
+    if (u.status === "deferring") {
+      return el("div", {class:"ver"}, el("span", {class:"badge b-grey", text:"updater deferring",
+        title: "the pre-update hook has been deferring this container's roll since " + fmtAgo(u.at) +
+               " — an implementation cycle or review is in flight; it clears once that ends"}));
+    }
+    return null;
+  }
+
   // ---------- section builder ----------
   function sectionOf(title, body) {
     return el("section", {}, [ el("h2", {text:title}), body ]);
@@ -1513,6 +1559,8 @@
     if (compose) card.appendChild(compose);
     var image = imageLine(n);
     if (image) card.appendChild(image);
+    var updater = updaterLine(n);
+    if (updater) card.appendChild(updater);
 
     card.appendChild(el("div", {class:"hb" + (n.stale ? " stale" : ""),
       title: n.self ? "read from this node's own lock and log"

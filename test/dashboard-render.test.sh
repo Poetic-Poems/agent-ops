@@ -184,6 +184,21 @@ assert_contains "poetic-3 is named on the strip" \
 assert_contains "poetic-4 is named on the strip" \
   "poetic-4" "$out"
 
+# --- The updater badge on the fleet strip (agent-ops#603) -------------------
+# poetic-1 (self) rolled cleanly and gets no badge, same as an in-sync compose
+# or a current image; poetic-2 predates the field (absent, like an old
+# version/compose/image verdict) and gets none either; poetic-3's hook allowed
+# a roll that never happened — the 2026-08-14 signature — and is flagged
+# amber; poetic-4's hook has been deferring and is flagged grey.
+assert_contains "a container the hook allowed but that never rolled is flagged" \
+  "updater stuck" "$out"
+assert_contains "a container the hook is still deferring is flagged too, distinctly" \
+  "updater deferring" "$out"
+assert_eq "and only the one stuck container gets the badge — never a rolled or pre-field one" \
+  "1" "$(grep -o 'updater stuck' <<<"$out" | wc -l | tr -d ' ')"
+assert_eq "and only the one deferring container gets its badge — never a rolled or pre-field one" \
+  "1" "$(grep -o 'updater deferring' <<<"$out" | wc -l | tr -d ' ')"
+
 # --- The node-scoped switch badge on the fleet strip (issue #379) -----------
 # poetic-1 (self) carries an enabled switch and gets no badge; poetic-2
 # carries a node-scoped disable and gets one, beside its role badge, naming

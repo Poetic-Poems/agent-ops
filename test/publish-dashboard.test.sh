@@ -1380,7 +1380,7 @@ vh="$(new_home nodeV)"
 vpeer="$vh/.cache/poetic-agents/workspaces/.agent-ops-peers/peerV"
 vold="$vh/.cache/poetic-agents/workspaces/.agent-ops-peers/peerOld"
 mkdir -p "$vpeer" "$vold"
-printf '{"node":"peerV","role":"active","ts":"%s","last_cycle":"","version":{"pr":88,"commit":"aa53d62f1b0c4e9a7d2839fbc5104e6a8d7b3f21","short":"aa53d62","built_at":"2026-07-26T11:21:00Z","repo":"Poetic-Poems/agent-ops","source":"image","dirty":false},"compose":{"status":"drifted","diff_lines":3},"image":{"status":"behind","registry_commit":"bb64d73a2c1d","registry_created_at":"2026-07-26T12:00:00Z","checked_at":"2026-07-26T12:05:00Z"},"stage_health":{"computed_at":"2026-07-26T12:00:00Z","threshold":3,"idle_after_hours":48,"stages":{"coordinator":{"verdict":"failing","consecutive_failures":4,"last_success":null,"last_detail":"coordinator exited 1"}}}}\n' \
+printf '{"node":"peerV","role":"active","ts":"%s","last_cycle":"","version":{"pr":88,"commit":"aa53d62f1b0c4e9a7d2839fbc5104e6a8d7b3f21","short":"aa53d62","built_at":"2026-07-26T11:21:00Z","repo":"Poetic-Poems/agent-ops","source":"image","dirty":false},"compose":{"status":"drifted","diff_lines":3},"image":{"status":"behind","registry_commit":"bb64d73a2c1d","registry_created_at":"2026-07-26T12:00:00Z","checked_at":"2026-07-26T12:05:00Z"},"stage_health":{"computed_at":"2026-07-26T12:00:00Z","threshold":3,"idle_after_hours":48,"stages":{"coordinator":{"verdict":"failing","consecutive_failures":4,"last_success":null,"last_detail":"coordinator exited 1"}}},"updater":{"status":"stuck","at":"2026-07-26T11:30:00Z","seconds":1800}}\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$vpeer/heartbeat.json"
 printf '{"node":"peerOld","role":"standby","ts":"%s","last_cycle":""}\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$vold/heartbeat.json"
@@ -1435,6 +1435,20 @@ assert_eq "a peer that publishes none reads null, never a locally computed one" 
   "$(jq -r '.fleet.nodes[] | select(.node=="peerOld") | .stage_health' <<<"$vdata")"
 assert_eq "and this node answers for its own stage-health too" "1" \
   "$(jq '[.fleet.nodes[] | select(.self) | has("stage_health")] | length' <<<"$vdata")"
+
+# The updater verdict (lib/updater-health.sh, agent-ops#603) rides the same
+# rules once more: only the node that can read its own ledger can answer for
+# it, so a peer's verdict comes from its heartbeat or not at all, and this
+# node answers for itself from its own updater-ledger/ (null here: this
+# suite runs from a plain checkout with no ledger ever written).
+assert_eq "a peer's updater verdict comes from its heartbeat" "stuck" \
+  "$(jq -r '.fleet.nodes[] | select(.node=="peerV") | .updater.status' <<<"$vdata")"
+assert_eq "carrying when it was allowed" "2026-07-26T11:30:00Z" \
+  "$(jq -r '.fleet.nodes[] | select(.node=="peerV") | .updater.at' <<<"$vdata")"
+assert_eq "a peer that publishes none reads null, never a locally computed one" "null" \
+  "$(jq -r '.fleet.nodes[] | select(.node=="peerOld") | .updater' <<<"$vdata")"
+assert_eq "and this node answers for its own updater status too" "1" \
+  "$(jq '[.fleet.nodes[] | select(.self) | has("updater")] | length' <<<"$vdata")"
 
 # --- The pull-request index ------------------------------------------------------
 # Every `#number` on the page resolves to a record here. Two properties are what

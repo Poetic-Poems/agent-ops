@@ -274,6 +274,13 @@ services:
       - egress-proxy
     environment:
       <<: *agent-ops-env
+      # Which compose service this container is, read back by
+      # deploy/docker/watchtower-pre-update.sh into every ledger line it
+      # writes (agent-ops#603): lib/updater-health.sh's "rolled" fallback
+      # scopes its scan to entries from the same service, since the
+      # scheduler and dashboard sharing this state volume must not read one
+      # another's ledger as evidence of their own roll.
+      AGENT_OPS_SERVICE: scheduler
       # Upper- and lower-case both, because the convention has two spellings
       # and the tools disagree about which they read.
       HTTPS_PROXY: http://egress-proxy:3128
@@ -407,6 +414,11 @@ services:
     <<: *agent-ops
     profiles: [tailnet]
     command: ["/app/scripts/serve-dashboard.sh", "8787"]
+    # Which compose service this container is — see the scheduler's own
+    # AGENT_OPS_SERVICE above for why lib/updater-health.sh needs it.
+    environment:
+      <<: *agent-ops-env
+      AGENT_OPS_SERVICE: dashboard
     # 54 MiB resident, measured 2026-08-24. Overrides the anchor's scheduler-
     # sized ceiling: this container renders a page from state another container
     # wrote, and giving it a scheduler's budget would mean two nodes reserving
@@ -478,6 +490,11 @@ services:
     <<: *agent-ops
     profiles: [local]
     command: ["/app/scripts/serve-dashboard.sh", "8787", "0.0.0.0"]
+    # Which compose service this container is — see the scheduler's own
+    # AGENT_OPS_SERVICE above for why lib/updater-health.sh needs it.
+    environment:
+      <<: *agent-ops-env
+      AGENT_OPS_SERVICE: dashboard-local
     # The same page and the same ceilings as the `dashboard` service above; only
     # how it is reached differs. 11 MiB resident, measured 2026-08-24.
     mem_limit: ${AGENT_OPS_DASHBOARD_MEMORY:-512m}

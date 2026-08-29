@@ -38,6 +38,8 @@ SCHEMA_FILE="$SCRIPT_DIR/config.schema.json"
 . "$SCRIPT_DIR/lib/compose-drift.sh"
 # shellcheck source=lib/image-drift.sh
 . "$SCRIPT_DIR/lib/image-drift.sh"
+# shellcheck source=lib/updater-health.sh
+. "$SCRIPT_DIR/lib/updater-health.sh"
 # shellcheck source=lib/toggle.sh
 . "$SCRIPT_DIR/lib/toggle.sh"
 # shellcheck source=lib/mirror-integrity.sh
@@ -108,6 +110,24 @@ workspace_root="$(expand_home "$(cfg '.workspace_root')")"
 cycles_retained="$(cfg '.cycles_retained')"
 local_retained="${STATE_SYNC_LOCAL_RETAINED:-$(cfg '.state_local_cycles_retained')}"
 streams_retained="${STATE_SYNC_STREAMS_RETAINED:-$(cfg '.state_local_streams_retained')}"
+# Minutes → seconds: lib/updater-health.sh's own contract takes a threshold
+# in seconds, never a config key of its own (agent-ops#603, following
+# image_behind_grace_hours' shape — the judgement lives one layer up from
+# the library, not baked into it). Converted in jq rather than `$(( ))`
+# because the schema types the key `number`, so a node may legitimately
+# configure `7.5` — which bash arithmetic cannot evaluate at all, and this
+# script runs under `set -e`, so the node would stop publishing a heartbeat
+# entirely over a legal config value.
+updater_stuck_after_seconds="$(cfg '.updater_stuck_after_minutes * 60 | floor')"
+# The bound on a legitimate defer streak: past the longer of the two lock
+# staleness windows, watchtower-pre-update.sh's own held_by() would no longer
+# honour either lock, so a defer streak that has outlived both is no longer
+# "a cycle in flight" — it is the same "stuck" fault an unresolved allow is.
+# Mirrors the hook's own simple `// 4`/`// 6` defaults (config.json read
+# directly there, not the derived value acquire_lock uses) rather than
+# re-deriving them, since this is bounding the same hook's own behaviour.
+updater_defer_stuck_after_seconds="$(cfg \
+  '([.lock_stale_after // 4, .project_review.lock_stale_after // 6] | max) * 3600 | floor')"
 
 node_name="${NODE_NAME:-$(hostname)}"
 node_name="${node_name//[^A-Za-z0-9._-]/-}"
@@ -224,6 +244,14 @@ EXCLUDES=(
   # carry a checkout-fresh mtime, silently deferring that node's next ensure
   # of every repository by a full interval.
   --exclude=labels-ensured/
+  # updater-ledger/ (deploy/docker/watchtower-pre-update.sh,
+  # lib/updater-health.sh, agent-ops#603): this node's own record of its
+  # pre-update hook's invocations, keyed by container — a peer's copy of it
+  # would answer for invocations against nobody's containers there, on the
+  # same reasoning as .image-drift-cache.json above. Its *verdict* does reach
+  # peers, folded into the heartbeat's own `updater` field below, exactly as
+  # `stage_health`'s raw file is excepted the same way one entry up.
+  --exclude=/updater-ledger/
   --exclude=*.stream.jsonl
   --exclude=.fleet-log.jsonl
   --exclude=/dashboard/
@@ -467,6 +495,20 @@ do_push() {
   # on a schedule; publishing the verdict, and bumping `count` on every
   # further rebuild rather than reading the same as the first, is what makes
   # a repeat visible instead of indistinguishable noise.
+  #
+  # And the updater verdict (lib/updater-health.sh, agent-ops#603):
+  # `deploy/docker/watchtower-pre-update.sh` keys its ledger by `$HOSTNAME` —
+  # the container's own identity, the same one it stamps into `lock.json`
+  # (`host: $host` above `held_by`'s foreign-lock branch) — never by
+  # `node_name`, which is `NODE_NAME` or a bare `hostname` fallback and may
+  # name the same node under a friendlier string than the container Docker
+  # actually created. Reading the ledger under `node_name` here would ask
+  # for a file the hook never wrote, and read every node as "not applicable"
+  # for ever. `null` until this node has ever been polled by the hook, or —
+  # on a fresh roll — for the short window before the replacement's own
+  # first poll lands (agent-ops#603, "at least these states" is deliberate:
+  # a container that has just been told to go ahead is not yet either
+  # rolled or stuck).
   # Newest cycle id. Sliced in bash rather than piped into `head -n 1`, for
   # the reason kept_cycles sets out — and this is the site where it mattered:
   # a command substitution in the current shell, under `set -euo pipefail`, so
@@ -492,9 +534,11 @@ do_push() {
     --argjson switch "$(toggle_switch_summary "$state_dir")" \
     --argjson stage_health "$(jq -c '.' "$state_dir/.stage-health.json" 2>/dev/null || echo null)" \
     --argjson mirror_rebuild "$(mirror_rebuild_verdict "$state_dir")" \
+    --argjson updater "$(updater_status "$state_dir/updater-ledger" "$updater_stuck_after_seconds" \
+      "$updater_defer_stuck_after_seconds" "${HOSTNAME:-}" "${AGENT_OPS_SERVICE:-}" || echo null)" \
     '{node: $node, role: $role, ts: $ts, last_cycle: $lc, version: $version,
       compose: $compose, image: $image, switch: $switch,
-      stage_health: $stage_health, mirror: $mirror_rebuild}' > "$mirror/heartbeat.json"
+      stage_health: $stage_health, mirror: $mirror_rebuild, updater: $updater}' > "$mirror/heartbeat.json"
 
   # One rolling commit per node, amended and force-pushed. The state files
   # carry their own history — log.jsonl is append-only and every cycle keeps

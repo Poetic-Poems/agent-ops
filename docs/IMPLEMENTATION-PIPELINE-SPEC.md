@@ -820,6 +820,7 @@ and the schema must carry every one of them.
 | `disable_default_ttl` | *(unset)* | How long `--disable` lasts when neither `--for` nor `--until` says (requirement 2.3). Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one. "A few cycles" means 4 cadence firings (requirement 1d), not a fixed 4 h: derived from the worst-case gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`); a configured value floors the derivation rather than replacing it. |
 | `none_selected_recheck_hours` | *(unset)* | The no-op short-circuit's safety valve (requirement 3b): the Co-Ordinator is engaged regardless once the last `none-selected` is this old, even if nothing changed. Bounds how long a gap in fingerprint coverage can stall the pipeline. "This old" means 24 cadence firings (requirement 1d), not a fixed 24 h: derived from the worst-case gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`); a configured non-zero value floors the derivation...[continued below](#extended-notes-none_selected_recheck_hours) |
 | `image_behind_grace_hours` | 3 h | The dashboard badge's (and `scripts/check-node-image.sh`'s) tolerance for a node behind the registry's newest image (`lib/image-drift.sh`, requirement 2.5, #155) before it turns amber / fails: a roll defers while a cycle is in flight, so being behind an image published more recently than this is the ordinary mid-roll state, not a fault. |
+| `updater_stuck_after_minutes` | 20 min | The dashboard badge's tolerance for a container that was allowed to roll (`lib/updater-health.sh`'s `updater_status`, requirement 2.5, #603) before it turns amber: past this, the container the hook told to go ahead is still running, which a healthy roll never takes this long to resolve on its own — unlike `image_behind_grace_hours`, this is not an ordinary mid-roll wait. |
 | `dashboard_refresh_seconds` | `5` | How often an open dashboard tab reloads to pick up freshly-written data (`docs/DASHBOARD-SPEC.md`). Match it to the heartbeat cadence: a shorter interval re-reads a file nothing has rewritten, a longer one shows a cycle that has already moved on. |
 | `schedule.cycle_hours` | `*` | The hour field of the implementation cycle's crontab line, rendered by `deploy/docker/render-crontab.sh`; `*` is every hour. |
 | `schedule.cycle_interval_minutes` | `15` | How often, in minutes, the implementation cycle's crontab line fires within an allowed hour, rendered by `deploy/docker/render-crontab.sh`; `60` reproduces the single-firing-per-hour shape every release before this key carried. |
@@ -2656,8 +2657,9 @@ implements.
    `revert-rate-cumulative-state.json` — requirement 2.6b, the structured
    `revert-rate.jsonl` excepted, below), the stage event streams
    (`*.stream.jsonl`, requirement 4d), the fleet-log snapshot
-   (`.fleet-log.jsonl`, "The union" below), and the mirror's own durable
-   rebuild record (`.mirror-rebuild-state.json`, "Mirror integrity" above).
+   (`.fleet-log.jsonl`, "The union" below), the mirror's own durable
+   rebuild record (`.mirror-rebuild-state.json`, "Mirror integrity" above),
+   and the updater's own invocation ledger (`updater-ledger/`, below).
    The exclusions are not tidiness: a copied `lock.json` is a lock no process
    holds — peers read logs, never locks; the
    dashboard is generated from the state beside it, so copying it would be
@@ -2673,7 +2675,10 @@ implements.
    peer ran, on the identical reasoning as `.image-drift-cache.json` — but
    unlike that cache, its *content* is meant to reach peers regardless, which
    is why it travels a different way, folded into the heartbeat below rather
-   than replicated verbatim. The
+   than replicated verbatim. `updater-ledger/` walks the identical path one
+   level further down: a copied ledger would answer for invocations against
+   containers nobody on the peer ever ran, so only its distilled verdict
+   travels, as the heartbeat's own `updater` field (below). The
    streams are excluded on size as much as on relevance: what
    a peer reads of a stage is its result envelope, which replicates as
    `<stage>.out` exactly as before, while the stream beside it is every
@@ -2738,7 +2743,7 @@ implements.
    crontab and again from the cleanup that ends a cycle. No two nodes share
    a branch, so pushes cannot contend and nothing arbitrates them. Each push
    stamps `heartbeat.json` (`{node, role, ts, last_cycle, version, compose,
-   image, switch, stage_health, mirror}`)
+   image, switch, stage_health, mirror, updater}`)
    into the branch root — on a standby, which has no cycles to publish, the
    heartbeat is the entire point, and it is what lets the fleet dashboard
    tell a quiet node from a dead one. `version` is `lib/version.sh`'s answer
@@ -2782,6 +2787,69 @@ implements.
    node's checkout, else `{status: "rebuilt", count, last_rebuilt_at}`, read
    back from the durable record every push so a repeat rebuild bumps `count`
    rather than reading identically to the first.
+   `updater` is `lib/updater-health.sh`'s `updater_status` (#603): the update
+   mechanism's own verdict, ahead of and independent of the drift `image`
+   above eventually catches — a node whose watchtower has stopped rolling
+   altogether still reads as every other field's idea of healthy until this
+   one says otherwise. Nothing inside a container can read watchtower's log
+   or the Docker socket, so the one fact available is what
+   `deploy/docker/watchtower-pre-update.sh` itself decided; that script
+   records every invocation, one line per poll, to a durable ledger under
+   `state_dir` (`updater-ledger/<hostname>.jsonl`, excluded from replication
+   below like `.image-drift-cache.json`, and keyed by `$HOSTNAME` exactly as
+   `acquire_lock`'s own lock stamp is, since a tailnet node's scheduler and
+   dashboard containers share this state volume but not an identity). Each
+   line also carries `service` — the compose service name
+   (`AGENT_OPS_SERVICE`: `scheduler`, `dashboard` or `dashboard-local`,
+   `"unknown"` if unset) the writing container ran as.
+   `updater_status` reads that ledger back as `{status: "rolled", at,
+   seconds}` (the newest recorded "allow" *from our own service* belongs to
+   a different hostname — the ordinary case; the scan is service-scoped
+   because a fresh container with no ledger entry of its own would otherwise
+   read a stuck sibling *of a different service* sharing this ledger
+   directory — the scheduler and the dashboard mount the same state volume —
+   as evidence of its own roll, since that sibling keeps appending
+   ever-newer "allow" entries every poll), `{status: "deferring", at,
+   seconds}` (this hostname's own most recent invocations have all deferred,
+   back to `at`, and that streak has not yet outlasted
+   `updater_defer_stuck_after_seconds`), `{status: "stuck", at, seconds,
+   reason}` (a fault only a human clears, either `reason: "allow"` — this
+   hostname's own most recent invocations have all allowed a roll, back to
+   `at`, and this same container is still running past
+   `updater_stuck_after_minutes` later, the 2026-08-14 signature: a
+   container told to go ahead that watchtower never actually replaced,
+   which the retry alone will not clear since it repeats the operation that
+   collided — or `reason: "defer"` — the defer streak above has itself
+   outlasted `updater_defer_stuck_after_seconds`, past which
+   `watchtower-pre-update.sh`'s own `held_by()` would no longer honour
+   either lock, so this is no longer "a cycle in flight") or `null` (no
+   invocation recorded under any hostname yet, the run of "allow"s is too
+   recent to classify either way, a threshold the caller passed is not a
+   whole number of seconds, or a ledger entry's own timestamp will not
+   parse — every one an unanswerable question, never a default the library
+   picks for itself, and never epoch 0: unlike `held_by()`'s identical
+   convention, which fails the lock *open*, epoch 0 here would fail
+   *closed*, into an alarm nothing could ever clear, since a corrupt
+   timestamp can also defeat the hook's own 48h trim below).
+   Both self-states are measured from the *start* of the current run of
+   like verdicts, not from its newest entry: watchtower re-runs the hook on
+   every poll for as long as the container is still stale, so each records
+   one entry per `WATCHTOWER_POLL_INTERVAL`, and timing the newest would
+   measure the age of the last poll rather than of the condition — putting
+   `stuck`, whose threshold is many polls wide, permanently out of reach. A
+   ledger line that will not parse, mid-streak, is skipped rather than
+   treated as ending the streak, so one transient bad line cannot silence an
+   alarm early or reset a stuck container's clock.
+   `updater_stuck_after_minutes` converts to `updater_stuck_after_seconds`
+   the same way `image_behind_grace_hours` converts one layer up from
+   `lib/image-drift.sh`, travelling as a parameter, never a literal inside
+   the library. `updater_defer_stuck_after_seconds` is derived rather than
+   configured: the longer of `lock_stale_after` and
+   `project_review.lock_stale_after` (in hours, read with the hook's own
+   simple `// 4`/`// 6` defaults, not `acquire_lock`'s fuller derivation),
+   converted to seconds — the same two values `watchtower-pre-update.sh`'s
+   `held_by()` already bounds a deferral by, so a defer streak this function
+   calls `stuck` is one no held lock could still legitimately justify.
    Each branch is a single rolling commit — `commit
    --amend` plus a force-push — because the state files carry their own
    history (`log.jsonl` is append-only, every cycle keeps its own directory)
