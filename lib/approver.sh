@@ -96,6 +96,16 @@ approver_model_for_tier() {
   fi
 }
 
+# _approver_err_log
+# Where approver_post_review's own GitHub failures land — cycle_dir when the
+# caller has one (every real caller does by the time this runs), /tmp as a
+# last resort for a standalone call or test with none, the same fallback
+# lib/tech-debt-file.sh's own `_techdebt_err_log` already uses for the
+# identical reason.
+_approver_err_log() {
+  printf '%s' "${cycle_dir:-/tmp}/approver-post.err"
+}
+
 # _approver_pr_parts PR_URL
 # Print `owner/repo<TAB>number`, or return non-zero printing nothing. The
 # same shape lib/handoff.sh's and lib/review-gate.sh's own private helpers
@@ -170,12 +180,20 @@ approver_refuse_streak() {
 # GitHub, non-zero otherwise — the caller must not read a failure as a posted
 # review.
 #
+# A refusal's own status and body land in `_approver_err_log`'s file, never
+# discarded — the same "keep what GitHub actually said" discipline
+# lib/tech-debt-file.sh's own error log already applies. Before agent-ops#945
+# this call's stderr went to `/dev/null`, and the only reason that incident
+# was diagnosable at all was that `techdebt_file_debt`, spending the same
+# token seconds earlier, happened to keep its own error file — this call had
+# none.
+#
 # `GH_TOKEN` is set only for this one invocation (a leading assignment on the
 # command, not `export`), so the override cannot leak into any later `gh`
 # call this process makes under the owner's own login.
 approver_post_review() {
   local url="${1:-}" event="${2:-}" body="${3:-}" token="${4:-}" gh_bin="${APPROVER_GH:-gh}"
-  local parts slug number
+  local parts slug number errlog
 
   [[ -n "$token" && -n "$event" ]] || return 1
   if [[ -z "$url" ]] || ! parts="$(_approver_pr_parts "$url")"; then
@@ -183,8 +201,9 @@ approver_post_review() {
   fi
   IFS=$'\t' read -r slug number <<<"$parts"
 
+  errlog="$(_approver_err_log)"
   GH_TOKEN="$token" "$gh_bin" api -X POST "repos/$slug/pulls/$number/reviews" \
-    -f "event=$event" -f "body=$body" >/dev/null 2>&1
+    -f "event=$event" -f "body=$body" >/dev/null 2>>"$errlog"
 }
 
 # approver_prior_refusal_bodies PR_URL LOGIN
@@ -318,7 +337,7 @@ approver_post_or_warn() {
   if ! approver_post_review "$pr_url" "$event" "$body" "$token"; then
     approver_last_post_ok=0
     log_event "warning" "$(jq -nc --arg u "$pr_url" --arg e "$event" \
-      --arg d "the Approver's $event review of $pr_url could not be posted — GitHub refused the write, so the pull request carries no App review this round" \
+      --arg d "the Approver's $event review of $pr_url could not be posted — GitHub refused the write (see approver-post.err), so the pull request carries no App review this round" \
       '{detail: $d, pr_url: $u, event: $e}')"
   fi
   return 0
@@ -636,6 +655,25 @@ $node_name
     verdict="$(jq -r '.verdict // empty' <<<"$status_json")"
     reasons_json="$(jq -c '[.reasons[]? | select(type == "string")]' <<<"$status_json" 2>/dev/null)"
     [[ "$reasons_json" != "null" && -n "$reasons_json" ]] || reasons_json='[]'
+
+    # agent-ops#945: the token minted before the engagement (above, at the
+    # top of this function) is a pre-engagement gate only — "is the
+    # credential even readable" — never the value spent on the writes below.
+    # An installation token lives about an hour, and an engagement can run
+    # close to that long, so every write this stage makes from here on
+    # (both filings and both `approver_post_or_warn` call sites) spends one
+    # fresh mint read now, immediately after the engagement returns and
+    # before the first write — never re-read per call, since the writes
+    # land seconds apart and a per-call re-read would buy nothing.
+    if ! token="$(approver_token_get "")"; then
+      log_event "warning" "$(jq -nc --arg u "$pr_url" \
+        --arg d "the Approver's installation token could not be minted again once the model engagement returned (it was still mintable at stage entry) — no tech-debt filing or App review was attempted for $pr_url this round" \
+        '{detail: $d, pr_url: $u}')"
+      if (( adjudicating )); then
+        approver_escalate "$pr_url" "$reasons_json"
+      fi
+      return 0
+    fi
 
     # file_debt/file_issue (agent-ops#631): orthogonal to `verdict` — the
     # Approver's own posture ("What you must never do") never writes to

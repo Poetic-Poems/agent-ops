@@ -119,7 +119,22 @@ merge_autonomy_effective_level() { printf '%s' "agent-approves"; }
 approver_token_credential_present() { return 0; }
 approver_token_identity_login() { printf 'pullwright-approver[bot]'; }
 approver_refuse_streak() { printf '0'; }
-approver_token_get() { printf 'a-minted-token'; }
+# agent-ops#945: the first call is the pre-engagement gate, the second the
+# fresh mint spent on the writes below (both filings and the review post) —
+# see test/approver-wiring.test.sh's own copy of this stub for why the count
+# lives in a file rather than a shell variable. GATE_TOKEN/WRITE_TOKEN both
+# default to "a-minted-token", the constant every assertion in this file
+# before agent-ops#945 already relied on.
+approver_token_get() {
+  local calls
+  calls=$(( $(cat "$T/token_calls_count" 2>/dev/null || printf '0') + 1 ))
+  printf '%s' "$calls" >"$T/token_calls_count"
+  if (( calls == 1 )); then
+    printf '%s' "${GATE_TOKEN:-a-minted-token}"
+  else
+    printf '%s' "${WRITE_TOKEN:-a-minted-token}"
+  fi
+}
 landing_protected_paths_hit() { return 1; }
 stage_prompt_text() { printf 'THE APPROVER PROMPT'; }
 stage_budget_apply() { :; }
@@ -164,15 +179,19 @@ HARNESS
 
 URL="https://github.com/Poetic-Poems/agent-ops/pull/463"
 
-# run_case VERDICT_JSON [FD_RC] [FI_RC]
+# run_case VERDICT_JSON [FD_RC] [FI_RC] [KEY=VALUE ...]
 run_case() {
   local verdict="$1" fd_rc="${2:-0}" fi_rc="${3:-0}"
+  local extra=()
+  (( $# > 3 )) && extra=("${@:4}")
   : >"$tmp_dir/events"; : >"$tmp_dir/posts"; : >"$tmp_dir/escalations"
   : >"$tmp_dir/fd_calls"; : >"$tmp_dir/fi_calls"
+  rm -f "$tmp_dir/token_calls_count"
   rm -rf "${tmp_dir:?}/cycle" "${tmp_dir:?}/clone" "${tmp_dir:?}/state"
   env -i PATH="$PATH" HOME="$HOME" \
     T="$tmp_dir" SCRIPT_DIR="$SCRIPT_DIR" PR_URL="$URL" COMPLEXITY="medium" \
     VERDICT="$verdict" FD_RC="$fd_rc" FI_RC="$fi_rc" \
+    "${extra[@]}" \
     bash "$tmp_dir/harness.sh" >"$tmp_dir/stdout" 2>"$tmp_dir/stderr"
   printf '%s' "$?"
 }
@@ -241,6 +260,21 @@ verdict='{"verdict":"refuse","reasons":["a real defect"],"file_debt":{"title":"T
 run_case "$verdict" >/dev/null
 assert_contains "refuse verdict still posts REQUEST_CHANGES" "event=REQUEST_CHANGES" "$(cat "$tmp_dir/posts")"
 assert_eq "  ... and file_debt still files, independent of the verdict" "1" "$(count fd_calls)"
+
+# --- Both filings, and the review post, spend the post-engagement mint, ----
+# --- never the pre-engagement gate token (agent-ops#945) --------------------
+verdict='{"verdict":"approve","reasons":["fine"],"file_debt":{"title":"T3","body":"B3"},"file_issue":{"title":"Q3","body":"B3"}}'
+run_case "$verdict" 0 0 GATE_TOKEN=stage-entry-token WRITE_TOKEN=fresh-write-token >/dev/null
+assert_contains "techdebt_file_debt spends the fresh, post-engagement token" \
+  "fresh-write-token" "$(fd_calls)"
+assert_eq "  ... never the pre-engagement gate token" "0" \
+  "$(grep -c 'stage-entry-token' "$tmp_dir/fd_calls")"
+assert_contains "techdebt_file_issue spends the same fresh token" \
+  "fresh-write-token" "$(fi_calls)"
+assert_eq "  ... never the pre-engagement gate token" "0" \
+  "$(grep -c 'stage-entry-token' "$tmp_dir/fi_calls")"
+assert_contains "the review post itself spends the same fresh token too" \
+  "token=fresh-write-token" "$(cat "$tmp_dir/posts")"
 
 echo
 if [[ "$failures" -eq 0 ]]; then
