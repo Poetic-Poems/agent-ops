@@ -66,8 +66,9 @@ a click.
    node silently stops rolling, the failure mode `deploy/docker/README.md`'s
    "Is this node on the newest image" section exists for. Anonymous pulls
    keep working; no registry login is needed.
-3. **The Approver App installation is per organisation, and installations are
-   per organisation.** `pullwright-approver-poetic` is installed on
+3. **A GitHub App installation is per organisation, so the Approver's own
+   installation does not follow the repository.**
+   `pullwright-approver-poetic` is installed on
    Poetic-Poems; agent-ops leaves that installation's scope on transfer.
    #913 (landed) resolved this ahead of the transfer:
    `lib/approver-token.sh` now resolves the installation id per repository

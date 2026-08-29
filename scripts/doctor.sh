@@ -382,7 +382,7 @@ if (( ma_above_human )); then
   if approver_token_credential_present; then
     ok "the Approver's runtime credential is present and its key is readable"
   else
-    warn "merge_autonomy is above human but the Approver's runtime credential is not present in this environment — PULLWRIGHT_APPROVER_APP_ID, PULLWRIGHT_APPROVER_INSTALLATION_ID and PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH (readable) must all be set where the cycle runs, or approver_token_get reports the gate unreadable and no approval is ever minted"
+    warn "merge_autonomy is above human but the Approver's runtime credential is not present in this environment — PULLWRIGHT_APPROVER_APP_ID, an installation id (PULLWRIGHT_APPROVER_INSTALLATION_ID, or PULLWRIGHT_APPROVER_INSTALLATION_IDS naming at least one owner) and PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH (readable) must all be set where the cycle runs, or approver_token_get reports the gate unreadable and no approval is ever minted"
   fi
 fi
 
