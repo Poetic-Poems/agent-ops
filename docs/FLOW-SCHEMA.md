@@ -116,7 +116,7 @@ handoff-recovery path (requirement 34a) — is also called from
 class. A recovery pass re-observing a condition an earlier round already
 recorded is not obviously a fresh repetition, and deciding that is the
 attribution question D23 parks at Phase 2, so the narrower reading is the one
-this document states rather than one it guesses at.
+this document states rather than one it guesses at (TD-PPagop-26082919).
 
 **check-failure.** `ok: false` on `review-gate-checks-read` means this
 particular attempt to *read* the pull request's required-check list failed —
