@@ -20,7 +20,9 @@
 #   DEFAULT_FIX/OWNER_DECISION (agent-ops#938): see techdebt_default_section
 #   below for what they add to the filed body, and pw::owner-decision for
 #   what OWNER_DECISION additionally applies here — a fresh issue only; the
-#   dedup hit above returns the existing issue untouched, label included.
+#   dedup hit above returns the existing issue untouched, label included. A
+#   refused labelled create is retried once without the label, so a repository
+#   that has not had `pw::owner-decision` ensured yet still gets its issue.
 #
 # techdebt_file_debt REPO TITLE BODY PROVENANCE [TOKEN] [GIT_DIR] [PR_LABEL] \
 #                     [DEFAULT_FIX] [OWNER_DECISION]
@@ -199,6 +201,19 @@ techdebt_file_issue() {
   [[ "$owner_decision" == "true" ]] && label_args=(--label pw::owner-decision)
   raw="$(_techdebt_gh "$token" issue create -R "$repo" --title "$title" --body-file "$combined_file" \
            "${label_args[@]}" 2>>"$errlog" || true)"
+  # One retry without the label, exactly as requirement 36a's escalation
+  # contract and create_escalation_issue (lib/enabler.sh) already do: `gh`
+  # resolves a label name to an id as part of the create, so a repository that
+  # has not had `pw::owner-decision` ensured yet fails the whole create and the
+  # filing is lost — the one outcome agent-ops#938 exists to prevent, and the
+  # failure class agent-ops#1009 already records for this file's own
+  # `gh pr create --label`. Losing the label costs the Refiner its marker (the
+  # issue reads to a later pass as a legacy no-marker item); losing the create
+  # costs the filing itself.
+  if [[ -z "$raw" && ${#label_args[@]} -gt 0 ]]; then
+    raw="$(_techdebt_gh "$token" issue create -R "$repo" --title "$title" \
+             --body-file "$combined_file" 2>>"$errlog" || true)"
+  fi
   rm -f "$combined_file"
   url="$(grep -oE 'https://github\.com/[A-Za-z0-9_./-]+/issues/[0-9]+' <<<"$raw" | tail -n1 || true)"
   [[ -n "$url" ]] || return 1

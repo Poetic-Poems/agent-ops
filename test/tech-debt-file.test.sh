@@ -157,6 +157,11 @@ a_git_dir() {
 #                                matched reports the ref as existing
 # $tmp_dir/fail-marker-put      present -> the reservation-releases/ marker
 #                                PUT fails
+# $tmp_dir/fail-labelled-issue-create
+#                               present -> an `issue create` carrying --label
+#                                fails, as `gh` does where the label does not
+#                                exist in the repository; an unlabelled create
+#                                still succeeds
 cat > "$tmp_dir/gh" <<'STUB'
 #!/usr/bin/env bash
 d="$(dirname "$0")"
@@ -212,14 +217,21 @@ if [[ "$1" == "issue" && "$2" == "create" ]]; then
   # assert on the `## Default` section actually filed rather than only on the
   # argv, which carries a throwaway path.
   shift 2
+  labelled=0
   while [[ $# -gt 0 ]]; do
     if [[ "$1" == "--body-file" ]]; then
       cat "$2" > "$d/last-issue-body" 2>/dev/null
       shift 2
       continue
     fi
+    [[ "$1" == "--label" ]] && labelled=1
     shift
   done
+  # `gh` resolves a label name to an id as part of the create, so a repository
+  # that does not carry the label fails the whole create rather than merely
+  # dropping the label: this fixture reproduces exactly that, and only for a
+  # create that actually asked for one.
+  [[ -f "$d/fail-labelled-issue-create" && "$labelled" == "1" ]] && exit 1
   [[ -s "$d/issue-url" ]] || exit 1
   cat "$d/issue-url"
   exit 0
@@ -236,7 +248,8 @@ export PATH="$tmp_dir:$PATH"
 reset_stub() {
   : > "$tmp_dir/calls"
   rm -f "$tmp_dir/fail-refs" "$tmp_dir/fail-contents" "$tmp_dir/fail-delete-refs" \
-    "$tmp_dir/absent-refs" "$tmp_dir/fail-marker-put"
+    "$tmp_dir/absent-refs" "$tmp_dir/fail-marker-put" \
+    "$tmp_dir/fail-labelled-issue-create"
   echo "https://github.com/o/r/pull/99" > "$tmp_dir/pr-url"
   echo "https://github.com/o/r/issues/77" > "$tmp_dir/issue-url"
   echo '[]' > "$tmp_dir/issue-list-response"
@@ -601,6 +614,35 @@ assert_eq "  ... no 'Owner decision:' body line (a label carries it here)" "0" \
   "$(grep -c '^Owner decision:' "$tmp_dir/last-issue-body")"
 assert_eq "  ... pw::owner-decision label requested" "1" \
   "$(grep -c -- '--label pw::owner-decision' "$tmp_dir/calls")"
+
+# A repository that has not had `pw::owner-decision` ensured yet fails the
+# labelled create outright -- `gh` resolves the label to an id as part of the
+# create -- so the create is retried once without it, exactly as requirement
+# 36a's escalation contract does. Losing the label costs the Refiner its
+# marker; losing the create would cost the filing itself, which is the one
+# outcome agent-ops#938 exists to prevent.
+reset_stub
+: > "$tmp_dir/fail-labelled-issue-create"
+out="$(techdebt_file_issue "o/r" "TD26082201" "A gap worth noting" <(echo "body") "" \
+        "Pick the vendor-locked option" "true")"
+rc=$?
+assert_eq "file_issue: a refused labelled create is retried unlabelled, exit 0" "0" "$rc"
+assert_eq "  ... and the issue is still filed" "77	https://github.com/o/r/issues/77" "$out"
+assert_eq "  ... the labelled create was attempted first" "1" \
+  "$(grep -c -- '--label pw::owner-decision' "$tmp_dir/calls")"
+assert_eq "  ... and the retry carried no label" "1" \
+  "$(grep -cE '^<none> issue create -R o/r --title A gap worth noting --body-file [^ ]+$' \
+       "$tmp_dir/calls")"
+
+# The retry is only for a labelled create: an unlabelled one that fails is
+# still a failed filing, never re-attempted.
+reset_stub
+: > "$tmp_dir/issue-url"
+out="$(techdebt_file_issue "o/r" "TD26082201" "A gap worth noting" <(echo "body") "" \
+        "Rename the flag rather than add a second one")"
+rc=$?
+assert_eq "file_issue: an unlabelled create that fails is not retried" "1" "$rc"
+assert_eq "  ... exactly one create attempted" "1" "$(grep -c 'issue create' "$tmp_dir/calls")"
 
 echo
 if [[ "$failures" -eq 0 ]]; then

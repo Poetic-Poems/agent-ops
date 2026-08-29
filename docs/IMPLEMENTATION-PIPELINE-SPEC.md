@@ -11224,6 +11224,23 @@ implements.
       **verdict**: it changes nothing about the choice between `unblocked`,
       `still-blocked` and `escalate` below, and never turns a refinement
       into an escalation on its own.
+
+      **The default-first rule** (agent-ops#938). An item that enumerates
+      candidate fixes is not, on that account alone, one this stage cannot
+      settle. Where its body carries a `## Default: <fix>` heading — or a
+      record's own `default_fix` field — the filer has already named the
+      option it would take, from a stage that had just read the code, and the
+      Enabler specifies to that option, noting which alternatives the filer
+      considered and why the default was chosen. Where the item instead
+      carries the `pw::owner-decision` label or an `Owner decision: yes` line
+      (requirements 36c, 42a), the choice is reserved under 36a's boundary
+      and this is an `escalate`. An item carrying neither marker follows
+      requirement 39d's third case exactly — that rule and this one are one
+      rule with two readers: specify to the option the item's own text argues
+      for; where it argues for none and the options differ only in mechanics,
+      with no operator-visible behaviour change either way, specify to the
+      smaller one and say so; only an unmarked fork that genuinely differs in
+      operator-visible behaviour is an `escalate`.
     - **Escalates**, where this stage cannot settle it — a decision, answer, or
       action is needed first — through the unchanged protocol of requirement
       36a, in a **separate** issue. Never the work item's own issue: that
@@ -13027,8 +13044,13 @@ with the Reviewer's own.
     is filed. `default_fix`/`owner_decision` follow requirement 36c's own
     contract exactly — same fields, same `## Default`/`Owner decision: yes`/
     `pw::owner-decision` handling in `lib/tech-debt-file.sh`, same
-    malformed-verdict warning when neither is set on a body that names more
-    than one fix (agent-ops#938). Filing is a Script-issued call
+    malformed-verdict warning whenever neither is set (agent-ops#938). The
+    Script cannot read whether the body it was handed names more than one
+    fix, so it warns on the field's absence alone: a single-fix filing that
+    never needed a default costs one `warning` and a `## Default: not stated`
+    heading, which is the cheap side of the trade against a filing whose
+    unstated choice would have cost a Refiner pass to rediscover. Filing is a
+    Script-issued call
     (`techdebt_file_debt`/`techdebt_file_issue`, `lib/tech-debt-file.sh`),
     never a write the model performs, and every `gh` call it makes runs under
     the same App token requirement 42 already mints for posting the review
@@ -15494,7 +15516,15 @@ What exists, and the requirements each part answers to:
       section (below); `OWNER_DECISION` of exactly `"true"` additionally
       requests the `pw::owner-decision` label on `gh issue create` itself,
       never a body line — a label, not untrusted body text, is what a later
-      gatherer can trust the same way `pw::type:tech-debt` already is.
+      gatherer can trust the same way `pw::type:tech-debt` already is —
+      **retried once without the label**, exactly as requirement 36a's
+      escalation contract is, so a repository that has not had that label
+      ensured yet still gets its issue: `gh` resolves a label name to an id as
+      part of the create, so a labelled create against a repository lacking it
+      fails outright, and a filing lost that way is the one outcome
+      agent-ops#938 exists to prevent. Losing the label costs a later Refiner
+      its marker — the issue reads to it as an item carrying neither marker
+      (requirement 39d's third case); losing the create costs the filing.
       Prints `"<number>\t<url>"` on success, nothing on failure.
     - `techdebt_default_section DEFAULT_FIX [OWNER_DECISION]` (agent-ops#938)
       — the `## Default: <DEFAULT_FIX>` heading both filing functions append
@@ -15616,7 +15646,12 @@ What exists, and the requirements each part answers to:
     default), and neither (`## Default: not stated`, no owner line/label) —
     decoding the record's own base64 `content=` argument and the issue's
     captured `--body-file` for the record and issue cases respectively,
-    since neither is otherwise visible in the stub's own argv capture. The
+    since neither is otherwise visible in the stub's own argv capture. And
+    the label retry: an `issue create` carrying `--label pw::owner-decision`
+    that the stub refuses — as `gh` refuses one against a repository lacking
+    the label — is re-attempted unlabelled and the issue is still filed,
+    while an *unlabelled* create that fails is not re-attempted and stays a
+    failed filing. The
     same suite also
     covers `_techdebt_unfile`'s durable fallback (TD-PPagop-26082427): a
     cleanup `DELETE` that fails while the branch is confirmed still there
