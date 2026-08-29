@@ -11837,6 +11837,16 @@ implements.
       refinement's own `spec`/`comment_url` unchanged — or, for any other
       item, an ordinary `unblocked` event whose `reason` carries the pass's
       own `evidence`. No escalation issue is filed either way.
+
+      Either verdict that clears the block — `settle` or `decide` — releases
+      `needs_refinement_label` from an item whose `kind` is
+      `needs-refinement` (`release_refinement_label`), on the block's `kind`
+      alone and never on whether a refinement was ever written: the label is
+      a projection of the open block (requirement 34e), and an item the
+      Enabler escalated before refining it at all would otherwise return to
+      the pool still carrying it. This is the same unconditional release the
+      ordinary `unblocked` verdict, the `void` verdict and
+      `adjudicate-first`'s own `adequate` each perform.
     - **`decide`** — a tactical decision the pipeline may take on its own
       authority (bounded by "The owner-only boundary", requirement 36a):
       `decision` (the choice, one paragraph), `rationale`, and

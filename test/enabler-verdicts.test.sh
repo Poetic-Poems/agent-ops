@@ -901,6 +901,28 @@ assert_contains "settle/issue: the thread gets the decide-settled correction" \
   "escalation_thread_reconcile acme/widgets 221 decide-settled" "$calls"
 assert_eq "settle/issue: no escalation issue is ever filed" "0" "$(grep -cE '^event escalated ' <<<"$calls")"
 
+# --- settle, refinement item that was never refined: the label is a
+# projection of the open block (requirement 34e), so clearing the block
+# releases it whether or not a specification was ever written — the same
+# unconditional release the ordinary `unblocked` and `void` verdicts and
+# adjudicate-first's own `adequate` each perform. There is no refinement to
+# re-record, so no item-refined event rides along. ---
+eligible_unrefined_issue='[{"repo":"acme/widgets","item":"222","blocked_ts":"2026-08-01T00:00:00Z",
+  "kind":"needs-refinement","reason":"threshold",
+  "detail":"which of the two shapes should this take?","unblock_condition":"a decision on shape"}]'
+examined_unrefined_issue='[{"repo":"acme/widgets","item":"222","verdict":"escalate","reason":"needs a decision first",
+  "issue":{"title":"widgets: decide 222'"'"'s shape before refining it","body":"…draft escalation…"}}]'
+calls="$(run_case "decide-tactical: settle (issue, needs-refinement, never refined)" \
+  "$eligible_unrefined_issue" "$examined_unrefined_issue")"
+
+assert_contains "settle/unrefined: the refinement label is still released" \
+  "release-refinement-label 222 acme/widgets" "$calls"
+assert_eq "settle/unrefined: no item-refined event (there was never a refinement to re-record)" "0" \
+  "$(grep -cE '^event item-refined ' <<<"$calls")"
+assert_eq "settle/unrefined: the block is cleared" "1" "$(grep -cE '^event unblocked ' <<<"$calls")"
+assert_eq "settle/unrefined: no escalation issue is ever filed" "0" \
+  "$(grep -cE '^event escalated ' <<<"$calls")"
+
 # --- decide, register record: decision-taken carries no comment_url, since
 # there is no thread to post one on ---
 # shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler

@@ -1183,13 +1183,26 @@ $(jq . <<<"$input")
             # decide-tactical pass never writes a specification of its own
             # (`prompts/enabler-decide.md`), so the only spec worth
             # re-recording is one that already existed before this pass ran.
-            if [[ "$e_kind" == "$REFINEMENT_BLOCK_KIND" && -n "$e_refined_before_present" ]]; then
-              e_refined_dec="$(jq -c '(.refined_before // {}) | {spec: (.spec // ""), comment_url: (.comment_url // "")}
-                                       | with_entries(select(.value != ""))' \
-                                  <<<"$claimed_entry" 2>/dev/null || printf '{}')"
-              if [[ "$e_refined_dec" != "{}" ]]; then
-                log_event "item-refined" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" \
-                  --argjson x "$e_refined_dec" '{repo: $r, item: $i} + $x')"
+            # The label release below is deliberately *not* held to that same
+            # condition: it is a projection of the open block (requirement
+            # 34e), and this branch has just cleared the block whether or not
+            # a refinement was ever written — a `needs-refinement` item the
+            # Enabler escalated before refining it at all
+            # (`prompts/enabler-decide.md`'s own "never been refined" shape)
+            # would otherwise be unblocked with the label still standing,
+            # waiting on requirement 39f's stale sweep to notice. Every
+            # neighbouring path releases it on `kind` alone — the ordinary
+            # `unblocked` verdict, `void`, and `adjudicate-first`'s own
+            # `adequate` — and so does this one.
+            if [[ "$e_kind" == "$REFINEMENT_BLOCK_KIND" ]]; then
+              if [[ -n "$e_refined_before_present" ]]; then
+                e_refined_dec="$(jq -c '(.refined_before // {}) | {spec: (.spec // ""), comment_url: (.comment_url // "")}
+                                         | with_entries(select(.value != ""))' \
+                                    <<<"$claimed_entry" 2>/dev/null || printf '{}')"
+                if [[ "$e_refined_dec" != "{}" ]]; then
+                  log_event "item-refined" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" \
+                    --argjson x "$e_refined_dec" '{repo: $r, item: $i} + $x')"
+                fi
               fi
               release_refinement_label "$e_item" "$e_repo"
             fi
