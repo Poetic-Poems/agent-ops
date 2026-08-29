@@ -18829,6 +18829,16 @@ pull request, run the ones the change touches and any it could regress.
     `ordered_repos_json`, which never gains one — requirement 3y);
     `refiner_engagement_set` caps the result deterministically by
     `(repo, source, item)` and treats an unreadable `MAX` as `0`.
+    `test/enabler-verdicts.test.sh` covers requirement 39a's third clause's
+    other bypass of the already-refined exclusion, the one `triage_only` is
+    not: driving `maybe_run_enabler` to a `decide` verdict on a register
+    record that already carried a refinement, the resulting `decision-taken`
+    and `item-refined` events are replayed as a log in the order and with the
+    gap `lib/enabler.sh` writes them in, `decisions_map` still names the
+    decision after that re-record, and `refiner_candidate_items` still offers
+    the item — carrying `decision`, and carrying no `triage_only`, since this
+    candidate owes a whole specification rather than one field
+    (agent-ops#1049).
 3y. **The two Refiner-only gatherers read what requirement 3y says
     (requirement 3y).** `test/gather-project-review.test.sh` and
     `test/gather-implementation-plan.test.sh` pass, each driving its script
