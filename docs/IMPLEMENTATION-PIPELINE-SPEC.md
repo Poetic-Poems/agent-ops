@@ -19008,11 +19008,26 @@ pull request, run the ones the change touches and any it could regress.
     `merge_queue_for_branch` once each per repository and naming in the
     failure which of the two is off together with both fixes (enable it or
     adopt a merge queue); an active queue is `ok` regardless of either
-    setting, an unreadable repository, an unreadable merge-queue state, and
-    a `repos/$slug` that reports neither key or only one of them (GitHub
-    returns both only to a token with admin visibility of the repository's
-    merge settings) are each a `skip` naming whichever went unreported, and
-    a repository below the routine tier is left silent. A setting read as a
+    setting, an unreadable repository and a `repos/$slug` that reports
+    neither key or only one of them (GitHub returns both only to a token
+    with admin visibility of the repository's merge settings) are each a
+    `skip` naming whichever went unreported, and a repository below the
+    routine tier is left silent. An **unreadable merge-queue state is a
+    `fail`**, alone among this check's bail-out paths and expressly not
+    covered by the "never fail for what this run could not check" rule the
+    consolidated verdict below still follows: `merge_queue_for_branch` is
+    the identical read `landing_arm` performs as its own gate 7, at a level
+    this check only reaches because landing is armed, and the `repos/$slug`
+    read above has already established that the token can see the
+    repository — so a failure here is neither a visibility gap nor an
+    unchecked precondition but the landing path itself demonstrated down,
+    and the failure names that, both candidate causes (the query in
+    `lib/merge-queue.sh` against GitHub's current schema, and the token's
+    reach) and the repository it is down for. The consolidated
+    autonomy-readiness verdict still reports that repository's
+    merge-settings/merge-queue pairing as **unconfirmed** rather than
+    missing, since this run established nothing either way about the
+    settings themselves. A setting read as a
     definite `false` decides the verdict before the unreported case is
     considered, so an unreadable sibling never masks one doctor did read as
     off. The `ok` states only the settings actually read, since they are a
@@ -19398,10 +19413,15 @@ pull request, run the ones the change touches and any it could regress.
     requires approving reviews (owner act)`, `no merge queue and
     allow_auto_merge/allow_squash_merge are not both enabled (owner act)`) or
     a configuration error (`approver_model_default is not set (configuration
-    error)`); and `skip`, with `doctor.sh` still exiting 0, where the only
-    gaps are ones this run could not read — an unreachable `rulesets`
-    endpoint, and an unreadable merge-queue state, which is named as unread
-    rather than as never looked at.
+    error)`); and `skip` where the only gaps are ones this run could not
+    read — an unreachable `rulesets` endpoint, and an unreadable merge-queue
+    state, each named as unread rather than as never looked at. This
+    verdict's own `skip` never raises `doctor.sh`'s exit status by itself:
+    for the `rulesets` case the run still exits 0, while an unreadable
+    merge-queue state exits 1 on the strength of the pairing check's own
+    `fail` (requirement 8t) — a separate verdict answering the separate
+    question of whether landing works at all, not this one changing its
+    mind about what it could confirm.
 8x. **`file_debt`/`file_issue` file what a stage found, and only the Script
     ever writes (requirements 36c, 42a, agent-ops#631).**
     `test/tech-debt-file.test.sh` passes against a real fixture git remote
