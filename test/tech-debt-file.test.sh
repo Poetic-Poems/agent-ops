@@ -207,6 +207,19 @@ if [[ "$1" == "pr" && "$2" == "create" ]]; then
   exit 0
 fi
 if [[ "$1" == "issue" && "$2" == "create" ]]; then
+  # Capture --body-file's own content before the caller deletes it
+  # (agent-ops#938: techdebt_file_issue's combined temp file), so a test can
+  # assert on the `## Default` section actually filed rather than only on the
+  # argv, which carries a throwaway path.
+  shift 2
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "--body-file" ]]; then
+      cat "$2" > "$d/last-issue-body" 2>/dev/null
+      shift 2
+      continue
+    fi
+    shift
+  done
   [[ -s "$d/issue-url" ]] || exit 1
   cat "$d/issue-url"
   exit 0
@@ -237,6 +250,15 @@ reset_stub() {
 reserved_id() {
   grep -oE 'ref=refs/heads/td-record/[A-Za-z0-9-]+' "$tmp_dir/calls" \
     | head -n1 | sed 's#.*/##'
+}
+
+# last_put_content -- the decoded body of the most recent contents PUT (the
+# record commit techdebt_file_debt just wrote), so a test can assert on the
+# `## Default`/`Owner decision:` section without re-deriving the base64
+# encoding the stub's own argv capture leaves it in.
+last_put_content() {
+  grep -oE '\-f content=[A-Za-z0-9+/=]+' "$tmp_dir/calls" | tail -n1 \
+    | sed 's/^-f content=//' | base64 -d
 }
 
 # assert_cleanup ID PREFIX -- both branches this filing could have created
@@ -284,6 +306,44 @@ assert_eq "  ... branch is td-record/<id>, not td/<id>" "1" \
 # to a real label rather than none at all.
 assert_eq "  ... pr create carries the default label" "1" \
   "$(grep -c '^<none> pr create .*--label autonomous-agent' "$tmp_dir/calls")"
+# DEFAULT_FIX/OWNER_DECISION omitted -> the record still carries a `##
+# Default` heading, filed as "not stated" rather than left out (agent-ops#938:
+# a malformed verdict is filed anyway, never lost).
+assert_eq "  ... no DEFAULT_FIX/OWNER_DECISION -> '## Default: not stated'" "1" \
+  "$(last_put_content | grep -c '^## Default: not stated$')"
+assert_eq "  ... and no 'Owner decision:' line" "0" \
+  "$(last_put_content | grep -c '^Owner decision:')"
+
+# --- DEFAULT_FIX/OWNER_DECISION (agent-ops#938) -----------------------------
+remote="$(make_remote 0)"
+gd="$(a_git_dir "$remote")"
+reset_stub
+techdebt_file_debt "o/r" "A finding with a default" "The body." "while reviewing PR #618" "" "$gd" \
+  "" "Do the smaller of the two fixes because it needs no schema change" >/dev/null
+assert_eq "file_debt: DEFAULT_FIX alone -> heading carries it, no owner line" "1" \
+  "$(last_put_content | grep -c '^## Default: Do the smaller of the two fixes because it needs no schema change$')"
+assert_eq "  ... no 'Owner decision:' line" "0" \
+  "$(last_put_content | grep -c '^Owner decision:')"
+
+remote="$(make_remote 0)"
+gd="$(a_git_dir "$remote")"
+reset_stub
+techdebt_file_debt "o/r" "A finding that is an owner call" "The body." "while reviewing PR #618" \
+  "" "$gd" "" "Pick the vendor-locked option" "true" >/dev/null
+assert_eq "file_debt: OWNER_DECISION true -> heading and 'Owner decision: yes' both present" "1" \
+  "$(last_put_content | grep -c '^## Default: Pick the vendor-locked option$')"
+assert_eq "  ... 'Owner decision: yes' beside it" "1" \
+  "$(last_put_content | grep -c '^Owner decision: yes$')"
+
+remote="$(make_remote 0)"
+gd="$(a_git_dir "$remote")"
+reset_stub
+techdebt_file_debt "o/r" "An owner call with no stated default" "The body." "while reviewing PR #618" \
+  "" "$gd" "" "" "true" >/dev/null
+assert_eq "file_debt: OWNER_DECISION true alone -> still '## Default: not stated'" "1" \
+  "$(last_put_content | grep -c '^## Default: not stated$')"
+assert_eq "  ... but 'Owner decision: yes' still present (verdict is not malformed)" "1" \
+  "$(last_put_content | grep -c '^Owner decision: yes$')"
 
 # --- An explicit PR_LABEL is passed through to `gh pr create` ---------------
 remote="$(make_remote 0)"
@@ -509,6 +569,38 @@ out="$(techdebt_file_issue "o/r" "TD26082201" "A gap worth noting" <(echo "body"
 rc=$?
 assert_eq "file_issue: create fails -> exit 1" "1" "$rc"
 assert_eq "  ... no output" "" "$out"
+
+# --- DEFAULT_FIX/OWNER_DECISION (agent-ops#938) -----------------------------
+# No DEFAULT_FIX/OWNER_DECISION -> filed anyway with "## Default: not stated",
+# no pw::owner-decision label.
+reset_stub
+techdebt_file_issue "o/r" "TD26082201" "A gap worth noting" <(echo "body") "" >/dev/null
+assert_eq "file_issue: neither field -> '## Default: not stated'" "1" \
+  "$(grep -c '^## Default: not stated$' "$tmp_dir/last-issue-body")"
+assert_eq "  ... no pw::owner-decision label requested" "0" \
+  "$(grep -c -- '--label pw::owner-decision' "$tmp_dir/calls")"
+
+# DEFAULT_FIX alone -> heading carries it, no label.
+reset_stub
+techdebt_file_issue "o/r" "TD26082201" "A gap worth noting" <(echo "body") "" \
+  "Rename the flag rather than add a second one" >/dev/null
+assert_eq "file_issue: DEFAULT_FIX alone -> heading carries it" "1" \
+  "$(grep -c '^## Default: Rename the flag rather than add a second one$' "$tmp_dir/last-issue-body")"
+assert_eq "  ... no pw::owner-decision label requested" "0" \
+  "$(grep -c -- '--label pw::owner-decision' "$tmp_dir/calls")"
+
+# OWNER_DECISION true -> the pw::owner-decision label is requested, alongside
+# the heading; a record would write "Owner decision: yes" instead, but an
+# issue is marked with a label, not body text, so a gatherer can trust it.
+reset_stub
+techdebt_file_issue "o/r" "TD26082201" "A gap worth noting" <(echo "body") "" \
+  "Pick the vendor-locked option" "true" >/dev/null
+assert_eq "file_issue: OWNER_DECISION true -> heading present" "1" \
+  "$(grep -c '^## Default: Pick the vendor-locked option$' "$tmp_dir/last-issue-body")"
+assert_eq "  ... no 'Owner decision:' body line (a label carries it here)" "0" \
+  "$(grep -c '^Owner decision:' "$tmp_dir/last-issue-body")"
+assert_eq "  ... pw::owner-decision label requested" "1" \
+  "$(grep -c -- '--label pw::owner-decision' "$tmp_dir/calls")"
 
 echo
 if [[ "$failures" -eq 0 ]]; then

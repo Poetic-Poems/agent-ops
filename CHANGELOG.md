@@ -22,6 +22,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reservation-only `td/<id>` branches (a single `chore(tech-debt): reserve`
   commit, no filed record, no pull request) that had accumulated on origin
   were released.
+- The Approver's and the Enabler's `file_debt`/`file_issue` verdicts gain two
+  fields, `default_fix` and `owner_decision` (agent-ops#938): `default_fix`
+  names the option the filer would take when the body enumerates more than
+  one way to fix it, and `owner_decision: true` reserves the choice under
+  requirement 36a's owner-only boundary instead. `lib/tech-debt-file.sh`
+  writes either into the filed body as a `## Default: <fix>` heading
+  (`## Default: not stated`, logged as a warning, when a filing enumerates
+  options and sets neither), plus an `Owner decision: yes` line beside it in
+  a tech-debt record or the new `pw::owner-decision` label on a filed issue.
+  The Refiner now specifies to a stated default instead of declining with
+  `needs-refinement` merely because alternatives exist, escalating only a
+  genuine owner-only marker or an unmarked, operator-visible fork — closing
+  the pattern behind four 2026-08-28 decision escalations that each took
+  three Co-Ordinator cycles and an Enabler engagement to confirm a default
+  the filing itself had already argued for.
 - The product-managed `pw::type:tech-debt` label is now part of the `target`
   role's catalogue (agent-ops#872), so the pipeline creates it in every
   repository it gathers data for, at most once per

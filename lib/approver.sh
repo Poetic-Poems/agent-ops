@@ -450,8 +450,10 @@ run_approver_stage() {
   local token review_body prior_section adj_bool
   local number="" protected_rc=0 protected_hit=0 critical_reason=""
   local posted_review="" posted_bool="false"
-  local ap_file_debt ap_fd_title ap_fd_body ap_fd_pr_label ap_fd_result ap_fd_id ap_fd_pr_url
-  local ap_file_issue ap_fi_title ap_fi_body ap_fi_body_file ap_fi_result ap_fi_number ap_fi_url
+  local ap_file_debt ap_fd_title ap_fd_body ap_fd_pr_label ap_fd_result ap_fd_id ap_fd_pr_url \
+    ap_fd_default_fix ap_fd_owner_decision
+  local ap_file_issue ap_fi_title ap_fi_body ap_fi_body_file ap_fi_result ap_fi_number ap_fi_url \
+    ap_fi_default_fix ap_fi_owner_decision
   approver_last_post_ok=""
 
   # `fresh` (issue #513, PR #506 review follow-up): this stage posts a real
@@ -652,6 +654,15 @@ $node_name
     if [[ -n "$ap_file_debt" && "$ap_file_debt" != "null" ]]; then
       ap_fd_title="$(jq -r '.title // ""' <<<"$ap_file_debt" 2>/dev/null || true)"
       ap_fd_body="$(jq -r '.body // ""' <<<"$ap_file_debt" 2>/dev/null || true)"
+      # default_fix/owner_decision (agent-ops#938): the option this review
+      # would take, or the owner-only clause it names instead — see
+      # prompts/approver.md's "file_debt/file_issue" for what each means and
+      # requirement 42a for what the Script does with them.
+      ap_fd_default_fix="$(jq -r '.default_fix // ""' <<<"$ap_file_debt" 2>/dev/null || true)"
+      ap_fd_owner_decision="$(jq -r \
+        'if (.owner_decision // false) == true then "true" else "false" end' \
+        <<<"$ap_file_debt" 2>/dev/null || true)"
+      [[ -n "$ap_fd_owner_decision" ]] || ap_fd_owner_decision="false"
       # The fleet's configured `pr_label` (agent-ops TD-PPagop-26082426): this
       # call site does not otherwise have it in hand, so it is read from
       # `DEFAULTED_CONFIG` here and threaded through to techdebt_file_debt,
@@ -666,17 +677,29 @@ $node_name
         log_event "warning" "$(jq -nc --arg u "$pr_url" \
           --arg d "approver set file_debt for $pr_url, but it carries no title or body — ignored" \
           '{detail: $d, pr_url: $u}')"
-      elif ap_fd_result="$(techdebt_file_debt "$selected_repo" "$ap_fd_title" "$ap_fd_body" \
-             "while the Approver was judging $pr_url" "$token" "$clone_dir" "$ap_fd_pr_label")" \
-             && [[ -n "$ap_fd_result" ]]; then
-        IFS=$'\t' read -r ap_fd_id ap_fd_pr_url <<<"$ap_fd_result"
-        log_event "tech-debt-filed" "$(jq -nc --arg u "$pr_url" --arg r "$selected_repo" \
-          --arg id "$ap_fd_id" --arg fu "$ap_fd_pr_url" \
-          '{pr_url: $u, repo: $r, by: "approver", id: $id, filed_pr_url: $fu}')"
       else
-        log_event "warning" "$(jq -nc --arg u "$pr_url" \
-          --arg d "approver: could not file the tech-debt record for $pr_url (see tech-debt-file.err)" \
-          '{detail: $d, pr_url: $u}')"
+        # A verdict naming neither is malformed, not refused: it is filed
+        # anyway with "## Default: not stated" (techdebt_default_section)
+        # rather than lost, and this warning is what lets the refusal be
+        # counted so the filing prompts can be tuned.
+        if [[ -z "$ap_fd_default_fix" && "$ap_fd_owner_decision" != "true" ]]; then
+          log_event "warning" "$(jq -nc --arg u "$pr_url" \
+            --arg d "approver set file_debt for $pr_url with no default_fix and no owner_decision — filed with '## Default: not stated'" \
+            '{detail: $d, pr_url: $u}')"
+        fi
+        if ap_fd_result="$(techdebt_file_debt "$selected_repo" "$ap_fd_title" "$ap_fd_body" \
+               "while the Approver was judging $pr_url" "$token" "$clone_dir" "$ap_fd_pr_label" \
+               "$ap_fd_default_fix" "$ap_fd_owner_decision")" \
+               && [[ -n "$ap_fd_result" ]]; then
+          IFS=$'\t' read -r ap_fd_id ap_fd_pr_url <<<"$ap_fd_result"
+          log_event "tech-debt-filed" "$(jq -nc --arg u "$pr_url" --arg r "$selected_repo" \
+            --arg id "$ap_fd_id" --arg fu "$ap_fd_pr_url" \
+            '{pr_url: $u, repo: $r, by: "approver", id: $id, filed_pr_url: $fu}')"
+        else
+          log_event "warning" "$(jq -nc --arg u "$pr_url" \
+            --arg d "approver: could not file the tech-debt record for $pr_url (see tech-debt-file.err)" \
+            '{detail: $d, pr_url: $u}')"
+        fi
       fi
     fi
 
@@ -684,11 +707,21 @@ $node_name
     if [[ -n "$ap_file_issue" && "$ap_file_issue" != "null" ]]; then
       ap_fi_title="$(jq -r '.title // ""' <<<"$ap_file_issue" 2>/dev/null || true)"
       ap_fi_body="$(jq -r '.body // ""' <<<"$ap_file_issue" 2>/dev/null || true)"
+      ap_fi_default_fix="$(jq -r '.default_fix // ""' <<<"$ap_file_issue" 2>/dev/null || true)"
+      ap_fi_owner_decision="$(jq -r \
+        'if (.owner_decision // false) == true then "true" else "false" end' \
+        <<<"$ap_file_issue" 2>/dev/null || true)"
+      [[ -n "$ap_fi_owner_decision" ]] || ap_fi_owner_decision="false"
       if [[ -z "$ap_fi_title" || -z "$ap_fi_body" ]]; then
         log_event "warning" "$(jq -nc --arg u "$pr_url" \
           --arg d "approver set file_issue for $pr_url, but it carries no title or body — ignored" \
           '{detail: $d, pr_url: $u}')"
       else
+        if [[ -z "$ap_fi_default_fix" && "$ap_fi_owner_decision" != "true" ]]; then
+          log_event "warning" "$(jq -nc --arg u "$pr_url" \
+            --arg d "approver set file_issue for $pr_url with no default_fix and no owner_decision — filed with '## Default: not stated'" \
+            '{detail: $d, pr_url: $u}')"
+        fi
         # The pull request's own URL is appended, not merely hoped for in
         # the model's own prose, because techdebt_file_issue's dedup guard
         # searches the issue body for exactly this string on every later
@@ -699,7 +732,8 @@ $node_name
         printf '%s\n\n---\nNoticed by the autonomous pipeline while approving %s.\n' \
           "$ap_fi_body" "$pr_url" > "$ap_fi_body_file"
         if ap_fi_result="$(techdebt_file_issue "$selected_repo" "$pr_url" "$ap_fi_title" \
-               "$ap_fi_body_file" "$token")" && [[ -n "$ap_fi_result" ]]; then
+               "$ap_fi_body_file" "$token" "$ap_fi_default_fix" "$ap_fi_owner_decision")" \
+               && [[ -n "$ap_fi_result" ]]; then
           IFS=$'\t' read -r ap_fi_number ap_fi_url <<<"$ap_fi_result"
           log_event "issue-filed" "$(jq -nc --arg u "$pr_url" --arg r "$selected_repo" \
             --argjson n "$ap_fi_number" --arg iu "$ap_fi_url" \

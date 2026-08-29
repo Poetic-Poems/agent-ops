@@ -182,8 +182,8 @@ fi_calls() { cat "$tmp_dir/fi_calls" 2>/dev/null || true; }
 count() { local f="$tmp_dir/$1"; [[ -s "$f" ]] && wc -l <"$f" | tr -d ' ' || printf '0'; }
 warnings() { grep $'^warning\t' "$tmp_dir/events" 2>/dev/null | cut -f2- || true; }
 
-# --- file_debt: success --------------------------------------------------
-verdict='{"verdict":"approve","reasons":["fine"],"file_debt":{"title":"A gap the Approver noticed","body":"The body."}}'
+# --- file_debt: success (carries default_fix) ------------------------------
+verdict='{"verdict":"approve","reasons":["fine"],"file_debt":{"title":"A gap the Approver noticed","body":"The body.","default_fix":"Do the smaller fix"}}'
 rc="$(run_case "$verdict")"
 assert_eq "file_debt success: stage still returns 0" "0" "$rc"
 assert_eq "  ... techdebt_file_debt called once" "1" "$(count fd_calls)"
@@ -197,9 +197,31 @@ assert_contains "  ... and the Approver's own App token, not the ordinary login"
 # label here that does not match that fallback.
 assert_contains "  ... and the configured pr_label, not the bare fallback" \
   "custom-agent-label" "$(fd_calls)"
+# agent-ops#938: default_fix/owner_decision reach the call, in that order,
+# past pr_label.
+assert_contains "  ... and default_fix/owner_decision past pr_label" \
+  "custom-agent-label Do the smaller fix false" "$(fd_calls)"
 assert_contains "  ... a tech-debt-filed event, crediting the approver" \
   '"by":"approver"' "$(grep '^tech-debt-filed' "$tmp_dir/events" || true)"
 assert_eq "  ... no warning" "0" "$(warnings | grep -c .)"
+
+# --- file_debt: owner_decision true, no default_fix -> no "malformed" -----
+#     warning (owner_decision alone is enough)
+verdict='{"verdict":"approve","reasons":["fine"],"file_debt":{"title":"An owner call","body":"The body.","owner_decision":true}}'
+run_case "$verdict" >/dev/null
+assert_contains "file_debt owner_decision: passed through as \"true\"" \
+  "custom-agent-label  true" "$(fd_calls)"
+assert_eq "  ... no warning" "0" "$(warnings | grep -c .)"
+
+# --- file_debt: neither default_fix nor owner_decision -> malformed, filed -
+#     anyway, and the refusal is counted as a warning (agent-ops#938)
+verdict='{"verdict":"approve","reasons":["fine"],"file_debt":{"title":"No stated default","body":"B."}}'
+run_case "$verdict" >/dev/null
+assert_eq "file_debt malformed default: still files" "1" "$(count fd_calls)"
+assert_contains "  ... still logs tech-debt-filed" '"by":"approver"' \
+  "$(grep '^tech-debt-filed' "$tmp_dir/events" || true)"
+assert_contains "  ... AND a warning naming the missing default" \
+  "no default_fix and no owner_decision" "$(warnings)"
 
 # --- file_debt: missing title/body -> warning, no call --------------------
 verdict='{"verdict":"approve","reasons":["fine"],"file_debt":{"title":"","body":""}}'
@@ -208,20 +230,32 @@ assert_eq "file_debt missing fields: no call made" "0" "$(count fd_calls)"
 assert_eq "  ... a warning was logged" "1" "$(warnings | grep -c .)"
 
 # --- file_debt: the call itself fails -> warning ---------------------------
-verdict='{"verdict":"approve","reasons":["fine"],"file_debt":{"title":"T","body":"B"}}'
+verdict='{"verdict":"approve","reasons":["fine"],"file_debt":{"title":"T","body":"B","default_fix":"D"}}'
 run_case "$verdict" 1 >/dev/null
 assert_eq "file_debt call fails: still attempted" "1" "$(count fd_calls)"
 assert_eq "  ... no tech-debt-filed event" "0" "$(grep -c '^tech-debt-filed' "$tmp_dir/events" || true)"
 assert_eq "  ... a warning was logged instead" "1" "$(warnings | grep -c .)"
 
-# --- file_issue: success ----------------------------------------------------
-verdict='{"verdict":"refuse","reasons":["needs a fix"],"file_issue":{"title":"A question","body":"Body of it."}}'
+# --- file_issue: success (carries default_fix) ------------------------------
+verdict='{"verdict":"refuse","reasons":["needs a fix"],"file_issue":{"title":"A question","body":"Body of it.","default_fix":"Answer it this way"}}'
 run_case "$verdict" >/dev/null
 assert_eq "file_issue success: techdebt_file_issue called once" "1" "$(count fi_calls)"
 assert_contains "  ... with the pull request's own URL as the item ref" "$URL" "$(fi_calls)"
 assert_contains "  ... and the Approver's own App token" "a-minted-token" "$(fi_calls)"
+assert_contains "  ... and default_fix/owner_decision past the token" \
+  "a-minted-token Answer it this way false" "$(fi_calls)"
 assert_contains "  ... an issue-filed event, crediting the approver" \
   '"by":"approver"' "$(grep '^issue-filed' "$tmp_dir/events" || true)"
+assert_eq "  ... no warning" "0" "$(warnings | grep -c .)"
+
+# --- file_issue: neither field -> malformed, filed anyway, warning ---------
+verdict='{"verdict":"refuse","reasons":["needs a fix"],"file_issue":{"title":"No stated default","body":"Body."}}'
+run_case "$verdict" >/dev/null
+assert_eq "file_issue malformed default: still files" "1" "$(count fi_calls)"
+assert_contains "  ... still logs issue-filed" '"by":"approver"' \
+  "$(grep '^issue-filed' "$tmp_dir/events" || true)"
+assert_contains "  ... AND a warning naming the missing default" \
+  "no default_fix and no owner_decision" "$(warnings)"
 
 # --- file_issue: missing body -> warning, no call --------------------------
 verdict='{"verdict":"approve","reasons":["fine"],"file_issue":{"title":"Q","body":""}}'
@@ -237,7 +271,7 @@ assert_eq "  ... no techdebt_file_issue call" "0" "$(count fi_calls)"
 assert_eq "  ... no warning" "0" "$(warnings | grep -c .)"
 
 # --- Orthogonal to verdict: a `refuse` verdict still files -----------------
-verdict='{"verdict":"refuse","reasons":["a real defect"],"file_debt":{"title":"T2","body":"B2"}}'
+verdict='{"verdict":"refuse","reasons":["a real defect"],"file_debt":{"title":"T2","body":"B2","default_fix":"D2"}}'
 run_case "$verdict" >/dev/null
 assert_contains "refuse verdict still posts REQUEST_CHANGES" "event=REQUEST_CHANGES" "$(cat "$tmp_dir/posts")"
 assert_eq "  ... and file_debt still files, independent of the verdict" "1" "$(count fd_calls)"

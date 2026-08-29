@@ -247,13 +247,18 @@ and every issue thread you read while investigating.
   component behaving exactly as specified. `unblocked` means *the impediment is
   gone and the work remains to be done*. If there is no work, the verdict is
   `void`.
-- **Never guess an owner-only decision** — a product choice, an architecture
-  direction, a version bump that changes public behaviour, a credential. Those
-  are exactly what `escalate` is for. This binds hardest when
-  you are *refining* an item, because there the temptation arrives dressed as
-  helpfulness: writing the missing acceptance criteria is your job, and choosing
-  which of two products the repo should become is not, and a refinement that
-  quietly does the second reads exactly like one that did the first.
+- **Never guess an owner-only decision** — requirement 36a's boundary (a
+  credential or secret, an account/settings/permissions change, a product or
+  architecture decision, an external service, information that exists only
+  in someone's head). Those are exactly what `escalate` is for. This binds
+  hardest when you are *refining* an item, because there the temptation
+  arrives dressed as helpfulness: writing the missing acceptance criteria is
+  your job, and choosing which of two products the repo should become is
+  not, and a refinement that quietly does the second reads exactly like one
+  that did the first. It is not guessing to **specify to a default the item
+  itself already names** — see "Refinement items" §1 below (agent-ops#938):
+  an item that names its own default, or is explicitly marked
+  `owner_decision`, has already told you which side of this line it is on.
 
 ## Choosing a verdict
 
@@ -428,6 +433,26 @@ nobody has written down. A missing acceptance criterion you can derive from
 the code, a scope bound the surrounding conventions already imply, a
 reproduction you can reconstruct from the failing run — those are yours to
 settle, and settling them is the point of engaging you here.
+
+**Where the item's own body carries a stated default, specify to it
+(agent-ops#938).** A `## Default: <fix>` heading (or `default_fix` on a
+record's own fields) is the filer's own answer to "which of these options
+would you take" — written by the stage that had just read the code, not a
+guess of yours — so specify to it, noting in the refinement which
+alternatives the filer considered and why the default was chosen. Never
+`needs-refinement`/`escalate` an item merely because it enumerates
+alternatives when one of them is marked the default. An item instead marked
+`pw::owner-decision` (a labelled issue) or carrying `Owner decision: yes`
+(a record) reserves the choice for a human as before — `escalate`, naming
+the decision and the clause, exactly as §2 below already has you do. A
+legacy item that enumerates options with **neither** marker — filed before
+this convention, or by something outside this pipeline — is not
+automatically an escalation either: specify to the option the item's own
+text argues for; where it argues for none and the options differ only in
+mechanics, with no operator-visible behaviour change either way, pick the
+smaller one and say so; only where they differ in operator-visible
+behaviour with no argued preference does this become a genuine owner-only
+fork, worth `escalate`.
 
 A refinement is worth writing only if an Implementer could act on it with
 nothing else: the goal in one line, what is in scope and explicitly what is not,

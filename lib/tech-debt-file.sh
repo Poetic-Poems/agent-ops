@@ -8,7 +8,8 @@
 # `file_issue` in their final JSON; the Script is what actually files it,
 # under the calling stage's own identity where one applies.
 #
-# techdebt_file_issue REPO ITEM_REF TITLE BODY_FILE [TOKEN]
+# techdebt_file_issue REPO ITEM_REF TITLE BODY_FILE [TOKEN] [DEFAULT_FIX] \
+#                      [OWNER_DECISION]
 #   Files one plain GitHub issue, or returns an existing one that already
 #   covers ITEM_REF. No label or assignee — unlike an escalation
 #   (create_escalation_issue) this is not addressed at a specific human and
@@ -16,7 +17,13 @@
 #   request excluded from the `issues` source. Prints "<number>\t<url>" on
 #   success; prints nothing and returns 1 otherwise.
 #
-# techdebt_file_debt REPO TITLE BODY PROVENANCE [TOKEN] [GIT_DIR] [PR_LABEL]
+#   DEFAULT_FIX/OWNER_DECISION (agent-ops#938): see techdebt_default_section
+#   below for what they add to the filed body, and pw::owner-decision for
+#   what OWNER_DECISION additionally applies here — a fresh issue only; the
+#   dedup hit above returns the existing issue untouched, label included.
+#
+# techdebt_file_debt REPO TITLE BODY PROVENANCE [TOKEN] [GIT_DIR] [PR_LABEL] \
+#                     [DEFAULT_FIX] [OWNER_DECISION]
 #   Reserves a tech-debt id, writes tech-debt/<id>.md, and opens a pull
 #   request carrying it alone, labelled PR_LABEL (default "autonomous-agent")
 #   so it is visible to every gatherer that filters pull requests by the
@@ -136,10 +143,40 @@ _techdebt_yaml_scalar() {
   printf '"%s"' "$v"
 }
 
-# techdebt_file_issue REPO ITEM_REF TITLE BODY_FILE [TOKEN]
+# techdebt_default_section DEFAULT_FIX [OWNER_DECISION]
+# The `## Default` section every filed body carries (agent-ops#938): the
+# option the filer would take (DEFAULT_FIX, one sentence), or `not stated`
+# when the filer's verdict carried neither DEFAULT_FIX nor an OWNER_DECISION
+# of exactly "true" — a malformed verdict is filed anyway rather than lost,
+# so the caller (lib/approver.sh, lib/enabler.sh) logs the warning that
+# distinguishes this fallback from a genuine, single-option filing that never
+# needed a default at all. OWNER_DECISION "true" adds `Owner decision: yes`
+# on its own line beside the heading — techdebt_file_issue applies the
+# `pw::owner-decision` label instead, since a label, not body text, is what a
+# later gatherer can trust (lib/labels.sh's own comment on why
+# `pw::type:tech-debt` is a label and not a body convention applies here
+# identically). Ends with a trailing newline so a caller can concatenate it
+# straight onto a body that may or may not already end with one.
+techdebt_default_section() {
+  local default_fix="$1" owner_decision="${2:-false}" heading
+  if [[ -n "$default_fix" ]]; then
+    heading="## Default: $default_fix"
+  else
+    heading="## Default: not stated"
+  fi
+  if [[ "$owner_decision" == "true" ]]; then
+    printf '%s\nOwner decision: yes\n' "$heading"
+  else
+    printf '%s\n' "$heading"
+  fi
+}
+
+# techdebt_file_issue REPO ITEM_REF TITLE BODY_FILE [TOKEN] [DEFAULT_FIX] \
+#                      [OWNER_DECISION]
 techdebt_file_issue() {
-  local repo="$1" item_ref="$2" title="$3" body_file="$4" token="${5:-}"
-  local existing raw url number errlog
+  local repo="$1" item_ref="$2" title="$3" body_file="$4" token="${5:-}" \
+        default_fix="${6:-}" owner_decision="${7:-false}"
+  local existing raw url number errlog body_content combined_file label_args=()
   errlog="$(_techdebt_err_log)"
   existing="$(_techdebt_gh "$token" issue list -R "$repo" --state open --search "$item_ref" \
                 --json number,url,body 2>>"$errlog" \
@@ -150,8 +187,19 @@ techdebt_file_issue() {
     printf '%s' "$existing"
     return 0
   fi
-  raw="$(_techdebt_gh "$token" issue create -R "$repo" --title "$title" --body-file "$body_file" \
-           2>>"$errlog" || true)"
+  body_content="$(cat "$body_file" 2>/dev/null || true)"
+  combined_file="$(mktemp)"
+  # OWNER_DECISION omitted from techdebt_default_section here, deliberately:
+  # for an issue, the `pw::owner-decision` label below is what a later
+  # gatherer trusts, the same reason `pw::type:tech-debt` is a label and not
+  # a body convention — the body stays untrusted data even though this
+  # filing call is itself trusted (lib/labels.sh's own comment).
+  printf '%s\n\n%s' "$body_content" "$(techdebt_default_section "$default_fix")" \
+    > "$combined_file"
+  [[ "$owner_decision" == "true" ]] && label_args=(--label pw::owner-decision)
+  raw="$(_techdebt_gh "$token" issue create -R "$repo" --title "$title" --body-file "$combined_file" \
+           "${label_args[@]}" 2>>"$errlog" || true)"
+  rm -f "$combined_file"
   url="$(grep -oE 'https://github\.com/[A-Za-z0-9_./-]+/issues/[0-9]+' <<<"$raw" | tail -n1 || true)"
   [[ -n "$url" ]] || return 1
   number="${url##*/}"
@@ -261,10 +309,11 @@ _techdebt_unfile() {
   _techdebt_release_ref "$token" "$repo" "td/$id" "$errlog"
 }
 
-# techdebt_file_debt REPO TITLE BODY PROVENANCE [TOKEN] [GIT_DIR] [PR_LABEL]
+# techdebt_file_debt REPO TITLE BODY PROVENANCE [TOKEN] [GIT_DIR] [PR_LABEL] \
+#                     [DEFAULT_FIX] [OWNER_DECISION]
 techdebt_file_debt() {
   local repo="$1" title="$2" body="$3" provenance="$4" token="${5:-}" git_dir="${6:-}" \
-        pr_label="${7:-autonomous-agent}"
+        pr_label="${7:-autonomous-agent}" default_fix="${8:-}" owner_decision="${9:-false}"
   local made_dir=0 id base_sha branch record_file reserve_script content \
         pr_body_file pr_url errlog
 
@@ -310,7 +359,7 @@ techdebt_file_debt() {
 
   branch="${TECHDEBT_RECORD_BRANCH_PREFIX}$id"
   record_file="tech-debt/$id.md"
-  content="$(techdebt_record_body "$id" "$title" "$body" "$provenance")"
+  content="$(techdebt_record_body "$id" "$title" "$body" "$provenance" "$default_fix" "$owner_decision")"
 
   if ! _techdebt_gh "$token" api -X POST "repos/$repo/git/refs" \
         -f "ref=refs/heads/$branch" -f "sha=$base_sha" >/dev/null 2>>"$errlog"; then
@@ -352,15 +401,20 @@ techdebt_file_debt() {
   printf '%s\t%s' "$id" "$pr_url"
 }
 
-# techdebt_record_body ID TITLE BODY PROVENANCE
+# techdebt_record_body ID TITLE BODY PROVENANCE [DEFAULT_FIX] [OWNER_DECISION]
 # The frontmatter+body TECH-DEBT.md's "Filing an item" describes, `filed:`
 # derived from ID's own date component (never the host clock) so the two
-# can never disagree regardless of the container's timezone.
+# can never disagree regardless of the container's timezone. DEFAULT_FIX/
+# OWNER_DECISION (agent-ops#938) become the trailing `## Default` section
+# techdebt_default_section builds, ahead of the provenance line — see its own
+# comment for what each does.
 techdebt_record_body() {
-  local id="$1" title="$2" body="$3" provenance="$4"
+  local id="$1" title="$2" body="$3" provenance="$4" default_fix="${5:-}" \
+        owner_decision="${6:-false}"
   local datepart yy mm dd
   datepart="${id##*-}"
   yy="${datepart:0:2}" mm="${datepart:2:2}" dd="${datepart:4:2}"
-  printf -- '---\nid: %s\ntitle: %s\nstatus: open\nfiled: 20%s-%s-%s\n---\n\n%s\n\nNoticed %s.\n' \
-    "$id" "$(_techdebt_yaml_scalar "$title")" "$yy" "$mm" "$dd" "$body" "$provenance"
+  printf -- '---\nid: %s\ntitle: %s\nstatus: open\nfiled: 20%s-%s-%s\n---\n\n%s\n\n%s\nNoticed %s.\n' \
+    "$id" "$(_techdebt_yaml_scalar "$title")" "$yy" "$mm" "$dd" "$body" \
+    "$(techdebt_default_section "$default_fix" "$owner_decision")" "$provenance"
 }

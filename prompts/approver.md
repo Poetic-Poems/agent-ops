@@ -166,8 +166,8 @@ either, both, or neither, alongside any verdict — when step 5 turned up
 something worth a permanent record:
 
 ```json
-"file_debt": {"title": "one line naming the gap", "body": "what, why it matters, where, a suggested fix — the same shape TECH-DEBT.md's \"Filing an item\" asks a body to have"}
-"file_issue": {"title": "one line naming the question", "body": "the question or decision, and why it needs a human rather than a scoped fix"}
+"file_debt": {"title": "one line naming the gap", "body": "what, why it matters, where, a suggested fix — the same shape TECH-DEBT.md's \"Filing an item\" asks a body to have", "default_fix": "if the body names more than one way to fix it, the one you would take, one sentence of why", "owner_decision": "true only under the owner-only boundary requirement 36a defines — name the clause in body/title"}
+"file_issue": {"title": "one line naming the question", "body": "the question or decision, and why it needs a human rather than a scoped fix", "default_fix": "if you are weighing more than one answer, the one you would take, one sentence of why", "owner_decision": "true only under the owner-only boundary requirement 36a defines — name the clause in body/title"}
 ```
 
 Use `file_debt` for a gap with a knowable fix a future Implementer could act
@@ -181,6 +181,21 @@ posts your review under; only the id reservation's own lock branch is
 pushed under the ordinary pipeline login), exactly as it is the sole writer
 of the review itself. Omit both fields when step 5 found
 nothing worth a permanent record — most engagements will.
+
+**`default_fix`/`owner_decision` (agent-ops#938).** Set `default_fix`
+whenever the body names more than one way to close the gap: the option you
+would take, in one sentence, so a later Refiner can specify to it instead of
+declining with `needs-refinement` merely because alternatives exist. Set
+`owner_decision: true` instead — never both meaninglessly, though a
+`default_fix` alongside it is fine where you have a leaning even so — only
+when the choice genuinely falls under the owner-only boundary requirement
+36a defines (a credential or secret, an account/settings/permissions change,
+a product or architecture decision, an external service, information that
+exists only in someone's head); naming the clause in your `title`/`body` is
+what lets a human, and the Refiner, act on it rather than merely see the
+flag. Leaving both unset when the body enumerates options is filed anyway —
+never lost — but as `## Default: not stated`, logged as a warning: state one
+or the other whenever there is a real choice in front of you.
 
 ## Long-running commands
 
