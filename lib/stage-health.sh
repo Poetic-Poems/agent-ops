@@ -97,7 +97,7 @@ stage_health_verdicts() {
     --argjson idle_secs "$(( idle_after_hours * 3600 ))" --argjson now "$now" '
     def stage_names: [
       "coordinator", "approver", "approver-adjudicate-open-question",
-      "enabler-adjudicate", "enabler", "refiner", "implementer", "reviewer"
+      "enabler-adjudicate", "enabler-decide", "enabler", "refiner", "implementer", "reviewer"
     ];
     ([ inputs | select(length > 0) | (fromjson? // empty) ]) as $events
     | reduce stage_names[] as $stage (

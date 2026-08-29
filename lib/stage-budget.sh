@@ -104,11 +104,11 @@ stage_budget_settings() {
 #   the repository comes from the cycle, not the event. A `stage-end` names
 #     only its stage; the cycle it belongs to named its repository in the
 #     `selection` event. `review-stage-end` carries its own.
-#   the Co-Ordinator, the Enabler and its `enabler-adjudicate` pass are keyed
-#     `*`. None has a repository naturally — the Co-Ordinator runs *before*
-#     selection, and the Enabler (and the adjudication pass it runs,
-#     requirement 36b) spans repositories — so pretending otherwise would
-#     fragment their samples for no gain.
+#   the Co-Ordinator, the Enabler and its `enabler-adjudicate`/`enabler-decide`
+#     passes are keyed `*`. None has a repository naturally — the Co-Ordinator
+#     runs *before* selection, and the Enabler (and the adjudication or decide
+#     pass it runs, requirements 36b/36d) spans repositories — so pretending
+#     otherwise would fragment their samples for no gain.
 #   a killed run contributes no duration. Its recorded length is its cap, not
 #     its length: that is the censoring that makes fitting a cap to durations
 #     self-defeating, and the fix begins with not pretending the observation
@@ -130,7 +130,8 @@ stage_budget_observations() {
              else "" end) as $killed
           | {
               actor: $actor,
-              repo: (if $actor == "coordinator" or $actor == "enabler" or $actor == "enabler-adjudicate" then "*"
+              repo: (if $actor == "coordinator" or $actor == "enabler"
+                        or $actor == "enabler-adjudicate" or $actor == "enabler-decide" then "*"
                      else (.repo // $repo_of[(.cycle // "")] // "*") end),
               model: (.model // "*"),
               ts: (.ts // ""),

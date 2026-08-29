@@ -20,10 +20,11 @@
 # Sourced by agent-cycle.sh only, and its four functions called once each, in
 # place, from where this text used to sit. Like `run_standdown_checks`
 # (lib/standdown.sh) they declare nothing `local` and read and write the
-# cycle's own globals directly — `refinements_json`, `enabler_eligible_json`,
-# `enabler_allowed`, `refiner_repos_json`, `refiner_candidates_json`,
-# `refiner_allowed`, `open_issues_json`, `live_pr_refs_json`,
-# `stale_enabler_refs_json`/`_n` — so each call is indistinguishable, to the
+# cycle's own globals directly — `refinements_json`, `decisions_json`,
+# `enabler_eligible_json`, `enabler_allowed`, `refiner_repos_json`,
+# `refiner_candidates_json`, `refiner_allowed`, `open_issues_json`,
+# `live_pr_refs_json`, `stale_enabler_refs_json`/`_n` — so each call is
+# indistinguishable, to the
 # rest of the cycle, from the inline block it replaces. Their bodies keep the
 # original top-level indentation for the same reason `lib/candidate-gather.sh`
 # does: these were never functions, and reformatting them would bury the move
@@ -104,6 +105,14 @@ done < <(jq -r '[.[] | select(((.issues // []) | length) > 0) | .slug] | unique[
 # exists, and without it the refinement would be written, the item unblocked,
 # and the next work order composed as if nothing had been settled.
 refinements_json="$(refinements_map "$union_log")"
+
+# A fourth, sibling extract (agent-ops#936, requirement 36d): a tactical
+# decision a `decide-tactical` pass took in place of escalating, beside — not
+# folded into — `refinements_json` above, since a decision settles a policy
+# question rather than supplying a specification; the Refiner is what turns
+# one into the other, the same way it would turn a human's own answer on a
+# closed escalation into one.
+decisions_json="$(decisions_map "$union_log")"
 }
 
 # compute_enabler_eligible_set — requirements 35a and 35b. Called once from
@@ -274,7 +283,8 @@ compute_refiner_candidates() {
 # same, so nothing else about the candidate rule below needs to know a
 # separate array exists.
 refiner_candidates_json="$(refiner_candidate_items "$refiner_repos_json" \
-  "$refinement_policy_json" "$refinements_json" "$blocked_json" "$void_json" "$claimed_json")"
+  "$refinement_policy_json" "$refinements_json" "$blocked_json" "$void_json" "$claimed_json" \
+  "$decisions_json")"
 # issue #511, extended by issue #542: drop this cycle's `triage_only`
 # candidates from any repository whose `Priority` field this token cannot
 # resolve at all, or which resolves carrying none of the four band names,

@@ -20,6 +20,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   plus a JSON block. This is the measurement D25 names as the trigger for a
   per-node authoring App: while every node authenticates as one user the
   movement is the bucket's, an upper bound on any one segment's own spend.
+- `escalation_autonomy` gains a third rung, `decide-tactical` (agent-ops#936):
+  one bounded Enabler decide pass (`prompts/enabler-decide.md`) runs before
+  *any* `escalate` verdict is filed as a human escalation — not only a
+  refinement disagreement, `adjudicate-first`'s own narrower scope — reaching
+  `settle` (nothing needed deciding), `decide` (a tactical trade-off the
+  pipeline may answer on its own authority, posted as a comment where the
+  item is a GitHub issue and logged as `decision-taken`), or `escalate`
+  (still a human's call). What counts as tactical versus owner-only is a
+  single, exhaustive nine-point boundary (requirement 36a's own "The
+  owner-only boundary" in `docs/IMPLEMENTATION-PIPELINE-SPEC.md`), referenced
+  rather than restated by `prompts/enabler-decide.md`, `prompts/enabler.md`
+  and `prompts/refiner.md`. Bounded per distinct reason rather than once per
+  item, capped by the new `escalation_adjudication_max_passes` (default `3`).
+  Both `adjudicate-first`'s and `decide-tactical`'s passes now run at the new
+  `enabler_model_critical` (falling back to `enabler_model`), the Enabler's
+  first critical tier. Poetic's own `config.json` opts in:
+  `escalation_autonomy: "decide-tactical"`, `enabler_model_critical:
+  "claude-fable-5"`.
 - New `scripts/migrate-tech-debt-register.sh` (agent-ops#880), a reusable
   per-repo migration script that closes the gap agent-ops#875 above
   deliberately accepted: for every `status: open`/`status: in-progress`

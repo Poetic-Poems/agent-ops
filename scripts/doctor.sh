@@ -263,13 +263,15 @@ else
   ok "every source whose refinement_policy is \"required\" has a Refiner configured to refine it"
 fi
 
-# D18 (agent-ops#627): `escalation_autonomy`'s `adjudicate-first` runs one
-# extra Enabler engagement per refinement-disagreement escalation, so it is a
-# configuration nobody can act on with the Enabler itself disabled — the same
-# pairing check merge_autonomy's own block runs against approver_app_id
-# above. Checked against every configured *source* of a level, on the same
-# terms as merge_autonomy_sources below: the top-level key and each repo's
-# own override, not the level each repo is effectively governed by.
+# D18 (agent-ops#627, agent-ops#936): `escalation_autonomy`'s `adjudicate-first`
+# and `decide-tactical` each run one extra Enabler engagement per escalation —
+# a refinement disagreement only for the former, any `escalate` verdict for the
+# latter — so either is a configuration nobody can act on with the Enabler
+# itself disabled, the same pairing check merge_autonomy's own block runs
+# against approver_app_id above. Checked against every configured *source* of
+# a level, on the same terms as merge_autonomy_sources below: the top-level key
+# and each repo's own override, not the level each repo is effectively
+# governed by.
 escalation_autonomy_sources="$(jq -r '
   [{label: "escalation_autonomy", level: (.escalation_autonomy // "always-escalate")}]
   + [(.repos // [])[] | select(has("escalation_autonomy"))
@@ -278,8 +280,8 @@ escalation_autonomy_sources="$(jq -r '
 if [[ -n "$escalation_autonomy_sources" ]]; then
   while IFS=$'\t' read -r ea_label ea_level; do
     [[ -n "$ea_label" ]] || continue
-    if [[ "$ea_level" == "adjudicate-first" && -z "$enabler_model" ]]; then
-      warn "$ea_label is \"adjudicate-first\" but enabler_model is empty — the Enabler is disabled, so no refinement-disagreement escalation is ever raised for an adjudication pass to run before"
+    if [[ ( "$ea_level" == "adjudicate-first" || "$ea_level" == "decide-tactical" ) && -z "$enabler_model" ]]; then
+      warn "$ea_label is \"$ea_level\" but enabler_model is empty — the Enabler is disabled, so no escalation is ever raised for that pass to run before"
     else
       ok "$ea_label is \"$ea_level\""
     fi

@@ -116,8 +116,11 @@ configuration change is.
       agent-ops's own entry carries it (it does not, as at 2026-08-27): the
       schema default `["low", "medium"]` is what agent-ops itself runs at
       today.
-    - **`approver_app_id`, `approver_model_default`/`_complex`/`_critical`**
-      — already set fleet-wide; nothing repository-specific to add.
+    - **`approver_app_id`, `approver_model_default`/`_complex`/`_critical`,
+      `escalation_autonomy`, `enabler_model`/`_critical`** — already set
+      fleet-wide (agent-ops#936: `escalation_autonomy` ships at
+      `decide-tactical`, the rung agent-ops itself runs at, as at 2026-08-29);
+      nothing repository-specific to add.
     - `sources` must actually gather every source
       `merge_autonomy_routine_sources` names (`scripts/doctor.sh` warns
       otherwise) — the list above mirrors agent-ops's own for that reason.

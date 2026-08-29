@@ -907,7 +907,12 @@ refiner_policy_value() {
 # object verbatim (an issue's full thread, a finding's title and severity, a
 # tech-debt item's whole file), because the Refiner needs it to write a
 # specification without a second fetch, the same reason the Co-Ordinator is
-# handed it pre-fetched rather than told to query it.
+# handed it pre-fetched rather than told to query it. A `decision` field
+# (agent-ops#936, requirement 36d) rides alongside `entry`, never inside it,
+# when `decisions` names one for this repo+item: a tactical decision a
+# decide-tactical pass already took in place of escalating, which the Refiner
+# turns into the actual specification the way it would a human's own answer
+# on a closed escalation.
 #
 # The first eight arrays are the same per-repo arrays requirement 3 assembles
 # for the Co-Ordinator's own `ordered_repos_json`. `project_review` and
@@ -919,20 +924,22 @@ refiner_policy_value() {
 # (TD-PPagop-26081307).
 refiner_candidate_items() {
   local repos="${1:-[]}" policy="${2:-{\}}" refinements="${3:-{\}}" \
-        blocked="${4:-[]}" void="${5:-[]}" claimed="${6:-[]}" docs
+        blocked="${4:-[]}" void="${5:-[]}" claimed="${6:-[]}" decisions="${7:-{\}}" docs
   # $refinements, $blocked, $void and $claimed are four of the five
   # aggregates requirement 4g names by name as growing with the fleet's
-  # history (TD-PPagop-26081406); $repos already arrived on stdin. All five
+  # history (TD-PPagop-26081406); $decisions (agent-ops#936) is the same
+  # shape and travels the same way. $repos already arrived on stdin. All six
   # travel there together now, one document per line, bound positionally
   # with `input as $name` in the order printed — never in argv, where past
   # MAX_ARG_STRLEN this call fails into its own `|| printf '[]'` and the
   # Refiner silently finds no candidates at all. $policy stays in argv: it is
   # the installation's own configuration, bounded by requirement 4g.
-  docs="$(printf '%s\n' "$repos" "$refinements" "$blocked" "$void" "$claimed")"
+  docs="$(printf '%s\n' "$repos" "$refinements" "$blocked" "$void" "$claimed" "$decisions")"
   jq -nc --argjson policy "$policy" '
     input as $repos | input as $refinements | input as $blocked
-    | input as $void | input as $claimed
-    | def exempt($s): (($policy // {})[$s] // "exempt") == "exempt";
+    | input as $void | input as $claimed | input as $decisions
+    | def decision_for($repo; $item): (($decisions // {})[$repo][($item | tostring)] // null);
+    def exempt($s): (($policy // {})[$s] // "exempt") == "exempt";
     def is_refined($repo; $item):
       (($refinements // {})[$repo][($item | tostring)] // null) != null;
     def is_blocked($repo; $item):
@@ -980,7 +987,8 @@ refiner_candidate_items() {
       | select(is_void($repo; $item) | not)
       | select(is_claimed($repo; $item) | not)
       | {repo: $repo, source: $source, item: $item, entry: $e}
-        + (if $triage_only then {triage_only: true} else {} end) ]
+        + (if $triage_only then {triage_only: true} else {} end)
+        + (decision_for($repo; $item) as $d | if $d == null then {} else {decision: $d} end) ]
   ' <<<"$docs" 2>/dev/null || printf '[]'
 }
 

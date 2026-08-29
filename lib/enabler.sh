@@ -186,6 +186,14 @@ create_escalation_issue() {
 #                           because the adjudication pass found the existing
 #                           refinement adequate and the item was unblocked on
 #                           that basis instead.
+#   decide-settled           a correcting comment: no escalation was filed,
+#                           because a decide-tactical pass (agent-ops#936)
+#                           settled the item — the `settle` verdict's own
+#                           equivalent of `adjudicated-adequate` above. A
+#                           `decide` verdict never reaches here: it posts its
+#                           own comment carrying the decision itself
+#                           (`enabler_decision_comment`), which already says
+#                           plainly that no escalation was filed.
 #   escalation-failed        a correcting comment: the escalation attempt
 #                           itself failed; a later re-examination will retry
 #                           it.
@@ -206,6 +214,9 @@ Blocked-by: #$number"
       ;;
     adjudicated-adequate)
       prose="No escalation issue was filed for this item: an \`adjudicate-first\` pass found the existing refinement adequate, and the item was unblocked on that basis instead."
+      ;;
+    decide-settled)
+      prose="No escalation issue was filed for this item: a \`decide-tactical\` pass settled it directly, and the item was unblocked on that basis instead."
       ;;
     escalation-failed)
       prose="No escalation issue was filed for this item: the attempt itself failed. A later cycle will retry once this item is re-examined."
@@ -328,12 +339,13 @@ escalation_autonomy_pass_available() {
 # CLAIMED_ENTRY's own existing refinement (`refined_before`) already answers
 # the re-flag's reason, mirroring the Approver's own adjudication path
 # (requirement 8c) in shape: bounded, once, verdict-plus-evidence logged.
-# Deliberately not its tiering — the Enabler has no second, critical model
-# tier to call this at, unlike the Approver's three (Refiner's own note on
-# #627), so this runs at the ordinary `enabler_model`, reusing the backstop
-# and inactivity caps `stage_budget_apply` already resolved for the calling
-# engagement rather than deriving a second budget for an actor this system
-# has no per-actor timeout key for.
+# Runs at `enabler_model_critical` (agent-ops#936, requirement 36d/§6),
+# falling back to `enabler_model` when that is empty — the Enabler's own
+# critical tier, the same "empty switches the escalation off" pattern
+# `approver_model_critical` uses for the Approver's own adjudication —
+# reusing the backstop and inactivity caps `stage_budget_apply` already
+# resolved for the calling engagement rather than deriving a second budget
+# for an actor this system has no per-actor timeout key for.
 #
 # Prints `{"verdict": "adequate"|"inadequate", "evidence": "..."}` on stdout.
 # A missing prompt file, a stage failure, or an unparseable verdict all print
@@ -343,6 +355,7 @@ escalation_autonomy_pass_available() {
 run_enabler_adjudication() {
   local repo="$1" item="$2" claimed_entry="$3" ex="$4" cycle_dir="$5" idx="$6"
   local input prompt out rc=0 result parsed verdict evidence
+  local critical_model="${enabler_model_critical:-$enabler_model}"
 
   if [[ ! -f "$PROMPTS_DIR/enabler-adjudicate.md" ]]; then
     printf '{"verdict":"inadequate","evidence":"no prompts/enabler-adjudicate.md in this installation"}'
@@ -370,13 +383,13 @@ $(jq . <<<"$input")
 \`\`\`
 "
   out="$cycle_dir/enabler-adjudicate-$idx.out"
-  if run_claude_stage enabler-adjudicate "$(( stage_backstop_min * 60 ))" "$enabler_model" "$prompt" "$out" "$cycle_dir" "$(( stage_inactivity_min * 60 ))"; then
+  if run_claude_stage enabler-adjudicate "$(( stage_backstop_min * 60 ))" "$critical_model" "$prompt" "$out" "$cycle_dir" "$(( stage_inactivity_min * 60 ))"; then
     rc=0
   else
     rc=$?
   fi
   log_event "stage-end" "$(jq -nc --argjson rc "$rc" --arg kr "$stage_kill_reason" \
-    --argjson m "$(metering_fields "$enabler_model" "$out" "$stage_gaps_json")" \
+    --argjson m "$(metering_fields "$critical_model" "$out" "$stage_gaps_json")" \
     '{stage: "enabler-adjudicate", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m')"
   rework_stage_rerun_maybe "enabler-adjudicate" "$stage_kill_reason" "$repo" "$item" \
     "$(jq -r '.pr_url // ""' <<<"$claimed_entry")"
@@ -398,6 +411,175 @@ $(jq . <<<"$input")
     || printf '{"verdict":"inadequate","evidence":"could not encode the adjudication verdict"}'
 }
 
+# escalation_autonomy_decide_pass_available REPO ITEM CLAIMED_ENTRY_JSON MAX_PASSES
+# The bound on `decide-tactical` (agent-ops#936, requirement 36d): a pass is
+# available when eligibility `reason` is `issue-closed` — the same one-touch
+# exemption `escalation_autonomy_pass_available` grants `adjudicate-first`,
+# since a human has just acted on an escalation about this item (requirement
+# 35a) and the pass it authorises is the first since they did — or when this
+# reflag's own reason key has never been decided or adjudicated before *and*
+# fewer than MAX_PASSES decide-tactical passes have run for this item at all,
+# whatever their reason. A reason already seen refuses regardless of how many
+# passes remain under the cap: two engagements disagreeing about the same
+# question, repeatedly, is exactly what `always-escalate` would have routed to
+# a human on the first round, and a bound that let it retry indefinitely would
+# reinstate the loop `escalation_autonomy_adjudicated_before`'s own "bounded,
+# not a loop" guard exists to stop, one rung up.
+escalation_autonomy_decide_pass_available() {
+  local repo="$1" item="$2" entry="$3" max_passes="$4" elig_reason reason_key count
+  elig_reason="$(jq -r '.reason // ""' <<<"$entry" 2>/dev/null || true)"
+  [[ "$elig_reason" != "issue-closed" ]] || return 0
+  reason_key="$(escalation_autonomy_decide_reason_key "$entry")"
+  if escalation_autonomy_decide_reason_seen "$repo" "$item" "$reason_key" < "${union_log:-$log_file}"; then
+    log_event "warning" "$(jq -nc --arg r "$repo" --arg i "$item" \
+      --arg d "enabler: $repo $item has already been decided or adjudicated over this exact reason and no human has acted since — escalating without a fresh pass (escalation_autonomy: decide-tactical is bounded per reason, per item, per human touch)" \
+      '{detail: $d, repo: $r, item: $i}')"
+    return 1
+  fi
+  count="$(escalation_autonomy_decide_pass_count "$repo" "$item" < "${union_log:-$log_file}")"
+  [[ "$max_passes" =~ ^[0-9]+$ ]] || max_passes=3
+  if (( count >= max_passes )); then
+    log_event "warning" "$(jq -nc --arg r "$repo" --arg i "$item" --argjson n "$max_passes" \
+      --arg d "enabler: $repo $item has already spent its $max_passes decide-tactical passes since the last human touch — escalating without a fresh pass" \
+      '{detail: $d, repo: $r, item: $i}')"
+    return 1
+  fi
+  return 0
+}
+
+# run_enabler_decide REPO ITEM CLAIMED_ENTRY_JSON EX_JSON CYCLE_DIR IDX
+# One bounded decide-tactical pass (agent-ops#936, D18 pattern,
+# `escalation_autonomy: "decide-tactical"`): before the Script files the
+# escalation issue for *any* `escalate` verdict — not only a refinement
+# disagreement, `run_enabler_adjudication`'s own narrower scope — ask a fresh,
+# narrower Enabler engagement, over this one item alone, whether the item can
+# be settled, decided tactically, or genuinely needs a person. Mirrors
+# `run_enabler_adjudication` in shape and runs at the same tier
+# (`enabler_model_critical`, falling back to `enabler_model`).
+#
+# Prints `{"verdict": "settle"|"decide"|"escalate", "evidence": "...",
+# "decision": "...", "rationale": "...", "options_considered": "..."}` on
+# stdout. A missing prompt file, a stage failure, or an unparseable verdict
+# all print `escalate` with an `evidence` string naming why — "cannot settle"
+# reads the same way the Approver's own adjudication reads it: not as
+# "nothing wrong" (requirement 8c).
+run_enabler_decide() {
+  local repo="$1" item="$2" claimed_entry="$3" ex="$4" cycle_dir="$5" idx="$6"
+  local input prompt out rc=0 result parsed verdict evidence decision rationale options
+  local critical_model="${enabler_model_critical:-$enabler_model}"
+
+  if [[ ! -f "$PROMPTS_DIR/enabler-decide.md" ]]; then
+    printf '{"verdict":"escalate","evidence":"no prompts/enabler-decide.md in this installation"}'
+    return 0
+  fi
+
+  input="$(jq -nc --arg r "$repo" --arg i "$item" \
+    --arg kind "$(jq -r '.kind // ""' <<<"$claimed_entry" 2>/dev/null || true)" \
+    --argjson refinement "$(jq -c '.refined_before // {}' <<<"$claimed_entry" 2>/dev/null || printf '{}')" \
+    --argjson reflag "$(jq -c '{reason: (.reason // ""), detail: (.detail // ""), unblock_condition: (.unblock_condition // "")}' \
+       <<<"$claimed_entry" 2>/dev/null || printf '{}')" \
+    --argjson escalation "$(jq -c '{title: (.issue.title // ""), body: (.issue.body // "")}' <<<"$ex" 2>/dev/null || printf '{}')" \
+    '{repo: $r, item: $i, kind: $kind, refinement: $refinement, reflag: $reflag, escalation: $escalation}' \
+    2>/dev/null || true)"
+  if [[ -z "$input" ]]; then
+    printf '{"verdict":"escalate","evidence":"could not build the decide-tactical input"}'
+    return 0
+  fi
+
+  prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" enabler-decide "$prompt_overrides_json")
+
+## Runtime input for this decide-tactical pass
+
+\`\`\`json
+$(jq . <<<"$input")
+\`\`\`
+"
+  out="$cycle_dir/enabler-decide-$idx.out"
+  if run_claude_stage enabler-decide "$(( stage_backstop_min * 60 ))" "$critical_model" "$prompt" "$out" "$cycle_dir" "$(( stage_inactivity_min * 60 ))"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  log_event "stage-end" "$(jq -nc --argjson rc "$rc" --arg kr "$stage_kill_reason" \
+    --argjson m "$(metering_fields "$critical_model" "$out" "$stage_gaps_json")" \
+    '{stage: "enabler-decide", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m')"
+  rework_stage_rerun_maybe "enabler-decide" "$stage_kill_reason" "$repo" "$item" \
+    "$(jq -r '.pr_url // ""' <<<"$claimed_entry")"
+
+  result="$(jq -r '.result // empty' "$out" 2>/dev/null || true)"
+  parsed="$(extract_json_result "$result" 2>/dev/null || true)"
+  if (( rc != 0 )) || [[ -z "$parsed" ]]; then
+    if (( rc == 124 )); then
+      printf '{"verdict":"escalate","evidence":"the decide-tactical engagement timed out"}'
+    else
+      printf '{"verdict":"escalate","evidence":"the decide-tactical engagement returned no parseable verdict"}'
+    fi
+    return 0
+  fi
+  verdict="$(jq -r '.verdict // ""' <<<"$parsed" 2>/dev/null || true)"
+  evidence="$(jq -r '.evidence // ""' <<<"$parsed" 2>/dev/null || true)"
+  case "$verdict" in
+    settle|decide) : ;;
+    *) verdict="escalate" ;;
+  esac
+  decision="$(jq -r '.decision // ""' <<<"$parsed" 2>/dev/null || true)"
+  rationale="$(jq -r '.rationale // ""' <<<"$parsed" 2>/dev/null || true)"
+  options="$(jq -r '.options_considered // ""' <<<"$parsed" 2>/dev/null || true)"
+  if [[ "$verdict" == "decide" && ( -z "$decision" || -z "$rationale" ) ]]; then
+    # A decide verdict missing its own decision or rationale is not one this
+    # system can act on: nothing would be recorded on decision-taken or posted
+    # to the item's thread that a human could later audit. Falls to escalate
+    # rather than being recorded as a decision nobody can read (requirement
+    # 8c's "cannot settle" reading applies here too).
+    verdict="escalate"
+    evidence="${evidence:-the decide-tactical pass reached \"decide\" but returned no decision or rationale to record}"
+  fi
+  jq -nc --arg v "$verdict" --arg e "$evidence" --arg d "$decision" --arg ra "$rationale" --arg o "$options" \
+    '{verdict: $v, evidence: $e}
+     + (if $v == "decide" then {decision: $d, rationale: $ra, options_considered: $o} else {} end)' 2>/dev/null \
+    || printf '{"verdict":"escalate","evidence":"could not encode the decide-tactical verdict"}'
+}
+
+# enabler_decision_comment REPO ITEM DECISION RATIONALE OPTIONS SUPPLEMENTS_REFINEMENT
+# The human-touch equivalent for a `decide` verdict (agent-ops#936,
+# requirement 36d): one comment on the item's own issue thread, in the
+# pipeline's voice, carrying the decision taken in place of escalating —
+# and, since the ordinary Enabler engagement that reached `escalate` may
+# already have posted its own "an escalation is being requested" comment on
+# this same thread for a refinement item (`prompts/enabler.md`, "Refinement
+# items"), this one also says plainly that no escalation was filed after all.
+# Prints the comment's own URL on success, nothing on failure — best-effort
+# like every other `gh` write in this file (requirement 37): a failure here
+# is logged as a warning, never a reason to unwind the verdict already
+# recorded, the same contract `escalation_thread_reconcile` beside it keeps.
+enabler_decision_comment() {
+  local repo="$1" item="$2" decision="$3" rationale="$4" options="$5" supplements_refinement="$6"
+  local prose body url
+  prose="No escalation issue was filed for this item: a decide-tactical pass decided the tactical question directly.
+
+## Tactical decision
+
+$decision
+
+**Rationale:** $rationale"
+  [[ -n "$options" ]] && prose="$prose
+
+**Options considered:** $options"
+  if [[ -n "$supplements_refinement" ]]; then
+    prose="$prose
+
+The specification already on this thread stands, amended by this decision."
+  fi
+  body="$(pipeline_comment_header enabler-decide "$node_name")
+
+$prose
+
+$(pipeline_comment_marker "$cycle_id" enabler-decide)"
+  url="$(gh issue comment "$item" -R "$repo" --body "$body" \
+    2>>"$cycle_dir/enabler-decision-comment.err")" || return 0
+  printf '%s' "$url"
+}
+
 # maybe_run_enabler CYCLE_EXIT_CODE
 # Engage the Enabler if this cycle should, and translate its verdicts into log
 # events and issues. Always returns without disturbing the cycle's outcome.
@@ -416,6 +598,9 @@ maybe_run_enabler() {
   local e_rereview_state e_rereview_who e_human_reviewer_state e_human_reviewer_who
   local issue_title issue_body_file created number url missing
   local e_adjudication e_adj_verdict e_adj_evidence e_adjudicated e_refined_adj
+  local e_ea_level e_kind e_refined_before_present
+  local e_decided e_decision e_dec_verdict e_dec_evidence e_dec_reason_key e_refined_dec
+  local e_dec_decision_text e_dec_rationale e_dec_options e_dec_comment_url
   local e_file_debt fd_title fd_body fd_pr_label fd_result fd_id fd_pr_url \
     fd_default_fix fd_owner_decision
   local e_file_issue fi_title fi_body fi_body_file fi_result fi_number fi_url \
@@ -885,6 +1070,10 @@ $(jq . <<<"$input")
         issue_title="$(jq -r '.issue.title // ""' <<<"$ex" 2>/dev/null || true)"
         issue_body_file="$cycle_dir/enabler-issue-$j.md"
         jq -r '.issue.body // ""' <<<"$ex" > "$issue_body_file" 2>/dev/null || true
+        e_ea_level="$(escalation_autonomy_configured_level "$DEFAULTED_CONFIG" "$e_repo")"
+        e_kind="$(jq -r '.kind // ""' <<<"$claimed_entry" 2>/dev/null || true)"
+        e_refined_before_present="$(jq -r 'if (.refined_before // null) == null then "" else "x" end' \
+          <<<"$claimed_entry" 2>/dev/null || true)"
 
         # D18 (agent-ops#627): `escalation_autonomy: "adjudicate-first"` runs
         # one bounded adjudication pass, over this item alone, before a
@@ -893,12 +1082,16 @@ $(jq . <<<"$input")
         # the same shape `refinement_second_pass_refused` refuses a second
         # `unblocked` verdict against — and only once a title/body actually
         # exist to adjudicate; an escalate verdict that already carried
-        # nothing filable is unaffected by the setting.
+        # nothing filable is unaffected by the setting. `decide-tactical`
+        # (agent-ops#936) includes this rung — its own pass below is a strict
+        # superset of what this one judges — so this branch runs only at
+        # `adjudicate-first` itself; a repository dialled past it never runs
+        # both passes over the same verdict.
         e_adjudicated=0
         e_adjudication=""
         if [[ -n "$issue_title" && -s "$issue_body_file" ]] \
+             && [[ "$e_ea_level" == "adjudicate-first" ]] \
              && refinement_is_disagreement "$claimed_entry" \
-             && [[ "$(escalation_autonomy_configured_level "$DEFAULTED_CONFIG" "$e_repo")" == "adjudicate-first" ]] \
              && escalation_autonomy_pass_available "$e_repo" "$e_item" "$claimed_entry"; then
           e_adjudication="$(run_enabler_adjudication "$e_repo" "$e_item" "$claimed_entry" "$ex" "$cycle_dir" "$j")"
           e_adj_verdict="$(jq -r '.verdict // "inadequate"' <<<"$e_adjudication" 2>/dev/null || printf 'inadequate')"
@@ -938,7 +1131,73 @@ $(jq . <<<"$input")
           fi
         fi
 
-        if (( ! e_adjudicated )); then
+        # D18 (agent-ops#936): `escalation_autonomy: "decide-tactical"` runs
+        # one bounded decide pass over *any* escalate verdict — refinement
+        # disagreement or not — before the escalation is filed, per-reason
+        # bounded and capped at `escalation_adjudication_max_passes`.
+        e_decided=0
+        e_decision=""
+        e_dec_verdict=""
+        if (( ! e_adjudicated )) \
+             && [[ -n "$issue_title" && -s "$issue_body_file" ]] \
+             && [[ "$e_ea_level" == "decide-tactical" ]] \
+             && escalation_autonomy_decide_pass_available "$e_repo" "$e_item" "$claimed_entry" \
+                  "$escalation_adjudication_max_passes"; then
+          e_decision="$(run_enabler_decide "$e_repo" "$e_item" "$claimed_entry" "$ex" "$cycle_dir" "$j")"
+          e_dec_verdict="$(jq -r '.verdict // "escalate"' <<<"$e_decision" 2>/dev/null || printf 'escalate')"
+          e_dec_evidence="$(jq -r '.evidence // ""' <<<"$e_decision" 2>/dev/null || true)"
+          e_dec_reason_key="$(escalation_autonomy_decide_reason_key "$claimed_entry")"
+          log_event "enabler-adjudication" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" \
+            --arg v "$e_dec_verdict" --arg ev "$e_dec_evidence" --arg rk "$e_dec_reason_key" \
+            '{repo: $r, item: $i, verdict: $v, evidence: $ev, adjudication: true,
+              pass: "decide-tactical", reason_key: $rk}')"
+
+          if [[ "$e_dec_verdict" == "settle" || "$e_dec_verdict" == "decide" ]]; then
+            e_decided=1
+            if [[ "$e_dec_verdict" == "decide" ]]; then
+              e_dec_decision_text="$(jq -r '.decision // ""' <<<"$e_decision" 2>/dev/null || true)"
+              e_dec_rationale="$(jq -r '.rationale // ""' <<<"$e_decision" 2>/dev/null || true)"
+              e_dec_options="$(jq -r '.options_considered // ""' <<<"$e_decision" 2>/dev/null || true)"
+              e_dec_comment_url=""
+              if [[ "$e_item" =~ ^[0-9]+$ ]]; then
+                e_dec_comment_url="$(enabler_decision_comment "$e_repo" "$e_item" \
+                  "$e_dec_decision_text" "$e_dec_rationale" "$e_dec_options" "$e_refined_before_present")"
+              fi
+              log_event "decision-taken" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" \
+                --arg d "$e_dec_decision_text" --arg ra "$e_dec_rationale" --arg op "$e_dec_options" \
+                --arg cu "$e_dec_comment_url" --arg m "${enabler_model_critical:-$enabler_model}" \
+                --arg rk "$e_dec_reason_key" \
+                '{repo: $r, item: $i, decision: $d, rationale: $ra, options_considered: $op}
+                 + (if $cu == "" then {} else {comment_url: $cu} end)
+                 + {model: $m, reason_key: $rk}')"
+              log_event "unblocked" "$(jq -nc --arg i "$e_item" --arg r "$e_repo" \
+                --arg reason "decided: $e_dec_decision_text" \
+                '{item: $i, repo: $r, by: "enabler", reason: $reason}')"
+            else
+              log_event "unblocked" "$(jq -nc --arg i "$e_item" --arg r "$e_repo" \
+                --arg reason "settled${e_dec_evidence:+: $e_dec_evidence}" \
+                '{item: $i, repo: $r, by: "enabler", reason: $reason}')"
+            fi
+
+            # Same carrier as the adjudicate-first `adequate` path above: a
+            # decide-tactical pass never writes a specification of its own
+            # (`prompts/enabler-decide.md`), so the only spec worth
+            # re-recording is one that already existed before this pass ran.
+            if [[ "$e_kind" == "$REFINEMENT_BLOCK_KIND" && -n "$e_refined_before_present" ]]; then
+              e_refined_dec="$(jq -c '(.refined_before // {}) | {spec: (.spec // ""), comment_url: (.comment_url // "")}
+                                       | with_entries(select(.value != ""))' \
+                                  <<<"$claimed_entry" 2>/dev/null || printf '{}')"
+              if [[ "$e_refined_dec" != "{}" ]]; then
+                log_event "item-refined" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" \
+                  --argjson x "$e_refined_dec" '{repo: $r, item: $i} + $x')"
+              fi
+              release_refinement_label "$e_item" "$e_repo"
+            fi
+            outcome="unblocked"
+          fi
+        fi
+
+        if (( ! e_adjudicated )) && (( ! e_decided )); then
           if [[ -n "$e_adjudication" ]]; then
             # agent-ops#681: the adjudication pass ran and did not settle the
             # disagreement (an `inadequate` verdict, or a stage failure whose
@@ -949,6 +1208,13 @@ $(jq . <<<"$input")
             # missing rather than only the pre-adjudication verdict.
             printf '\n\n## Adjudication attempted\n\nAdjudication was attempted and returned: %s\n' \
               "${e_adj_evidence:-no evidence given}" >> "$issue_body_file"
+          fi
+          if [[ -n "$e_decision" ]]; then
+            # Same rationale, for the decide-tactical pass's own `escalate`
+            # verdict (or an unreadable one): the human starts from why the
+            # pipeline could not decide it, not only from the pre-pass verdict.
+            printf '\n\n## Adjudication attempted\n\nA decide-tactical pass was attempted and returned: %s\n' \
+              "${e_dec_evidence:-no evidence given}" >> "$issue_body_file"
           fi
           if [[ -z "$issue_title" || ! -s "$issue_body_file" ]]; then
             log_event "warning" "$(jq -nc \
@@ -980,11 +1246,18 @@ $(jq . <<<"$input")
         # item is itself a bare GitHub issue number. `outcome` still reads
         # "escalate" (its initial value, never reassigned) on the one path
         # that filed successfully, so it is what tells that case apart from
-        # `escalation-failed` here.
-        if [[ "$e_item" =~ ^[0-9]+$ ]] \
-             && [[ "$(jq -r '.kind // ""' <<<"$claimed_entry" 2>/dev/null || true)" == "$REFINEMENT_BLOCK_KIND" ]]; then
+        # `escalation-failed` here. A `decide` verdict is not corrected here
+        # at all: `enabler_decision_comment` above already posted its own
+        # comment on this same thread, and it already says plainly that no
+        # escalation was filed — a second, near-identical correcting comment
+        # would only restate it.
+        if [[ "$e_item" =~ ^[0-9]+$ ]] && [[ "$e_kind" == "$REFINEMENT_BLOCK_KIND" ]]; then
           if (( e_adjudicated )); then
             escalation_thread_reconcile "$e_repo" "$e_item" "adjudicated-adequate" "" ""
+          elif (( e_decided )) && [[ "$e_dec_verdict" == "settle" ]]; then
+            escalation_thread_reconcile "$e_repo" "$e_item" "decide-settled" "" ""
+          elif (( e_decided )); then
+            : # decide: enabler_decision_comment already posted the thread's own comment
           elif [[ "$outcome" == "escalation-failed" ]]; then
             escalation_thread_reconcile "$e_repo" "$e_item" "escalation-failed" "" ""
           else

@@ -136,6 +136,83 @@ assert_spent "no neighbouring event is mistaken for an adjudication" 1 acme/widg
 assert_spent "unparseable lines are skipped rather than hiding a spent pass" 0 acme/widgets TD001 \
   "$tmp_dir/torn.jsonl"
 
+# agent-ops#936: a decide-tactical pass's own enabler-adjudication event must
+# never be mistaken for an adjudicate-first one — the two rungs' bounds must
+# stay independent, or a repository that moved between them would have one
+# rung's bound spent by the other's history.
+decide_evt() {  # decide_evt REPO ITEM -> one decide-tactical-tagged enabler-adjudication log line
+  jq -nc --arg r "$1" --arg i "$2" \
+    '{ts: "2026-08-02T00:00:00Z", event: "enabler-adjudication", repo: $r, item: $i,
+      verdict: "settle", evidence: "…", adjudication: true, pass: "decide-tactical", reason_key: "abc123"}'
+}
+decide_evt acme/widgets TD001 > "$tmp_dir/decide-only.jsonl"
+assert_spent "a decide-tactical pass's own event does not spend adjudicate-first's bound" 1 \
+  acme/widgets TD001 "$tmp_dir/decide-only.jsonl"
+
+# --- escalation_autonomy_decide_reason_key ---
+
+same_a="$(jq -nc '{detail: "Should the disk gate read state_dir too?", unblock_condition: "a decision on scope"}')"
+same_b="$(jq -nc '{detail: "  should the disk gate read state_dir too?  ", unblock_condition: "A Decision On Scope"}')"
+different="$(jq -nc '{detail: "a different question entirely", unblock_condition: "x"}')"
+
+key_a="$(escalation_autonomy_decide_reason_key "$same_a")"
+key_b="$(escalation_autonomy_decide_reason_key "$same_b")"
+key_c="$(escalation_autonomy_decide_reason_key "$different")"
+assert_eq "reason keys are stable and case/whitespace-insensitive" "$key_a" "$key_b"
+if [[ "$key_a" == "$key_c" ]]; then
+  printf 'FAIL - %s\n     expected: different keys for different reasons\n     actual:   both %s\n' \
+    "reason keys distinguish genuinely different reasons" "$key_a"
+  failures=$(( failures + 1 ))
+else
+  printf 'ok   - %s\n' "reason keys distinguish genuinely different reasons"
+fi
+assert_eq "a reason key is 16 hex characters" "16" "${#key_a}"
+
+# --- escalation_autonomy_decide_reason_seen / escalation_autonomy_decide_pass_count ---
+
+assert_reason_seen() {  # assert_reason_seen DESC EXPECTED_RC REPO ITEM KEY LOG_FILE
+  local desc="$1" expected="$2" repo="$3" item="$4" key="$5" log="$6" rc=0
+  escalation_autonomy_decide_reason_seen "$repo" "$item" "$key" < "$log" || rc=$?
+  assert_eq "$desc" "$expected" "$rc"
+}
+
+: > "$tmp_dir/empty.jsonl"
+assert_reason_seen "an empty log has seen no reason" 1 acme/widgets TD001 "$key_a" "$tmp_dir/empty.jsonl"
+
+decide_full_evt() {  # decide_full_evt REPO ITEM KEY -> a decide-tactical event tagged with KEY
+  jq -nc --arg r "$1" --arg i "$2" --arg k "$3" \
+    '{ts: "2026-08-02T00:00:00Z", event: "enabler-adjudication", repo: $r, item: $i,
+      verdict: "settle", evidence: "…", adjudication: true, pass: "decide-tactical", reason_key: $k}'
+}
+decide_full_evt acme/widgets TD001 "$key_a" > "$tmp_dir/one-decide.jsonl"
+assert_reason_seen "the same reason key is found" 0 acme/widgets TD001 "$key_a" "$tmp_dir/one-decide.jsonl"
+assert_reason_seen "...but not credited to a different reason on the same item" 1 \
+  acme/widgets TD001 "$key_c" "$tmp_dir/one-decide.jsonl"
+assert_reason_seen "...nor to the same key on a different item" 1 \
+  acme/widgets TD002 "$key_a" "$tmp_dir/one-decide.jsonl"
+assert_eq "an adjudicate-first event (no pass tag) does not count toward decide-tactical's history" \
+  "0" "$(escalation_autonomy_decide_pass_count acme/widgets TD001 < "$tmp_dir/one.jsonl")"
+assert_eq "one decide-tactical event is counted" "1" \
+  "$(escalation_autonomy_decide_pass_count acme/widgets TD001 < "$tmp_dir/one-decide.jsonl")"
+
+decision_taken_evt="$(jq -nc --arg r "acme/widgets" --arg i "TD001" --arg k "$key_a" \
+  '{ts: "2026-08-02T00:05:00Z", event: "decision-taken", repo: $r, item: $i,
+    decision: "use option B", rationale: "…", reason_key: $k}')"
+printf '%s\n' "$decision_taken_evt" > "$tmp_dir/decision-only.jsonl"
+assert_reason_seen "a decision-taken event alone (no enabler-adjudication) still counts as seen" 0 \
+  acme/widgets TD001 "$key_a" "$tmp_dir/decision-only.jsonl"
+assert_eq "...but a decision-taken event alone is not a spent decide-tactical pass for the cap" "0" \
+  "$(escalation_autonomy_decide_pass_count acme/widgets TD001 < "$tmp_dir/decision-only.jsonl")"
+
+{ decide_full_evt acme/widgets TD001 "key1"
+  decide_full_evt acme/widgets TD001 "key2"
+  decide_full_evt acme/widgets TD001 "key3"
+} > "$tmp_dir/three-decides.jsonl"
+assert_eq "three decide-tactical passes over three different reasons all count toward the cap" "3" \
+  "$(escalation_autonomy_decide_pass_count acme/widgets TD001 < "$tmp_dir/three-decides.jsonl")"
+assert_reason_seen "a fourth, genuinely new reason has not itself been seen" 1 \
+  acme/widgets TD001 "key4" "$tmp_dir/three-decides.jsonl"
+
 echo
 if (( failures == 0 )); then
   echo "all assertions passed"

@@ -401,12 +401,14 @@ Keys:
 | `approver_model_critical` | `claude-fable-5` | The Approver's model for adjudicating a pull request the Approver has refused twice in a row — the rarest and most expensive tier, re-entered every round while that two-refusal streak holds, until an approval resets it; the escalation issue a refusal raises stays deduplicated to one per pull request rather than one per round. Leave it empty to fall back to `approver_model_complex`. |
 | `approver_restale_escalate_after_hours` | `24` | Hours a pull request may sit with a stale Approver `CHANGES_REQUESTED` — its `commit_id` no longer matching the head, but with no commit authored since (a rebase-only push, never a fix) — before the restale sweep escalates it to `enabler_assignee` instead of retrying forever. |
 | `enabler_model` | `claude-opus-5` | The Enabler: re-examines long-blocked items and escalates the ones needing you. The most expensive model here, engaged rarely — see [Blocked items and the Enabler](#blocked-items-and-the-enabler). Leave it empty to switch the stage off. |
+| `enabler_model_critical` | `claude-fable-5` | The Enabler's model for its narrower bounded pass — the `adjudicate-first`/`decide-tactical` adjudication or decide pass over one item alone, see [Blocked items and the Enabler](#blocked-items-and-the-enabler). Leave it empty to run that pass on `enabler_model` itself. |
 | `enabler_assignee` | `warwickallen` | GitHub login every Enabler escalation is assigned to. Required whenever `enabler_model` is set — the Script refuses to start a cycle rather than raise an unassigned escalation, since the assignment is what excludes the issue from the pipeline's own `issues` source (see [Issue priority](#issue-priority) and requirement 16.4 in the spec). |
 | `enabler_after_coordinator_cycles` | `3` | How many cycles that actually ran a Co-Ordinator must pass, after an item is blocked, before the Enabler looks at it. Counting cycles rather than hours means a fleet that spent the night stood down on a usage limit has not "waited". |
 | `refinement_after_coordinator_cycles` | *(same as `enabler_after_coordinator_cycles`)* | The same wait, but for an item the pipeline recorded as too under-specified to work on (an issue picks up the `needs-refinement` label) rather than one blocked by something in the world. Left unset it waits exactly as long as any other block; set it separately once fleet behaviour tells you refinement items should age faster or slower. |
 | `enabler_recheck_hours` | `72` | Hours before the Enabler re-examines an item it has already examined. This is the bound on how long new evidence — a diagnosis posted into the very thread whose absence blocked the item — can sit unread. `0` switches re-examination off. |
 | `enabler_escalation_label` | `enabler-escalation` | Label applied to every issue the Enabler raises, for your filters and for its own duplicate check. The pipeline creates it in every repository it gathers data for, not only the one it happens to work, at most once per `labels_ensure_interval_hours` — so there is nothing to set up; without it the issue is still raised, just unlabelled. |
-| `escalation_autonomy` | `always-escalate` | The D18 escalation-autonomy ladder: `always-escalate` (today's behaviour — every refinement-disagreement escalation goes straight to a human) or `adjudicate-first` (one bounded Enabler adjudication pass runs first; it either confirms the earlier refinement or escalates anyway). One such pass per item: a second disagreement over the same item comes to you regardless, until you act on it. A `repos[]` entry may override this per repository — see...[continued below](#extended-notes-escalation_autonomy) |
+| `escalation_autonomy` | `decide-tactical` | The D18 escalation-autonomy ladder, three rungs, each including the one below it (with one exception, below): `always-escalate` (today's behaviour — every Enabler escalation goes straight to a human), `adjudicate-first` (one bounded Enabler adjudication pass runs first, but only over a refinement disagreement; it either confirms the earlier refinement or escalates anyway), or `decide-tactical` (one bounded Enabler decide pass runs first over *any* escalation — an ordinary...[continued below](#extended-notes-escalation_autonomy) |
+| `escalation_adjudication_max_passes` | 3 | How many `decide-tactical` passes one item may spend since you last touched it (closed an escalation about it), whatever their reason — see [Blocked items and the Enabler](#blocked-items-and-the-enabler). A fresh reason still gets its own pass under this cap; only a run of unrelated tactical questions on the same item, between your touches, is what this bounds. |
 | `needs_refinement_label` | `needs-refinement` | Label put on an **issue** while the pipeline has it recorded as too under-specified to work on, and taken off again when that clears — see [Items nobody has specified](#items-nobody-has-specified). You can also apply it yourself to flag one directly; the pipeline reads that back the same way. The pipeline creates it in every repository it gathers data for, not only the one it happens to work, at most once per `labels_ensure_interval_hours` — so there is nothing to set up...[continued below](#extended-notes-needs_refinement_label) |
 | `refinement_max_per_engagement` | `3` | How many under-specified items one Enabler engagement will take on. Ordinary blocked items are never displaced by them, and items over the cap simply wait for a later engagement. `0` switches the refinement work off while still recording it. |
 | `refiner_model` | `claude-sonnet-5` | The Refiner: writes a specification for an item nobody has scoped yet and marks it `refined`, before it would otherwise have to be blocked and wait for the Enabler — see [Refined items and the Refiner](#refined-items-and-the-refiner). Engaged every cycle there is unrefined work to do, so how often it runs and how good it has to be pull against each other: what it writes is the brief an Implementer works from. Leave it empty to switch the stage off. |
@@ -555,9 +557,9 @@ Each of them is set by editing `config.json`, like every other key here — see 
 
 ### Extended notes: `escalation_autonomy`
 
-The D18 escalation-autonomy ladder: `always-escalate` (today's behaviour — every refinement-disagreement escalation goes straight to a human) or `adjudicate-first` (one bounded Enabler adjudication pass runs first; it either confirms the earlier refinement or escalates anyway). One such pass per item: a second disagreement over the same item comes to you regardless, until you act on it. A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Owner-only decisions still escalate at every level.
+The D18 escalation-autonomy ladder, three rungs, each including the one below it (with one exception, below): `always-escalate` (today's behaviour — every Enabler escalation goes straight to a human), `adjudicate-first` (one bounded Enabler adjudication pass runs first, but only over a refinement disagreement; it either confirms the earlier refinement or escalates anyway), or `decide-tactical` (one bounded Enabler decide pass runs first over *any* escalation — an ordinary blocked item as much as a refinement disagreement — and either settles it, decides a tactical trade-off on the pipeline's own authority, or escalates anyway; an owner-only decision always escalates, at every rung). A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos).
 
-The same setting also governs a second, independent case: a Reviewer's own open question about a pull request's work order or scope (D18, agent-ops#668). `adjudicate-first` runs one bounded adjudication pass there too, at the Approver's own critical tier rather than the Enabler's — you cannot enable one path without the other.
+The same setting also governs a second, independent case: a Reviewer's own open question about a pull request's work order or scope (D18, agent-ops#668). That path runs its own bounded pass only at `adjudicate-first` exactly — `decide-tactical` behaves the same as `adjudicate-first` there, not a further widening — so you cannot enable one Enabler-side rung without also getting the open-question path at its `adjudicate-first` behaviour.
 
 ### Extended notes: `needs_refinement_label`
 
@@ -1445,6 +1447,27 @@ second pass — so the setting can save you an issue, but it cannot quietly keep
 an item circulating between two models forever. Acting on an escalation about
 the item (closing the issue it raised) gives it a fresh pass, on the same
 terms every other "one per human touch" rule here uses.
+
+Set `escalation_autonomy` to `decide-tactical` instead and the Enabler's
+narrower pass widens to *every* escalation, not only a re-flagged
+specification — an ordinary blocked item as much as a refinement disagreement.
+It reaches one of three answers: **settle** it (the same "nothing needs
+deciding" outcome `adjudicate-first` already reaches, now available to any
+item), **decide** it — a genuine tactical trade-off among options the item's
+own record already names, which the pipeline may answer on its own authority
+and does, posting the decision as a comment where the item is a GitHub issue —
+or **escalate** it to you regardless, when the question turns out to need
+something only you can supply. An owner-only decision — spending money,
+touching a credential or a permission, a product or roadmap call, anything
+this system's own spec reserves to you by name — always escalates, at every
+setting; `decide-tactical` only ever widens which *tactical* questions the
+pipeline may answer for itself, never that boundary. Bounded per distinct
+reason rather than once per item: a fresh question about an item that was
+already decided over something else still gets its own pass, up to
+`escalation_adjudication_max_passes` since you last touched it (see
+[Configuration](#configuration)) — the same repeat of the *same* question a
+second time still comes to you, on the same terms `adjudicate-first`'s own
+bound already uses.
 
 **Closing that issue is the whole protocol.** Do the thing it asks, close it, and
 say nothing: the next cycle notices the closure, the Enabler re-checks the item

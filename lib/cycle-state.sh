@@ -606,6 +606,67 @@ refinements_map() {
   printf '%s' "$out"
 }
 
+# The tactical decisions a later Refiner engagement must be given (agent-ops
+# #936, requirement 36d), beside — never merged into — `REFINEMENTS_MAP_JQ`
+# above: a `decision-taken` event settles a policy question, not a
+# specification, so an item can carry a decision with no refinement at all
+# (the ordinary shape for a `decide-tactical` pass over an item that was never
+# refined), and the Refiner still has to turn that decision into an actual
+# specification the way it would from a human's own answer on a closed
+# escalation. Latest `decision-taken` event per repo+item, dropped once the
+# item is void (a decision about work that does not exist is worse than none,
+# the same reasoning `REFINEMENTS_MAP_JQ` gives its own void drop) or once a
+# refinement already carries the decision forward (`item-refined`'s own
+# `ts` — the settle/decide path in lib/enabler.sh re-records `item-refined`
+# whenever a prior refinement existed — postdates the decision): at that
+# point the decision has already done its job and the specification it
+# produced is what the Refiner (or Co-Ordinator) should read instead.
+# shellcheck disable=SC2016  # jq's $set/$clear/$r, not the shell's.
+DECISIONS_MAP_JQ='
+  def latest_unresolved($set; $clear): '"$LATEST_UNRESOLVED_JQ"';
+  . as $all
+  | ($all | latest_unresolved("item-void"; "unvoided")) as $void
+  | [ $all[] | select(.event == "item-refined") ] as $refined
+  | [ $all[]
+      | select(.event == "decision-taken"
+               and (.item // "") != "" and (.repo // "") != "")
+      | . as $d
+      | select($void
+               | any((.item // "") == ($d.item // "")
+                     and ((.repo // "") == "" or (.repo // "") == ($d.repo // "")))
+               | not)
+      | select($refined
+               | any((.item // "") == ($d.item // "")
+                     and ((.repo // "") == "" or (.repo // "") == ($d.repo // ""))
+                     and (((.ts // "") > ($d.ts // ""))))
+               | not) ]
+  | sort_by(.ts)
+  | reduce .[] as $d ({};
+      .[$d.repo][($d.item | tostring)] =
+        {ts: ($d.ts // ""), decision: ($d.decision // ""), rationale: ($d.rationale // "")}
+        + (if ($d.options_considered // "") == "" then {} else {options_considered: $d.options_considered} end)
+        + (if ($d.comment_url // "") == "" then {} else {comment_url: $d.comment_url} end))
+'
+
+# decisions_map [LOG_FILE]
+# Print, as a JSON object keyed repo → item, the latest tactical decision
+# recorded for every item that has one, is not void, and has not since been
+# carried forward into a refinement. Reads LOG_FILE, or stdin if it is
+# omitted or "-". Always succeeds, printing {} on a missing, empty or
+# unreadable log, on the same terms `refinements_map` does.
+decisions_map() {
+  local src="${1:--}" out=""
+  if [[ "$src" == "-" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' 2>/dev/null \
+      | jq -sc "$DECISIONS_MAP_JQ" 2>/dev/null || true)"
+  elif [[ -s "$src" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null \
+      | jq -sc "$DECISIONS_MAP_JQ" 2>/dev/null || true)"
+  fi
+  [[ -n "$out" ]] || out='{}'
+  printf '%s' "$out"
+}
+
 # The Enabler's eligibility rule (requirement 35a), as one jq program over the
 # fleet's whole event stream. It re-uses the extracts above rather than
 # re-deriving any of them: the set it computes is a subset of `open_blocked_items`
