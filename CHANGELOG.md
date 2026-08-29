@@ -1133,6 +1133,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   mirrors it on the complexity half, approximated from each repository's
   configured `merge_autonomy` level rather than the live effective one, to
   avoid a per-repository merge-budget-freeze read on every publish tick.
+
+- Requirement 1a's model-key enumeration
+  (`docs/IMPLEMENTATION-PIPELINE-SPEC.md`) named six of the eleven model keys
+  `agent-cycle.sh` actually resolves through `resolve_model_id`
+  (agent-ops#1002): `refiner_model` and
+  `approver_model_default`/`_complex`/`_critical` were all resolved by the
+  code and named nowhere in the requirement that governs the resolution. The
+  list now carries every key, `enabler_model_critical` included.
+
 - A Refiner (or Enabler) verdict whose `comments_posted[0]`/`comment_url` is a
   bare issue URL — no `#issuecomment-` anchor, so it cannot name any comment
   at all — is no longer recorded as a genuine refinement (TD-PPagop-26082819,
