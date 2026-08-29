@@ -84,6 +84,14 @@
 # trustable even though its body stays untrusted data. A configurable name
 # would let anything in the untrusted band claim membership by renaming
 # itself to whatever the operator picked.
+# `pw::owner-decision` (agent-ops#938) is fixed for the same reason:
+# `lib/tech-debt-file.sh`'s `techdebt_file_issue` applies it, on the
+# Approver's/Enabler's own say-so, to mark a filed issue as carrying an
+# owner-only choice rather than a knowable fix — the Refiner reads it to
+# decide between specifying to a stated default and declining with
+# `needs-refinement` (prompts/refiner.md, requirement 39d), so a configurable
+# name here would let a renamed label silently stop being read the same way
+# everywhere this system checks for it.
 
 # labels_catalogue CONFIG_FILE SCHEMA_FILE ROLE [REVIEW_PR_LABEL]
 # Print the labels a repository in ROLE needs, one per line, as
@@ -132,6 +140,8 @@ labels_catalogue() {
                "Hand-applied to say a still-open, diff-carrying draft PR is unwanted; no pipeline stage applies this"),
          entry("pw::type:tech-debt"; "5319e7";
                "Tech debt: a known gap or shortcut with a knowable fix. Managed by Pullwright."),
+         entry("pw::owner-decision"; "5319e7";
+               "Filed with an owner-only choice still open; the Refiner escalates rather than guessing"),
          entry("open-question"; "d4c5f9";
                "Reviewer-projected: an open scope question blocks unattended landing until adjudicated (D18 #668)"),
          entry("complexity:low"; "c2e0c6";

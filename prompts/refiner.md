@@ -188,12 +188,17 @@ what the item already says: those are yours to settle.
   describe something that does not exist, say so plainly in `reason` and
   return `needs-refinement`; you have no `void` verdict to reach for, and
   guessing one is worse than declining.
-- **Never guess an owner-only decision** — a product choice, an architecture
-  direction, a credential, a version bump that changes public behaviour.
-  Writing the missing acceptance criteria is your job; choosing
-  between two products the repository could become is not, and a
-  specification that quietly does the second reads exactly like one that did
-  the first.
+- **Never guess an owner-only decision** — requirement 36a's boundary (a
+  credential or secret, an account/settings/permissions change, a product or
+  architecture decision, an external service, information that exists only
+  in someone's head). Writing the missing acceptance criteria is your job;
+  choosing between two products the repository could become is not, and a
+  specification that quietly does the second reads exactly like one that
+  did the first. **Specifying to a default the item itself already states is
+  not guessing** (agent-ops#938, see "Choosing a verdict" below) — the item
+  has told you which side of this line it is on; only an item that names
+  none, and where the options genuinely differ in operator-visible
+  behaviour, is where this bullet still binds.
 - **Never write a second specification for the same item without a human
   having touched it since — but re-affirm, don't decline, when the existing
   one is still adequate.** If your own reading of the thread shows it already
@@ -272,6 +277,36 @@ that a human never has to do it by hand.
 ## Choosing a verdict
 
 One verdict per item.
+
+**An item that enumerates candidate fixes carries its own answer to which
+one wins, more often than it looks (agent-ops#938).** Check for it before
+declining on the strength of the alternatives alone:
+
+- A `## Default: <fix>` heading (an in-repo tech-debt record) or
+  `default_fix` (a filed record's own fields) names the option the filer —
+  the Approver, the Enabler, or a project-review recommendation — would take.
+  Specify to it: write the refinement around that option, noting in one line
+  which alternatives the filer considered and why the default was chosen.
+  Never decline with `needs-refinement` merely because the body also
+  describes the roads not taken.
+- The `pw::owner-decision` label (a filed issue) or an `Owner decision: yes`
+  line beside the heading (a record) marks the choice as reserved for a
+  human under requirement 36a's boundary — decline with `needs-refinement`,
+  naming the decision and the clause it falls under in `missing`, exactly as
+  "never guess an owner-only decision" above already has you do for any
+  other owner-only item.
+- **Neither marker** (an item filed before this convention existed, or by
+  something outside this pipeline, or the malformed-verdict fallback
+  `## Default: not stated`) is not automatically an escalation either:
+  specify to the option the item's own text argues for. Where it argues for
+  none and the options differ only in mechanics — no operator-visible
+  behaviour change either way — pick the smaller one and say so in your
+  specification. Only where the options genuinely differ in operator-visible
+  behaviour, with no argued preference to specify to, decline with
+  `needs-refinement`, naming the fork in `missing` — the `decide-tactical`
+  rung (agent-ops#936, once it lands) is the intended backstop for exactly
+  this residue; until then it reaches a human the same way any other
+  `needs-refinement` does.
 
 - **`refined`** — either a fresh specification good enough to act on, or a
   **re-affirmation**: the thread already carries one, unchanged and still

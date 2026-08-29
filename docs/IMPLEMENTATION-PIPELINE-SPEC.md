@@ -5725,7 +5725,13 @@ implements.
    `needs_refinement_label`, `refined_label`, `unvoid_label`,
    `complexity:low|medium|high`, `blocked`, `blocked:needs-refinement`,
    `obsolete`, `open-question` (the Reviewer's own projection,
-   requirement 8f) and `pw::type:tech-debt` — `blocked` and `obsolete` being
+   requirement 8f), `pw::type:tech-debt` and `pw::owner-decision`
+   (`techdebt_file_issue`'s own marker for an owner-only `file_debt`/
+   `file_issue`, requirements 23d, 36c, 42a — a fourth fixed name, for the
+   same reason as `pw::type:tech-debt`: only a collaborator with triage can
+   apply a label, so a filed issue's membership of the owner-only band is
+   trustable even though its body stays untrusted data) — `blocked` and
+   `obsolete` being
    human-only controls no pipeline stage ever applies itself: `blocked`
    excludes an issue from selection (requirement 16.4), and `obsolete`
    corroborates closing a still-open, still-diff-carrying
@@ -11252,6 +11258,23 @@ implements.
       **verdict**: it changes nothing about the choice between `unblocked`,
       `still-blocked` and `escalate` below, and never turns a refinement
       into an escalation on its own.
+
+      **The default-first rule** (agent-ops#938). An item that enumerates
+      candidate fixes is not, on that account alone, one this stage cannot
+      settle. Where its body carries a `## Default: <fix>` heading — or a
+      record's own `default_fix` field — the filer has already named the
+      option it would take, from a stage that had just read the code, and the
+      Enabler specifies to that option, noting which alternatives the filer
+      considered and why the default was chosen. Where the item instead
+      carries the `pw::owner-decision` label or an `Owner decision: yes` line
+      (requirements 36c, 42a), the choice is reserved under 36a's boundary
+      and this is an `escalate`. An item carrying neither marker follows
+      requirement 39d's third case exactly — that rule and this one are one
+      rule with two readers: specify to the option the item's own text argues
+      for; where it argues for none and the options differ only in mechanics,
+      with no operator-visible behaviour change either way, specify to the
+      smaller one and say so; only an unmarked fork that genuinely differs in
+      operator-visible behaviour is an `escalate`.
     - **Escalates**, where this stage cannot settle it — a decision, answer, or
       action is needed first — through the unchanged protocol of requirement
       36a, in a **separate** issue. Never the work item's own issue: that
@@ -11392,8 +11415,9 @@ implements.
     an item's `examined` entry may carry either, both, or neither alongside
     `unblocked`, `still-blocked`, `escalate` or `void` alike, since what it
     names is deferred work the engagement noticed, not what it decided about
-    the item in front of it. Each is `{title, body}`; a field present with
-    either empty is a `warning` and nothing is filed. The Script — never the
+    the item in front of it. Each is `{title, body, default_fix, owner_decision}`;
+    a field present with either `title`/`body` empty is a `warning` and
+    nothing is filed. The Script — never the
     model, which carries no GitHub-writing power under "What you must never
     do" — performs the filing via `lib/tech-debt-file.sh`, under the ordinary
     pipeline login (the Enabler holds no App identity of its own the way the
@@ -11418,9 +11442,23 @@ implements.
       reference *is* the record — but carries no label and no assignee: unlike
       an escalation this is not addressed at a specific human, and is
       legitimate autonomous work for the `issues` source to pick up later, not
-      a request that source must exclude. Logs `issue-filed` (`repo`, `item`,
-      `by: "enabler"`, `issue_number`, `issue_url`) on success; a `warning` on
-      failure.
+      a request that source must exclude (`owner_decision: true` below is the
+      one exception, adding a label of its own). Logs `issue-filed` (`repo`,
+      `item`, `by: "enabler"`, `issue_number`, `issue_url`) on success; a
+      `warning` on failure.
+    - `default_fix`/`owner_decision` (agent-ops#938, requirement 23d's own
+      `techdebt_default_section`): `default_fix` is the option the Enabler
+      would take, one sentence, required whenever the body names more than
+      one; `owner_decision` is `true` only under requirement 36a's boundary.
+      Both are threaded straight through to `techdebt_file_debt`/
+      `techdebt_file_issue`, which write a `## Default: <default_fix>`
+      heading into the filed body (`## Default: not stated` when
+      `default_fix` is empty) and, for `owner_decision: true`, an
+      `Owner decision: yes` line beside it in a record or the
+      `pw::owner-decision` label on an issue. A verdict carrying neither
+      `default_fix` nor `owner_decision: true` is filed anyway — never
+      lost — but is malformed: logged as a `warning` naming the item, so the
+      refusal is counted and the filing prompts can be tuned.
 
     Neither call changes `verdict` or the item's `enabler-examined` outcome —
     a failed filing attempt costs a `warning`, never a reason to treat the
@@ -12509,7 +12547,37 @@ implements.
     opinion against a first, and stays a `needs-refinement` decline (39d),
     escalated rather than settled here.
 
-39d. **The `needs-refinement` decline.** Where the Refiner cannot write an
+39d. **The default-first rule (agent-ops#938).** Before reaching for
+    `needs-refinement` on the strength of enumerated alternatives alone, the
+    Refiner checks whether the item already answers its own question:
+
+    - A `## Default: <fix>` heading (an in-repo tech-debt record body) or
+      `default_fix` (a filed record's own field) names the option the filer —
+      Approver, Enabler, or a project-review recommendation, per requirements
+      36c/42a — would take. The Refiner specifies to it, `refined`, noting in
+      the specification which alternatives the filer considered and why the
+      default was chosen. Enumerating alternatives is never itself grounds
+      for `needs-refinement` once one of them is marked the default.
+    - The `pw::owner-decision` label (a filed issue) or an
+      `Owner decision: yes` line beside the heading (a record) marks the
+      choice as reserved under requirement 36a's boundary — `needs-refinement`,
+      naming the decision and its clause in `missing`, exactly as any other
+      owner-only item.
+    - An item enumerating options with **neither** marker — filed before this
+      convention, or by something outside this pipeline, or the
+      malformed-verdict fallback `## Default: not stated` (requirements
+      36c/42a) — is not automatically `needs-refinement` either: the Refiner
+      specifies to the option the item's own text argues for. Where it argues
+      for none and the options differ only in mechanics, with no
+      operator-visible behaviour change either way, it specifies to the
+      smaller one and says so. Only where the options genuinely differ in
+      operator-visible behaviour, with no argued preference, does this reach
+      `needs-refinement`, naming the fork in `missing` — the `decide-tactical`
+      rung (agent-ops#936) is the intended backstop for exactly this residue
+      once it lands; until then the ordinary `needs-refinement` route below
+      reaches a human the same way any other decline does.
+
+    **The `needs-refinement` decline.** Where the Refiner cannot write an
     adequate specification — the gap is a decision, a credential, or
     information that exists only in a human's head, or the item's own premise
     looks wrong to it (a `void` it has no power to declare) — it declines with
@@ -13005,8 +13073,18 @@ with the Reviewer's own.
     either, both, or neither may accompany any verdict this requirement or
     requirement 43 allows, since what it names is deferred work the diff read
     turned up, not what was decided about the pull request itself. Each is
-    `{title, body}`; present with either empty, it is a `warning` and nothing
-    is filed. Filing is a Script-issued call
+    `{title, body, default_fix, owner_decision}`;
+    present with either `title`/`body` empty, it is a `warning` and nothing
+    is filed. `default_fix`/`owner_decision` follow requirement 36c's own
+    contract exactly — same fields, same `## Default`/`Owner decision: yes`/
+    `pw::owner-decision` handling in `lib/tech-debt-file.sh`, same
+    malformed-verdict warning whenever neither is set (agent-ops#938). The
+    Script cannot read whether the body it was handed names more than one
+    fix, so it warns on the field's absence alone: a single-fix filing that
+    never needed a default costs one `warning` and a `## Default: not stated`
+    heading, which is the cheap side of the trade against a filing whose
+    unstated choice would have cost a Refiner pass to rediscover. Filing is a
+    Script-issued call
     (`techdebt_file_debt`/`techdebt_file_issue`, `lib/tech-debt-file.sh`),
     never a write the model performs, and every `gh` call it makes runs under
     the same App token requirement 42 already mints for posting the review
@@ -15459,15 +15537,42 @@ What exists, and the requirements each part answers to:
     themselves, so this is what the Script calls in their place once either
     stage's final JSON carries `file_debt`/`file_issue`:
 
-    - `techdebt_file_issue REPO ITEM_REF TITLE BODY_FILE [TOKEN]` — the same
+    - `techdebt_file_issue REPO ITEM_REF TITLE BODY_FILE [TOKEN] [DEFAULT_FIX]
+      [OWNER_DECISION]` — the same
       duplicate-guard shape `create_escalation_issue` (component 2) already
       uses (an open issue whose body already quotes `ITEM_REF` is returned
-      rather than filing a second one), but with no label and no assignee:
-      this is not an escalation addressed at a specific human, and is
-      legitimate autonomous work for the `issues` source to pick up later.
+      rather than filing a second one, `DEFAULT_FIX`/`OWNER_DECISION` untouched
+      on that path — a dedup hit never re-labels or re-bodies the existing
+      issue), but with no label and no assignee: this is not an escalation
+      addressed at a specific human, and is legitimate autonomous work for the
+      `issues` source to pick up later. A fresh issue's body is `BODY_FILE`'s
+      own content plus `techdebt_default_section`'s trailing `## Default`
+      section (below); `OWNER_DECISION` of exactly `"true"` additionally
+      requests the `pw::owner-decision` label on `gh issue create` itself,
+      never a body line — a label, not untrusted body text, is what a later
+      gatherer can trust the same way `pw::type:tech-debt` already is —
+      **retried once without the label**, exactly as requirement 36a's
+      escalation contract is, so a repository that has not had that label
+      ensured yet still gets its issue: `gh` resolves a label name to an id as
+      part of the create, so a labelled create against a repository lacking it
+      fails outright, and a filing lost that way is the one outcome
+      agent-ops#938 exists to prevent. Losing the label costs a later Refiner
+      its marker — the issue reads to it as an item carrying neither marker
+      (requirement 39d's third case); losing the create costs the filing.
       Prints `"<number>\t<url>"` on success, nothing on failure.
+    - `techdebt_default_section DEFAULT_FIX [OWNER_DECISION]` (agent-ops#938)
+      — the `## Default: <DEFAULT_FIX>` heading both filing functions append
+      (`## Default: not stated` when `DEFAULT_FIX` is empty — a malformed
+      verdict, per requirements 36c/42a, is filed anyway rather than lost),
+      plus an `Owner decision: yes` line immediately below it when
+      `OWNER_DECISION` is exactly `"true"`. `techdebt_file_debt` passes both
+      through; `techdebt_file_issue` passes `DEFAULT_FIX` alone — its own
+      `OWNER_DECISION` signal is the `pw::owner-decision` label above, never
+      a body line, so the two writers never disagree about which of
+      body-text or label is the trusted signal for the same fact.
     - `techdebt_file_debt REPO TITLE BODY PROVENANCE [TOKEN] [GIT_DIR]
-      [PR_LABEL]` — reserves an id by running `scripts/reserve-tech-debt-id.pl`
+      [PR_LABEL] [DEFAULT_FIX] [OWNER_DECISION]` — reserves an id by running
+      `scripts/reserve-tech-debt-id.pl`
       **unmodified**, always against `GIT_DIR`'s `origin/main` specifically
       (`git show origin/main:scripts/reserve-tech-debt-id.pl`, extracted
       fresh to a temporary path outside `GIT_DIR` and run from a CWD inside
@@ -15536,7 +15641,10 @@ What exists, and the requirements each part answers to:
       that case releases the same way any abandoned "Claiming an item" claim
       does (`TECH-DEBT.md`). `filed:` in the record's frontmatter is derived
       from the id's own date component, never the host clock, so the two can
-      never disagree regardless of the container's timezone.
+      never disagree regardless of the container's timezone. The record's
+      body carries `techdebt_default_section`'s output — the `## Default`
+      heading and, for `OWNER_DECISION` of `"true"`, the `Owner decision: yes`
+      line beneath it — ahead of the trailing provenance line.
     - `TOKEN`, given to either function, runs every `gh` call under that
       identity (`GH_TOKEN="$TOKEN"`) — the Approver's own minted App token
       (`approver_token_get`, `lib/approver-token.sh`, requirement 14b), the
@@ -15564,7 +15672,21 @@ What exists, and the requirements each part answers to:
     `PR_LABEL` omitted (the `"autonomous-agent"` fallback) and with one
     supplied explicitly — the one case a passing test suite could otherwise
     hide entirely, since a filing that opens unlabelled still returns a URL
-    and reports success (agent-ops TD-PPagop-26082426). The same suite also
+    and reports success (agent-ops TD-PPagop-26082426). Also asserts
+    `techdebt_default_section`'s three shapes for both functions
+    (agent-ops#938) — `DEFAULT_FIX` alone (the heading, no owner line/label),
+    `OWNER_DECISION` alone (`## Default: not stated` plus the owner
+    line/label — a stated owner-only choice is never malformed even with no
+    default), and neither (`## Default: not stated`, no owner line/label) —
+    decoding the record's own base64 `content=` argument and the issue's
+    captured `--body-file` for the record and issue cases respectively,
+    since neither is otherwise visible in the stub's own argv capture. And
+    the label retry: an `issue create` carrying `--label pw::owner-decision`
+    that the stub refuses — as `gh` refuses one against a repository lacking
+    the label — is re-attempted unlabelled and the issue is still filed,
+    while an *unlabelled* create that fails is not re-attempted and stays a
+    failed filing. The
+    same suite also
     covers `_techdebt_unfile`'s durable fallback (TD-PPagop-26082427): a
     cleanup `DELETE` that fails while the branch is confirmed still there
     writes a `reservation-releases/` marker under the ordinary login even
@@ -15580,10 +15702,13 @@ What exists, and the requirements each part answers to:
     wiring — that `run_approver_stage` and `maybe_run_enabler` actually call
     these with the right arguments, including the fleet's configured
     `pr_label` resolved from `DEFAULTED_CONFIG` rather than the bare
-    fallback, and log the right event — is
+    fallback, `default_fix`/`owner_decision` extracted from the verdict and
+    threaded through past it in that order (agent-ops#938), the
+    malformed-verdict warning logged whenever a filing carries neither, and
+    log the right event — is
     covered separately, by `test/approver-tech-debt-file-wiring.test.sh` and
     `test/enabler-tech-debt-file-wiring.test.sh`, lifting each block out of
-    `agent-cycle.sh` the same way `test/approver-wiring.test.sh` and
+    `lib/approver.sh` and `lib/enabler.sh` the same way `test/approver-wiring.test.sh` and
     `test/enabler-verdicts.test.sh` already do for the rest of either stage's
     own wiring. Must pass `shellcheck`.
 23e. `.github/workflows/release-td-branch.yml` and

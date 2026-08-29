@@ -157,6 +157,11 @@ a_git_dir() {
 #                                matched reports the ref as existing
 # $tmp_dir/fail-marker-put      present -> the reservation-releases/ marker
 #                                PUT fails
+# $tmp_dir/fail-labelled-issue-create
+#                               present -> an `issue create` carrying --label
+#                                fails, as `gh` does where the label does not
+#                                exist in the repository; an unlabelled create
+#                                still succeeds
 cat > "$tmp_dir/gh" <<'STUB'
 #!/usr/bin/env bash
 d="$(dirname "$0")"
@@ -207,6 +212,26 @@ if [[ "$1" == "pr" && "$2" == "create" ]]; then
   exit 0
 fi
 if [[ "$1" == "issue" && "$2" == "create" ]]; then
+  # Capture --body-file's own content before the caller deletes it
+  # (agent-ops#938: techdebt_file_issue's combined temp file), so a test can
+  # assert on the `## Default` section actually filed rather than only on the
+  # argv, which carries a throwaway path.
+  shift 2
+  labelled=0
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "--body-file" ]]; then
+      cat "$2" > "$d/last-issue-body" 2>/dev/null
+      shift 2
+      continue
+    fi
+    [[ "$1" == "--label" ]] && labelled=1
+    shift
+  done
+  # `gh` resolves a label name to an id as part of the create, so a repository
+  # that does not carry the label fails the whole create rather than merely
+  # dropping the label: this fixture reproduces exactly that, and only for a
+  # create that actually asked for one.
+  [[ -f "$d/fail-labelled-issue-create" && "$labelled" == "1" ]] && exit 1
   [[ -s "$d/issue-url" ]] || exit 1
   cat "$d/issue-url"
   exit 0
@@ -223,7 +248,8 @@ export PATH="$tmp_dir:$PATH"
 reset_stub() {
   : > "$tmp_dir/calls"
   rm -f "$tmp_dir/fail-refs" "$tmp_dir/fail-contents" "$tmp_dir/fail-delete-refs" \
-    "$tmp_dir/absent-refs" "$tmp_dir/fail-marker-put"
+    "$tmp_dir/absent-refs" "$tmp_dir/fail-marker-put" \
+    "$tmp_dir/fail-labelled-issue-create"
   echo "https://github.com/o/r/pull/99" > "$tmp_dir/pr-url"
   echo "https://github.com/o/r/issues/77" > "$tmp_dir/issue-url"
   echo '[]' > "$tmp_dir/issue-list-response"
@@ -237,6 +263,15 @@ reset_stub() {
 reserved_id() {
   grep -oE 'ref=refs/heads/td-record/[A-Za-z0-9-]+' "$tmp_dir/calls" \
     | head -n1 | sed 's#.*/##'
+}
+
+# last_put_content -- the decoded body of the most recent contents PUT (the
+# record commit techdebt_file_debt just wrote), so a test can assert on the
+# `## Default`/`Owner decision:` section without re-deriving the base64
+# encoding the stub's own argv capture leaves it in.
+last_put_content() {
+  grep -oE '\-f content=[A-Za-z0-9+/=]+' "$tmp_dir/calls" | tail -n1 \
+    | sed 's/^-f content=//' | base64 -d
 }
 
 # assert_cleanup ID PREFIX -- both branches this filing could have created
@@ -284,6 +319,44 @@ assert_eq "  ... branch is td-record/<id>, not td/<id>" "1" \
 # to a real label rather than none at all.
 assert_eq "  ... pr create carries the default label" "1" \
   "$(grep -c '^<none> pr create .*--label autonomous-agent' "$tmp_dir/calls")"
+# DEFAULT_FIX/OWNER_DECISION omitted -> the record still carries a `##
+# Default` heading, filed as "not stated" rather than left out (agent-ops#938:
+# a malformed verdict is filed anyway, never lost).
+assert_eq "  ... no DEFAULT_FIX/OWNER_DECISION -> '## Default: not stated'" "1" \
+  "$(last_put_content | grep -c '^## Default: not stated$')"
+assert_eq "  ... and no 'Owner decision:' line" "0" \
+  "$(last_put_content | grep -c '^Owner decision:')"
+
+# --- DEFAULT_FIX/OWNER_DECISION (agent-ops#938) -----------------------------
+remote="$(make_remote 0)"
+gd="$(a_git_dir "$remote")"
+reset_stub
+techdebt_file_debt "o/r" "A finding with a default" "The body." "while reviewing PR #618" "" "$gd" \
+  "" "Do the smaller of the two fixes because it needs no schema change" >/dev/null
+assert_eq "file_debt: DEFAULT_FIX alone -> heading carries it, no owner line" "1" \
+  "$(last_put_content | grep -c '^## Default: Do the smaller of the two fixes because it needs no schema change$')"
+assert_eq "  ... no 'Owner decision:' line" "0" \
+  "$(last_put_content | grep -c '^Owner decision:')"
+
+remote="$(make_remote 0)"
+gd="$(a_git_dir "$remote")"
+reset_stub
+techdebt_file_debt "o/r" "A finding that is an owner call" "The body." "while reviewing PR #618" \
+  "" "$gd" "" "Pick the vendor-locked option" "true" >/dev/null
+assert_eq "file_debt: OWNER_DECISION true -> heading and 'Owner decision: yes' both present" "1" \
+  "$(last_put_content | grep -c '^## Default: Pick the vendor-locked option$')"
+assert_eq "  ... 'Owner decision: yes' beside it" "1" \
+  "$(last_put_content | grep -c '^Owner decision: yes$')"
+
+remote="$(make_remote 0)"
+gd="$(a_git_dir "$remote")"
+reset_stub
+techdebt_file_debt "o/r" "An owner call with no stated default" "The body." "while reviewing PR #618" \
+  "" "$gd" "" "" "true" >/dev/null
+assert_eq "file_debt: OWNER_DECISION true alone -> still '## Default: not stated'" "1" \
+  "$(last_put_content | grep -c '^## Default: not stated$')"
+assert_eq "  ... but 'Owner decision: yes' still present (verdict is not malformed)" "1" \
+  "$(last_put_content | grep -c '^Owner decision: yes$')"
 
 # --- An explicit PR_LABEL is passed through to `gh pr create` ---------------
 remote="$(make_remote 0)"
@@ -509,6 +582,67 @@ out="$(techdebt_file_issue "o/r" "TD26082201" "A gap worth noting" <(echo "body"
 rc=$?
 assert_eq "file_issue: create fails -> exit 1" "1" "$rc"
 assert_eq "  ... no output" "" "$out"
+
+# --- DEFAULT_FIX/OWNER_DECISION (agent-ops#938) -----------------------------
+# No DEFAULT_FIX/OWNER_DECISION -> filed anyway with "## Default: not stated",
+# no pw::owner-decision label.
+reset_stub
+techdebt_file_issue "o/r" "TD26082201" "A gap worth noting" <(echo "body") "" >/dev/null
+assert_eq "file_issue: neither field -> '## Default: not stated'" "1" \
+  "$(grep -c '^## Default: not stated$' "$tmp_dir/last-issue-body")"
+assert_eq "  ... no pw::owner-decision label requested" "0" \
+  "$(grep -c -- '--label pw::owner-decision' "$tmp_dir/calls")"
+
+# DEFAULT_FIX alone -> heading carries it, no label.
+reset_stub
+techdebt_file_issue "o/r" "TD26082201" "A gap worth noting" <(echo "body") "" \
+  "Rename the flag rather than add a second one" >/dev/null
+assert_eq "file_issue: DEFAULT_FIX alone -> heading carries it" "1" \
+  "$(grep -c '^## Default: Rename the flag rather than add a second one$' "$tmp_dir/last-issue-body")"
+assert_eq "  ... no pw::owner-decision label requested" "0" \
+  "$(grep -c -- '--label pw::owner-decision' "$tmp_dir/calls")"
+
+# OWNER_DECISION true -> the pw::owner-decision label is requested, alongside
+# the heading; a record would write "Owner decision: yes" instead, but an
+# issue is marked with a label, not body text, so a gatherer can trust it.
+reset_stub
+techdebt_file_issue "o/r" "TD26082201" "A gap worth noting" <(echo "body") "" \
+  "Pick the vendor-locked option" "true" >/dev/null
+assert_eq "file_issue: OWNER_DECISION true -> heading present" "1" \
+  "$(grep -c '^## Default: Pick the vendor-locked option$' "$tmp_dir/last-issue-body")"
+assert_eq "  ... no 'Owner decision:' body line (a label carries it here)" "0" \
+  "$(grep -c '^Owner decision:' "$tmp_dir/last-issue-body")"
+assert_eq "  ... pw::owner-decision label requested" "1" \
+  "$(grep -c -- '--label pw::owner-decision' "$tmp_dir/calls")"
+
+# A repository that has not had `pw::owner-decision` ensured yet fails the
+# labelled create outright -- `gh` resolves the label to an id as part of the
+# create -- so the create is retried once without it, exactly as requirement
+# 36a's escalation contract does. Losing the label costs the Refiner its
+# marker; losing the create would cost the filing itself, which is the one
+# outcome agent-ops#938 exists to prevent.
+reset_stub
+: > "$tmp_dir/fail-labelled-issue-create"
+out="$(techdebt_file_issue "o/r" "TD26082201" "A gap worth noting" <(echo "body") "" \
+        "Pick the vendor-locked option" "true")"
+rc=$?
+assert_eq "file_issue: a refused labelled create is retried unlabelled, exit 0" "0" "$rc"
+assert_eq "  ... and the issue is still filed" "77	https://github.com/o/r/issues/77" "$out"
+assert_eq "  ... the labelled create was attempted first" "1" \
+  "$(grep -c -- '--label pw::owner-decision' "$tmp_dir/calls")"
+assert_eq "  ... and the retry carried no label" "1" \
+  "$(grep -cE '^<none> issue create -R o/r --title A gap worth noting --body-file [^ ]+$' \
+       "$tmp_dir/calls")"
+
+# The retry is only for a labelled create: an unlabelled one that fails is
+# still a failed filing, never re-attempted.
+reset_stub
+: > "$tmp_dir/issue-url"
+out="$(techdebt_file_issue "o/r" "TD26082201" "A gap worth noting" <(echo "body") "" \
+        "Rename the flag rather than add a second one")"
+rc=$?
+assert_eq "file_issue: an unlabelled create that fails is not retried" "1" "$rc"
+assert_eq "  ... exactly one create attempted" "1" "$(grep -c 'issue create' "$tmp_dir/calls")"
 
 echo
 if [[ "$failures" -eq 0 ]]; then

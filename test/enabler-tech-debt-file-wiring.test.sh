@@ -232,8 +232,8 @@ still_blocked_verdict() {  # still_blocked_verdict FILE_DEBT_JSON|null FILE_ISSU
       + (if $iss == null then {} else {file_issue: $iss} end)]'
 }
 
-# --- file_debt: success ------------------------------------------------------
-fd='{"title":"A gap worth filing","body":"The body text."}'
+# --- file_debt: success (carries default_fix) -------------------------------
+fd='{"title":"A gap worth filing","body":"The body text.","default_fix":"Do the smaller fix"}'
 out="$(run_case "file_debt success" "$(still_blocked_verdict "$fd" null)")"
 assert_eq "file_debt success: techdebt_file_debt called once" "1" \
   "$(grep -c '^techdebt_file_debt ' <<<"$out")"
@@ -245,11 +245,33 @@ assert_eq "  ... with the repo, title, body and provenance" "1" \
 # label here that does not match that fallback.
 assert_eq "  ... and the configured pr_label, not the bare fallback" "1" \
   "$(grep -c '^techdebt_file_debt .*custom-agent-label' <<<"$out")"
+# agent-ops#938: default_fix and owner_decision are threaded through, in that
+# order, past pr_label.
+assert_eq "  ... and default_fix/owner_decision past pr_label" "1" \
+  "$(grep -c '^techdebt_file_debt .*custom-agent-label Do the smaller fix false$' <<<"$out")"
 assert_eq "  ... tech-debt-filed event logged" "1" "$(events_named "$out" tech-debt-filed | grep -c .)"
 fields="$(events_named "$out" tech-debt-filed)"
 assert_eq "  ... event names by:enabler" "enabler" "$(jq -r '.by' <<<"$fields")"
 assert_eq "  ... event carries the returned id" "TD-PPtest-99999901" "$(jq -r '.id' <<<"$fields")"
 assert_eq "  ... no warning" "0" "$(events_named "$out" warning | grep -c .)"
+
+# --- file_debt: owner_decision true, no default_fix -> passed through, no --
+#     "malformed" warning (the owner_decision alone is enough)
+fd_owner='{"title":"A gap that is an owner call","body":"The body text.","owner_decision":true}'
+out="$(run_case "file_debt owner_decision" "$(still_blocked_verdict "$fd_owner" null)")"
+assert_eq "file_debt owner_decision: passed through as \"true\"" "1" \
+  "$(grep -c '^techdebt_file_debt .*custom-agent-label  true$' <<<"$out")"
+assert_eq "  ... no warning" "0" "$(events_named "$out" warning | grep -c .)"
+
+# --- file_debt: neither default_fix nor owner_decision -> malformed, filed --
+#     anyway, and the refusal is counted as a warning (agent-ops#938)
+fd_neither='{"title":"A gap with no stated default","body":"The body text."}'
+out="$(run_case "file_debt malformed default" "$(still_blocked_verdict "$fd_neither" null)")"
+assert_eq "file_debt malformed default: still files" "1" \
+  "$(grep -c '^techdebt_file_debt ' <<<"$out")"
+assert_eq "  ... still logs tech-debt-filed" "1" "$(events_named "$out" tech-debt-filed | grep -c .)"
+assert_eq "  ... AND a warning naming the missing default" "1" \
+  "$(events_named "$out" warning | grep -c 'no default_fix and no owner_decision')"
 
 # --- file_debt: missing title/body -> warning, no call ----------------------
 fd_bad='{"title":"","body":""}'
@@ -263,17 +285,29 @@ assert_eq "file_debt call fails: still attempted" "1" "$(grep -c '^techdebt_file
 assert_eq "  ... no tech-debt-filed event" "0" "$(events_named "$out" tech-debt-filed | grep -c .)"
 assert_eq "  ... a warning was logged instead" "1" "$(events_named "$out" warning | grep -c .)"
 
-# --- file_issue: success ------------------------------------------------------
-fi='{"title":"A question worth asking","body":"Body of the issue."}'
+# --- file_issue: success (carries default_fix) -------------------------------
+fi='{"title":"A question worth asking","body":"Body of the issue.","default_fix":"Answer it this way"}'
 out="$(run_case "file_issue success" "$(still_blocked_verdict null "$fi")")"
 assert_eq "file_issue success: techdebt_file_issue called once" "1" \
   "$(grep -c '^techdebt_file_issue ' <<<"$out")"
 assert_eq "  ... with the repo, item ref and title" "1" \
   "$(grep -c 'techdebt_file_issue acme/widgets TD26082201 A question worth asking' <<<"$out")"
+assert_eq "  ... and default_fix/owner_decision past the (empty) token" "1" \
+  "$(grep -c '^techdebt_file_issue .* Answer it this way false$' <<<"$out")"
 assert_eq "  ... issue-filed event logged" "1" "$(events_named "$out" issue-filed | grep -c .)"
 fields="$(events_named "$out" issue-filed)"
 assert_eq "  ... event names by:enabler" "enabler" "$(jq -r '.by' <<<"$fields")"
 assert_eq "  ... event carries the returned issue number" "55" "$(jq -r '.issue_number' <<<"$fields")"
+assert_eq "  ... no warning" "0" "$(events_named "$out" warning | grep -c .)"
+
+# --- file_issue: neither field -> malformed, filed anyway, warning ----------
+fi_neither='{"title":"A question with no stated default","body":"Body of it."}'
+out="$(run_case "file_issue malformed default" "$(still_blocked_verdict null "$fi_neither")")"
+assert_eq "file_issue malformed default: still files" "1" \
+  "$(grep -c '^techdebt_file_issue ' <<<"$out")"
+assert_eq "  ... still logs issue-filed" "1" "$(events_named "$out" issue-filed | grep -c .)"
+assert_eq "  ... AND a warning naming the missing default" "1" \
+  "$(events_named "$out" warning | grep -c 'no default_fix and no owner_decision')"
 
 # --- file_issue: missing body -> warning, no call ----------------------------
 fi_bad='{"title":"A question","body":""}'

@@ -416,8 +416,10 @@ maybe_run_enabler() {
   local e_rereview_state e_rereview_who e_human_reviewer_state e_human_reviewer_who
   local issue_title issue_body_file created number url missing
   local e_adjudication e_adj_verdict e_adj_evidence e_adjudicated e_refined_adj
-  local e_file_debt fd_title fd_body fd_pr_label fd_result fd_id fd_pr_url
-  local e_file_issue fi_title fi_body fi_body_file fi_result fi_number fi_url
+  local e_file_debt fd_title fd_body fd_pr_label fd_result fd_id fd_pr_url \
+    fd_default_fix fd_owner_decision
+  local e_file_issue fi_title fi_body fi_body_file fi_result fi_number fi_url \
+    fi_default_fix fi_owner_decision
 
   # --- Guards (requirement 35). Every one of them declining is normal. ---
   # The lock is the log's single-writer guarantee, and this stage writes events.
@@ -1010,6 +1012,15 @@ $(jq . <<<"$input")
     if [[ -n "$e_file_debt" && "$e_file_debt" != "null" ]]; then
       fd_title="$(jq -r '.title // ""' <<<"$e_file_debt" 2>/dev/null || true)"
       fd_body="$(jq -r '.body // ""' <<<"$e_file_debt" 2>/dev/null || true)"
+      # default_fix/owner_decision (agent-ops#938): the option this
+      # engagement would take, or the owner-only clause it names instead —
+      # see prompts/enabler.md's "file_debt/file_issue" for what each means
+      # and requirement 36c for what the Script does with them.
+      fd_default_fix="$(jq -r '.default_fix // ""' <<<"$e_file_debt" 2>/dev/null || true)"
+      fd_owner_decision="$(jq -r \
+        'if (.owner_decision // false) == true then "true" else "false" end' \
+        <<<"$e_file_debt" 2>/dev/null || true)"
+      [[ -n "$fd_owner_decision" ]] || fd_owner_decision="false"
       # The fleet's configured `pr_label` (agent-ops TD-PPagop-26082426): this
       # call site does not otherwise have it in hand, so it is read from
       # `DEFAULTED_CONFIG` here and threaded through to techdebt_file_debt,
@@ -1021,17 +1032,29 @@ $(jq . <<<"$input")
         log_event "warning" "$(jq -nc \
           --arg d "enabler set file_debt for $e_repo $e_item, but it carries no title or body — ignored" \
           '{detail: $d}')"
-      elif fd_result="$(techdebt_file_debt "$e_repo" "$fd_title" "$fd_body" \
-             "during an Enabler engagement on $e_item (cycle $cycle_id)" "" "" "$fd_pr_label")" \
-             && [[ -n "$fd_result" ]]; then
-        IFS=$'\t' read -r fd_id fd_pr_url <<<"$fd_result"
-        log_event "tech-debt-filed" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" \
-          --arg id "$fd_id" --arg u "$fd_pr_url" \
-          '{repo: $r, item: $i, by: "enabler", id: $id, pr_url: $u}')"
       else
-        log_event "warning" "$(jq -nc \
-          --arg d "enabler: could not file the tech-debt record for $e_repo $e_item (see tech-debt-file.err)" \
-          '{detail: $d}')"
+        # A verdict naming neither is malformed, not refused: it is filed
+        # anyway with "## Default: not stated" (techdebt_default_section)
+        # rather than lost, and this warning is what lets the refusal be
+        # counted so the filing prompts can be tuned.
+        if [[ -z "$fd_default_fix" && "$fd_owner_decision" != "true" ]]; then
+          log_event "warning" "$(jq -nc \
+            --arg d "enabler set file_debt for $e_repo $e_item with no default_fix and no owner_decision — filed with '## Default: not stated'" \
+            '{detail: $d}')"
+        fi
+        if fd_result="$(techdebt_file_debt "$e_repo" "$fd_title" "$fd_body" \
+               "during an Enabler engagement on $e_item (cycle $cycle_id)" "" "" "$fd_pr_label" \
+               "$fd_default_fix" "$fd_owner_decision")" \
+               && [[ -n "$fd_result" ]]; then
+          IFS=$'\t' read -r fd_id fd_pr_url <<<"$fd_result"
+          log_event "tech-debt-filed" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" \
+            --arg id "$fd_id" --arg u "$fd_pr_url" \
+            '{repo: $r, item: $i, by: "enabler", id: $id, pr_url: $u}')"
+        else
+          log_event "warning" "$(jq -nc \
+            --arg d "enabler: could not file the tech-debt record for $e_repo $e_item (see tech-debt-file.err)" \
+            '{detail: $d}')"
+        fi
       fi
     fi
 
@@ -1039,11 +1062,21 @@ $(jq . <<<"$input")
     if [[ -n "$e_file_issue" && "$e_file_issue" != "null" ]]; then
       fi_title="$(jq -r '.title // ""' <<<"$e_file_issue" 2>/dev/null || true)"
       fi_body="$(jq -r '.body // ""' <<<"$e_file_issue" 2>/dev/null || true)"
+      fi_default_fix="$(jq -r '.default_fix // ""' <<<"$e_file_issue" 2>/dev/null || true)"
+      fi_owner_decision="$(jq -r \
+        'if (.owner_decision // false) == true then "true" else "false" end' \
+        <<<"$e_file_issue" 2>/dev/null || true)"
+      [[ -n "$fi_owner_decision" ]] || fi_owner_decision="false"
       if [[ -z "$fi_title" || -z "$fi_body" ]]; then
         log_event "warning" "$(jq -nc \
           --arg d "enabler set file_issue for $e_repo $e_item, but it carries no title or body — ignored" \
           '{detail: $d}')"
       else
+        if [[ -z "$fi_default_fix" && "$fi_owner_decision" != "true" ]]; then
+          log_event "warning" "$(jq -nc \
+            --arg d "enabler set file_issue for $e_repo $e_item with no default_fix and no owner_decision — filed with '## Default: not stated'" \
+            '{detail: $d}')"
+        fi
         # The item ref is appended, not merely hoped for in the model's own
         # prose, because techdebt_file_issue's dedup guard searches the
         # issue body for exactly this string on every later call.
@@ -1051,7 +1084,8 @@ $(jq . <<<"$input")
         # shellcheck disable=SC2016 # the backtick around %s is literal Markdown, not code
         printf '%s\n\n---\nNoticed by the autonomous pipeline while examining `%s` in %s.\n' \
           "$fi_body" "$e_item" "$e_repo" > "$fi_body_file"
-        if fi_result="$(techdebt_file_issue "$e_repo" "$e_item" "$fi_title" "$fi_body_file")" \
+        if fi_result="$(techdebt_file_issue "$e_repo" "$e_item" "$fi_title" "$fi_body_file" "" \
+               "$fi_default_fix" "$fi_owner_decision")" \
              && [[ -n "$fi_result" ]]; then
           IFS=$'\t' read -r fi_number fi_url <<<"$fi_result"
           log_event "issue-filed" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" \
