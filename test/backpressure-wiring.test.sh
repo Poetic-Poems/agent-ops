@@ -426,6 +426,84 @@ out_cr_h="$(PATH="$stub_bin:$PATH" \
 assert_eq "…and the identical pull request at human reads exactly the same — the narrowing never costs the cap a PR" \
   "$(sed -n '1p' <<<"$out_cr")" "$(sed -n '1p' <<<"$out_cr_h")"
 
+# --- Issue #946 review follow-up (PR #1048): the elevated-level branch is
+#     never exercised with more than one candidate in the same listing, so
+#     ineligible_prs_json accumulating one entry while another candidate
+#     stays counted, and counted_prs_array's `[.number] - $ineligible`
+#     subtraction dropping one PR while keeping its neighbour, are never
+#     seen in combination. One listing at agent-merges-routine with both an
+#     otherwise-eligible PR (#980, complexity:low) and a landing-ineligible
+#     one (#981, complexity:high) alongside it. ---
+
+cat > "$listings/Poetic-Poems__poetic-fiddle.json" <<'JSON'
+[{"number":980,"isDraft":false,"reviewDecision":"APPROVED","headRefName":"agent/80",
+  "labels":[{"name":"complexity:low"},{"name":"autonomous-agent"}]},
+ {"number":981,"isDraft":false,"reviewDecision":"APPROVED","headRefName":"agent/81",
+  "labels":[{"name":"complexity:high"},{"name":"autonomous-agent"}]}]
+JSON
+printf '0' > "$counts_dir/Poetic-Poems__poetic-fiddle"
+union_log_mixed="$tmp_dir/union-mixed.jsonl"
+cat > "$union_log_mixed" <<'JSONL'
+{"event":"selection","repo":"Poetic-Poems/poetic-fiddle","branch":"agent/80","source":"tech-debt","ts":"2026-08-01T00:00:00Z"}
+{"event":"selection","repo":"Poetic-Poems/poetic-fiddle","branch":"agent/81","source":"tech-debt","ts":"2026-08-01T00:00:00Z"}
+JSONL
+
+calls_file_mixed="$tmp_dir/claim-calls-mixed"
+: > "$calls_file_mixed"
+out_mixed="$(PATH="$stub_bin:$PATH" \
+        GH_STUB_LISTINGS="$listings" CLAIM_CALLS="$calls_file_mixed" CLAIM_COUNTS="$counts_dir" \
+        UNION_LOG="$union_log_mixed" \
+        REPOS_JSON='[{"slug":"Poetic-Poems/poetic-fiddle"}]' \
+        CFG_JSON='{"repos":[{"slug":"Poetic-Poems/poetic-fiddle","merge_autonomy":"agent-merges-routine"}]}' \
+        run_block 2>/dev/null)"
+
+assert_eq "a mixed listing's composition counts only the otherwise-eligible PR toward the trip, the other toward human" \
+  "1 changes-requested + 0 draft + 0 unraised claim(s) — plus 1 waiting on human (2 raw)" \
+  "$(sed -n '1p' <<<"$out_mixed")"
+assert_eq "…so the trip figure is 1, not 0 or 2" "1" "$(sed -n '2p' <<<"$out_mixed")"
+assert_eq "…and counted_prs carries the eligible PR only — its ineligible neighbour is not folded in, nor dropped" \
+  "count|Poetic-Poems/poetic-fiddle|980" "$(sed -n '1p' "$calls_file_mixed")"
+
+# --- Issue #946 review follow-up (PR #1048): AC2 as literally written asks
+#     for a scenario at agent-merges-all, and no test anywhere in this file
+#     runs the block above agent-merges-routine — so a regression that
+#     re-introduced a level-specific gate above that rank (rather than "or
+#     above", as amended requirement 2.2 and lib/landing.sh's own
+#     landing_routine_eligible state) would pass every existing assertion.
+#     Same shape as the mixed-listing scenario above, one level higher: an
+#     otherwise-eligible PR (#990, complexity:low) still counts toward the
+#     cap, and a landing-ineligible one (#991, complexity:high) is still
+#     narrowed into the human queue, at agent-merges-all. ---
+
+cat > "$listings/Poetic-Poems__poetic-fiddle.json" <<'JSON'
+[{"number":990,"isDraft":false,"reviewDecision":"APPROVED","headRefName":"agent/90",
+  "labels":[{"name":"complexity:low"},{"name":"autonomous-agent"}]},
+ {"number":991,"isDraft":false,"reviewDecision":"APPROVED","headRefName":"agent/91",
+  "labels":[{"name":"complexity:high"},{"name":"autonomous-agent"}]}]
+JSON
+printf '0' > "$counts_dir/Poetic-Poems__poetic-fiddle"
+union_log_all="$tmp_dir/union-all.jsonl"
+cat > "$union_log_all" <<'JSONL'
+{"event":"selection","repo":"Poetic-Poems/poetic-fiddle","branch":"agent/90","source":"tech-debt","ts":"2026-08-01T00:00:00Z"}
+{"event":"selection","repo":"Poetic-Poems/poetic-fiddle","branch":"agent/91","source":"tech-debt","ts":"2026-08-01T00:00:00Z"}
+JSONL
+
+calls_file_all="$tmp_dir/claim-calls-all"
+: > "$calls_file_all"
+out_all="$(PATH="$stub_bin:$PATH" \
+        GH_STUB_LISTINGS="$listings" CLAIM_CALLS="$calls_file_all" CLAIM_COUNTS="$counts_dir" \
+        UNION_LOG="$union_log_all" \
+        REPOS_JSON='[{"slug":"Poetic-Poems/poetic-fiddle"}]' \
+        CFG_JSON='{"repos":[{"slug":"Poetic-Poems/poetic-fiddle","merge_autonomy":"agent-merges-all"}]}' \
+        run_block 2>/dev/null)"
+
+assert_eq "at agent-merges-all, an otherwise-eligible ready PR still counts toward the cap" \
+  "1 changes-requested + 0 draft + 0 unraised claim(s) — plus 1 waiting on human (2 raw)" \
+  "$(sed -n '1p' <<<"$out_all")"
+assert_eq "…so the trip figure is 1" "1" "$(sed -n '2p' <<<"$out_all")"
+assert_eq "…and a landing-ineligible ready PR is still narrowed into the human queue at this level too" \
+  "count|Poetic-Poems/poetic-fiddle|990" "$(sed -n '1p' "$calls_file_all")"
+
 # --- Issue #502 (PR #499 review follow-up): fleet_flag_fetch_status
 #     memoises a live/clear answer per (flag, state_dir) for the life of this
 #     process, so the block's own per-repo loop — which reads the kill switch
