@@ -86,8 +86,8 @@
 # (scripts/gather-review-feedback.sh — the events-not-timestamps fix), so a
 # blind re-request would drop the pull request out of the Implementer's own
 # review-feedback selection while the human's `CHANGES_REQUESTED` sat
-# unanswered — PR #205's silent-starvation failure, reintroduced hourly and
-# fleet-wide.
+# unanswered — PR #205's silent-starvation failure, reintroduced cycle
+# after cycle and fleet-wide.
 #
 # The discriminating judgement is `lib/handoff.sh`'s `handoff_round_answered`
 # (requirement 34a, tech-debt/TD-PPagop-26080804.md): the same predicate
