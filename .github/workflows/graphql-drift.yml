@@ -1,0 +1,61 @@
+name: GraphQL schema drift check
+
+# Asks GitHub whether the GraphQL documents this repository sends still mean
+# anything to its schema (TD-PPagop-26082930, requirement 1g-ii). The check
+# itself is scripts/check-graphql-drift.sh; the reasoning about how a document
+# is validated without being executed lives in its header, and the file set is
+# discovered there rather than listed here, for the same reason
+# scripts/lint-shell.sh owns its own file set: CI and a developer must be
+# checking the same thing.
+#
+# SCHEDULED, NOT PER-PULL-REQUEST, and deliberately so. The failure this
+# catches does not arrive with a commit — nothing in this repository changed
+# on 2026-08-23; GitHub did — so the pull request is the wrong place to look
+# for it, and putting the check there would make every merge depend on
+# GitHub's GraphQL endpoint being up and this runner having credentials for
+# it. The cost of the trade is that a document added with a typo in it is
+# caught by the following night's run rather than by its own pull request;
+# what the pull request does check is that the document's *shape* is one the
+# checker can read at all (test/graphql-drift.test.sh), which is the half that
+# can be answered without asking GitHub anything.
+#
+# WHO SEES A RED RUN, precisely. `failed-runs` is a configured work source for
+# this repository, ranked above `issues:high`, so a failure here can become
+# the pipeline's own work item `failed-run-graphql-drift` (requirement 19) —
+# but only while this workflow's failing run is still among the most recent
+# 100 runs on `main`, which is the single unpaginated page both the
+# Co-Ordinator's own live query (prompts/coordinator.md) and
+# scripts/gather-source-state.sh read. Measured on 2026-08-29, one such page
+# spanned 11h18m, so a daily run is visible to roughly the next seven hourly
+# cycles and invisible after that, until the following night's run restarts
+# the window. It is therefore materially better than a mark on a page nobody
+# opens, and materially less than a durable work item; TD-PPagop-26082936
+# records the gap and what would close it. Do not restate this as "a red run
+# becomes the next work item" without fixing that read first.
+#
+# Daily rather than weekly, unlike td-tooling-drift.yml beside it: that check
+# watches a repository whose changes land in pull requests someone reviews,
+# while this one watches an API that moves without notice. Six days was the
+# cost last time.
+
+on:
+  schedule:
+    - cron: "23 4 * * *" # daily, 04:23 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate every GraphQL document against GitHub's live schema
+        env:
+          # Nothing this check sends executes — every operation's selection
+          # set is skipped — so the workflow's own token needs no reach beyond
+          # authenticating the request.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/check-graphql-drift.sh

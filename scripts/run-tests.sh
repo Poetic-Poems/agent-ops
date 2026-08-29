@@ -48,8 +48,13 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE="${AGENT_OPS_TEST_IMAGE:-ghcr.io/poetic-poems/agent-ops:latest}"
 
+# Prints the header block whole. The `sed -n '3,/^# Exit status/p'` this
+# replaced stopped *on* the line it matched, so the rest of that paragraph —
+# what --list's exit status actually means — never reached anyone who ran
+# --help (noticed in review of scripts/check-graphql-drift.sh, which had
+# copied the idiom and truncated its own exit-code contract the same way).
 usage() {
-  sed -n '3,/^# Exit status/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  awk 'NR >= 3 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"
   exit "${1:-0}"
 }
 
