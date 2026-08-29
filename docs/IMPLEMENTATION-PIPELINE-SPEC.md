@@ -2007,11 +2007,21 @@ implements.
       to be parked in — the Approver App, not a human, is next in line — so
       the exclusion's own premise ("its next action belongs to a human") no
       longer holds for that pull request. The qualifier is load-bearing, not
-      incidental: a ready pull request the pipeline is barred from landing —
-      by `complexity:*` grade or by originating source, `landing_eligible`'s
-      (lib/landing.sh) own two deterministic gates — has no other actor to
-      move it regardless of level, so it stays in the human queue exactly as
-      it would below `agent-merges-routine` (issue #946). This is read
+      incidental: a ready, non-`CHANGES_REQUESTED` pull request the pipeline
+      is barred from landing — by `complexity:*` grade or by originating
+      source, `landing_eligible`'s (lib/landing.sh) own two deterministic
+      gates — has no other actor to move it regardless of level, so it stays
+      in the human queue exactly as it would below `agent-merges-routine`
+      (issue #946). The narrowing reaches a non-`CHANGES_REQUESTED` pull
+      request only, and that restriction is itself load-bearing: a
+      `CHANGES_REQUESTED` pull request is owed a change by the pipeline at
+      every level whatever its grade or source — the `review-feedback` source
+      (requirement 17) re-engages it, and that path consults neither list —
+      so it counts here as it does below `agent-merges-routine`. The
+      narrowing can therefore only ever hold *more* pull requests out of the
+      human queue than the un-narrowed rule does, never fewer against the
+      cap: of the two ways to be wrong, opening work past a full cap is the
+      one that is not recoverable next cycle. This is read
       through `landing_routine_eligible` (lib/landing.sh) rather than
       `landing_eligible` itself: the complexity-and-source subset of that
       function's gates, deliberately never its protected-path gate, which is

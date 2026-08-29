@@ -729,9 +729,15 @@ while IFS= read -r slug; do
   # agent-merges-routine there is no human queue for a ready pull request the
   # pipeline could actually land — but one it is barred from landing, by
   # complexity or by source, still has no other actor to move it, so it
-  # stays in the human queue exactly as it would below this level, whatever
-  # its review decision (D18 WI-6's "every ready pull request counts,
-  # CHANGES_REQUESTED or not" already covers that half). `landing_eligible`
+  # stays in the human queue exactly as it would below this level. Only a
+  # non-CHANGES_REQUESTED one is asked about: a CHANGES_REQUESTED pull
+  # request is pipeline-owed at every level whatever its grade or source
+  # (`gather-review-feedback.sh` re-engages it, and that path consults
+  # neither), so narrowing it into the human queue would make this level
+  # hold *fewer* pull requests against the cap than the same repository does
+  # at `human` — the one direction requirement 2.2 rules out. Restricting
+  # the candidates keeps `n_human` a subset of the un-narrowed rule's own
+  # answer rather than a different set. `landing_eligible`
   # itself is not called here: its protected-path gate is a live changed-file
   # read this decision has no need of (a protected path does not stop a
   # human from landing it, only the pipeline from doing so automatically),
@@ -767,7 +773,8 @@ while IFS= read -r slug; do
         appended="$(jq -c --argjson n "$cand_number" '. + [$n]' <<<"$ineligible_prs_json" 2>/dev/null)"
         [[ -n "$appended" ]] && ineligible_prs_json="$appended"
       fi
-    done < <(jq -c '.[] | select(.isDraft | not)' <<<"$prs_json" 2>/dev/null)
+    done < <(jq -c '.[] | select(.isDraft | not)
+      | select(.reviewDecision != "CHANGES_REQUESTED")' <<<"$prs_json" 2>/dev/null)
     [[ -n "$ineligible_prs_json" ]] || ineligible_prs_json='[]'
     n_human="$(jq 'length' <<<"$ineligible_prs_json" 2>/dev/null)" || n_human=0
     [[ "$n_human" =~ ^[0-9]+$ ]] || n_human=0
@@ -785,7 +792,10 @@ while IFS= read -r slug; do
   # its ready ones the pipeline still owes a change — at agent-merges-routine
   # or above, every ready one `ineligible_prs_json` above did not just carve
   # out into the human queue (the same predicate `n_human` was built from,
-  # so the two can never disagree about the same pull request). Bounded by
+  # so the two can never disagree about the same pull request), which leaves
+  # its CHANGES_REQUESTED ones in the set here exactly as the branch below
+  # keeps them, since the loop above never offers them as candidates.
+  # Bounded by
   # GITHUB_PR_LIST_LIMIT, so it may ride argv (requirement 4g). An unreadable
   # listing leaves it empty, which counts every claim — the fail-closed
   # reading, matching the zeroed counts above.

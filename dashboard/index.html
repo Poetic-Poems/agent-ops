@@ -3047,8 +3047,16 @@
     }
     function prCountsTowardCap(p) {
       if (p.isDraft) return true;
+      // A CHANGES_REQUESTED pull request is pipeline-owed at every level,
+      // whatever its complexity: the review-feedback source re-engages it and
+      // never consults the routine lists. Answered before the elevated branch
+      // below, so the narrowing can only ever move a pull request *out* of the
+      // human queue relative to the plain rule, never into it —
+      // lib/standdown.sh's own candidate loop excludes them for the same
+      // reason.
+      if (p.review_decision === "CHANGES_REQUESTED") return true;
       if (repoBackpressureElevated(p.repo)) return prOtherwiseEligible(p);
-      return p.review_decision === "CHANGES_REQUESTED";
+      return false;
     }
     var humanQueueN = openPrs.filter(function (p) { return !p.isDraft && !prCountsTowardCap(p); }).length;
     var pipelineReadyN = readyN - humanQueueN;

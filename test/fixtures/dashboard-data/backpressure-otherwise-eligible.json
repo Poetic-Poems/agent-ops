@@ -36,7 +36,12 @@
         "title": "approved and complexity:low — otherwise-eligible, so still pipeline-owed", "isDraft": false,
         "review_decision": "APPROVED", "labels": ["autonomous-agent", "complexity:low"],
         "checks": {"total": 3, "failed": 0, "pending": 0},
-        "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "createdAt": "@ago:25m"}
+        "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "createdAt": "@ago:25m"},
+      {"repo": "Poetic-Poems/poetic-fiddle", "number": 931, "url": "https://github.com/Poetic-Poems/poetic-fiddle/pull/931",
+        "title": "changes-requested and complexity:high — still pipeline-owed at every level", "isDraft": false,
+        "review_decision": "CHANGES_REQUESTED", "labels": ["autonomous-agent", "complexity:high"],
+        "checks": {"total": 3, "failed": 0, "pending": 0},
+        "mergeable": "MERGEABLE", "mergeStateStatus": "BLOCKED", "createdAt": "@ago:20m"}
     ],
     "pr_index": {},
     "inputs": {}

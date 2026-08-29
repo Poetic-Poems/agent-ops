@@ -940,7 +940,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   composition string it logs (`… plus N waiting on human`) reported `N` as
   lower than the true figure. The exclusion now asks `landing_routine_eligible`
   (lib/landing.sh, the complexity-and-source subset of `landing_eligible`'s
-  own gates, factored out so the two can never drift) per ready pull request —
+  own gates, factored out so the two can never drift) per ready,
+  non-`CHANGES_REQUESTED` pull request — a `CHANGES_REQUESTED` one is owed a
+  change by the pipeline at every level whatever its grade or source, so the
+  narrowing never reaches it and can never hold fewer pull requests against
+  the cap than the un-narrowed rule did —
   complexity from the same listing already fetched, source read back from the
   fleet's union log via `landing_retry_source`, the same primitive the 2.1e
   landing-retry sweep already uses. A pull request whose source cannot be

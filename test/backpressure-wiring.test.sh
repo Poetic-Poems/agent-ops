@@ -375,6 +375,57 @@ assert_eq "…naming the repository and the pull request" "yes" \
   "$(if cut -f2- "$log_calls_unknown" | jq -e '.repo == "Poetic-Poems/poetic-fiddle" and .pr_number == 955' \
       >/dev/null 2>&1; then echo yes; else echo no; fi)"
 
+# --- Issue #946 (AC1's own "non-CHANGES_REQUESTED" scope): the narrowing
+#     above never reaches a CHANGES_REQUESTED pull request. The pipeline owes
+#     that one a change at every level, whatever its grade or source — the
+#     review-feedback source re-engages it and consults neither list — so it
+#     counts toward the cap here exactly as it does at `human` below. Were it
+#     narrowed, an elevated repository would hold *fewer* pull requests
+#     against the cap than the same repository does at `human`: the one
+#     direction requirement 2.2 rules out, and the reason this case is
+#     asserted at both levels rather than one. ---
+
+cat > "$listings/Poetic-Poems__poetic-fiddle.json" <<'JSON'
+[{"number":971,"isDraft":false,"reviewDecision":"CHANGES_REQUESTED","headRefName":"agent/71",
+  "labels":[{"name":"complexity:high"},{"name":"autonomous-agent"}]}]
+JSON
+printf '0' > "$counts_dir/Poetic-Poems__poetic-fiddle"
+union_log_cr="$tmp_dir/union-cr.jsonl"
+cat > "$union_log_cr" <<'JSONL'
+{"event":"selection","repo":"Poetic-Poems/poetic-fiddle","branch":"agent/71","source":"tech-debt","ts":"2026-08-01T00:00:00Z"}
+JSONL
+
+calls_file_cr="$tmp_dir/claim-calls-cr"
+: > "$calls_file_cr"
+log_calls_cr="$tmp_dir/log-calls-cr"
+: > "$log_calls_cr"
+out_cr="$(PATH="$stub_bin:$PATH" \
+        GH_STUB_LISTINGS="$listings" CLAIM_CALLS="$calls_file_cr" CLAIM_COUNTS="$counts_dir" \
+        UNION_LOG="$union_log_cr" LOG_EVENT_CALLS="$log_calls_cr" \
+        REPOS_JSON='[{"slug":"Poetic-Poems/poetic-fiddle"}]' \
+        CFG_JSON='{"repos":[{"slug":"Poetic-Poems/poetic-fiddle","merge_autonomy":"agent-merges-routine"}]}' \
+        run_block 2>/dev/null)"
+
+assert_eq "a CHANGES_REQUESTED complexity:high PR at agent-merges-routine is still pipeline-owed, not human-waiting" \
+  "1 changes-requested + 0 draft + 0 unraised claim(s) — plus 0 waiting on human (1 raw)" \
+  "$(sed -n '1p' <<<"$out_cr")"
+assert_eq "…so the trip figure counts it" "1" "$(sed -n '2p' <<<"$out_cr")"
+assert_eq "…and counted_prs holds it, so its own claim does not double-count on top of it" \
+  "count|Poetic-Poems/poetic-fiddle|971" "$(sed -n '1p' "$calls_file_cr")"
+assert_eq "…and it is never offered to the eligibility predicate, so no source lookup warns about it" \
+  "0" "$(wc -l < "$log_calls_cr" | tr -d ' ')"
+
+calls_file_cr_h="$tmp_dir/claim-calls-cr-human"
+: > "$calls_file_cr_h"
+out_cr_h="$(PATH="$stub_bin:$PATH" \
+        GH_STUB_LISTINGS="$listings" CLAIM_CALLS="$calls_file_cr_h" CLAIM_COUNTS="$counts_dir" \
+        UNION_LOG="$union_log_cr" \
+        REPOS_JSON='[{"slug":"Poetic-Poems/poetic-fiddle"}]' \
+        CFG_JSON='{}' \
+        run_block 2>/dev/null)"
+assert_eq "…and the identical pull request at human reads exactly the same — the narrowing never costs the cap a PR" \
+  "$(sed -n '1p' <<<"$out_cr")" "$(sed -n '1p' <<<"$out_cr_h")"
+
 # --- Issue #502 (PR #499 review follow-up): fleet_flag_fetch_status
 #     memoises a live/clear answer per (flag, state_dir) for the life of this
 #     process, so the block's own per-repo loop — which reads the kill switch
