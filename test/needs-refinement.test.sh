@@ -853,6 +853,67 @@ assert_eq "a refinement written after an older block is not shadowed by it" \
   "$(refinements_map "$stale_log" | jq -r '."o/r"."77".spec')"
 rm -f "$stale_log"
 
+# --- Requirement 36d: decisions_map, refinements_map's sibling carrier -----------
+# A `decide-tactical` pass answers a policy question rather than writing a
+# specification, so an item can carry a decision with no refinement at all —
+# and the Refiner is what turns one into the other. Every drop below fails
+# silently into "this item has no decision", which downstream reads as the
+# decision never having been taken, so each is asserted rather than assumed.
+dec_log="$(mktemp)"
+cat > "$dec_log" <<'EOF'
+{"ts":"2026-08-10T10:00:00Z","cycle":"c1","event":"decision-taken","repo":"o/r","item":"TD26081001","decision":"first answer","rationale":"because"}
+{"ts":"2026-08-10T11:00:00Z","cycle":"c2","event":"decision-taken","repo":"o/r","item":"TD26081001","decision":"the current answer","rationale":"a better reason","options_considered":"A, B","reason_key":"abc123"}
+{"ts":"2026-08-10T11:30:00Z","cycle":"c2","event":"decision-taken","repo":"o/other","item":"TD26081001","decision":"the other repo's","rationale":"…"}
+EOF
+dmap="$(decisions_map "$dec_log")"
+assert_eq "the latest decision for an item wins" "the current answer" \
+  "$(jq -r '."o/r".TD26081001.decision' <<<"$dmap")"
+assert_eq "...carrying its own rationale" "a better reason" \
+  "$(jq -r '."o/r".TD26081001.rationale' <<<"$dmap")"
+assert_eq "...and options_considered where the pass gave any" "A, B" \
+  "$(jq -r '."o/r".TD26081001.options_considered' <<<"$dmap")"
+assert_eq "an absent options_considered is omitted rather than recorded empty" "null" \
+  "$(jq -r '."o/other".TD26081001.options_considered // "null"' <<<"$dmap")"
+assert_eq "the map is keyed by repo as well as item, like refinements_map's" "the other repo's" \
+  "$(jq -r '."o/other".TD26081001.decision' <<<"$dmap")"
+
+printf '%s\n' '{"ts":"2026-08-10T12:00:00Z","cycle":"c3","event":"decision-taken","repo":"o/r","item":"310","decision":"an issue item'"'"'s decision","rationale":"…","comment_url":"https://github.com/o/r/issues/310#issuecomment-9"}' >> "$dec_log"
+assert_eq "an issue item's decision carries the thread comment it was posted on" \
+  "https://github.com/o/r/issues/310#issuecomment-9" \
+  "$(decisions_map "$dec_log" | jq -r '."o/r"."310".comment_url')"
+
+# A decision about work that does not exist is worse than none — the same
+# reasoning REFINEMENTS_MAP_JQ's own void drop rests on.
+printf '%s\n' '{"ts":"2026-08-11T09:00:00Z","cycle":"c4","event":"item-void","stage":"enabler","repo":"o/r","item":"TD26081001","detail":"already done","evidence":"main@aad1405"}' >> "$dec_log"
+assert_eq "a void item's decision is withheld" "null" \
+  "$(decisions_map "$dec_log" | jq -r '."o/r".TD26081001 // "null"')"
+assert_eq "and the others are untouched" "an issue item's decision" \
+  "$(decisions_map "$dec_log" | jq -r '."o/r"."310".decision')"
+printf '%s\n' '{"ts":"2026-08-12T09:00:00Z","cycle":"manual","event":"unvoided","item":"TD26081001"}' >> "$dec_log"
+assert_eq "a human unvoiding it hands the decision back" "the current answer" \
+  "$(decisions_map "$dec_log" | jq -r '."o/r".TD26081001.decision')"
+
+# Once a refinement postdates the decision, the specification it produced is
+# what the next reader should get — the decision has already done its job.
+printf '%s\n' '{"ts":"2026-08-13T09:00:00Z","cycle":"c5","event":"item-refined","repo":"o/r","item":"310","comment_url":"https://github.com/o/r/issues/310#issuecomment-10"}' >> "$dec_log"
+assert_eq "a refinement written after the decision supersedes it" "null" \
+  "$(decisions_map "$dec_log" | jq -r '."o/r"."310" // "null"')"
+printf '%s\n' '{"ts":"2026-08-14T09:00:00Z","cycle":"c6","event":"decision-taken","repo":"o/r","item":"310","decision":"a later decision still","rationale":"…"}' >> "$dec_log"
+assert_eq "...but a decision taken after that refinement stands again" "a later decision still" \
+  "$(decisions_map "$dec_log" | jq -r '."o/r"."310".decision')"
+
+# An older refinement never suppresses a decision taken since — the drop is
+# ordered on `ts`, not merely on both events existing.
+printf '%s\n' '{"ts":"2026-08-09T09:00:00Z","cycle":"c0","event":"item-refined","repo":"o/r","item":"TD26081001","spec":"written before the decision"}' >> "$dec_log"
+assert_eq "a refinement older than the decision does not suppress it" "the current answer" \
+  "$(decisions_map "$dec_log" | jq -r '."o/r".TD26081001.decision')"
+
+assert_eq "a missing log yields no decisions" "{}" "$(decisions_map "$tmp_dir/nonexistent.jsonl")"
+printf '%s' '{"ts":"2026-08-14T10:00:00Z","event":"decision-tak' >> "$dec_log"
+assert_eq "a malformed trailing line does not lose the map" "a later decision still" \
+  "$(decisions_map "$dec_log" | jq -r '."o/r"."310".decision')"
+rm -f "$dec_log"
+
 # --- Requirement 35d: the per-engagement cap -------------------------------------
 # The asymmetry is the point: the backlog of items silently skipped before this
 # existed is unbounded and none of it is urgent, while the ordinary blocked
