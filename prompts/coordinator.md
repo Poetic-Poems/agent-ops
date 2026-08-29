@@ -1343,10 +1343,11 @@ file it touched" both are — give `evidence` as `{"ref": "…", "path": "…",
 "expect": "present"|"absent", "pattern": "…"}` instead of prose, naming exactly
 the `gh api repos/<slug>/contents/<path>?ref=<ref>` fetch you already made (see
 "Read-only" above). The Script re-runs that same fetch and tests it — a
-citation shaped this way is *checked*, not just read. `pattern` is optional
-and, when given, is matched against the fetched content (e.g. a pattern
-confirming the workaround a tech-debt issue described no longer appears in the
-fixed file's content on `main`, `expect: "absent"`). Evidence that fits
+citation shaped this way is *checked*, not just read. `pattern` is checked
+only against a `"present"` claim — `"absent"` is satisfied by the fetch itself
+404ing, with no further check against `pattern` — so give it alongside
+`expect: "present"` (e.g. a pattern confirming a tech-debt issue's fix
+actually landed in the file it touched, on `main`). Evidence that fits
 neither this shape nor a PR/commit citation (below) is refused outright,
 whatever it says — non-empty prose alone is no longer enough (issue #413,
 WI-10): name a fetch that shape above, or a PR/commit that names this item, or
