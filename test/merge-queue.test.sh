@@ -52,12 +52,20 @@ cat > "$tmp_dir/gh" <<'STUB'
 d="$(dirname "$0")"
 if [[ "$1 $2" == "api graphql" ]]; then
   [[ -f "$d/fail" ]] && exit 1
-  jqfilter="" prev=""
+  jqfilter="." have_jq=0 prev=""
   for a in "$@"; do
-    [[ "$prev" == "--jq" ]] && jqfilter="$a"
+    [[ "$prev" == "--jq" ]] && { jqfilter="$a"; have_jq=1; }
     prev="$a"
   done
-  jq -c "$jqfilter" "$d/response.json" 2>/dev/null || exit 1
+  out="$(jq -c "$jqfilter" "$d/response.json" 2>/dev/null)" || exit 1
+  # `gh --jq` *raw*-prints its result, so a filter yielding a JSON `null`
+  # emits an empty line, not the four characters `null`. Plain `jq` prints
+  # `null`, and a stub that did the same is what let merge_queue_for_branch
+  # assert a no-queue answer for months against a shape `gh` never
+  # produced. Only the `--jq` path raw-prints; without it `gh` hands back
+  # the response body whole, which is what this stub's `.` default serves.
+  (( have_jq )) && [[ "$out" == "null" ]] && out=""
+  printf '%s\n' "$out"
   exit 0
 fi
 exit 1
@@ -164,10 +172,10 @@ out="$(for_branch o/r main)"; rc=$?
 assert_eq "no queue on this branch: prints the literal null, exit 0" "null" "$out"
 assert_eq "  ... exit 0" "0" "$rc"
 
-mq_response '{"id":"MQ_kwDOTWpCsc4AA8Qo","mergeMethod":"SQUASH","mergingStrategy":"ALLGREEN"}'
+mq_response '{"id":"MQ_kwDOTWpCsc4AA8Qo"}'
 out="$(for_branch o/r main)"; rc=$?
 assert_eq "an active queue: the object comes back verbatim" \
-  '{"id":"MQ_kwDOTWpCsc4AA8Qo","mergeMethod":"SQUASH","mergingStrategy":"ALLGREEN"}' "$out"
+  '{"id":"MQ_kwDOTWpCsc4AA8Qo"}' "$out"
 assert_eq "  ... exit 0" "0" "$rc"
 
 mq_response 'null'
@@ -181,9 +189,26 @@ mq_response '"neither null nor an object"'
 out="$(for_branch o/r main)"; rc=$?
 assert_eq "a mergeQueue value that is neither null nor an object is rejected" "1" "$rc"
 
-mq_response '{"mergeMethod":"SQUASH"}'
+mq_response '{"nextEntryEstimatedTimeToMerge":42}'
 out="$(for_branch o/r main)"; rc=$?
 assert_eq "a queue object missing its own id is rejected, never handed to a caller" "1" "$rc"
+
+# The selection set itself, pinned. GitHub moved `mergeMethod` and
+# `mergingStrategy` off `MergeQueue` onto `MergeQueue.configuration` between
+# 2026-08-16 and 2026-08-23, and because GraphQL rejects the whole document
+# for a single unknown field, those two — asked for by the query, read by no
+# caller — took `merge_queue_for_branch` down outright, and with it every
+# `landing_arm` attempt the fleet made. No stubbed response can catch that:
+# every fixture above answers in whatever shape this file says it does, and
+# they all went on answering in the pre-move shape for as long as the live
+# query was dead. So what is pinned here instead is the invariant whose
+# breach caused it — this query asks for nothing it does not hand back to a
+# caller — which is a property of the source, and the one part of this that
+# a test without network access can actually hold.
+# shellcheck disable=SC2016  # GraphQL's own $branch variable, matched literally.
+selection="$(sed -n 's/.*mergeQueue(branch:$branch){\(.*\)}.*/\1/p' \
+  "$SCRIPT_DIR/lib/merge-queue.sh" | tr -s ' ' | sed 's/^ *//; s/ *$//')"
+assert_eq "the mergeQueue selection set is 'id' alone" "id" "$selection"
 
 mq_response 'null'
 out="$(for_branch "" main)"; rc=$?

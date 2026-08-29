@@ -134,6 +134,20 @@ if [[ "${args[0]:-}" == "api" ]]; then
   fi
 fi
 
+# `gh --jq` *raw*-prints its result, so a filter yielding a JSON `null`
+# emits an empty line, not the four characters `null` that plain `jq`
+# prints. HAVE_JQ distinguishes a call that passed `--jq` at all from one
+# that did not: without it `gh` hands back the response body whole.
+# merge_queue_for_branch (lib/merge-queue.sh) reads the envelope itself for
+# exactly this reason — a stub that answered `null` where `gh` answers
+# nothing is what kept its no-queue path green while it was broken live.
+gh_jq() {  # gh_jq FILTER HAVE_JQ FILE
+  local _out
+  _out="$(jq -c "$1" "$3" 2>/dev/null)" || exit 1
+  [[ "$2" == "1" && "$_out" == "null" ]] && _out=""
+  printf '%s\n' "$_out"
+}
+
 # --- gh api --method GET repos/SLUG/pulls/NUMBER/files --paginate -F per_page=100 --jq ... ---
 if [[ "${args[0]:-}" == "api" && "$api_path" == repos/*/pulls/*/files ]]; then
   if [[ "$api_method" != "GET" ]]; then
@@ -170,11 +184,11 @@ fi
 #     enqueuePullRequest write) — distinguished by the query text, since
 #     both reach this same sub-command. ---
 if [[ "${args[0]:-}" == "api" && "$api_path" == "graphql" ]]; then
-  query="" jqfilter=""
+  query="" jqfilter="." have_jq=0
   i=2
   while (( i < ${#args[@]} )); do
     case "${args[$i]}" in
-      --jq) i=$((i+1)); jqfilter="${args[$i]}" ;;
+      --jq) i=$((i+1)); jqfilter="${args[$i]}"; have_jq=1 ;;
       -f)   i=$((i+1)); kv="${args[$i]}"; [[ "$kv" == query=* ]] && query="${kv#query=}" ;;
     esac
     i=$((i+1))
@@ -182,12 +196,12 @@ if [[ "${args[0]:-}" == "api" && "$api_path" == "graphql" ]]; then
   if [[ "$query" == *enqueuePullRequest* ]]; then
     [[ -f "$f/enqueue-fail" ]] && exit 1
     printf '%s\n' "${GH_TOKEN:-<none>}" >> "$ENQUEUE_CALLS"
-    jq -c "$jqfilter" "$f/enqueue-response.json" 2>/dev/null
+    gh_jq "$jqfilter" "$have_jq" "$f/enqueue-response.json"
     exit 0
   fi
   if [[ "$query" == *mergeQueue* ]]; then
     [[ -f "$f/queue-fail" ]] && exit 1
-    jq -c "$jqfilter" "$f/queue-response.json" 2>/dev/null
+    gh_jq "$jqfilter" "$have_jq" "$f/queue-response.json"
     exit 0
   fi
   exit 1
@@ -708,7 +722,7 @@ assert_eq "stdin works the same as a named file (LOG_FILE omitted/-)" "critical"
 # --- landing_arm ---------------------------------------------------------------
 
 : > "$enqueue_calls"; : > "$merge_calls"
-queue '{"id":"MQ_fake","mergeMethod":"SQUASH","mergingStrategy":"ALLGREEN"}'
+queue '{"id":"MQ_fake"}'
 out="$(landing_arm acme/widgets 12 a-minted-token)"; rc=$?
 assert_eq "a base branch with a merge queue: enqueues" "enqueued" "$out"
 assert_eq "  ... exit 0" "0" "$rc"

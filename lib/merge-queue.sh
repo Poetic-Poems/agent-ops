@@ -98,8 +98,8 @@ merge_queue_probe() {
 # merge_queue_for_branch SLUG BRANCH
 # Print the `mergeQueue(branch:)` GraphQL object for BRANCH in SLUG — the
 # literal string `null` when that branch carries no active merge queue,
-# or a compact JSON object (`{id, mergeMethod, mergingStrategy}`) when it
-# does. Returns non-zero, printing nothing, when the read fails for any
+# or a compact JSON object carrying the queue's own `id` when it does.
+# Returns non-zero, printing nothing, when the read fails for any
 # reason (bad arguments, `gh` erroring, an unparsable response) — the same
 # "prints nothing on failure" contract `merge_queue_probe` follows, so a
 # caller can tell "definitely no queue" (the string `null`) apart from
@@ -111,14 +111,31 @@ merge_queue_probe() {
 # §5.1): whether to enqueue a pull request or fall back to
 # `gh pr merge --auto --squash` depends on the *base branch's* own queue,
 # not the pull request's queued state (`merge_queue_probe` answers that
-# different question). Verified live, 2026-08-16, against
+# different question). Verified live, 2026-08-29, against
 # `Poetic-Poems/agent-ops`'s own `main`: `mergeQueue(branch:"main")` →
-# `{id: "MQ_kwDOTWpCsc4AA8Qo", mergeMethod: "SQUASH", mergingStrategy:
-# "ALLGREEN"}`, confirming the field resolves for a real installation and
-# the shape below is what it actually returns. Kept in this file rather
-# than in `lib/landing.sh` — "one file owns every merge-queue GraphQL
-# read" is this file's own header, and a second query here would be the
-# same detector drift TD26071401 recorded for `lib/limit-detect.sh`.
+# `{id: "MQ_kwDOTWpCsc4AA8Qo"}`, confirming the field resolves for a real
+# installation and the shape below is what it actually returns. Kept in
+# this file rather than in `lib/landing.sh` — "one file owns every
+# merge-queue GraphQL read" is this file's own header, and a second query
+# here would be the same detector drift TD26071401 recorded for
+# `lib/limit-detect.sh`.
+#
+# The selection set is deliberately `id` alone, and stays that way unless a
+# caller actually consumes what is added to it. It once also asked for
+# `mergeMethod` and `mergingStrategy`, which GitHub moved off `MergeQueue`
+# onto `MergeQueue.configuration` (a `MergeQueueConfiguration`) between
+# 2026-08-16 and 2026-08-23. GraphQL rejects the *whole* document for one
+# unknown field, so those two — decoration, read by no caller here or in
+# `scripts/doctor.sh`, which take only this function's exit status and its
+# `null`-versus-object answer — took the entire query down with them, and
+# `landing_arm` refused every arming attempt from 2026-08-23 onwards with
+# its gate-4 wording ("could not read the base branch's merge-queue
+# state"): the fleet's first autonomous landing, and D18 Stage 1's own exit
+# evidence (agent-ops#677), waited on two fields nobody read. Every `gh`
+# mock under `test/` answered with the pre-move shape, so no test could
+# fail. If a caller ever does need the queue's configuration, ask for it
+# under `configuration { … }` and consume it; never re-add a field this
+# function does not hand back to somebody.
 merge_queue_for_branch() {
   local slug="$1" branch="${2:-}" gh_bin="${MERGE_QUEUE_GH:-gh}"
   local out
@@ -130,12 +147,37 @@ merge_queue_for_branch() {
   out="$("$gh_bin" api graphql \
     -f query='query($owner:String!,$repo:String!,$branch:String!){
       repository(owner:$owner,name:$repo){
-        mergeQueue(branch:$branch){ id mergeMethod mergingStrategy }
+        mergeQueue(branch:$branch){ id }
       }
     }' \
     -f owner="$owner" -f repo="$repo" -f branch="$branch" \
-    --jq '.data.repository.mergeQueue' \
     2>/dev/null)" || return 1
+  # `gh`'s own `--jq` is deliberately not used to reach the field, and must
+  # not be reintroduced. It *raw*-prints, so a filter yielding a JSON `null`
+  # emits an empty line rather than the four characters `null` — and a null
+  # is not an edge case here, it is the commonest answer this function
+  # exists to give ("that branch runs no merge queue"). Through `--jq` it
+  # arrived indistinguishable from "gh printed nothing at all", leaving the
+  # emptiness to be settled by a `jq -e` on empty input, which exits 0 on
+  # jq 1.6 and 4 on jq 1.7 — the same version split `landing_eligible`
+  # documents at each of its own membership tests. So on the image's jq 1.7
+  # a repository with no merge queue read as *unreadable*, and
+  # `landing_arm` refused it (exit 4) instead of taking the `gh pr merge
+  # --auto --squash` fallback that whole branch of the code exists for;
+  # on a jq 1.6 host it read as an active queue and would have tried to
+  # enqueue into a queue that is not there. Reading the envelope whole and
+  # extracting it here keeps a null the literal `null` the contract above
+  # promises, identically on either jq.
+  #
+  # `.data.repository` is checked rather than indexed straight through:
+  # jq yields `null` for a field of a null parent, so a repository the
+  # token cannot see would otherwise arrive as the same confident "no
+  # queue" as a repository that genuinely has none. GitHub answers that
+  # case with an `errors` array `gh` already exits non-zero on; this is the
+  # belt to that braces, not a substitute for it.
+  out="$(jq -c 'if .data.repository == null then error("no repository")
+                else .data.repository.mergeQueue end' <<<"$out" 2>/dev/null)" || return 1
+  [[ -n "$out" ]] || return 1
   # Belt and braces, matching `merge_queue_probe`'s own type check: only
   # ever hand a caller a document that actually parses as the shape this
   # promises — `null` (no queue) or an object carrying `id`.
