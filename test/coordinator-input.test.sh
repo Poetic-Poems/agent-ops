@@ -176,22 +176,28 @@ out="$(fit 100000 <<<"$past_cap" 2>/dev/null)"
 assert_true "…and the trimmed result is inside its allowance" \
   "$(jq '.fit.bytes_after <= .fit.budget' <<<"$out")"
 
-# --- The tech-debt band is trimmed on the same terms as issues: it is the
-#     other array carrying a whole document per entry. ---
+# --- The tech-debt band is trimmed on the same terms as issues: since
+#     agent-ops#875 it is the other array carrying a whole *issue thread* per
+#     entry — body and comments both — so the comment rungs must reach it too,
+#     not only the body ones. ---
 td="$(python3 -c '
 import json
 print(json.dumps([{"slug": "o/r", "sources": ["tech-debt"], "issues": [], "tech_debt": [
-  {"source": "tech-debt", "ref": "TD-PPagop-26080801", "id": "TD-PPagop-26080801",
-   "title": "t", "filed": "2026-08-08",
-   "url": "https://github.com/o/r/blob/main/tech-debt/TD-PPagop-26080801.md",
-   "body": "F" * 40000}]}]))')"
+  {"source": "tech-debt", "ref": "42", "number": 42,
+   "title": "t", "url": "https://github.com/o/r/issues/42",
+   "body": "F" * 40000,
+   "comments": [{"author": "a", "created_at": "2026-08-08T00:00:00Z", "body": "C" * 20000}
+                for _ in range(8)]}]}]))')"
 out="$(fit 9000 <<<"$td")"
 assert_true "an oversized tech-debt body is trimmed" \
   "$(jq '.fit.bytes_after <= .fit.budget' <<<"$out")"
-assert_true "a trimmed tech-debt body names its own file url" \
-  "$(jq -r '.repos[0].tech_debt[0].body | test("read it whole at https://github.com/o/r/blob/main/tech-debt/TD-PPagop-26080801.md\\]")' <<<"$out")"
-assert_eq "a trimmed tech-debt entry keeps its id" \
-  "TD-PPagop-26080801" "$(jq -r '.repos[0].tech_debt[0].id' <<<"$out")"
+assert_true "a trimmed tech-debt body names its own issue url" \
+  "$(jq -r '.repos[0].tech_debt[0].body | test("read it whole at https://github.com/o/r/issues/42\\]")' <<<"$out")"
+assert_eq "a trimmed tech-debt entry keeps its ref" \
+  "42" "$(jq -r '.repos[0].tech_debt[0].ref' <<<"$out")"
+assert_true "a tech-debt entry's comment thread is trimmed too, like an issue's" \
+  "$(jq '(.repos[0].tech_debt[0].comments | length) < 8
+         or ((.repos[0].tech_debt[0].comments[0].body | length) < 20000)' <<<"$out")"
 
 # --- The other bands are left alone. Their bodies are what the prompt
 #     requires pasted verbatim into a work order, they are bounded by the
