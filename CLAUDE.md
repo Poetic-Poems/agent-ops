@@ -67,7 +67,7 @@ working copy (which may be edited at any moment) or a clone another agent is
 already using:
 
 ```bash
-git clone https://github.com/Poetic-Poems/agent-ops.git <scratch-dir>/agent-ops
+git clone https://github.com/Pullwright/agent-ops.git <scratch-dir>/agent-ops
 ```
 
 A full clone is the default: at this repo's size it costs nothing, and

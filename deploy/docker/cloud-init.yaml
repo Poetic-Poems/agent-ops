@@ -69,10 +69,10 @@ runcmd:
 
   # The stack itself. Pinned to `main`, which is the same branch CI builds the
   # image from, so the compose file and the image it runs stay in step.
-  - [sh, -c, "curl -fsSL -o /opt/poetic-node/compose.yaml https://raw.githubusercontent.com/Poetic-Poems/agent-ops/main/deploy/docker/compose.yaml"]
-  - [sh, -c, "curl -fsSL -o /opt/poetic-node/ts-serve.json https://raw.githubusercontent.com/Poetic-Poems/agent-ops/main/deploy/docker/ts-serve.json"]
-  - [sh, -c, "curl -fsSL -o /opt/poetic-node/watch-node.sh https://raw.githubusercontent.com/Poetic-Poems/agent-ops/main/scripts/watch-node.sh && chmod +x /opt/poetic-node/watch-node.sh"]
-  - [sh, -c, "curl -fsSL -o /opt/poetic-node/check-node-compose.sh https://raw.githubusercontent.com/Poetic-Poems/agent-ops/main/scripts/check-node-compose.sh && chmod +x /opt/poetic-node/check-node-compose.sh"]
+  - [sh, -c, "curl -fsSL -o /opt/poetic-node/compose.yaml https://raw.githubusercontent.com/Pullwright/agent-ops/main/deploy/docker/compose.yaml"]
+  - [sh, -c, "curl -fsSL -o /opt/poetic-node/ts-serve.json https://raw.githubusercontent.com/Pullwright/agent-ops/main/deploy/docker/ts-serve.json"]
+  - [sh, -c, "curl -fsSL -o /opt/poetic-node/watch-node.sh https://raw.githubusercontent.com/Pullwright/agent-ops/main/scripts/watch-node.sh && chmod +x /opt/poetic-node/watch-node.sh"]
+  - [sh, -c, "curl -fsSL -o /opt/poetic-node/check-node-compose.sh https://raw.githubusercontent.com/Pullwright/agent-ops/main/scripts/check-node-compose.sh && chmod +x /opt/poetic-node/check-node-compose.sh"]
 
   - [sh, -c, "cd /opt/poetic-node && docker compose up -d"]
 

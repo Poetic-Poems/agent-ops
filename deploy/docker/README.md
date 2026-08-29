@@ -17,7 +17,7 @@ README](../../README.md) and `docs/*-SPEC.md`.
 - A machine with Docker (any Linux with a kernel from this decade; a 2-core VM
   with 20 GB of disk is comfortable — the workspaces volume holds full clones).
 - A **GitHub token** for this node: read and write on `Poetic-Poems/poetic`,
-  `Poetic-Poems/poetic-fiddle`, `Poetic-Poems/agent-ops` (a target repo of its
+  `Poetic-Poems/poetic-fiddle`, `Pullwright/agent-ops` (a target repo of its
   own pipeline since the roadmap's dogfood rule) and
   `Poetic-Poems/agent-ops-state` (contents, pull requests, issues, workflows,
   actions) plus read on security alerts. Workflows and actions are separate
@@ -27,7 +27,11 @@ README](../../README.md) and `docs/*-SPEC.md`.
   `HTTP 403: Resource not accessible by personal access token` names the
   permission it wanted in its `x-accepted-github-permissions` response header
   — read that rather than guessing. One token per node, so a single node can
-  be revoked without disturbing the others.
+  be revoked without disturbing the others. Those repositories now span two
+  owners, and a fine-grained token reaches exactly one, so until D25's Forge
+  App lands each node's token is a personal access token (classic) with
+  `repo` and `workflow`; the trade-off and the end state are recorded in
+  `docs/PULLWRIGHT-REHOMING.md`.
 - A **git identity** — a name and an email — for the commits this node's
   cycles make. There is no default; an active node's cycles refuse to run
   without both.
@@ -59,11 +63,11 @@ The node holds four files and no clone: the image is the deployment.
 
 ```bash
 mkdir -p ~/poetic-node && cd ~/poetic-node
-base=https://raw.githubusercontent.com/Poetic-Poems/agent-ops/main/deploy/docker
+base=https://raw.githubusercontent.com/Pullwright/agent-ops/main/deploy/docker
 curl -fsSLO "$base/compose.yaml"
 curl -fsSLO "$base/ts-serve.json"
 curl -fsSL  "$base/.env.example" -o .env
-scripts=https://raw.githubusercontent.com/Poetic-Poems/agent-ops/main/scripts
+scripts=https://raw.githubusercontent.com/Pullwright/agent-ops/main/scripts
 curl -fsSLO "$scripts/watch-node.sh"
 curl -fsSLO "$scripts/check-node-compose.sh"
 curl -fsSLO "$scripts/check-node-image.sh"
@@ -244,7 +248,7 @@ one node down for maintenance — no container recreate, no role flip.
 
 Nothing to do. CI builds an image from every merge to `main` that touches
 anything the container reads, and publishes it as
-`ghcr.io/poetic-poems/agent-ops:latest`; watchtower (profile `auto-update`)
+`ghcr.io/pullwright/agent-ops:latest`; watchtower (profile `auto-update`)
 notices and restarts the services into it. There is no `git pull` anywhere in
 this design. A merge that only changes documentation publishes nothing and
 rolls nothing — the running image is already the code that merge describes.
@@ -289,7 +293,7 @@ alone cannot deliver them. Once per node, at a moment of your choosing:
 
 ```bash
 docker compose exec scheduler /app/agent-cycle.sh --status   # wait for idle
-curl -fsSLO https://raw.githubusercontent.com/Poetic-Poems/agent-ops/main/deploy/docker/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/Pullwright/agent-ops/main/deploy/docker/compose.yaml
 docker compose up -d
 docker compose exec scheduler /app/deploy/docker/watchtower-pre-update.sh   # 0 idle, 75 busy
 ```
@@ -312,7 +316,7 @@ To pin a node to a known-good build, or to roll one back, set the image to a
 commit SHA tag in `.env` and re-run `up -d`:
 
 ```
-AGENT_OPS_IMAGE=ghcr.io/poetic-poems/agent-ops:<sha>
+AGENT_OPS_IMAGE=ghcr.io/pullwright/agent-ops:<sha>
 ```
 
 ### Keeping the compose file current
@@ -325,7 +329,7 @@ human performs, on each node, at a moment when it is idle:
 
 ```bash
 docker compose exec scheduler /app/agent-cycle.sh --status   # wait for idle
-curl -fsSLO https://raw.githubusercontent.com/Poetic-Poems/agent-ops/main/deploy/docker/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/Pullwright/agent-ops/main/deploy/docker/compose.yaml
 docker compose up -d
 ```
 
@@ -375,7 +379,7 @@ a wedged hook, a registry token that quietly expired — which looks
 identical to a healthy mid-roll for as long as nobody checks (issue #155).
 
 Every dashboard's fleet strip carries the answer, from each node's own
-comparison against `ghcr.io/poetic-poems/agent-ops:latest` (`lib/image-drift.sh`,
+comparison against `ghcr.io/pullwright/agent-ops:latest` (`lib/image-drift.sh`,
 via the heartbeat):
 
 - **image behind** (grey) — the registry's newest image is younger than

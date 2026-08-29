@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Poetic-Poems/agent-ops/config.schema.json",
+  "$id": "https://github.com/Pullwright/agent-ops/config.schema.json",
   "title": "agent-ops installation configuration",
   "description": "The shape of config.json: every key an installation may set, its type, its constraints, and — where the code has one — the value used when the key is absent. This file is the machine-readable half of the configuration tables in docs/IMPLEMENTATION-PIPELINE-SPEC.md, docs/REVIEW-PIPELINE-SPEC.md and README.md, which remain the prose authority on what each key means. `default` here records what the code actually falls back to; a key listed in `required` has no fallback anywhere and must be set. Values in this file are the product's, not this installation's: Poetic's own choices live in config.json. A leaf's `x-docs.value`, where present, carries the two documents' own value cell (scripts/render-config-table.sh) — and doubles as a claim about which installation it describes: equal to this key's own `default`, it documents the product's shipped behaviour, and no installation's config.json is checked against it; differing from the default, it documents Poetic's own choice for this key, and scripts/doctor.sh (lib/config-schema.sh's config_documented_value_mismatches) warns if a live config.json ever resolves that key to something else (issue #567).",
   "type": "object",
@@ -949,7 +949,7 @@
       "x-docs": {
         "readme": "Where the crash-loop escalation issues are filed — the pipeline's own repository. Deduplicated like an Enabler escalation and assigned to `enabler_assignee`, so the pipeline never selects its own SOS as work. Empty disables both checks.",
         "spec": "Where requirement 2.7's escalation issues are filed — the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks.",
-        "value": "`Poetic-Poems/agent-ops`"
+        "value": "`Pullwright/agent-ops`"
       }
     },
     "escalation_webhook_url": {
@@ -1689,7 +1689,7 @@
       "x-docs": {
         "readme": "The D18 Stage 0 merge-autonomy baseline, copied once from `docs/reviews/2026-08-15-merge-autonomy-baseline.md` rather than re-derived — `scripts/publish-revert-rate.sh` compares every window's rate against it. A fresh install ships no baseline until Stage 0 records one.",
         "spec": "The D18 Stage 0 merge-autonomy baseline (docs/reviews/2026-08-15-merge-autonomy-baseline.md §6), copied here once as a fixed reference rather than re-derived at runtime (issue #579): `scripts/publish-revert-rate.sh` compares every window's revert-or-follow-up rate against these figures. A repository absent from `repos` reports its baseline comparison `unavailable` rather than failing.",
-        "value": "`{\"source\": \"docs/reviews/2026-08-15-merge-autonomy-baseline.md\", \"generated\": \"2026-08-15\", \"repos\": [{\"slug\": \"Poetic-Poems/poetic\", \"count\": 84, \"reverts\": 0, \"follow_up_fixes\": 31}, {\"slug\": \"Poetic-Poems/poetic-fiddle\", \"count\": 119, \"reverts\": 0, \"follow_up_fixes\": 44}, {\"slug\": \"Poetic-Poems/agent-ops\", \"count\": 120, \"reverts\": 0, \"follow_up_fixes\": 106}]}`"
+        "value": "`{\"source\": \"docs/reviews/2026-08-15-merge-autonomy-baseline.md\", \"generated\": \"2026-08-15\", \"repos\": [{\"slug\": \"Poetic-Poems/poetic\", \"count\": 84, \"reverts\": 0, \"follow_up_fixes\": 31}, {\"slug\": \"Poetic-Poems/poetic-fiddle\", \"count\": 119, \"reverts\": 0, \"follow_up_fixes\": 44}, {\"slug\": \"Pullwright/agent-ops\", \"count\": 120, \"reverts\": 0, \"follow_up_fixes\": 106}]}`"
       }
     }
   },

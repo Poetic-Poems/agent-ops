@@ -437,7 +437,7 @@ Keys:
 | `landing_cool_off_hours` | `24` | D18 WI-12 (Stage 4): the wait, in hours, between the Approver's own approval of a protected-path pull request and the arming step landing it — only at `agent-merges-all`, and only alongside the critical-tier control. Measured from the standing review's own timestamp, re-read fresh every cycle; a fresh push restarts it, since the standing review's own commit no longer matches the pull request's current head. A `repos[]` entry may override this per repository — see...[continued below](#extended-notes-landing_cool_off_hours) |
 | `approver_app_id` | *(unset)* | The Pullwright Approver GitHub App's id. Every `merge_autonomy` level above `human` needs it set, and `scripts/doctor.sh` fails the config otherwise. `doctor.sh` also cross-checks it against the node's `PULLWRIGHT_APPROVER_APP_ID` environment, so the id the token wrapper mints against can never silently differ from the one recorded here. One id for the whole installation: the Approver is a single App identity, and its per-repository reach comes from where the App is...[continued below](#extended-notes-approver_app_id) |
 | `crash_loop_after` | `4` | Consecutive fleet-wide failures, with no intervening recovery, before the Script files a crash-loop escalation issue — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. Neither class blames a repo or an item, so without this nothing ever surfaces a deterministic fleet-wide failure — the dashboard shows a healthy idle fleet. `0` (or absent) disables both checks. |
-| `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where the crash-loop escalation issues are filed — the pipeline's own repository. Deduplicated like an Enabler escalation and assigned to `enabler_assignee`, so the pipeline never selects its own SOS as work. Empty disables both checks. |
+| `crash_loop_repo` | `Pullwright/agent-ops` | Where the crash-loop escalation issues are filed — the pipeline's own repository. Deduplicated like an Enabler escalation and assigned to `enabler_assignee`, so the pipeline never selects its own SOS as work. Empty disables both checks. |
 | `escalation_webhook_url` | *(unset)* | A webhook URL, POSTed to as a fallback whenever the pipeline cannot file an escalation issue on GitHub — most often a dead `GH_TOKEN`, which also blocks the filing call itself. Carries the same `reason`/`detail` the issue would have. Empty (the default) disables it: nothing is attempted, and a node with no webhook configured behaves exactly as before. Setting it takes a second edit each node: the webhook's host must also be named in that node's `EGRESS_EXTRA_ALLOW`, or the...[continued below](#extended-notes-escalation_webhook_url) |
 | `timeout_coordinator` | *(unset)* | Minutes, and an override. Leave it out — the backstop tunes itself, and a key set here outranks the derivation for as long as it is there. A repo entry's own `stage_timeouts` outranks this key in turn, for that repo alone — see [`repos`](#extended-notes-repos). |
 | `timeout_implementer` | *(unset)* | Minutes, and an override. As above. |
@@ -476,7 +476,7 @@ Keys:
 | `schedule.doctor_offset_minutes` | `44` | Minutes past `CYCLE_MINUTE` (mod 60) the hourly unattended `doctor.sh` pass's minute is set to (agent-ops#543), on the same per-node jitter `review_offset_minutes` uses. |
 | `schedule.revert_rate_hour` | `2` | The hour the containerised node's daily revert-rate publishing tick (`scripts/publish-revert-rate.sh`, agent-ops#579) fires. |
 | `schedule.revert_rate_offset_minutes` | `51` | Minutes past `CYCLE_MINUTE` (mod 60) the daily revert-rate publishing tick's minute is set to (agent-ops#579), on the same per-node jitter `doctor_offset_minutes` uses. |
-| `revert_rate_baseline` | `{"source": "docs/reviews/2026-08-15-merge-autonomy-baseline.md", "generated": "2026-08-15", "repos": [{"slug": "Poetic-Poems/poetic", "count": 84, "reverts": 0, "follow_up_fixes": 31}, {"slug": "Poetic-Poems/poetic-fiddle", "count": 119, "reverts": 0, "follow_up_fixes": 44}, {"slug": "Poetic-Poems/agent-ops", "count": 120, "reverts": 0, "follow_up_fixes": 106}]}` | The D18 Stage 0 merge-autonomy baseline, copied once from `docs/reviews/2026-08-15-merge-autonomy-baseline.md` rather than re-derived — `scripts/publish-revert-rate.sh` compares every window's rate against it. A fresh install ships no baseline until Stage 0 records one. |
+| `revert_rate_baseline` | `{"source": "docs/reviews/2026-08-15-merge-autonomy-baseline.md", "generated": "2026-08-15", "repos": [{"slug": "Poetic-Poems/poetic", "count": 84, "reverts": 0, "follow_up_fixes": 31}, {"slug": "Poetic-Poems/poetic-fiddle", "count": 119, "reverts": 0, "follow_up_fixes": 44}, {"slug": "Pullwright/agent-ops", "count": 120, "reverts": 0, "follow_up_fixes": 106}]}` | The D18 Stage 0 merge-autonomy baseline, copied once from `docs/reviews/2026-08-15-merge-autonomy-baseline.md` rather than re-derived — `scripts/publish-revert-rate.sh` compares every window's rate against it. A fresh install ships no baseline until Stage 0 records one. |
 <!-- config-table:end -->
 
 Every `*_model` key above, plus `project_review.defaults.model` (or a repo's
@@ -717,11 +717,11 @@ image; the only thing that differs between two nodes is its `.env`.
 
 ```bash
 mkdir -p ~/poetic-node && cd ~/poetic-node
-base=https://raw.githubusercontent.com/Poetic-Poems/agent-ops/main/deploy/docker
+base=https://raw.githubusercontent.com/Pullwright/agent-ops/main/deploy/docker
 curl -fsSLO "$base/compose.yaml"
 curl -fsSLO "$base/ts-serve.json"
 curl -fsSL  "$base/.env.example" -o .env
-curl -fsSLO "https://raw.githubusercontent.com/Poetic-Poems/agent-ops/main/scripts/watch-node.sh"
+curl -fsSLO "https://raw.githubusercontent.com/Pullwright/agent-ops/main/scripts/watch-node.sh"
 chmod +x watch-node.sh
 $EDITOR .env          # name the node, set its role, paste its tokens
 docker compose up -d
@@ -754,9 +754,9 @@ Five things are worth knowing:
   node updates by pulling a new image — never by pulling a branch inside a
   running container. Every merge to `main` that touches anything the container
   reads builds one and publishes it to
-  `ghcr.io/poetic-poems/agent-ops` as `latest` (what watchtower follows) and as
+  `ghcr.io/pullwright/agent-ops` as `latest` (what watchtower follows) and as
   the commit SHA. To pin a node to a known-good build, or to roll one back, set
-  `AGENT_OPS_IMAGE=ghcr.io/poetic-poems/agent-ops:<sha>` in its `.env` — a
+  `AGENT_OPS_IMAGE=ghcr.io/pullwright/agent-ops:<sha>` in its `.env` — a
   documentation-only merge publishes nothing, so pin to a commit that built an
   image (the package's tag list is the record).
 - **`~/.claude` and `state_dir` must be volumes.** Claude's OAuth credentials
@@ -820,7 +820,7 @@ until you act):
 
 ```sh
 cd ~/agent-ops   # wherever this node keeps compose.yaml and .env
-base=https://raw.githubusercontent.com/Poetic-Poems/agent-ops/main/deploy/docker
+base=https://raw.githubusercontent.com/Pullwright/agent-ops/main/deploy/docker
 curl -fsSLO "$base/compose.yaml"
 docker compose pull && docker compose up -d
 docker compose exec scheduler /app/scripts/doctor.sh --offline || true
@@ -2197,7 +2197,7 @@ So don't plan around it. Delete the node's images by name once no container
 wants them, and check the unique column first to know what you are getting:
 
 ```bash
-docker image rm ghcr.io/poetic-poems/agent-ops:latest \
+docker image rm ghcr.io/pullwright/agent-ops:latest \
                 containrrr/watchtower:latest \
                 tailscale/tailscale:latest
 ```
@@ -2455,7 +2455,7 @@ anything it doesn't:
   `docker compose down` (which keeps the volumes). The rest of the fleet
   carries on; per-item claims mean no other node was depending on this one.
 - **Hold it on a known image** while the rest follow `latest`: pin
-  `AGENT_OPS_IMAGE=ghcr.io/poetic-poems/agent-ops:<sha>` in its `.env`.
+  `AGENT_OPS_IMAGE=ghcr.io/pullwright/agent-ops:<sha>` in its `.env`.
 
 All three, and a `--this-node` disable once its expiry passes or
 `--enable --this-node` runs, leave the node able to come back, which is what

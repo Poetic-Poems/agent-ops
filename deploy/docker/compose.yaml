@@ -95,7 +95,7 @@ x-agent-ops: &agent-ops
   # build context would be a path that does not exist there. To run an image
   # built locally (docker build -f deploy/docker/Dockerfile -t agent-ops .),
   # set AGENT_OPS_IMAGE in .env.
-  image: ${AGENT_OPS_IMAGE:-ghcr.io/poetic-poems/agent-ops:latest}
+  image: ${AGENT_OPS_IMAGE:-ghcr.io/pullwright/agent-ops:latest}
   restart: unless-stopped
   # --- Resource ceilings (D14) --------------------------------------------
   # What is shared by all three agent-ops services; the per-service memory and
@@ -304,7 +304,7 @@ services:
   # state read-only, solely so watchtower's pre-update hook can honour a
   # running cycle's lock before a roll recreates this container mid-stage.
   egress-proxy:
-    image: ${AGENT_OPS_IMAGE:-ghcr.io/poetic-poems/agent-ops:latest}
+    image: ${AGENT_OPS_IMAGE:-ghcr.io/pullwright/agent-ops:latest}
     restart: unless-stopped
     entrypoint: ["/app/deploy/docker/egress-proxy-start.sh"]
     # ~30 MiB of squid moving bytes it may not cache; the ceiling is tight

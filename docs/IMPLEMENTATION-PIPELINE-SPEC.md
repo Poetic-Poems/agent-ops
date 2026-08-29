@@ -245,7 +245,7 @@ a node updates by pulling a new image rather than by pulling a branch.
   `.github/workflows/build-image.yml` builds it on every pull request and
   every merge that could change it, runs the acceptance checks below *inside*
   it, and — on `main` only — publishes it to
-  `ghcr.io/poetic-poems/agent-ops` tagged both `latest`
+  `ghcr.io/pullwright/agent-ops` tagged both `latest`
   (what a node's watchtower follows) and the commit SHA (how a node is pinned
   or rolled back, through `AGENT_OPS_IMAGE`), each tag a multi-platform manifest
   list covering `linux/amd64` and `linux/arm64`. A pull request builds and
@@ -486,7 +486,7 @@ file and carries placeholders only; `.env` itself is never committed.
   adopts one broken image at once agrees with itself perfectly and reads as
   healthy on that measure alone, which is exactly what happened across
   issues #149/#154. `lib/image-drift.sh` answers against a reference outside
-  the fleet instead — `ghcr.io/poetic-poems/agent-ops:latest`'s own
+  the fleet instead — `ghcr.io/pullwright/agent-ops:latest`'s own
   `org.opencontainers.image.revision` label, read anonymously over the OCI
   Distribution API (no GitHub `read:packages` scope needed) — never against
   `origin/main`, since a documentation-only merge publishes no image at all
@@ -795,7 +795,7 @@ and the schema must carry every one of them.
 | `landing_cool_off_hours` | 24 h | D18 WI-12 (Stage 4, §7 risk 1, `lib/landing.sh`'s `landing_protected_path_controls_ok`/`landing_cool_off_effective_hours`/`landing_cool_off_remaining_hours`): the wait between the Approver's own approval of a protected-path pull request and the arming step (requirement 8d) landing it, fleet-wide default; a `repos[]` entry's own `landing_cool_off_hours` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). Binds only at...[continued below](#extended-notes-landing_cool_off_hours) |
 | `approver_app_id` | *(unset)* | The Approver GitHub App's id for this installation (§5.3) — required for any `merge_autonomy` level above `human`, and reconciled by `scripts/doctor.sh` against the `PULLWRIGHT_APPROVER_APP_ID` environment the token wrapper (requirement 14b) mints from: a set pair that differs is a doctor `fail`. Deliberately one fleet-wide scalar string with no per-repo override — see the Design decisions entry on this key's shape. |
 | `crash_loop_after` | `4` | Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue (requirement 2.7) — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. At four nodes each hitting the same deterministic failure once per cycle, this crosses within about one `schedule.cycle_interval_minutes` interval. `0` (or absent) disables both checks. |
-| `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where requirement 2.7's escalation issues are filed — the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks. |
+| `crash_loop_repo` | `Pullwright/agent-ops` | Where requirement 2.7's escalation issues are filed — the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks. |
 | `escalation_webhook_url` | *(unset)* | A URL POSTed to as a best-effort, `GH_TOKEN`-independent fallback whenever `create_escalation_issue` cannot file (requirement 2m). Empty disables it: the call is skipped rather than attempted, so an installation with none configured is unaffected. Must be `https://` when set — a plain-text channel is not a fit substitute for the credential it stands in for. Fleet-wide like every key here, and inert on a node whose `EGRESS_EXTRA_ALLOW` does not name the webhook's host — see...[continued below](#extended-notes-escalation_webhook_url) |
 | `timeout_coordinator` | *(unset)* | An override for the wall-clock backstop of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case and the intended one: a configured value wins permanently, so setting it turns the self-tuning off for that actor. |
 | `timeout_implementer` | *(unset)* | As `timeout_coordinator`, for the Implementer. The interim raise to 120 this key carried (#203, #209) has gone with the fixed cap it belonged to: the shipped prior is 150 and the derivation moves from there. |
@@ -834,7 +834,7 @@ and the schema must carry every one of them.
 | `schedule.doctor_offset_minutes` | `44` | Minutes past `CYCLE_MINUTE` (mod 60) the hourly `doctor.sh --unattended` pass's minute is set to, jittering it across the fleet the same way `review_offset_minutes` jitters the review tick. |
 | `schedule.revert_rate_hour` | `2` | The hour the daily revert-rate publishing tick fires. |
 | `schedule.revert_rate_offset_minutes` | `51` | Minutes past `CYCLE_MINUTE` (mod 60) the daily revert-rate publishing tick's minute is set to, jittering it across the fleet the same way `doctor_offset_minutes` jitters the unattended doctor pass. |
-| `revert_rate_baseline` | `{"source": "docs/reviews/2026-08-15-merge-autonomy-baseline.md", "generated": "2026-08-15", "repos": [{"slug": "Poetic-Poems/poetic", "count": 84, "reverts": 0, "follow_up_fixes": 31}, {"slug": "Poetic-Poems/poetic-fiddle", "count": 119, "reverts": 0, "follow_up_fixes": 44}, {"slug": "Poetic-Poems/agent-ops", "count": 120, "reverts": 0, "follow_up_fixes": 106}]}` | The D18 Stage 0 merge-autonomy baseline (docs/reviews/2026-08-15-merge-autonomy-baseline.md §6), copied here once as a fixed reference rather than re-derived at runtime (issue #579): `scripts/publish-revert-rate.sh` compares every window's revert-or-follow-up rate against these figures. A repository absent from `repos` reports its baseline comparison `unavailable` rather than failing. |
+| `revert_rate_baseline` | `{"source": "docs/reviews/2026-08-15-merge-autonomy-baseline.md", "generated": "2026-08-15", "repos": [{"slug": "Poetic-Poems/poetic", "count": 84, "reverts": 0, "follow_up_fixes": 31}, {"slug": "Poetic-Poems/poetic-fiddle", "count": 119, "reverts": 0, "follow_up_fixes": 44}, {"slug": "Pullwright/agent-ops", "count": 120, "reverts": 0, "follow_up_fixes": 106}]}` | The D18 Stage 0 merge-autonomy baseline (docs/reviews/2026-08-15-merge-autonomy-baseline.md §6), copied here once as a fixed reference rather than re-derived at runtime (issue #579): `scripts/publish-revert-rate.sh` compares every window's revert-or-follow-up rate against these figures. A repository absent from `repos` reports its baseline comparison `unavailable` rather than failing. |
 <!-- config-table:end -->
 
 Model IDs are pinned in config (one place to update); do not use floating
@@ -2711,7 +2711,7 @@ implements.
    (see "The node stack"), a question only that node can ask because the
    file lives on its host and only its own containers mount it (#131).
    `image` is `lib/image-drift.sh`'s: whether the node's own commit is the
-   one `ghcr.io/poetic-poems/agent-ops:latest` currently names, read
+   one `ghcr.io/pullwright/agent-ops:latest` currently names, read
    anonymously over the registry's own API rather than GitHub's (which would
    need the `read:packages` scope this pipeline does not hold) — the gap
    `version` alone cannot close, since comparing nodes only with each other
