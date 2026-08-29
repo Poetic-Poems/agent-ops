@@ -2001,19 +2001,43 @@ implements.
 
       This exclusion is level-aware (D18 WI-6): for a repository whose
       `merge_autonomy_effective_level` (requirement 2.3b) ranks
-      `agent-merges-routine` or above, every ready pull request counts,
-      `CHANGES_REQUESTED` or not. Above that level there is no human queue
-      for an otherwise-eligible ready pull request to be parked in — the
-      Approver App, not a human, is next in line — so the exclusion's own
-      premise ("its next action belongs to a human") no longer holds for
-      that repository. Judged per repository, inside the same per-repository
-      loop the count is already taken in, against the effective level (not
-      the configured one), so a fleet-wide kill switch or a merge-budget
-      freeze (requirement 2.3c) affecting the effective level un-excludes
-      those pull requests again by the next cycle's process — this read is
+      `agent-merges-routine` or above, every **otherwise-eligible** ready
+      pull request counts, `CHANGES_REQUESTED` or not. Above that level
+      there is no human queue for an otherwise-eligible ready pull request
+      to be parked in — the Approver App, not a human, is next in line — so
+      the exclusion's own premise ("its next action belongs to a human") no
+      longer holds for that pull request. The qualifier is load-bearing, not
+      incidental: a ready pull request the pipeline is barred from landing —
+      by `complexity:*` grade or by originating source, `landing_eligible`'s
+      (lib/landing.sh) own two deterministic gates — has no other actor to
+      move it regardless of level, so it stays in the human queue exactly as
+      it would below `agent-merges-routine` (issue #946). This is read
+      through `landing_routine_eligible` (lib/landing.sh) rather than
+      `landing_eligible` itself: the complexity-and-source subset of that
+      function's gates, deliberately never its protected-path gate, which is
+      a live changed-file read for a decision (arming a landing) this one
+      has no need of — a protected path does not stop a human from landing a
+      pull request, only the pipeline from doing so automatically. Complexity
+      comes from the same pull-request listing this count already took (its
+      own `complexity:*` label); a pull request's source carries no field on
+      GitHub at all and is read back from the fleet's own union log instead
+      (`landing_retry_source`, the same primitive the 2.1e landing-retry
+      sweep already uses for the identical reason) — a candidate whose
+      source cannot be resolved this way counts toward the cap rather than
+      being excluded from it (fail-closed: of the two ways to be wrong here,
+      opening work past a full cap is the one that is not recoverable next
+      cycle), logged as a `warning` naming the repository and the pull
+      request. Judged per repository, inside the same per-repository loop
+      the count is already taken in, against the effective level (not the
+      configured one), so a fleet-wide kill switch or a merge-budget freeze
+      (requirement 2.3c) affecting the effective level un-excludes those
+      pull requests again by the next cycle's process — this read is
       advisory, not a site that acts on the level, so it is memoised for the
       running process's whole lifetime like every other advisory read
-      (requirement 2.3a).
+      (requirement 2.3a). `counted_prs_json`'s own record of which pull
+      requests this count held (2.2b, `claim.sh count`'s exclusion) is built
+      from the identical otherwise-eligible verdict, per pull request, so the
+      two can never disagree about the same one.
 
       The logged reason — of the stand-down here and of the restriction
       warning in 2.2a — states the count's full composition:

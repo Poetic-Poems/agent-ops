@@ -296,6 +296,24 @@ assert_contains "the raw open-PR line still counts only pull requests" \
 assert_contains "the live-claims panel still shows the pseudo-slug rows in full" \
   "Poetic-Poems-agent-ops/342/1786772746" "$bps"
 
+# --- backpressure-otherwise-eligible.json: D18 WI-6 (issue #946) — the card's
+#     own level-aware exclusion only un-excludes an *otherwise-eligible* ready
+#     pull request. poetic-fiddle is configured at agent-merges-routine with
+#     two approved ready PRs: #929 is complexity:high (the pipeline is barred
+#     from landing it — PR #929's own evidence in the issue), #930 is
+#     complexity:low (routine, so still pipeline-owed). Only #929 belongs in
+#     the human queue; #930 counts toward the cap exactly as it did before
+#     this fix. ---
+bpoe="$(render backpressure-otherwise-eligible.json)" || { printf 'FAIL - backpressure-otherwise-eligible.json did not render:\n%s\n' "$bpoe"; exit 1; }
+bpoeflat="$(tr '\n' ' ' <<<"$bpoe" | tr -s ' ')"
+assert_contains "a complexity:high PR at agent-merges-routine does not shrink the gauge — only the complexity:low PR does" \
+  '1 <small> / 3 max' "$bpoeflat"
+assert_contains "the tooltip's composition puts the complexity:high PR in the human-waiting figure" \
+  'title="1 changes-requested + 0 draft + 0 unraised claim(s) — plus 1 waiting on human (2 raw)"' \
+  "$bpoe"
+assert_contains "and the raw open-PR line names the same human-queue count" \
+  "2 open, 1 waiting on human" "$bpoe"
+
 # --- claim-expired-tombstone.json: a backdated tombstone reads as expired, not ancient (#839) ---
 # `lib/claim.sh`'s `do_expire()` backdates a discarded Enabler/Refiner
 # tombstone's `ts` to the fixed sentinel "1970-01-01T00:00:01Z" (issue #237,

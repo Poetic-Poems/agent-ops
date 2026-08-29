@@ -1,0 +1,50 @@
+{
+  "generated_at": "@now",
+  "node": "poetic-1",
+  "config": {
+    "repos": [{"slug": "Poetic-Poems/poetic-fiddle", "merge_autonomy": "agent-merges-routine"}],
+    "timeout_coordinator": 15, "timeout_implementer": 90,
+    "timeout_reviewer": 30, "timeout_enabler": 30,
+    "lock_stale_after": 4, "dashboard_refresh_seconds": 5,
+    "coordinator_model": "claude-haiku-4-5-20251001"
+  },
+  "status": {
+    "switch": {"disabled": false},
+    "limit": {"active": false},
+    "running": false,
+    "lock": null,
+    "current": null,
+    "last_cycle": null
+  },
+  "counts": {
+    "spend_today_usd": 0, "spend_total_usd": 0,
+    "failures_shown": 0, "cycles_shown": 0, "prs_reached_ready": 0,
+    "by_day": [], "by_model": [], "by_actor": []
+  },
+  "cycles": [],
+  "blocked": [],
+  "void": [],
+  "github": {
+    "ok": true, "fetched_at": "@ago:1m",
+    "prs": [
+      {"repo": "Poetic-Poems/poetic-fiddle", "number": 929, "url": "https://github.com/Poetic-Poems/poetic-fiddle/pull/929",
+        "title": "approved but complexity:high — the pipeline is barred from landing it", "isDraft": false,
+        "review_decision": "APPROVED", "labels": ["autonomous-agent", "complexity:high"],
+        "checks": {"total": 3, "failed": 0, "pending": 0},
+        "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "createdAt": "@ago:30m"},
+      {"repo": "Poetic-Poems/poetic-fiddle", "number": 930, "url": "https://github.com/Poetic-Poems/poetic-fiddle/pull/930",
+        "title": "approved and complexity:low — otherwise-eligible, so still pipeline-owed", "isDraft": false,
+        "review_decision": "APPROVED", "labels": ["autonomous-agent", "complexity:low"],
+        "checks": {"total": 3, "failed": 0, "pending": 0},
+        "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "createdAt": "@ago:25m"}
+    ],
+    "pr_index": {},
+    "inputs": {}
+  },
+  "fleet": {
+    "claims": []
+  },
+  "log_tail": [],
+  "cron_tail": [],
+  "max_open_agent_prs": 3
+}

@@ -182,8 +182,12 @@ run_block() {
   . "$SCRIPT_DIR/lib/merge-budget.sh"
   # shellcheck source=lib/merge-autonomy.sh
   . "$SCRIPT_DIR/lib/merge-autonomy.sh"
+  # shellcheck source=lib/landing.sh
+  # D18 WI-6's own predicate — landing_routine_eligible and
+  # landing_retry_source — lives here, and the block now calls both.
+  . "$SCRIPT_DIR/lib/landing.sh"
   # shellcheck disable=SC2317  # Called from the lifted block, on its truncation and guard paths.
-  log_event() { :; }
+  log_event() { [[ -z "${LOG_EVENT_CALLS:-}" ]] || printf '%s\t%s\n' "$1" "$2" >> "$LOG_EVENT_CALLS"; }
   # shellcheck disable=SC2317  # Likewise — the lifted block's guard_warn on a claim-count failure.
   guard_warn() { :; }
   SCRIPT_DIR="$tmp_dir/root"
@@ -200,6 +204,9 @@ run_block() {
   state_repo="${STATE_REPO:-}"
   # shellcheck disable=SC2034
   state_dir="${STATE_DIR:-$tmp_dir/state}"
+  # shellcheck disable=SC2034  # Read by landing_retry_source, once per otherwise-eligible-level candidate.
+  union_log="${UNION_LOG:-$tmp_dir/empty-union.jsonl}"
+  [[ -f "$union_log" ]] || : > "$union_log"
   eval "$counting_block"
   # shellcheck disable=SC2154  # All three are assigned by the lifted block — they are what it is for.
   printf '%s\n%s\n%s\n' "$open_composition" "$adjusted_open_count" "$raw_open_count"
@@ -241,28 +248,39 @@ assert_eq "the composition states the split the operator and the dashboard both 
 assert_eq "the trip figure excludes the human-queue PR" "6" "$adjusted"
 assert_eq "…while the raw total includes it" "7" "$raw"
 
-# --- D18 WI-6: the exclusion is level-aware. A second, standalone repo,
-#     configured at agent-merges-routine, with one approved (not
-#     CHANGES_REQUESTED) ready PR that the plain rule above would exclude —
-#     above this level there is no human queue for it to be parked in, so it
+# --- D18 WI-6: the exclusion is level-aware, but only for an
+#     *otherwise-eligible* pull request (issue #946). A second, standalone
+#     repo, configured at agent-merges-routine, with one approved (not
+#     CHANGES_REQUESTED) ready PR whose complexity:low label and whose
+#     source — resolved from the union log's own `selection` event, the way
+#     `landing_retry_source` already does for the 2.1e retry sweep — are
+#     both in poetic-fiddle's configured routine lists: the plain rule above
+#     would exclude it, and above this level there is genuinely no human
+#     queue for an otherwise-eligible pull request to be parked in, so it
 #     must count, and its claim must not double-count on top of it. ---
 
 cat > "$listings/Poetic-Poems__poetic-fiddle.json" <<'JSON'
-[{"number":900,"isDraft":false,"reviewDecision":"APPROVED"}]
+[{"number":900,"isDraft":false,"reviewDecision":"APPROVED","headRefName":"agent/42",
+  "labels":[{"name":"complexity:low"},{"name":"autonomous-agent"}]}]
 JSON
 printf '0' > "$counts_dir/Poetic-Poems__poetic-fiddle"
+union_log_fiddle="$tmp_dir/union-fiddle.jsonl"
+cat > "$union_log_fiddle" <<'JSONL'
+{"event":"selection","repo":"Poetic-Poems/poetic-fiddle","branch":"agent/42","source":"tech-debt","ts":"2026-08-01T00:00:00Z"}
+JSONL
 
 calls_file2="$tmp_dir/claim-calls-2"
 : > "$calls_file2"
 out2="$(PATH="$stub_bin:$PATH" \
         GH_STUB_LISTINGS="$listings" CLAIM_CALLS="$calls_file2" CLAIM_COUNTS="$counts_dir" \
+        UNION_LOG="$union_log_fiddle" \
         REPOS_JSON='[{"slug":"Poetic-Poems/poetic-fiddle"}]' \
         CFG_JSON='{"repos":[{"slug":"Poetic-Poems/poetic-fiddle","merge_autonomy":"agent-merges-routine"}]}' \
         run_block 2>/dev/null)"
 composition2="$(sed -n '1p' <<<"$out2")"
 adjusted2="$(sed -n '2p' <<<"$out2")"
 
-assert_eq "at agent-merges-routine, an approved ready PR counts toward the cap — no human queue to exclude it from" \
+assert_eq "at agent-merges-routine, an otherwise-eligible approved ready PR counts toward the cap — no human queue to exclude it from" \
   "1 changes-requested + 0 draft + 0 unraised claim(s) — plus 0 waiting on human (1 raw)" \
   "$composition2"
 assert_eq "…so the trip figure includes it" "1" "$adjusted2"
@@ -275,6 +293,7 @@ calls_file3="$tmp_dir/claim-calls-3"
 : > "$calls_file3"
 out3="$(PATH="$stub_bin:$PATH" \
         GH_STUB_LISTINGS="$listings" CLAIM_CALLS="$calls_file3" CLAIM_COUNTS="$counts_dir" \
+        UNION_LOG="$union_log_fiddle" \
         REPOS_JSON='[{"slug":"Poetic-Poems/poetic-fiddle"}]' \
         CFG_JSON='{}' \
         run_block 2>/dev/null)"
@@ -283,6 +302,78 @@ assert_eq "at human (the default), the identical approved PR is excluded, and th
   "0" "$adjusted3"
 assert_eq "…and its claim is what keeps counting instead" \
   "count|Poetic-Poems/poetic-fiddle|" "$(sed -n '1p' "$calls_file3")"
+
+# --- Issue #946 (AC1, AC3): at agent-merges-routine, a ready pull request
+#     the pipeline is barred from landing by its own complexity grade stays
+#     in the human queue — it is not otherwise-eligible, whatever GitHub's
+#     own review decision on it says, because nothing downstream of the
+#     Approver will ever land it automatically. ---
+
+cat > "$listings/Poetic-Poems__poetic-fiddle.json" <<'JSON'
+[{"number":929,"isDraft":false,"reviewDecision":"APPROVED","headRefName":"agent/43",
+  "labels":[{"name":"complexity:high"},{"name":"autonomous-agent"}]}]
+JSON
+printf '0' > "$counts_dir/Poetic-Poems__poetic-fiddle"
+union_log_high="$tmp_dir/union-high.jsonl"
+cat > "$union_log_high" <<'JSONL'
+{"event":"selection","repo":"Poetic-Poems/poetic-fiddle","branch":"agent/43","source":"tech-debt","ts":"2026-08-01T00:00:00Z"}
+JSONL
+
+calls_file_high="$tmp_dir/claim-calls-high"
+: > "$calls_file_high"
+log_calls_high="$tmp_dir/log-calls-high"
+: > "$log_calls_high"
+out_high="$(PATH="$stub_bin:$PATH" \
+        GH_STUB_LISTINGS="$listings" CLAIM_CALLS="$calls_file_high" CLAIM_COUNTS="$counts_dir" \
+        UNION_LOG="$union_log_high" LOG_EVENT_CALLS="$log_calls_high" \
+        REPOS_JSON='[{"slug":"Poetic-Poems/poetic-fiddle"}]' \
+        CFG_JSON='{"repos":[{"slug":"Poetic-Poems/poetic-fiddle","merge_autonomy":"agent-merges-routine"}]}' \
+        run_block 2>/dev/null)"
+composition_high="$(sed -n '1p' <<<"$out_high")"
+adjusted_high="$(sed -n '2p' <<<"$out_high")"
+
+assert_eq "AC3: the exact composition string for a complexity:high PR at agent-merges-routine" \
+  "0 changes-requested + 0 draft + 0 unraised claim(s) — plus 1 waiting on human (1 raw)" \
+  "$composition_high"
+assert_eq "AC1: a complexity:high pull request is excluded from the trip figure, not counted toward it" \
+  "0" "$adjusted_high"
+assert_eq "AC5: its claim is not folded into counted_prs — the PR itself sits in the human queue, outside the sum" \
+  "count|Poetic-Poems/poetic-fiddle|" "$(sed -n '1p' "$calls_file_high")"
+assert_eq "no warning is logged — the source resolved cleanly, this is a deterministic ineligibility" \
+  "0" "$(wc -l < "$log_calls_high" | tr -d ' ')"
+
+# --- Issue #946 (AC4): an eligibility answer that cannot be read — here, no
+#     `selection` event names this pull request's branch at all — counts the
+#     pull request toward the cap rather than excluding it (fail-closed),
+#     and warns naming the repository and the pull request. ---
+
+cat > "$listings/Poetic-Poems__poetic-fiddle.json" <<'JSON'
+[{"number":955,"isDraft":false,"reviewDecision":"APPROVED","headRefName":"agent/unknown-branch",
+  "labels":[{"name":"complexity:low"},{"name":"autonomous-agent"}]}]
+JSON
+printf '0' > "$counts_dir/Poetic-Poems__poetic-fiddle"
+
+calls_file_unknown="$tmp_dir/claim-calls-unknown"
+: > "$calls_file_unknown"
+log_calls_unknown="$tmp_dir/log-calls-unknown"
+: > "$log_calls_unknown"
+out_unknown="$(PATH="$stub_bin:$PATH" \
+        GH_STUB_LISTINGS="$listings" CLAIM_CALLS="$calls_file_unknown" CLAIM_COUNTS="$counts_dir" \
+        UNION_LOG="$union_log_high" LOG_EVENT_CALLS="$log_calls_unknown" \
+        REPOS_JSON='[{"slug":"Poetic-Poems/poetic-fiddle"}]' \
+        CFG_JSON='{"repos":[{"slug":"Poetic-Poems/poetic-fiddle","merge_autonomy":"agent-merges-routine"}]}' \
+        run_block 2>/dev/null)"
+composition_unknown="$(sed -n '1p' <<<"$out_unknown")"
+adjusted_unknown="$(sed -n '2p' <<<"$out_unknown")"
+
+assert_eq "AC4: an unresolvable source counts the pull request toward the cap (fail-closed)" \
+  "1 changes-requested + 0 draft + 0 unraised claim(s) — plus 0 waiting on human (1 raw)" \
+  "$composition_unknown"
+assert_eq "…so the trip figure includes it, same as a genuinely eligible pull request" "1" "$adjusted_unknown"
+assert_eq "…and a warning is logged" "1" "$(wc -l < "$log_calls_unknown" | tr -d ' ')"
+assert_eq "…naming the repository and the pull request" "yes" \
+  "$(if cut -f2- "$log_calls_unknown" | jq -e '.repo == "Poetic-Poems/poetic-fiddle" and .pr_number == 955' \
+      >/dev/null 2>&1; then echo yes; else echo no; fi)"
 
 # --- Issue #502 (PR #499 review follow-up): fleet_flag_fetch_status
 #     memoises a live/clear answer per (flag, state_dir) for the life of this

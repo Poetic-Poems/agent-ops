@@ -401,15 +401,20 @@ landing_autonomy_refusal_reason() {
   printf 'merge_autonomy effective level is %s, not agent-merges-routine or agent-merges-all' "${level:-empty}"
 }
 
-# landing_eligible CONFIG_JSON SLUG NUMBER COMPLEXITY SOURCE LEVEL
-# Print `eligible`, `ineligible:<reason>` or `unknown:<reason>`. LEVEL is
-# the caller's own already-resolved `merge_autonomy_effective_level` — this
-# function never resolves it itself, so the kill switch and a WI-6 budget
-# freeze both bind exactly once, at the caller, rather than being read
-# twice and risking the two reads disagreeing.
+# landing_routine_eligible CONFIG_JSON SLUG COMPLEXITY SOURCE
+# Print `eligible` or `ineligible:<reason>` — the complexity-and-source
+# subset of `landing_eligible`'s own gates, factored out so a caller that
+# only needs *that* verdict (D18 WI-6's back-pressure exclusion,
+# lib/standdown.sh) reads the identical primitives `landing_eligible` itself
+# does rather than re-deriving them, and the two can never drift apart.
+# Deliberately never calls `landing_protected_paths_hit`: that gate is a
+# live changed-file read `landing_eligible` pays for once, at arming time,
+# for a decision this function's own callers do not need — a protected-path
+# pull request is not barred from a *human* landing it, only from the
+# pipeline doing so automatically, so back-pressure counting has no business
+# with it.
 #
-# Eligible iff **all** of:
-#   - LEVEL is `agent-merges-routine` or `agent-merges-all`;
+# Eligible iff **both**:
 #   - COMPLEXITY is a member of `_landing_routine_complexity`'s list for
 #     SLUG (default `low`/`medium`; agent-ops#725) — an empty or
 #     unrecognised COMPLEXITY is ineligible, never eligible by omission.
@@ -420,33 +425,9 @@ landing_autonomy_refusal_reason() {
 #     diff through automatic landing;
 #   - SOURCE is a member of `_landing_routine_sources`'s list for SLUG — an
 #     empty or unrecognised SOURCE is ineligible, never eligible by
-#     omission;
-#   - `landing_protected_paths_hit` says no — below `agent-merges-all`. At
-#     `agent-merges-all` a hit is instead reported `eligible` and deferred
-#     to `landing_protected_path_controls_ok` (D18 WI-12), which needs
-#     facts this function is never handed; see the hit branch's own comment
-#     below.
-#
-# `unknown` is returned only for `landing_protected_paths_hit`'s own exit 2
-# (the changed-file list could not be read or was truncated, or the
-# configured protected-paths list could not be evaluated against a path at
-# all — TD-PPagop-26082320) — every other refusal above is a deterministic
-# `ineligible`, since COMPLEXITY, SOURCE and LEVEL are all already in the
-# caller's hand, nothing further to ask GitHub. Both words carry the same
-# instruction to every call site: **never a pass** — `unknown` is treated
-# as `ineligible` everywhere this is read, the distinction exists only so a
-# log can say whether the diff was genuinely disqualified or merely
-# unreadable.
-landing_eligible() {
-  local config_json="$1" slug="$2" number="$3" complexity="$4" source="$5" level="$6"
-
-  case "$level" in
-    agent-merges-routine|agent-merges-all) ;;
-    *)
-      printf 'ineligible:merge_autonomy effective level is %s, not agent-merges-routine or agent-merges-all' "${level:-empty}"
-      return 0
-      ;;
-  esac
+#     omission.
+landing_routine_eligible() {
+  local config_json="$1" slug="$2" complexity="$3" source="$4"
 
   local routine_complexity_json
   routine_complexity_json="$(_landing_routine_complexity "$config_json" "$slug")"
@@ -475,6 +456,53 @@ landing_eligible() {
      || ! jq -e --arg s "$source" 'index($s) != null' <<<"$routine_json" >/dev/null 2>&1; then
     printf 'ineligible:source %s is not in %s'\''s configured routine list %s' \
       "${source:-empty}" "$slug" "$routine_json"
+    return 0
+  fi
+
+  printf 'eligible'
+}
+
+# landing_eligible CONFIG_JSON SLUG NUMBER COMPLEXITY SOURCE LEVEL
+# Print `eligible`, `ineligible:<reason>` or `unknown:<reason>`. LEVEL is
+# the caller's own already-resolved `merge_autonomy_effective_level` — this
+# function never resolves it itself, so the kill switch and a WI-6 budget
+# freeze both bind exactly once, at the caller, rather than being read
+# twice and risking the two reads disagreeing.
+#
+# Eligible iff **all** of:
+#   - LEVEL is `agent-merges-routine` or `agent-merges-all`;
+#   - `landing_routine_eligible` says so (COMPLEXITY and SOURCE, above);
+#   - `landing_protected_paths_hit` says no — below `agent-merges-all`. At
+#     `agent-merges-all` a hit is instead reported `eligible` and deferred
+#     to `landing_protected_path_controls_ok` (D18 WI-12), which needs
+#     facts this function is never handed; see the hit branch's own comment
+#     below.
+#
+# `unknown` is returned only for `landing_protected_paths_hit`'s own exit 2
+# (the changed-file list could not be read or was truncated, or the
+# configured protected-paths list could not be evaluated against a path at
+# all — TD-PPagop-26082320) — every other refusal above is a deterministic
+# `ineligible`, since COMPLEXITY, SOURCE and LEVEL are all already in the
+# caller's hand, nothing further to ask GitHub. Both words carry the same
+# instruction to every call site: **never a pass** — `unknown` is treated
+# as `ineligible` everywhere this is read, the distinction exists only so a
+# log can say whether the diff was genuinely disqualified or merely
+# unreadable.
+landing_eligible() {
+  local config_json="$1" slug="$2" number="$3" complexity="$4" source="$5" level="$6"
+
+  case "$level" in
+    agent-merges-routine|agent-merges-all) ;;
+    *)
+      printf 'ineligible:merge_autonomy effective level is %s, not agent-merges-routine or agent-merges-all' "${level:-empty}"
+      return 0
+      ;;
+  esac
+
+  local routine_elig
+  routine_elig="$(landing_routine_eligible "$config_json" "$slug" "$complexity" "$source")"
+  if [[ "$routine_elig" != "eligible" ]]; then
+    printf '%s' "$routine_elig"
     return 0
   fi
 
