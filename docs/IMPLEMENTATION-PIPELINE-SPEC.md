@@ -14217,6 +14217,52 @@ What exists, and the requirements each part answers to:
     this workflow's — so an Implementer working inside the node image can run
     `scripts/lint-shell.sh` itself before pushing, rather than pushing blind
     and finding out from this workflow (requirement 1b).
+10a. `scripts/check-graphql-drift.sh` and
+    `.github/workflows/graphql-drift.yml` — the GraphQL schema-drift check and
+    the nightly job that runs it (acceptance check 1g-ii,
+    TD-PPagop-26082930). Every GitHub read in this repository is asserted only
+    against a `gh` stub it writes itself, and a stub answers in whatever shape
+    its own fixture declares, so a field GitHub renames or moves cannot fail a
+    test; this asks GitHub instead. The documents are **discovered**, by
+    scanning tracked files for `-f query='` — the one form all of them use —
+    rather than read from a list, for the reason component 10 and
+    `td-tooling-drift.yml` both give about their own file sets. Three kinds of
+    file carry the delimiter without sending anything and are excluded:
+    `test/`, because a stub answers without asking and this check's own
+    fixtures are deliberately broken documents; the script itself, which
+    quotes the delimiter throughout its commentary; and Markdown outside
+    `prompts/` — CHANGELOG.md, `docs/`, README.md — which is prose about these
+    documents rather than any of them. `prompts/` is the deliberate exception:
+    a prompt file is the instruction an agent carries out, so its documents
+    are sent as surely as `lib/`'s. Any shell script anywhere in the tree is
+    searched, whether or not whoever added it knew this check exists. Finding
+    no document at all fails, and is never a quiet pass. Discovery walks the
+    tree rather than `git ls-files`, unlike component 10 beside it, because
+    the `test/` suite runs inside the node image, where `.dockerignore` and
+    `scripts/run-tests.sh` have both dropped `.git`: an index-keyed discovery
+    would find nothing there and report it as no drift, leaving the one case
+    worth having — the real tree, walked as the nightly walks it — assertable
+    only on a developer's checkout, which is the shape of the failure this
+    check exists to retire.
+    Each operation's selection set is wrapped in `... @skip(if:true) { … }`
+    before it is sent. GraphQL validates a document in full *before* executing
+    any of it, so every field inside the fragment is still checked while
+    nothing is collected — which is what lets the two mutations,
+    `enqueuePullRequest` (`lib/landing.sh`) and `setIssueFieldValue`
+    (`lib/issue-priority.sh`), be validated nightly without a pull request
+    being enqueued or an issue's Priority written. Variables are coerced even
+    when the body is skipped, so each declared variable is given a placeholder
+    chosen by its type from a closed table; a type not in that table fails the
+    run naming the variable rather than being guessed at, because a guess
+    GitHub rejects is indistinguishable from the drift this exists to report.
+    Exit 0 every document validates, 1 at least one does not (drift, or a
+    document the checker cannot read), 2 could not check — no documents found,
+    a transport failure, or a GitHub error carrying a `type` such as
+    `RATE_LIMITED`; unable is never reported as clean. Unit-tested against a
+    stubbed `gh` (`test/graphql-drift.test.sh`), whose first case runs the real
+    discovery over this repository's own tree so a document added in a shape
+    the scanner cannot see fails there rather than going unchecked; must pass
+    `shellcheck`.
 11. `scripts/watch-node.sh` — a read-only wrapper around
     `docker compose exec -T scheduler tail` for watching a node's `cron.log`
     or cycle log (`log.jsonl`, requirement 33) from outside, in place of the
@@ -16134,6 +16180,39 @@ pull request, run the ones the change touches and any it could regress.
    gate's coverage does not quietly track how much memory a runner happens to
    have, which is also what keeps the three suppressed checks checked in full
    on every pull request.
+1g-ii. **Every GraphQL document this repository sends still validates
+   against GitHub's live schema, checked nightly rather than at merge time.**
+   `.github/workflows/graphql-drift.yml` runs
+   `./scripts/check-graphql-drift.sh` on a daily schedule, and exit 0 is every
+   discovered document validating (component 10a). Being off the pull-request
+   path is the point rather than a compromise: this failure arrives without a
+   commit. GitHub moved `mergeMethod` and `mergingStrategy` off `MergeQueue`
+   onto `MergeQueue.configuration` between 2026-08-16 and 2026-08-23, GraphQL
+   rejects the whole document for one unknown field, and
+   `merge_queue_for_branch` — which asked for both and read neither — returned
+   non-zero on every call for the six days that followed, while `landing_arm`
+   reported only its own gate-7 refusal and the suite stayed green. Nothing a
+   pull request could have gated would have caught that, and gating one on
+   GitHub's endpoint being reachable would cost every merge for no return. A
+   red run is not left as a mark on a page either: `failed-runs` is a
+   configured work source for this repository (requirement 19), ranked above
+   `issues:high`, so the failure becomes the pipeline's own next work item,
+   `failed-run-graphql-drift`.
+   `test/graphql-drift.test.sh` passes: the repository's own documents are all
+   discovered — `lib/issue-priority.sh`, `lib/landing.sh`,
+   `lib/merge-queue.sh`, `prompts/implementer.md` and `prompts/reviewer.md`,
+   seven documents between them — and all reach `gh` wrapped, with neither
+   mutation's field left collectable; a moved field fails the run and is
+   annotated with the file and the line its document starts on, in GitHub's own
+   wording; a transport failure and a GitHub error carrying a `type` both exit
+   2 rather than being reported as drift or as clean; a tree with no document
+   in it exits 2 saying it refuses to report no drift; two documents in one
+   file are each found at their own line; a variable type with no placeholder
+   and a document whose shape cannot be read each fail the run saying so, never
+   silently skipped; `test/`, this repository's CHANGELOG and this document
+   itself all quote the delimiter and none is checked as a document, while a
+   `prompts/` file carrying one is; and an anonymous shorthand query is
+   wrapped like any other.
 1h. **A log past `log_retained_bytes` rotates, keeps `log_generations`, and
    never touches `log.jsonl`.** `test/rotate-logs.test.sh` passes: a log under
    the threshold is left alone; one over it is renamed to `.1` and a fresh

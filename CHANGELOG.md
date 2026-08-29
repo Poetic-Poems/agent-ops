@@ -37,6 +37,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the pattern behind four 2026-08-28 decision escalations that each took
   three Co-Ordinator cycles and an Enabler engagement to confirm a default
   the filing itself had already argued for.
+- A nightly check now asks GitHub whether the GraphQL documents this
+  repository sends still mean anything to its schema (TD-PPagop-26082930).
+  `scripts/check-graphql-drift.sh` discovers every document by walking the
+  tree for `-f query='`, wraps each operation's selection set in
+  `... @skip(if:true) { … }` — GraphQL validates a document in full before
+  executing any of it, so every field is checked while nothing is collected,
+  which is what lets the `enqueuePullRequest` and `setIssueFieldValue`
+  mutations be validated without being run — and fails on anything GitHub no
+  longer recognises. `.github/workflows/graphql-drift.yml` runs it daily,
+  deliberately off the pull-request path: the failure it catches arrives
+  without a commit, as it did when GitHub moved `mergeMethod` and
+  `mergingStrategy` off `MergeQueue` and took every autonomous landing down
+  with them for six days while the suite stayed green (#953). `failed-runs`
+  is a configured work source for this repository, so a red run becomes the
+  pipeline's own next work item rather than a mark on a page.
+
 - The product-managed `pw::type:tech-debt` label is now part of the `target`
   role's catalogue (agent-ops#872), so the pipeline creates it in every
   repository it gathers data for, at most once per
