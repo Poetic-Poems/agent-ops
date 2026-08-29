@@ -947,6 +947,70 @@ unblk_evt="$(events_named "$calls" unblocked | head -n1)"
 assert_contains "decide/TD: ...naming the decision in its reason" "use option B" "$(jq -r '.reason' <<<"$unblk_evt")"
 assert_eq "decide/TD: no item-refined (ordinary item)" "0" "$(grep -cE '^event item-refined ' <<<"$calls")"
 
+# --- decide, register record that is ALSO a refinement disagreement
+# (agent-ops#1049 review fix): the item-refined re-record this verdict writes
+# is the *same* unchanged spec `refined_before` already carried, never a
+# fresh one incorporating the decision, so it must not read to
+# DECISIONS_MAP_JQ as "the decision already did its job" — and
+# refiner_candidate_items must still offer this item to the Refiner as a
+# full candidate despite refinements_map showing it refined, until an actual
+# Refiner pass supersedes the pending decision with a real rewrite. Without
+# the fix, the decision reaches no actor at all: the item returns to the
+# pool and the next Co-Ordinator composes its work order from the
+# pre-decision spec, verbatim. ---
+eligible_decide_disagreement_td='[{"repo":"acme/widgets","item":"TD26082901","blocked_ts":"2026-08-01T00:00:00Z",
+  "kind":"needs-refinement","reason":"threshold",
+  "refined_before":{"ts":"2026-08-01T09:00:00Z","cycle":"c1","comment_url":"","spec":"the original spec"}}]'
+examined_decide_disagreement_td='[{"repo":"acme/widgets","item":"TD26082901","verdict":"escalate","reason":"still too vague",
+  "issue":{"title":"Refinement disagreement for TD26082901","body":"…draft escalation…"}}]'
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+run_enabler_decide() {
+  record "run_enabler_decide $1 $2"
+  printf '{"verdict":"decide","evidence":"a tactical trade-off","decision":"use option B",
+           "rationale":"cheaper and fully reversible","options_considered":"A, B, C"}'
+}
+calls="$(run_case "decide-tactical: decide (register record, refinement disagreement)" \
+  "$eligible_decide_disagreement_td" "$examined_decide_disagreement_td")"
+
+assert_eq "decide/TD-disagreement: exactly one decision-taken event" "1" \
+  "$(grep -cE '^event decision-taken ' <<<"$calls")"
+dt_evt="$(events_named "$calls" decision-taken | head -n1)"
+assert_eq "decide/TD-disagreement: ...carrying the decision" "use option B" "$(jq -r '.decision' <<<"$dt_evt")"
+assert_eq "decide/TD-disagreement: exactly one item-refined event" "1" \
+  "$(grep -cE '^event item-refined ' <<<"$calls")"
+refined_evt="$(events_named "$calls" item-refined | head -n1)"
+assert_eq "decide/TD-disagreement: ...re-recording the *existing* spec unchanged" \
+  "the original spec" "$(jq -r '.spec' <<<"$refined_evt")"
+assert_eq "decide/TD-disagreement: ...marked unchanged, so it never masquerades as the decision's own carrier" \
+  "true" "$(jq -r '.unchanged' <<<"$refined_evt")"
+
+# Reconstruct the two events as a real log — decision-taken first, then the
+# item-refined re-record moments later, exactly the order and gap
+# lib/enabler.sh writes them in — and prove decisions_map does not drop the
+# decision because of it (the bug: without the marker, this item-refined's
+# later ts would read as the decision having already been turned into a
+# fresh spec).
+recon_log="$tmp_dir/decide-disagreement.jsonl"
+jq -c --arg ts "2026-08-20T10:00:00Z" '. + {event: "decision-taken", ts: $ts}' <<<"$dt_evt" > "$recon_log"
+jq -c --arg ts "2026-08-20T10:00:05Z" '. + {event: "item-refined", ts: $ts}' <<<"$refined_evt" >> "$recon_log"
+dmap="$(decisions_map "$recon_log")"
+assert_eq "decide/TD-disagreement: decisions_map still carries the decision after its own re-record" \
+  "use option B" "$(jq -r '."acme/widgets".TD26082901.decision // "null"' <<<"$dmap")"
+
+# And the ultimate consumer: refiner_candidate_items must still offer this
+# item — despite refinements_map showing it refined — because decisions_map
+# (built above) still carries a decision for it.
+rmap='{"acme/widgets":{"TD26082901":{"ts":"2026-08-01T09:00:00Z","spec":"the original spec"}}}'
+repos_for_candidates='[{"slug":"acme/widgets","tech_debt":[{"source":"tech_debt","ref":"TD26082901"}]}]'
+candidates="$(refiner_candidate_items "$repos_for_candidates" '{"tech_debt":"required"}' \
+  "$rmap" '[]' '[]' '[]' "$dmap")"
+assert_eq "decide/TD-disagreement: the refined item is still a Refiner candidate" "1" \
+  "$(jq 'length' <<<"$candidates")"
+assert_eq "decide/TD-disagreement: ...carrying the pending decision" "use option B" \
+  "$(jq -r '.[0].decision.decision' <<<"$candidates")"
+assert_eq "decide/TD-disagreement: ...as a full candidate, not triage_only (it needs a real spec, not one field)" \
+  "null" "$(jq -r '.[0].triage_only // "null"' <<<"$candidates")"
+
 # --- decide, issue item: posts the decision comment, and its URL rides on
 # decision-taken as comment_url ---
 calls="$(run_case "decide-tactical: decide (issue, ordinary item)" \

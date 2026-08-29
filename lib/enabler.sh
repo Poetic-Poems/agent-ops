@@ -1119,8 +1119,15 @@ $(jq . <<<"$input")
                                      | with_entries(select(.value != ""))' \
                                 <<<"$claimed_entry" 2>/dev/null || printf '{}')"
             if [[ "$e_refined_adj" != "{}" ]]; then
+              # `unchanged: true` (agent-ops#1049): this re-records the
+              # *existing* spec verbatim rather than a fresh one, so it must
+              # not read, to DECISIONS_MAP_JQ, as a refinement that carried a
+              # decision forward — this path never records a decision at all,
+              # but the marker is applied on the same terms the decide-
+              # tactical path below applies it, since both re-record the same
+              # shape of unchanged item-refined.
               log_event "item-refined" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" \
-                --argjson x "$e_refined_adj" '{repo: $r, item: $i} + $x')"
+                --argjson x "$e_refined_adj" '{repo: $r, item: $i, unchanged: true} + $x')"
             else
               log_event "warning" "$(jq -nc \
                 --arg d "enabler: adjudication confirmed $e_repo $e_item's existing refinement as adequate, but refined_before carried neither a spec nor a comment_url — nothing was recorded for the next Co-Ordinator to read" \
@@ -1200,8 +1207,24 @@ $(jq . <<<"$input")
                                          | with_entries(select(.value != ""))' \
                                     <<<"$claimed_entry" 2>/dev/null || printf '{}')"
                 if [[ "$e_refined_dec" != "{}" ]]; then
+                  # `unchanged: true` (agent-ops#1049): for the `decide`
+                  # verdict on a non-issue item this re-record is the *only*
+                  # item-refined event this pass writes, and it always
+                  # postdates the decision-taken event just logged above — so
+                  # without this marker, DECISIONS_MAP_JQ (lib/cycle-state.sh)
+                  # reads it as "a refinement already carried the decision
+                  # forward" and drops the decision from decisions_map before
+                  # any Refiner engagement ever reads it, even though the spec
+                  # re-recorded here is refined_before's own, unamended by the
+                  # decision. refiner_candidate_items (lib/refinement.sh)
+                  # reads the marker's absence the same way `triage_only`
+                  # reads an unbanded issue: a decision still pending against
+                  # this item keeps it a candidate despite refinements_map
+                  # showing it refined, until an actual Refiner pass writes a
+                  # fresh item-refined (no marker) that supersedes it for
+                  # real.
                   log_event "item-refined" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" \
-                    --argjson x "$e_refined_dec" '{repo: $r, item: $i} + $x')"
+                    --argjson x "$e_refined_dec" '{repo: $r, item: $i, unchanged: true} + $x')"
                 fi
               fi
               release_refinement_label "$e_item" "$e_repo"

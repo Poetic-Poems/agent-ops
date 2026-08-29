@@ -11869,16 +11869,28 @@ implements.
       This never writes a specification of its own, and `item-refined` is
       logged only where the item already carried one (`refined_before` set)
       — re-recording that existing refinement unchanged, on the same terms
-      `settle` does — never invented from the decision. For a non-issue item
-      with no existing refinement, the decision has no thread to carry it:
-      it is recorded on `decision-taken` alone and read back by
-      `decisions_map` (`lib/cycle-state.sh`) into `decisions_json`, a
-      carrier alongside — never merged into — `refinements_json` (requirement
-      3h), supplied to the next Refiner engagement for that item as its
-      runtime input's own `decision` field (`refiner_candidate_items`,
-      `lib/refinement.sh`) beside `entry`. The Refiner turns a decision into
-      the specification the way it would a human's own answer on a closed
-      escalation (`prompts/refiner.md`).
+      `settle` does — never invented from the decision, and marked
+      `unchanged: true`. For a non-issue item, the decision has no thread to
+      carry it regardless of whether it already had a refinement: it is
+      recorded on `decision-taken` and read back by `decisions_map`
+      (`lib/cycle-state.sh`) into `decisions_json`, a carrier alongside —
+      never merged into — `refinements_json` (requirement 3h), supplied to
+      the next Refiner engagement for that item as its runtime input's own
+      `decision` field (`refiner_candidate_items`, `lib/refinement.sh`)
+      beside `entry`. Where a refinement already existed, `decisions_map`
+      does not treat the `unchanged: true` re-record above as having carried
+      the decision forward — an unmarked `item-refined` is what supersedes a
+      decision, since only that shape is the Refiner actually turning one
+      into a specification — and `refiner_candidate_items` offers the item
+      as a full (non-`triage_only`) candidate despite `refinements_json`
+      showing it refined, for as long as `decisions_json` still names a
+      pending decision for it (agent-ops#1049). Without both, a refined
+      non-issue item's decision reaches no carrier at all: `item-refined`'s
+      own re-record would otherwise both exclude the item from
+      `refiner_candidate_items` and appear, by its later `ts` alone, to have
+      already superseded the decision in `decisions_map`. The Refiner turns a
+      decision into the specification the way it would a human's own answer
+      on a closed escalation (`prompts/refiner.md`).
     - **`escalate`** — anything else: any owner-only condition applies, the
       re-flag's own concern is real and unresolved beyond what the item's
       record supplies, or the pass could not read enough to tell. As
@@ -12888,7 +12900,11 @@ implements.
        merge conflict, a review comment, a security finding names its own
        remediation);
     3. it carries no refinement yet — `refinements_map` (requirement 3h) has
-       no entry for it;
+       no entry for it — **or** it does, but `decisions_json` (requirement
+       36d) still names a pending decision for it: a `decide-tactical` pass
+       never writes a specification of its own, so a refined item it decided
+       still owes the Refiner the fresh spec the decision has to become
+       (agent-ops#1049);
     4. it is not blocked (requirement 34), not void (requirement 34c), and not
        held by an ordinary implementation claim (the same `claimed` array the
        Co-Ordinator's own exclusion 3 reads).

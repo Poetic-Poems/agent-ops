@@ -616,17 +616,26 @@ refinements_map() {
 # escalation. Latest `decision-taken` event per repo+item, dropped once the
 # item is void (a decision about work that does not exist is worse than none,
 # the same reasoning `REFINEMENTS_MAP_JQ` gives its own void drop) or once a
-# refinement already carries the decision forward (`item-refined`'s own
-# `ts` — the settle/decide path in lib/enabler.sh re-records `item-refined`
-# whenever a prior refinement existed — postdates the decision): at that
-# point the decision has already done its job and the specification it
-# produced is what the Refiner (or Co-Ordinator) should read instead.
+# refinement genuinely carries the decision forward: an `item-refined` whose
+# own `ts` postdates the decision *and* that is not itself marked `unchanged:
+# true`. That marker (agent-ops#1049) is what makes the distinction: the
+# settle/decide path in lib/enabler.sh re-records `item-refined` whenever a
+# prior refinement existed, but that re-record always carries `refined_before`
+# verbatim and always postdates the `decision-taken` it sits beside — it is
+# never the Refiner turning the decision into an actual specification, only
+# the Enabler preserving `refinements_map`'s own entry (requirement 34e). A
+# marked re-record therefore does *not* mean the decision's job is done, and
+# is excluded here; only an unmarked `item-refined` — the Refiner's own
+# fresh-spec write (lib/refinement.sh) — supersedes a decision. A refined
+# non-issue item with a decision still pending stays a candidate despite
+# `refinements_map` showing it refined (`refiner_candidate_items`,
+# lib/refinement.sh) for exactly this reason.
 # shellcheck disable=SC2016  # jq's $set/$clear/$r, not the shell's.
 DECISIONS_MAP_JQ='
   def latest_unresolved($set; $clear): '"$LATEST_UNRESOLVED_JQ"';
   . as $all
   | ($all | latest_unresolved("item-void"; "unvoided")) as $void
-  | [ $all[] | select(.event == "item-refined") ] as $refined
+  | [ $all[] | select(.event == "item-refined" and (.unchanged // false) != true) ] as $refined
   | [ $all[]
       | select(.event == "decision-taken"
                and (.item // "") != "" and (.repo // "") != "")

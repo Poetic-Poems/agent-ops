@@ -890,7 +890,7 @@ refiner_policy_value() {
   jq -r --arg s "$source" '(. // {})[$s] // "exempt"' <<<"$policy" 2>/dev/null || printf 'exempt'
 }
 
-# refiner_candidate_items REPOS_JSON POLICY_JSON REFINEMENTS_JSON BLOCKED_JSON VOID_JSON CLAIMED_JSON
+# refiner_candidate_items REPOS_JSON POLICY_JSON REFINEMENTS_JSON BLOCKED_JSON VOID_JSON CLAIMED_JSON DECISIONS_JSON
 # Print, as a JSON array, every item from this cycle's pre-fetched source
 # arrays — `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`,
 # `dequeued`, `register_hygiene`, `issues`, `tech_debt`, `project_review`,
@@ -900,8 +900,13 @@ refiner_policy_value() {
 # void, or held by an ordinary implementation claim — except an `issues`
 # entry gather-issues.sh marked `priority_set: false`, which is a candidate
 # even when already refined, solely for its missing `Priority` band
-# (requirement 39g). Such an entry carries `triage_only: true` so the Refiner
-# knows not to write a second specification for it.
+# (requirement 39g), and except an item DECISIONS_JSON (requirement 36d)
+# still carries a pending decision for — a `decide-tactical` verdict never
+# writes a specification, so a refined item it decided owes the Refiner a
+# fresh one exactly as a never-refined item would (agent-ops#1049). The
+# `issues` exception carries `triage_only: true` so the Refiner knows not to
+# write a second specification for it; the decision exception does not — it
+# needs the full spec, not one field — and carries `decision` instead (below).
 #
 # Each entry is `{repo, source, item, entry}` — `entry` is the gatherer's own
 # object verbatim (an issue's full thread, a finding's title and severity, a
@@ -982,13 +987,26 @@ refiner_candidate_items() {
       | select(exempt($source) | not)
       | (is_refined($repo; $item)) as $refined
       | (is_unbanded_issue($source; $e) and $refined) as $triage_only
-      | select($triage_only or ($refined | not))
+      | (decision_for($repo; $item)) as $decision
+      # agent-ops#1049: a refined item that still carries a pending decision
+      # (decisions_map has not dropped it — DECISIONS_MAP_JQ only drops one
+      # once an unmarked, genuinely-fresh item-refined supersedes it) is a
+      # full candidate despite `is_refined`, on the same "bypass only the
+      # is_refined exclusion, nothing else" terms `triage_only` already
+      # applies for an unbanded issue (requirement 39g): the decide-tactical
+      # pass that took this decision never wrote a specification of its own
+      # (lib/enabler.sh), so the Refiner still owes this item the fresh spec
+      # requirement 36d promises, exactly as it would a never-refined item.
+      # Deliberately *not* `triage_only`: unlike the priority-only case, this
+      # candidate needs its full specification rewritten, not one field.
+      | ($refined and ($decision != null)) as $decision_pending
+      | select($triage_only or $decision_pending or ($refined | not))
       | select(is_blocked($repo; $item) | not)
       | select(is_void($repo; $item) | not)
       | select(is_claimed($repo; $item) | not)
       | {repo: $repo, source: $source, item: $item, entry: $e}
         + (if $triage_only then {triage_only: true} else {} end)
-        + (decision_for($repo; $item) as $d | if $d == null then {} else {decision: $d} end) ]
+        + (if $decision == null then {} else {decision: $decision} end) ]
   ' <<<"$docs" 2>/dev/null || printf '[]'
 }
 

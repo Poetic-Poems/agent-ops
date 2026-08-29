@@ -37,7 +37,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `enabler_model_critical` (falling back to `enabler_model`), the Enabler's
   first critical tier. Poetic's own `config.json` opts in:
   `escalation_autonomy: "decide-tactical"`, `enabler_model_critical:
-  "claude-fable-5"`.
+  "claude-fable-5"`. A `decide` verdict on a non-issue item that already
+  carried a refinement now reaches the next Refiner engagement rather than
+  being lost: the `item-refined` this path re-records to preserve
+  `refinements_map` is marked `unchanged: true`, `decisions_map`
+  (`lib/cycle-state.sh`) no longer reads that marked re-record as having
+  carried the decision forward, and `refiner_candidate_items`
+  (`lib/refinement.sh`) offers such an item as a full candidate for as long
+  as its decision stays pending (agent-ops#1049).
 - New `scripts/migrate-tech-debt-register.sh` (agent-ops#880), a reusable
   per-repo migration script that closes the gap agent-ops#875 above
   deliberately accepted: for every `status: open`/`status: in-progress`
