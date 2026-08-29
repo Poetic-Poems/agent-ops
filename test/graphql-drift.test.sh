@@ -119,19 +119,20 @@ for f in lib/issue-priority.sh lib/landing.sh lib/merge-queue.sh \
     "yes" "$(if grep -q "^ok   - $f:" <<<"$out"; then echo yes; else echo no; fi)"
 done
 
-assert_eq "a document in test/ is never checked — a stub sends nothing to GitHub" \
-  "yes" "$(if grep -q '^ok   - test/' <<<"$out"; then echo no; else echo yes; fi)"
-assert_eq "the checker does not discover the delimiter quoted in its own comments" \
-  "yes" "$(if grep -q '^ok   - scripts/check-graphql-drift.sh' <<<"$out"; then echo no; else echo yes; fi)"
-
-# Prose about these documents quotes the delimiter too — this repository's own
-# CHANGELOG and spec both do, describing this very check — and prose sends
-# nothing. `prompts/` is the exception, asserted above: a prompt file is the
-# instruction an agent carries out.
-for f in CHANGELOG.md docs/IMPLEMENTATION-PIPELINE-SPEC.md; do
-  assert_eq "$f quotes the delimiter as prose and is not checked as a document" \
-    "yes" "$(if grep -q "^ok   - $f:" <<<"$out"; then echo no; else echo yes; fi)"
-done
+# Each exclusion is asserted in two halves: that the file really does carry
+# the delimiter, and that it was still not checked. Without the first half
+# these pass for free the day the file stops mentioning it, and an assertion
+# that has quietly stopped testing anything is this whole item in miniature.
+assert_excluded() {  # <path> <why>
+  assert_eq "$1 carries the delimiter" \
+    "yes" "$(if grep -qF -e "-f query='" "$SCRIPT_DIR/$1" >/dev/null 2>&1; then echo yes; else echo no; fi)"
+  assert_eq "…and is not checked as a document — $2" \
+    "yes" "$(if grep -q "^ok   - $1" <<<"$out"; then echo no; else echo yes; fi)"
+}
+assert_excluded test/graphql-drift.test.sh "a stub sends nothing to GitHub"
+assert_excluded scripts/check-graphql-drift.sh "it quotes the delimiter in its own commentary"
+assert_excluded CHANGELOG.md "prose about these documents is not one of them"
+assert_excluded docs/IMPLEMENTATION-PIPELINE-SPEC.md "so is the spec describing this very check"
 
 sent="$(grep -c '^---$' "$tmp_dir/queries.log")"
 assert_eq "gh was called once per document" "$checked" "$sent"
