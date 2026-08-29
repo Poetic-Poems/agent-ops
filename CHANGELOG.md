@@ -915,6 +915,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A Refiner (or Enabler) verdict whose `comments_posted[0]`/`comment_url` is a
+  bare issue URL — no `#issuecomment-` anchor, so it cannot name any comment
+  at all — is no longer recorded as a genuine refinement (TD-PPagop-26082819,
+  #935). `refinement_record_fields` (`lib/refinement.sh`) now validates the
+  URL's shape (an `#issuecomment-<n>` anchor or a REST API comment URL, via
+  the new shared `refinement_comment_url_valid`/`_id`) before extracting
+  `comment_url`; an invalid shape is treated exactly as absent, falling into
+  the existing `refined-uncorroborated` warning path instead of arming
+  requirement 36b's thrash guard on a specification that was never written.
+  `enabler_eligible_items` (`lib/cycle-state.sh`) applies the same check when
+  deriving `refined_before`, so the two phantom `item-refined` events already
+  on the fleet log (agent-ops#818, #874) stop blocking their items with no
+  edit to history, and logs a warning naming any phantom it skips. Folds in
+  TD-PPagop-26082603 in the same change: `refinement_traceability_fault`
+  (`lib/candidate-select.sh`) now recognises the REST API comment-URL shape
+  too, via the same shared predicate, rather than silently testing nothing
+  for it.
 - The Co-Ordinator's fit-exemption gate (`agent-cycle.sh`) now reads its own
   fit report correctly, restoring requirement 34e's fourth refusal,
   requirement 3x's trimmed exemption and requirement 17g's fabrication check
