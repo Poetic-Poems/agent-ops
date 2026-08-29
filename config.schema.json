@@ -706,12 +706,12 @@
       }
     },
     "tech_debt_branch_prefix": {
-      "description": "Branch naming for the human tech-debt-claim protocol (`TECH-DEBT.md`): `<tech_debt_branch_prefix><ID>`, read by lib/claim.sh and the gatherer/sweep scripts that must not treat a human's tech-debt branch as their own agent's. Empty disables the tech-debt namespace: those scripts then match only `branch_prefix`.",
+      "description": "Deprecated (D15 as revised, #869/#879): a fresh tech-debt selection now claims and names its branch exactly as an `issues` selection does (`branch_prefix`), so this key mints nothing new. It is read only for legacy recognition — a repository's own pre-migration human tech-debt-claim protocol (`TECH-DEBT.md`'s `<tech_debt_branch_prefix><ID>`) and a `td/<ID>` branch this pipeline minted before this change landed — by lib/claim.sh and the gatherer/sweep scripts that must not treat either as their own agent's fresh claim. Empty disables the tech-debt namespace: those scripts then match only `branch_prefix`. Retired outright, along with the namespace itself, in the roadmap's later register-retirement issue — until then, leave a migrated repository's value alone rather than emptying it early, so a not-yet-swept legacy branch is still recognised.",
       "type": "string",
       "default": "td/",
       "x-docs": {
-        "readme": "Branch naming for the human tech-debt-claim protocol (`TECH-DEBT.md`): `<tech_debt_branch_prefix><ID>`. Leave it empty for a repository that does not follow that convention — the affected scripts then match only `branch_prefix`.",
-        "spec": "Branch name `<tech_debt_branch_prefix><ID>`, e.g. `td/TD26051201`, read wherever `lib/claim.sh` and the gatherer/sweep scripts of requirements 3c/3e/3g/3z/17b must tell a human's tech-debt claim branch from their own agent's. Empty disables the tech-debt namespace: those scripts then match only `branch_prefix`.",
+        "readme": "Deprecated: legacy recognition only, for a pre-migration human tech-debt-claim branch or a `td/<ID>` branch minted before D15's revision. A fresh tech-debt selection now claims `branch_prefix` like any other item. Leave it empty for a repository that never followed the `TECH-DEBT.md` convention — the affected scripts then match only `branch_prefix`.",
+        "spec": "Deprecated (D15 as revised, #869/#879): no longer minted for a fresh claim (requirement 17a) — read only so `lib/claim.sh` and the gatherer/sweep scripts of requirements 3c/3e/3g/3z/17b still recognise a pre-migration human tech-debt-claim branch, or a `td/<ID>` branch minted before this revision, as not their own agent's fresh claim. Branch name `<tech_debt_branch_prefix><ID>`, e.g. `td/TD26051201`. Empty disables the tech-debt namespace: those scripts then match only `branch_prefix`. Retires with the `td/` namespace itself in the roadmap's later register-retirement issue.",
         "value": "`td/`"
       }
     },

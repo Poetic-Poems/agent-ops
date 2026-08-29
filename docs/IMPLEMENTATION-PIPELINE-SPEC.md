@@ -778,7 +778,7 @@ and the schema must carry every one of them.
 | `prompt_overrides` | `{}` | Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementer`/`reviewer`/`enabler`/`refiner`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. `approver` is deliberately absent from the enumeration: the Approver's...[continued below](#extended-notes-prompt_overrides) |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. It must not be `obsolete`: the pipeline would then project requirement 34k's human-only corroboration onto every draft it raises, and the void guard would close live drafts on the pipeline's own say-so — `scripts/doctor.sh` fails the config. Threaded through the Co-Ordinator's runtime input (requirement 4) into every work order's own `pr_label` field, which the Implementer labels its pull request with (requirement 23). |
 | `branch_prefix` | `agent/` | Branch name `agent/<item-slug>`, e.g. `agent/td26051201-fix-xyz`. |
-| `tech_debt_branch_prefix` | `td/` | Branch name `<tech_debt_branch_prefix><ID>`, e.g. `td/TD26051201`, read wherever `lib/claim.sh` and the gatherer/sweep scripts of requirements 3c/3e/3g/3z/17b must tell a human's tech-debt claim branch from their own agent's. Empty disables the tech-debt namespace: those scripts then match only `branch_prefix`. |
+| `tech_debt_branch_prefix` | `td/` | Deprecated (D15 as revised, #869/#879): no longer minted for a fresh claim (requirement 17a) — read only so `lib/claim.sh` and the gatherer/sweep scripts of requirements 3c/3e/3g/3z/17b still recognise a pre-migration human tech-debt-claim branch, or a `td/<ID>` branch minted before this revision, as not their own agent's fresh claim. Branch name `<tech_debt_branch_prefix><ID>`, e.g. `td/TD26051201`. Empty disables the tech-debt namespace: those scripts then match only...[continued below](#extended-notes-tech_debt_branch_prefix) |
 | `max_open_agent_prs` | `8` | Back-pressure: draft PRs, ready PRs still `CHANGES_REQUESTED`, and live claim-registry entries, carrying `pr_label` across all repos — excludes ready PRs whose next action lies outside the pipeline (requirement 2.2). |
 | `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list (requirement 17a), so alternates turn a lost race into the next-best item instead of a wasted cycle. |
 | `coordinator_prompt_max_bytes` | `350000` | The largest assembled prompt the Script will hand the Co-Ordinator (requirement 4i). The default is derived from the 200000-token window of the Co-Ordinator model this installation runs, less the ~50000 tokens of system prompt and tool definitions the Script neither assembles nor can measure, less a reserve for the verdict itself, at the ~2.35 bytes per token JSON-escaped Markdown actually costs. Stated in bytes because bytes are what the Script can count without a tokenizer....[continued below](#extended-notes-coordinator_prompt_max_bytes) |
@@ -941,6 +941,10 @@ Namespace prefix `lib/labels.sh`'s `labels_reconcile` reconciles full CRUD for (
 ### Extended notes: `prompt_overrides`
 
 Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementer`/`reviewer`/`enabler`/`refiner`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. `approver` is deliberately absent from the enumeration: the Approver's adversarial prompt is the gate the D18 trust ladder rests on, and no installation may extend or replace it (requirement 4a, #469). A `replace` file substitutes the whole shipped prompt, its `## Untrusted external content` section included (requirement 45): preserving the canonical marker-delimited block is part of the replacement's contract — `test/prompt-untrusted-framing.test.sh` pins only the shipped prompts.
+
+### Extended notes: `tech_debt_branch_prefix`
+
+Deprecated (D15 as revised, #869/#879): no longer minted for a fresh claim (requirement 17a) — read only so `lib/claim.sh` and the gatherer/sweep scripts of requirements 3c/3e/3g/3z/17b still recognise a pre-migration human tech-debt-claim branch, or a `td/<ID>` branch minted before this revision, as not their own agent's fresh claim. Branch name `<tech_debt_branch_prefix><ID>`, e.g. `td/TD26051201`. Empty disables the tech-debt namespace: those scripts then match only `branch_prefix`. Retires with the `td/` namespace itself in the roadmap's later register-retirement issue.
 
 ### Extended notes: `coordinator_prompt_max_bytes`
 
@@ -3984,13 +3988,16 @@ implements.
    `claimed` genuinely has no fresh claim on it — the array is not a hint to go
    verify, it is the answer.
 
-   Item refs recovered from a branch name are the exact inverse of
-   `claim_branch_for` (requirement 17a): `td/<ID>` strips to `<ID>`,
-   `<branch_prefix><ref>` strips to `<ref>`. That recovery is exact in
-   practice for every item type this system ever mints such a branch for — an
-   issue number, an alert ref, a register-hygiene or project-review ref — none
-   of which contain a character `claim_branch_for`'s sanitiser would have
-   touched, so there is nothing lossy to recover from.
+   Item refs recovered from a branch name mirror `claim_branch_for`
+   (requirement 17a): `<branch_prefix><ref>` strips to `<ref>` for a fresh
+   claim, and `td/<ID>` — no longer minted by `claim_branch_for` itself, but
+   still matched here — strips to `<ID>` for a legacy branch (a repository's
+   pre-migration human tech-debt-claim workflow, or one this pipeline minted
+   before this revision). That recovery is exact in practice for every item
+   type this system ever mints such a branch for — an issue number, an alert
+   ref, a register-hygiene or project-review ref — none of which contain a
+   character `claim_branch_for`'s sanitiser would have touched, so there is
+   nothing lossy to recover from.
 3p. **PR-level candidate exclusion (issue #238).** The four finishing sources'
    ref-per-round/per-head-SHA item refs (requirements 3c, 3e, 3g, 3z) mean a
    peer's claim on a PR under one round's or one head's ref is invisible to
@@ -7510,13 +7517,24 @@ implements.
       — plus one exception within `merge-conflicts` itself, below): a REST
       create-ref (`POST /git/refs`) on the target repository at the default
       branch's head. The claim branch **is** the
-      working branch, derived deterministically so every node computes the same
-      name for the same item: `td/<ID>` for tech-debt — the same lock the human
-      claiming workflow in TECH-DEBT.md takes, so agents and humans contend
-      safely — and `agent/<item-ref>` for everything else. A 422 (ref exists,
-      even at the same SHA — which a plain `git push` of an identical ref would
-      no-op) means a peer holds the item: log `claim-lost` and move to the
-      next candidate.
+      working branch, derived deterministically (`claim_branch_for`,
+      `lib/candidate-select.sh`) so every node computes the same name for the
+      same item: `agent/<item-ref>`, uniformly — tech-debt included, since D15
+      as revised (#869/#875/#879) moved its item to the same bare-issue-number
+      shape an `issues` item already has, so it claims the same way. A 422
+      (ref exists, even at the same SHA — which a plain `git push` of an
+      identical ref would no-op) means a peer holds the item: log
+      `claim-lost` and move to the next candidate.
+
+      `td/<ID>` is no longer minted for a fresh claim — `tech_debt_branch_prefix`
+      is deprecated — but a *live* one is still recognised elsewhere as not
+      this pipeline's own fresh claim: `lib/claim.sh`'s `branches` listing
+      (requirement 17b's orphan-branch sweep, and this requirement's own
+      `gather_claimed`) still matches it, so a repository's pre-migration
+      human tech-debt-claim workflow (`TECH-DEBT.md`) and a `td/<ID>` branch
+      this pipeline minted before this revision are both left alone rather
+      than double-claimed or swept. That recognition, and the namespace
+      itself, retires only in the roadmap's later register-retirement issue.
 
       A `merge-conflicts` work order carrying `"takeover": true` (requirement
       3s) takes a *branch* claim, not the file claim every other
@@ -8061,10 +8079,10 @@ implements.
     parseable final message (requirement 9). That breadcrumb is a courtesy,
     not the guarantee: it is one more step in this
     stage's procedure, and requirement 9's fourth lookup is what covers the
-    stage that performed none of them. For
-    tech-debt items this follows the repo's claiming workflow exactly —
-    flipping the record's `status:` frontmatter to `in-progress` as the
-    first commit. For issues, it
+    stage that performed none of them. For issues and tech-debt items alike —
+    a tech-debt item is an issue carrying the product-managed
+    `pw::type:tech-debt` label, and both claim identically (requirement
+    17a) — it
     comments on the issue linking the draft PR; the work order's `context`
     already carries the issue body and its comments (requirement 20), but if
     the Implementer consults the issue directly it reads the whole thread
@@ -8153,27 +8171,64 @@ implements.
     and both prompts' use of it against each other, so the path cannot drift
     between the three (requirement 34a).
 24b. **Filing deferred work inline, instead of losing it to scope creep or a
-    separate round trip (agent-ops#631).** Adjacent cleanup the Implementer is
-    tempted to do but must keep out of this pull request (requirement 24's own
-    scope discipline) is *noted*, not silently dropped: a `tech-debt/<id>.md`
-    record or a GitHub issue, riding along on this same branch rather than
-    waiting for a future cycle to notice and re-derive it. `TECH-DEBT.md`'s
-    "Filing alongside other work" is the mechanism —
-    `scripts/find-similar-tech-debt.sh` first, to avoid filing a duplicate
-    of an already-tracked gap, then `scripts/reserve-tech-debt-id.pl` and a
-    commit of `tech-debt/<id>.md` directly onto the current branch, never the
-    reservation's own `td/<id>` branch. A lone record file with no
-    accompanying code change is ordinary traffic through this register, not
-    scope creep, and requirement 26a's complexity grading treats it
-    accordingly (register-entry-only stays `low`). This is a **note**, never
-    the fix: the actual work for a filed record is left for a future item to
-    pick up on its own merits.
-25. Updates the originating record: the tech-debt record marked `resolved` —
-    its `status:` frontmatter flipped (with `resolved:` and `ref:` filled in)
-    and its body left in place, the file never deleted or renamed; issues
+    separate round trip (agent-ops#631; the issue-backed convention, D15 as
+    revised, #869/#875/#879).** Adjacent cleanup the Implementer is tempted to
+    do but must keep out of this pull request (requirement 24's own scope
+    discipline) is *noted*, not silently dropped: a labelled GitHub issue,
+    riding along on this same branch rather than waiting for a future cycle
+    to notice and re-derive it. The mechanism is one API call, not a register
+    file: dedup-search first (`gh issue list --label pw::type:tech-debt
+    --search "<working title>"`), to avoid filing a duplicate of an
+    already-tracked gap, then `gh issue create` labelled `pw::type:tech-debt`
+    — never a branch or a pull request of its own — plus a `Defers: #<n>`
+    line added to *this* pull request's body, naming the freshly filed issue.
+    `Defers:` is never a closing keyword (`Closes`/`Fixes`/`Resolves`):
+    deferring is not resolving, and GitHub's own closing-keyword parser (the
+    one requirement 25a's check mirrors) does not recognise it as one either
+    way, so there is no risk of it auto-closing anything — the distinction
+    matters for the *reader*, human or Reviewer, not for GitHub's own
+    behaviour. The issue and the `Defers:` line both land before the
+    Implementer's own turn ends — the Reviewer (requirement 30d) verifies
+    each one, not files it fresh. Where the gap is a question or a decision
+    rather than a scoped piece of work, an unlabelled `gh issue create`
+    mentioned in the pull request body substitutes, with no `Defers:` line.
+    A `Defers:`-linked issue with no accompanying code change is ordinary
+    traffic through this band, not scope creep, and requirement 26a's
+    complexity grading treats it accordingly (issue-only stays `low`). This
+    is a **note**, never the fix: the actual work for a filed issue is left
+    for a future item to pick up on its own merits.
+25. Updates the originating record: an issue — tech-debt or otherwise —
     linked with a real GitHub closing keyword (`Closes`/`Fixes`/`Resolves
     #N`) naming the same `N` as requirement 23b's marker; implementation-plan
     task marked done.
+
+    **Tech-debt's closing keyword carries a second thing besides the
+    reference: a structured record.** Since D15 as revised (#869/#875/#879)
+    moved the store off an in-repo register and onto the issue itself — a
+    mutable, editable object, unlike a register file's line in `main`'s own
+    history — the permanent record now has to be written somewhere immutable
+    at resolution time, and the pull request body, carried verbatim into the
+    squash-merge commit on `main` (`squash_merge_commit_message: PR_BODY`),
+    is that somewhere. The Implementer adds a fenced `td-record` block to the
+    PR body alongside the closing keyword:
+
+    ```td-record
+    issue: <n>
+    title: "<the issue's own title, verbatim>"
+    filed: <the issue's own creation date, YYYY-MM-DD>
+    summary: "<what the debt was, briefly>"
+    resolution: "<what this PR did about it>"
+    ```
+
+    All five fields are required, in this order — `issue` matching the
+    closing keyword's own `N`; `filed` the issue's `created_at` date
+    (already in the work order's `context`), never the day of resolution, so
+    the record states when the debt was noticed rather than only when it was
+    paid off. This is a pull-request-body convention, not a file: there is no
+    register entry to flip and no `td-check.pl` to satisfy for a tech-debt
+    item any more, and the block's shape is fixed so the archive mirror and
+    later analytics can parse it (the mirror and its own retention are D15's
+    separate concern, not this requirement's).
     For `security`/`code-quality` findings, no register flip applies — GitHub
     closes a Dependabot or code-scanning alert automatically once the fix
     lands on the default branch and is re-scanned — so the PR body names the
@@ -8236,17 +8291,18 @@ implements.
       number, unless the body also carries a real closing keyword for that
       same `N`.
     - **The branch.** A head branch of exactly `agent/<N>` — the name the
-      Script itself mints for an issue-sourced work order
-      (`claim_branch_for`) and for nothing else, since no other source
-      yields a purely numeric item (`lib/work-gone.sh`) — requires both the
+      Script itself mints for any work order whose item is a bare issue
+      number, `issues` and `tech-debt` sources alike (`claim_branch_for`),
+      and for nothing else (`lib/work-gone.sh`) — requires both the
       marker for `N` and the closing keyword for `N` to be *present*. This
       anchor is the one no model writes: a marker-only check passes
       trivially on the PR whose Implementer forgot the marker, which is the
       same silent prompt-skip that motivated issue #240, whereas the branch
       name was fixed by the Script before the Implementer ever ran.
 
-    A PR with no marker on any other branch — every non-issue source —
-    passes; the check has nothing to say about a PR with nothing to close.
+    A PR with no marker on any other branch — every source with nothing to
+    close — passes; the check has nothing to say about a PR with nothing to
+    close.
     This is what makes requirement 25's "Implements #198" failure (issue
     #240) structurally impossible to repeat unnoticed: the pull request
     itself goes red, in front of the human who reviews it, rather than
@@ -8328,9 +8384,10 @@ implements.
     never to how difficult it felt — the PR that most needs a strong review
     is the one whose author misunderstood something and didn't notice, and
     that author will find it easy:
-    - `low` — docs, comments, or register entries only; no behaviour
-      change. A work order the Co-Ordinator classified trivial (requirement
-      19) is `low` by definition, no deliberation required.
+    - `low` — docs, comments, register entries, or a lone deferred-work
+      issue (a `Defers:` line with no accompanying code change) only; no
+      behaviour change. A work order the Co-Ordinator classified trivial
+      (requirement 19) is `low` by definition, no deliberation required.
     - `medium` — a behaviour change confined to one area and well covered by
       existing or added tests.
     - `high` — the diff touches concurrency/locking, security, state
@@ -8490,14 +8547,28 @@ implements.
     request — a design gap in code the diff merely touches, something worth a
     human's attention that isn't itself a defect to fix under requirement 30.
     Rather than lose it to a step-32 comment nothing later sweeps for unfiled
-    debt, it is filed the same way: `TECH-DEBT.md`'s "Filing alongside other
-    work", `scripts/find-similar-tech-debt.sh` first, then a `tech-debt/<id>.md`
-    record (or a `gh issue create`, for a question rather than a scoped fix)
-    committed directly onto the pull request's own branch — riding along
-    whether the Implementer or the Reviewer is the one who added it. A lone
-    record file with no accompanying code change is, for both stages, never
-    itself grounds to flag a defect, correct the `complexity:*` label upward,
-    or read the diff as having grown beyond its scope.
+    debt, it is filed the same way: dedup-search (`gh issue list --label
+    pw::type:tech-debt --search "<working title>"`) first, then `gh issue
+    create` labelled `pw::type:tech-debt` (or an unlabelled one, for a
+    question rather than a scoped fix) plus a `Defers: #<n>` line added to
+    the pull request's own body — riding along whether the Implementer or
+    the Reviewer is the one who added it. A `Defers:`-linked issue with no
+    accompanying code change is, for both stages, never itself grounds to
+    flag a defect, correct the `complexity:*` label upward, or read the diff
+    as having grown beyond its scope.
+30e. **Verifying every `Defers:` link (D15 as revised, #869/#875/#879).** A
+    `Defers: #<n>` line the Implementer (or an earlier Reviewer pass) added
+    is a claim that issue `#<n>` exists and carries `pw::type:tech-debt` —
+    the label is what makes it selectable as this band's own work later, and
+    a typo'd number or a missing label leaves it invisible to both a human
+    and `scripts/gather-tech-debt.sh` alike. The Reviewer confirms both
+    (`gh issue view <n> --json state,labels`) for every `Defers:` line the
+    pull request body carries, fixing what it can — the number, or the label
+    on an issue that is genuinely a debt item simply filed without it — under
+    requirement 30, and flagging the rest under requirement 32. A `Defers:`
+    line is never also a closing keyword for the same `N`: a body caught
+    both resolving and deferring the same number is a defect in the body,
+    fixed by keeping whichever the diff actually does.
 31. Confirms CI is passing (`gh pr checks`) and the PR is mergeable, then
     marks it ready for review (`gh pr ready`), and where a human's review is
     what blocks it, requests a fresh one from them (requirement 31b). It never

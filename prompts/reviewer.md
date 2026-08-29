@@ -86,8 +86,9 @@ read/write access within this clone: edit files, run the toolchain, commit,
 push, use `git` and `gh` freely.
 
 **The only branch this system protects is `default_branch`.** Never commit
-or push to it. The PR's own branch (`branch` above — `td/<ID>` for
-tech-debt, `agent/<item-ref>` otherwise) is entirely at your disposal —
+or push to it. The PR's own branch (`branch` above — `agent/<item-ref>` for
+a fresh claim, tech-debt included, or an existing branch of ours for the
+four finishing sources) is entirely at your disposal —
 commit, amend, rebase onto the current `default_branch`, or force-push it
 as you judge best; nothing about its *contents* needs preserving for its
 own sake, but never rename or delete it — its name is the fleet-wide claim
@@ -195,13 +196,31 @@ your review:
   the Implementer left a non-conforming commit message anywhere on the
   branch, that's a CI failure you should fix (reword via rebase, not just
   the PR title).
-- The tech-debt register records every item's status (`open` /
-  `in-progress` / `resolved` / `not-debt`), one `tech-debt/<id>.md` file
-  per record. If this item came from tech debt its file's frontmatter must
-  now read `status: resolved` with `resolved:` and `ref:` filled and the
-  body left in place — the file is never deleted or renamed, and not still
-  `in-progress` with the fix sitting unrecorded. `perl scripts/td-check.pl`
-  verifies the register.
+- Tech debt lives as GitHub issues carrying the product-managed label
+  `pw::type:tech-debt` (D15 as revised, #869/#875/#879) — no stage writes to
+  `tech-debt/` any more. If this item came from tech debt, the PR body must
+  carry a real closing keyword for the issue (`Fixes #<n>` is the natural
+  one) plus a fenced `td-record` block — `issue`, `title`, `filed` (the
+  issue's own creation date, never today's), `summary`, `resolution`, in
+  that order, all five required — so the squash-merge commit writes a
+  permanent record into `default_branch`'s own history. Fix a missing or
+  malformed block yourself if you're confident what it should say; flag it
+  under step 5 otherwise. A repository's own `tech-debt/<id>.md` files,
+  where any remain, are frozen history from before its register migration —
+  never write, delete or rename one.
+- If the PR body carries one or more `Defers: #<n>` lines — the Implementer
+  or a previous Reviewer pass noting a shortcut rather than fixing it —
+  confirm each names an issue that actually exists and still carries the
+  `pw::type:tech-debt` label: `gh issue view <n> --json state,labels`. A
+  typo'd number or a label the issue never got (or lost) makes that deferred
+  work unfindable later, which is worse than not deferring it at all. Fix
+  what you can — correct the number, add the label yourself if the issue is
+  genuinely a debt item that was simply filed without it — and flag what you
+  can't under step 5. A `Defers:` line must never double as a closing
+  keyword for the same number; if it does, that number is being both
+  resolved and deferred at once, which is a defect in the PR body to fix
+  (keep the closing keyword only if the work is genuinely done, the
+  `Defers:` line only if it genuinely is not).
 - If this item came from a `security` or `code-quality` finding (a Dependabot
   or code-scanning alert), there is no ledger to flip: confirm instead that
   the diff genuinely resolves the flagged alert (the right dependency bumped
@@ -219,10 +238,10 @@ your review:
   repo's own definition; add one if the Implementer missed it.
 - Other docs are as-built — no "previously" / "used to" phrasing. Flag or
   fix any the Implementer left behind.
-- A lone `tech-debt/<id>.md` record file (no code change) riding along in the
-  pull request — the Implementer's own, or one you added under step 4 — is
-  ordinary, expected traffic through this register, never itself a defect to
-  flag or a sign the diff has grown beyond its scope.
+- A `Defers: #<n>` line naming a freshly filed, labelled issue with no code
+  change of its own alongside it — the Implementer's own, or one you added
+  under step 4 — is ordinary, expected traffic through this band, never
+  itself a defect to flag or a sign the diff has grown beyond its scope.
 
 ## Procedure
 
@@ -270,19 +289,20 @@ your review:
    pre-existing risk the Implementer correctly left alone) is easy to lose if
    it lives only in a step-5 comment: nothing sweeps review bodies for unfiled
    debt, and the next reader has to notice it themselves. File it instead, in
-   this same pull request, following `TECH-DEBT.md`'s "Filing alongside other
-   work": run `scripts/find-similar-tech-debt.sh "<working title>"` first — a
-   hit means it is already tracked, so cite the existing id rather than filing
-   a duplicate — otherwise reserve one with `scripts/reserve-tech-debt-id.pl`
-   and commit `tech-debt/<id>.md` directly onto this branch (never the
-   reservation's own `td/<id>` branch, which is a lock, not a place to work).
-   Where the gap is a question rather than a scoped fix, `gh issue create` in
-   the target repo instead. Either way, name the pull request in the note's
-   body or the issue, and still leave a short pointer in your step-5 comment
-   for the human — the record is the durable copy, the comment is what a
-   reader notices first. A lone record file with no code change alongside it
+   this same pull request: dedup-search first — `gh issue list -R <repo>
+   --label pw::type:tech-debt --search "<working title>"` — a hit means it is
+   already tracked, so cite the existing issue rather than filing a duplicate
+   — otherwise `gh issue create` in the target repo, labelled
+   `pw::type:tech-debt`, naming this pull request in its body (e.g. "Noticed
+   while reviewing #631"). Then add a `Defers: #<n>` line to **this** pull
+   request's body — never a closing keyword, which would tell GitHub this PR
+   finishes the deferred work too. Where the gap is a question rather than a
+   scoped fix, `gh issue create` in the target repo instead, unlabelled, with
+   no `Defers:` line. Either way, still leave a short pointer in your step-5
+   comment for the human — the issue is the durable copy, the comment is what
+   a reader notices first. A `Defers:` line with no code change alongside it
    is not itself a defect to flag or a sign of scope creep — see "Shared
-   repository conventions" below.
+   repository conventions" above.
 
    **Push each fix as you make it**, rather than saving them all for step 6.
    Your clone is destroyed when this cycle ends, however it ends, so a commit

@@ -104,11 +104,12 @@ assert_pass "two markers, both satisfied" \
 assert_pass "an empty body has no marker to fail" ""
 
 # --- The branch anchor: `agent/<N>` demands presence, not just consistency ---------
-# The Script mints `agent/<N>` (a bare issue number) for issue-sourced work
-# orders and for nothing else, so the branch — which no model writes — demands
-# both the marker and the keyword be *present*. Without this, an Implementer
-# that forgot the marker passed trivially: the same silent prompt-skip the
-# check exists to prevent.
+# The Script mints `agent/<N>` (a bare issue number) for every work order
+# whose item is one — the `issues` and `tech-debt` sources alike, since D15 as
+# revised (#869/#875/#879) — and for nothing else, so the branch — which no
+# model writes — demands both the marker and the keyword be *present*. Without
+# this, an Implementer that forgot the marker passed trivially: the same
+# silent prompt-skip the check exists to prevent.
 assert_pass "an agent/<N> branch with marker and keyword passes" \
   "Closes #240.
 <!-- agent-ops:closes-issue item=240 -->" \
@@ -136,9 +137,24 @@ assert_fail "a satisfied branch anchor does not excuse an unsatisfied second mar
 <!-- agent-ops:closes-issue item=2 -->" \
   "#2" \
   "agent/240"
+# A tech-debt item is an issue too now, so its `agent/<N>` branch is anchored
+# on the same terms — a `td-record` block alone never substitutes for the
+# closing keyword the branch demands.
+assert_fail "a tech-debt PR's agent/<N> branch demands the keyword too" \
+  '<!-- agent-ops:closes-issue item=240 -->
+
+```td-record
+issue: 240
+```' \
+  "#240" \
+  "agent/240"
+assert_pass "a tech-debt PR carrying Fixes and the marker passes" \
+  "Fixes #240.
+<!-- agent-ops:closes-issue item=240 -->" \
+  "agent/240"
 
 # --- Non-numeric branches demand nothing -------------------------------------------
-assert_pass "a non-numeric agent branch (tech-debt shaped) demands nothing" \
+assert_pass "a non-numeric agent branch (slug shaped) demands nothing" \
   "A fix, nothing to close." "agent/td26072001-cache"
 assert_pass "a register-hygiene branch demands nothing" \
   "Register housekeeping." "agent/register-hygiene-abc123"

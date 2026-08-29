@@ -23,8 +23,10 @@
 #   - the `<!-- agent-ops:closes-issue item=N -->` marker
 #     (`prompts/implementer.md` Procedure step 2; requirement 23b);
 #   - failing that, a head branch of exactly `agent/<N>` — the name the
-#     Script itself mints for an issue-sourced work order (`claim_branch_for`,
-#     agent-cycle.sh) and for nothing else, so it needs no model to have
+#     Script itself mints for a work order whose item is a bare issue number
+#     (`claim_branch_for`, agent-cycle.sh), the `issues` and `tech-debt`
+#     sources alike since D15 as revised (#869/#875/#879), and for nothing
+#     else, so it needs no model to have
 #     remembered anything. Without this fallback, the Implementer forgetting
 #     the marker blinded the sweep and the CI check together — the two
 #     defences failing on the same omission they exist to catch.

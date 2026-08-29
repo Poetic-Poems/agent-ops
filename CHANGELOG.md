@@ -1823,6 +1823,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The implementation pipeline claims, resolves and defers tech debt as issues
+  rather than as register files (agent-ops#879; D15 as revised #869, on top of
+  the issue-backed band #875). `lib/candidate-select.sh`'s `claim_branch_for`
+  drops its tech-debt special case: a tech-debt selection's item is a bare
+  issue number like any `issues` one, so it claims and names its branch
+  `agent/<item-ref>` the same way, and `tech_debt_branch_prefix` is deprecated
+  — read only so `lib/claim.sh` and the gatherer/sweep scripts still recognise
+  a repository's pre-migration human tech-debt-claim branch, or a `td/<ID>`
+  minted before this change, as not their own agent's fresh claim. Resolving a
+  debt item now means a real closing keyword plus a fenced `td-record` block
+  (`issue`, `title`, `filed`, `summary`, `resolution`) in the pull request
+  body, which the squash merge writes into `main`'s own immutable history —
+  the permanent record that replaces the register file's line in it. Deferring
+  a shortcut noticed mid-implementation means a dedup-searched,
+  `pw::type:tech-debt`-labelled issue plus a `Defers: #n` line in the same
+  body, never a closing keyword; the Reviewer verifies each `Defers:` link
+  exists and still carries the label (requirement 30e). `prompts/implementer.md`,
+  `prompts/reviewer.md` and requirements 17a, 23, 24b, 25, 25a, 30d and 30e
+  move with it. Neither the `td/` namespace nor the frozen `tech-debt/`
+  directory is removed here; both retire with the register machinery
+  (agent-ops#882).
 - The landing audit record's `head_sha` field is renamed `review_commit_sha`
   (requirement 8x, TD-PPagop-26082312): the value is unchanged — still the
   Approver's standing review's own `commit_id` — but the old name read as the

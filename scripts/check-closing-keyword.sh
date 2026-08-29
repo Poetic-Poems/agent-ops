@@ -24,14 +24,16 @@
 # an Implementer that forgets the marker entirely produces a PR this check
 # passes trivially, which is the same silent skip that motivated issue #240
 # in the first place. So the check has a second anchor no model writes: the
-# head branch. The Script names an issue-sourced work order's branch
-# `agent/<N>` with a bare issue number (`claim_branch_for`, agent-cycle.sh),
+# head branch. The Script names a work order whose item is a bare issue
+# number `agent/<N>` (`claim_branch_for`, agent-cycle.sh) — the `issues` and
+# `tech-debt` sources alike, since D15 as revised (#869/#875/#879) moved debt
+# onto `pw::type:tech-debt` issues and its item ref onto the issue number —
 # and no other source ever yields a purely numeric item (`lib/work-gone.sh`);
 # a head branch matching `agent/<N>` therefore *requires* both the marker for
 # `N` (which the post-merge sweep keys on, requirement 17c) and a closing
 # keyword for `N`. A PR with no marker and a non-numeric branch covers every
-# non-issue-sourced source (tech-debt, register-hygiene, security,
-# project-review, …) that has nothing to close, and passes.
+# source with nothing to close (register-hygiene, security, project-review,
+# …), and passes.
 #
 # Usage: check-closing-keyword.sh <pr-body-text> [<head-branch>]
 # Exit 0: nothing claims an issue, or every claim has its closing keyword.
@@ -51,8 +53,9 @@ mapfile -t items < <(grep -oE '<!-- agent-ops:closes-issue item=[0-9]+ -->' <<<"
 
 status=0
 
-# The branch anchor: `agent/<N>` is minted by the Script for issue-sourced
-# work orders only, so it demands the marker's *presence* — the one thing the
+# The branch anchor: `agent/<N>` is minted by the Script only for a work
+# order whose item is a bare issue number — one there is therefore always
+# something to close — so it demands the marker's *presence*, the one thing the
 # marker cannot demand of itself. The number joins the keyword loop below
 # whether or not the marker was there, so a branch-anchored PR missing both
 # gets both told to it.

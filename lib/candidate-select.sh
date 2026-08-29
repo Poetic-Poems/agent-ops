@@ -62,15 +62,19 @@ release_pr_claim() {
 
 # The claim/working branch is derived here, deterministically, never by the
 # model: two nodes must compute the same name for the same item or the lock
-# locks nothing. Tech-debt takes the human protocol's own `td/<ID>` — agents
-# and humans then contend on the same ref and git arbitrates; everything else
-# is `agent/<item-ref>`.
+# locks nothing. Every source, tech-debt included, is `agent/<item-ref>` —
+# tech-debt's own item is now a bare issue number (the store moved to
+# labelled issues, D15 as revised, #869/#875/#879), the same shape an
+# `issues` item already has, so it claims the same way. `td/<ID>` is no
+# longer minted for a fresh claim; `lib/claim.sh`'s `branches` listing and
+# this file's own `gather_claimed` still recognise a *live* `td/*` branch —
+# a repo's own pre-migration human tech-debt-claim protocol
+# (`tech_debt_branch_prefix`, deprecated) or a claim this code minted before
+# this change landed — so as not to let a peer double-claim one; that
+# recognition retires only in the roadmap's later register-retirement issue.
 claim_branch_for() {  # <source> <item>
-  local source="$1" item="$2"
-  case "$source" in
-    tech-debt) printf 'td/%s' "$item" ;;
-    *)         printf 'agent/%s' "${item//[^A-Za-z0-9._-]/-}" ;;
-  esac
+  local item="$2"
+  printf 'agent/%s' "${item//[^A-Za-z0-9._-]/-}"
 }
 
 # Requirement 3o: the fleet's active claims for one repo, deterministic claim
