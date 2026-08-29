@@ -905,6 +905,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The Co-Ordinator's fit-exemption gate (`agent-cycle.sh`) now reads its own
+  fit report correctly, restoring requirement 34e's fourth refusal,
+  requirement 3x's trimmed exemption and requirement 17g's fabrication check
+  on every fitted cycle (TD-PPagop-26082816, #933). The gate read
+  `${coordinator_fit_report_json:-{}}`; bash's `${parameter:-word}` closes on
+  the *first* unquoted `}`, so the default word was `{` with a literal `}`
+  appended after it — on every cycle the fit actually ran, that stray brace
+  corrupted the report into invalid JSON, and the gate silently read it as
+  "fit did not run". `coordinator_fit_trimmed_json` was therefore permanently
+  `[]` and `coordinator_fit_rung` permanently `0`, and a context-tight
+  Co-Ordinator's `needs_refinement` reports against already-trimmed items
+  went unrefused. `coordinator_fit_report_json` is now initialised to `'{}'`
+  ahead of the guard instead, removing the parameter-expansion default (and
+  the trap) entirely.
 - The stand-down classifier's own documentation now names all five causes
   it can report — `raced`, `unreachable`, `pre-claimed`, `untraceable` and
   `fabricated` — rather than describing a "three-way distinction" and
