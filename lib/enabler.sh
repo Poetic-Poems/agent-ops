@@ -440,7 +440,7 @@ escalation_autonomy_decide_pass_available() {
   [[ "$max_passes" =~ ^[0-9]+$ ]] || max_passes=3
   if (( count >= max_passes )); then
     log_event "warning" "$(jq -nc --arg r "$repo" --arg i "$item" --argjson n "$max_passes" \
-      --arg d "enabler: $repo $item has already spent its $max_passes decide-tactical passes since the last human touch — escalating without a fresh pass" \
+      --arg d "enabler: $repo $item has already spent its $max_passes decide-tactical passes — escalating without a fresh pass (the cap counts the item's whole history; a human touch grants one further pass regardless of it)" \
       '{detail: $d, repo: $r, item: $i}')"
     return 1
   fi

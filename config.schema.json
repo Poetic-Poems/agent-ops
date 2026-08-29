@@ -509,14 +509,14 @@
       }
     },
     "escalation_adjudication_max_passes": {
-      "description": "How many decide-tactical passes one item may spend since the last human touch, whatever their reason (requirement 36d). A fresh reason still gets its own pass below this cap; the cap only stops an item cycling through unrelated tactical questions indefinitely between touches.",
+      "description": "How many decide-tactical passes one item may spend in total, whatever their reason (requirement 36d). A fresh reason still gets its own pass below this cap; a human touch (eligibility `reason: \"issue-closed\"`) grants one further pass regardless of it. The cap only stops an item cycling through unrelated tactical questions indefinitely.",
       "type": "integer",
       "minimum": 1,
       "default": 3,
       "x-docs": {
-        "readme": "How many `decide-tactical` passes one item may spend since you last touched it (closed an escalation about it), whatever their reason — see [Blocked items and the Enabler](#blocked-items-and-the-enabler). A fresh reason still gets its own pass under this cap; only a run of unrelated tactical questions on the same item, between your touches, is what this bounds.",
-        "spec": "The cap half of `decide-tactical`'s per-reason bound (requirement 36d): `escalation_autonomy_decide_pass_available` (lib/enabler.sh) refuses a fresh pass once this many decide-tactical passes — `enabler-adjudication` events tagged `pass: \"decide-tactical\"` — have run for the item since the last human touch (eligibility `reason: \"issue-closed\"`), regardless of reason key. An unreadable value falls back to `3`, the same default this key ships.",
-        "value": "3"
+        "readme": "How many `decide-tactical` passes one item may spend in total, whatever their reason — see [Blocked items and the Enabler](#blocked-items-and-the-enabler). A fresh reason still gets its own pass under this cap, and closing an escalation about the item grants one further pass regardless of it; only a run of unrelated tactical questions on the same item is what this bounds.",
+        "spec": "The cap half of `decide-tactical`'s per-reason bound (requirement 36d): `escalation_autonomy_decide_pass_available` (lib/enabler.sh) refuses a fresh pass once this many decide-tactical passes — `enabler-adjudication` events tagged `pass: \"decide-tactical\"` — have run for the item over the whole log, regardless of reason key. A human touch (eligibility `reason: \"issue-closed\"`) short-circuits the check for that cycle, granting one further pass, but does not reset the count. An unreadable value falls back to `3`, the same default this key ships.",
+        "value": "`3`"
       }
     },
     "needs_refinement_label": {

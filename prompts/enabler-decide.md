@@ -35,8 +35,9 @@ reversible shapes — is tactical, and yours to settle or decide.
 **This is the item's only pass per distinct reason, and it is capped.** The
 Script runs a decide-tactical pass once per reason key — a fingerprint of
 `reflag.detail`/`reflag.unblock_condition` — and at most
-`escalation_adjudication_max_passes` times in total since the last human
-touch. A second escalation over the *same* stated reason reaches you never:
+`escalation_adjudication_max_passes` times for the item in total, plus one
+further pass each time a human touches it. A second escalation over the
+*same* stated reason reaches you never:
 it escalates directly, on the same "two models disagreeing is a human's call"
 principle `enabler-adjudicate.md`'s own bound rests on. That cuts both ways:
 an `escalate` here, over a genuinely tactical question, costs a person one

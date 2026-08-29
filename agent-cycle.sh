@@ -545,9 +545,11 @@ refinement_max_per_engagement="$(cfg '.refinement_max_per_engagement')"
 [[ "$refinement_max_per_engagement" =~ ^[0-9]+$ ]] || refinement_max_per_engagement=3
 # The per-reason bound's own cap (D18 §5, agent-ops#936): how many
 # decide-tactical passes `escalation_autonomy_decide_pass_available` (lib/
-# enabler.sh) allows for one item since the last human touch, whatever their
-# reason — the backstop that turns "a fresh reason always gets a fresh pass"
-# into a bounded total rather than an unbounded one.
+# enabler.sh) allows for one item in total, whatever their reason — the
+# backstop that turns "a fresh reason always gets a fresh pass" into a
+# bounded total rather than an unbounded one. A human touch (eligibility
+# `reason: "issue-closed"`) short-circuits the check for that cycle, granting
+# one further pass, but does not reset the count.
 escalation_adjudication_max_passes="$(cfg '.escalation_adjudication_max_passes')"
 [[ "$escalation_adjudication_max_passes" =~ ^[0-9]+$ ]] || escalation_adjudication_max_passes=3
 # The Refiner (requirement 39): the positive counterpart of the refinement
