@@ -14223,45 +14223,82 @@ What exists, and the requirements each part answers to:
     TD-PPagop-26082930). Every GitHub read in this repository is asserted only
     against a `gh` stub it writes itself, and a stub answers in whatever shape
     its own fixture declares, so a field GitHub renames or moves cannot fail a
-    test; this asks GitHub instead. The documents are **discovered**, by
-    walking the tree for `-f query='` — the one form all of them use —
-    rather than read from a list, for the reason component 10 and
-    `td-tooling-drift.yml` both give about their own file sets. Three kinds of
-    file carry the delimiter without sending anything and are excluded:
-    `test/`, because a stub answers without asking and this check's own
-    fixtures are deliberately broken documents; the script itself, which
-    quotes the delimiter throughout its commentary; and Markdown outside
-    `prompts/` — CHANGELOG.md, `docs/`, README.md — which is prose about these
-    documents rather than any of them. `prompts/` is the deliberate exception:
-    a prompt file is the instruction an agent carries out, so its documents
-    are sent as surely as `lib/`'s. Any shell script anywhere in the tree is
-    searched, whether or not whoever added it knew this check exists. Finding
-    no document at all fails, and is never a quiet pass. Discovery walks the
-    tree rather than `git ls-files`, unlike component 10 beside it, because
-    the `test/` suite runs inside the node image, where `.dockerignore` and
-    `scripts/run-tests.sh` have both dropped `.git`: an index-keyed discovery
-    would find nothing there and report it as no drift, leaving the one case
-    worth having — the real tree, walked as the nightly walks it — assertable
-    only on a developer's checkout, which is the shape of the failure this
-    check exists to retire.
+    test; this asks GitHub instead.
     Each operation's selection set is wrapped in `... @skip(if:true) { … }`
     before it is sent. GraphQL validates a document in full *before* executing
     any of it, so every field inside the fragment is still checked while
     nothing is collected — which is what lets the two mutations,
     `enqueuePullRequest` (`lib/landing.sh`) and `setIssueFieldValue`
     (`lib/issue-priority.sh`), be validated nightly without a pull request
-    being enqueued or an issue's Priority written. Variables are coerced even
-    when the body is skipped, so each declared variable is given a placeholder
-    chosen by its type from a closed table; a type not in that table fails the
-    run naming the variable rather than being guessed at, because a guess
-    GitHub rejects is indistinguishable from the drift this exists to report.
-    Exit 0 every document validates, 1 at least one does not (drift, or a
-    document the checker cannot read), 2 could not check — no documents found,
-    a transport failure, or a GitHub error carrying a `type` such as
-    `RATE_LIMITED`; unable is never reported as clean. Unit-tested against a
-    stubbed `gh` (`test/graphql-drift.test.sh`), whose first case runs the real
-    discovery over this repository's own tree so a document added in a shape
-    the scanner cannot see fails there rather than going unchecked; must pass
+    being enqueued or an issue's Priority written.
+    The request is a `{query, variables}` JSON body posted with `--input`, not
+    a set of `-f query=…` arguments: `gh api graphql` builds one map from
+    every `-f`/`-F` pair and lifts all but `query` into `variables`, so a
+    document declaring a variable actually named `$query` collides with the
+    reserved key carrying the document itself — gh 2.96.0 refuses the call,
+    other versions send the placeholder *as* the document, and either way a
+    valid document reads as this check's own failure. Variables are coerced
+    even when the body is skipped, so each declared variable is given a
+    placeholder chosen by its type from a closed table (`String`/`ID`, `Int`,
+    `Float`, `Boolean`, and `[]` for any list); a type not in that table fails
+    the run naming the file, line and variable rather than being guessed at,
+    because a guess GitHub rejects is indistinguishable from the drift this
+    exists to report. `lib/github-limit.sh` is sourced, so a secondary limit
+    is waited out rather than turning the nightly red — which matters more
+    here than for a work source that merely degrades, since by this check's
+    own design a red run is meant to become work.
+    **Discovery is a search, never a list, and is checked from the other
+    side.** Documents are found by walking the tree for `-f query='` at an
+    argv token boundary — the one form all of them use — rather than read from
+    a list, for the reason component 10 and `td-tooling-drift.yml` both give
+    about their own file sets. Three kinds of file carry the delimiter without
+    sending anything and are excluded: `test/`, because a stub answers without
+    asking and this check's own fixtures are deliberately broken documents;
+    the script itself, which quotes the delimiter throughout its commentary;
+    and Markdown outside `prompts/` — CHANGELOG.md, `docs/`, README.md — which
+    is prose about these documents rather than any of them. `prompts/` is the
+    deliberate exception: a prompt file is the instruction an agent carries
+    out, so its documents are sent as surely as `lib/`'s — and the token
+    boundary is what keeps a prompt's own prose about the form (a Markdown
+    code span, where the character before `-f` is a backtick) from opening a
+    document whose closing quote is the real call's own. Any shell script
+    anywhere in the tree is searched, whether or not whoever added it knew
+    this check exists. Four things fail rather than passing quietly: finding
+    no document anywhere; a file that opens a document it never closes (a
+    typographic quote in place of an apostrophe used to make the scan run to
+    end of file and contribute nothing); a document whose shape cannot be
+    read, reported with which of the three malformations it is; and — the
+    cross-check that closes the "one spelling is still a list" gap — a file
+    that mentions `api graphql` at all and yields no document, which is how a
+    call site written `-f query="…"` or assembled in a variable would
+    otherwise be invisible to the very check meant to cover it.
+    Discovery walks the tree rather than `git ls-files`, unlike component 10
+    beside it, because the `test/` suite runs inside the node image, where
+    `.dockerignore` and `scripts/run-tests.sh` have both dropped `.git`: an
+    index-keyed discovery would find nothing there and report it as no drift,
+    leaving the one case worth having — the real tree, walked as the nightly
+    walks it — assertable only on a developer's checkout, which is the shape
+    of the failure this check exists to retire.
+    **Two verdicts, never collapsed.** Drift is "GitHub answered, and the
+    answer was that this document is wrong"; unable is "no answer was
+    obtained". A response carrying both a `type`d error (`NOT_FOUND`,
+    `FORBIDDEN`, `RATE_LIMITED` — what GitHub could not *do*) and an untyped
+    validation error is partitioned rather than tested as a whole, so a token
+    without reach for one field does not discard real drift beside it. Exit 0
+    every document validates, 1 at least one is wrong, 2 at least one was not
+    checked — and **2 wins where both apply**, because a run that could not
+    answer for every document has not established the "no drift" half of its
+    verdict either; any drift found is still printed and annotated. Unable is
+    never reported as clean, and never as drift. The run's last line reports
+    documents *answered* of documents *found*, counted after the call and only
+    on a complete answer, so a run whose every call failed on credentials says
+    `0 of 2` rather than `2 of 2`. `--list` prints what would be checked and
+    validates nothing, so its exit status reports only whether it could list
+    (0 listed something, 2 nothing to list) and never 1 — a malformed document
+    is listed, marked, rather than dropped. Unit-tested against a stubbed `gh`
+    (`test/graphql-drift.test.sh`), whose first case runs the real discovery
+    over this repository's own tree so a document added in a shape the scanner
+    cannot see fails there rather than going unchecked; must pass
     `shellcheck`.
 11. `scripts/watch-node.sh` — a read-only wrapper around
     `docker compose exec -T scheduler tail` for watching a node's `cron.log`
@@ -16193,26 +16230,41 @@ pull request, run the ones the change touches and any it could regress.
    non-zero on every call for the six days that followed, while `landing_arm`
    reported only its own gate-7 refusal and the suite stayed green. Nothing a
    pull request could have gated would have caught that, and gating one on
-   GitHub's endpoint being reachable would cost every merge for no return. A
-   red run is not left as a mark on a page either: `failed-runs` is a
-   configured work source for this repository (requirement 19), ranked above
-   `issues:high`, so the failure becomes the pipeline's own next work item,
-   `failed-run-graphql-drift`.
+   GitHub's endpoint being reachable would cost every merge for no return.
+   A red run reaches the pipeline as a `failed-run-graphql-drift` candidate
+   (requirement 19) for as long as its run is still inside the single
+   unpaginated 100-run page of the default branch that both the Co-Ordinator's
+   own live query and `scripts/gather-source-state.sh` read — measured at
+   11h18m on 2026-08-29, so roughly the next seven hourly cycles and no
+   longer. That is better than a mark on a page nobody opens and less than a
+   durable work item; TD-PPagop-26082936 records the gap and what would close
+   it.
    `test/graphql-drift.test.sh` passes: the repository's own documents are all
    discovered — `lib/issue-priority.sh`, `lib/landing.sh`,
    `lib/merge-queue.sh`, `prompts/implementer.md` and `prompts/reviewer.md`,
-   seven documents between them — and all reach `gh` wrapped, with neither
-   mutation's field left collectable; a moved field fails the run and is
+   seven documents between them — and all reach `gh` as a `{query, variables}`
+   body whose document is wrapped, with neither mutation's field left
+   collectable; a document declaring a variable named `$query` is checked
+   rather than overwritten by its own placeholder; a document that never
+   closes is annotated at the line it opens on instead of contributing
+   nothing, and a prompt that describes the form in a code span before using
+   it yields exactly one document, the real one; a moved field fails the run
    annotated with the file and the line its document starts on, in GitHub's own
-   wording; a transport failure and a GitHub error carrying a `type` both exit
-   2 rather than being reported as drift or as clean; a tree with no document
-   in it exits 2 saying it refuses to report no drift; two documents in one
-   file are each found at their own line; a variable type with no placeholder
-   and a document whose shape cannot be read each fail the run saying so, never
-   silently skipped; `test/`, this repository's CHANGELOG and this document
-   itself all quote the delimiter and none is checked as a document, while a
-   `prompts/` file carrying one is; and an anonymous shorthand query is
-   wrapped like any other.
+   wording, and counts as answered because GitHub answered; a transport
+   failure reports `0 of 2`, not `2 of 2`; an unreadable document alongside an
+   unanswered one exits 2 rather than letting drift mask it; a response
+   carrying a `type`d error beside real drift reports both; a multi-line
+   GraphQL message stays one `::error` line; the three shape malformations
+   report three distinct reasons; a file that calls `api graphql` and yields
+   no document fails the run naming what discovery recognises; a variable type
+   with no placeholder is annotated with its line; `--help` reaches the whole
+   exit-code contract; `--list` lists a malformed document and exits 0, and
+   exits 2 over a tree with nothing to list; a tree with no document at all
+   exits 2 saying it refuses to report no drift; `test/`, this repository's
+   CHANGELOG and this document itself all quote the delimiter and none is
+   checked as a document, while a `prompts/` file carrying one is; two
+   documents in one file are each found at their own line; and an anonymous
+   shorthand query is wrapped like any other.
 1h. **A log past `log_retained_bytes` rotates, keeps `log_generations`, and
    never touches `log.jsonl`.** `test/rotate-logs.test.sh` passes: a log under
    the threshold is left alone; one over it is renamed to `.1` and a fresh

@@ -40,18 +40,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A nightly check now asks GitHub whether the GraphQL documents this
   repository sends still mean anything to its schema (TD-PPagop-26082930).
   `scripts/check-graphql-drift.sh` discovers every document by walking the
-  tree for `-f query='`, wraps each operation's selection set in
-  `... @skip(if:true) { … }` — GraphQL validates a document in full before
-  executing any of it, so every field is checked while nothing is collected,
-  which is what lets the `enqueuePullRequest` and `setIssueFieldValue`
-  mutations be validated without being run — and fails on anything GitHub no
-  longer recognises. `.github/workflows/graphql-drift.yml` runs it daily,
-  deliberately off the pull-request path: the failure it catches arrives
-  without a commit, as it did when GitHub moved `mergeMethod` and
-  `mergingStrategy` off `MergeQueue` and took every autonomous landing down
-  with them for six days while the suite stayed green (#953). `failed-runs`
-  is a configured work source for this repository, so a red run becomes the
-  pipeline's own next work item rather than a mark on a page.
+  tree for `-f query='` at an argv token boundary, wraps each operation's
+  selection set in `... @skip(if:true) { … }` — GraphQL validates a document
+  in full before executing any of it, so every field is checked while nothing
+  is collected, which is what lets the `enqueuePullRequest` and
+  `setIssueFieldValue` mutations be validated without being run — and posts it
+  as a `{query, variables}` body, which has no reserved key for a document's
+  own `$query` variable to collide with. It fails on anything GitHub no longer
+  recognises, and equally on anything it could not check: no document found, a
+  document that opens and never closes, a document whose shape it cannot read,
+  or a file that calls `api graphql` and yields no document at all — the last
+  being how a call site written in a different but equally idiomatic form
+  would otherwise stay invisible to the check meant to cover it. Drift and
+  "could not check" are separate verdicts and the second wins, so a run never
+  claims a survey it did not finish.
+  `.github/workflows/graphql-drift.yml` runs it daily, deliberately off the
+  pull-request path: the failure it catches arrives without a commit, as it
+  did when GitHub moved `mergeMethod` and `mergingStrategy` off `MergeQueue`
+  and took every autonomous landing down with them for six days while the
+  suite stayed green (#953). A red run reaches the pipeline as a
+  `failed-run-graphql-drift` candidate only while it is still inside the
+  unpaginated 100-run page the Co-Ordinator reads — about seven hours on this
+  repository, measured — which TD-PPagop-26082936 records.
 
 - The product-managed `pw::type:tech-debt` label is now part of the `target`
   role's catalogue (agent-ops#872), so the pipeline creates it in every
@@ -959,6 +969,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   own now-stale framing.
 
 ### Fixed
+
+- `scripts/run-tests.sh --help` no longer stops mid-sentence. Its `usage`
+  printed the header block with `sed -n '3,/^# Exit status/p'`, which stops
+  *on* the line it matches, so the paragraph explaining what `--list`'s exit
+  status means — the part a caller reading `--help` most needs — was never
+  printed. Noticed in review of `scripts/check-graphql-drift.sh`, which had
+  copied the idiom and truncated its own exit-code contract the same way; both
+  now print the block whole.
 
 - Back-pressure no longer counts a ready pull request the pipeline is barred
   from landing as pipeline-owed (#946). At `agent-merges-routine` or above,
