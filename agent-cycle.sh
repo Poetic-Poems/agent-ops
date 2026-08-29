@@ -175,6 +175,11 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/issue-priority.sh"
 # shellcheck source=lib/tech-debt-file.sh
 . "$SCRIPT_DIR/lib/tech-debt-file.sh"
+# shellcheck source=lib/merge-observed.sh
+# Sourced after handoff.sh (whose pr_merge_state it wraps), candidate-select.sh
+# (release_pr_claim) and tech-debt-file.sh (techdebt_file_debt/_issue), all of
+# which reviewer_merge_observed calls.
+. "$SCRIPT_DIR/lib/merge-observed.sh"
 # shellcheck source=lib/label-marker.sh
 . "$SCRIPT_DIR/lib/label-marker.sh"
 # shellcheck source=lib/prompt-overrides.sh
@@ -2761,6 +2766,25 @@ if [[ -n "$impl_pr_url" ]]; then
 fi
 
 # --- 8. Reviewer stage ---
+# Requirement (agent-ops#916, escalation #922, decision 3): a cheap, advisory
+# read ahead of a whole Reviewer engagement — has $impl_pr_url already merged
+# in the gap between the Implementer's own handoff and here? Merged is acted
+# on immediately, the same completion the handoff-time read below reaches for
+# a merge caught mid-Reviewer-pass, without spending the stage on a pull
+# request no longer there to review. Unreadable just runs the stage as
+# normal: nothing here is the last word, since the fail-closed read ahead of
+# `confirm_pr_ready` still guards whatever this stage produces.
+pre_reviewer_merge_state=""; pre_reviewer_merge_sha=""
+if [[ -n "$impl_pr_url" ]]; then
+  pre_reviewer_merge_result="$(pr_merge_state "$impl_pr_url")" || true
+  IFS=$'\t' read -r pre_reviewer_merge_state pre_reviewer_merge_sha <<<"$pre_reviewer_merge_result"
+fi
+if [[ "$pre_reviewer_merge_state" == "merged" ]]; then
+  reviewer_merge_observed "$impl_pr_url" "$pre_reviewer_merge_sha" '{}' "reviewer-stage-start"
+  echo "$impl_pr_url"
+  exit 0
+fi
+
 # Requirement 8a: the reviewer tier follows the item's complexity — the
 # highest of the Implementer's ex-post grade (its summary's `complexity`) and
 # the PR's raise-never-lower `complexity:*` label, falling back to the
@@ -2849,6 +2873,42 @@ if (( rev_rc != 0 )) || [[ -z "$rev_status_json" ]]; then
 fi
 
 rev_status="$(jq -r '.status // empty' <<<"$rev_status_json")"
+
+# Requirement (agent-ops#916, escalation #922, decisions 2 and 3): the
+# handoff's own fail-closed read of whether $impl_pr_url has already
+# merged — ahead of confirm_pr_ready's isDraft read inside
+# handoff_complete_review below, and decisive over the Reviewer verdict's own
+# word, which is why this runs before branching on $rev_status at all. A
+# confirmed merge is a completion whether the Reviewer never noticed
+# ("ready") or noticed and said so ("blocked", naming the merge) — neither
+# reaches pr-ready, an Approver engagement or a landing attempt. A Reviewer
+# claiming a merge GitHub denies is a model error and falls through to the
+# ordinary attempt-failed handling below unchanged, since merge_state is
+# "open" (or "failed") in that case, not "merged".
+merge_state=""; merge_sha=""
+if [[ -n "$impl_pr_url" ]]; then
+  merge_result="$(pr_merge_state "$impl_pr_url")" || true
+  IFS=$'\t' read -r merge_state merge_sha <<<"$merge_result"
+fi
+
+if [[ "$merge_state" == "merged" ]]; then
+  reviewer_merge_observed "$impl_pr_url" "$merge_sha" "$rev_status_json" "reviewer"
+  echo "$impl_pr_url"
+  exit 0
+fi
+
+if [[ "$rev_status" == "ready" && "$merge_state" == "failed" ]]; then
+  # Fail-closed exactly as `confirm_pr_ready` already is (see
+  # `pr_merge_state`'s own header): "could not tell whether this merged"
+  # must never read as "safe to hand off" — this is the last check before an
+  # irreversible act (the draft flip, the Approver, landing), and nothing
+  # downstream re-asks it.
+  log_reviewer_handback \
+    "the Reviewer reported ready, but whether $impl_pr_url has already merged could not be confirmed" \
+    "$impl_pr_url" "Retry once a node can read GitHub's pull-request state for this pull request."
+  exit 0
+fi
+
 if [[ "$rev_status" == "ready" ]]; then
   # Requirement 31c (agent-ops#249) and 32b (agent-ops#440): a Reviewer's
   # "ready" is a model reading a check list, exactly the judgement that

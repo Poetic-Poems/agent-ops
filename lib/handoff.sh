@@ -286,6 +286,62 @@ confirm_pr_draft() {
   return 1
 }
 
+# pr_merge_state PR_URL
+# Ask GitHub whether a pull request has merged — the read agent-ops#916's
+# escalation #922 settled on, shared by both call sites the fix needs: the
+# handoff, ahead of `confirm_pr_ready`'s own isDraft read (fail-closed, since
+# nothing downstream of the handoff ever re-checks), and each stage-start
+# advisory read (`reviewer_merge_observed`'s callers in agent-cycle.sh),
+# which can simply run the stage on an unreadable answer because the handoff
+# read below still guards whatever that stage produces.
+#
+# Prints, tab-separated:
+#   open<TAB>            GitHub confirms the pull request has not merged
+#                         (state OPEN, or CLOSED without ever merging — a
+#                         different, unrelated defect this helper is not
+#                         asked about).
+#   merged<TAB>SHA        GitHub confirms it merged; SHA is the merge
+#                         commit's `oid` when GitHub reports one, empty
+#                         otherwise.
+#   failed<TAB>           the state could not be read at all: an unreachable
+#                         API, a deleted pull request, an authentication
+#                         failure, or a reply shaped like none of the three
+#                         states GitHub actually has.
+#
+# Exit status is 0 for open/merged, 1 for failed — the same convention
+# `confirm_pr_ready` uses, so a caller may branch on status and log the word.
+#
+# Fail-closed the same way that function already is: "could not tell" must
+# never read as "open". A caller that treated an unreadable pull request as
+# still open would run the very handoff a genuine merge invalidates — the
+# defect this whole file exists to remove, one step further down the same
+# path. `pr_url_for_branch`'s header names the same discipline for the
+# read one step earlier.
+pr_merge_state() {
+  local url="${1:-}" gh_bin="${HANDOFF_GH:-gh}" json state sha
+  if [[ -z "$url" ]]; then
+    printf 'failed\t'
+    return 1
+  fi
+  json="$("$gh_bin" pr view "$url" --json state,mergedAt,mergeCommit 2>/dev/null)" || {
+    printf 'failed\t'
+    return 1
+  }
+  state="$(jq -r '.state // empty' <<<"$json" 2>/dev/null)"
+  case "$state" in
+    OPEN|CLOSED) printf 'open\t'; return 0 ;;
+    MERGED)
+      sha="$(jq -r '.mergeCommit.oid // empty' <<<"$json" 2>/dev/null)"
+      printf 'merged\t%s' "$sha"
+      return 0
+      ;;
+    *)
+      printf 'failed\t'
+      return 1
+      ;;
+  esac
+}
+
 # _handoff_pr_parts PR_URL
 # Print `owner/repo<TAB>number` for a pull request URL, or return non-zero.
 #
