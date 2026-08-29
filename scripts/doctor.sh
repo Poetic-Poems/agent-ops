@@ -1232,8 +1232,32 @@ if ((gh_ready)); then
       skip "$slug's merge-settings/merge-queue pairing — repos/$slug did not report a default_branch"
       continue
     fi
+    # The one read in this loop that is a `fail` rather than a `skip`, and
+    # deliberately not covered by "never fail for what this run could not
+    # check" (the rule the consolidated verdict below still follows). The
+    # two skips above are visibility gaps: `repos/$slug` carries the merge
+    # settings only for a token with admin sight of them, so not seeing them
+    # says something about the token, not about the repository. This read is
+    # different in kind on both counts. It is not admin-gated — and by the
+    # time control reaches here the check above has *already* established
+    # that this token can read `repos/$slug`, so a failure now cannot be a
+    # visibility gap. And it is not an inspection of configuration from the
+    # outside: `merge_queue_for_branch` is the identical call `landing_arm`
+    # makes as its own gate 7, at a level this loop only runs at because
+    # landing is armed. So a failure here is not "unconfirmed", it is the
+    # landing path demonstrated broken — the failure to read *is* the
+    # observation, which is exactly the case the rule was never about.
+    #
+    # This is not hypothetical: GitHub moved `mergeMethod`/`mergingStrategy`
+    # off `MergeQueue` on 2026-08-23, `merge_queue_for_branch` failed on
+    # every call for six days, and `landing_arm` refused every arming
+    # attempt the fleet made. Both this line and the consolidated verdict
+    # were `skip`s, and `write_unattended_status` records skips as a bare
+    # count with no messages — so the hourly pass went on writing
+    # `verdict: "ok"` throughout, and nothing on the dashboard could have
+    # said why (TD-PPagop-26082930).
     if ! aam_queue_json="$(merge_queue_for_branch "$slug" "$aam_default_branch")"; then
-      skip "$slug's merge-settings/merge-queue pairing — could not read $aam_default_branch's merge-queue state"
+      fail "$slug's merge_autonomy is \"$aam_level\" but $aam_default_branch's merge-queue state could not be read — landing_arm makes this same read as its own gate 7 and refuses every landing it cannot answer, so landing is down for $slug until this reads again; check the GraphQL query in lib/merge-queue.sh against GitHub's current schema, and this token's reach to $slug"
       continue
     fi
 
@@ -1249,8 +1273,9 @@ if ((gh_ready)); then
     # from cli/cli. `jq -r` renders that absence as the string `null`, which
     # is *unknown*, not `false`: reading it as `false` would fail an
     # installation, exit code and all, for a setting doctor never got to see.
-    # Unreadable is a skip, exactly as an unreachable repository or
-    # merge-queue state above is.
+    # Unreadable is a skip, exactly as an unreachable repository above is
+    # — but *not* as an unreadable merge-queue state is: that one fails, for
+    # the reasons its own comment above gives.
     aam_off=""
     aam_unknown=""
     for aam_pair in "allow_auto_merge:$aam_auto" "allow_squash_merge:$aam_squash"; do
@@ -1397,11 +1422,17 @@ if ((gh_ready)); then
         -1) unconfirmed+=("allow_auto_merge/allow_squash_merge could not be read with this token") ;;
         # Every remaining case is an unset entry, and at this rank that can
         # only mean the merge-path pass above reached one of its own three
-        # skip-and-continue paths — repos/<slug> unreachable, no
+        # bail-and-continue paths — repos/<slug> unreachable, no
         # default_branch reported, or the merge-queue state unreadable. It
         # was attempted and could not be read, which is not the same as
-        # never having been looked at, and the skip line above already names
-        # which of the three it was.
+        # never having been looked at, and the line above already names
+        # which of the three it was. Readiness stays *unconfirmed* even for
+        # the third, which reports its own `fail`: that fail is the specific,
+        # actionable statement that landing is down, while this verdict
+        # answers the separate question of whether the repository's forge
+        # configuration supports its level — which this run genuinely did not
+        # establish either way. Reporting it as `missing` instead would put
+        # words in its mouth, naming settings nothing here ever read.
         *) unconfirmed+=("its merge-settings/merge-queue pairing could not be read") ;;
       esac
     fi

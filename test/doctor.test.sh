@@ -787,8 +787,20 @@ assert_not_contains "  ... never read as a failure either" \
 out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
   STUB_REPO_JSON="$aam_ok_json" STUB_MERGE_QUEUE_FAIL=1 \
   bash "$DOCTOR" --config "$ma_config" 2>&1)"
-assert_contains "an unreadable merge-queue state is also a skip" \
-  "[skip] $slug's merge-settings/merge-queue pairing — could not read main's merge-queue state" \
+# Alone among this loop's three bail-out paths, an unreadable merge-queue
+# state fails rather than skips: `merge_queue_for_branch` is the identical
+# call `landing_arm` makes as its gate 7, so a read that cannot be answered
+# here is the landing path demonstrably down, not a visibility gap — and by
+# this point the `repos/$slug` read above has already proved the token can
+# see the repository. Both were skips until 2026-08-29, and since
+# `write_unattended_status` records skips as a bare count with no messages,
+# the hourly pass wrote `verdict: "ok"` through six days of the fleet
+# refusing every landing (TD-PPagop-26082930).
+assert_contains "an unreadable merge-queue state fails, naming landing as down" \
+  "[fail] $slug's merge_autonomy is \"agent-merges-routine\" but main's merge-queue state could not be read" \
+  "$out"
+assert_contains "  ... and points at both candidate causes" \
+  "check the GraphQL query in lib/merge-queue.sh against GitHub's current schema" \
   "$out"
 
 # GitHub omits both keys from `repos/$slug` altogether unless the reading
@@ -919,10 +931,12 @@ assert_not_contains "  ... never as a fail for something this run could not chec
   "[fail] $slug is configured at \"agent-merges-routine\" but its forge configuration" "$out"
 assert_eq "  ... and doctor.sh does not exit non-zero for it" "0" "$rc"
 
-# The merge-path pass has three skip-and-continue paths of its own that leave
-# no verdict behind at all (repos/<slug> unreachable, no default_branch
-# reported, the merge-queue state unreadable — the live case on
-# Poetic-Poems/agent-ops as of 2026-08-22). The consolidated verdict must name
+# The merge-path pass has three bail-and-continue paths of its own that leave
+# no merge-path verdict behind at all (repos/<slug> unreachable, no
+# default_branch reported, the merge-queue state unreadable — the live case
+# on Poetic-Poems/agent-ops from 2026-08-23 until #953). The first two skip;
+# the third fails, and still leaves this verdict unconfirmed rather than
+# missing. The consolidated verdict must name
 # those as could-not-be-read rather than as never-looked-at: at this rank the
 # pass always runs, so an unset entry can only mean a failed read.
 out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
@@ -932,9 +946,14 @@ out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID 
 rc=$?
 assert_contains "an unreadable merge-queue state leaves the verdict unconfirmed, naming it as unread" \
   "$slug's autonomy readiness at \"agent-merges-routine\" could not be fully confirmed — unconfirmed: its merge-settings/merge-queue pairing could not be read" "$out"
-assert_not_contains "  ... never as a fail for something this run could not check" \
+assert_not_contains "  ... and the consolidated verdict itself is still not a fail" \
   "[fail] $slug is configured at \"agent-merges-routine\" but its forge configuration" "$out"
-assert_eq "  ... and doctor.sh does not exit non-zero for it" "0" "$rc"
+# Exit 1 here comes from the pairing check's own fail, not from this verdict:
+# readiness stays *unconfirmed* (this run established nothing either way
+# about the repository's settings), while the pairing check separately
+# states the actionable fact that landing is down. Two different questions,
+# two different verdicts, and only the second is a failure.
+assert_eq "  ... though the pairing fail alone does make doctor.sh exit non-zero" "1" "$rc"
 
 # Below agent-approves (human), the verdict is silent — there is nothing to
 # verify at the level every repository starts at.
