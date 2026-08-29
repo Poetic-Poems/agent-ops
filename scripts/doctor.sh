@@ -378,6 +378,7 @@ elif [[ -n "$env_app_id" ]]; then
   ok "PULLWRIGHT_APPROVER_APP_ID matches approver_app_id"
 fi
 if (( ma_above_human )); then
+  # shellcheck disable=SC2119 # fleet-wide check, deliberately no owner argument
   if approver_token_credential_present; then
     ok "the Approver's runtime credential is present and its key is readable"
   else
@@ -1310,66 +1311,98 @@ if ((gh_ready)); then
     fi
   done < <(cfg '.repos[]?.slug // empty')
 
-  # D18 Stage 3 (agent-ops#575): the Approver App installation's actual
-  # granted permissions, read live rather than assumed from approver_app_id
-  # alone — an installation can be re-scoped through GitHub's own consent
-  # screen at any time, entirely outside config.json. Exactly three
-  # permissions are needed, no more and no less: contents:write (push a
-  # review's own comments and, at agent-merges-routine+, land), metadata:read
-  # (read the repository at all) and pull_requests:write (submit the review).
-  # Fleet-wide, not per-repository — one installation backs every repository
-  # this identity reviews — so this is a single check, gated the same way the
+  # D18 Stage 3 (agent-ops#575, #721, #913): the Approver App installation's
+  # actual granted permissions and repository selection, read live rather
+  # than assumed from approver_app_id alone — an installation can be
+  # re-scoped through GitHub's own consent screen at any time, entirely
+  # outside config.json. Exactly three permissions are needed, no more and no
+  # less: contents:write (push a review's own comments and, at
+  # agent-merges-routine+, land), metadata:read (read the repository at all)
+  # and pull_requests:write (submit the review).
+  #
+  # One App may hold several installations, one per repository owner
+  # (agent-ops#913: a repository's own owner resolves to its installation id
+  # via lib/approver-token.sh's approver_token_installation_id_for, from
+  # PULLWRIGHT_APPROVER_INSTALLATION_IDS falling back to
+  # PULLWRIGHT_APPROVER_INSTALLATION_ID) — so both reads happen once per
+  # *distinct installation id*, not once fleet-wide: two owners sharing one
+  # installation cost one read each, not two, and an owner with neither
+  # variable naming it is a `fail` right here, naming the owner and both
+  # variables, rather than a silent skip. Gated the same way the
   # runtime-credential check above is (component 14's ma_above_human, and
   # only once the credential is present enough to ask; an absent credential
   # is already warned about there, and asking again here would only fail the
   # same way a second time).
-  app_permissions_verdict="unknown"
-  if (( ma_above_human )) && approver_token_credential_present; then
-    if perms_json="$(approver_token_installation_permissions "" 2>/dev/null)"; then
-      perms_gap="$(jq -rn --argjson want '{"contents":"write","metadata":"read","pull_requests":"write"}' \
-                   --argjson got "$perms_json" '
-        ($want | keys_unsorted) as $wanted
-        | ($got  | keys_unsorted) as $granted
-        | ([$wanted[] | select(($got[.] // "") != $want[.])
-            | if ($got[.] // "") == "" then "\(.) missing" else "\(.) is \($got[.]), needs \($want[.])" end]
-          + [$granted[] | select(($want[.] // "") == "") | "\(.) granted but not required"]
-          ) as $problems
-        | ($problems | join("; "))
-      ' 2>/dev/null)"
-      if [[ -z "$perms_gap" ]]; then
-        ok "the Approver App installation carries exactly contents:write, metadata:read and pull_requests:write (D18 Stage 3, agent-ops#575)"
-        app_permissions_verdict="ok"
-      else
-        fail "the Approver App installation's live permissions do not match what this fleet needs: $perms_gap — an owner act, only the installer can regrant them (D18 Stage 3, agent-ops#575)"
-        app_permissions_verdict="fail"
-      fi
-    else
-      skip "the Approver App installation's live permissions — GitHub did not answer /app/installations/<id>, or the response could not be read (network failure, or PULLWRIGHT_APPROVER_INSTALLATION_ID/PULLWRIGHT_APPROVER_APP_ID do not name a real installation)"
-    fi
-  fi
+  declare -A ait_installation_id=()  # owner (lowercased) -> resolved installation id
+  declare -A ait_perm_verdict=()     # installation id -> ok|fail|unknown
+  declare -A ait_repos_list=()       # installation id -> "all" or newline-separated slugs
+  declare -A ait_repos_readable=()   # installation id -> 0|1
+  ait_owners_seen=$'\n'
+  while IFS= read -r ait_slug; do
+    [[ -n "$ait_slug" ]] || continue
+    ait_owner="${ait_slug%%/*}"
+    ait_owner_key="$(printf '%s' "$ait_owner" | tr '[:upper:]' '[:lower:]')"
+    case "$ait_owners_seen" in *$'\n'"$ait_owner_key"$'\n'*) continue ;; esac
+    ait_owners_seen+="$ait_owner_key"$'\n'
 
-  # The same installation's *repository selection* (D18 Stage 3,
-  # agent-ops#721). Permissions say what the App may do; the selection says
-  # where it may do it, and an installation scoped to `selected` can leave a
-  # configured repository out with nothing in config.json the wiser — a
-  # readiness verdict that checked only the permissions would report "fully
-  # supported" over an App that cannot see the repository at all. Read once,
-  # fleet-wide, like the permissions above; `all` is the whole-account
-  # selection, in which case every repository is covered by construction.
-  # Unreadable is left as the empty string and reported per repository as
-  # unconfirmed, never as "not covered": a repository the App genuinely
-  # cannot see is a `fail` and an owner act, and no network failure should
-  # ever be able to mint one of those.
-  app_repos_list=""
-  app_repos_readable=0
-  if (( ma_above_human )) && approver_token_credential_present; then
-    if app_repos_list="$(approver_token_installation_repositories "" 2>/dev/null)"; then
-      app_repos_readable=1
-    else
-      app_repos_list=""
-      skip "which repositories the Approver App installation covers — GitHub did not answer /installation/repositories, or the listing came back incomplete (D18 Stage 3, agent-ops#721)"
+    # shellcheck disable=SC2119 # fleet-wide check, deliberately no owner argument
+    if ! (( ma_above_human )) || ! approver_token_credential_present; then
+      continue
     fi
-  fi
+
+    if ! ait_id="$(approver_token_installation_id_for "$ait_owner")" || [[ -z "$ait_id" ]]; then
+      fail "no Approver App installation is configured for $ait_owner — set PULLWRIGHT_APPROVER_INSTALLATION_IDS (a JSON map naming $ait_owner) or PULLWRIGHT_APPROVER_INSTALLATION_ID as the fleet-wide default (D18 Stage 3, agent-ops#913)"
+      continue
+    fi
+    ait_installation_id[$ait_owner_key]="$ait_id"
+
+    if [[ -z "${ait_perm_verdict[$ait_id]:-}" ]]; then
+      ait_perm_verdict[$ait_id]="unknown"
+      if perms_json="$(approver_token_installation_permissions "$ait_owner" 2>/dev/null)"; then
+        perms_gap="$(jq -rn --argjson want '{"contents":"write","metadata":"read","pull_requests":"write"}' \
+                     --argjson got "$perms_json" '
+          ($want | keys_unsorted) as $wanted
+          | ($got  | keys_unsorted) as $granted
+          | ([$wanted[] | select(($got[.] // "") != $want[.])
+              | if ($got[.] // "") == "" then "\(.) missing" else "\(.) is \($got[.]), needs \($want[.])" end]
+            + [$granted[] | select(($want[.] // "") == "") | "\(.) granted but not required"]
+            ) as $problems
+          | ($problems | join("; "))
+        ' 2>/dev/null)"
+        if [[ -z "$perms_gap" ]]; then
+          ok "the Approver App installation carries exactly contents:write, metadata:read and pull_requests:write (D18 Stage 3, agent-ops#575) — the installation for $ait_owner (id $ait_id)"
+          ait_perm_verdict[$ait_id]="ok"
+        else
+          fail "the Approver App installation's live permissions do not match what this fleet needs: $perms_gap — an owner act, only the installer can regrant them (D18 Stage 3, agent-ops#575) — the installation for $ait_owner (id $ait_id)"
+          ait_perm_verdict[$ait_id]="fail"
+        fi
+      else
+        skip "the Approver App installation's live permissions — GitHub did not answer /app/installations/<id>, or the response could not be read (network failure, or PULLWRIGHT_APPROVER_INSTALLATION_ID/PULLWRIGHT_APPROVER_INSTALLATION_IDS/PULLWRIGHT_APPROVER_APP_ID do not name a real installation) — the installation for $ait_owner (id $ait_id)"
+      fi
+    fi
+
+    # The same installation's *repository selection* (D18 Stage 3,
+    # agent-ops#721). Permissions say what the App may do; the selection says
+    # where it may do it, and an installation scoped to `selected` can leave
+    # a configured repository out with nothing in config.json the wiser — a
+    # readiness verdict that checked only the permissions would report
+    # "fully supported" over an App that cannot see the repository at all.
+    # `all` is the whole-account selection, in which case every repository
+    # on that account is covered by construction. Unreadable is left
+    # unset/0 and reported per repository as unconfirmed, never as "not
+    # covered": a repository the App genuinely cannot see is a `fail` and an
+    # owner act, and no network failure should ever be able to mint one of
+    # those.
+    if [[ -z "${ait_repos_readable[$ait_id]:-}" ]]; then
+      if ait_list="$(approver_token_installation_repositories "$ait_owner" 2>/dev/null)"; then
+        ait_repos_list[$ait_id]="$ait_list"
+        ait_repos_readable[$ait_id]=1
+      else
+        ait_repos_readable[$ait_id]=0
+        skip "which repositories the Approver App installation covers — GitHub did not answer /installation/repositories, or the listing came back incomplete (D18 Stage 3, agent-ops#721) — the installation for $ait_owner (id $ait_id)"
+      fi
+    fi
+  done < <(cfg '.repos[]?.slug // empty')
 
   # --- D18 Stage 3 (#575): one consolidated autonomy-readiness verdict per
   # repository, gathering every forge precondition above into the one
@@ -1443,24 +1476,44 @@ if ((gh_ready)); then
     # agent-approves upward, not just agent-merges-routine upward:
     # pull_requests:write is what lets the App post a review at all, so a
     # narrowed installation is exactly as fatal to "agent-approves is
-    # supported" as it is to "agent-merges-routine is supported".
-    case "$app_permissions_verdict" in
-      ok) : ;;
-      fail) missing+=("the Approver App installation's live permissions do not match exactly what this fleet needs (owner act)") ;;
-      *) unconfirmed+=("the Approver App installation's live permissions could not be confirmed") ;;
-    esac
+    # supported" as it is to "agent-merges-routine is supported". Resolve
+    # *this* repository's own owner back to the installation id the loop
+    # above already read once per distinct installation (agent-ops#913).
+    ra_owner="${slug%%/*}"
+    ra_owner_key="$(printf '%s' "$ra_owner" | tr '[:upper:]' '[:lower:]')"
+    ra_installation_id="${ait_installation_id[$ra_owner_key]:-}"
 
-    # And that those permissions reach *this* repository (agent-ops#721). The
-    # comparison is on the full `owner/name`, case-insensitively, because that
-    # is what GitHub returns and what config.json carries; `all` short-circuits
-    # it, being the whole-account selection.
-    if (( app_repos_readable )); then
-      if [[ "$app_repos_list" != "all" ]] \
-         && ! grep -qixF -- "$slug" <<<"$app_repos_list"; then
-        missing+=("the Approver App installation does not cover $slug — add it to the installation's repository selection (owner act)")
+    if [[ -z "$ra_installation_id" ]]; then
+      # shellcheck disable=SC2119 # fleet-wide check, deliberately no owner argument
+      if (( ma_above_human )) && approver_token_credential_present; then
+        # A resolvable credential (app id, key, *some* installation) exists,
+        # but this repository's own owner names neither
+        # PULLWRIGHT_APPROVER_INSTALLATION_IDS nor the default — a
+        # configuration gap this run can name outright, not merely something
+        # it could not confirm.
+        missing+=("no Approver App installation is configured for $ra_owner — set PULLWRIGHT_APPROVER_INSTALLATION_IDS or PULLWRIGHT_APPROVER_INSTALLATION_ID (D18 Stage 3, agent-ops#913)")
+      else
+        unconfirmed+=("the Approver App installation's live permissions could not be confirmed")
       fi
-    elif (( ma_above_human )) && approver_token_credential_present; then
-      unconfirmed+=("which repositories the Approver App installation covers could not be read")
+    else
+      case "${ait_perm_verdict[$ra_installation_id]:-unknown}" in
+        ok) : ;;
+        fail) missing+=("the Approver App installation's live permissions do not match exactly what this fleet needs (owner act)") ;;
+        *) unconfirmed+=("the Approver App installation's live permissions could not be confirmed") ;;
+      esac
+
+      # And that those permissions reach *this* repository (agent-ops#721). The
+      # comparison is on the full `owner/name`, case-insensitively, because that
+      # is what GitHub returns and what config.json carries; `all` short-circuits
+      # it, being the whole-account selection.
+      if [[ "${ait_repos_readable[$ra_installation_id]:-0}" == "1" ]]; then
+        if [[ "${ait_repos_list[$ra_installation_id]}" != "all" ]] \
+           && ! grep -qixF -- "$slug" <<<"${ait_repos_list[$ra_installation_id]}"; then
+          missing+=("the Approver App installation does not cover $slug — add it to the installation's repository selection (owner act)")
+        fi
+      else
+        unconfirmed+=("which repositories the Approver App installation covers could not be read")
+      fi
     fi
 
     missing_str="$(printf '%s; ' "${missing[@]}")"; missing_str="${missing_str%; }"

@@ -72,6 +72,15 @@ x-agent-ops-env: &agent-ops-env
   # to be set on all four nodes while no cycle could see any of them.
   PULLWRIGHT_APPROVER_APP_ID: ${PULLWRIGHT_APPROVER_APP_ID:-}
   PULLWRIGHT_APPROVER_INSTALLATION_ID: ${PULLWRIGHT_APPROVER_INSTALLATION_ID:-}
+  # A GitHub App installation is per account, so a fleet whose repos[] span
+  # more than one owner (agent-ops#913) needs more than one installation id.
+  # This is a JSON object mapping owner to installation id
+  # ('{"Pullwright": 12345678, "Poetic-Poems": 87654321}'), resolved by the
+  # owner half of each repository's slug (lib/approver-token.sh's
+  # approver_token_installation_id_for); an owner it does not name falls back
+  # to the scalar PULLWRIGHT_APPROVER_INSTALLATION_ID above. A single-owner
+  # fleet leaves this unset and needs no change.
+  PULLWRIGHT_APPROVER_INSTALLATION_IDS: ${PULLWRIGHT_APPROVER_INSTALLATION_IDS:-}
   PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH: ${PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH:-}
   # The forge authoring App's identity (D18 decision 1, agent-ops#607) — the
   # second, distinct GitHub App every authoring act (clone, push, comment,

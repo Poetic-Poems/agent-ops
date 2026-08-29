@@ -544,7 +544,7 @@ run_approver_stage() {
       '{detail: $d, pr_url: $u}')"
     return 0
   fi
-  if ! approver_token_credential_present; then
+  if ! approver_token_credential_present "$selected_repo"; then
     log_event "warning" "$(jq -nc --arg u "$pr_url" --arg l "$level" \
       --arg d "merge_autonomy is \"$level\" for $selected_repo but the Approver's runtime credential is not present on this node — no App review was posted on $pr_url" \
       '{detail: $d, pr_url: $u}')"
@@ -562,7 +562,7 @@ run_approver_stage() {
       '{detail: $d, pr_url: $u}')"
     return 0
   fi
-  if ! token="$(approver_token_get "")"; then
+  if ! token="$(approver_token_get "$selected_repo")"; then
     log_event "warning" "$(jq -nc --arg u "$pr_url" \
       --arg d "could not mint the Approver's installation token — no App review was posted on $pr_url" \
       '{detail: $d, pr_url: $u}')"
@@ -1016,7 +1016,7 @@ _approver_restale_dismiss() {
       '{detail: $d, pr_url: $u}')"
     return 1
   fi
-  if ! token="$(approver_token_get "")"; then
+  if ! token="$(approver_token_get "$slug")"; then
     log_event "warning" "$(jq -nc --arg u "$pr_url" \
       --arg d "$pr_url carries a stale Approver review a re-review could not be attempted for, and the Approver's installation token could not be minted to dismiss it either — it remains blocked" \
       '{detail: $d, pr_url: $u}')"

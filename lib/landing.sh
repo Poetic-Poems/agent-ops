@@ -1472,7 +1472,7 @@ _landing_stage_attempt() {
   fi
 
   local token method arm_rc=0
-  if ! token="$(approver_token_get "")"; then
+  if ! token="$(approver_token_get "$slug")"; then
     _landing_refuse "$pr_url" "$slug" "could not mint the Approver's installation token" "$retry"
     return 0
   fi

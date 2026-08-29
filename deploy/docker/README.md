@@ -33,6 +33,11 @@ README](../../README.md) and `docs/*-SPEC.md`.
   without both.
 - A **Tailscale pre-auth key** from the tailnet's admin console, unless this
   node will run the `local` profile.
+- If this node's fleet raises `merge_autonomy` above `human`, the
+  **Pullwright Approver App**'s identity (D18 §5.3) — see the `.env.example`
+  section it lives in for the three variables it needs, and
+  `PULLWRIGHT_APPROVER_INSTALLATION_IDS` in that same section if the fleet's
+  `repos[]` spans more than one GitHub owner (agent-ops#913).
 - **Model credentials**, either of (see step 4):
   - An **Anthropic API key** — the primary, first-class path (D4). Set
     `ANTHROPIC_API_KEY` in `.env`; no interactive step, and any number of

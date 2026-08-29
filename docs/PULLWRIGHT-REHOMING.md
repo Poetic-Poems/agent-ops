@@ -66,15 +66,20 @@ a click.
    node silently stops rolling, the failure mode `deploy/docker/README.md`'s
    "Is this node on the newest image" section exists for. Anonymous pulls
    keep working; no registry login is needed.
-3. **The Approver App has one installation id, and installations are per
-   organisation.** `lib/approver-token.sh` takes a single
-   `PULLWRIGHT_APPROVER_INSTALLATION_ID`, and `scripts/doctor.sh`'s
-   installation checks assume "one installation backs every repository this
-   identity reviews". `pullwright-approver-poetic` is installed on
+3. **The Approver App installation is per organisation, and installations are
+   per organisation.** `pullwright-approver-poetic` is installed on
    Poetic-Poems; agent-ops leaves that installation's scope on transfer.
-   Without #913 (per-owner installation resolution), agent-ops drops from
-   `agent-merges-routine` to a human landing every pull request — the
-   regression Principle 8 forbids — so #913 lands first.
+   #913 (landed) resolved this ahead of the transfer:
+   `lib/approver-token.sh` now resolves the installation id per repository
+   owner (`PULLWRIGHT_APPROVER_INSTALLATION_IDS`, falling back to the scalar
+   `PULLWRIGHT_APPROVER_INSTALLATION_ID`), and `scripts/doctor.sh`'s
+   installation checks run once per distinct installation rather than
+   assuming one covers every repository. What remains for this transfer is
+   the owner act #913 left out of its own scope: installing
+   `pullwright-approver-poetic` on Pullwright too (or transferring it there)
+   with `contents: write`, `metadata: read`, `pull_requests: write`, and
+   recording the resulting installation id in
+   `PULLWRIGHT_APPROVER_INSTALLATION_IDS` on every node.
 
 Two lesser effects: the `Priority` issue field is organisation-scoped
 (Pullwright already defines one with the same four options; whether values

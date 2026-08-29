@@ -134,7 +134,7 @@ rm -f "$cache_dir"/*
 body='{"token":"ghs_first000","expires_at":"2026-08-14T14:00:00Z","permissions":{"contents":"write"}}'
 stub_curl 201 "$body"
 now=1786708800  # 2026-08-14T12:00:00Z
-out="$(approver_token_get "$now")"; rc=$?
+out="$(approver_token_get "acme-org/widgets" "$now")"; rc=$?
 assert_eq "success path: exit 0" "0" "$rc"
 assert_eq "  ... the minted token on stdout" "ghs_first000" "$out"
 assert_eq "  ... exactly one mint call" "1" "$(call_count)"
@@ -154,7 +154,7 @@ assert_true "  ... and arrives on stdin via --config instead" \
   grep -q '^header = "Authorization: Bearer ' "$tmp_dir/curl_stdin"
 
 # --- A second call within the token's lifetime reuses the cache, mints nothing
-out2="$(approver_token_get "$((now + 60))")"; rc=$?
+out2="$(approver_token_get "acme-org/widgets" "$((now + 60))")"; rc=$?
 assert_eq "cached call: exit 0" "0" "$rc"
 assert_eq "  ... the same cached token" "ghs_first000" "$out2"
 assert_eq "  ... no new mint call" "1" "$(call_count)"
@@ -163,7 +163,7 @@ assert_eq "  ... no new mint call" "1" "$(call_count)"
 #     mint replaces it ---------------------------------------------------------
 stub_curl 201 '{"token":"ghs_second111","expires_at":"2026-08-14T15:00:00Z"}'
 near_expiry=1786715900  # 100s before the cached token's 14:00:00Z expiry — inside the 5-minute buffer
-out3="$(approver_token_get "$near_expiry")"; rc=$?
+out3="$(approver_token_get "acme-org/widgets" "$near_expiry")"; rc=$?
 assert_eq "near-expiry call: exit 0" "0" "$rc"
 assert_eq "  ... a freshly minted token, not the stale cached one" "ghs_second111" "$out3"
 assert_eq "  ... a new mint call was made" "1" "$(call_count)"
@@ -175,7 +175,7 @@ setup_env
 rm -f "$cache_dir"/*
 stub_curl 201 '{"token":"should-not-be-minted","expires_at":"2026-08-14T20:00:00Z"}'
 unset PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH
-out="$(approver_token_get "$now" 2>/dev/null)"; rc=$?
+out="$(approver_token_get "acme-org/widgets" "$now" 2>/dev/null)"; rc=$?
 assert_eq "no key path set: exit 2" "2" "$rc"
 assert_eq "  ... no output" "" "$out"
 assert_eq "  ... no mint call was attempted" "0" "$(call_count)"
@@ -183,18 +183,18 @@ assert_eq "  ... no mint call was attempted" "0" "$(call_count)"
 setup_env
 PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$tmp_dir/no-such-key.pem"
 export PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH
-out="$(approver_token_get "$now" 2>/dev/null)"; rc=$?
+out="$(approver_token_get "acme-org/widgets" "$now" 2>/dev/null)"; rc=$?
 assert_eq "key file does not exist: exit 2" "2" "$rc"
 assert_eq "  ... no output" "" "$out"
 
 setup_env
 unset PULLWRIGHT_APPROVER_APP_ID
-out="$(approver_token_get "$now" 2>/dev/null)"; rc=$?
+out="$(approver_token_get "acme-org/widgets" "$now" 2>/dev/null)"; rc=$?
 assert_eq "no App id set: exit 2" "2" "$rc"
 
 setup_env
 unset PULLWRIGHT_APPROVER_INSTALLATION_ID
-out="$(approver_token_get "$now" 2>/dev/null)"; rc=$?
+out="$(approver_token_get "acme-org/widgets" "$now" 2>/dev/null)"; rc=$?
 assert_eq "no installation id set: exit 2" "2" "$rc"
 
 # --- approver_token_credential_present mirrors the same check --------------
@@ -212,7 +212,7 @@ fi
 setup_env
 rm -f "$cache_dir"/*
 stub_curl 401 '{"message":"Bad credentials"}'
-out="$(approver_token_get "$now" 2>/dev/null)"; rc=$?
+out="$(approver_token_get "acme-org/widgets" "$now" 2>/dev/null)"; rc=$?
 assert_eq "GitHub refuses the JWT: exit 1" "1" "$rc"
 assert_eq "  ... no output" "" "$out"
 assert_true "  ... nothing was cached" bash -c "[[ ! -s '$cache_dir/$cache_file_name' ]]"
@@ -222,7 +222,7 @@ setup_env
 rm -f "$cache_dir"/*
 stub_curl 201 '{}'
 : > "$tmp_dir/curl_fail"
-out="$(approver_token_get "$now" 2>/dev/null)"; rc=$?
+out="$(approver_token_get "acme-org/widgets" "$now" 2>/dev/null)"; rc=$?
 assert_eq "curl fails outright: exit 1" "1" "$rc"
 assert_eq "  ... no output" "" "$out"
 rm -f "$tmp_dir/curl_fail"
@@ -231,7 +231,7 @@ rm -f "$tmp_dir/curl_fail"
 setup_env
 rm -f "$cache_dir"/*
 stub_curl 201 '{"expires_at":"2026-08-14T20:00:00Z"}'  # no token field
-out="$(approver_token_get "$now" 2>/dev/null)"; rc=$?
+out="$(approver_token_get "acme-org/widgets" "$now" 2>/dev/null)"; rc=$?
 assert_eq "response missing the token field: exit 1" "1" "$rc"
 assert_eq "  ... no output" "" "$out"
 
@@ -247,7 +247,7 @@ printf '{"token":"ghs_PLANTED","expires_at":"2099-01-01T00:00:00Z","exp_epoch":4
   > "$tmp_dir/planted.json"
 ln -s "$tmp_dir/planted.json" "$cache_dir/$cache_file_name"
 stub_curl 201 '{"token":"ghs_minted999","expires_at":"2026-08-14T20:00:00Z"}'
-out="$(approver_token_get "$now" 2>/dev/null)"; rc=$?
+out="$(approver_token_get "acme-org/widgets" "$now" 2>/dev/null)"; rc=$?
 assert_eq "planted cache file: still succeeds" "0" "$rc"
 assert_eq "  ... the planted token is never returned" "ghs_minted999" "$out"
 assert_eq "  ... a real mint happened instead of trusting the cache" "1" "$(call_count)"
@@ -258,7 +258,7 @@ setup_env
 APPROVER_TOKEN_CACHE_DIR="$tmp_dir/no-such-cache-dir"
 export APPROVER_TOKEN_CACHE_DIR
 stub_curl 201 '{"token":"ghs_nocachedir","expires_at":"2026-08-14T20:00:00Z"}'
-out="$(approver_token_get "$now" 2>/dev/null)"; rc=$?
+out="$(approver_token_get "acme-org/widgets" "$now" 2>/dev/null)"; rc=$?
 assert_eq "cache directory absent: still succeeds" "0" "$rc"
 assert_eq "  ... the minted token on stdout" "ghs_nocachedir" "$out"
 
@@ -271,20 +271,134 @@ assert_eq "  ... the minted token on stdout" "ghs_nocachedir" "$out"
 setup_env
 rm -f "$cache_dir"/*
 stub_curl 201 '{"token":"ghs_installA","expires_at":"2026-08-14T14:00:00Z"}'
-out="$(approver_token_get "$now")"; rc=$?
+out="$(approver_token_get "acme-org/widgets" "$now")"; rc=$?
 assert_eq "installation A mints: exit 0" "0" "$rc"
 PULLWRIGHT_APPROVER_INSTALLATION_ID="999000111"
 export PULLWRIGHT_APPROVER_INSTALLATION_ID
 stub_curl 201 '{"token":"ghs_installB","expires_at":"2026-08-14T14:00:00Z"}'
-out="$(approver_token_get "$((now + 60))")"; rc=$?
+out="$(approver_token_get "acme-org/widgets" "$((now + 60))")"; rc=$?
 assert_eq "a different installation id within A's lifetime: exit 0" "0" "$rc"
 assert_eq "  ... never serves installation A's cached token" "ghs_installB" "$out"
 assert_eq "  ... a real mint happened for the new installation" "1" "$(call_count)"
 assert_true "  ... each installation holds its own cache file" \
   test -f "$cache_dir/pullwright-approver-token.999000111.json"
-out="$(PULLWRIGHT_APPROVER_INSTALLATION_ID=153689775 approver_token_get "$((now + 120))")"
+out="$(PULLWRIGHT_APPROVER_INSTALLATION_ID=153689775 approver_token_get "acme-org/widgets" "$((now + 120))")"
 assert_eq "  ... switching back serves A's still-valid cache" "ghs_installA" "$out"
 assert_eq "  ... without a further mint" "1" "$(call_count)"
+
+# --- approver_token_installation_id_for (agent-ops#913) --------------------
+# One App, several installations: the installation id resolves by the owner
+# half of a repository slug (or a bare owner), case-insensitively, against
+# PULLWRIGHT_APPROVER_INSTALLATION_IDS, falling back to the scalar
+# PULLWRIGHT_APPROVER_INSTALLATION_ID for an owner the map does not name.
+setup_env
+unset PULLWRIGHT_APPROVER_INSTALLATION_IDS
+
+out="$(approver_token_installation_id_for "Poetic-Poems/agent-ops")"; rc=$?
+assert_eq "no map set: falls back to the scalar default" "0" "$rc"
+assert_eq "  ... the scalar's value" "153689775" "$out"
+
+export PULLWRIGHT_APPROVER_INSTALLATION_IDS='{"Pullwright": 12345678, "Poetic-Poems": 87654321}'
+out="$(approver_token_installation_id_for "Pullwright/agent-ops")"; rc=$?
+assert_eq "map names the owner: exit 0" "0" "$rc"
+assert_eq "  ... the map's value, not the scalar default" "12345678" "$out"
+
+out="$(approver_token_installation_id_for "poetic-poems/poetic")"; rc=$?
+assert_eq "owner matched case-insensitively" "0" "$rc"
+assert_eq "  ... the map's value for the differently-cased owner" "87654321" "$out"
+
+out="$(approver_token_installation_id_for "SomeOtherOrg/thing")"; rc=$?
+assert_eq "map is set but does not name this owner: falls back to the scalar default" "0" "$rc"
+assert_eq "  ... the scalar's value" "153689775" "$out"
+
+unset PULLWRIGHT_APPROVER_INSTALLATION_ID
+out="$(approver_token_installation_id_for "Pullwright/agent-ops")"; rc=$?
+assert_eq "map names the owner even with no scalar default set: exit 0" "0" "$rc"
+assert_eq "  ... the map's value" "12345678" "$out"
+
+out="$(approver_token_installation_id_for "SomeOtherOrg/thing" 2>/dev/null)"; rc=$?
+assert_eq "neither the map nor the default names this owner: exit 1" "1" "$rc"
+assert_eq "  ... no output" "" "$out"
+
+PULLWRIGHT_APPROVER_INSTALLATION_ID="153689775"
+export PULLWRIGHT_APPROVER_INSTALLATION_ID
+export PULLWRIGHT_APPROVER_INSTALLATION_IDS='not valid json'
+out="$(approver_token_installation_id_for "Pullwright/agent-ops" 2>/dev/null)"; rc=$?
+assert_eq "a malformed map falls back to the scalar default rather than erroring" "0" "$rc"
+assert_eq "  ... the scalar's value" "153689775" "$out"
+
+export PULLWRIGHT_APPROVER_INSTALLATION_IDS='["Pullwright", "Poetic-Poems"]'
+out="$(approver_token_installation_id_for "Pullwright/agent-ops" 2>/dev/null)"; rc=$?
+assert_eq "a map that is valid JSON but not an object also falls back" "0" "$rc"
+assert_eq "  ... the scalar's value" "153689775" "$out"
+
+unset PULLWRIGHT_APPROVER_INSTALLATION_IDS
+
+# --- approver_token_any_installation_id (agent-ops#913) ---------------------
+# Used only where no specific owner is in play (approver_token_identity_login,
+# and the fleet-wide "is any credential configured at all" checks).
+setup_env
+unset PULLWRIGHT_APPROVER_INSTALLATION_IDS
+out="$(approver_token_any_installation_id)"; rc=$?
+assert_eq "scalar default set: exit 0" "0" "$rc"
+assert_eq "  ... the scalar's value" "153689775" "$out"
+
+unset PULLWRIGHT_APPROVER_INSTALLATION_ID
+export PULLWRIGHT_APPROVER_INSTALLATION_IDS='{"Pullwright": 12345678, "Poetic-Poems": 87654321}'
+out="$(approver_token_any_installation_id)"; rc=$?
+assert_eq "no scalar default, only a map: exit 0" "0" "$rc"
+assert_eq "  ... the first entry by key" "87654321" "$out"
+
+unset PULLWRIGHT_APPROVER_INSTALLATION_IDS
+out="$(approver_token_any_installation_id 2>/dev/null)"; rc=$?
+assert_eq "neither configured: exit 1" "1" "$rc"
+assert_eq "  ... no output" "" "$out"
+
+# --- approver_token_credential_present with an owner (agent-ops#913) -------
+setup_env
+unset PULLWRIGHT_APPROVER_INSTALLATION_IDS
+export PULLWRIGHT_APPROVER_INSTALLATION_IDS='{"Pullwright": 12345678}'
+unset PULLWRIGHT_APPROVER_INSTALLATION_ID
+assert_true "credential_present: true for an owner the map names, with no scalar default" \
+  approver_token_credential_present "Pullwright/agent-ops"
+if approver_token_credential_present "Poetic-Poems/poetic"; then
+  assert_eq "credential_present: false for an owner named by neither the map nor a default" "false" "true"
+else
+  assert_eq "credential_present: false for an owner named by neither the map nor a default" "false" "false"
+fi
+unset PULLWRIGHT_APPROVER_INSTALLATION_IDS
+
+# --- Two owners, two installations, two tokens (agent-ops#913) -------------
+# The scenario the issue's own acceptance criterion asks for: a fleet whose
+# repos[] name two owners mints the right installation token for each.
+setup_env
+rm -f "$cache_dir"/*
+export PULLWRIGHT_APPROVER_INSTALLATION_IDS='{"Pullwright": 111222333, "Poetic-Poems": 444555666}'
+unset PULLWRIGHT_APPROVER_INSTALLATION_ID
+
+stub_curl 201 '{"token":"ghs_pullwright_tok","expires_at":"2026-08-14T14:00:00Z"}'
+out_a="$(approver_token_get "Pullwright/agent-ops" "$now")"; rc_a=$?
+assert_eq "Pullwright/agent-ops mints: exit 0" "0" "$rc_a"
+assert_eq "  ... a token minted against Pullwright's own installation" "ghs_pullwright_tok" "$out_a"
+assert_true "  ... cached under Pullwright's own installation id" \
+  test -f "$cache_dir/pullwright-approver-token.111222333.json"
+
+stub_curl 201 '{"token":"ghs_poeticpoems_tok","expires_at":"2026-08-14T14:00:00Z"}'
+out_b="$(approver_token_get "Poetic-Poems/poetic" "$now")"; rc_b=$?
+assert_eq "Poetic-Poems/poetic mints: exit 0" "0" "$rc_b"
+assert_eq "  ... a distinct token minted against Poetic-Poems's own installation" "ghs_poeticpoems_tok" "$out_b"
+assert_true "  ... cached under Poetic-Poems's own installation id, distinct from Pullwright's" \
+  test -f "$cache_dir/pullwright-approver-token.444555666.json"
+
+# Switching back to the first owner within its token's lifetime must serve
+# its own cache, not the second owner's — same guarantee the single-map
+# "cache keyed by installation id" case above already covers, now proven
+# across two owners resolved from the same map rather than a manually
+# reassigned scalar.
+out_a2="$(approver_token_get "Pullwright/agent-ops" "$((now + 60))")"
+assert_eq "  ... Pullwright's still-valid cache is served on a second call" "ghs_pullwright_tok" "$out_a2"
+assert_eq "  ... with no further mint (curl_calls resets per stub_curl call, so this counts only since Poetic-Poems's own mint)" "1" "$(call_count)"
+unset PULLWRIGHT_APPROVER_INSTALLATION_IDS
 
 # --- A disk-backed cache directory gets no cache at all ---------------------
 # APPROVER_TOKEN_CACHE_DIR is an ordinary environment variable; #407's
@@ -302,12 +416,12 @@ else
   APPROVER_TOKEN_CACHE_DIR="$disk_dir"
   export APPROVER_TOKEN_CACHE_DIR
   stub_curl 201 '{"token":"ghs_diskdir","expires_at":"2026-08-14T14:00:00Z"}'
-  out="$(approver_token_get "$now" 2>/dev/null)"; rc=$?
+  out="$(approver_token_get "acme-org/widgets" "$now" 2>/dev/null)"; rc=$?
   assert_eq "disk-backed cache dir: still succeeds" "0" "$rc"
   assert_eq "  ... the minted token on stdout" "ghs_diskdir" "$out"
   assert_eq "  ... but nothing at all was written to the disk-backed directory" "" \
     "$(ls -A "$disk_dir")"
-  out="$(approver_token_get "$((now + 60))" 2>/dev/null)"
+  out="$(approver_token_get "acme-org/widgets" "$((now + 60))" 2>/dev/null)"
   assert_eq "  ... and a second call mints fresh rather than caching" "2" "$(call_count)"
 fi
 
@@ -319,7 +433,7 @@ fi
 setup_env
 rm -f "$cache_dir"/*
 stub_curl 201 '{"token":"ghs_oddexpiry","expires_at":"not-a-timestamp"}'
-out="$(approver_token_get "$now" 2>/dev/null)"; rc=$?
+out="$(approver_token_get "acme-org/widgets" "$now" 2>/dev/null)"; rc=$?
 assert_eq "unparsable expires_at: still exit 0" "0" "$rc"
 assert_eq "  ... the minted token on stdout" "ghs_oddexpiry" "$out"
 assert_eq "  ... nothing was cached" "" "$(ls -A "$cache_dir")"
@@ -331,10 +445,10 @@ assert_eq "  ... nothing was cached" "" "$(ls -A "$cache_dir")"
 setup_env
 rm -f "$cache_dir"/*
 stub_curl 201 '{"token":"ghs_repos000","expires_at":"2026-08-14T14:00:00Z"}'
-approver_token_get "$now" >/dev/null 2>&1
+approver_token_get "acme-org/widgets" "$now" >/dev/null 2>&1
 
 stub_curl 200 '{"total_count":2,"repository_selection":"selected","repositories":[{"full_name":"o/a"},{"full_name":"o/b"}]}'
-out="$(approver_token_installation_repositories "$now")"; rc=$?
+out="$(approver_token_installation_repositories "acme-org/widgets" "$now")"; rc=$?
 assert_eq "installation repositories: exit 0" "0" "$rc"
 assert_eq "  ... one owner/name per line" "$(printf 'o/a\no/b')" "$out"
 assert_eq "  ... one live call: the installation token came from the cache" "1" "$(call_count)"
@@ -342,7 +456,7 @@ assert_eq "  ... the Authorization header is absent from curl's argv" "" \
   "$(grep -i 'authorization' "$tmp_dir/curl_argv" || true)"
 
 stub_curl 200 '{"total_count":0,"repository_selection":"all","repositories":[]}'
-out="$(approver_token_installation_repositories "$now")"; rc=$?
+out="$(approver_token_installation_repositories "acme-org/widgets" "$now")"; rc=$?
 assert_eq "installation repositories: a whole-account installation says so" "all" "$out"
 assert_eq "  ... and exits 0" "0" "$rc"
 
@@ -350,24 +464,24 @@ assert_eq "  ... and exits 0" "0" "$rc"
 # error, not a short list. A caller turns non-zero into "unconfirmed", where a
 # silently short list would have read as "the App cannot see this repository".
 stub_curl 200 '{"total_count":9,"repository_selection":"selected","repositories":[{"full_name":"o/a"}]}'
-out="$(approver_token_installation_repositories "$now")"; rc=$?
+out="$(approver_token_installation_repositories "acme-org/widgets" "$now")"; rc=$?
 assert_eq "installation repositories: a truncated listing prints nothing" "" "$out"
 assert_eq "  ... and exits non-zero rather than reporting a short list" "1" "$rc"
 
 stub_curl 404 '{"message":"Not Found"}'
-out="$(approver_token_installation_repositories "$now")"; rc=$?
+out="$(approver_token_installation_repositories "acme-org/widgets" "$now")"; rc=$?
 assert_eq "installation repositories: a non-200 is a failure" "" "$out"
 assert_eq "  ... and exits non-zero" "1" "$rc"
 
 setup_env
 touch "$tmp_dir/curl_fail"
-out="$(approver_token_installation_repositories "$now")"; rc=$?
+out="$(approver_token_installation_repositories "acme-org/widgets" "$now")"; rc=$?
 assert_eq "installation repositories: an unreachable API is a failure" "" "$out"
 assert_eq "  ... and exits non-zero" "1" "$rc"
 rm -f "$tmp_dir/curl_fail"
 
 clear_env
-out="$(approver_token_installation_repositories "$now")"; rc=$?
+out="$(approver_token_installation_repositories "acme-org/widgets" "$now")"; rc=$?
 assert_eq "installation repositories: no credential configured is gate-unreadable" "" "$out"
 assert_eq "  ... exit 2, the same code approver_token_get uses for it" "2" "$rc"
 
@@ -412,7 +526,7 @@ assert_eq "  ... exit 2, the same code approver_token_get uses for it" "2" "$rc"
 # autonomy-readiness verdict is the sole caller.
 setup_env
 stub_curl 200 '{"id":153689775,"permissions":{"contents":"write","metadata":"read","pull_requests":"write"}}'
-out="$(approver_token_installation_permissions "$now")"; rc=$?
+out="$(approver_token_installation_permissions "acme-org/widgets" "$now")"; rc=$?
 assert_eq "installation permissions: exit 0" "0" "$rc"
 assert_eq "  ... prints exactly the live .permissions object" \
   '{"contents":"write","metadata":"read","pull_requests":"write"}' "$out"
@@ -420,29 +534,29 @@ assert_eq "  ... the Authorization header is absent from curl's argv" "" \
   "$(grep -i 'authorization' "$tmp_dir/curl_argv" || true)"
 
 stub_curl 404 '{"message":"Not Found"}'
-out="$(approver_token_installation_permissions "$now")"; rc=$?
+out="$(approver_token_installation_permissions "acme-org/widgets" "$now")"; rc=$?
 assert_eq "installation permissions: a non-200 is a failure" "" "$out"
 assert_eq "  ... and exits non-zero" "1" "$rc"
 
 stub_curl 200 '{"id":153689775}'
-out="$(approver_token_installation_permissions "$now")"; rc=$?
+out="$(approver_token_installation_permissions "acme-org/widgets" "$now")"; rc=$?
 assert_eq "installation permissions: a body with no permissions is a failure" "" "$out"
 assert_eq "  ... and exits non-zero" "1" "$rc"
 
 stub_curl 200 '{"id":153689775,"permissions":{}}'
-out="$(approver_token_installation_permissions "$now")"; rc=$?
+out="$(approver_token_installation_permissions "acme-org/widgets" "$now")"; rc=$?
 assert_eq "installation permissions: an empty permissions object is a failure too" "" "$out"
 assert_eq "  ... and exits non-zero" "1" "$rc"
 
 setup_env
 touch "$tmp_dir/curl_fail"
-out="$(approver_token_installation_permissions "$now")"; rc=$?
+out="$(approver_token_installation_permissions "acme-org/widgets" "$now")"; rc=$?
 assert_eq "installation permissions: an unreachable API is a failure" "" "$out"
 assert_eq "  ... and exits non-zero" "1" "$rc"
 rm -f "$tmp_dir/curl_fail"
 
 clear_env
-out="$(approver_token_installation_permissions "$now")"; rc=$?
+out="$(approver_token_installation_permissions "acme-org/widgets" "$now")"; rc=$?
 assert_eq "installation permissions: no credential configured is gate-unreadable" "" "$out"
 assert_eq "  ... exit 2, the same code approver_token_get uses for it" "2" "$rc"
 
