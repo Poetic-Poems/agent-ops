@@ -7337,7 +7337,17 @@ implements.
       actual comment (the pre-fetched `comments` array on a repo's `issues`
       entry carries no per-comment id to join against, so this is the only
       way to know the comment's real text) — a fault if that text, normalized
-      the same way, is present in neither `context` nor `acceptance`.
+      the same way, is present in neither `context` nor `acceptance`. The
+      comment id itself is extracted by `refinement_comment_url_id`
+      (`lib/refinement.sh`, the same predicate requirement 39c's recording
+      seam and requirement 35a's reading seam both test a comment URL's
+      shape against), which recognises the HTML permalink anchor
+      (`#issuecomment-<n>`) and the REST API form (`.../issues/comments/<n>`)
+      alike (TD-PPagop-26082603) — a `comment_url` matching neither shape is
+      now a fault too, reported the same way the structural (wrong-issue)
+      check above is, rather than the pre-fix behaviour of a bare `sed`
+      extraction that recognised only the HTML form and silently returned "no
+      fault" for anything else, having tested nothing at all.
     **A failed check is repaired, not discarded (agent-ops#767).** The
     requirement is that the work order *carry* the item's refinement — not
     that the model be the one who carried it — and the Script is holding the
@@ -10946,9 +10956,25 @@ implements.
     check, or any other clause. Each entry additionally carries that `kind`, so
     the engagement knows which duty it is there to perform (requirement 36b),
     and `refined_before`: the latest `item-refined` event for the same
-    repo+item, or `null`. That field is the thrash guard's input and the
-    record of what the last engagement already specified, so a later one need
-    not reconstruct it.
+    repo+item whose `comment_url` — if it carries one — actually names a
+    comment, or `null` if none does. That field is the thrash guard's input
+    and the record of what the last engagement already specified, so a later
+    one need not reconstruct it.
+
+    **A phantom `item-refined` event is skipped, not trusted (TD-PPagop-
+    26082819).** An event logged before the corroboration fix at requirement
+    39c — `comment_url` a bare issue URL, with no `#issuecomment-` anchor or
+    REST API comment form, so it cannot name any comment at all — is excluded
+    from the derivation above exactly as if it had never been logged, and the
+    next-latest event that does pass the same shape check (`refinement_
+    comment_url_valid`, `lib/refinement.sh`) is used instead; `null` if none
+    does. This is what let #818's and #874's own phantom records self-heal
+    without editing history: each wrongly armed the thrash guard the moment
+    it was logged, and each cleared the instant this check shipped, with no
+    change to the log itself. `enabler_eligible_items` logs one `warning`
+    naming every phantom event's timestamp and repo+item it skipped this way,
+    each time it is called with one in scope, so a still-live phantom is
+    visible rather than only inferred from the item's own eligibility.
 
     Like requirements 34 and 34c, this rule has exactly **one** implementation
     (requirement 34a): `enabler_eligible_items` in `lib/cycle-state.sh`, whose
@@ -12408,11 +12434,28 @@ implements.
     `refined-uncorroborated` and **no** `item-refined` is written: the item
     stays exactly as unrefined as it was, and is a candidate again next cycle.
 
+    **`comments_posted[0]` must actually name a comment (TD-PPagop-26082819).**
+    An `#issuecomment-<n>` anchor or the REST API comment form
+    (`.../issues/comments/<n>`) — `refinement_comment_url_valid`/
+    `refinement_comment_url_id` (`lib/refinement.sh`), the one predicate every
+    caller in this codebase tests a comment URL's shape against (also
+    requirement 17f's `refinement_traceability_fault`,
+    `lib/candidate-select.sh`). A bare issue URL — no anchor at all, so it
+    cannot point at any comment — is treated exactly as if `comments_posted`
+    were empty: no `comment_url` field is extracted, and the verdict falls
+    into the `refined-uncorroborated` path above rather than being recorded.
+    This closed a live gap (#818, #874): the corroboration bar used to accept
+    any non-empty string, so a verdict returning the issue's own URL with no
+    anchor at all was recorded as a genuine refinement, and requirement 36b's
+    thrash guard then refused every later attempt to write the specification
+    the phantom record falsely claimed already existed.
+
     Reusing `refinement_record_fields` (`lib/refinement.sh`) for the
     extraction — the same function requirement 36b's `unblocked`/refinement
     path already uses — is what keeps the two writers of `item-refined`
     agreeing on its shape without a second implementation to drift from the
-    first (requirement 34a).
+    first (requirement 34a); the shape check above lives inside that shared
+    function, so both writers reject a phantom `comment_url` identically.
 
     **A `refined` verdict may be a re-affirmation, not only a fresh
     specification (agent-ops#670 Part 2).** The Refiner may find the item's
@@ -17045,7 +17088,14 @@ pull request, run the ones the change touches and any it could regress.
    `refinements` document fails open rather than faulting the candidate; and
    an unreachable GitHub now faults the candidate (`untraceable`, same as a
    mismatch) rather than passing it, with the failed read reported through
-   `guard_warn` rather than swallowed. The same test pins the scoping: a
+   `guard_warn` rather than swallowed. A `comment_url` in the REST API form
+   (`.../issues/comments/<n>`) is now checked rather than silently waved
+   through — `refinement_comment_url_id`'s two recognised shapes
+   (TD-PPagop-26082603), pinned with both a passing and a faulting comment
+   under that shape — and a `comment_url` matching neither known shape now
+   faults (no `gh` call, no `guard_warn` — the same terms the structural,
+   wrong-issue check already uses) rather than the pre-fix "no fault having
+   tested nothing at all". The same test pins the scoping: a
    candidate `fallback_select_candidate` itself picks for a spec-refined item
    does not satisfy the normalized check, and the claim loop's own call site
    guards the check with `selected_by_fallback` so that candidate is never
@@ -17800,7 +17850,18 @@ pull request, run the ones the change touches and any it could regress.
     ordinary re-flag, and a re-flag with no prior refinement each get no such
     exemption; and every boundary is asserted on both sides of itself, because
     too permissive spends Opus in a loop and too strict never escalates at all,
-    and both look like a quiet pipeline.
+    and both look like a quiet pipeline. A block behind only a phantom
+    `item-refined` event (`comment_url` a bare issue URL, no
+    `#issuecomment-`/REST-API comment anchor — #818's and #874's own shape,
+    TD-PPagop-26082819) derives a `null` `refined_before` and logs a warning
+    naming the phantom's timestamp and repo+item; a genuine refinement is
+    still found behind an earlier or a later phantom, in either order; a
+    spec-carrying (non-issue) event, which has no `comment_url` to test at
+    all, is never treated as phantom; and one item's phantom does not
+    suppress a *different* item's genuine refinement stamped in the same
+    second, since the log is fleet-wide and `log_event`'s timestamps are
+    whole-second, so the phantom set is matched on the whole
+    `{repo, item, ts}` triple rather than on `ts` alone.
 11a. **The fingerprint wakes a quiet fleet at the threshold, and lets it go
     quiet again (requirement 35b).** In `test/noop-skip.test.sh`, per the same
     discipline as the abandoned-drafts trap: an item entering the eligible set
@@ -17923,7 +17984,13 @@ pull request, run the ones the change touches and any it could regress.
     `refined_label` add logged as an `own-label-action`; a non-issue item's
     `refined` verdict carrying `refined_spec` records the spec itself, with
     no `comment_url` and no label write. The degradation is asserted from
-    both of its directions: an `issues` verdict with no comment, and a
+    both of its directions: an `issues` verdict with no comment — including a
+    `comments_posted[0]` that is a bare issue URL naming no comment at all,
+    or an array rather than a string, both treated identically to an empty
+    one by `refinement_record_fields`'s own shared shape check
+    (TD-PPagop-26082819, TD-PPagop-26082603; pinned directly in
+    `test/needs-refinement.test.sh`, since the shape check is the shared
+    function's own, not `maybe_run_refiner`'s) — and a
     non-issue verdict whose payload names `spec` instead of `refined_spec` —
     the exact field-name mismatch between `prompts/refiner.md` and
     `refinement_record_fields` that PR #283's review caught by hand — earn a

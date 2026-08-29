@@ -433,6 +433,14 @@ _traceability_normalize() {  # <text>
 # fetch below for why. Set `TRACEABILITY_DEBUG=1` to log, to stderr, the
 # normalized haystack/needle a comparison actually ran against; this is
 # never required to diagnose a failure, only to see it directly.
+#
+# Calls `refinement_comment_url_id` (`lib/refinement.sh`) for its own
+# comment-id extraction below — the same predicate TD-PPagop-26082819's
+# recording and reading seams use, so a comment URL's shape is judged the
+# same way everywhere in this codebase (TD-PPagop-26082603). `agent-cycle.sh`
+# sources both files well before either is called, so which one it sources
+# first does not matter; a harness that lifts this function in isolation
+# (`test/refinement-traceability.test.sh`) must define this helper too.
 refinement_traceability_fault() {  # <candidate-json> <refinements-json>
   local cand="$1" refinements="${2:-{\}}" repo item entry spec comment_url \
     url_issue comment_id body norm_context norm_acceptance norm_needle \
@@ -471,9 +479,27 @@ refinement_traceability_fault() {  # <candidate-json> <refinements-json>
     return 0
   fi
 
-  comment_id="$(printf '%s' "$comment_url" \
-    | sed -n 's|.*#issuecomment-\([0-9][0-9]*\)$|\1|p')"
-  [[ -n "$comment_id" ]] || return 0
+  comment_id="$(refinement_comment_url_id "$comment_url")"
+  if [[ -z "$comment_id" ]]; then
+    # TD-PPagop-26082603: this used to be a bare `sed` extraction of the HTML
+    # permalink form alone, so a `comment_url` recorded in any other valid
+    # shape (the REST API form, say) yielded no id and this returned "no
+    # fault having tested nothing at all" — the same "requirement 17f
+    # silently disarmed" gap the fetch-failure case below now closes, but
+    # reachable by a `refinements` entry shaped this way rather than by a
+    # network fault. `refinement_comment_url_id` (lib/refinement.sh) is the
+    # one predicate every caller in this codebase tests a comment URL's shape
+    # against, so an unrecognised shape now faults here, on the same terms
+    # the structural check just above already does for a `comment_url`
+    # naming the wrong issue — a malformed ledger entry, not a `gh` failure,
+    # so it is reported the same way that one is: as the fault text below,
+    # not through `guard_warn` (test/guard-degradation.test.sh's sweep scopes
+    # that to a guarded command's own captured-output fallback, which this
+    # is not).
+    printf '%s %s: recorded refinement comment_url (%s) does not name a comment — no #issuecomment-<n> anchor or REST API comment URL, so traceability cannot be verified; treated as untraceable rather than assumed compliant' \
+      "$repo" "$item" "$comment_url"
+    return 0
+  fi
   # A failed fetch here used to fail open (return 0, no fault) — the same
   # direction every other degraded `gh` read in this pipeline fails, on the
   # reasoning that an outage is a fact about GitHub, not about the work
@@ -572,8 +598,7 @@ refinement_traceability_repair() {  # <candidate-json> <refinements-json>
       | sed -n 's|.*/issues/\([0-9][0-9]*\)#issuecomment-.*|\1|p')"
     # The ledger-disagreement case is never repaired — see above.
     if [[ -z "$url_issue" || "$url_issue" == "$item" ]]; then
-      comment_id="$(printf '%s' "$comment_url" \
-        | sed -n 's|.*#issuecomment-\([0-9][0-9]*\)$|\1|p')"
+      comment_id="$(refinement_comment_url_id "$comment_url")"
       if [[ -n "$comment_id" ]]; then
         body="$(gh api "repos/$repo/issues/comments/$comment_id" --jq '.body // ""' 2>/dev/null || true)"
         if [[ -n "$body" ]] \

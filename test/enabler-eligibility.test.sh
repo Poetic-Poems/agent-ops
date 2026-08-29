@@ -24,6 +24,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # shellcheck source=lib/cycle-state.sh
 . "$SCRIPT_DIR/lib/cycle-state.sh"
+# shellcheck source=lib/void-guard.sh
+. "$SCRIPT_DIR/lib/void-guard.sh"
+# TD-PPagop-26082819: enabler_eligible_items now checks a phantom
+# item-refined event's comment_url shape against REFINEMENT_COMMENT_URL_RE
+# (lib/refinement.sh) before trusting it — sourced here so that check runs
+# against the real pattern rather than this file's own fallback copy.
+# shellcheck source=lib/refinement.sh
+. "$SCRIPT_DIR/lib/refinement.sh"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -40,10 +48,32 @@ assert_eq() {
   fi
 }
 
+assert_contains() {
+  local desc="$1" needle="$2" haystack="$3"
+  if [[ "$haystack" == *"$needle"* ]]; then
+    printf 'ok   - %s\n' "$desc"
+  else
+    printf 'FAIL - %s\n     expected to contain: %s\n     actual:             %s\n' \
+      "$desc" "$needle" "$haystack"
+    failures=$(( failures + 1 ))
+  fi
+}
+
 log="$tmp_dir/log.jsonl"
 now="$(date -u -d '2026-07-25T12:00:00Z' +%s)"
 open_none='{"o/r":[]}'
 open_52='{"o/r":[52]}'
+
+# log_event is stubbed, not sourced from agent-cycle.sh: enabler_eligible_items
+# (TD-PPagop-26082819) calls it, guarded by `command -v`, to warn once a
+# phantom item-refined event is found — captured here the same way `gh` is
+# stubbed in test/needs-refinement.test.sh, so that warning is observable
+# without lifting agent-cycle.sh's own logging machinery into this harness.
+LOG_EVENT_CALLS_FILE="$tmp_dir/log_event_calls"
+log_event() { printf '%s\t%s\n' "$1" "$2" >> "$LOG_EVENT_CALLS_FILE"; }
+log_event_calls() { [[ -f "$LOG_EVENT_CALLS_FILE" ]] && wc -l < "$LOG_EVENT_CALLS_FILE" | tr -d ' ' || printf '0'; }
+log_event_last_fields() { [[ -f "$LOG_EVENT_CALLS_FILE" ]] && tail -n1 "$LOG_EVENT_CALLS_FILE" | cut -f2- || printf ''; }
+reset_log_event_calls() { rm -f "$LOG_EVENT_CALLS_FILE"; }
 
 # eligible [MIN] [RECHECK] [OPEN_ISSUES] [REFINEMENT_MIN] — the rule over
 # $log, at a fixed now.
@@ -70,6 +100,21 @@ coord_cycles() {  # <n> [first-hour]
 }
 
 blocked_line='{"ts":"2026-07-22T09:00:00Z","cycle":"c0","event":"attempt-failed","stage":"implementer","repo":"o/r","item":"TD1","detail":"needs repo secrets","unblock_condition":"a human adds SENTRY_DSN"}'
+
+# coord_cycles_after TS N — like coord_cycles above, but its N stage-end
+# events start one hour after TS instead of the fixed 2026-07-22 date: the
+# TD-PPagop-26082819 fixtures below are dated in August, and a block's own
+# coord_cycles count is only ever the stage-end events *after its own ts*
+# (ENABLER_ELIGIBLE_JQ's $coord_cycles), so a fixed-July helper would count
+# zero for them regardless of N.
+coord_cycles_after() {
+  local ts="$1" n="$2" i epoch
+  epoch="$(date -u -d "$ts" +%s)"
+  for (( i = 1; i <= n; i++ )); do
+    printf '{"ts":"%s","cycle":"ca%d","event":"stage-end","stage":"coordinator","exit_code":0}\n' \
+      "$(date -u -d "@$(( epoch + i * 3600 ))" +%Y-%m-%dT%H:%M:%SZ)" "$i"
+  done
+}
 
 # --- Nothing to read at all ---
 
@@ -342,6 +387,102 @@ cat >> "$log" <<'EOF'
 EOF
 assert_eq "a needs-refinement re-flag with no prior item-refined event gets no exemption" \
   "" "$(reason_for TD1 3 0 "$open_none")"
+
+# --- TD-PPagop-26082819: a phantom item-refined event sets no refined_before ---
+# #818's and #874's own item-refined events were both logged with a bare
+# issue URL in comment_url — no #issuecomment- anchor, so it could never name
+# a real comment — because the recording seam that now rejects that shape
+# (refinement_record_fields, lib/refinement.sh) had not been fixed yet. Those
+# events are still sitting on the fleet log; this is the reading seam that
+# must not trust them, so the thrash guard they wrongly armed releases once
+# the recording fix ships, with no history to edit.
+
+reset_log_event_calls
+cat > "$log" <<'EOF'
+{"ts":"2026-08-26T08:45:09Z","cycle":"c-phantom","event":"item-refined","repo":"o/r","item":"TD1","by":"refiner","comment_url":"https://github.com/o/r/issues/818"}
+{"ts":"2026-08-26T09:00:00Z","cycle":"c0","event":"attempt-failed","stage":"coordinator","repo":"o/r","item":"TD1","kind":"needs-refinement","detail":"under-specified","unblock_condition":"a human writes acceptance criteria"}
+EOF
+coord_cycles_after "2026-08-26T09:00:00Z" 3 >> "$log"
+assert_eq "a block behind only a phantom item-refined event has no refined_before" \
+  "null" "$(eligible 3 0 "$open_none" | jq -r '.[0].refined_before // "null"')"
+assert_eq "…so the thrash guard's own exemption question (39a-style re-offer) never fires from it" \
+  "threshold" "$(reason_for TD1 3 0 "$open_none")"
+# Two calls above (eligible, then reason_for) each independently re-derive
+# and warn — enabler_eligible_items runs once per cycle in production
+# (compute_enabler_eligible_set, lib/eligibility.sh), so a real cycle logs
+# this once; this harness just proves the warning fires at all and names the
+# right thing, not the exact call count its own two lookups happen to cost.
+if [[ "$(log_event_calls)" -ge 1 ]]; then
+  printf 'ok   - %s\n' "…and the phantom is named in a warning"
+else
+  printf 'FAIL - %s\n     expected: >= 1\n     actual:   %s\n' "…and the phantom is named in a warning" "$(log_event_calls)"
+  failures=$(( failures + 1 ))
+fi
+assert_contains "…naming its timestamp" "2026-08-26T08:45:09Z" "$(log_event_last_fields)"
+assert_contains "…and its repo+item" '"item":"TD1"' "$(log_event_last_fields)"
+
+# A later, *valid* item-refined event must still win over an earlier phantom
+# — the derivation does not stop at the first phantom it meets, it keeps
+# looking for the latest one that actually passes the shape check.
+reset_log_event_calls
+cat > "$log" <<'EOF'
+{"ts":"2026-08-26T08:45:09Z","cycle":"c-phantom","event":"item-refined","repo":"o/r","item":"TD1","by":"refiner","comment_url":"https://github.com/o/r/issues/818"}
+{"ts":"2026-08-27T10:00:00Z","cycle":"c-real","event":"item-refined","repo":"o/r","item":"TD1","by":"refiner","comment_url":"https://github.com/o/r/issues/818#issuecomment-99"}
+{"ts":"2026-08-27T10:05:00Z","cycle":"c1","event":"attempt-failed","stage":"coordinator","repo":"o/r","item":"TD1","kind":"needs-refinement","detail":"still not enough","unblock_condition":"a human clarifies"}
+EOF
+coord_cycles_after "2026-08-27T10:05:00Z" 3 >> "$log"
+assert_eq "a genuine, later refinement is still found behind an earlier phantom" \
+  "2026-08-27T10:00:00Z" "$(eligible 3 0 "$open_none" | jq -r '.[0].refined_before.ts // "null"')"
+
+# The reverse: a genuine refinement followed by a *later* phantom must still
+# be found — the phantom does not shadow the real one just because it sorts
+# after it by timestamp.
+reset_log_event_calls
+cat > "$log" <<'EOF'
+{"ts":"2026-08-26T08:00:00Z","cycle":"c-real","event":"item-refined","repo":"o/r","item":"TD1","by":"refiner","comment_url":"https://github.com/o/r/issues/818#issuecomment-99"}
+{"ts":"2026-08-26T08:45:09Z","cycle":"c-phantom","event":"item-refined","repo":"o/r","item":"TD1","by":"refiner","comment_url":"https://github.com/o/r/issues/818"}
+{"ts":"2026-08-26T09:00:00Z","cycle":"c0","event":"attempt-failed","stage":"coordinator","repo":"o/r","item":"TD1","kind":"needs-refinement","detail":"under-specified","unblock_condition":"a human writes acceptance criteria"}
+EOF
+coord_cycles_after "2026-08-26T09:00:00Z" 3 >> "$log"
+assert_eq "a later phantom does not shadow an earlier, genuine refinement" \
+  "2026-08-26T08:00:00Z" "$(eligible 3 0 "$open_none" | jq -r '.[0].refined_before.ts // "null"')"
+
+# A spec-carrying (non-issue) item-refined event has no comment_url at all —
+# the phantom check must never touch it. Ordinary tech-debt/plan/review
+# refinements keep working exactly as before.
+reset_log_event_calls
+cat > "$log" <<'EOF'
+{"ts":"2026-07-20T08:00:00Z","cycle":"c-1","event":"item-refined","repo":"o/r","item":"TD1","spec":"original spec"}
+{"ts":"2026-07-22T09:00:00Z","cycle":"c0","event":"attempt-failed","stage":"coordinator","repo":"o/r","item":"TD1","kind":"needs-refinement","detail":"under-specified","unblock_condition":"a human writes acceptance criteria"}
+EOF
+coord_cycles 3 >> "$log"
+assert_eq "a spec-carrying item-refined event is never treated as phantom" \
+  "2026-07-20T08:00:00Z" "$(eligible 3 0 "$open_none" | jq -r '.[0].refined_before.ts // "null"')"
+assert_eq "…and earns no phantom warning" "0" "$(log_event_calls)"
+
+# One item's phantom must not suppress another item's genuine refinement.
+# `log_event` stamps whole-second UTC timestamps and this rule runs over the
+# fleet-wide *union* log, so two `item-refined` events sharing a second across
+# different items is ordinary traffic, not a contrivance — which is why the
+# phantom set is matched on the whole {repo, item, ts} triple and never on
+# `ts` alone. Keyed on `ts` alone, TD1's real refinement below derives to
+# null: the thrash guard silently disarms for an item that genuinely was
+# refined, and the spec/comment_url lib/enabler.sh's adjudication path reads
+# back out of `refined_before` is discarded with it.
+reset_log_event_calls
+cat > "$log" <<'EOF'
+{"ts":"2026-08-26T08:45:09Z","cycle":"cA","event":"item-refined","repo":"o/r","item":"TD1","by":"refiner","comment_url":"https://github.com/o/r/issues/818#issuecomment-99"}
+{"ts":"2026-08-26T08:45:09Z","cycle":"cB","event":"item-refined","repo":"o/r","item":"TD2","by":"refiner","comment_url":"https://github.com/o/r/issues/874"}
+{"ts":"2026-08-26T09:00:00Z","cycle":"c0","event":"attempt-failed","stage":"coordinator","repo":"o/r","item":"TD1","kind":"needs-refinement","detail":"under-specified","unblock_condition":"a human clarifies"}
+{"ts":"2026-08-26T09:00:00Z","cycle":"c0","event":"attempt-failed","stage":"coordinator","repo":"o/r","item":"TD2","kind":"needs-refinement","detail":"under-specified","unblock_condition":"a human clarifies"}
+EOF
+coord_cycles_after "2026-08-26T09:00:00Z" 3 >> "$log"
+assert_eq "a phantom does not suppress another item's refinement sharing its timestamp" \
+  "2026-08-26T08:45:09Z" \
+  "$(eligible 3 0 "$open_none" | jq -r '.[] | select(.item == "TD1") | .refined_before.ts // "null"')"
+assert_eq "…and the same-second phantom is still skipped for the item that owns it" \
+  "null" \
+  "$(eligible 3 0 "$open_none" | jq -r '.[] | select(.item == "TD2") | .refined_before.ts // "null"')"
 
 # A repo whose source state could not be sampled has no digest, and an
 # escalation there might still be open. "Cannot tell" resolves to ineligible:

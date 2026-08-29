@@ -70,6 +70,30 @@ if [[ -z "$norm_block" || "$norm_block" != *'jq'* ]]; then
 fi
 eval "$norm_block"
 
+# refinement_comment_url_id (lib/refinement.sh) is the shared TD-PPagop-26082819/
+# TD-PPagop-26082603 predicate refinement_traceability_fault/_repair now call
+# for their own comment-id extraction — lifted the same way
+# _traceability_normalize is above, plus the REFINEMENT_COMMENT_URL_RE pattern
+# and refinement_comment_url_valid it is built from.
+re_line="$(grep '^REFINEMENT_COMMENT_URL_RE=' "$SCRIPT_DIR/lib/refinement.sh")"
+if [[ -z "$re_line" ]]; then
+  echo "FAIL - could not find REFINEMENT_COMMENT_URL_RE in lib/refinement.sh — has it moved?" >&2
+  exit 1
+fi
+eval "$re_line"
+valid_block="$(extract_block '^refinement_comment_url_valid\(\) \{' '^\}$' "$SCRIPT_DIR/lib/refinement.sh")"
+if [[ -z "$valid_block" ]]; then
+  echo "FAIL - could not extract refinement_comment_url_valid from lib/refinement.sh — has it moved?" >&2
+  exit 1
+fi
+eval "$valid_block"
+url_id_block="$(extract_block '^refinement_comment_url_id\(\) \{' '^\}$' "$SCRIPT_DIR/lib/refinement.sh")"
+if [[ -z "$url_id_block" ]]; then
+  echo "FAIL - could not extract refinement_comment_url_id from lib/refinement.sh — has it moved?" >&2
+  exit 1
+fi
+eval "$url_id_block"
+
 fn_block="$(extract_block '^refinement_traceability_fault\(\) \{' '^\}$' "$SCRIPT_DIR/lib/candidate-select.sh")"
 if [[ -z "$fn_block" || "$fn_block" != *'jq'* ]]; then
   echo "FAIL - could not extract refinement_traceability_fault from agent-cycle.sh — has it moved?" >&2
@@ -155,6 +179,50 @@ fault_structural="$(refinement_traceability_fault "$cand_swapped" "$refinements_
 assert_nonempty "a comment_url naming a different issue than item is a fault" \
   "$fault_structural"
 assert_eq "the structural check needs no gh call at all" "0" "$(gh_calls)"
+
+# --- TD-PPagop-26082603: a comment_url in the REST API shape ------------------
+# The old `sed`-only extraction recognised only the HTML permalink form
+# (…/issues/<n>#issuecomment-<id>); a `comment_url` recorded in the REST API
+# form (https://api.github.com/repos/<owner>/<repo>/issues/comments/<id>)
+# yielded no comment id from either of its two patterns, and
+# `[[ -n "$comment_id" ]] || return 0` silently returned "no fault" having
+# tested nothing at all. refinement_comment_url_id (lib/refinement.sh) now
+# recognises this shape too, so the check actually runs against it.
+
+refinements_api_shape='{"o/r": {"571": {"ts": "t", "cycle": "c",
+  "comment_url": "https://api.github.com/repos/o/r/issues/comments/5324678525"}}}'
+reset_gh_calls
+GH_COMMENT_BODY='stage_models pie charts using shortModel/spendByModel/windowedCostBreakdown/.costgrid'
+fault_api_ok="$(refinement_traceability_fault "$cand_ok" "$refinements_api_shape")"
+assert_empty "a REST-API-shaped comment_url whose comment really is pasted in passes" \
+  "$fault_api_ok"
+assert_eq "…and it really was checked, at the cost of one gh call" "1" "$(gh_calls)"
+
+reset_gh_calls
+GH_COMMENT_BODY='some other refinement entirely'
+fault_api_bad="$(refinement_traceability_fault "$cand_ok" "$refinements_api_shape")"
+assert_nonempty "…and a REST-API-shaped comment_url whose text is not pasted in still faults" \
+  "$fault_api_bad"
+
+# --- TD-PPagop-26082603: a comment_url matching neither known shape ----------
+# This used to test nothing at all and return "no fault" — the same silent
+# disarming TD-PPagop-26082307 fixed for a failed gh read, but reachable by a
+# malformed ledger entry rather than a network fault. It now faults, on the
+# same terms the structural (wrong-issue) check just above it already does
+# for a malformed ledger entry — no gh call, no guard_warn, just the fault
+# text below — rather than the fetch-failure check's own guard_warn, which is
+# scoped to a guarded command's own captured-output fallback.
+
+refinements_malformed_url='{"o/r": {"571": {"ts": "t", "cycle": "c",
+  "comment_url": "https://github.com/o/r/issues/571"}}}'
+reset_gh_calls
+reset_guard_warn_calls
+fault_malformed_shape="$(refinement_traceability_fault "$cand_ok" "$refinements_malformed_url")"
+assert_nonempty "a comment_url matching neither known shape now faults instead of silently passing" \
+  "$fault_malformed_shape"
+assert_eq "…no gh call is spent trying to fetch an id that was never extracted" "0" "$(gh_calls)"
+assert_eq "…and, like the structural check, needs no guard_warn either" "0" \
+  "$(guard_warn_calls)"
 
 # --- A spec-carrying refinement (tech-debt, review, plan) ----------------------
 # No network call is ever needed here: the spec text is already in
