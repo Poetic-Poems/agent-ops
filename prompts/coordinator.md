@@ -82,12 +82,12 @@ heading, the Script gives you one JSON object:
   ],
   "refinements": {
     "org/repo-a": {
-      "TD26071805": {"ts": "…", "cycle": "…", "spec": "the refined specification, in markdown"},
+      "42": {"ts": "…", "cycle": "…", "spec": "the refined specification, in markdown"},
       "52": {"ts": "…", "cycle": "…", "comment_url": "https://github.com/…/issues/52#issuecomment-…"}
     }
   },
   "claimed": [
-    {"repo": "org/repo-a", "item": "TD26071805", "age_hours": 2},
+    {"repo": "org/repo-a", "item": "42", "age_hours": 2},
     {"repo": "org/repo-a", "item": "pr-57-review-4718691960", "age_hours": 0, "pr_number": 57}
   ],
   "models": {"default": "claude-sonnet-5", "trivial": "claude-haiku-4-5-20251001"},
@@ -195,8 +195,8 @@ heading, the Script gives you one JSON object:
   issue data having been withheld.
 - **Some of that text may have been trimmed to fit your context window, and
   where it has, the entry says so.** The `issues` and `tech_debt` arrays are
-  the only two that carry a whole document each — an issue's entire thread, a
-  register item's entire file — so they are the only two the Script trims, and
+  the only two that carry a whole document each — an issue's entire thread in
+  both cases — so they are the only two the Script trims, and
   it trims them only as far as the window requires. Three marks tell you it
   did:
   - a `body`, or a comment's `body`, ending in
@@ -373,8 +373,8 @@ after you reads it under this same rule.
   carrying any of the three elision marks above (see "What you receive") is
   fully rankable as it stands, and you should rank it without spending a read.
   Once you have decided to *select* it, you must read the whole of it first —
-  `gh issue view <n> --comments` for an issue, `gh api` (or the entry's `url`)
-  for a register item — because your work order has to paste that document
+  `gh issue view <n> --comments`, for either an `issues` or a `tech_debt`
+  entry — because your work order has to paste that document
   **verbatim**, and the Implementer starts with nothing but your work order.
   Never paste an elision marker into a `context`, and never write a `context`
   or an `acceptance` from a truncated body: the missing bytes are exactly
@@ -390,8 +390,8 @@ after you reads it under this same rule.
 - **Open issues and open tech-debt items are pre-fetched; failed runs are
   not.** The `issues` source's candidates are each repo's `issues` array,
   whole threads included, and the `tech-debt` source's are each repo's
-  `tech_debt` array, whole item files included — do not re-list the issues
-  API or unpack a register's tarball to find candidates, and never treat an
+  `tech_debt` array, whole issue threads included — do not re-list the issues
+  API or query the label to find candidates, and never treat an
   empty array as "the data was withheld": an empty `issues` or `tech_debt`
   array *is* the candidate set, exactly as an empty `findings` array is. The
   **failed-runs** source has no array and never did: query it live (`gh api
@@ -1582,11 +1582,11 @@ logging it as a selection defect rather than a race.
       "default_branch": "main",
       "pr_label": "autonomous-agent",
       "source": "tech-debt",
-      "item": "TD26051201",
+      "item": "42",
       "title": "one-line description",
       "model": "claude-sonnet-5",
       "model_reason": "code change with tests",
-      "context": "everything the Implementer needs: the register entry, issue text, or finding verbatim, file paths, related conventions found while evaluating, why the item is unblocked and in scope",
+      "context": "everything the Implementer needs: the issue thread, finding, or plan section verbatim, file paths, related conventions found while evaluating, why the item is unblocked and in scope",
       "acceptance": "what done looks like, concretely"
     }
   ]
