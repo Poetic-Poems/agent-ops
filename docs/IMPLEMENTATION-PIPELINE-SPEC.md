@@ -2073,7 +2073,7 @@ implements.
    reason around. The pre-fetched `issues` (requirement 3j) and `tech_debt`
    (requirement 3t) arrays are emptied along with the narrowing — they are the
    two that carry a whole document each, an issue's entire thread and a
-   tech-debt item's entire file, and paying the Co-Ordinator to read candidates
+   tech-debt issue's entire thread, and paying the Co-Ordinator to read candidates
    it cannot pick is the exact spend this gate exists to stop; the other
    non-finishing arrays are compact enough that stripping them would buy
    nothing. Emptying `tech_debt` here also settles requirement 3t's
@@ -5415,7 +5415,7 @@ implements.
 
    **Two bands are trimmed, and only two.** `issues` and `tech_debt` are the
    arrays that carry a whole document each — an issue's entire thread
-   (requirement 3j), a register item's entire file (requirement 3t) — and are
+   (requirement 3j), a tech-debt issue's entire thread (requirement 3t) — and are
    the only two whose size tracks the repository's history rather than the
    number of open pull requests. That pairing is not new: requirement 2.2a's
    back-pressure block already singles out exactly those two, for exactly this
@@ -5443,7 +5443,8 @@ implements.
    **Dropping entries is the last rung, and it is loud.** Once the tightest
    tier is applied there is nothing left but entries, and those are capped per
    band per repo (halving: 64, 32, … 1), keeping the highest `Priority` band
-   first and the freshest thread within a band, the oldest register item
+   first and the freshest thread within a band, the lowest-numbered tech-debt
+   issue — the one that has waited longest —
    first. The count is recorded as `issues_elided`/`tech_debt_elided` on the
    repo entry the Co-Ordinator reads, and the whole fit is applied *before*
    `coordinator_eligible_items` — beside requirement 2.2a's own emptying of
@@ -13305,7 +13306,9 @@ What exists, and the requirements each part answers to:
    array of the repo's candidate issues — open, unassigned, not labelled
    `blocked`, naming no unresolved `Blocked-by:` reference (requirement 34j,
    each reference's state checked live once the candidate's whole thread is
-   in hand), pull requests dropped — each carrying the bare issue number as
+   in hand), pull requests dropped, and `pw::type:tech-debt`-labelled issues
+   dropped on the same unreported terms (they are the `tech-debt` band's,
+   requirement 3t) — each carrying the bare issue number as
    its ref, the `Priority` band (default `Medium`, read as the source-state
    digest reads it), and the whole thread verbatim (`body` plus `comments`).
    `excluded` is `{number, reason}` for every issue the three deterministic
@@ -13317,13 +13320,18 @@ What exists, and the requirements each part answers to:
    Its filter and shape are regression-tested in `test/issues-prefetch.test.sh`
    and `test/dependency-gate.test.sh`; must pass `shellcheck`.
 3t. `scripts/gather-tech-debt.sh` implementing requirement 3t: given a repo
-   slug and default branch, reads the register in one tarball fetch (like
-   `scripts/gather-register-hygiene.sh`) and prints the JSON array of the
-   repo's candidate tech-debt items — every `status: open` row, each
-   carrying its own id as `ref`/`id`, `title`, `filed`, `url`, and the whole
-   item file verbatim as `body` — sorted by id ascending. A repo with no
-   `tech-debt` tree prints `[]` silently; an API failure prints `[]` with
-   `gh`'s diagnosis on stderr. Fails safe to `[]` (exit 0). Claimed/blocked/
+   slug — and nothing else, since an issue is not read off a branch — lists
+   that repo's open issues carrying the `pw::type:tech-debt` label and prints
+   the JSON array of the ones that survive the deterministic filter it shares
+   with `scripts/gather-issues.sh` (`lib/issue-prefetch.sh`: not a pull
+   request, not assigned, not labelled `blocked` whatever the case, and
+   naming no still-open `Blocked-by:` reference — requirement 34j), each
+   carrying `source: "tech-debt"`, its bare issue number as `ref` (a string)
+   and as `number`, `url`, `title`, `labels`, `author`, `created_at`,
+   `updated_at`, its `body`, and its whole comment thread verbatim as
+   `comments` — sorted by issue number ascending. A repo with no such issues
+   prints `[]`; an API failure prints `[]` with `gh`'s diagnosis on stderr.
+   Fails safe to `[]` (exit 0). Claimed/blocked/
    void exclusion is deliberately not this script's job — the cycle applies
    `exclude_claimed_items` and the new `exclude_blocked_or_void_items`
    (both in `lib/candidate-select.sh`, alongside `exclude_claimed_prs`) once the
@@ -13404,6 +13412,23 @@ What exists, and the requirements each part answers to:
    `scripts/gather-issues.sh` (the holding half) and `agent-cycle.sh` (the
    releasing half, in the same pre-extract window as requirement 34i).
    Unit-tested (`test/dependency-gate.test.sh`); must pass `shellcheck`.
+3r. `lib/issue-prefetch.sh` implementing the issue-walking half requirements 3j
+   and 3t share: `ISSUE_DETERMINISTIC_FILTER_JQ`, the jq definitions
+   `issue_deterministic_ok` (not a pull request, not assigned, not labelled
+   `blocked` whatever the case) and `issue_exclude_reason` (which of
+   `"assigned"`/`"blocked-label"` a rejected issue is reportable under, `null`
+   otherwise — a pull request is never reported); and `issue_blocked_by_ref`,
+   which prints the display form of a thread's first still-open `Blocked-by:`
+   reference (requirement 34j) or nothing, treating a reference whose state
+   cannot be read as still open. Sourced by both `scripts/gather-issues.sh`
+   and `scripts/gather-tech-debt.sh`, so the drops the two bands share cannot
+   drift apart; `issue_blocked_by_ref` calls `dependency_refs`, so
+   `lib/dependency-gate.sh` must be sourced first. What qualifies an issue for
+   candidacy at all — every open issue for `issues`, only the
+   `pw::type:tech-debt`-labelled ones for `tech-debt` — is deliberately left
+   to each caller. Regression-tested through both callers'
+   own tests (`test/issues-prefetch.test.sh`, `test/gather-tech-debt.test.sh`);
+   must pass `shellcheck`.
 3k. `scripts/gather-register-status.sh` implementing requirement 34i's register
    half: given a repo slug, default branch and item ids, prints a JSON object
    mapping each id to the `status` its own item file declares on that branch.
@@ -16163,6 +16188,9 @@ pull request, run the ones the change touches and any it could regress.
    `Medium`), its body, and its comments verbatim; the assigned and
    `Blocked`-labelled drops reappear in `excluded` tagged `assigned` and
    `blocked-label` while the pull request never does (agent-ops#447); a
+   `pw::type:tech-debt`-labelled issue is dropped from `candidates` and,
+   like the pull request, never reported in `excluded` either — it is the
+   `tech-debt` band's candidate, not this one's (agent-ops#875); a
    failing API degrades to `{"candidates":[],"excluded":null}`
    (exit 0) with the failure on stderr; and the no-op fingerprint
    (`lib/noop-skip.sh`) differs between two inputs identical except for the
@@ -16172,11 +16200,15 @@ pull request, run the ones the change touches and any it could regress.
    carry `comments` and a four-name `priority`.
 2j. **Tech-debt arrives pre-fetched, pre-excluded, and its verdict is
    corroborated (requirement 3t).** `test/gather-tech-debt.test.sh` passes:
-   against a stubbed tarball, `scripts/gather-tech-debt.sh` prints one entry
-   per `status: open` item — `source: "tech-debt"`, the item's own id as `ref`
-   and `id`, its `title`, `filed`, `url` and the whole file verbatim as `body`,
-   sorted by id — while `in-progress`, `resolved` and `not-debt` rows and a
-   repo with no `tech-debt` tree yield nothing, and a failing API degrades to
+   against a stubbed issues endpoint, `scripts/gather-tech-debt.sh` prints one
+   entry per open `pw::type:tech-debt`-labelled issue that survives the
+   deterministic filter — `source: "tech-debt"`, the bare issue number as
+   `ref` (a string) and as `number`, its `title`, `labels`, `author`,
+   `created_at`, `updated_at`, `url`, its `body` and its whole comment thread
+   verbatim as `comments`, sorted by issue number ascending — while an
+   assigned issue, a `Blocked`-labelled one (whatever the case) and one naming
+   a still-open `Blocked-by:` reference yield nothing, that last one arriving
+   once its reference closes, and a failing API degrades to
    `[]` (exit 0) with the failure on stderr.
    `test/verdict-corroboration.test.sh` passes:
    `exclude_blocked_or_void_items` drops a candidate blocked or void for its
