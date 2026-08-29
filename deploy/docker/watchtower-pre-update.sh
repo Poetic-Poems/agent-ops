@@ -136,29 +136,49 @@ state_dir="$(expand_home "$(jq -r '.state_dir // "~/.local/state/poetic-agents"'
 # lib/updater-health.sh reads back (agent-ops#603), keyed by $HOSTNAME exactly
 # as the locks above are: the dashboard and scheduler containers on a tailnet
 # node share this state volume but not an identity, so a shared file would mix
-# their invocations the same way an unstamped lock once did (#130).
+# their invocations the same way an unstamped lock once did (#130). Each line
+# also carries `service` (`AGENT_OPS_SERVICE`, "unknown" if unset) — the
+# compose service this container runs as — so a reader with no ledger entry
+# of its own can tell a same-service predecessor's roll from an unrelated
+# sibling service's ledger sharing this same directory.
 #
 # Best-effort throughout (`|| return 0` at every step): a failure to write
 # must never change the hook's exit status, and must not add materially to the
 # one-minute pre-update-timeout, which fails *open* — a container too slow to
-# answer is rolled regardless.
+# answer is rolled regardless. The trim and prune below run only after an
+# "allow": they cost several more subprocesses than the defer path — on the
+# roll's own critical path, ahead of `exit 75` — can safely spend against that
+# budget. A long defer streak still grows this file only slowly, one line per
+# `WATCHTOWER_POLL_INTERVAL`, and is caught up on the next allow.
 record_verdict() {
   local verdict="$1" f=""
   mkdir -p "$state_dir/updater-ledger" 2>/dev/null || return 0
   f="$state_dir/updater-ledger/${HOSTNAME:-unknown}.jsonl"
   local line=""
   line="$(jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg v "$verdict" \
-      '{ts:$ts, verdict:$v}' 2>/dev/null)" || return 0
+      --arg svc "${AGENT_OPS_SERVICE:-unknown}" '{ts:$ts, verdict:$v, service:$svc}' \
+      2>/dev/null)" || return 0
   [[ -n "$line" ]] || return 0
   printf '%s\n' "$line" >> "$f" 2>/dev/null || return 0
+
+  [[ "$verdict" == "allow" ]] || return 0
 
   # Bound this file to the last 48h of invocations — comfortably beyond any
   # legitimate defer streak (bounded by cycle_stale_after/review_stale_after,
   # a few hours by default below) while staying trivial in size at
-  # watchtower's five-minute poll cadence.
+  # watchtower's five-minute poll cadence. The ISO-8601 shape check, not just
+  # the cutoff comparison, matters: a `.ts` that will not parse — corrupt
+  # data, or a future format this hook does not write — sorts unpredictably
+  # against `$cutoff` under jq's plain string `>=`, and could otherwise never
+  # be trimmed at all, pinning lib/updater-health.sh to whatever verdict it
+  # read off that line forever.
   local cutoff="" tmp="$f.tmp.$$"
   cutoff="$(date -u -d '48 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" || return 0
-  if jq -c --arg cutoff "$cutoff" 'select(.ts >= $cutoff)' "$f" > "$tmp" 2>/dev/null; then
+  if jq -c --arg cutoff "$cutoff" \
+      'select((.ts | type == "string")
+        and (.ts | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+        and .ts >= $cutoff)' \
+      "$f" > "$tmp" 2>/dev/null; then
     mv "$tmp" "$f" 2>/dev/null || rm -f "$tmp" 2>/dev/null
   else
     rm -f "$tmp" 2>/dev/null

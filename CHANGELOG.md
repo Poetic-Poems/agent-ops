@@ -66,21 +66,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The update mechanism's own verdict now leaves the updater (agent-ops#603):
   `deploy/docker/watchtower-pre-update.sh` records every invocation, one line
   per poll, to a durable ledger under `state_dir` (`updater-ledger/
-  <hostname>.jsonl`, keyed by the container's own `$HOSTNAME`, excluded from
-  state-sync replication like `.image-drift-cache.json`), and a new
-  `lib/updater-health.sh` reads it back as `rolled` (the ordinary case,
-  no badge), `deferring` (grey, resolves itself) or `stuck` (amber, a fault
-  only a human clears — the container the hook allowed to roll is still the
-  one running). The verdict travels in every node's heartbeat as `updater`,
-  a sibling of `compose`/`image`/`switch`/`stage_health`, and the dashboard's
-  fleet strip renders it as a third badge beneath compose and image; a peer
-  heartbeat predating the field reads as unknown, never as healthy. New
-  `updater_stuck_after_minutes` config key (default 20 minutes), following
-  `image_behind_grace_hours`' shape: the threshold lives one layer above the
-  library, never as a literal inside it. On 2026-08-14 a node stayed on its
-  previous image through a whole fleet roll while every existing signal on
-  the dashboard still read healthy, because none of them read the update
-  mechanism's own verdict, only the drift it eventually causes.
+  <hostname>.jsonl`, keyed by the container's own `$HOSTNAME` and tagged with
+  its compose service, excluded from state-sync replication like
+  `.image-drift-cache.json`), and a new `lib/updater-health.sh` reads it back
+  as `rolled` (the ordinary case, no badge — scoped to the reading
+  container's own service, so a stuck sibling of a different service sharing
+  this ledger cannot masquerade as evidence of a healthy roll), `deferring`
+  (grey, resolves itself, bounded by how long any lock the hook honours could
+  still legitimately be held) or `stuck` (amber, a fault only a human clears
+  — either the container the hook allowed to roll is still the one running,
+  or a defer streak has itself outlasted that same bound). The verdict
+  travels in every node's heartbeat as `updater`, a sibling of
+  `compose`/`image`/`switch`/`stage_health`, and the dashboard's fleet strip
+  renders it as a third badge beneath compose and image; a peer heartbeat
+  predating the field, or carrying a status this page does not recognise,
+  reads as unknown, never as healthy. New `updater_stuck_after_minutes`
+  config key (default 20 minutes), following `image_behind_grace_hours`'
+  shape: the threshold lives one layer above the library, never as a literal
+  inside it. On 2026-08-14 a node stayed on its previous image through a
+  whole fleet roll while every existing signal on the dashboard still read
+  healthy, because none of them read the update mechanism's own verdict,
+  only the drift it eventually causes.
 - The product-managed `pw::type:tech-debt` label is now part of the `target`
   role's catalogue (agent-ops#872), so the pipeline creates it in every
   repository it gathers data for, at most once per

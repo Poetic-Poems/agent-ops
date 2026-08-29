@@ -32,18 +32,19 @@ assert_eq() {
 ledger="$tmp_dir/updater-ledger"
 mkdir -p "$ledger"
 
-entry() { jq -nc --arg ts "$1" --arg v "$2" '{ts:$ts, verdict:$v}'; }
+entry() { jq -nc --arg ts "$1" --arg v "$2" --arg svc "${3:-svc}" '{ts:$ts, verdict:$v, service:$svc}'; }
 ago() { date -u -d "-$1" +%Y-%m-%dT%H:%M:%SZ; }   # ago SECONDS-EXPRESSION (e.g. "10 minutes")
 
-STUCK_AFTER=1200   # 20 minutes, an ordinary threshold for the fixtures below
+STUCK_AFTER=1200        # 20 minutes, an ordinary threshold for the fixtures below
+DEFER_STUCK_AFTER=21600 # 6 hours, an ordinary bound for the fixtures below
 
 # --- Not applicable ------------------------------------------------------------
 
 assert_eq "no ledger directory at all reads null" "null" \
-  "$(updater_status "$tmp_dir/no-such-dir" "$STUCK_AFTER" "host-a")"
+  "$(updater_status "$tmp_dir/no-such-dir" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-a" "svc")"
 
 assert_eq "an empty ledger directory reads null" "null" \
-  "$(updater_status "$ledger" "$STUCK_AFTER" "host-a")"
+  "$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-a" "svc")"
 
 # --- Rolled ----------------------------------------------------------------
 
@@ -51,7 +52,7 @@ assert_eq "an empty ledger directory reads null" "null" \
 # entries of its own yet — the ordinary post-roll reading.
 allowed_at="$(ago '10 minutes')"
 entry "$allowed_at" allow > "$ledger/host-a.jsonl"
-out="$(updater_status "$ledger" "$STUCK_AFTER" "host-b")"
+out="$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc")"
 assert_eq "a container with no history of its own, after a peer's allow, reads rolled" \
   "rolled" "$(jq -r '.status' <<<"$out")"
 assert_eq "naming when that roll was allowed" \
@@ -59,7 +60,7 @@ assert_eq "naming when that roll was allowed" \
 
 # The newest allow among several retired hostnames wins.
 entry "$(ago '2 hours')" allow > "$ledger/host-older.jsonl"
-out="$(updater_status "$ledger" "$STUCK_AFTER" "host-c")"
+out="$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-c" "svc")"
 assert_eq "the most recent allow across every retired hostname is the one reported" \
   "$allowed_at" "$(jq -r '.at' <<<"$out")"
 rm -f "$ledger/host-older.jsonl"
@@ -69,8 +70,38 @@ rm -f "$ledger/host-older.jsonl"
 rm -f "$ledger/host-a.jsonl"
 entry "$(ago '5 minutes')" defer > "$ledger/host-a.jsonl"
 assert_eq "a foreign defer alone is not evidence of a roll" "null" \
-  "$(updater_status "$ledger" "$STUCK_AFTER" "host-b")"
+  "$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc")"
 rm -f "$ledger/host-a.jsonl"
+
+# --- Rolled is scoped to our own service (finding: cross-service contamination) --
+# The scheduler and the dashboard share a ledger directory but are different
+# services. A stuck scheduler that keeps appending fresh "allow" entries every
+# poll must not be read by a fresh dashboard container as evidence of its own
+# roll — and, symmetrically, a genuine same-service roll must still be found.
+
+scheduler_allowed_at="$(ago '1 minute')"
+dashboard_allowed_at="$(ago '3 hours')"
+entry "$scheduler_allowed_at" allow "scheduler" > "$ledger/stuck-scheduler.jsonl"
+entry "$dashboard_allowed_at" allow "dashboard" > "$ledger/old-dashboard.jsonl"
+out="$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "fresh-dashboard" "dashboard")"
+assert_eq "a fresh dashboard reads its own service's allow, not a stuck sibling service's newer one" \
+  "$dashboard_allowed_at" "$(jq -r '.at' <<<"$out")"
+rm -f "$ledger/stuck-scheduler.jsonl" "$ledger/old-dashboard.jsonl"
+
+entry "$(ago '1 minute')" allow "dashboard" > "$ledger/stuck-dashboard.jsonl"
+out="$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "fresh-scheduler" "scheduler")"
+assert_eq "and a fresh scheduler is not fooled by a stuck dashboard's allow either" \
+  "null" "$out"
+rm -f "$ledger/stuck-dashboard.jsonl"
+
+# A ledger line predating the `service` field defaults to "unknown", and an
+# omitted service argument does too — so old peers still find each other.
+legacy_allowed_at="$(ago '20 minutes')"
+jq -nc --arg ts "$legacy_allowed_at" '{ts:$ts, verdict:"allow"}' > "$ledger/legacy-host.jsonl"
+out="$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "")"
+assert_eq "a service-less ledger line and an omitted service argument both default to unknown" \
+  "rolled" "$(jq -r '.status' <<<"$out")"
+rm -f "$ledger/legacy-host.jsonl"
 
 # --- Deferring ---------------------------------------------------------------
 
@@ -78,7 +109,7 @@ streak_start="$(ago '15 minutes')"
 entry "$streak_start" defer > "$ledger/host-b.jsonl"
 entry "$(ago '10 minutes')" defer >> "$ledger/host-b.jsonl"
 entry "$(ago '5 minutes')"  defer >> "$ledger/host-b.jsonl"
-out="$(updater_status "$ledger" "$STUCK_AFTER" "host-b")"
+out="$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc")"
 assert_eq "three consecutive defers read as deferring" "deferring" "$(jq -r '.status' <<<"$out")"
 assert_eq "since the earliest of the streak" "$streak_start" "$(jq -r '.at' <<<"$out")"
 
@@ -90,9 +121,34 @@ streak_start="$(ago '20 minutes')"
   entry "$streak_start" defer
   entry "$(ago '10 minutes')" defer
 } > "$ledger/host-b.jsonl"
-out="$(updater_status "$ledger" "$STUCK_AFTER" "host-b")"
+out="$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc")"
 assert_eq "the streak stops at the last allow, not the start of the file" \
   "$streak_start" "$(jq -r '.at' <<<"$out")"
+rm -f "$ledger/host-b.jsonl"
+
+# --- Deferring has a bound (finding: an unbounded defer streak) --------------
+# A defer streak that has outlasted DEFER_STUCK_AFTER is no longer "a cycle in
+# flight" — no lock the hook honours could still be held that long — so it
+# reads stuck, distinguished by reason:"defer" from an unresolved allow.
+
+streak_start="$(ago '7 hours')"    # past DEFER_STUCK_AFTER (6h)
+{
+  entry "$streak_start" defer
+  entry "$(ago '10 minutes')" defer
+} > "$ledger/host-b.jsonl"
+out="$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc")"
+assert_eq "a defer streak past the bound reads stuck, not an eternal deferring" \
+  "stuck" "$(jq -r '.status' <<<"$out")"
+assert_eq "distinguished from an unresolved allow by reason" \
+  "defer" "$(jq -r '.reason' <<<"$out")"
+assert_eq "timed from the start of the streak" "$streak_start" "$(jq -r '.at' <<<"$out")"
+rm -f "$ledger/host-b.jsonl"
+
+# The same streak with no usable bound (omitted) never escalates — matching
+# the stuck_after threshold's own graceful-degradation contract.
+entry "$streak_start" defer > "$ledger/host-b.jsonl"
+assert_eq "an unusable defer-stuck-after threshold never escalates deferring to stuck" \
+  "deferring" "$(updater_status "$ledger" "$STUCK_AFTER" "" "host-b" "svc" | jq -r '.status')"
 rm -f "$ledger/host-b.jsonl"
 
 # --- Stuck -------------------------------------------------------------------
@@ -101,18 +157,19 @@ rm -f "$ledger/host-b.jsonl"
 # running: the 2026-08-14 signature.
 allowed_at="$(ago '30 minutes')"
 entry "$allowed_at" allow > "$ledger/host-b.jsonl"
-out="$(updater_status "$ledger" "$STUCK_AFTER" "host-b")"
+out="$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc")"
 assert_eq "an allow this container has outlived past the threshold reads stuck" \
   "stuck" "$(jq -r '.status' <<<"$out")"
 assert_eq "naming when it was allowed" "$allowed_at" "$(jq -r '.at' <<<"$out")"
 assert_eq "and roughly how long ago (within a few seconds of 1800s)" "1" \
   "$(jq -r '(.seconds >= 1795 and .seconds <= 1810) | if . then 1 else 0 end' <<<"$out")"
+assert_eq "distinguished from an overlong defer by reason" "allow" "$(jq -r '.reason' <<<"$out")"
 
 # Allowed 30 seconds ago, well inside the threshold: too recent to call
 # either state yet, and never reads as failing while that is true.
 entry "$(ago '30 seconds')" allow > "$ledger/host-b.jsonl"
 assert_eq "an allow inside the grace window is not yet stuck" "null" \
-  "$(updater_status "$ledger" "$STUCK_AFTER" "host-b")"
+  "$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc")"
 rm -f "$ledger/host-b.jsonl"
 
 # The state this whole check exists for, in the shape it actually arrives in:
@@ -129,7 +186,7 @@ streak_start="$(ago '40 minutes')"
   for m in 35 30 25 20 15 10 5; do entry "$(ago "$m minutes")" allow; done
   entry "$(ago '10 seconds')" allow
 } > "$ledger/host-b.jsonl"
-out="$(updater_status "$ledger" "$STUCK_AFTER" "host-b")"
+out="$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc")"
 assert_eq "an allow repeated on every poll since is still stuck, not reset by the newest" \
   "stuck" "$(jq -r '.status' <<<"$out")"
 assert_eq "timed from the first allow of the run, not the last" \
@@ -145,7 +202,26 @@ assert_eq "timed from the first allow of the run, not the last" \
   entry "$(ago '5 minutes')" allow
 } > "$ledger/host-b.jsonl"
 assert_eq "a defer in between ends the run, so the clock starts at the allow after it" \
-  "$(ago '25 minutes')" "$(updater_status "$ledger" "$STUCK_AFTER" "host-b" | jq -r '.at')"
+  "$(ago '25 minutes')" "$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc" | jq -r '.at')"
+rm -f "$ledger/host-b.jsonl"
+
+# --- A corrupt line mid-streak is skipped, not treated as ending the run -----
+# A single transient bad line must not truncate a genuine allow streak: it
+# supports neither "same verdict" nor "different verdict", so the scan passes
+# over it rather than stopping there.
+streak_start="$(ago '2 hours')"
+{
+  entry "$streak_start" allow
+  entry "$(ago '110 minutes')" allow
+  printf 'not json at all\n'
+  entry "$(ago '90 minutes')" allow
+  entry "$(ago '10 minutes')" allow
+} > "$ledger/host-b.jsonl"
+out="$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc")"
+assert_eq "a corrupt line mid-streak is skipped, not read as a verdict change" \
+  "stuck" "$(jq -r '.status' <<<"$out")"
+assert_eq "the streak still starts at the genuinely first allow, past the corrupt line" \
+  "$streak_start" "$(jq -r '.at' <<<"$out")"
 rm -f "$ledger/host-b.jsonl"
 
 # --- An unusable threshold is a question this library will not answer --------
@@ -156,30 +232,54 @@ rm -f "$ledger/host-b.jsonl"
 # seconds, therefore stuck".
 entry "$(ago '40 minutes')" allow > "$ledger/host-b.jsonl"
 assert_eq "an omitted threshold reads null, never instantly stuck" "null" \
-  "$(updater_status "$ledger" "" "host-b")"
+  "$(updater_status "$ledger" "" "$DEFER_STUCK_AFTER" "host-b" "svc")"
 assert_eq "and a non-numeric one reads null too" "null" \
-  "$(updater_status "$ledger" "twenty" "host-b")"
+  "$(updater_status "$ledger" "twenty" "$DEFER_STUCK_AFTER" "host-b" "svc")"
 assert_eq "while the same ledger with a usable threshold still reads stuck" "stuck" \
-  "$(updater_status "$ledger" "$STUCK_AFTER" "host-b" | jq -r '.status')"
+  "$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc" | jq -r '.status')"
 rm -f "$ledger/host-b.jsonl"
 
 # --- Malformed data never crashes and never asserts more than it can support --
 
 printf 'not json at all\n' > "$ledger/host-b.jsonl"
 assert_eq "an unreadable last line reads null rather than a guess" "null" \
-  "$(updater_status "$ledger" "$STUCK_AFTER" "host-b")"
+  "$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc")"
 rm -f "$ledger/host-b.jsonl"
 
 jq -nc '{ts:"", verdict:"allow"}' > "$ledger/host-b.jsonl"
 assert_eq "an entry with no usable timestamp reads null rather than asserting stuck" "null" \
-  "$(updater_status "$ledger" "$STUCK_AFTER" "host-b")"
+  "$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc")"
 rm -f "$ledger/host-b.jsonl"
+
+# A non-empty but unparseable timestamp must fail the same way as an empty
+# one — never as epoch 0, which would read as impossibly old and pin this
+# container to a permanent stuck/deferring badge nothing could ever clear.
+jq -nc '{ts:"not-a-date", verdict:"allow"}' > "$ledger/host-b.jsonl"
+assert_eq "a garbage timestamp reads null, never a permanent stuck badge" "null" \
+  "$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc")"
+rm -f "$ledger/host-b.jsonl"
+
+jq -nc '{ts:"not-a-date", verdict:"defer"}' > "$ledger/host-b.jsonl"
+assert_eq "and the same holds on the defer branch" "null" \
+  "$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc")"
+rm -f "$ledger/host-b.jsonl"
+
+# --- An empty hostname reads the same way the writer's own fallback does ----
+# deploy/docker/watchtower-pre-update.sh writes ${HOSTNAME:-unknown}.jsonl;
+# an empty hostname argument, with $HOSTNAME itself also unset, must resolve
+# the same "unknown" name back, not read as unanswerable. Run in a subshell
+# with $HOSTNAME unset — bash otherwise auto-populates it to this machine's
+# real name, which would mask exactly the case this asserts.
+entry "$(ago '10 minutes')" allow > "$ledger/unknown.jsonl"
+assert_eq "an empty hostname argument falls back to 'unknown', matching the writer" \
+  "null" "$(unset HOSTNAME; updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "" "svc" | jq -r '.status')"
+rm -f "$ledger/unknown.jsonl"
 
 # --- Never a non-zero exit ----------------------------------------------------
 
 set -e
-updater_status "$ledger" "$STUCK_AFTER" "host-b" >/dev/null
-updater_status "$tmp_dir/does-not-exist" "$STUCK_AFTER" "host-b" >/dev/null
+updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc" >/dev/null
+updater_status "$tmp_dir/does-not-exist" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc" >/dev/null
 set +e
 
 printf '\n'

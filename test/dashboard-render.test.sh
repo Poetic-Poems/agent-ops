@@ -194,6 +194,10 @@ assert_contains "a container the hook allowed but that never rolled is flagged" 
   "updater stuck" "$out"
 assert_contains "a container the hook is still deferring is flagged too, distinctly" \
   "updater deferring" "$out"
+assert_eq "and only the one stuck container gets the badge — never a rolled or pre-field one" \
+  "1" "$(grep -o 'updater stuck' <<<"$out" | wc -l | tr -d ' ')"
+assert_eq "and only the one deferring container gets its badge — never a rolled or pre-field one" \
+  "1" "$(grep -o 'updater deferring' <<<"$out" | wc -l | tr -d ' ')"
 
 # --- The node-scoped switch badge on the fleet strip (issue #379) -----------
 # poetic-1 (self) carries an enabled switch and gets no badge; poetic-2

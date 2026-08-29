@@ -1267,25 +1267,37 @@
   // "deferring" is grey, versionLine's own "behind" colour: it resolves
   // itself the moment the cycle or review holding it ends, so it is named
   // rather than warned about, for how long. "stuck" is amber, composeLine's
-  // colour for "this wants a human": the container the hook told to go
-  // ahead is still running, and the retry that follows repeats the very
-  // thing that collided, so it will not clear by itself. Absent (a peer
-  // whose heartbeat predates this check, or one still inside the short
-  // window before its own first poll) renders nothing, same as an old
-  // version/compose/image verdict.
+  // colour for "this wants a human" — either because an allowed roll never
+  // happened (`u.reason === "allow"`) and the retry that follows repeats the
+  // very thing that collided, or because a defer streak has itself outlived
+  // what any lock this hook honours could still legitimately hold
+  // (`u.reason === "defer"`); neither clears by itself. Every other status —
+  // absent (a peer whose heartbeat predates this check, or one still inside
+  // the short window before its own first poll), or one this page does not
+  // recognise (a future release, or a truncated/corrupt heartbeat field) —
+  // renders nothing, same as an old version/compose/image verdict:
+  // imageLine's own "unverified" branch is the precedent for naming a status
+  // explicitly rather than folding every non-default case into the same
+  // benign badge, which would misdescribe whatever the fold caught next.
   function updaterLine(n) {
     var u = n.updater;
-    if (!u || !u.status || u.status === "rolled") return null;
-    var badge = u.status === "stuck"
-      ? el("span", {class:"badge b-amber", text:"updater stuck",
-          title: "the pre-update hook has been allowing this container's roll since " + fmtAgo(u.at) +
-                 ", every poll, and it is still the one running — the retry repeats the operation " +
-                 "that collided, so this will not clear on its own (agent-ops#603); investigate on " +
-                 "that node's host"})
-      : el("span", {class:"badge b-grey", text:"updater deferring",
-          title: "the pre-update hook has been deferring this container's roll since " + fmtAgo(u.at) +
-                 " — an implementation cycle or review is in flight; it clears once that ends"});
-    return el("div", {class:"ver"}, badge);
+    if (!u || !u.status) return null;
+    if (u.status === "stuck") {
+      var title = u.reason === "defer"
+        ? "the pre-update hook has been deferring this container's roll since " + fmtAgo(u.at) +
+          " — longer than any implementation cycle or review lock could still legitimately hold it, " +
+          "so this is no longer a cycle in flight (agent-ops#603); investigate on that node's host"
+        : "the pre-update hook has been allowing this container's roll since " + fmtAgo(u.at) +
+          ", every poll, and it is still the one running — the retry repeats the operation that " +
+          "collided, so this will not clear on its own (agent-ops#603); investigate on that node's host";
+      return el("div", {class:"ver"}, el("span", {class:"badge b-amber", text:"updater stuck", title: title}));
+    }
+    if (u.status === "deferring") {
+      return el("div", {class:"ver"}, el("span", {class:"badge b-grey", text:"updater deferring",
+        title: "the pre-update hook has been deferring this container's roll since " + fmtAgo(u.at) +
+               " — an implementation cycle or review is in flight; it clears once that ends"}));
+    }
+    return null;
   }
 
   // ---------- section builder ----------

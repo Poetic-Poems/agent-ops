@@ -119,6 +119,15 @@ streams_retained="${STATE_SYNC_STREAMS_RETAINED:-$(cfg '.state_local_streams_ret
 # script runs under `set -e`, so the node would stop publishing a heartbeat
 # entirely over a legal config value.
 updater_stuck_after_seconds="$(cfg '.updater_stuck_after_minutes * 60 | floor')"
+# The bound on a legitimate defer streak: past the longer of the two lock
+# staleness windows, watchtower-pre-update.sh's own held_by() would no longer
+# honour either lock, so a defer streak that has outlived both is no longer
+# "a cycle in flight" — it is the same "stuck" fault an unresolved allow is.
+# Mirrors the hook's own simple `// 4`/`// 6` defaults (config.json read
+# directly there, not the derived value acquire_lock uses) rather than
+# re-deriving them, since this is bounding the same hook's own behaviour.
+updater_defer_stuck_after_seconds="$(cfg \
+  '([.lock_stale_after // 4, .project_review.lock_stale_after // 6] | max) * 3600 | floor')"
 
 node_name="${NODE_NAME:-$(hostname)}"
 node_name="${node_name//[^A-Za-z0-9._-]/-}"
@@ -525,7 +534,8 @@ do_push() {
     --argjson switch "$(toggle_switch_summary "$state_dir")" \
     --argjson stage_health "$(jq -c '.' "$state_dir/.stage-health.json" 2>/dev/null || echo null)" \
     --argjson mirror_rebuild "$(mirror_rebuild_verdict "$state_dir")" \
-    --argjson updater "$(updater_status "$state_dir/updater-ledger" "$updater_stuck_after_seconds" "${HOSTNAME:-}")" \
+    --argjson updater "$(updater_status "$state_dir/updater-ledger" "$updater_stuck_after_seconds" \
+      "$updater_defer_stuck_after_seconds" "${HOSTNAME:-}" "${AGENT_OPS_SERVICE:-}" || echo null)" \
     '{node: $node, role: $role, ts: $ts, last_cycle: $lc, version: $version,
       compose: $compose, image: $image, switch: $switch,
       stage_health: $stage_health, mirror: $mirror_rebuild, updater: $updater}' > "$mirror/heartbeat.json"

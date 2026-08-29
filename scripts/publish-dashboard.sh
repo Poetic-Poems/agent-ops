@@ -198,7 +198,14 @@ stage_health_json="$(jq -c '.' "$stage_health_file" 2>/dev/null || echo null)"
 # types the key `number`, and bash arithmetic cannot evaluate a fractional
 # one at all.
 updater_stuck_after_seconds="$(cfg '.updater_stuck_after_minutes * 60 | floor')"
-updater_json="$(updater_status "$state_dir/updater-ledger" "$updater_stuck_after_seconds" "${HOSTNAME:-}")"
+# The bound on a legitimate defer streak — see scripts/state-sync.sh's
+# identical derivation for why it is the longer of the two lock staleness
+# windows, read the same simple way watchtower-pre-update.sh's own held_by()
+# reads them.
+updater_defer_stuck_after_seconds="$(cfg \
+  '([.lock_stale_after // 4, .project_review.lock_stale_after // 6] | max) * 3600 | floor')"
+updater_json="$(updater_status "$state_dir/updater-ledger" "$updater_stuck_after_seconds" \
+  "$updater_defer_stuck_after_seconds" "${HOSTNAME:-}" "${AGENT_OPS_SERVICE:-}" || echo null)"
 mkdir -p "$out_dir"
 
 # Large JSON blobs (the cycles array carries full transcripts) are handed to jq

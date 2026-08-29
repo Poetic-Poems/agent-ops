@@ -2798,30 +2798,58 @@ implements.
    `state_dir` (`updater-ledger/<hostname>.jsonl`, excluded from replication
    below like `.image-drift-cache.json`, and keyed by `$HOSTNAME` exactly as
    `acquire_lock`'s own lock stamp is, since a tailnet node's scheduler and
-   dashboard containers share this state volume but not an identity).
+   dashboard containers share this state volume but not an identity). Each
+   line also carries `service` — the compose service name
+   (`AGENT_OPS_SERVICE`: `scheduler`, `dashboard` or `dashboard-local`,
+   `"unknown"` if unset) the writing container ran as.
    `updater_status` reads that ledger back as `{status: "rolled", at,
-   seconds}` (the newest recorded "allow" belongs to a different hostname —
-   the ordinary case), `{status: "deferring", at, seconds}` (this hostname's
-   own most recent invocations have all deferred, back to `at`), `{status:
-   "stuck", at, seconds}` (this hostname's own most recent invocations have
-   all allowed a roll, back to `at`, and this same container is still
-   running past `updater_stuck_after_minutes` later — the 2026-08-14
-   signature: a container told to go ahead that watchtower never actually
-   replaced, which the retry alone will not clear since it repeats the
-   operation that collided) or `null` (no invocation recorded under any
-   hostname yet, the run of "allow"s is too recent to classify either way,
-   or the threshold the caller passed is not a whole number of seconds —
-   an unanswerable question, never a default the library picks for itself).
+   seconds}` (the newest recorded "allow" *from our own service* belongs to
+   a different hostname — the ordinary case; the scan is service-scoped
+   because a fresh container with no ledger entry of its own would otherwise
+   read a stuck sibling *of a different service* sharing this ledger
+   directory — the scheduler and the dashboard mount the same state volume —
+   as evidence of its own roll, since that sibling keeps appending
+   ever-newer "allow" entries every poll), `{status: "deferring", at,
+   seconds}` (this hostname's own most recent invocations have all deferred,
+   back to `at`, and that streak has not yet outlasted
+   `updater_defer_stuck_after_seconds`), `{status: "stuck", at, seconds,
+   reason}` (a fault only a human clears, either `reason: "allow"` — this
+   hostname's own most recent invocations have all allowed a roll, back to
+   `at`, and this same container is still running past
+   `updater_stuck_after_minutes` later, the 2026-08-14 signature: a
+   container told to go ahead that watchtower never actually replaced,
+   which the retry alone will not clear since it repeats the operation that
+   collided — or `reason: "defer"` — the defer streak above has itself
+   outlasted `updater_defer_stuck_after_seconds`, past which
+   `watchtower-pre-update.sh`'s own `held_by()` would no longer honour
+   either lock, so this is no longer "a cycle in flight") or `null` (no
+   invocation recorded under any hostname yet, the run of "allow"s is too
+   recent to classify either way, a threshold the caller passed is not a
+   whole number of seconds, or a ledger entry's own timestamp will not
+   parse — every one an unanswerable question, never a default the library
+   picks for itself, and never epoch 0: unlike `held_by()`'s identical
+   convention, which fails the lock *open*, epoch 0 here would fail
+   *closed*, into an alarm nothing could ever clear, since a corrupt
+   timestamp can also defeat the hook's own 48h trim below).
    Both self-states are measured from the *start* of the current run of
    like verdicts, not from its newest entry: watchtower re-runs the hook on
    every poll for as long as the container is still stale, so each records
    one entry per `WATCHTOWER_POLL_INTERVAL`, and timing the newest would
    measure the age of the last poll rather than of the condition — putting
-   `stuck`, whose threshold is many polls wide, permanently out of reach.
-   The
-   threshold travels as a parameter from the caller's own config read, never
-   as a literal inside the library, the same shape `image_behind_grace_hours`
-   already uses one layer up from `lib/image-drift.sh`.
+   `stuck`, whose threshold is many polls wide, permanently out of reach. A
+   ledger line that will not parse, mid-streak, is skipped rather than
+   treated as ending the streak, so one transient bad line cannot silence an
+   alarm early or reset a stuck container's clock.
+   `updater_stuck_after_minutes` converts to `updater_stuck_after_seconds`
+   the same way `image_behind_grace_hours` converts one layer up from
+   `lib/image-drift.sh`, travelling as a parameter, never a literal inside
+   the library. `updater_defer_stuck_after_seconds` is derived rather than
+   configured: the longer of `lock_stale_after` and
+   `project_review.lock_stale_after` (in hours, read with the hook's own
+   simple `// 4`/`// 6` defaults, not `acquire_lock`'s fuller derivation),
+   converted to seconds — the same two values `watchtower-pre-update.sh`'s
+   `held_by()` already bounds a deferral by, so a defer streak this function
+   calls `stuck` is one no held lock could still legitimately justify.
    Each branch is a single rolling commit — `commit
    --amend` plus a force-push — because the state files carry their own
    history (`log.jsonl` is append-only, every cycle keeps its own directory)

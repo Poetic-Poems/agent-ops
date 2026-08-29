@@ -282,6 +282,8 @@ assert_eq "an allow is recorded under this container's own name" "1" \
   "$(test -f "$state_dir/updater-ledger/ledger-host.jsonl" && echo 1 || echo 0)"
 assert_eq "carrying the allow verdict" "allow" \
   "$(jq -r '.verdict' "$state_dir/updater-ledger/ledger-host.jsonl")"
+assert_eq "and a service, defaulting to unknown when AGENT_OPS_SERVICE is unset" "unknown" \
+  "$(jq -r '.service' "$state_dir/updater-ledger/ledger-host.jsonl")"
 
 start_sleeper
 write_lock "$state_dir/lock.json" "$sleeper_pid" 0 "ledger-host"
@@ -292,6 +294,52 @@ assert_eq "carrying the defer verdict" "defer" \
   "$(tail -n 1 "$state_dir/updater-ledger/ledger-host.jsonl" | jq -r '.verdict')"
 stop_sleeper
 rm -f "$state_dir/lock.json"
+rm -rf "$state_dir/updater-ledger"
+
+# AGENT_OPS_SERVICE, when set (as compose.yaml sets it per service), is
+# stamped into every line — the raw material lib/updater-health.sh's "rolled"
+# fallback scopes its scan by, so a stuck sibling of a different service does
+# not masquerade as evidence of this container's own roll.
+AGENT_OPS_SERVICE=dashboard run_hook_as "ledger-host"
+assert_eq "AGENT_OPS_SERVICE, when set, is recorded on the line" "dashboard" \
+  "$(jq -r '.service' "$state_dir/updater-ledger/ledger-host.jsonl")"
+rm -rf "$state_dir/updater-ledger"
+
+# The trim/prune housekeeping only runs after an allow — the defer path sits
+# on the roll's own critical path, ahead of exit 75 under the one-minute
+# fail-open timeout, so it does the bare append and nothing else. A long
+# defer streak therefore keeps every line rather than trimming to 48h until
+# the next allow.
+old_ts="$(date -u -d '72 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+mkdir -p "$state_dir/updater-ledger"
+jq -nc --arg ts "$old_ts" '{ts:$ts, verdict:"defer", service:"unknown"}' \
+  > "$state_dir/updater-ledger/ledger-host.jsonl"
+start_sleeper
+write_lock "$state_dir/lock.json" "$sleeper_pid" 0 "ledger-host"
+run_hook_as "ledger-host"
+stop_sleeper
+rm -f "$state_dir/lock.json"
+assert_eq "a defer write does not trim an older line past the 48h cutoff" "1" \
+  "$(jq -r --arg ts "$old_ts" 'select(.ts == $ts) | 1' "$state_dir/updater-ledger/ledger-host.jsonl" \
+      | head -n 1)"
+rm -rf "$state_dir/updater-ledger"
+
+# An allow write does trim entries past the 48h cutoff, and — because the
+# cutoff check now also validates the timestamp's own shape — an entry whose
+# `ts` will not parse at all is trimmed the same way, rather than being
+# pinned in place forever by a plain string comparison against the cutoff.
+mkdir -p "$state_dir/updater-ledger"
+{
+  jq -nc --arg ts "$old_ts" '{ts:$ts, verdict:"allow", service:"unknown"}'
+  jq -nc '{ts:"not-a-date", verdict:"allow", service:"unknown"}'
+} > "$state_dir/updater-ledger/ledger-host.jsonl"
+run_hook_as "ledger-host"
+assert_eq "an allow write trims a line past the 48h cutoff" "0" \
+  "$(jq -r --arg ts "$old_ts" 'select(.ts == $ts) | 1' "$state_dir/updater-ledger/ledger-host.jsonl" \
+      | wc -l | tr -d ' ')"
+assert_eq "and trims an unparseable timestamp too, rather than keeping it forever" "0" \
+  "$(jq -r 'select(.ts == "not-a-date") | 1' "$state_dir/updater-ledger/ledger-host.jsonl" \
+      | wc -l | tr -d ' ')"
 rm -rf "$state_dir/updater-ledger"
 
 # A ledger write that cannot happen — the ledger path exists as a plain file,

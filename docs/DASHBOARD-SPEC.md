@@ -794,12 +794,17 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                           stages: { "<stage>": {
                                             verdict, consecutive_failures,
                                             last_success, last_detail } } },
-                         updater: { status, at, seconds },  // the node's own
-                                            //   watchtower pre-update hook
-                                            //   verdict (#603): "rolled",
+                         updater: { status, at, seconds, reason },  // the
+                                            //   node's own watchtower
+                                            //   pre-update hook verdict
+                                            //   (#603): "rolled",
                                             //   "deferring" or "stuck"; null
                                             //   if unreported or not yet
-                                            //   determinable
+                                            //   determinable. `reason`
+                                            //   ("allow" or "defer") is
+                                            //   present only on "stuck",
+                                            //   naming which of the two
+                                            //   ways it got there
                          live: { cycle, since, running, ended_at,
                                  stage, repo, item, source, title } } ],
                                             // what THAT node is doing; null
@@ -2622,16 +2627,26 @@ number's twins elsewhere on the page.
   compose and image: **updater deferring**, grey, naming how long
   `deploy/docker/watchtower-pre-update.sh` has been holding this container's
   roll back for a cycle or review in flight — it resolves the moment that
-  ends, the same colour and reasoning as `behind`. **updater stuck**, amber,
-  `compose`'s colour for a fault only a human clears: the hook allowed a
+  ends, the same colour and reasoning as `behind`, and only while that defer
+  streak stays inside `updater_defer_stuck_after_seconds`. **updater stuck**,
+  amber, `compose`'s colour for a fault only a human clears, in either of two
+  shapes the badge's title distinguishes (`u.reason`): the hook allowed a
   roll — on every poll since the time named, watchtower asking again each
   time — and the container it allowed is still the one running — same
   hostname, so watchtower never actually replaced it — and the retry that
   follows repeats the very operation that collided, so it will not clear on
-  its own. `rolled` (the ordinary case) renders nothing, and so does an
+  its own; or the defer streak above has itself outlasted
+  `updater_defer_stuck_after_seconds`, past which no lock the hook honours
+  could still be legitimately held, so "an implementation cycle or review is
+  in flight" is no longer a true reading. `rolled` (the ordinary case), an
   absent verdict — a peer whose heartbeat predates the check, or one still
-  inside the short window before its own first poll — the same
-  absent-means-unknown rule `compose` and `image` already follow.
+  inside the short window before its own first poll — and any other status
+  this page does not recognise (a future release, or a truncated/corrupt
+  heartbeat field) all render nothing, the same absent-means-unknown rule
+  `compose` and `image` already follow: an unrecognised status is routed
+  explicitly to "render nothing" rather than folded into `deferring`'s
+  benign badge, the same way `image`'s own `unverified` branch is routed
+  explicitly rather than folded into `current`'s silence.
 - **A node-scoped disable (implementation spec 2.3, `--disable --this-node`,
   issue #379) gets its own badge beside the role badge**, not just the
   page-top switch banner. The banner (above) is keyed to *this* node's own
