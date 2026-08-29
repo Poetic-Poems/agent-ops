@@ -139,9 +139,12 @@ case "$1" in
         # pairing check, agent-ops#532) is the only GraphQL read this suite
         # ever triggers, so the query text itself is never inspected —
         # STUB_MERGE_QUEUE_JSON is the raw `mergeQueue` value (`null`, or an
-        # object literal), served through the same jq_filter the real
-        # `--jq '.data.repository.mergeQueue'` applies. STUB_MERGE_QUEUE_FAIL=1
-        # is a transport-level failure.
+        # object literal). `merge_queue_for_branch` passes no `--jq` — it
+        # reads this envelope whole and extracts the field itself, so that a
+        # JSON `null` stays a `null` instead of arriving as the empty line
+        # `gh --jq` raw-prints for one — so jq_filter is the `.` default
+        # here and the body is served verbatim. STUB_MERGE_QUEUE_FAIL=1 is a
+        # transport-level failure.
         [[ "${STUB_MERGE_QUEUE_FAIL:-0}" != "1" ]] || exit 1
         printf '{"data":{"repository":{"mergeQueue":%s}}}' "${STUB_MERGE_QUEUE_JSON:-null}" \
           | jq -c "$jq_filter" ;;
@@ -692,7 +695,7 @@ assert_contains "always-escalate (the default) needs no enabler_model either" \
 # Reuses $ma_config (merge_autonomy already at agent-merges-routine, with
 # approver_app_id/approver_model_default set so those pairings don't also
 # fire and add noise to these assertions).
-aam_queue_json='{"id":"MQ_kwDOTWpCsc4AA8Qo","mergeMethod":"SQUASH","mergingStrategy":"ALLGREEN"}'
+aam_queue_json='{"id":"MQ_kwDOTWpCsc4AA8Qo"}'
 aam_ok_json='{"permissions":{"push":true},"archived":false,"allow_auto_merge":true,"allow_squash_merge":true,"default_branch":"main"}'
 aam_auto_off_json='{"permissions":{"push":true},"archived":false,"allow_auto_merge":false,"allow_squash_merge":true,"default_branch":"main"}'
 aam_squash_off_json='{"permissions":{"push":true},"archived":false,"allow_auto_merge":true,"allow_squash_merge":false,"default_branch":"main"}'

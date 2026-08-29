@@ -778,13 +778,19 @@ landing_arm() {
       -f query='mutation($id:ID!){enqueuePullRequest(input:{pullRequestId:$id}){mergeQueueEntry{id}}}' \
       -f id="$node_id" \
       --jq '.data.enqueuePullRequest.mergeQueueEntry.id' 2>/dev/null)" || return 5
-    # `null` as well as empty: `--jq` prints a JSON null as the four-character
-    # word `null`, so a mutation that returned no `mergeQueueEntry` at all —
-    # `enqueuePullRequest` reports one as nullable, and GitHub does not
-    # always accompany that with a GraphQL error `gh` would exit non-zero on
-    # — would otherwise pass the `-n` test and be logged `landing-armed`
-    # naming a queue entry that does not exist. Exactly the "a partial write
-    # this function cannot vouch for" case the header promises to refuse.
+    # Empty *and* the literal `null`, because which one arrives is not
+    # this code's to predict: `enqueuePullRequest` reports `mergeQueueEntry`
+    # as nullable and GitHub does not always accompany a null with a GraphQL
+    # error `gh` would exit non-zero on, while `gh --jq` raw-prints, turning
+    # a JSON null into an empty line rather than the four characters `null`
+    # (checked live, 2026-08-29 — the same behaviour that broke
+    # `merge_queue_for_branch`, which now reads its envelope whole rather
+    # than through `--jq`). Testing only one of the two would let a mutation
+    # that enqueued nothing be logged `landing-armed` naming a queue entry
+    # that does not exist — exactly the "a partial write this function
+    # cannot vouch for" case the header promises to refuse. Both are tested
+    # here so neither `gh`'s rendering nor GitHub's nullability has to be
+    # relied on.
     [[ -n "$mutate_out" && "$mutate_out" != "null" ]] || return 6
     printf 'enqueued'
     return 0
