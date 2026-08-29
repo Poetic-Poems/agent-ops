@@ -67,7 +67,7 @@ heading, the Script gives you one JSON object:
         {"source": "human-visibility", "ref": "human-visibility-1a2b3c4d5e6f", "url": "https://github.com/…/pulls", "problems": ["HUMAN VISIBILITY  https://github.com/…/pull/9: could not request review from …"], "body": "…one line per violation the sweep could not heal, verbatim…"}
       ],
       "tech_debt": [
-        {"source": "tech-debt", "ref": "TD-PPpoet-26071805", "id": "TD-PPpoet-26071805", "title": "…", "filed": "2026-07-18", "url": "https://github.com/…/blob/main/tech-debt/TD-PPpoet-26071805.md", "body": "…the whole item file, frontmatter and all, verbatim…"}
+        {"source": "tech-debt", "ref": "42", "number": 42, "url": "https://github.com/…/issues/42", "title": "…", "labels": ["pw::type:tech-debt", "…"], "author": "…", "created_at": "…", "updated_at": "…", "body": "…verbatim…", "comments": [{"author": "…", "created_at": "…", "body": "…verbatim…"}]}
       ]
     },
     {
@@ -426,16 +426,15 @@ selectable item:
   commit on `main`** and must be in [Conventional
   Commits](https://www.conventionalcommits.org/) format
   (`<type>[(scope)]: <description>`).
-- Each repo keeps deferred work in a per-item tech-debt register: one
-  `tech-debt/<id>.md` file per record, its frontmatter carrying the
-  `status:` (`open` / `in-progress` / `resolved` / `not-debt`), with
-  `TECH-DEBT.md` holding only policy. You never read this register yourself —
-  every currently open, unclaimed, unblocked, non-void item arrives
-  pre-fetched in the runtime input's `tech_debt` array (see "What you
-  receive" above and "Tech-debt candidates" below). Claiming an item flips
-  its status to `in-progress` and opens a draft PR immediately. A record
-  still `open` has not been claimed; `in-progress` means someone (possibly
-  a previous, still-active cycle) already has.
+- Deferred work is tracked as open GitHub issues labelled `pw::type:tech-debt`.
+  These issues reach you pre-fetched in the runtime input's `tech_debt` array
+  (see "What you receive" above and "Tech-debt candidates" below). You never
+  read the label or issues API yourself; every currently open, unclaimed,
+  unblocked, non-void item arrives pre-fetched. Claiming an item opens a
+  branch and a draft PR (the Script derives `agent/<item-ref>` and claims it
+  atomically before you are launched); commenting on the issue announces the
+  claim to the human. An issue still unclaimed can be picked up; a PR naming
+  it means someone (possibly a peer cycle) already has it.
 - CI (build/lint/test, CodeQL, commit-format) runs on every PR. A PR isn't
   finished until its checks pass and `gh pr view --json
   mergeable,mergeStateStatus` reports it mergeable — but that's the
@@ -489,15 +488,14 @@ source priority, with no edit to this file:
   excludes it, what you put in the work order — is identical in every band.
   See "Issue priority" below for what the bands mean. `issues:urgent` also
   outranks the plain walk across all repos, second only to security.
-- **tech-debt** — open (`status: open`) rows from the repo's per-item
-  tech-debt register, handed to you **pre-fetched** in each repo's
-  `tech_debt` array, whole item file included, and **already cross-referenced
-  against `claimed`, `blocked` and `void` for you**. An entry's presence in
-  the array is the candidate test — there is nothing left to check against
-  those three lists for a `tech_debt` entry, and no register to go read
-  yourself. An empty array means the repo has no eligible tech-debt item this
-  cycle, never that the register was withheld. See "Tech-debt candidates"
-  below.
+- **tech-debt** — open GitHub issues labelled `pw::type:tech-debt`, handed
+  to you **pre-fetched** in each repo's `tech_debt` array, whole thread
+  included, and **already cross-referenced against `claimed`, `blocked` and
+  `void` for you**. An entry's presence in the array is the candidate test —
+  there is nothing left to check against those three lists for a `tech_debt`
+  entry, and no label check to do yourself. An empty array means the repo has
+  no eligible tech-debt item this cycle, never that the label was withheld.
+  See "Tech-debt candidates" below.
 - **implementation-plan** — only for a repo whose `sources` lists it.
   Candidates are the next unblocked task(s) in that repo's plan document, at
   the path given in its runtime-input entry's
@@ -1102,9 +1100,9 @@ referencing that review; match `R-NN` refs against it. When you select one,
    fresh evidence is still there, exactly so you can apply the **unless**
    above to it. So for `issues`, what remains yours to check is only ever a
    *live* re-read, never a stale block you'd need to notice and skip by hand.
-2. A tech-debt item whose item file's `status:` frontmatter is
-   `in-progress`. Already applied for `tech_debt` entries: only `status: open`
-   rows are ever in the array.
+2. A tech-debt item that is already claimed. Already applied for `tech_debt`
+   entries: an issue with an open draft or PR referencing it never reaches the
+   array (requirement 34j, like `issues`).
 3. Already referenced by any open PR or draft (in any repo) — that's a
    claim, per the claiming workflow, even if it's a PR you didn't select
    this item for. A peer node's claim is excluded too, even before its draft
@@ -1343,12 +1341,12 @@ which "already on `main`" and "the register says resolved" both are — give
 repos/<slug>/contents/<path>?ref=<ref>` fetch you already made (see "Read-only"
 above). The Script re-runs that same fetch and tests it — a citation shaped
 this way is *checked*, not just read. `pattern` is optional and, when given, is
-matched against the file's content (e.g. `status: *resolved` against the
-item's `tech-debt/<id>.md`). Evidence that fits neither this shape nor a
-PR/commit citation (below) is refused outright, whatever it says — non-empty
-prose alone is no longer enough (issue #413, WI-10): name a fetch that shape
-above, or a PR/commit that names this item, or nothing you assert here will be
-recorded.
+matched against the fetched content (e.g. `labels.*pw::type:tech-debt` against
+an issue's live state, or `"Fixes #…"` against a PR body). Evidence that fits
+neither this shape nor a PR/commit citation (below) is refused outright,
+whatever it says — non-empty prose alone is no longer enough (issue #413,
+WI-10): name a fetch that shape above, or a PR/commit that names this item, or
+nothing you assert here will be recorded.
 
 Nor is one this cycle's own candidates contradict. If the item still has an open
 pull request whose diff against its base is non-empty, the work is by definition
@@ -1397,7 +1395,7 @@ candidate:
 ```json
 {
   "repo": "org/repo-a",
-  "item": "TD26071805",
+  "item": "42",
   "source": "tech-debt",
   "reason": "one line: why it fails the selection bar",
   "missing": "what a selectable version would need — acceptance criteria, a scope bound, a named decision, reproduction steps…",
