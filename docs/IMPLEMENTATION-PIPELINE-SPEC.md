@@ -8974,6 +8974,16 @@ implements.
     has, and an unresolved entry holds only *unattended landing*, through the
     gate requirement 8f adds — never the handoff itself, and never anything
     a defect or an impediment already has a channel for.
+
+    Additive on the one ending requirement 31d describes, absent everywhere
+    else: `"file_debt"`/`"file_issue"` (`{title, body, default_fix,
+    owner_decision}` each — the Approver's own field shape, requirement 42a),
+    carrying what a pass had already found when its subject merged out from
+    under it. There is no live pull request left to hold a `Defers:` line or a
+    replacement pull request of the Reviewer's own (requirement 31d forbids
+    one), so the verdict field *is* the record: requirement 32c's completion
+    path files whatever it names, and nothing else the Reviewer writes that
+    round survives.
 32a. **A Reviewer that cannot hand off hands back, not out.** Any ending other
     than a pull request the human can see — `blocked`, an unparseable status, or
     a `ready` whose handoff requirement 31a could not make true — is recorded as
@@ -15690,10 +15700,17 @@ What exists, and the requirements each part answers to:
     `test/find-similar-tech-debt.test.sh` (exact-match, containment,
     below-the-length-floor on either side, `open`/`in-progress` included,
     `resolved`/`not-debt` excluded); must pass `shellcheck`.
-23d. `lib/tech-debt-file.sh` implementing the filing half of requirements 36c
-    and 42a — the Approver and Enabler must never write to GitHub or a branch
-    themselves, so this is what the Script calls in their place once either
-    stage's final JSON carries `file_debt`/`file_issue`:
+23d. `lib/tech-debt-file.sh` implementing the filing half of requirements 36c,
+    42a and 32c — the Approver and Enabler must never write to GitHub or a
+    branch themselves, and the Reviewer whose subject merged mid-pass no
+    longer has one to write to (requirement 31d), so this is what the Script
+    calls in their place once a stage's final JSON carries
+    `file_debt`/`file_issue`. `GIT_DIR` is the cycle's own clone of the target
+    repository wherever the caller holds one — the Approver's and the
+    Reviewer's `clone_dir`, still on disk until the EXIT trap — and empty for
+    the Enabler, which holds no clone and gets a throwaway directory instead;
+    it is never the cycle's state directory, which has no `origin` to fetch
+    and would fail the filing outright:
 
     - `techdebt_file_issue REPO ITEM_REF TITLE BODY_FILE [TOKEN] [DEFAULT_FIX]
       [OWNER_DECISION]` — the same
@@ -17890,9 +17907,11 @@ pull request, run the ones the change touches and any it could regress.
    `stage-end` for `reviewer`), reaching the same `merge-observed` completion
    at zero stage cost. Assert `file_debt`/`file_issue` on the Reviewer's own
    verdict are filed under the ordinary pipeline login (no `TOKEN`) exactly as
-   the Enabler's own use of the two fields already is (`test/merge-observed.
-   test.sh`), and are silently absent at the stage-start call site, where no
-   verdict exists yet to carry them. Assert the fall-through: a Reviewer
+   the Enabler's own use of the two fields already is, and against the cycle's
+   own clone of the target repository rather than its state directory
+   (requirement 23d's `GIT_DIR`, which a state directory fails outright)
+   (`test/merge-observed.test.sh`), and are silently absent at the stage-start
+   call site, where no verdict exists yet to carry them. Assert the fall-through: a Reviewer
    claiming a merge `pr_merge_state` does not confirm (`merge_state` `open` or
    `failed`) is handled exactly as an ordinary `"status": "blocked"` verdict
    always has been (requirement 32a) — this is a model error, not a
