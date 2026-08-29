@@ -15788,7 +15788,9 @@ pull request, run the ones the change touches and any it could regress.
    alone exceeds, and an allowance the ladder bottoms out inside — each log a
    `warning` saying which it was, itself carrying the same `terms` breakdown,
    with its five bands summing to the overhead total the block itself
-   computed. The same test lifts `handle_stage_failure`'s two refusal
+   computed. The same file also lifts the exemption-set block that reads the
+   fit's report downstream of all this, covered under acceptance check 2j-iii
+   below. The same test lifts `handle_stage_failure`'s two refusal
    readers and drives them over the record the fleet actually produced on
    2026-08-21: the refusal is named `prompt_too_long`, its name carries none
    of the numbers the crash-loop ladder groups on, the API's message is kept
@@ -16369,6 +16371,21 @@ pull request, run the ones the change touches and any it could regress.
    refusal alone would have just relocated the mass-flag into a
    corroboration-rejected retry loop over the same trimmed input, and this is
    the assertion that it does not.
+   Both those files supply the trimmed set themselves, so neither can tell
+   whether `agent-cycle.sh` ever builds one — the gap agent-ops#933 lived in
+   for as long as the gate shipped. `test/coordinator-input-wiring.test.sh`
+   closes it, over the exemption-set block lifted verbatim and driven off the
+   fit report a genuinely-trimmed cycle actually left behind rather than a
+   hand-written one: the block's `if` takes its true branch, so
+   `coordinator_fit_trimmed_json` comes back non-empty and
+   `coordinator_fit_rung` non-zero; requirement 3x's own accounting inside
+   that same lifted block counts those candidates unassessable and logs
+   `coordinator-input-fit-unassessable` carrying the count, the rung and its
+   detail sentence; and `coordinator_fit_trim_refusal_reason`, given a
+   `needs_refinement` report naming one of the items that block actually
+   trimmed, refuses it and names the rung. Every one of those assertions
+   fails against the pre-fix gate, which is what the empty-input fixtures
+   above could not do.
 2f. **A preview nobody can reach is never reported as a healthy one
    (requirement 24a).** `test/preview-deploy.test.sh` passes: against a stubbed
    `gh` and a stubbed Vercel that answers the login flow to any request not
