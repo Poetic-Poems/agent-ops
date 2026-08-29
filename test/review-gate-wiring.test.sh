@@ -172,6 +172,8 @@ run_gate_block() {
     printf '%s\n' 'set -euo pipefail'
     printf 'impl_pr_url=%q\n' "$URL"
     printf '%s\n' 'work_order_json='"'"'{"default_branch":"main"}'"'"''
+    printf 'selected_repo=%q\n' "Poetic-Poems/poetic-fiddle"
+    printf 'selected_item=%q\n' "198"
     printf 'node_name=%q\n' "n1"
     printf 'enabler_assignee=%q\n' "alice"
     printf 'cycle_started_at=%q\n' "2026-08-17T00:00:00Z"
@@ -183,6 +185,15 @@ run_gate_block() {
       "$gate_arg4" "$review_json"
     printf 'review_gate_unknown_streak_verdict() { cat >/dev/null; printf %%s %q; }\n' "$streak_json"
     printf 'review_gate_degraded_since() { cat >/dev/null; return %s; }\n' "$since_rc"
+    # docs/FLOW-SCHEMA.md, requirement 47, issue #596: the block calls two
+    # rework-record functions (lib/rework.sh) this file's own scope is not
+    # about — test/rework-record.test.sh covers their own logic directly.
+    # Stubbed to print nothing, the same "does not fire" shape the real
+    # functions return whenever their own predicate is unmet, so the
+    # extracted block's `[[ -n "$rework_..._json" ]] && log_event ...` guard
+    # simply never calls `log_event` and every assertion below is unaffected.
+    printf '%s\n' 'rework_check_failure_fields() { :; }'
+    printf '%s\n' 'rework_human_change_request_fields() { :; }'
     printf '%s\n' "$streak_helper_fn"
     printf '%s\n' "$gate_block"
     printf '%s\n' 'printf -- "--\n" >>'"$(printf '%q' "$events")"''

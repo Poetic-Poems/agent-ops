@@ -1741,6 +1741,7 @@ $(jq . <<<"$input")
   log_event "stage-end" "$(jq -nc --argjson rc "$rc" --arg kr "$stage_kill_reason" \
     --argjson m "$(metering_fields "$approver_model_critical" "$out" "$stage_gaps_json")" \
     '{stage: "approver-adjudicate-open-question", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m')"
+  rework_stage_rerun_maybe "approver-adjudicate-open-question" "$stage_kill_reason" "$slug" "" "$pr_url"
 
   result="$(jq -r '.result // empty' "$out" 2>/dev/null || true)"
   parsed="$(extract_json_result "$result" 2>/dev/null || true)"

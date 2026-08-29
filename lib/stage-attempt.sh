@@ -309,6 +309,9 @@ run_coordinator_stage_attempt() {  # <attempt-out-file> <prompt> [extra-budget-j
   log_event "stage-end" "$(jq -nc --argjson rc "$rc" --arg kr "$stage_kill_reason" \
     --argjson m "$coord_attempt_metering_json" --argjson e "$extra" \
     '{stage: "coordinator", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m + $e')"
+  # No repo/item: the Co-Ordinator runs ahead of selection, over every
+  # configured repository at once (docs/FLOW-SCHEMA.md's "where applicable").
+  rework_stage_rerun_maybe "coordinator" "$stage_kill_reason"
   # `if`, not `&&` — see the identical comment at the original call site below.
   watchdog_warning="$(stage_watchdog_warning coordinator || true)"
   if [[ -n "$watchdog_warning" ]]; then

@@ -319,6 +319,12 @@ mkdir -p "$state_dir" "$cycle_dir"
 : >"$union_log"; : >"$log_file"
 
 log_event() { printf '%s\t%s\n' "$1" "$2" >>"$T/events"; }
+# docs/FLOW-SCHEMA.md, requirement 47, issue #596: run_open_question_
+# adjudication's own stage-end site calls lib/rework.sh's rework_stage_
+# rerun_maybe — out of this file's own scope (test/rework-record.test.sh
+# covers it directly). Stubbed to a no-op, the same "does not fire" shape
+# the real function takes whenever stage_kill_reason (set above) is empty.
+rework_stage_rerun_maybe() { :; }
 landing_open_question_latest() { printf '%s' '[{"question":"is CODEOWNERS in scope?"}]'; }
 stage_prompt_text() { printf '%s\n' "$3" >>"$T/prompt_actor_args"; printf 'THE PROMPT'; }
 stage_budget_apply() { :; }

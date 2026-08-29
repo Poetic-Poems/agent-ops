@@ -886,6 +886,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   of orphaned clones behind (#605). `lib/disk-space.sh` is the one place
   free space is now read and judged, shared by the gate and by `doctor.sh`'s
   own warning so the two cannot disagree about what "low" means.
+- The rework record (D23 of `docs/ROADMAP.md`, requirement 47, issue #596):
+  one `rework` event per repetition, emitted by the detector that already
+  exists for it — a review round-trip, a human change request the
+  reconciliation gate catches, a required-checks read failure, a merge
+  conflict or abandoned draft resumed, a stage killed by requirement 4e's
+  backstop caps or an escalated crash loop, a claim lost to healthy
+  contention, a needs-refinement block on an already-refined item, or a
+  post-merge revert/follow-up fix — never inferred after the fact and never
+  classified by a model. `lib/rework.sh`'s `rework_fields` and its nine
+  per-class helpers are the one shaping layer every site calls; `docs/FLOW-
+  SCHEMA.md` is the field-by-field contract, sibling to `docs/METERING-
+  SCHEMA.md` under the same stability policy. `docs/FLOW-SCHEMA.md` also
+  states agent-ops#533's real, current state — closed 2026-08-20, caught by
+  `lib/reconciliation-gate.sh` at the Reviewer's own handoff — and the
+  residual coverage that fix does not reach, rather than the blind spot's
+  own now-stale framing.
 
 ### Fixed
 

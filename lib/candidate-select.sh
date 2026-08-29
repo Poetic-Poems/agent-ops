@@ -1233,6 +1233,7 @@ release_refinement_label() {
 #     nothing about what either of them actually had in front of them.
 record_needs_refinement_block() {
   local entry="$1" stage="$2" repo item reason problem label blocked_label blocked_reason_label reason_label number who
+  local rework_bounce_back_json
   who="$(pipeline_actor_label "$stage")"
   if ! problem="$(refinement_entry_problem "$entry")"; then
     log_event "warning" "$(jq -nc --arg d "$who needs_refinement entry dropped — it $problem" \
@@ -1350,6 +1351,18 @@ record_needs_refinement_block() {
 
   log_event "attempt-failed" "$(item_event_fields "$stage" "$reason" "$repo" "$item" \
     "$(refinement_block_fields "$entry" "$label" "$blocked_label" "$blocked_reason_label")")"
+
+  # refinement-bounce-back (docs/FLOW-SCHEMA.md, D23, issue #596): this is a
+  # *fresh* needs-refinement block (the already-blocked check above already
+  # returned 1 for a re-report of a standing one) on an item `refinements_json`
+  # — the same lookup line 1337's own `refined_label` cleanup reads — already
+  # shows as refined. That combination is exactly "specified once, and it
+  # was not enough" happening again, never inferred: the fact is
+  # `refinements_json` itself, built from the log's own `item-refined`
+  # events, not a read of this block's prose.
+  rework_bounce_back_json="$(rework_refinement_bounce_back_fields "$repo" "$item" "$reason" "$stage" \
+    "${refinements_json:-{\}}")"
+  [[ -n "$rework_bounce_back_json" ]] && log_event "rework" "$rework_bounce_back_json"
   return 0
 }
 
