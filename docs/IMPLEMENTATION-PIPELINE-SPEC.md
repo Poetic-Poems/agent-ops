@@ -6084,13 +6084,41 @@ implements.
    stage makes is a Script-issued `gh api` call under the Approver's own
    minted token (`approver_post_review`), never a prompt-issued `gh pr
    review` or `gh pr merge` — `prompts/approver.md` is explicitly forbidden
-   both, and the model's only output is a JSON verdict. A review GitHub
-   itself refused — an expired token, an installation that lost review
-   rights, an API outage — is logged as a `warning` naming the pull request
-   and the event (`approver_post_or_warn`, requirement 33) and changes
-   nothing else: the pull request stays exactly as the human already had it,
-   which is 8b's "a missing review, never a stranded PR" at the one point
-   where the failure is the write itself rather than the decision.
+   both, and the model's only output is a JSON verdict.
+
+   **The token those writes spend is minted fresh once the engagement
+   returns, never the one read before it started (agent-ops#945).** Before
+   launching the model, the Script confirms an installation token can be
+   minted at all (`approver_token_get`) purely as a pre-engagement gate — "is
+   the credential even readable" — the same value the Trivial tier's own
+   deterministic, no-model approval spends directly, since nothing runs
+   between that read and its one write. Every other tier launches a model
+   engagement that can run for minutes to close to an hour, near an
+   installation token's own ~1 h life, so once it returns the Script reads
+   `approver_token_get` again, once, immediately before the first write, and
+   spends that one fresh mint across the whole write block — both
+   `techdebt_file_debt`/`techdebt_file_issue` filings (requirement 40) and
+   both `approver_post_or_warn` call sites — rather than the token read
+   before the engagement, which a long-enough round can outlive. The restale
+   sweep's own re-review (requirement 46, `_approver_restale_review`) gets
+   the same treatment for free: it re-enters this same function rather than
+   duplicating it. A token that cannot be minted again once the engagement
+   returns logs a `warning` distinguishing that ("mintable at stage entry,
+   not after") from the pre-engagement gate's own failure text, escalates if
+   an adjudication was in progress (the same "cannot settle" treatment an
+   unparseable verdict already gets), and otherwise costs a missing review
+   this round, never a stranded PR.
+
+   A review GitHub itself refused — an installation that lost review rights
+   mid-round, an API outage — is logged as a `warning` naming the pull
+   request and the event (`approver_post_or_warn`, requirement 33) and
+   changes nothing else: the pull request stays exactly as the human already
+   had it, which is 8b's "a missing review, never a stranded PR" at the one
+   point where the failure is the write itself rather than the decision.
+   `approver_post_review`'s own refusal — GitHub's actual status and body —
+   lands in `approver-post.err` in the cycle directory, the same "keep what
+   GitHub actually said" discipline `techdebt_file_debt`'s own
+   `tech-debt-file.err` already applies, and the `warning` names that file.
 8d. **The arming step (D18 WI-7, same design §5.1/§6/§7; agent-ops#410).**
    Immediately after `run_approver_stage` returns — never before, and gating
    nothing above it, the same placement 8b already establishes for the
@@ -14929,7 +14957,11 @@ What exists, and the requirements each part answers to:
     EVENT BODY TOKEN` POSTs the actual `APPROVE`/`REQUEST_CHANGES` review,
     `GH_TOKEN` set for that one invocation only, never exported — the one
     GitHub write this whole stage performs, and the only place in this
-    codebase that mints a review under a non-owner identity. This file also
+    codebase that mints a review under a non-owner identity. A refusal's own
+    status and body land in `approver-post.err` (`_approver_err_log`, cycle_dir
+    when the caller has one, `/tmp` otherwise) rather than `/dev/null`
+    (agent-ops#945), the same discipline `lib/tech-debt-file.sh`'s own
+    `_techdebt_err_log` already applies. This file also
     carries the stage itself (moved from `agent-cycle.sh`, #771):
     `run_approver_stage`, `approver_post_or_warn`, `approver_escalate` and
     `approver_stage_complexity`, the sole callers of the primitives above,

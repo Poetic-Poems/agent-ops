@@ -178,7 +178,29 @@ merge_autonomy_effective_level() { printf '%s\n' "$*" >>"$T/mal_calls"; printf '
 approver_token_credential_present() { [[ "${CREDENTIAL:-1}" == "1" ]]; }
 approver_token_identity_login() { printf 'pullwright-approver[bot]'; }
 approver_refuse_streak() { printf '%s' "$STREAK"; }
-approver_token_get() { printf 'a-minted-token'; }
+# agent-ops#945: the first call is the pre-engagement gate (line 488 in
+# lib/approver.sh), the second is the fresh mint read once the model
+# engagement returns, spent on every write from there on. Distinguishing
+# GATE_TOKEN/WRITE_TOKEN (defaulting to the same value every case before this
+# fix already relied on) lets a case prove the two are genuinely different
+# reads rather than the same value threaded through twice; *_RC lets a case
+# simulate either read failing outright. The count is kept in a file, not a
+# shell variable: `token="$(approver_token_get "")"` runs this function in a
+# command-substitution subshell, whose writes to a plain variable never reach
+# the caller back.
+approver_token_get() {
+  local calls
+  calls=$(( $(cat "$T/token_calls_count" 2>/dev/null || printf '0') + 1 ))
+  printf '%s' "$calls" >"$T/token_calls_count"
+  printf '%s\n' "$calls" >>"$T/token_calls"
+  if (( calls == 1 )); then
+    [[ "${GATE_TOKEN_RC:-0}" == "0" ]] || return "${GATE_TOKEN_RC}"
+    printf '%s' "${GATE_TOKEN:-a-minted-token}"
+  else
+    [[ "${WRITE_TOKEN_RC:-0}" == "0" ]] || return "${WRITE_TOKEN_RC}"
+    printf '%s' "${WRITE_TOKEN:-a-minted-token}"
+  fi
+}
 approver_prior_refusal_bodies() { printf '### earlier\n\nthe first refusal'; }
 # D18 WI-12 (agent-ops#415): the one classifier a protected-path engagement
 # reads to force the critical tier — PROTECTED_RC defaults to 1 (no
@@ -264,6 +286,7 @@ run_case() {
   : >"$tmp_dir/escalations"; : >"$tmp_dir/launches"
   : >"$tmp_dir/resolved_complexity"; : >"$tmp_dir/prompt_override_args"
   : >"$tmp_dir/mal_calls"; : >"$tmp_dir/protected_calls"
+  : >"$tmp_dir/token_calls"; rm -f "$tmp_dir/token_calls_count"
   rm -rf "${tmp_dir:?}/cycle" "${tmp_dir:?}/clone" "${tmp_dir:?}/state"
   env -i PATH="$PATH" HOME="$HOME" \
     T="$tmp_dir" SCRIPT_DIR="$SCRIPT_DIR" PR_URL="$URL" \
@@ -281,6 +304,7 @@ posts() { cat "$tmp_dir/posts"; }
 launches() { cat "$tmp_dir/launches"; }
 escalations() { cat "$tmp_dir/escalations"; }
 resolved_complexity() { cat "$tmp_dir/resolved_complexity"; }
+token_calls() { wc -l <"$tmp_dir/token_calls" | tr -d ' '; }
 count() { local f="$tmp_dir/$1"; [[ -s "$f" ]] && wc -l <"$f" | tr -d ' ' || printf '0'; }
 verdict_event() { grep -m1 $'^approver-verdict\t' "$tmp_dir/events" | cut -f2-; }
 warnings() { grep $'^warning\t' "$tmp_dir/events" | cut -f2- || true; }
@@ -477,6 +501,38 @@ assert_eq "no protected path, complexity:low: still the deterministic trivial ti
 assert_eq "  ... logged as trivial, not critical" '"trivial"' "$(jq -c '.tier' <<<"$(verdict_event)")"
 assert_eq "  ... with no critical_reason at all" \
   "null" "$(jq -c '.critical_reason // null' <<<"$(verdict_event)")"
+
+# --- The write token is re-minted once the engagement returns (agent-ops#945) -
+
+run_case agent-approves medium 0 '{"verdict":"approve","reasons":["fine"]}' \
+  GATE_TOKEN=stage-entry-token WRITE_TOKEN=fresh-write-token >/dev/null
+assert_eq "the pre-engagement token is spent nowhere" "0" \
+  "$(grep -c 'stage-entry-token' "$tmp_dir/posts")"
+assert_contains "  ... only the token re-minted once the engagement returns is" \
+  "token=fresh-write-token" "$(posts)"
+assert_eq "  ... exactly two mints: the pre-engagement gate and the post-engagement write" \
+  "2" "$(token_calls)"
+
+run_case agent-approves low 0 '' GATE_TOKEN=only-mint WRITE_TOKEN=never-used >/dev/null
+assert_contains "the trivial tier's one deterministic write spends the pre-engagement mint" \
+  "token=only-mint" "$(posts)"
+assert_eq "  ... since no model engagement ran to make that value stale" "1" "$(token_calls)"
+
+rc="$(run_case agent-approves medium 0 '{"verdict":"approve","reasons":["fine"]}' WRITE_TOKEN_RC=1)"
+assert_eq "a token that cannot be re-minted once the engagement returns still returns 0" "0" "$rc"
+assert_eq "  ... posts nothing" "0" "$(count posts)"
+assert_contains "  ... and warns distinguishing entry-mintable from now-unmintable" \
+  "still mintable at stage entry" "$(warnings)"
+assert_eq "  ... without escalating — no adjudication was in progress" "0" "$(count escalations)"
+
+run_case agent-approves medium 2 '{"verdict":"refuse","reasons":["the same defect, moved"]}' \
+  WRITE_TOKEN_RC=1 >/dev/null
+assert_eq "a re-mint failure mid-adjudication still escalates rather than stranding it" \
+  "1" "$(count escalations)"
+assert_contains "  ... carrying the adjudication's own reasons, not a generic placeholder" \
+  "the same defect, moved" "$(escalations)"
+assert_eq "  ... and posts no review, since no fresh token ever reached GitHub" \
+  "0" "$(count posts)"
 
 echo
 if (( failures == 0 )); then

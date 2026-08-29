@@ -32,6 +32,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
+# approver_post_review's own error log (agent-ops#945) lands at
+# "${cycle_dir:-/tmp}/approver-post.err" — set here so a test asserting on it
+# never touches the real /tmp.
+cycle_dir="$tmp_dir/cycle"
+mkdir -p "$cycle_dir"
+
 failures=0
 assert_eq() {
   local desc="$1" expected="$2" actual="$3"
@@ -71,6 +77,7 @@ cat >"$tmp_dir/gh" <<'STUB'
 #!/usr/bin/env bash
 d="$(dirname "$0")"
 if [[ -s "$d/api-fail" ]]; then
+  echo "gh: Bad credentials (HTTP 401)" >&2
   exit 1
 fi
 if [[ "$1 $2" == "api -X" ]]; then
@@ -136,6 +143,7 @@ set_commits() {  # <authoredDate>...
 }
 reset_stub() {
   : >"$tmp_dir/posts"; : >"$tmp_dir/api-fail"; : >"$tmp_dir/dismissals"; rm -f "$tmp_dir/commits.json"
+  rm -f "$cycle_dir/approver-post.err"
 }
 posts() { wc -l <"$tmp_dir/posts" | tr -d ' '; }
 dismissals() { wc -l <"$tmp_dir/dismissals" | tr -d ' '; }
@@ -262,6 +270,18 @@ assert_eq "no token means no POST is even attempted" "0" "$(posts)"
 reset_stub
 approver_post_review "" APPROVE "x" "secret-token"
 assert_eq "an empty PR URL posts nothing" "0" "$(posts)"
+
+# GitHub's own refusal (agent-ops#945): before this fix the status/body went
+# to /dev/null, and the only reason the incident that motivated it was
+# diagnosable at all was that a sibling call (techdebt_file_debt) happened to
+# keep its own error file. approver_post_review now keeps one too.
+reset_stub
+printf 'x' >"$tmp_dir/api-fail"
+rc=0
+approver_post_review "$URL" APPROVE "x" "secret-token" || rc=$?
+assert_eq "GitHub refusing the write is reported, never read as posted" "1" "$rc"
+assert_eq "  ... and its status/body land in cycle_dir's own error file, not /dev/null" "1" \
+  "$(grep -c "Bad credentials (HTTP 401)" "$cycle_dir/approver-post.err" 2>/dev/null || true)"
 
 # --- approver_review_stale (requirement 46, agent-ops#682) ---------------------
 # Pure predicate, no `gh` involved.

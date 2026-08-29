@@ -1067,6 +1067,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`lib/candidate-select.sh`) now recognises the REST API comment-URL shape
   too, via the same shared predicate, rather than silently testing nothing
   for it.
+- The Approver stage (`lib/approver.sh`) no longer spends a stale
+  installation token on its post-engagement GitHub writes (#945). It used to
+  mint the token once, before launching the model engagement, and spend that
+  same value afterwards on the tech-debt/issue filings and the review post;
+  an installation token lives about an hour, and an engagement lasting close
+  to that long — a 749 s critical-tier round on PR #929 among them — spent a
+  token already too near expiry, losing a recorded `approve` verdict and its
+  filed tech-debt record to a silent `401`. The pre-engagement read is now a
+  gate only ("is the credential even readable"); a fresh token is minted once
+  the engagement returns and spent across the whole write block, with a
+  distinct warning (and, mid-adjudication, an escalation) if that re-mint
+  itself fails. `approver_post_review`'s own refusals now land in
+  `approver-post.err` instead of `/dev/null`, the same discipline
+  `techdebt_file_debt`'s own error log already applies, so a future refusal
+  is diagnosable without depending on a sibling call's error file.
 - The Co-Ordinator's fit-exemption gate (`agent-cycle.sh`) now reads its own
   fit report correctly, restoring requirement 34e's fourth refusal,
   requirement 3x's trimmed exemption and requirement 17g's fabrication check
