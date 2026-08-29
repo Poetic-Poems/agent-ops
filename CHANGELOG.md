@@ -929,6 +929,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Back-pressure no longer counts a ready pull request the pipeline is barred
+  from landing as pipeline-owed (#946). At `agent-merges-routine` or above,
+  `lib/standdown.sh`'s level-aware exclusion (D18 WI-6) zeroed the human-queue
+  count for *every* ready pull request in a repository, without asking
+  whether the pipeline could actually land it — so a `complexity:high` pull
+  request sat in a human's queue by construction (`landing_eligible` refuses
+  anything outside `merge_autonomy_routine_complexity`) while still occupying
+  a `max_open_agent_prs` slot nothing in the fleet could free, and the
+  composition string it logs (`… plus N waiting on human`) reported `N` as
+  lower than the true figure. The exclusion now asks `landing_routine_eligible`
+  (lib/landing.sh, the complexity-and-source subset of `landing_eligible`'s
+  own gates, factored out so the two can never drift) per ready,
+  non-`CHANGES_REQUESTED` pull request — a `CHANGES_REQUESTED` one is owed a
+  change by the pipeline at every level whatever its grade or source, so the
+  narrowing never reaches it and can never hold fewer pull requests against
+  the cap than the un-narrowed rule did —
+  complexity from the same listing already fetched, source read back from the
+  fleet's union log via `landing_retry_source`, the same primitive the 2.1e
+  landing-retry sweep already uses. A pull request whose source cannot be
+  resolved this way counts toward the cap rather than being excluded from it
+  (fail-closed), logged as a `warning` naming the repository and the pull
+  request. `counted_prs_array` (and the `claim.sh count` exclusion it feeds)
+  now agree with the same otherwise-eligible verdict, and the dashboard's
+  back-pressure card (`scripts/publish-dashboard.sh`, `dashboard/index.html`)
+  mirrors it on the complexity half, approximated from each repository's
+  configured `merge_autonomy` level rather than the live effective one, to
+  avoid a per-repository merge-budget-freeze read on every publish tick.
 - A Refiner (or Enabler) verdict whose `comments_posted[0]`/`comment_url` is a
   bare issue URL — no `#issuecomment-` anchor, so it cannot name any comment
   at all — is no longer recorded as a genuine refinement (TD-PPagop-26082819,

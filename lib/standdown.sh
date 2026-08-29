@@ -694,26 +694,27 @@ listing_truncated=0
 # they cannot be folded in above) this count already counted and which it did
 # not.
 counted_prs_json='{}'
-# The rank a repo's effective merge_autonomy level must reach for this loop
-# to stop excluding its ready, non-CHANGES_REQUESTED pull requests (D18 WI-6,
-# requirement 2.2's own level-aware paragraph) — loop-invariant, so it is
-# resolved once rather than once per repo.
+# The rank a repo's effective merge_autonomy level must reach before an
+# otherwise-eligible ready pull request stops excluding from this loop's
+# human-queue count (D18 WI-6, requirement 2.2's own level-aware paragraph)
+# — loop-invariant, so it is resolved once rather than once per repo.
 backpressure_autonomous_rank="$(merge_autonomy_rank agent-merges-routine)"
 while IFS= read -r slug; do
   # D18 WI-6 (requirement 2.2's own level-aware paragraph): above
-  # agent-merges-routine there is no human queue for a ready, non-
-  # CHANGES_REQUESTED pull request to sit in, so nothing is excluded from
-  # this repo's count below. Read once per repo, against the effective level
-  # (never the configured one — merge_autonomy_effective_level is the one
-  # function every reader of this key must go through), so a fleet-wide kill
-  # switch or a merge-budget freeze (requirement 2.3c) un-excludes those pull
-  # requests again by the next cycle's process — this read is advisory, not
-  # an acting site, so it is memoised for this process's whole run like every
-  # other advisory read (requirement 2.3a, issue #513).
+  # agent-merges-routine there is no human queue for an *otherwise-eligible*
+  # ready pull request to sit in, so nothing is excluded from this repo's
+  # count below for one the pipeline could actually land. Read once per
+  # repo, against the effective level (never the configured one —
+  # merge_autonomy_effective_level is the one function every reader of this
+  # key must go through), so a fleet-wide kill switch or a merge-budget
+  # freeze (requirement 2.3c) un-excludes those pull requests again by the
+  # next cycle's process — this read is advisory, not an acting site, so it
+  # is memoised for this process's whole run like every other advisory read
+  # (requirement 2.3a, issue #513).
   slug_level="$(merge_autonomy_effective_level "$DEFAULTED_CONFIG" "$slug" "$state_repo" "$state_dir")"
   slug_level_rank="$(merge_autonomy_rank "$slug_level" 2>/dev/null)" || slug_level_rank=0
   prs_json="$(gh pr list -R "$slug" --state open --label "$pr_label" \
-    --limit "$GITHUB_PR_LIST_LIMIT" --json number,isDraft,reviewDecision 2>/dev/null)" || prs_json=''
+    --limit "$GITHUB_PR_LIST_LIMIT" --json number,isDraft,reviewDecision,headRefName,labels 2>/dev/null)" || prs_json=''
   [[ -n "$prs_json" ]] || prs_json='[]'
   counts="$(jq -r '[([.[] | select(.isDraft | not)] | length),
            ([.[] | select(.isDraft | not) | select(.reviewDecision != "CHANGES_REQUESTED")] | length),
@@ -724,8 +725,59 @@ while IFS= read -r slug; do
   [[ "$n_human" =~ ^[0-9]+$ ]] || n_human=0
   [[ "$n_draft" =~ ^[0-9]+$ ]] || n_draft=0
   [[ "$n_total" =~ ^[0-9]+$ ]] || n_total=0
+  # D18 WI-6, requirement 2.2's own "otherwise-eligible" qualifier: above
+  # agent-merges-routine there is no human queue for a ready pull request the
+  # pipeline could actually land — but one it is barred from landing, by
+  # complexity or by source, still has no other actor to move it, so it
+  # stays in the human queue exactly as it would below this level. Only a
+  # non-CHANGES_REQUESTED one is asked about: a CHANGES_REQUESTED pull
+  # request is pipeline-owed at every level whatever its grade or source
+  # (`gather-review-feedback.sh` re-engages it, and that path consults
+  # neither), so narrowing it into the human queue would make this level
+  # hold *fewer* pull requests against the cap than the same repository does
+  # at `human` — the one direction requirement 2.2 rules out. Restricting
+  # the candidates keeps `n_human` a subset of the un-narrowed rule's own
+  # answer rather than a different set. `landing_eligible`
+  # itself is not called here: its protected-path gate is a live changed-file
+  # read this decision has no need of (a protected path does not stop a
+  # human from landing it, only the pipeline from doing so automatically),
+  # so `landing_routine_eligible` (lib/landing.sh) — the same
+  # _landing_routine_complexity/_landing_routine_sources primitives
+  # `landing_eligible` itself reads — answers this alone, at no extra
+  # network cost. SOURCE has no field on GitHub at all (a pull request's
+  # source is fixed at claim time; `landing_retry_source`'s own header),
+  # so it is read back from the fleet's union log the same way the 2.1e
+  # landing-retry sweep already does (`_landing_retry_sweep_repo`); a
+  # candidate whose source cannot be resolved this way counts toward the
+  # cap rather than being excluded from it (fail-closed — of the two ways
+  # to be wrong here, opening work past a full cap is the one that is not
+  # recoverable next cycle), with a warning naming the repository and the
+  # pull request so an operator can see why it was not narrowed.
+  ineligible_prs_json='[]'
   if (( slug_level_rank >= backpressure_autonomous_rank )); then
-    n_human=0
+    while IFS= read -r cand; do
+      [[ -n "$cand" ]] || continue
+      cand_number="$(jq -r '.number' <<<"$cand")"
+      cand_branch="$(jq -r '.headRefName' <<<"$cand")"
+      cand_complexity="$(jq -r '((.labels // []) | map(.name)
+        | map(select(startswith("complexity:"))) | first // "" | sub("^complexity:";""))' <<<"$cand")"
+      cand_source="$(landing_retry_source "$slug" "$cand_branch" "$union_log")"
+      if [[ -z "$cand_source" ]]; then
+        log_event "warning" "$(jq -nc --arg r "$slug" --argjson n "$cand_number" \
+          --arg d "back-pressure: $slug#$cand_number's originating source could not be resolved from the fleet log, so it is counted toward the cap rather than excluded from it (fail-closed)" \
+          '{repo: $r, pr_number: $n, detail: $d}')"
+        continue
+      fi
+      cand_elig="$(landing_routine_eligible "$DEFAULTED_CONFIG" "$slug" "$cand_complexity" "$cand_source")"
+      if [[ "$cand_elig" != "eligible" ]]; then
+        appended="$(jq -c --argjson n "$cand_number" '. + [$n]' <<<"$ineligible_prs_json" 2>/dev/null)"
+        [[ -n "$appended" ]] && ineligible_prs_json="$appended"
+      fi
+    done < <(jq -c '.[] | select(.isDraft | not)
+      | select(.reviewDecision != "CHANGES_REQUESTED")' <<<"$prs_json" 2>/dev/null)
+    [[ -n "$ineligible_prs_json" ]] || ineligible_prs_json='[]'
+    n_human="$(jq 'length' <<<"$ineligible_prs_json" 2>/dev/null)" || n_human=0
+    [[ "$n_human" =~ ^[0-9]+$ ]] || n_human=0
   fi
   if github_pr_list_truncated "$n_total"; then
     listing_truncated=1
@@ -737,13 +789,20 @@ while IFS= read -r slug; do
   human_queue_count=$(( human_queue_count + n_human ))
   draft_count=$(( draft_count + n_draft ))
   # The pull requests this repo just contributed to the trip: its drafts, and
-  # its ready ones the pipeline still owes a change — every ready one, at
-  # agent-merges-routine or above, where n_human was just zeroed above for
-  # the same reason. Bounded by GITHUB_PR_LIST_LIMIT, so it may ride argv
-  # (requirement 4g). An unreadable listing leaves it empty, which counts
-  # every claim — the fail-closed reading, matching the zeroed counts above.
+  # its ready ones the pipeline still owes a change — at agent-merges-routine
+  # or above, every ready one `ineligible_prs_json` above did not just carve
+  # out into the human queue (the same predicate `n_human` was built from,
+  # so the two can never disagree about the same pull request), which leaves
+  # its CHANGES_REQUESTED ones in the set here exactly as the branch below
+  # keeps them, since the loop above never offers them as candidates.
+  # Bounded by
+  # GITHUB_PR_LIST_LIMIT, so it may ride argv (requirement 4g). An unreadable
+  # listing leaves it empty, which counts every claim — the fail-closed
+  # reading, matching the zeroed counts above.
   if (( slug_level_rank >= backpressure_autonomous_rank )); then
-    counted_prs_array="$(jq -c '[.[].number]' <<<"$prs_json" 2>/dev/null)" || counted_prs_array='[]'
+    counted_prs_array="$(jq -c --argjson ineligible "$ineligible_prs_json" \
+      '[.[] | select(.isDraft or (([.number] - $ineligible) | length > 0)) | .number]' \
+      <<<"$prs_json" 2>/dev/null)" || counted_prs_array='[]'
   else
     counted_prs_array="$(jq -c '[.[] | select(.isDraft or .reviewDecision == "CHANGES_REQUESTED") | .number]' \
       <<<"$prs_json" 2>/dev/null)" || counted_prs_array='[]'

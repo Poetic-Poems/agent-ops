@@ -987,7 +987,23 @@ on (requirement 2.2) — draft PRs, ready PRs still `CHANGES_REQUESTED`, and
 live claims — rather
 than a figure the page derives from the open-PR listing alone: a live claim
 is work already in flight whose PR does not exist yet, so it cannot appear
-there. Which registry rows those are is `claim.sh count`'s rule, transcribed
+there. For a repository configured at `agent-merges-routine` or above, the
+card additionally narrows the human-queue exclusion to an **otherwise-
+eligible** ready pull request (D18 WI-6, issue #946), mirroring requirement
+2.2's own level-aware paragraph: a ready, non-`CHANGES_REQUESTED` pull
+request whose `complexity:*` label is outside that repository's
+`merge_autonomy_routine_complexity` list stays in the human queue, since
+nothing downstream of the Approver will ever land it automatically. A
+`CHANGES_REQUESTED` pull request is exempt from the narrowing at every
+level, exactly as it is in requirement 2.2 — the pipeline still owes it a
+change — so the card can never hold fewer pull requests against the cap
+than the plain rule would. This reads the repository's
+*configured* `merge_autonomy` level (`D.config`) combined with the
+fleet-wide kill switch the page already fetches for the banner above — never
+the live effective level, which also needs a per-repository merge-budget-
+freeze read the Publisher does not make on every tick — and complexity
+alone, never a pull request's originating source, which carries no field on
+GitHub and is not data this page holds. Which registry rows those are is `claim.sh count`'s rule, transcribed
 rather than re-derived — a card reporting a different figure from the gate it
 depicts is worse than no card — and it excludes two kinds of row. Rows under a
 **pseudo-slug** (`enabler`, `refiner`) are the Enabler's and Refiner's
@@ -2046,6 +2062,16 @@ number's twins elsewhere on the page.
   other. The live-claims panel below is asserted to still show the
   pseudo-slug rows in full: the gauge's narrowing is a statement about the
   cap, not about what an operator hunting a stuck item may see.
+  `backpressure-otherwise-eligible.json` (D18 WI-6, issue #946) holds a
+  repository configured at `agent-merges-routine` with three ready PRs — an
+  approved `complexity:high`, an approved `complexity:low`, and a
+  `CHANGES_REQUESTED` `complexity:high`: the gauge reads 2 of 3, counting the
+  latter two toward the cap and putting only the approved `complexity:high`
+  one in the human-waiting figure — confirming both halves of the rule at
+  once, that the level-aware exclusion is narrowed to an otherwise-eligible
+  pull request rather than every ready one, and that the narrowing itself
+  never reaches a `CHANGES_REQUESTED` pull request, which the pipeline owes a
+  change at every level.
 - `claim-expired-tombstone.json` (agent-ops#839) holds one claim backdated to
   `do_expire()`'s sentinel `1970-01-01T00:00:01Z` alongside one with a real,
   recent `ts`: the live-claims panel's Held column reads the first "expired —

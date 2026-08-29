@@ -3000,9 +3000,65 @@
     var rawN = openPrs.length, maxN = D.max_open_agent_prs || 0;
     var draftN = openPrs.filter(function (p) { return p.isDraft; }).length;
     var readyN = rawN - draftN;
-    var humanQueueN = openPrs.filter(function (p) {
-      return !p.isDraft && p.review_decision !== "CHANGES_REQUESTED";
-    }).length;
+    // D18 WI-6 (issue #946): above agent-merges-routine there is no human
+    // queue for an *otherwise-eligible* ready pull request to sit in — but
+    // one the pipeline is barred from landing by its own complexity grade
+    // still has no other actor to move it, so it stays in the human queue
+    // regardless of level. Mirrors lib/standdown.sh's own predicate
+    // (`landing_routine_eligible`) on the one part of it this page can
+    // afford: a repository's *configured* merge_autonomy level (D.config,
+    // free) combined with the fleet-wide kill switch (fleetFlags(),
+    // already fetched for the banner above) — never the live effective
+    // level, which also needs a per-repository merge-budget-freeze read
+    // this page's own publisher declines to pay for on every tick
+    // (scripts/publish-dashboard.sh's own header). A freeze can make this
+    // card briefly optimistic; it never touches the pipeline's own arming
+    // decision, which always reads the live level fresh. Complexity alone,
+    // never source: a pull request's source has no field on GitHub and is
+    // resolved fleet-log-side (lib/landing.sh's own landing_retry_source),
+    // which is not data this page holds — the same "approximate on
+    // complexity alone" choice issue #946's own refinement sanctioned.
+    var MERGE_AUTONOMY_LEVELS = ["human", "agent-approves", "agent-merges-routine", "agent-merges-all"];
+    var autonomyKillEngaged = (function () {
+      var mak = (fleetFlags() || {}).merge_autonomy_kill;
+      return !!(mak && mak.state && mak.state !== "enabled");
+    })();
+    function repoConfig(repo) {
+      var repos = (D.config && D.config.repos) || [];
+      for (var i = 0; i < repos.length; i++) { if (repos[i].slug === repo) return repos[i]; }
+      return {};
+    }
+    function repoBackpressureElevated(repo) {
+      if (autonomyKillEngaged) return false;
+      var rc = repoConfig(repo);
+      var level = rc.merge_autonomy || (D.config && D.config.merge_autonomy) || "human";
+      return MERGE_AUTONOMY_LEVELS.indexOf(level) >= MERGE_AUTONOMY_LEVELS.indexOf("agent-merges-routine");
+    }
+    function prComplexity(p) {
+      var m = (p.labels || []).filter(function (l) { return /^complexity:/.test(l); })[0];
+      return m ? m.slice("complexity:".length) : "";
+    }
+    function prOtherwiseEligible(p) {
+      var rc = repoConfig(p.repo);
+      var routine = rc.merge_autonomy_routine_complexity || (D.config && D.config.merge_autonomy_routine_complexity) ||
+        ["low", "medium"];
+      var complexity = prComplexity(p);
+      return complexity !== "" && routine.indexOf(complexity) >= 0;
+    }
+    function prCountsTowardCap(p) {
+      if (p.isDraft) return true;
+      // A CHANGES_REQUESTED pull request is pipeline-owed at every level,
+      // whatever its complexity: the review-feedback source re-engages it and
+      // never consults the routine lists. Answered before the elevated branch
+      // below, so the narrowing can only ever move a pull request *out* of the
+      // human queue relative to the plain rule, never into it —
+      // lib/standdown.sh's own candidate loop excludes them for the same
+      // reason.
+      if (p.review_decision === "CHANGES_REQUESTED") return true;
+      if (repoBackpressureElevated(p.repo)) return prOtherwiseEligible(p);
+      return false;
+    }
+    var humanQueueN = openPrs.filter(function (p) { return !p.isDraft && !prCountsTowardCap(p); }).length;
     var pipelineReadyN = readyN - humanQueueN;
     // Which registry entries are "unraised claims" is lib/claim.sh's `do_count`
     // rule, and this is a transcription of it, not a second opinion: a card
@@ -3025,11 +3081,15 @@
     // dropped only when its PR is in the draft or changes-requested sum. A
     // conflicted or dequeued PR sits in the human's queue, is excluded from
     // that sum, and its claim is then the only record of the work in flight —
-    // so that one keeps counting.
+    // so that one keeps counting. Above agent-merges-routine, a pull request
+    // the pipeline is barred from landing by complexity sits in the human's
+    // queue the same way (`prCountsTowardCap` above), so it is excluded from
+    // this set exactly as it is excluded from `humanQueueN` — the two must
+    // agree about the same pull request.
     var claimRepos = ((D.config && D.config.repos) || []).map(function (r) { return r.slug; });
     var countedPr = {};
     openPrs.forEach(function (p) {
-      if (p.isDraft || p.review_decision === "CHANGES_REQUESTED") countedPr[p.repo + "#" + p.number] = true;
+      if (prCountsTowardCap(p)) countedPr[p.repo + "#" + p.number] = true;
     });
     var claimN = fleetClaims().filter(function (c) {
       if (claimRepos.indexOf(c.repo) < 0) return false;

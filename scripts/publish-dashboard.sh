@@ -2031,11 +2031,16 @@ if (( WITH_GITHUB )); then
     # 4g, TD-PPagop-26081506). Both arrive on stdin, one document per line,
     # bound positionally with `input as $name` in the printed order — never in
     # argv.
+    # D18 WI-6 (issue #946): the back-pressure card below needs each ready
+    # pull request's own complexity:* grade, to mirror requirement 2.2's own
+    # otherwise-eligible exclusion — carried through as `labels` below, the
+    # same field already riding along in this same listing.
     prs_json="$(jq -nc --arg slug "$slug" "$PR_JQ"'
       input as $cur | input as $add |
       $cur + ($add | map({
         repo: $slug, number, title, url, isDraft, state, mergeable, mergeStateStatus, headRefName, createdAt,
         review_decision: (.reviewDecision // ""),
+        labels: [ (.labels // [])[] | .name ],
         checks: (.statusCheckRollup | checks_of)
       }))' <<<"$prs_json"$'\n'"$prs")"
     # The same fetch, indexed. These entries are this tick's freshest answer for
@@ -2897,11 +2902,23 @@ lock_stale_derived_hours="$(jq -nr --argjson sec \
      "$(stage_budget_all_overrides "$(cat "$CONFIG_FILE" 2>/dev/null || printf '{}')")" 30 \
      "$(jq -r '.lock_stale_after // 0' "$CONFIG_FILE" 2>/dev/null || printf 0)")" \
   '(($sec / 3600) * 100 | round) / 100' 2>/dev/null || printf 4)"
+# D18 WI-6 (issue #946): the back-pressure card's own otherwise-eligible
+# exclusion needs each repository's configured merge_autonomy level and
+# routine-complexity list, carried through as the two extra top-level keys
+# below — repos[] already carries a repository's own overrides of both,
+# wholesale; these two are the fleet-wide defaults they fall back to, per
+# merge_autonomy_configured_level's and _landing_routine_complexity's own
+# precedence (lib/merge-autonomy.sh, lib/landing.sh). Not the live effective
+# level: that also needs a per-repository merge-budget-freeze read this
+# script's own header already declines to pay for on every tick, so the card
+# mirrors the configured level plus the kill switch it already fetches for
+# free, same as every other display-only approximation on this page.
 config_json="$(jq -c --argjson t "$stage_budget_json" --argjson lock "$lock_stale_derived_hours" \
   '{repos, coordinator_model, implementer_model_default, implementer_model_trivial,
     reviewer_model_default, reviewer_model_complex, pr_label, branch_prefix,
     max_open_agent_prs, limit_cooldown_default, dashboard_refresh_seconds,
-    image_behind_grace_hours}
+    image_behind_grace_hours,
+    merge_autonomy, merge_autonomy_routine_complexity}
    + {lock_stale_after: $lock,
       stage_backstops: (($t.cells // {}) | to_entries
         | reduce .[] as $e ({};
