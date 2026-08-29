@@ -5959,7 +5959,11 @@ implements.
    (requirement 33), which is what lets the distribution of self-assessments
    be audited for drift.
 8b. **Approver stage (D18 WI-5, `docs/reviews/2026-08-14-autonomy-investigation.md`
-   §5.2).** Once the Reviewer's `ready` verdict has cleared every existing
+   §5.2).** Requirement 31d's own read intercepts ahead of everything below: a
+   pull request confirmed merged never reaches this stage at all (requirement
+   32c) — there is no `ready` verdict left to clear a gate on, only a
+   completion already recorded. Once the Reviewer's `ready` verdict has
+   cleared every existing
    gate — `review_gate_verdict`, the closing-keyword gate, the draft flip
    (requirement 31a), the re-request (requirement 31b), `ensure_human_reviewer`
    (requirement 38) — and only then, the Script resolves this repository's
@@ -8990,6 +8994,33 @@ implements.
     the flagged constant, commit `8e62ff6`) before this requirement existed to
     check it, which is itself the confirmation that a script-side gate would
     have found nothing further to do once that fix landed.
+31d. **A pull request that already merged is not handed off, not reviewed by
+    the Approver, and not landed against — the Script's own read decides,
+    never the Reviewer verdict's word (agent-ops#916, escalation #922).**
+    `lib/handoff.sh`'s `pr_merge_state` is the one helper both reads share:
+    fail-closed at the handoff — ahead of `confirm_pr_ready`'s own isDraft
+    read, and before `$rev_status` is even branched on, so a Reviewer that
+    never noticed the merge (`"status": "ready"`) and one that did
+    (`"status": "blocked"`, naming it) are caught the same way — and advisory
+    at the Reviewer's own stage-start, so a whole engagement is never spent
+    on a pull request already gone (an unreadable answer there simply runs
+    the stage, since the fail-closed read afterward still guards whatever it
+    produces). A confirmed merge is requirement 32c's completion, not
+    requirement 32a's `attempt-failed`; a merge GitHub does not confirm — a
+    Reviewer claiming one the Script's own read denies — is a model error
+    and falls through requirement 32a unchanged, since nothing distinguishes
+    it from any other unparseable or false claim.
+
+    Live instance: cycle `20260828T013721Z-ockham-2-16721`, PR #883 — merged
+    at 02:38:28Z, 21 minutes into a Reviewer engagement that ran another 24
+    minutes never asking. The Reviewer opened a replacement pull request
+    (#891), reported only in prose; nothing machine-readable ever named it,
+    and it sat with zero reviews for 9.4 hours until a human found it by
+    hand. Requirement 32c is what that pull request's leftovers become
+    instead — `file_debt`/`file_issue` on the Reviewer's own verdict, filed
+    by the Script — and `prompts/reviewer.md`'s own "When this pull request
+    merges while you are still reviewing it" is the instruction that
+    replaces the improvisation: no replacement pull request, ever.
 32. Ends with a single JSON object:
     `{"status": "ready" | "blocked", "pr_url": …, "fixes_applied": […], "comments_left": n, "ci": "passing" | …}`,
     plus `reason` — one line naming what is wrong — on `blocked`, which becomes
@@ -9011,6 +9042,16 @@ implements.
     has, and an unresolved entry holds only *unattended landing*, through the
     gate requirement 8f adds — never the handoff itself, and never anything
     a defect or an impediment already has a channel for.
+
+    Additive on the one ending requirement 31d describes, absent everywhere
+    else: `"file_debt"`/`"file_issue"` (`{title, body, default_fix,
+    owner_decision}` each — the Approver's own field shape, requirement 42a),
+    carrying what a pass had already found when its subject merged out from
+    under it. There is no live pull request left to hold a `Defers:` line or a
+    replacement pull request of the Reviewer's own (requirement 31d forbids
+    one), so the verdict field *is* the record: requirement 32c's completion
+    path files whatever it names, and nothing else the Reviewer writes that
+    round survives.
 32a. **A Reviewer that cannot hand off hands back, not out.** Any ending other
     than a pull request the human can see — `blocked`, an unparseable status, or
     a `ready` whose handoff requirement 31a could not make true — is recorded as
@@ -9109,6 +9150,31 @@ implements.
     never a draft. Completing only the flip would clear the block, log a handoff,
     and leave the human as unasked as before. Both handoff paths run both halves,
     or the one that recovers a failure is the one that recovers it incompletely.
+32c. **A subject that merges mid-stage is a completion, not a hand-back
+    (agent-ops#916, escalation #922).** Requirement 31d's `pr_merge_state`
+    read confirming `merged` — at the Reviewer's own stage-start or at the
+    handoff, ahead of `$rev_status`'s own branch — ends the cycle here
+    instead: `merge-observed` is logged (repo, item, `pr_url`, the merge
+    commit when GitHub reports one, and which of the two reads caught it),
+    whatever the Reviewer's own verdict asked to be filed under `file_debt`/
+    `file_issue` is filed under the ordinary pipeline login — the Reviewer
+    carries no App identity of its own, the same reason the Enabler's own
+    use of the two fields (requirement 36c) always omits a token too — and
+    the PR-keyed claim is released. No `pr-ready`, no Approver engagement
+    (requirement 8b), no landing attempt: the item retires the way
+    `lib/work-gone.sh` retires one whose issue closed underneath it
+    (requirement 34i), never as requirement 32a's `attempt-failed`, because
+    the work this pipeline was asked to hand off is not missing — it is
+    already on `default_branch`, merged by whoever merged it, and there is
+    nothing left for an Enabler to re-examine.
+
+    `lib/merge-observed.sh`'s `reviewer_merge_observed` is the one
+    implementation both call sites run: the stage-start call passes it an
+    empty verdict (`{}` — the Reviewer never ran, so it never asked for
+    anything to be filed); the handoff call passes the Reviewer's own parsed
+    JSON, `file_debt`/`file_issue` included wherever its own
+    `"status": "blocked"` ending set them (`prompts/reviewer.md`'s "When this
+    pull request merges while you are still reviewing it").
 
 ### Logging and state
 
@@ -9124,6 +9190,7 @@ implements.
     `stand-down`, `selection`, `claim-lost`, `claim-skipped`, `none-selected`,
     `corroboration`, `stage-start`,
     `stage-end`, `pr-raised`, `pr-ready`, `attempt-failed`, `unblocked`,
+    `merge-observed`,
     `recheck-clean`, `item-void`, `unvoided`, `item-refined`,
     `enabler-examined`, `refiner-examined`, `own-label-action`, `escalated`,
     `enabler-adjudication`,
@@ -9158,6 +9225,12 @@ implements.
     omits `outcome` (the event name itself already says it), `landing-audit`
     keeps it so a reader of the log alone can tell `clean` from
     `unverifiable` without cross-referencing the event name.
+    `merge-observed` (requirements 31d/32c, `lib/merge-observed.sh`'s
+    `reviewer_merge_observed`, agent-ops#916) is the completion this pipeline
+    logs instead of `attempt-failed` when a subject pull request merges
+    mid-stage: `repo`, `item`, `pr_url`, `stage` (`"reviewer"` for the
+    handoff-time read, `"reviewer-stage-start"` for the advisory one), and
+    `merge_sha` when GitHub reported one.
     `merge-budget-hold`, `merge-budget-frozen` and
     `merge-budget-freeze-escalated` (requirement 2.3c,
     `merge_budget_apply_decision`) are logged whenever gate 5 of
@@ -14104,10 +14177,22 @@ What exists, and the requirements each part answers to:
    `ensure_human_reviewer`, the same promise again where nobody's review is
    blocking at all; requirement 3c's `handoff_answer_events` and
    `handoff_round_answered`, the answered-from-events predicate shared with
-   requirement 38c's sweep; and requirement 9's
+   requirement 38c's sweep; requirement 31d's `pr_merge_state`
+   (agent-ops#916), printing `open`/`merged<TAB>sha`/`failed`, fail-closed the
+   same way `confirm_pr_ready` already is; and requirement 9's
    `pr_url_for_branch`, which names the pull request on a claimed branch when
    the stage that opened it named nothing; `HANDOFF_GH` substitutes a stub for
    tests),
+   `lib/merge-observed.sh` (requirement 32c's `reviewer_merge_observed`,
+   agent-ops#916: given a merged pull request's URL, its merge commit (when
+   known) and the Reviewer's own verdict JSON (`{}` at the advisory
+   stage-start call site), logs `merge-observed`, files whatever `file_debt`/
+   `file_issue` the verdict carries — under the ordinary pipeline login,
+   omitting `TOKEN` exactly as `lib/enabler.sh`'s own use of the two fields
+   does — and releases the PR-keyed claim. Depends on `lib/handoff.sh`'s
+   `pr_merge_state`, `lib/candidate-select.sh`'s `release_pr_claim` and
+   `lib/tech-debt-file.sh`'s `techdebt_file_debt`/`techdebt_file_issue`, so is
+   sourced after all three),
    `lib/stage-run.sh` (requirement 4d's `run_claude_stage`, the one stage
    launcher both pipelines call, with `stage_stream_file` and
    `stage_result_line` naming and reading the stream it writes, and
@@ -15683,10 +15768,17 @@ What exists, and the requirements each part answers to:
     `test/find-similar-tech-debt.test.sh` (exact-match, containment,
     below-the-length-floor on either side, `open`/`in-progress` included,
     `resolved`/`not-debt` excluded); must pass `shellcheck`.
-23d. `lib/tech-debt-file.sh` implementing the filing half of requirements 36c
-    and 42a — the Approver and Enabler must never write to GitHub or a branch
-    themselves, so this is what the Script calls in their place once either
-    stage's final JSON carries `file_debt`/`file_issue`:
+23d. `lib/tech-debt-file.sh` implementing the filing half of requirements 36c,
+    42a and 32c — the Approver and Enabler must never write to GitHub or a
+    branch themselves, and the Reviewer whose subject merged mid-pass no
+    longer has one to write to (requirement 31d), so this is what the Script
+    calls in their place once a stage's final JSON carries
+    `file_debt`/`file_issue`. `GIT_DIR` is the cycle's own clone of the target
+    repository wherever the caller holds one — the Approver's and the
+    Reviewer's `clone_dir`, still on disk until the EXIT trap — and empty for
+    the Enabler, which holds no clone and gets a throwaway directory instead;
+    it is never the cycle's state directory, which has no `origin` to fetch
+    and would fail the filing outright:
 
     - `techdebt_file_issue REPO ITEM_REF TITLE BODY_FILE [TOKEN] [DEFAULT_FIX]
       [OWNER_DECISION]` — the same
@@ -17867,6 +17959,42 @@ pull request, run the ones the change touches and any it could regress.
    from the branch and not from the stage — that is the whole point, and a test
    whose Implementer helpfully left a breadcrumb passes without exercising
    anything.
+8e-ii. **A subject pull request that merges mid-stage is a completion, not an
+   attempt-failed (requirements 31d/32c, agent-ops#916).** Drive a cycle whose
+   `$impl_pr_url` is confirmed merged by `pr_merge_state` before the
+   Reviewer's own ready/blocked branch is read — both when the Reviewer's own
+   verdict is `"status": "ready"` (never noticed) and when it is
+   `"status": "blocked"` naming the merge (noticed): in either case the cycle
+   must log `merge-observed` for the item, never `pr-ready`, `attempt-failed`
+   or an Approver engagement, and must release the PR-keyed claim
+   (`test/reviewer-merge-observed-wiring.test.sh`, extracting the dispatch
+   block out of `agent-cycle.sh` the same way
+   `test/human-reviewer-handoff-wiring.test.sh` extracts its own). Assert the
+   same for the Reviewer's own stage-start advisory read: a merged
+   `$impl_pr_url` skips the Reviewer stage entirely (no `stage-start`/
+   `stage-end` for `reviewer`), reaching the same `merge-observed` completion
+   at zero stage cost. Assert `file_debt`/`file_issue` on the Reviewer's own
+   verdict are filed under the ordinary pipeline login (no `TOKEN`) exactly as
+   the Enabler's own use of the two fields already is, and against the cycle's
+   own clone of the target repository rather than its state directory
+   (requirement 23d's `GIT_DIR`, which a state directory fails outright)
+   (`test/merge-observed.test.sh`), and are silently absent at the stage-start
+   call site, where no verdict exists yet to carry them. Assert the fall-through: a Reviewer
+   claiming a merge `pr_merge_state` does not confirm (`merge_state` `open` or
+   `failed`) is handled exactly as an ordinary `"status": "blocked"` verdict
+   always has been (requirement 32a) — this is a model error, not a
+   completion; and that an unreadable `pr_merge_state` on an otherwise-`ready`
+   verdict refuses the handoff (a `log_reviewer_handback`, never a silent
+   pass-through).
+8e-iii. **`pr_merge_state` (requirement 31d) is fail-closed, the same
+   convention `confirm_pr_ready` already keeps.** `test/pr-merge-state.test.sh`
+   passes: a `state: "MERGED"` reply reports `merged` with the merge commit's
+   `oid` when GitHub supplies one and an empty second field when it does not;
+   a `state: "OPEN"` or `state: "CLOSED"` reply reports `open`; an unreachable
+   API, a reply with no recognisable `state` field, and an empty PR URL all
+   report `failed` and exit non-zero — never `open`, since a caller that read
+   an unreadable pull request as still open would run the very handoff a
+   genuine merge invalidates.
 8f. **A human can reopen a void from where they actually are (requirement
    34f).** `test/unvoid-label.test.sh` passes: a request clears a void recorded
    before the label; a void recorded after it, or at the same instant, stands; a
@@ -21081,6 +21209,27 @@ confirmed by the repo owner on 2026-07-13; no open questions remain.
   a reproducibility gain, not a loss. The variables' quirk is recorded
   where they are set: some treat *any* value, `"0"` included, as opted
   out, so they are set to `"1"` or not at all, never templated.
+- **A subject that merges mid-stage retires as a completion; the Reviewer
+  never raises a replacement pull request (agent-ops#916, escalation #922).**
+  Three forks the original issue left open were owner decisions, not
+  conventions derivable from the code, and escalation #922 settled all three
+  in one round: (1) the Reviewer may not open a replacement pull request when
+  its subject merges mid-pass — a replacement it raises itself is invisible
+  to every machine-readable record this pipeline keeps for one it raised
+  (no `pr-raised`, no `pr-<n>` claim, no `complexity:*` label, no Approver
+  engagement), which is exactly how #891 sat unreviewed for 9.4 hours after
+  #883 merged 21 minutes into the Reviewer pass that produced it; instead the
+  Reviewer stops, ends `blocked` naming the merge, and carries its leftovers
+  in `file_debt`/`file_issue` — the Approver's own field shape, since the
+  Reviewer carries no App identity of its own either. (2) A mid-stage merge
+  is a completion, not `attempt-failed`, decided by the Script's own read of
+  GitHub — never the Reviewer verdict's word — so it fires whether the
+  Reviewer noticed or not, and a Reviewer claiming a merge GitHub denies
+  falls through to the ordinary handling as a model error. (3) One read
+  (`pr_merge_state`) serves two call sites at different strictness: fail-closed
+  at the handoff, since nothing downstream ever re-checks; advisory at the
+  Reviewer's own stage-start, since the handoff read still guards whatever
+  the stage produces even when this earlier one could not be answered.
 
 ## Gotchas
 

@@ -994,6 +994,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A subject pull request that merges mid-Reviewer-pass is now caught and
+  retired as a completion, instead of running the rest of the cycle against a
+  pull request no longer there (agent-ops#916, escalation #922). Nothing on
+  the handoff path used to ask GitHub whether `$impl_pr_url` was still open,
+  so a Reviewer whose subject merged part-way through improvised: it opened a
+  replacement pull request reported only in prose, invisible to every
+  machine-readable record the pipeline keeps for one it raises, while the
+  cycle's own tail (`pr-ready`, an Approver engagement, a landing attempt) ran
+  against the pull request that had already merged. `lib/handoff.sh`'s new
+  `pr_merge_state` is the one fail-closed read both call sites share: at the
+  handoff, ahead of `confirm_pr_ready`'s own isDraft read, and, advisory, at
+  the Reviewer's own stage-start, so a whole engagement is never spent on a
+  pull request already gone. A confirmed merge now logs `merge-observed`
+  (`lib/merge-observed.sh`) and retires the item as a completion — never
+  `pr-ready`, never an Approver engagement, never `attempt-failed` — filing
+  whatever the Reviewer's own verdict found under `file_debt`/`file_issue`
+  (the Approver's own field shape) rather than a `Defers:` line, since there
+  is no live pull request left to add one to. `prompts/reviewer.md` now says
+  plainly that the Reviewer may not open a replacement pull request when its
+  subject merges mid-pass.
+
 - `scripts/run-tests.sh --help` no longer stops mid-sentence. Its `usage`
   printed the header block with `sed -n '3,/^# Exit status/p'`, which stops
   *on* the line it matches, so the paragraph explaining what `--list`'s exit
