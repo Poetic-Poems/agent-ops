@@ -8,6 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- New `scripts/migrate-tech-debt-register.sh` (agent-ops#880), a reusable
+  per-repo migration script that closes the gap agent-ops#875 above
+  deliberately accepted: for every `status: open`/`status: in-progress`
+  `tech-debt/<id>.md` record in a checkout, it creates a
+  `pw::type:tech-debt`-labelled GitHub issue carrying the record's title and
+  body, then appends a `Migrated to <issue url>.` line to the record's body —
+  `status:` untouched, so `td-check.pl` and the append-only open-item-body
+  rule both still pass. Idempotent: a record already carrying a `Migrated
+  to ` line is left alone, so re-running it against a checkout that already
+  reflects a prior run is a no-op. Run once against this repository's own
+  register: every open record now has its issue, and the 44 stale
+  reservation-only `td/<id>` branches (a single `chore(tech-debt): reserve`
+  commit, no filed record, no pull request) that had accumulated on origin
+  were released.
 - The product-managed `pw::type:tech-debt` label is now part of the `target`
   role's catalogue (agent-ops#872), so the pipeline creates it in every
   repository it gathers data for, at most once per
