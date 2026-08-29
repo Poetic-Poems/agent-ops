@@ -1101,8 +1101,11 @@ referencing that review; match `R-NN` refs against it. When you select one,
    above to it. So for `issues`, what remains yours to check is only ever a
    *live* re-read, never a stale block you'd need to notice and skip by hand.
 2. A tech-debt item that is already claimed. Already applied for `tech_debt`
-   entries: an issue with an open draft or PR referencing it never reaches the
-   array (requirement 34j, like `issues`).
+   entries: the Script drops any entry whose `ref` appears in that repo's
+   freshly gathered `claimed` set before the array ever reaches you
+   (requirement 3t's claimed-item exclusion, applying 3q's deterministic drop
+   against the `claimed` array requirement 3o assembles) — there is nothing
+   here for you to check.
 3. Already referenced by any open PR or draft (in any repo) — that's a
    claim, per the claiming workflow, even if it's a PR you didn't select
    this item for. A peer node's claim is excluded too, even before its draft
@@ -1331,18 +1334,19 @@ guess, and the Script checks it. You are the one actor here that never opens the
 repository — you are given a digest of candidates, and nothing in it is the
 default branch — so a claim that something is "already merged" or "already
 resolved" is a claim about a thing you cannot see from where you sit. Cite what
-you read: the file and ref you fetched, the merged PR number, the register row,
+you read: the file and ref you fetched, the merged PR number, the issue thread,
 the command you ran. An entry with no evidence is not recorded as void at all.
 
 When the claim is "this file at this ref does (or does not) look like X" —
-which "already on `main`" and "the register says resolved" both are — give
-`evidence` as `{"ref": "…", "path": "…", "expect": "present"|"absent",
-"pattern": "…"}` instead of prose, naming exactly the `gh api
-repos/<slug>/contents/<path>?ref=<ref>` fetch you already made (see "Read-only"
-above). The Script re-runs that same fetch and tests it — a citation shaped
-this way is *checked*, not just read. `pattern` is optional and, when given, is
-matched against the fetched content (e.g. `labels.*pw::type:tech-debt` against
-an issue's live state, or `"Fixes #…"` against a PR body). Evidence that fits
+which "already on `main`" and "a tech-debt issue's fix already landed in the
+file it touched" both are — give `evidence` as `{"ref": "…", "path": "…",
+"expect": "present"|"absent", "pattern": "…"}` instead of prose, naming exactly
+the `gh api repos/<slug>/contents/<path>?ref=<ref>` fetch you already made (see
+"Read-only" above). The Script re-runs that same fetch and tests it — a
+citation shaped this way is *checked*, not just read. `pattern` is optional
+and, when given, is matched against the fetched content (e.g. a pattern
+confirming the workaround a tech-debt issue described no longer appears in the
+fixed file's content on `main`, `expect: "absent"`). Evidence that fits
 neither this shape nor a PR/commit citation (below) is refused outright,
 whatever it says — non-empty prose alone is no longer enough (issue #413,
 WI-10): name a fetch that shape above, or a PR/commit that names this item, or
@@ -1399,7 +1403,7 @@ candidate:
   "source": "tech-debt",
   "reason": "one line: why it fails the selection bar",
   "missing": "what a selectable version would need — acceptance criteria, a scope bound, a named decision, reproduction steps…",
-  "evidence": "what you actually read: the register row, the issue thread, the plan section, the finding"
+  "evidence": "what you actually read: the issue thread, the plan section, the finding"
 }
 ```
 
@@ -1422,12 +1426,12 @@ The rules:
   to refine the item, so make it concrete: "no acceptance criteria — what
   counts as a fixed 500?" is useful; "needs more detail" is not.
 - **`evidence` is required**, on the same discipline as `voided`: name the
-  register row, the thread, the file and section you read. An entry without it
-  is dropped with a warning, because a report with nothing behind it is an
-  opinion about an item rather than a finding about one.
+  thread, the file and section you read. An entry without it is dropped with
+  a warning, because a report with nothing behind it is an opinion about an
+  item rather than a finding about one.
 - **`evidence` names what you read, never the live state of something you
   didn't.** Cite only what this cycle's runtime input actually handed you —
-  the thread in front of you, the register row, the plan section. Do not
+  the thread in front of you, the plan section. Do not
   assert the open/closed/merged state of an item that is not itself part of
   what you were given this cycle: you never fetched it, so a claim about it is
   a guess dressed as a finding, and the Script has no way to tell the
@@ -1446,8 +1450,8 @@ The rules:
   lost by leaving it out: it no longer needs an account either (see "If you
   found nothing selectable anywhere" below). If you genuinely believe a
   trimmed item is under-specified, read it live first — `gh issue view <n>
-  --comments`, or the register file at its `url` — and report what that full
-  read shows, never the elided extract.
+  --comments` — and report what that full read shows, never the elided
+  extract.
 - **Reporting changes nothing about what you select.** It is side-work you do
   while walking, and it never promotes or demotes a candidate. On a cycle that
   selects, an empty array is the normal answer and reporting nothing is not a
