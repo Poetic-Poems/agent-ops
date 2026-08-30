@@ -127,6 +127,147 @@ chooses:
   suite for own use, and the paid capabilities are the ones a buyer pays
   for because they are expensive to build.
 
+## Pillars
+
+Three properties the product is built to have, stated in the order a
+conflict between them is settled. Decided August 2026. They compress the
+decisions table rather than add to it: every rule below is already in force
+in some decision row, and the section's job is to make the ordering
+explicit instead of re-derived in each decision. A pillar earns its place
+by two tests — it can be **measured**, or it is a claim; and there is
+something the product **refuses** in its name, or it is decoration — so
+each carries a definition, the measure that holds it to account, the
+decisions that cash it out, and its refusal. Every decision that describes
+the *product* serves at least one pillar; decisions about the *programme* —
+how it is built, sequenced, shipped and sold (D1, D2, D6, D8, D10, D11,
+D13, D26) — serve none and need not.
+
+**Order: Quality, Autonomy, Efficiency.** Autonomy is the promise, quality
+is the licence to deliver it, and efficiency is its price. Quality bounds
+the other two absolutely: nothing buys autonomy or efficiency with it —
+D18's ladder climbs on quality evidence and cannot simply be switched on,
+and D23 refuses to buy efficiency by driving rework to zero. Autonomy and
+efficiency trade against each other only knowingly, under the
+calculated-trade-off rule (Principle 6): the product may spend tokens to
+keep a human out of the loop, or call the human back in to save them, and
+the change that makes the trade says so. The order is the mnemonic; there
+is no acronym. The word is *autonomy* — self-government under rules the
+installation sets and can tighten at any moment — never a synonym that
+connotes acting without consent, which in a product whose defining act is
+holding write credentials while reading untrusted text (D24) is exactly the
+fear the `human` default exists to defuse.
+
+**Binding rule: every pillar has a measure, and every measure has a
+lever.** The lever rule (Principle 7) applies to the pillars first. The
+measurement decisions — D21 (time, spend and flow accounts), D22
+(evidence-driven model selection) and D23 (rework and escape accounting) —
+are the backbone that makes all three pillars observable, and belong to
+that role rather than to any one pillar. A pillar the product cannot show a
+number for is a claim any product in the category can make; the number is
+what makes it Pullwright's.
+
+### 1. Quality
+
+- **Definition.** Two faces. *What it ships:* the pull requests it raises
+  are mergeable as raised — correct, reviewed to the repository's own
+  standards (D7), and free of the defects each rung of the detection
+  ladder above them would otherwise have to catch — the security of the
+  emitted code included. *How it behaves:* the pipeline's own conduct is
+  safe to run against a repository with write credentials — untrusted
+  content contained (D24), the authoring identity never approving its own
+  work (D25), the Approver's power behind a separate short-lived token
+  (D18), and a human veto that outlives every gate. The second face is the
+  one a mid-size organisation's security review asks about (D3), and the
+  one a customer has to trust before the first face can be observed at all.
+- **Measure.** Code quality cannot be observed directly; rework can (D23).
+  The headline is therefore the **escape rate per detection stage** — the
+  share of defects that got past each rung of the detection cost ladder
+  (agent review, then the landing gate, then post-merge revert) — with
+  first-pass yield beside it. For conduct: which of D24's staged
+  containments is in force, and how many of the standing controls that
+  staging names are verified rather than assumed.
+- **Decisions.** D7 (the whole suite; reviews feed the pipeline the work
+  it does), D15 (tech-debt management in the offering), D17 (merge queues
+  retire the behind-but-green class), D19 (rendered previews), D23
+  (rework and escape accounting), D24 (untrusted-content containment),
+  D25 (forge authoring identity); Principle 5 (specs as-built).
+- **Refusal.** Rework is never driven to zero (D23). A Reviewer catching a
+  defect is the system working; a panel that rewards waving work through
+  is the most expensive failure the ladder has.
+
+### 2. Autonomy
+
+- **Definition.** The pipeline is as autonomous as the installation wants
+  and no more — up to a rung where the human supplies vision-level
+  guidance and the pipeline works out the rest. The resource it conserves
+  is human attention: every rung climbed is a class of decision the human
+  no longer makes. It is opt-in per installation and per repository,
+  climbed on that installation's own evidence, and at every level the
+  default is the one that asks (D18: `human`).
+
+  Autonomy has two axes, and only one has a ladder today. The **landing**
+  axis — who approves and lands a pull request — is D18's. The **intake**
+  axis — who decides what gets built — has rungs the product already
+  partly occupies without naming them: human-written issues; work the
+  product files for itself (repository-review findings, D7; stage-filed
+  debt, D15); roadmap items decomposed from an owner's *[interactive]*
+  moves (Principle 3); and, at the top, a vision the pipeline decomposes
+  itself. The intake axis has no ladder, no evidence gate and no stated
+  default, and this pillar names that gap (open question below): a
+  Co-Ordinator inventing acceptance criteria for a trimmed work order, or a
+  cheaper model authoring the specification a dearer one then follows, are
+  intake-side failures with no rung to gate them.
+- **Measure.** The `merge_autonomy` rung reached per repository and the
+  evidence it was climbed on; `merge_budget_per_day` as the spend
+  governor; and, once D21's accounts exist, **human attention per
+  delivered unit** — human acts (approvals, change requests, hand-backs,
+  escalations) per landed item. That figure should fall as the rung rises;
+  a rung it does not fall for was climbed on paper.
+- **Decisions.** D18 (the merge-autonomy ladder), D9 (mixed build mode:
+  the fleet works down whatever can be decomposed), D20 (tooling delivered
+  — a repository's autonomy from its own maintenance), D3 (the segments
+  for whom attention is the scarce resource); Principles 3 (dogfood), 4
+  (customer zero) and 8 (autonomy parity).
+- **Refusal.** Nothing a customer has not opted into ever lands a pull
+  request (D18), and a human `CHANGES_REQUESTED` blocks landing at every
+  level. The veto outlives the gate.
+
+### 3. Efficiency
+
+- **Definition.** The product's own consumption per unit of delivered
+  work: tokens, elapsed time, and the per-container CPU, memory, disk and
+  bandwidth budgets of D14. It is distinct from autonomy by what it
+  counts — efficiency counts what the product spends, autonomy counts what
+  the human spends. Under BYO keys (D4) the token bill is the customer's
+  own invoice rather than the product's margin, which makes this pillar a
+  promise to the customer before it is a cost control for the vendor;
+  under hosting (D26) it is both. Within the pillar D14 already orders the
+  halves: resource budgets are held alongside, never at the expense of,
+  speed of delivery.
+- **Measure.** D21's two rates, verbatim — **delivered work per elapsed
+  hour** and **delivered work per token** — each backed by an exhaustive
+  account (time, spend, flow) whose remainder lands in `unaccounted` and
+  is never dropped; D14's per-container budgets as the floor beneath them.
+- **Decisions.** D14 (per-container efficiency), D21 (productivity
+  analytics), D22 (evidence-driven model selection — the largest single
+  lever on both rates); Principles 6 (calculated trade-off) and 7 (lever).
+- **Refusal.** No resource is spent without the change that spends it
+  saying so (D14), and no figure is published without a lever (Principle
+  7).
+
+### What the pillars do not hold
+
+D4 (BYO keys), D5 (source-available), D12 (any provider) and D16
+(configuration as code) form a cluster — the customer's keys, models,
+configuration and readable code stay in the customer's hands — that is the
+customer's autonomy from the *vendor*, not the pipeline's from the human.
+Folding it into the Autonomy pillar would conflate two directions under one
+word. It is recorded instead as a standing constraint, the customer-control
+rule (Principle 9), in the both-paths rule's shape: a rule about what no
+work may do, not a property the product is measured on. Three pillars are
+kept because a triad is what a reader retains; a fourth would be paid for
+in all three.
+
 ## Principles
 
 1. **Both-paths rule.** Until the Phase 4 delivery gate, no work may assume
@@ -171,6 +312,19 @@ chooses:
    checklist this rule cashes out to for any repository created after the
    transfer (D8 as amended) — the consumer repository first; the product
    repository inherits agent-ops's level by being agent-ops.
+9. **Customer-control rule.** Nothing the product does takes the
+   customer's keys, models, configuration or code out of the customer's
+   hands: model usage runs on the customer's own key (D4), the source is
+   readable (D5), every actor's model is the customer's choice from any
+   supported provider (D12), and an installation's whole configuration is
+   versioned declaration the customer applies (D16). This is the
+   customer's autonomy from the vendor — a different direction from the
+   Autonomy pillar's, the pipeline's from the human, and deliberately not
+   folded into it (Pillars, above). It holds on the self-hosted path
+   always and on every path until the Phase 4 gate, in the both-paths
+   rule's shape: a capability that needs the product to hold what the
+   customer could hold waits for the gate, where a hosted tenant may
+   choose it and a self-hosted installation never has to.
 
 ## Phase 1 — Untether
 
@@ -870,7 +1024,18 @@ Deliberately lightweight — hours a week, not a phase of its own:
   **Pullwright** (D13), org created. Remaining: secure `pullwright.dev`
   (and `.io` if wanted) and a proper trademark search before the licence
   carries the name.
-- **Positioning and landing page:** drafted during Phase 2.
+- **Positioning and landing page:** drafted during Phase 2, on the three
+  pillars in their order — and each pillar stated with its mechanism,
+  never as an adjective, because every product in the category claims the
+  adjectives: autonomy as a trust ladder an installation climbs on its own
+  evidence (D18), quality as an escape rate the customer can read (D23),
+  efficiency as accounts that add up with a lever on every number (D21).
+  Working hypothesis for the segments (D3), to be tested with design
+  partners rather than assumed: the solo developer's first question is
+  autonomy (attention returned); the maintainer's is efficiency and
+  quality together (a key not burned, a queue not flooded); the mid-size
+  organisation's is quality's conduct face (safe to hold our credentials,
+  D24).
 - **Design partners:** recruitment starts at the end of Phase 1 — two or
   three, drawn from the three target segments (D3); committed partners gate
   Phase 3 entry.
@@ -902,6 +1067,7 @@ Parked deliberately, each with a decide-by gate:
 | Whether a model trial may ever be assigned to the critical tier, and what evidence would justify allowing it (D22) | Phase 3, with the trial facility |
 | How a repetition's cause is attributed (D23) — from the detector alone, from the diff between one pass and the next, or from the reviewing actor's own stated finding — and what is admissible when two causes are equally plausible, given that a model inferring cause after the fact is exactly what the decision forbids | Phase 2, with the rework panel |
 | How long after a merge a revert or a follow-up fix still counts as an escape (D23) — `scripts/mine-merge-history.sh` uses 48 hours — and whether that window is the same for a repository merging once a week as for one merging hourly | Phase 2, with the rework panel |
+| The intake ladder (Autonomy pillar) — what the rungs are between human-written issues and a vision the pipeline decomposes itself, what evidence gates each, what the default is, and whether the Refiner's tier is bound to the Implementer's as the first rung (`refinement_policy` is unset fleet-wide today and `refiner_model` is optional, so a cheaper model can author the specification a dearer one follows). Landing has a ladder (D18); intake has rungs the product occupies without naming them | Phase 2, alongside the D18 climb on the Poetic fleet; no installation is offered a rung above human-authored intake before Phase 3 |
 | Multi-forge support — which forges beyond GitHub, in what order, and what the abstraction seam costs to retrofit. That the product gets one is not in question: a forge-abstraction layer, so an installation can point Pullwright at a forge other than GitHub, is intended (owner, 2026-08-29, agent-ops#942). **Which** forges it serves is deliberately not pre-decided and will follow user demand — GitLab, Bitbucket and Gitea name the category, not a shortlist, and no order among them is implied. Equally open is where the seam sits: the forge is reached today through `gh` invocations and GitHub-shaped concepts (issues, labels, pull requests, checks, merge queues, App installations) spread across the libraries, the stage prompts and the vendored skills, so the retrofit is a survey before it is a design | Post-MVP: revisit on design-partner demand from Phase 3, build no earlier than after the Phase 4 launch. Nothing before then waits on it |
 | SaaS infrastructure | Only if Phase 4 chooses SaaS |
 
