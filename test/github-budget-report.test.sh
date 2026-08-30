@@ -53,6 +53,8 @@ cat > "$log_b" <<'LOG'
 {"ts":"2026-08-30T07:04:40Z","cycle":"c9","node":"ockham-2","event":"guard-degraded","site":"contents","detail":"HTTP 404: Not Found"}
 {"ts":"2026-08-30T07:06:00Z","cycle":"c9","node":"ockham-2","event":"stand-down","reason":"GitHub API budget exhausted: core has 10 point(s) left","github_resource":"core","github_remaining":"10","resume_at":"2026-08-30T07:10:35Z"}
 {"ts":"2026-08-30T07:20:00Z","cycle":"c10","node":"ockham-2","event":"github-budget","phase":"stage","stage":"reviewer","readable":true,"core":{"limit":5000,"used":7,"remaining":4993,"reset":1788079835},"graphql":{"limit":5000,"used":1,"remaining":4999,"reset":1788079895},"since_previous":{"core":7,"graphql":1,"window_rolled":true}}
+{"ts":"2026-08-30T05:14:00Z","cycle":"c0","node":"ockham-2","event":"guard-degraded","site":"handoff","detail":"HTTP 403: API rate limit exceeded for user ID 2049303."}
+{"ts":"2026-08-30T05:14:30Z","cycle":"c0","node":"ockham-2","event":"guard-degraded","site":"sweep","detail":"HTTP 403: API rate limit exceeded for user ID 2049303."}
 LOG
 
 out="$("$REPORT" "$log_a" "$log_b")"
@@ -84,6 +86,15 @@ assert_eq "…and its one requirement-2.0 stand-down" \
   "1" "$(jq -r '.per_hour[] | select(.hour == "2026-08-30T07") | .budget_standdowns' <<<"$json")"
 assert_eq "the unreadable reading counts as a reading but contributes no figure" \
   "3" "$(jq -r '.per_hour[] | select(.hour == "2026-08-30T07") | .readings' <<<"$json")"
+
+# An hour that holds refusals but no reading at all (the pre-fix hours in a
+# real log) has null figures in the middle of its row. They must render as
+# dashes in place, never vanish and pull the refusal count leftwards under
+# "core peak used" — which is what the first live run printed.
+assert_eq "an hour with refusals and no readings keeps its columns aligned" \
+  "| 2026-08-30T05 | 0 | — | — | — | 2 | 0 |" "$(grep -F '| 2026-08-30T05 |' <<<"$out")"
+assert_eq "…and the JSON block carries nulls for those figures" \
+  "0 null null 2" "$(jq -r '.per_hour[] | select(.hour == "2026-08-30T05") | "\(.readings) \(.core_peak_used) \(.core_min_remaining) \(.refusals)"' <<<"$json")"
 
 # Per stage: the reviewer has two same-window readings (40 and 100) and one
 # rolled reading that must be left out; the implementer has one.

@@ -1125,6 +1125,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `scripts/github-budget-report.sh` rendered a null figure as an empty
+  tab-separated field, which `read -r` under a tab IFS collapses, so every
+  column after it shifted left — on the first live run an hour with
+  refusals but no readings printed its refusal count under "core peak
+  used". Nulls are now rendered as em dashes inside jq, before `@tsv`.
 - A `human-visibility` violation logged as "could not read the pull
   request's state — skipping its review-state checks" no longer survives
   forever once the underlying read starts working again (requirement 38e;
