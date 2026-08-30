@@ -6255,6 +6255,24 @@ implements.
    lands in `approver-post.err` in the cycle directory, the same "keep what
    GitHub actually said" discipline `techdebt_file_debt`'s own
    `tech-debt-file.err` already applies, and the `warning` names that file.
+
+   **A refusal that is specifically a GitHub REST rate-limit refusal is
+   classified and retried, not dropped on the first attempt (agent-ops#1082).**
+   `approver_post_or_warn` classifies what it just left in
+   `approver-post.err` via `github_limit_kind` (`lib/github-limit.sh` —
+   reused, not reclassified) and, only when the cause was rate-limiting,
+   tries the write once more through `github_limit_wait_plan`'s existing
+   wait/backoff (the same policy the `gh` wrapper's own single attempt
+   already applies, taken a second time here because that wrapper commits to
+   exactly one wait-and-retry per call and gives up silently once it does) —
+   `github_limit_primary_reset_epoch` answers the "when does this reset"
+   question a primary refusal needs for that wait the same way the wrapper's
+   own retry does. The `warning` this logs either way names the rate limit
+   distinguishably from a generic refusal, and whether a retry was actually
+   attempted, so an operator can tell "no human review reached this pull
+   request because the owner's shared REST budget was gone" from a genuine
+   fault — the same distinction requirement 38a's own review-request read
+   and the idle-nudge check's reviews read draw at their own call sites.
 8d. **The arming step (D18 WI-7, same design §5.1/§6/§7; agent-ops#410).**
    Immediately after `run_approver_stage` returns — never before, and gating
    nothing above it, the same placement 8b already establishes for the
@@ -12067,6 +12085,18 @@ implements.
     `pr-ready` event, on the same terms requirement 31b's own re-request
     failure is: the pull request is finished and visible, only a notification
     is missing.
+
+    The `requested_reviewers`/`requested_teams` read this candidate rule and
+    the POST's own re-check both depend on (`_handoff_pending_review_
+    targets`) tells a GitHub REST rate-limit refusal apart from any other
+    read failure at that one call site (agent-ops#1082): where
+    `github_limit_kind` (`lib/github-limit.sh`) — reused, not reclassified —
+    names the failure a rate-limit refusal, `ensure_human_reviewer` prints
+    `failed-rate-limited` in place of the bare `failed` above, and the
+    `pr-ready` warning names GitHub's rate limit as the cause instead of the
+    same generic wording a genuine failure gets. An operator reading the log
+    can then tell "no human was notified because the owner's shared REST
+    budget was gone" from a real fault, which a bare `failed` could not say.
 
 38b. **A Co-Ordinator-recorded block gated on a human decision is labelled
     `blocked` and by reason, not only by class.** Requirement 34e projects the
@@ -19402,7 +19432,12 @@ pull request, run the ones the change touches and any it could regress.
     reviews list warns twice for the same pull request, once from
     `ensure_human_reviewer`'s own candidate check and once from
     `_handoff_pr_approved`'s idle-nudge check, since each reads it
-    independently and neither may mask the other's failure. A pull request
+    independently and neither may mask the other's failure; and, where that
+    idle-nudge reviews read fails specifically on a GitHub REST rate-limit
+    refusal, its warning names the cause distinguishably — GitHub's `kind`
+    rate limit, read via `github_limit_kind` from one further diagnostic-only
+    read of the same endpoint — rather than the same generic detail a
+    non-rate-limit failure gets (agent-ops#1082). A pull request
     whose only legal candidate is its own author is a `warning` naming
     `enabler_assignee`, not silence — the one `skip` reason the sweep itself
     surfaces, read off requirement 38a's `skip\tno-candidate` detail, unlike a
@@ -19617,7 +19652,17 @@ pull request, run the ones the change touches and any it could regress.
     for that one invocation only, never leaking into a later call under the
     stub's own default identity; `approver_prior_refusal_bodies` returns the
     same login's `REQUEST_CHANGES` bodies oldest-first and nothing on an
-    unreadable list. `test/approver-wiring.test.sh` lifts `run_approver_stage`,
+    unreadable list. `approver_post_or_warn` itself (agent-ops#1082, against
+    the same `lib/github-limit.sh` sourced ahead of `lib/approver.sh` a real
+    caller always has): a write refused by a secondary rate limit is retried
+    once and reaches GitHub on the retry, `approver_last_post_ok` reporting
+    `1` and no warning logged at all; a write still refused by that same
+    limit after the retry logs a `warning`, with `approver_last_post_ok`
+    reporting `0`, naming the rate limit distinguishably from a generic
+    refusal and saying a retry was made; and a generic (non-rate-limit)
+    refusal is not retried at all — one POST attempt only — and keeps the
+    original, unchanged "GitHub refused the write" wording.
+    `test/approver-wiring.test.sh` lifts `run_approver_stage`,
     `approver_post_or_warn` and `approver_stage_complexity` verbatim out of
     `lib/approver.sh` and drives them with every GitHub call, model launch and
     log write stubbed: at `merge_autonomy: human` the stage posts no review,
