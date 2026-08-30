@@ -6,9 +6,10 @@
 # What matters here:
 #
 #   what rotates      dashboard.log, state-sync.log, doctor.log,
-#                     revert-rate.log, cron.log and review-cron.log, and only
-#                     once they cross the threshold — a log still under it is
-#                     left byte-identical.
+#                     revert-rate.log, cron.log, review-cron.log and
+#                     gh-shim/ledger.ndjson (requirement 2.0e), and only once
+#                     they cross the threshold — a log still under it is left
+#                     byte-identical.
 #   what never does   log.jsonl, review-log.jsonl and revert-rate.jsonl are
 #                     the fleet's memory (the union readers scan them whole);
 #                     no size, however large, may rotate them.
@@ -97,6 +98,18 @@ make_log "$d/cron.log" 2000
 run_rotate "$d" ROTATE_LOGS_RETAINED_BYTES=1000 ROTATE_LOGS_GENERATIONS=3
 assert_eq "the oversized log is renamed to .1" "2000" "$(stat -c%s "$d/cron.log.1" 2>/dev/null || stat -f%z "$d/cron.log.1")"
 assert_eq "the live file reappears immediately, empty" "0" "$(stat -c%s "$d/cron.log" 2>/dev/null || stat -f%z "$d/cron.log")"
+
+# --- the gh-shim ledger rotates too, nested path included (requirement 2.0e) -
+d="$(new_home ghshim)"
+mkdir -p "$d/gh-shim"
+make_log "$d/gh-shim/ledger.ndjson" 2000
+run_rotate "$d" ROTATE_LOGS_RETAINED_BYTES=1000 ROTATE_LOGS_GENERATIONS=3
+assert_eq "the oversized ledger is renamed to .1" "2000" "$(stat -c%s "$d/gh-shim/ledger.ndjson.1" 2>/dev/null || stat -f%z "$d/gh-shim/ledger.ndjson.1")"
+assert_eq "and the live file reappears immediately, empty" "0" "$(stat -c%s "$d/gh-shim/ledger.ndjson" 2>/dev/null || stat -f%z "$d/gh-shim/ledger.ndjson")"
+
+d="$(new_home ghshim_absent)"
+run_rotate "$d" ROTATE_LOGS_RETAINED_BYTES=1000 ROTATE_LOGS_GENERATIONS=3
+assert_eq "rotate-logs exits 0 when no node has ever used the shim" "0" "$?"
 
 # --- doctor.log rotates like every other diagnostic log (agent-ops#543) ----
 d="$(new_home doctor)"

@@ -432,6 +432,13 @@ cfg_json() { jq -c "$1" <<<"$DEFAULTED_CONFIG"; }
 
 state_dir="$(expand_home "$(cfg '.state_dir')")"
 workspace_root="$(expand_home "$(cfg '.workspace_root')")"
+# Exported, not merely a local, so every subprocess this cycle forks from
+# here on — a `scripts/gather-*`/`scripts/sweep-*` call and, crucially, each
+# `claude -p` stage — inherits it: the `gh` transport shim (requirement
+# 2.0e, agent-ops#1084) reads this to find state_dir/gh-shim/ from wherever
+# it is invoked, including a model-driven `gh …` call this process never sees
+# directly.
+export PW_GH_STATE_DIR="$state_dir"
 coordinator_model="$(resolve_model_id coordinator_model "$(cfg '.coordinator_model')")"
 implementer_model_default="$(resolve_model_id implementer_model_default "$(cfg '.implementer_model_default')")"
 implementer_model_trivial="$(resolve_model_id implementer_model_trivial "$(cfg '.implementer_model_trivial')")"

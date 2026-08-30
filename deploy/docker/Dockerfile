@@ -222,6 +222,18 @@ RUN mkdir -p /home/agent/.claude \
 
 COPY --chown=agent:agent . /app
 
+# The `gh` transport shim (requirement 2.0e, agent-ops#1084): a symlink ahead
+# of apt's own /usr/bin/gh on PATH, so every `gh` call this image ever makes —
+# this repository's own scripts and a model-driven stage's bare `gh …` alike —
+# resolves to it first. PW_GH_REAL_BIN names the binary it calls through to;
+# it must never be the shim's own path, which is why this points at the
+# apt-installed binary by its fixed location rather than by another PATH
+# search. scripts/gh-shim.sh needs no build step of its own — it is plain
+# bash — so this is a symlink to the copy already staged under /app, not a
+# second copy to keep in step.
+RUN ln -sf /app/scripts/gh-shim.sh /usr/local/bin/gh
+ENV PW_GH_REAL_BIN=/usr/bin/gh
+
 # The egress fence config (D24), parsed at build so a typo fails here, not on
 # a node. The conf reads its allowlist from /tmp/egress-allowlist, so stage
 # the baked list there exactly as egress-proxy-start.sh does at run time —

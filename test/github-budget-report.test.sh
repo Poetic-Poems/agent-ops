@@ -129,13 +129,39 @@ assert_eq "--since drops the earlier hour entirely" \
 
 # The fleet-shaped read: state_dir's own log plus each peer directory's copy.
 fleet="$tmp_dir/fleet"
-mkdir -p "$fleet/state" "$fleet/peers/ockham-2"
+mkdir -p "$fleet/state/gh-shim" "$fleet/peers/ockham-2/gh-shim"
 cp "$log_a" "$fleet/state/log.jsonl"
 cp "$log_b" "$fleet/peers/ockham-2/log.jsonl"
+# The shim's own per-call ledger (requirement 2.0e, agent-ops#1084), read the
+# same fleet-shaped way as log.jsonl: this node's two calls (a hit and a
+# miss) plus the peer's two (a stale serve and a bypass).
+cat > "$fleet/state/gh-shim/ledger.ndjson" <<'LEDGER'
+{"ts":"2026-08-30T06:33:05Z","method":"GET","path":"repos/o/r","status":200,"cache":"miss","resource":"core","used":10}
+{"ts":"2026-08-30T06:40:05Z","method":"GET","path":"repos/o/r","status":304,"cache":"hit","resource":"core","used":12}
+LEDGER
+cat > "$fleet/peers/ockham-2/gh-shim/ledger.ndjson" <<'LEDGER'
+{"ts":"2026-08-30T07:04:00Z","method":"GET","path":"repos/o/r2","status":403,"cache":"stale","resource":"core","used":4990}
+{"ts":"2026-08-30T07:05:00Z","method":"POST","path":"repos/o/r2/issues","status":0,"cache":"bypass","resource":null,"used":null}
+LEDGER
 # shellcheck disable=SC2016
 fleet_json="$("$REPORT" --state-dir "$fleet/state" --peers-dir "$fleet/peers" | sed -n '/^```json$/,/^```$/p' | sed '1d;$d')"
 assert_eq "the fleet read unions this node's log with its peers'" \
   "7" "$(jq -r '.readings' <<<"$fleet_json")"
+assert_eq "the shim ledger unions this node's calls with its peer's" \
+  "4" "$(jq -r '.shim.calls' <<<"$fleet_json")"
+assert_eq "…and sums each cache outcome across the fleet" \
+  "1 1 1 1" "$(jq -r '.shim | "\(.hit) \(.miss) \(.stale) \(.bypass)"' <<<"$fleet_json")"
+fleet_out="$("$REPORT" --state-dir "$fleet/state" --peers-dir "$fleet/peers")"
+# shellcheck disable=SC2016  # the fence is literal backticks, not an expansion
+assert_eq "the shim section is printed with its own heading" \
+  "yes" "$(if [[ "$fleet_out" == *'## `gh` transport shim (requirement 2.0e)'* ]]; then echo yes; else echo no; fi)"
+
+# Given explicit LOG.jsonl files there is no state_dir to find a ledger
+# beside, so the shim section reads as empty rather than erroring.
+# shellcheck disable=SC2016  # the fence is literal backticks, not an expansion
+explicit_json="$("$REPORT" "$log_a" "$log_b" | sed -n '/^```json$/,/^```$/p' | sed '1d;$d')"
+assert_eq "explicit log files read zero shim calls, not an error" \
+  "0" "$(jq -r '.shim.calls' <<<"$explicit_json")"
 
 # Nothing to report is said, not crashed on.
 empty="$tmp_dir/empty.jsonl"; : > "$empty"
