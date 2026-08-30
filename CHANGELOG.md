@@ -16,8 +16,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   not count against the primary rate limit; a primary-limit `403` or a
   `5xx`, with a fresh-enough cached body, is served last-known-good with a
   `PW_GH_CACHE=stale` marker; a successful write invalidates the cache
-  entries its own path feeds. Writes, `graphql`, `--input` and a caller
-  already reading its own headers are always passed through unmodified.
+  entries its own path feeds. Writes, `graphql`, `--input`, a caller
+  already reading its own headers, and a `--paginate`/`--slurp` read are
+  always passed through unmodified — the last of those because `-i` changes
+  the shape of the document `gh` prints for a paginated call rather than
+  merely prepending headers to it, though such a read is still stored and
+  still served last-known-good.
   Every call is ledgered (`state_dir/gh-shim/ledger.ndjson`) and a cacheable
   GET's ratelimit headers update a per-identity `budget.json`;
   `scripts/github-budget-report.sh` sums the ledger by cache outcome and

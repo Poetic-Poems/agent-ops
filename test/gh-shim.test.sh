@@ -87,8 +87,18 @@ gh_shim_classify api
 assert_eq "'api' with no endpoint is 'other'" "other" "$GH_SHIM_CLASS"
 
 gh_shim_classify api "repos/o/r/issues?state=open" --paginate
-assert_eq "--paginate is still 'read'" "read" "$GH_SHIM_CLASS"
+assert_eq "--paginate is its own class, never 'read'" "paginate" "$GH_SHIM_CLASS"
 assert_eq "…and is flagged" "1" "$GH_SHIM_HAS_PAGINATE"
+
+gh_shim_classify api "repos/o/r/issues" --paginate --slurp
+assert_eq "--slurp is 'paginate' too" "paginate" "$GH_SHIM_CLASS"
+assert_eq "…and is flagged separately from --paginate" "1" "$GH_SHIM_HAS_SLURP"
+
+gh_shim_classify api "repos/o/r/issues" --slurp
+assert_eq "…even on its own, without --paginate beside it" "paginate" "$GH_SHIM_CLASS"
+
+gh_shim_classify api repos/o/r/issues --paginate -X POST
+assert_eq "a paginated call that is somehow a write is still 'write'" "write" "$GH_SHIM_CLASS"
 
 # --- gh_shim_strip_query / gh_shim_parent_path ---
 
@@ -156,6 +166,31 @@ raw_file3="$tmp_dir/raw3"
 printf 'gh: Could not resolve host: api.github.com\n' > "$raw_file3"
 count3="$(gh_shim_split_blocks "$raw_file3" "$split_dir3")"
 assert_eq "output with no HTTP status line at all is zero blocks" "0" "$count3"
+
+# --- gh_shim_header_end_offset ---
+#
+# The body has to come back byte-exact — a CR inside it kept, and no newline
+# invented for a body that never ended with one. Reassembling it line by line
+# out of the split capture cannot do either.
+
+off_raw="$tmp_dir/off1"
+printf 'HTTP/2.0 200 OK\r\nEtag: "x"\r\n\r\n{"a":1}' > "$off_raw"
+off1="$(gh_shim_header_end_offset "$off_raw")"
+assert_eq "the body starts just past the header terminator" \
+  '{"a":1}' "$(tail -c "+$(( off1 + 1 ))" "$off_raw")"
+assert_eq "…and carries no newline the wire never sent" \
+  "7" "$(tail -c "+$(( off1 + 1 ))" "$off_raw" | wc -c | tr -d ' ')"
+
+off_raw2="$tmp_dir/off2"
+printf 'HTTP/2.0 200 OK\r\n\r\nfirst\r\nsecond\r\n' > "$off_raw2"
+off2="$(gh_shim_header_end_offset "$off_raw2")"
+assert_eq "a body's own CRs survive (a line-based reassembly would strip them)" \
+  "15" "$(tail -c "+$(( off2 + 1 ))" "$off_raw2" | wc -c | tr -d ' ')"
+
+off_raw3="$tmp_dir/off3"
+printf 'gh: Could not resolve host\n' > "$off_raw3"
+assert_eq "output with no header terminator at all offsets to 0" \
+  "0" "$(gh_shim_header_end_offset "$off_raw3")"
 
 # --- gh_shim_should_use_lkg ---
 
@@ -375,6 +410,68 @@ assert_eq "a caller already asking for -i gets the real binary's raw output back
   "yes" "$(grep -q '^HTTP/2.0 200' <<<"$outD4" && grep -qF '{"already":"headers"}' <<<"$outD4" && echo yes || echo no)"
 assert_eq "…and that call is never cached either" \
   "0" "$(find "$stD/gh-shim/http-cache" -name '*.json' 2>/dev/null | wc -l | tr -d ' ')"
+
+# --- "--paginate/--slurp reach the real binary with the caller's own argv" ---
+#
+# The regression this pins: adding `-i` to a paginated call does not merely
+# prepend headers, it changes the document `gh` prints — plain `--paginate`
+# stops merging its pages into one array, and `--slurp` puts its opening `[`
+# ahead of the first status line, which no status-line anchor can then split.
+# Either way the caller would be handed a differently-shaped answer than the
+# real binary's. So nothing may be added to one of these calls, and its
+# stdout must arrive byte for byte.
+
+stP="$tmp_dir/stateP"; pdP="$tmp_dir/planP"; mkdir -p "$stP" "$pdP"
+plan "$pdP" 1 200 '[{"id":1},{"id":2},{"id":3}]' 'eP' null 0
+outP1="$(run_shim "$stP" "$pdP" tokP api "repos/o/r/labels?per_page=1" --paginate)"; rcP1=$?
+assert_eq "a --paginate call's stdout reaches the caller exactly as the real binary printed it" \
+  '[{"id":1},{"id":2},{"id":3}]' "$outP1"
+assert_eq "…with exit 0" "0" "$rcP1"
+assert_eq "…and the real binary was never asked to include headers" \
+  "no" "$(tail -1 "$pdP/calls.log" | grep -qF -- '-i' && echo yes || echo no)"
+assert_eq "…nor sent a conditional header" \
+  "no" "$(tail -1 "$pdP/calls.log" | grep -qF 'If-None-Match' && echo yes || echo no)"
+assert_eq "…and it is ledgered as an ordinary miss, not a bypass" \
+  "miss" "$(tail -1 "$stP/gh-shim/ledger.ndjson" | jq -r '.cache')"
+
+# Property 2 still holds for a paginated read: the body stored above is what a
+# refusal is served from, even though the call itself was never conditioned.
+plan "$pdP" 2 403 '{"message":"API rate limit exceeded for user ID 9"}' '' null 1
+outP2="$(run_shim "$stP" "$pdP" tokP api "repos/o/r/labels?per_page=1" --paginate \
+  2>"$tmp_dir/pstalestderr")"; rcP2=$?
+assert_eq "a paginated read is still served last-known-good under a primary-limit refusal" \
+  '[{"id":1},{"id":2},{"id":3}]' "$outP2"
+assert_eq "…with the stale exit code" "0" "$rcP2"
+assert_eq "…and the stale marker on stderr" \
+  "yes" "$(grep -qE '^PW_GH_CACHE=stale age=[0-9]+s$' "$tmp_dir/pstalestderr" && echo yes || echo no)"
+
+plan "$pdP" 3 200 '[[{"id":1}]]' '' null 0
+outP3="$(run_shim "$stP" "$pdP" tokP api repos/o/r/labels --paginate --slurp)"
+assert_eq "a --slurp call reaches the caller unreshaped too" '[[{"id":1}]]' "$outP3"
+assert_eq "…and was never asked to include headers either" \
+  "no" "$(tail -1 "$pdP/calls.log" | grep -qF -- '-i' && echo yes || echo no)"
+
+# --- a read the shim cannot parse still hands the caller the real stdout ---
+#
+# Eating the real binary's stdout while still reporting its exit status is the
+# one failure mode a transport seam must never have: a caller reading only the
+# body would take the silence for an empty answer.
+
+unparseable_bin="$tmp_dir/unparseable"
+mkdir -p "$unparseable_bin"
+cat > "$unparseable_bin/gh" <<'UNPARSEABLE'
+#!/usr/bin/env bash
+printf 'not an HTTP response at all\n'
+printf 'gh: something went wrong\n' >&2
+exit 3
+UNPARSEABLE
+chmod +x "$unparseable_bin/gh"
+stU="$tmp_dir/stateU"; mkdir -p "$stU"
+outU="$(PW_GH_REAL_BIN="$unparseable_bin/gh" PW_GH_STATE_DIR="$stU" GH_TOKEN=tokU \
+  "$SCRIPT_DIR/scripts/gh-shim.sh" api repos/o/r 2>/dev/null)"; rcU=$?
+assert_eq "output the shim cannot split into responses is passed through, not dropped" \
+  "not an HTTP response at all" "$outU"
+assert_eq "…with the real binary's own exit status" "3" "$rcU"
 
 # --- "real binary reached with original args/status in other cases" ---
 

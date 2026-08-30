@@ -22,12 +22,17 @@
 # GET, no `-f`/`-F`/`--raw-field`/`--field`/`--input` (gh's own rule: any of
 # those switches the default method to POST), not the literal `graphql`
 # endpoint, and not a call that already asks for `-i`/`--include` itself — is
-# ever cached or conditioned. Everything else (`gh pr view`, `gh issue list`,
-# a write, the `graphql` endpoint of `gh api`, a caller already reading raw
-# headers) is passed
+# ever conditioned, and a `--paginate`/`--slurp` call not even that (see the
+# scope limit below; it is still stored and still ledgered). Everything else
+# (`gh pr view`, `gh issue list`, a write, the `graphql` endpoint of `gh api`,
+# a caller already reading raw headers) is passed
 # to the real binary completely unmodified: same argv, same stdout, same
 # stderr, same exit status. `gh_shim_classify` is the one place that decision
 # is made; see its own header for why each case is excluded.
+#
+# No pathway here ever reshapes what the real binary printed. A conditioned
+# read is the only one whose argv this file adds to at all, and what it hands
+# back on stdout is byte-for-byte the body a plain call would have printed.
 #
 # The already-asks-for-`-i` exclusion matters most for
 # `github_limit_snapshot`'s own probe (`command gh api -i "$GITHUB_LIMIT_PROBE_PATH"`,
@@ -71,19 +76,36 @@
 # semantic model of the API: it matches the one example agent-ops#1084 gives
 # and nothing more specific than "the write's own resource, and its parent".
 #
-# ## Known scope limit: `--paginate` (agent-ops#1114)
+# ## Known scope limit: `--paginate`/`--slurp` (agent-ops#1114)
 #
 # `gh api --paginate` fetches every page inside one real-binary invocation,
 # each with its own `ETag`. Conditioning the *first* page's request would be
 # unsound — a stale `If-None-Match` sent uniformly to every page could 304 a
-# page whose content actually changed — so a `--paginate` call is never sent
-# a conditional header at all: it always reaches the network in full. Its
-# response is still stored, so property 2 (last-known-good) still applies to
-# it; only property 1 (the 304 saving) does not. Per-page conditioning is
-# filed as tech debt rather than built here (agent-ops#1114) — it needs the
-# shim to drive pagination itself
-# rather than delegate it to the real binary in one call, which is a
-# materially larger change than the rest of this file.
+# page whose content actually changed — so a paginated call is never sent a
+# conditional header at all: it always reaches the network in full. Per-page
+# conditioning is filed as tech debt rather than built here (agent-ops#1114)
+# — it needs the shim to drive pagination itself rather than delegate it to
+# the real binary in one call, which is a materially larger change than the
+# rest of this file.
+#
+# It is also the one read shape this file must not add `-i` to, which is why
+# it has a pathway of its own (`gh_shim_handle_paginate`) rather than sharing
+# the cacheable-GET one. Adding `-i` does not merely prepend headers there —
+# it changes the document `gh` prints:
+#
+#   * plain `--paginate` *merges* a paginated array response into one JSON
+#     array; with `-i` it emits one complete array per page instead, so a
+#     caller reading `gh api --paginate <path>` would get N documents where
+#     the real binary gives it one;
+#   * `--slurp` prints its opening `[` *ahead of* the first status line
+#     (`[HTTP/2.0 200 OK`), so the response cannot be split on a status-line
+#     anchor at all.
+#
+# So a paginated call is handed to the real binary with the caller's own argv
+# untouched and its stdout passed through byte for byte. Its response is
+# still stored, so property 2 (last-known-good) still applies to it, and it is
+# still ledgered (property 3); only property 1 (the 304 saving) does not
+# apply. Nothing here is allowed to reshape what the real binary printed.
 #
 # ## Files under `state_dir/gh-shim/`
 #
@@ -208,6 +230,25 @@ gh_shim_header_value() {
   grep -i "^${name}:" "$file" 2>/dev/null | tail -1 | sed -E 's/^[^:]*:[ \t]*//' | tr -d '\r'
 }
 
+# gh_shim_header_end_offset RAW_FILE
+# The byte offset of the end of RAW_FILE's first header block — the first
+# empty line, a CR tolerated — so that `tail -c +<offset + 1>` is the response
+# body exactly as the wire carried it: every CR kept, no newline added to a
+# body that never ended with one. Prints 0 when RAW_FILE carries no header
+# terminator at all. Reassembling the body line by line out of
+# gh_shim_split_blocks' own capture cannot do this — `print` re-terminates
+# every line it writes, and the CR strip that makes the *headers* readable
+# would be applied to the body too. Pure (given the file).
+gh_shim_header_end_offset() {
+  LC_ALL=C awk '
+    { n += length($0) + 1
+      line = $0; sub(/\r$/, "", line)
+      if (line == "") { off = n; done = 1; exit }
+    }
+    END { print (done ? off : 0) }
+  ' "$1" 2>/dev/null || printf '0'
+}
+
 # gh_shim_split_blocks RAW_FILE OUT_DIR
 # Splits a `gh api -i` (or `-i --paginate`) capture into per-page blocks —
 # one HTTP response GitHub sent, per page — writing OUT_DIR/<n>.status (the
@@ -255,6 +296,7 @@ gh_shim_split_blocks() {
 #                         override — gh's own default-method rule
 #   GH_SHIM_HAS_INCLUDE   1 iff -i/--include is already in ARGS
 #   GH_SHIM_HAS_PAGINATE  1 iff -p/--paginate is already in ARGS
+#   GH_SHIM_HAS_SLURP     1 iff --slurp is already in ARGS
 # Not exhaustive against every `gh api` flag gh itself accepts (concatenated
 # short-flag values like `-XPOST` are not recognised, only `-X POST`/
 # `-X=POST`/`--method POST`/`--method=POST`) — every call site in this
@@ -267,9 +309,10 @@ GH_SHIM_ENDPOINT=""
 GH_SHIM_METHOD="GET"
 GH_SHIM_HAS_INCLUDE=0
 GH_SHIM_HAS_PAGINATE=0
+GH_SHIM_HAS_SLURP=0
 gh_shim_parse() {
   GH_SHIM_IS_API=0; GH_SHIM_ENDPOINT=""; GH_SHIM_METHOD="GET"
-  GH_SHIM_HAS_INCLUDE=0; GH_SHIM_HAS_PAGINATE=0
+  GH_SHIM_HAS_INCLUDE=0; GH_SHIM_HAS_PAGINATE=0; GH_SHIM_HAS_SLURP=0
   [[ "${1:-}" == "api" ]] || return 0
   GH_SHIM_IS_API=1
   shift
@@ -279,7 +322,8 @@ gh_shim_parse() {
     case "$a" in
       -i|--include) GH_SHIM_HAS_INCLUDE=1; shift ;;
       -p|--paginate) GH_SHIM_HAS_PAGINATE=1; shift ;;
-      --silent|--slurp|--verbose) shift ;;
+      --slurp) GH_SHIM_HAS_SLURP=1; shift ;;
+      --silent|--verbose) shift ;;
       -X=*|--method=*) explicit_method="${a#*=}"; shift ;;
       -X|--method) explicit_method="${2:-}"; shift 2 ;;
       --input=*) has_body_flag=1; shift ;;
@@ -307,7 +351,11 @@ gh_shim_parse() {
 # Sets GH_SHIM_CLASS (plus GH_SHIM_PARSE's own globals, via gh_shim_parse) to
 # one of:
 #   read     a plain `gh api` GET with a real endpoint — the only class this
-#            file ever caches or conditions
+#            file ever conditions
+#   paginate a `gh api` GET carrying --paginate/--slurp: stored and served
+#            last-known-good like a `read`, but never conditioned and never
+#            reshaped — see this file's header for why `-i` cannot be added
+#            to one
 #   write    a `gh api` call whose method resolved to non-GET
 #   graphql  the literal `graphql` endpoint of `gh api` — always POST, never
 #            conditional, per GitHub's own semantics
@@ -315,8 +363,9 @@ gh_shim_parse() {
 #            this file's header for why that always bypasses
 #   other    anything that is not `gh api` at all (`gh pr view`, `gh issue
 #            list`, …), or `gh api` with no endpoint this file could find
-# Every class but `read` is a pure, unmodified passthrough to the real
-# binary.
+# Every class but `read` reaches the real binary with the caller's own argv,
+# unmodified; every class but `read` and `paginate` has its stdout passed
+# straight through without this file ever reading it.
 GH_SHIM_CLASS="other"
 gh_shim_classify() {
   gh_shim_parse "$@"
@@ -325,6 +374,9 @@ gh_shim_classify() {
   if [[ -z "$GH_SHIM_ENDPOINT" ]]; then GH_SHIM_CLASS="other"; return 0; fi
   if [[ "$GH_SHIM_ENDPOINT" == "graphql" ]]; then GH_SHIM_CLASS="graphql"; return 0; fi
   if [[ "$GH_SHIM_METHOD" != "GET" ]]; then GH_SHIM_CLASS="write"; return 0; fi
+  if [[ "$GH_SHIM_HAS_PAGINATE" == 1 || "$GH_SHIM_HAS_SLURP" == 1 ]]; then
+    GH_SHIM_CLASS="paginate"; return 0
+  fi
   GH_SHIM_CLASS="read"
 }
 
@@ -474,11 +526,12 @@ gh_shim_serve_lkg() {
 }
 
 # gh_shim_handle_read STATE_DIR IDENTITY ARGS...
-# The cacheable-GET pathway: conditions the request on a stored ETag (unless
-# --paginate — see this file's header), always adds -i itself so it can read
-# the response, and never lets that addition reach the caller: what comes
-# back on stdout is exactly the body(ies) a plain `gh api` call without -i
-# would have printed.
+# The cacheable-GET pathway: conditions the request on a stored ETag, always
+# adds -i itself so it can read the response, and never lets that addition
+# reach the caller: what comes back on stdout is exactly the body a plain
+# `gh api` call without -i would have printed, byte for byte. A `--paginate`/
+# `--slurp` call never arrives here — `-i` reshapes those (see this file's
+# header), so gh_shim_handle_paginate takes them instead.
 gh_shim_handle_read() {
   local state_dir="$1" identity="$2"
   shift 2
@@ -490,7 +543,7 @@ gh_shim_handle_read() {
   [[ -n "$cache_json" ]] && etag="$(jq -r '.etag // empty' <<<"$cache_json" 2>/dev/null)"
 
   local -a call_args=("$@")
-  if [[ "$GH_SHIM_HAS_PAGINATE" != 1 && -n "$etag" ]]; then
+  if [[ -n "$etag" ]]; then
     call_args+=(-H "If-None-Match: $etag")
   fi
   call_args+=(-i)
@@ -510,6 +563,12 @@ gh_shim_handle_read() {
       rm -rf "$work"
       return "${PW_GH_STALE_EXIT_CODE:-0}"
     fi
+    # Whatever the real binary printed goes to the caller even here, where
+    # this file could not parse it: eating the real binary's stdout and still
+    # reporting its exit status is the one failure mode a transport seam must
+    # never have — a caller that checks only the body would read the silence
+    # as an empty answer rather than as the failure it is.
+    cat "$out"
     cat "$err" >&2
     gh_shim_ledger_line "$state_dir" GET "$path" "" miss "" ""
     rm -rf "$work"
@@ -529,11 +588,24 @@ gh_shim_handle_read() {
   first_hdr="$work/1.hdr"
   [[ -f "$first_hdr" ]] && new_etag="$(gh_shim_header_value "$first_hdr" etag)"
 
-  local bodyfile="$work/full-body" i
+  local bodyfile="$work/full-body" i off
   : > "$bodyfile"
-  for (( i = 1; i <= blocks; i++ )); do
-    [[ -f "$work/$i.body" ]] && cat "$work/$i.body" >> "$bodyfile"
-  done
+  if [[ "$blocks" -eq 1 ]]; then
+    # The ordinary case, and the only one a non-paginated call can produce:
+    # take the body byte-exactly, from just past the header terminator.
+    off="$(gh_shim_header_end_offset "$out")"
+    if [[ "$off" =~ ^[0-9]+$ ]] && (( off > 0 )); then
+      tail -c "+$(( off + 1 ))" "$out" > "$bodyfile" 2>/dev/null || : > "$bodyfile"
+    fi
+  else
+    # Belt and braces: no call reaching this function should answer in more
+    # than one block, since `--paginate` is handled elsewhere. Reassembling
+    # from the split capture is line-based rather than byte-exact, which is
+    # why it is the fallback and not the rule.
+    for (( i = 1; i <= blocks; i++ )); do
+      [[ -f "$work/$i.body" ]] && cat "$work/$i.body" >> "$bodyfile"
+    done
+  fi
 
   if [[ "$blocks" -eq 1 && "$last_status" == "304" && -n "$cache_json" ]]; then
     jq -j '.body' <<<"$cache_json" 2>/dev/null
@@ -565,6 +637,57 @@ gh_shim_handle_read() {
   cat "$err" >&2
   gh_shim_ledger_line "$state_dir" GET "$path" "$last_status" miss "$resource" "$used"
   gh_shim_budget_update "$state_dir" "$identity" "$resjson"
+  rm -rf "$work"
+  return "$rc"
+}
+
+# gh_shim_handle_paginate STATE_DIR IDENTITY ARGS...
+# The `--paginate`/`--slurp` pathway. The real binary is called with the
+# caller's own argv, untouched — no `If-None-Match`, and above all no `-i`,
+# which would change the shape of the document `gh` prints rather than merely
+# prepend headers to it (this file's header sets out both shapes) — and its
+# stdout is passed through byte for byte. Property 1 (the 304 saving) is
+# therefore not available here, and is agent-ops#1114's; properties 2
+# (last-known-good, from the body stored on a successful call) and 3 (the
+# ledger) are, and are what this pathway exists to keep.
+gh_shim_handle_paginate() {
+  local state_dir="$1" identity="$2"
+  shift 2
+  local real path key cache_json
+  real="$(gh_shim_real_bin)"
+  path="$(gh_shim_strip_query "$GH_SHIM_ENDPOINT")"
+  key="$(gh_shim_cache_key "$identity" "$@")"
+  cache_json="$(gh_shim_cache_read "$state_dir" "$key")"
+
+  local work out err
+  work="$(mktemp -d 2>/dev/null)" || { "$real" "$@"; return $?; }
+  out="$work/out"; err="$work/err"
+  "$real" "$@" >"$out" 2>"$err"
+  local rc=$?
+  local now; now="$(date -u +%s)"
+
+  # No status line is ever read here — the response was never asked to carry
+  # one — so the ledger records this call's outcome by exit status, and the
+  # budget file is left to the conditional reads that do see headers.
+  if (( rc == 0 )); then
+    gh_shim_cache_write "$state_dir" "$key" "$identity" "$path" "" "$out" "$now"
+    cat "$out"
+    cat "$err" >&2
+    gh_shim_ledger_line "$state_dir" GET "$path" "" miss "" ""
+    rm -rf "$work"
+    return 0
+  fi
+
+  if gh_shim_serve_lkg "$state_dir" "$cache_json" "$now" "" \
+       "$(cat "$err" 2>/dev/null; printf ' '; cat "$out" 2>/dev/null)"; then
+    gh_shim_ledger_line "$state_dir" GET "$path" "" stale "" ""
+    rm -rf "$work"
+    return "${PW_GH_STALE_EXIT_CODE:-0}"
+  fi
+
+  cat "$out"
+  cat "$err" >&2
+  gh_shim_ledger_line "$state_dir" GET "$path" "" miss "" ""
   rm -rf "$work"
   return "$rc"
 }
@@ -620,7 +743,8 @@ gh_shim_main() {
   fi
 
   case "$GH_SHIM_CLASS" in
-    read) gh_shim_handle_read "$state_dir" "$identity" "$@" ;;
-    *)    gh_shim_run_bypass "$state_dir" "$identity" "$@" ;;
+    read)     gh_shim_handle_read "$state_dir" "$identity" "$@" ;;
+    paginate) gh_shim_handle_paginate "$state_dir" "$identity" "$@" ;;
+    *)        gh_shim_run_bypass "$state_dir" "$identity" "$@" ;;
   esac
 }

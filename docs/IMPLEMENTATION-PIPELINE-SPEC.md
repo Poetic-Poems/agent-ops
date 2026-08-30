@@ -1944,13 +1944,29 @@ implements.
       entire job is reading the bucket's *live* headers, so it must never be
       answered from a cache or a stale reading. Every one of those is passed
       to the real binary completely unmodified: same argv, same stdout, same
-      stderr, same exit status. `--paginate` is a partial exception,
-      documented as an open scope limit in `lib/gh-shim.sh`'s own header and
-      filed as tech debt (agent-ops#1114) rather than built here: its
-      response is still stored for last-known-good, but never sent a
-      conditional header, since one `If-None-Match` applied uniformly to
-      every page a `--paginate` call fetches could 304 a later page whose
-      content actually changed.
+      stderr, same exit status. A `--paginate`/`--slurp` GET is a partial
+      exception, documented as an open scope limit in `lib/gh-shim.sh`'s own
+      header and filed as tech debt (agent-ops#1114) rather than built here:
+      its response is still stored for last-known-good and still ledgered,
+      but it is never sent a conditional header — one `If-None-Match` applied
+      uniformly to every page a `--paginate` call fetches could 304 a later
+      page whose content actually changed — and, unlike an ordinary
+      cacheable read, it is never sent `-i` either, because `-i` does not
+      merely prepend headers to a paginated call: plain `--paginate` stops
+      merging its pages into one JSON array, and `--slurp` prints its opening
+      `[` ahead of the first status line. Either would hand the caller a
+      differently-shaped document than the real binary gives it, so a
+      paginated call reaches the real binary with the caller's own argv and
+      has its stdout passed through byte for byte.
+
+      No pathway ever reshapes what the real binary printed. A conditioned
+      read is the only call whose argv the shim adds to at all; what it
+      returns on stdout is byte-for-byte the body a plain call would have
+      printed — the response body taken from past the header terminator by
+      byte offset, never reassembled line by line, so a body carrying CRs or
+      ending without a newline round-trips unchanged. Output the shim cannot
+      parse into responses at all is passed through rather than dropped,
+      with the real binary's own exit status.
 
       A cacheable GET is retried with the stored `ETag` as `If-None-Match`;
       a `304` is served from the cache with exit 0. A primary rate-limit
@@ -16523,15 +16539,22 @@ What exists, and the requirements each part answers to:
     other function lives in the library and is unit-tested by sourcing it
     directly. `gh_shim_classify` (built on `gh_shim_parse`) is the one place
     a call is sorted into `read` (a plain `gh api` GET — the only class ever
-    cached or conditioned), `write` (method resolves non-GET), `graphql`
+    conditioned), `paginate` (a `gh api` GET carrying `--paginate`/`--slurp`
+    — stored and served last-known-good like a `read`, but never conditioned
+    and never reshaped), `write` (method resolves non-GET), `graphql`
     (the literal `graphql` endpoint), `include` (the caller already asks for
     `-i`/`--include`) or `other` (not `gh api` at all, or `gh api` with no
-    endpoint found) — every class but `read` a pure, unmodified passthrough.
-    `gh_shim_handle_read` conditions a cacheable GET on a stored `ETag`
-    (skipped for `--paginate`, see requirement 2.0e's own scope-limit note),
+    endpoint found) — every class but `read` reaching the real binary with
+    the caller's own argv, and every class but `read` and `paginate` having
+    its stdout passed straight through unread.
+    `gh_shim_handle_read` conditions a cacheable GET on a stored `ETag`,
     always adds `-i` itself and always strips it back out of what the caller
-    sees; `gh_shim_split_blocks` parses one or many (`--paginate`) HTTP
-    response blocks from that capture; `gh_shim_should_use_lkg` and
+    sees, taking the body by byte offset from past the header terminator
+    (`gh_shim_header_end_offset`) so it is returned exactly as the wire
+    carried it; `gh_shim_handle_paginate` is the pathway that adds nothing at
+    all, for the calls `-i` would reshape (see requirement 2.0e's own
+    scope-limit note); `gh_shim_split_blocks` parses the HTTP
+    response block from that capture; `gh_shim_should_use_lkg` and
     `gh_shim_serve_lkg` decide and perform a last-known-good serve, reusing
     `lib/github-limit.sh`'s own `github_limit_kind` so a refusal can never be
     recognised two different ways in this repository; `gh_shim_cache_read`/
@@ -17559,13 +17582,19 @@ pull request, run the ones the change touches and any it could regress.
    (requirement 2.0e, agent-ops#1084).** `test/gh-shim.test.sh` passes, both
    the pure functions (sourced directly) and the shim end to end against a
    stub "real gh" binary answering from a per-call JSON plan:
-   `gh_shim_classify` sorts a plain GET as `read`, an explicit or
-   body-flag-implied non-GET method as `write`, the literal `graphql`
+   `gh_shim_classify` sorts a plain GET as `read`, a GET carrying
+   `--paginate` or `--slurp` (either alone, or both together) as `paginate`,
+   an explicit or
+   body-flag-implied non-GET method as `write` — even carrying `--paginate` —
+   the literal `graphql`
    endpoint and a caller already carrying `-i`/`--include` each as their own
    class, and anything that is not `gh api` at all (or has no endpoint) as
    `other`; `gh_shim_split_blocks` parses a single response and a
-   `--paginate`-shaped multi-page capture alike, and zero blocks from output
-   with no HTTP status line in it at all; `gh_shim_should_use_lkg` accepts a
+   multi-page capture alike, and zero blocks from output
+   with no HTTP status line in it at all; `gh_shim_header_end_offset` finds
+   the body's own first byte, so a body carrying CRs or ending without a
+   newline is returned exactly as the wire carried it, and offsets to 0 for
+   output with no header terminator at all; `gh_shim_should_use_lkg` accepts a
    primary rate-limit refusal and a bare `5xx` but never a secondary limit or
    an ordinary error status; a cache entry's body and metadata round-trip
    exactly, embedded newlines included; and `gh_shim_cache_invalidate` drops
@@ -17579,7 +17608,14 @@ pull request, run the ones the change touches and any it could regress.
    `PW_GH_STALE_CEILING_SECONDS`; a successful write invalidates the reads it
    feeds and is itself never conditioned; a `POST`, `graphql`, `--input` and
    a caller's own `-i` each reach the real binary with unmodified argv and
-   return its output unmodified, none of them ever cached; a non-`api`
+   return its output unmodified, none of them ever cached; a `--paginate`
+   call and a `--slurp` call each reach the real binary carrying neither `-i`
+   nor a conditional header and return its stdout unreshaped, are ledgered as
+   an ordinary read rather than a bypass, and are still served
+   last-known-good under a primary-limit refusal from the body a previous
+   call stored; output the shim cannot split into responses at all is passed
+   through to the caller with the real binary's own exit status rather than
+   dropped; a non-`api`
    subcommand's output and exit status (success and failure alike) pass
    through unmodified; and `PW_GH_NO_CACHE=1` forces the same unmodified
    passthrough for an otherwise-cacheable read, still ledgered as `bypass`.
