@@ -3436,7 +3436,7 @@ implements.
    and naming every offending slug, the same guard as
    `implementation_plan_path` (requirement 3k).
 3a. **Findings pre-fetch (cost control).** For each configured repo whose
-   `sources` include `security` or `code-quality`, run
+   `sources` include `security` or `code-quality` (requirement 48: freshly for the one repository this cycle picks, replayed from this node's expensive-gather cache for the rest), run
    `scripts/gather-findings.sh <repo-slug>` — a deterministic script that uses
    `gh api` to pull the repo's open Dependabot alerts and open code-scanning
    alerts, normalises each into a compact finding (`source` of `security` or
@@ -3448,7 +3448,7 @@ implements.
    `findings`. Doing this in the Script — not in the Co-Ordinator — spends no
    model tokens on paginating and digesting those verbose APIs.
 3c. **Review-feedback pre-fetch (requirement 3c).** For each configured repo
-   whose `sources` include `review-feedback`, run
+   whose `sources` include `review-feedback` (requirement 48: freshly for the one repository this cycle picks, replayed from this node's expensive-gather cache for the rest), run
    `scripts/gather-review-feedback.sh <slug> <pr_label> <branch_prefix>
    <tech_debt_branch_prefix>` and
    attach the array to that repo's entry as `review_feedback`. It prints the
@@ -3569,7 +3569,7 @@ implements.
      (`lib/handoff.sh`) and `_sweep_round_answered`
      (`scripts/sweep-human-visibility.sh`) already use
      (tech-debt/TD-PPagop-26081306.md).
-3e. **Abandoned-drafts pre-fetch.** For each configured repo, run
+3e. **Abandoned-drafts pre-fetch.** For each configured repo (requirement 48: freshly for the one repository this cycle picks, replayed from this node's expensive-gather cache for the rest), run
    `scripts/gather-abandoned-drafts.sh <slug>
    <pr_label> <branch_prefix> <abandoned_draft_after_hours>
    <tech_debt_branch_prefix>` and attach the array
@@ -3680,7 +3680,7 @@ implements.
      rather than treated as maximally stale: the dangerous direction is stealing
      live work, not leaving a stalled draft one more cycle. `shellcheck`-clean.
 3g. **Merge-conflicts pre-fetch.** For each configured repo whose `sources`
-   include `merge-conflicts`, run `scripts/gather-merge-conflicts.sh <slug>
+   include `merge-conflicts` (requirement 48: freshly for the one repository this cycle picks, replayed from this node's expensive-gather cache for the rest), run `scripts/gather-merge-conflicts.sh <slug>
    <pr_label> <branch_prefix> <tech_debt_branch_prefix>` and attach the array
    to that repo's entry as
    `merge_conflicts`. It prints the PRs *this system raised that are otherwise
@@ -3860,7 +3860,7 @@ implements.
    (poetic-fiddle #129) is a candidate in the same `merge_conflicts` array
    every other conflicted PR is.
 3z. **Dequeued-PR pre-fetch (TD-PPagop-26081409, issue #374).** For each
-   configured repo whose `sources` include `dequeued`, run
+   configured repo whose `sources` include `dequeued` (requirement 48: freshly for the one repository this cycle picks, replayed from this node's expensive-gather cache for the rest), run
    `scripts/gather-dequeued.sh <slug> <pr_label> <branch_prefix>
    <tech_debt_branch_prefix>` and attach the
    array to that repo's entry as `dequeued`. It prints the PRs *this system
@@ -3979,7 +3979,7 @@ implements.
    - Fails safe to `[]` (exit 0), with the same stderr discipline as
      requirement 3g. `shellcheck`-clean.
 3i. **Register-hygiene pre-fetch.** For each configured repo whose `sources`
-   include `register-hygiene`, run `scripts/gather-register-hygiene.sh <slug>
+   include `register-hygiene` (requirement 48: freshly for the one repository this cycle picks, replayed from this node's expensive-gather cache for the rest), run `scripts/gather-register-hygiene.sh <slug>
    <default_branch>` and attach the array to that repo's entry as
    `register_hygiene`. One root-tree listing read
    (`gh api repos/<slug>/git/trees/<default_branch>`) gives both the
@@ -4039,7 +4039,7 @@ implements.
      and only the failure prints to stderr. `shellcheck`-clean.
 3j. **Issues pre-fetch.** For each configured repo whose `sources` include any
    `issues:<band>` entry (one source at four ranks — any band warrants the one
-   fetch), run `scripts/gather-issues.sh <slug>`, which prints
+   fetch) (requirement 48: freshly for the one repository this cycle picks, replayed from this node's expensive-gather cache for the rest), run `scripts/gather-issues.sh <slug>`, which prints
    `{"candidates": […], "excluded": […]|null}`, and attach `.candidates` to
    that repo's entry as `issues` and `.excluded` as `issues_excluded` — or
    `[]` when `.excluded` is `null` (the gather did not run to completion; see
@@ -4257,7 +4257,9 @@ implements.
 3t. **Tech-debt pre-fetch, and deterministic blocked/void exclusion (issue
    #310; the store moved from the in-repo register to labelled issues by D15
    as revised, #869/#875).** For each configured repo whose `sources` include
-   `tech-debt`, run `scripts/gather-tech-debt.sh <slug>` and attach the array
+   `tech-debt` (requirement 48: freshly for the one repository this cycle
+   picks, replayed from this node's expensive-gather cache for the rest),
+   run `scripts/gather-tech-debt.sh <slug>` and attach the array
    to that repo's entry as `tech_debt`. Each entry is one candidate: an open
    GitHub issue carrying the product-managed label `pw::type:tech-debt` — the
    D24 trust anchor, since only a collaborator with triage can apply it, so an
@@ -10569,7 +10571,15 @@ implements.
       Co-Ordinator and never earns an `attempt-failed`: the dependency holds
       it before the pipeline's own notion of "blocked" is ever written, at
       zero cost beyond the one `gh` read per reference the candidate would
-      otherwise have spent a full evaluation on anyway.
+      otherwise have spent a full evaluation on anyway. That holding is as
+      recent as the band it filtered: requirement 48 runs this gatherer for
+      one repository per cycle per node, so a dependency (or an assignment,
+      or a `blocked` label) that a repository's thread gained *after* its
+      last turn does not hold its candidate out of that node's digest until
+      the repository's next turn comes round. agent-ops#1095 carries the
+      close — re-applying 3j's drops to a replayed band from
+      `gather_source_state`'s own already-sampled labels and assignee, which
+      costs no further GitHub read.
     - **Releasing.** Against the *open* blocked set (34h), in the same
       pre-extract window as 34f, 34g and 34i, the Script reshapes this
       cycle's own freshly gathered `issues` candidates to a `repo → item →
@@ -10582,7 +10592,12 @@ implements.
       *any* reason — a reference still open, an assignment, the `blocked`
       label, or simply a repo this cycle did not walk — is absent from the
       map and decides nothing, the same "unknown is never gone" rule
-      requirement 34i's clearances observe. Logged `unblocked` with
+      requirement 34i's clearances observe. A repository whose `issues` band
+      requirement 48 replayed from this node's expensive-gather cache rather
+      than reading fresh counts as one this cycle did not walk, and is
+      narrowed out of the map before the reshape: its band carries the
+      holding check's verdict from whenever its own last turn was, which is
+      not the proof this release reads. Logged `unblocked` with
       `by: "dependency-resolved"` and a `detail` naming the reference(s)
       that resolved.
 
@@ -13690,6 +13705,20 @@ with the Reviewer's own.
     written (`lib/candidate-gather.sh`'s own `.ok`-marker convention,
     TD-PPagop-26081303) — the existing safe default, unchanged by this
     requirement.
+
+    Two mechanisms whose whole guarantee is *this cycle's own live read* are
+    narrowed rather than fed a replayed band. Requirement 34j's release reads
+    a map built only from the repositories this cycle actually gathered — a
+    non-fresh repository's `issues` band proves what its own last turn found,
+    not what is true now, and `dependency_clearances`' own rule already says
+    an item this cycle's candidates do not carry decides nothing and stays
+    blocked. Requirement 34j's *holding* half, and with it requirement 16.4's
+    deterministic assigned/`blocked`-label drops (requirement 3j), are as
+    recent as the band they filtered and are not re-applied to a replayed
+    one: an issue assigned or labelled after its repository's last turn stays
+    a candidate in that node's digest until its next turn. agent-ops#1095
+    carries the close, from `gather_source_state`'s own already-sampled
+    labels and assignee, which costs no further GitHub read.
 
 ## Components
 

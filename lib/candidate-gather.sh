@@ -796,8 +796,21 @@ fi
 # repo above, so no second `gh` read is spent deciding it: an already-blocked
 # issue reappearing there this cycle is itself gather-issues.sh's live proof
 # that every reference it named is now closed.
+#
+# Requirement 48 (agent-ops#1086) is why the reshape starts by narrowing to
+# the repos this cycle actually read: that live proof is the whole mechanism
+# here, and a repo whose `issues` band was replayed from this node's
+# expensive-gather cache carries proof from whenever its last turn was, not
+# from this cycle. `dependency_clearances`' own rule already names the right
+# answer for the rest — an item this cycle's candidates do not carry, "simply
+# not walked this cycle", decides nothing and stays blocked — so a non-fresh
+# repo's dependency clearances wait for its own turn rather than being made
+# on stale proof. An entry with no `expensive_gather` stamp at all (a caller
+# that predates the field, every test that builds the array by hand) reads as
+# fresh, exactly as it did before this narrowing existed.
 issues_by_repo_json="$(jq -c '
-  map({key: .slug,
+  map(select((.expensive_gather // null) == null or (.expensive_gather.fresh == true)))
+  | map({key: .slug,
        value: ((.issues // [])
                | map({key: (.number | tostring),
                       value: {body: (.body // ""), comments: (.comments // [])}})

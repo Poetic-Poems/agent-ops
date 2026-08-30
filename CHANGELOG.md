@@ -18,7 +18,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   exclusion and `sources` gating re-applied fresh) instead of paying another
   full GitHub read. Every repository entry gains `expensive_gather: {fresh,
   gathered_at}`; `prompts/coordinator.md` requires a live re-check before
-  selecting from a non-fresh entry. Cheap fleet-wide probes (repo ordering,
+  selecting from a non-fresh entry, and requirement 34j's dependency release
+  reads only the repositories this cycle actually gathered, so no block is
+  cleared on a replayed band's stale proof. Cheap fleet-wide probes (repo ordering,
   `gather_source_state`, label-ensure, unvoid/hand-flagged-refinement scans)
   are unaffected and still run for every configured repository every cycle.
   `scripts/github-budget-report.sh` gains a `per_cycle` breakdown (core/
