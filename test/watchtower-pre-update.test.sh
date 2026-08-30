@@ -288,8 +288,15 @@ assert_eq "and a service, defaulting to unknown when AGENT_OPS_SERVICE is unset"
   "$(jq -r '.service' "$state_dir/updater-ledger/ledger-host.jsonl")"
 assert_eq "and this invocation's own PID 1 start time, readable inside any Linux container" "true" \
   "$(jq -r '.started | type == "number"' "$state_dir/updater-ledger/ledger-host.jsonl")"
-assert_eq "matching what this same shell reads from /proc/1 directly (agent-ops#1072)" "1" \
-  "$(jq -r --argjson want "$(stat -c %Y /proc/1)" '(.started == $want) | if . then 1 else 0 end' \
+# Read independently of the hook, and deliberately not as `stat -c %Y /proc/1`:
+# that is the procfs inode's own instantiation time, not PID 1's start, and it
+# moves when the dentry is reclaimed — so an identity built on it can change
+# under a single container. Field 22 of /proc/1/stat is fixed for the life of
+# the process. Split after the last `") "` because field 2 is the executable's
+# name in parentheses and may contain spaces of its own.
+assert_eq "matching what this same shell reads from /proc/1/stat directly (agent-ops#1072)" "1" \
+  "$(jq -r --argjson want "$(awk '{ sub(/^.*\) /, ""); print $20 }' /proc/1/stat)" \
+      '(.started == $want) | if . then 1 else 0 end' \
       "$state_dir/updater-ledger/ledger-host.jsonl")"
 
 start_sleeper

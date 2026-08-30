@@ -277,11 +277,12 @@ assert_eq "with the count of differing lines" "2" \
 # recent enough to stay live *and* a first allow old enough to be stuck,
 # the same shape a container watchtower is still polling actually writes.
 # Both entries also carry `started` (agent-ops#1072), matching this test
-# process's own `/proc/1` — `updater_status` inside the pushed subshell reads
-# the same value back (no sixth argument passed here, exactly as
+# process's own reading of PID 1's start time (field 22 of /proc/1/stat, the
+# same field the hook stamps) — `updater_status` inside the pushed subshell
+# reads the same value back (no sixth argument passed here, exactly as
 # state-sync.sh's own call site never passes one), so the fixture is read as
 # genuinely this container's own unbroken run, never a foreign generation's.
-own_started="$(stat -c %Y /proc/1)"
+own_started="$(awk '{ sub(/^.*\) /, ""); print $20 }' /proc/1/stat)"
 mkdir -p "$state/updater-ledger"
 {
   printf '{"ts":"%s","verdict":"allow","started":%s}\n' \

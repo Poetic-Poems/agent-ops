@@ -2857,12 +2857,24 @@ implements.
    *generation*: watchtower clones `Config.Hostname` forward when it
    recreates a container (agent-ops#1072), so a roll's replacement inherits
    its predecessor's hostname and keeps appending to the very same file. Each
-   line therefore also carries `started` — the epoch seconds the *writing*
-   container's own PID 1 has been running since (`stat -c %Y /proc/1`;
-   `/proc/uptime` is the host's uptime under Docker, not the container's, and
-   is not usable), `null` when unreadable — the one field two lines in the
+   line therefore also carries `started` — the *writing* container's own PID 1
+   start time, in clock ticks since the host booted (field 22 of
+   `/proc/1/stat`), `null` when unreadable — the one field two lines in the
    same file can disagree on across a roll, and so the only thing that can
-   answer "did the container reading this line write it?" Each line also
+   answer "did the container reading this line write it?" The hook and
+   `updater_status` must read it identically, and from that field
+   specifically: `/proc/uptime` is the *host's* uptime under Docker, not the
+   container's, so it reads the same in every generation; and `stat -c %Y
+   /proc/1` is the procfs inode's mtime, which the kernel sets when that inode
+   is instantiated — the first lookup after a cache miss — rather than at
+   process start, so it is a property of access history and moves whenever the
+   dentry is reclaimed (measured on poetic-1, 2026-08-30: it read 2h25m later
+   than PID 1's real start). An identity that can change under one container
+   fails one way only — the reader stops recognising entries it wrote itself
+   and reads `rolled` — silently retiring the `stuck` alarm this ledger
+   exists to raise. Field 22 is fixed for the life of the process and
+   strictly ordered across generations, a replacement always starting after
+   what it replaced. Each line also
    carries `service` — the compose service name (`AGENT_OPS_SERVICE`:
    `scheduler`, `dashboard` or `dashboard-local`, `"unknown"` if unset) the
    writing container ran as. This field has a live limitation

@@ -1066,7 +1066,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   very same ledger file — measured across the fleet on 2026-08-30, no
   scheduler's `$HOSTNAME` names its own container id. `deploy/docker/
   watchtower-pre-update.sh`'s `record_verdict` now stamps each ledger line
-  with the writing container's own PID 1 start time (`started`, best-effort);
+  with the writing container's own PID 1 start time (`started`, best-effort —
+  field 22 of `/proc/1/stat`, in clock ticks since the host booted, which is
+  fixed for the life of the process, unlike `stat -c %Y /proc/1`, whose
+  procfs inode mtime records when that inode was last instantiated);
   `updater_status` reports `reason: "allow"` only when a container's own
   reading of that value matches the ledger's trailing entry, reads a
   mismatch as `rolled` instead, and the `allow` streak scan itself stops at

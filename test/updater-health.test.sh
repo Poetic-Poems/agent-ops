@@ -310,8 +310,8 @@ assert_eq "a legacy allow streak with no start-time field never reads stuck" "nu
 rm -f "$ledger/host-b.jsonl"
 
 # And the same holds when this container cannot establish its own identity
-# either — `_updater_health_own_started` failing, as `stat` can when
-# `/proc/1` is unreadable — modelled by shadowing it for one call.
+# either — `_updater_health_own_started` failing, as it does when
+# `/proc/1/stat` is unreadable — modelled by shadowing it for one call.
 entry "$(ago '10 seconds')" allow "svc" "$OWN_STARTED" > "$ledger/host-b.jsonl"
 _updater_health_own_started() { :; }
 assert_eq "an own identity this container cannot establish never asserts stuck either" "null" \

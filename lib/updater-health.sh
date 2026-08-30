@@ -24,11 +24,13 @@
 # the same service from the next: watchtower clones `Config.Hostname` forward
 # when it recreates a container (agent-ops#1072), so a roll's replacement
 # inherits its predecessor's hostname and keeps appending to the very same
-# file. Each line therefore also carries `started` — the epoch seconds the
-# *writing* container's own PID 1 has been running since (`stat -c %Y
-# /proc/1`), `null` when unreadable — the one field two lines in the same
-# file can disagree on across a roll, and so the only thing that can answer
-# "did the container reading this line write it?" Each line also carries
+# file. Each line therefore also carries `started` — the *writing*
+# container's own PID 1 start time, in clock ticks since the host booted
+# (field 22 of `/proc/1/stat`; see `_updater_health_own_started` below for
+# why neither `/proc/uptime` nor `stat -c %Y /proc/1` can serve), `null` when
+# unreadable — the one field two lines in the same file can disagree on
+# across a roll, and so the only thing that can answer "did the container
+# reading this line write it?" Each line also carries
 # `service` — the compose service name (`AGENT_OPS_SERVICE`: `scheduler`,
 # `dashboard` or `dashboard-local`) the writing container ran as, `"unknown"`
 # when unset. `updater_status` reads that ledger back and answers one of:
@@ -166,18 +168,37 @@ _updater_health_live() {
   (( now_epoch - epoch <= stuck_after ))
 }
 
-# _updater_health_own_started — epoch seconds this container's own PID 1 has
-# been running since, or nothing if unreadable. Same source
-# `deploy/docker/watchtower-pre-update.sh`'s `record_verdict` stamps into
-# each ledger line it writes (`stat -c %Y /proc/1`) — this file runs inside
-# the very same container whose ledger it reads back (state-sync.sh's and
-# publish-dashboard.sh's own heartbeat pushes), so asking the question the
-# same way is what makes the two comparable at all. `/proc/uptime` is
-# deliberately not used: under Docker it reports the *host's* uptime, not
-# this container's, and would read as "running since the host booted"
-# regardless of when this container was actually created.
+# _updater_health_own_started — this container's own PID 1 start time, in
+# clock ticks since the host booted (field 22 of `/proc/1/stat`), or nothing
+# if unreadable. Same source, asked the same way, that
+# `deploy/docker/watchtower-pre-update.sh`'s `pid1_started` stamps into every
+# ledger line it writes — this file runs inside the very same container whose
+# ledger it reads back (state-sync.sh's and publish-dashboard.sh's own
+# heartbeat pushes), so asking the question identically is what makes the two
+# comparable at all. Split on the *last* `") "`: field 2 is the executable's
+# name in parentheses and may contain spaces or parens, after which the
+# remaining fields start at field 3, so field 22 is index 19.
+#
+# Two nearer-to-hand readings are deliberately not used. `/proc/uptime` is the
+# *host's* uptime under Docker, not this container's, so it would read the
+# same in every generation. And `stat -c %Y /proc/1` is the procfs inode's
+# mtime, which the kernel sets when that inode is *instantiated* — the first
+# lookup after a cache miss — rather than when the process started; it is a
+# property of access history, not of the process, and moves whenever the
+# dentry is reclaimed and looked up afresh (measured on poetic-1: it read
+# 2h25m later than PID 1's real start). An identity that can change under one
+# container fails exactly one way — the reader stops recognising entries it
+# wrote itself and reads `rolled` — which silently retires the `stuck` alarm
+# this whole file exists to raise. Field 22 is fixed for the life of the
+# process, and strictly ordered across generations, since a replacement
+# always starts after what it replaced.
 _updater_health_own_started() {
-  stat -c %Y /proc/1 2>/dev/null
+  local line="" rest="" fields=()
+  read -r line < /proc/1/stat 2>/dev/null || return 0
+  rest="${line##*') '}"
+  read -r -a fields <<<"$rest"
+  [[ "${fields[19]:-}" =~ ^[0-9]+$ ]] || return 0
+  printf '%s\n' "${fields[19]}"
 }
 
 # _updater_health_last_entry FILE — prints "<verdict>\t<ts>\t<service>\t<started>"
