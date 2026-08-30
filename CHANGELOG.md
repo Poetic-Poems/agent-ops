@@ -8,6 +8,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Expensive per-repository gather — issue threads with comments, the
+  tech-debt register, PR review reads, merge-conflict/dequeued/register-
+  hygiene walks — runs for one configured repository per cycle, not every
+  one of them (requirement 48, agent-ops#1086): `lib/expensive-gather-
+  cache.sh` picks whichever configured repository this node has gone
+  longest without reading and caches its raw gather under `state_dir`, so
+  every other repository reuses its own last read (with this cycle's claim
+  exclusion and `sources` gating re-applied fresh) instead of paying another
+  full GitHub read. Every repository entry gains `expensive_gather: {fresh,
+  gathered_at}`; `prompts/coordinator.md` requires a live re-check before
+  selecting from a non-fresh entry, and requirement 34j's dependency release
+  reads only the repositories this cycle actually gathered, so no block is
+  cleared on a replayed band's stale proof. Cheap fleet-wide probes (repo ordering,
+  `gather_source_state`, label-ensure, unvoid/hand-flagged-refinement scans)
+  are unaffected and still run for every configured repository every cycle.
+  `scripts/github-budget-report.sh` gains a `per_cycle` breakdown (core/
+  graphql spend per cycle, node named) to measure the reduction.
 - The GitHub API budget is recorded (requirement 2.0d, agent-ops#1087): a
   `github-budget` event at cycle start, after every model stage and at cycle
   end carries both pools' `limit/used/remaining/reset` and `since_previous`,

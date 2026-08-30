@@ -19,6 +19,13 @@
 #   - per stage: how far the bucket moved while the stage ran (median and
 #     maximum of `since_previous.core`, median of `.graphql`), readings that
 #     spanned a window roll excluded;
+#   - per cycle (agent-ops#1086): the sum of `since_previous.core`/`.graphql`
+#     across every readable, non-window-rolled reading a cycle logged — its
+#     own whole REST/GraphQL spend, node named alongside since a cycle id
+#     belongs to exactly one. This is what requirement 48's own before/after
+#     comparison reads: the target is a per-cycle spend low enough that
+#     sixteen cycles an hour fit inside one 5,000 bucket with
+#     `github_min_core_budget`'s floor to spare;
 #   - per node: readings, unreadable readings, and cycles that carry a record.
 #
 # ## What the movement is, and is not
@@ -152,6 +159,19 @@ report="$(jq -c '
                 core_movement_median: ($r | map(.since_previous.core | select(type == "number")) | median),
                 core_movement_max: ($r | map(.since_previous.core | select(type == "number")) | max),
                 graphql_movement_median: ($r | map(.since_previous.graphql | select(type == "number")) | median) } ]),
+      per_cycle: (
+        ($b | map(select(.readable == true and (.since_previous.window_rolled // false) == false
+                          and (.since_previous.core | type) == "number"))) as $m
+        | ($b | map(.cycle // "?") | unique) as $cycles
+        | [ $cycles[] | . as $c
+            | ($b | map(select((.cycle // "?") == $c))) as $all
+            | ($m | map(select((.cycle // "?") == $c))) as $r
+            | { cycle: $c,
+                node: ($all | map(.node // "?") | first),
+                readings: ($all | length),
+                core_spend: ($r | map(.since_previous.core) | add // 0),
+                graphql_spend: ($r | map(.since_previous.graphql | select(type == "number")) | add // 0) } ]
+        | sort_by(.cycle)),
       per_node: (
         ($b | map(.node // "?") | unique) as $nodes
         | [ $nodes[] | . as $n
@@ -198,6 +218,15 @@ echo "|---|---:|---:|---:|---:|"
 jq -r '.per_stage[] | [.stage, .readings, .core_movement_median, .core_movement_max, .graphql_movement_median] | @tsv' <<<"$report" \
   | while IFS=$'\t' read -r st r cm cx gm; do
       printf '| %s | %s | %s | %s | %s |\n' "$st" "$(cell "$r")" "$(cell "$cm")" "$(cell "$cx")" "$(cell "$gm")"
+    done
+echo
+echo "## Per cycle (core/graphql spent while that cycle ran; window rolls excluded)"
+echo
+echo "| cycle | node | readings | core spend | graphql spend |"
+echo "|---|---|---:|---:|---:|"
+jq -r '.per_cycle[] | [.cycle, .node, .readings, .core_spend, .graphql_spend] | @tsv' <<<"$report" \
+  | while IFS=$'\t' read -r c n r cs gs; do
+      printf '| %s | %s | %s | %s | %s |\n' "$(cell "$c")" "$(cell "$n")" "$(cell "$r")" "$(cell "$cs")" "$(cell "$gs")"
     done
 echo
 echo "## Per node"

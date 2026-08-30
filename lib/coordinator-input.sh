@@ -70,6 +70,28 @@
 # is re-measured against the real assembled document rather than predicted, so
 # the ladder converges whatever the input's shape.
 #
+# ## Freshness is shed for the non-selected majority (requirement 48)
+#
+# Everything above assumes each repo entry's eight bands were read this
+# cycle. Since agent-ops#1086 that is only guaranteed for one repo per cycle
+# per node (lib/expensive-gather-cache.sh): every other configured repo's
+# entry carries whatever this node's own cache last captured for it, which
+# can be many cycles old. This module's own ladder does not care — it fits
+# bytes, not freshness, and a cached entry's prose is exactly as eligible for
+# trimming as a fresh one's — but a reader of the fitted array does care, so
+# `lib/candidate-gather.sh` stamps every entry, cached or fresh, with
+# `expensive_gather: {fresh: bool, gathered_at: <ISO-8601>|null}` before this
+# module ever sees it. `fresh: true` names the one repo this cycle actually
+# read; every other entry's `fresh: false` and `gathered_at` are what
+# `prompts/coordinator.md` points to when it tells the Co-Ordinator a
+# non-fresh entry needs a live re-check before selection, the same
+# live-read-before-you-select obligation this module already places on a
+# trimmed entry, extended to cover an entry that is stale rather than merely
+# short. `gathered_at: null` names a repo this node has never yet read at
+# all, which the `none-selected`/no-op paths must treat as "unsampled",
+# never as "sampled and found nothing" — the same distinction
+# `gather-source-state.sh`'s own `ok` flag draws for the signals it proxies.
+#
 # Sourced by agent-cycle.sh.
 
 # The ladder: `comments_kept:comment_bytes:body_bytes`, generous first. The

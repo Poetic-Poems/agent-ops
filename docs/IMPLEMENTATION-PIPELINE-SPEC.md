@@ -2726,7 +2726,10 @@ implements.
    (`*.stream.jsonl`, requirement 4d), the fleet-log snapshot
    (`.fleet-log.jsonl`, "The union" below), the mirror's own durable
    rebuild record (`.mirror-rebuild-state.json`, "Mirror integrity" above),
-   and the updater's own invocation ledger (`updater-ledger/`, below).
+   the two per-node caches whose own file mtimes *are* the schedule they
+   gate — the label-ensure stamps (`labels-ensured/`, requirement 6a) and
+   the expensive-gather cache (`expensive-gather/`, requirement 48) — and
+   the updater's own invocation ledger (`updater-ledger/`, below).
    The exclusions are not tidiness: a copied `lock.json` is a lock no process
    holds — peers read logs, never locks; the
    dashboard is generated from the state beside it, so copying it would be
@@ -2745,7 +2748,14 @@ implements.
    than replicated verbatim. `updater-ledger/` walks the identical path one
    level further down: a copied ledger would answer for invocations against
    containers nobody on the peer ever ran, so only its distilled verdict
-   travels, as the heartbeat's own `updater` field (below). The
+   travels, as the heartbeat's own `updater` field (below).
+   `labels-ensured/` and `expensive-gather/` carry a second reason on top of
+   that one, and it is the sharper of the two: each schedules its own next
+   run off its files' mtimes rather than off a timestamp written inside
+   them, so a copy restored from the state branch arrives checkout-fresh —
+   a node materialising either would read every repository as just-ensured
+   or just-gathered and defer its next real ensure or real gather by a full
+   interval, while serving the restored, arbitrarily stale snapshot. The
    streams are excluded on size as much as on relevance: what
    a peer reads of a stage is its result envelope, which replicates as
    `<stage>.out` exactly as before, while the stream beside it is every
@@ -3448,7 +3458,7 @@ implements.
    and naming every offending slug, the same guard as
    `implementation_plan_path` (requirement 3k).
 3a. **Findings pre-fetch (cost control).** For each configured repo whose
-   `sources` include `security` or `code-quality`, run
+   `sources` include `security` or `code-quality` (requirement 48: freshly for the one repository this cycle picks, replayed from this node's expensive-gather cache for the rest), run
    `scripts/gather-findings.sh <repo-slug>` — a deterministic script that uses
    `gh api` to pull the repo's open Dependabot alerts and open code-scanning
    alerts, normalises each into a compact finding (`source` of `security` or
@@ -3460,7 +3470,7 @@ implements.
    `findings`. Doing this in the Script — not in the Co-Ordinator — spends no
    model tokens on paginating and digesting those verbose APIs.
 3c. **Review-feedback pre-fetch (requirement 3c).** For each configured repo
-   whose `sources` include `review-feedback`, run
+   whose `sources` include `review-feedback` (requirement 48: freshly for the one repository this cycle picks, replayed from this node's expensive-gather cache for the rest), run
    `scripts/gather-review-feedback.sh <slug> <pr_label> <branch_prefix>
    <tech_debt_branch_prefix>` and
    attach the array to that repo's entry as `review_feedback`. It prints the
@@ -3581,7 +3591,7 @@ implements.
      (`lib/handoff.sh`) and `_sweep_round_answered`
      (`scripts/sweep-human-visibility.sh`) already use
      (tech-debt/TD-PPagop-26081306.md).
-3e. **Abandoned-drafts pre-fetch.** For each configured repo, run
+3e. **Abandoned-drafts pre-fetch.** For each configured repo (requirement 48: freshly for the one repository this cycle picks, replayed from this node's expensive-gather cache for the rest), run
    `scripts/gather-abandoned-drafts.sh <slug>
    <pr_label> <branch_prefix> <abandoned_draft_after_hours>
    <tech_debt_branch_prefix>` and attach the array
@@ -3692,7 +3702,7 @@ implements.
      rather than treated as maximally stale: the dangerous direction is stealing
      live work, not leaving a stalled draft one more cycle. `shellcheck`-clean.
 3g. **Merge-conflicts pre-fetch.** For each configured repo whose `sources`
-   include `merge-conflicts`, run `scripts/gather-merge-conflicts.sh <slug>
+   include `merge-conflicts` (requirement 48: freshly for the one repository this cycle picks, replayed from this node's expensive-gather cache for the rest), run `scripts/gather-merge-conflicts.sh <slug>
    <pr_label> <branch_prefix> <tech_debt_branch_prefix>` and attach the array
    to that repo's entry as
    `merge_conflicts`. It prints the PRs *this system raised that are otherwise
@@ -3872,7 +3882,7 @@ implements.
    (poetic-fiddle #129) is a candidate in the same `merge_conflicts` array
    every other conflicted PR is.
 3z. **Dequeued-PR pre-fetch (TD-PPagop-26081409, issue #374).** For each
-   configured repo whose `sources` include `dequeued`, run
+   configured repo whose `sources` include `dequeued` (requirement 48: freshly for the one repository this cycle picks, replayed from this node's expensive-gather cache for the rest), run
    `scripts/gather-dequeued.sh <slug> <pr_label> <branch_prefix>
    <tech_debt_branch_prefix>` and attach the
    array to that repo's entry as `dequeued`. It prints the PRs *this system
@@ -3991,7 +4001,7 @@ implements.
    - Fails safe to `[]` (exit 0), with the same stderr discipline as
      requirement 3g. `shellcheck`-clean.
 3i. **Register-hygiene pre-fetch.** For each configured repo whose `sources`
-   include `register-hygiene`, run `scripts/gather-register-hygiene.sh <slug>
+   include `register-hygiene` (requirement 48: freshly for the one repository this cycle picks, replayed from this node's expensive-gather cache for the rest), run `scripts/gather-register-hygiene.sh <slug>
    <default_branch>` and attach the array to that repo's entry as
    `register_hygiene`. One root-tree listing read
    (`gh api repos/<slug>/git/trees/<default_branch>`) gives both the
@@ -4051,7 +4061,7 @@ implements.
      and only the failure prints to stderr. `shellcheck`-clean.
 3j. **Issues pre-fetch.** For each configured repo whose `sources` include any
    `issues:<band>` entry (one source at four ranks — any band warrants the one
-   fetch), run `scripts/gather-issues.sh <slug>`, which prints
+   fetch) (requirement 48: freshly for the one repository this cycle picks, replayed from this node's expensive-gather cache for the rest), run `scripts/gather-issues.sh <slug>`, which prints
    `{"candidates": […], "excluded": […]|null}`, and attach `.candidates` to
    that repo's entry as `issues` and `.excluded` as `issues_excluded` — or
    `[]` when `.excluded` is `null` (the gather did not run to completion; see
@@ -4113,7 +4123,9 @@ implements.
      their own reasons, could sit permanently unselectable with nobody able
      to tell why short of reading the filter's source. `issues_excluded`
      (above) is that record: the Script logs an `issues-excluded` event
-     (requirement 33) per repo, when its exclusion set changes from the one
+     (requirement 33) per repo whose `issues` band it read fresh this cycle
+     (requirement 48 — a repo replaying its cached band observed nothing new,
+     so it logs nothing), when that repo's exclusion set changes from the one
      most recently logged, carrying the same `{number, reason}` pairs and a
      `count`, so the cycle log and the dashboard's log tail can both show "N
      issues excluded, and why" without a reader re-deriving the filter. The
@@ -4269,7 +4281,9 @@ implements.
 3t. **Tech-debt pre-fetch, and deterministic blocked/void exclusion (issue
    #310; the store moved from the in-repo register to labelled issues by D15
    as revised, #869/#875).** For each configured repo whose `sources` include
-   `tech-debt`, run `scripts/gather-tech-debt.sh <slug>` and attach the array
+   `tech-debt` (requirement 48: freshly for the one repository this cycle
+   picks, replayed from this node's expensive-gather cache for the rest),
+   run `scripts/gather-tech-debt.sh <slug>` and attach the array
    to that repo's entry as `tech_debt`. Each entry is one candidate: an open
    GitHub issue carrying the product-managed label `pw::type:tech-debt` — the
    D24 trust anchor, since only a collaborator with triage can apply it, so an
@@ -9523,7 +9537,10 @@ implements.
     verbatim with no event-specific rendering of its own. Logged by
     `gather_issues`'s caller (lib/candidate-gather.sh) on change only (review
     decision
-    on agent-ops#452 concern 1): once per repo per cycle when that repo's
+    on agent-ops#452 concern 1): once per cycle, for the one repo whose
+    `issues` band that cycle read fresh (requirement 48 — a repo replaying
+    its cached band logs nothing, having observed nothing new to log a change
+    against), when that repo's
     exclusion set differs from the one carried by the most recent
     `issues-excluded` event logged for it — `lib/cycle-state.sh`'s
     `latest_issues_excluded`, read off the union log once per cycle the same
@@ -10581,7 +10598,15 @@ implements.
       Co-Ordinator and never earns an `attempt-failed`: the dependency holds
       it before the pipeline's own notion of "blocked" is ever written, at
       zero cost beyond the one `gh` read per reference the candidate would
-      otherwise have spent a full evaluation on anyway.
+      otherwise have spent a full evaluation on anyway. That holding is as
+      recent as the band it filtered: requirement 48 runs this gatherer for
+      one repository per cycle per node, so a dependency (or an assignment,
+      or a `blocked` label) that a repository's thread gained *after* its
+      last turn does not hold its candidate out of that node's digest until
+      the repository's next turn comes round. agent-ops#1095 carries the
+      close — re-applying 3j's drops to a replayed band from
+      `gather_source_state`'s own already-sampled labels and assignee, which
+      costs no further GitHub read.
     - **Releasing.** Against the *open* blocked set (34h), in the same
       pre-extract window as 34f, 34g and 34i, the Script reshapes this
       cycle's own freshly gathered `issues` candidates to a `repo → item →
@@ -10594,7 +10619,12 @@ implements.
       *any* reason — a reference still open, an assignment, the `blocked`
       label, or simply a repo this cycle did not walk — is absent from the
       map and decides nothing, the same "unknown is never gone" rule
-      requirement 34i's clearances observe. Logged `unblocked` with
+      requirement 34i's clearances observe. A repository whose `issues` band
+      requirement 48 replayed from this node's expensive-gather cache rather
+      than reading fresh counts as one this cycle did not walk, and is
+      narrowed out of the map before the reshape: its band carries the
+      holding check's verdict from whenever its own last turn was, which is
+      not the proof this release reads. Logged `unblocked` with
       `by: "dependency-resolved"` and a `detail` naming the reference(s)
       that resolved.
 
@@ -10960,8 +10990,14 @@ implements.
         rather than per object — a fresh `<head-sha>` mints a fresh id, so no
         two ever coalesce — which makes it the fastest-growing member of
         this class; it needs nothing beyond the ordinary liveness rule, since
-        `scripts/gather-merge-conflicts.sh` re-gathers the source every cycle
-        and stops yielding the id the moment the conflict resolves.
+        `scripts/gather-merge-conflicts.sh` re-gathers the source on that
+        repository's own turn (requirement 48 — every cycle before it, one
+        cycle in `repositories` since) and stops yielding the id the moment
+        the conflict resolves. The narrowing costs a rotation, never a wrong
+        answer: a cycle that replays the band writes no
+        `merge-conflicts-<repo>.ok` marker, and the liveness pass reads an
+        absent marker as "unsampled", so the void is held to that
+        repository's next turn rather than retired on a stale array.
 
         The `human-visibility-<hash>` shape (agent-ops#646) joins on the same
         rule and needs one thing none of the others do. Its ref is a digest
@@ -12243,8 +12279,15 @@ implements.
     per-repo gather loop runs it wherever `sources` configures the `issues`
     band, ahead of `scripts/gather-issues.sh` itself so an issue this frees
     becomes a candidate the same cycle: one `gh issue list --label
-    blocked:<reason> --state open` call per repo, compared against
-    `blocked_items`. An issue that never carried the reason label is never
+    blocked:<reason> --state open` call, compared against
+    `blocked_items`. It rides on that band's own fresh read, so requirement
+    48 narrows it to the one repository this cycle expensively gathers: a
+    stuck pair on any other configured repository is released on that
+    repository's own next turn — bounded by one rotation, never indefinite,
+    unlike the page cap below — which is a delay this reconciliation can
+    afford, since a label stuck long enough to be orphaned has by then been
+    stuck for far longer than a rotation. An issue
+    that never carried the reason label is never
     read by this call at all, so a standalone hand-applied `blocked` — #402,
     #677, #678 among them — is untouched by it, the same guarantee the fresh
     path's `refinement_label_project` gives at the moment of application.
@@ -13802,6 +13845,93 @@ with the Reviewer's own.
     letting a later reader assume the class covers every human change
     request there is.
 
+48. **Expensive per-repository gather runs for one repository per cycle, not
+    every configured one (agent-ops#1086).** The eight bands requirement 3
+    pre-fetches whole — `findings`, `review_feedback`, `abandoned_drafts`,
+    `merge_conflicts`, `dequeued`, `register_hygiene`, `issues` (with
+    `issues_excluded`) and `tech_debt` — are read fresh from GitHub, each
+    cycle, for exactly one of `gather_ordered_repos`'s configured
+    repositories: the one whose expensive-gather cache
+    (`lib/expensive-gather-cache.sh`, under this node's own `state_dir`) is
+    oldest, with a repository never yet cached always outranking one cached
+    at all. The cache directory (`state_dir/expensive-gather/`) is local to
+    this node, not synced fleet-wide the way the union log is — it is
+    excluded from general state-sync replication
+    (`scripts/state-sync.sh`'s `EXCLUDES`), on the identical reasoning as
+    `labels-ensured/`: `expensive_gather_pick_repo` keys entirely on
+    cache-file mtime, and a cache restored from the fleet state branch would
+    carry a checkout-fresh mtime, deferring this node's next real gather of
+    every configured repository by a full rotation while it kept serving the
+    restored, arbitrarily stale snapshots. Every other configured
+    repository's entry carries the raw gather this same node cached the
+    last time its own turn came around —
+    `sources` gating and claim exclusion (`exclude_claimed_items`/
+    `exclude_claimed_prs`) are re-applied to it fresh every cycle regardless,
+    so a claim a peer takes or a `sources` edit still takes effect without a
+    live read. `--repo` narrows the configured set to one repository, which
+    is then always the one picked, exactly as before this requirement
+    existed.
+
+    Picking is keyed on this node's own last-read time for each repository
+    (the cache file's mtime), never on `lib/repo-order.sh`'s effective-age
+    ordering: that ordering is a pure function of GitHub state every node
+    computes identically, so keying the expensive-gather pick on it would
+    have every node read the same one repository fresh every cycle and
+    starve every other configured repository of a fresh read for as long as
+    nothing landed on its default branch — indefinitely, for a repository
+    this pipeline has never gathered enough to select work in. Keying on
+    this node's own cache age instead guarantees every configured repository
+    eventually gets its own turn, regardless of commit activity, the same
+    way `labels_ensure_stamped`'s per-repo stamps already do.
+
+    Every repository entry in `ordered_repos_json` carries
+    `expensive_gather: {fresh, gathered_at}` — `fresh: true` for the one
+    repository this cycle actually read, `gathered_at` naming when the
+    bands shown were captured (`null` for a repository never yet read on
+    this node). `lib/coordinator-input.sh` documents this shape for a
+    reader of the Co-Ordinator's runtime input, and `prompts/coordinator.md`
+    obliges a live re-check (`gh issue view`/`gh pr view`) before selecting
+    a candidate from a non-fresh entry, the same obligation requirement 4i
+    already places on a trimmed one. The no-op short-circuit's canonical
+    form (`lib/noop-skip.sh`'s `NOOP_CANON_JQ`) re-projects each repository
+    entry to a fixed field list that does not include `expensive_gather`, so
+    neither field enters the fingerprint: a repository's cached bands
+    fingerprint identically across cycles until its next fresh read, and the
+    one repository read fresh each cycle does not bust the fingerprint
+    merely by carrying a new `gathered_at` stamp.
+
+    The cheap fleet-wide probes are unaffected and remain unrestricted: the
+    per-repository default-branch/commit-timestamp read that orders the
+    gather walk (`lib/repo-order.sh`), `gather_source_state`'s own four-call
+    sample (the no-op fingerprint's `state.*` fields and
+    `compute_enabler_eligible_set`'s input), `labels_ensure_stamped`'s
+    already-rate-limited label listing, and the `unvoid`/hand-flagged-
+    `needs_refinement` label scans all still run for every configured
+    repository every cycle — restricting any of these would either reopen
+    agent-ops#687 (a repository never selected for work never getting its
+    labels ensured) or leave a human's override on a non-selected repository
+    unnoticed, for a saving small against the eight bands' own cost. A
+    repository this cycle does not expensively re-read therefore still gets
+    a same-cycle void-liveness verdict of "unsampled, not gone" wherever
+    that liveness reads a marker only the skipped gather call would have
+    written (`lib/candidate-gather.sh`'s own `.ok`-marker convention,
+    TD-PPagop-26081303) — the existing safe default, unchanged by this
+    requirement.
+
+    Two mechanisms whose whole guarantee is *this cycle's own live read* are
+    narrowed rather than fed a replayed band. Requirement 34j's release reads
+    a map built only from the repositories this cycle actually gathered — a
+    non-fresh repository's `issues` band proves what its own last turn found,
+    not what is true now, and `dependency_clearances`' own rule already says
+    an item this cycle's candidates do not carry decides nothing and stays
+    blocked. Requirement 34j's *holding* half, and with it requirement 16.4's
+    deterministic assigned/`blocked`-label drops (requirement 3j), are as
+    recent as the band they filtered and are not re-applied to a replayed
+    one: an issue assigned or labelled after its repository's last turn stays
+    a candidate in that node's digest until its next turn. agent-ops#1095
+    carries the close, from `gather_source_state`'s own already-sampled
+    labels and assignee, which costs no further GitHub read.
+
 ## Components
 
 What exists, and the requirements each part answers to:
@@ -13879,10 +14009,15 @@ What exists, and the requirements each part answers to:
    gathering loop and the skip-list extracts built directly on top of it
    (requirement 3, the requirement-34 blocked/void skip-lists; #771):
    `gather_ordered_repos` orders every configured repository by effective
-   staleness (`lib/repo-order.sh`) and, for each, runs every pre-fetched
-   source's gather script, folding claims, first-seen state and the
-   per-repo entry into `ordered_repos_json`/`source_states_json`/
-   `claimed_json`/`unvoid_requests_json`/`hand_flagged_refinements_json`.
+   staleness (`lib/repo-order.sh`) and, for each, folds claims, first-seen
+   state and the per-repo entry into `ordered_repos_json`/
+   `source_states_json`/`claimed_json`/`unvoid_requests_json`/
+   `hand_flagged_refinements_json`. Every pre-fetched source's gather script
+   runs fresh only for the one repository `expensive_gather_pick_repo`
+   (`lib/expensive-gather-cache.sh`) picks this cycle (requirement 48); every
+   other configured repository's eight bands come from that same node's
+   cache of its own last turn, with this cycle's `sources` gating and claim
+   exclusion re-applied regardless.
    `compute_skip_lists` reconciles the `unvoid`/hand-flagged
    `needs_refinement` label overrides against the cycle's own claim, then
    derives `blocked_json`/`void_json`, the skip-lists everything downstream
@@ -13938,6 +14073,28 @@ What exists, and the requirements each part answers to:
    this file and `test/refiner-priority-triage.test.sh` lifts the Refiner
    pre-flight's own `refiner_model` call-site guard from it. Must pass
    `shellcheck`.
+2g. `lib/expensive-gather-cache.sh` implementing requirement 48
+   (agent-ops#1086): the per-node cache `gather_ordered_repos` reads and
+   writes so its eight expensive bands are read fresh from GitHub for one
+   configured repository per cycle rather than every one of them.
+   `expensive_gather_pick_repo` picks the configured repository whose cache
+   file (under `state_dir/expensive-gather/`) is oldest, ties broken by
+   slug — slicing its own sorted stream with a reader that consumes its
+   input (`sed -n '1p'`, never `head`), because its caller takes it in
+   `$(…)` under `set -e` and `pipefail` would promote the `sort`'s SIGPIPE
+   to a whole aborted gather (agent-ops#806, the same rule
+   `scripts/state-sync.sh`'s `kept_cycles` follows);
+   `expensive_gather_cache_load`/`expensive_gather_cache_save` read
+   and atomically write that repository's raw gather. Sourced, never
+   executed, ahead of `lib/candidate-gather.sh` (its only caller). Must pass
+   `shellcheck`. `test/expensive-gather-cache.test.sh` exercises all three
+   functions directly: the epoch-0 tie-break for a never-cached repository,
+   round-tripping a saved snapshot, the pick rotating to the next-oldest
+   cache once one repository is saved, a never-cached repository always
+   outranking any already-cached one, an empty configured set picking
+   nothing, a corrupt cache file loading as empty rather than raising a
+   parse error, and a configured set past one pipe buffer picking cleanly
+   rather than 141.
 3. `scripts/gather-findings.sh` implementing requirement 3a: given a repo
    slug, prints a normalised JSON array of the repo's open Dependabot and
    code-scanning alerts, degrading to `[]` (exit 0) when a feature is
@@ -16094,9 +16251,13 @@ What exists, and the requirements each part answers to:
     primary-limit refusals that reached `guard-degraded` and the number of
     requirement-2.0 stand-downs; per stage, the median and maximum of the
     bucket's `core` movement and the median `graphql` movement while the
-    stage ran, readings that spanned a window roll excluded; and per node,
-    readings, unreadable readings and cycles carrying a record — as Markdown
-    followed by a machine-readable JSON block. `--since ISO8601` restricts
+    stage ran, readings that spanned a window roll excluded; per cycle
+    (requirement 48, agent-ops#1086), the sum of `core`/`graphql` movement
+    across a cycle's own readable, non-window-rolled readings, node named
+    alongside — the figure requirement 48's before/after comparison reads;
+    and per node, readings, unreadable readings and cycles carrying a
+    record — as Markdown followed by a machine-readable JSON block. `--since
+    ISO8601` restricts
     the window. Its preamble states what the figures are: the bucket's, an
     upper bound on any one segment's own spend while identities are shared.
     Damaged log lines are dropped, not fatal; an empty read says so and
@@ -17087,9 +17248,11 @@ pull request, run the ones the change touches and any it could regress.
    one apart, takes each hour's peak used and minimum remaining from readable
    readings only, counts primary refusals (never a 404) and requirement-2.0
    stand-downs per hour, excludes a rolled reading from a stage's movement,
-   sums per node, honours `--since`, unions this node's log with its peers'
-   in the fleet-shaped read, says so on an empty log, and errors on a named
-   log that does not exist. `scripts/github-budget-report.sh` passes
+   sums each cycle's own core/graphql spend excluding a window-rolled or
+   unreadable reading from it (requirement 48, agent-ops#1086), sums per
+   node, honours `--since`, unions this node's log with its peers' in the
+   fleet-shaped read, says so on an empty log, and errors on a named log
+   that does not exist. `scripts/github-budget-report.sh` passes
    `shellcheck`.
 2l. **A rejected or missing credential is classified apart from an outage,
    and stands the cycle down before the Co-Ordinator ever runs (requirement
@@ -20506,6 +20669,26 @@ pull request, run the ones the change touches and any it could regress.
     unreachable`, yields none; a malformed event line in the stream is
     skipped rather than fatal to the reduction. `scripts/lint-shell.sh` is
     clean on every file this requirement touches.
+
+48. **Expensive per-repository gather runs for one repository per cycle
+    (requirement 48).** `test/expensive-gather-cache.test.sh` passes:
+    `expensive_gather_pick_repo` picks a never-cached repository over any
+    already-cached one, breaks a tie among never-cached repositories on
+    slug ascending, and picks the oldest cache file once every configured
+    repository has one; `expensive_gather_cache_load` round-trips a saved
+    object exactly and reads a corrupt or absent cache file as empty rather
+    than raising; `expensive_gather_cache_save` is atomic (no stray `.tmp`
+    file survives it) and a single-repository set (`--repo`) always picks
+    that repository; and a configured set whose sorted candidate lines
+    outgrow one pipe buffer still picks cleanly under the caller's own
+    `$(…)`-under-`set -e` shape rather than dying 141 on the `sort`'s
+    SIGPIPE (agent-ops#806's shape — the assertion runs its caller as a
+    separate process, because a subshell in a `||` context has its own
+    `set -e` suppressed and would pass either way).
+    `test/repo-entry-build.test.sh` still passes unchanged,
+    confirming the per-repo entry-build block's own eight-band shape is
+    undisturbed by the cache being threaded in ahead of it.
+    `scripts/lint-shell.sh` is clean on every file this requirement touches.
 
 9. **An open question the Reviewer could not settle holds unattended landing,
    resolves through the configured ladder, and never through a new commit

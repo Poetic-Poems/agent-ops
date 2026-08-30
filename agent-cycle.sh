@@ -82,6 +82,9 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/cycle-state.sh"
 # shellcheck source=lib/candidate-select.sh
 . "$SCRIPT_DIR/lib/candidate-select.sh"
+# shellcheck source=lib/expensive-gather-cache.sh
+# Ahead of candidate-gather.sh, which is its only caller (requirement 48).
+. "$SCRIPT_DIR/lib/expensive-gather-cache.sh"
 # shellcheck source=lib/candidate-gather.sh
 . "$SCRIPT_DIR/lib/candidate-gather.sh"
 # shellcheck source=lib/eligibility.sh
