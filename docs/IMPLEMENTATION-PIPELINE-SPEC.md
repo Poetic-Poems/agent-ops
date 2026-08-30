@@ -2714,7 +2714,10 @@ implements.
    (`*.stream.jsonl`, requirement 4d), the fleet-log snapshot
    (`.fleet-log.jsonl`, "The union" below), the mirror's own durable
    rebuild record (`.mirror-rebuild-state.json`, "Mirror integrity" above),
-   and the updater's own invocation ledger (`updater-ledger/`, below).
+   the two per-node caches whose own file mtimes *are* the schedule they
+   gate — the label-ensure stamps (`labels-ensured/`, requirement 6a) and
+   the expensive-gather cache (`expensive-gather/`, requirement 48) — and
+   the updater's own invocation ledger (`updater-ledger/`, below).
    The exclusions are not tidiness: a copied `lock.json` is a lock no process
    holds — peers read logs, never locks; the
    dashboard is generated from the state beside it, so copying it would be
@@ -2733,7 +2736,14 @@ implements.
    than replicated verbatim. `updater-ledger/` walks the identical path one
    level further down: a copied ledger would answer for invocations against
    containers nobody on the peer ever ran, so only its distilled verdict
-   travels, as the heartbeat's own `updater` field (below). The
+   travels, as the heartbeat's own `updater` field (below).
+   `labels-ensured/` and `expensive-gather/` carry a second reason on top of
+   that one, and it is the sharper of the two: each schedules its own next
+   run off its files' mtimes rather than off a timestamp written inside
+   them, so a copy restored from the state branch arrives checkout-fresh —
+   a node materialising either would read every repository as just-ensured
+   or just-gathered and defer its next real ensure or real gather by a full
+   interval, while serving the restored, arbitrarily stale snapshot. The
    streams are excluded on size as much as on relevance: what
    a peer reads of a stage is its result envelope, which replicates as
    `<stage>.out` exactly as before, while the stream beside it is every
