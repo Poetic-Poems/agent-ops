@@ -23,7 +23,8 @@
 # those switches the default method to POST), not the literal `graphql`
 # endpoint, and not a call that already asks for `-i`/`--include` itself — is
 # ever cached or conditioned. Everything else (`gh pr view`, `gh issue list`,
-# a write, `gh api graphql`, a caller already reading raw headers) is passed
+# a write, the `graphql` endpoint of `gh api`, a caller already reading raw
+# headers) is passed
 # to the real binary completely unmodified: same argv, same stdout, same
 # stderr, same exit status. `gh_shim_classify` is the one place that decision
 # is made; see its own header for why each case is excluded.
@@ -99,8 +100,9 @@
 #   budget.json             the latest `{limit, used, remaining, reset}` per
 #                           identity, `core` only — a cacheable GET is the
 #                           only call this file adds headers to, and every
-#                           one of those reads `core`, never `graphql`
-#                           (`gh api graphql` is always excluded, see above).
+#                           one of those reads `core`, never `graphql` (the
+#                           `graphql` endpoint of `gh api` is always
+#                           excluded, see above).
 #
 # Sourced, never executed — `scripts/gh-shim.sh` is the thin executable
 # entry point installed on `PATH`. Requires `lib/github-limit.sh` to already
@@ -307,7 +309,7 @@ gh_shim_parse() {
 #   read     a plain `gh api` GET with a real endpoint — the only class this
 #            file ever caches or conditions
 #   write    a `gh api` call whose method resolved to non-GET
-#   graphql  the literal `gh api graphql` endpoint — always POST, never
+#   graphql  the literal `graphql` endpoint of `gh api` — always POST, never
 #            conditional, per GitHub's own semantics
 #   include  a `gh api` call that already asks for -i/--include itself — see
 #            this file's header for why that always bypasses
