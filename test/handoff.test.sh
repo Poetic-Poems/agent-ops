@@ -39,6 +39,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # shellcheck source=lib/pipeline-marker.sh
 . "$SCRIPT_DIR/lib/pipeline-marker.sh"
+# Sourced ahead of lib/handoff.sh, matching every real caller (agent-cycle.sh,
+# scripts/sweep-human-visibility.sh): _handoff_pending_review_targets reuses
+# its github_limit_kind classifier (agent-ops#1082).
+# shellcheck source=lib/github-limit.sh
+. "$SCRIPT_DIR/lib/github-limit.sh"
 # shellcheck source=lib/handoff.sh
 . "$SCRIPT_DIR/lib/handoff.sh"
 
@@ -746,7 +751,11 @@ if [[ "$1 $2" == "api -X" ]]; then
   exit 0
 fi
 path="$2"
-[[ -n "$fail" && "$path" == *"$fail" ]] && exit 1
+if [[ -n "$fail" && "$path" == *"$fail" ]]; then
+  failmsg="$(cat "$d/api-fail-msg" 2>/dev/null || true)"
+  [[ -n "$failmsg" ]] && printf '%s\n' "$failmsg" >&2
+  exit 1
+fi
 if [[ "$path" == *"/reviews" ]]; then
   jq -c '.[] | select(.submitted_at != null)
              | {login: .user.login,
@@ -773,6 +782,16 @@ else
     prev="$a"
   done
   [[ -n "$jq_filter" ]] || { echo "stub: no --jq in: $*" >&2; exit 1; }
+  # A dedicated fixture for this one read (agent-ops#1082): `_handoff_pr_author`
+  # reads the same bare PR-object path with a different `--jq` filter
+  # (`.user.login`), so the generic `api-fail`/path match above cannot target
+  # this call alone — it is told apart here by its own filter, which only
+  # `_handoff_pending_review_targets` ever hands this stub.
+  if [[ -s "$d/api-fail-pending" && "$jq_filter" == *requested_reviewers* ]]; then
+    failmsg="$(cat "$d/api-fail-msg" 2>/dev/null || true)"
+    [[ -n "$failmsg" ]] && printf '%s\n' "$failmsg" >&2
+    exit 1
+  fi
   {
     printf '{"requested_reviewers":['
     first=true
@@ -800,6 +819,7 @@ reset_human_stub() {  # <draft-flag> <post-behaviour>
   printf '%s' "$1" >"$tmp_dir/draft"
   printf '%s' "$2" >"$tmp_dir/post"
   : >"$tmp_dir/pending"; : >"$tmp_dir/pending-teams"; : >"$tmp_dir/posts"; : >"$tmp_dir/api-fail"
+  : >"$tmp_dir/api-fail-msg"; : >"$tmp_dir/api-fail-pending"
   printf 'warwickallen\n' >"$tmp_dir/author"
 }
 
@@ -1008,6 +1028,20 @@ set_reviews "$(review Warwick-Allen APPROVED)"
 printf 'pulls/111' >"$tmp_dir/api-fail"
 out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
 assert_eq "an unreadable pending list is a failure" "failed" "$out"
+assert_eq "  ... and exits 1" "1" "$rc"
+
+# agent-ops#1082: a rate-limit refusal at this same read is told apart from
+# any other cause, distinguishably — an operator reading the log needs to
+# know whether nobody was asked because the shared REST budget was gone,
+# never folded into the same bare `failed` a genuine failure gets above.
+review_n=0
+reset_human_stub false works
+set_reviews "$(review Warwick-Allen APPROVED)"
+printf x >"$tmp_dir/api-fail-pending"
+printf 'HTTP 403: API rate limit exceeded for user ID 2049303' >"$tmp_dir/api-fail-msg"
+out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
+assert_eq "a rate-limited pending-list read is told apart from a generic failure" \
+  "failed-rate-limited" "$out"
 assert_eq "  ... and exits 1" "1" "$rc"
 
 reset_human_stub true works

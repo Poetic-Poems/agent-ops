@@ -551,6 +551,37 @@ github_limit_wait_plan() {
   printf '%s' "$wait"
 }
 
+# github_limit_primary_reset_epoch [NOW_EPOCH]
+# Which resource a primary-limit refusal actually named is not stated in the
+# message, so this spends one fresh probe (`github_limit_snapshot`) and
+# returns the earlier of `core`'s and `graphql`'s own reset that is still
+# ahead of NOW_EPOCH (defaulting to the clock) — whichever resource the
+# refused call spent, it can be retried once that time passes. The snapshot's
+# own probe is refused too under a primary limit, and that is fine: the
+# refusal carries the `x-ratelimit-reset` header the probe itself reads.
+# Prints `0` (never empty) when neither resource offers a future reset, so a
+# caller can hand this straight to `github_limit_wait_plan` without an
+# emptiness check of its own. Pulled out of the `gh` wrapper below so a
+# caller that already knows *why* a call failed — `approver_post_or_warn`
+# (lib/approver.sh, agent-ops#1082), retrying a refused review write the
+# wrapper's own single attempt already gave up on — can ask the same
+# question without re-deriving it.
+# shellcheck disable=SC2120  # NOW_EPOCH is optional; the `gh` wrapper omits it.
+github_limit_primary_reset_epoch() {
+  local now_epoch="${1:-}" snapshot core_reset graphql_reset reset reset_epoch=0
+  [[ "$now_epoch" =~ ^[0-9]+$ ]] || now_epoch="$(date +%s)"
+  # shellcheck disable=SC2119  # the default probe, deliberately
+  snapshot="$(github_limit_snapshot 2>/dev/null || true)"
+  core_reset="$(github_limit_reset_epoch "$snapshot" core)"
+  graphql_reset="$(github_limit_reset_epoch "$snapshot" graphql)"
+  for reset in "$core_reset" "$graphql_reset"; do
+    [[ "$reset" =~ ^[0-9]+$ ]] || continue
+    (( reset > now_epoch )) || continue
+    if (( reset_epoch == 0 )) || (( reset < reset_epoch )); then reset_epoch="$reset"; fi
+  done
+  printf '%s' "$reset_epoch"
+}
+
 # gh [args...]
 # `gh`, but a rate-limit refusal is waited out once instead of returned.
 #
@@ -586,7 +617,7 @@ github_limit_wait_plan() {
 # it is passed on) and then replayed verbatim onto stderr, so a caller's own
 # `2>"$file"` redirect still receives exactly what `gh` said.
 gh() {
-  local out_file err_file rc kind reset_epoch wait snapshot
+  local out_file err_file rc kind reset_epoch wait
   out_file="$(mktemp)" || { command gh "$@"; return $?; }
   err_file="$(mktemp)" || { rm -f "$out_file"; command gh "$@"; return $?; }
 
@@ -601,24 +632,8 @@ gh() {
     kind="$(github_limit_kind "$(cat "$err_file" 2>/dev/null || true)")"
     if [[ "$kind" != "none" ]]; then
       reset_epoch=0
-      if [[ "$kind" == "primary" ]]; then
-        # Which resource was refused is not stated in the message, so take the
-        # earlier of the two resets that are still ahead of us: whichever
-        # resource this call spends, it can be retried once that time passes.
-        # The snapshot's own probe is refused too under a primary limit, and
-        # that is fine: the refusal carries the `x-ratelimit-reset` header.
-        # shellcheck disable=SC2119  # the default probe, deliberately
-        snapshot="$(github_limit_snapshot 2>/dev/null || true)"
-        local now_epoch core_reset graphql_reset reset
-        now_epoch="$(date +%s)"
-        core_reset="$(github_limit_reset_epoch "$snapshot" core)"
-        graphql_reset="$(github_limit_reset_epoch "$snapshot" graphql)"
-        for reset in "$core_reset" "$graphql_reset"; do
-          [[ "$reset" =~ ^[0-9]+$ ]] || continue
-          (( reset > now_epoch )) || continue
-          if (( reset_epoch == 0 )) || (( reset < reset_epoch )); then reset_epoch="$reset"; fi
-        done
-      fi
+      # shellcheck disable=SC2119  # the default (now-relative) NOW_EPOCH, deliberately
+      [[ "$kind" == "primary" ]] && reset_epoch="$(github_limit_primary_reset_epoch)"
       wait="$(github_limit_wait_plan "$kind" "$reset_epoch" "$(date +%s)" "$GITHUB_LIMIT_WAITED_SECONDS")"
       if [[ -n "$wait" ]]; then
         printf 'gh: %s rate limit; waiting %ss and retrying once\n' "$kind" "$wait" >&2

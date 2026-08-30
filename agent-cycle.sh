@@ -3170,9 +3170,16 @@ if [[ "$rev_status" == "ready" ]]; then
   # targeted at `enabler_assignee` instead of a blocking reviewer set.
   human_reviewer_state="$(jq -r '.human_reviewer.state // ""' <<<"$review_json")"
   human_reviewer_who="$(jq -r '.human_reviewer.who // ""' <<<"$review_json")"
-  if [[ "$human_reviewer_state" == "failed" ]]; then
+  if [[ "$human_reviewer_state" == "failed" || "$human_reviewer_state" == "failed-rate-limited" ]]; then
+    # agent-ops#1082: `ensure_human_reviewer` (lib/handoff.sh) tells a rate-limit
+    # refusal apart from any other read failure at this call site — an operator
+    # reading this warning needs to know whether nobody was notified because the
+    # shared REST budget was gone, or because something else genuinely failed.
+    rate_note=""
+    [[ "$human_reviewer_state" == "failed-rate-limited" ]] \
+      && rate_note=" — GitHub's REST rate limit refused the read"
     log_event "warning" "$(jq -nc --arg u "$impl_pr_url" --arg a "$enabler_assignee" --arg w "$human_reviewer_who" \
-      --arg d "$impl_pr_url is ready with nothing blocking it, but review could not be requested from ${human_reviewer_who:-$enabler_assignee} — it will not appear in their review queue" \
+      --arg d "$impl_pr_url is ready with nothing blocking it, but review could not be requested from ${human_reviewer_who:-$enabler_assignee} — it will not appear in their review queue$rate_note" \
       '{detail: $d, pr_url: $u} + (if $w == "" then {reviewers: [$a]} else {reviewers: ($w | split(","))} end)')"
   fi
 
