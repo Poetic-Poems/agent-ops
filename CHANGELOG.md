@@ -1048,6 +1048,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The Approver stage skipped a ready pull request silently whenever the
+  merge-autonomy kill switch's own read failed closed with no cached copy
+  (TD-PPagop-26081507) — a lone rate-limited refusal, the everyday cause,
+  read exactly like a genuinely configured or manually killed `human`
+  (agent-ops#1081): no App review, and no `warning` logging why, breaking
+  requirement 8b's own contract that every other way this stage cannot run
+  says so. `run_approver_stage` now asks `merge_autonomy_kill_state`
+  directly, ahead of `merge_autonomy_effective_level`, with a new `RETRY`
+  argument: on a fail-closed read it classifies whatever was left in the
+  kill flag's own `$cache.err` via `github_limit_kind` and, only when the
+  cause was rate-limiting, waits out `github_limit_wait_plan`'s existing
+  wait/backoff and asks once more before giving up. A still-fail-closed read
+  now logs a `warning` naming the pull request, the flag, and the cause,
+  distinguishable from a genuinely configured `human` (which stays silent,
+  unchanged) — leaving the pull request exactly the shape issue #890's own
+  recovery sweep is built to recover, once it lands.
 - The expensive-gather cache (requirement 48 above) wrote a 0-byte file for
   any repository whose raw bands outgrew `MAX_ARG_STRLEN`, so the fleet's
   busiest repository was invisible to each node two cycles in three

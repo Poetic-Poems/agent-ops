@@ -93,6 +93,29 @@ if [[ "${GH_STUB_MODE:-ok}" == "down" ]]; then
   echo "dial tcp: could not resolve host github.com" >&2
   exit 1
 fi
+if [[ "${GH_STUB_MODE:-ok}" == "ratelimit" ]]; then
+  # agent-ops#1081: fails the call with a rate-limit-shaped refusal the first
+  # $(cat ratelimit-fail-count) times, then falls through to the ordinary
+  # backing-directory handling below — simulating a transient 403 that
+  # clears on a retry, or one that does not, depending on the count a case
+  # primes before it calls.
+  n_file="${GH_STUB_STATE_DIR:?}/ratelimit-calls"
+  n="$(cat "$n_file" 2>/dev/null || printf 0)"
+  n=$(( n + 1 ))
+  printf '%s' "$n" > "$n_file"
+  fail_count="$(cat "${GH_STUB_STATE_DIR:?}/ratelimit-fail-count" 2>/dev/null || printf 0)"
+  if (( n <= fail_count )); then
+    # The secondary-limit message, deliberately, not the primary one: a
+    # primary refusal's own retry asks github_limit_primary_reset_epoch for
+    # a fresh snapshot, which reaches the real `gh` binary via `command gh`
+    # rather than this stub (see that function's own header) — wrong in a
+    # sandboxed test. The secondary wait is fixed
+    # (GITHUB_LIMIT_SECONDARY_WAIT_SECONDS) and needs no snapshot at all,
+    # the same reason test/approver.test.sh's own #1082 coverage picks it.
+    echo "You have exceeded a secondary rate limit. Please wait a few minutes." >&2
+    exit 1
+  fi
+fi
 backing="${GH_STUB_BACKING:?}"
 method=GET path="" jq_expr=""
 declare -A f=()
@@ -290,6 +313,99 @@ assert_eq "and names itself fail-closed rather than leaving doctor.sh to infer i
 # unreachable-with-no-cache case, nothing broader.
 assert_eq "a reachable repo confirms clear on that same node once network returns" "enabled" \
   "$(merge_autonomy_kill_state "$slug" "$fs_fresh" | jq -r '.state')"
+
+# --- agent-ops#1081: the RETRY argument ----------------------------------------
+# A lone rate-limited refusal is by far the common cause of the fail-closed
+# read above (agent-ops#1101's own evidence: six `guard-degraded` events in
+# one hour on the same node). RETRY has this function classify whatever it
+# just left in $cache.err via github_limit_kind and, only when the cause was
+# rate-limiting, wait (github_limit_wait_plan) and ask once more before
+# giving up. GITHUB_LIMIT_SECONDARY_WAIT_SECONDS=1 keeps the real `sleep`
+# this exercises well under a second, the same device
+# test/approver.test.sh's own rate-limit section already uses for
+# agent-ops#1082. Both facts a caller needs — whether the retry was actually
+# taken, and whether the result is still the fail-closed synthesis — travel
+# in the returned document itself (`.retried`, `.record.kind`), never a
+# global: see merge_autonomy_kill_state's own header for why.
+GITHUB_LIMIT_SECONDARY_WAIT_SECONDS=1
+rl_state="$tmp_dir/ratelimit-state"
+mkdir -p "$rl_state"
+export GH_STUB_STATE_DIR="$rl_state"
+reset_ratelimit_stub() {  # <fail-count>
+  printf '%s' "$1" > "$rl_state/ratelimit-fail-count"
+  rm -f "$rl_state/ratelimit-calls"
+  GITHUB_LIMIT_WAITED_SECONDS=0
+}
+
+# Primed genuinely set (rather than clear) so the successful retry's GET
+# returns real content directly, without the probe-404 mode's own extra
+# repo-existence call a 404 would trigger (fleet_flag_fetch_status's own
+# header) — keeping this case's own call count to exactly the two kill-flag
+# reads the retry contract is about.
+merge_autonomy_kill_set "$slug" "primed for the retry-succeeds case" "test-operator pid 4" >/dev/null
+fs_retry_ok="$tmp_dir/fleet-state-retry-ok"
+mkdir -p "$fs_retry_ok"
+reset_ratelimit_stub 1
+rl_ok="$(GH_STUB_MODE=ratelimit merge_autonomy_kill_state "$slug" "$fs_retry_ok" fresh retry)"
+assert_eq "RETRY: a rate-limited refusal, real content on the retry, resolves disabled" "disabled" \
+  "$(jq -r '.state' <<<"$rl_ok")"
+assert_eq "  ... carrying the real manual kind, not the fail-closed synthesis" "manual" \
+  "$(jq -r '.record.kind // ""' <<<"$rl_ok")"
+assert_eq "  ... exactly two fetch attempts were made" "2" "$(cat "$rl_state/ratelimit-calls")"
+assert_eq "  ... and the document reports the retry was actually taken" "true" \
+  "$(jq -r '.retried' <<<"$rl_ok")"
+merge_autonomy_kill_clear "$slug" "$fs" >/dev/null
+
+fs_retry_fail="$tmp_dir/fleet-state-retry-fail"
+mkdir -p "$fs_retry_fail"
+reset_ratelimit_stub 99
+rl_fail="$(GH_STUB_MODE=ratelimit merge_autonomy_kill_state "$slug" "$fs_retry_fail" fresh retry)"
+assert_eq "RETRY: still rate-limited after the retry fails closed the same as before" "disabled" \
+  "$(jq -r '.state' <<<"$rl_fail")"
+assert_eq "  ... names itself fail-closed, distinguishable from a configured/manual human" \
+  "fail-closed" "$(jq -r '.record.kind // ""' <<<"$rl_fail")"
+assert_eq "  ... exactly two fetch attempts were made, not endless retries" "2" \
+  "$(cat "$rl_state/ratelimit-calls")"
+assert_eq "  ... and the document still reports the retry was taken" "true" \
+  "$(jq -r '.retried' <<<"$rl_fail")"
+
+fs_no_retry="$tmp_dir/fleet-state-no-retry"
+mkdir -p "$fs_no_retry"
+reset_ratelimit_stub 99
+rl_noretry="$(GH_STUB_MODE=ratelimit merge_autonomy_kill_state "$slug" "$fs_no_retry" fresh)"
+assert_eq "without RETRY, a rate-limited refusal still fails closed on the first attempt" "disabled" \
+  "$(jq -r '.state' <<<"$rl_noretry")"
+assert_eq "  ... with no retry attempted at all — unchanged behaviour for every caller but run_approver_stage" \
+  "1" "$(cat "$rl_state/ratelimit-calls")"
+assert_eq "  ... and the document says so" "false" "$(jq -r '.retried' <<<"$rl_noretry")"
+
+# Not every failure is a rate limit — RETRY must not turn a genuine transport
+# failure (the GH_STUB_MODE=down case above) into a retry loop.
+fs_down_retry="$tmp_dir/fleet-state-down-retry"
+mkdir -p "$fs_down_retry"
+rl_down="$(GH_STUB_MODE=down merge_autonomy_kill_state "$slug" "$fs_down_retry" fresh retry)"
+assert_eq "RETRY: a non-rate-limit transport failure is not retried" "disabled" \
+  "$(jq -r '.state' <<<"$rl_down")"
+assert_eq "  ... and the document says no retry was taken" "false" "$(jq -r '.retried' <<<"$rl_down")"
+
+# RETRY threads through merge_autonomy_effective_level too — it still
+# returns one word, never a cause, exactly as before (agent-ops#1081's own
+# distinguishing behaviour is `run_approver_stage`'s to derive, by asking
+# merge_autonomy_kill_state itself, ahead of this function — see
+# lib/approver.sh).
+fs_retry_level="$tmp_dir/fleet-state-retry-level"
+mkdir -p "$fs_retry_level"
+reset_ratelimit_stub 1
+assert_eq "RETRY threads through merge_autonomy_effective_level too" "agent-approves" \
+  "$(GH_STUB_MODE=ratelimit merge_autonomy_effective_level "$top_level_cfg" "acme/widgets" "$slug" "$fs_retry_level" fresh retry)"
+
+fs_retry_level_fail="$tmp_dir/fleet-state-retry-level-fail"
+mkdir -p "$fs_retry_level_fail"
+reset_ratelimit_stub 99
+assert_eq "  ... and a still-fail-closed read leaves the effective level human" "human" \
+  "$(GH_STUB_MODE=ratelimit merge_autonomy_effective_level "$top_level_cfg" "acme/widgets" "$slug" "$fs_retry_level_fail" fresh retry)"
+
+unset GH_STUB_STATE_DIR
 
 # --- TD-PPagop-26081602: a repo-level 404 fails closed the same way a
 #     transport-unreachable repo does — the contents API cannot tell "the

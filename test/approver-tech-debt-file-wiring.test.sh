@@ -115,6 +115,12 @@ approver_model_complex="model-complex"
 approver_model_critical="model-critical"
 mkdir -p "$cycle_dir" "$clone_dir" "$state_dir"
 
+# agent-ops#1081: run_approver_stage now asks merge_autonomy_kill_state
+# directly, ahead of merge_autonomy_effective_level, to distinguish a
+# fail-closed `human` from a genuinely configured one — see lib/approver.sh's
+# own comment at that call site. Stubbed enabled, the same "nothing killed"
+# baseline every case in this file already assumes.
+merge_autonomy_kill_state() { printf '{"state":"enabled"}'; }
 merge_autonomy_effective_level() { printf '%s' "agent-approves"; }
 approver_token_credential_present() { return 0; }
 approver_token_identity_login() { printf 'pullwright-approver[bot]'; }

@@ -517,7 +517,7 @@ approver_stage_complexity() {
 # return.
 run_approver_stage() {
   local pr_url="$1" complexity="$2"
-  local level login streak tier model="" mode="" adjudicating=0
+  local level login streak tier model="" mode="" adjudicating=0 kill_json
   local prompt out rc status_json verdict="" reasons_json="[]"
   approver_stage_verdict=""
   approver_stage_adjudicating=0
@@ -535,6 +535,40 @@ run_approver_stage() {
   # App review under the level it reads, so an operator's mid-cycle kill must
   # stop it here, not wait for the next cycle's process — see
   # merge_autonomy_effective_level's own comment on FRESH.
+  #
+  # `retry` (agent-ops#1081): `merge_autonomy_kill_state` fails closed to
+  # `human` on any transport failure reading the kill switch with no cached
+  # copy (TD-PPagop-26081507) — a lone rate-limited refusal is the common
+  # cause, and before this fix that silently stranded the pull request with
+  # no App review and no log trace, breaking requirement 8b's own contract
+  # that every other way this stage cannot run logs a `warning`. Reading the
+  # kill switch itself, ahead of (and instead of asking
+  # merge_autonomy_effective_level to ask on its behalf) is deliberate: a
+  # fail-closed `human` is entirely a property of the kill switch (the
+  # merge-budget freeze can only ever cap *down* to `agent-approves`, never
+  # produce `human`), so this one read already carries everything needed to
+  # tell the fail-closed case apart from a genuinely configured or manually
+  # killed `human` — via `.record.kind` on the very document this call
+  # returns, never a global a `$(...)` command substitution (needed here to
+  # capture that document at all) would silently drop.
+  kill_json="$(merge_autonomy_kill_state "$state_repo" "$state_dir" fresh retry)"
+  if [[ "$(jq -r '.state' <<<"$kill_json" 2>/dev/null)" != "enabled" ]]; then
+    if [[ "$(jq -r '.record.kind // ""' <<<"$kill_json" 2>/dev/null)" == "fail-closed" ]]; then
+      local kill_errf kill_cause kill_detail kill_retried_bool
+      kill_errf="$(fleet_cache_file "$state_dir" "$MERGE_AUTONOMY_KILL_FLAG").err"
+      kill_cause="$(cat "$kill_errf" 2>/dev/null || true)"
+      kill_retried_bool="$(jq -r 'if (.retried // false) == true then "true" else "false" end' <<<"$kill_json" 2>/dev/null)"
+      if [[ "$kill_retried_bool" == "true" ]]; then
+        kill_detail="could not read the $MERGE_AUTONOMY_KILL_FLAG flag for $selected_repo, even after one retry — failing closed to human this round, so no App review was posted on $pr_url ($kill_cause)"
+      else
+        kill_detail="could not read the $MERGE_AUTONOMY_KILL_FLAG flag for $selected_repo — failing closed to human this round, so no App review was posted on $pr_url ($kill_cause)"
+      fi
+      log_event "warning" "$(jq -nc --arg u "$pr_url" --arg f "$MERGE_AUTONOMY_KILL_FLAG" \
+        --arg c "$kill_cause" --argjson r "$kill_retried_bool" --arg d "$kill_detail" \
+        '{detail: $d, pr_url: $u, flag: $f, cause: $c, fail_closed: true, retried: $r}')"
+    fi
+    return 0
+  fi
   level="$(merge_autonomy_effective_level "$DEFAULTED_CONFIG" "$selected_repo" "$state_repo" "$state_dir" fresh)"
   [[ "$level" != "human" ]] || return 0
 
