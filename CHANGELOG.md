@@ -1085,6 +1085,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   does too, and now retries once through `github_limit_wait_plan`'s existing
   wait/backoff (`lib/github-limit.sh`) instead of dropping the verdict
   outright when the cause was rate-limiting.
+- A healthy node running long or chained cycles could stay behind the
+  registry's newest image for hours — two images behind, on the 2026-08-30
+  evidence (agent-ops#1096) — because `deploy/docker/
+  watchtower-pre-update.sh` deferred the roll whenever a cycle held the lock,
+  and a node whose next cycle starts before watchtower's next five-minute
+  poll never presented a gap to poll into: every individual deferral stayed
+  correctly bounded by `lock_stale_after`, but the *sequence* of them was
+  not, and nothing about the node was actually wedged. `agent-cycle.sh`'s
+  `cleanup()` now checks, at every cycle boundary, whether the running image
+  has fallen behind (`lib/image-drift.sh`'s `image_drift_status`, the same
+  verdict the heartbeat's `image` field already publishes — no second
+  signal); if so it declines a chain it would otherwise take and writes
+  `$state_dir/roll-pending.json`, which the hook now honours as an
+  unconditional allow against `lock.json` alone — never `review-lock.json`,
+  which never wrote the marker and never yielded anything (agent-ops#1102)
+  — until the window it names expires, or until the cycle that next
+  reacquires `lock.json` clears it itself, at its own start, once the image
+  is no longer "behind" (also agent-ops#1102: the window is a fixed clock
+  offset from cycle-end, not "until the next cycle would have started", so
+  without this a reacquired lock could otherwise run its own stages
+  underneath a marker still authorising an override of it). The bound is
+  now two-part: one cycle's length for a node that is merely busy,
+  `lock_stale_after` only for one that is actually wedged. An allow the
+  marker granted says so as it signs off, rather than reporting the idle
+  path's "no cycle in flight" over the in-flight line the same run printed a
+  few checks earlier — that log is what an operator reads after losing a
+  cycle to a roll, and is the whole reason this machinery is legible.
 - Requirement 2.0's budget gate read `GET /rate_limit`, whose body — read
   cold, as the first call of every cycle — is an empty window (`5000/5000`,
   reset exactly an hour from now) rather than a reading; it answered `ok`

@@ -11,6 +11,15 @@
 # directions on both inputs — chain_count against max_chained_cycles, and an
 # empty `.sources` against a non-empty one — rather than one happy-path case.
 #
+# Also covers `chain_image_behind` and `chain_write_roll_pending`
+# (agent-ops#1096): the cycle-end check that yields a chain a healthy node
+# would otherwise take when the running image has fallen behind, and the
+# marker it writes so deploy/docker/watchtower-pre-update.sh's own test can
+# pick up where this one leaves off. And `chain_clear_landed_roll_pending`
+# (agent-ops#1102): the other half, called back at the top of the next cycle
+# to shed that marker once it has either done its job or was never earned by
+# this node's own current image.
+#
 # No test framework is used (none exists elsewhere in this repo). Run directly:
 #
 #   ./test/chain.test.sh
@@ -23,6 +32,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # shellcheck source=lib/chain.sh
 . "$SCRIPT_DIR/lib/chain.sh"
+
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
 
 failures=0
 
@@ -92,6 +104,107 @@ assert_stops "max_chained_cycles=1 disables chaining outright, even cycle 1" "1"
 assert_stops "a non-numeric chain_count fails closed" "banana" "3" "$one_source"
 assert_stops "a non-numeric max_chained_cycles fails closed" "1" "banana" "$one_source"
 assert_stops "a negative-looking chain_count fails closed" "-1" "3" "$one_source"
+
+# --- chain_image_behind (requirement 39, agent-ops#1096) --------------------
+# A healthy node running long or chained cycles never presents watchtower a
+# gap to poll into, so a cycle that is about to chain must check whether the
+# image has fallen behind before it does — reusing the heartbeat's own
+# image_drift_status verdict, never a second signal.
+
+assert_behind() {  # assert_behind <desc> <status_json>
+  local desc="$1" status="$2"
+  if chain_image_behind "$status"; then
+    printf 'ok   - %s\n' "$desc"
+  else
+    printf 'FAIL - %s\n     expected chain_image_behind to succeed for: %s\n' "$desc" "$status"
+    failures=$(( failures + 1 ))
+  fi
+}
+
+assert_not_behind() {  # assert_not_behind <desc> <status_json>
+  local desc="$1" status="$2"
+  if chain_image_behind "$status"; then
+    printf 'FAIL - %s\n     expected chain_image_behind to fail for: %s\n' "$desc" "$status"
+    failures=$(( failures + 1 ))
+  else
+    printf 'ok   - %s\n' "$desc"
+  fi
+}
+
+assert_behind "a 'behind' verdict is behind" '{"status":"behind","registry_commit":"abc","checked_at":"2026-08-30T00:00:00Z"}'
+assert_not_behind "a 'current' verdict is not" '{"status":"current","checked_at":"2026-08-30T00:00:00Z"}'
+assert_not_behind "an 'unverified' verdict is not — nothing to act on" '{"status":"unverified","reason":"registry unreachable","checked_at":"2026-08-30T00:00:00Z"}'
+assert_not_behind "the JSON literal null (a developer checkout) is not" "null"
+assert_not_behind "no argument at all defaults closed" ""
+assert_not_behind "malformed JSON fails closed" "not json"
+
+# --- chain_write_roll_pending (requirement 39, agent-ops#1096) --------------
+# What deploy/docker/watchtower-pre-update.sh reads back to override its
+# ordinary in-flight-cycle deferral for exactly the window this cycle
+# yielded, and no longer.
+
+tmp_state="$tmp_dir/state"
+mkdir -p "$tmp_state"
+
+chain_write_roll_pending "$tmp_state" 15
+assert_eq "the marker file is written" "1" \
+  "$(test -f "$tmp_state/roll-pending.json" && echo 1 || echo 0)"
+marker_until="$(jq -r '.until' "$tmp_state/roll-pending.json")"
+assert_eq "'until' is a bare ISO-8601 timestamp" "1" \
+  "$([[ "$marker_until" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] && echo 1 || echo 0)"
+
+now_epoch="$(date +%s)"
+until_epoch="$(date -d "$marker_until" +%s)"
+gap=$(( until_epoch - now_epoch ))
+assert_eq "'until' is roughly 15 minutes out (within a minute either way)" "1" \
+  "$(( gap > 14*60 && gap < 16*60 ? 1 : 0 ))"
+
+chain_write_roll_pending "$tmp_state" "banana"
+marker_until="$(jq -r '.until' "$tmp_state/roll-pending.json")"
+until_epoch="$(date -d "$marker_until" +%s)"
+gap=$(( until_epoch - $(date +%s) ))
+assert_eq "a non-numeric minutes argument falls back to the schema default (15)" "1" \
+  "$(( gap > 14*60 && gap < 16*60 ? 1 : 0 ))"
+
+rm -rf "$tmp_state"
+chain_write_roll_pending "$tmp_state" 5
+assert_eq "a missing state_dir is created rather than failing" "1" \
+  "$(test -f "$tmp_state/roll-pending.json" && echo 1 || echo 0)"
+
+# --- chain_clear_landed_roll_pending (agent-ops#1102) -----------------------
+# The other half of the pair above: called back at the top of the next cycle
+# to reacquire the lock, this sheds a marker that has either done its job
+# (the roll landed) or was never earned by this node's own current image —
+# but only once the verdict genuinely says so, never on a "behind" verdict
+# still in force.
+
+chain_write_roll_pending "$tmp_state" 15
+chain_clear_landed_roll_pending "$tmp_state" '{"status":"behind","checked_at":"2026-08-30T00:00:00Z"}'
+assert_eq "a still-'behind' verdict leaves the marker in place" "1" \
+  "$(test -f "$tmp_state/roll-pending.json" && echo 1 || echo 0)"
+
+chain_clear_landed_roll_pending "$tmp_state" '{"status":"current","checked_at":"2026-08-30T00:00:00Z"}'
+assert_eq "a 'current' verdict clears a landed marker" "0" \
+  "$(test -f "$tmp_state/roll-pending.json" && echo 1 || echo 0)"
+
+chain_write_roll_pending "$tmp_state" 15
+chain_clear_landed_roll_pending "$tmp_state" '{"status":"unverified","reason":"registry unreachable","checked_at":"2026-08-30T00:00:00Z"}'
+assert_eq "an 'unverified' verdict clears it too — nothing to protect any more" "0" \
+  "$(test -f "$tmp_state/roll-pending.json" && echo 1 || echo 0)"
+
+chain_write_roll_pending "$tmp_state" 15
+chain_clear_landed_roll_pending "$tmp_state" "null"
+assert_eq "the JSON literal null clears it — this node is not running a CI-stamped image at all" "0" \
+  "$(test -f "$tmp_state/roll-pending.json" && echo 1 || echo 0)"
+
+chain_write_roll_pending "$tmp_state" 15
+chain_clear_landed_roll_pending "$tmp_state" ""
+assert_eq "no argument at all defaults to clearing, same as null" "0" \
+  "$(test -f "$tmp_state/roll-pending.json" && echo 1 || echo 0)"
+
+rm -f "$tmp_state/roll-pending.json"
+chain_clear_landed_roll_pending "$tmp_state" '{"status":"current"}'
+assert_eq "no marker to clear is not an error" "0" "$?"
 
 printf '\n'
 if (( failures > 0 )); then

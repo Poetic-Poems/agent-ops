@@ -26,12 +26,13 @@
 # the same staleness the next cycle uses means the hook can never defer past
 # the point where a cycle would have taken the lock over anyway.
 #
-# That bounds **one** deferral, and only one. It does not bound the sequence.
-# Each poll is answered independently, so a node whose next cycle starts
-# before watchtower's next poll is never *asked* at a moment when the lock is
-# free: every individual refusal is correct, every one is well inside
-# `lock_stale_after`, and the node still never rolls. Nothing here is wedged
-# and nothing self-corrects.
+# That bounds **one** deferral, and only one. It does not, by itself, bound
+# the sequence. Each poll is answered independently, so a node whose next
+# cycle starts before watchtower's next poll is never *asked* at a moment
+# when the lock is free: every individual refusal is correct, every one is
+# well inside `lock_stale_after`, and the node still never rolls on this
+# check alone. Nothing here is wedged and nothing here self-corrects — that is
+# `roll-pending`'s job, below.
 #
 # Measured on VM1, 2026-08-24: `Failed=3 Scanned=3 Updated=0` every five
 # minutes for hours. One of the two nodes sharing that host happened to be
@@ -39,13 +40,43 @@
 # the gap and stayed on an image ninety minutes older, with nothing anywhere
 # saying so. This earlier read the other way — "the worst case is therefore
 # `lock_stale_after` hours of deferral, not 'until somebody notices this node
-# stopped updating'" — which holds for the *wedged* cycle it was written
-# about and not for a merely busy one. Reporting the repeated `Failed` is
-# agent-ops#603; this comment's job is only to stop the bound being read as
-# wider than it is.
+# stopped updating'" — which holds only for a *wedged* cycle. Reporting the
+# repeated `Failed` is agent-ops#603; a *healthy* node that simply never gets
+# a gap is agent-ops#1096, fixed by the `roll-pending` marker below. The real
+# bound today is therefore two-part: one cycle's length for a healthy node
+# (agent-cycle.sh's own cleanup() yields its next chain and writes
+# `roll-pending` the moment `image_drift_status` reads "behind" — requirement
+# 39, requirement 2.5), and `lock_stale_after` hours only for a cycle that is
+# actually wedged, which never reaches that cleanup path at all.
 #
-# Both pipelines count. agent-cycle.sh holds `lock.json` and review-cycle.sh
-# holds `review-lock.json`, and either dying to a roll costs the same.
+# **`roll-pending`** (`$state_dir/roll-pending.json`, `{"until": <ISO8601>}`)
+# is how the healthy-node bound is actually delivered rather than merely
+# hoped for. Declining to chain releases the lock, but the gap that leaves is
+# no wider than the moment before the next cron-fired cycle reacquires it —
+# still too narrow for a five-minute poll to reliably land in. So
+# agent-cycle.sh's cleanup() writes this marker instead of relying on that
+# gap: read below, once `lock.json` itself is found held, it overrides that
+# one deferral as an unconditional allow until `until` — wide enough
+# (`schedule.cycle_interval_minutes`) to guarantee the next poll falls inside
+# it, whatever the lock says. Past `until`, with no marker at all, or against
+# `review-lock.json`, the ordinary lock-based judgement applies exactly as it
+# always has — see "Scope", below, for why the override stops at `lock.json`.
+# agent-cycle.sh's own `acquire_lock` also clears a marker that has already
+# done its job (agent-ops#1102): once `image_drift_status` no longer reads
+# "behind", the next cycle to reacquire the lock removes it before running
+# its own stages, so a marker written for one roll cannot linger to authorise
+# a later, unrelated one across the cycle boundary it was never asked about.
+#
+# **Scope.** Only `lock.json`'s own deferral is overridden. `review-lock.json`
+# defers exactly as before, marker or not (agent-ops#1102): review-cycle.sh
+# never wrote this marker and never decided to yield anything, so a project
+# review beginning just after a yielding implementation cycle must not run
+# any part of itself under a licence to be destroyed that it never earned.
+#
+# Both pipelines count toward the ordinary, marker-free judgement below.
+# agent-cycle.sh holds `lock.json` and review-cycle.sh holds
+# `review-lock.json`, and either dying to a roll costs the same — the marker
+# just does not extend to the second of them.
 #
 # One thing acquire_lock never has to think about: *which container* wrote the
 # lock. This script must — watchtower runs it in every container carrying the
@@ -277,12 +308,39 @@ held_by() {
   fi
 }
 
+# roll_pending_allow — print a one-line reason and succeed iff
+# $state_dir/roll-pending.json names an `until` that has not yet passed
+# (agent-ops#1096). Checked, and honoured, only once `lock.json` itself is
+# found held, below (agent-ops#1102): this overrides that one deferral, never
+# `review-lock.json`'s — review-cycle.sh never wrote this marker and never
+# decided to yield anything, so it must not be destroyed on the strength of a
+# decision it took no part in. An unparseable `until` reads as epoch 0 —
+# impossibly old, exactly `held_by`'s own convention for a timestamp it
+# cannot trust — so a corrupt or foreign-shaped marker never grants an allow
+# it did not earn.
+roll_pending_allow() {
+  local f="$state_dir/roll-pending.json" until_ts until_epoch now_epoch
+  [[ -f "$f" ]] || return 1
+  until_ts="$(jq -r '.until // empty' "$f" 2>/dev/null || true)"
+  [[ -n "$until_ts" ]] || return 1
+  until_epoch="$(date -d "$until_ts" +%s 2>/dev/null || echo 0)"
+  now_epoch="$(date +%s)"
+  (( until_epoch > now_epoch )) || return 1
+  printf 'a roll-pending marker from the last cycle boundary is in force until %s' "$until_ts"
+}
+
 defer=0
+overrode=0
 
 held="$(held_by "$state_dir/lock.json" "$cycle_stale_after")"
 if [[ -n "$held" ]]; then
-  say "an implementation cycle is in flight ($held) — deferring this update"
-  defer=1
+  if pending="$(roll_pending_allow)"; then
+    say "an implementation cycle is in flight ($held), but $pending — allowing the update despite the lock"
+    overrode=1
+  else
+    say "an implementation cycle is in flight ($held) — deferring this update"
+    defer=1
+  fi
 fi
 
 held="$(held_by "$state_dir/review-lock.json" "$review_stale_after")"
@@ -298,5 +356,16 @@ if (( defer )); then
 fi
 
 record_verdict allow
-say "no cycle in flight — the update may proceed"
+# Two different allows, and the log has to tell them apart: the ordinary one
+# is "nothing was running here", while the marker's override is "something
+# *was* running here and this container agreed at its own last cycle boundary
+# to be destroyed anyway". Saying "no cycle in flight" for the second would
+# contradict the line printed a few checks above it — in the one log an
+# operator reads after losing a cycle to a roll, which is exactly what this
+# machinery exists to explain.
+if (( overrode )); then
+  say "the update may proceed on the roll-pending marker's own authority"
+else
+  say "no cycle in flight — the update may proceed"
+fi
 exit 0

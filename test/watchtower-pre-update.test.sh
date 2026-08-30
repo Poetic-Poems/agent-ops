@@ -17,7 +17,13 @@
 #     door, and one that reads as alive may be an unrelated local process
 #     (#130);
 #   - anything the hook cannot read fails *open*, because a node that quietly
-#     stops updating is worse than a roll that lands badly once.
+#     stops updating is worse than a roll that lands badly once;
+#   - a `roll-pending` marker (agent-ops#1096) overrides a live, fresh
+#     lock.json as an unconditional allow, until it expires — the mechanism a
+#     healthy node running long or chained cycles relies on to actually get a
+#     roll, rather than merely being bounded by `lock_stale_after` the way a
+#     wedged one is. It never extends to review-lock.json (agent-ops#1102):
+#     a project review never wrote the marker and never yielded anything.
 #
 # Run directly: ./test/watchtower-pre-update.test.sh — exit 0 iff all passed.
 
@@ -216,6 +222,79 @@ run_hook_as "reader-container"
 assert_eq "a foreign review lock defers the same way" "75" "$rc"
 assert_contains "naming that pipeline" "project review is in flight" "$out"
 rm -f "$state_dir/review-lock.json"
+
+# --- The roll-pending override (agent-ops#1096, scoped by agent-ops#1102) ------
+# agent-cycle.sh's cleanup() writes this marker when it declines to chain
+# because the image has fallen behind — see test/chain.test.sh for that side.
+# The hook must honour it as an unconditional allow against a live, fresh
+# lock.json, for exactly the window it names and no longer — but never
+# against review-lock.json, which review-cycle.sh never wrote the marker for
+# and never decided to yield anything (agent-ops#1102): a project review
+# beginning just after a yielding implementation cycle must keep deferring on
+# its own ordinary judgement regardless of what lock.json's own marker says.
+
+write_roll_pending() {  # write_roll_pending MINUTES_FROM_NOW
+  jq -n --arg u "$(date -u -d "${1} minutes" +%Y-%m-%dT%H:%M:%SZ)" '{until: $u}' \
+    > "$state_dir/roll-pending.json"
+}
+
+start_sleeper
+write_lock "$state_dir/lock.json" "$sleeper_pid" 0
+write_roll_pending 15
+run_hook
+assert_eq "a live cycle's lock is overridden while roll-pending is in force" "0" "$rc"
+assert_contains "and says so" "roll-pending marker" "$out"
+# The closing line has to agree with the one above it: an override is the one
+# allow where a cycle *was* in flight, so reporting the idle path's "no cycle
+# in flight" here would contradict the hook's own record of what it just did.
+assert_eq "and never signs off as an idle node" "0" \
+  "$(grep -c 'no cycle in flight' <<<"$out")"
+assert_contains "signing off on the marker's authority instead" \
+  "may proceed on the roll-pending marker's own authority" "$out"
+stop_sleeper
+rm -f "$state_dir/lock.json"
+
+start_sleeper
+write_lock "$state_dir/review-lock.json" "$sleeper_pid" 0
+write_roll_pending 15
+run_hook
+assert_eq "a live review's lock still defers — the marker does not extend to it" "75" "$rc"
+assert_eq "and the hook does not claim an override it never grants here" "0" "$(grep -c 'roll-pending' <<<"$out")"
+stop_sleeper
+rm -f "$state_dir/review-lock.json" "$state_dir/roll-pending.json"
+
+start_sleeper
+write_lock "$state_dir/lock.json" "$sleeper_pid" 0
+write_roll_pending -5
+run_hook
+assert_eq "an expired roll-pending marker no longer overrides — ordinary judgement applies" "75" "$rc"
+stop_sleeper
+rm -f "$state_dir/lock.json" "$state_dir/roll-pending.json"
+
+start_sleeper
+write_lock "$state_dir/lock.json" "$sleeper_pid" 0
+jq -n '{until: "not a date"}' > "$state_dir/roll-pending.json"
+run_hook
+assert_eq "a roll-pending marker whose 'until' will not parse reads as expired, not as forever" "75" "$rc"
+stop_sleeper
+rm -f "$state_dir/lock.json" "$state_dir/roll-pending.json"
+
+# Judged against a live lock on purpose: with nothing in flight the hook
+# exits 0 whatever the marker says, so an idle node could not tell "the junk
+# was rejected" from "there was nothing to override" in the first place.
+start_sleeper
+write_lock "$state_dir/lock.json" "$sleeper_pid" 0
+printf 'not json at all\n' > "$state_dir/roll-pending.json"
+run_hook
+assert_eq "junk in the roll-pending marker does not grant an override" "75" "$rc"
+assert_eq "and the hook does not claim an override it refused" "0" "$(grep -c 'roll-pending' <<<"$out")"
+stop_sleeper
+rm -f "$state_dir/lock.json" "$state_dir/roll-pending.json"
+
+rm -f "$state_dir/lock.json" "$state_dir/review-lock.json"
+run_hook
+assert_eq "no marker at all: an idle node behaves exactly as before" "0" "$rc"
+assert_eq "and does not claim a roll-pending override it never had" "0" "$(grep -c 'roll-pending' <<<"$out")"
 
 # --- Junk in the lock ---------------------------------------------------------
 
