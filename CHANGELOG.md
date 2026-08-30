@@ -994,6 +994,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- An unreachable provider no longer escalates as a deterministic crash loop
+  (agent-ops#1073, escalation #1070). `stage_api_refusal` narrows every API
+  refusal to one stable token so requirement 2.7's ladder can group across
+  cycles whose messages differ (requirement 4i), and that narrowing discarded
+  the one fact separating two classes with opposite handling: the API
+  *refusing* a request it considered (400, `prompt_too_long`,
+  `invalid_request_error` — deterministic, will not clear by retrying) and the
+  API being *unreachable* (a 5xx, a dropped connection — external, and
+  self-clearing). Between 2026-08-29T22:21Z and 2026-08-30T02:15Z the Ockham
+  host lost outbound network, the Co-Ordinator failed 16 consecutive times on
+  both nodes with `api_error_status: 503` on every record, and the escalation
+  that produced told a human the fault was "almost certainly deterministic …
+  no amount of retrying will clear it" — false on its own evidence, and gone
+  the moment the network returned. `lib/stage-attempt.sh`'s new
+  `stage_api_refusal_class` reads that status (and a named connection-level
+  `terminal_reason`) as a sibling of the stable token, answering `transient`
+  or `refused`, and `handle_stage_failure` carries it on the `attempt-failed`
+  event as `api_refusal_class`; `detail` itself is byte-identical to what it
+  was, so nothing about the grouping changes. `crash_loop_verdict` now returns
+  an `escalate` field, `false` only when every failure the run counted was
+  classified `transient`, and `agent-cycle.sh` logs `provider-unreachable`
+  instead of filing an issue in that case — the run is still counted and still
+  resets on a Co-Ordinator success. A sustained transient run is not thereby
+  invisible: `scripts/publish-dashboard.sh` re-runs the same verdict over the
+  fleet union log and `dashboard/index.html` renders a **provider
+  unreachable** badge on every node the run names, beside the updater and
+  image verdicts, which is where a node-health fact nothing in this repository
+  can fix belongs.
+
 - A subject pull request that merges mid-Reviewer-pass is now caught and
   retired as a completion, instead of running the rest of the cycle against a
   pull request no longer there (agent-ops#916, escalation #922). Nothing on
