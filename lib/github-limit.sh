@@ -43,13 +43,54 @@
 # `github_auth_probe`, checked ahead of the budget verdict for the same
 # "before it spends anything" reason.
 #
-# ## Why the budget check is free
+# ## Why the meter is read from response headers, not from `GET /rate_limit`
 #
-# `GET /rate_limit` is exempt from the limits it reports — a call to it does
-# not increment `core.used`, which is what makes a check-before-you-spend gate
-# affordable at the top of every cycle. Verified 2026-08-12 by bracketing a
-# metered call with two of them and observing the delta of exactly 1.
+# `GET /rate_limit` is exempt from the limits it reports, which made it the
+# obvious probe when this file was written (2026-08-12: a metered call
+# bracketed by two of them moved `core.used` by exactly one). It is also, read
+# cold, not a reading. On 2026-08-30 three metered calls seven seconds apart,
+# each followed within the same second by the endpoint, showed the response
+# headers draining the shared user bucket — `x-ratelimit-used` 92, 105, 118
+# against one fixed `x-ratelimit-reset` — while the endpoint's body answered
+# `used: 0, remaining: 5000` every time, with a `reset` exactly 3600 s from
+# *now* and sliding with the clock; the endpoint's own `x-ratelimit-*` headers
+# said the same. It is intermittently right (one read immediately after a
+# metered call by the same token showed the true aggregate), and nothing in
+# the answer says which kind it is. The cycle-start check's snapshot was the
+# first call a cycle made, so it read that empty window essentially always,
+# answered `ok`, and fired zero times across 95 recorded refusals in 48 hours
+# (agent-ops#1087).
 #
+# The `x-ratelimit-*` headers on any *metered* response are computed on the
+# request and describe the bucket GitHub enforces — the user's aggregate, so
+# the whole fleet's, the publisher's and the owner's own shell together — and
+# GraphQL's `rateLimit` object is the same kind of reading for that pool. So
+# `github_limit_snapshot` spends one `core` point (`GET /meta`,
+# `GITHUB_LIMIT_PROBE_PATH`) and one GraphQL point per reading, and builds
+# from the two the same `{resources: {core, graphql}}` document the verdict
+# always consumed. A body-shaped snapshot that carries the empty-window
+# signature — `remaining == limit`, nothing used, `reset` within
+# `GITHUB_LIMIT_PRISTINE_SLACK` seconds of now + 3600 — is classified
+# `unknown`, never `ok` (`github_limit_resource_pristine`), so a caller that
+# still hands the verdict an endpoint body cannot be told the bucket is full
+# by a document that says nothing. `GET /rate_limit` remains what the
+# credential probe (2.0b) and the token-expiry read use: both want the call's
+# status and headers, not its budget figures.
+#
+# ## The record (requirement 2.0d)
+#
+# `github_budget_record` takes a snapshot and logs it as a `github-budget`
+# event — at cycle start (the same reading the verdict judges), after every
+# model stage (`lib/stage-run.sh`) and at cycle end — carrying both pools'
+# `limit/used/remaining/reset` and `since_previous`, the bucket's movement
+# since this process's last reading. That movement is the *bucket's*, not this
+# node's: while every node authenticates as one user (D25 unprovisioned) the
+# figure is an upper bound on what the segment itself spent, exact only once
+# identities are per node or a per-call ledger exists (agent-ops#1084).
+# `scripts/github-budget-report.sh` sums the events. This is the measurement
+# D25 names as the trigger for a per-node App — "until the shared budget is
+# *measured* to bind".
+
 # Sourced by the pipelines, `lib/claim.sh` and the `scripts/gather-*`,
 # `scripts/sweep-*` family — see the wrapper's own header for what sourcing it
 # does to a script.
@@ -141,29 +182,92 @@ github_limit_kind() {
   fi
 }
 
-# github_limit_snapshot
-# The `/rate_limit` document, or nothing if it cannot be read. Free (see the
-# header), so callers may take one whenever they would otherwise guess.
+# The metered REST call whose response headers carry the `core` meter. `/meta`
+# is public, tiny, one point, and its headers were verified truthful against
+# a draining bucket on 2026-08-30; a caller with a repository in hand may pass
+# its own path. Not `/rate_limit`: see the header.
+GITHUB_LIMIT_PROBE_PATH="${GITHUB_LIMIT_PROBE_PATH:-meta}"
+# How far from an exact now + 3600 a `reset` may sit and still be read as the
+# endpoint's synthetic empty window. The clock is read once here and once by
+# GitHub, so a few seconds of slack; a real window's reset is fixed for the
+# hour and drifts away from now + 3600 by one second per second.
+GITHUB_LIMIT_PRISTINE_SLACK="${GITHUB_LIMIT_PRISTINE_SLACK:-15}"
+
+# github_limit_headers_to_resource RAW
+# RAW is `gh api -i` output — status line and headers, a blank line, the body.
+# Prints the resource object `{limit, used, remaining, reset}` built from the
+# `x-ratelimit-*` headers, or nothing when they are absent or not `core`'s.
+# Header names are matched case-insensitively and a CR is tolerated, since
+# `gh` prints the headers as GitHub sent them. A refused call (403, 404) still
+# carries the headers, which is what lets the wrapper below read a reset off
+# the very refusal it is handling.
+github_limit_headers_to_resource() {
+  local raw="${1:-}" hdrs limit used remaining reset resource
+  [[ -n "$raw" ]] || return 0
+  hdrs="$(printf '%s\n' "$raw" | tr -d '\r' | awk 'NF == 0 { exit } { print }' | tr '[:upper:]' '[:lower:]')"
+  resource="$(sed -n 's/^x-ratelimit-resource: *//p' <<<"$hdrs" | tail -1)"
+  [[ -z "$resource" || "$resource" == "core" ]] || return 0
+  limit="$(sed -n 's/^x-ratelimit-limit: *//p' <<<"$hdrs" | tail -1)"
+  used="$(sed -n 's/^x-ratelimit-used: *//p' <<<"$hdrs" | tail -1)"
+  remaining="$(sed -n 's/^x-ratelimit-remaining: *//p' <<<"$hdrs" | tail -1)"
+  reset="$(sed -n 's/^x-ratelimit-reset: *//p' <<<"$hdrs" | tail -1)"
+  [[ "$used" =~ ^[0-9]+$ && "$remaining" =~ ^[0-9]+$ && "$reset" =~ ^[0-9]+$ ]] || return 0
+  [[ "$limit" =~ ^[0-9]+$ ]] || limit=null
+  jq -nc --argjson l "$limit" --argjson u "$used" --argjson r "$remaining" --argjson k "$reset" \
+    '{limit: $l, used: $u, remaining: $r, reset: $k}'
+}
+
+# github_limit_graphql_resource [DOC]
+# The `graphql` pool's own meter: from DOC, a `{ rateLimit { limit cost used
+# remaining resetAt } }` response document, or — with no argument at all —
+# from that query made live (one point). Prints `{limit, used, remaining,
+# reset}` with `resetAt` converted to an epoch, or nothing when unreadable.
+# shellcheck disable=SC2120  # DOC is for tests and future callers; the live read passes none.
+github_limit_graphql_resource() {
+  local doc="${1-}"
+  if (( $# == 0 )); then
+    doc="$(command gh api graphql -f query='{ rateLimit { limit cost used remaining resetAt } }' 2>/dev/null)" || doc=""
+  fi
+  [[ -n "$doc" ]] || return 0
+  jq -ec '.data.rateLimit
+          | select(type == "object")
+          | select((.used | type) == "number" and (.remaining | type) == "number")
+          | {limit: .limit, used: .used, remaining: .remaining,
+             reset: ((.resetAt // "") | try fromdateiso8601 catch null)}' <<<"$doc" 2>/dev/null || true
+}
+
+# github_limit_snapshot [PROBE_PATH]
+# The budget document `github_limit_verdict` consumes — `{resources: {core:
+# {limit, used, remaining, reset}, graphql: {…}}, read_at, source}` — read from
+# the headers of one metered REST call and the GraphQL `rateLimit` object (see
+# the header for why not `GET /rate_limit`). Either pool may be absent when
+# its read failed; nothing at all, and exit 1, when both did, which the
+# verdict reads as `unknown` — never grounds to stand a cycle down.
 #
 # `command gh`, so this reaches the binary rather than recursing into the
 # wrapper below — and so a test's `PATH` stub answers it, which is the only
-# substitution any caller needs.
-#
-# stderr is discarded because every caller's fallback is the same and none of
-# them can act on the diagnosis. A snapshot that cannot be taken is reported as
-# the `unknown` verdict, which is never grounds to stand a cycle down — an
-# unreadable meter says nothing about the budget, and standing down on it would
-# invent a failure mode GitHub never had.
+# substitution any caller needs. stderr is discarded because every caller's
+# fallback is the same and none of them can act on the diagnosis. The probe's
+# own exit status is ignored on purpose: a refused probe still answers with
+# the headers, and the headers are the reading.
+# shellcheck disable=SC2120  # PROBE_PATH is optional; every in-repo caller takes the default.
 github_limit_snapshot() {
-  local out
-  out="$(command gh api rate_limit 2>/dev/null)" || return 1
-  jq -e 'type == "object" and has("resources")' <<<"$out" >/dev/null 2>&1 || return 1
-  printf '%s' "$out"
+  local probe="${1:-$GITHUB_LIMIT_PROBE_PATH}" raw core graphql now
+  now="$(date -u +%s)"
+  raw="$(command gh api -i "$probe" 2>/dev/null)" || true
+  core="$(github_limit_headers_to_resource "$raw")"
+  # shellcheck disable=SC2119  # the live read, deliberately argument-less
+  graphql="$(github_limit_graphql_resource)"
+  [[ -n "$core" || -n "$graphql" ]] || return 1
+  jq -nc --argjson c "${core:-null}" --argjson g "${graphql:-null}" --argjson t "$now" \
+    '{resources: ((if $c then {core: $c} else {} end) + (if $g then {graphql: $g} else {} end)),
+      read_at: $t, source: "headers"}'
 }
 
 # github_auth_probe
-# The same free `/rate_limit` call `github_limit_snapshot` makes, but kept
-# for what it says about the *credentials* rather than the budget: prints
+# The free `/rate_limit` call — the one `github_limit_snapshot` no longer
+# reads its figures from (see the header) — kept for what it says about the
+# *credentials* rather than the budget: prints
 # "<verdict>\t<detail>" —
 #
 #   - ok            a real `/rate_limit` document came back. The token works.
@@ -239,6 +343,96 @@ github_limit_reset_epoch() {
   jq -r --arg r "${2:-core}" '.resources[$r].reset // empty' <<<"${1:-}" 2>/dev/null || true
 }
 
+# github_limit_resource_pristine SNAPSHOT RESOURCE [NOW]
+# True when that resource carries the empty-window signature `GET /rate_limit`
+# answers with when read cold (see the header): `remaining == limit`, nothing
+# used, and `reset` within `GITHUB_LIMIT_PRISTINE_SLACK` seconds of NOW + 3600.
+# A header-derived reading can never look like this — the probe that produced
+# it is itself one point used — so the verdict skips a pristine resource as
+# "no evidence" rather than reading it as a full bucket.
+github_limit_resource_pristine() {
+  local snapshot="${1:-}" res="${2:-core}" now="${3:-}"
+  [[ "$now" =~ ^[0-9]+$ ]] || now="$(date -u +%s)"
+  [[ -n "$snapshot" ]] || return 1
+  jq -e --arg r "$res" --argjson now "$now" --argjson slack "$GITHUB_LIMIT_PRISTINE_SLACK" '
+    .resources[$r] as $x
+    | ($x | type) == "object"
+      and ($x.limit | type) == "number"
+      and $x.remaining == $x.limit
+      and (($x.used // 0) == 0)
+      and ($x.reset | type) == "number"
+      and (($x.reset - ($now + 3600)) | fabs) <= $slack' <<<"$snapshot" >/dev/null 2>&1
+}
+
+# github_limit_budget_fields SNAPSHOT
+# The two pools as the `github-budget` event carries them: `{core: {limit,
+# used, remaining, reset} | null, graphql: {…} | null}`. Pure.
+github_limit_budget_fields() {
+  jq -c '{core: (.resources.core // null | if . == null then null else {limit, used, remaining, reset} end),
+          graphql: (.resources.graphql // null | if . == null then null else {limit, used, remaining, reset} end)}' \
+    <<<"${1:-}" 2>/dev/null || printf '{"core":null,"graphql":null}'
+}
+
+# github_limit_budget_delta PREVIOUS CURRENT
+# The bucket's movement between two snapshots, per pool: `{core: n | null,
+# graphql: n | null, window_rolled: bool}`. Within one window it is
+# `current.used - previous.used`; across a roll (the two `reset`s differ) it is
+# `current.used` — a lower bound, flagged — since whatever was spent before
+# the roll is gone with the old window; `null` where either side lacks a
+# `used` figure or the count went backwards. Pure.
+github_limit_budget_delta() {
+  local prev="${1:-}" cur="${2:-}" out
+  if [[ -n "$prev" && -n "$cur" ]] \
+     && out="$(jq -nc --argjson p "$prev" --argjson c "$cur" '
+       def d($r): ($p.resources[$r]) as $a | ($c.resources[$r]) as $b
+         | if ($a | type) != "object" or ($b | type) != "object"
+              or ($a.used | type) != "number" or ($b.used | type) != "number"
+             then {spent: null, rolled: false}
+           elif $a.reset != $b.reset then {spent: $b.used, rolled: true}
+           elif $b.used >= $a.used then {spent: ($b.used - $a.used), rolled: false}
+           else {spent: null, rolled: false} end;
+       d("core") as $dc | d("graphql") as $dg
+       | {core: $dc.spent, graphql: $dg.spent, window_rolled: ($dc.rolled or $dg.rolled)}' 2>/dev/null)" \
+     && [[ -n "$out" ]]; then
+    printf '%s' "$out"
+  else
+    printf '{"core":null,"graphql":null,"window_rolled":false}'
+  fi
+}
+
+# The last snapshot this process recorded, for `since_previous`; and whether
+# a cycle-start reading has been taken, which is what lets the cycle-end
+# reading stay silent for an ending that never read GitHub at all (a disabled
+# switch must cost nothing, requirement 2.3).
+GITHUB_BUDGET_LAST_SNAPSHOT="${GITHUB_BUDGET_LAST_SNAPSHOT:-}"
+GITHUB_BUDGET_CYCLE_OPEN="${GITHUB_BUDGET_CYCLE_OPEN:-0}"
+
+# github_budget_record PHASE [STAGE]
+# Take a snapshot and log it as a `github-budget` event (requirement 2.0d):
+# `{phase: cycle-start | stage | cycle-end, stage?, readable, core, graphql,
+# since_previous}`. Needs the sourcing script's `log_event`; without one it
+# does nothing, and it never fails its caller. The snapshot is left in
+# `GITHUB_BUDGET_LAST_SNAPSHOT` so the cycle-start verdict judges the very
+# reading that was recorded rather than paying for a second one.
+github_budget_record() {
+  local phase="${1:-}" stage="${2:-}" snap fields delta
+  declare -F log_event >/dev/null 2>&1 || return 0
+  [[ "$phase" != "cycle-start" ]] || GITHUB_BUDGET_CYCLE_OPEN=1
+  # shellcheck disable=SC2119  # the default probe, deliberately
+  snap="$(github_limit_snapshot 2>/dev/null || true)"
+  if [[ -z "$snap" ]]; then
+    log_event "github-budget" "$(jq -nc --arg p "$phase" --arg s "$stage" \
+      '{phase: $p, readable: false} + (if $s == "" then {} else {stage: $s} end)')" || true
+    return 0
+  fi
+  fields="$(github_limit_budget_fields "$snap")"
+  delta="$(github_limit_budget_delta "$GITHUB_BUDGET_LAST_SNAPSHOT" "$snap")"
+  log_event "github-budget" "$(jq -nc --arg p "$phase" --arg s "$stage" --argjson f "$fields" --argjson d "$delta" \
+    '{phase: $p, readable: true} + (if $s == "" then {} else {stage: $s} end) + $f + {since_previous: $d}')" || true
+  GITHUB_BUDGET_LAST_SNAPSHOT="$snap"
+  return 0
+}
+
 # github_limit_verdict SNAPSHOT MIN_CORE MIN_GRAPHQL
 # The cycle-start budget check, pure: prints
 # "<verdict>\t<resource>\t<remaining>\t<reset_at>".
@@ -246,16 +440,19 @@ github_limit_reset_epoch() {
 #   - exhausted  one or both are below. `resource` names the binding one, and
 #                `reset_at` is a real ISO-8601 UTC time GitHub stated — never
 #                an estimate, so a caller may treat it as a deadline.
-#   - unknown    the snapshot is missing or unreadable. Says nothing about the
-#                budget; the caller must carry on rather than stand down.
+#   - unknown    the snapshot is missing or unreadable — or carries nothing but
+#                the endpoint's empty-window answer (`github_limit_resource_pristine`).
+#                Says nothing about the budget; the caller must carry on rather
+#                than stand down. NOW (epoch) is for that classification; it
+#                defaults to the clock.
 #
 # When both resources are below their floor the one with the **later** reset
 # binds, so the stand-down a caller derives from it covers both. Picking the
 # earlier one would let a cycle wake into a budget that is still exhausted on
 # the other resource and spend a Co-Ordinator discovering it.
 github_limit_verdict() {
-  local snapshot="${1:-}" min_core="${2:-0}" min_graphql="${3:-0}"
-  local res rem reset best_res="" best_rem="" best_reset=0
+  local snapshot="${1:-}" min_core="${2:-0}" min_graphql="${3:-0}" now="${4:-}"
+  local res rem reset best_res="" best_rem="" best_reset=0 saw_pristine=0 saw_evidence=0
 
   if [[ -z "$snapshot" ]] || ! jq -e 'type == "object"' <<<"$snapshot" >/dev/null 2>&1; then
     printf 'unknown\t\t\t\n'
@@ -269,6 +466,11 @@ github_limit_verdict() {
     # An absent figure is unknown, not zero: a snapshot that does not mention
     # a resource is no evidence that the resource is spent.
     [[ "$rem" =~ ^[0-9]+$ ]] || continue
+    # The endpoint's cold answer — a full bucket with a reset exactly an hour
+    # from now — is no evidence either (see the header), and is skipped the
+    # same way; a snapshot made only of such answers is `unknown`, not `ok`.
+    if github_limit_resource_pristine "$snapshot" "$res" "$now"; then saw_pristine=1; continue; fi
+    saw_evidence=1
     (( rem < floor )) || continue
     reset="$(github_limit_reset_epoch "$snapshot" "$res")"
     [[ "$reset" =~ ^[0-9]+$ ]] || reset=0
@@ -278,7 +480,11 @@ github_limit_verdict() {
   done
 
   if [[ -z "$best_res" ]]; then
-    printf 'ok\t\t\t\n'
+    if (( saw_pristine == 1 && saw_evidence == 0 )); then
+      printf 'unknown\t\t\t\n'
+    else
+      printf 'ok\t\t\t\n'
+    fi
     return 0
   fi
   local reset_at=""
@@ -399,6 +605,9 @@ gh() {
         # Which resource was refused is not stated in the message, so take the
         # earlier of the two resets that are still ahead of us: whichever
         # resource this call spends, it can be retried once that time passes.
+        # The snapshot's own probe is refused too under a primary limit, and
+        # that is fine: the refusal carries the `x-ratelimit-reset` header.
+        # shellcheck disable=SC2119  # the default probe, deliberately
         snapshot="$(github_limit_snapshot 2>/dev/null || true)"
         local now_epoch core_reset graphql_reset reset
         now_epoch="$(date +%s)"

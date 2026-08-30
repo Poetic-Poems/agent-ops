@@ -362,5 +362,14 @@ run_claude_stage() {
   # it was: see scripts/state-sync.sh on why a stream is never replicated.
   stage_result_line "$stream_file" >"$out_file" 2>/dev/null || : >"$out_file"
 
+  # The GitHub budget reading after the model's own run, attributed to this
+  # stage (requirement 2.0d, lib/github-limit.sh's `github_budget_record`).
+  # Guarded rather than assumed: a caller that sources this file without the
+  # recorder simply gets no record, and a reading that fails never costs the
+  # stage its exit status.
+  if declare -F github_budget_record >/dev/null 2>&1; then
+    github_budget_record stage "$stage" || true
+  fi
+
   return "$rc"
 }

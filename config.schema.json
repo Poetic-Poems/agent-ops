@@ -1223,7 +1223,7 @@
       "default": 300,
       "x-docs": {
         "readme": "GitHub REST points a cycle must have left before it starts. `0` turns the check off for this resource.",
-        "spec": "The `core` floor of the GitHub API budget check (requirement 2.0). Sized above one cycle's typical REST spend so the cycle that starts can finish, and read from a `/rate_limit` call that is itself exempt from the limits it reports. `0` disables the floor.",
+        "spec": "The `core` floor of the GitHub API budget check (requirement 2.0). Sized above one cycle's typical REST spend so the cycle that starts can finish, and read from the `x-ratelimit-*` headers of one metered call — not from `GET /rate_limit`, whose body read cold is an empty window rather than a reading (agent-ops#1087). `0` disables the floor.",
         "value": {
           "spec": "300 points"
         }

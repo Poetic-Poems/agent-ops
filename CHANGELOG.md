@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- The GitHub API budget is recorded (requirement 2.0d, agent-ops#1087): a
+  `github-budget` event at cycle start, after every model stage and at cycle
+  end carries both pools' `limit/used/remaining/reset` and `since_previous`,
+  the bucket's movement since the process's last reading, read from the
+  `x-ratelimit-*` headers of one metered `GET /meta` and the GraphQL
+  `rateLimit` object (`github_budget_record`, `lib/github-limit.sh`). New
+  `scripts/github-budget-report.sh` sums the events across the fleet's logs —
+  per hour (peak used, minimum remaining, refusals, budget stand-downs), per
+  stage (the bucket's movement during the stage) and per node — as Markdown
+  plus a JSON block. This is the measurement D25 names as the trigger for a
+  per-node authoring App: while every node authenticates as one user the
+  movement is the bucket's, an upper bound on any one segment's own spend.
 - New `scripts/migrate-tech-debt-register.sh` (agent-ops#880), a reusable
   per-repo migration script that closes the gap agent-ops#875 above
   deliberately accepted: for every `status: open`/`status: in-progress`
@@ -994,6 +1006,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Requirement 2.0's budget gate read `GET /rate_limit`, whose body — read
+  cold, as the first call of every cycle — is an empty window (`5000/5000`,
+  reset exactly an hour from now) rather than a reading; it answered `ok`
+  through 95 recorded refusals in 48 hours (agent-ops#1087). The snapshot now
+  comes from the `x-ratelimit-*` headers of a metered call and the GraphQL
+  `rateLimit` object, which describe the bucket GitHub enforces — the user's
+  aggregate, so the gate is fleet-aware without any per-node arithmetic — and
+  a body that carries the empty-window signature is classified `unknown`,
+  never `ok` (`github_limit_resource_pristine`). The wrapper's own reset
+  lookup under a primary refusal reads the same headers off the refusal.
 - An unreachable provider no longer escalates as a deterministic crash loop
   (agent-ops#1073, escalation #1070). `stage_api_refusal` narrows every API
   refusal to one stable token so requirement 2.7's ladder can group across
