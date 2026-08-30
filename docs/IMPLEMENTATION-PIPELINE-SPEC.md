@@ -2851,12 +2851,29 @@ implements.
    `deploy/docker/watchtower-pre-update.sh` itself decided; that script
    records every invocation, one line per poll, to a durable ledger under
    `state_dir` (`updater-ledger/<hostname>.jsonl`, excluded from replication
-   below like `.image-drift-cache.json`, and keyed by `$HOSTNAME` exactly as
-   `acquire_lock`'s own lock stamp is, since a tailnet node's scheduler and
-   dashboard containers share this state volume but not an identity). Each
-   line also carries `service` — the compose service name
-   (`AGENT_OPS_SERVICE`: `scheduler`, `dashboard` or `dashboard-local`,
-   `"unknown"` if unset) the writing container ran as.
+   below like `.image-drift-cache.json`). `$HOSTNAME` tells a tailnet node's
+   scheduler and dashboard containers apart — they share this state volume
+   but not an identity — but it does **not** identify a container
+   *generation*: watchtower clones `Config.Hostname` forward when it
+   recreates a container (agent-ops#1072), so a roll's replacement inherits
+   its predecessor's hostname and keeps appending to the very same file. Each
+   line therefore also carries `started` — the epoch seconds the *writing*
+   container's own PID 1 has been running since (`stat -c %Y /proc/1`;
+   `/proc/uptime` is the host's uptime under Docker, not the container's, and
+   is not usable), `null` when unreadable — the one field two lines in the
+   same file can disagree on across a roll, and so the only thing that can
+   answer "did the container reading this line write it?" Each line also
+   carries `service` — the compose service name (`AGENT_OPS_SERVICE`:
+   `scheduler`, `dashboard` or `dashboard-local`, `"unknown"` if unset) the
+   writing container ran as. This field has a live limitation
+   (agent-ops#1072): watchtower clones the writing container's environment
+   forward the same way it clones its hostname, so a compose-level addition
+   of `AGENT_OPS_SERVICE` never reaches a container created by a roll — every
+   line on every node currently reads `service: "unknown"`, and the
+   `service`-scoped "rolled" fallback scan below therefore currently admits
+   every candidate rather than narrowing to a genuine sibling. This is
+   ordinary compose drift, not fixed by this file; `lib/compose-drift.sh`
+   already reports it for `compose.yaml` generally.
    Liveness first (agent-ops#1071, deciding agent-ops#1053): before
    `updater_status` reads anything under our own hostname, it checks that
    hostname's own newest ledger entry — whatever its verdict — is no older
@@ -2871,20 +2888,25 @@ implements.
    past, already carries its own age in `seconds`, and keeps the hook's 7-day
    prune as its only bound.
    `updater_status` reads that ledger back as `{status: "rolled", at,
-   seconds}` (the newest recorded "allow" *from our own service* belongs to
-   a different hostname — the ordinary case; the scan is service-scoped
-   because a fresh container with no ledger entry of its own would otherwise
-   read a stuck sibling *of a different service* sharing this ledger
-   directory — the scheduler and the dashboard mount the same state volume —
-   as evidence of its own roll, since that sibling keeps appending
-   ever-newer "allow" entries every poll), `{status: "deferring", at,
-   seconds}` (this hostname's own most recent invocations have all deferred,
-   back to `at`, and that streak has not yet outlasted
+   seconds}` — the newest "allow" invocation the ledger can show was *not*
+   written by the container now reading it. That is either the ordinary
+   post-roll case (a different hostname entirely, from our own service — the
+   scan is service-scoped, on the limitation just described, because a fresh
+   container with no ledger entry of its own would otherwise read a stuck
+   sibling *of a different service* sharing this ledger directory as evidence
+   of its own roll, since that sibling keeps appending ever-newer "allow"
+   entries every poll) or the identity case this hostname's own file can now
+   answer directly: its trailing "allow" carries a `started` different from
+   this container's own — the roll that produced this very container
+   (agent-ops#1072), not evidence that it never happened. `{status:
+   "deferring", at, seconds}` (this hostname's own most recent invocations
+   have all deferred, back to `at`, and that streak has not yet outlasted
    `updater_defer_stuck_after_seconds`), `{status: "stuck", at, seconds,
    reason}` (a fault only a human clears, either `reason: "allow"` — this
-   hostname's own most recent invocations have all allowed a roll, back to
-   `at`, and this same container is still running past
-   `updater_stuck_after_minutes` later, the 2026-08-14 signature: a
+   hostname's own most recent invocations have all allowed a roll, proven by
+   `started` matching this container's own and never by the hostname alone
+   (agent-ops#1072), back to `at`, and this same container is still running
+   past `updater_stuck_after_minutes` later, the 2026-08-14 signature: a
    container told to go ahead that watchtower never actually replaced,
    which the retry alone will not clear since it repeats the operation that
    collided — or `reason: "defer"` — the defer streak above has itself
@@ -2893,14 +2915,16 @@ implements.
    either lock, so this is no longer "a cycle in flight") or `null` (no
    invocation recorded under any hostname yet, our own newest entry is
    already older than `updater_stuck_after_minutes` (the liveness gate
-   above), the run of "allow"s is too recent to classify either way, a
-   threshold the caller passed is not a whole number of seconds, or a
-   ledger entry's own timestamp will not parse — every one an unanswerable
-   question, never a default the library picks for itself, and never epoch
-   0: unlike `held_by()`'s identical convention, which fails the lock
-   *open*, epoch 0 here would fail *closed*, into an alarm nothing could
-   ever clear, since a corrupt timestamp can also defeat the hook's own 48h
-   trim below).
+   above), the run of "allow"s is too recent to classify either way, the
+   trailing entry under our own hostname carries no `started` at all or this
+   container cannot read its own — so no identity verdict is possible on the
+   strength of that entry, in either direction (agent-ops#1072) — a threshold
+   the caller passed is not a whole number of seconds, or a ledger entry's
+   own timestamp will not parse — every one an unanswerable question, never a
+   default the library picks for itself, and never epoch 0: unlike
+   `held_by()`'s identical convention, which fails the lock *open*, epoch 0
+   here would fail *closed*, into an alarm nothing could ever clear, since a
+   corrupt timestamp can also defeat the hook's own 48h trim below).
    Once liveness holds, both self-states are measured from the *start* of
    the current run of like verdicts, not from its newest entry: watchtower
    re-runs the hook on every poll for as long as the container is still
@@ -2909,7 +2933,18 @@ implements.
    the condition — putting `stuck`, whose threshold is many polls wide,
    permanently out of reach. A ledger line that will not parse, mid-streak,
    is skipped rather than treated as ending the streak, so one transient bad
-   line cannot silence an alarm early or reset a stuck container's clock.
+   line cannot silence an alarm early or reset a stuck container's clock. The
+   `allow` streak's scan is additionally bounded by `started`: the run stops
+   the moment `started` changes, not only when the verdict does, so a
+   container watchtower rolls repeatedly inside `updater_stuck_after_minutes`
+   — each replacement appending its own genuine "allow" under the one
+   hostname it inherits — reads each roll on its own terms rather than one
+   continuous streak spanning several *successful* rolls (agent-ops#1072,
+   the residual false positive agent-ops#1071's liveness fix could not reach
+   on its own). The `defer` streak needs no such bound: the entry immediately
+   before any roll is always an "allow" — that is what authorises it — so a
+   defer streak can never itself straddle a generation boundary; the ordinary
+   verdict-mismatch break already stops it there.
    `updater_stuck_after_minutes` converts to `updater_stuck_after_seconds`
    the same way `image_behind_grace_hours` converts one layer up from
    `lib/image-drift.sh`, travelling as a parameter, never a literal inside

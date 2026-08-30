@@ -1059,6 +1059,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `stuck` forever. `rolled` is unaffected — it is a claim about the past and
   already carries its own age.
 
+- `lib/updater-health.sh`'s `allow` arm no longer reads a rolled container's
+  own creation as proof it never rolled (agent-ops#1072). Watchtower clones
+  `Config.Hostname` forward when it recreates a container, so a roll's
+  replacement inherits its predecessor's hostname and keeps appending to the
+  very same ledger file — measured across the fleet on 2026-08-30, no
+  scheduler's `$HOSTNAME` names its own container id. `deploy/docker/
+  watchtower-pre-update.sh`'s `record_verdict` now stamps each ledger line
+  with the writing container's own PID 1 start time (`started`, best-effort);
+  `updater_status` reports `reason: "allow"` only when a container's own
+  reading of that value matches the ledger's trailing entry, reads a
+  mismatch as `rolled` instead, and the `allow` streak scan itself stops at
+  a `started` change as well as a verdict change — closing the residual
+  false-positive class agent-ops#1071's liveness fix could not reach on its
+  own: a container rolled repeatedly inside `updater_stuck_after_minutes`,
+  each roll's own genuine `allow` previously read as one streak spanning
+  several successful rolls. An entry with no `started` field supports no
+  identity verdict and never produces `stuck` on a hostname match alone.
+
 - A subject pull request that merges mid-Reviewer-pass is now caught and
   retired as a completion, instead of running the rest of the cycle against a
   pull request no longer there (agent-ops#916, escalation #922). Nothing on

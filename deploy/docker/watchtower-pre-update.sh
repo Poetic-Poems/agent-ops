@@ -136,27 +136,43 @@ state_dir="$(expand_home "$(jq -r '.state_dir // "~/.local/state/poetic-agents"'
 # lib/updater-health.sh reads back (agent-ops#603), keyed by $HOSTNAME exactly
 # as the locks above are: the dashboard and scheduler containers on a tailnet
 # node share this state volume but not an identity, so a shared file would mix
-# their invocations the same way an unstamped lock once did (#130). Each line
-# also carries `service` (`AGENT_OPS_SERVICE`, "unknown" if unset) — the
-# compose service this container runs as — so a reader with no ledger entry
-# of its own can tell a same-service predecessor's roll from an unrelated
-# sibling service's ledger sharing this same directory.
+# their invocations the same way an unstamped lock once did (#130). $HOSTNAME
+# does not, however, tell one *generation* of the same service from the next:
+# watchtower clones `Config.Hostname` forward when it recreates a container
+# (agent-ops#1072), so a roll's replacement keeps appending to the very same
+# file its predecessor wrote to, under the same name. Each line therefore also
+# carries `started` — the epoch seconds *this* invocation's own PID 1 has been
+# running since (`stat -c %Y /proc/1`; `/proc/uptime` is the host's uptime
+# under Docker, not this container's, and is not usable), `null` when
+# unreadable — which lib/updater-health.sh compares against its own live
+# reading of the same value to tell "I wrote this line" from "my predecessor
+# did". Each line also carries `service` (`AGENT_OPS_SERVICE`, "unknown" if
+# unset) — the compose service this container runs as — so a reader with no
+# ledger entry of its own can tell a same-service predecessor's roll from an
+# unrelated sibling service's ledger sharing this same directory.
 #
 # Best-effort throughout (`|| return 0` at every step): a failure to write
 # must never change the hook's exit status, and must not add materially to the
 # one-minute pre-update-timeout, which fails *open* — a container too slow to
-# answer is rolled regardless. The trim and prune below run only after an
-# "allow": they cost several more subprocesses than the defer path — on the
-# roll's own critical path, ahead of `exit 75` — can safely spend against that
-# budget. A long defer streak still grows this file only slowly, one line per
+# answer is rolled regardless. `started` follows the same rule: an unreadable
+# `/proc/1` writes `null` rather than aborting the line, since a ledger entry
+# with no identity is still worth more than no entry at all (the caller
+# already treats a missing `started` as unable to support an identity
+# verdict). The trim and prune below run only after an "allow": they cost
+# several more subprocesses than the defer path — on the roll's own critical
+# path, ahead of `exit 75` — can safely spend against that budget. A long
+# defer streak still grows this file only slowly, one line per
 # `WATCHTOWER_POLL_INTERVAL`, and is caught up on the next allow.
 record_verdict() {
-  local verdict="$1" f=""
+  local verdict="$1" f="" started="" started_json="null"
   mkdir -p "$state_dir/updater-ledger" 2>/dev/null || return 0
   f="$state_dir/updater-ledger/${HOSTNAME:-unknown}.jsonl"
+  started="$(stat -c %Y /proc/1 2>/dev/null)"
+  [[ "$started" =~ ^[0-9]+$ ]] && started_json="$started"
   local line=""
   line="$(jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg v "$verdict" \
-      --arg svc "${AGENT_OPS_SERVICE:-unknown}" '{ts:$ts, verdict:$v, service:$svc}' \
+      --arg svc "${AGENT_OPS_SERVICE:-unknown}" --argjson started "$started_json" \
+      '{ts:$ts, verdict:$v, service:$svc, started:$started}' \
       2>/dev/null)" || return 0
   [[ -n "$line" ]] || return 0
   printf '%s\n' "$line" >> "$f" 2>/dev/null || return 0

@@ -32,7 +32,18 @@ assert_eq() {
 ledger="$tmp_dir/updater-ledger"
 mkdir -p "$ledger"
 
-entry() { jq -nc --arg ts "$1" --arg v "$2" --arg svc "${3:-svc}" '{ts:$ts, verdict:$v, service:$svc}'; }
+# entry TS VERDICT [SERVICE] [STARTED] — a ledger line. STARTED, when given,
+# is the writing container's own identity (agent-ops#1072); omitted, the line
+# predates that field, exactly as every ledger line did before this fix.
+entry() {
+  local ts="$1" v="$2" svc="${3:-svc}" started="${4:-}"
+  if [[ -n "$started" ]]; then
+    jq -nc --arg ts "$ts" --arg v "$v" --arg svc "$svc" --argjson started "$started" \
+      '{ts:$ts, verdict:$v, service:$svc, started:$started}'
+  else
+    jq -nc --arg ts "$ts" --arg v "$v" --arg svc "$svc" '{ts:$ts, verdict:$v, service:$svc}'
+  fi
+}
 ago() { date -u -d "-$1" +%Y-%m-%dT%H:%M:%SZ; }   # ago SECONDS-EXPRESSION (e.g. "10 minutes")
 
 STUCK_AFTER=1200        # 20 minutes, an ordinary threshold for the fixtures below
@@ -186,29 +197,41 @@ assert_eq "and one of its stale defer ledgers reads null too" \
 rm -f "$ledger/host-b.jsonl"
 
 # --- Stuck -------------------------------------------------------------------
+# Identity, not just hostname (agent-ops#1072): a trailing "allow" under our
+# own hostname file was not necessarily written by the container reading it —
+# watchtower clones the hostname forward across a roll, so the same file
+# accumulates entries from every generation that has run under that name.
+# `updater_status`'s optional sixth argument is this container's own reading
+# of that identity (`started`, an opaque value in these fixtures); a line
+# supports "stuck, reason: allow" only when its own `started` matches it.
 
-# Allowed 30 seconds ago, well inside the threshold: too recent to call
-# either state yet, and never reads as failing while that is true.
-entry "$(ago '30 seconds')" allow > "$ledger/host-b.jsonl"
+OWN_STARTED=1000000000    # this container's own identity, for the fixtures below
+OTHER_STARTED=2000000000  # a different generation's
+
+# Allowed 30 seconds ago, well inside the threshold, and genuinely ours: too
+# recent to call either state yet, and never reads as failing while that is
+# true.
+entry "$(ago '30 seconds')" allow "svc" "$OWN_STARTED" > "$ledger/host-b.jsonl"
 assert_eq "an allow inside the grace window is not yet stuck" "null" \
-  "$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc")"
+  "$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc" "$OWN_STARTED")"
 rm -f "$ledger/host-b.jsonl"
 
 # The state this whole check exists for, in the shape it actually arrives in:
 # watchtower re-runs the hook on every poll for as long as the container is
 # still stale, so the container it allowed and never replaced records one
-# `allow` every WATCHTOWER_POLL_INTERVAL (300s), not one in total. Timing the
-# newest entry would measure the age of the last poll — always under one
-# interval, so never past a threshold counted in polls — and the 2026-08-14
-# signature would read as nothing at all. The streak's start is the age of the
-# condition.
+# `allow` every WATCHTOWER_POLL_INTERVAL (300s), not one in total — every one
+# of them genuinely written by this same container (matching `started`).
+# Timing the newest entry would measure the age of the last poll — always
+# under one interval, so never past a threshold counted in polls — and the
+# 2026-08-14 signature would read as nothing at all. The streak's start is
+# the age of the condition.
 streak_start="$(ago '40 minutes')"
 {
-  entry "$streak_start" allow
-  for m in 35 30 25 20 15 10 5; do entry "$(ago "$m minutes")" allow; done
-  entry "$(ago '10 seconds')" allow
+  entry "$streak_start" allow "svc" "$OWN_STARTED"
+  for m in 35 30 25 20 15 10 5; do entry "$(ago "$m minutes")" allow "svc" "$OWN_STARTED"; done
+  entry "$(ago '10 seconds')" allow "svc" "$OWN_STARTED"
 } > "$ledger/host-b.jsonl"
-out="$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc")"
+out="$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc" "$OWN_STARTED")"
 assert_eq "an allow repeated on every poll since is still stuck, not reset by the newest — liveness holds because the newest entry is recent" \
   "stuck" "$(jq -r '.status' <<<"$out")"
 assert_eq "timed from the first allow of the run, not the last" \
@@ -221,13 +244,80 @@ assert_eq "distinguished from an overlong defer by reason" "allow" "$(jq -r '.re
 # between means watchtower was told to hold off, so the clock starts again
 # with the allow that followed it.
 {
-  entry "$(ago '2 hours')" allow
-  entry "$(ago '90 minutes')" defer
-  entry "$(ago '25 minutes')" allow
-  entry "$(ago '5 minutes')" allow
+  entry "$(ago '2 hours')" allow "svc" "$OWN_STARTED"
+  entry "$(ago '90 minutes')" defer "svc" "$OWN_STARTED"
+  entry "$(ago '25 minutes')" allow "svc" "$OWN_STARTED"
+  entry "$(ago '5 minutes')" allow "svc" "$OWN_STARTED"
 } > "$ledger/host-b.jsonl"
 assert_eq "a defer in between ends the run, so the clock starts at the allow after it" \
-  "$(ago '25 minutes')" "$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc" | jq -r '.at')"
+  "$(ago '25 minutes')" "$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc" "$OWN_STARTED" | jq -r '.at')"
+rm -f "$ledger/host-b.jsonl"
+
+# --- Identity: a rolled container must not read its own creation as proof it
+# never rolled (finding: the residual identity defect, agent-ops#1072) ------
+# Matching filename (this container's own hostname file), a *different*
+# start time on the trailing allow, recent enough to be live: exactly the
+# shape measured across the fleet on 2026-08-30 — the roll that produced this
+# container, misread by the old hostname-only check as this container's own
+# proof it never rolled.
+
+entry "$(ago '11 seconds')" allow "svc" "$OTHER_STARTED" > "$ledger/host-b.jsonl"
+out="$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc" "$OWN_STARTED")"
+assert_eq "a roll's own allow, under the hostname it handed forward, reads rolled" \
+  "rolled" "$(jq -r '.status' <<<"$out")"
+assert_eq "naming when that roll was allowed" \
+  "$(ago '11 seconds')" "$(jq -r '.at' <<<"$out")"
+rm -f "$ledger/host-b.jsonl"
+
+# A container that genuinely never rolled — same start time on the trailing
+# allow, entries still arriving — still reads stuck: the identity fix must
+# not turn a real alarm into a permanent "rolled" reading.
+streak_start="$(ago '40 minutes')"
+{
+  entry "$streak_start" allow "svc" "$OWN_STARTED"
+  entry "$(ago '10 seconds')" allow "svc" "$OWN_STARTED"
+} > "$ledger/host-b.jsonl"
+out="$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc" "$OWN_STARTED")"
+assert_eq "a container that genuinely never rolled still reads stuck" \
+  "stuck" "$(jq -r '.status' <<<"$out")"
+rm -f "$ledger/host-b.jsonl"
+
+# The residual false positive the liveness fix (agent-ops#1071) cannot reach
+# on its own: a container watchtower rolls repeatedly inside STUCK_AFTER,
+# each replacement appending its own genuine "allow" under the one hostname
+# it inherits. Without a `started`-bounded streak scan, this would read as
+# one continuous streak spanning several *successful* rolls.
+{
+  entry "$(ago '18 minutes')" allow "svc" "$OTHER_STARTED"   # an earlier generation's own allow
+  entry "$(ago '9 minutes')"  allow "svc" "$OWN_STARTED"     # the roll that produced this container
+  entry "$(ago '10 seconds')" allow "svc" "$OWN_STARTED"     # this container, still running fine
+} > "$ledger/host-b.jsonl"
+out="$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc" "$OWN_STARTED")"
+assert_eq "several successful rolls inside the window read as fine, not one spanning stuck streak" \
+  "null" "$(jq -r '.status' <<<"$out")"
+rm -f "$ledger/host-b.jsonl"
+
+# Entries with no start-time field support no identity verdict and never
+# produce stuck on a hostname match alone (agent-ops#1072) — the shape every
+# ledger line had before this fix, retired within the 48h trim.
+streak_start="$(ago '40 minutes')"
+{
+  entry "$streak_start" allow    # no started field at all
+  entry "$(ago '10 seconds')" allow
+} > "$ledger/host-b.jsonl"
+assert_eq "a legacy allow streak with no start-time field never reads stuck" "null" \
+  "$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc" "$OWN_STARTED" | jq -r '.status')"
+rm -f "$ledger/host-b.jsonl"
+
+# And the same holds when this container cannot establish its own identity
+# either — `_updater_health_own_started` failing, as `stat` can when
+# `/proc/1` is unreadable — modelled by shadowing it for one call.
+entry "$(ago '10 seconds')" allow "svc" "$OWN_STARTED" > "$ledger/host-b.jsonl"
+_updater_health_own_started() { :; }
+assert_eq "an own identity this container cannot establish never asserts stuck either" "null" \
+  "$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc" "" | jq -r '.status')"
+# shellcheck source=lib/updater-health.sh
+. "$SCRIPT_DIR/lib/updater-health.sh"   # restore the real definition
 rm -f "$ledger/host-b.jsonl"
 
 # --- A corrupt line mid-streak is skipped, not treated as ending the run -----
@@ -236,13 +326,13 @@ rm -f "$ledger/host-b.jsonl"
 # over it rather than stopping there.
 streak_start="$(ago '2 hours')"
 {
-  entry "$streak_start" allow
-  entry "$(ago '110 minutes')" allow
+  entry "$streak_start" allow "svc" "$OWN_STARTED"
+  entry "$(ago '110 minutes')" allow "svc" "$OWN_STARTED"
   printf 'not json at all\n'
-  entry "$(ago '90 minutes')" allow
-  entry "$(ago '10 minutes')" allow
+  entry "$(ago '90 minutes')" allow "svc" "$OWN_STARTED"
+  entry "$(ago '10 minutes')" allow "svc" "$OWN_STARTED"
 } > "$ledger/host-b.jsonl"
-out="$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc")"
+out="$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc" "$OWN_STARTED")"
 assert_eq "a corrupt line mid-streak is skipped, not read as a verdict change" \
   "stuck" "$(jq -r '.status' <<<"$out")"
 assert_eq "the streak still starts at the genuinely first allow, past the corrupt line" \
@@ -259,15 +349,15 @@ rm -f "$ledger/host-b.jsonl"
 # than a lone stale entry, which reads null regardless (see "Liveness first"
 # above) and would prove nothing about this threshold specifically.
 {
-  entry "$(ago '40 minutes')" allow
-  entry "$(ago '5 minutes')" allow
+  entry "$(ago '40 minutes')" allow "svc" "$OWN_STARTED"
+  entry "$(ago '5 minutes')" allow "svc" "$OWN_STARTED"
 } > "$ledger/host-b.jsonl"
 assert_eq "an omitted threshold reads null, never instantly stuck" "null" \
-  "$(updater_status "$ledger" "" "$DEFER_STUCK_AFTER" "host-b" "svc")"
+  "$(updater_status "$ledger" "" "$DEFER_STUCK_AFTER" "host-b" "svc" "$OWN_STARTED")"
 assert_eq "and a non-numeric one reads null too" "null" \
-  "$(updater_status "$ledger" "twenty" "$DEFER_STUCK_AFTER" "host-b" "svc")"
+  "$(updater_status "$ledger" "twenty" "$DEFER_STUCK_AFTER" "host-b" "svc" "$OWN_STARTED")"
 assert_eq "while the same ledger with a usable threshold still reads stuck" "stuck" \
-  "$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc" | jq -r '.status')"
+  "$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc" "$OWN_STARTED" | jq -r '.status')"
 rm -f "$ledger/host-b.jsonl"
 
 # --- Malformed data never crashes and never asserts more than it can support --

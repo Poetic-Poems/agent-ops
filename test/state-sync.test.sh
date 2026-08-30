@@ -276,10 +276,18 @@ assert_eq "with the count of differing lines" "2" \
 # is also old enough to read null outright — the fixture needs a poll
 # recent enough to stay live *and* a first allow old enough to be stuck,
 # the same shape a container watchtower is still polling actually writes.
+# Both entries also carry `started` (agent-ops#1072), matching this test
+# process's own `/proc/1` — `updater_status` inside the pushed subshell reads
+# the same value back (no sixth argument passed here, exactly as
+# state-sync.sh's own call site never passes one), so the fixture is read as
+# genuinely this container's own unbroken run, never a foreign generation's.
+own_started="$(stat -c %Y /proc/1)"
 mkdir -p "$state/updater-ledger"
 {
-  printf '{"ts":"%s","verdict":"allow"}\n' "$(date -u -d '40 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
-  printf '{"ts":"%s","verdict":"allow"}\n' "$(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
+  printf '{"ts":"%s","verdict":"allow","started":%s}\n' \
+    "$(date -u -d '40 minutes ago' +%Y-%m-%dT%H:%M:%SZ)" "$own_started"
+  printf '{"ts":"%s","verdict":"allow","started":%s}\n' \
+    "$(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ)" "$own_started"
 } > "$state/updater-ledger/updater-host.jsonl"
 sync_as "$active_home" active push HOSTNAME=updater-host >/dev/null
 assert_eq "the updater-carrying push exits 0" "0" "$?"
