@@ -593,6 +593,45 @@ confirm_review_requested() {
   return 0
 }
 
+# _handoff_pending_review_targets SLUG NUMBER
+# Print, one per line, the non-bot logins in `requested_reviewers` and the
+# slugs in `requested_teams` for pull request NUMBER on SLUG — the "who has
+# already been asked" list `ensure_human_reviewer` reads both before and
+# after its own POST. On failure prints nothing and returns 1, *except* when
+# the underlying `gh api` read failed specifically on a GitHub REST
+# rate-limit refusal: then it prints `rate-limited` (still returning 1), so
+# `ensure_human_reviewer` can tell that apart from any other read failure
+# (agent-ops#1082) instead of folding both into the same bare `failed` an
+# operator cannot act on. Classification reuses `github_limit_kind`
+# (lib/github-limit.sh) — sourced ahead of this file by every real caller,
+# per the header, but only if it happens to be available: an unreadable
+# result is `failed`, the same as before this existed, when it is not.
+_handoff_pending_review_targets() {
+  local slug="$1" number="$2" gh_bin="${HANDOFF_GH:-gh}"
+  local out errfile rc kind diag
+  local filter='[(.requested_reviewers[]? | select(((.type // "User") == "Bot")
+                   or (.login | endswith("[bot]")) | not) | .login),
+                 (.requested_teams[]? | .slug)] | .[]'
+  errfile="$(mktemp 2>/dev/null || true)"
+  if [[ -n "$errfile" ]]; then
+    out="$("$gh_bin" api "repos/$slug/pulls/$number" --jq "$filter" 2>"$errfile")"; rc=$?
+  else
+    out="$("$gh_bin" api "repos/$slug/pulls/$number" --jq "$filter" 2>/dev/null)"; rc=$?
+  fi
+  if (( rc != 0 )); then
+    kind="none"
+    if [[ -n "$errfile" ]]; then
+      diag="$(cat "$errfile" 2>/dev/null || true)"
+      declare -F github_limit_kind >/dev/null 2>&1 && kind="$(github_limit_kind "$diag")"
+      rm -f "$errfile"
+    fi
+    [[ "$kind" == "none" ]] || printf 'rate-limited'
+    return 1
+  fi
+  [[ -n "$errfile" ]] && rm -f "$errfile"
+  printf '%s' "$out"
+}
+
 # ensure_human_reviewer PR_URL ASSIGNEE
 # Ensure a live review request is on a pull request whose next reviewer
 # action belongs to a human, for the case `confirm_review_requested` does not
@@ -672,11 +711,19 @@ confirm_review_requested() {
 #                       reviewed yet, but somebody (typically CODEOWNERS)
 #                       already has a request pending.
 #   requested           this call asked, and GitHub now shows it pending.
-#   failed              the request could not be read, or did not take.
+#   failed              the request could not be read, or did not take, for a
+#                       reason other than an exhausted GitHub REST budget.
+#   failed-rate-limited the review-request read (`_handoff_pending_review_
+#                       targets` below) failed specifically on a rate-limit
+#                       refusal — agent-ops#1082: a caller logging a bare
+#                       `failed` here cannot tell "the owner's shared REST
+#                       budget was gone" from a genuine failure, and an
+#                       operator reading the log needs to.
 #
 # Exit status is 0 for `skip` (either shape), `already` and `requested`, 1 for
-# `failed` — the same convention as `confirm_review_requested`, so callers can
-# share one `case` shape across both.
+# `failed`/`failed-rate-limited` — the same convention as
+# `confirm_review_requested`, so callers can share one `case` shape across
+# both (matching on the `failed` prefix where a caller does not care which).
 ensure_human_reviewer() {
   local url="${1:-}" assignee="${2:-}" gh_bin="${HANDOFF_GH:-gh}"
   local parts slug number draft blocking known author targets pending
@@ -747,11 +794,8 @@ ensure_human_reviewer() {
   # human, and a team can never itself be a bot, so
   # `scripts/gather-human-visibility-hygiene.sh`'s own read of this rule
   # (requirement 38e) counts it the same way this one does.
-  if ! pending="$("$gh_bin" api "repos/$slug/pulls/$number" \
-                    --jq '[(.requested_reviewers[]? | select(((.type // "User") == "Bot")
-                             or (.login | endswith("[bot]")) | not) | .login),
-                           (.requested_teams[]? | .slug)] | .[]' 2>/dev/null)"; then
-    printf 'failed'
+  if ! pending="$(_handoff_pending_review_targets "$slug" "$number")"; then
+    [[ "$pending" == "rate-limited" ]] && printf 'failed-rate-limited' || printf 'failed'
     return 1
   fi
 
@@ -784,11 +828,8 @@ ensure_human_reviewer() {
   "$gh_bin" api -X POST "repos/$slug/pulls/$number/requested_reviewers" \
     "${args[@]}" >/dev/null 2>&1 || true
 
-  if ! pending="$("$gh_bin" api "repos/$slug/pulls/$number" \
-                    --jq '[(.requested_reviewers[]? | select(((.type // "User") == "Bot")
-                             or (.login | endswith("[bot]")) | not) | .login),
-                           (.requested_teams[]? | .slug)] | .[]' 2>/dev/null)"; then
-    printf 'failed'
+  if ! pending="$(_handoff_pending_review_targets "$slug" "$number")"; then
+    [[ "$pending" == "rate-limited" ]] && printf 'failed-rate-limited' || printf 'failed'
     return 1
   fi
   if [[ -n "$(comm -23 <(sort -u <<<"$targets") <(sort -u <<<"$pending"))" ]]; then
