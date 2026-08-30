@@ -162,6 +162,19 @@ printf 'revert-rate noise\n' > "$state/revert-rate.log"
 # .doctor-status.json above.
 printf '{"o/r":{"settled_aggregate":{"count":1,"post_merge":{"reverts":0,"follow_up_fixes":0}},"settled_until":"2026-08-21T00:00:00Z","baseline_since":"2026-08-15T00:00:00Z"}}\n' \
   > "$state/revert-rate-cumulative-state.json"
+# The gh transport shim's own state (lib/gh-shim.sh, requirement 2.0e,
+# agent-ops#1084): the stored response bodies are this node's own cache, on
+# the same reasoning as the caches above, and the largest and fastest-churning
+# thing under state_dir. The ledger and budget.json beside them are fleet-wide
+# telemetry and must replicate.
+mkdir -p "$state/gh-shim/http-cache"
+printf '{"identity":"abc","path":"repos/o/r","etag":"e","fetched_at":1,"body":"{}"}\n' \
+  > "$state/gh-shim/http-cache/deadbeef.json"
+printf '{"ts":"2026-07-20T01:00:00Z","method":"GET","path":"repos/o/r","status":200,"cache":"miss","resource":"core","used":7}\n' \
+  > "$state/gh-shim/ledger.ndjson"
+printf '{"abc":{"core":{"limit":5000,"used":7,"remaining":4993,"reset":1893456000}}}\n' \
+  > "$state/gh-shim/budget.json"
+printf '' > "$state/gh-shim/ledger.ndjson.lock"
 mkdir -p "$state/dashboard"
 printf '<html>\n' > "$state/dashboard/index.html"
 
@@ -194,6 +207,14 @@ assert_eq "the revert-rate publish log does not replicate" "0" "$(test -e "$push
 assert_eq "the revert-rate cumulative-state cache does not replicate" "0" \
   "$(test -e "$pushed/revert-rate-cumulative-state.json" && echo 1 || echo 0)"
 assert_eq "the generated dashboard does not replicate" "0" "$(test -e "$pushed/dashboard" && echo 1 || echo 0)"
+assert_eq "the gh shim's HTTP cache does not replicate" "0" \
+  "$(test -e "$pushed/gh-shim/http-cache" && echo 1 || echo 0)"
+assert_eq "…nor its lock files" "0" \
+  "$(test -e "$pushed/gh-shim/ledger.ndjson.lock" && echo 1 || echo 0)"
+assert_eq "…but its ledger does, being fleet-wide telemetry" "1" \
+  "$(test -f "$pushed/gh-shim/ledger.ndjson" && echo 1 || echo 0)"
+assert_eq "…and so does its budget reading of the shared bucket" "1" \
+  "$(test -f "$pushed/gh-shim/budget.json" && echo 1 || echo 0)"
 # Both transfers are covered: the cycle directories go through their own rsync
 # with its own filter, so an exclusion that held only for the general transfer
 # would let every cycle's stream through anyway.

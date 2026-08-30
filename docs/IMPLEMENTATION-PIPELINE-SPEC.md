@@ -2825,8 +2825,11 @@ implements.
    rebuild record (`.mirror-rebuild-state.json`, "Mirror integrity" above),
    the two per-node caches whose own file mtimes *are* the schedule they
    gate — the label-ensure stamps (`labels-ensured/`, requirement 6a) and
-   the expensive-gather cache (`expensive-gather/`, requirement 48) — and
-   the updater's own invocation ledger (`updater-ledger/`, below).
+   the expensive-gather cache (`expensive-gather/`, requirement 48) —
+   the updater's own invocation ledger (`updater-ledger/`, below), and the
+   `gh` transport shim's stored response bodies and lock files
+   (`gh-shim/http-cache/`, `gh-shim/*.lock`, requirement 2.0e — the ledger
+   and `budget.json` beside them excepted, below).
    The exclusions are not tidiness: a copied `lock.json` is a lock no process
    holds — peers read logs, never locks; `roll-pending.json` is this node's own
    instruction to its own watchtower hook, earned by its own cycle boundary,
@@ -2849,6 +2852,15 @@ implements.
    level further down: a copied ledger would answer for invocations against
    containers nobody on the peer ever ran, so only its distilled verdict
    travels, as the heartbeat's own `updater` field (below).
+   `gh-shim/http-cache/` is that reasoning again, with size behind it: it
+   answers for reads nobody on the peer made, and it is both the largest
+   thing under `state_dir` — one stored response body per distinct `gh api`
+   GET this node has made — and the fastest-churning, since every fresh read
+   rewrites an entry. Its two siblings are deliberately *not* excluded: the
+   per-call ledger is fleet-wide telemetry
+   `scripts/github-budget-report.sh` unions across nodes exactly as it
+   unions `log.jsonl`, and `budget.json` is a reading of the one bucket
+   every node shares, so both must travel.
    `labels-ensured/` and `expensive-gather/` carry a second reason on top of
    that one, and it is the sharper of the two: each schedules its own next
    run off its files' mtimes rather than off a timestamp written inside
@@ -17038,7 +17050,10 @@ pull request, run the ones the change touches and any it could regress.
 1d. **State replicates per node, and comes back as peers.**
    `test/state-sync.test.sh`
    passes: a push carries the logs, cycles, reviews and switch but not the
-   locks or the dashboard, onto the node's own `nodes/<NODE_NAME>` branch
+   locks or the dashboard, and — of the `gh` transport shim's own state
+   (requirement 2.0e) — carries its per-call ledger and `budget.json` but
+   neither its stored response bodies nor its lock files, onto the node's own
+   `nodes/<NODE_NAME>` branch
    with a heartbeat naming the node, its role, its newest cycle, its version,
    its compose-drift verdict (asserted end to end: a node whose fixture
    copies differ publishes `drifted` with the differing-line count), an
