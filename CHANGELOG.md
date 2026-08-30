@@ -1023,6 +1023,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   image verdicts, which is where a node-health fact nothing in this repository
   can fix belongs.
 
+- `lib/updater-health.sh`'s `updater_status` no longer reads a stale ledger
+  as a permanent **updater stuck** alarm (agent-ops#1071, deciding
+  agent-ops#1053, resolving `TD-PPagop-26082913`). Before branching on a
+  container's own most recent invocation, it now checks that entry's own
+  timestamp against `updater_stuck_after_minutes` first: older than that and
+  it reads `null` outright, whatever the `allow`/`defer` streak underneath
+  would have said, since nothing has polled the container recently enough to
+  answer for the present. Without this gate, a multi-hour network outage
+  left every node's ledger trailing a stale entry and the whole fleet read
+  `updater stuck` at once, though every node was healthy; a node
+  deliberately taken down after its last allowed roll would have read
+  `stuck` forever. `rolled` is unaffected — it is a claim about the past and
+  already carries its own age.
+
 - A subject pull request that merges mid-Reviewer-pass is now caught and
   retired as a completion, instead of running the rest of the cycle against a
   pull request no longer there (agent-ops#916, escalation #922). Nothing on
