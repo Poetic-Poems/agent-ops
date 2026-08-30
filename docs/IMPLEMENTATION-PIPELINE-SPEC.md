@@ -10978,8 +10978,14 @@ implements.
         rather than per object — a fresh `<head-sha>` mints a fresh id, so no
         two ever coalesce — which makes it the fastest-growing member of
         this class; it needs nothing beyond the ordinary liveness rule, since
-        `scripts/gather-merge-conflicts.sh` re-gathers the source every cycle
-        and stops yielding the id the moment the conflict resolves.
+        `scripts/gather-merge-conflicts.sh` re-gathers the source on that
+        repository's own turn (requirement 48 — every cycle before it, one
+        cycle in `repositories` since) and stops yielding the id the moment
+        the conflict resolves. The narrowing costs a rotation, never a wrong
+        answer: a cycle that replays the band writes no
+        `merge-conflicts-<repo>.ok` marker, and the liveness pass reads an
+        absent marker as "unsampled", so the void is held to that
+        repository's next turn rather than retired on a stale array.
 
         The `human-visibility-<hash>` shape (agent-ops#646) joins on the same
         rule and needs one thing none of the others do. Its ref is a digest
