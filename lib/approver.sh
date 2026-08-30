@@ -331,14 +331,70 @@ approver_dismiss_review() {
 # whether this round's verdict actually reached GitHub before logging it
 # (requirement 8c's `posted` field, agent-ops#573): a verdict a human never
 # saw a review for cannot have diverged from, or agreed with, anything.
+#
+# agent-ops#1082: a failed write used to log the same generic "GitHub refused
+# the write" whether GitHub rejected the token outright or merely refused
+# because the owner's shared REST budget was spent — indistinguishable to an
+# operator, and the second case silently dropped a verdict a short wait could
+# have delivered. `approver_post_review`'s own `gh` call already goes through
+# the rate-limit-aware wrapper (lib/github-limit.sh) when it is sourced ahead
+# of this file (every real caller's own order, per that file's header) and
+# `APPROVER_GH` is left at its default — but that wrapper commits to exactly
+# one wait-and-retry per call, and gives up silently if the reset it saw then
+# was not worth waiting for. This is the caller's own second look, taken only
+# once the wrapper has already given up: it classifies the diagnostic
+# `approver_post_review` just left in `_approver_err_log` via
+# `github_limit_kind` (reused, not reclassified) and, only when the cause was
+# rate-limiting, tries the same wait/backoff (`github_limit_wait_plan`) once
+# more itself before conceding the verdict is dropped.
 approver_post_or_warn() {
   local pr_url="$1" event="$2" body="$3" token="$4"
+  local errlog before diag kind wait now reset_epoch retried=0
   approver_last_post_ok=1
-  if ! approver_post_review "$pr_url" "$event" "$body" "$token"; then
-    approver_last_post_ok=0
+  errlog="$(_approver_err_log)"
+  before=0
+  [[ -f "$errlog" ]] && before="$(wc -c <"$errlog" 2>/dev/null || printf 0)"
+
+  if approver_post_review "$pr_url" "$event" "$body" "$token"; then
+    return 0
+  fi
+
+  diag=""
+  [[ -f "$errlog" ]] && diag="$(tail -c "+$(( before + 1 ))" "$errlog" 2>/dev/null || true)"
+  kind="none"
+  declare -F github_limit_kind >/dev/null 2>&1 && kind="$(github_limit_kind "$diag")"
+
+  if [[ "$kind" != "none" ]] && declare -F github_limit_wait_plan >/dev/null 2>&1; then
+    now="$(date +%s)"
+    reset_epoch=0
+    if [[ "$kind" == "primary" ]] && declare -F github_limit_primary_reset_epoch >/dev/null 2>&1; then
+      reset_epoch="$(github_limit_primary_reset_epoch "$now")"
+    fi
+    wait="$(github_limit_wait_plan "$kind" "$reset_epoch" "$now" "${GITHUB_LIMIT_WAITED_SECONDS:-0}")"
+    if [[ -n "$wait" ]]; then
+      retried=1
+      sleep "$wait"
+      GITHUB_LIMIT_WAITED_SECONDS=$(( ${GITHUB_LIMIT_WAITED_SECONDS:-0} + wait ))
+      if approver_post_review "$pr_url" "$event" "$body" "$token"; then
+        return 0
+      fi
+    fi
+  fi
+
+  approver_last_post_ok=0
+  if [[ "$kind" == "none" ]]; then
     log_event "warning" "$(jq -nc --arg u "$pr_url" --arg e "$event" \
       --arg d "the Approver's $event review of $pr_url could not be posted — GitHub refused the write (see approver-post.err), so the pull request carries no App review this round" \
       '{detail: $d, pr_url: $u, event: $e}')"
+  else
+    local outcome="not worth waiting for — see approver-post.err" retried_bool=false
+    if (( retried )); then
+      outcome="retried, but it still refused the write — see approver-post.err"
+      retried_bool=true
+    fi
+    log_event "warning" "$(jq -nc --arg u "$pr_url" --arg e "$event" --argjson r "$retried_bool" \
+      --arg d "the Approver's $event review of $pr_url could not be posted — GitHub's $kind rate limit refused the write ($outcome), so the pull request carries no App review this round" \
+      '{detail: $d, pr_url: $u, event: $e, rate_limited: true, retried: $r}')"
   fi
   return 0
 }

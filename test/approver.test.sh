@@ -26,6 +26,12 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Sourced ahead of lib/approver.sh, matching every real caller's own order
+# (agent-cycle.sh) — approver_post_or_warn reuses its github_limit_kind
+# classifier and github_limit_wait_plan/github_limit_primary_reset_epoch
+# retry policy (agent-ops#1082).
+# shellcheck source=lib/github-limit.sh
+. "$SCRIPT_DIR/lib/github-limit.sh"
 # shellcheck source=lib/approver.sh
 . "$SCRIPT_DIR/lib/approver.sh"
 
@@ -45,6 +51,17 @@ assert_eq() {
     printf 'ok   - %s\n' "$desc"
   else
     printf 'FAIL - %s\n     expected: %s\n     actual:   %s\n' "$desc" "$expected" "$actual"
+    failures=$(( failures + 1 ))
+  fi
+}
+
+assert_contains() {
+  local desc="$1" needle="$2" haystack="$3"
+  if [[ "$haystack" == *"$needle"* ]]; then
+    printf 'ok   - %s\n' "$desc"
+  else
+    printf 'FAIL - %s\n     expected to contain: %s\n     actual:             %s\n' \
+      "$desc" "$needle" "$haystack"
     failures=$(( failures + 1 ))
   fi
 }
@@ -362,6 +379,89 @@ printf 'x' >"$tmp_dir/api-fail"
 rc=0
 approver_dismiss_review "$URL" "12345" "x" "secret-token" || rc=$?
 assert_eq "GitHub refusing the write is reported, never read as a dismissal" "1" "$rc"
+
+# --- approver_post_or_warn: rate-limit refusals (agent-ops#1082) ---------------
+# A failed write used to log the same generic "GitHub refused the write"
+# whether GitHub rejected the token outright or merely refused because the
+# owner's shared REST budget was spent — and dropped the verdict outright
+# either way. This covers both halves: the log line names a rate-limit
+# refusal distinguishably, and a refusal `github_limit_wait_plan` says is
+# worth waiting for is retried rather than dropped.
+#
+# A dedicated stub, since the two behaviours this section tests — a
+# controllable fail-then-succeed POST sequence, and a real (short) secondary
+# rate-limit wait — are not what the stub above exercises. `GITHUB_LIMIT_
+# SECONDARY_WAIT_SECONDS=1` keeps the real `sleep` this exercises well under
+# a second's worth of test time rather than the production default's 20s.
+rl_dir="$tmp_dir/ratelimit"
+mkdir -p "$rl_dir"
+cat >"$rl_dir/gh" <<'STUB'
+#!/usr/bin/env bash
+d="$(dirname "$0")"
+if [[ "$1 $2" == "api -X" ]]; then
+  n="$(cat "$d/post-calls" 2>/dev/null || printf 0)"
+  n=$(( n + 1 ))
+  printf '%s' "$n" >"$d/post-calls"
+  fail_count="$(cat "$d/fail-count" 2>/dev/null || printf 0)"
+  if (( n <= fail_count )); then
+    cat "$d/fail-message" >&2
+    exit 1
+  fi
+  printf 'posted\n' >>"$d/posts"
+  exit 0
+fi
+exit 1
+STUB
+chmod +x "$rl_dir/gh"
+
+events=()
+log_event() { events+=("$1"$'\t'"$2"); }
+reset_rl_stub() {  # <fail-count> <fail-message>
+  printf '%s' "$1" >"$rl_dir/fail-count"
+  printf '%s' "$2" >"$rl_dir/fail-message"
+  : >"$rl_dir/post-calls"; : >"$rl_dir/posts"
+  events=()
+  GITHUB_LIMIT_WAITED_SECONDS=0
+}
+rl_posts() { wc -l <"$rl_dir/posts" 2>/dev/null | tr -d ' '; }
+rl_post_calls() { cat "$rl_dir/post-calls" 2>/dev/null || printf 0; }
+warning_events() { local e; for e in "${events[@]}"; do [[ "$e" == warning$'\t'* ]] && printf '%s\n' "${e#*$'\t'}"; done; }
+
+GITHUB_LIMIT_SECONDARY_WAIT_SECONDS=1
+APPROVER_GH="$rl_dir/gh"
+cycle_dir="$rl_dir/cycle"; mkdir -p "$cycle_dir"
+
+# A secondary refusal (a wait always worth taking, per github_limit_wait_plan)
+# on the first attempt, success on the retry: the verdict reaches GitHub, not
+# dropped, and approver_last_post_ok says so.
+reset_rl_stub 1 "You have exceeded a secondary rate limit. Please wait a few minutes."
+approver_last_post_ok=-1
+approver_post_or_warn "$URL" APPROVE "looks fine" "secret-token"
+assert_eq "a rate-limited write is retried rather than dropped" "1" "$approver_last_post_ok"
+assert_eq "  ... exactly two POST attempts were made" "2" "$(rl_post_calls)"
+assert_eq "  ... and the retry actually reached GitHub" "1" "$(rl_posts)"
+assert_eq "  ... logging no warning at all — the retry recovered it" "" "$(warning_events)"
+
+# A refusal that is still rate-limited on the retry: dropped, but the warning
+# names the cause distinguishably from a generic refusal, and says a retry
+# was attempted.
+reset_rl_stub 99 "You have exceeded a secondary rate limit. Please wait a few minutes."
+approver_last_post_ok=-1
+approver_post_or_warn "$URL" APPROVE "looks fine" "secret-token"
+assert_eq "a write still rate-limited after the retry is not posted" "0" "$approver_last_post_ok"
+assert_contains "  ... its warning names the rate limit, not a generic refusal" \
+  "secondary rate limit" "$(warning_events)"
+assert_contains "  ... and says a retry was made" "retried" "$(warning_events)"
+
+# A generic (non-rate-limit) refusal: no retry attempted at all, and the
+# warning keeps its original, generic wording — unchanged behaviour.
+reset_rl_stub 99 "Bad credentials (HTTP 401)"
+approver_last_post_ok=-1
+approver_post_or_warn "$URL" APPROVE "looks fine" "secret-token"
+assert_eq "a generic refusal is not retried" "1" "$(rl_post_calls)"
+assert_eq "  ... and is not posted" "0" "$approver_last_post_ok"
+assert_contains "  ... its warning keeps the original generic wording" \
+  "GitHub refused the write" "$(warning_events)"
 
 # --- Survives the caller's shell options ---------------------------------------
 # agent-cycle.sh runs under `set -euo pipefail`; every call site captures
