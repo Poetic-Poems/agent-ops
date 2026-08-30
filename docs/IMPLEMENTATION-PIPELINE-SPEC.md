@@ -426,11 +426,18 @@ file and carries placeholders only; `.env` itself is never committed.
   `roll-pending` marker (requirement 39c): at its own cycle boundary, a node
   whose image has fallen behind the registry's newest declines the chain it
   would otherwise take and writes the marker instead, which the hook honours
-  as an unconditional allow — lock included — until the window it names
-  expires. The bound today is therefore two-part: one cycle's length for a
-  node that is merely busy, and `lock_stale_after` only for one that is
-  actually wedged and so never reaches that cycle-boundary check at all. The
-  fail-closed side is the cheap
+  as an unconditional allow against `lock.json` alone — never
+  `review-lock.json`, which never wrote the marker and never yielded
+  anything (agent-ops#1102) — until the window it names expires, or until the
+  cycle that next reacquires `lock.json` clears it itself, at its own start,
+  once `image_drift_status` no longer reads "behind" (also agent-ops#1102: a
+  fixed clock offset from cycle-end is not "until the next cycle would have
+  started", so without this a reacquired lock could otherwise run its own
+  stages underneath a marker that still authorises overriding it). The bound
+  today is therefore two-part: one cycle's length for a node that is merely
+  busy, and `lock_stale_after` only for one that is actually wedged and so
+  never reaches that cycle-boundary check at all. The fail-closed side is
+  the cheap
   one — a leftover foreign lock is taken over or removed within the hour by
   the next cycle (requirement 1 precedes the stand-down checks, so standby
   nodes clear it too), while a foreign `kill -0` answers for the wrong
@@ -7227,14 +7234,39 @@ implements.
     (`{"until": <ISO8601>}`, `schedule.cycle_interval_minutes` from now,
     requirement 2.5's own exclusion list). `deploy/docker/
     watchtower-pre-update.sh` reads that marker back and honours it as an
-    unconditional allow — overriding its own ordinary in-flight-cycle
-    deferral, lock included — until `until`: wide enough that the next poll
-    is guaranteed to land inside it, which the true gap a declined chain
+    unconditional allow against `lock.json` alone — overriding only that
+    pipeline's own ordinary in-flight-cycle deferral, never
+    `review-lock.json`'s (agent-ops#1102: `review-cycle.sh` never wrote the
+    marker and never decided to yield anything, so a project review beginning
+    just after a yielding implementation cycle must keep deferring on its own
+    ordinary judgement regardless) — until `until`: wide enough that the next
+    poll is guaranteed to land inside it, which the true gap a declined chain
     leaves (the instant between this cycle's lock release and the next
-    cron-fired cycle's own claim) is not. The result is the bound the hook's
-    own header now states: one cycle's length for a node that is merely busy,
-    and `lock_stale_after` only for one that is actually wedged and so never
-    reaches this check at all.
+    cron-fired cycle's own claim) is not.
+
+    Because `until` is a fixed clock offset from this cycle's own end, not
+    "the next cycle's own start", a cycle that reacquires `lock.json` before
+    `until` passes would otherwise run its own stages underneath a marker
+    that still authorises overriding that very lock (agent-ops#1102). So the
+    other half of this mechanism runs at the *top* of every cycle, immediately
+    after `acquire_lock`: if `$state_dir/roll-pending.json` exists, the same
+    `image_drift_status` round trip (the identical TTL-backed cache, so this
+    is a network call only when that cache was already due to refresh) is
+    read again, and `chain_clear_landed_roll_pending` (`lib/chain.sh`) removes
+    the marker unless the verdict still reads "behind". Re-acquiring the lock
+    is itself the proof the gap the marker described has ended; once the
+    verdict is no longer "behind" the marker has either already done its job
+    (the roll landed in the gap) or was never earned by this node's own
+    current image, and leaving it live either way would let a marker written
+    for one roll authorise watchtower to destroy *this* cycle's own container
+    for whatever publishes next. A verdict still reading "behind" leaves the
+    marker untouched — narrowing that window further is a larger design
+    change (agent-ops#1102's own option 2: standing the next cycle down while
+    a marker is in force and the image is still behind), not this one.
+
+    The result is the bound the hook's own header now states: one cycle's
+    length for a node that is merely busy, and `lock_stale_after` only for
+    one that is actually wedged and so never reaches this check at all.
 17d. **Race-loss observability**: how many candidates a cycle lost to a peer
     genuinely holding the item (17a's `cause: "held"`, as opposed to
     `"unreachable"`) before it won its own claim, or — on the cycle that
@@ -19904,28 +19936,36 @@ pull request, run the ones the change touches and any it could regress.
     every other malformed schedule key already gets. `test/doctor.test.sh`
     passes: the crontab report names the full comma list, not just the
     first occurrence.
-39c. **A pending image roll overrides an otherwise-eligible chain, never grants
-    one, and is honoured at the hook** (requirement 39c, agent-ops#1096).
-    `test/chain.test.sh` passes: `chain_image_behind` reads true only for a
-    `{"status":"behind",...}` verdict — "current", "unverified", the JSON
-    literal `null` and malformed input all read false — and
-    `chain_write_roll_pending` writes `$state_dir/roll-pending.json` naming a
-    bare ISO-8601 `until` `schedule.cycle_interval_minutes` minutes out
-    (falling back to the schema default of 15 on a non-numeric argument),
-    creating `state_dir` if it does not yet exist. `test/finish-then-
-    continue.test.sh` passes, against the same real `cleanup` block as 39a,
-    now driven with a stubbed `image_drift_status`/`agent_ops_version`: a
-    "behind" verdict cancels an otherwise chain-eligible, exit-0 cycle and
-    writes the marker; a "current" verdict still chains and writes no marker;
-    a cycle with no chain to give up (`chain_eligible=0`) or that did not end
-    cleanly (a non-zero exit) never even reaches the check, marker included.
-    `test/watchtower-pre-update.test.sh` passes: an unexpired
-    `roll-pending.json` makes the hook exit 0 despite a live lock naming a
-    live process in the hook's own container; an expired or unparseable
-    marker leaves the ordinary lock-based judgement unchanged; no marker at
-    all behaves exactly as before the marker existed. `test/state-sync.test.sh`
-    passes: `roll-pending.json` does not replicate to a peer's branch,
-    alongside the other live locks.
+39c. **A pending image roll overrides an otherwise-eligible chain, never
+    grants one, is honoured at the hook against `lock.json` alone, and is
+    cleared once landed** (requirement 39c, agent-ops#1096, amended by
+    agent-ops#1102). `test/chain.test.sh` passes: `chain_image_behind` reads
+    true only for a `{"status":"behind",...}` verdict — "current",
+    "unverified", the JSON literal `null` and malformed input all read false
+    — and `chain_write_roll_pending` writes `$state_dir/roll-pending.json`
+    naming a bare ISO-8601 `until` `schedule.cycle_interval_minutes` minutes
+    out (falling back to the schema default of 15 on a non-numeric argument),
+    creating `state_dir` if it does not yet exist. `chain_clear_landed_roll_pending`
+    removes that same file unless the verdict handed to it still reads
+    "behind" — "current", "unverified", `null` and no argument at all every
+    clear it — and does nothing, without error, when the file is already
+    absent. `test/finish-then-continue.test.sh` passes, against the same
+    real `cleanup` block as 39a, now driven with a stubbed `image_drift_
+    status`/`agent_ops_version`: a "behind" verdict cancels an otherwise
+    chain-eligible, exit-0 cycle and writes the marker; a "current" verdict
+    still chains and writes no marker; a cycle with no chain to give up
+    (`chain_eligible=0`) or that did not end cleanly (a non-zero exit) never
+    even reaches the check, marker included. `test/watchtower-pre-update.
+    test.sh` passes: an unexpired `roll-pending.json` makes the hook exit 0
+    despite a live lock naming a live process in the hook's own container,
+    when that lock is `lock.json` — but never when it is `review-lock.json`,
+    which still defers on its own ordinary judgement regardless of the
+    marker, and whose deferral the hook's own output never misdescribes as
+    an override; an expired or unparseable marker leaves the ordinary
+    lock-based judgement unchanged; no marker at all behaves exactly as
+    before the marker existed. `test/state-sync.test.sh` passes:
+    `roll-pending.json` does not replicate to a peer's branch, alongside the
+    other live locks.
 17e. **Contended-claim-loss reporting is correct per node and per era
     (component 21).** `test/pickup-metrics.test.sh` passes against a fixture
     union log: `selection` and `claim-lost` events split "before"/"after" at

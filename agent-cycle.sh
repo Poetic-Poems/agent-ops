@@ -1442,6 +1442,24 @@ fi
 
 acquire_lock
 
+# Shed a landed roll-pending marker before this cycle's own stages run
+# (requirement 39c amendment, agent-ops#1102): the marker a prior cycle's
+# cleanup() wrote is honoured on a fixed clock, not "until the next cycle
+# would have started", so a cycle that reacquires the lock (as this one just
+# did) before that clock runs out would otherwise spend its own run
+# underneath a marker that still tells watchtower-pre-update.sh to override
+# this very lock. Re-acquiring the lock is itself the proof the gap the
+# marker described has ended, so clear it once the image is no longer
+# "behind" — the only case a cycle boundary can act on either way (see
+# lib/chain.sh's chain_image_behind). Reads the same cache-backed round trip
+# the state-sync heartbeat already keeps warm (`IMAGE_DRIFT_TTL`), so this
+# costs a network call only when that cache was already due to refresh.
+if [[ -f "$state_dir/roll-pending.json" ]]; then
+  chain_clear_landed_roll_pending "$state_dir" \
+    "$(image_drift_status "$(agent_ops_version "$SCRIPT_DIR")" \
+      "$state_dir/.image-drift-cache.json" 2>/dev/null || echo null)"
+fi
+
 # --- 1b. Crash-loop escalation (requirement 2.7) ---
 # A Co-Ordinator failure pins no repo/item — nothing is blocked, so the whole
 # blocked → Enabler → escalation ladder that covers item failures never sees

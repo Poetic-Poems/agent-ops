@@ -55,14 +55,28 @@
 # no wider than the moment before the next cron-fired cycle reacquires it —
 # still too narrow for a five-minute poll to reliably land in. So
 # agent-cycle.sh's cleanup() writes this marker instead of relying on that
-# gap: read below, before either lock is even inspected, it overrides the
-# ordinary in-flight deferral as an unconditional allow until `until` — wide
-# enough (`schedule.cycle_interval_minutes`) to guarantee the next poll falls
-# inside it, whatever the lock says. Past `until`, or with no marker at all,
-# the ordinary lock-based judgement applies exactly as it always has.
+# gap: read below, once `lock.json` itself is found held, it overrides that
+# one deferral as an unconditional allow until `until` — wide enough
+# (`schedule.cycle_interval_minutes`) to guarantee the next poll falls inside
+# it, whatever the lock says. Past `until`, with no marker at all, or against
+# `review-lock.json`, the ordinary lock-based judgement applies exactly as it
+# always has — see "Scope", below, for why the override stops at `lock.json`.
+# agent-cycle.sh's own `acquire_lock` also clears a marker that has already
+# done its job (agent-ops#1102): once `image_drift_status` no longer reads
+# "behind", the next cycle to reacquire the lock removes it before running
+# its own stages, so a marker written for one roll cannot linger to authorise
+# a later, unrelated one across the cycle boundary it was never asked about.
 #
-# Both pipelines count. agent-cycle.sh holds `lock.json` and review-cycle.sh
-# holds `review-lock.json`, and either dying to a roll costs the same.
+# **Scope.** Only `lock.json`'s own deferral is overridden. `review-lock.json`
+# defers exactly as before, marker or not (agent-ops#1102): review-cycle.sh
+# never wrote this marker and never decided to yield anything, so a project
+# review beginning just after a yielding implementation cycle must not run
+# any part of itself under a licence to be destroyed that it never earned.
+#
+# Both pipelines count toward the ordinary, marker-free judgement below.
+# agent-cycle.sh holds `lock.json` and review-cycle.sh holds
+# `review-lock.json`, and either dying to a roll costs the same — the marker
+# just does not extend to the second of them.
 #
 # One thing acquire_lock never has to think about: *which container* wrote the
 # lock. This script must — watchtower runs it in every container carrying the
@@ -296,11 +310,14 @@ held_by() {
 
 # roll_pending_allow — print a one-line reason and succeed iff
 # $state_dir/roll-pending.json names an `until` that has not yet passed
-# (agent-ops#1096). Checked, and honoured, before either lock below: this is
-# an override of the ordinary in-flight-cycle judgement, not a third case fed
-# into it. An unparseable `until` reads as epoch 0 — impossibly old, exactly
-# `held_by`'s own convention for a timestamp it cannot trust — so a corrupt or
-# foreign-shaped marker never grants an allow it did not earn.
+# (agent-ops#1096). Checked, and honoured, only once `lock.json` itself is
+# found held, below (agent-ops#1102): this overrides that one deferral, never
+# `review-lock.json`'s — review-cycle.sh never wrote this marker and never
+# decided to yield anything, so it must not be destroyed on the strength of a
+# decision it took no part in. An unparseable `until` reads as epoch 0 —
+# impossibly old, exactly `held_by`'s own convention for a timestamp it
+# cannot trust — so a corrupt or foreign-shaped marker never grants an allow
+# it did not earn.
 roll_pending_allow() {
   local f="$state_dir/roll-pending.json" until_ts until_epoch now_epoch
   [[ -f "$f" ]] || return 1
@@ -312,19 +329,16 @@ roll_pending_allow() {
   printf 'a roll-pending marker from the last cycle boundary is in force until %s' "$until_ts"
 }
 
-if pending="$(roll_pending_allow)"; then
-  say "$pending — allowing the update despite any lock"
-  record_verdict allow
-  say "the update may proceed"
-  exit 0
-fi
-
 defer=0
 
 held="$(held_by "$state_dir/lock.json" "$cycle_stale_after")"
 if [[ -n "$held" ]]; then
-  say "an implementation cycle is in flight ($held) — deferring this update"
-  defer=1
+  if pending="$(roll_pending_allow)"; then
+    say "an implementation cycle is in flight ($held), but $pending — allowing the update despite the lock"
+  else
+    say "an implementation cycle is in flight ($held) — deferring this update"
+    defer=1
+  fi
 fi
 
 held="$(held_by "$state_dir/review-lock.json" "$review_stale_after")"

@@ -1075,10 +1075,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   verdict the heartbeat's `image` field already publishes — no second
   signal); if so it declines a chain it would otherwise take and writes
   `$state_dir/roll-pending.json`, which the hook now honours as an
-  unconditional allow — overriding even a live lock — until the window it
-  names expires. The bound is now two-part: one cycle's length for a node
-  that is merely busy, `lock_stale_after` only for one that is actually
-  wedged.
+  unconditional allow against `lock.json` alone — never `review-lock.json`,
+  which never wrote the marker and never yielded anything (agent-ops#1102)
+  — until the window it names expires, or until the cycle that next
+  reacquires `lock.json` clears it itself, at its own start, once the image
+  is no longer "behind" (also agent-ops#1102: the window is a fixed clock
+  offset from cycle-end, not "until the next cycle would have started", so
+  without this a reacquired lock could otherwise run its own stages
+  underneath a marker still authorising an override of it). The bound is
+  now two-part: one cycle's length for a node that is merely busy,
+  `lock_stale_after` only for one that is actually wedged.
 - Requirement 2.0's budget gate read `GET /rate_limit`, whose body — read
   cold, as the first call of every cycle — is an empty window (`5000/5000`,
   reset exactly an hour from now) rather than a reading; it answered `ok`

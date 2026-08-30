@@ -18,11 +18,12 @@
 #     (#130);
 #   - anything the hook cannot read fails *open*, because a node that quietly
 #     stops updating is worse than a roll that lands badly once;
-#   - a `roll-pending` marker (agent-ops#1096) overrides even a live, fresh
-#     lock as an unconditional allow, until it expires — the mechanism a
+#   - a `roll-pending` marker (agent-ops#1096) overrides a live, fresh
+#     lock.json as an unconditional allow, until it expires — the mechanism a
 #     healthy node running long or chained cycles relies on to actually get a
 #     roll, rather than merely being bounded by `lock_stale_after` the way a
-#     wedged one is.
+#     wedged one is. It never extends to review-lock.json (agent-ops#1102):
+#     a project review never wrote the marker and never yielded anything.
 #
 # Run directly: ./test/watchtower-pre-update.test.sh — exit 0 iff all passed.
 
@@ -222,11 +223,15 @@ assert_eq "a foreign review lock defers the same way" "75" "$rc"
 assert_contains "naming that pipeline" "project review is in flight" "$out"
 rm -f "$state_dir/review-lock.json"
 
-# --- The roll-pending override (agent-ops#1096) --------------------------------
+# --- The roll-pending override (agent-ops#1096, scoped by agent-ops#1102) ------
 # agent-cycle.sh's cleanup() writes this marker when it declines to chain
 # because the image has fallen behind — see test/chain.test.sh for that side.
-# The hook must honour it as an unconditional allow, overriding even a live,
-# fresh, same-container lock, for exactly the window it names and no longer.
+# The hook must honour it as an unconditional allow against a live, fresh
+# lock.json, for exactly the window it names and no longer — but never
+# against review-lock.json, which review-cycle.sh never wrote the marker for
+# and never decided to yield anything (agent-ops#1102): a project review
+# beginning just after a yielding implementation cycle must keep deferring on
+# its own ordinary judgement regardless of what lock.json's own marker says.
 
 write_roll_pending() {  # write_roll_pending MINUTES_FROM_NOW
   jq -n --arg u "$(date -u -d "${1} minutes" +%Y-%m-%dT%H:%M:%SZ)" '{until: $u}' \
@@ -246,7 +251,8 @@ start_sleeper
 write_lock "$state_dir/review-lock.json" "$sleeper_pid" 0
 write_roll_pending 15
 run_hook
-assert_eq "a live review's lock is overridden the same way" "0" "$rc"
+assert_eq "a live review's lock still defers — the marker does not extend to it" "75" "$rc"
+assert_eq "and the hook does not claim an override it never grants here" "0" "$(grep -c 'roll-pending' <<<"$out")"
 stop_sleeper
 rm -f "$state_dir/review-lock.json" "$state_dir/roll-pending.json"
 

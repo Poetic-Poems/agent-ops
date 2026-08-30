@@ -22,6 +22,14 @@
 # `chain_write_roll_pending` records the decision not to chain so the hook can
 # honour it — see agent-cycle.sh's cleanup(), which is the only caller of
 # either.
+#
+# A third question, added once the first two shipped (agent-ops#1102): a
+# marker `chain_write_roll_pending` wrote is honoured on a fixed clock, not
+# "until the next cycle would have started" the way #1096's own spec
+# describes, so a cycle that reacquires the lock before the marker's `until`
+# passes runs its own stages underneath it. `chain_clear_landed_roll_pending`
+# is how the next cycle sheds a marker that has already done its job — see
+# agent-cycle.sh's `acquire_lock` call site, its only caller.
 
 # chain_sources_remain ORDERED_REPOS_JSON
 # Print the total count of configured, non-excluded sources across every
@@ -97,4 +105,28 @@ chain_write_roll_pending() {
   local tmp="$state_dir/roll-pending.json.tmp.$$"
   jq -nc --arg u "$until_ts" '{until: $u}' > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 0; }
   mv "$tmp" "$state_dir/roll-pending.json" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+}
+
+# chain_clear_landed_roll_pending STATE_DIR IMAGE_STATUS_JSON
+# Remove STATE_DIR/roll-pending.json unless IMAGE_STATUS_JSON still reads
+# "behind" (agent-ops#1102). `chain_write_roll_pending` names a fixed-width
+# window because it cannot know exactly when the next cycle will start; this
+# is the other half, called back at the top of the cycle that actually does
+# start, once it holds the lock the marker was written to be overridden
+# against. Re-acquiring that lock is itself the proof the "no cycle running"
+# gap the marker describes has ended — so once the image is no longer
+# "behind", the marker has either already done its job (the roll landed in
+# the gap) or was never earned by this node's own current image, and leaving
+# it live either way would let it authorise watchtower to destroy *this*
+# cycle's own container for whatever publishes next, on the strength of a
+# decision made about a roll that is no longer the one in question. A
+# "behind" verdict — the roll genuinely has not landed yet — leaves the
+# marker untouched: narrowing the window in that case is #1102's own
+# documented larger design change, not this fix. Always succeeds, the same
+# as `chain_write_roll_pending`: no marker to clear, and a failed removal,
+# both leave nothing for the caller to react to.
+chain_clear_landed_roll_pending() {
+  local state_dir="$1" status_json="${2:-null}"
+  chain_image_behind "$status_json" && return 0
+  rm -f "$state_dir/roll-pending.json" 2>/dev/null || true
 }

@@ -15,7 +15,10 @@
 # (agent-ops#1096): the cycle-end check that yields a chain a healthy node
 # would otherwise take when the running image has fallen behind, and the
 # marker it writes so deploy/docker/watchtower-pre-update.sh's own test can
-# pick up where this one leaves off.
+# pick up where this one leaves off. And `chain_clear_landed_roll_pending`
+# (agent-ops#1102): the other half, called back at the top of the next cycle
+# to shed that marker once it has either done its job or was never earned by
+# this node's own current image.
 #
 # No test framework is used (none exists elsewhere in this repo). Run directly:
 #
@@ -167,6 +170,41 @@ rm -rf "$tmp_state"
 chain_write_roll_pending "$tmp_state" 5
 assert_eq "a missing state_dir is created rather than failing" "1" \
   "$(test -f "$tmp_state/roll-pending.json" && echo 1 || echo 0)"
+
+# --- chain_clear_landed_roll_pending (agent-ops#1102) -----------------------
+# The other half of the pair above: called back at the top of the next cycle
+# to reacquire the lock, this sheds a marker that has either done its job
+# (the roll landed) or was never earned by this node's own current image —
+# but only once the verdict genuinely says so, never on a "behind" verdict
+# still in force.
+
+chain_write_roll_pending "$tmp_state" 15
+chain_clear_landed_roll_pending "$tmp_state" '{"status":"behind","checked_at":"2026-08-30T00:00:00Z"}'
+assert_eq "a still-'behind' verdict leaves the marker in place" "1" \
+  "$(test -f "$tmp_state/roll-pending.json" && echo 1 || echo 0)"
+
+chain_clear_landed_roll_pending "$tmp_state" '{"status":"current","checked_at":"2026-08-30T00:00:00Z"}'
+assert_eq "a 'current' verdict clears a landed marker" "0" \
+  "$(test -f "$tmp_state/roll-pending.json" && echo 1 || echo 0)"
+
+chain_write_roll_pending "$tmp_state" 15
+chain_clear_landed_roll_pending "$tmp_state" '{"status":"unverified","reason":"registry unreachable","checked_at":"2026-08-30T00:00:00Z"}'
+assert_eq "an 'unverified' verdict clears it too — nothing to protect any more" "0" \
+  "$(test -f "$tmp_state/roll-pending.json" && echo 1 || echo 0)"
+
+chain_write_roll_pending "$tmp_state" 15
+chain_clear_landed_roll_pending "$tmp_state" "null"
+assert_eq "the JSON literal null clears it — this node is not running a CI-stamped image at all" "0" \
+  "$(test -f "$tmp_state/roll-pending.json" && echo 1 || echo 0)"
+
+chain_write_roll_pending "$tmp_state" 15
+chain_clear_landed_roll_pending "$tmp_state" ""
+assert_eq "no argument at all defaults to clearing, same as null" "0" \
+  "$(test -f "$tmp_state/roll-pending.json" && echo 1 || echo 0)"
+
+rm -f "$tmp_state/roll-pending.json"
+chain_clear_landed_roll_pending "$tmp_state" '{"status":"current"}'
+assert_eq "no marker to clear is not an error" "0" "$?"
 
 printf '\n'
 if (( failures > 0 )); then
