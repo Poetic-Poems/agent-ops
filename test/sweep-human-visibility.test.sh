@@ -161,7 +161,11 @@ fi
 
 path="$2"
 fail="$(cat "$d/api-fail" 2>/dev/null || true)"
-[[ -n "$fail" && "$path" == *"$fail" ]] && exit 1
+if [[ -n "$fail" && "$path" == *"$fail" ]]; then
+  failmsg="$(cat "$d/api-fail-msg" 2>/dev/null || true)"
+  [[ -n "$failmsg" ]] && printf '%s\n' "$failmsg" >&2
+  exit 1
+fi
 
 jqfilter=""
 prev=""
@@ -307,7 +311,7 @@ reset_stub() {
   printf 'warwickallen\n' > "$tmp_dir/author"
   printf '[]' > "$tmp_dir/issue-comments.json"
   : > "$tmp_dir/pending"; : > "$tmp_dir/posts"; : > "$tmp_dir/comments.log"
-  rm -f "$tmp_dir/api-fail" "$tmp_dir/post-fail" "$tmp_dir/list-fail" \
+  rm -f "$tmp_dir/api-fail" "$tmp_dir/api-fail-msg" "$tmp_dir/post-fail" "$tmp_dir/list-fail" \
         "$tmp_dir/view-fail" "$tmp_dir/comment-fail" "$tmp_dir/pages" "$tmp_dir/mq-fail"
   set_merge_queue false
   idle_view "" "" "" "" no
@@ -791,6 +795,19 @@ assert_eq "an unreadable reviews list warns on every check that reads it" \
   "$(printf 'warning\nwarning')" "$(jq -r '.action' <<<"$out" | sort)"
 assert_eq "  ... both naming the pull request" "$(printf '%s\n%s' "$URL" "$URL")" \
   "$(jq -r '.pr_url' <<<"$out" | sort)"
+
+# agent-ops#1082: when the /reviews read behind the idle-nudge check fails
+# specifically on a GitHub REST rate-limit refusal, the warning says so
+# distinguishably, rather than the same generic detail a non-rate-limit
+# failure gets.
+reset_stub
+set_reviews "$(review Warwick-Allen APPROVED)"
+printf '/reviews' > "$tmp_dir/api-fail"
+printf 'HTTP 403: API rate limit exceeded for user ID 2049303' > "$tmp_dir/api-fail-msg"
+out="$(run_sweep)"
+assert_contains "a rate-limited reviews read names the cause in the idle-nudge warning" \
+  "could not read the pull request's reviews — skipping the idle-nudge check (GitHub's primary rate limit refused the read)" \
+  "$(jq -r 'select(.action == "warning") | .detail' <<<"$out" | grep 'idle-nudge')"
 
 reset_stub
 printf x > "$tmp_dir/list-fail"

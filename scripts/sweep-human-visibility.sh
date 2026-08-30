@@ -172,6 +172,23 @@ dequeue_max_age_hours="$(cfg '.merge_queue_dequeue_notice_max_age_hours')"
 
 warn() { jq -nc --arg u "$1" --arg d "$2" '{action: "warning", pr_url: $u, detail: $d}'; }
 
+# _sweep_reviews_read_kind SLUG NUMBER
+# Print `primary`, `secondary` or `none` for why the idle-nudge check's own
+# `/reviews` read (via `_handoff_pr_approved`, lib/handoff.sh) just failed —
+# agent-ops#1082: that function's own contract prints nothing on failure
+# (test/handoff.test.sh depends on it), so nothing about the cause survives
+# its call. This makes one further, diagnostic-only read of the same
+# endpoint — cheap next to the warning it lets a human act on — purely to
+# classify the failure already established via `lib/github-limit.sh`'s
+# `github_limit_kind`, reused rather than reclassified by a second detector.
+# Always prints something (falling back to `none` when the classifier itself
+# is unavailable), and never itself fails the caller.
+_sweep_reviews_read_kind() {
+  local slug="$1" number="$2" gh_bin="${HANDOFF_GH:-gh}" diag
+  diag="$("$gh_bin" api "repos/$slug/pulls/$number/reviews" 2>&1 1>/dev/null)" || true
+  declare -F github_limit_kind >/dev/null 2>&1 && github_limit_kind "$diag" || printf 'none'
+}
+
 # _sweep_round_answered SLUG NUMBER
 # Print `answered`, `unanswered` or `unknown` for the review round currently
 # blocking pull request NUMBER's `reviewDecision` — the judgement requirement
@@ -437,8 +454,15 @@ $mq_marker"
     warn "$pr_url" "could not parse the pull request's owner/repo/number from its URL — skipping the idle-nudge check"
     continue
   fi
-  approved="$(_handoff_pr_approved "$mq_owner/$mq_repo" "$mq_number")" \
-    || { warn "$pr_url" "could not read the pull request's reviews — skipping the idle-nudge check"; continue; }
+  if ! approved="$(_handoff_pr_approved "$mq_owner/$mq_repo" "$mq_number")"; then
+    kind="$(_sweep_reviews_read_kind "$mq_owner/$mq_repo" "$mq_number")"
+    if [[ "$kind" != "none" ]]; then
+      warn "$pr_url" "could not read the pull request's reviews — skipping the idle-nudge check (GitHub's $kind rate limit refused the read)"
+    else
+      warn "$pr_url" "could not read the pull request's reviews — skipping the idle-nudge check"
+    fi
+    continue
+  fi
   [[ "$approved" == "true" ]] || continue
   [[ "$(jq -r '.mergeable // ""' <<<"$pr_json")" == "MERGEABLE" ]] || continue
   # `mergeable` answers the merge-*conflict* question alone
