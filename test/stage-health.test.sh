@@ -78,7 +78,7 @@ NOW_EPOCH="$(epoch_of "$NOW")"
 
 empty_verdicts="$(stage_health_verdicts 3 48 "$NOW_EPOCH" <<<"")"
 assert_eq "an empty stream still names every known stage" \
-  '["approver","approver-adjudicate-open-question","coordinator","enabler","enabler-adjudicate","implementer","refiner","reviewer"]' \
+  '["approver","approver-adjudicate-open-question","coordinator","enabler","enabler-adjudicate","enabler-decide","implementer","refiner","reviewer"]' \
   "$(jq -cS 'keys' <<<"$empty_verdicts")"
 
 # --- the stage list tracks the pipeline's own source, not a snapshot of it --

@@ -20,6 +20,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   plus a JSON block. This is the measurement D25 names as the trigger for a
   per-node authoring App: while every node authenticates as one user the
   movement is the bucket's, an upper bound on any one segment's own spend.
+- `escalation_autonomy` gains a third rung, `decide-tactical` (agent-ops#936):
+  one bounded Enabler decide pass (`prompts/enabler-decide.md`) runs before
+  *any* `escalate` verdict is filed as a human escalation — not only a
+  refinement disagreement, `adjudicate-first`'s own narrower scope — reaching
+  `settle` (nothing needed deciding), `decide` (a tactical trade-off the
+  pipeline may answer on its own authority, posted as a comment where the
+  item is a GitHub issue and logged as `decision-taken`), or `escalate`
+  (still a human's call). What counts as tactical versus owner-only is a
+  single, exhaustive nine-point boundary (requirement 36a's own "The
+  owner-only boundary" in `docs/IMPLEMENTATION-PIPELINE-SPEC.md`), referenced
+  rather than restated by `prompts/enabler-decide.md`, `prompts/enabler.md`
+  and `prompts/refiner.md`. Bounded per distinct reason rather than once per
+  item, capped by the new `escalation_adjudication_max_passes` (default `3`).
+  Both `adjudicate-first`'s and `decide-tactical`'s passes now run at the new
+  `enabler_model_critical` (falling back to `enabler_model`), the Enabler's
+  first critical tier. Poetic's own `config.json` opts in:
+  `escalation_autonomy: "decide-tactical"`, `enabler_model_critical:
+  "claude-fable-5"`. A `decide` verdict on a non-issue item that already
+  carried a refinement now reaches the next Refiner engagement rather than
+  being lost: the `item-refined` this path re-records to preserve
+  `refinements_map` is marked `unchanged: true`, `decisions_map`
+  (`lib/cycle-state.sh`) no longer reads that marked re-record as having
+  carried the decision forward, and `refiner_candidate_items`
+  (`lib/refinement.sh`) offers such an item as a full candidate for as long
+  as its decision stays pending (agent-ops#1049).
 - New `scripts/migrate-tech-debt-register.sh` (agent-ops#880), a reusable
   per-repo migration script that closes the gap agent-ops#875 above
   deliberately accepted: for every `status: open`/`status: in-progress`
@@ -1115,6 +1140,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   mirrors it on the complexity half, approximated from each repository's
   configured `merge_autonomy` level rather than the live effective one, to
   avoid a per-repository merge-budget-freeze read on every publish tick.
+
+- Requirement 1a's model-key enumeration
+  (`docs/IMPLEMENTATION-PIPELINE-SPEC.md`) named six of the eleven model keys
+  `agent-cycle.sh` actually resolves through `resolve_model_id`
+  (agent-ops#1002): `refiner_model` and
+  `approver_model_default`/`_complex`/`_critical` were all resolved by the
+  code and named nowhere in the requirement that governs the resolution. The
+  list now carries every key, `enabler_model_critical` included.
+
 - A Refiner (or Enabler) verdict whose `comments_posted[0]`/`comment_url` is a
   bare issue URL — no `#issuecomment-` anchor, so it cannot name any comment
   at all — is no longer recorded as a genuine refinement (TD-PPagop-26082819,

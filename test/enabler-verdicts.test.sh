@@ -150,6 +150,14 @@ review_gate_escalate_unreadable_streak_fn="$(extract_fn 'review_gate_escalate_un
 # (`escalation_autonomy_adjudicated_before`) is sourced for real above and
 # unit-tested in test/escalation-autonomy.test.sh.
 escalation_autonomy_pass_available_fn="$(extract_fn 'escalation_autonomy_pass_available() {' "$SCRIPT_DIR/lib/enabler.sh")"
+# agent-ops#936: the sibling bound on `decide-tactical` — per-reason, capped,
+# rather than once-per-item. Lifted for real for the same reason its
+# adjudicate-first counterpart above is: a guard that fails open here would
+# silently let two models loop over the same tactical question indefinitely.
+# Its own log predicates (`escalation_autonomy_decide_reason_key`/
+# `_reason_seen`/`_pass_count`) are sourced for real above and unit-tested in
+# test/escalation-autonomy.test.sh.
+escalation_autonomy_decide_pass_available_fn="$(extract_fn 'escalation_autonomy_decide_pass_available() {' "$SCRIPT_DIR/lib/enabler.sh")"
 # agent-ops#815: lifted here with the rest, while `SCRIPT_DIR` still points at
 # the repository (the scenarios below repoint it at `fake_root` for the
 # claim.sh stub), but `eval`led only in the last section of this file — every
@@ -177,6 +185,10 @@ if [[ "$escalation_autonomy_pass_available_fn" != *"escalation_autonomy_adjudica
   printf 'FAIL - escalation_autonomy_pass_available could not be found in agent-cycle.sh (renamed or moved?)\n'
   exit 1
 fi
+if [[ "$escalation_autonomy_decide_pass_available_fn" != *"escalation_autonomy_decide_reason_seen"* ]]; then
+  printf 'FAIL - escalation_autonomy_decide_pass_available could not be found in lib/enabler.sh (renamed or moved?)\n'
+  exit 1
+fi
 if [[ "$escalation_thread_reconcile_fn" != *"Blocked-by:"* ]]; then
   printf 'FAIL - escalation_thread_reconcile could not be found in lib/enabler.sh (renamed or moved?)\n'
   exit 1
@@ -186,6 +198,7 @@ eval "$extract_json_result_fn"
 eval "$enabler_claim_key_fn"
 eval "$review_gate_escalate_unreadable_streak_fn"
 eval "$escalation_autonomy_pass_available_fn"
+eval "$escalation_autonomy_decide_pass_available_fn"
 eval "$maybe_run_enabler_fn"
 
 # --- A claim.sh stub that always wins, so the claim step needs no network ---
@@ -291,6 +304,11 @@ DRY_RUN=0
 limit_hit_this_cycle=0
 # shellcheck disable=SC2034
 enabler_model="claude-test-model"
+# agent-ops#936: empty here so the fallback (`${enabler_model_critical:-
+# $enabler_model}`) is exercised by default; the decide-tactical scenarios
+# below set it explicitly to prove the override is honoured too.
+# shellcheck disable=SC2034
+enabler_model_critical=""
 # escalation_autonomy_configured_level's own input (agent-ops#627) — the real
 # function is sourced above and runs for real, so most scenarios need only
 # the product default; the adjudicate-first scenario below overrides this.
@@ -300,6 +318,10 @@ DEFAULTED_CONFIG='{}'
 PROMPTS_DIR="$fake_root/prompts"
 # shellcheck disable=SC2034
 refinement_max_per_engagement=5
+# agent-ops#936: the decide-tactical cap (`escalation_adjudication_max_passes`);
+# the cap scenario below overrides this to exercise "cap reached" directly.
+# shellcheck disable=SC2034
+escalation_adjudication_max_passes=3
 # shellcheck disable=SC2034
 state_repo=""
 state_dir="$tmp_dir/state"
@@ -372,6 +394,29 @@ handoff_complete_review() {
 run_enabler_adjudication() {
   echo "FAIL - run_enabler_adjudication was called but no scenario stub was set" >&2
   exit 97
+}
+
+# run_enabler_decide (agent-ops#936) is decide-tactical's own equivalent,
+# stubbed for the same reason and on the same terms as run_enabler_adjudication
+# above — the live nested Claude engagement is out of scope for this file;
+# what it tests is the gating logic (escalation_autonomy_decide_pass_available,
+# real, sourced above) and what the escalate branch does with the verdict.
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+run_enabler_decide() {
+  echo "FAIL - run_enabler_decide was called but no scenario stub was set" >&2
+  exit 96
+}
+
+# enabler_decision_comment (agent-ops#936) posts the decide-tactical `decide`
+# verdict's own comment via `gh` — stubbed like every other `gh`-writing call
+# this file keeps out of scope (create_escalation_issue, escalation_thread_
+# reconcile before its own section). Records the call and returns a fixed URL
+# so the decision-taken event's own comment_url is checkable without a real
+# GitHub write.
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+enabler_decision_comment() {
+  record "enabler_decision_comment $1 $2 $3 $4 $5 $6"
+  printf 'https://github.com/%s/issues/%s#issuecomment-999' "$1" "$2"
 }
 
 # run_case DESC ELIGIBLE_JSON EXAMINED_JSON [CYCLE_RC]
@@ -775,6 +820,338 @@ assert_eq "always-escalate: files the escalation directly" "1" \
   "$(grep -cE '^event escalated ' <<<"$calls")"
 assert_eq "always-escalate: TD26071901 is not issue-shaped — no thread reconciliation call" "0" \
   "$(grep -cE '^escalation_thread_reconcile ' <<<"$calls")"
+
+# ============================================================================
+# escalate, decide-tactical (agent-ops#936): the broader rung — *any*
+# escalate verdict, not only a refinement disagreement, runs one bounded
+# decide pass first. One case per verdict (settle/decide/escalate) per item
+# type (a register-record item with no thread, and a bare-issue-number item),
+# plus the per-reason bound and its cap.
+# ============================================================================
+
+# shellcheck disable=SC2034
+DEFAULTED_CONFIG='{"escalation_autonomy": "decide-tactical"}'
+
+eligible_ordinary_td='[{"repo":"acme/widgets","item":"TD26080001","blocked_ts":"2026-08-01T00:00:00Z",
+  "kind":"","reason":"threshold",
+  "detail":"should the disk gate read state_dir too?","unblock_condition":"a decision on scope"}]'
+eligible_ordinary_issue='[{"repo":"acme/widgets","item":"210","blocked_ts":"2026-08-01T00:00:00Z",
+  "kind":"","reason":"threshold",
+  "detail":"should the disk gate read state_dir too?","unblock_condition":"a decision on scope"}]'
+examined_ordinary='[{"repo":"acme/widgets","item":"TD26080001","verdict":"escalate","reason":"needs a decision",
+  "issue":{"title":"widgets: decide disk-gate scope","body":"…draft escalation…"}}]'
+examined_ordinary_issue='[{"repo":"acme/widgets","item":"210","verdict":"escalate","reason":"needs a decision",
+  "issue":{"title":"widgets: decide disk-gate scope","body":"…draft escalation…"}}]'
+eligible_disagreement_issue='[{"repo":"acme/widgets","item":"221","blocked_ts":"2026-08-01T00:00:00Z",
+  "kind":"needs-refinement","reason":"threshold",
+  "refined_before":{"ts":"2026-08-01T09:00:00Z","cycle":"c1",
+    "comment_url":"https://github.com/acme/widgets/issues/221#issuecomment-1","spec":""}}]'
+examined_disagreement_issue='[{"repo":"acme/widgets","item":"221","verdict":"escalate","reason":"still too vague",
+  "issue":{"title":"Refinement disagreement for 221","body":"…draft escalation…"}}]'
+
+# --- settle, register record (no thread, kind "") ---
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+run_enabler_decide() {
+  record "run_enabler_decide $1 $2"
+  printf '{"verdict":"settle","evidence":"the impediment already cleared"}'
+}
+calls="$(run_case "decide-tactical: settle (register record)" "$eligible_ordinary_td" "$examined_ordinary")"
+
+assert_contains "settle/TD: the decide pass was actually called" \
+  "run_enabler_decide acme/widgets TD26080001" "$calls"
+assert_eq "settle/TD: exactly one enabler-adjudication event" "1" \
+  "$(grep -cE '^event enabler-adjudication ' <<<"$calls")"
+dec_evt="$(events_named "$calls" enabler-adjudication | head -n1)"
+assert_eq "settle/TD: the event carries the settle verdict" "settle" "$(jq -r '.verdict' <<<"$dec_evt")"
+assert_eq "settle/TD: ...the decide-tactical pass tag" "decide-tactical" "$(jq -r '.pass' <<<"$dec_evt")"
+assert_eq "settle/TD: ...a non-empty reason_key" "16" "$(jq -r '.reason_key | length' <<<"$dec_evt")"
+assert_eq "settle/TD: no escalation issue is ever filed" "0" "$(grep -cE '^event escalated ' <<<"$calls")"
+assert_eq "settle/TD: exactly one unblocked event" "1" "$(grep -cE '^event unblocked ' <<<"$calls")"
+unblk_evt="$(events_named "$calls" unblocked | head -n1)"
+assert_eq "settle/TD: ...crediting the enabler" "enabler" "$(jq -r '.by' <<<"$unblk_evt")"
+assert_eq "settle/TD: no decision-taken event (settle never decides)" "0" \
+  "$(grep -cE '^event decision-taken ' <<<"$calls")"
+assert_eq "settle/TD: no item-refined event (ordinary item, no refinement to re-record)" "0" \
+  "$(grep -cE '^event item-refined ' <<<"$calls")"
+assert_eq "settle/TD: no decision comment posted (nothing to post for settle)" "0" \
+  "$(grep -cE '^enabler_decision_comment ' <<<"$calls")"
+xmn_evt="$(events_named "$calls" enabler-examined | head -n1)"
+assert_eq "settle/TD: enabler-examined outcome is unblocked, not escalate" \
+  "unblocked" "$(jq -r '.outcome' <<<"$xmn_evt")"
+
+# --- settle, issue item that is also a refinement disagreement: the
+# existing refinement is re-recorded, its label released, and the thread
+# gets the same correcting comment adjudicate-first's own "adequate" earns ---
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+run_enabler_decide() {
+  record "run_enabler_decide $1 $2"
+  printf '{"verdict":"settle","evidence":"the existing refinement already answers this"}'
+}
+calls="$(run_case "decide-tactical: settle (issue, refinement disagreement)" \
+  "$eligible_disagreement_issue" "$examined_disagreement_issue")"
+
+assert_eq "settle/issue: exactly one item-refined event" "1" \
+  "$(grep -cE '^event item-refined ' <<<"$calls")"
+refined_evt="$(events_named "$calls" item-refined | head -n1)"
+assert_eq "settle/issue: ...carrying the *existing* refinement's comment_url" \
+  "https://github.com/acme/widgets/issues/221#issuecomment-1" "$(jq -r '.comment_url' <<<"$refined_evt")"
+assert_contains "settle/issue: the refinement label is released" \
+  "release-refinement-label 221 acme/widgets" "$calls"
+assert_contains "settle/issue: the thread gets the decide-settled correction" \
+  "escalation_thread_reconcile acme/widgets 221 decide-settled" "$calls"
+assert_eq "settle/issue: no escalation issue is ever filed" "0" "$(grep -cE '^event escalated ' <<<"$calls")"
+
+# --- settle, refinement item that was never refined: the label is a
+# projection of the open block (requirement 34e), so clearing the block
+# releases it whether or not a specification was ever written — the same
+# unconditional release the ordinary `unblocked` and `void` verdicts and
+# adjudicate-first's own `adequate` each perform. There is no refinement to
+# re-record, so no item-refined event rides along. ---
+eligible_unrefined_issue='[{"repo":"acme/widgets","item":"222","blocked_ts":"2026-08-01T00:00:00Z",
+  "kind":"needs-refinement","reason":"threshold",
+  "detail":"which of the two shapes should this take?","unblock_condition":"a decision on shape"}]'
+examined_unrefined_issue='[{"repo":"acme/widgets","item":"222","verdict":"escalate","reason":"needs a decision first",
+  "issue":{"title":"widgets: decide 222'"'"'s shape before refining it","body":"…draft escalation…"}}]'
+calls="$(run_case "decide-tactical: settle (issue, needs-refinement, never refined)" \
+  "$eligible_unrefined_issue" "$examined_unrefined_issue")"
+
+assert_contains "settle/unrefined: the refinement label is still released" \
+  "release-refinement-label 222 acme/widgets" "$calls"
+assert_eq "settle/unrefined: no item-refined event (there was never a refinement to re-record)" "0" \
+  "$(grep -cE '^event item-refined ' <<<"$calls")"
+assert_eq "settle/unrefined: the block is cleared" "1" "$(grep -cE '^event unblocked ' <<<"$calls")"
+assert_eq "settle/unrefined: no escalation issue is ever filed" "0" \
+  "$(grep -cE '^event escalated ' <<<"$calls")"
+
+# --- decide, register record: decision-taken carries no comment_url, since
+# there is no thread to post one on ---
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+run_enabler_decide() {
+  record "run_enabler_decide $1 $2"
+  printf '{"verdict":"decide","evidence":"a tactical trade-off","decision":"use option B",
+           "rationale":"cheaper and fully reversible","options_considered":"A, B, C"}'
+}
+calls="$(run_case "decide-tactical: decide (register record)" "$eligible_ordinary_td" "$examined_ordinary")"
+
+assert_eq "decide/TD: no decision comment posted (not an issue-shaped item)" "0" \
+  "$(grep -cE '^enabler_decision_comment ' <<<"$calls")"
+assert_eq "decide/TD: exactly one decision-taken event" "1" \
+  "$(grep -cE '^event decision-taken ' <<<"$calls")"
+dt_evt="$(events_named "$calls" decision-taken | head -n1)"
+assert_eq "decide/TD: ...carrying the decision" "use option B" "$(jq -r '.decision' <<<"$dt_evt")"
+assert_eq "decide/TD: ...the rationale" "cheaper and fully reversible" "$(jq -r '.rationale' <<<"$dt_evt")"
+assert_eq "decide/TD: ...no comment_url" "" "$(jq -r '.comment_url // ""' <<<"$dt_evt")"
+assert_eq "decide/TD: ...the resolved model" "claude-test-model" "$(jq -r '.model' <<<"$dt_evt")"
+assert_eq "decide/TD: exactly one unblocked event" "1" "$(grep -cE '^event unblocked ' <<<"$calls")"
+unblk_evt="$(events_named "$calls" unblocked | head -n1)"
+assert_contains "decide/TD: ...naming the decision in its reason" "use option B" "$(jq -r '.reason' <<<"$unblk_evt")"
+assert_eq "decide/TD: no item-refined (ordinary item)" "0" "$(grep -cE '^event item-refined ' <<<"$calls")"
+
+# --- decide, register record that is ALSO a refinement disagreement
+# (agent-ops#1049 review fix): the item-refined re-record this verdict writes
+# is the *same* unchanged spec `refined_before` already carried, never a
+# fresh one incorporating the decision, so it must not read to
+# DECISIONS_MAP_JQ as "the decision already did its job" — and
+# refiner_candidate_items must still offer this item to the Refiner as a
+# full candidate despite refinements_map showing it refined, until an actual
+# Refiner pass supersedes the pending decision with a real rewrite. Without
+# the fix, the decision reaches no actor at all: the item returns to the
+# pool and the next Co-Ordinator composes its work order from the
+# pre-decision spec, verbatim. ---
+eligible_decide_disagreement_td='[{"repo":"acme/widgets","item":"TD26082901","blocked_ts":"2026-08-01T00:00:00Z",
+  "kind":"needs-refinement","reason":"threshold",
+  "refined_before":{"ts":"2026-08-01T09:00:00Z","cycle":"c1","comment_url":"","spec":"the original spec"}}]'
+examined_decide_disagreement_td='[{"repo":"acme/widgets","item":"TD26082901","verdict":"escalate","reason":"still too vague",
+  "issue":{"title":"Refinement disagreement for TD26082901","body":"…draft escalation…"}}]'
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+run_enabler_decide() {
+  record "run_enabler_decide $1 $2"
+  printf '{"verdict":"decide","evidence":"a tactical trade-off","decision":"use option B",
+           "rationale":"cheaper and fully reversible","options_considered":"A, B, C"}'
+}
+calls="$(run_case "decide-tactical: decide (register record, refinement disagreement)" \
+  "$eligible_decide_disagreement_td" "$examined_decide_disagreement_td")"
+
+assert_eq "decide/TD-disagreement: exactly one decision-taken event" "1" \
+  "$(grep -cE '^event decision-taken ' <<<"$calls")"
+dt_evt="$(events_named "$calls" decision-taken | head -n1)"
+assert_eq "decide/TD-disagreement: ...carrying the decision" "use option B" "$(jq -r '.decision' <<<"$dt_evt")"
+assert_eq "decide/TD-disagreement: exactly one item-refined event" "1" \
+  "$(grep -cE '^event item-refined ' <<<"$calls")"
+refined_evt="$(events_named "$calls" item-refined | head -n1)"
+assert_eq "decide/TD-disagreement: ...re-recording the *existing* spec unchanged" \
+  "the original spec" "$(jq -r '.spec' <<<"$refined_evt")"
+assert_eq "decide/TD-disagreement: ...marked unchanged, so it never masquerades as the decision's own carrier" \
+  "true" "$(jq -r '.unchanged' <<<"$refined_evt")"
+
+# Reconstruct the two events as a real log — decision-taken first, then the
+# item-refined re-record moments later, exactly the order and gap
+# lib/enabler.sh writes them in — and prove decisions_map does not drop the
+# decision because of it (the bug: without the marker, this item-refined's
+# later ts would read as the decision having already been turned into a
+# fresh spec).
+recon_log="$tmp_dir/decide-disagreement.jsonl"
+jq -c --arg ts "2026-08-20T10:00:00Z" '. + {event: "decision-taken", ts: $ts}' <<<"$dt_evt" > "$recon_log"
+jq -c --arg ts "2026-08-20T10:00:05Z" '. + {event: "item-refined", ts: $ts}' <<<"$refined_evt" >> "$recon_log"
+dmap="$(decisions_map "$recon_log")"
+assert_eq "decide/TD-disagreement: decisions_map still carries the decision after its own re-record" \
+  "use option B" "$(jq -r '."acme/widgets".TD26082901.decision // "null"' <<<"$dmap")"
+
+# And the ultimate consumer: refiner_candidate_items must still offer this
+# item — despite refinements_map showing it refined — because decisions_map
+# (built above) still carries a decision for it.
+rmap='{"acme/widgets":{"TD26082901":{"ts":"2026-08-01T09:00:00Z","spec":"the original spec"}}}'
+repos_for_candidates='[{"slug":"acme/widgets","tech_debt":[{"source":"tech_debt","ref":"TD26082901"}]}]'
+candidates="$(refiner_candidate_items "$repos_for_candidates" '{"tech_debt":"required"}' \
+  "$rmap" '[]' '[]' '[]' "$dmap")"
+assert_eq "decide/TD-disagreement: the refined item is still a Refiner candidate" "1" \
+  "$(jq 'length' <<<"$candidates")"
+assert_eq "decide/TD-disagreement: ...carrying the pending decision" "use option B" \
+  "$(jq -r '.[0].decision.decision' <<<"$candidates")"
+assert_eq "decide/TD-disagreement: ...as a full candidate, not triage_only (it needs a real spec, not one field)" \
+  "null" "$(jq -r '.[0].triage_only // "null"' <<<"$candidates")"
+
+# --- decide, issue item: posts the decision comment, and its URL rides on
+# decision-taken as comment_url ---
+calls="$(run_case "decide-tactical: decide (issue, ordinary item)" \
+  "$eligible_ordinary_issue" "$examined_ordinary_issue")"
+
+assert_contains "decide/issue: the decision comment was posted" \
+  "enabler_decision_comment acme/widgets 210 use" "$calls"
+dt_evt="$(events_named "$calls" decision-taken | head -n1)"
+assert_eq "decide/issue: decision-taken carries the comment's own URL" \
+  "https://github.com/acme/widgets/issues/210#issuecomment-999" "$(jq -r '.comment_url' <<<"$dt_evt")"
+
+# --- decide honours enabler_model_critical over enabler_model when set ---
+# shellcheck disable=SC2034
+enabler_model_critical="claude-critical-model"
+calls="$(run_case "decide-tactical: decision-taken names enabler_model_critical" \
+  "$eligible_ordinary_td" "$examined_ordinary")"
+dt_evt="$(events_named "$calls" decision-taken | head -n1)"
+assert_eq "decide: decision-taken's model is enabler_model_critical, not enabler_model" \
+  "claude-critical-model" "$(jq -r '.model' <<<"$dt_evt")"
+# shellcheck disable=SC2034
+enabler_model_critical=""
+
+# --- escalate: the pass could not settle it, and the escalation is filed
+# with the pass's own evidence folded in, same as adjudicate-first's own
+# inadequate path ---
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+run_enabler_decide() {
+  printf '{"verdict":"escalate","evidence":"this touches approver_app_id — owner-only"}'
+}
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+create_escalation_issue() { record "issue_body: $(cat "$5")"; printf '50\thttps://github.com/acme/widgets/issues/50'; return 0; }
+calls="$(run_case "decide-tactical: escalate" "$eligible_ordinary_td" "$examined_ordinary")"
+
+assert_eq "escalate: exactly one enabler-adjudication event" "1" \
+  "$(grep -cE '^event enabler-adjudication ' <<<"$calls")"
+dec_evt="$(events_named "$calls" enabler-adjudication | head -n1)"
+assert_eq "escalate: the event carries the escalate verdict" "escalate" "$(jq -r '.verdict' <<<"$dec_evt")"
+assert_eq "escalate: no unblocked event" "0" "$(grep -cE '^event unblocked ' <<<"$calls")"
+assert_eq "escalate: no decision-taken event" "0" "$(grep -cE '^event decision-taken ' <<<"$calls")"
+assert_eq "escalate: files the escalation" "1" "$(grep -cE '^event escalated ' <<<"$calls")"
+assert_contains "escalate: the pass's own evidence is folded into the filed body" \
+  "this touches approver_app_id — owner-only" "$calls"
+
+# --- the bound: same reason twice escalates without a fresh pass ---
+same_reason_key="$(escalation_autonomy_decide_reason_key "$(jq -c '.[0]' <<<"$eligible_ordinary_td")")"
+prior_same_reason="$(jq -nc --arg r "acme/widgets" --arg i "TD26080001" --arg k "$same_reason_key" \
+  '{ts: "2026-08-02T00:00:00Z", event: "enabler-adjudication", repo: $r, item: $i,
+    verdict: "escalate", evidence: "…", adjudication: true, pass: "decide-tactical", reason_key: $k}')"
+printf '%s\n' "$prior_same_reason" > "$log_file"
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+run_enabler_decide() {
+  echo "FAIL - run_enabler_decide was called but the bound should have refused a fresh pass" >&2
+  exit 95
+}
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+create_escalation_issue() { printf '51\thttps://github.com/acme/widgets/issues/51'; return 0; }
+calls="$(run_case "decide-tactical: same reason twice escalates without a fresh pass" \
+  "$eligible_ordinary_td" "$examined_ordinary")"
+
+assert_eq "same reason: no fresh decide-tactical pass runs" "0" \
+  "$(grep -cE '^event enabler-adjudication ' <<<"$calls")"
+assert_eq "same reason: it escalates to the human instead" "1" \
+  "$(grep -cE '^event escalated ' <<<"$calls")"
+assert_contains "same reason: says in the log why it did not decide" \
+  "already been decided or adjudicated over this exact reason" "$calls"
+: > "$log_file"
+
+# --- a genuinely new reason still gets a fresh pass, under the cap ---
+other_reason_evt="$(jq -nc --arg r "acme/widgets" --arg i "TD26080001" \
+  '{ts: "2026-08-02T00:00:00Z", event: "enabler-adjudication", repo: $r, item: $i,
+    verdict: "settle", evidence: "…", adjudication: true, pass: "decide-tactical", reason_key: "some-other-reason"}')"
+printf '%s\n' "$other_reason_evt" > "$log_file"
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+run_enabler_decide() {
+  record "run_enabler_decide $1 $2"
+  printf '{"verdict":"settle","evidence":"ok"}'
+}
+calls="$(run_case "decide-tactical: a new reason on the same item still gets a fresh pass" \
+  "$eligible_ordinary_td" "$examined_ordinary")"
+
+assert_contains "new reason: the pass was actually called" \
+  "run_enabler_decide acme/widgets TD26080001" "$calls"
+assert_eq "new reason: exactly one enabler-adjudication event" "1" \
+  "$(grep -cE '^event enabler-adjudication ' <<<"$calls")"
+: > "$log_file"
+
+# --- the cap refuses even a genuinely new reason once it is reached ---
+cap_evt_a="$(jq -nc --arg r "acme/widgets" --arg i "TD26080001" \
+  '{ts: "2026-08-02T00:00:00Z", event: "enabler-adjudication", repo: $r, item: $i,
+    verdict: "settle", evidence: "…", adjudication: true, pass: "decide-tactical", reason_key: "keyA"}')"
+cap_evt_b="$(jq -nc --arg r "acme/widgets" --arg i "TD26080001" \
+  '{ts: "2026-08-02T00:01:00Z", event: "enabler-adjudication", repo: $r, item: $i,
+    verdict: "settle", evidence: "…", adjudication: true, pass: "decide-tactical", reason_key: "keyB"}')"
+{ printf '%s\n' "$cap_evt_a"; printf '%s\n' "$cap_evt_b"; } > "$log_file"
+# shellcheck disable=SC2034
+escalation_adjudication_max_passes=2
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+run_enabler_decide() {
+  echo "FAIL - run_enabler_decide was called but the cap should have refused a fresh pass" >&2
+  exit 94
+}
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+create_escalation_issue() { printf '52\thttps://github.com/acme/widgets/issues/52'; return 0; }
+calls="$(run_case "decide-tactical: the cap refuses even a genuinely new reason" \
+  "$eligible_ordinary_td" "$examined_ordinary")"
+
+assert_eq "cap reached: no fresh decide-tactical pass runs" "0" \
+  "$(grep -cE '^event enabler-adjudication ' <<<"$calls")"
+assert_eq "cap reached: it escalates to the human instead" "1" \
+  "$(grep -cE '^event escalated ' <<<"$calls")"
+assert_contains "cap reached: says in the log it has spent its passes" \
+  "already spent its 2 decide-tactical passes" "$calls"
+# shellcheck disable=SC2034
+escalation_adjudication_max_passes=3
+: > "$log_file"
+
+# --- the exemption: issue-closed authorises a pass regardless of history ---
+eligible_ordinary_td_closed="$(jq -c '[.[0] + {reason: "issue-closed"}]' <<<"$eligible_ordinary_td")"
+printf '%s\n' "$prior_same_reason" > "$log_file"
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+run_enabler_decide() {
+  record "run_enabler_decide $1 $2"
+  printf '{"verdict":"settle","evidence":"ok"}'
+}
+calls="$(run_case "decide-tactical: issue-closed exemption grants a pass regardless" \
+  "$eligible_ordinary_td_closed" "$examined_ordinary")"
+
+assert_contains "issue-closed: the pass is available again" \
+  "run_enabler_decide acme/widgets TD26080001" "$calls"
+: > "$log_file"
+
+# Reset to the product default and the harness's own always-loud defaults, so
+# a scenario below that forgets to set either is caught rather than silently
+# reusing what this section left behind.
+# shellcheck disable=SC2034
+DEFAULTED_CONFIG='{}'
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+run_enabler_decide() {
+  echo "FAIL - run_enabler_decide was called but no scenario stub was set" >&2
+  exit 96
+}
 
 # ============================================================================
 # agent-ops#815: escalation_thread_reconcile — the Script's own completing or

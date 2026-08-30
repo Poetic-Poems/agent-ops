@@ -247,18 +247,19 @@ and every issue thread you read while investigating.
   component behaving exactly as specified. `unblocked` means *the impediment is
   gone and the work remains to be done*. If there is no work, the verdict is
   `void`.
-- **Never guess an owner-only decision** — requirement 36a's boundary (a
-  credential or secret, an account/settings/permissions change, a product or
-  architecture decision, an external service, information that exists only
-  in someone's head). Those are exactly what `escalate` is for. This binds
-  hardest when you are *refining* an item, because there the temptation
-  arrives dressed as helpfulness: writing the missing acceptance criteria is
-  your job, and choosing which of two products the repo should become is
-  not, and a refinement that quietly does the second reads exactly like one
-  that did the first. It is not guessing to **specify to a default the item
-  itself already names** — see "Refinement items" §1 below (agent-ops#938):
-  an item that names its own default, or is explicitly marked
-  `owner_decision`, has already told you which side of this line it is on.
+- **Never guess an owner-only decision.** Requirement 36a's own "The
+  owner-only boundary" subsection in `docs/IMPLEMENTATION-PIPELINE-SPEC.md`
+  enumerates, exhaustively, the nine conditions under which a decision is the
+  owner's alone — read it, not this paragraph, for the definitive list. Those
+  are exactly what `escalate` is for. This binds hardest when you are
+  *refining* an item, because there the temptation arrives dressed as
+  helpfulness: writing the missing acceptance criteria is your job, and
+  deciding a matter the boundary reserves is not, and a refinement that
+  quietly does the second reads exactly like one that did the first. It is
+  not guessing to **specify to a default the item itself already names** —
+  see "Refinement items" §1 below (agent-ops#938): an item that names its own
+  default, or is explicitly marked `owner_decision`, has already told you
+  which side of this line it is on.
 
 ## Choosing a verdict
 
@@ -558,16 +559,19 @@ Refinement items are capped per engagement, so a backlog of them arrives a few
 at a time. Items over the cap are not lost — they stay blocked and come back to
 a later engagement.
 
-Nothing about writing `escalate` for a refinement disagreement changes on your
-side regardless of installation: write `issue.title`/`issue.body` exactly as
-"Escalating well" below describes. Some installations run
-`escalation_autonomy: "adjudicate-first"` (D18), under which the Script runs
-one further, separate adjudication pass — a fresh, narrower engagement over
-this one item alone — before it actually files your escalation, and may
-resolve it as an ordinary refinement instead if that pass finds the existing
-specification already answers the re-flag. That decision is entirely the
-Script's and that later engagement's; it asks nothing further of you, and your
-own verdict here is unaffected by which setting is configured.
+Nothing about writing `escalate` changes on your side regardless of
+installation, for a refinement disagreement or any other item: write
+`issue.title`/`issue.body` exactly as "Escalating well" below describes. Some
+installations run `escalation_autonomy: "adjudicate-first"` or
+`"decide-tactical"` (D18, agent-ops#936), under which the Script runs one
+further, separate pass — a fresh, narrower engagement over this one item
+alone — before it actually files your escalation, and may resolve it without
+ever paging a human if that pass settles it or decides it tactically.
+`adjudicate-first`'s own pass only ever runs over a refinement disagreement;
+`decide-tactical`'s runs over any `escalate` verdict, refinement or not. Either
+way that decision is entirely the Script's and that later engagement's; it
+asks nothing further of you, and your own verdict here is unaffected by which
+setting is configured.
 
 ## Escalating well
 

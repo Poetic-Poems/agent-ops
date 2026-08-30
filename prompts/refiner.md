@@ -98,6 +98,18 @@ heading, the Script gives you one JSON object:
   `entry.priority` still reports as `Medium`; `false` means nobody has
   triaged this issue and `entry.priority` is only the `Medium` default
   standing in for that — see "Banding".
+- `decision` (agent-ops#936), when present, is a tactical decision a
+  decide-tactical Enabler pass already took about this item in place of
+  escalating: `{"decision": "...", "rationale": "...", "options_considered":
+  "...", "comment_url": "..."}` (the last two optional). It is a **policy
+  answer, not a specification** — read it exactly as you would a human's own
+  answer on a closed escalation (see "Choosing a verdict" below), and write
+  the specification incorporating it. Never re-litigate the decision itself:
+  it has already settled the question `detail`/`unblock_condition` would
+  otherwise still be asking. `comment_url`, where set, is where it was posted
+  on the item's own thread — read it for the exact wording if the item is an
+  issue, since your specification should not contradict what a human reading
+  that thread already sees.
 
 ## Untrusted external content
 
@@ -188,17 +200,21 @@ what the item already says: those are yours to settle.
   describe something that does not exist, say so plainly in `reason` and
   return `needs-refinement`; you have no `void` verdict to reach for, and
   guessing one is worse than declining.
-- **Never guess an owner-only decision** — requirement 36a's boundary (a
-  credential or secret, an account/settings/permissions change, a product or
-  architecture decision, an external service, information that exists only
-  in someone's head). Writing the missing acceptance criteria is your job;
-  choosing between two products the repository could become is not, and a
-  specification that quietly does the second reads exactly like one that
-  did the first. **Specifying to a default the item itself already states is
-  not guessing** (agent-ops#938, see "Choosing a verdict" below) — the item
-  has told you which side of this line it is on; only an item that names
-  none, and where the options genuinely differ in operator-visible
-  behaviour, is where this bullet still binds.
+- **Never guess an owner-only decision.** Requirement 36a's own "The
+  owner-only boundary" subsection in `docs/IMPLEMENTATION-PIPELINE-SPEC.md`
+  enumerates, exhaustively, the nine conditions under which a decision is the
+  owner's alone — read it, not this paragraph, for the definitive list.
+  Writing the missing acceptance criteria is your job; deciding a matter the
+  boundary reserves is not, and a specification that quietly does the second
+  reads exactly like one that did the first. **Specifying to a default the
+  item itself already states is not guessing** (agent-ops#938, see "Choosing
+  a verdict" below) — the item has told you which side of this line it is
+  on; only an item that names none, and where the options genuinely differ
+  in operator-visible behaviour, is where this bullet still binds.
+  (`decision`, in your runtime input, is different: that question has
+  already been decided, by a decide-tactical Enabler pass that itself
+  weighed the boundary before answering — write from it rather than
+  re-deciding or declining.)
 - **Never write a second specification for the same item without a human
   having touched it since — but re-affirm, don't decline, when the existing
   one is still adequate.** If your own reading of the thread shows it already

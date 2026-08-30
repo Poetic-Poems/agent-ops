@@ -890,7 +890,7 @@ refiner_policy_value() {
   jq -r --arg s "$source" '(. // {})[$s] // "exempt"' <<<"$policy" 2>/dev/null || printf 'exempt'
 }
 
-# refiner_candidate_items REPOS_JSON POLICY_JSON REFINEMENTS_JSON BLOCKED_JSON VOID_JSON CLAIMED_JSON
+# refiner_candidate_items REPOS_JSON POLICY_JSON REFINEMENTS_JSON BLOCKED_JSON VOID_JSON CLAIMED_JSON DECISIONS_JSON
 # Print, as a JSON array, every item from this cycle's pre-fetched source
 # arrays — `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`,
 # `dequeued`, `register_hygiene`, `issues`, `tech_debt`, `project_review`,
@@ -900,14 +900,24 @@ refiner_policy_value() {
 # void, or held by an ordinary implementation claim — except an `issues`
 # entry gather-issues.sh marked `priority_set: false`, which is a candidate
 # even when already refined, solely for its missing `Priority` band
-# (requirement 39g). Such an entry carries `triage_only: true` so the Refiner
-# knows not to write a second specification for it.
+# (requirement 39g), and except an item DECISIONS_JSON (requirement 36d)
+# still carries a pending decision for — a `decide-tactical` verdict never
+# writes a specification, so a refined item it decided owes the Refiner a
+# fresh one exactly as a never-refined item would (agent-ops#1049). The
+# `issues` exception carries `triage_only: true` so the Refiner knows not to
+# write a second specification for it; the decision exception does not — it
+# needs the full spec, not one field — and carries `decision` instead (below).
 #
 # Each entry is `{repo, source, item, entry}` — `entry` is the gatherer's own
 # object verbatim (an issue's full thread, a finding's title and severity, a
 # tech-debt item's whole file), because the Refiner needs it to write a
 # specification without a second fetch, the same reason the Co-Ordinator is
-# handed it pre-fetched rather than told to query it.
+# handed it pre-fetched rather than told to query it. A `decision` field
+# (agent-ops#936, requirement 36d) rides alongside `entry`, never inside it,
+# when `decisions` names one for this repo+item: a tactical decision a
+# decide-tactical pass already took in place of escalating, which the Refiner
+# turns into the actual specification the way it would a human's own answer
+# on a closed escalation.
 #
 # The first eight arrays are the same per-repo arrays requirement 3 assembles
 # for the Co-Ordinator's own `ordered_repos_json`. `project_review` and
@@ -919,20 +929,22 @@ refiner_policy_value() {
 # (TD-PPagop-26081307).
 refiner_candidate_items() {
   local repos="${1:-[]}" policy="${2:-{\}}" refinements="${3:-{\}}" \
-        blocked="${4:-[]}" void="${5:-[]}" claimed="${6:-[]}" docs
+        blocked="${4:-[]}" void="${5:-[]}" claimed="${6:-[]}" decisions="${7:-{\}}" docs
   # $refinements, $blocked, $void and $claimed are four of the five
   # aggregates requirement 4g names by name as growing with the fleet's
-  # history (TD-PPagop-26081406); $repos already arrived on stdin. All five
+  # history (TD-PPagop-26081406); $decisions (agent-ops#936) is the same
+  # shape and travels the same way. $repos already arrived on stdin. All six
   # travel there together now, one document per line, bound positionally
   # with `input as $name` in the order printed — never in argv, where past
   # MAX_ARG_STRLEN this call fails into its own `|| printf '[]'` and the
   # Refiner silently finds no candidates at all. $policy stays in argv: it is
   # the installation's own configuration, bounded by requirement 4g.
-  docs="$(printf '%s\n' "$repos" "$refinements" "$blocked" "$void" "$claimed")"
+  docs="$(printf '%s\n' "$repos" "$refinements" "$blocked" "$void" "$claimed" "$decisions")"
   jq -nc --argjson policy "$policy" '
     input as $repos | input as $refinements | input as $blocked
-    | input as $void | input as $claimed
-    | def exempt($s): (($policy // {})[$s] // "exempt") == "exempt";
+    | input as $void | input as $claimed | input as $decisions
+    | def decision_for($repo; $item): (($decisions // {})[$repo][($item | tostring)] // null);
+    def exempt($s): (($policy // {})[$s] // "exempt") == "exempt";
     def is_refined($repo; $item):
       (($refinements // {})[$repo][($item | tostring)] // null) != null;
     def is_blocked($repo; $item):
@@ -975,12 +987,26 @@ refiner_candidate_items() {
       | select(exempt($source) | not)
       | (is_refined($repo; $item)) as $refined
       | (is_unbanded_issue($source; $e) and $refined) as $triage_only
-      | select($triage_only or ($refined | not))
+      | (decision_for($repo; $item)) as $decision
+      # agent-ops#1049: a refined item that still carries a pending decision
+      # (decisions_map has not dropped it — DECISIONS_MAP_JQ only drops one
+      # once an unmarked, genuinely-fresh item-refined supersedes it) is a
+      # full candidate despite `is_refined`, on the same "bypass only the
+      # is_refined exclusion, nothing else" terms `triage_only` already
+      # applies for an unbanded issue (requirement 39g): the decide-tactical
+      # pass that took this decision never wrote a specification of its own
+      # (lib/enabler.sh), so the Refiner still owes this item the fresh spec
+      # requirement 36d promises, exactly as it would a never-refined item.
+      # Deliberately *not* `triage_only`: unlike the priority-only case, this
+      # candidate needs its full specification rewritten, not one field.
+      | ($refined and ($decision != null)) as $decision_pending
+      | select($triage_only or $decision_pending or ($refined | not))
       | select(is_blocked($repo; $item) | not)
       | select(is_void($repo; $item) | not)
       | select(is_claimed($repo; $item) | not)
       | {repo: $repo, source: $source, item: $item, entry: $e}
-        + (if $triage_only then {triage_only: true} else {} end) ]
+        + (if $triage_only then {triage_only: true} else {} end)
+        + (if $decision == null then {} else {decision: $decision} end) ]
   ' <<<"$docs" 2>/dev/null || printf '[]'
 }
 

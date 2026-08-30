@@ -455,6 +455,16 @@ approver_restale_escalate_after_hours="$(cfg '.approver_restale_escalate_after_h
 # runs, which is affordable only because the eligibility rule engages it rarely:
 # an empty `enabler_model` disables the stage outright.
 enabler_model="$(resolve_model_id enabler_model "$(cfg '.enabler_model')")"
+# The Enabler's own critical tier (D18 §6, agent-ops#936): both bounded
+# passes below `escalate` — `adjudicate-first`'s adjudication and
+# `decide-tactical`'s decide — run at this model, on the same
+# empty-falls-back-to-the-tier-below pattern `approver_model_critical` uses
+# above, rather than at `enabler_model` itself: the Enabler has no second
+# tier the way the Approver's three-tier chain does, so this is that tier's
+# first appearance.
+enabler_model_critical="$(cfg '.enabler_model_critical')"
+[[ -n "$enabler_model_critical" ]] || enabler_model_critical="$enabler_model"
+enabler_model_critical="$(resolve_model_id enabler_model_critical "$enabler_model_critical")"
 enabler_after_coordinator_cycles="$(cfg '.enabler_after_coordinator_cycles')"
 # A refinement block (requirements 34e, 35a) ages on its own threshold,
 # because unlike an ordinary block it waits on the Enabler and nothing else —
@@ -533,6 +543,15 @@ void_retire_after_days="$(cfg '.void_retire_after_days')"
 needs_refinement_label="$(cfg '.needs_refinement_label')"
 refinement_max_per_engagement="$(cfg '.refinement_max_per_engagement')"
 [[ "$refinement_max_per_engagement" =~ ^[0-9]+$ ]] || refinement_max_per_engagement=3
+# The per-reason bound's own cap (D18 §5, agent-ops#936): how many
+# decide-tactical passes `escalation_autonomy_decide_pass_available` (lib/
+# enabler.sh) allows for one item in total, whatever their reason — the
+# backstop that turns "a fresh reason always gets a fresh pass" into a
+# bounded total rather than an unbounded one. A human touch (eligibility
+# `reason: "issue-closed"`) short-circuits the check for that cycle, granting
+# one further pass, but does not reset the count.
+escalation_adjudication_max_passes="$(cfg '.escalation_adjudication_max_passes')"
+[[ "$escalation_adjudication_max_passes" =~ ^[0-9]+$ ]] || escalation_adjudication_max_passes=3
 # The Refiner (requirement 39): the positive counterpart of the refinement
 # class above. `refined_label` is a projection too, never read back — there is
 # no hand-applied form of it, unlike `needs_refinement_label` — and empty

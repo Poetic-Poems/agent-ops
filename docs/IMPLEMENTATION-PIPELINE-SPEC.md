@@ -65,10 +65,12 @@ cron (schedule.cycle_interval_minutes)
    blocked with a fresher condition; where an item was never specified well
    enough to select, it specifies it (requirement 36b); and where an item
    cannot be moved without escalating, it composes a GitHub issue that the
-   Script files, assigned to a human — directly, or, for a
-   refinement-disagreement item (requirement 36b), after a bounded
-   adjudication pass per `escalation_autonomy`. It writes no code and raises
-   no pull request.
+   Script files, assigned to a human — directly, or after one bounded pass
+   per `escalation_autonomy`: an adjudication, for a refinement-disagreement
+   item only (requirement 36b), or, at `decide-tactical`, a decide pass over
+   any escalation, which may settle it or decide a tactical question on the
+   pipeline's own authority instead of paging a human at all (requirement
+   36d). It writes no code and raises no pull request.
 8. The **Refiner** — a headless Claude Code invocation, engaged from the same
    end-of-cycle cleanup as the Enabler and immediately after it, that writes
    the specification an under-specified item lacks *before* the item has to be
@@ -759,12 +761,14 @@ and the schema must carry every one of them.
 | `approver_model_critical` | `claude-fable-5` | Adjudication engagements, triggered by a refuse streak of two rather than by complexity (requirement 8c). Empty falls back to `approver_model_complex`. |
 | `approver_restale_escalate_after_hours` | 24 h | Requirement 46: how long the restale sweep (agent-ops#682) tolerates a rebase-only-stale Approver review — its standing `CHANGES_REQUESTED` `commit_id` mismatched against the pull request's head, but its most recently authored commit no older than the review itself — before escalating rather than leaving it to retry every cycle indefinitely. Measured from the standing review's own `submitted_at`, which a rebase does not move. |
 | `enabler_model` | `claude-opus-5` | The Enabler (requirement 35). The highest-tier model this system runs, affordable only because the eligibility rule of 35a engages it rarely and the claims of 35c stop it being engaged twice. Empty disables the stage. |
+| `enabler_model_critical` | `claude-fable-5` | The Enabler's critical tier (requirement 36d, D18 §6): both `run_enabler_adjudication` (`adjudicate-first`) and `run_enabler_decide` (`decide-tactical`) run at this model rather than `enabler_model` — the Enabler's own first appearance of a second tier, on the same empty-falls-back pattern `approver_model_critical` uses for the Approver's own adjudication. Empty falls back to `enabler_model`. |
 | `enabler_assignee` | `warwickallen` | GitHub login assigned to every escalation issue the Enabler raises (requirement 36a). Required whenever `enabler_model` is set: the Script exits with an error at startup rather than run with it unset, since an unassigned escalation would not be excluded by requirement 16.4 and could be selected as work by the pipeline itself. |
 | `enabler_after_coordinator_cycles` | `3` | How many distinct cycles that ran a Co-Ordinator to completion must follow a block before the item becomes Enabler-eligible (requirement 35a). Counted in cycles rather than hours because a fleet stood down on a usage limit or a switch has not "had a chance" at anything. |
 | `refinement_after_coordinator_cycles` | *(`enabler_after_coordinator_cycles`)* | The same threshold, applied instead of `enabler_after_coordinator_cycles` when the block's `kind` is `needs-refinement` (requirement 35a). Unset, it inherits `enabler_after_coordinator_cycles`'s value, which is what keeps the two classes aging identically until fleet behaviour justifies pulling them apart. |
 | `enabler_recheck_hours` | `72` | How long after an examination the Enabler may examine the same item again (requirement 35a). Requirement 18a catches most of the failure mode `TECH-DEBT.md` TD26072101 recorded — a GitHub issue gaining evidence after it was blocked — same-cycle, off the issue's own `updated_at`; this bound is the lever for everything that leaves no such signal: every non-issue blocked source, and a blocker that clears without a comment landing on the issue. `0` disables re-examination. |
 | `enabler_escalation_label` | `enabler-escalation` | Applied to every issue the Enabler raises, for the human's filter and for the duplicate guard of requirement 36a. It must not be `blocked`: that label is an exclusion criterion for the `issues` source (requirement 16.4) and would double-count with the assignment. Nor `obsolete`: that name is the human-only corroboration requirement 34k closes a draft pull request on, and no configured label may carry it — `scripts/doctor.sh` fails a config that does. |
-| `escalation_autonomy` | `always-escalate` | The D18 escalation-autonomy ladder (agent-ops#627), fleet-wide default; a `repos[]` entry's own `escalation_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). At `adjudicate-first`, before the Script files the escalation issue for a refinement-disagreement item (requirement 36b: a `needs-refinement` block whose `refined_before` is set), one bounded adjudication pass runs at `enabler_model` — the Enabler has no second...[continued below](#extended-notes-escalation_autonomy) |
+| `escalation_autonomy` | `decide-tactical` | The D18 escalation-autonomy ladder (agent-ops#627, agent-ops#936), fleet-wide default; a `repos[]` entry's own `escalation_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). At `adjudicate-first`, before the Script files the escalation issue for a refinement-disagreement item (requirement 36b: a `needs-refinement` block whose `refined_before` is set), one bounded adjudication pass runs at `enabler_model_critical` (falling...[continued below](#extended-notes-escalation_autonomy) |
+| `escalation_adjudication_max_passes` | `3` | The cap half of `decide-tactical`'s per-reason bound (requirement 36d): `escalation_autonomy_decide_pass_available` (lib/enabler.sh) refuses a fresh pass once this many decide-tactical passes — `enabler-adjudication` events tagged `pass: "decide-tactical"` — have run for the item over the whole log, regardless of reason key. A human touch (eligibility `reason: "issue-closed"`) short-circuits the check for that cycle, granting one further pass, but does not reset the count. An...[continued below](#extended-notes-escalation_adjudication_max_passes) |
 | `needs_refinement_label` | `needs-refinement` | The label the Script projects onto an issue-type item while its refinement block is open (requirement 34e), and removes when the block clears. Also the label a human applies by hand to flag an item themselves, which the Script scans every repo's issues for and records as the same kind of block (requirement 34g) — removing it while that block is open clears it the same way. Empty disables both directions: the log is the record, so the mechanism is unaffected and the item still...[continued below](#extended-notes-needs_refinement_label) |
 | `refinement_max_per_engagement` | `3` | How many refinement-class items one Enabler engagement takes on (requirement 35d); ordinary blocked items are uncapped and are never displaced by them. The cap exists because the backlog of items silently skipped before requirement 16a existed is unbounded, and an engagement spent entirely on old vagueness would delay the pull request nobody can see. `0` removes the class from engagements entirely — blocks are still recorded, and the items wait. |
 | `refiner_model` | `claude-sonnet-5` | The Refiner (requirement 39). Unlike the Enabler, eligibility carries no threshold, so it runs as often as there is unrefined work, and its frequency has to be weighed against the fact that what it produces is a specification rather than a ranking. Empty disables the stage. |
@@ -909,9 +913,15 @@ Cycle and review directories whose derived files are kept — the stage event st
 
 ### Extended notes: `escalation_autonomy`
 
-The D18 escalation-autonomy ladder (agent-ops#627), fleet-wide default; a `repos[]` entry's own `escalation_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). At `adjudicate-first`, before the Script files the escalation issue for a refinement-disagreement item (requirement 36b: a `needs-refinement` block whose `refined_before` is set), one bounded adjudication pass runs at `enabler_model` — the Enabler has no second, critical tier to call this at, unlike the Approver's own adjudication (requirement 8c) — and is logged as an `enabler-adjudication` event carrying its `verdict` (`adequate`/`inadequate`) and `evidence`. `adequate` is recorded exactly as an ordinary `unblocked` refinement (an `unblocked` event plus `item-refined`, carrying the existing refinement's own `spec`/`comment_url`); `inadequate`, an unparseable verdict, or a failed adjudication engagement all escalate, with the pass's own `evidence` appended to `issue.body` under an `## Adjudication attempted` heading (agent-ops#681) before the issue is filed, so the human starts from why an adjudicator's answer is missing rather than only the pre-adjudication verdict. Bounded, not a loop: one pass per item, per human touch — an item with an `enabler-adjudication` event already on the log escalates without a further pass, the one exemption being eligibility `reason: "issue-closed"`, a human having acted on an escalation about it. Owner-only decisions (spec edits, architecture and strategy choices) escalate at every level; nothing here relaxes requirement 36a's protocol.
+The D18 escalation-autonomy ladder (agent-ops#627, agent-ops#936), fleet-wide default; a `repos[]` entry's own `escalation_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). At `adjudicate-first`, before the Script files the escalation issue for a refinement-disagreement item (requirement 36b: a `needs-refinement` block whose `refined_before` is set), one bounded adjudication pass runs at `enabler_model_critical` (falling back to `enabler_model`) and is logged as an `enabler-adjudication` event carrying its `verdict` (`adequate`/`inadequate`) and `evidence`. `adequate` is recorded exactly as an ordinary `unblocked` refinement (an `unblocked` event plus `item-refined`, carrying the existing refinement's own `spec`/`comment_url`); `inadequate`, an unparseable verdict, or a failed adjudication engagement all escalate, with the pass's own `evidence` appended to `issue.body` under an `## Adjudication attempted` heading (agent-ops#681) before the issue is filed. Bounded, not a loop: one pass per item, per human touch — an item with an `enabler-adjudication` event already on the log (excluding any tagged `pass: "decide-tactical"`) escalates without a further pass, the one exemption being eligibility `reason: "issue-closed"`.
 
-The same top-level (or per-repo) level also governs a second, independent consumer: a Reviewer's own open question against a pull request (requirement 8f, agent-ops#668). The ladder word is shared — one config key, not two — but the actor, tier and prompt are not: an open question adjudicates at the Approver's own critical tier (`approver_model_critical`, `prompts/approver-adjudicate-open-question.md`) rather than `enabler_model`, is logged as `open-question-adjudication` rather than `enabler-adjudication`, and is bounded by `open_question_pass_available` rather than `escalation_autonomy_pass_available` — a distinct function reading the same "one pass per item, per human touch, with a closed-escalation-issue exemption" shape, never the same log entries. A repository dialled to `adjudicate-first` for refinement disagreements gets the open-question adjudication path too; there is no way to enable one without the other.
+At `decide-tactical` (requirement 36d), the same pairing but broader: before the Script files the escalation issue for *any* `escalate` verdict, one bounded decide pass runs at `enabler_model_critical` (`prompts/enabler-decide.md`, `run_enabler_decide`), reaching `settle` (recorded exactly as `adjudicate-first`'s own `adequate`, or as an ordinary `unblocked` with the pass's own evidence as reason for a non-refinement item), `decide` (a tactical decision the pipeline may take — the human-touch equivalent: one comment on the item's own thread where it is an issue, a `decision-taken` event carrying `decision`/`rationale`/`options_considered`/`comment_url`/`model`, and an `unblocked` event; never a specification of its own — a non-issue item's decision is instead supplied to the next Refiner engagement for that item, alongside `refinements` (requirement 3h), as `decisions` (requirement 36d)), or `escalate` (as `adjudicate-first`'s own `inadequate`). Bounded per reason, not per item: a pass is available when eligibility `reason` is `issue-closed`, or when this reflag's own reason key — a fingerprint of `detail`/`unblock_condition` — has never been decided or adjudicated before *and* fewer than `escalation_adjudication_max_passes` decide-tactical passes have run for this item at all. Every decision this key can reach that touches any of requirement 36a's nine owner-only conditions is unaffected by it: those escalate at every level, and `decide-tactical` widens only which *tactical* questions the pipeline may answer, never the owner-only boundary itself.
+
+The same top-level (or per-repo) level also governs a second, independent consumer: a Reviewer's own open question against a pull request (requirement 8f, agent-ops#668). The ladder word is shared — one config key, not two — but the actor, tier and prompt are not: an open question adjudicates at the Approver's own critical tier (`approver_model_critical`, `prompts/approver-adjudicate-open-question.md`) rather than the Enabler's, is logged as `open-question-adjudication` rather than `enabler-adjudication`, and is bounded by `open_question_pass_available` rather than `escalation_autonomy_pass_available` — a distinct function reading the same "one pass per item, per human touch, with a closed-escalation-issue exemption" shape, never the same log entries. This one consumer checks the level for `adjudicate-first` exactly (`lib/landing.sh`), so `decide-tactical` gets it at `adjudicate-first`'s own behaviour rather than a further widening — deliberately out of scope for this key (a later item may extend `decide-tactical` to 8f on its own terms).
+
+### Extended notes: `escalation_adjudication_max_passes`
+
+The cap half of `decide-tactical`'s per-reason bound (requirement 36d): `escalation_autonomy_decide_pass_available` (lib/enabler.sh) refuses a fresh pass once this many decide-tactical passes — `enabler-adjudication` events tagged `pass: "decide-tactical"` — have run for the item over the whole log, regardless of reason key. A human touch (eligibility `reason: "issue-closed"`) short-circuits the check for that cycle, granting one further pass, but does not reset the count. An unreadable value falls back to `3`, the same default this key ships.
 
 ### Extended notes: `needs_refinement_label`
 
@@ -1223,7 +1233,9 @@ implements.
 1a. **Model id resolution (D12 groundwork).** Every model key read from
    config — `coordinator_model`, `implementer_model_default`,
    `implementer_model_trivial`, `reviewer_model_default`,
-   `reviewer_model_complex`, `enabler_model` — is resolved immediately after
+   `reviewer_model_complex`, `enabler_model`, `enabler_model_critical`,
+   `refiner_model`, `approver_model_default`, `approver_model_complex`,
+   `approver_model_critical` — is resolved immediately after
    being read, before the lock and before any stage may launch: a bare id
    (`claude-sonnet-5`) means `anthropic/claude-sonnet-5`; an
    `anthropic/`-qualified id has the qualifier stripped to the same bare id;
@@ -7140,7 +7152,7 @@ implements.
    round's feedback) or fetched live with `gh` mid-run. Every shipped stage
    prompt — `prompts/coordinator.md`, `prompts/implementer.md`,
    `prompts/reviewer.md`, `prompts/approver.md`, `prompts/enabler.md`,
-   `prompts/enabler-adjudicate.md`,
+   `prompts/enabler-adjudicate.md`, `prompts/enabler-decide.md`,
    `prompts/approver-adjudicate-open-question.md`, `prompts/refiner.md` —
    carries an `## Untrusted external content` section stating this rule to
    the stage it operates.
@@ -11498,19 +11510,59 @@ implements.
     interpret has failed even where its verdict was right.
 
     **Which escalations configuration routes, and which it does not.** An
-    `escalate` verdict reached here is a person's at every setting of
-    `escalation_autonomy`: the acts it names — a credential or secret, an
+    `escalate` verdict reached here is a person's at `always-escalate`, the
+    default: the acts it typically names — a credential or secret, an
     account/settings/permissions change, a product or architecture decision,
     an external service, information that exists only in someone's head — are
-    owner-only, and the ladder has no rung that could settle one. The single
-    exception is requirement 36b's **refinement disagreement**, and it is the
-    only escalation the key gates: at `adjudicate-first` one bounded
-    adjudication pass runs first, and a person is reached only where that pass
-    declines to settle it. `agent-cycle.sh` branches on exactly that
-    distinction (`refinement_is_disagreement`), so prose describing an
-    ordinary escalation may name the person, and prose describing a
-    refinement disagreement may not — it names the condition, and the key
-    that chooses the destination.
+    owner-only, and that rung has none of its own that could settle one. Two
+    further rungs each gate a wider slice of that traffic with one bounded
+    pass first, never widening what is owner-only itself (see "The owner-only
+    boundary" below): `adjudicate-first` gates only requirement 36b's
+    **refinement disagreement**, one bounded adjudication pass reaching a
+    person only where it declines to settle it; `decide-tactical`
+    (requirement 36d) gates *every* `escalate` verdict the same way, with a
+    broader pass that may also decide a genuinely tactical question on the
+    pipeline's own authority. `agent-cycle.sh` branches on the configured
+    level and, for `adjudicate-first`, on `refinement_is_disagreement`, so
+    prose describing an ordinary escalation may name the person, and prose
+    describing a refinement disagreement under `adjudicate-first` may not — it
+    names the condition, and the key that chooses the destination.
+
+    **The owner-only boundary.** Written once here and referenced —  never
+    restated — by `prompts/enabler-decide.md`, `prompts/enabler.md` and
+    `prompts/refiner.md`: `escalate` (or, for the Refiner, `needs-refinement`
+    naming an owner-only gate) is required whenever the decision in front of
+    the pipeline:
+
+    1. spends money or changes a cap, budget, model tier or node count
+       (`merge_budget_per_day`, `max_open_agent_prs`, any `*_model` key, fleet
+       size);
+    2. touches credentials, secrets, GitHub Apps, rulesets, permissions,
+       organisation or account settings;
+    3. touches licence, revenue or pricing (D5, D26) or any go-to-market
+       matter;
+    4. adds, amends or renames a roadmap decision (a D-number), a phase gate,
+       or a roadmap item;
+    5. creates an ongoing human obligation (a bump cadence, a manual check, a
+       standing review);
+    6. moves a trust boundary of the pipeline itself — `merge_autonomy`,
+       `escalation_autonomy`, `merge_autonomy_protected_paths`, a kill switch,
+       the Approver's identity;
+    7. depends on an external service or account the pipeline does not hold;
+    8. needs information that exists only in someone's head and is not
+       recoverable from the repository, its threads or the fleet log;
+    9. was explicitly reserved by the item's author — "owner must choose", or
+       a filer-named owner-decision label.
+
+    Everything else is tactical, and a `decide-tactical` pass (requirement
+    36d) may settle or decide it: an engineering trade-off among options the
+    item's own record already enumerates, a config-key semantics question,
+    guard behaviour, a spec-prose correction, a scope affirmation on a closed
+    issue, a naming choice that touches no roadmap item, a choice between two
+    reversible shapes. `always-escalate` and `adjudicate-first` never reach
+    this list at all — every `escalate` verdict they cannot resolve some other
+    way already goes to a person — so it binds only the one rung wide enough
+    to need it.
 36b. **The refinement duty.** For an item carrying `kind: "needs-refinement"`
     (requirement 34e) the Enabler reads the item and its whole context and then:
 
@@ -11622,13 +11674,15 @@ implements.
       "needs-refinement"` with `refined_before` set, the same shape the thrash
       guard below refuses a second `unblocked` verdict against
       (`refinement_is_disagreement`, `lib/refinement.sh`) — and this
-      repository's `escalation_autonomy` resolves to `adjudicate-first`
+      repository's `escalation_autonomy` resolves to exactly `adjudicate-first`
       (`escalation_autonomy_configured_level`, `lib/escalation-autonomy.sh`,
       the same `stage_timeouts`/`merge_autonomy` per-repo-override precedence,
-      requirement 4f), the Script runs one
+      requirement 4f — `decide-tactical` runs its own broader pass instead,
+      requirement 36d), the Script runs one
       bounded adjudication pass (`run_enabler_adjudication`,
       `prompts/enabler-adjudicate.md`) — a fresh, narrower engagement over
-      this one item alone, at `enabler_model` — before it files the issue
+      this one item alone, at `enabler_model_critical` (falling back to
+      `enabler_model`) — before it files the issue
       above. The pass reads the item's existing refinement
       (`refined_before`'s own `spec`/`comment_url`), the re-flag's recorded
       reason (`detail`/`unblock_condition`), and this verdict's own
@@ -11652,9 +11706,12 @@ implements.
       **Bounded, not a loop.** One pass per item, per human touch
       (`escalation_autonomy_pass_available`, `lib/enabler.sh`, over
       `escalation_autonomy_adjudicated_before`): where an
-      `enabler-adjudication` event for this item is already on the log, no
-      further pass runs and the escalation is filed as it would have been at
-      `always-escalate`, the refusal recorded as a `warning` naming the item.
+      `enabler-adjudication` event for this item is already on the log — one
+      carrying `pass: "decide-tactical"` (requirement 36d) does not count here,
+      so a repository that has moved between the two rungs never has one
+      rung's bound spent by the other's history — no further pass runs and the
+      escalation is filed as it would have been at `always-escalate`, the
+      refusal recorded as a `warning` naming the item.
       The one exemption is the thrash guard's own — eligibility `reason:
       "issue-closed"`, which exists only because a human acted on an
       escalation about this item (requirement 35a), so the pass it authorises
@@ -11663,12 +11720,16 @@ implements.
       *existing* refinement, so the item returns to the pool with
       `refined_before` still set and a re-flag of it reaches this same
       `escalate` verdict over this same evidence — which an unbounded pass
-      would answer the same way, indefinitely, with nobody ever paged. Every escalation this verdict can reach that is not a
+      would answer the same way, indefinitely, with nobody ever paged. At
+      `adjudicate-first`, every escalation this verdict can reach that is not a
       refinement disagreement (an ordinary blocked item, an owner-only
-      decision, a strategy call) is unaffected by this key at every level: the
-      setting only ever replaces one escalation with one adjudication pass
-      that itself either confirms the earlier refinement or escalates anyway,
-      never widens what the Script may decide without a human.
+      decision, a strategy call) is unaffected by this rung: it only ever
+      replaces one escalation with one adjudication pass that itself either
+      confirms the earlier refinement or escalates anyway, never widens what
+      the Script may decide without a human. `decide-tactical` (requirement
+      36d) is the one rung that does reach an ordinary blocked item too — it
+      is a distinct, broader pass with its own bound, described there rather
+      than here.
     - **Leaves it blocked**, where the gating decision is recorded as
       deliberately parked — an open question with a decide-by gate in a roadmap
       or plan, or a thread saying the decision is intentionally deferred. The
@@ -11756,6 +11817,116 @@ implements.
     Neither call changes `verdict` or the item's `enabler-examined` outcome —
     a failed filing attempt costs a `warning`, never a reason to treat the
     item itself as unresolved.
+36d. **`decide-tactical` (D18, agent-ops#936).** The third rung of
+    `escalation_autonomy`, including everything `adjudicate-first` reaches
+    (requirement 36b's own paragraph of the same name) and widening it: at
+    `decide-tactical`, before the Script files the escalation issue for **any**
+    `escalate` verdict this Enabler engagement reached — an ordinary blocked
+    item as much as a refinement disagreement — one bounded decide pass runs
+    first (`run_enabler_decide`, `prompts/enabler-decide.md`), a fresh,
+    narrower engagement over this one item alone, at `enabler_model_critical`
+    (falling back to `enabler_model`). The pass reads the item's `kind`, its
+    existing refinement where it has one (`refined_before`'s own
+    `spec`/`comment_url`, empty for an ordinary blocked item or a
+    never-refined `needs-refinement` one), the re-flag's recorded reason
+    (`detail`/`unblock_condition`), and this verdict's own
+    `issue.title`/`issue.body`, and returns one of three verdicts:
+
+    - **`settle`** — nothing needs deciding: an existing refinement already
+      answers the re-flag (the same case `adjudicate-first`'s own `adequate`
+      covers), the impediment the escalation named is demonstrably gone, or
+      the ask was purely mechanical. Recorded exactly as `adjudicate-first`'s
+      `adequate` for a refinement item with an existing `refined_before` — an
+      `unblocked` event plus `item-refined`, carrying the *existing*
+      refinement's own `spec`/`comment_url` unchanged — or, for any other
+      item, an ordinary `unblocked` event whose `reason` carries the pass's
+      own `evidence`. No escalation issue is filed either way.
+
+      Either verdict that clears the block — `settle` or `decide` — releases
+      `needs_refinement_label` from an item whose `kind` is
+      `needs-refinement` (`release_refinement_label`), on the block's `kind`
+      alone and never on whether a refinement was ever written: the label is
+      a projection of the open block (requirement 34e), and an item the
+      Enabler escalated before refining it at all would otherwise return to
+      the pool still carrying it. This is the same unconditional release the
+      ordinary `unblocked` verdict, the `void` verdict and
+      `adjudicate-first`'s own `adequate` each perform.
+    - **`decide`** — a tactical decision the pipeline may take on its own
+      authority (bounded by "The owner-only boundary", requirement 36a):
+      `decision` (the choice, one paragraph), `rationale`, and
+      `options_considered`. The Script records this as the **human-touch
+      equivalent** of an escalation the human answered and closed: it logs
+      `decision-taken` (`repo`, `item`, `decision`, `rationale`,
+      `options_considered`, `comment_url` where one exists, `model`,
+      `reason_key` — the same fingerprint the bound below computes) and logs
+      `unblocked` (`by: "enabler"`, `reason` naming the decision). Where the
+      item is itself a GitHub issue, it additionally posts one comment on the
+      item's own thread (`enabler_decision_comment`) in the pipeline's voice
+      — actor `enabler-decide` — carrying the decision, the rationale, the
+      options considered, and, where the item already carried a refinement,
+      a statement that the existing specification stands amended by this
+      decision; its URL is what `decision-taken` records as `comment_url`.
+      This never writes a specification of its own, and `item-refined` is
+      logged only where the item already carried one (`refined_before` set)
+      — re-recording that existing refinement unchanged, on the same terms
+      `settle` does — never invented from the decision, and marked
+      `unchanged: true`. For a non-issue item, the decision has no thread to
+      carry it regardless of whether it already had a refinement: it is
+      recorded on `decision-taken` and read back by `decisions_map`
+      (`lib/cycle-state.sh`) into `decisions_json`, a carrier alongside —
+      never merged into — `refinements_json` (requirement 3h), supplied to
+      the next Refiner engagement for that item as its runtime input's own
+      `decision` field (`refiner_candidate_items`, `lib/refinement.sh`)
+      beside `entry`. Where a refinement already existed, `decisions_map`
+      does not treat the `unchanged: true` re-record above as having carried
+      the decision forward — an unmarked `item-refined` is what supersedes a
+      decision, since only that shape is the Refiner actually turning one
+      into a specification — and `refiner_candidate_items` offers the item
+      as a full (non-`triage_only`) candidate despite `refinements_json`
+      showing it refined, for as long as `decisions_json` still names a
+      pending decision for it (agent-ops#1049). Without both, a refined
+      non-issue item's decision reaches no carrier at all: `item-refined`'s
+      own re-record would otherwise both exclude the item from
+      `refiner_candidate_items` and appear, by its later `ts` alone, to have
+      already superseded the decision in `decisions_map`. The Refiner turns a
+      decision into the specification the way it would a human's own answer
+      on a closed escalation (`prompts/refiner.md`).
+    - **`escalate`** — anything else: any owner-only condition applies, the
+      re-flag's own concern is real and unresolved beyond what the item's
+      record supplies, or the pass could not read enough to tell. As
+      `adjudicate-first`'s own `inadequate`, with the pass's own `evidence`
+      appended to `issue.body` under an `## Adjudication attempted` heading
+      (agent-ops#681) before the issue is filed. A missing
+      `prompts/enabler-decide.md`, a stage failure, an unparseable verdict, or
+      a `decide` verdict missing its own `decision`/`rationale` all fall to
+      `escalate` too, on the same "cannot settle is not the same as nothing
+      wrong" reading requirement 8c's own adjudication gives an unreadable
+      verdict.
+
+    Every pass, whichever verdict it reaches, is logged as an
+    `enabler-adjudication` event carrying `verdict`, `evidence`,
+    `adjudication: true`, `pass: "decide-tactical"`, and `reason_key` — the
+    `pass` field is what keeps this rung's own passes out of
+    `adjudicate-first`'s unrelated bound (`escalation_autonomy_adjudicated_before`
+    excludes it explicitly), and `reason_key` is what the bound below reads.
+
+    **Bounded per reason, not per item** — `escalation_autonomy_decide_pass_available`,
+    `lib/enabler.sh`, over `escalation_autonomy_decide_reason_key`/
+    `_reason_seen`/`_pass_count` (`lib/escalation-autonomy.sh`). A pass is
+    available when eligibility `reason` is `issue-closed` — the same one-touch
+    exemption `adjudicate-first`'s own bound grants, a human having just acted
+    on an escalation about this item (requirement 35a) — or when both hold:
+    no `enabler-adjudication` event tagged `pass: "decide-tactical"`, nor any
+    `decision-taken` event, for this item already carries the *same*
+    `reason_key` — a SHA-256 fingerprint, truncated to 16 hex characters, of
+    `detail` and `unblock_condition` lower-cased and whitespace-collapsed, so
+    two engagements paraphrasing the same complaint still collide — and fewer
+    than `escalation_adjudication_max_passes` (default `3`) decide-tactical
+    passes, over any reason, have run for this item at all. A repeat of the
+    *same* reason escalates outright, regardless of how much of the cap
+    remains — the genuine two-models-disagree loop `adjudicate-first`'s own
+    bound exists to stop, one rung wider; a *fresh* reason still earns its own
+    pass, up to the cap.
 37. **Failure containment.** The Enabler must never change a cycle's outcome.
     A timeout, a non-zero exit, or an unparseable final message produces the
     stage's `stage-end`, a `warning`, and **no state events at all**: no
@@ -12729,7 +12900,11 @@ implements.
        merge conflict, a review comment, a security finding names its own
        remediation);
     3. it carries no refinement yet — `refinements_map` (requirement 3h) has
-       no entry for it;
+       no entry for it — **or** it does, but `decisions_json` (requirement
+       36d) still names a pending decision for it: a `decide-tactical` pass
+       never writes a specification of its own, so a refined item it decided
+       still owes the Refiner the fresh spec the decision has to become
+       (agent-ops#1049);
     4. it is not blocked (requirement 34), not void (requirement 34c), and not
        held by an ordinary implementation claim (the same `claimed` array the
        Co-Ordinator's own exclusion 3 reads).
@@ -18654,6 +18829,16 @@ pull request, run the ones the change touches and any it could regress.
     `ordered_repos_json`, which never gains one — requirement 3y);
     `refiner_engagement_set` caps the result deterministically by
     `(repo, source, item)` and treats an unreadable `MAX` as `0`.
+    `test/enabler-verdicts.test.sh` covers requirement 39a's third clause's
+    other bypass of the already-refined exclusion, the one `triage_only` is
+    not: driving `maybe_run_enabler` to a `decide` verdict on a register
+    record that already carried a refinement, the resulting `decision-taken`
+    and `item-refined` events are replayed as a log in the order and with the
+    gap `lib/enabler.sh` writes them in, `decisions_map` still names the
+    decision after that re-record, and `refiner_candidate_items` still offers
+    the item — carrying `decision`, and carrying no `triage_only`, since this
+    candidate owes a whole specification rather than one field
+    (agent-ops#1049).
 3y. **The two Refiner-only gatherers read what requirement 3y says
     (requirement 3y).** `test/gather-project-review.test.sh` and
     `test/gather-implementation-plan.test.sh` pass, each driving its script

@@ -69,6 +69,7 @@ pipeline_actor_label() {
     review-script) printf 'Review Script' ;;
     project-reviewer) printf 'Project Reviewer' ;;
     approver-adjudicate-open-question) printf 'Approver (adjudication)' ;;
+    enabler-decide) printf 'Enabler (decide-tactical)' ;;
     *) printf '%s' "$1" ;;
   esac
 }
