@@ -1917,6 +1917,71 @@ implements.
       per-call ledger exists (agent-ops#1084). `scripts/github-budget-report.sh`
       (component 22b) sums the events and says so in its preamble.
 
+   0e. *A `gh` transport shim makes REST reads conditional, serves
+      last-known-good under a refusal, and ledgers every call*
+      (agent-ops#1084). `since_previous`'s own upper-bound caveat (0d, above)
+      is because every node authenticates as one user and the `x-ratelimit-*`
+      headers describe that shared bucket, not any one caller's own spend —
+      and because almost every GitHub read this fleet makes re-reads
+      something a sibling node, or this same node's own last cycle, already
+      read minutes earlier: four nodes each gather every configured
+      repository on a 15-minute tick, and GitHub's own guidance is that a
+      conditional request answered `304` does not count against the primary
+      limit at all. `scripts/gh-shim.sh` (backed by `lib/gh-shim.sh`) is
+      installed on `PATH` ahead of the real binary (`deploy/docker/Dockerfile`)
+      so every `gh` call resolves to it first — this repository's own
+      scripts (through `command gh`, `lib/github-limit.sh`'s own retry
+      wrapper included) and a model-driven stage's bare `gh …` alike, which
+      no library-level wrapper can reach.
+
+      Only a plain `gh api <endpoint>` **GET** is ever cached or
+      conditioned: not a call whose method resolves to non-GET (an explicit
+      `-X`/`--method`, or gh's own default-to-POST when a body-supplying
+      flag — `-f`/`-F`/`--raw-field`/`--field`/`--input` — is present with no
+      override), not the literal `graphql` endpoint (always POST, never
+      conditional), and not a call that already asks for `-i`/`--include`
+      itself — most notably 0's own `github_limit_snapshot` probe, whose
+      entire job is reading the bucket's *live* headers, so it must never be
+      answered from a cache or a stale reading. Every one of those is passed
+      to the real binary completely unmodified: same argv, same stdout, same
+      stderr, same exit status. `--paginate` is a partial exception,
+      documented as an open scope limit in `lib/gh-shim.sh`'s own header and
+      filed as tech debt (agent-ops#1114) rather than built here: its
+      response is still stored for last-known-good, but never sent a
+      conditional header, since one `If-None-Match` applied uniformly to
+      every page a `--paginate` call fetches could 304 a later page whose
+      content actually changed.
+
+      A cacheable GET is retried with the stored `ETag` as `If-None-Match`;
+      a `304` is served from the cache with exit 0. A primary rate-limit
+      `403` (`github_limit_kind`, reused from 0a's own retry wrapper rather
+      than re-implemented, so the two can never recognise a refusal
+      differently) or a `5xx`, with a body cached within
+      `PW_GH_STALE_CEILING_SECONDS` (default 3600), is served last-known-good
+      with a `PW_GH_CACHE=stale age=<s>` line on stderr and exit
+      `PW_GH_STALE_EXIT_CODE` (default 0, so an ordinary reader degrades
+      gracefully; a caller that must not act on stale data sets this to a
+      distinguishable code). A successful write drops the cache entries for
+      its own path and that path's parent resource (a review `POST` to
+      `.../pulls/5/reviews` invalidates both that listing and `.../pulls/5`
+      itself) — a heuristic, not a semantic model of the API. `PW_GH_NO_CACHE=1`
+      opts one call out of all of this, still ledgered as a bypass.
+
+      Every call is logged to `state_dir/gh-shim/ledger.ndjson` —
+      `{ts, method, path, status, cache: hit|miss|stale|bypass, resource,
+      used}` — under `flock`, and a cacheable GET that yielded ratelimit
+      headers updates `state_dir/gh-shim/budget.json`, keyed by identity (a
+      hash of `GH_TOKEN`/`GITHUB_TOKEN`, since the forge authoring App and the
+      owner's own PAT can legitimately see different data). `PW_GH_STATE_DIR`
+      carries the resolved `state_dir` to wherever the shim runs — both
+      `agent-cycle.sh` and `review-cycle.sh` export it once they compute
+      `state_dir`, so every subprocess they fork, model-driven stages
+      included, finds the same node's state without needing config.json of
+      its own. `scripts/rotate-logs.sh` bounds the ledger's size like the
+      node's other diagnostic logs (component 21); `scripts/github-budget-report.sh`
+      (component 22b) sums it by cache outcome fleet-wide, the same
+      `state_dir`/peers union `log.jsonl` already reads.
+
    1. *Usage-limit cooldown*: the same signal arrives on two carriers, and
       the **later** `resume_at` wins. The log union's most recent `limit-hit`
       is as fresh as the last state-sync fetch; `fleet/limit.json` on the
@@ -14804,6 +14869,10 @@ What exists, and the requirements each part answers to:
    `lib/claim.sh`, `lib/void-guard.sh` and every
    `scripts/gather-*`/`scripts/sweep-*` that calls GitHub. Unit-tested,
    `test/github-limit.test.sh`),
+   `lib/gh-shim.sh` (requirement 2.0e's `gh` transport shim — see component
+   22c for its own functions; reuses this file's `github_limit_kind` and
+   `github_limit_headers_to_resource` rather than re-implementing either.
+   Unit-tested, `test/gh-shim.test.sh`),
    `lib/disk-space.sh` (requirement 2.0c's `disk_space_free_kb`,
    `disk_space_verdict` and `disk_space_describe` — the one place free space
    on a directory's filesystem is read and judged, sourced by both
@@ -16434,7 +16503,11 @@ What exists, and the requirements each part answers to:
     across a cycle's own readable, non-window-rolled readings, node named
     alongside — the figure requirement 48's before/after comparison reads;
     and per node, readings, unreadable readings and cycles carrying a
-    record — as Markdown followed by a machine-readable JSON block. `--since
+    record; and — over the `gh` transport shim's own ledger (component 22c),
+    read the same fleet-shaped way, or nothing at all when explicit log
+    files were given instead, since there is then no `state_dir` to find a
+    ledger beside — total calls and how many resolved `hit`/`miss`/`stale`/
+    `bypass`, as Markdown followed by a machine-readable JSON block. `--since
     ISO8601` restricts
     the window. Its preamble states what the figures are: the bucket's, an
     upper bound on any one segment's own spend while identities are shared.
@@ -16442,6 +16515,40 @@ What exists, and the requirements each part answers to:
     exits 0; a named log that does not exist is an error. Itself adds no
     event, makes no network call and changes nothing. Unit-tested
     (`test/github-budget-report.test.sh`); must pass `shellcheck`.
+
+22c. `lib/gh-shim.sh` and `scripts/gh-shim.sh` — the `gh` transport shim
+    (requirement 2.0e, agent-ops#1084): the executable, installed on `PATH`
+    ahead of the real binary (`deploy/docker/Dockerfile`), is a thin entry
+    point that sources the library and calls `gh_shim_main "$@"`; every
+    other function lives in the library and is unit-tested by sourcing it
+    directly. `gh_shim_classify` (built on `gh_shim_parse`) is the one place
+    a call is sorted into `read` (a plain `gh api` GET — the only class ever
+    cached or conditioned), `write` (method resolves non-GET), `graphql`
+    (the literal `graphql` endpoint), `include` (the caller already asks for
+    `-i`/`--include`) or `other` (not `gh api` at all, or `gh api` with no
+    endpoint found) — every class but `read` a pure, unmodified passthrough.
+    `gh_shim_handle_read` conditions a cacheable GET on a stored `ETag`
+    (skipped for `--paginate`, see requirement 2.0e's own scope-limit note),
+    always adds `-i` itself and always strips it back out of what the caller
+    sees; `gh_shim_split_blocks` parses one or many (`--paginate`) HTTP
+    response blocks from that capture; `gh_shim_should_use_lkg` and
+    `gh_shim_serve_lkg` decide and perform a last-known-good serve, reusing
+    `lib/github-limit.sh`'s own `github_limit_kind` so a refusal can never be
+    recognised two different ways in this repository; `gh_shim_cache_read`/
+    `_write`/`_invalidate` manage `state_dir/gh-shim/http-cache/*.json`
+    (identity, path, etag, fetched_at, body — written via a temp file plus
+    `mv -f`, `--rawfile`-read so an arbitrarily large body never passes
+    through a shell variable); `gh_shim_ledger_line` and `gh_shim_budget_update`
+    write `state_dir/gh-shim/ledger.ndjson` and `budget.json` under `flock`.
+    `gh_shim_identity` hashes `GH_TOKEN`/`GITHUB_TOKEN` (or the fixed
+    `no-token` tag) so the App and the PAT never share a cache entry or a
+    budget reading. `PW_GH_REAL_BIN`, `PW_GH_STATE_DIR`, `PW_GH_NO_CACHE`,
+    `PW_GH_STALE_CEILING_SECONDS` and `PW_GH_STALE_EXIT_CODE` are its test
+    seams and operator knobs, documented in the library's own header rather
+    than in `config.schema.json` — the same convention `lib/github-limit.sh`'s
+    own `GITHUB_LIMIT_*` variables already use. Unit- and integration-tested
+    against a stub "real gh" binary answering from a per-call JSON plan
+    (`test/gh-shim.test.sh`); must pass `shellcheck`.
 
 23c. `scripts/find-similar-tech-debt.sh` implementing the dedup half of
     requirements 24b/30d/36c/42a: given a working title, normalises it
@@ -17441,8 +17548,42 @@ pull request, run the ones the change touches and any it could regress.
    unreadable reading from it (requirement 48, agent-ops#1086), sums per
    node, honours `--since`, unions this node's log with its peers' in the
    fleet-shaped read, says so on an empty log, and errors on a named log
-   that does not exist. `scripts/github-budget-report.sh` passes
-   `shellcheck`.
+   that does not exist; and, over the `gh` transport shim's own ledger
+   (requirement 2.0e), unions this node's ledger with a peer's the same
+   fleet-shaped way, sums each cache outcome across that union, prints the
+   shim's own section, and reads as zero calls — never an error — when
+   explicit log files were given instead of a `state_dir`.
+   `scripts/github-budget-report.sh` passes `shellcheck`.
+2p. **The `gh` transport shim conditions a cacheable read, serves
+   last-known-good under a refusal, and never touches anything else
+   (requirement 2.0e, agent-ops#1084).** `test/gh-shim.test.sh` passes, both
+   the pure functions (sourced directly) and the shim end to end against a
+   stub "real gh" binary answering from a per-call JSON plan:
+   `gh_shim_classify` sorts a plain GET as `read`, an explicit or
+   body-flag-implied non-GET method as `write`, the literal `graphql`
+   endpoint and a caller already carrying `-i`/`--include` each as their own
+   class, and anything that is not `gh api` at all (or has no endpoint) as
+   `other`; `gh_shim_split_blocks` parses a single response and a
+   `--paginate`-shaped multi-page capture alike, and zero blocks from output
+   with no HTTP status line in it at all; `gh_shim_should_use_lkg` accepts a
+   primary rate-limit refusal and a bare `5xx` but never a secondary limit or
+   an ordinary error status; a cache entry's body and metadata round-trip
+   exactly, embedded newlines included; and `gh_shim_cache_invalidate` drops
+   a write's own path and its parent resource for the write's own identity
+   only, leaving an unrelated path and another identity's cache of the very
+   same path untouched. End to end: a repeated GET sends `If-None-Match` and
+   a `304` is served from the cache with exit 0; a primary-limit `403` with a
+   stored body is served last-known-good with a `PW_GH_CACHE=stale age=<s>`
+   marker and exit 0, and the same refusal falls through to the real
+   (failing) answer once the cached entry is older than
+   `PW_GH_STALE_CEILING_SECONDS`; a successful write invalidates the reads it
+   feeds and is itself never conditioned; a `POST`, `graphql`, `--input` and
+   a caller's own `-i` each reach the real binary with unmodified argv and
+   return its output unmodified, none of them ever cached; a non-`api`
+   subcommand's output and exit status (success and failure alike) pass
+   through unmodified; and `PW_GH_NO_CACHE=1` forces the same unmodified
+   passthrough for an otherwise-cacheable read, still ledgered as `bypass`.
+   `lib/gh-shim.sh` and `scripts/gh-shim.sh` pass `shellcheck -x`.
 2l. **A rejected or missing credential is classified apart from an outage,
    and stands the cycle down before the Co-Ordinator ever runs (requirement
    2.0b, agent-ops#691, TD-PPagop-26082306).** `test/github-limit.test.sh`

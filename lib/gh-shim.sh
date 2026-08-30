@@ -70,7 +70,7 @@
 # semantic model of the API: it matches the one example agent-ops#1084 gives
 # and nothing more specific than "the write's own resource, and its parent".
 #
-# ## Known scope limit: `--paginate` (TD-PPagop-26083101)
+# ## Known scope limit: `--paginate` (agent-ops#1114)
 #
 # `gh api --paginate` fetches every page inside one real-binary invocation,
 # each with its own `ETag`. Conditioning the *first* page's request would be
@@ -79,8 +79,8 @@
 # a conditional header at all: it always reaches the network in full. Its
 # response is still stored, so property 2 (last-known-good) still applies to
 # it; only property 1 (the 304 saving) does not. Per-page conditioning is
-# filed as tech debt rather than built here (issue referenced in this pull
-# request's `Defers:` line) — it needs the shim to drive pagination itself
+# filed as tech debt rather than built here (agent-ops#1114) — it needs the
+# shim to drive pagination itself
 # rather than delegate it to the real binary in one call, which is a
 # materially larger change than the rest of this file.
 #

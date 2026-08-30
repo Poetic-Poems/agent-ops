@@ -8,6 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A `gh` transport shim, installed on `PATH` ahead of the real binary
+  (requirement 2.0e, agent-ops#1084), so every `gh` call — this
+  repository's own scripts and a model-driven stage's bare `gh …` alike —
+  passes through it. A plain `gh api` GET is conditioned on a stored `ETag`
+  and served from cache on a `304`, which GitHub's own guidance says does
+  not count against the primary rate limit; a primary-limit `403` or a
+  `5xx`, with a fresh-enough cached body, is served last-known-good with a
+  `PW_GH_CACHE=stale` marker; a successful write invalidates the cache
+  entries its own path feeds. Writes, `graphql`, `--input` and a caller
+  already reading its own headers are always passed through unmodified.
+  Every call is ledgered (`state_dir/gh-shim/ledger.ndjson`) and a cacheable
+  GET's ratelimit headers update a per-identity `budget.json`;
+  `scripts/github-budget-report.sh` sums the ledger by cache outcome and
+  `scripts/rotate-logs.sh` bounds its size.
 - Expensive per-repository gather — issue threads with comments, the
   tech-debt register, PR review reads, merge-conflict/dequeued/register-
   hygiene walks — runs for one configured repository per cycle, not every
