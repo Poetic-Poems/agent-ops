@@ -4111,7 +4111,9 @@ implements.
      their own reasons, could sit permanently unselectable with nobody able
      to tell why short of reading the filter's source. `issues_excluded`
      (above) is that record: the Script logs an `issues-excluded` event
-     (requirement 33) per repo, when its exclusion set changes from the one
+     (requirement 33) per repo whose `issues` band it read fresh this cycle
+     (requirement 48 — a repo replaying its cached band observed nothing new,
+     so it logs nothing), when that repo's exclusion set changes from the one
      most recently logged, carrying the same `{number, reason}` pairs and a
      `count`, so the cycle log and the dashboard's log tail can both show "N
      issues excluded, and why" without a reader re-deriving the filter. The
@@ -9523,7 +9525,10 @@ implements.
     verbatim with no event-specific rendering of its own. Logged by
     `gather_issues`'s caller (lib/candidate-gather.sh) on change only (review
     decision
-    on agent-ops#452 concern 1): once per repo per cycle when that repo's
+    on agent-ops#452 concern 1): once per cycle, for the one repo whose
+    `issues` band that cycle read fresh (requirement 48 — a repo replaying
+    its cached band logs nothing, having observed nothing new to log a change
+    against), when that repo's
     exclusion set differs from the one carried by the most recent
     `issues-excluded` event logged for it — `lib/cycle-state.sh`'s
     `latest_issues_excluded`, read off the union log once per cycle the same
@@ -12097,8 +12102,15 @@ implements.
     per-repo gather loop runs it wherever `sources` configures the `issues`
     band, ahead of `scripts/gather-issues.sh` itself so an issue this frees
     becomes a candidate the same cycle: one `gh issue list --label
-    blocked:<reason> --state open` call per repo, compared against
-    `blocked_items`. An issue that never carried the reason label is never
+    blocked:<reason> --state open` call, compared against
+    `blocked_items`. It rides on that band's own fresh read, so requirement
+    48 narrows it to the one repository this cycle expensively gathers: a
+    stuck pair on any other configured repository is released on that
+    repository's own next turn — bounded by one rotation, never indefinite,
+    unlike the page cap below — which is a delay this reconciliation can
+    afford, since a label stuck long enough to be orphaned has by then been
+    stuck for far longer than a rotation. An issue
+    that never carried the reason label is never
     read by this call at all, so a standalone hand-applied `blocked` — #402,
     #677, #678 among them — is untouched by it, the same guarantee the fresh
     path's `refinement_label_project` gives at the moment of application.
