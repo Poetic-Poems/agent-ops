@@ -145,25 +145,47 @@ assert_eq "timed from the start of the streak" "$streak_start" "$(jq -r '.at' <<
 rm -f "$ledger/host-b.jsonl"
 
 # The same streak with no usable bound (omitted) never escalates — matching
-# the stuck_after threshold's own graceful-degradation contract.
-entry "$streak_start" defer > "$ledger/host-b.jsonl"
+# the stuck_after threshold's own graceful-degradation contract. The last
+# entry stays inside STUCK_AFTER (liveness holds), so this exercises the
+# defer_stuck_after gap specifically, not the liveness gate below.
+{
+  entry "$streak_start" defer
+  entry "$(ago '10 minutes')" defer
+} > "$ledger/host-b.jsonl"
 assert_eq "an unusable defer-stuck-after threshold never escalates deferring to stuck" \
   "deferring" "$(updater_status "$ledger" "$STUCK_AFTER" "" "host-b" "svc" | jq -r '.status')"
 rm -f "$ledger/host-b.jsonl"
 
-# --- Stuck -------------------------------------------------------------------
+# --- Liveness first (finding: a stale ledger read as a permanent alarm, agent-ops#1071) --
+# A ledger whose newest entry has itself gone older than STUCK_AFTER supports
+# no claim about the present, whatever the streak underneath it says — before
+# this fix, a lone trailing "allow"/"defer" like these read as an eternal
+# stuck badge nothing could ever clear (TD-PPagop-26082913). This is exactly
+# the shape all four nodes in agent-ops#1071's fleet table arrived in after a
+# multi-hour network outage: one trailing entry, nothing polled since.
 
-# Allowed 30 minutes ago, past the 20-minute threshold, same hostname still
-# running: the 2026-08-14 signature.
-allowed_at="$(ago '30 minutes')"
-entry "$allowed_at" allow > "$ledger/host-b.jsonl"
-out="$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc")"
-assert_eq "an allow this container has outlived past the threshold reads stuck" \
-  "stuck" "$(jq -r '.status' <<<"$out")"
-assert_eq "naming when it was allowed" "$allowed_at" "$(jq -r '.at' <<<"$out")"
-assert_eq "and roughly how long ago (within a few seconds of 1800s)" "1" \
-  "$(jq -r '(.seconds >= 1795 and .seconds <= 1810) | if . then 1 else 0 end' <<<"$out")"
-assert_eq "distinguished from an overlong defer by reason" "allow" "$(jq -r '.reason' <<<"$out")"
+entry "$(ago '30 minutes')" allow > "$ledger/host-b.jsonl"
+assert_eq "a lone allow older than the threshold, with nothing polled since, reads null" \
+  "null" "$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc")"
+rm -f "$ledger/host-b.jsonl"
+
+entry "$(ago '30 minutes')" defer > "$ledger/host-b.jsonl"
+assert_eq "and the same holds for a lone stale defer" \
+  "null" "$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc")"
+rm -f "$ledger/host-b.jsonl"
+
+# Replaying two of the fleet table's own measurements (agent-ops#1071).
+entry "$(ago '19699 seconds')" allow > "$ledger/host-b.jsonl"
+assert_eq "replaying one of the fleet's own stale allow ledgers reads null, not stuck" \
+  "null" "$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc")"
+rm -f "$ledger/host-b.jsonl"
+
+entry "$(ago '52452 seconds')" defer > "$ledger/host-b.jsonl"
+assert_eq "and one of its stale defer ledgers reads null too" \
+  "null" "$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc")"
+rm -f "$ledger/host-b.jsonl"
+
+# --- Stuck -------------------------------------------------------------------
 
 # Allowed 30 seconds ago, well inside the threshold: too recent to call
 # either state yet, and never reads as failing while that is true.
@@ -187,10 +209,13 @@ streak_start="$(ago '40 minutes')"
   entry "$(ago '10 seconds')" allow
 } > "$ledger/host-b.jsonl"
 out="$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc")"
-assert_eq "an allow repeated on every poll since is still stuck, not reset by the newest" \
+assert_eq "an allow repeated on every poll since is still stuck, not reset by the newest — liveness holds because the newest entry is recent" \
   "stuck" "$(jq -r '.status' <<<"$out")"
 assert_eq "timed from the first allow of the run, not the last" \
   "$streak_start" "$(jq -r '.at' <<<"$out")"
+assert_eq "and roughly how long ago (within a few seconds of 2400s)" "1" \
+  "$(jq -r '(.seconds >= 2395 and .seconds <= 2410) | if . then 1 else 0 end' <<<"$out")"
+assert_eq "distinguished from an overlong defer by reason" "allow" "$(jq -r '.reason' <<<"$out")"
 
 # And the run starts where the last non-allow entry left off: a deferral in
 # between means watchtower was told to hold off, so the clock starts again
@@ -229,8 +254,14 @@ rm -f "$ledger/host-b.jsonl"
 # and a value that is not a whole number of seconds supports neither verdict,
 # so it reads null rather than defaulting to one this file has no business
 # choosing — an omitted argument included, which must never read as "0
-# seconds, therefore stuck".
-entry "$(ago '40 minutes')" allow > "$ledger/host-b.jsonl"
+# seconds, therefore stuck". Two entries, not one, so the usable-threshold
+# assertion below exercises a genuinely live, genuinely stuck streak rather
+# than a lone stale entry, which reads null regardless (see "Liveness first"
+# above) and would prove nothing about this threshold specifically.
+{
+  entry "$(ago '40 minutes')" allow
+  entry "$(ago '5 minutes')" allow
+} > "$ledger/host-b.jsonl"
 assert_eq "an omitted threshold reads null, never instantly stuck" "null" \
   "$(updater_status "$ledger" "" "$DEFER_STUCK_AFTER" "host-b" "svc")"
 assert_eq "and a non-numeric one reads null too" "null" \

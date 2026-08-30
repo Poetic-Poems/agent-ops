@@ -47,10 +47,12 @@
 #     still be legitimately held, so this is no longer "a cycle in flight".
 #   null
 #     no watchtower has ever polled this container (no ledger entry under
-#     any hostname at all), or the most recent "allow" from our own service
-#     anywhere already belongs to us with less than <stuck-after-seconds>
-#     elapsed — too recent to call either "rolled" or "stuck" yet. Never
-#     returns non-zero and never asserts a verdict the ledger cannot support:
+#     any hostname at all), our own newest entry is already older than
+#     <stuck-after-seconds> (see "Liveness first" below), or the most recent
+#     "allow" from our own service anywhere already belongs to us with less
+#     than <stuck-after-seconds> elapsed — too recent to call either "rolled"
+#     or "stuck" yet. Never returns non-zero and never asserts a verdict the
+#     ledger cannot support:
 #     this runs under `set -e` inside a heartbeat push, and an unanswerable
 #     question is not a reason to abort one. A threshold that is not a whole
 #     number of seconds, or a timestamp this file cannot parse, is one such
@@ -77,6 +79,21 @@
 # parse, mid-streak, is skipped rather than treated as ending the streak: one
 # transient bad line must not silence an alarm four polls early, or reset the
 # clock on a stuck container that has been running for hours.
+#
+# Liveness first (agent-ops#1071, deciding agent-ops#1053): before either
+# streak above is even read, our own hostname's newest entry — whatever its
+# verdict — must itself be no older than <stuck-after-seconds>, or this
+# returns null outright. Both self-states are claims about the present, and a
+# ledger nothing has appended to in that long no longer supports one, however
+# long the streak underneath it runs: a node whose watchtower stopped
+# polling after one last "allow" (TD-PPagop-26082913) and a node genuinely
+# stuck since that same "allow" are indistinguishable from the ledger alone
+# once the newest line itself has gone that stale, so both get the same
+# unanswerable reading rather than the first reading as a permanent, human-
+# unclearable alarm. One gate, the same threshold that already bounds the
+# `allow` streak — no second number for siblings. `rolled` below is exempt:
+# it is a claim about the past, already carries its own age in `seconds`, and
+# keeps the hook's 7-day prune as its only bound.
 #
 # <stuck-after-seconds> is the caller's, not a literal here — the same shape
 # `image_behind_grace_hours` already uses one layer up (config.schema.json's
@@ -105,6 +122,21 @@
 # entry supports no verdict", never default to epoch 0 (see the header).
 _updater_health_epoch() {
   date -u -d "$1" +%s 2>/dev/null
+}
+
+# _updater_health_live TS STUCK-AFTER-SECONDS NOW-EPOCH — true (exit 0) iff TS
+# is no older than STUCK-AFTER-SECONDS as of NOW-EPOCH: a claim about the
+# present needs an entry recent enough to still describe it (see the header's
+# "Liveness first"). False — never a crash — for an unparseable TS or a
+# STUCK-AFTER-SECONDS that is not a whole number of seconds too: neither
+# supports an answer, and "no answer" is not liveness. A property of a file,
+# not of a service — identical for this container's own ledger and any
+# foreign one — so it takes no hostname or service of its own.
+_updater_health_live() {
+  local ts="$1" stuck_after="$2" now_epoch="$3" epoch=""
+  [[ "$stuck_after" =~ ^[0-9]+$ ]] || return 1
+  epoch="$(_updater_health_epoch "$ts")" || return 1
+  (( now_epoch - epoch <= stuck_after ))
 }
 
 # _updater_health_last_entry FILE — prints "<verdict>\t<ts>\t<service>" for a
@@ -180,6 +212,13 @@ updater_status() {
   if [[ -n "$own_entry" ]]; then
     IFS=$'\t' read -r verdict ts _ <<<"$own_entry"
 
+    # Liveness first: a claim about the present needs an own-hostname entry
+    # recent enough to still describe it, before either streak below even
+    # runs (see the header's "Liveness first"). Covers an unusable
+    # `stuck_after` too — same as the old allow-only check this replaces,
+    # now applied ahead of both branches, since it is the one gate for both.
+    _updater_health_live "$ts" "$stuck_after" "$now_epoch" || { printf 'null'; return 0; }
+
     if [[ "$verdict" == "defer" ]]; then
       local since="" start_epoch="" elapsed=0
       since="$(_updater_health_streak_start "$own_file" defer "$ts")"
@@ -197,11 +236,6 @@ updater_status() {
     fi
 
     if [[ "$verdict" == "allow" ]]; then
-      # A threshold this function cannot read is a question it cannot answer:
-      # neither "stuck" nor "not stuck" is supportable, so say nothing. The
-      # caller owns the number (config.json's `updater_stuck_after_minutes`),
-      # and inventing one here is exactly the drift the header rules out.
-      [[ "$stuck_after" =~ ^[0-9]+$ ]] || { printf 'null'; return 0; }
       local since="" ts_epoch="" elapsed=0
       since="$(_updater_health_streak_start "$own_file" allow "$ts")"
       ts_epoch="$(_updater_health_epoch "$since")" || { printf 'null'; return 0; }
