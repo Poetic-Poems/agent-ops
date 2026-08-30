@@ -140,7 +140,13 @@ peers_dir="$(fleet_peers_dir "$workspace_root")"
 # Excluded from the branch in both directions:
 #
 #   the locks       a copied lock.json is a lock no process holds; peers read
-#                   logs, never locks.
+#                   logs, never locks. `roll-pending.json` (agent-ops#1096)
+#                   travels the same way and for the same reason: it is this
+#                   node's own instruction to its own watchtower hook to
+#                   allow an update despite its own lock, for a window only
+#                   this node's own cycle boundary can have earned — a copy on
+#                   a peer would tell that peer's hook to allow a roll nothing
+#                   about that peer actually asked for.
 #   this script's   `state-sync.log` is where a node records its own
 #   own log          replication; replicating it would be a node describing
 #                   another node's description of itself.
@@ -201,6 +207,7 @@ EXCLUDES=(
   --exclude=.git
   --exclude=lock.json
   --exclude=review-lock.json
+  --exclude=roll-pending.json
   --exclude=dashboard.lck
   --exclude=dashboard.log
   --exclude=dashboard-server.log

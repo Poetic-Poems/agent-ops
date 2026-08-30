@@ -24,6 +24,14 @@
 # `exit_code == 0` half of the gate actually guards, and the cases below
 # check exactly that boundary.
 #
+# The extracted block also carries the image-behind check ahead of the chain
+# decision (requirement 39, agent-ops#1096): a section further down drives it
+# with the real `chain_image_behind`/`chain_write_roll_pending` (lib/chain.sh,
+# test/chain.test.sh already covers those two in isolation) and a stubbed
+# `image_drift_status`/`agent_ops_version`, checking that this new check only
+# ever *cancels* an otherwise-eligible chain — never grants one — and writes
+# `roll-pending.json` exactly when, and only when, it does.
+#
 # Run directly: ./test/finish-then-continue.test.sh — exit 0 iff all passed.
 #
 # shellcheck disable=SC2016
@@ -152,6 +160,87 @@ assert_eq "chain_eligible=1 after a signal (128+n) does not chain" "" "$out"
 out="$(run_cycle eligible-handled-failure 1 3 1 0)"
 assert_eq "chain_eligible=1 after a *handled* stage failure (exit 0, like a stand-down) still chains" \
   "count=2 argv=" "$out"
+
+# --- Yielding to a pending image roll (requirement 39, agent-ops#1096) ----------
+# The image-behind check inside cleanup() only ever *cancels* a chain that was
+# otherwise eligible; it must never grant one, and — when there is nothing to
+# cancel — it must not run at all. Driven with the real chain_image_behind and
+# chain_write_roll_pending (lib/chain.sh) and a stubbed image_drift_status/
+# agent_ops_version, so no real registry call or build-info.json is needed.
+
+run_cycle_image() {  # run_cycle_image DESC CHAIN_ELIGIBLE EXIT_CODE IMAGE_STATUS_JSON
+  local desc="$1" eligible="$2" code="$3" image_json="$4"
+  local run_dir spawn_record script
+  run_dir="$tmp_dir/img-$(printf '%s' "$desc" | tr -c 'A-Za-z0-9' '-')"
+  mkdir -p "$run_dir/scripts"
+  spawn_record="$run_dir/spawned.txt"
+
+  cat > "$run_dir/agent-cycle.sh" <<STUB
+#!/usr/bin/env bash
+printf 'spawned\n' > "$spawn_record"
+exit 0
+STUB
+  chmod +x "$run_dir/agent-cycle.sh"
+
+  script="$run_dir/run.sh"
+  {
+    printf '#!/usr/bin/env bash\nset -uo pipefail\n'
+    printf 'SCRIPT_DIR=%q\n' "$run_dir"
+    printf 'state_dir=%q\n' "$run_dir"
+    printf 'log_file=%q\n' "$run_dir/log.jsonl"
+    printf 'lock_acquired=0\nlock_file=%q\nclone_dir=""\n' "$run_dir/lock.json"
+    printf 'max_chained_cycles=3\ncycle_interval_minutes=15\nORIGINAL_ARGV=()\n'
+    printf 'log_event() { printf "EVENT %%s %%s\\n" "$1" "$2" >> %q; }\n' "$run_dir/events.log"
+    printf 'maybe_run_enabler() { :; }\n'
+    printf 'agent_ops_version() { printf null; }\n'
+    printf 'IMG_JSON=%q\n' "$image_json"
+    printf 'image_drift_status() { printf %%s "$IMG_JSON"; }\n'
+    # shellcheck source=lib/chain.sh
+    printf 'source %q\n' "$SCRIPT_DIR/lib/chain.sh"
+    printf '%s\n' "$block"
+    printf 'chain_eligible=%q\n' "$eligible"
+    printf 'chain_count=1\n'
+    printf 'exit %q\n' "$code"
+  } > "$script"
+  chmod +x "$script"
+
+  timeout 10 bash "$script" >/dev/null 2>&1 || true
+
+  # Poll briefly for the spawn the same way run_cycle does; a "does not
+  # chain" case simply times out this wait, which costs it two seconds.
+  local waited=0
+  while [[ ! -s "$spawn_record" ]] && (( waited < 20 )); do
+    sleep 0.1
+    waited=$(( waited + 1 ))
+  done
+  printf '%s' "$run_dir"
+}
+
+behind='{"status":"behind","registry_commit":"abc1234","checked_at":"2026-08-30T00:00:00Z"}'
+current='{"status":"current","checked_at":"2026-08-30T00:00:00Z"}'
+
+run_dir="$(run_cycle_image behind-cancels-chain 1 0 "$behind")"
+assert_eq "a pending image roll cancels an otherwise-eligible chain" "0" \
+  "$(test -s "$run_dir/spawned.txt" && echo 1 || echo 0)"
+assert_eq "…and writes the roll-pending marker" "1" \
+  "$(test -f "$run_dir/roll-pending.json" && echo 1 || echo 0)"
+assert_eq "…naming a bare ISO-8601 'until'" "1" \
+  "$([[ "$(jq -r '.until' "$run_dir/roll-pending.json" 2>/dev/null)" \
+      =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] && echo 1 || echo 0)"
+
+run_dir="$(run_cycle_image current-still-chains 1 0 "$current")"
+assert_eq "no pending image roll: the chain proceeds exactly as before this check existed" "1" \
+  "$(test -s "$run_dir/spawned.txt" && echo 1 || echo 0)"
+assert_eq "…and no marker is written" "0" \
+  "$(test -f "$run_dir/roll-pending.json" && echo 1 || echo 0)"
+
+run_dir="$(run_cycle_image not-eligible-skips-the-check 0 0 "$behind")"
+assert_eq "a cycle with no chain to give up never even checks the image" "0" \
+  "$(test -f "$run_dir/roll-pending.json" && echo 1 || echo 0)"
+
+run_dir="$(run_cycle_image crashed-skips-the-check 1 1 "$behind")"
+assert_eq "an untrapped non-zero exit never checks the image either" "0" \
+  "$(test -f "$run_dir/roll-pending.json" && echo 1 || echo 0)"
 
 # --- The parent never waits on the child ----------------------------------------
 

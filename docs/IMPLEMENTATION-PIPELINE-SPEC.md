@@ -414,16 +414,23 @@ file and carries placeholders only; `.env` itself is never committed.
   namespace that minted it, and on a tailnet node the dashboard reads the
   scheduler's locks through the shared `state` volume. Either way **a single
   deferral** can never outlast `lock_stale_after` — which is not a bound on
-  the *sequence* of them, and must not be read as one. Each poll is answered
-  independently, so a node whose next cycle starts before watchtower's next
-  poll is never asked at a moment when the lock is free: every refusal
-  correct, every one well inside `lock_stale_after`, and the node never
-  rolling. Nothing is wedged and nothing self-corrects. Measured on VM1,
-  2026-08-24: `Failed=3 Scanned=3 Updated=0` every five minutes for hours,
-  one of two nodes on that host catching a gap and rolling while its
-  neighbour kept missing it and stayed ninety minutes behind, unreported.
-  Surfacing that is #603's business, not this hook's; what belongs here is
-  that the bound is per-deferral only. The fail-closed side is the cheap
+  the *sequence* of them by itself, and must not be read as one. Each poll is
+  answered independently, so a node whose next cycle starts before
+  watchtower's next poll is never asked at a moment when the lock is free:
+  every refusal correct, every one well inside `lock_stale_after`, and the
+  node never rolling on this check alone. Measured on VM1, 2026-08-24:
+  `Failed=3 Scanned=3 Updated=0` every five minutes for hours, one of two
+  nodes on that host catching a gap and rolling while its neighbour kept
+  missing it and stayed ninety minutes behind, unreported. Surfacing that is
+  #603's business, not this hook's. What was missing is agent-ops#1096's
+  `roll-pending` marker (requirement 39a): at its own cycle boundary, a node
+  whose image has fallen behind the registry's newest declines the chain it
+  would otherwise take and writes the marker instead, which the hook honours
+  as an unconditional allow — lock included — until the window it names
+  expires. The bound today is therefore two-part: one cycle's length for a
+  node that is merely busy, and `lock_stale_after` only for one that is
+  actually wedged and so never reaches that cycle-boundary check at all. The
+  fail-closed side is the cheap
   one — a leftover foreign lock is taken over or removed within the hour by
   the next cycle (requirement 1 precedes the stand-down checks, so standby
   nodes clear it too), while a foreign `kill -0` answers for the wrong
@@ -2712,7 +2719,9 @@ implements.
    single-node operation behaves exactly as it did before the fleet existed.
 
    **What replicates.** Everything under `state_dir` except the live locks
-   (`lock.json`, `review-lock.json`, `dashboard.lck`), the dashboard's own
+   (`lock.json`, `review-lock.json`, `dashboard.lck`), the roll-pending
+   marker (`roll-pending.json`, requirement 39a, agent-ops#1096), the
+   dashboard's own
    machinery (`dashboard/`, `dashboard.log`, `dashboard-server.log`,
    `.dashboard-github.json`, `.dashboard-claims.json`,
    `.image-drift-cache.json`), `state-sync.log`, the unattended doctor
@@ -2731,7 +2740,10 @@ implements.
    the expensive-gather cache (`expensive-gather/`, requirement 48) — and
    the updater's own invocation ledger (`updater-ledger/`, below).
    The exclusions are not tidiness: a copied `lock.json` is a lock no process
-   holds — peers read logs, never locks; the
+   holds — peers read logs, never locks; `roll-pending.json` is this node's own
+   instruction to its own watchtower hook, earned by its own cycle boundary,
+   and a copy on a peer would tell that peer's hook to allow a roll nothing
+   about that peer actually asked for; the
    dashboard is generated from the state beside it, so copying it would be
    copying a derivative of what is already being copied; a copied
    `.image-drift-cache.json` would answer for a registry query nobody on the
@@ -7194,6 +7206,35 @@ implements.
     9c's handler exists to catch, and requirement 1's stale-lock takeover
     would reach it only through the `KILL` that follows its ignored `TERM`
     — no `attempt-failed`, no `cycle-end`, no claim released.
+39c. **A pending image roll overrides the chain** (agent-ops#1096). Both
+    conditions above, and the `exit_code == 0` gate, only ever decide whether
+    a chain is *available*; this one decides whether to take it anyway. A
+    node running long or chained cycles never leaves
+    `deploy/docker/watchtower-pre-update.sh` a gap its five-minute poll can
+    land in — every individual deferral stays correctly bounded by that
+    pipeline's `lock_stale_after`, and the node still never rolls, because the
+    next chained cycle's own claim reacquires the lock before the lock-free
+    instant a poll would need. So immediately before the chain decision,
+    inside the same `cleanup` (11) that already checked `exit_code == 0`, a
+    chain-eligible cycle asks one more question: is the image it is running
+    behind the registry's newest (`lib/image-drift.sh`'s `image_drift_status`,
+    read back through the identical cache the requirement-2.5 heartbeat push
+    just above it already refreshed — no second registry round trip, no
+    second signal)? If so, `chain_image_behind` (`lib/chain.sh`) flips
+    `chain_eligible` back to false — overriding, never granting, since a
+    cycle that was not going to chain anyway has nothing to check this for —
+    and `chain_write_roll_pending` writes `$state_dir/roll-pending.json`
+    (`{"until": <ISO8601>}`, `schedule.cycle_interval_minutes` from now,
+    requirement 2.5's own exclusion list). `deploy/docker/
+    watchtower-pre-update.sh` reads that marker back and honours it as an
+    unconditional allow — overriding its own ordinary in-flight-cycle
+    deferral, lock included — until `until`: wide enough that the next poll
+    is guaranteed to land inside it, which the true gap a declined chain
+    leaves (the instant between this cycle's lock release and the next
+    cron-fired cycle's own claim) is not. The result is the bound the hook's
+    own header now states: one cycle's length for a node that is merely busy,
+    and `lock_stale_after` only for one that is actually wedged and so never
+    reaches this check at all.
 17d. **Race-loss observability**: how many candidates a cycle lost to a peer
     genuinely holding the item (17a's `cause: "held"`, as opposed to
     `"unreachable"`) before it won its own claim, or — on the cycle that
@@ -16718,7 +16759,13 @@ pull request, run the ones the change touches and any it could regress.
    script, and `watchtower` carrying `WATCHTOWER_LIFECYCLE_HOOKS=true`.
    On a live node: `docker compose exec scheduler
    /app/deploy/docker/watchtower-pre-update.sh` echoes its finding and exits
-   0 when idle, 75 during a cycle.
+   0 when idle, 75 during a cycle. The same suite also pins the
+   `roll-pending` override (requirement 39a, agent-ops#1096): a valid,
+   unexpired `$state_dir/roll-pending.json` makes the hook exit 0 despite a
+   live lock naming a live process in the hook's own container, an expired
+   or unparseable marker leaves the ordinary lock-based judgement above
+   unchanged, and no marker at all behaves exactly as it did before the
+   marker existed.
 1c-ii. **The dashboard is published to the host's loopback and to no network.**
    `test/dashboard-exposure.test.sh` passes: in `deploy/docker/compose.yaml`
    every port `dashboard-local` publishes is scoped to `127.0.0.1`, the mapping
@@ -19857,6 +19904,28 @@ pull request, run the ones the change touches and any it could regress.
     every other malformed schedule key already gets. `test/doctor.test.sh`
     passes: the crontab report names the full comma list, not just the
     first occurrence.
+39c. **A pending image roll overrides an otherwise-eligible chain, never grants
+    one, and is honoured at the hook** (requirement 39c, agent-ops#1096).
+    `test/chain.test.sh` passes: `chain_image_behind` reads true only for a
+    `{"status":"behind",...}` verdict — "current", "unverified", the JSON
+    literal `null` and malformed input all read false — and
+    `chain_write_roll_pending` writes `$state_dir/roll-pending.json` naming a
+    bare ISO-8601 `until` `schedule.cycle_interval_minutes` minutes out
+    (falling back to the schema default of 15 on a non-numeric argument),
+    creating `state_dir` if it does not yet exist. `test/finish-then-
+    continue.test.sh` passes, against the same real `cleanup` block as 39a,
+    now driven with a stubbed `image_drift_status`/`agent_ops_version`: a
+    "behind" verdict cancels an otherwise chain-eligible, exit-0 cycle and
+    writes the marker; a "current" verdict still chains and writes no marker;
+    a cycle with no chain to give up (`chain_eligible=0`) or that did not end
+    cleanly (a non-zero exit) never even reaches the check, marker included.
+    `test/watchtower-pre-update.test.sh` passes: an unexpired
+    `roll-pending.json` makes the hook exit 0 despite a live lock naming a
+    live process in the hook's own container; an expired or unparseable
+    marker leaves the ordinary lock-based judgement unchanged; no marker at
+    all behaves exactly as before the marker existed. `test/state-sync.test.sh`
+    passes: `roll-pending.json` does not replicate to a peer's branch,
+    alongside the other live locks.
 17e. **Contended-claim-loss reporting is correct per node and per era
     (component 21).** `test/pickup-metrics.test.sh` passes against a fixture
     union log: `selection` and `claim-lost` events split "before"/"after" at

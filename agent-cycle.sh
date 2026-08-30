@@ -199,6 +199,10 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/labels.sh"
 # shellcheck source=lib/chain.sh
 . "$SCRIPT_DIR/lib/chain.sh"
+# shellcheck source=lib/version.sh
+. "$SCRIPT_DIR/lib/version.sh"
+# shellcheck source=lib/image-drift.sh
+. "$SCRIPT_DIR/lib/image-drift.sh"
 
 # lib/refinement.sh's self-heal hook (requirement 6a, agent-ops#687), installed
 # here because this is the one file that sources both it and lib/labels.sh: a
@@ -747,6 +751,16 @@ candidates_max="$(cfg '.candidates_max')"
 coordinator_prompt_max_bytes="$(cfg '.coordinator_prompt_max_bytes')"
 [[ "$coordinator_prompt_max_bytes" =~ ^[0-9]+$ ]] || coordinator_prompt_max_bytes=0
 max_chained_cycles="$(cfg '.max_chained_cycles')"
+# How far apart this node's own cron firings are (requirement 39,
+# agent-ops#1096): the width of the window a `roll-pending` marker needs to
+# span so a healthy node that declines to chain on a pending image roll still
+# gets watchtower a real gap to poll into, rather than the sub-second one a
+# chained cycle's own lock hand-off leaves. Not derived from `cycle_hours`/
+# `excluded_minutes` the way `lock_stale_after` and its siblings are
+# (requirement 1d) — this bounds one cycle's own deferral, not a span of
+# fleet history, and the plain interval is the right width for that.
+cycle_interval_minutes="$(cfg '.schedule.cycle_interval_minutes')"
+[[ "$cycle_interval_minutes" =~ ^[0-9]+$ ]] || cycle_interval_minutes=15
 # How long a draft PR this system raised may sit untouched before it counts as
 # abandoned and finishing it becomes selectable work (requirement 3e). Comfortably
 # beyond a whole cycle, so a draft merely being worked never qualifies.
@@ -1094,6 +1108,29 @@ cleanup() {
   # gh call here must never affect the cycle's outcome or exit code.
   if [[ -x "$SCRIPT_DIR/scripts/publish-dashboard.sh" ]]; then
     timeout 120 "$SCRIPT_DIR/scripts/publish-dashboard.sh" >/dev/null 2>&1 || true
+  fi
+  # Yield to a pending image roll (requirement 39, agent-ops#1096): a node
+  # running long or chained cycles never presents watchtower's
+  # deploy/docker/watchtower-pre-update.sh a gap to poll into, so a healthy,
+  # merely-busy node could stay behind the registry's newest image
+  # indefinitely — the bound `lock_stale_after` gives a wedged cycle never
+  # applied to one that is simply busy. Only worth asking when there is a
+  # chain to give up: a cycle already not chaining, or one that failed
+  # outright, has nothing here to yield. Reads the same `image_drift_status`
+  # verdict the heartbeat's `image` field publishes (requirement 2.5) — no
+  # second signal — through the identical cache file the state-sync push just
+  # above refreshed, so this costs no second registry round trip.
+  if (( chain_eligible )) && (( exit_code == 0 )); then
+    local image_status_json=""
+    image_status_json="$(image_drift_status "$(agent_ops_version "$SCRIPT_DIR")" \
+      "$state_dir/.image-drift-cache.json" 2>/dev/null || echo null)"
+    if chain_image_behind "$image_status_json"; then
+      chain_eligible=0
+      chain_write_roll_pending "$state_dir" "$cycle_interval_minutes"
+      log_event "roll-pending" "$(jq -nc --argjson image "$image_status_json" \
+        --argjson minutes "$cycle_interval_minutes" \
+        '{image: $image, minutes: $minutes}')"
+    fi
   fi
   # Finish-then-continue (requirement 39), last of all: a chained cycle is a
   # brand-new process with its own cycle id, its own lock acquisition and its

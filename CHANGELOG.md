@@ -1062,6 +1062,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   does too, and now retries once through `github_limit_wait_plan`'s existing
   wait/backoff (`lib/github-limit.sh`) instead of dropping the verdict
   outright when the cause was rate-limiting.
+- A healthy node running long or chained cycles could stay behind the
+  registry's newest image for hours — two images behind, on the 2026-08-30
+  evidence (agent-ops#1096) — because `deploy/docker/
+  watchtower-pre-update.sh` deferred the roll whenever a cycle held the lock,
+  and a node whose next cycle starts before watchtower's next five-minute
+  poll never presented a gap to poll into: every individual deferral stayed
+  correctly bounded by `lock_stale_after`, but the *sequence* of them was
+  not, and nothing about the node was actually wedged. `agent-cycle.sh`'s
+  `cleanup()` now checks, at every cycle boundary, whether the running image
+  has fallen behind (`lib/image-drift.sh`'s `image_drift_status`, the same
+  verdict the heartbeat's `image` field already publishes — no second
+  signal); if so it declines a chain it would otherwise take and writes
+  `$state_dir/roll-pending.json`, which the hook now honours as an
+  unconditional allow — overriding even a live lock — until the window it
+  names expires. The bound is now two-part: one cycle's length for a node
+  that is merely busy, `lock_stale_after` only for one that is actually
+  wedged.
 - Requirement 2.0's budget gate read `GET /rate_limit`, whose body — read
   cold, as the first call of every cycle — is an empty window (`5000/5000`,
   reset exactly an hour from now) rather than a reading; it answered `ok`

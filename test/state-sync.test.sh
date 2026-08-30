@@ -128,6 +128,10 @@ printf 'review\n' > "$state/reviews/20260720T020000Z-1/review.out"
 # The things that must stay behind, one per reason in the exclude list.
 printf '{"pid":999}\n' > "$state/lock.json"
 printf '{"pid":998}\n' > "$state/review-lock.json"
+# This node's own instruction to its own watchtower hook (agent-ops#1096): a
+# copy on a peer would tell that peer's hook to allow a roll nothing about
+# that peer actually earned, on the same reasoning as the locks above.
+printf '{"until":"2026-08-30T10:00:00Z"}\n' > "$state/roll-pending.json"
 printf 'server noise\n' > "$state/dashboard.log"
 printf '{}\n' > "$state/.dashboard-github.json"
 printf '{"ok":false}\n' > "$state/.image-drift-cache.json"
@@ -178,6 +182,7 @@ assert_eq "the cron log replicates" "1" "$(test -f "$pushed/cron.log" && echo 1 
 
 assert_eq "the lock does not replicate" "0" "$(test -e "$pushed/lock.json" && echo 1 || echo 0)"
 assert_eq "the review lock does not replicate" "0" "$(test -e "$pushed/review-lock.json" && echo 1 || echo 0)"
+assert_eq "the roll-pending marker does not replicate" "0" "$(test -e "$pushed/roll-pending.json" && echo 1 || echo 0)"
 assert_eq "the dashboard log does not replicate" "0" "$(test -e "$pushed/dashboard.log" && echo 1 || echo 0)"
 assert_eq "the GitHub cache does not replicate" "0" "$(test -e "$pushed/.dashboard-github.json" && echo 1 || echo 0)"
 assert_eq "the image-drift cache does not replicate" "0" "$(test -e "$pushed/.image-drift-cache.json" && echo 1 || echo 0)"

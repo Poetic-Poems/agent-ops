@@ -26,12 +26,13 @@
 # the same staleness the next cycle uses means the hook can never defer past
 # the point where a cycle would have taken the lock over anyway.
 #
-# That bounds **one** deferral, and only one. It does not bound the sequence.
-# Each poll is answered independently, so a node whose next cycle starts
-# before watchtower's next poll is never *asked* at a moment when the lock is
-# free: every individual refusal is correct, every one is well inside
-# `lock_stale_after`, and the node still never rolls. Nothing here is wedged
-# and nothing self-corrects.
+# That bounds **one** deferral, and only one. It does not, by itself, bound
+# the sequence. Each poll is answered independently, so a node whose next
+# cycle starts before watchtower's next poll is never *asked* at a moment
+# when the lock is free: every individual refusal is correct, every one is
+# well inside `lock_stale_after`, and the node still never rolls on this
+# check alone. Nothing here is wedged and nothing here self-corrects — that is
+# `roll-pending`'s job, below.
 #
 # Measured on VM1, 2026-08-24: `Failed=3 Scanned=3 Updated=0` every five
 # minutes for hours. One of the two nodes sharing that host happened to be
@@ -39,10 +40,26 @@
 # the gap and stayed on an image ninety minutes older, with nothing anywhere
 # saying so. This earlier read the other way — "the worst case is therefore
 # `lock_stale_after` hours of deferral, not 'until somebody notices this node
-# stopped updating'" — which holds for the *wedged* cycle it was written
-# about and not for a merely busy one. Reporting the repeated `Failed` is
-# agent-ops#603; this comment's job is only to stop the bound being read as
-# wider than it is.
+# stopped updating'" — which holds only for a *wedged* cycle. Reporting the
+# repeated `Failed` is agent-ops#603; a *healthy* node that simply never gets
+# a gap is agent-ops#1096, fixed by the `roll-pending` marker below. The real
+# bound today is therefore two-part: one cycle's length for a healthy node
+# (agent-cycle.sh's own cleanup() yields its next chain and writes
+# `roll-pending` the moment `image_drift_status` reads "behind" — requirement
+# 39, requirement 2.5), and `lock_stale_after` hours only for a cycle that is
+# actually wedged, which never reaches that cleanup path at all.
+#
+# **`roll-pending`** (`$state_dir/roll-pending.json`, `{"until": <ISO8601>}`)
+# is how the healthy-node bound is actually delivered rather than merely
+# hoped for. Declining to chain releases the lock, but the gap that leaves is
+# no wider than the moment before the next cron-fired cycle reacquires it —
+# still too narrow for a five-minute poll to reliably land in. So
+# agent-cycle.sh's cleanup() writes this marker instead of relying on that
+# gap: read below, before either lock is even inspected, it overrides the
+# ordinary in-flight deferral as an unconditional allow until `until` — wide
+# enough (`schedule.cycle_interval_minutes`) to guarantee the next poll falls
+# inside it, whatever the lock says. Past `until`, or with no marker at all,
+# the ordinary lock-based judgement applies exactly as it always has.
 #
 # Both pipelines count. agent-cycle.sh holds `lock.json` and review-cycle.sh
 # holds `review-lock.json`, and either dying to a roll costs the same.
@@ -276,6 +293,31 @@ held_by() {
       "${host:-unknown}" "${started_at:-unknown}" "$age_sec"
   fi
 }
+
+# roll_pending_allow — print a one-line reason and succeed iff
+# $state_dir/roll-pending.json names an `until` that has not yet passed
+# (agent-ops#1096). Checked, and honoured, before either lock below: this is
+# an override of the ordinary in-flight-cycle judgement, not a third case fed
+# into it. An unparseable `until` reads as epoch 0 — impossibly old, exactly
+# `held_by`'s own convention for a timestamp it cannot trust — so a corrupt or
+# foreign-shaped marker never grants an allow it did not earn.
+roll_pending_allow() {
+  local f="$state_dir/roll-pending.json" until_ts until_epoch now_epoch
+  [[ -f "$f" ]] || return 1
+  until_ts="$(jq -r '.until // empty' "$f" 2>/dev/null || true)"
+  [[ -n "$until_ts" ]] || return 1
+  until_epoch="$(date -d "$until_ts" +%s 2>/dev/null || echo 0)"
+  now_epoch="$(date +%s)"
+  (( until_epoch > now_epoch )) || return 1
+  printf 'a roll-pending marker from the last cycle boundary is in force until %s' "$until_ts"
+}
+
+if pending="$(roll_pending_allow)"; then
+  say "$pending — allowing the update despite any lock"
+  record_verdict allow
+  say "the update may proceed"
+  exit 0
+fi
 
 defer=0
 
