@@ -596,6 +596,7 @@ maybe_run_enabler() {
   local e_gate_checks_unreadable e_ck_word e_ck_reason e_rc_word e_rc_reason e_rc_revert
   local e_review_safe e_gate_checks_ok e_finding
   local e_rereview_state e_rereview_who e_human_reviewer_state e_human_reviewer_who
+  local e_human_rate_note
   local issue_title issue_body_file created number url missing
   local e_adjudication e_adj_verdict e_adj_evidence e_adjudicated e_refined_adj
   local e_ea_level e_kind e_refined_before_present
@@ -966,9 +967,17 @@ $(jq . <<<"$input")
                 # above — this path exists precisely so the two cannot drift.
                 e_human_reviewer_state="$(jq -r '.human_reviewer.state // ""' <<<"$e_review_json")"
                 e_human_reviewer_who="$(jq -r '.human_reviewer.who // ""' <<<"$e_review_json")"
-                if [[ "$e_human_reviewer_state" == "failed" ]]; then
+                if [[ "$e_human_reviewer_state" == "failed" || "$e_human_reviewer_state" == "failed-rate-limited" ]]; then
+                  # agent-ops#1082, the same shape agent-cycle.sh's own site
+                  # carries: `ensure_human_reviewer` distinguishes a rate-limit
+                  # refusal, so both shapes are matched — a `failed` arm alone
+                  # would drop this warning entirely for exactly the case that
+                  # distinction exists to surface.
+                  e_human_rate_note=""
+                  [[ "$e_human_reviewer_state" == "failed-rate-limited" ]] \
+                    && e_human_rate_note=" — GitHub's REST rate limit refused the read"
                   log_event "warning" "$(jq -nc --arg u "$e_pr_url" --arg a "$enabler_assignee" --arg w "$e_human_reviewer_who" \
-                    --arg d "enabler completed the handoff on $e_pr_url, but review could not be requested from ${e_human_reviewer_who:-$enabler_assignee} — it will not appear in their review queue" \
+                    --arg d "enabler completed the handoff on $e_pr_url, but review could not be requested from ${e_human_reviewer_who:-$enabler_assignee} — it will not appear in their review queue$e_human_rate_note" \
                     '{detail: $d, pr_url: $u} + (if $w == "" then {reviewers: [$a]} else {reviewers: ($w | split(","))} end)')"
                 fi
 

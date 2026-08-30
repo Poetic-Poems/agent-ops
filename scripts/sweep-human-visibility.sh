@@ -294,8 +294,18 @@ while IFS= read -r pr_url; do
       jq -nc --arg u "$pr_url" --arg w "$human_who" \
         '{action: "human-review-requested", pr_url: $u, reviewers: ($w | split(","))}'
       ;;
-    failed)
-      warn "$pr_url" "could not request review from ${human_who:-$assignee}"
+    failed | failed-rate-limited)
+      # agent-ops#1082: `ensure_human_reviewer` distinguishes a rate-limit
+      # refusal from any other read failure, so both shapes are matched here
+      # — a `failed` arm alone would drop the warning entirely for exactly
+      # the case that distinction exists to surface. The detail's prefix is
+      # unchanged either way: requirement 38e's own classification
+      # (`scripts/gather-human-visibility-hygiene.sh`'s `_warning_class`,
+      # `lib/human-visibility-hygiene.sh`'s `warning_family`) matches on it.
+      rate_note=""
+      [[ "$human_state" == "failed-rate-limited" ]] \
+        && rate_note=" — GitHub's REST rate limit refused the read"
+      warn "$pr_url" "could not request review from ${human_who:-$assignee}$rate_note"
       ;;
     skip)
       if [[ "$human_who" == "no-candidate" ]]; then

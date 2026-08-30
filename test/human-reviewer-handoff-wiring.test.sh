@@ -127,9 +127,9 @@ done
 # review_json RS RW HS HW
 # Assembles the `rereview`/`human_reviewer` slice of `handoff_complete_review`'s
 # JSON — the only two fields either extracted block reads — for state RS/who RW
-# and state HS/who HW respectively (a literal `none`, `failed`, `failed<TAB>
-# logins` split into state+who, `skip`, `skip<TAB>no-candidate` split the same
-# way, or `requested<TAB>logins`).
+# and state HS/who HW respectively (a literal `none`, `failed`,
+# `failed-rate-limited`, `failed<TAB>logins` split into state+who, `skip`,
+# `skip<TAB>no-candidate` split the same way, or `requested<TAB>logins`).
 review_json() {
   jq -nc --arg rs "$1" --arg rw "$2" --arg hs "$3" --arg hw "$4" \
     '{rereview: {state: $rs, who: $rw}, human_reviewer: {state: $hs, who: $hw}}'
@@ -198,6 +198,25 @@ run_case() {
     "[\"$ASSIGNEE\"]" "$(jq -c '.reviewers' <<<"$warn")"
   assert_eq "  ... pr-ready still carries the bare state" \
     '"failed"' "$(jq -c '.human_review_requested' <<<"$ready")"
+
+  # --- failed-rate-limited: still warned, and the cause is named ------------
+  # agent-ops#1082: `ensure_human_reviewer` tells a GitHub REST rate-limit
+  # refusal apart from any other read failure. Both blocks must match that
+  # shape as well as the bare `failed` — matching `failed` alone would drop
+  # the warning entirely for exactly the case the new state exists to
+  # surface, which is worse than the indistinguishable warning it replaced.
+  out="$(run_block "$block" "$pr_url_var" "$URL" "$handoff_var" "$handoff_val" \
+          "$review_json_var" "$ASSIGNEE" "$(review_json none "" failed-rate-limited "")")"
+  warn="$(warning_jsons "$out")"
+  ready="$(pr_ready_json "$out")"
+  assert_contains "$desc: failed-rate-limited still produces a warning" \
+    "could not be requested from $ASSIGNEE" "$warn"
+  assert_contains "  ... naming GitHub's rate limit as the cause" \
+    "GitHub's REST rate limit refused the read" "$warn"
+  assert_eq "  ... and reviewers still fall back to enabler_assignee" \
+    "[\"$ASSIGNEE\"]" "$(jq -c '.reviewers' <<<"$warn")"
+  assert_eq "  ... pr-ready carries the distinguishing state, not a bare failed" \
+    '"failed-rate-limited"' "$(jq -c '.human_review_requested' <<<"$ready")"
 
   # --- skip<TAB>no-candidate: never warned as a failed request ---------------
   out="$(run_block "$block" "$pr_url_var" "$URL" "$handoff_var" "$handoff_val" \

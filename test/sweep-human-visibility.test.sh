@@ -186,6 +186,16 @@ elif [[ "$path" == */comments ]]; then
 elif [[ "$*" == *"user.login"* ]]; then
   cat "$d/author"
 else
+  # A dedicated fixture for the review-request read alone (agent-ops#1082):
+  # `_handoff_pr_author` reads the same bare PR-object path with a different
+  # `--jq` filter, so the generic `api-fail` path match above cannot target
+  # this call by itself — it is told apart here by its own filter, which only
+  # `_handoff_pending_review_targets` ever hands this stub.
+  if [[ -s "$d/api-fail-pending" && "$jqfilter" == *requested_reviewers* ]]; then
+    failmsg="$(cat "$d/api-fail-msg" 2>/dev/null || true)"
+    [[ -n "$failmsg" ]] && printf '%s\n' "$failmsg" >&2
+    exit 1
+  fi
   while IFS= read -r l; do [[ -n "$l" ]] && printf '%s\n' "$l"; done < "$d/pending"
 fi
 STUB
@@ -311,7 +321,8 @@ reset_stub() {
   printf 'warwickallen\n' > "$tmp_dir/author"
   printf '[]' > "$tmp_dir/issue-comments.json"
   : > "$tmp_dir/pending"; : > "$tmp_dir/posts"; : > "$tmp_dir/comments.log"
-  rm -f "$tmp_dir/api-fail" "$tmp_dir/api-fail-msg" "$tmp_dir/post-fail" "$tmp_dir/list-fail" \
+  rm -f "$tmp_dir/api-fail" "$tmp_dir/api-fail-msg" "$tmp_dir/api-fail-pending" \
+        "$tmp_dir/post-fail" "$tmp_dir/list-fail" \
         "$tmp_dir/view-fail" "$tmp_dir/comment-fail" "$tmp_dir/pages" "$tmp_dir/mq-fail"
   set_merge_queue false
   idle_view "" "" "" "" no
@@ -808,6 +819,36 @@ out="$(run_sweep)"
 assert_contains "a rate-limited reviews read names the cause in the idle-nudge warning" \
   "could not read the pull request's reviews — skipping the idle-nudge check (GitHub's primary rate limit refused the read)" \
   "$(jq -r 'select(.action == "warning") | .detail' <<<"$out" | grep 'idle-nudge')"
+
+# agent-ops#1082, the other half of the same distinction: when the review-
+# request read itself is refused, `ensure_human_reviewer` answers
+# `failed-rate-limited` rather than the bare `failed` — and this sweep must
+# still warn. Matching `failed` alone here would drop the warning entirely
+# for exactly the case that new state exists to surface, which is strictly
+# worse than the indistinguishable warning it replaced. The detail keeps its
+# `could not request review from …` prefix either way: requirement 38e's own
+# classification (`scripts/gather-human-visibility-hygiene.sh`) reads it.
+reset_stub
+set_reviews "$(review Warwick-Allen APPROVED)"
+printf x > "$tmp_dir/api-fail-pending"
+printf 'HTTP 403: API rate limit exceeded for user ID 2049303' > "$tmp_dir/api-fail-msg"
+out="$(run_sweep)"
+request_warning="$(jq -r 'select(.action == "warning") | .detail' <<<"$out" \
+  | grep 'could not request review from' || true)"
+assert_eq "a rate-limited review-request read still warns" \
+  "could not request review from warwickallen — GitHub's REST rate limit refused the read" \
+  "$request_warning"
+
+# ... and a non-rate-limit failure at the same read keeps the original,
+# unchanged wording, so the two remain tellable apart.
+reset_stub
+set_reviews "$(review Warwick-Allen APPROVED)"
+printf x > "$tmp_dir/api-fail-pending"
+out="$(run_sweep)"
+assert_eq "a generic review-request read failure keeps the original wording" \
+  "could not request review from warwickallen" \
+  "$(jq -r 'select(.action == "warning") | .detail' <<<"$out" \
+     | grep 'could not request review from' || true)"
 
 reset_stub
 printf x > "$tmp_dir/list-fail"

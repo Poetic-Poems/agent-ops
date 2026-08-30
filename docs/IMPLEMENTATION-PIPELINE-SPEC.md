@@ -12092,11 +12092,18 @@ implements.
     read failure at that one call site (agent-ops#1082): where
     `github_limit_kind` (`lib/github-limit.sh`) — reused, not reclassified —
     names the failure a rate-limit refusal, `ensure_human_reviewer` prints
-    `failed-rate-limited` in place of the bare `failed` above, and the
-    `pr-ready` warning names GitHub's rate limit as the cause instead of the
-    same generic wording a genuine failure gets. An operator reading the log
-    can then tell "no human was notified because the owner's shared REST
-    budget was gone" from a real fault, which a bare `failed` could not say.
+    `failed-rate-limited` in place of the bare `failed` above. Every one of
+    the three call sites that reads that answer treats it as a failure the
+    same way the bare `failed` is, and names GitHub's rate limit as the cause
+    in the warning it already logs: the Reviewer's own handoff and the
+    Enabler's `complete_handoff` (both `pr-ready` warnings, which stay
+    identical to each other), and requirement 38c's sweep (its
+    `could not request review from …` warning, whose prefix is unchanged so
+    requirement 38e's own classification of it is unaffected). An operator
+    reading the log can then tell "no human was notified because the owner's
+    shared REST budget was gone" from a real fault, which a bare `failed`
+    could not say — and no site may answer the new state with silence, which
+    would be worse than the indistinguishable warning it replaced.
 
 38b. **A Co-Ordinator-recorded block gated on a human decision is labelled
     `blocked` and by reason, not only by class.** Requirement 34e projects the
@@ -19354,7 +19361,15 @@ pull request, run the ones the change touches and any it could regress.
     requirement 38e's own read of the same rule
     (tech-debt/TD-PPagop-26081403.md); and an unreadable reviews list or
     pending list is `failed`, never an assumed
-    `skip`. `handoff_round_answered` is asserted
+    `skip`, while a pending-list read refused specifically by GitHub's REST
+    rate limit is `failed-rate-limited`, told apart from that bare `failed`
+    (agent-ops#1082). `test/human-reviewer-handoff-wiring.test.sh` asserts
+    what both call sites do with that answer, driving the Reviewer's own
+    handoff block and the Enabler's `complete_handoff` block through the same
+    cases: `failed-rate-limited` still warns, names GitHub's rate limit as
+    the cause, still falls back to `enabler_assignee` for `reviewers`, and
+    carries the distinguishing state on `pr-ready` rather than a bare
+    `failed`. `handoff_round_answered` is asserted
     directly there too, both callers' halves at once: a marked
     `actor=implementer` reply after the blocking review is `answered`, the
     same reply before it is `unanswered`, an unmarked comment and another
@@ -19437,7 +19452,13 @@ pull request, run the ones the change touches and any it could regress.
     refusal, its warning names the cause distinguishably — GitHub's `kind`
     rate limit, read via `github_limit_kind` from one further diagnostic-only
     read of the same endpoint — rather than the same generic detail a
-    non-rate-limit failure gets (agent-ops#1082). A pull request
+    non-rate-limit failure gets (agent-ops#1082). The same distinction holds
+    at the sweep's own review-request read: a rate-limited one still warns —
+    never silence, which matching requirement 38a's bare `failed` alone would
+    produce — with `— GitHub's REST rate limit refused the read` appended to
+    the unchanged `could not request review from …` prefix requirement 38e
+    classifies on, while a non-rate-limit failure at that read keeps that
+    detail exactly as it was. A pull request
     whose only legal candidate is its own author is a `warning` naming
     `enabler_assignee`, not silence — the one `skip` reason the sweep itself
     surfaces, read off requirement 38a's `skip\tno-candidate` detail, unlike a

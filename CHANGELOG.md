@@ -1036,7 +1036,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   notified because the owner's shared budget was gone" from a genuine fault
   (agent-ops#1082): `ensure_human_reviewer`'s review-request read
   (`lib/handoff.sh`) now reports `failed-rate-limited` distinctly from a bare
-  `failed`; the pull request/reviews read behind
+  `failed`, and all three sites that read that answer — the Reviewer's own
+  handoff, the Enabler's `complete_handoff` and the human-visibility sweep —
+  name the rate limit in the warning they already logged rather than falling
+  silent on the new state; the pull request/reviews read behind
   `sweep-human-visibility.sh`'s idle-nudge check names the cause in its
   warning; and `approver_post_or_warn`'s review write (`lib/approver.sh`)
   does too, and now retries once through `github_limit_wait_plan`'s existing
