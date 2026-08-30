@@ -288,8 +288,8 @@ rm -f "$ledger/host-b.jsonl"
 # it inherits. Without a `started`-bounded streak scan, this would read as
 # one continuous streak spanning several *successful* rolls.
 {
-  entry "$(ago '18 minutes')" allow "svc" "$OTHER_STARTED"   # an earlier generation's own allow
-  entry "$(ago '9 minutes')"  allow "svc" "$OWN_STARTED"     # the roll that produced this container
+  entry "$(ago '25 minutes')" allow "svc" "$OTHER_STARTED"   # an earlier generation's own allow
+  entry "$(ago '9 minutes')"  allow "svc" "$OWN_STARTED"     # this container's own allow, written shortly after the roll that produced it
   entry "$(ago '10 seconds')" allow "svc" "$OWN_STARTED"     # this container, still running fine
 } > "$ledger/host-b.jsonl"
 out="$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc" "$OWN_STARTED")"
