@@ -13948,13 +13948,34 @@ with the Reviewer's own.
     every configured repository by a full rotation while it kept serving the
     restored, arbitrarily stale snapshots. Every other configured
     repository's entry carries the raw gather this same node cached the
-    last time its own turn came around —
+    last time its own turn came around — only once that cache actually holds
+    one: a repository never yet cached, or whose cache file is zero-byte or
+    unparseable, carries empty bands instead (below), the same shape a
+    repository whose `sources` are all disabled already produces —
     `sources` gating and claim exclusion (`exclude_claimed_items`/
     `exclude_claimed_prs`) are re-applied to it fresh every cycle regardless,
     so a claim a peer takes or a `sources` edit still takes effect without a
     live read. `--repo` narrows the configured set to one repository, which
     is then always the one picked, exactly as before this requirement
     existed.
+
+    The nine values `expensive_gather_cache_save` writes into a repository's
+    cache document — the eight raw bands plus `issues_excluded` — are each
+    unbounded past the call that builds it (agent-ops's own raw `tech_debt`
+    band alone has reached 421,622 bytes), so, per requirement 4g, they reach
+    `jq` on stdin, one document per line, bound positionally with `input as
+    $name` in the order printed, delivered via a here-string (requirement
+    4c) — never in argv, where past `MAX_ARG_STRLEN` the build fails silently
+    at `execve` inside `$(…)` (agent-ops#1107). `expensive_gather_cache_save`
+    additionally refuses (non-zero, no write) an empty or non-object third
+    argument, so a build failure of that kind is reported through the
+    caller's own `|| log_event "warning" ...` rather than silently producing
+    a 0-byte cache file. `expensive_gather_cache_load` treats a zero-byte or
+    unparseable cache file as absent, not as `{}`, and logs a `warning`
+    naming the slug; `expensive_gather_pick_repo` treats that same file as
+    never-cached (epoch 0) rather than reading its mtime, so the affected
+    repository is picked again on the very next cycle instead of waiting out
+    a full rotation.
 
     Picking is keyed on this node's own last-read time for each repository
     (the cache file's mtime), never on `lib/repo-order.sh`'s effective-age
@@ -20789,19 +20810,29 @@ pull request, run the ones the change touches and any it could regress.
     already-cached one, breaks a tie among never-cached repositories on
     slug ascending, and picks the oldest cache file once every configured
     repository has one; `expensive_gather_cache_load` round-trips a saved
-    object exactly and reads a corrupt or absent cache file as empty rather
-    than raising; `expensive_gather_cache_save` is atomic (no stray `.tmp`
-    file survives it) and a single-repository set (`--repo`) always picks
-    that repository; and a configured set whose sorted candidate lines
-    outgrow one pipe buffer still picks cleanly under the caller's own
-    `$(…)`-under-`set -e` shape rather than dying 141 on the `sort`'s
-    SIGPIPE (agent-ops#806's shape — the assertion runs its caller as a
-    separate process, because a subshell in a `||` context has its own
-    `set -e` suppressed and would pass either way).
-    `test/repo-entry-build.test.sh` still passes unchanged,
-    confirming the per-repo entry-build block's own eight-band shape is
-    undisturbed by the cache being threaded in ahead of it.
-    `scripts/lint-shell.sh` is clean on every file this requirement touches.
+    object exactly, a band past `MAX_ARG_STRLEN` (131072 bytes) included, and
+    reads a zero-byte or corrupt cache file as absent — not `{}` — logging a
+    `warning` that names the slug; `expensive_gather_pick_repo` treats that
+    same zero-byte or corrupt file as never-cached (epoch 0), so it is picked
+    again the very next cycle rather than waiting out a full rotation;
+    `expensive_gather_cache_save` is atomic (no stray `.tmp` file survives
+    it), refuses (non-zero, no write) an empty or non-object third argument,
+    and a single-repository set (`--repo`) always picks that repository; and
+    a configured set whose sorted candidate lines outgrow one pipe buffer
+    still picks cleanly under the caller's own `$(…)`-under-`set -e` shape
+    rather than dying 141 on the `sort`'s SIGPIPE (agent-ops#806's shape —
+    the assertion runs its caller as a separate process, because a subshell
+    in a `||` context has its own `set -e` suppressed and would pass either
+    way). `test/repo-entry-build.test.sh` still passes unchanged for the
+    per-repo entry-build block's own eight-band shape, and additionally pins
+    `lib/candidate-gather.sh`'s expensive-gather cache-save build itself,
+    lifted the same way: per requirement 4g, its nine values (the eight
+    bands plus `issues_excluded`) reach `jq` on stdin, never in argv, so a
+    band past `MAX_ARG_STRLEN` — agent-ops's own raw `tech_debt` band has
+    reached 421,622 bytes — round-trips through the real save+load intact
+    rather than the build dying silently at `execve` and leaving a 0-byte
+    cache (agent-ops#1107). `scripts/lint-shell.sh` is clean on every file
+    this requirement touches.
 
 9. **An open question the Reviewer could not settle holds unattended landing,
    resolves through the configured ladder, and never through a new commit
