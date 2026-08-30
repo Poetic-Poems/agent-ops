@@ -66,6 +66,13 @@ fail_at() {  # fail_at TS NODE DETAIL
   jq -nc --arg ts "$1" --arg node "$2" --arg d "$3" \
     '{ts: $ts, node: $node, event: "attempt-failed", stage: "coordinator", detail: $d}'
 }
+# fail_class_at TS NODE DETAIL CLASS — a refusal carrying its own
+# api_refusal_class (issue #1073), the field handle_stage_failure now adds
+# when stage_api_refusal_class could classify the refusal.
+fail_class_at() {
+  jq -nc --arg ts "$1" --arg node "$2" --arg d "$3" --arg c "$4" \
+    '{ts: $ts, node: $node, event: "attempt-failed", stage: "coordinator", detail: $d, api_refusal_class: $c}'
+}
 success_at() {  # success_at TS NODE
   jq -nc --arg ts "$1" --arg node "$2" \
     '{ts: $ts, node: $node, event: "stage-end", stage: "coordinator", exit_code: 0}'
@@ -102,8 +109,8 @@ four_fails="$(fail_at 2026-08-01T10:00:00Z n1 'coordinator exited 126'
   fail_at 2026-08-01T10:45:00Z n4 'coordinator exited 126')"
 
 verdict="$(crash_loop_verdict 4 <<<"$four_fails")"
-assert_eq "threshold-many identical failures yield a verdict" \
-  '{"stage":"coordinator","detail":"coordinator exited 126","count":4,"first_ts":"2026-08-01T10:00:00Z","last_ts":"2026-08-01T10:45:00Z","nodes":["n1","n2","n3","n4"]}' \
+assert_eq "threshold-many identical failures yield a verdict that escalates" \
+  '{"stage":"coordinator","detail":"coordinator exited 126","count":4,"first_ts":"2026-08-01T10:00:00Z","last_ts":"2026-08-01T10:45:00Z","nodes":["n1","n2","n3","n4"],"escalate":true}' \
   "$verdict"
 
 assert_eq "one fewer yields nothing" "" \
@@ -151,6 +158,59 @@ torn="$(head -n2 <<<"$four_fails"
   tail -n2 <<<"$four_fails")"
 assert_eq "a torn line is skipped, not a reset" \
   "4" "$(crash_loop_verdict 4 <<<"$torn" | jq -r '.count')"
+
+# --- crash_loop_verdict: transient class (issue #1073) ---------------------------
+#
+# The Ockham outage (2026-08-29/30): the host lost outbound network for four
+# hours, and every Co-Ordinator failure recorded the same detail ("api_error")
+# with api_error_status 503 — a provider outage, not a deterministic fault.
+# `handle_stage_failure` now carries that as `api_refusal_class: "transient"`
+# on the event, and a run where every failure counted carries it must not
+# escalate — the exact replay #1073 asks for.
+sixteen_transient="$(for i in $(seq 1 16); do
+    fail_class_at "2026-08-29T22:$(printf '%02d' "$i"):00Z" "n$(( (i % 2) + 1 ))" "api_error" "transient"
+  done)"
+verdict="$(crash_loop_verdict 4 <<<"$sixteen_transient")"
+assert_eq "16 consecutive transient refusals still yield a verdict" \
+  "16" "$(jq -r '.count' <<<"$verdict")"
+assert_eq "but one that does not escalate" \
+  "false" "$(jq -r '.escalate' <<<"$verdict")"
+
+# The 2026-08-21 prompt_too_long outage: a named deterministic reason, class
+# `refused`. Grouping across cycles whose own message differs is already
+# covered above (detail alone carries the group); this pins that a `refused`
+# run — the class requirement 2.7's escalation was built for — still
+# escalates exactly as before.
+four_refused="$(fail_class_at 2026-08-21T10:00:00Z n1 prompt_too_long refused
+  fail_class_at 2026-08-21T10:15:00Z n2 prompt_too_long refused
+  fail_class_at 2026-08-21T10:30:00Z n3 prompt_too_long refused
+  fail_class_at 2026-08-21T10:45:00Z n4 prompt_too_long refused)"
+assert_eq "a refused run still escalates, unchanged" \
+  "true" "$(crash_loop_verdict 4 <<<"$four_refused" | jq -r '.escalate')"
+
+# A run mixing a transient failure with an unclassified (or refused) one is
+# not proven transient by the member that was, so it escalates — the safe
+# default over silently swallowing a real deterministic loop.
+mixed_class="$(fail_class_at 2026-08-29T22:00:00Z n1 mixed-detail transient
+  fail_class_at 2026-08-29T22:15:00Z n2 mixed-detail refused
+  fail_class_at 2026-08-29T22:30:00Z n3 mixed-detail transient
+  fail_class_at 2026-08-29T22:45:00Z n4 mixed-detail transient)"
+assert_eq "a run with one non-transient member still escalates" \
+  "true" "$(crash_loop_verdict 4 <<<"$mixed_class" | jq -r '.escalate')"
+
+# A run with no class information at all (an ordinary crash, a timeout — never
+# what stage_api_refusal_class classifies) defaults to escalating, exactly as
+# every run did before this field existed.
+assert_eq "an unclassified run defaults to escalating" \
+  "true" "$(crash_loop_verdict 4 <<<"$four_fails" | jq -r '.escalate')"
+
+# A success still resets a transient run exactly as it resets any other: with
+# the success spliced in after the first 2 of 16, only 14 remain after the
+# reset, below a threshold of 15.
+assert_eq "a success mid-run resets a transient run too" "" \
+  "$(crash_loop_verdict 15 <<<"$(head -n2 <<<"$sixteen_transient"
+    success_at 2026-08-29T22:05:00Z n2
+    tail -n14 <<<"$sixteen_transient")")"
 
 # --- crash_loop_preselection_verdict ---------------------------------------------
 #

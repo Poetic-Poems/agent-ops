@@ -61,6 +61,8 @@ TEMPLATE="$SCRIPT_DIR/dashboard/index.html"
 . "$SCRIPT_DIR/lib/image-drift.sh"
 # shellcheck source=lib/updater-health.sh
 . "$SCRIPT_DIR/lib/updater-health.sh"
+# shellcheck source=lib/crash-loop.sh
+. "$SCRIPT_DIR/lib/crash-loop.sh"
 # shellcheck source=lib/stage-budget.sh
 . "$SCRIPT_DIR/lib/stage-budget.sh"
 # shellcheck source=lib/merge-queue.sh
@@ -204,6 +206,26 @@ updater_stuck_after_seconds="$(cfg '.updater_stuck_after_minutes * 60 | floor')"
 # reads them.
 updater_defer_stuck_after_seconds="$(cfg \
   '([.lock_stale_after // 4, .project_review.lock_stale_after // 6] | max) * 3600 | floor')"
+# The fleet-wide transient-refusal verdict (lib/crash-loop.sh, issue #1073):
+# a `crash_loop_verdict` run whose `escalate` is `false` — every failure it
+# counted was the API being unreachable, not refusing a request — never
+# reaches an escalation issue (requirement 2.7), so this is the only place
+# it is ever surfaced. Read straight from the same union `agent-cycle.sh`
+# itself scans (`fleet_logs`, never `read_events`'s already-`fromjson`'d
+# stream — `crash_loop_verdict` wants the same raw-lines-on-stdin shape the
+# Script's own `union_log` file is), so a sustained outage shows here without
+# needing this node to have run the cycle that would have escalated it.
+# `crash_loop_after` 0 (or absent) disables this the same way it disables the
+# escalation itself — a run this reads back is one whose threshold is off.
+crash_loop_after_dashboard="$(cfg '.crash_loop_after')"
+[[ "$crash_loop_after_dashboard" =~ ^[0-9]+$ ]] || crash_loop_after_dashboard=0
+provider_unreachable_json='null'
+if (( crash_loop_after_dashboard > 0 )); then
+  provider_unreachable_json="$(fleet_logs "$state_dir" "$peers_dir" log.jsonl \
+    | crash_loop_verdict "$crash_loop_after_dashboard" 2>/dev/null \
+    | jq -c 'select(.escalate == false)' 2>/dev/null)"
+  [[ -z "$provider_unreachable_json" ]] && provider_unreachable_json='null'
+fi
 updater_json="$(updater_status "$state_dir/updater-ledger" "$updater_stuck_after_seconds" \
   "$updater_defer_stuck_after_seconds" "${HOSTNAME:-}" "${AGENT_OPS_SERVICE:-}" || echo null)"
 mkdir -p "$out_dir"
@@ -1882,13 +1904,16 @@ jq -nc --arg n "$self_node" --arg r "$(role_current)" --arg ts "$now_iso" --arg 
   --argjson switch "$switch_json" \
   --argjson stage_health "$stage_health_json" \
   --argjson updater "$updater_json" \
+  --argjson pu "$provider_unreachable_json" \
   '{node: $n, role: $r, heartbeat_ts: $ts, heartbeat_age_s: 0,
     last_cycle: (if $lc == "" then null else $lc end), self: true, stale: false,
     live: $live, version: $version, compose: $compose, image: $image, switch: $switch,
-    stage_health: $stage_health, updater: $updater}' > "$nodes_rows"
+    stage_health: $stage_health, updater: $updater,
+    provider_unreachable: (if $pu != null and (($pu.nodes // []) | index($n) != null) then $pu else null end)}' > "$nodes_rows"
 for hb in "$peers_dir"/*/heartbeat.json; do
   [[ -f "$hb" ]] || continue
-  jq -c --argjson now "$now_epoch" --argjson live "$node_live_json" '
+  jq -c --argjson now "$now_epoch" --argjson live "$node_live_json" \
+    --argjson pu "$provider_unreachable_json" '
     . as $h
     | (try ($h.ts | fromdateiso8601) catch 0) as $t
     | {node: ($h.node // "unknown"), role: ($h.role // "unknown"),
@@ -1927,7 +1952,14 @@ for hb in "$peers_dir"/*/heartbeat.json; do
        # a heartbeat built before this check existed — or from before that
        # container had its first poll — yields null rather than this node
        # guessing at a peer it never ran.
-       updater: ($h.updater // null)}' \
+       updater: ($h.updater // null),
+       # Unlike the fields above, `provider_unreachable` is not a report from
+       # the peer about itself — it is this node reading the fleet-wide
+       # union directly (issue #1073), computed once above and applied to
+       # every row the run names rather than per node. A peer named in the
+       # run `nodes` array gets it, whether or not its heartbeat predates
+       # this check.
+       provider_unreachable: (if $pu != null and (($pu.nodes // []) | index($h.node // "unknown") != null) then $pu else null end)}' \
     "$hb" 2>/dev/null >> "$nodes_rows" || true
 done
 fleet_nodes_json="$(jq -sc 'sort_by([(.self | not), .node])' "$nodes_rows" 2>/dev/null)"

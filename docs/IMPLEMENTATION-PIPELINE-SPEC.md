@@ -3139,7 +3139,17 @@ implements.
      identical detail**, with no Co-Ordinator success (`stage-end`, stage
      `coordinator`, exit 0) anywhere in the fleet in between. Identical
      detail is what separates the deterministic class from transient
-     noise; any success resets the count.
+     noise; any success resets the count. The run's own `escalate` field
+     (issue #1073) is `false` when every failure it counted carries
+     `api_refusal_class: "transient"` on its own `attempt-failed` event —
+     the API was unreachable (a 5xx, a dropped connection), not refusing a
+     considered request — and `true` otherwise, including a run with no
+     class at all. `detail` alone cannot carry this: it is the field the
+     count groups on (requirement 4i), and folding a second axis into it
+     would split one outage into as many "distinct" failures as it had
+     status codes. See requirement 4i's own text on `stage_api_refusal`
+     and `stage_api_refusal_class` for where the class comes from and why
+     it travels beside `detail` rather than inside it.
    - `crash_loop_preselection_verdict` scans for `crash_loop_after` or
      more **consecutive** cycles that each logged `cycle-start` followed by
      a `cycle-end` with a **non-zero `exit_code`** and *no* `stage-start`
@@ -3164,22 +3174,50 @@ implements.
      running, or killed too abruptly to log one) is dropped, counted
      neither way.
 
-   On a verdict from either reader, and unless `crash_loop_escalated_since`
-   finds a `crash-loop-escalated` event with the same detail at or after the
-   run's own first failure (so the same loop is never escalated twice,
-   while a fresh loop with an old detail escalates anew), the Script files
-   an issue on `crash_loop_repo` through the Enabler's own
-   `create_escalation_issue` — same open-issue dedup (item ref
-   `crash-loop:coordinator` for the first class, `crash-loop:pre-selection`
-   for the second, so either can escalate independently of the other), same
-   label, same load-bearing assignee that keeps the pipeline from selecting
-   its own SOS as work — and logs `crash-loop-escalated` with the verdict's
-   fields and the issue's number and URL. If the issue cannot be filed the
-   Script logs a `warning` and leaves no `crash-loop-escalated` event, so
-   the next cycle retries. The cycle then proceeds normally either way:
-   detection must never suppress the recovery attempt that might end the
-   loop. `crash_loop_after` 0 (or absent), or an empty `crash_loop_repo` or
-   `enabler_assignee`, disables both checks; `--dry-run` never files.
+   On a verdict from either reader whose `escalate` is not `false` — every
+   `crash_loop_preselection_verdict` run qualifies, since an `execve`
+   failure is never a network refusal and that reader carries no class at
+   all — and unless `crash_loop_escalated_since` finds a
+   `crash-loop-escalated` event with the same detail at or after the run's
+   own first failure (so the same loop is never escalated twice, while a
+   fresh loop with an old detail escalates anew), the Script files an issue
+   on `crash_loop_repo` through the Enabler's own `create_escalation_issue`
+   — same open-issue dedup (item ref `crash-loop:coordinator` for the first
+   class, `crash-loop:pre-selection` for the second, so either can escalate
+   independently of the other), same label, same load-bearing assignee that
+   keeps the pipeline from selecting its own SOS as work — and logs
+   `crash-loop-escalated` with the verdict's fields and the issue's number
+   and URL. If the issue cannot be filed the Script logs a `warning` and
+   leaves no `crash-loop-escalated` event, so the next cycle retries. The
+   cycle then proceeds normally either way: detection must never suppress
+   the recovery attempt that might end the loop. `crash_loop_after` 0 (or
+   absent), or an empty `crash_loop_repo` or `enabler_assignee`, disables
+   both checks; `--dry-run` never files.
+
+   A `crash_loop_verdict` run whose `escalate` is `false` — the API was
+   unreachable, not refusing a request — never reaches `crash_loop_escalate`
+   at all: the Script logs `provider-unreachable` with the verdict's own
+   fields instead. This is deliberately not an issue: nothing in this
+   repository can fix a provider outage, and an escalation asserting
+   "almost certainly deterministic … no amount of retrying will clear it"
+   over evidence that says the opposite is worse than no escalation, which
+   is exactly what happened for the 2026-08-29/30 Ockham outage (agent-ops
+   #1070, filed and closed as not-a-defect against this requirement).
+   `scripts/publish-dashboard.sh` does not read that event: it sources
+   `lib/crash-loop.sh` and re-runs `crash_loop_verdict` over the same
+   fleet-wide union (`fleet_logs`) itself, keeping the verdict only when
+   `escalate` is `false`, and surfaces it — a run is still current exactly
+   when no Co-Ordinator success on any node has reset it — on the affected
+   nodes' own cards, beside their updater and image verdicts.
+   Recomputing rather than reading the event is what lets a node publish
+   the fact without having been the node whose cycle logged it, and it is
+   gated on `crash_loop_after` alone, so the badge appears whether or not
+   `crash_loop_repo`/`enabler_assignee` would have allowed an escalation.
+   `docs/DASHBOARD-SPEC.md` documents the field and the badge. A run this
+   verdict counts is still counted and still resets on a Co-Ordinator
+   success exactly as an escalating run does; `escalate` changes only what
+   the Script does with a verdict that already fired, never whether one
+   fires.
 2.7a. **Token-expiry escalation** (agent-ops#694). GitHub states a
    fine-grained PAT's own expiry on every authenticated API response, in the
    `GitHub-Authentication-Token-Expiration` response header. On 2026-08-22
@@ -5635,6 +5673,22 @@ implements.
    so a detail built from it would have read as four distinct failures and the
    ladder would never have fired on the outage it was needed for. The
    escalation's own hint now names `coordinator.out` first.
+
+   **Not every refusal is deterministic, and the record now says which
+   (issue #1073).** `stage_api_refusal`'s stable token cannot itself carry
+   that distinction — the whole point of narrowing it was to keep a moving
+   detail from splitting one outage into several — so `stage_api_refusal_class`
+   reads it from the same `api_error_status` (and, for a named connection-level
+   `terminal_reason`, from that) as a sibling, stable value: `refused` for a
+   named deterministic reason (`prompt_too_long`, `invalid_request_error`) or
+   any other 4xx — the API considered the request and declined it, and no
+   amount of retrying changes that — and `transient` for a 5xx or a
+   connection-level fault — the request never reached a considered answer,
+   the fault is external, and it clears on its own. `handle_stage_failure`
+   carries it on the `attempt-failed` event as `api_refusal_class`, empty
+   when `stage_api_refusal` found nothing to classify. `crash_loop_verdict`
+   is the one reader of this field today (requirement 2.7); no other part of
+   this requirement changes on its account.
 
 4j. **The unsheddable half of the Co-Ordinator's input is bounded too, and
    `refinements` is bounded by candidacy.** Requirement 4i bounds the prompt
@@ -9222,7 +9276,7 @@ implements.
     `recheck-clean`, `item-void`, `unvoided`, `item-refined`,
     `enabler-examined`, `refiner-examined`, `own-label-action`, `escalated`,
     `enabler-adjudication`,
-    `crash-loop-escalated`,
+    `crash-loop-escalated`, `provider-unreachable`,
     `labels-ensured`, `limit-hit`, `limit-cleared`,
     `orphan-branch-recovered`, `orphan-branch-released`,
     `issue-closed-post-merge`, `void-object-closed`, `void-retired`,

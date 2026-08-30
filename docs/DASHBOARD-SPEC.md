@@ -805,6 +805,19 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                             //   present only on "stuck",
                                             //   naming which of the two
                                             //   ways it got there
+                         provider_unreachable: { stage, detail, count,
+                                          first_ts, last_ts, nodes,
+                                          escalate },            // the fleet-
+                                            //   wide transient-refusal
+                                            //   verdict (#1073,
+                                            //   `crash_loop_verdict`'s own
+                                            //   `escalate: false` case), read
+                                            //   fresh from the union log every
+                                            //   publish and applied to every
+                                            //   node its own `nodes` names;
+                                            //   null when no such run is
+                                            //   currently active or this node
+                                            //   was not one it named
                          live: { cycle, since, running, ended_at,
                                  stage, repo, item, source, title } } ],
                                             // what THAT node is doing; null
@@ -2647,6 +2660,31 @@ number's twins elsewhere on the page.
   explicitly to "render nothing" rather than folded into `deferring`'s
   benign badge, the same way `image`'s own `unverified` branch is routed
   explicitly rather than folded into `current`'s silence.
+- **A crash-loop run the Script has classified `transient` renders as a
+  fourth badge, below updater, rather than as an escalation issue (issue
+  #1073).** `lib/crash-loop.sh`'s `crash_loop_verdict` groups consecutive
+  Co-Ordinator failures by their identical `detail` for requirement 2.7's
+  escalation ladder; what it could not previously say is whether the API was
+  refusing a request outright (deterministic, will not clear by retrying) or
+  simply unreachable (a 5xx, a dropped connection — external, and self-
+  clearing). On 2026-08-29/30 the Ockham host lost outbound network for four
+  hours, every failure recorded a 503 verbatim, and the only signal of it was
+  a crash-loop escalation asserting "almost certainly deterministic … no
+  amount of retrying will clear it" — false on the escalation's own evidence,
+  and gone the moment the network returned. A run whose `escalate` field
+  reads `false` — every failure it counted classified `transient` — now never
+  reaches that escalation at all; the Publisher reads the same union log
+  directly (`fleet_logs`, not the heartbeat: this is a fleet-wide fact, not
+  one only the affected node can report on its own behalf) and renders
+  **provider unreachable**, amber like `updater stuck` — a fault worth a
+  human's attention, but not one this node's own code caused — on every
+  node the run's own `nodes` names, titled with the consecutive count, the
+  verbatim detail, and how long the run has been going. It renders nothing
+  the moment no such run is currently active (the newest verdict's
+  `escalate` reads `true`, or no run has reached `crash_loop_after` at all)
+  — there is no separate "cleared" state to track, since the union log is
+  read fresh every publish and a Co-Ordinator success anywhere in the fleet
+  ends the run the same way it already ends the escalating case.
 - **A node-scoped disable (implementation spec 2.3, `--disable --this-node`,
   issue #379) gets its own badge beside the role badge**, not just the
   page-top switch banner. The banner (above) is keyed to *this* node's own

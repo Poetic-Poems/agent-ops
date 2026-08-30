@@ -1450,6 +1450,64 @@ assert_eq "a peer that publishes none reads null, never a locally computed one" 
 assert_eq "and this node answers for its own updater status too" "1" \
   "$(jq '[.fleet.nodes[] | select(.self) | has("updater")] | length' <<<"$vdata")"
 
+# --- provider_unreachable: a sustained run of Co-Ordinator failures the
+#     Script classified `transient` — the API unreachable, not refusing a
+#     considered request (issue #1073) — surfaces on the node card instead of
+#     as a crash-loop escalation issue. Unlike version/compose/image/updater
+#     above, this is not a peer reporting on itself: it is read straight from
+#     the fleet-wide union log, the same file `agent-cycle.sh`'s own
+#     `crash_loop_verdict` reads, and applied to every node the run names.
+puh="$(new_home nodePU)"
+pu_peer="$puh/.cache/poetic-agents/workspaces/.agent-ops-peers/peerPU"
+mkdir -p "$pu_peer"
+printf '{"node":"peerPU","role":"active","ts":"%s","last_cycle":""}\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$pu_peer/heartbeat.json"
+# config.json's own crash_loop_after is 4 — four identical-detail,
+# no-intervening-success Co-Ordinator failures, alternating nodes the way the
+# 2026-08-29/30 Ockham outage actually did, every one carrying
+# `api_refusal_class: "transient"` the way `handle_stage_failure` now writes
+# it for a 5xx (lib/stage-attempt.sh's `stage_api_refusal_class`).
+{
+  printf '{"ts":"2026-08-29T22:00:00Z","node":"nodePU-self","event":"attempt-failed","stage":"coordinator","detail":"api_error","api_refusal_class":"transient"}\n'
+  printf '{"ts":"2026-08-29T22:15:00Z","node":"peerPU","event":"attempt-failed","stage":"coordinator","detail":"api_error","api_refusal_class":"transient"}\n'
+  printf '{"ts":"2026-08-29T22:30:00Z","node":"nodePU-self","event":"attempt-failed","stage":"coordinator","detail":"api_error","api_refusal_class":"transient"}\n'
+  printf '{"ts":"2026-08-29T22:45:00Z","node":"peerPU","event":"attempt-failed","stage":"coordinator","detail":"api_error","api_refusal_class":"transient"}\n'
+} >> "$puh/.local/state/poetic-agents/log.jsonl"
+run_publish "$puh" NODE_NAME=nodePU-self
+pudata="$(data_of "$puh")"
+
+assert_eq "a sustained transient run reaches this node's own card" "api_error" \
+  "$(jq -r '.fleet.nodes[] | select(.self) | .provider_unreachable.detail' <<<"$pudata")"
+assert_eq "carrying the run's own count" "4" \
+  "$(jq -r '.fleet.nodes[] | select(.self) | .provider_unreachable.count' <<<"$pudata")"
+assert_eq "and reaches the peer the same run also named" "api_error" \
+  "$(jq -r '.fleet.nodes[] | select(.node=="peerPU") | .provider_unreachable.detail' <<<"$pudata")"
+
+# Below `crash_loop_after` (3 of the 4 failures), no run has fired at all.
+puh2="$(new_home nodePU2)"
+{
+  printf '{"ts":"2026-08-29T22:00:00Z","node":"nodePU2-self","event":"attempt-failed","stage":"coordinator","detail":"api_error","api_refusal_class":"transient"}\n'
+  printf '{"ts":"2026-08-29T22:15:00Z","node":"nodePU2-self","event":"attempt-failed","stage":"coordinator","detail":"api_error","api_refusal_class":"transient"}\n'
+  printf '{"ts":"2026-08-29T22:30:00Z","node":"nodePU2-self","event":"attempt-failed","stage":"coordinator","detail":"api_error","api_refusal_class":"transient"}\n'
+} >> "$puh2/.local/state/poetic-agents/log.jsonl"
+run_publish "$puh2" NODE_NAME=nodePU2-self
+assert_eq "short of the threshold, no card is badged" "null" \
+  "$(jq -r '.fleet.nodes[] | select(.self) | .provider_unreachable' <<<"$(data_of "$puh2")")"
+
+# A run classified `refused` (the deterministic class requirement 2.7's
+# escalation was built for) never sets this field: that class still escalates
+# through the ordinary crash-loop issue, not the node card.
+puh3="$(new_home nodePU3)"
+{
+  printf '{"ts":"2026-08-21T10:00:00Z","node":"nodePU3-self","event":"attempt-failed","stage":"coordinator","detail":"prompt_too_long","api_refusal_class":"refused"}\n'
+  printf '{"ts":"2026-08-21T10:15:00Z","node":"nodePU3-self","event":"attempt-failed","stage":"coordinator","detail":"prompt_too_long","api_refusal_class":"refused"}\n'
+  printf '{"ts":"2026-08-21T10:30:00Z","node":"nodePU3-self","event":"attempt-failed","stage":"coordinator","detail":"prompt_too_long","api_refusal_class":"refused"}\n'
+  printf '{"ts":"2026-08-21T10:45:00Z","node":"nodePU3-self","event":"attempt-failed","stage":"coordinator","detail":"prompt_too_long","api_refusal_class":"refused"}\n'
+} >> "$puh3/.local/state/poetic-agents/log.jsonl"
+run_publish "$puh3" NODE_NAME=nodePU3-self
+assert_eq "a deterministic (refused) run never badges the node card" "null" \
+  "$(jq -r '.fleet.nodes[] | select(.self) | .provider_unreachable' <<<"$(data_of "$puh3")")"
+
 # --- The pull-request index ------------------------------------------------------
 # Every `#number` on the page resolves to a record here. Two properties are what
 # make that affordable at the heartbeat's cadence, and neither leaves a trace

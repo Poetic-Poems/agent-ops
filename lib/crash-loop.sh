@@ -38,11 +38,24 @@
 # as the dashboard's reader treats the same stream.
 
 # crash_loop_verdict THRESHOLD < union.jsonl
-# Print one JSON object — {stage, detail, count, first_ts, last_ts, nodes} —
-# when the stream's tail shows THRESHOLD or more consecutive same-detail
-# Co-Ordinator failures with no intervening Co-Ordinator success; print
-# nothing otherwise. A THRESHOLD that is not a positive integer prints
+# Print one JSON object — {stage, detail, count, first_ts, last_ts, nodes,
+# escalate} — when the stream's tail shows THRESHOLD or more consecutive
+# same-detail Co-Ordinator failures with no intervening Co-Ordinator success;
+# print nothing otherwise. A THRESHOLD that is not a positive integer prints
 # nothing: 0 (or an unset key upstream) is the feature's off switch.
+#
+# `escalate` (issue #1073) is `false` exactly when every failure counted in
+# the run carries `api_refusal_class: "transient"` on its own event — the API
+# was unreachable, not refusing the request, and no amount of retrying inside
+# this repository clears that. It is `true` otherwise: a run with no class at
+# all (a crash, a timeout, an unparseable message — nothing `stage_api_refusal`
+# ever classified) defaults to escalating exactly as it always has, and one
+# `refused` failure anywhere in the run is enough to call the whole run
+# escalate-worthy, on the theory that a mixed run is evidence of *something*
+# deterministic even if not every member proves it alone. The run is still
+# counted and still resets on a success either way — `escalate` only changes
+# what the caller does with a verdict that already fired, never whether one
+# fires.
 crash_loop_verdict() {
   local threshold="${1:-0}"
   if ! [[ "$threshold" =~ ^[0-9]+$ ]] || (( threshold < 1 )); then
@@ -60,21 +73,24 @@ crash_loop_verdict() {
     # attempt-failed: unparseable" sequence, where the reset lands first and
     # the failure then counts 1, which is the truth of that cycle.
     | reduce .[] as $e (
-        {detail: "", count: 0, first_ts: null, last_ts: null, nodes: []};
+        {detail: "", count: 0, first_ts: null, last_ts: null, nodes: [], all_transient: true};
         if $e.event == "stage-end" then
-          {detail: "", count: 0, first_ts: null, last_ts: null, nodes: []}
+          {detail: "", count: 0, first_ts: null, last_ts: null, nodes: [], all_transient: true}
         elif ($e.detail // "") == .detail and .count > 0 then
           {detail: .detail, count: (.count + 1), first_ts: .first_ts,
            last_ts: ($e.ts // .last_ts),
-           nodes: ((.nodes + [$e.node // "?"]) | unique)}
+           nodes: ((.nodes + [$e.node // "?"]) | unique),
+           all_transient: (.all_transient and (($e.api_refusal_class // "") == "transient"))}
         else
           {detail: ($e.detail // ""), count: 1,
            first_ts: ($e.ts // null), last_ts: ($e.ts // null),
-           nodes: [$e.node // "?"]}
+           nodes: [$e.node // "?"],
+           all_transient: (($e.api_refusal_class // "") == "transient")}
         end
       )
     | select(.count >= $threshold and .detail != "")
-    | {stage: "coordinator"} + .
+    | {stage: "coordinator", detail, count, first_ts, last_ts, nodes,
+       escalate: (.all_transient | not)}
   ' 2>/dev/null || true
 }
 
