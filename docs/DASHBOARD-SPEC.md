@@ -2651,15 +2651,23 @@ number's twins elsewhere on the page.
   its own; or the defer streak above has itself outlasted
   `updater_defer_stuck_after_seconds`, past which no lock the hook honours
   could still be legitimately held, so "an implementation cycle or review is
-  in flight" is no longer a true reading. `rolled` (the ordinary case), an
-  absent verdict — a peer whose heartbeat predates the check, or one still
-  inside the short window before its own first poll — and any other status
-  this page does not recognise (a future release, or a truncated/corrupt
-  heartbeat field) all render nothing, the same absent-means-unknown rule
-  `compose` and `image` already follow: an unrecognised status is routed
-  explicitly to "render nothing" rather than folded into `deferring`'s
-  benign badge, the same way `image`'s own `unverified` branch is routed
-  explicitly rather than folded into `current`'s silence.
+  in flight" is no longer a true reading. Both shapes hold only while
+  watchtower is still asking: `updater_status` reads liveness first
+  (implementation spec 2.5, agent-ops#1071), and a hostname whose own newest
+  ledger entry has itself gone older than `updater_stuck_after_minutes`
+  renders no badge at all rather than a permanent **updater stuck** — the
+  node's watchtower has stopped polling this container altogether (taken
+  down deliberately, or the container itself retired), which is a different
+  fact from either amber shape above and not one this badge asserts.
+  `rolled` (the ordinary case), an absent verdict — a peer whose heartbeat
+  predates the check, or one still inside the short window before its own
+  first poll — and any other status this page does not recognise (a future
+  release, or a truncated/corrupt heartbeat field) all render nothing, the
+  same absent-means-unknown rule `compose` and `image` already follow: an
+  unrecognised status is routed explicitly to "render nothing" rather than
+  folded into `deferring`'s benign badge, the same way `image`'s own
+  `unverified` branch is routed explicitly rather than folded into
+  `current`'s silence.
 - **A crash-loop run the Script has classified `transient` renders as a
   fourth badge, below updater, rather than as an escalation issue (issue
   #1073).** `lib/crash-loop.sh`'s `crash_loop_verdict` groups consecutive

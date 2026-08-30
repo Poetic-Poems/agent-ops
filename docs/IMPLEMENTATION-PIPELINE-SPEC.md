@@ -2802,6 +2802,19 @@ implements.
    line also carries `service` — the compose service name
    (`AGENT_OPS_SERVICE`: `scheduler`, `dashboard` or `dashboard-local`,
    `"unknown"` if unset) the writing container ran as.
+   Liveness first (agent-ops#1071, deciding agent-ops#1053): before
+   `updater_status` reads anything under our own hostname, it checks that
+   hostname's own newest ledger entry — whatever its verdict — is no older
+   than `updater_stuck_after_minutes`; if it is, every claim about the
+   present reads `null` outright, streak included, because nothing has
+   polled this container recently enough to answer for it. This is the one
+   gate for both self-states below, not a second threshold: a container
+   whose last poll allowed a roll hours ago and has not been heard from
+   since is indistinguishable, at the ledger, from one deliberately taken
+   down after a roll (agent-ops#1046's `TD-PPagop-26082913`) — both get the
+   same unanswerable reading. `rolled` is exempt: it is a claim about the
+   past, already carries its own age in `seconds`, and keeps the hook's 7-day
+   prune as its only bound.
    `updater_status` reads that ledger back as `{status: "rolled", at,
    seconds}` (the newest recorded "allow" *from our own service* belongs to
    a different hostname — the ordinary case; the scan is service-scoped
@@ -2823,23 +2836,25 @@ implements.
    outlasted `updater_defer_stuck_after_seconds`, past which
    `watchtower-pre-update.sh`'s own `held_by()` would no longer honour
    either lock, so this is no longer "a cycle in flight") or `null` (no
-   invocation recorded under any hostname yet, the run of "allow"s is too
-   recent to classify either way, a threshold the caller passed is not a
-   whole number of seconds, or a ledger entry's own timestamp will not
-   parse — every one an unanswerable question, never a default the library
-   picks for itself, and never epoch 0: unlike `held_by()`'s identical
-   convention, which fails the lock *open*, epoch 0 here would fail
-   *closed*, into an alarm nothing could ever clear, since a corrupt
-   timestamp can also defeat the hook's own 48h trim below).
-   Both self-states are measured from the *start* of the current run of
-   like verdicts, not from its newest entry: watchtower re-runs the hook on
-   every poll for as long as the container is still stale, so each records
-   one entry per `WATCHTOWER_POLL_INTERVAL`, and timing the newest would
-   measure the age of the last poll rather than of the condition — putting
-   `stuck`, whose threshold is many polls wide, permanently out of reach. A
-   ledger line that will not parse, mid-streak, is skipped rather than
-   treated as ending the streak, so one transient bad line cannot silence an
-   alarm early or reset a stuck container's clock.
+   invocation recorded under any hostname yet, our own newest entry is
+   already older than `updater_stuck_after_minutes` (the liveness gate
+   above), the run of "allow"s is too recent to classify either way, a
+   threshold the caller passed is not a whole number of seconds, or a
+   ledger entry's own timestamp will not parse — every one an unanswerable
+   question, never a default the library picks for itself, and never epoch
+   0: unlike `held_by()`'s identical convention, which fails the lock
+   *open*, epoch 0 here would fail *closed*, into an alarm nothing could
+   ever clear, since a corrupt timestamp can also defeat the hook's own 48h
+   trim below).
+   Once liveness holds, both self-states are measured from the *start* of
+   the current run of like verdicts, not from its newest entry: watchtower
+   re-runs the hook on every poll for as long as the container is still
+   stale, so each records one entry per `WATCHTOWER_POLL_INTERVAL`, and
+   timing the newest would measure the age of the last poll rather than of
+   the condition — putting `stuck`, whose threshold is many polls wide,
+   permanently out of reach. A ledger line that will not parse, mid-streak,
+   is skipped rather than treated as ending the streak, so one transient bad
+   line cannot silence an alarm early or reset a stuck container's clock.
    `updater_stuck_after_minutes` converts to `updater_stuck_after_seconds`
    the same way `image_behind_grace_hours` converts one layer up from
    `lib/image-drift.sh`, travelling as a parameter, never a literal inside
