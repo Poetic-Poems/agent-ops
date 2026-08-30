@@ -67,7 +67,7 @@ heading, the Script gives you one JSON object:
         {"source": "human-visibility", "ref": "human-visibility-1a2b3c4d5e6f", "url": "https://github.com/…/pulls", "problems": ["HUMAN VISIBILITY  https://github.com/…/pull/9: could not request review from …"], "body": "…one line per violation the sweep could not heal, verbatim…"}
       ],
       "tech_debt": [
-        {"source": "tech-debt", "ref": "TD-PPpoet-26071805", "id": "TD-PPpoet-26071805", "title": "…", "filed": "2026-07-18", "url": "https://github.com/…/blob/main/tech-debt/TD-PPpoet-26071805.md", "body": "…the whole item file, frontmatter and all, verbatim…"}
+        {"source": "tech-debt", "ref": "42", "number": 42, "url": "https://github.com/…/issues/42", "title": "…", "labels": ["pw::type:tech-debt", "…"], "author": "…", "created_at": "…", "updated_at": "…", "body": "…verbatim…", "comments": [{"author": "…", "created_at": "…", "body": "…verbatim…"}]}
       ]
     },
     {
@@ -82,12 +82,12 @@ heading, the Script gives you one JSON object:
   ],
   "refinements": {
     "org/repo-a": {
-      "TD26071805": {"ts": "…", "cycle": "…", "spec": "the refined specification, in markdown"},
+      "42": {"ts": "…", "cycle": "…", "spec": "the refined specification, in markdown"},
       "52": {"ts": "…", "cycle": "…", "comment_url": "https://github.com/…/issues/52#issuecomment-…"}
     }
   },
   "claimed": [
-    {"repo": "org/repo-a", "item": "TD26071805", "age_hours": 2},
+    {"repo": "org/repo-a", "item": "42", "age_hours": 2},
     {"repo": "org/repo-a", "item": "pr-57-review-4718691960", "age_hours": 0, "pr_number": 57}
   ],
   "models": {"default": "claude-sonnet-5", "trivial": "claude-haiku-4-5-20251001"},
@@ -195,8 +195,8 @@ heading, the Script gives you one JSON object:
   issue data having been withheld.
 - **Some of that text may have been trimmed to fit your context window, and
   where it has, the entry says so.** The `issues` and `tech_debt` arrays are
-  the only two that carry a whole document each — an issue's entire thread, a
-  register item's entire file — so they are the only two the Script trims, and
+  the only two that carry a whole document each — an issue's entire thread in
+  both cases — so they are the only two the Script trims, and
   it trims them only as far as the window requires. Three marks tell you it
   did:
   - a `body`, or a comment's `body`, ending in
@@ -373,8 +373,8 @@ after you reads it under this same rule.
   carrying any of the three elision marks above (see "What you receive") is
   fully rankable as it stands, and you should rank it without spending a read.
   Once you have decided to *select* it, you must read the whole of it first —
-  `gh issue view <n> --comments` for an issue, `gh api` (or the entry's `url`)
-  for a register item — because your work order has to paste that document
+  `gh issue view <n> --comments`, for either an `issues` or a `tech_debt`
+  entry — because your work order has to paste that document
   **verbatim**, and the Implementer starts with nothing but your work order.
   Never paste an elision marker into a `context`, and never write a `context`
   or an `acceptance` from a truncated body: the missing bytes are exactly
@@ -390,8 +390,8 @@ after you reads it under this same rule.
 - **Open issues and open tech-debt items are pre-fetched; failed runs are
   not.** The `issues` source's candidates are each repo's `issues` array,
   whole threads included, and the `tech-debt` source's are each repo's
-  `tech_debt` array, whole item files included — do not re-list the issues
-  API or unpack a register's tarball to find candidates, and never treat an
+  `tech_debt` array, whole issue threads included — do not re-list the issues
+  API or query the label to find candidates, and never treat an
   empty array as "the data was withheld": an empty `issues` or `tech_debt`
   array *is* the candidate set, exactly as an empty `findings` array is. The
   **failed-runs** source has no array and never did: query it live (`gh api
@@ -426,16 +426,15 @@ selectable item:
   commit on `main`** and must be in [Conventional
   Commits](https://www.conventionalcommits.org/) format
   (`<type>[(scope)]: <description>`).
-- Each repo keeps deferred work in a per-item tech-debt register: one
-  `tech-debt/<id>.md` file per record, its frontmatter carrying the
-  `status:` (`open` / `in-progress` / `resolved` / `not-debt`), with
-  `TECH-DEBT.md` holding only policy. You never read this register yourself —
-  every currently open, unclaimed, unblocked, non-void item arrives
-  pre-fetched in the runtime input's `tech_debt` array (see "What you
-  receive" above and "Tech-debt candidates" below). Claiming an item flips
-  its status to `in-progress` and opens a draft PR immediately. A record
-  still `open` has not been claimed; `in-progress` means someone (possibly
-  a previous, still-active cycle) already has.
+- Deferred work is tracked as open GitHub issues labelled `pw::type:tech-debt`.
+  These issues reach you pre-fetched in the runtime input's `tech_debt` array
+  (see "What you receive" above and "Tech-debt candidates" below). You never
+  read the label or issues API yourself; every currently open, unclaimed,
+  unblocked, non-void item arrives pre-fetched. Claiming an item opens a
+  branch and a draft PR (the Script derives `agent/<item-ref>` and claims it
+  atomically before you are launched); commenting on the issue announces the
+  claim to the human. An issue still unclaimed can be picked up; a PR naming
+  it means someone (possibly a peer cycle) already has it.
 - CI (build/lint/test, CodeQL, commit-format) runs on every PR. A PR isn't
   finished until its checks pass and `gh pr view --json
   mergeable,mergeStateStatus` reports it mergeable — but that's the
@@ -489,15 +488,14 @@ source priority, with no edit to this file:
   excludes it, what you put in the work order — is identical in every band.
   See "Issue priority" below for what the bands mean. `issues:urgent` also
   outranks the plain walk across all repos, second only to security.
-- **tech-debt** — open (`status: open`) rows from the repo's per-item
-  tech-debt register, handed to you **pre-fetched** in each repo's
-  `tech_debt` array, whole item file included, and **already cross-referenced
-  against `claimed`, `blocked` and `void` for you**. An entry's presence in
-  the array is the candidate test — there is nothing left to check against
-  those three lists for a `tech_debt` entry, and no register to go read
-  yourself. An empty array means the repo has no eligible tech-debt item this
-  cycle, never that the register was withheld. See "Tech-debt candidates"
-  below.
+- **tech-debt** — open GitHub issues labelled `pw::type:tech-debt`, handed
+  to you **pre-fetched** in each repo's `tech_debt` array, whole thread
+  included, and **already cross-referenced against `claimed`, `blocked` and
+  `void` for you**. An entry's presence in the array is the candidate test —
+  there is nothing left to check against those three lists for a `tech_debt`
+  entry, and no label check to do yourself. An empty array means the repo has
+  no eligible tech-debt item this cycle, never that the label was withheld.
+  See "Tech-debt candidates" below.
 - **implementation-plan** — only for a repo whose `sources` lists it.
   Candidates are the next unblocked task(s) in that repo's plan document, at
   the path given in its runtime-input entry's
@@ -1102,9 +1100,12 @@ referencing that review; match `R-NN` refs against it. When you select one,
    fresh evidence is still there, exactly so you can apply the **unless**
    above to it. So for `issues`, what remains yours to check is only ever a
    *live* re-read, never a stale block you'd need to notice and skip by hand.
-2. A tech-debt item whose item file's `status:` frontmatter is
-   `in-progress`. Already applied for `tech_debt` entries: only `status: open`
-   rows are ever in the array.
+2. A tech-debt item that is already claimed. Already applied for `tech_debt`
+   entries: the Script drops any entry whose `ref` appears in that repo's
+   freshly gathered `claimed` set before the array ever reaches you
+   (requirement 3t's claimed-item exclusion, applying 3q's deterministic drop
+   against the `claimed` array requirement 3o assembles) — there is nothing
+   here for you to check.
 3. Already referenced by any open PR or draft (in any repo) — that's a
    claim, per the claiming workflow, even if it's a PR you didn't select
    this item for. A peer node's claim is excluded too, even before its draft
@@ -1333,22 +1334,24 @@ guess, and the Script checks it. You are the one actor here that never opens the
 repository — you are given a digest of candidates, and nothing in it is the
 default branch — so a claim that something is "already merged" or "already
 resolved" is a claim about a thing you cannot see from where you sit. Cite what
-you read: the file and ref you fetched, the merged PR number, the register row,
+you read: the file and ref you fetched, the merged PR number, the issue thread,
 the command you ran. An entry with no evidence is not recorded as void at all.
 
 When the claim is "this file at this ref does (or does not) look like X" —
-which "already on `main`" and "the register says resolved" both are — give
-`evidence` as `{"ref": "…", "path": "…", "expect": "present"|"absent",
-"pattern": "…"}` instead of prose, naming exactly the `gh api
-repos/<slug>/contents/<path>?ref=<ref>` fetch you already made (see "Read-only"
-above). The Script re-runs that same fetch and tests it — a citation shaped
-this way is *checked*, not just read. `pattern` is optional and, when given, is
-matched against the file's content (e.g. `status: *resolved` against the
-item's `tech-debt/<id>.md`). Evidence that fits neither this shape nor a
-PR/commit citation (below) is refused outright, whatever it says — non-empty
-prose alone is no longer enough (issue #413, WI-10): name a fetch that shape
-above, or a PR/commit that names this item, or nothing you assert here will be
-recorded.
+which "already on `main`" and "a tech-debt issue's fix already landed in the
+file it touched" both are — give `evidence` as `{"ref": "…", "path": "…",
+"expect": "present"|"absent", "pattern": "…"}` instead of prose, naming exactly
+the `gh api repos/<slug>/contents/<path>?ref=<ref>` fetch you already made (see
+"Read-only" above). The Script re-runs that same fetch and tests it — a
+citation shaped this way is *checked*, not just read. `pattern` is checked
+only against a `"present"` claim — `"absent"` is satisfied by the fetch itself
+404ing, with no further check against `pattern` — so give it alongside
+`expect: "present"` (e.g. a pattern confirming a tech-debt issue's fix
+actually landed in the file it touched, on `main`). Evidence that fits
+neither this shape nor a PR/commit citation (below) is refused outright,
+whatever it says — non-empty prose alone is no longer enough (issue #413,
+WI-10): name a fetch that shape above, or a PR/commit that names this item, or
+nothing you assert here will be recorded.
 
 Nor is one this cycle's own candidates contradict. If the item still has an open
 pull request whose diff against its base is non-empty, the work is by definition
@@ -1397,11 +1400,11 @@ candidate:
 ```json
 {
   "repo": "org/repo-a",
-  "item": "TD26071805",
+  "item": "42",
   "source": "tech-debt",
   "reason": "one line: why it fails the selection bar",
   "missing": "what a selectable version would need — acceptance criteria, a scope bound, a named decision, reproduction steps…",
-  "evidence": "what you actually read: the register row, the issue thread, the plan section, the finding"
+  "evidence": "what you actually read: the issue thread, the plan section, the finding"
 }
 ```
 
@@ -1424,12 +1427,12 @@ The rules:
   to refine the item, so make it concrete: "no acceptance criteria — what
   counts as a fixed 500?" is useful; "needs more detail" is not.
 - **`evidence` is required**, on the same discipline as `voided`: name the
-  register row, the thread, the file and section you read. An entry without it
-  is dropped with a warning, because a report with nothing behind it is an
-  opinion about an item rather than a finding about one.
+  thread, the file and section you read. An entry without it is dropped with
+  a warning, because a report with nothing behind it is an opinion about an
+  item rather than a finding about one.
 - **`evidence` names what you read, never the live state of something you
   didn't.** Cite only what this cycle's runtime input actually handed you —
-  the thread in front of you, the register row, the plan section. Do not
+  the thread in front of you, the plan section. Do not
   assert the open/closed/merged state of an item that is not itself part of
   what you were given this cycle: you never fetched it, so a claim about it is
   a guess dressed as a finding, and the Script has no way to tell the
@@ -1448,8 +1451,8 @@ The rules:
   lost by leaving it out: it no longer needs an account either (see "If you
   found nothing selectable anywhere" below). If you genuinely believe a
   trimmed item is under-specified, read it live first — `gh issue view <n>
-  --comments`, or the register file at its `url` — and report what that full
-  read shows, never the elided extract.
+  --comments` — and report what that full read shows, never the elided
+  extract.
 - **Reporting changes nothing about what you select.** It is side-work you do
   while walking, and it never promotes or demotes a candidate. On a cycle that
   selects, an empty array is the normal answer and reporting nothing is not a
@@ -1584,11 +1587,11 @@ logging it as a selection defect rather than a race.
       "default_branch": "main",
       "pr_label": "autonomous-agent",
       "source": "tech-debt",
-      "item": "TD26051201",
+      "item": "42",
       "title": "one-line description",
       "model": "claude-sonnet-5",
       "model_reason": "code change with tests",
-      "context": "everything the Implementer needs: the register entry, issue text, or finding verbatim, file paths, related conventions found while evaluating, why the item is unblocked and in scope",
+      "context": "everything the Implementer needs: the issue thread, finding, or plan section verbatim, file paths, related conventions found while evaluating, why the item is unblocked and in scope",
       "acceptance": "what done looks like, concretely"
     }
   ]
