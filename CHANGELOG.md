@@ -1247,6 +1247,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   path's "no cycle in flight" over the in-flight line the same run printed a
   few checks earlier — that log is what an operator reads after losing a
   cycle to a roll, and is the whole reason this machinery is legible.
+- `test/updater-health.test.sh` read the clock twice for one fixture — once
+  writing the ledger entry, once as the assertion's expected value — so a
+  second boundary falling between the two reads failed "a defer in between
+  ends the run" by one second; it did on CI's arm64 leg on 2026-08-30 and
+  failed the image build of a merge commit the merge queue had just passed.
+  The timestamp is now read once, as the neighbouring `streak_start` fixture
+  already did.
 - Requirement 2.0's budget gate read `GET /rate_limit`, whose body — read
   cold, as the first call of every cycle — is an empty window (`5000/5000`,
   reset exactly an hour from now) rather than a reading; it answered `ok`
