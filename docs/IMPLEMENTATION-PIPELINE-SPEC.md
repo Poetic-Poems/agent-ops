@@ -423,7 +423,7 @@ file and carries placeholders only; `.env` itself is never committed.
   nodes on that host catching a gap and rolling while its neighbour kept
   missing it and stayed ninety minutes behind, unreported. Surfacing that is
   #603's business, not this hook's. What was missing is agent-ops#1096's
-  `roll-pending` marker (requirement 39a): at its own cycle boundary, a node
+  `roll-pending` marker (requirement 39c): at its own cycle boundary, a node
   whose image has fallen behind the registry's newest declines the chain it
   would otherwise take and writes the marker instead, which the hook honours
   as an unconditional allow — lock included — until the window it names
@@ -2720,7 +2720,7 @@ implements.
 
    **What replicates.** Everything under `state_dir` except the live locks
    (`lock.json`, `review-lock.json`, `dashboard.lck`), the roll-pending
-   marker (`roll-pending.json`, requirement 39a, agent-ops#1096), the
+   marker (`roll-pending.json`, requirement 39c, agent-ops#1096), the
    dashboard's own
    machinery (`dashboard/`, `dashboard.log`, `dashboard-server.log`,
    `.dashboard-github.json`, `.dashboard-claims.json`,
@@ -16760,7 +16760,7 @@ pull request, run the ones the change touches and any it could regress.
    On a live node: `docker compose exec scheduler
    /app/deploy/docker/watchtower-pre-update.sh` echoes its finding and exits
    0 when idle, 75 during a cycle. The same suite also pins the
-   `roll-pending` override (requirement 39a, agent-ops#1096): a valid,
+   `roll-pending` override (requirement 39c, agent-ops#1096): a valid,
    unexpired `$state_dir/roll-pending.json` makes the hook exit 0 despite a
    live lock naming a live process in the hook's own container, an expired
    or unparseable marker leaves the ordinary lock-based judgement above

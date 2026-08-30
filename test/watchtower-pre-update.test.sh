@@ -266,10 +266,17 @@ assert_eq "a roll-pending marker whose 'until' will not parse reads as expired, 
 stop_sleeper
 rm -f "$state_dir/lock.json" "$state_dir/roll-pending.json"
 
+# Judged against a live lock on purpose: with nothing in flight the hook
+# exits 0 whatever the marker says, so an idle node could not tell "the junk
+# was rejected" from "there was nothing to override" in the first place.
+start_sleeper
+write_lock "$state_dir/lock.json" "$sleeper_pid" 0
 printf 'not json at all\n' > "$state_dir/roll-pending.json"
 run_hook
-assert_eq "junk in the roll-pending marker does not grant an override" "0" "$rc"
-rm -f "$state_dir/roll-pending.json"
+assert_eq "junk in the roll-pending marker does not grant an override" "75" "$rc"
+assert_eq "and the hook does not claim an override it refused" "0" "$(grep -c 'roll-pending' <<<"$out")"
+stop_sleeper
+rm -f "$state_dir/lock.json" "$state_dir/roll-pending.json"
 
 rm -f "$state_dir/lock.json" "$state_dir/review-lock.json"
 run_hook
