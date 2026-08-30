@@ -1048,6 +1048,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The expensive-gather cache (requirement 48 above) wrote a 0-byte file for
+  any repository whose raw bands outgrew `MAX_ARG_STRLEN`, so the fleet's
+  busiest repository was invisible to each node two cycles in three
+  (agent-ops#1107). `lib/candidate-gather.sh` built the cache document with
+  all nine raw bands in argv (`jq --argjson`) — the shape requirement 4g
+  forbids — and agent-ops's own raw tech-debt band, 421,622 bytes, put it
+  past the 131072-byte cap: `jq` died at `execve` inside `$(…)`, the
+  substitution yielded `""` without tripping `set -e`, and the save wrote
+  that faithfully, so every node's `Poetic-Poems_agent-ops.json` was empty
+  and every non-selected cycle replayed the repository with no issues, no
+  tech debt, no review feedback and no findings, indistinguishable in the
+  log and the digest from a repository with genuinely nothing to do. The
+  nine values now reach `jq` on stdin, one document per line, bound
+  positionally with `input as $name`, matching the per-repo entry build
+  beside it. The same failure can no longer be silent if it recurs:
+  `expensive_gather_cache_save` refuses (non-zero, no write) an empty or
+  non-object document, so the caller's existing `|| log_event "warning"`
+  fires; `expensive_gather_cache_load` treats a zero-byte or unparseable
+  cache file as absent rather than `{}` and logs a `warning` naming the
+  slug; and `expensive_gather_pick_repo` treats that same file as
+  never-cached (epoch 0), so an affected repository is re-read on the very
+  next cycle instead of waiting out a full rotation — which is also what
+  heals the caches already on disk.
 - Three GitHub REST budget call sites logged a 403 rate-limit refusal the
   same as any other failure, so an operator could not tell "no human was
   notified because the owner's shared budget was gone" from a genuine fault
