@@ -76,13 +76,28 @@ _expensive_gather_cache_path() {
   printf '%s/%s.json' "$(_expensive_gather_cache_dir "$state_dir")" "$safe"
 }
 
+# _expensive_gather_cache_valid PATH
+# True (0) iff PATH is a non-empty file whose content parses as a JSON
+# object. A cache save that died at `execve` (MAX_ARG_STRLEN, the failure
+# mode requirement 4g exists to prevent — agent-ops#1107) leaves a zero-byte
+# file behind, and a cycle killed mid-write can in principle leave a
+# truncated one; both fail this check, and both `expensive_gather_pick_repo`
+# and `expensive_gather_cache_load` below treat that the same as "never
+# cached", never as "cached but empty".
+_expensive_gather_cache_valid() {
+  local path="$1"
+  [[ -s "$path" ]] || return 1
+  jq -e 'type == "object"' "$path" >/dev/null 2>&1
+}
+
 # expensive_gather_pick_repo STATE_DIR REPOS_JSON
 # Print the slug, among REPOS_JSON's `.[].slug` entries, whose cache file is
-# oldest — a repository never yet cached sorts as epoch 0, so it is always
-# picked ahead of one this node has already read at least once. Ties (every
-# configured repository uncached, most often the fleet's first-ever cycle)
-# break on slug, ascending, for a deterministic answer rather than one that
-# depends on `jq`'s own array order.
+# oldest — a repository never yet cached, or whose cache file exists but is
+# zero-byte or unparseable (`_expensive_gather_cache_valid`), sorts as epoch
+# 0, so it is always picked ahead of one this node holds a genuinely usable
+# cache for. Ties (every configured repository uncached, most often the
+# fleet's first-ever cycle) break on slug, ascending, for a deterministic
+# answer rather than one that depends on `jq`'s own array order.
 #
 # REPOS_JSON with no entries prints nothing; the caller must treat that as
 # "nothing to pick" rather than call this with an empty set.
@@ -103,7 +118,7 @@ expensive_gather_pick_repo() {
     [[ -n "$slug" ]] || continue
     path="$(_expensive_gather_cache_path "$state_dir" "$slug")"
     mtime=0
-    if [[ -f "$path" ]]; then
+    if [[ -f "$path" ]] && _expensive_gather_cache_valid "$path"; then
       mtime="$(stat -c %Y "$path" 2>/dev/null || echo 0)"
       [[ "$mtime" =~ ^[0-9]+$ ]] || mtime=0
     fi
@@ -117,12 +132,21 @@ expensive_gather_pick_repo() {
 # expensive_gather_cache_load STATE_DIR SLUG
 # Print the cached raw-gather object for SLUG, or nothing when there is none
 # yet or it cannot be parsed — the same "unknown, never fabricated" direction
-# every other cache/liveness read in this Script takes.
+# every other cache/liveness read in this Script takes. A zero-byte or
+# unparseable file (`_expensive_gather_cache_valid`) is reported with a
+# `warning` log event naming the slug, since a cache save is meant to make
+# this unreachable (requirement 4g/48) and a peer or a human should be able
+# to see it happen if it ever does regardless.
 expensive_gather_cache_load() {
   local state_dir="$1" slug="$2" path
   path="$(_expensive_gather_cache_path "$state_dir" "$slug")"
   [[ -f "$path" ]] || return 0
-  jq -c 'select(type == "object")' "$path" 2>/dev/null || true
+  if ! _expensive_gather_cache_valid "$path"; then
+    log_event "warning" "$(jq -nc --arg s "$slug" \
+      '{detail: ("expensive-gather cache for " + $s + " is zero-byte or unparseable — treating it as absent, not \"{}\"")}')"
+    return 0
+  fi
+  jq -c '.' "$path" 2>/dev/null || true
 }
 
 # expensive_gather_cache_save STATE_DIR SLUG JSON
@@ -134,8 +158,16 @@ expensive_gather_cache_load() {
 # effort: a write failure (a read-only state_dir, a full disk) is reported by
 # a non-zero return and never raised to the caller's own cycle, the same
 # advisory contract `labels_ensure_stamped` already keeps.
+#
+# Refuses (non-zero, no write) an empty or non-object JSON — the shape a
+# caller building the document via `jq --argjson` past MAX_ARG_STRLEN gets
+# back silently, `""`, when the `execve` fails inside `$(…)` — so the
+# caller's own `|| log_event "warning" ...` actually fires instead of a
+# 0-byte file landing and later replaying as empty bands.
 expensive_gather_cache_save() {
   local state_dir="$1" slug="$2" json="$3" dir path tmp
+  [[ -n "$json" ]] || return 1
+  jq -e 'type == "object"' <<<"$json" >/dev/null 2>&1 || return 1
   dir="$(_expensive_gather_cache_dir "$state_dir")"
   path="$(_expensive_gather_cache_path "$state_dir" "$slug")"
   tmp="$path.tmp.$$"

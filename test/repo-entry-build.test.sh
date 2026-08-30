@@ -128,6 +128,80 @@ assert_eq "  ... carrying the issue's full body, not truncated or dropped" \
 assert_eq "  ... and every other band still comes through, none dropped" "true" \
   "$(jq '(.findings == []) and (.review_feedback == []) and (.tech_debt == [])' <<<"$out_big")"
 
+# --- The expensive-gather cache save (requirement 4g/48, agent-ops#1107) ----
+# lib/candidate-gather.sh's fresh branch folds the same nine bands (the eight
+# above, plus issues_excluded) into expensive_gather_cache_save's own third
+# argument. Before agent-ops#1107 this went through `jq --argjson`, nine
+# flags in argv — the exact shape this file's own entry-build assertions
+# above already rule out for the entry build itself — and agent-ops's own
+# tech_debt_raw band (421,622 bytes) died at `execve` inside `$(…)` silently,
+# leaving a 0-byte cache file two cycles in three. Lifted the same way as
+# entry_build_block above, by its own literal start/end lines; the cache
+# functions themselves are sourced for real from lib/expensive-gather-
+# cache.sh and log_event lifted from agent-cycle.sh — the same extraction
+# test/expensive-gather-cache.test.sh and test/first-seen-emission.test.sh
+# both use — so these assertions exercise the shipped save/load, not a
+# description of them.
+cache_build_block="$(awk '
+  index($0, "  expensive_gather_fresh=1") == 1 { on = 1 }
+  on                                             { print }
+  on && index($0, "could not persist the expensive-gather cache") > 0 { exit }
+' "$SCRIPT_DIR/lib/candidate-gather.sh")"
+if [[ "$cache_build_block" != *'expensive_gather_cache_docs'* \
+   || "$cache_build_block" != *'expensive_gather_cache_save'* ]]; then
+  printf 'FAIL - could not extract the expensive-gather cache build from lib/candidate-gather.sh (moved or reworded?)\n'
+  exit 1
+fi
+
+log_event_src="$(awk '
+  $0 ~ /^log_event\(\) \{/ { on = 1 }
+  on                        { print }
+  on && /^}$/               { exit }
+' "$SCRIPT_DIR/agent-cycle.sh")"
+if [[ "$log_event_src" != *"log_event()"* ]]; then
+  printf 'FAIL - could not extract log_event from agent-cycle.sh (renamed or moved?)\n'
+  exit 1
+fi
+eval "$log_event_src"
+
+# shellcheck source=lib/expensive-gather-cache.sh
+. "$SCRIPT_DIR/lib/expensive-gather-cache.sh"
+
+run_cache_build() {  # run_cache_build <state_dir> <slug> <findings_raw>
+                      #   <review_feedback_raw> <abandoned_drafts_raw>
+                      #   <merge_conflicts_raw> <dequeued_raw> <register_hygiene_raw>
+                      #   <issues_raw> <issues_excluded_raw> <tech_debt_raw>
+  # Every one of these is consumed only by the eval'd cache_build_block,
+  # invisible to shellcheck — including expensive_gather_fresh and
+  # expensive_gather_as_of, which the block itself assigns.
+  # shellcheck disable=SC2034
+  ( state_dir="$1" slug="$2" findings_raw="$3" review_feedback_raw="$4" \
+    abandoned_drafts_raw="$5" merge_conflicts_raw="$6" dequeued_raw="$7" \
+    register_hygiene_raw="$8" issues_raw="$9" issues_excluded_raw="${10}" \
+    tech_debt_raw="${11}" cycle_id="test-cycle" node_name="node-a" \
+    log_file="$1/cache-build.log.jsonl"
+    eval "$cache_build_block" )
+}
+
+cache_state="$(mktemp -d)"
+trap 'rm -rf "$cache_state"' EXIT
+
+oversized_td_body="$(head -c 140000 < /dev/zero | tr '\0' 'x')"
+big_tech_debt="$(printf '[{"source": "tech-debt", "ref": "TD1", "body": "%s"}]' "$oversized_td_body")"
+assert_eq "the oversized tech-debt fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( ${#big_tech_debt} > 131072 ))"
+
+run_cache_build "$cache_state" "o/cache-repo" '[]' '[]' '[]' '[]' '[]' '[]' '[]' 'null' "$big_tech_debt"
+
+assert_eq "the cache build leaves a non-empty cache file, not the 0-byte pre-#1107 failure mode" \
+  "1" "$([[ -s "$cache_state/expensive-gather/o_cache-repo.json" ]] && echo 1 || echo 0)"
+
+cache_loaded="$(expensive_gather_cache_load "$cache_state" "o/cache-repo")"
+assert_eq "the cache round-trips an oversized tech-debt band intact, not truncated or dropped" "1" \
+  "$([[ "$(jq -r '.tech_debt_raw[0].body // ""' <<<"$cache_loaded")" == "$oversized_td_body" ]] && echo 1 || echo 0)"
+assert_eq "  ... and every other band still comes through, none dropped" "true" \
+  "$(jq '(.findings_raw == []) and (.review_feedback_raw == []) and (.issues_excluded_raw == null)' <<<"$cache_loaded")"
+
 printf '\n'
 if (( failures > 0 )); then
   printf '%d assertion(s) failed\n' "$failures"

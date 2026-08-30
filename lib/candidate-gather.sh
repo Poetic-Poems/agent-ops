@@ -378,17 +378,27 @@ while IFS=$'\t' read -r _ slug default_branch; do
   fi
   expensive_gather_fresh=1
   expensive_gather_as_of="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  expensive_gather_cache_save "$state_dir" "$slug" "$(jq -nc \
-    --arg at "$expensive_gather_as_of" \
-    --argjson f "$findings_raw" --argjson rf "$review_feedback_raw" \
-    --argjson ad "$abandoned_drafts_raw" --argjson mc "$merge_conflicts_raw" \
-    --argjson dq "$dequeued_raw" --argjson rh "$register_hygiene_raw" \
-    --argjson is "$issues_raw" --argjson ie "$issues_excluded_raw" \
-    --argjson td "$tech_debt_raw" \
-    '{gathered_at: $at, findings_raw: $f, review_feedback_raw: $rf,
-      abandoned_drafts_raw: $ad, merge_conflicts_raw: $mc, dequeued_raw: $dq,
-      register_hygiene_raw: $rh, issues_raw: $is, issues_excluded_raw: $ie,
-      tech_debt_raw: $td}')" \
+  # The nine raw bands below are each unbounded past this call — agent-ops's
+  # own tech_debt_raw alone has reached 421,622 bytes, far past MAX_ARG_STRLEN
+  # (131072) — so, exactly like the per-repo entry build further down, they
+  # arrive on stdin, one document per line, bound positionally with `input as
+  # $name` in the order printed (requirement 4g), delivered via a here-string
+  # rather than a pipe for requirement 4c's pipefail reason. Only
+  # `gathered_at` stays a plain --arg. Building this with every band in argv
+  # instead (as before) fails silently past MAX_ARG_STRLEN: `jq` dies at
+  # `execve` inside `$(…)`, the substitution yields `""` without tripping
+  # `set -e`, and `expensive_gather_cache_save` below now refuses that empty
+  # input outright rather than writing a 0-byte cache (agent-ops#1107).
+  expensive_gather_cache_docs="$(printf '%s\n' "$findings_raw" "$review_feedback_raw" \
+    "$abandoned_drafts_raw" "$merge_conflicts_raw" "$dequeued_raw" "$register_hygiene_raw" \
+    "$issues_raw" "$issues_excluded_raw" "$tech_debt_raw")"
+  expensive_gather_cache_save "$state_dir" "$slug" "$(jq -nc --arg at "$expensive_gather_as_of" \
+      'input as $f | input as $rf | input as $ad | input as $mc | input as $dq | input as $rh
+       | input as $is | input as $ie | input as $td
+       | {gathered_at: $at, findings_raw: $f, review_feedback_raw: $rf,
+          abandoned_drafts_raw: $ad, merge_conflicts_raw: $mc, dequeued_raw: $dq,
+          register_hygiene_raw: $rh, issues_raw: $is, issues_excluded_raw: $ie,
+          tech_debt_raw: $td}' <<<"$expensive_gather_cache_docs")" \
     || log_event "warning" "$(jq -nc --arg d "could not persist the expensive-gather cache for $slug — its next non-selected cycle will see empty bands, not this cycle's read" '{detail: $d}')"
   else
   # Not this cycle's turn (see the requirement-48 comment above): reuse the
