@@ -132,31 +132,77 @@ expand_home() {
 
 state_dir="$(expand_home "$(jq -r '.state_dir // "~/.local/state/poetic-agents"' "$CONFIG_FILE")")"
 
+# pid1_started — PID 1's start time in clock ticks since the host booted (field
+# 22 of `/proc/1/stat`), or nothing if it cannot be read. Kept identical, down
+# to the field arithmetic, to lib/updater-health.sh's own
+# `_updater_health_own_started`, which reads it back: the two are only
+# comparable because they ask the same question the same way, and this script
+# ships in the image standalone, with no lib/ to share. Split on the *last*
+# `") "` because field 2 is the executable's name in parentheses and may
+# contain spaces or parens of its own — after which the remaining fields start
+# at field 3, so field 22 is index 19. Pure bash: no subprocess on the roll's
+# own critical path.
+pid1_started() {
+  local line="" rest="" fields=()
+  read -r line < /proc/1/stat 2>/dev/null || return 0
+  rest="${line##*') '}"
+  read -r -a fields <<<"$rest"
+  [[ "${fields[19]:-}" =~ ^[0-9]+$ ]] || return 0
+  printf '%s\n' "${fields[19]}"
+}
+
 # record_verdict allow|defer — append this invocation to the durable ledger
 # lib/updater-health.sh reads back (agent-ops#603), keyed by $HOSTNAME exactly
 # as the locks above are: the dashboard and scheduler containers on a tailnet
 # node share this state volume but not an identity, so a shared file would mix
-# their invocations the same way an unstamped lock once did (#130). Each line
-# also carries `service` (`AGENT_OPS_SERVICE`, "unknown" if unset) — the
-# compose service this container runs as — so a reader with no ledger entry
-# of its own can tell a same-service predecessor's roll from an unrelated
-# sibling service's ledger sharing this same directory.
+# their invocations the same way an unstamped lock once did (#130). $HOSTNAME
+# does not, however, tell one *generation* of the same service from the next:
+# watchtower clones `Config.Hostname` forward when it recreates a container
+# (agent-ops#1072), so a roll's replacement keeps appending to the very same
+# file its predecessor wrote to, under the same name. Each line therefore also
+# carries `started` — *this* invocation's own PID 1 start time, taken from
+# field 22 of `/proc/1/stat` (clock ticks since the host booted), `null` when
+# unreadable — which lib/updater-health.sh compares against its own live
+# reading of the same value to tell "I wrote this line" from "my predecessor
+# did". Two other readings of "when did this container start" are deliberately
+# not used: `/proc/uptime` is the *host's* uptime under Docker, not this
+# container's; and `stat -c %Y /proc/1` is the procfs inode's mtime, which the
+# kernel sets when that inode is *instantiated* — first lookup after a cache
+# miss — not when the process started, so it moves whenever the dentry is
+# reclaimed and re-created (measured on poetic-1: `stat -c %Y /proc/1` read
+# 2h25m later than PID 1's real start). A discriminator that can change under
+# one container fails exactly one way — the reader stops recognising its own
+# entries and reads `rolled` — which silently retires the `stuck` alarm this
+# ledger exists to raise. Field 22 is fixed for the life of the process, needs
+# no `procps` in the image, and is strictly ordered across generations, since
+# a replacement always starts after what it replaced. Each line also carries
+# `service` (`AGENT_OPS_SERVICE`, "unknown" if
+# unset) — the compose service this container runs as — so a reader with no
+# ledger entry of its own can tell a same-service predecessor's roll from an
+# unrelated sibling service's ledger sharing this same directory.
 #
 # Best-effort throughout (`|| return 0` at every step): a failure to write
 # must never change the hook's exit status, and must not add materially to the
 # one-minute pre-update-timeout, which fails *open* — a container too slow to
-# answer is rolled regardless. The trim and prune below run only after an
-# "allow": they cost several more subprocesses than the defer path — on the
-# roll's own critical path, ahead of `exit 75` — can safely spend against that
-# budget. A long defer streak still grows this file only slowly, one line per
+# answer is rolled regardless. `started` follows the same rule: an unreadable
+# `/proc/1/stat` writes `null` rather than aborting the line, since a ledger entry
+# with no identity is still worth more than no entry at all (the caller
+# already treats a missing `started` as unable to support an identity
+# verdict). The trim and prune below run only after an "allow": they cost
+# several more subprocesses than the defer path — on the roll's own critical
+# path, ahead of `exit 75` — can safely spend against that budget. A long
+# defer streak still grows this file only slowly, one line per
 # `WATCHTOWER_POLL_INTERVAL`, and is caught up on the next allow.
 record_verdict() {
-  local verdict="$1" f=""
+  local verdict="$1" f="" started="" started_json=null
   mkdir -p "$state_dir/updater-ledger" 2>/dev/null || return 0
   f="$state_dir/updater-ledger/${HOSTNAME:-unknown}.jsonl"
+  started="$(pid1_started)"
+  [[ "$started" =~ ^[0-9]+$ ]] && started_json="$started"
   local line=""
   line="$(jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg v "$verdict" \
-      --arg svc "${AGENT_OPS_SERVICE:-unknown}" '{ts:$ts, verdict:$v, service:$svc}' \
+      --arg svc "${AGENT_OPS_SERVICE:-unknown}" --argjson started "$started_json" \
+      '{ts:$ts, verdict:$v, service:$svc, started:$started}' \
       2>/dev/null)" || return 0
   [[ -n "$line" ]] || return 0
   printf '%s\n' "$line" >> "$f" 2>/dev/null || return 0
