@@ -270,9 +270,17 @@ assert_eq "with the count of differing lines" "2" \
 # the verdict says; what belongs here is that a ledger deploy/docker/
 # watchtower-pre-update.sh wrote reaches the heartbeat, keyed by the
 # container's own $HOSTNAME rather than NODE_NAME — the two need not match —
-# and that the raw ledger itself does not replicate.
+# and that the raw ledger itself does not replicate. Two entries, not one
+# (agent-ops#1071): `updater_status` now reads liveness first, off the
+# ledger's own newest entry, so a single entry old enough to prove "stuck"
+# is also old enough to read null outright — the fixture needs a poll
+# recent enough to stay live *and* a first allow old enough to be stuck,
+# the same shape a container watchtower is still polling actually writes.
 mkdir -p "$state/updater-ledger"
-printf '{"ts":"2026-07-20T00:00:00Z","verdict":"allow"}\n' > "$state/updater-ledger/updater-host.jsonl"
+{
+  printf '{"ts":"%s","verdict":"allow"}\n' "$(date -u -d '40 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
+  printf '{"ts":"%s","verdict":"allow"}\n' "$(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
+} > "$state/updater-ledger/updater-host.jsonl"
 sync_as "$active_home" active push HOSTNAME=updater-host >/dev/null
 assert_eq "the updater-carrying push exits 0" "0" "$?"
 updater_pushed="$tmp_dir/pushed-updater"
