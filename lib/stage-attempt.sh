@@ -225,8 +225,48 @@ stage_api_refusal_message() {  # <out-file> -> the API's own words, truncated
     "$out_file" 2>/dev/null | head -1
 }
 
+# Issue #1073 (agent-ops#1073): a refusal's stable token cannot carry the one
+# fact that decides how to react to it, because requirement 4i's own grouping
+# discipline forbids folding a moving number into `detail` — so it is read
+# separately, from the same `api_error_status` `stage_api_refusal` already
+# reads but never returns. On 2026-08-29/30 the Ockham host lost outbound
+# network for four hours; every refusal recorded `terminal_reason: "api_error"`
+# with `api_error_status: 503` — "This is a server-side issue, usually
+# temporary — try again in a moment" — and the crash-loop ladder escalated it
+# as "almost certainly deterministic … no amount of retrying will clear it",
+# which was false on its own evidence and cleared itself the moment the
+# network came back.
+#
+# `refused` — the API looked at the request and declined it: a named
+# deterministic reason (`prompt_too_long`, `invalid_request_error`, the class
+# requirement 2.7's escalation was built for), or any other 4xx. This will not
+# clear by retrying; something in the image or the assembled prompt is wrong.
+# `transient` — the request never reached a considered answer: a 5xx, or a
+# `terminal_reason` naming a connection-level fault (a proxy error page, a
+# dropped connection, an overload) whatever status rides with it. This is
+# external and clears on its own; no code in this repository can fix it.
+# Empty — `stage_api_refusal` itself found nothing to classify (no refusal on
+# this record), or a genuinely unrecognised 1xx/2xx/3xx status; the ladder
+# below defaults an unrecognised case to `refused` rather than guessing
+# `transient`, since escalating a puzzle for a human to read is the safe
+# failure and silently swallowing a real deterministic loop is not.
+stage_api_refusal_class() {  # <out-file> -> "transient", "refused", or empty
+  local out_file="$1"
+  [[ -s "$out_file" ]] || return 0
+  jq -r 'select((.is_error // false) == true)
+         | select((.api_error_status // null) | type == "number")
+         | (.terminal_reason // "") as $r
+         | (.api_error_status) as $status
+         | if ($r == "prompt_too_long" or $r == "invalid_request_error") then "refused"
+           elif ($r | test("connection|network|overload"; "i")) then "transient"
+           elif ($status >= 500) then "transient"
+           else "refused"
+           end' \
+    "$out_file" 2>/dev/null | head -1
+}
+
 handle_stage_failure() {
-  local stage="$1" rc="$2" out_file="$3" pr_url="${4:-}" detail refusal refusal_msg
+  local stage="$1" rc="$2" out_file="$3" pr_url="${4:-}" detail refusal refusal_msg refusal_class
   # 124 is now both caps, and they are not the same news to whoever reads this
   # next — the Enabler, or a human asking why an item is blocked. "Ran to its
   # wall-clock cap while still working" argues for a longer cap; "produced
@@ -254,14 +294,22 @@ handle_stage_failure() {
   # The PR travels on the event (requirement 32a) so the Enabler can open it
   # without re-deriving it from the item id — for a finishing source the item
   # may not name the PR at all. So does the API's own refusal message, which
-  # carries the numbers `detail` deliberately leaves out.
+  # carries the numbers `detail` deliberately leaves out. So does the refusal's
+  # class (issue #1073) — `transient` or `refused` — which is what lets
+  # `crash_loop_verdict` tell an outage from a deterministic fault without
+  # folding either into `detail`, the field requirement 2.7 groups on.
   refusal_msg=""
-  [[ -n "$refusal" ]] && refusal_msg="$(stage_api_refusal_message "$out_file")"
+  refusal_class=""
+  if [[ -n "$refusal" ]]; then
+    refusal_msg="$(stage_api_refusal_message "$out_file")"
+    refusal_class="$(stage_api_refusal_class "$out_file")"
+  fi
   log_attempt_failed "$stage" "$detail" \
-    "$(jq -nc --arg u "$pr_url" --arg r "$refusal" --arg m "$refusal_msg" \
+    "$(jq -nc --arg u "$pr_url" --arg r "$refusal" --arg m "$refusal_msg" --arg c "$refusal_class" \
        '(if $u == "" then {} else {pr_url: $u} end)
         + (if $r == "" then {} else {api_refusal: $r} end)
-        + (if $m == "" then {} else {api_message: $m} end)')"
+        + (if $m == "" then {} else {api_message: $m} end)
+        + (if $c == "" then {} else {api_refusal_class: $c} end)')"
   if [[ -n "$pr_url" ]]; then
     gh pr comment "$pr_url" --body "$(pipeline_comment_header script "$node_name")
 

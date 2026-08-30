@@ -398,6 +398,7 @@ assert_true "…and the coordinator-input-fitted event beside it also carries th
 #     block is. ---
 eval "$(extract_block '^stage_api_refusal\(\) \{' '^\}$' "$SCRIPT_DIR/lib/stage-attempt.sh")"
 eval "$(extract_block '^stage_api_refusal_message\(\) \{' '^\}$' "$SCRIPT_DIR/lib/stage-attempt.sh")"
+eval "$(extract_block '^stage_api_refusal_class\(\) \{' '^\}$' "$SCRIPT_DIR/lib/stage-attempt.sh")"
 
 # The record the fleet actually produced on 2026-08-21, verbatim but for the
 # fields nothing here reads.
@@ -432,6 +433,52 @@ assert_eq "a clean result is not a refusal" "" "$(stage_api_refusal "$tmp_dir/ok
 assert_eq "an empty transcript is not a refusal" "" "$(stage_api_refusal "$tmp_dir/empty.out")"
 echo 'this is not json' > "$tmp_dir/garbage.out"
 assert_eq "an unparseable transcript is not a refusal" "" "$(stage_api_refusal "$tmp_dir/garbage.out")"
+
+# --- issue #1073: not every refusal is deterministic, and the record now
+#     says which. `stage_api_refusal_class` reads the same file as
+#     `stage_api_refusal`/`stage_api_refusal_message` above and answers
+#     "transient" or "refused" beside the stable token, never inside it. ---
+
+# The Ockham record, verbatim but for the fields nothing here reads
+# (2026-08-29/30, agent-ops#1073's own evidence): a 503 the runner named
+# "api_error" — the API was unreachable, not refusing a considered request.
+cat > "$tmp_dir/ockham.out" <<'REC'
+{"is_error":true,"api_error_status":503,"terminal_reason":"api_error","result":"API Error: ERROR: The requested URL could not be retrieved. This is a server-side issue, usually temporary — try again in a moment. If it persists, check https://status.claude.com."}
+REC
+assert_eq "a 503 is classified transient" \
+  "transient" "$(stage_api_refusal_class "$tmp_dir/ockham.out")"
+
+assert_eq "the 2026-08-21 prompt_too_long refusal is classified refused" \
+  "refused" "$(stage_api_refusal_class "$tmp_dir/refused.out")"
+
+# A named connection-level fault, whatever status happens to ride with it
+# (here none at all is impossible — stage_api_refusal_class shares
+# stage_api_refusal's own gate, an HTTP status must be present — so this is
+# the shape a CLI naming the fault explicitly would take).
+echo '{"is_error":true,"api_error_status":502,"terminal_reason":"api_connection_error","result":"connection reset by peer"}' \
+  > "$tmp_dir/connection.out"
+assert_eq "a named connection-level fault is classified transient" \
+  "transient" "$(stage_api_refusal_class "$tmp_dir/connection.out")"
+
+assert_eq "the 529 overload falls back to its status, above 500, so transient" \
+  "transient" "$(stage_api_refusal_class "$tmp_dir/overloaded.out")"
+
+# An ordinary 4xx with no named reason: the API considered and declined the
+# request, so this defaults to refused rather than transient.
+echo '{"is_error":true,"api_error_status":404,"result":"not found"}' > "$tmp_dir/notfound.out"
+assert_eq "an unnamed 4xx defaults to refused" \
+  "refused" "$(stage_api_refusal_class "$tmp_dir/notfound.out")"
+
+# The shapes that are not a refusal at all yield no class, same as
+# stage_api_refusal itself.
+assert_eq "a stage that ran and then failed has no refusal class" \
+  "" "$(stage_api_refusal_class "$tmp_dir/crashed.out")"
+assert_eq "a clean result has no refusal class" \
+  "" "$(stage_api_refusal_class "$tmp_dir/ok.out")"
+assert_eq "an empty transcript has no refusal class" \
+  "" "$(stage_api_refusal_class "$tmp_dir/empty.out")"
+assert_eq "an unparseable transcript has no refusal class" \
+  "" "$(stage_api_refusal_class "$tmp_dir/garbage.out")"
 
 echo
 if (( failures == 0 )); then

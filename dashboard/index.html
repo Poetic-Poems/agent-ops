@@ -1300,6 +1300,31 @@
     return null;
   }
 
+  // Whether this node is caught up in a sustained run of Co-Ordinator
+  // failures the Script has classified `transient` — the API itself
+  // unreachable (a 5xx, a dropped connection), not refusing a considered
+  // request (issue #1073, lib/crash-loop.sh's `crash_loop_verdict`). On
+  // 2026-08-29/30 the Ockham host lost outbound network for four hours and
+  // the only signal of it was a crash-loop escalation asserting "almost
+  // certainly deterministic … no amount of retrying will clear it" — false on
+  // the escalation's own evidence, and gone the moment the network returned.
+  // This is that signal's honest replacement: no issue, because nothing in
+  // this repository can fix a provider outage, just the fact itself, on the
+  // node's own card, same footing as updaterLine above. Amber, not red — the
+  // condition is expected to clear on its own, same colour the "updater
+  // stuck" badge above uses for "this wants attention", not "this is a
+  // failure of this node's own code".
+  function providerUnreachableLine(n) {
+    var pu = n.provider_unreachable;
+    if (!pu || !pu.detail) return null;
+    var title = pu.count + " consecutive Co-Ordinator failure(s), every one `" + pu.detail +
+      "`, since " + fmtAgo(pu.first_ts) + ", still failing as of " + fmtAgo(pu.last_ts) +
+      " — classified transient (the API was unreachable, not refusing the request); " +
+      "clears on its own the moment a Co-Ordinator engagement succeeds anywhere in the fleet";
+    return el("div", {class:"ver"}, el("span", {class:"badge b-amber", text:"provider unreachable",
+      title: title}));
+  }
+
   // ---------- section builder ----------
   function sectionOf(title, body) {
     return el("section", {}, [ el("h2", {text:title}), body ]);
@@ -1561,6 +1586,8 @@
     if (image) card.appendChild(image);
     var updater = updaterLine(n);
     if (updater) card.appendChild(updater);
+    var providerUnreachable = providerUnreachableLine(n);
+    if (providerUnreachable) card.appendChild(providerUnreachable);
 
     card.appendChild(el("div", {class:"hb" + (n.stale ? " stale" : ""),
       title: n.self ? "read from this node's own lock and log"

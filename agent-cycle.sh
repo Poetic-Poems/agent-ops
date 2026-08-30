@@ -1401,14 +1401,34 @@ acquire_lock
 # for any stage is ever logged, so no `attempt-failed` exists for
 # `crash_loop_verdict` to count. Each class keys its own item ref, so either
 # can escalate independently of the other.
+#
+# `crash_loop_verdict`'s own run can additionally be *transient* (issue
+# #1073): every failure it counted was the API being unreachable — a 5xx, a
+# dropped connection — not the API refusing a request it considered. On
+# 2026-08-29/30 the Ockham host lost outbound network for four hours and this
+# block escalated it as "almost certainly deterministic … no amount of
+# retrying will clear it" (#1070), which was false on the escalation's own
+# evidence and cleared itself the moment the network returned. `escalate`
+# (set by `crash_loop_verdict` itself, from each failure's own
+# `api_refusal_class`) is what tells the two apart here: `false` means every
+# failure in the run was `transient`, so this is a node/fleet connectivity
+# fact, not a deterministic fault, and it is logged for the dashboard's node
+# card instead of raised as an issue asserting a cause it cannot support.
+# `crash_loop_preselection_verdict` carries no such class — an `execve`
+# failure is never a network refusal — so its run always escalates exactly as
+# it always has.
 if ! (( DRY_RUN )) && (( crash_loop_after > 0 )) \
     && [[ -n "$crash_loop_repo" && -n "$enabler_assignee" && -s "$union_log" ]]; then
   crash_loop_json="$(crash_loop_verdict "$crash_loop_after" < "$union_log")"
   if [[ -n "$crash_loop_json" ]]; then
-    crash_loop_escalate "$crash_loop_json" "crash-loop:coordinator" \
-      "Co-Ordinator failures" \
-      "Crash loop: the Co-Ordinator is failing fleet-wide" \
-      "Start with the newest failing cycle's \`coordinator.out\` under \`state_dir/cycles/\` — a stage the API refused outright records the refusal there, as a \`result\` with \`is_error: true\`, and leaves \`coordinator.out.stderr\` empty (agent-ops#641). Read \`coordinator.out.stderr\` too, for a stage that died rather than being refused; the stage transcripts survive every failure."
+    if [[ "$(jq -r '.escalate' <<<"$crash_loop_json")" == "true" ]]; then
+      crash_loop_escalate "$crash_loop_json" "crash-loop:coordinator" \
+        "Co-Ordinator failures" \
+        "Crash loop: the Co-Ordinator is failing fleet-wide" \
+        "Start with the newest failing cycle's \`coordinator.out\` under \`state_dir/cycles/\` — a stage the API refused outright records the refusal there, as a \`result\` with \`is_error: true\`, and leaves \`coordinator.out.stderr\` empty (agent-ops#641). Read \`coordinator.out.stderr\` too, for a stage that died rather than being refused; the stage transcripts survive every failure."
+    else
+      log_event "provider-unreachable" "$crash_loop_json"
+    fi
   fi
 
   crash_loop_preselection_json="$(crash_loop_preselection_verdict "$crash_loop_after" < "$union_log")"

@@ -199,6 +199,16 @@ assert_eq "and only the one stuck container gets the badge — never a rolled or
 assert_eq "and only the one deferring container gets its badge — never a rolled or pre-field one" \
   "1" "$(grep -o 'updater deferring' <<<"$out" | wc -l | tr -d ' ')"
 
+# --- The provider-unreachable badge on the fleet strip (issue #1073) --------
+# poetic-3 carries a `provider_unreachable` verdict (the transient class
+# lib/crash-loop.sh's `crash_loop_verdict` now emits instead of a crash-loop
+# escalation issue); poetic-1, poetic-2 and poetic-4 carry none and get no
+# badge, same as an in-sync compose or a rolled updater.
+assert_contains "a node caught in a transient-refusal run is flagged" \
+  "provider unreachable" "$out"
+assert_eq "and only the named node gets the badge" \
+  "1" "$(grep -o 'provider unreachable' <<<"$out" | wc -l | tr -d ' ')"
+
 # --- The node-scoped switch badge on the fleet strip (issue #379) -----------
 # poetic-1 (self) carries an enabled switch and gets no badge; poetic-2
 # carries a node-scoped disable and gets one, beside its role badge, naming
