@@ -402,6 +402,25 @@ assert_eq "…and writes nothing to the cache" \
 assert_eq "…but is still ledgered, as bypass" \
   "bypass" "$(tail -1 "$stF/gh-shim/ledger.ndjson" | jq -r '.cache')"
 
+# --- Invoked through a symlink, exactly as deploy/docker/Dockerfile installs
+# it (`/usr/local/bin/gh -> /app/scripts/gh-shim.sh`) ---
+#
+# `${BASH_SOURCE[0]}` inside scripts/gh-shim.sh is the path it was invoked
+# as, not the file it resolves to; a symlinked invocation's `dirname` lands
+# one directory away from where lib/gh-shim.sh actually lives unless the
+# symlink is resolved first. Every other case in this file calls
+# scripts/gh-shim.sh by its real path directly, which cannot catch this —
+# only a genuine symlink can.
+stG="$tmp_dir/stateG"; pdG="$tmp_dir/planG"; mkdir -p "$stG" "$pdG"
+plan "$pdG" 1 200 '{"n":42}' 'eG' null 0
+link_dir="$tmp_dir/symlinked-path"
+mkdir -p "$link_dir"
+ln -s "$SCRIPT_DIR/scripts/gh-shim.sh" "$link_dir/gh"
+outG="$(PW_GH_REAL_BIN="$stub_bin/gh" PW_GH_STATE_DIR="$stG" STUB_PLAN_DIR="$pdG" \
+  GH_TOKEN=tokG "$link_dir/gh" api repos/o/r)"
+assert_eq "invoked through a symlink, the shim still finds lib/gh-shim.sh and answers" \
+  '{"n":42}' "$outG"
+
 echo
 if (( failures == 0 )); then
   echo "All gh-shim assertions passed."
