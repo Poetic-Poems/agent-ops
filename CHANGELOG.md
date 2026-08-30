@@ -1031,6 +1031,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Three GitHub REST budget call sites logged a 403 rate-limit refusal the
+  same as any other failure, so an operator could not tell "no human was
+  notified because the owner's shared budget was gone" from a genuine fault
+  (agent-ops#1082): `ensure_human_reviewer`'s review-request read
+  (`lib/handoff.sh`) now reports `failed-rate-limited` distinctly from a bare
+  `failed`; the pull request/reviews read behind
+  `sweep-human-visibility.sh`'s idle-nudge check names the cause in its
+  warning; and `approver_post_or_warn`'s review write (`lib/approver.sh`)
+  does too, and now retries once through `github_limit_wait_plan`'s existing
+  wait/backoff (`lib/github-limit.sh`) instead of dropping the verdict
+  outright when the cause was rate-limiting.
 - Requirement 2.0's budget gate read `GET /rate_limit`, whose body — read
   cold, as the first call of every cycle — is an empty window (`5000/5000`,
   reset exactly an hour from now) rather than a reading; it answered `ok`
