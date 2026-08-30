@@ -96,6 +96,25 @@ assert_eq "…and its maximum is the largest same-window movement" \
 assert_eq "a single-reading stage reports that reading" \
   "60" "$(jq -r '.per_stage[] | select(.stage == "implementer") | .core_movement_median' <<<"$json")"
 
+# Per cycle (agent-ops#1086): the sum of same-window since_previous.core
+# across a cycle's own readings. c1's cycle-start carries no since_previous
+# (excluded); its spend is the implementer (60) + reviewer (40) + cycle-end
+# (30) readings. c2 has one reading (100). c9's only reading is unreadable, so
+# its spend is 0 despite having a reading. c10's only reading is window-rolled,
+# so it too spends 0 despite being readable.
+assert_eq "c1's per-cycle core spend sums every same-window reading but the null cycle-start" \
+  "130" "$(jq -r '.per_cycle[] | select(.cycle == "c1") | .core_spend' <<<"$json")"
+assert_eq "…and its node is named" \
+  "poetic-1" "$(jq -r '.per_cycle[] | select(.cycle == "c1") | .node' <<<"$json")"
+assert_eq "c2's spend is its one reading" \
+  "100" "$(jq -r '.per_cycle[] | select(.cycle == "c2") | .core_spend' <<<"$json")"
+assert_eq "c9's spend is 0 — its only reading is unreadable" \
+  "0" "$(jq -r '.per_cycle[] | select(.cycle == "c9") | .core_spend' <<<"$json")"
+assert_eq "c10's spend is 0 — its only reading spans a window roll" \
+  "0" "$(jq -r '.per_cycle[] | select(.cycle == "c10") | .core_spend' <<<"$json")"
+assert_eq "every cycle enters the breakdown even with zero spend" \
+  "c1,c10,c2,c9" "$(jq -r '[.per_cycle[].cycle] | sort | join(",")' <<<"$json")"
+
 # Per node.
 assert_eq "poetic-1's readings span two cycles" \
   "5 0 2" "$(jq -r '.per_node[] | select(.node == "poetic-1") | "\(.readings) \(.unreadable) \(.cycles_with_record)"' <<<"$json")"

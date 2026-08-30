@@ -13627,6 +13627,70 @@ with the Reviewer's own.
     letting a later reader assume the class covers every human change
     request there is.
 
+48. **Expensive per-repository gather runs for one repository per cycle, not
+    every configured one (agent-ops#1086).** The eight bands requirement 3
+    pre-fetches whole — `findings`, `review_feedback`, `abandoned_drafts`,
+    `merge_conflicts`, `dequeued`, `register_hygiene`, `issues` (with
+    `issues_excluded`) and `tech_debt` — are read fresh from GitHub, each
+    cycle, for exactly one of `gather_ordered_repos`'s configured
+    repositories: the one whose expensive-gather cache
+    (`lib/expensive-gather-cache.sh`, under this node's own `state_dir`) is
+    oldest, with a repository never yet cached always outranking one cached
+    at all. Every other configured repository's entry carries the raw
+    gather this same node cached the last time its own turn came around —
+    `sources` gating and claim exclusion (`exclude_claimed_items`/
+    `exclude_claimed_prs`) are re-applied to it fresh every cycle regardless,
+    so a claim a peer takes or a `sources` edit still takes effect without a
+    live read. `--repo` narrows the configured set to one repository, which
+    is then always the one picked, exactly as before this requirement
+    existed.
+
+    Picking is keyed on this node's own last-read time for each repository
+    (the cache file's mtime), never on `lib/repo-order.sh`'s effective-age
+    ordering: that ordering is a pure function of GitHub state every node
+    computes identically, so keying the expensive-gather pick on it would
+    have every node read the same one repository fresh every cycle and
+    starve every other configured repository of a fresh read for as long as
+    nothing landed on its default branch — indefinitely, for a repository
+    this pipeline has never gathered enough to select work in. Keying on
+    this node's own cache age instead guarantees every configured repository
+    eventually gets its own turn, regardless of commit activity, the same
+    way `labels_ensure_stamped`'s per-repo stamps already do.
+
+    Every repository entry in `ordered_repos_json` carries
+    `expensive_gather: {fresh, gathered_at}` — `fresh: true` for the one
+    repository this cycle actually read, `gathered_at` naming when the
+    bands shown were captured (`null` for a repository never yet read on
+    this node). `lib/coordinator-input.sh` documents this shape for a
+    reader of the Co-Ordinator's runtime input, and `prompts/coordinator.md`
+    obliges a live re-check (`gh issue view`/`gh pr view`) before selecting
+    a candidate from a non-fresh entry, the same obligation requirement 4i
+    already places on a trimmed one. The no-op short-circuit's canonical
+    form (`lib/noop-skip.sh`'s `NOOP_CANON_JQ`) re-projects each repository
+    entry to a fixed field list that does not include `expensive_gather`, so
+    neither field enters the fingerprint: a repository's cached bands
+    fingerprint identically across cycles until its next fresh read, and the
+    one repository read fresh each cycle does not bust the fingerprint
+    merely by carrying a new `gathered_at` stamp.
+
+    The cheap fleet-wide probes are unaffected and remain unrestricted: the
+    per-repository default-branch/commit-timestamp read that orders the
+    gather walk (`lib/repo-order.sh`), `gather_source_state`'s own four-call
+    sample (the no-op fingerprint's `state.*` fields and
+    `compute_enabler_eligible_set`'s input), `labels_ensure_stamped`'s
+    already-rate-limited label listing, and the `unvoid`/hand-flagged-
+    `needs_refinement` label scans all still run for every configured
+    repository every cycle — restricting any of these would either reopen
+    agent-ops#687 (a repository never selected for work never getting its
+    labels ensured) or leave a human's override on a non-selected repository
+    unnoticed, for a saving small against the eight bands' own cost. A
+    repository this cycle does not expensively re-read therefore still gets
+    a same-cycle void-liveness verdict of "unsampled, not gone" wherever
+    that liveness reads a marker only the skipped gather call would have
+    written (`lib/candidate-gather.sh`'s own `.ok`-marker convention,
+    TD-PPagop-26081303) — the existing safe default, unchanged by this
+    requirement.
+
 ## Components
 
 What exists, and the requirements each part answers to:
@@ -13704,10 +13768,15 @@ What exists, and the requirements each part answers to:
    gathering loop and the skip-list extracts built directly on top of it
    (requirement 3, the requirement-34 blocked/void skip-lists; #771):
    `gather_ordered_repos` orders every configured repository by effective
-   staleness (`lib/repo-order.sh`) and, for each, runs every pre-fetched
-   source's gather script, folding claims, first-seen state and the
-   per-repo entry into `ordered_repos_json`/`source_states_json`/
-   `claimed_json`/`unvoid_requests_json`/`hand_flagged_refinements_json`.
+   staleness (`lib/repo-order.sh`) and, for each, folds claims, first-seen
+   state and the per-repo entry into `ordered_repos_json`/
+   `source_states_json`/`claimed_json`/`unvoid_requests_json`/
+   `hand_flagged_refinements_json`. Every pre-fetched source's gather script
+   runs fresh only for the one repository `expensive_gather_pick_repo`
+   (`lib/expensive-gather-cache.sh`) picks this cycle (requirement 48); every
+   other configured repository's eight bands come from that same node's
+   cache of its own last turn, with this cycle's `sources` gating and claim
+   exclusion re-applied regardless.
    `compute_skip_lists` reconciles the `unvoid`/hand-flagged
    `needs_refinement` label overrides against the cycle's own claim, then
    derives `blocked_json`/`void_json`, the skip-lists everything downstream
@@ -13763,6 +13832,22 @@ What exists, and the requirements each part answers to:
    this file and `test/refiner-priority-triage.test.sh` lifts the Refiner
    pre-flight's own `refiner_model` call-site guard from it. Must pass
    `shellcheck`.
+2g. `lib/expensive-gather-cache.sh` implementing requirement 48
+   (agent-ops#1086): the per-node cache `gather_ordered_repos` reads and
+   writes so its eight expensive bands are read fresh from GitHub for one
+   configured repository per cycle rather than every one of them.
+   `expensive_gather_pick_repo` picks the configured repository whose cache
+   file (under `state_dir/expensive-gather/`) is oldest, ties broken by
+   slug; `expensive_gather_cache_load`/`expensive_gather_cache_save` read
+   and atomically write that repository's raw gather. Sourced, never
+   executed, ahead of `lib/candidate-gather.sh` (its only caller). Must pass
+   `shellcheck`. `test/expensive-gather-cache.test.sh` exercises all three
+   functions directly: the epoch-0 tie-break for a never-cached repository,
+   round-tripping a saved snapshot, the pick rotating to the next-oldest
+   cache once one repository is saved, a never-cached repository always
+   outranking any already-cached one, an empty configured set picking
+   nothing, and a corrupt cache file loading as empty rather than raising a
+   parse error.
 3. `scripts/gather-findings.sh` implementing requirement 3a: given a repo
    slug, prints a normalised JSON array of the repo's open Dependabot and
    code-scanning alerts, degrading to `[]` (exit 0) when a feature is
@@ -15919,9 +16004,13 @@ What exists, and the requirements each part answers to:
     primary-limit refusals that reached `guard-degraded` and the number of
     requirement-2.0 stand-downs; per stage, the median and maximum of the
     bucket's `core` movement and the median `graphql` movement while the
-    stage ran, readings that spanned a window roll excluded; and per node,
-    readings, unreadable readings and cycles carrying a record — as Markdown
-    followed by a machine-readable JSON block. `--since ISO8601` restricts
+    stage ran, readings that spanned a window roll excluded; per cycle
+    (requirement 48, agent-ops#1086), the sum of `core`/`graphql` movement
+    across a cycle's own readable, non-window-rolled readings, node named
+    alongside — the figure requirement 48's before/after comparison reads;
+    and per node, readings, unreadable readings and cycles carrying a
+    record — as Markdown followed by a machine-readable JSON block. `--since
+    ISO8601` restricts
     the window. Its preamble states what the figures are: the bucket's, an
     upper bound on any one segment's own spend while identities are shared.
     Damaged log lines are dropped, not fatal; an empty read says so and
@@ -16912,9 +17001,11 @@ pull request, run the ones the change touches and any it could regress.
    one apart, takes each hour's peak used and minimum remaining from readable
    readings only, counts primary refusals (never a 404) and requirement-2.0
    stand-downs per hour, excludes a rolled reading from a stage's movement,
-   sums per node, honours `--since`, unions this node's log with its peers'
-   in the fleet-shaped read, says so on an empty log, and errors on a named
-   log that does not exist. `scripts/github-budget-report.sh` passes
+   sums each cycle's own core/graphql spend excluding a window-rolled or
+   unreadable reading from it (requirement 48, agent-ops#1086), sums per
+   node, honours `--since`, unions this node's log with its peers' in the
+   fleet-shaped read, says so on an empty log, and errors on a named log
+   that does not exist. `scripts/github-budget-report.sh` passes
    `shellcheck`.
 2l. **A rejected or missing credential is classified apart from an outage,
    and stands the cycle down before the Co-Ordinator ever runs (requirement
@@ -20321,6 +20412,20 @@ pull request, run the ones the change touches and any it could regress.
     unreachable`, yields none; a malformed event line in the stream is
     skipped rather than fatal to the reduction. `scripts/lint-shell.sh` is
     clean on every file this requirement touches.
+
+48. **Expensive per-repository gather runs for one repository per cycle
+    (requirement 48).** `test/expensive-gather-cache.test.sh` passes:
+    `expensive_gather_pick_repo` picks a never-cached repository over any
+    already-cached one, breaks a tie among never-cached repositories on
+    slug ascending, and picks the oldest cache file once every configured
+    repository has one; `expensive_gather_cache_load` round-trips a saved
+    object exactly and reads a corrupt or absent cache file as empty rather
+    than raising; `expensive_gather_cache_save` is atomic (no stray `.tmp`
+    file survives it) and a single-repository set (`--repo`) always picks
+    that repository. `test/repo-entry-build.test.sh` still passes unchanged,
+    confirming the per-repo entry-build block's own eight-band shape is
+    undisturbed by the cache being threaded in ahead of it.
+    `scripts/lint-shell.sh` is clean on every file this requirement touches.
 
 9. **An open question the Reviewer could not settle holds unattended landing,
    resolves through the configured ladder, and never through a new commit

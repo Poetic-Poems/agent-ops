@@ -40,6 +40,16 @@ source_states_json="[]"
 unvoid_requests_json="[]"
 hand_flagged_refinements_json="[]"
 claimed_json="[]"
+# Requirement 48 (agent-ops#1086): of every repo `repos_json` names, the one
+# whose expensive per-repository sources (findings, review-feedback,
+# abandoned-drafts, merge-conflicts, dequeued, register-hygiene, issues,
+# tech-debt) this cycle actually reads fresh from GitHub — every other one
+# reuses the snapshot this same node captured the last time its own turn came
+# around (lib/expensive-gather-cache.sh). Picked once, ahead of the per-repo
+# loop below, from `repos_json` rather than `all_repos_json`: a `--repo`
+# filter narrows this cycle to one repository, and that one repository must
+# always be the one read fresh, exactly as before this feature existed.
+expensive_gather_slug="$(expensive_gather_pick_repo "$state_dir" "$repos_json")"
 # Issue #248 acceptance 4 (TD-PPagop-26081405): the fleet's already-logged
 # `first-seen` set, read once off the union log snapshotted at 1a1 above —
 # every emit_first_seen call below both consults and grows this — and
@@ -142,19 +152,34 @@ while IFS=$'\t' read -r _ slug default_branch; do
   # further down, which filters every one of these arrays in place, a second
   # time, once they do.
   #
+  # Requirement 48 (agent-ops#1086): the eight expensive bands below —
+  # findings, review-feedback, abandoned-drafts, merge-conflicts, dequeued,
+  # register-hygiene, issues (+ issues_excluded) and tech-debt — are read
+  # fresh from GitHub only for `expensive_gather_slug`, the one repository
+  # this cycle picked for this node's turn (lib/expensive-gather-cache.sh).
+  # Every other configured repository reuses the raw gather this same node
+  # captured the last time its own turn came around, with this cycle's own
+  # `sources` gating and claim exclusion re-applied to it exactly as they
+  # would be to a fresh read — only the GitHub call itself is skipped. A
+  # repository never yet read on this node (no cache file) yields empty
+  # bands, the same shape a repository whose sources are all disabled
+  # already produces, until its own first turn arrives — which
+  # `expensive_gather_pick_repo`'s epoch-0 default guarantees happens before
+  # any repository already cached once does.
+  if [[ "$slug" == "$expensive_gather_slug" ]]; then
   # Pre-fetch security/code-quality findings only when this repo lists either
   # source, so a repo that opts out of them costs no gh calls. first-seen is
   # emitted on the raw array, split by each finding's own `.source`, before
   # exclusion — findings is the one pre-fetch that mixes two first-seen
   # sources in one gather call.
-  findings="[]"
+  findings="[]"; findings_raw="[]"
   if jq -e 'any(.[]; . == "security" or . == "code-quality")' <<<"$sources" >/dev/null 2>&1; then
     findings_raw="$(gather_findings "$slug")"
     emit_first_seen "$slug" security "$(jq -c '[.[] | select(.source == "security")]' <<<"$findings_raw")"
     emit_first_seen "$slug" code-quality "$(jq -c '[.[] | select(.source == "code-quality")]' <<<"$findings_raw")"
     findings="$(exclude_claimed_items "$findings_raw" "$claimed_item_refs_json")"
   fi
-  review_feedback="[]"
+  review_feedback="[]"; review_feedback_raw="[]"
   if jq -e 'any(.[]; . == "review-feedback")' <<<"$sources" >/dev/null 2>&1; then
     review_feedback_raw="$(gather_review_feedback "$slug")"
     emit_first_seen "$slug" review-feedback "$review_feedback_raw"
@@ -167,19 +192,19 @@ while IFS=$'\t' read -r _ slug default_branch; do
   abandoned_drafts_raw="$(gather_abandoned_drafts "$slug")"
   emit_first_seen "$slug" abandoned-drafts "$abandoned_drafts_raw"
   abandoned_drafts="$(exclude_claimed_items "$(exclude_claimed_prs "$abandoned_drafts_raw" "$claimed_pr_numbers_json")" "$claimed_item_refs_json")"
-  merge_conflicts="[]"
+  merge_conflicts="[]"; merge_conflicts_raw="[]"
   if jq -e 'any(.[]; . == "merge-conflicts")' <<<"$sources" >/dev/null 2>&1; then
     merge_conflicts_raw="$(gather_merge_conflicts "$slug")"
     emit_first_seen "$slug" merge-conflicts "$merge_conflicts_raw"
     merge_conflicts="$(exclude_claimed_items "$(exclude_claimed_prs "$merge_conflicts_raw" "$claimed_pr_numbers_json")" "$claimed_item_refs_json")"
   fi
-  dequeued="[]"
+  dequeued="[]"; dequeued_raw="[]"
   if jq -e 'any(.[]; . == "dequeued")' <<<"$sources" >/dev/null 2>&1; then
     dequeued_raw="$(gather_dequeued "$slug")"
     emit_first_seen "$slug" dequeued "$dequeued_raw"
     dequeued="$(exclude_claimed_items "$(exclude_claimed_prs "$dequeued_raw" "$claimed_pr_numbers_json")" "$claimed_item_refs_json")"
   fi
-  register_hygiene="[]"
+  register_hygiene="[]"; register_hygiene_raw="[]"
   if jq -e 'any(.[]; . == "register-hygiene")' <<<"$sources" >/dev/null 2>&1; then
     register_hygiene_raw="$(gather_register_hygiene "$slug" "$default_branch" prefetch)"
     emit_first_seen "$slug" register-hygiene "$register_hygiene_raw"
@@ -188,8 +213,8 @@ while IFS=$'\t' read -r _ slug default_branch; do
   # The issues source is one source at four ranks (`issues:urgent` …
   # `issues:low`, requirement 15e), so any band in `sources` warrants the one
   # fetch — the band is per issue, not per fetch.
-  issues="[]"
-  issues_excluded="[]"
+  issues="[]"; issues_raw="[]"
+  issues_excluded="[]"; issues_excluded_raw="null"
   if jq -e 'any(.[]; startswith("issues"))' <<<"$sources" >/dev/null 2>&1; then
     # Requirement 38b's *live* reconciliation (agent-ops#816,
     # TD-PPagop-26082602), run ahead of the gather below so an issue this
@@ -345,11 +370,80 @@ while IFS=$'\t' read -r _ slug default_branch; do
       fi
     fi
   fi
-  tech_debt="[]"
+  tech_debt="[]"; tech_debt_raw="[]"
   if jq -e 'any(.[]; . == "tech-debt")' <<<"$sources" >/dev/null 2>&1; then
     tech_debt_raw="$(gather_tech_debt "$slug")"
     emit_first_seen "$slug" tech-debt "$tech_debt_raw"
     tech_debt="$(exclude_claimed_items "$tech_debt_raw" "$claimed_item_refs_json")"
+  fi
+  expensive_gather_fresh=1
+  expensive_gather_as_of="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  expensive_gather_cache_save "$state_dir" "$slug" "$(jq -nc \
+    --arg at "$expensive_gather_as_of" \
+    --argjson f "$findings_raw" --argjson rf "$review_feedback_raw" \
+    --argjson ad "$abandoned_drafts_raw" --argjson mc "$merge_conflicts_raw" \
+    --argjson dq "$dequeued_raw" --argjson rh "$register_hygiene_raw" \
+    --argjson is "$issues_raw" --argjson ie "$issues_excluded_raw" \
+    --argjson td "$tech_debt_raw" \
+    '{gathered_at: $at, findings_raw: $f, review_feedback_raw: $rf,
+      abandoned_drafts_raw: $ad, merge_conflicts_raw: $mc, dequeued_raw: $dq,
+      register_hygiene_raw: $rh, issues_raw: $is, issues_excluded_raw: $ie,
+      tech_debt_raw: $td}')" \
+    || log_event "warning" "$(jq -nc --arg d "could not persist the expensive-gather cache for $slug — its next non-selected cycle will see empty bands, not this cycle's read" '{detail: $d}')"
+  else
+  # Not this cycle's turn (see the requirement-48 comment above): reuse the
+  # raw gather this node cached the last time $slug was picked, re-applying
+  # this cycle's own `sources` gating and claim exclusion to it exactly as
+  # the fresh branch does to a live read. No emit_first_seen here — nothing
+  # was newly observed this cycle, only re-shown.
+  expensive_gather_fresh=0
+  expensive_gather_cache_json="$(expensive_gather_cache_load "$state_dir" "$slug")"
+  if [[ -n "$expensive_gather_cache_json" ]]; then
+    expensive_gather_as_of="$(jq -r '.gathered_at // ""' <<<"$expensive_gather_cache_json" 2>/dev/null || true)"
+  else
+    expensive_gather_as_of=""
+    expensive_gather_cache_json='{}'
+  fi
+  findings_raw="$(jq -c '.findings_raw // []' <<<"$expensive_gather_cache_json" 2>/dev/null || echo '[]')"
+  review_feedback_raw="$(jq -c '.review_feedback_raw // []' <<<"$expensive_gather_cache_json" 2>/dev/null || echo '[]')"
+  abandoned_drafts_raw="$(jq -c '.abandoned_drafts_raw // []' <<<"$expensive_gather_cache_json" 2>/dev/null || echo '[]')"
+  merge_conflicts_raw="$(jq -c '.merge_conflicts_raw // []' <<<"$expensive_gather_cache_json" 2>/dev/null || echo '[]')"
+  dequeued_raw="$(jq -c '.dequeued_raw // []' <<<"$expensive_gather_cache_json" 2>/dev/null || echo '[]')"
+  register_hygiene_raw="$(jq -c '.register_hygiene_raw // []' <<<"$expensive_gather_cache_json" 2>/dev/null || echo '[]')"
+  issues_raw="$(jq -c '.issues_raw // []' <<<"$expensive_gather_cache_json" 2>/dev/null || echo '[]')"
+  issues_excluded_raw="$(jq -c '.issues_excluded_raw // null' <<<"$expensive_gather_cache_json" 2>/dev/null || echo 'null')"
+  tech_debt_raw="$(jq -c '.tech_debt_raw // []' <<<"$expensive_gather_cache_json" 2>/dev/null || echo '[]')"
+
+  findings="[]"
+  if jq -e 'any(.[]; . == "security" or . == "code-quality")' <<<"$sources" >/dev/null 2>&1; then
+    findings="$(exclude_claimed_items "$findings_raw" "$claimed_item_refs_json")"
+  fi
+  review_feedback="[]"
+  if jq -e 'any(.[]; . == "review-feedback")' <<<"$sources" >/dev/null 2>&1; then
+    review_feedback="$(exclude_claimed_items "$(exclude_claimed_prs "$review_feedback_raw" "$claimed_pr_numbers_json")" "$claimed_item_refs_json")"
+  fi
+  abandoned_drafts="$(exclude_claimed_items "$(exclude_claimed_prs "$abandoned_drafts_raw" "$claimed_pr_numbers_json")" "$claimed_item_refs_json")"
+  merge_conflicts="[]"
+  if jq -e 'any(.[]; . == "merge-conflicts")' <<<"$sources" >/dev/null 2>&1; then
+    merge_conflicts="$(exclude_claimed_items "$(exclude_claimed_prs "$merge_conflicts_raw" "$claimed_pr_numbers_json")" "$claimed_item_refs_json")"
+  fi
+  dequeued="[]"
+  if jq -e 'any(.[]; . == "dequeued")' <<<"$sources" >/dev/null 2>&1; then
+    dequeued="$(exclude_claimed_items "$(exclude_claimed_prs "$dequeued_raw" "$claimed_pr_numbers_json")" "$claimed_item_refs_json")"
+  fi
+  register_hygiene="[]"
+  if jq -e 'any(.[]; . == "register-hygiene")' <<<"$sources" >/dev/null 2>&1; then
+    register_hygiene="$(exclude_claimed_items "$register_hygiene_raw" "$claimed_item_refs_json")"
+  fi
+  issues="[]"; issues_excluded="[]"
+  if jq -e 'any(.[]; startswith("issues"))' <<<"$sources" >/dev/null 2>&1; then
+    issues="$(exclude_claimed_items "$issues_raw" "$claimed_item_refs_json")"
+    [[ "$issues_excluded_raw" != "null" ]] && issues_excluded="$issues_excluded_raw"
+  fi
+  tech_debt="[]"
+  if jq -e 'any(.[]; . == "tech-debt")' <<<"$sources" >/dev/null 2>&1; then
+    tech_debt="$(exclude_claimed_items "$tech_debt_raw" "$claimed_item_refs_json")"
+  fi
   fi
   # The implementation-plan source's path is per-repo config, never a path
   # fixed in the prompt (issue #77): echo it into the runtime-input entry only
@@ -382,6 +476,17 @@ while IFS=$'\t' read -r _ slug default_branch; do
      | input as $issues | input as $td
      | {slug: $slug, default_branch: $db, sources: $sources, findings: $findings, review_feedback: $rf, abandoned_drafts: $ad, merge_conflicts: $mc, dequeued: $dq, register_hygiene: $rh, human_visibility: [], issues: $issues, issues_excluded: $ie, tech_debt: $td}
      + (if $ipp == "" then {} else {implementation_plan_path: $ipp} end)' <<<"$entry_docs")"
+  # Requirement 48 (agent-ops#1086): whether the eight bands above came from
+  # this cycle's own read of $slug or from this node's cache of an earlier
+  # cycle's — lib/coordinator-input.sh documents what a reader (the
+  # Co-Ordinator, a human, the no-op fingerprint) may conclude from each.
+  # Applied after the lifted block above, not inside it, so
+  # test/repo-entry-build.test.sh's literal extraction of that block (which
+  # predates this feature) stays byte-identical and keeps pinning the eight
+  # bands' own shape undisturbed by this addition.
+  entry="$(jq -c --arg fresh "${expensive_gather_fresh:-1}" --arg at "${expensive_gather_as_of:-}" \
+    '. + {expensive_gather: {fresh: ($fresh == "1"), gathered_at: (if $at == "" then null else $at end)}}' \
+    <<<"$entry")"
   # $entry — one repo's whole pre-fetched sources, including issue threads
   # (requirement 3d/#118) and its open tech-debt register (requirement
   # 3t/#310) — is the least bounded value in this loop, and the accumulator it

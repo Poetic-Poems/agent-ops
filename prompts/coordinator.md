@@ -216,6 +216,19 @@ heading, the Script gives you one JSON object:
   carrying `issues_elided` is emphatically not a repo with no more issues: it
   is one whose backlog has outgrown a single cycle's window, which is a fact
   worth reporting, never one to reason from.
+- **Each entry carries `expensive_gather: {fresh, gathered_at}`, and only one
+  repo's `fresh` is `true` this cycle.** The Script now reads every repo's
+  eight pre-fetched bands (`findings`, `review_feedback`, `abandoned_drafts`,
+  `merge_conflicts`, `dequeued`, `register_hygiene`, `issues` and
+  `tech_debt`) fresh from GitHub for one repo per cycle, and hands you every
+  other configured repo's *last* such read — `gathered_at` names when, and
+  `gathered_at: null` means this node has never yet read that repo at all
+  (treat it exactly like a fresh repo with empty bands, not as evidence of
+  anything). None of this changes what counts as a candidate or how you rank
+  one: a non-fresh entry's arrays are exactly as real as a fresh one's. It
+  changes what you owe before you *select* one — see "Trimmed entries must be
+  read live before you select them" below, which this same obligation now
+  covers a second way.
 - Each entry's `issues_excluded` is the number and reason for every issue the
   Script's own deterministic filter just dropped from `issues` above —
   `{"number": 125, "reason": "assigned" | "blocked-label" | "blocked-by: <ref>"}`
@@ -382,6 +395,21 @@ after you reads it under this same rule.
   read for the one item you actually pick, rather than a thread's worth of
   context window for every item you merely considered — which is the whole
   reason the trimming is worth making.
+- **A non-fresh repo's entries must be read live before you select one,
+  too.** `expensive_gather.fresh` (see "What you receive") is `false` for
+  every repo but the one this cycle actually re-read from GitHub; that
+  repo's pre-fetched bands are a snapshot from `expensive_gather.gathered_at`
+  — anywhere from one cycle to several days old — not this cycle's own view.
+  Rank a non-fresh candidate exactly as you would a fresh one, but before you
+  *select* it, confirm live that it is still real: `gh issue view <n>
+  --comments` for an `issues`/`tech_debt` entry, `gh pr view <n>` for a
+  `review_feedback`/`merge_conflicts`/`dequeued`/`abandoned_drafts` one. An
+  item the snapshot shows open may have been closed, merged, claimed or
+  edited since; write your `context`/`acceptance` from what the live read
+  shows, never from the stale snapshot alone. This is the same
+  live-read-before-you-select obligation the trimmed-entry bullet above
+  already places on you, extended to cover staleness rather than only
+  shortness.
 - **Security and code-quality findings are pre-fetched.** The Dependabot and
   code-scanning alerts arrive in each repo's `findings` array (see "What you
   receive"). Read them there; do not call `gh api .../dependabot/alerts` or
