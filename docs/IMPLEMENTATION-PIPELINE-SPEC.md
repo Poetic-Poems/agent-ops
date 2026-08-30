@@ -3203,10 +3203,16 @@ implements.
    over evidence that says the opposite is worse than no escalation, which
    is exactly what happened for the 2026-08-29/30 Ockham outage (agent-ops
    #1070, filed and closed as not-a-defect against this requirement).
-   `scripts/publish-dashboard.sh` reads `provider-unreachable` the same way
-   it reads any other fleet-wide log event and surfaces the newest
-   still-current one (no later Co-Ordinator success on any node) on the
-   affected nodes' own cards, beside their updater and image verdicts —
+   `scripts/publish-dashboard.sh` does not read that event: it sources
+   `lib/crash-loop.sh` and re-runs `crash_loop_verdict` over the same
+   fleet-wide union (`fleet_logs`) itself, keeping the verdict only when
+   `escalate` is `false`, and surfaces it — a run is still current exactly
+   when no Co-Ordinator success on any node has reset it — on the affected
+   nodes' own cards, beside their updater and image verdicts.
+   Recomputing rather than reading the event is what lets a node publish
+   the fact without having been the node whose cycle logged it, and it is
+   gated on `crash_loop_after` alone, so the badge appears whether or not
+   `crash_loop_repo`/`enabler_assignee` would have allowed an escalation.
    `docs/DASHBOARD-SPEC.md` documents the field and the badge. A run this
    verdict counts is still counted and still resets on a Co-Ordinator
    success exactly as an escalating run does; `escalate` changes only what
@@ -9270,7 +9276,7 @@ implements.
     `recheck-clean`, `item-void`, `unvoided`, `item-refined`,
     `enabler-examined`, `refiner-examined`, `own-label-action`, `escalated`,
     `enabler-adjudication`,
-    `crash-loop-escalated`,
+    `crash-loop-escalated`, `provider-unreachable`,
     `labels-ensured`, `limit-hit`, `limit-cleared`,
     `orphan-branch-recovered`, `orphan-branch-released`,
     `issue-closed-post-merge`, `void-object-closed`, `void-retired`,

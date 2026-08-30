@@ -805,8 +805,9 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                             //   present only on "stuck",
                                             //   naming which of the two
                                             //   ways it got there
-                         provider_unreachable: { detail, count, first_ts,
-                                          last_ts, nodes },      // the fleet-
+                         provider_unreachable: { stage, detail, count,
+                                          first_ts, last_ts, nodes,
+                                          escalate },            // the fleet-
                                             //   wide transient-refusal
                                             //   verdict (#1073,
                                             //   `crash_loop_verdict`'s own
