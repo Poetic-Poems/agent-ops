@@ -86,6 +86,17 @@ _expensive_gather_cache_path() {
 #
 # REPOS_JSON with no entries prints nothing; the caller must treat that as
 # "nothing to pick" rather than call this with an empty set.
+#
+# `sed -n '1p'` rather than `head -n1`, on the rule agent-ops#806 wrote and
+# `scripts/state-sync.sh`'s `kept_cycles` already follows: `head` closes the
+# pipe the instant it has its line, `sort` — which cannot emit anything
+# before it has read every one — may still be writing, and that SIGPIPE
+# becomes 141 for the whole pipeline under `pipefail`. The call shape is what
+# makes it fatal rather than inert, and this one is the fatal one: the caller
+# in `lib/candidate-gather.sh` takes this in `$(…)` under `set -e`, so a
+# promoted 141 would abort the whole gather — and with it the cycle — rather
+# than merely yield an empty pick. `sed` without `q` reads its input to the
+# end, so nothing upstream is ever signalled.
 expensive_gather_pick_repo() {
   local state_dir="$1" repos_json="$2" slug path mtime
   while IFS= read -r slug; do
@@ -99,7 +110,7 @@ expensive_gather_pick_repo() {
     printf '%012d\t%s\n' "$mtime" "$slug"
   done < <(jq -r '.[]?.slug // empty' <<<"$repos_json" 2>/dev/null) \
     | sort \
-    | head -n1 \
+    | sed -n '1p' \
     | cut -f2-
 }
 

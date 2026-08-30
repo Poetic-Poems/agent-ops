@@ -87,6 +87,38 @@ assert_eq "a corrupt cache file loads as empty, not a parse error" \
 assert_eq "save leaves no stray .tmp file behind" \
   "0" "$(find "$tmp_state/expensive-gather" -name '*.tmp.*' | wc -l)"
 
+# --- The pick does not slice its sorted stream with a reader that quits -----
+# agent-ops#806's own shape: the pick's `sort` cannot emit until it has read
+# every candidate, so a reader that closes the pipe on its first line takes
+# SIGPIPE, `pipefail` promotes the 141 to the whole pipeline, and the
+# caller's `$(…)` under `set -e` (lib/candidate-gather.sh) aborts the gather
+# and with it the cycle. It only bites once the sorted output outgrows the
+# 64 KiB pipe buffer, which no live `repositories` list approaches — which is
+# exactly why the shape has to be pinned rather than reasoned about. This set
+# is deliberately past that buffer: with `head -n1` the caller below exits
+# 141, with a reader that consumes its input (`sed -n '1p'`) it exits 0.
+#
+# The caller runs as its own `bash -c` rather than a subshell here, and that
+# is load-bearing: a `( … ) || status=$?` would put the subshell in a context
+# where bash suppresses `set -e` *inside* it too, so the failing assignment
+# would be ignored and this assertion would pass against either reader. A
+# separate process, with `$?` read on the next line, reproduces the real
+# caller's errexit rather than a defanged copy of it.
+# The set travels as a file, not as an argument: 2000 slugs is past Linux's
+# own 128 KiB ceiling on a single argv string, and an `Argument list too long`
+# would fail this assertion for a reason that has nothing to do with the pick.
+jq -nc '[range(2000)
+  | {slug: ("o/repo-with-a-deliberately-long-name-to-outgrow-the-buffer-\(.)")}]' \
+  > "$tmp_state/big-repos.json"
+bash -c '
+  set -euo pipefail
+  . "$1/lib/expensive-gather-cache.sh"
+  picked="$(expensive_gather_pick_repo "$2" "$(cat "$3")")"
+  [[ -n "$picked" ]]' _ "$SCRIPT_DIR" "$tmp_state" "$tmp_state/big-repos.json" >/dev/null 2>&1
+big_status=$?
+assert_eq "a repo set larger than one pipe buffer picks cleanly, never SIGPIPE" \
+  "0" "$big_status"
+
 printf '\n'
 if (( failures > 0 )); then
   printf '%d assertion(s) failed\n' "$failures"

@@ -13886,7 +13886,12 @@ What exists, and the requirements each part answers to:
    configured repository per cycle rather than every one of them.
    `expensive_gather_pick_repo` picks the configured repository whose cache
    file (under `state_dir/expensive-gather/`) is oldest, ties broken by
-   slug; `expensive_gather_cache_load`/`expensive_gather_cache_save` read
+   slug — slicing its own sorted stream with a reader that consumes its
+   input (`sed -n '1p'`, never `head`), because its caller takes it in
+   `$(…)` under `set -e` and `pipefail` would promote the `sort`'s SIGPIPE
+   to a whole aborted gather (agent-ops#806, the same rule
+   `scripts/state-sync.sh`'s `kept_cycles` follows);
+   `expensive_gather_cache_load`/`expensive_gather_cache_save` read
    and atomically write that repository's raw gather. Sourced, never
    executed, ahead of `lib/candidate-gather.sh` (its only caller). Must pass
    `shellcheck`. `test/expensive-gather-cache.test.sh` exercises all three
@@ -13894,8 +13899,9 @@ What exists, and the requirements each part answers to:
    round-tripping a saved snapshot, the pick rotating to the next-oldest
    cache once one repository is saved, a never-cached repository always
    outranking any already-cached one, an empty configured set picking
-   nothing, and a corrupt cache file loading as empty rather than raising a
-   parse error.
+   nothing, a corrupt cache file loading as empty rather than raising a
+   parse error, and a configured set past one pipe buffer picking cleanly
+   rather than 141.
 3. `scripts/gather-findings.sh` implementing requirement 3a: given a repo
    slug, prints a normalised JSON array of the repo's open Dependabot and
    code-scanning alerts, degrading to `[]` (exit 0) when a feature is
@@ -20470,7 +20476,13 @@ pull request, run the ones the change touches and any it could regress.
     object exactly and reads a corrupt or absent cache file as empty rather
     than raising; `expensive_gather_cache_save` is atomic (no stray `.tmp`
     file survives it) and a single-repository set (`--repo`) always picks
-    that repository. `test/repo-entry-build.test.sh` still passes unchanged,
+    that repository; and a configured set whose sorted candidate lines
+    outgrow one pipe buffer still picks cleanly under the caller's own
+    `$(…)`-under-`set -e` shape rather than dying 141 on the `sort`'s
+    SIGPIPE (agent-ops#806's shape — the assertion runs its caller as a
+    separate process, because a subshell in a `||` context has its own
+    `set -e` suppressed and would pass either way).
+    `test/repo-entry-build.test.sh` still passes unchanged,
     confirming the per-repo entry-build block's own eight-band shape is
     undisturbed by the cache being threaded in ahead of it.
     `scripts/lint-shell.sh` is clean on every file this requirement touches.
