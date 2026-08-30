@@ -723,7 +723,7 @@ $node_name
     # fresh mint read now, immediately after the engagement returns and
     # before the first write — never re-read per call, since the writes
     # land seconds apart and a per-call re-read would buy nothing.
-    if ! token="$(approver_token_get "")"; then
+    if ! token="$(approver_token_get "$selected_repo")"; then
       log_event "warning" "$(jq -nc --arg u "$pr_url" \
         --arg d "the Approver's installation token could not be minted again once the model engagement returned (it was still mintable at stage entry) — no tech-debt filing or App review was attempted for $pr_url this round" \
         '{detail: $d, pr_url: $u}')"
