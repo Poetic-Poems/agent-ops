@@ -1041,6 +1041,14 @@ cleanup() {
   # after the Refiner, since the Refiner's own priority-triage duty is that
   # cache's main consumer.
   issue_priority_cache_cleanup
+  # The closing GitHub budget reading (requirement 2.0d): after the Enabler
+  # and the Refiner so their own calls fall inside it, before `cycle-end` so
+  # it travels with this cycle. Only for a cycle that took the opening
+  # reading — an ending that never read GitHub (the switch, requirement 2.3)
+  # must not start now. Two points; never fatal.
+  if [[ "${GITHUB_BUDGET_CYCLE_OPEN:-0}" == "1" ]]; then
+    github_budget_record cycle-end || true
+  fi
   log_event "cycle-end" "$(jq -nc --argjson rc "$exit_code" '{exit_code: $rc}')"
   if [[ "$lock_acquired" == "1" ]]; then
     rm -f "$lock_file"

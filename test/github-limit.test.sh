@@ -117,6 +117,126 @@ assert_eq "the description names the resource, the shortfall and the reset" \
 assert_eq "…and says the reset is stated rather than estimated" \
   "yes" "$(if [[ "$describe" == *"Stated by GitHub, not estimated"* ]]; then echo yes; else echo no; fi)"
 
+# --- The meter is the headers, not the endpoint's body (agent-ops#1087) ---
+#
+# The live shape of 2026-08-30: `GET /rate_limit` read cold answers a full
+# bucket with a reset exactly an hour from now, while the headers on any
+# metered call show the bucket draining. The snapshot must be built from the
+# headers, and a body that carries the empty-window signature must never be
+# read as `ok`.
+raw_headers="$(printf 'HTTP/2.0 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nX-RateLimit-Limit: 5000\r\nX-RateLimit-Remaining: 4882\r\nX-RateLimit-Reset: 1788076235\r\nX-RateLimit-Resource: core\r\nX-RateLimit-Used: 118\r\n\r\n{"verifiable_password_authentication":false}\n')"
+assert_eq "core is read from a metered response's x-ratelimit headers" \
+  '{"limit":5000,"used":118,"remaining":4882,"reset":1788076235}' \
+  "$(github_limit_headers_to_resource "$raw_headers")"
+assert_eq "…case-insensitively, and a refused call's headers still count" \
+  '{"limit":5000,"used":5000,"remaining":0,"reset":1788076235}' \
+  "$(github_limit_headers_to_resource "$(printf 'HTTP/2.0 403 Forbidden\r\nx-ratelimit-limit: 5000\r\nx-ratelimit-remaining: 0\r\nx-ratelimit-reset: 1788076235\r\nx-ratelimit-resource: core\r\nx-ratelimit-used: 5000\r\n\r\n{"message":"API rate limit exceeded for user ID 2049303."}\n')")"
+assert_eq "a response without the headers yields nothing, not zeros" \
+  "" "$(github_limit_headers_to_resource "$(printf 'HTTP/2.0 200 OK\r\nContent-Type: text/plain\r\n\r\nKeep it logically awesome.\n')")"
+assert_eq "another pool's headers are not read as core's" \
+  "" "$(github_limit_headers_to_resource "$(printf 'HTTP/2.0 200 OK\r\nX-RateLimit-Remaining: 29\r\nX-RateLimit-Reset: 1788076235\r\nX-RateLimit-Resource: search\r\nX-RateLimit-Used: 1\r\n\r\n{}\n')")"
+assert_eq "graphql is read from the rateLimit object, resetAt as an epoch" \
+  '{"limit":5000,"used":38,"remaining":4962,"reset":1788076295}' \
+  "$(github_limit_graphql_resource '{"data":{"rateLimit":{"limit":5000,"cost":1,"used":38,"remaining":4962,"resetAt":"2026-08-30T07:51:35Z"}}}')"
+assert_eq "a GraphQL error document yields nothing" \
+  "" "$(github_limit_graphql_resource '{"errors":[{"message":"API rate limit already exceeded"}]}')"
+
+# The signature itself, judged against a fixed clock: full, unused, and a
+# reset within slack of now + 3600.
+pristine='{"resources":{"core":{"limit":5000,"used":0,"remaining":5000,"reset":1788079600},"graphql":{"limit":5000,"used":0,"remaining":5000,"reset":1788079600}}}'
+assert_eq "a full bucket whose reset is exactly an hour from now is the empty window" \
+  "yes" "$(if github_limit_resource_pristine "$pristine" core 1788076000; then echo yes; else echo no; fi)"
+assert_eq "…the same bucket an hour into a real window is not" \
+  "no" "$(if github_limit_resource_pristine "$pristine" core 1788077800; then echo yes; else echo no; fi)"
+assert_eq "…and a header reading, with its own probe used, is not" \
+  "no" "$(if github_limit_resource_pristine '{"resources":{"core":{"limit":5000,"used":1,"remaining":4999,"reset":1788079600}}}' core 1788076000; then echo yes; else echo no; fi)"
+assert_eq "a snapshot made only of empty windows is unknown, never ok" \
+  "unknown" "$(github_limit_verdict "$pristine" 300 100 1788076000 | cut -f1)"
+assert_eq "…while one real pool beside an empty window is judged on the real one" \
+  "exhausted" "$(github_limit_verdict '{"resources":{"core":{"limit":5000,"used":0,"remaining":5000,"reset":1788079600},"graphql":{"limit":5000,"used":4990,"remaining":10,"reset":1788078000}}}' 300 100 1788076000 | cut -f1)"
+assert_eq "…and a header-derived reading below the floor is exhausted" \
+  "core" "$(github_limit_verdict '{"resources":{"core":{"limit":5000,"used":4900,"remaining":100,"reset":1788078000}}}' 300 100 1788076000 | cut -f2)"
+
+# The snapshot assembled from the two reads, against a stub that answers them
+# the way GitHub does (verified live 2026-08-30).
+snap_stub_bin="$tmp_dir/snap-bin"
+mkdir -p "$snap_stub_bin"
+cat > "$snap_stub_bin/gh" <<'STUB'
+#!/usr/bin/env bash
+case "${SNAP_STUB_MODE:-ok}" in
+  ok)
+    if [[ "${1:-}" == "api" && "${2:-}" == "-i" && "${3:-}" == "meta" ]]; then
+      printf 'HTTP/2.0 200 OK\r\nX-RateLimit-Limit: 5000\r\nX-RateLimit-Remaining: 4450\r\nX-RateLimit-Reset: 1788076235\r\nX-RateLimit-Resource: core\r\nX-RateLimit-Used: 550\r\n\r\n{}\n'
+      exit 0
+    fi
+    if [[ "${1:-}" == "api" && "${2:-}" == "graphql" ]]; then
+      printf '{"data":{"rateLimit":{"limit":5000,"cost":1,"used":38,"remaining":4962,"resetAt":"2026-08-30T07:51:35Z"}}}\n'
+      exit 0
+    fi ;;
+  rest-only)
+    if [[ "${1:-}" == "api" && "${2:-}" == "-i" ]]; then
+      printf 'HTTP/2.0 200 OK\r\nX-RateLimit-Limit: 5000\r\nX-RateLimit-Remaining: 4450\r\nX-RateLimit-Reset: 1788076235\r\nX-RateLimit-Resource: core\r\nX-RateLimit-Used: 550\r\n\r\n{}\n'
+      exit 0
+    fi
+    echo 'gh: Could not resolve host' >&2; exit 1 ;;
+  down)
+    echo 'gh: Could not resolve host: api.github.com' >&2; exit 1 ;;
+esac
+exit 1
+STUB
+chmod +x "$snap_stub_bin/gh"
+snap_probe="$(PATH="$snap_stub_bin:$PATH" SNAP_STUB_MODE=ok github_limit_snapshot)"
+assert_eq "the snapshot carries both pools, read from headers and rateLimit" \
+  '{"core":{"limit":5000,"used":550,"remaining":4450,"reset":1788076235},"graphql":{"limit":5000,"used":38,"remaining":4962,"reset":1788076295}}' \
+  "$(github_limit_budget_fields "$snap_probe")"
+assert_eq "…and the verdict reads it as it always did" \
+  "ok" "$(github_limit_verdict "$snap_probe" 300 100 | cut -f1)"
+assert_eq "one pool unreadable leaves the other in the snapshot" \
+  '{"core":{"limit":5000,"used":550,"remaining":4450,"reset":1788076235},"graphql":null}' \
+  "$(github_limit_budget_fields "$(PATH="$snap_stub_bin:$PATH" SNAP_STUB_MODE=rest-only github_limit_snapshot)")"
+assert_eq "both unreadable is no snapshot at all" \
+  "rc=1:" "$(out="$(PATH="$snap_stub_bin:$PATH" SNAP_STUB_MODE=down github_limit_snapshot)"; echo "rc=$?:$out")"
+
+# --- The record's arithmetic (requirement 2.0d), pure ---
+earlier='{"resources":{"core":{"limit":5000,"used":550,"remaining":4450,"reset":1788076235},"graphql":{"limit":5000,"used":38,"remaining":4962,"reset":1788076295}}}'
+later='{"resources":{"core":{"limit":5000,"used":610,"remaining":4390,"reset":1788076235},"graphql":{"limit":5000,"used":40,"remaining":4960,"reset":1788076295}}}'
+rolled='{"resources":{"core":{"limit":5000,"used":7,"remaining":4993,"reset":1788079835},"graphql":{"limit":5000,"used":40,"remaining":4960,"reset":1788076295}}}'
+assert_eq "movement within one window is the difference in used" \
+  '{"core":60,"graphql":2,"window_rolled":false}' "$(github_limit_budget_delta "$earlier" "$later")"
+assert_eq "across a roll it is the new window's used, and says so" \
+  '{"core":7,"graphql":0,"window_rolled":true}' "$(github_limit_budget_delta "$later" "$rolled")"
+assert_eq "a count that went backwards inside one window is null, not negative" \
+  '{"core":null,"graphql":null,"window_rolled":false}' "$(github_limit_budget_delta "$later" "$earlier")"
+assert_eq "no previous reading is no movement" \
+  '{"core":null,"graphql":null,"window_rolled":false}' "$(github_limit_budget_delta "" "$later")"
+assert_eq "a pool missing on one side is null for that pool only" \
+  '{"core":60,"graphql":null,"window_rolled":false}' \
+  "$(github_limit_budget_delta "$earlier" '{"resources":{"core":{"limit":5000,"used":610,"remaining":4390,"reset":1788076235}}}')"
+
+# The recorder end to end: a `log_event` of the sourcing script's shape, the
+# stub above, and three readings in a row.
+record_log="$tmp_dir/record.jsonl"
+log_event() {  # <event> <fields-json> — the shape agent-cycle.sh writes
+  jq -nc --arg event "$1" --argjson fields "${2:-{\}}" '{event: $event} + $fields' >>"$record_log"
+}
+GITHUB_BUDGET_LAST_SNAPSHOT=""
+GITHUB_BUDGET_CYCLE_OPEN=0
+PATH="$snap_stub_bin:$PATH" SNAP_STUB_MODE=ok github_budget_record cycle-start
+PATH="$snap_stub_bin:$PATH" SNAP_STUB_MODE=ok github_budget_record stage reviewer
+PATH="$snap_stub_bin:$PATH" SNAP_STUB_MODE=down github_budget_record cycle-end
+assert_eq "cycle-start opens the cycle's record" "1" "$GITHUB_BUDGET_CYCLE_OPEN"
+assert_eq "three readings, three github-budget events" \
+  "3" "$(jq -r 'select(.event == "github-budget") | .phase' "$record_log" | wc -l | tr -d ' ')"
+assert_eq "the opening reading has no previous to move from" \
+  'cycle-start true null' "$(jq -r 'select(.phase == "cycle-start") | "\(.phase) \(.readable) \(.since_previous.core)"' "$record_log")"
+assert_eq "the stage reading names its stage and its movement (zero here: same stub answer)" \
+  'stage reviewer 0 550' "$(jq -r 'select(.phase == "stage") | "\(.phase) \(.stage) \(.since_previous.core) \(.core.used)"' "$record_log")"
+assert_eq "an unreadable reading is recorded as such, not skipped" \
+  'cycle-end false' "$(jq -r 'select(.phase == "cycle-end") | "\(.phase) \(.readable)"' "$record_log")"
+assert_eq "…and leaves the last good snapshot in place for the next delta" \
+  "550" "$(jq -r '.resources.core.used' <<<"$GITHUB_BUDGET_LAST_SNAPSHOT")"
+unset -f log_event
+
 # --- Classifying a refusal (requirement 2.0a) ---
 #
 # The three messages observed in the wild. The secondary test runs first in the
@@ -201,10 +321,18 @@ cat > "$stub_bin/gh" <<'STUB'
 #!/usr/bin/env bash
 # $GH_STUB_MODE decides what the first call does; every later call succeeds.
 count_file="$GH_STUB_COUNT"
-if [[ "${1:-}" == "api" && "${2:-}" == "rate_limit" ]]; then
-  # Not counted: the wrapper's own lookup is not the caller's call.
-  printf '{"resources":{"core":{"remaining":0,"reset":%s},"graphql":{"remaining":0,"reset":%s}}}\n' \
-    "$(( $(date +%s) + 3 ))" "$(( $(date +%s) + 3 ))"
+# Not counted: the wrapper's own reset lookup is not the caller's call. The
+# snapshot reads the `core` meter off a metered probe's headers and the
+# `graphql` meter off the `rateLimit` object — a refused probe still answers
+# with headers, which is the case the wrapper is in.
+if [[ "${1:-}" == "api" && "${2:-}" == "-i" ]]; then
+  printf 'HTTP/2.0 403 Forbidden\r\nX-RateLimit-Limit: 5000\r\nX-RateLimit-Used: 5000\r\nX-RateLimit-Remaining: 0\r\nX-RateLimit-Reset: %s\r\nX-RateLimit-Resource: core\r\n\r\n{"message":"API rate limit exceeded"}\n' \
+    "$(( $(date +%s) + 3 ))"
+  exit 1
+fi
+if [[ "${1:-}" == "api" && "${2:-}" == "graphql" ]]; then
+  printf '{"data":{"rateLimit":{"limit":5000,"cost":1,"used":5000,"remaining":0,"resetAt":"%s"}}}\n' \
+    "$(date -u -d "@$(( $(date +%s) + 3 ))" +%Y-%m-%dT%H:%M:%SZ)"
   exit 0
 fi
 n=$(( $(cat "$count_file" 2>/dev/null || echo 0) + 1 ))

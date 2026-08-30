@@ -813,7 +813,7 @@ and the schema must carry every one of them.
 | `stage_budget` | *(unset)* | Tuning for the derivation of requirement 4f: `gap_multiplier` and `shrinkage_runs` shape the watchdog estimate, `increase_factor`, `decrease_after_runs`, `decrease_step_min`, `kill_rate_slo` and `ceiling_multiple` shape the backstop controller, and `window_days`/`window_runs` bound what either looks at. Defaults live in `lib/stage-budget.sh`, not here, on requirement 4e's reasoning: a value an installation must set is a value it can set wrongly. |
 | `limit_cooldown_default` | 3 h | Stand-down period after an ordinary/transient usage-limit error whose reset time cannot be parsed. A weekly/monthly match with no parseable reset time uses the longer `LIMIT_LONG_COOLDOWN_HOURS` fallback in `lib/limit-detect.sh` instead (see requirement 10) — not this key. |
 | `limit_escalate_after_hours` | 24 h | The automatic-freeze escalation threshold of requirement 2 (#244): aged from `limit_standdown_since` (the first `limit-hit` of the current freeze, not its latest extension), raised once per freeze via the `limit-freeze-escalated` event, filed in `crash_loop_repo` with `enabler_escalation_label` and `enabler_assignee`. `0` disables it. A manual stand-down never pages the person who set it. |
-| `github_min_core_budget` | 300 points | The `core` floor of the GitHub API budget check (requirement 2.0). Sized above one cycle's typical REST spend so the cycle that starts can finish, and read from a `/rate_limit` call that is itself exempt from the limits it reports. `0` disables the floor. |
+| `github_min_core_budget` | 300 points | The `core` floor of the GitHub API budget check (requirement 2.0). Sized above one cycle's typical REST spend so the cycle that starts can finish, and read from the `x-ratelimit-*` headers of one metered call — not from `GET /rate_limit`, whose body read cold is an empty window rather than a reading (agent-ops#1087). `0` disables the floor. |
 | `github_min_graphql_budget` | 100 points | The `graphql` floor of the GitHub API budget check (requirement 2.0). Separate from `github_min_core_budget` because GitHub meters the two pools independently and either can be the binding one — on 2026-08-12 the fleet exhausted `graphql` with 96% of its `core` hour unspent. `0` disables the floor. |
 | `github_retry_max_wait_seconds` | 60 s | The per-call wait bound of the `gh` wrapper (requirement 2.0a). A secondary rate limit waits a fixed fallback, a primary one waits until GitHub's stated reset, and either is abandoned if it exceeds this — the cycle holds a lock and runs on a `cycle_interval_minutes` tick, so a wrapper that waited out a primary limit would collide with the next tick. `0` turns retrying off. |
 | `min_free_workspace_bytes` | 2 GiB | The free-space floor of the pre-clone stand-down (requirement 2.0c, agent-ops#756): below this, `workspace_root`'s filesystem is read via `lib/disk-space.sh` and the cycle stands down before the clone rather than cloning into whatever room is actually left. `scripts/doctor.sh` reads the same key for its own advisory warning, so the two cannot silently disagree about what "low" means. `0` turns the check off. |
@@ -1706,8 +1706,11 @@ implements.
    with. Unnumbered rather than "0aa" or similar, since renumbering 0a–0c
    would touch every cross-reference those letters already have elsewhere in
    this document, and this step changes no stand-down behaviour of its own.
-   0. *GitHub API budget*: before any other check, read `GET /rate_limit` and
-      stand the cycle down when either metered pool is below its floor —
+   0. *GitHub API budget*: before any other check, read the meter — the
+      `x-ratelimit-*` headers of one metered `GET /meta` for `core`, and the
+      GraphQL `rateLimit` object for `graphql`, assembled into one snapshot by
+      `github_limit_snapshot` — and stand the cycle down when either metered
+      pool is below its floor —
       `core` below `github_min_core_budget`, or `graphql` below
       `github_min_graphql_budget`. Either floor set to `0` turns that
       resource's check off; both at `0` turns the check off entirely. The
@@ -1717,9 +1720,9 @@ implements.
       needs to. When both pools are below their floors the one resetting
       **later** binds, so the stand-down covers both.
 
-      First, because it is the only free check: `/rate_limit` is exempt from
-      the limits it reports, and every check below it can spend money — 1b's
-      probe most literally. What it prevents is not a failed `gh` call but
+      First, because it is the cheapest check — two points, against the
+      thousands every check below it can spend, 1b's probe most literally.
+      What it prevents is not a failed `gh` call but
       the cycle those calls sit inside. On 2026-08-12 an exhausted GraphQL
       budget read to the pipeline as a quiet GitHub: every gatherer degraded
       to `[]` (the `[]`-on-error trap in the Gotchas table), the Co-Ordinator
@@ -1728,11 +1731,36 @@ implements.
       exceeded`. Everything before the clone was spent answering a question
       GitHub answers for free.
 
-      A `/rate_limit` call that cannot be read is **not** a stand-down. An
-      unreadable meter is no evidence about the budget, and a node that cannot
-      reach it could not have run a cycle anyway; whatever call meets the real
-      fault will report it. Standing down here would give a network blip the
-      same face as an exhausted account.
+      A meter that cannot be read is **not** a stand-down. An unreadable meter
+      is no evidence about the budget, and a node that cannot reach it could
+      not have run a cycle anyway; whatever call meets the real fault will
+      report it. Standing down here would give a network blip the same face
+      as an exhausted account.
+
+      **Not `GET /rate_limit`** (agent-ops#1087). That endpoint is exempt from
+      the limits it reports, which made it the obvious probe; it is also, read
+      cold, not a reading. On 2026-08-30 three metered calls seven seconds
+      apart, each followed within the same second by the endpoint, showed the
+      response headers draining the shared bucket (`x-ratelimit-used` 92, 105,
+      118 against one fixed reset) while the endpoint's body answered `used:
+      0, remaining: 5000` every time with a `reset` exactly 3600 s from *now*,
+      sliding with the clock — and the endpoint's own headers said the same.
+      It is intermittently right, and nothing in the answer says which kind it
+      is. Read as the first call of every cycle, it answered `ok` through 95
+      recorded refusals in 48 hours. The headers on any *metered* response are
+      computed on the request and describe the bucket GitHub enforces — the
+      **user's** aggregate, so the whole fleet's, the publisher's and the
+      owner's shell together, which makes this gate fleet-aware with no
+      per-node arithmetic — and GraphQL's `rateLimit` object is the same kind
+      of reading for that pool. A body-shaped snapshot that carries the
+      empty-window signature — `remaining == limit`, nothing used, `reset`
+      within `GITHUB_LIMIT_PRISTINE_SLACK` seconds of now + 3600 — is
+      classified `unknown`, never `ok` (`github_limit_resource_pristine`); one
+      real pool beside such an answer is judged on the real one. A refused
+      probe still answers with the headers, which is also how 0a's wrapper
+      reads a reset off the very refusal it is handling. `GET /rate_limit`
+      remains what 0b's credential probe and the token-expiry read use: both
+      want the call's status and headers, not its budget figures.
 
    0a. *A refusal shorter than the cycle is waited out, not reported.* The two
       GitHub limits divide by how far away their reset is, and this is the near
@@ -1835,6 +1863,33 @@ implements.
       differing only in how far past the floor the shortfall runs.
       `min_free_workspace_bytes` set to `0` turns the check off, the same
       convention `github_min_core_budget`/`github_min_graphql_budget` use.
+
+   0d. *The budget is recorded* (agent-ops#1087). `github_budget_record`
+      (`lib/github-limit.sh`) takes a snapshot and logs it as a
+      `github-budget` event — `{phase, stage?, readable, core: {limit, used,
+      remaining, reset} | null, graphql: {…} | null, since_previous: {core,
+      graphql, window_rolled}}` — at three points: `cycle-start`, the very
+      reading 0's verdict then judges (recorded whether or not a floor is
+      set, since the record is what D25's "measured to bind" trigger reads);
+      `stage`, after every model run `run_claude_stage` (`lib/stage-run.sh`)
+      completes, naming the stage; and `cycle-end`, after the Enabler and the
+      Refiner and before the `cycle-end` event, but only for a cycle that
+      took the opening reading — an ending that never read GitHub (the
+      switch, requirement 2.3) must not start now. `since_previous` is the
+      bucket's movement since this process's last reading: within one window
+      the difference in `used`, across a roll (the two `reset`s differ) the
+      new window's `used`, flagged `window_rolled` as the lower bound it is,
+      and `null` where either side lacks a figure or the count went
+      backwards. A reading that cannot be taken is recorded `readable: false`,
+      never skipped, and never fails the cycle or the stage. Each reading
+      costs two points; a cycle with three stages costs ten.
+
+      What the movement is, and is not: while every node authenticates as one
+      user (D25 unprovisioned) the headers describe the user's aggregate, so
+      a segment's movement is the *bucket's* — an upper bound on what the
+      segment itself spent, exact only once identities are per node or a
+      per-call ledger exists (agent-ops#1084). `scripts/github-budget-report.sh`
+      (component 22b) sums the events and says so in its preamble.
 
    1. *Usage-limit cooldown*: the same signal arrives on two carriers, and
       the **later** `resume_at` wins. The log union's most recent `limit-hit`
@@ -14227,7 +14282,10 @@ What exists, and the requirements each part answers to:
    `github_limit_verdict` and `github_limit_describe`; requirement 2.0a's `gh`
    wrapper, `github_limit_kind` and the pure `github_limit_wait_plan`;
    requirement 2.0b's `github_auth_probe`, the same free call classifying a
-   401, and a missing token, apart from every other failure; and the
+   401, and a missing token, apart from every other failure; requirement
+   2.0d's `github_limit_headers_to_resource`, `github_limit_graphql_resource`,
+   `github_limit_resource_pristine`, `github_limit_budget_fields`,
+   `github_limit_budget_delta` and `github_budget_record`; and the
    `GITHUB_PR_LIST_LIMIT` listing
    bound with `github_pr_list_truncated`, whose callers — the back-pressure
    gate, the four PR-listing gatherers, and the void guard's supersession
@@ -15852,6 +15910,25 @@ What exists, and the requirements each part answers to:
     no benefit — but shares `lib/verdict-fate.sh`'s join and classification
     logic unchanged, so a change to the classification rules changes both
     call sites at once, deliberately.
+22b. `scripts/github-budget-report.sh` — a read-only operator report, like
+    components 21, 22 and 22a: over the `github-budget` events requirement
+    2.0d records — this node's `state_dir/log.jsonl` plus every peer's
+    mirrored copy, or exactly the log files given as arguments — prints, per
+    hour (UTC), the readings taken, the peak `core` used and the minimum
+    `core` remaining any reading saw, the peak `graphql` used, the number of
+    primary-limit refusals that reached `guard-degraded` and the number of
+    requirement-2.0 stand-downs; per stage, the median and maximum of the
+    bucket's `core` movement and the median `graphql` movement while the
+    stage ran, readings that spanned a window roll excluded; and per node,
+    readings, unreadable readings and cycles carrying a record — as Markdown
+    followed by a machine-readable JSON block. `--since ISO8601` restricts
+    the window. Its preamble states what the figures are: the bucket's, an
+    upper bound on any one segment's own spend while identities are shared.
+    Damaged log lines are dropped, not fatal; an empty read says so and
+    exits 0; a named log that does not exist is an error. Itself adds no
+    event, makes no network call and changes nothing. Unit-tested
+    (`test/github-budget-report.test.sh`); must pass `shellcheck`.
+
 23c. `scripts/find-similar-tech-debt.sh` implementing the dedup half of
     requirements 24b/30d/36c/42a: given a working title, normalises it
     (lower-cased, punctuation folded to spaces, runs collapsed) and compares
@@ -16805,7 +16882,40 @@ pull request, run the ones the change touches and any it could regress.
    `github_pr_list_truncated` fires exactly at the cap. The wrapper itself is
    exercised against a stub `gh`: a rate-limited call is retried once and its
    stdout emitted exactly once, a non-rate-limit failure is returned
-   unretried, and `gh`'s own stderr reaches the caller either way.
+   unretried, and `gh`'s own stderr reaches the caller either way. The meter
+   is the headers (agent-ops#1087): `github_limit_headers_to_resource` builds
+   `core` from a metered response's `x-ratelimit-*` headers — case-
+   insensitively, a refused call's included, never another pool's, and
+   nothing rather than zeros when they are absent; `github_limit_graphql_resource`
+   builds `graphql` from the `rateLimit` object with `resetAt` as an epoch
+   and nothing from an error document; `github_limit_snapshot`, against a
+   stub answering both reads as GitHub does, carries both pools, carries one
+   when only one read, and is no snapshot at all when neither did; and
+   `github_limit_resource_pristine` recognises the endpoint's empty window
+   (full, unused, reset an hour from a fixed clock) but not the same bucket an
+   hour into its window nor a header reading with its own probe used — so a
+   snapshot made only of empty windows is `unknown`, never `ok`, one real
+   pool beside one is judged on the real pool, and a header reading below the
+   floor is `exhausted`.
+2o. **The budget is recorded, and the record adds up (requirement 2.0d).**
+   `test/github-limit.test.sh` passes: `github_limit_budget_delta` gives the
+   difference in `used` within one window, the new window's `used` flagged
+   `window_rolled` across a roll, `null` for a count that went backwards, for
+   no previous reading, and for a pool missing on either side — that pool
+   only; and `github_budget_record`, against a stub and a `log_event` of the
+   pipeline's shape, logs one `github-budget` event per reading —
+   `cycle-start` with no movement and the cycle opened, `stage` naming its
+   stage and its movement, and an unreadable `cycle-end` recorded
+   `readable: false` with the last good snapshot left in place for the next
+   delta. `test/github-budget-report.test.sh` passes: over two nodes' logs
+   with a damaged line, the report counts every reading and the unreadable
+   one apart, takes each hour's peak used and minimum remaining from readable
+   readings only, counts primary refusals (never a 404) and requirement-2.0
+   stand-downs per hour, excludes a rolled reading from a stage's movement,
+   sums per node, honours `--since`, unions this node's log with its peers'
+   in the fleet-shaped read, says so on an empty log, and errors on a named
+   log that does not exist. `scripts/github-budget-report.sh` passes
+   `shellcheck`.
 2l. **A rejected or missing credential is classified apart from an outage,
    and stands the cycle down before the Co-Ordinator ever runs (requirement
    2.0b, agent-ops#691, TD-PPagop-26082306).** `test/github-limit.test.sh`

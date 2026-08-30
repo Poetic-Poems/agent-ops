@@ -43,9 +43,12 @@ fi
 
 # --- 2. Stand-down checks ---
 # 2.0 GitHub API budget (requirement 2.0). First of the stand-down checks
-# because it is the only free one: `GET /rate_limit` is exempt from the limits
-# it reports, so asking costs nothing, and every check below it — the
-# usage-limit probe most of all — can spend real money.
+# because it is the cheapest one: two points — one metered `GET /meta` for its
+# `x-ratelimit-*` headers and one GraphQL `rateLimit` query — against the
+# thousands every check below it can spend, the usage-limit probe most of all.
+# Not the free `GET /rate_limit`: read cold, its body is an empty window, not
+# a reading, and this gate answered `ok` from it through 95 refusals
+# (agent-ops#1087; lib/github-limit.sh's header has the measurement).
 #
 # What this prevents is not the failed `gh` call. It is the cycle of
 # 2026-08-12T20:52Z, which read a rate-limited GitHub as a quiet one: every
@@ -60,9 +63,13 @@ fi
 # `/rate_limit` could not have run a cycle anyway; the failure it does have
 # will be reported by whatever call meets it. Standing down here would invent
 # a way for a network blip to look like an exhausted account.
+# The reading is recorded first (requirement 2.0d) — whether or not a floor is
+# set, since the record is what D25's "measured to bind" trigger reads — and
+# the verdict judges that same reading rather than paying for a second one.
+github_budget_record cycle-start
 if (( github_min_core_budget > 0 || github_min_graphql_budget > 0 )); then
   IFS=$'\t' read -r gh_budget_verdict gh_budget_resource gh_budget_remaining gh_budget_reset_at \
-    < <(github_limit_verdict "$(github_limit_snapshot || true)" \
+    < <(github_limit_verdict "$GITHUB_BUDGET_LAST_SNAPSHOT" \
           "$github_min_core_budget" "$github_min_graphql_budget")
   if [[ "$gh_budget_verdict" == "exhausted" ]]; then
     if [[ "$gh_budget_resource" == "core" ]]; then
