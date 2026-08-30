@@ -244,6 +244,13 @@ write_roll_pending 15
 run_hook
 assert_eq "a live cycle's lock is overridden while roll-pending is in force" "0" "$rc"
 assert_contains "and says so" "roll-pending marker" "$out"
+# The closing line has to agree with the one above it: an override is the one
+# allow where a cycle *was* in flight, so reporting the idle path's "no cycle
+# in flight" here would contradict the hook's own record of what it just did.
+assert_eq "and never signs off as an idle node" "0" \
+  "$(grep -c 'no cycle in flight' <<<"$out")"
+assert_contains "signing off on the marker's authority instead" \
+  "may proceed on the roll-pending marker's own authority" "$out"
 stop_sleeper
 rm -f "$state_dir/lock.json"
 

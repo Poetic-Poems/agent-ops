@@ -16792,12 +16792,17 @@ pull request, run the ones the change touches and any it could regress.
    On a live node: `docker compose exec scheduler
    /app/deploy/docker/watchtower-pre-update.sh` echoes its finding and exits
    0 when idle, 75 during a cycle. The same suite also pins the
-   `roll-pending` override (requirement 39c, agent-ops#1096): a valid,
-   unexpired `$state_dir/roll-pending.json` makes the hook exit 0 despite a
-   live lock naming a live process in the hook's own container, an expired
-   or unparseable marker leaves the ordinary lock-based judgement above
-   unchanged, and no marker at all behaves exactly as it did before the
-   marker existed.
+   `roll-pending` override (requirement 39c, agent-ops#1096, scoped by
+   agent-ops#1102): a valid, unexpired `$state_dir/roll-pending.json` makes
+   the hook exit 0 despite a live `lock.json` naming a live process in the
+   hook's own container — but never despite a live `review-lock.json`, which
+   still defers on its own ordinary judgement whatever the marker says, and
+   whose deferral the hook's own output never reports as an override; an
+   expired or unparseable marker leaves the ordinary lock-based judgement
+   above unchanged; and no marker at all behaves exactly as it did before the
+   marker existed. The allow the override does grant says so in the hook's
+   own output — it names the lock it overrode rather than the "no cycle in
+   flight" the marker-free allow reports.
 1c-ii. **The dashboard is published to the host's loopback and to no network.**
    `test/dashboard-exposure.test.sh` passes: in `deploy/docker/compose.yaml`
    every port `dashboard-local` publishes is scoped to `127.0.0.1`, the mapping
@@ -19961,9 +19966,12 @@ pull request, run the ones the change touches and any it could regress.
     when that lock is `lock.json` — but never when it is `review-lock.json`,
     which still defers on its own ordinary judgement regardless of the
     marker, and whose deferral the hook's own output never misdescribes as
-    an override; an expired or unparseable marker leaves the ordinary
-    lock-based judgement unchanged; no marker at all behaves exactly as
-    before the marker existed. `test/state-sync.test.sh` passes:
+    an override; the override's own sign-off names the marker's authority
+    rather than the idle path's "no cycle in flight", which would contradict
+    the in-flight line the same run already printed; an expired or
+    unparseable marker leaves the ordinary lock-based judgement unchanged; no
+    marker at all behaves exactly as before the marker existed.
+    `test/state-sync.test.sh` passes:
     `roll-pending.json` does not replicate to a peer's branch, alongside the
     other live locks.
 17e. **Contended-claim-loss reporting is correct per node and per era

@@ -330,11 +330,13 @@ roll_pending_allow() {
 }
 
 defer=0
+overrode=0
 
 held="$(held_by "$state_dir/lock.json" "$cycle_stale_after")"
 if [[ -n "$held" ]]; then
   if pending="$(roll_pending_allow)"; then
     say "an implementation cycle is in flight ($held), but $pending — allowing the update despite the lock"
+    overrode=1
   else
     say "an implementation cycle is in flight ($held) — deferring this update"
     defer=1
@@ -354,5 +356,16 @@ if (( defer )); then
 fi
 
 record_verdict allow
-say "no cycle in flight — the update may proceed"
+# Two different allows, and the log has to tell them apart: the ordinary one
+# is "nothing was running here", while the marker's override is "something
+# *was* running here and this container agreed at its own last cycle boundary
+# to be destroyed anyway". Saying "no cycle in flight" for the second would
+# contradict the line printed a few checks above it — in the one log an
+# operator reads after losing a cycle to a roll, which is exactly what this
+# machinery exists to explain.
+if (( overrode )); then
+  say "the update may proceed on the roll-pending marker's own authority"
+else
+  say "no cycle in flight — the update may proceed"
+fi
 exit 0

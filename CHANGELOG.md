@@ -1084,7 +1084,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   without this a reacquired lock could otherwise run its own stages
   underneath a marker still authorising an override of it). The bound is
   now two-part: one cycle's length for a node that is merely busy,
-  `lock_stale_after` only for one that is actually wedged.
+  `lock_stale_after` only for one that is actually wedged. An allow the
+  marker granted says so as it signs off, rather than reporting the idle
+  path's "no cycle in flight" over the in-flight line the same run printed a
+  few checks earlier — that log is what an operator reads after losing a
+  cycle to a roll, and is the whole reason this machinery is legible.
 - Requirement 2.0's budget gate read `GET /rate_limit`, whose body — read
   cold, as the first call of every cycle — is an empty window (`5000/5000`,
   reset exactly an hour from now) rather than a reading; it answered `ok`
