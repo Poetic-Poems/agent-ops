@@ -131,6 +131,12 @@ printf '{"pid":998}\n' > "$state/review-lock.json"
 printf 'server noise\n' > "$state/dashboard.log"
 printf '{}\n' > "$state/.dashboard-github.json"
 printf '{"ok":false}\n' > "$state/.image-drift-cache.json"
+# The expensive-gather cache (lib/expensive-gather-cache.sh, requirement 48,
+# agent-ops#1086): local to this node, like the caches above —
+# expensive_gather_pick_repo keys on cache-file mtime, and a copy restored
+# from the fleet state branch would carry a checkout-fresh mtime.
+mkdir -p "$state/expensive-gather"
+printf '{"findings":[]}\n' > "$state/expensive-gather/o_r.json"
 # The hourly unattended doctor pass's own artefacts (agent-ops#543): local to
 # this node, like the caches above, so neither should replicate.
 printf 'doctor noise\n' > "$state/doctor.log"
@@ -175,6 +181,7 @@ assert_eq "the review lock does not replicate" "0" "$(test -e "$pushed/review-lo
 assert_eq "the dashboard log does not replicate" "0" "$(test -e "$pushed/dashboard.log" && echo 1 || echo 0)"
 assert_eq "the GitHub cache does not replicate" "0" "$(test -e "$pushed/.dashboard-github.json" && echo 1 || echo 0)"
 assert_eq "the image-drift cache does not replicate" "0" "$(test -e "$pushed/.image-drift-cache.json" && echo 1 || echo 0)"
+assert_eq "the expensive-gather cache does not replicate" "0" "$(test -e "$pushed/expensive-gather" && echo 1 || echo 0)"
 assert_eq "the doctor log does not replicate" "0" "$(test -e "$pushed/doctor.log" && echo 1 || echo 0)"
 assert_eq "the doctor status cache does not replicate" "0" "$(test -e "$pushed/.doctor-status.json" && echo 1 || echo 0)"
 assert_eq "the stage-health cache does not replicate as a raw file" "0" "$(test -e "$pushed/.stage-health.json" && echo 1 || echo 0)"

@@ -21,7 +21,11 @@
 #
 # The cache lives under this node's own `state_dir`, exactly like
 # `lib/labels.sh`'s ensure-stamp — it is not synced fleet-wide the way the
-# union log is. A fleet-shared cache (the node that gathers first in an
+# union log is: `scripts/state-sync.sh`'s `EXCLUDES` excludes
+# `state_dir/expensive-gather/` from general replication, on the same
+# checkout-fresh-mtime reasoning as `labels-ensured/` — a cache restored from
+# the fleet state branch would make every repository look freshly read.
+# A fleet-shared cache (the node that gathers first in an
 # interval writing a snapshot every node reuses) is a real further
 # reduction — issue #1086's own "Option 2" — but it is a state-store
 # contract, deliberately left for whenever D21/Phase 2 settles what that

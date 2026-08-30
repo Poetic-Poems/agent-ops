@@ -244,6 +244,16 @@ EXCLUDES=(
   # carry a checkout-fresh mtime, silently deferring that node's next ensure
   # of every repository by a full interval.
   --exclude=labels-ensured/
+  # expensive-gather/ (lib/expensive-gather-cache.sh, requirement 48,
+  # agent-ops#1086): this node's own cache of each configured repository's
+  # last expensively-gathered bands, local to this node on the same
+  # reasoning as labels-ensured/ above — no peer reads another node's cache,
+  # and expensive_gather_pick_repo keys entirely on cache-file mtime, so a
+  # cache restored from the fleet state branch would carry a checkout-fresh
+  # mtime, making every repository look freshly read and deferring this
+  # node's next real gather of each one by a full rotation while it keeps
+  # serving the restored (arbitrarily stale) snapshots.
+  --exclude=/expensive-gather/
   # updater-ledger/ (deploy/docker/watchtower-pre-update.sh,
   # lib/updater-health.sh, agent-ops#603): this node's own record of its
   # pre-update hook's invocations, keyed by container — a peer's copy of it

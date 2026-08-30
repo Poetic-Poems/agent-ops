@@ -13651,8 +13651,17 @@ with the Reviewer's own.
     repositories: the one whose expensive-gather cache
     (`lib/expensive-gather-cache.sh`, under this node's own `state_dir`) is
     oldest, with a repository never yet cached always outranking one cached
-    at all. Every other configured repository's entry carries the raw
-    gather this same node cached the last time its own turn came around —
+    at all. The cache directory (`state_dir/expensive-gather/`) is local to
+    this node, not synced fleet-wide the way the union log is — it is
+    excluded from general state-sync replication
+    (`scripts/state-sync.sh`'s `EXCLUDES`), on the identical reasoning as
+    `labels-ensured/`: `expensive_gather_pick_repo` keys entirely on
+    cache-file mtime, and a cache restored from the fleet state branch would
+    carry a checkout-fresh mtime, deferring this node's next real gather of
+    every configured repository by a full rotation while it kept serving the
+    restored, arbitrarily stale snapshots. Every other configured
+    repository's entry carries the raw gather this same node cached the
+    last time its own turn came around —
     `sources` gating and claim exclusion (`exclude_claimed_items`/
     `exclude_claimed_prs`) are re-applied to it fresh every cycle regardless,
     so a claim a peer takes or a `sources` edit still takes effect without a
