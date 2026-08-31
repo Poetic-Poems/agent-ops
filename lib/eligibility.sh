@@ -23,7 +23,8 @@
 # cycle's own globals directly — `refinements_json`, `decisions_json`,
 # `enabler_eligible_json`, `enabler_allowed`, `refiner_repos_json`,
 # `refiner_candidates_json`, `refiner_allowed`, `open_issues_json`,
-# `live_pr_refs_json`, `stale_enabler_refs_json`/`_n` — so each call is
+# `gathered_pr_refs_json`, `live_pr_refs_json`,
+# `stale_enabler_refs_json`/`_n` — so each call is
 # indistinguishable, to the
 # rest of the cycle, from the inline block it replaces. Their bodies keep the
 # original top-level indentation for the same reason `lib/candidate-gather.sh`
@@ -69,6 +70,38 @@ compute_band_eligibility() {
 # void — with no per-item judgement left for it to apply, and no room for a
 # verdict like "requires per-item evaluation against blocked/void/claimed
 # records" to be true of any of them.
+# Requirement 35e's live set, sampled here rather than where it is used
+# (issue #1119). The loop below rewrites `merge_conflicts`, `dequeued` and
+# `abandoned_drafts` in `ordered_repos_json` with their blocked and void
+# entries subtracted — and a blocked entry is the only kind the Enabler is
+# ever eligible for, so a staleness test run against the post-subtraction
+# array is asking whether a ref is present in a set the subtraction has just
+# guaranteed it is absent from. It always answered yes: from 2026-08-13, when
+# requirement 3u generalised the subtraction to every band, until issue #1119,
+# every blocked `pr-<n>-conflict-<sha>`/`-superseded-`/`-dequeued-`/
+# `-abandoned-` ref was skipped as stale on every cycle of every node, and the
+# Enabler — the only thing that can clear such a block — could never reach
+# one. PR #1059 sat blocked that way for eleven hours across 96 skips while
+# `scripts/gather-merge-conflicts.sh` went on reporting its ref every cycle.
+#
+# So the value is taken now, while the bands still hold what this cycle's
+# gatherers actually reported, and `compute_enabler_eligible_set` reads this
+# instead of re-deriving from an aggregate that no longer means what
+# requirement 35e needs it to mean. The claim exclusion the repo loop already
+# applied (lib/candidate-gather.sh) is deliberately still in it: a ref another
+# node is working is not this Enabler's to examine, which is the same answer
+# the filter gave before this fix and the same one requirement 17a wants.
+#
+# Empty string on failure, never `[]`, and for the reason
+# `compute_enabler_eligible_set` spells out at the point of use: an empty live
+# set and a failed derivation of one are opposite facts, and only the empty
+# string keeps them apart. jq prints nothing to stdout on error and `[]` at
+# minimum on success, so `|| true` preserves the distinction rather than
+# erasing it.
+gathered_pr_refs_json="$(jq -c \
+  '[.[] | .slug as $s | ((.merge_conflicts // []) + (.dequeued // []) + (.abandoned_drafts // []))[] | ($s + "#" + .ref)]' \
+  <<<"$ordered_repos_json" 2>/dev/null || true)"
+
 for eligibility_band in findings review_feedback abandoned_drafts merge_conflicts dequeued register_hygiene human_visibility tech_debt; do
   while IFS= read -r eb_slug; do
     [[ -n "$eb_slug" ]] || continue
@@ -146,10 +179,17 @@ enabler_eligible_json="$(enabler_eligible_items "$union_log" \
 # costing a full engagement every time its recheck clock came round only to be
 # voided as stale (as happened to `pr-205-conflict-305ca060016d`, claimed and
 # voided three minutes later). This cycle's own fresh
-# `merge_conflicts`/`dequeued`/`abandoned_drafts` arrays — already gathered
-# into `ordered_repos_json` above — are the current truth for every PR still
-# in any of those states; a SHA-scoped ref absent from them has been
-# superseded (a newer push), resolved, or requeued, either way stale. Only refs
+# `merge_conflicts`/`dequeued`/`abandoned_drafts` arrays are the current truth
+# for every PR still in any of those states; a SHA-scoped ref absent from them
+# has been superseded (a newer push), resolved, or requeued, either way stale.
+#
+# They are read from `gathered_pr_refs_json`, the snapshot
+# `compute_band_eligibility` takes on the way past, and never re-derived from
+# `ordered_repos_json` here: by this line that aggregate has had its blocked
+# and void entries subtracted (requirements 3t/3u), and a blocked entry is the
+# only kind this filter is ever asked about, so re-deriving would test each
+# ref against a set the subtraction had just guaranteed it was missing from
+# and call every one of them stale (issue #1119). Only refs
 # shaped `pr-<n>-conflict-<sha>`/`pr-<n>-superseded-<sha>`/
 # `pr-<n>-dequeued-<sha>`/`pr-<n>-abandoned-<sha>` are tested — the
 # merge-conflicts gather mints the first two (requirement 3g), both scoped to
@@ -165,9 +205,7 @@ enabler_eligible_json="$(enabler_eligible_items "$union_log" \
 # `test` on a plain id or number simply never matches the pattern. A jq
 # failure leaves the set unfiltered: this is a cost saving, never the
 # correctness gate (the Enabler still voids a stale item it does reach).
-live_pr_refs_json="$(jq -c \
-  '[.[] | .slug as $s | ((.merge_conflicts // []) + (.dequeued // []) + (.abandoned_drafts // []))[] | ($s + "#" + .ref)]' \
-  <<<"$ordered_repos_json" 2>/dev/null || true)"
+live_pr_refs_json="${gathered_pr_refs_json-}"
 # An *empty* live set and a *failed* derivation of one are opposite facts, and
 # only the guard below keeps them apart. Empty-on-success is meaningful — no PR
 # is in either state this cycle, so every SHA-scoped ref really is superseded or
@@ -176,7 +214,12 @@ live_pr_refs_json="$(jq -c \
 # drop the lot: maximal filtering, the exact opposite of the unfiltered
 # degradation the comment above and requirement 35e both promise. Failure alone
 # yields the empty *string* (jq prints nothing to stdout on error, and prints
-# `[]` at minimum on success), so testing for it skips the filter outright.
+# `[]` at minimum on success), so testing for it skips the filter outright —
+# which is why the snapshot above carries `|| true` rather than a `[]`
+# fallback, and why this reads `${gathered_pr_refs_json-}` rather than
+# `${gathered_pr_refs_json:-[]}`: a caller that somehow reached this function
+# without the snapshot having been taken degrades to the unfiltered set, the
+# same safe direction a jq failure takes.
 #
 # `as $repo`/`as $item` before piping into `$live`: `|` rebinds `.` to its
 # right-hand side for everything downstream, `$live` included, so reading
