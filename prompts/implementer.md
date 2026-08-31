@@ -255,11 +255,19 @@ yourself.
   --branch "gr-…"` (GitHub names a merge group's own ref `gh-readonly-queue/…`
   or similar; list recent runs and match by timestamp if the branch name
   does not filter cleanly) or the repository's Actions tab filtered the same
-  way, then `gh run view <run-id> --log-failed` on whichever one failed. That
-  log names the actual failure — a test order dependency, a resource
-  contention, a genuine incompatibility with a commit that landed ahead of
-  this one in the queue — which is what you are fixing, not a guess from the
-  PR's own green checks.
+  way, then read the run's log via the run-level endpoint (works through the D24
+  fence): `gh api repos/<owner>/<repo>/actions/runs/<run-id>/logs > /tmp/run.zip`,
+  then extract the failed job's entry by name (the zip contains `<n>_<job name>.txt`
+  for each job, e.g. `2_Build and test (linux_amd64).txt`) — `unzip` is not
+  installed on this image, so read the entry with `python3 -c "import
+  zipfile, sys; print(zipfile.ZipFile('/tmp/run.zip').read(sys.argv[1])
+  .decode())" '2_Build and test (linux_amd64).txt'`. If `gh run view --log`
+  or the per-job endpoint gives a `Forbidden` error naming `blob.core.windows.net`,
+  that is the node's egress proxy fence (D24), not a credentials issue — the run-level
+  endpoint shown above is the supported route on a fenced node. That log names the
+  actual failure — a test order dependency, a resource contention, a genuine
+  incompatibility with a commit that landed ahead of this one in the queue —
+  which is what you are fixing, not a guess from the PR's own green checks.
 - **Fix the cause, not the symptom.** Once you know what failed, treat it as
   an ordinary bug in this pull request's own change: a flaky or order-dependent
   test, a generated artefact that collides with what landed ahead of it, a

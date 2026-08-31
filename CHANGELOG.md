@@ -2252,6 +2252,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   answers it too. The exemption still only grants an *examination*, not an
   unblock: `prompts/enabler.md` already has the engagement verify the closed
   issue's claim against reality either way.
+- Dequeue diagnosis on a fenced node could not read a failed job's log
+  (agent-ops#1091): `gh run view --log-failed` and the per-job
+  `.../actions/jobs/<job-id>/logs` route both resolve to
+  `productionresultssa*.blob.core.windows.net`, which the D24 egress fence
+  blocks by design, leaving the Implementer's merge-group diagnosis (and the
+  Enabler's own log reads) to infer a cause rather than read it. Both
+  `prompts/implementer.md` and `prompts/enabler.md` now read the run-level
+  endpoint instead — `gh api repos/<owner>/<repo>/actions/runs/<run-id>/logs`,
+  which stays on `api.github.com` and returns every job's log as one zip —
+  and name a `Forbidden` naming `blob.core.windows.net` as the fence itself
+  rather than a credentials problem. `deploy/docker/egress-allowlist.txt`'s
+  "Not here, deliberately" paragraph now records the Azure Blob hosts as a
+  deliberate omission with this endpoint as the supported route, so the gap
+  is not re-proposed as a widening of the allowlist.
 
 ### Changed
 
