@@ -14272,10 +14272,15 @@ What exists, and the requirements each part answers to:
    `compute_band_eligibility` runs every pre-fetched band but `issues`
    through `exclude_blocked_or_void_items` (`issues` has its own narrower
    pass through `exclude_blocked_or_void_issues`) and settles
-   `refinements_json`. `compute_enabler_eligible_set` derives
+   `refinements_json`; before that subtraction it snapshots
+   `live_pr_refs_json` — requirement 35e's live set — from the untouched
+   gather, because the entries the subtraction removes are exactly the ones
+   that filter is asked about (issue #1119).
+   `compute_enabler_eligible_set` derives
    `enabler_eligible_json` from the source-state digests of the repositories
    that sampled cleanly — how "is that escalation issue still open?" is
-   answered without a `gh` call per escalation — and ends by setting
+   answered without a `gh` call per escalation — consumes that snapshot for
+   requirement 35e's filter, and ends by setting
    `enabler_allowed`. `prefetch_refiner_sources` fetches the Refiner's own
    two extra sources into `refiner_repos_json`, which `ordered_repos_json`
    deliberately never gains. `compute_refiner_candidates` derives

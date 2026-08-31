@@ -1064,6 +1064,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   distinguishable from a genuinely configured `human` (which stays silent,
   unchanged) — leaving the pull request exactly the shape issue #890's own
   recovery sweep is built to recover, once it lands.
+- A blocked `merge-conflicts`, `dequeued` or `abandoned-drafts` ref could
+  never reach the Enabler — the only stage that can clear such a block — because
+  requirement 35e's stale-ref filter judged it against a set the blocked/void
+  subtraction had already emptied of exactly the refs it was being asked about
+  (agent-ops#1119). `compute_enabler_eligible_set` (`lib/eligibility.sh`)
+  derived its live set of `pr-<n>-conflict-<sha>` /`-superseded-` /`-dequeued-`
+  /`-abandoned-` refs from `ordered_repos_json` *after*
+  `compute_band_eligibility` had run requirements 3t/3u's
+  `exclude_blocked_or_void_items` over those same three bands, and since the
+  Enabler is only ever eligible for items that *are* blocked, every such ref was
+  missing from the set by construction: judged superseded, logged
+  `enabler-stale-refs-skipped`, and dropped — every cycle, forever. It was true
+  of 24 distinct refs across two repositories and roughly 1000 skip events since
+  2026-08-14, the morning after #329 generalised the blocked/void exclusion from
+  `tech_debt` (which #253's filter had been written against) to every
+  pre-fetched band but `issues`, silently invalidating that filter's premise.
+  `compute_band_eligibility` now snapshots `live_pr_refs_json` from the fresh
+  gather at its own start, before its subtraction loop runs, and
+  `compute_enabler_eligible_set` consumes that snapshot. The staleness
+  comparison itself is unchanged — a ref whose head has genuinely moved is still
+  dropped, and a failed derivation still leaves the eligible set unfiltered —
+  and the Co-Ordinator's own band eligibility is untouched: it never reads the
+  snapshot, and still never sees a blocked candidate.
+  `test/pr-claim-exclusion.test.sh`'s "live conflict ref survives" case now
+  builds its state *through* the real `compute_band_eligibility` with a ref that
+  is both live and blocked — the only shape that can tell the fix from the bug,
+  and the reason the hand-built fixture it replaces passed throughout.
 - The expensive-gather cache (requirement 48 above) wrote a 0-byte file for
   any repository whose raw bands outgrew `MAX_ARG_STRLEN`, so the fleet's
   busiest repository was invisible to each node two cycles in three
