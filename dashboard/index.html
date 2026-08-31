@@ -1640,6 +1640,91 @@
     return tableOf(["Repo","Claim","Node","Source","Item","Held"], rows);
   }
 
+  // ---------- GitHub API budget panel (issue #1090) ----------
+  // Whether the shared rate-limit bucket is about to bind — requirement 2.0's
+  // own gate question — answered from `D.github_budget`
+  // (scripts/publish-dashboard.sh's roll-up over the fleet's `github-budget`
+  // events, lib/github-limit.sh's `github_budget_record`), before the first
+  // `guard-degraded` refusal rather than after. No live read: this panel
+  // spends no `gh` call of its own.
+  function fmtResetCountdown(epoch) {
+    if (epoch == null) return "—";
+    var sec = epoch - (Date.now() / 1000);
+    if (sec <= 0) return "resets any moment";
+    var m = Math.round(sec / 60);
+    if (m < 60) return "in " + m + "m";
+    return "in " + Math.floor(m / 60) + "h" + String(m % 60).padStart(2, "0") + "m";
+  }
+  function githubBudgetPoolText(label, pool) {
+    if (!pool) return label + " not read";
+    return label + " " + pool.used + "/" + pool.limit + " used (" + pool.remaining + " remaining)";
+  }
+  function githubBudgetPanel() {
+    var G = D.github_budget;
+    if (!G || G.readings == null) {
+      return el("div", {class:"panel muted", text:
+        "GitHub API budget: could not be assembled this tick. See cron.log."});
+    }
+    var body = [];
+    if (G.readings === 0) {
+      body.push(el("div", {class:"panel"}, el("div", {class:"empty", text:
+        "No github-budget events in the fleet's logs yet — nothing to report. " +
+        "Written by lib/github-limit.sh's github_budget_record from the first " +
+        "cycle that runs a build carrying it."})));
+      return el("div", {}, body);
+    }
+    // Badges first — the at-a-glance answer, before the detail beneath it.
+    var badges = [];
+    if (G.about_to_bind) {
+      badges.push(el("span", {class:"badge b-red", title:
+        "The latest reading is below its configured floor — requirement 2.0's own " +
+        "gate would stand the next cycle down."}, "about to bind"));
+    }
+    if (G.quiet) {
+      badges.push(el("span", {class:"badge b-amber", title:
+        "No readable reading in the last " + (2 * (G.cycle_interval_minutes || 0)) +
+        " minutes (two configured cycle intervals) — the meter itself has gone quiet."}, "meter gone quiet"));
+    }
+    if (badges.length) body.push(el("div", {class:"panel"}, badges));
+
+    var L = G.latest;
+    if (!L) {
+      body.push(el("div", {class:"panel muted", text: "No readable reading yet."}));
+    } else {
+      body.push(el("div", {class:"panel"}, [
+        el("span", {class:"mono", text: githubBudgetPoolText("core", L.core)}),
+        el("span", {class:"muted", text: " · "}),
+        el("span", {class:"mono", text: githubBudgetPoolText("graphql", L.graphql)}),
+        el("span", {class:"muted", text: " · resets " +
+          fmtResetCountdown(L.core ? L.core.reset : (L.graphql ? L.graphql.reset : null))}),
+        el("div", {class:"muted", style:"font-size:11px", text: fmtAgo(L.ts) + " (" + fmtTime(L.ts) + ")"})
+      ]));
+    }
+
+    body.push(el("div", {class:"panel muted", text:
+      "While every node authenticates as one user, these figures are the shared " +
+      "bucket's, not any one node's."}));
+
+    var rows = (G.per_hour || []).slice().sort(function (a, b) {
+      return a.hour < b.hour ? 1 : a.hour > b.hour ? -1 : 0;
+    }).map(function (h) {
+      return el("tr", {}, [
+        el("td", {class:"mono", text: h.hour + ":00"}),
+        el("td", {class:"mono", text: String(h.readings)}),
+        el("td", {class:"mono", text: h.core_peak_used == null ? "—" : String(h.core_peak_used)}),
+        el("td", {class:"mono", text: String(h.refusals)}),
+        el("td", {class:"mono", text: String(h.budget_standdowns)})
+      ]);
+    });
+    if (rows.length) {
+      body.push(tableOf(["Hour (UTC)", "Readings", "Core peak used", "Refusals", "Stand-downs"], rows));
+    } else {
+      body.push(el("div", {class:"panel"}, el("div", {class:"empty", text:
+        "No readings in the trailing 24h."})));
+    }
+    return el("div", {}, body);
+  }
+
   // ---------- autonomous landings panel (D18 WI-8, agent-ops#411) ----------
   // Risk 6 of the autonomy investigation — "overnight merges with nobody
   // watching" — was accepted on the condition that this replaces the
@@ -3188,6 +3273,14 @@
         (humanQueueN ? ", " + humanQueueN + " waiting on human" : "")})
     ]));
     app.appendChild(cards);
+
+    // ---------- GitHub API budget ----------
+    // First section on the page, deliberately: the question it answers —
+    // is the shared rate-limit bucket about to bind — is the same one
+    // requirement 2.0's own gate asks, and the point is answering it before
+    // the first `guard-degraded` refusal shows up further down the page,
+    // not after (issue #1090).
+    app.appendChild(sectionOf("GitHub API budget", githubBudgetPanel()));
 
     // ---------- open PRs ----------
     app.appendChild(sectionOf("Open pull requests", prsPanel(openPrs)));

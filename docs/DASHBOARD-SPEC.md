@@ -548,9 +548,9 @@ So a tick has two kinds, and `--fast` chooses:
   `cycles`, `log_tail`, `cron_tail`, `fleet`, `revert_rate` — and merges those
   keys over the last full payload. The history roll-ups (`counts` and its
   verdict-quality, model-selection and classifier-escape enrichments, `blocked`,
-  `void`, `landings`, and the stage budgets inside `config`) are not computed at
-  all: they read the fleet's whole history and change on the scale of cycles,
-  not ticks.
+  `void`, `landings`, `github_budget`, and the stage budgets inside `config`)
+  are not computed at all: they read the fleet's whole history and change on
+  the scale of cycles, not ticks.
 
 A fast build emits only the keys it recomputed and merges them **over** the
 cached payload rather than assembling a whole object from variables the skipped
@@ -1138,6 +1138,72 @@ label, and states that a failed run or a retry each count as their own slice.
 A stage with nothing in the selected window renders the same `.empty` panel
 every other chart on this page uses for "no data here", never a blank or a
 zero-slice pie.
+
+The **GitHub API budget** panel (issue #1090) is the first section on the
+page, deliberately: it answers the same question requirement 2.0's own gate
+asks — is the shared rate-limit bucket about to bind — before the first
+`guard-degraded` refusal shows up further down the page, not after. It
+spends no `gh` call of its own: it renders `github_budget`, which the
+Publisher folds from the fleet-wide `github-budget` events
+`lib/github-limit.sh`'s `github_budget_record` logs at cycle start, after
+every model stage and at cycle end (requirement 2.0d, agent-ops#1088) — the
+same source `scripts/github-budget-report.sh` sums on demand. A full-build-
+only roll-up, on `landings`'/`escape_audits`' own precedent ("The tiered
+publish" above): it reads the fleet's whole history and is carried forward
+unchanged on a fast tick.
+
+`github_budget` is `{readings, latest, per_hour[], floors,
+cycle_interval_minutes, about_to_bind, quiet}`:
+
+- `readings` is the count of every `github-budget` event in the fleet-wide
+  union, fleet-wide and all-time — never windowed. `0` (with every other
+  field null-shaped) is the card's own **empty state**: no such event
+  anywhere in the log, rendered as "nothing to report" rather than a blank
+  card or an error. This is distinct from `null` (never `0`), which means
+  the roll-up itself could not be assembled this tick — the same "outage, not
+  a quiet night" distinction `landings`/`escape_audits` already make.
+- `latest` is `{ts, core, graphql}` from the newest `readable: true` event by
+  its own `ts` — also never windowed, since the point of the "meter gone
+  quiet" badge below is noticing a *stale* latest reading, which a 24h window
+  would silently drop instead of reporting. `core`/`graphql` are each either
+  the pool's own `{limit, used, remaining, reset}` or `null` when that pool's
+  read failed on an otherwise-readable event; `null` (with `readings > 0`)
+  when no event has ever been readable. The panel renders both pools' used/
+  limit/remaining and `reset` as a countdown, plus how long ago the reading
+  was taken, followed by the same shared-bucket note the report script's own
+  preamble states: while every node authenticates as one user (D25
+  unprovisioned) the figures are the *bucket's*, not any one node's.
+- `per_hour[]` is `{hour, readings, core_peak_used, refusals,
+  budget_standdowns}` per UTC hour (`.ts[0:13]`, matching the report script's
+  own `hour` grouping) — trailing 24h only, unlike `latest` above:
+  `readings` and `core_peak_used` (the peak `core.used` among that hour's
+  *readable* readings) come from the `github-budget` events themselves;
+  `refusals` counts `guard-degraded` events matching the report script's own
+  `is_refusal` predicate (a `detail` matching `rate limit (already )?exceeded`,
+  case-insensitively); `budget_standdowns` counts `stand-down` events
+  matching its `is_budget_standdown` predicate (`has("github_resource")`) —
+  copied verbatim from `scripts/github-budget-report.sh` so the two can never
+  disagree about what counts as either. Rendered as a table, newest hour
+  first, the same shape the report script's own "did it bind" table prints.
+- `floors` is `{core, graphql}`, copied from `config.json`'s own
+  `github_min_core_budget`/`github_min_graphql_budget` (default 300/100) —
+  requirement 2.0's own gate floors, read via config defaults rather than a
+  value hardcoded here, so the two can never drift apart.
+  `cycle_interval_minutes` is `schedule.cycle_interval_minutes` (default 15),
+  the cadence source the "meter gone quiet" badge below is measured against.
+- **`about_to_bind`** is `null` with no readable reading to judge (`readings
+  == 0` or `latest == null`); otherwise `true` when `latest`'s `core` or
+  `graphql` remaining is below its configured floor — the identical
+  `remaining < floor` comparison `github_limit_verdict` itself makes, so a
+  `0` floor (disabled) can never trip it, the same as the gate it mirrors.
+  Renders a red **about to bind** badge.
+- **`quiet`** is `null` on the empty state (`readings == 0`, nothing to
+  judge); otherwise `true` when no *readable* `github-budget` event falls
+  within the last two configured cycle intervals of `now` — an unreadable
+  meter reads the same as no meter at all. Renders an amber **meter gone
+  quiet** badge, distinct from `about_to_bind`'s red one: the two answer
+  different questions (the bucket is nearly spent vs. nothing has told this
+  page whether it is) and either, both or neither may be true at once.
 
 The **Autonomous landings** panel (D18 WI-8, agent-ops#411) is the
 asynchronous audit that D18 accepts unattended merging in exchange for. Risk 6
