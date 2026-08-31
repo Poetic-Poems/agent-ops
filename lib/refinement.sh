@@ -658,12 +658,23 @@ refinement_comment_url_id() {
 # verdict earns (requirements 36b, 39c), or nothing when it earns none.
 #
 # Two shapes, because refinement has to land where a *future* Co-Ordinator will
-# read it and that place differs by item type. For an issue the Enabler posts
-# one authoritative comment, which the Co-Ordinator already pastes into the work
-# order along with the rest of the thread — so the event records the comment URL
-# as a pointer. For every other item type there is no thread to write into, so
-# the spec itself travels in the log and requirement 3h injects it into the
-# Co-Ordinator's runtime input.
+# read it and that place differs by item type. For an item with a thread the
+# Enabler or Refiner posts one authoritative comment, which the Co-Ordinator
+# already pastes into the work order along with the rest of the thread — so the
+# event records the comment URL as a pointer. For an item with no thread to
+# write into (a review recommendation, a plan task) the spec itself travels in
+# the log and requirement 3h injects it into the Co-Ordinator's runtime input.
+# Which of the two an item can hold is settled by whether it has an issue
+# number, never by the band it was gathered from (agent-ops#1128): tech-debt
+# had no thread until agent-ops#875 gave it one, and reading the band instead
+# of the item is what kept 98 of 106 candidates on the expensive shape.
+#
+# The two are exclusive, and a URL wins (agent-ops#1128). A pointer and a
+# payload recording the same refinement is not redundancy that costs nothing:
+# the payload is several kilobytes in the one band requirement 4i's ladder
+# cannot shed, and the pointer already resolves to the same text — requirement
+# 17f's own traceability check reads the comment for exactly this reason. An
+# entry that offers both is therefore recorded as the pointer alone.
 #
 # TD-PPagop-26082819: a `comments_posted[0]` that does not actually name a
 # comment — REFINEMENT_COMMENT_URL_RE false for it, a bare issue URL being the
@@ -686,9 +697,9 @@ refinement_record_fields() {
     | (((.comments_posted // []) | if type == "array" then (.[0] // "") else "" end)
        | if type == "string" then . else "" end) as $raw_url
     | (if $raw_url != "" and ($raw_url | test($re)) then $raw_url else "" end) as $url
-    | if $spec == "" and $url == "" then empty
-      else (if $spec == "" then {} else {spec: $spec} end)
-           + (if $url == "" then {} else {comment_url: $url} end)
+    | if $url != "" then {comment_url: $url}
+      elif $spec != "" then {spec: $spec}
+      else empty
       end' <<<"$1" 2>/dev/null || true
 }
 
@@ -1312,8 +1323,30 @@ $(jq . <<<"$input")
     e_source="$(jq -r '.source // ""' <<<"$claimed_entry")"
     outcome="$verdict"
     extra='{}'
-    e_number=""
-    [[ "$e_source" == "issues" ]] && e_number="$e_item"
+    # agent-ops#1128: whether a refinement can be recorded as a pointer is a
+    # property of the *item*, not of the band it was gathered from. Requirement
+    # 4j's "an item type with no thread to hold it (tech-debt, a review
+    # recommendation, a plan task)" was true when it was written; agent-ops#875
+    # then moved the tech-debt band onto `pw::type:tech-debt` issues, which
+    # carry a number, a URL and a comment thread like every other issue. Keying
+    # the two shapes on `source == "issues"` therefore kept sending tech-debt
+    # down the thread-less path — 98 of this repository's 106 candidates on
+    # 2026-08-31 — and put each one's whole specification into the unsheddable
+    # `refinements` band, 229,399 bytes of it, which is what starved
+    # requirement 4i's ladder to one entry per band on every node of the fleet.
+    #
+    # The gather entry's own `number` settles it: every issue-backed source
+    # carries one (`scripts/gather-issues.sh` stamps it for `issues` and, since
+    # #875, for `tech-debt`), and no thread-less source does. The numeric-`item`
+    # fallback covers an entry gathered before that field existed, where the
+    # `ref` *is* the issue number — the shape `refinements_map` shows for every
+    # tech-debt refinement recorded since #875.
+    e_number="$(jq -r 'if (.entry.number // null) == null then ""
+                       else (.entry.number | tostring) end' \
+      <<<"$claimed_entry" 2>/dev/null || printf '')"
+    if [[ -z "$e_number" && "$e_item" =~ ^[0-9]+$ ]]; then
+      e_number="$e_item"
+    fi
     # requirement 39g: an entry the candidate rule (refiner_candidate_items)
     # marked `triage_only` is one already refined — the Refiner was offered
     # it solely to band it, never to write a second specification, so a
@@ -1328,7 +1361,9 @@ $(jq . <<<"$input")
           outcome="triage-only"
         else
           e_refined_fields="$(refinement_record_fields "$ex")"
-          if [[ "$e_source" == "issues" ]]; then
+          # agent-ops#1128: corroborated against the shape the *item* can hold,
+          # not against its source band — see the `e_number` derivation above.
+          if [[ -n "$e_number" ]]; then
             if [[ -z "$(jq -r '.comment_url // ""' <<<"$e_refined_fields")" ]]; then
               log_event "warning" "$(jq -nc --arg d "refiner: refined $e_repo#$e_item carries no comment that names a real GitHub comment — nothing was posted for the Co-Ordinator to find, or comments_posted[0] does not point at one (no #issuecomment- anchor or REST API comment URL); not recorded as refined" \
                 '{detail: $d}')"

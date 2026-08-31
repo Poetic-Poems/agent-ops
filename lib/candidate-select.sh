@@ -335,6 +335,14 @@ coordinator_blocked_view() {  # <blocked-json>
 # presence rather than its spec, and a `comment_url` is a pointer whose cost is
 # a line. Only the payload with a single, candidate-scoped use is shed.
 #
+# A spec sitting *beside* a `comment_url` is shed whatever its candidacy
+# (agent-ops#1128). `refinement_record_fields` no longer writes that pair, but
+# the ledger is never retired, so entries recorded before it stopped are still
+# read here for as long as their items live — and for those the pointer already
+# resolves to the same text the payload holds. This is the read side of the
+# same "one home per refinement" rule, and it is what lets a ledger written
+# under the old rule stop being charged for twice.
+#
 # Both documents arrive on stdin, never in argv (requirement 4g): this map is
 # the value that crossed MAX_ARG_STRLEN, and an `--argjson` here would trade
 # the refusal this function exists to prevent for the execve death that
@@ -372,7 +380,8 @@ coordinator_refinements_view() {  # <refinements-json> <ordered-repos-json>
         | .value |= ( if type == "object"
                       then with_entries(
                              if (.value | type) == "object" and (.value | has("spec"))
-                                and (($live[$slug] // {})[.key] | not)
+                                and ((.value | has("comment_url"))
+                                     or (($live[$slug] // {})[.key] | not))
                              then .value |= del(.spec)
                              else . end)
                       else . end))' <<<"$docs" 2>/dev/null || printf '%s' "$refinements"

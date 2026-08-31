@@ -646,6 +646,91 @@ assert_eq "the warning still carries every one of the 50 claimed items" \
 assert_eq "  ... and no refiner-examined/item-refined/attempt-failed at all" "0" \
   "$(grep -cE '^event (refiner-examined|item-refined|attempt-failed) ' <<<"$calls")"
 
+# ============================================================================
+# (h) The carrier is the item, not its source band (agent-ops#1128)
+#
+# agent-ops#875 moved the tech-debt band onto `pw::type:tech-debt` issues, so
+# a `tech-debt` candidate now usually *is* an issue: `ref` is its number and
+# `entry.number` carries it. `lib/refinement.sh` went on choosing the carrier
+# from `source == "issues"`, so every such refinement took the inline-`spec`
+# shape it no longer needed — 98 of 106 candidates and 229,399 bytes of
+# duplicated markdown in the one band requirement 4i's ladder cannot shed.
+#
+# These three cases pin the rule to the item: a tech-debt candidate with a
+# number is corroborated, recorded and labelled exactly like any other issue,
+# and one *without* a number keeps the payload shape it still needs.
+# ============================================================================
+td_issue_candidates='[{"repo":"o/r","source":"tech-debt","item":"960","entry":{"number":960,"ref":"960"}}]'
+
+verdicts='[{"repo":"o/r","item":"960","verdict":"refined","reason":"specified in one comment",
+            "comments_posted":["https://github.com/o/r/issues/960#issuecomment-7"]}]'
+calls="$(run_case "refined tech-debt issue" "$td_issue_candidates" "$verdicts")"
+
+assert_eq "tech-debt issue: exactly one item-refined event" "1" \
+  "$(grep -cE '^event item-refined ' <<<"$calls")"
+ir_evt="$(events_named "$calls" item-refined | head -n1)"
+assert_eq "tech-debt issue: the record is the pointer" \
+  "https://github.com/o/r/issues/960#issuecomment-7" "$(jq -r '.comment_url' <<<"$ir_evt")"
+assert_eq "tech-debt issue: ...and carries no spec beside it" "absent" \
+  "$(jq -r '.spec // "absent"' <<<"$ir_evt")"
+assert_contains "tech-debt issue: it is labelled like any other issue" \
+  "gh-label add o/r 960 refined-by-agent" "$calls"
+
+# The corroboration bar moves with the carrier: a spec alone is no longer a
+# record for an item that had a thread to post to, and must be refused the
+# way an issue's own missing comment already is.
+verdicts='[{"repo":"o/r","item":"960","verdict":"refined","reason":"wrote it inline instead of posting",
+            "refined_spec":"SPEC-WRITTEN-WHERE-A-COMMENT-BELONGED"}]'
+calls="$(run_case "refined tech-debt issue, spec but no comment" "$td_issue_candidates" "$verdicts")"
+
+assert_eq "tech-debt issue, no comment: no item-refined is written" "0" \
+  "$(grep -cE '^event item-refined ' <<<"$calls")"
+xmn_evt="$(events_named "$calls" refiner-examined | head -n1)"
+assert_eq "tech-debt issue, no comment: the outcome is refined-uncorroborated" \
+  "refined-uncorroborated" "$(jq -r '.outcome' <<<"$xmn_evt")"
+assert_not_contains "tech-debt issue, no comment: no label write either" "gh-label" "$calls"
+
+# ...and the payload shape survives exactly where it is still the only home:
+# a tech-debt ref that is not an issue number has no thread to post to.
+verdicts='[{"repo":"o/r","item":"TD26080101","verdict":"refined","reason":"no thread to post to",
+            "refined_spec":"SPEC-FOR-A-THREADLESS-ITEM"}]'
+calls="$(run_case "refined tech-debt, no thread" "$td_candidates" "$verdicts")"
+
+ir_evt="$(events_named "$calls" item-refined | head -n1)"
+assert_eq "tech-debt with no thread: still recorded, and as the spec" "SPEC-FOR-A-THREADLESS-ITEM" \
+  "$(jq -r '.spec' <<<"$ir_evt")"
+assert_eq "tech-debt with no thread: no pointer is invented for it" "absent" \
+  "$(jq -r '.comment_url // "absent"' <<<"$ir_evt")"
+
+# --- One home per refinement (agent-ops#1128) ---------------------------------
+#
+# `refinement_record_fields` used to record whatever the verdict offered: a
+# `spec` and a `comment_url` together produced both. That pairing is what put
+# kilobytes of duplicated markdown into requirement 4j's unsheddable band
+# beside a pointer that already resolved to the same text. The pointer wins.
+
+assert_eq "a verdict offering only a comment URL records the pointer" \
+  '{"comment_url":"https://github.com/o/r/issues/7#issuecomment-1"}' \
+  "$(refinement_record_fields '{"comments_posted":["https://github.com/o/r/issues/7#issuecomment-1"]}')"
+
+assert_eq "a verdict offering only a spec records the payload" \
+  '{"spec":"S"}' \
+  "$(refinement_record_fields '{"refined_spec":"S"}')"
+
+assert_eq "a verdict offering both records the pointer alone" \
+  '{"comment_url":"https://github.com/o/r/issues/7#issuecomment-1"}' \
+  "$(refinement_record_fields '{"refined_spec":"S","comments_posted":["https://github.com/o/r/issues/7#issuecomment-1"]}')"
+
+assert_eq "a verdict offering neither records nothing" "" \
+  "$(refinement_record_fields '{}')"
+
+# A `comments_posted[0]` that names no real comment is absent, not a pointer
+# (TD-PPagop-26082819) — so a spec beside it is still the record, and the
+# exclusivity rule must not swallow it.
+assert_eq "a bare issue URL is not a pointer, so the spec beside it survives" \
+  '{"spec":"S"}' \
+  "$(refinement_record_fields '{"refined_spec":"S","comments_posted":["https://github.com/o/r/issues/7"]}')"
+
 printf '\n'
 if (( failures > 0 )); then
   printf '%d assertion(s) failed\n' "$failures"
