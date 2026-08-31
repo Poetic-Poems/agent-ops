@@ -75,6 +75,11 @@ exclude_claimed_prs_src="$(extract_function exclude_claimed_prs)"
 exclude_claimed_items_src="$(extract_function exclude_claimed_items)"
 candidate_preclaimed_src="$(extract_function candidate_preclaimed)"
 pr_number_for_candidate_src="$(extract_function pr_number_for_candidate)"
+# Requirement 3t/3u's own filter, lifted for the same reason as the rest: the
+# band-eligibility block below calls it, and the whole point of running that
+# block (issue #1119) is that the real subtraction is what the staleness test
+# then has to survive.
+exclude_blocked_or_void_items_src="$(extract_function exclude_blocked_or_void_items)"
 
 if [[ "$gather_claimed_src" != *"gather_claimed()"* ]]; then
   printf 'FAIL - could not extract gather_claimed from agent-cycle.sh (renamed or moved?)\n'
@@ -96,12 +101,17 @@ if [[ "$pr_number_for_candidate_src" != *"pr_number_for_candidate()"* ]]; then
   printf 'FAIL - could not extract pr_number_for_candidate from agent-cycle.sh (renamed or moved?)\n'
   exit 1
 fi
+if [[ "$exclude_blocked_or_void_items_src" != *"exclude_blocked_or_void_items()"* ]]; then
+  printf 'FAIL - could not extract exclude_blocked_or_void_items from lib/candidate-select.sh (renamed or moved?)\n'
+  exit 1
+fi
 
 eval "$gather_claimed_src"
 eval "$exclude_claimed_prs_src"
 eval "$exclude_claimed_items_src"
 eval "$candidate_preclaimed_src"
 eval "$pr_number_for_candidate_src"
+eval "$exclude_blocked_or_void_items_src"
 
 # --- The stub gh (same filesystem CAS as test/claim.test.sh) -------------------
 stub_bin="$tmp_dir/bin"
@@ -341,34 +351,74 @@ assert_eq "malformed candidate JSON degrades to the ref" "57" \
   "$(pr_number_for_candidate 'not json' 'pr-57-review-1')"
 
 # --- The Enabler stale-conflict/abandoned-draft ref filter ---------------------
-# Not a standalone function (it runs inline, between enabler_eligible_items and
-# the point past which the exit trap may engage the Enabler — inside
-# `compute_enabler_eligible_set` since #771), so it is lifted by
-# its own start/end markers instead of a function signature — same technique,
-# same reason: the real code is what runs here, not a reimplementation of it.
-extract_stale_ref_block() {
+# Neither half is a standalone function (both run inline — the live-set
+# snapshot and requirement 3t/3u's subtraction inside
+# `compute_band_eligibility`, the staleness test inside
+# `compute_enabler_eligible_set`, since #771), so each is lifted by its own
+# start/end markers instead of a function signature — same technique, same
+# reason: the real code is what runs here, not a reimplementation of it.
+#
+# Both halves, not just the second, and in the order agent-cycle.sh calls them
+# (issue #1119). Requirement 35e's live set is sampled before requirement
+# 3t/3u subtracts the blocked and void entries from every band, and a blocked
+# entry is the only kind the Enabler is ever eligible for — so a test that
+# hands the staleness filter a hand-built `ordered_repos_json` still
+# containing a blocked ref is asserting against a state no real cycle can
+# reach. That is exactly what this suite used to do, and it is why the
+# regression that skipped every blocked SHA-scoped PR ref as stale, on every
+# cycle of every node, went unnoticed from 2026-08-13 to 2026-08-30.
+extract_band_eligibility_block() {
   awk '
-    /^live_pr_refs_json="\$\(jq -c \\$/ { on = 1 }
-    on                                  { print }
-    on && /^fi$/                        { exit }
+    /^gathered_pr_refs_json="\$\(jq -c \\$/ { on = 1 }
+    on                                        { print }
+    on && /^done$/                            { exit }
   ' "$SCRIPT_DIR/lib/eligibility.sh"
 }
+extract_stale_ref_block() {
+  awk '
+    /^live_pr_refs_json="\$\{gathered_pr_refs_json-\}"$/ { on = 1 }
+    on                                                     { print }
+    on && /^fi$/                                           { exit }
+  ' "$SCRIPT_DIR/lib/eligibility.sh"
+}
+band_eligibility_block_src="$(extract_band_eligibility_block)"
 stale_ref_block_src="$(extract_stale_ref_block)"
+if [[ "$band_eligibility_block_src" != *"exclude_blocked_or_void_items"* \
+   || "$band_eligibility_block_src" != *"gathered_pr_refs_json"* ]]; then
+  printf 'FAIL - could not extract the band-eligibility block from lib/eligibility.sh (moved or reworded?)\n'
+  exit 1
+fi
 if [[ "$stale_ref_block_src" != *"stale_enabler_refs_json"* ]]; then
   printf 'FAIL - could not extract the stale-ref block from lib/eligibility.sh (moved or reworded?)\n'
   exit 1
 fi
 
-run_stale_ref_block() {  # run_stale_ref_block <ordered-repos-json> <enabler-eligible-json>
-  # ordered_repos_json and log_event are consumed by the eval'd block below,
-  # which shellcheck cannot see into.
+# The pair, run back to back over one `ordered_repos_json`, exactly as
+# agent-cycle.sh:1623-1624 runs them. `blocked_json`/`void_json` default empty
+# so the existing head-SHA assertions below read unchanged.
+run_stale_ref_block() {  # run_stale_ref_block <ordered-repos-json> <enabler-eligible-json> [blocked-json] [void-json]
+  # Every one of these is consumed by the eval'd blocks below, which the
+  # linter cannot see into.
   # shellcheck disable=SC2034
-  ordered_repos_json="$1" enabler_eligible_json="$2" logged="" logged_fields=""
+  ordered_repos_json="$1" enabler_eligible_json="$2" blocked_json="${3:-[]}" void_json="${4:-[]}"
+  # shellcheck disable=SC2034
+  logged="" logged_fields="" gathered_pr_refs_json=""
   # shellcheck disable=SC2317
   log_event() { logged="$logged$1 $2\n"; logged_fields="$2"; }
+  # shellcheck disable=SC2317
+  guard_warn() { :; }
+  eval "$band_eligibility_block_src"
   eval "$stale_ref_block_src"
+  # `.ordered` reports back what requirement 3t/3u left in the bands, so an
+  # assertion can check both halves of the fix at once. It reports `null` for
+  # an `ordered_repos_json` that was never JSON — the degradation case below
+  # feeds this harness deliberate garbage, and that case is about the eligible
+  # set, not the bands.
+  local ordered_out="$ordered_repos_json"
+  jq -e 'type == "array"' <<<"$ordered_out" >/dev/null 2>&1 || ordered_out='null'
   jq -c -n --argjson e "$enabler_eligible_json" --arg l "$logged" --arg f "$logged_fields" \
-    '{eligible: $e, logged: $l, fields: $f}'
+    --argjson o "$ordered_out" \
+    '{eligible: $e, logged: $l, fields: $f, ordered: $o}'
 }
 
 ordered='[{"slug": "o/r",
@@ -424,6 +474,41 @@ resolved_ordered='[{"slug": "o/r", "merge_conflicts": [], "abandoned_drafts": []
 resolved_result="$(run_stale_ref_block "$resolved_ordered" "$eligible")"
 assert_eq "a resolved PR's now-stale ref is dropped too" "0" \
   "$(jq '[.eligible[] | select(.item == "pr-205-conflict-305ca060016d" or .item == "pr-205-conflict-6319fee06dfc")] | length' <<<"$resolved_result")"
+
+# Issue #1119, the reason both halves now run: a blocked ref that this cycle's
+# gather still reports must survive to `enabler_eligible`. Requirement 3t/3u
+# strips it out of `merge_conflicts` on the way past — that is its job, and the
+# Co-Ordinator must not see it — but requirement 35e's live set was sampled
+# before that, so the staleness test still finds it. This is PR #1059's own
+# state on 2026-08-30: open, non-draft, conflicting at a head that never moved,
+# recorded blocked by `implementer exited 137`, re-reported by
+# scripts/gather-merge-conflicts.sh every cycle, and skipped as stale 96 times.
+blocked_ordered='[{"slug": "o/r",
+                   "merge_conflicts": [{"ref": "pr-1059-conflict-f108aca762e5"}],
+                   "dequeued": [], "abandoned_drafts": []}]'
+blocked_blocked='[{"repo": "o/r", "item": "pr-1059-conflict-f108aca762e5",
+                   "ts": "2026-08-30T12:27:28Z", "detail": "implementer exited 137"}]'
+blocked_eligible='[{"repo": "o/r", "item": "pr-1059-conflict-f108aca762e5", "reason": "threshold"}]'
+blocked_result="$(run_stale_ref_block "$blocked_ordered" "$blocked_eligible" "$blocked_blocked")"
+assert_eq "a blocked ref the gather still reports reaches the Enabler (issue #1119)" "1" \
+  "$(jq '[.eligible[] | select(.item == "pr-1059-conflict-f108aca762e5")] | length' <<<"$blocked_result")"
+assert_eq "  ... and nothing is logged as stale, because nothing is" "false" \
+  "$(jq -r '.logged | test("enabler-stale-refs-skipped")' <<<"$blocked_result")"
+assert_eq "  ... while requirement 3t/3u still keeps it from the Co-Ordinator's band" "0" \
+  "$(jq '.ordered[0].merge_conflicts | length' <<<"$blocked_result")"
+
+# The converse, over the same pair: a blocked ref the gather has stopped
+# reporting (the head moved, or the PR resolved) is still dropped. Requirement
+# 35e's whole purpose survives the fix — this is the `pr-205-conflict-…`
+# engagement-per-recheck case issue #238 closed.
+moved_ordered='[{"slug": "o/r",
+                 "merge_conflicts": [{"ref": "pr-1059-conflict-9f5401ba7ad4"}],
+                 "dequeued": [], "abandoned_drafts": []}]'
+moved_result="$(run_stale_ref_block "$moved_ordered" "$blocked_eligible" "$blocked_blocked")"
+assert_eq "a blocked ref at a head the gather no longer reports is still dropped" "0" \
+  "$(jq '[.eligible[] | select(.item == "pr-1059-conflict-f108aca762e5")] | length' <<<"$moved_result")"
+assert_eq "  ... and that drop is logged" "true" \
+  "$(jq -r '.logged | test("enabler-stale-refs-skipped")' <<<"$moved_result")"
 
 # The degradation requirement 35e promises: a jq failure deriving the live set
 # leaves the eligible set *unfiltered*. The distinction that makes this work is

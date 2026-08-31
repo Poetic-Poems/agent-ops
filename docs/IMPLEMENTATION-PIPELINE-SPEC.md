@@ -11578,9 +11578,8 @@ implements.
     `pr-<n>-dequeued-<sha>` or
     `pr-<n>-abandoned-<sha>` is tested against this
     cycle's own freshly gathered
-    `merge_conflicts`/`dequeued`/`abandoned_drafts` arrays
-    (already assembled into `ordered_repos_json` for the Co-Ordinator, requirements
-    3g, 3z): if that exact ref is not among them — the head moved again, or the PR
+    `merge_conflicts`/`dequeued`/`abandoned_drafts` arrays (requirements 3g,
+    3z): if that exact ref is not among them — the head moved again, or the PR
     resolved outright — the entry is dropped, and the drop is logged
     (`enabler-stale-refs-skipped`, an object payload `{skipped: [{repo,
     item}…]}` — log_event's envelope merge can only add objects, and the
@@ -11598,6 +11597,48 @@ implements.
     refs match the pattern. A jq failure leaves the eligible set unfiltered — this
     is a cost saving, never the correctness gate; the Enabler still voids a stale
     item it does reach, exactly as it always has.
+
+    **The live set is sampled before requirement 3t/3u subtracts from it, and
+    never re-derived at the point of use (issue #1119).** Requirement 3t/3u
+    rewrites `merge_conflicts`, `dequeued` and `abandoned_drafts` inside
+    `ordered_repos_json` with their blocked and void entries removed, and that
+    pass runs first (`compute_band_eligibility`, then
+    `compute_enabler_eligible_set`). A blocked entry is the *only* kind this
+    filter is ever asked about — an unblocked item never reaches
+    `enabler_eligible` — so a live set re-derived from the post-subtraction
+    aggregate is one the subtraction has just guaranteed every tested ref is
+    missing from, and the answer is unconditionally "stale". That is what
+    happened from 2026-08-13, when requirement 3u generalised the subtraction
+    from tech-debt to every band, until this requirement was corrected: on
+    every cycle of every node, every blocked SHA-scoped PR ref was logged
+    `enabler-stale-refs-skipped` and dropped, so the Enabler could never reach
+    the one thing that clears such a block, and a pull request blocked at a head
+    that never moved again stayed blocked for good. PR #1059 — blocked by an
+    Implementer OOM kill, approved, still conflicting at the same head, and
+    re-reported by `scripts/gather-merge-conflicts.sh` on every cycle — was
+    skipped 96 times over eleven hours before anyone noticed.
+
+    `compute_band_eligibility` therefore takes the live set
+    (`gathered_pr_refs_json`) on the way past, before its own loop rewrites a
+    single band, and `compute_enabler_eligible_set` reads that snapshot. What
+    the snapshot still carries is the claim exclusion the repo loop applied
+    earlier (requirement 17a): a ref another node holds a claim on is not this
+    Enabler's to examine, which is the answer this filter gave before the
+    regression and the one requirement 17a asks for. A failed snapshot yields
+    the empty string, never `[]`, so it degrades to the unfiltered eligible set
+    on the same terms a failed derivation always did — the two must stay
+    distinguishable, since an empty live set is a meaningful "nothing is in any
+    of those states this cycle" and a failed one knows nothing about any pull
+    request at all.
+
+    Acceptance: a ref this cycle's gather still reports, recorded blocked
+    against the same head SHA, survives requirement 3t/3u's subtraction and
+    reaches `enabler_eligible`; a ref the gather no longer reports does not. A
+    test that asserts this must build its `ordered_repos_json` by running
+    requirement 3t/3u's own pass over the gathered bands, not by hand: the
+    hand-built state that still contains a blocked ref is unreachable in a real
+    cycle, and asserting against it is what let this regression stand for
+    seventeen days.
 36. **The Enabler's powers.** It may read anything through `gh` — issues, PRs,
     reviews, checks, runs, alerts, file contents — and reads an issue or PR as
     its **whole thread** (requirement 14a's rule, for the same reason and with

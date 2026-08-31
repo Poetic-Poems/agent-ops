@@ -1048,6 +1048,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A blocked merge-conflict, dequeued or abandoned-draft ref can reach the
+  Enabler again (agent-ops#1119). Requirement 35e drops an eligible
+  `pr-<n>-conflict-<sha>`/`-superseded-`/`-dequeued-`/`-abandoned-` ref that
+  this cycle's own gather no longer reports, and it was deriving that live set
+  from `ordered_repos_json` at the point of use — by which time requirement
+  3t/3u had already subtracted every blocked and void entry from those very
+  bands. A blocked entry is the only kind the Enabler is ever eligible for, so
+  the test was asking whether a ref was present in a set the subtraction had
+  just guaranteed it was absent from, and answered "stale" every time. From
+  2026-08-13, when requirement 3u generalised the subtraction from tech-debt to
+  every band, until this fix, every blocked SHA-scoped PR ref was logged
+  `enabler-stale-refs-skipped` and dropped on every cycle of every node — so
+  the one thing that can clear such a block could never reach it, and a pull
+  request blocked at a head that never moved again stayed blocked for good.
+  PR #1059 sat that way for eleven hours across 96 skips: approved, still
+  conflicting at the same head, re-reported by
+  `scripts/gather-merge-conflicts.sh` every cycle, unreachable. The live set is
+  now sampled in `compute_band_eligibility` (`gathered_pr_refs_json`) before
+  its own loop rewrites a single band, and `compute_enabler_eligible_set` reads
+  that snapshot rather than re-deriving one. Requirement 35e's original purpose
+  is unchanged — a ref whose head has moved, or whose PR resolved, is still
+  dropped and still logged — and requirement 3t/3u still keeps the blocked
+  candidate away from the Co-Ordinator. `test/pr-claim-exclusion.test.sh` now
+  runs requirement 3t/3u's own pass before the staleness test instead of
+  hand-building an `ordered_repos_json` that no real cycle can produce, which
+  is what let this stand for seventeen days.
 - The expensive-gather cache (requirement 48 above) wrote a 0-byte file for
   any repository whose raw bands outgrew `MAX_ARG_STRLEN`, so the fleet's
   busiest repository was invisible to each node two cycles in three
