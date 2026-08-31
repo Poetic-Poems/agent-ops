@@ -1540,8 +1540,28 @@ fi
 # Ordinator-class escalation whose run has broken since, on any later cycle's
 # ordinary union snapshot — no same-cycle race to lose, so no need to wait
 # for `cleanup()`.
+#
+# Retirement runs FIRST, before either `crash_loop_escalate_or_defer` call
+# below (agent-ops#1134 review). `create_escalation_issue`'s own open-issue
+# dedup is a live `gh issue list` query, not a read of this cycle's
+# `$union_log` — so if a resolved run's issue is still open when a *new*,
+# same-detail run re-crosses `crash_loop_after` later in this same block,
+# `create_escalation_issue` finds that still-open issue and rebinds it to the
+# new run instead of filing a fresh one, and this retirement step then closes
+# it out from under that live run on the strength of a `$union_log` snapshot
+# that predates the rebind. Running retirement first closes the resolved
+# run's issue before the new run's own filing attempt can see it, so that
+# attempt's `gh issue list` no longer finds anything to reuse and opens a
+# fresh issue instead — the new run gets its own alarm rather than inheriting
+# one already closed for the old.
 if ! (( DRY_RUN )) && (( crash_loop_after > 0 )) \
     && [[ -n "$crash_loop_repo" && -n "$enabler_assignee" && -s "$union_log" ]]; then
+  # Retirement (agent-ops#1074): independent of whether either class fires a
+  # verdict this cycle — an open escalation from a run that broke cycles ago
+  # is exactly what this closes, whatever this cycle's own union log shows
+  # right now.
+  crash_loop_retire_resolved
+
   crash_loop_json="$(crash_loop_verdict "$crash_loop_after" < "$union_log")"
   if [[ -n "$crash_loop_json" ]]; then
     if [[ "$(jq -r '.escalate' <<<"$crash_loop_json")" == "true" ]]; then
@@ -1561,12 +1581,6 @@ if ! (( DRY_RUN )) && (( crash_loop_after > 0 )) \
       "Crash loop: cycles are dying before any stage starts" \
       "No stage transcript exists for a cycle that dies before any stage begins — start with the newest failing cycle's entry in \`cron.log\` (or \`cron.log.1\` after rotation) under \`state_dir/\`."
   fi
-
-  # Retirement (agent-ops#1074): independent of whether either class fired a
-  # verdict this cycle — an open escalation from a run that broke cycles ago
-  # is exactly what this closes, whatever this cycle's own union log shows
-  # right now.
-  crash_loop_retire_resolved
 fi
 
 # 1c. Token-expiry escalation (agent-ops#694). GitHub states a fine-grained

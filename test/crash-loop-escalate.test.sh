@@ -277,6 +277,32 @@ assert_eq "a run that ended without any success — the fleet still failing unde
   "0" "$STUB_GH_CLOSE_CALLS"
 assert_eq "and no retirement is logged for it" "0" "$(events_of crash-loop-retired | wc -l | tr -d ' ')"
 
+# The multi-node reuse-collision variant (agent-ops#1134 review): the old
+# run named by the open issue really did break — a success is nameable — but
+# the SAME detail has since re-crossed `crash_loop_after` again as a new run
+# (a different first_ts). `crash_loop_reverify` alone would not catch this
+# (it only refuses to retire the *exact* run the issue names), and
+# `create_escalation_issue`'s live `gh issue list` dedup means a peer's own
+# `crash_loop_escalate_or_defer` may already have rebound this same
+# still-open issue to that new run — so closing it here, off a union
+# snapshot that has not yet caught up with the rebind, would retire the live
+# alarm out from under it.
+union_log="$WORKDIR/union-reactivated.jsonl"
+{
+  cat <<<"$four_fails"
+  printf '%s\n' "$escalated_marker_501"
+  success_at 2026-08-01T12:00:00Z n2
+  fail_at 2026-08-01T13:00:00Z n1 'coordinator exited 126'
+  fail_at 2026-08-01T13:15:00Z n1 'coordinator exited 126'
+  fail_at 2026-08-01T13:30:00Z n1 'coordinator exited 126'
+  fail_at 2026-08-01T13:45:00Z n1 'coordinator exited 126'
+} > "$union_log"
+STUB_GH_CLOSE_MODE="success"; STUB_GH_CLOSE_CALLS=0; EVENTS=()
+crash_loop_retire_resolved
+assert_eq "an open escalation is never closed while the same detail is active again under a new run" \
+  "0" "$STUB_GH_CLOSE_CALLS"
+assert_eq "and no retirement is logged for it" "0" "$(events_of crash-loop-retired | wc -l | tr -d ' ')"
+
 printf '\n'
 if (( failures )); then
   printf '%d assertion(s) failed\n' "$failures"

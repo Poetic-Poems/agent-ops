@@ -2299,7 +2299,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`crash-loop-dropped`) rather than filed. `crash_loop_retire_resolved`
   closes the other half of the same gap, retiring an already-open
   Co-Ordinator-class escalation once its run has broken, with a comment
-  naming the success that cleared it.
+  naming the success that cleared it. Step 1b now runs `crash_loop_retire_
+  resolved` *before* either filing call, and the function itself now also
+  checks for a same-detail run already active anywhere in the union log
+  regardless of its own `first_ts` — both close a collision where a
+  resolved run's still-open issue gets rebound (via `create_escalation_
+  issue`'s live open-issue dedup) to a new same-detail run and is then
+  retired out from under it, closing the alarm for that run's entire
+  remaining life.
 
 ### Changed
 

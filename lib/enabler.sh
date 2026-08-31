@@ -428,9 +428,29 @@ crash_loop_refile_pending() {
 # to lose to — an open issue's run either broke some earlier cycle (visible
 # in any union snapshot since) or it did not, so the freshest-available
 # snapshot serves exactly as well as one gathered later would.
+#
+# Before touching any open escalation, this also checks whether the same
+# `$union_log` already shows a *fresh* Co-Ordinator run under the very same
+# detail — regardless of that run's own `first_ts` — via a plain
+# `crash_loop_verdict` recompute, and skips retirement outright if so
+# (agent-ops#1134 review). `crash_loop_reverify` below already refuses to
+# retire the *exact* run an open issue names; it cannot see a *new* run that
+# has since re-crossed `crash_loop_after` under the same detail, because that
+# new run has a different `first_ts` and so reads as a different run to a
+# same-first_ts match. Step 1b in agent-cycle.sh now runs this function
+# before either `crash_loop_escalate_or_defer` call, which closes the
+# single-cycle, single-node version of that gap — but a peer node can still
+# have escalated (and so rebound the still-open issue to) that new run in an
+# earlier cycle whose own rebind event has not yet reached this node's
+# peer-synced union. Without this check, this node would then retire the
+# issue the peer just rebound, on the strength of a union snapshot that is
+# stale only about the rebind, not about the new run's failures themselves —
+# which this same snapshot already shows.
 crash_loop_retire_resolved() {
   [[ -n "$crash_loop_repo" && -s "$union_log" ]] || return 0
   local entry stage detail first_ts issue_number issue_url success_ts body
+  local active_detail
+  active_detail="$(jq -r '.detail // empty' <<<"$(crash_loop_verdict "$crash_loop_after" < "$union_log")" 2>/dev/null)"
   while IFS= read -r entry; do
     [[ -n "$entry" ]] || continue
     stage="$(jq -r '.stage // ""' <<<"$entry")"
@@ -440,6 +460,7 @@ crash_loop_retire_resolved() {
     issue_number="$(jq -r '.issue_number // ""' <<<"$entry")"
     issue_url="$(jq -r '.issue_url // ""' <<<"$entry")"
     [[ -n "$detail" && -n "$first_ts" && "$issue_number" =~ ^[0-9]+$ ]] || continue
+    [[ -n "$active_detail" && "$active_detail" == "$detail" ]] && continue
     [[ -z "$(crash_loop_reverify "$(jq -nc --arg s "$stage" --arg d "$detail" --arg f "$first_ts" \
                 '{stage: $s, detail: $d, first_ts: $f}')" "$crash_loop_after" < "$union_log")" ]] || continue
     success_ts="$(crash_loop_last_success_since "$stage" "$first_ts" < "$union_log")"

@@ -3491,11 +3491,12 @@ implements.
    same gap: an already-open Co-Ordinator-class escalation (`stage:
    "coordinator"` — pre-selection has no single resetting event to name in
    the closing comment) whose run has broken since. It runs from step 1b,
-   against the cycle's ordinary start-of-cycle union log — no same-cycle race
-   to lose the way a deferred filing does, since an open issue's run either
-   broke some earlier cycle or it did not, and any union snapshot since would
-   show it either way. For each `crash-loop-escalated` event not yet followed
-   by a `crash-loop-retired` event naming the same `issue_number`
+   **before** either `crash_loop_escalate_or_defer` call, against the
+   cycle's ordinary start-of-cycle union log — no same-cycle race to lose the
+   way a deferred filing does, since an open issue's run either broke some
+   earlier cycle or it did not, and any union snapshot since would show it
+   either way. For each `crash-loop-escalated` event not yet followed by a
+   `crash-loop-retired` event naming the same `issue_number`
    (`crash_loop_open_escalations`), a `crash_loop_reverify` finding the run
    broken *and* a `crash_loop_last_success_since` naming the Co-Ordinator
    success that broke it close the issue with a comment naming that success,
@@ -3508,6 +3509,35 @@ implements.
    escalation whose clearing success cannot be named is left open for a human
    to close — the detector's silence is never evidence the loop broke, in
    this direction any more than in the deferred-filing one.
+
+   Two further guards (agent-ops#1134 review) stop retirement from closing an
+   issue a *new* run of the same shape has already claimed, or is about to:
+
+   - **Retiring before filing, not after.** `create_escalation_issue`'s own
+     open-issue dedup is a live `gh issue list` query, not a read of
+     `$union_log` — so if step 1b instead retired *after* filing, a resolved
+     run's still-open issue could be rebound to a same-detail run that
+     re-crosses `crash_loop_after` later in the very same cycle (`create_
+     escalation_issue` finds the still-open issue and reuses it rather than
+     filing fresh), and retirement would then close that issue on the
+     strength of a union snapshot that predates the rebind — silently
+     dropping the alarm for the live run's entire remaining life, since every
+     later escalation attempt for it dedupes against its own now-closed-but-
+     reused issue number. Running retirement first closes the resolved run's
+     issue before either filing call can see it, so a same-cycle re-crossing
+     opens a fresh issue instead of inheriting the retired one.
+   - **A same-detail run already active anywhere in `$union_log`, regardless
+     of its own `first_ts`, blocks retirement outright** — a plain
+     `crash_loop_verdict` recompute against the same log, checked before the
+     `crash_loop_reverify` per-issue check above. This is the residual,
+     cross-node version of the same race the reordering above closes only
+     within one node's own cycle: a peer can have escalated (and so rebound
+     the still-open issue to) a new same-detail run in an earlier cycle whose
+     rebind has not yet reached this node's peer-synced union, even though
+     that union already shows the new run's own failures. `crash_loop_
+     reverify` alone cannot see this — it only refuses to retire the *exact*
+     run an open issue names (same `detail` **and** `first_ts`), and the new
+     run's `first_ts` necessarily differs from the old one's.
 
    A `crash_loop_verdict` run whose `escalate` is `false` — the API was
    unreachable, not refusing a request — never reaches `crash_loop_escalate`
