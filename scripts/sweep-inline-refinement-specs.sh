@@ -66,6 +66,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib/cycle-state.sh
 . "$SCRIPT_DIR/lib/cycle-state.sh"
+# shellcheck source=lib/pipeline-marker.sh
+. "$SCRIPT_DIR/lib/pipeline-marker.sh"
 
 apply=0
 append_to=""
@@ -120,6 +122,8 @@ sweep_candidates() {  # <refinements-json> <repo>  -> {item, spec} lines
     | {item: .key, spec: .value.spec}' <<<"${1:-{\}}" 2>/dev/null || true
 }
 
+sweep_cycle_id="sweep-inline-refinement-specs"
+
 refinements="$(refinements_map "$log_file")"
 candidates="$(sweep_candidates "$refinements" "$repo")"
 
@@ -148,9 +152,22 @@ while IFS= read -r entry; do
     continue
   fi
 
-  body="$(printf '%s\n\n%s\n' \
-    '**Recorded specification.** This is the refinement the pipeline has been acting on for this item. It was held only in the fleet log until now; it is posted here so the thread carries it (agent-ops#1128).' \
-    "$spec")"
+  # Requirement 3f/3e's envelope, not a bare body. Every write this system
+  # makes lands under the maintainer's own GitHub account, so author alone
+  # cannot tell a human's comment from the pipeline's: the visible header is
+  # what tells a human reading the thread who wrote this, and the invisible
+  # marker is what tells `scripts/gather-abandoned-drafts.sh` the same thing.
+  # A sweep posting 81 unmarked comments would read, to both, as the
+  # maintainer suddenly hand-specifying 81 issues.
+  #
+  # Actor `script`: this is a Script-level maintenance write, not a stage's
+  # verdict — no model was engaged to produce this text, it was already in the
+  # ledger.
+  body="$(printf '%s\n\n%s\n\n%s\n\n%s\n' \
+    "$(pipeline_comment_header script "${NODE_NAME:-sweep}")" \
+    'This item'"'"'s recorded specification, moved here from the fleet log so the thread carries it (agent-ops#1128). It is the same specification the pipeline has been acting on — nothing about the work has changed, and this comment asks nothing of anyone.' \
+    "$spec" \
+    "$(pipeline_comment_marker "$sweep_cycle_id" script)")"
 
   url="$(gh issue comment "$item" --repo "$repo" --body "$body" 2>/dev/null || true)"
   if [[ -z "$url" ]]; then
@@ -162,7 +179,7 @@ while IFS= read -r entry; do
   # this from a Refiner's or an Enabler's own record without cross-referencing
   # timestamps, the same reason requirement 3h's own `by` exists.
   jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-         --arg cycle "sweep-inline-refinement-specs" \
+         --arg cycle "$sweep_cycle_id" \
          --arg node "${NODE_NAME:-sweep}" \
          --arg r "$repo" --arg i "$item" --arg u "$url" \
     '{ts: $ts, cycle: $cycle, node: $node, event: "item-refined",
