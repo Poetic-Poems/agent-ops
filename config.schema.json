@@ -1595,6 +1595,15 @@
                 "value": "`6`"
               }
             },
+            "min_prs_between_reviews": {
+              "$ref": "#/$defs/minPrsBetweenReviews",
+              "description": "The other half of the skip-guard threshold (R4): a repository with fewer than this many pull requests merged into its default branch since its last review is skipped, independent of `min_days_between_reviews` (a review needs both enough elapsed days and enough merged PRs). Absent, and absent on a repository's own override too, 5 is used — the fallback lives in code, not this default, so a schema-only reader sees it as genuinely unset.",
+              "x-docs": {
+                "readme": "Skip a repo with fewer than this many PRs merged into its default branch since its last review. Independent of `min_days_between_reviews` — a review needs both enough elapsed days and enough merged PRs.",
+                "spec": "The other half of the skip-guard threshold (R4). A repo with fewer than this many PRs merged into its default branch since its last review is skipped, independent of `min_days_between_reviews`. Absent everywhere, 5 is used — the fallback lives in code, not this default.",
+                "value": "`5`"
+              }
+            },
             "not_before": {
               "$ref": "#/$defs/notBefore",
               "description": "Optional timestamp before which no review may start. Absent or empty means no stand-down. It expires by itself, which is why it exists rather than raising `min_days_between_reviews`: a threshold has to be put back by hand, and a cadence left quietly throttled is not noticed for weeks.",
@@ -1655,6 +1664,10 @@
               "min_days_between_reviews": {
                 "$ref": "#/$defs/minDaysBetweenReviews",
                 "description": "Override for `defaults.min_days_between_reviews`, for this repository alone."
+              },
+              "min_prs_between_reviews": {
+                "$ref": "#/$defs/minPrsBetweenReviews",
+                "description": "Override for `defaults.min_prs_between_reviews`, for this repository alone."
               },
               "not_before": {
                 "$ref": "#/$defs/notBefore",
@@ -1792,6 +1805,11 @@
     "minDaysBetweenReviews": {
       "description": "A non-negative day count.",
       "type": "number",
+      "minimum": 0
+    },
+    "minPrsBetweenReviews": {
+      "description": "A non-negative merged-PR count. Deliberately carries no `default` of its own, so the two sites that `$ref` it choose independently whether to fabricate one — the ultimate fallback of 5 when neither is set lives in code (review-cycle.sh), not the schema, the same as `reportDirectory`.",
+      "type": "integer",
       "minimum": 0
     },
     "notBefore": {

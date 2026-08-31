@@ -36,6 +36,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   GET's ratelimit headers update a per-identity `budget.json`;
   `scripts/github-budget-report.sh` sums the ledger by cache outcome and
   `scripts/rotate-logs.sh` bounds its size.
+- New `min_prs_between_reviews` skip-guard for the review pipeline
+  (agent-ops#1079), analogous to the existing `min_days_between_reviews`:
+  a repository whose default branch has had fewer than this many pull
+  requests merged since its last review is skipped this run, independent of
+  the day-count guard (a review needs both enough elapsed days *and* enough
+  merged PRs). Configurable at `project_review.defaults.min_prs_between_reviews`
+  and per-repository as `project_review.repos[].min_prs_between_reviews`;
+  absent everywhere, a code-level default of `5` applies, the same pattern
+  `report_directory` already uses. `review-cycle.sh`'s `skip_reason()` gains
+  a `min_prs` parameter and a `merged_pr_count_since` helper, fail-open to
+  "proceed" on any `gh` read it can't verify, and only evaluated once a
+  repository has a most-recent review date to count PRs since.
 - Expensive per-repository gather — issue threads with comments, the
   tech-debt register, PR review reads, merge-conflict/dequeued/register-
   hygiene walks — runs for one configured repository per cycle, not every

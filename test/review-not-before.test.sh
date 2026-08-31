@@ -233,6 +233,65 @@ assert_lacks "the repository inheriting the empty default is not held back by it
   "skip Poetic-Poems/poetic-fiddle — not_before" "$out"
 assert_eq "and the tick still ends 0" "0" "$RC"
 
+# --- min_prs_between_reviews: the merged-PR-count half of R4's skip-guard --------
+# review-cycle.sh's merged_pr_count_since (agent-ops#1079) counts pull requests
+# merged since a repository's last review via `gh api search/issues`, an
+# endpoint that only accepts GET — `gh api` defaults to POST whenever `-f`
+# parameters are given, so without `-X GET` the call 404s every time and this
+# guard's branch can never fire. This case's own gh stub answers just enough of
+# skip_reason's call sequence (no open PRs, a resolvable default branch, one past
+# report directory) to reach that call, and proves it was actually made with
+# `-X GET` — the marker file, not just the skip message, is what a regression
+# dropping the flag again would fail on.
+merged_pr_report_date="$(date -u -d '-30 day' +%Y-%m-%d)"
+get_seen_marker="$tmp_dir/merged-pr-count-get-seen"
+gh_bin="$tmp_dir/gh-stub-bin"
+mkdir -p "$gh_bin"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$gh_bin/claude"
+chmod +x "$gh_bin/claude"
+cat > "$gh_bin/gh" <<STUB
+#!/usr/bin/env bash
+if [[ "\$1" == "pr" && "\$2" == "list" ]]; then
+  echo 0
+  exit 0
+fi
+if [[ "\$1" == "api" ]]; then
+  full="\$*"
+  if [[ "\$full" == *"search/issues"* ]]; then
+    if [[ "\$full" == *"-X GET"* ]]; then
+      : > '$get_seen_marker'
+      echo 2
+      exit 0
+    fi
+    printf '{\n  "message": "Not Found",\n  "documentation_url": "https://docs.github.com/rest",\n  "status": "404"\n}\n'
+    echo "gh: Not Found (HTTP 404)" >&2
+    exit 1
+  fi
+  if [[ "\$full" == *"contents/reviews"* ]]; then
+    printf '[{"name": "project-review-$merged_pr_report_date", "type": "dir"}]\n'
+    exit 0
+  fi
+  if [[ "\$full" == "api repos/"* ]]; then
+    echo main
+    exit 0
+  fi
+fi
+exit 1
+STUB
+chmod +x "$gh_bin/gh"
+
+d="$(make_node merged-pr-guard ".project_review.defaults.not_before = \"\" \
+  | .project_review.repos = [ {slug: \"o/merged-pr-guard\", min_prs_between_reviews: 10} ] \
+  | .state_repo = \"\"")"
+out="$(env HOME="$d/home" AGENT_OPS_ROLE=active PATH="$gh_bin:$PATH" \
+  timeout 60 "$d/review-cycle.sh" --once 2>&1)"
+rc=$?
+assert_contains "a repository below min_prs_between_reviews is skipped, count and threshold logged" \
+  "skip o/merged-pr-guard — only 2 PR(s) merged into main since last review ($merged_pr_report_date) (< 10)" "$out"
+assert_eq "the search/issues call the skip reads its count from used -X GET" \
+  "1" "$([[ -f "$get_seen_marker" ]] && echo 1 || echo 0)"
+assert_eq "and the tick still ends 0" "0" "$rc"
+
 # --- Unparseable -----------------------------------------------------------------
 # Fails towards the operator's evident intent, not through it.
 d="$(make_node unparseable "$BASE | .project_review.defaults.not_before = \"next Thursday-ish\"")"
