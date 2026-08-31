@@ -84,6 +84,27 @@
 # shellcheck source=lib/github-app-token.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/github-app-token.sh"
 
+# _approver_token_installation_id_valid ID
+# True (exit 0) iff ID is a syntactically usable installation id: a non-empty
+# run of digits, which is what GitHub issues and the only thing any consumer
+# of this file can do anything with. Everything below routes both the map and
+# the scalar through here, so a configuration typo can never be *carried* —
+# only fallen back from, or reported as gate-unreadable.
+#
+# Three separate things break on an id that reaches a consumer unchecked, and
+# only the first is obvious. A non-numeric id 404s at
+# POST /app/installations/<id>/access_tokens, which reads in a log as "GitHub
+# did not issue a token" rather than as the config typo it is. It also
+# defeats github-app-token.sh's cache-key invariant, whose
+# `_github_app_token_cache_file` collapses every [^0-9A-Za-z_-] to `_`, so two
+# distinct malformed ids can collide on one cache file. And an id of `*` or
+# `@` is a bash hazard in its own right: `scripts/doctor.sh` indexes
+# associative arrays by installation id (`${ait_perm_verdict[$ait_id]:-}`),
+# where either subscript expands as *all elements* rather than as a lookup.
+_approver_token_installation_id_valid() {
+  [[ "${1:-}" =~ ^[0-9]+$ ]]
+}
+
 # approver_token_installation_id_for SLUG_OR_OWNER
 # Resolve the Approver installation id for a repository slug ("owner/repo")
 # or a bare owner, by the owner half, case-insensitively, against
@@ -92,14 +113,29 @@
 # an owner the map does not name. Prints the resolved id and returns 0, or
 # prints nothing and returns 1 if neither names this owner.
 #
+# An empty SLUG_OR_OWNER returns 1 rather than falling back to the scalar.
+# It names no owner, so it can only arrive as a caller error — the shape
+# every call site here had before agent-ops#913 gave them all a slug — and
+# the fleet-wide default is precisely the wrong answer to it: in a
+# multi-owner fleet it mints against one owner's installation for a
+# repository belonging to another, and the resulting 403/404 surfaces at
+# write time as "GitHub did not issue" rather than as the gate-unreadable
+# this file reports for every other unresolvable credential. Callers that
+# genuinely have no owner in play ask approver_token_any_installation_id.
+#
 # A map that is set but not valid JSON, or not a JSON object, is treated the
 # same as an empty map (falls straight through to the scalar default) rather
 # than raised as an error here — malformed configuration is exactly what
 # scripts/doctor.sh exists to catch before this ever runs against it, and a
 # minting path failing closed on a config typo would turn a doctor `fail`
-# into a mint failure with a much less specific diagnosis.
+# into a mint failure with a much less specific diagnosis. A malformed
+# *value* under a well-formed map key falls through the same way, and for the
+# same reason: `null`, an object or an array stringifies to a non-empty token
+# that would otherwise shadow a perfectly good scalar default, turning a
+# fallback into a permanent mint failure for that one owner.
 approver_token_installation_id_for() {
-  local slug="$1" owner id
+  local slug="${1:-}" owner id=""
+  [[ -n "$slug" ]] || return 1
   owner="${slug%%/*}"
   if [[ -n "${PULLWRIGHT_APPROVER_INSTALLATION_IDS:-}" ]]; then
     id="$(jq -r --arg o "$owner" '
@@ -107,11 +143,12 @@ approver_token_installation_id_for() {
         (to_entries[] | select((.key | ascii_downcase) == ($o | ascii_downcase)) | .value | tostring)
       else empty end
     ' <<<"$PULLWRIGHT_APPROVER_INSTALLATION_IDS" 2>/dev/null | head -n1)"
+    _approver_token_installation_id_valid "$id" || id=""
   fi
-  if [[ -z "${id:-}" ]]; then
+  if [[ -z "$id" ]]; then
     id="${PULLWRIGHT_APPROVER_INSTALLATION_ID:-}"
   fi
-  [[ -n "$id" ]] || return 1
+  _approver_token_installation_id_valid "$id" || return 1
   printf '%s' "$id"
 }
 
@@ -124,9 +161,18 @@ approver_token_installation_id_for() {
 # of which installation answers the credential-present gate).
 approver_token_any_installation_id() {
   local id="${PULLWRIGHT_APPROVER_INSTALLATION_ID:-}"
+  _approver_token_installation_id_valid "$id" || id=""
   if [[ -z "$id" && -n "${PULLWRIGHT_APPROVER_INSTALLATION_IDS:-}" ]]; then
-    id="$(jq -r 'if (type == "object") then (to_entries | sort_by(.key) | .[0].value | tostring) else empty end' \
-      <<<"$PULLWRIGHT_APPROVER_INSTALLATION_IDS" 2>/dev/null)"
+    # The first *usable* entry by key, not simply the first: this answers
+    # "is any credential configured at all", so a malformed value sorting
+    # ahead of a good one must not make the whole map read as unconfigured.
+    id="$(jq -r '
+      if (type == "object")
+      then (to_entries | sort_by(.key) | map(.value | tostring)
+            | map(select(test("^[0-9]+$"))) | .[0] // empty)
+      else empty end
+    ' <<<"$PULLWRIGHT_APPROVER_INSTALLATION_IDS" 2>/dev/null)"
+    _approver_token_installation_id_valid "$id" || id=""
   fi
   [[ -n "$id" ]] || return 1
   printf '%s' "$id"

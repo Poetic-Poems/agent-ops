@@ -1155,6 +1155,126 @@ assert_contains "  ... and third-org's own consolidated verdict names the same g
   "no Approver App installation is configured for third-org" "$out"
 assert_eq "  ... and doctor.sh exits 1" "1" "$rc"
 
+# --- agent-ops#1060 (the owner's decision (a) on escalation #1064): the
+#     per-owner installation loop runs from `agent-approves` upward, exactly
+#     as the consolidated readiness verdict below it already does. A
+#     repository at `merge_autonomy: human` never mints an Approver token —
+#     `run_approver_stage` returns before any credential read — so demanding
+#     an installation for it would fail a whole run over configuration that
+#     is idle by choice, and would spend both live reads on an installation
+#     nothing will ever use. The stub below logs every URL it is asked for,
+#     which is how "no read was spent" is asserted rather than assumed. ----
+rank_key="$tmp/rank-key.pem"
+openssl genrsa -out "$rank_key" 2048 >/dev/null 2>&1
+rank_cache="$tmp/rank-token-cache"
+mkdir -p "$rank_cache"
+rank_log="$tmp/rank-curl.log"
+rank_curl="$tmp/rank-curl"
+cat > "$rank_curl" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null 2>&1
+url=""
+for a in "$@"; do case "$a" in https://*) url="$a" ;; esac; done
+printf '%s\n' "$url" >> "$RANK_CURL_LOG"
+case "$url" in
+  */access_tokens)
+    id="${url#*/app/installations/}"; id="${id%%/access_tokens}"
+    printf '{"token":"ghs_stub_%s","expires_at":"2099-01-01T00:00:00Z"}\n201' "$id"
+    exit 0 ;;
+  */app/installations/*)
+    printf '{"permissions":{"contents":"write","metadata":"read","pull_requests":"write"}}\n200'
+    exit 0 ;;
+  */installation/repositories*)
+    printf '{"total_count":0,"repository_selection":"all","repositories":[]}\n200'
+    exit 0 ;;
+esac
+exit 1
+STUB
+chmod +x "$rank_curl"
+# How many times the permissions read (`/app/installations/<id>`, which the
+# `access_tokens` mint URL extends rather than matches) was asked for a given
+# installation id.
+rank_reads() { grep -c "app/installations/$1\$" "$rank_log" 2>/dev/null || true; }
+
+# `idle-org` is named by the map and has one repository, at `human`;
+# `unmapped-org` is at `human` and named by nothing at all. Neither may
+# produce a fail, and neither may cost an installation read.
+rank_human_config="$tmp/rank-human-config.json"
+jq '.repos += [{slug: "idle-org/idle-repo", sources: ["security", "abandoned-drafts"], merge_autonomy: "human"},
+               {slug: "unmapped-org/other-idle-repo", sources: ["security", "abandoned-drafts"], merge_autonomy: "human"}]' \
+  "$ma_approves_config" > "$rank_human_config"
+: > "$rank_log"
+rm -f "$rank_cache"/*
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_INSTALLATION_IDS -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
+  PULLWRIGHT_APPROVER_APP_ID=123456 \
+  PULLWRIGHT_APPROVER_INSTALLATION_IDS='{"acme-org": 111111111, "idle-org": 222222222}' \
+  PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$rank_key" APPROVER_TOKEN_CURL="$rank_curl" \
+  APPROVER_TOKEN_CACHE_DIR="$rank_cache" RANK_CURL_LOG="$rank_log" \
+  bash "$DOCTOR" --config "$rank_human_config" 2>&1)"
+rc=$?
+assert_not_contains "a human-level repository whose owner is named by neither variable is no fail" \
+  "no Approver App installation is configured for unmapped-org" "$out"
+assert_not_contains "  ... and earns no consolidated readiness verdict either, as at every other check" \
+  "unmapped-org/other-idle-repo's autonomy readiness" "$out"
+assert_eq "  ... and doctor.sh does not exit non-zero over a repository that never mints a token" "0" "$rc"
+assert_contains "  ... while the agent-approves repository beside it still resolves and reads normally" \
+  "the installation for acme-org (id 111111111)" "$out"
+assert_eq "  ... reading acme-org's own installation exactly once" "1" "$(rank_reads 111111111)"
+assert_eq "  ... and spending no read at all on the installation only a human-level repository names" \
+  "0" "$(rank_reads 222222222)"
+
+# The order of the skip is itself load-bearing: the loop de-duplicates by
+# owner, so a rank-0 skip placed *after* the owner is marked seen would leave
+# an owner whose first listed repository is at `human` and whose second is at
+# `agent-approves` unresolved — and the readiness verdict below would then
+# fail that second repository for a variable that is set.
+rank_dup_config="$tmp/rank-dup-config.json"
+jq '.repos += [{slug: "dup-org/first-repo", sources: ["security", "abandoned-drafts"], merge_autonomy: "human"},
+               {slug: "dup-org/second-repo", sources: ["security", "abandoned-drafts"]}]' \
+  "$ma_approves_config" > "$rank_dup_config"
+: > "$rank_log"
+rm -f "$rank_cache"/*
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_INSTALLATION_IDS -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
+  PULLWRIGHT_APPROVER_APP_ID=123456 \
+  PULLWRIGHT_APPROVER_INSTALLATION_IDS='{"acme-org": 111111111, "dup-org": 333444555}' \
+  PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$rank_key" APPROVER_TOKEN_CURL="$rank_curl" \
+  APPROVER_TOKEN_CACHE_DIR="$rank_cache" RANK_CURL_LOG="$rank_log" \
+  bash "$DOCTOR" --config "$rank_dup_config" 2>&1)"
+rc=$?
+assert_contains "an owner listed first at human and again at agent-approves still resolves" \
+  "the installation for dup-org (id 333444555)" "$out"
+assert_contains "  ... and its agent-approves repository is fully supported, not failed for an unset variable" \
+  "dup-org/second-repo's autonomy readiness: \"agent-approves\" is fully supported" "$out"
+assert_not_contains "  ... while its human-level repository still earns no verdict of its own" \
+  "dup-org/first-repo's autonomy readiness" "$out"
+assert_eq "  ... reading dup-org's installation exactly once for the two repositories" \
+  "1" "$(rank_reads 333444555)"
+assert_eq "  ... and doctor.sh exits 0" "0" "$rc"
+
+# --- agent-ops#575: a permissions payload this run could not *compare* is
+#     unreadable, never an all-clear. `approver_token_installation_permissions`
+#     rejects only an absent or empty `.permissions`, so a scalar `permissions`
+#     reaches the gap computation and makes jq's `keys_unsorted` an error;
+#     reading that error's empty output as "no gap" would print the exact
+#     verdict this whole check exists to withhold. -------------------------
+stub_perm 200 '{"permissions":"write"}'
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_INSTALLATION_IDS -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" \
+  PULLWRIGHT_APPROVER_APP_ID=123456 PULLWRIGHT_APPROVER_INSTALLATION_ID=153689775 \
+  PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$perm_key" APPROVER_TOKEN_CURL="$perm_curl" \
+  APPROVER_TOKEN_CACHE_DIR="$perm_cache" \
+  bash "$DOCTOR" --config "$ma_approves_config" 2>&1)"
+rc=$?
+assert_contains "an uncomparable permissions payload is reported as unreadable" \
+  "its \`permissions\` came back in a shape this run could not compare against what the fleet needs" "$out"
+assert_not_contains "  ... and never as the exact-three all-clear" \
+  "the Approver App installation carries exactly contents:write, metadata:read and pull_requests:write" "$out"
+assert_contains "  ... leaving readiness unconfirmed rather than fully supported" \
+  "$slug's autonomy readiness at \"agent-approves\" could not be fully confirmed" "$out"
+assert_eq "  ... and doctor.sh does not fail for something it could not check" "0" "$rc"
+
+# Restore the comparable payload for every case below.
+stub_perm 200 '{"permissions":{"contents":"write","metadata":"read","pull_requests":"write"}}'
+
 # --- agent-ops#913: a single-owner fleet needs no new configuration and
 #     sees no change in doctor output — the acceptance criterion the issue
 #     states outright. Every assertion above this point in this file runs

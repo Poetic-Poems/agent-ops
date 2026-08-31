@@ -106,17 +106,29 @@ printf '%s\n%s' "\$body" "\$status"
 STUB
 chmod +x "$tmp_dir/curl"
 
+# Both helpers name PULLWRIGHT_APPROVER_INSTALLATION_IDS (agent-ops#913)
+# alongside the three variables that predate it. `setup_env` is a
+# *single-owner* environment, so it unsets the map rather than setting one:
+# that is the shape every assertion written before #913 assumes. `clear_env`
+# has to unset it for a much sharper reason — it is what backs every
+# "no credential configured is gate-unreadable" assertion below, and a map
+# left set from an earlier case would resolve an installation id all on its
+# own, so the gate would be readable and the assertion would fail (or, worse,
+# a later case would silently exercise map resolution while claiming to test
+# the scalar).
 setup_env() {
   PULLWRIGHT_APPROVER_APP_ID="4593249"
   PULLWRIGHT_APPROVER_INSTALLATION_ID="153689775"
   PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$key_path"
   APPROVER_TOKEN_CURL="$tmp_dir/curl"
   APPROVER_TOKEN_CACHE_DIR="$cache_dir"
+  unset PULLWRIGHT_APPROVER_INSTALLATION_IDS
   export PULLWRIGHT_APPROVER_APP_ID PULLWRIGHT_APPROVER_INSTALLATION_ID \
     PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH APPROVER_TOKEN_CURL APPROVER_TOKEN_CACHE_DIR
 }
 clear_env() {
   unset PULLWRIGHT_APPROVER_APP_ID PULLWRIGHT_APPROVER_INSTALLATION_ID \
+    PULLWRIGHT_APPROVER_INSTALLATION_IDS \
     PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH APPROVER_TOKEN_CURL APPROVER_TOKEN_CACHE_DIR
 }
 
@@ -332,6 +344,45 @@ out="$(approver_token_installation_id_for "Pullwright/agent-ops" 2>/dev/null)"; 
 assert_eq "a map that is valid JSON but not an object also falls back" "0" "$rc"
 assert_eq "  ... the scalar's value" "153689775" "$out"
 
+# A malformed *value* under a well-formed key falls through the same way a
+# malformed map does. Without this, `jq`'s `tostring` hands back a non-empty
+# token — the literal "null", "{}" or "[]" — which is truthy enough to shadow
+# a perfectly good scalar default and turn a fallback into a permanent mint
+# failure for that one owner: every POST to /app/installations/null/... 404s,
+# and the log says "GitHub did not issue a token" rather than naming the typo.
+for bad_value in 'null' '{"id": 5}' '[5]' '"not-an-id"' 'true'; do
+  export PULLWRIGHT_APPROVER_INSTALLATION_IDS="{\"Pullwright\": $bad_value}"
+  out="$(approver_token_installation_id_for "Pullwright/agent-ops" 2>/dev/null)"; rc=$?
+  assert_eq "a map value of $bad_value falls back to the scalar default rather than shadowing it: exit 0" "0" "$rc"
+  assert_eq "  ... the scalar's value, never the malformed one" "153689775" "$out"
+done
+
+# ... and with no scalar to fall back to, a malformed value is the same
+# unresolved-owner exit 1 an absent key already is — never a token a caller
+# would carry to GitHub.
+unset PULLWRIGHT_APPROVER_INSTALLATION_ID
+export PULLWRIGHT_APPROVER_INSTALLATION_IDS='{"Pullwright": null}'
+out="$(approver_token_installation_id_for "Pullwright/agent-ops" 2>/dev/null)"; rc=$?
+assert_eq "a malformed map value with no scalar default: exit 1" "1" "$rc"
+assert_eq "  ... no output" "" "$out"
+PULLWRIGHT_APPROVER_INSTALLATION_ID="153689775"
+export PULLWRIGHT_APPROVER_INSTALLATION_ID
+
+# An empty slug names no owner, so it must not resolve to the fleet-wide
+# default: in a multi-owner fleet that mints one owner's installation token
+# for another owner's repository, and the resulting 403/404 surfaces at write
+# time as "GitHub did not issue" rather than as the gate-unreadable this file
+# reports for every other unresolvable credential. It is the shape every call
+# site here had before agent-ops#913 gave them all a slug.
+unset PULLWRIGHT_APPROVER_INSTALLATION_IDS
+out="$(approver_token_installation_id_for "" 2>/dev/null)"; rc=$?
+assert_eq "an empty slug is unresolved, not the scalar default: exit 1" "1" "$rc"
+assert_eq "  ... no output" "" "$out"
+
+out="$(approver_token_get "" "$now" 2>/dev/null)"; rc=$?
+assert_eq "  ... and approver_token_get \"\" is gate-unreadable (exit 2), never a mint" "2" "$rc"
+assert_eq "  ... with no token on stdout" "" "$out"
+
 unset PULLWRIGHT_APPROVER_INSTALLATION_IDS
 
 # --- approver_token_any_installation_id (agent-ops#913) ---------------------
@@ -348,6 +399,19 @@ export PULLWRIGHT_APPROVER_INSTALLATION_IDS='{"Pullwright": 12345678, "Poetic-Po
 out="$(approver_token_any_installation_id)"; rc=$?
 assert_eq "no scalar default, only a map: exit 0" "0" "$rc"
 assert_eq "  ... the first entry by key" "87654321" "$out"
+
+# The first *usable* entry by key, not simply the first: this function
+# answers "is any credential configured at all", so a malformed value sorting
+# ahead of a good one must not make the whole map read as unconfigured.
+export PULLWRIGHT_APPROVER_INSTALLATION_IDS='{"aaa-org": null, "zzz-org": 87654321}'
+out="$(approver_token_any_installation_id)"; rc=$?
+assert_eq "a malformed first entry is skipped for the first usable one: exit 0" "0" "$rc"
+assert_eq "  ... the first usable entry's value" "87654321" "$out"
+
+export PULLWRIGHT_APPROVER_INSTALLATION_IDS='{"aaa-org": null, "zzz-org": {}}'
+out="$(approver_token_any_installation_id 2>/dev/null)"; rc=$?
+assert_eq "a map with no usable entry at all: exit 1" "1" "$rc"
+assert_eq "  ... no output" "" "$out"
 
 unset PULLWRIGHT_APPROVER_INSTALLATION_IDS
 out="$(approver_token_any_installation_id 2>/dev/null)"; rc=$?

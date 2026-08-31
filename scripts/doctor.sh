@@ -1328,11 +1328,13 @@ if ((gh_ready)); then
   # *distinct installation id*, not once fleet-wide: two owners sharing one
   # installation cost one read each, not two, and an owner with neither
   # variable naming it is a `fail` right here, naming the owner and both
-  # variables, rather than a silent skip. Gated the same way the
-  # runtime-credential check above is (component 14's ma_above_human, and
-  # only once the credential is present enough to ask; an absent credential
-  # is already warned about there, and asking again here would only fail the
-  # same way a second time).
+  # variables, rather than a silent skip. The loop runs from `agent-approves`
+  # upward (agent-ops#1060): a repository at `human` is skipped before its
+  # owner is even resolved, the same convention the readiness verdict below
+  # already follows. Gated the same way the runtime-credential check above is
+  # (component 14's ma_above_human, and only once the credential is present
+  # enough to ask; an absent credential is already warned about there, and
+  # asking again here would only fail the same way a second time).
   declare -A ait_installation_id=()  # owner (lowercased) -> resolved installation id
   declare -A ait_perm_verdict=()     # installation id -> ok|fail|unknown
   declare -A ait_repos_list=()       # installation id -> "all" or newline-separated slugs
@@ -1340,6 +1342,24 @@ if ((gh_ready)); then
   ait_owners_seen=$'\n'
   while IFS= read -r ait_slug; do
     [[ -n "$ait_slug" ]] || continue
+
+    # `human` (rank 0) is skipped *before* the owner de-duplication below,
+    # not after (agent-ops#1060, owner decision (a) on #1064). Such a
+    # repository never mints an Approver token — `run_approver_stage` returns
+    # before any credential read — so demanding an installation for it would
+    # fail a whole doctor run over configuration that is idle by choice
+    # rather than contradictory by construction, and would spend both live
+    # GitHub reads on an installation only a `human`-level repository names.
+    # The order matters on its own account: marking the owner seen first and
+    # skipping after would leave an owner whose *first* listed repository is
+    # at `human` and whose second is at `agent-approves` unresolved, and the
+    # readiness verdict below would then `fail` that second repository for a
+    # variable that is set.
+    ait_level="$(merge_autonomy_configured_level "$DEFAULTED_CONFIG" "$ait_slug")"
+    ait_rank="$(merge_autonomy_rank "$ait_level" 2>/dev/null || printf 0)"
+    [[ "$ait_rank" =~ ^[0-9]+$ ]] || continue
+    (( ait_rank >= 1 )) || continue
+
     ait_owner="${ait_slug%%/*}"
     ait_owner_key="$(printf '%s' "$ait_owner" | tr '[:upper:]' '[:lower:]')"
     case "$ait_owners_seen" in *$'\n'"$ait_owner_key"$'\n'*) continue ;; esac
@@ -1359,6 +1379,15 @@ if ((gh_ready)); then
     if [[ -z "${ait_perm_verdict[$ait_id]:-}" ]]; then
       ait_perm_verdict[$ait_id]="unknown"
       if perms_json="$(approver_token_installation_permissions "$ait_owner" 2>/dev/null)"; then
+        # jq's own exit status decides, never the emptiness of its output.
+        # `approver_token_installation_permissions` rejects only an absent or
+        # empty `.permissions`, so a response body whose `permissions` is a
+        # scalar rather than an object reaches this comparison and makes
+        # `keys_unsorted` an error; discarding that status and reading the
+        # resulting empty string as "no gap" would print the exact all-clear
+        # this check exists to withhold (agent-ops#575). A comparison that
+        # could not be made is unreadable, which is the `skip` below.
+        perms_readable=1
         perms_gap="$(jq -rn --argjson want '{"contents":"write","metadata":"read","pull_requests":"write"}' \
                      --argjson got "$perms_json" '
           ($want | keys_unsorted) as $wanted
@@ -1368,8 +1397,10 @@ if ((gh_ready)); then
             + [$granted[] | select(($want[.] // "") == "") | "\(.) granted but not required"]
             ) as $problems
           | ($problems | join("; "))
-        ' 2>/dev/null)"
-        if [[ -z "$perms_gap" ]]; then
+        ' 2>/dev/null)" || perms_readable=0
+        if (( ! perms_readable )); then
+          skip "the Approver App installation's live permissions — GitHub answered /app/installations/<id>, but its \`permissions\` came back in a shape this run could not compare against what the fleet needs (D18 Stage 3, agent-ops#575) — the installation for $ait_owner (id $ait_id)"
+        elif [[ -z "$perms_gap" ]]; then
           ok "the Approver App installation carries exactly contents:write, metadata:read and pull_requests:write (D18 Stage 3, agent-ops#575) — the installation for $ait_owner (id $ait_id)"
           ait_perm_verdict[$ait_id]="ok"
         else
