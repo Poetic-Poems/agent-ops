@@ -3497,9 +3497,17 @@ implements.
    show it either way. For each `crash-loop-escalated` event not yet followed
    by a `crash-loop-retired` event naming the same `issue_number`
    (`crash_loop_open_escalations`), a `crash_loop_reverify` finding the run
-   broken closes the issue with a comment naming the Co-Ordinator success
-   that cleared it (`crash_loop_last_success_since`) and logs
-   `crash-loop-retired`; a run still active leaves the issue untouched.
+   broken *and* a `crash_loop_last_success_since` naming the Co-Ordinator
+   success that broke it close the issue with a comment naming that success,
+   and log `crash-loop-retired`; a run still active leaves the issue
+   untouched. Both conditions are required, and the second is the load-
+   bearing one: a run stops matching the detector whenever it stops being
+   *that* run, which a fleet still failing does every time the failures
+   change `detail`, and which a raised `crash_loop_after` or a peer that has
+   stopped syncing its log does without any change in the fleet at all. An
+   escalation whose clearing success cannot be named is left open for a human
+   to close — the detector's silence is never evidence the loop broke, in
+   this direction any more than in the deferred-filing one.
 
    A `crash_loop_verdict` run whose `escalate` is `false` — the API was
    unreachable, not refusing a request — never reaches `crash_loop_escalate`

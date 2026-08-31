@@ -258,6 +258,25 @@ crash_loop_retire_resolved
 assert_eq "an open escalation whose run is still active is never closed" "0" "$STUB_GH_CLOSE_CALLS"
 assert_eq "and nothing is logged for it" "0" "$(events_of crash-loop-retired | wc -l | tr -d ' ')"
 
+# The run stops matching the detector without anything having recovered: the
+# fleet is still failing every cycle, just under a different `detail`, so the
+# old run ends (runs are same-detail by construction) and the new one has not
+# reached threshold yet. `crash_loop_reverify` prints nothing here exactly as
+# it does after a real recovery — which is why retirement must turn on the
+# Co-Ordinator success being *nameable*, not on the detector's silence.
+union_log="$WORKDIR/union-detail-changed.jsonl"
+{
+  cat <<<"$four_fails"
+  printf '%s\n' "$escalated_marker_501"
+  fail_at 2026-08-01T11:00:00Z n1 'coordinator was refused by the API before it could run: api_error'
+  fail_at 2026-08-01T11:15:00Z n1 'coordinator was refused by the API before it could run: api_error'
+} > "$union_log"
+STUB_GH_CLOSE_MODE="success"; STUB_GH_CLOSE_CALLS=0; EVENTS=()
+crash_loop_retire_resolved
+assert_eq "a run that ended without any success — the fleet still failing under a new detail — is never retired" \
+  "0" "$STUB_GH_CLOSE_CALLS"
+assert_eq "and no retirement is logged for it" "0" "$(events_of crash-loop-retired | wc -l | tr -d ' ')"
+
 printf '\n'
 if (( failures )); then
   printf '%d assertion(s) failed\n' "$failures"

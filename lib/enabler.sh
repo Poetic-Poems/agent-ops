@@ -413,8 +413,11 @@ crash_loop_refile_pending() {
 }
 
 # crash_loop_retire_resolved
-# Closes any open crash-loop escalation whose run has since broken
-# (agent-ops#1074) — the Co-Ordinator class only (`stage: "coordinator"`);
+# Closes any open crash-loop escalation whose run has since broken *and*
+# whose breaking Co-Ordinator success can be named — both conditions, since
+# the detector going quiet alone is not evidence of recovery (see the
+# `success_ts` guard below) — the Co-Ordinator class only (`stage:
+# "coordinator"`, agent-ops#1074);
 # `crash_loop_preselection_verdict`'s own class has no single resetting
 # event `crash_loop_last_success_since` can name for the closing comment (a
 # clean cycle exit and a selection-path stage-start both reset it), and
@@ -440,9 +443,23 @@ crash_loop_retire_resolved() {
     [[ -z "$(crash_loop_reverify "$(jq -nc --arg s "$stage" --arg d "$detail" --arg f "$first_ts" \
                 '{stage: $s, detail: $d, first_ts: $f}')" "$crash_loop_after" < "$union_log")" ]] || continue
     success_ts="$(crash_loop_last_success_since "$stage" "$first_ts" < "$union_log")"
-    body="The Co-Ordinator has succeeded since this run's first failure (\`$first_ts\`)"
-    [[ -n "$success_ts" ]] && body="$body — at \`$success_ts\`"
-    body="$body. The loop this escalation reported has broken.
+    # Positive evidence only. `crash_loop_reverify` going quiet is not the
+    # same fact as "the Co-Ordinator recovered": a run stops matching the
+    # detector whenever it stops being *this* run, and a still-broken fleet
+    # does that all the time — every run is same-detail by construction, so
+    # one failing node starting to say `api_error` where it used to say
+    # `coordinator exited 126` ends the run without anything recovering. A
+    # `crash_loop_after` raised between the filing and now, or a peer whose
+    # failures made up the run no longer syncing its log, end it the same
+    # way. Retiring on any of those closes a live alarm and asserts a
+    # success that never happened — the precise mistake, in the opposite
+    # direction, that requirement 2.7's "silence must never retire an alarm"
+    # forbids. So the success must be nameable before the issue is closed,
+    # which is also the only way the closing comment can name it as
+    # requirement 2.7 says it does. Not nameable: leave it open, and let a
+    # human close it.
+    [[ -n "$success_ts" ]] || continue
+    body="The Co-Ordinator has succeeded since this run's first failure (\`$first_ts\`) — at \`$success_ts\`. The loop this escalation reported has broken.
 
 ---
 Retired automatically by agent-cycle.sh (requirement 2.7)."
