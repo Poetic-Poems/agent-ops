@@ -52,9 +52,9 @@
 # repository rather than one call for all of them — still a strict
 # improvement (1 GraphQL point replacing 2 REST points, per repository) and
 # the one shape this checker can actually verify against GitHub's live
-# schema. TD-PPagop-26083101 (agent-ops#1084) is where a batched or
-# conditionally-cached alternative belongs if the fleet's own repository
-# count ever makes the per-repository cost worth avoiding.
+# schema. agent-ops#1084 (conditional REST caching) is where a batched or
+# further-optimised alternative belongs if the fleet's own repository count
+# ever makes the per-repository cost worth avoiding.
 #
 # Prints nothing and returns non-zero — never a guessed value — when the read
 # fails for any reason: bad arguments, an unreachable API, a repository
