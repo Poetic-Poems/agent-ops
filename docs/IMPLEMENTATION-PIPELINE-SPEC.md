@@ -640,10 +640,12 @@ occupies four separate ranks rather than one:
   *when* the work is picked up, not about what the work is or how it is done.
 
   The `Priority` field is GitHub's native issue field, not a label and not a
-  Projects v2 field, so it arrives on the ordinary REST issues endpoint in
-  `issue_field_values` (the entry whose `issue_field_name` is `Priority`, read
-  from its `single_select_option.name`). It is absent from `gh issue view
-  --json`, which is why requirement 15e names the REST read. An issue whose
+  Projects v2 field, so it arrives on both the REST issues endpoint and its
+  GraphQL equivalent, in `issue_field_values`/`issueFieldValues` respectively
+  (the entry whose `issue_field_name`/`field.name` is `Priority`, read from
+  its `single_select_option.name`/`name`). It is absent from `gh issue view
+  --json`, which is why requirement 15e names one of the other two surfaces
+  instead. An issue whose
   `issue_field_values` is empty, or that carries no `Priority` entry, or whose
   entry cannot be read at all, is `Medium` — the field's visibility is
   `organization_members_only`, and a token that cannot see it must degrade to
@@ -4401,8 +4403,14 @@ implements.
      `excluded: null` for the shapes it falls back on itself (a gather that
      produced no object at all). Failures are loud on stderr (teed to
      `issues-<repo>.err` in the cycle record).
-   - Both reads take one 100-item page, like every gatherer. The bound is
-     stated in the script header rather than silently applied.
+   - The listing-plus-comments read is one paginated GraphQL walk
+     (`issue_prefetch_open_issues`, `lib/issue-prefetch.sh`, agent-ops#1085),
+     stated and checked the same way `gh pr list`'s own cap is
+     (`ISSUE_PREFETCH_MAX_PAGES`, default 2000 open issues) rather than
+     silently truncated at its predecessor's own uncontrolled first REST
+     page; each issue's own comment thread takes one 100-comment window, the
+     newest 100 where a thread runs longer than that. Both bounds are stated
+     in that function's own header rather than silently applied.
 3k. **Implementation-plan path passthrough.** The `implementation-plan` source
    names no path of its own: for each configured repo whose `sources` include
    it, attach that repo's `implementation_plan_path` (from its `config.json`
@@ -7749,11 +7757,12 @@ implements.
     issue and leaving it alone changes nothing.
 
     The band arrives on each pre-fetched entry as `priority`, derived by the
-    Script (requirement 3j) from the REST issues endpoint, whose payload
-    carries `issue_field_values`; the band is the `single_select_option.name`
-    of the entry whose `issue_field_name` is `Priority`. `gh issue view
-    --json` does not expose issue fields, which is why the REST listing is
-    the one surface it can come from. Anything that is
+    Script (requirement 3j) from `issue_prefetch_open_issues`'s GraphQL walk
+    (`lib/issue-prefetch.sh`, agent-ops#1085; a REST issues-endpoint read
+    before it), whose payload carries `issue_field_values`; the band is the
+    `single_select_option.name` of the entry whose `issue_field_name` is
+    `Priority`. `gh issue view --json` does not expose issue fields, which is
+    why neither surface this can come from is that command. Anything that is
     not one of the four names — absent, empty, unreadable by this token, or a
     value the organisation added later — is `Medium`, which keeps an
     unrecognised or invisible field a no-op rather than a re-ranking.
@@ -12486,7 +12495,10 @@ implements.
     who it already picked is both correct and one API call. `assignee` is the
     fallback for a pull request CODEOWNERS never touched at all.
 
-    Between those two, an already-pending `requested_reviewers` entry is its
+    Between those two, an already-pending review-request entry (GraphQL's
+    `reviewRequests`, one query shared with every other per-pull-request read
+    in this file since agent-ops#1085; two separate REST fields,
+    `requested_reviewers` and `requested_teams`, before it) is its
     own candidate source, read before `assignee` is ever considered: it is
     what a fresh CODEOWNERS auto-request leaves behind before anyone has
     reviewed, which `_handoff_known_reviewers` — reviews *submitted*, not
@@ -12516,15 +12528,18 @@ implements.
     them — under the account that raised the pull request. The pending list
     needs no author filter: GitHub never lets a review request name the pull
     request's own author to begin with. It does carry the same *bot* filter
-    the reviews list applies: a bot-type account or a `[bot]`-suffixed login
-    sitting in `requested_reviewers` is never read as proof a human was asked
-    — this org runs Copilot code review, and a repository ruleset can
-    auto-request it into this exact list, which would otherwise answer the
-    requirement without ever asking a human (tech-debt/TD-PPagop-26081403.md).
-    It also reads `requested_teams`, not only `requested_reviewers`: a
-    requested team is extended the same review-request mechanism CODEOWNERS
-    gives a named human, and a team can never itself be a bot, so this
-    function and requirement 38e's own read of the same rule
+    the reviews list applies: a bot-type account (GraphQL's `__typename`,
+    belt-and-braces alongside the same `[bot]`-suffix test the reviews list
+    uses) sitting in the pending review-request list is never read as proof a
+    human was asked — this org runs Copilot code review, and a repository
+    ruleset can auto-request it into this exact list, which would otherwise
+    answer the requirement without ever asking a human
+    (tech-debt/TD-PPagop-26081403.md). It also reads a requested team, not
+    only a requested user — one field, `reviewRequests`, since agent-ops#1085
+    (two separate REST fields, `requested_teams` and `requested_reviewers`,
+    before it): a requested team is extended the same review-request
+    mechanism CODEOWNERS gives a named human, and a team can never itself be
+    a bot, so this function and requirement 38e's own read of the same rule
     (`scripts/gather-human-visibility-hygiene.sh`'s `no_candidate` re-check)
     count a pending request the same way.
 
@@ -12546,9 +12561,11 @@ implements.
     failure is: the pull request is finished and visible, only a notification
     is missing.
 
-    The `requested_reviewers`/`requested_teams` read this candidate rule and
+    The pending review-request read this candidate rule and
     the POST's own re-check both depend on (`_handoff_pending_review_
-    targets`) tells a GitHub REST rate-limit refusal apart from any other
+    targets`) tells a GitHub rate-limit refusal — REST before agent-ops#1085
+    moved this read onto GraphQL, and `github_limit_kind` (`lib/github-
+    limit.sh`) recognises both phrasings — apart from any other
     read failure at that one call site (agent-ops#1082): where
     `github_limit_kind` (`lib/github-limit.sh`) — reused, not reclassified —
     names the failure a rate-limit refusal, `ensure_human_reviewer` prints
@@ -12561,9 +12578,10 @@ implements.
     `could not request review from …` warning, whose prefix is unchanged so
     requirement 38e's own classification of it is unaffected). An operator
     reading the log can then tell "no human was notified because the owner's
-    shared REST budget was gone" from a real fault, which a bare `failed`
-    could not say — and no site may answer the new state with silence, which
-    would be worse than the indistinguishable warning it replaced.
+    shared GitHub API budget was gone" from a real fault, which a bare
+    `failed` could not say — and no site may answer the new state with
+    silence, which would be worse than the indistinguishable warning it
+    replaced.
 
 38b. **A Co-Ordinator-recorded block gated on a human decision is labelled
     `blocked` and by reason, not only by class.** Requirement 34e projects the
@@ -14740,12 +14758,15 @@ What exists, and the requirements each part answers to:
    `reviewDecision` (agent-ops#391, TD-PPagop-26081505); a
    `could not read the pull request's reviews …` warning
    (`_handoff_pr_approved`'s own read failing inside the idle-nudge check)
-   only while re-running that same call — `_handoff_pr_approved`
-   (`lib/handoff.sh`), keyed off `_handoff_pr_parts`' own read of the
-   warning's `pr_url` — still fails; the `gh pr view` call this re-check
-   opens with is a different API surface (GraphQL, versus that call's own
-   REST `gh api …/reviews --paginate`) and proves nothing about it on its
-   own; a
+   drops unconditionally once the `gh pr view` call this re-check opens with
+   succeeds at all: since agent-ops#1085 moved `_handoff_pr_approved`
+   (`lib/handoff.sh`) onto the same GraphQL surface this `gh pr view` call
+   already asks `reviews` from, a successful read here already *is* proof
+   the read that failed now works, and no second call is made to confirm it
+   (before that migration, that read was a separate REST `gh api …/reviews
+   --paginate` call, a different API surface a successful `gh pr view`
+   proved nothing about, and this re-check ran it a second time to find
+   out); a
    `could not read the pull request's state …` warning
    (`scripts/sweep-human-visibility.sh`'s own broad `gh pr view --json
    reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,reviews,
@@ -20391,14 +20412,16 @@ pull request, run the ones the change touches and any it could regress.
     `could not read the pull request's reviews …` violation
     (`_handoff_pr_approved`'s own read failing inside the idle-nudge check)
     has no follow-up action outcome of its own to inspect — the read failing
-    was the whole violation — so it re-runs that same read instead: dropped
-    only once a fresh `_handoff_pr_approved` call (`lib/handoff.sh`, keyed off
-    `_handoff_pr_parts`' own read of the warning's `pr_url`) exits
-    successfully, judged on its exit status alone, never its printed
-    true/false, since the question here is only whether the read now
-    succeeds; survives while that same call still fails, even though the
-    outer `gh pr view` re-check — a different API surface — succeeds, proving
-    the fix does not infer the answer from that unrelated read; a
+    was the whole violation — and is dropped unconditionally the moment the
+    outer `gh pr view` re-check itself succeeds: since agent-ops#1085 moved
+    `_handoff_pr_approved` (`lib/handoff.sh`) onto the same GraphQL surface,
+    asking for the same `reviews` field, that outer call already succeeds
+    at, reaching this class at all past that success is the whole answer —
+    survives only while the outer `gh pr view` re-check itself is
+    unreadable, the same fail-safe default every other class shares, proven
+    by `test/gather-human-visibility-hygiene.test.sh`'s own `STUB_VIEW_RC`
+    case rather than by a second, separately-stubbable read this class no
+    longer makes; a
     `could not read the pull request's state …` violation
     (`scripts/sweep-human-visibility.sh`'s own broad `gh pr view --json
     reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,reviews,

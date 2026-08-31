@@ -84,13 +84,40 @@ URL="https://github.com/o/r/pull/1"
 #   $tmp_dir/list-fail    present -> `pr list` fails
 #   $tmp_dir/draft        "true" | "false" — the draft flag `pr view` reports
 #   $tmp_dir/reviews      the reviews array, verbatim JSON (raw GitHub shape:
-#                          user.login, user.type, state, submitted_at, body)
+#                          user.login, user.type, state, submitted_at, body) —
+#                          folded into `_handoff_pr_query`'s own GraphQL
+#                          document (agent-ops#1085) for every `_handoff_*`
+#                          caller, and still handed to `_sweep_round_answered`'s
+#                          own REST `/reviews` read verbatim (that one is not
+#                          part of the migration — see its own header)
 #   $tmp_dir/issue-comments.json  the PR's general (issue) comments, verbatim
 #                          JSON: an array of {created_at, body}
-#   $tmp_dir/pending      the requested_reviewers logins, one per line
+#   $tmp_dir/pending      the pending review-request logins, one per line
 #   $tmp_dir/author       the pull request author's login
 #   $tmp_dir/post-fail    present -> the POST changes nothing
-#   $tmp_dir/api-fail     the path fragment whose GET should fail, if any
+#   $tmp_dir/api-fail     for a REST call (`/reviews`, `/comments`, unchanged):
+#                          the path fragment whose GET should fail, if any. For
+#                          the `_handoff_pr_query` GraphQL call: a bare integer
+#                          fails every call from that 1-based call number
+#                          onward; the literal value `/reviews` — the one
+#                          REST-era value that named the read this call now
+#                          replaces — fails every call regardless of number;
+#                          any other value (e.g. `/comments`) is REST-only and
+#                          does not reach this call at all.
+#                          `_handoff_blocking_reviewers`/`_handoff_known_
+#                          reviewers`/`_handoff_pr_author`/`_handoff_pending_
+#                          review_targets`/`_handoff_pr_approved` (via
+#                          `_handoff_latest_reviews`) each ask `_handoff_pr_
+#                          query` fresh — nothing memoises across them
+#                          (`_handoff_pr_query`'s own header) — so a fixture
+#                          that targets one call and not another needs the call
+#                          number, never a path: there is only the one call
+#                          shape now.
+#   $tmp_dir/api-fail-pending  present -> fails the `_handoff_pr_query` call
+#                          numbered 4 onward specifically — the position
+#                          `_handoff_pending_review_targets`'s own read falls
+#                          at within `ensure_human_reviewer`'s call sequence
+#                          (blocking, known, author, pending, in that order)
 #   $tmp_dir/idle-view.json  the payload for the script's own idle-check
 #                             `pr view --json reviewDecision,...` (no --jq)
 #   $tmp_dir/view-fail    present -> that idle-check view fails
@@ -99,13 +126,17 @@ URL="https://github.com/o/r/pull/1"
 #   $tmp_dir/comments.log one paragraph per posted comment body
 #   $tmp_dir/pages        how many pages `--paginate` splits a listing over
 #                          (default 1) — each emitted as its own document
+#   $tmp_dir/hq-calls     how many `_handoff_pr_query` GraphQL calls have been
+#                          made so far this run — the call-numbering fixtures
+#                          above count against this
 #
 # `/reviews` and `/issues/…/comments` GET calls apply the *real* `--jq`
 # filter the caller passed to the raw fixture, rather than a filter of the
-# stub's own — `_handoff_blocking_reviewers` (login/bot/state) and
-# `_sweep_round_answered` (state/at/who/body) both read `/reviews`, with
-# different shapes, and only running each caller's own filter serves both
-# correctly from one fixture.
+# stub's own — `_sweep_round_answered`'s own two REST reads want a different
+# shape from `$tmp_dir/reviews` than `_handoff_pr_query`'s GraphQL document
+# does, and only running each caller's own filter serves both correctly from
+# one fixture. The `api graphql` branch below does the same for
+# `_handoff_pr_query`'s own filter, and separately for `merge_queue_probe`'s.
 cat > "$tmp_dir/gh" <<'STUB'
 #!/usr/bin/env bash
 d="$(dirname "$0")"
@@ -149,13 +180,61 @@ if [[ "$1 $2" == "api -X" ]]; then
 fi
 
 if [[ "$1 $2" == "api graphql" ]]; then
-  [[ -f "$d/mq-fail" ]] && exit 1
-  jqfilter="" prev=""
+  query="" prev=""
   for a in "$@"; do
-    [[ "$prev" == "--jq" ]] && jqfilter="$a"
+    if [[ "$prev" == "-f" && "$a" == query=* ]]; then query="$a"; fi
     prev="$a"
   done
-  jq -c "$jqfilter" "$d/mq-response.json" 2>/dev/null
+  if [[ "$query" == *isInMergeQueue* ]]; then
+    [[ -f "$d/mq-fail" ]] && exit 1
+    jqfilter="" prev=""
+    for a in "$@"; do
+      [[ "$prev" == "--jq" ]] && jqfilter="$a"
+      prev="$a"
+    done
+    jq -c "$jqfilter" "$d/mq-response.json" 2>/dev/null
+    exit 0
+  fi
+  # `_handoff_pr_query`'s own call (agent-ops#1085): author + reviews +
+  # pending, built from the same $d/reviews, $d/pending and $d/author fixtures
+  # this file's REST-era stub already maintained.
+  n="$(cat "$d/hq-calls" 2>/dev/null || echo 0)"; n=$(( n + 1 )); printf '%s' "$n" > "$d/hq-calls"
+  fail="$(cat "$d/api-fail" 2>/dev/null || true)"
+  should_fail=0
+  if [[ "$fail" =~ ^[0-9]+$ ]]; then
+    (( n >= fail )) && should_fail=1
+  elif [[ "$fail" == "/reviews" ]]; then
+    # `/reviews` is the one REST-era value tests set to fail the read
+    # `_handoff_blocking_reviewers`/`_handoff_pr_approved` used to make of
+    # that literal path — now `_handoff_pr_query`'s own call — so it is
+    # honoured here too; any other value (e.g. `/comments`, which never named
+    # a path any `_handoff_*` function read) is a REST-only fixture and must
+    # not reach across to this call at all.
+    should_fail=1
+  fi
+  [[ -s "$d/api-fail-pending" && "$n" -ge 4 ]] && should_fail=1
+  if (( should_fail )); then
+    failmsg="$(cat "$d/api-fail-msg" 2>/dev/null || true)"
+    [[ -n "$failmsg" ]] && printf '%s\n' "$failmsg" >&2
+    exit 1
+  fi
+  jqfilter="" prev=""
+  for a in "$@"; do
+    if [[ "$prev" == "--jq" ]]; then jqfilter="$a"; break; fi
+    prev="$a"
+  done
+  reviews_nodes="$(jq -c '[.[] | select(.submitted_at != null)
+              | {author: {login: .user.login, __typename: (.user.type // "User")},
+                 state: .state, submittedAt: .submitted_at}]' "$d/reviews")"
+  pending_nodes="$(
+    { while IFS= read -r l; do
+        [[ -n "$l" ]] && printf '{"requestedReviewer":{"__typename":"User","login":"%s"}}\n' "$l"
+      done < "$d/pending"; } | jq -sc '.'
+  )"
+  author_login="$(tr -d '\n' < "$d/author")"
+  doc="$(jq -nc --argjson reviews "$reviews_nodes" --argjson pending "$pending_nodes" --arg author "$author_login" \
+    '{data:{repository:{pullRequest:{author:{login:$author},reviews:{nodes:$reviews},reviewRequests:{nodes:$pending}}}}}')"
+  printf '%s' "$doc" | jq -c "$jqfilter"
   exit 0
 fi
 
@@ -183,20 +262,6 @@ if [[ "$path" == */reviews ]]; then
   for (( p = 0; p < pages; p++ )); do jq -c "$jqfilter" "$d/reviews"; done
 elif [[ "$path" == */comments ]]; then
   for (( p = 0; p < pages; p++ )); do jq -c "$jqfilter" "$d/issue-comments.json"; done
-elif [[ "$*" == *"user.login"* ]]; then
-  cat "$d/author"
-else
-  # A dedicated fixture for the review-request read alone (agent-ops#1082):
-  # `_handoff_pr_author` reads the same bare PR-object path with a different
-  # `--jq` filter, so the generic `api-fail` path match above cannot target
-  # this call by itself — it is told apart here by its own filter, which only
-  # `_handoff_pending_review_targets` ever hands this stub.
-  if [[ -s "$d/api-fail-pending" && "$jqfilter" == *requested_reviewers* ]]; then
-    failmsg="$(cat "$d/api-fail-msg" 2>/dev/null || true)"
-    [[ -n "$failmsg" ]] && printf '%s\n' "$failmsg" >&2
-    exit 1
-  fi
-  while IFS= read -r l; do [[ -n "$l" ]] && printf '%s\n' "$l"; done < "$d/pending"
 fi
 STUB
 chmod +x "$tmp_dir/gh"
@@ -323,7 +388,8 @@ reset_stub() {
   : > "$tmp_dir/pending"; : > "$tmp_dir/posts"; : > "$tmp_dir/comments.log"
   rm -f "$tmp_dir/api-fail" "$tmp_dir/api-fail-msg" "$tmp_dir/api-fail-pending" \
         "$tmp_dir/post-fail" "$tmp_dir/list-fail" \
-        "$tmp_dir/view-fail" "$tmp_dir/comment-fail" "$tmp_dir/pages" "$tmp_dir/mq-fail"
+        "$tmp_dir/view-fail" "$tmp_dir/comment-fail" "$tmp_dir/pages" "$tmp_dir/mq-fail" \
+        "$tmp_dir/hq-calls"
   set_merge_queue false
   idle_view "" "" "" "" no
 }

@@ -114,8 +114,25 @@ degrade() {
   exit 0
 }
 
-issues_raw="$(gh api "repos/$slug/issues?labels=pw::type:tech-debt&state=open&per_page=100")" \
-  || degrade "issues list fetch failed"
+# issue_prefetch_open_issues (lib/issue-prefetch.sh, agent-ops#1085) is one
+# paginated GraphQL walk fetching every open issue's whole comment thread
+# alongside it — every open issue, not only `pw::type:tech-debt`-labelled
+# ones, unlike this script's own former REST listing (`labels=pw::type:
+# tech-debt` was a server-side filter that call could apply and this shared
+# walk cannot, since scripts/gather-issues.sh needs the unfiltered set too);
+# the label filter below is now this script's own `select`, the one thing
+# lib/issue-prefetch.sh's own header already says is left to each caller.
+# See that function's own header for the point-cost measurement. Exit 2 means
+# its own page cap was reached before the repository's own open-issue count
+# was: the array it still printed is used rather than discarded, the same
+# "a truncated set is still useful" judgement gather-issues.sh's own call
+# site makes explicit.
+issues_raw="$(issue_prefetch_open_issues "$slug")"; issues_raw_rc=$?
+if (( issues_raw_rc == 1 )); then
+  degrade "issues list fetch failed"
+elif (( issues_raw_rc == 2 )); then
+  echo "gather-tech-debt: $slug: issue_prefetch_open_issues hit its own page cap — some open tech-debt issues may be missing this cycle" >&2
+fi
 jq -e 'type == "array"' <<<"$issues_raw" >/dev/null 2>&1 \
   || degrade "issues list payload is not an array"
 
@@ -125,6 +142,7 @@ jq -e 'type == "array"' <<<"$issues_raw" >/dev/null 2>&1 \
 candidates="$(jq -c "$ISSUE_DETERMINISTIC_FILTER_JQ"'
   [.[]
    | select(issue_deterministic_ok)
+   | select(([.labels[]?.name] | index("pw::type:tech-debt")) != null)
    | {number: .number,
       url: .html_url,
       title: .title,
@@ -132,7 +150,8 @@ candidates="$(jq -c "$ISSUE_DETERMINISTIC_FILTER_JQ"'
       author: (.user.login // ""),
       created_at: .created_at,
       updated_at: .updated_at,
-      body: (.body // "")}]
+      body: (.body // ""),
+      comments: [(.comments // [])[] | {author: (.user.login // ""), created_at: .created_at, body: (.body // "")}]}]
   | sort_by(.number)' <<<"$issues_raw" 2>/dev/null)" \
   || degrade "issues filter failed"
 
@@ -140,29 +159,24 @@ out='[]'
 while IFS= read -r candidate; do
   [[ -n "$candidate" ]] || continue
   n="$(jq -r '.number' <<<"$candidate")"
-  comments="$(gh api "repos/$slug/issues/$n/comments?per_page=100" \
-      --jq '[.[] | {author: (.user.login // ""), created_at: .created_at, body: (.body // "")}]')" \
-    || degrade "comments fetch failed for issue #$n"
-  jq -e 'type == "array"' <<<"$comments" >/dev/null 2>&1 \
-    || degrade "comments payload for issue #$n is not an array"
 
   # Requirement 34j, exactly as gather-issues.sh applies it: a `Blocked-by:`
-  # reference still open anywhere in the thread holds this candidate back,
-  # before the comparatively expensive comments payload above is put to any
-  # other use.
+  # reference still open anywhere in the thread holds this candidate back.
+  # `$candidate` already carries its own thread (`issue_prefetch_open_issues`
+  # fetched it alongside the listing itself, agent-ops#1085), so no further
+  # `gh` call is made to get it.
   thread_text="$(jq -r '.body' <<<"$candidate")
-$(jq -r '[.[].body] | join("\n")' <<<"$comments")"
+$(jq -r '[.comments[].body] | join("\n")' <<<"$candidate")"
   if [[ -n "$(issue_blocked_by_ref "$slug" "$thread_text")" ]]; then
     continue
   fi
 
-  # $candidate and $comments arrive on stdin, bound positionally with `input
-  # as $name` in the order printed (requirement 4g) — never in argv: a single
-  # issue thread past MAX_ARG_STRLEN must not degrade this repo's whole
-  # tech_debt array to `[]`.
-  entry="$(jq -nc 'input as $candidate | input as $comments |
-    {source: "tech-debt", ref: ($candidate.number | tostring)} + $candidate + {comments: $comments}' \
-    <<<"$candidate"$'\n'"$comments")" || degrade "entry assembly failed for issue #$n"
+  # $candidate already carries its own whole issue thread (requirement 4g) —
+  # unbounded past this call — so it arrives on stdin, never in argv: a
+  # single issue thread past MAX_ARG_STRLEN must not degrade this repo's
+  # whole tech_debt array to `[]`.
+  entry="$(jq -c '{source: "tech-debt", ref: (.number | tostring)} + .' \
+    <<<"$candidate")" || degrade "entry assembly failed for issue #$n"
   out="$(jq -nc 'input as $arr | input as $e | $arr + [$e]' <<<"$out"$'\n'"$entry")" \
     || degrade "array assembly failed at issue #$n"
 done < <(jq -c '.[]' <<<"$candidates")
