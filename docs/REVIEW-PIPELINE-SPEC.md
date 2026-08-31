@@ -204,6 +204,7 @@ the one long enough for that today.
 | `project_review.defaults.timeout_review` | *(unset)* | An override for the Reviewer-Agent's backstop, on the same terms as `timeout_coordinator` and through the same derivation (requirement 4f). Absent is the normal case. |
 | `project_review.defaults.inactivity_review` | *(unset)* | An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog and leaves the backstop as the only cap. |
 | `project_review.defaults.min_days_between_reviews` | `6` | The skip-guard threshold (R4). A repo reviewed within this many days is skipped. Six (not seven) leaves a day of slack, so a review that lands late one week is not pushed a full extra week the next. |
+| `project_review.defaults.min_prs_between_reviews` | `5` | The other half of the skip-guard threshold (R4). A repo with fewer than this many PRs merged into its default branch since its last review is skipped, independent of `min_days_between_reviews`. Absent everywhere, 5 is used — the fallback lives in code, not this default. |
 | `project_review.defaults.not_before` | *(unset)* | Optional. A timestamp before which no review may start (R3.3). Absent or empty means no stand-down; a value `date -d` cannot read stands the pipeline down rather than running through it. Expires by itself, which is why it exists rather than raising `min_days_between_reviews`: a threshold has to be put back by hand, and a cadence left quietly throttled is not noticed for weeks. As `defaults.not_before` it gates the whole cycle before the lock, exactly as a single...[continued below](#extended-notes-project_reviewdefaultsnot_before) |
 | `project_review.defaults.report_directory` | *(unset)* | Optional. The report directory, as a GNU `date`(1) format string resolved with `date -u +"<format>"` relative to the repository root, for the run's own `review_date` (R4a). Absent, and absent on a repository's own override too, `reviews/project-review-%Y-%m-%d` is used — today's layout, unchanged; the fallback lives in code, not this default, so a schema-only reader sees it as genuinely unset. Must be day-granular (R4a): a format carrying `%H`, `%M` or `%S` resolves...[continued below](#extended-notes-project_reviewdefaultsreport_directory) |
 | `project_review.repos` | `[{"slug": "Poetic-Poems/poetic"}, {"slug": "Poetic-Poems/poetic-fiddle"}]` | The repositories to review. Each entry's `slug` is required; every other key overrides the same-named key in `defaults` for that repository alone (requirement 342), and an entry carrying only `slug` inherits every default. A review has no per-repo work-source structure beyond these overrides. Adding a repo is a config-only change. |
@@ -444,7 +445,8 @@ R2c. **The fleet's memory and state publication.** After the lock and before
    loses the create-ref and skips the repo before cloning anything.
 
 R4. **Per-repo skip-guard (idempotency; this is how "once a week" is
-   enforced).** For each configured repo, skip it *this run* when **any** of:
+   enforced).** For each configured repo, skip it *this run* when **any** of
+   these independent conditions holds (an OR across the three):
    - its own resolved `not_before` (its override, or
      `project_review.defaults.not_before`, requirement 342) is set and now is
      before it — the same rule R3's cycle-wide check applies, checked again
@@ -455,14 +457,25 @@ R4. **Per-repo skip-guard (idempotency; this is how "once a week" is
      merge); **or**
    - its default branch already contains a report directory (R4a) dated
      within the last `min_days_between_reviews` days (its own resolved
-     value) (read best-effort via `gh`).
+     value), **or** fewer than `min_prs_between_reviews` pull requests (its
+     own resolved value) have merged into its default branch since that same
+     report directory's date (read best-effort via `gh`, and only evaluated
+     once a most-recent review date exists — a repository's first-ever review
+     has nothing to count either threshold since). These two thresholds are
+     an **AND**, not a further OR: a review proceeds only once *both* enough
+     days have elapsed *and* enough pull requests have merged, so raising
+     either alone raises the bar.
 
-   Log `review-skipped` with the reason. This guard is what makes a **daily**
+   Log `review-skipped` with the reason, naming the count and threshold for
+   the `min_prs_between_reviews` case. This guard is what makes a **daily**
    cron tick safe and preferable to a strict weekly one: the Script only
    actually reviews a repo when at least `min_days_between_reviews` days have
    passed, so a tick missed because the machine was asleep simply catches up on
    the next day instead of losing a whole week (compare requirement note that
-   "a missed cycle simply waits for the next tick").
+   "a missed cycle simply waits for the next tick"). `min_prs_between_reviews`
+   defaults to 5 in code (`review-cycle.sh`) when neither
+   `project_review.defaults.min_prs_between_reviews` nor a repository's own
+   override is set.
 
 R4a. **Report directory (issue #761).** Where a report set (R11) is written,
    and where R4's own skip-guard and the implementation pipeline's

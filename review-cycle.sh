@@ -171,8 +171,9 @@ workspace_root="$(expand_home "$(cfg '.workspace_root')")"
 # alike — finds this node's real state_dir/gh-shim/ rather than its default.
 export PW_GH_STATE_DIR="$state_dir"
 # Every per-repository tunable (model, pr_label, branch_prefix,
-# min_days_between_reviews, not_before, report_directory, timeout_review,
-# inactivity_review) is resolved once here, against project_review.defaults
+# min_days_between_reviews, min_prs_between_reviews, not_before,
+# report_directory, timeout_review, inactivity_review) is resolved once
+# here, against project_review.defaults
 # and each repository's
 # own override in project_review.repos — lib/config-schema.sh's
 # config_project_review_repos is the one implementation, shared with
@@ -738,7 +739,8 @@ fi
 # installation-wide any more.
 skip_reason() {
   local slug="$1" default_branch="$2" pr_label="$3" min_days="$4" not_before="$5" report_directory="$6" \
-        open_prs recent_date days not_before_epoch now_epoch
+        min_prs="$7" \
+        open_prs recent_date days not_before_epoch now_epoch merged_prs
   # A repository's own `not_before` (its override, or project_review.defaults'
   # own value — the same one already checked once, cycle-wide, before the lock
   # above) is checked again here so an override can hold this one repository
@@ -773,6 +775,12 @@ skip_reason() {
       printf 'last review (%s) is %s day(s) old (< %s)' "$recent_date" "$days" "$min_days"
       return 0
     fi
+    merged_prs="$(merged_pr_count_since "$slug" "$default_branch" "$recent_date")"
+    if [[ "$merged_prs" =~ ^[0-9]+$ ]] && (( merged_prs < min_prs )); then
+      printf 'only %s PR(s) merged into %s since last review (%s) (< %s)' \
+        "$merged_prs" "$default_branch" "$recent_date" "$min_prs"
+      return 0
+    fi
   fi
   return 0
 }
@@ -791,6 +799,19 @@ most_recent_review_date() {
   report_directory_most_recent "$slug" "$default_branch" "$report_directory" | cut -f1
 }
 
+# Count of pull requests merged into default_branch on or after since_date —
+# a single `search/issues` request, no pagination, mirroring why the
+# open-PR check above uses `--limit 1`: the question is "how many", answered
+# in one call, not "which ones". Degrades to empty (not 0) on any failure,
+# the same fail-open shape most_recent_review_date already has for a
+# repository gh can't read — a transient API error must not block a review
+# it cannot actually verify.
+merged_pr_count_since() {
+  local slug="$1" default_branch="$2" since_date="$3"
+  gh api search/issues -f q="repo:$slug is:pr is:merged base:$default_branch merged:>=$since_date" \
+    --jq '.total_count' 2>/dev/null || true
+}
+
 days_since() {
   local date_str="$1" then_epoch now_epoch
   then_epoch="$(date -d "$date_str" +%s 2>/dev/null || echo 0)"
@@ -801,20 +822,21 @@ days_since() {
 
 # Resolve default branch + skip decision for each repo up front. `entry`
 # already carries this repository's own resolved model, pr_label,
-# branch_prefix, min_days_between_reviews, not_before, report_directory,
-# timeout_review and inactivity_review (project_review_repos_json above) —
-# review_one reads them straight off `to_review_json` rather than
-# re-deriving anything.
+# branch_prefix, min_days_between_reviews, min_prs_between_reviews,
+# not_before, report_directory, timeout_review and inactivity_review
+# (project_review_repos_json above) — review_one reads them straight off
+# `to_review_json` rather than re-deriving anything.
 to_review_json="[]"
 while IFS= read -r entry; do
   slug="$(jq -r '.slug' <<<"$entry")"
   entry_pr_label="$(jq -r '.pr_label' <<<"$entry")"
   entry_min_days="$(jq -r '.min_days_between_reviews' <<<"$entry")"
+  entry_min_prs="$(jq -r '.min_prs_between_reviews' <<<"$entry")"
   entry_not_before="$(jq -r '.not_before // ""' <<<"$entry")"
   entry_report_directory="$(jq -r '.report_directory // ""' <<<"$entry")"
   [[ -n "$entry_report_directory" ]] || entry_report_directory="$REPORT_DIRECTORY_DEFAULT"
   default_branch="$(gh api "repos/$slug" --jq '.default_branch' 2>/dev/null || echo "main")"
-  reason="$(skip_reason "$slug" "$default_branch" "$entry_pr_label" "$entry_min_days" "$entry_not_before" "$entry_report_directory")"
+  reason="$(skip_reason "$slug" "$default_branch" "$entry_pr_label" "$entry_min_days" "$entry_not_before" "$entry_report_directory" "$entry_min_prs")"
   if [[ -n "$reason" ]]; then
     log_event "review-skipped" "$(jq -nc --arg r "$slug" --arg d "$reason" '{repo: $r, detail: $d}')"
     (( ONCE || DRY_RUN )) && echo "skip $slug — $reason"

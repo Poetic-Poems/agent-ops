@@ -837,7 +837,7 @@ assert_rejected "a misspelt key inside a project_review repo entry is rejected" 
   '.project_review.repos[0].sluggg = "a/b"' \
   'config.project_review.repos[0]: unknown key "sluggg"'
 assert_valid "a project_review repo entry may override any of defaults' own keys" \
-  '.project_review.repos[0] += {model: "claude-opus-5", pr_label: "custom-review", branch_prefix: "custom/", timeout_review: 30, inactivity_review: 5, min_days_between_reviews: 1, not_before: "2026-01-01T00:00:00Z", report_directory: "docs/reviews/project-review-%Y-%m-%d"}'
+  '.project_review.repos[0] += {model: "claude-opus-5", pr_label: "custom-review", branch_prefix: "custom/", timeout_review: 30, inactivity_review: 5, min_days_between_reviews: 1, min_prs_between_reviews: 10, not_before: "2026-01-01T00:00:00Z", report_directory: "docs/reviews/project-review-%Y-%m-%d"}'
 assert_valid "a project_review repo entry carrying only slug inherits every default" \
   '.project_review.repos = [{slug: "Poetic-Poems/poetic"}]'
 assert_rejected "a non-string report_directory is rejected" \
@@ -850,6 +850,16 @@ assert_valid "report_directory may be dropped from defaults (it is optional, not
   '.project_review.defaults.report_directory = "docs/reviews/project-review-%Y-%m-%d" | del(.project_review.defaults.report_directory)'
 assert_valid "report_directory may be dropped from a repo override too" \
   '.project_review.repos[0].report_directory = "reviews/%Y-%m-%d" | del(.project_review.repos[0].report_directory)'
+assert_rejected "a negative project_review.defaults.min_prs_between_reviews is rejected" \
+  '.project_review.defaults.min_prs_between_reviews = -1' \
+  'config.project_review.defaults.min_prs_between_reviews: -1 is below the minimum 0'
+assert_rejected "a negative per-repo min_prs_between_reviews override is rejected" \
+  '.project_review.repos[0].min_prs_between_reviews = -1' \
+  'config.project_review.repos[0].min_prs_between_reviews: -1 is below the minimum 0'
+assert_valid "min_prs_between_reviews may be dropped from defaults (it is optional, not required)" \
+  '.project_review.defaults.min_prs_between_reviews = 5 | del(.project_review.defaults.min_prs_between_reviews)'
+assert_valid "min_prs_between_reviews may be dropped from a repo override too" \
+  '.project_review.repos[0].min_prs_between_reviews = 5 | del(.project_review.repos[0].min_prs_between_reviews)'
 assert_rejected "a state_repo that is not owner/name is rejected" \
   '.state_repo = "agent-ops-state"' 'config.state_repo: "agent-ops-state" does not match'
 assert_valid "an empty state_repo is accepted (single-node operation)" \
@@ -903,11 +913,37 @@ assert_project_review "a repo's own override wins over the default, for that key
 assert_project_review "a repo may override every key defaults carries" \
   '.project_review.repos = [{slug: "Poetic-Poems/poetic", model: "claude-opus-5",
      pr_label: "custom-review", branch_prefix: "custom/", min_days_between_reviews: 1,
+     min_prs_between_reviews: 2,
      not_before: "2026-01-01T00:00:00Z", report_directory: "docs/reviews/project-review-%Y-%m-%d",
      timeout_review: 30, inactivity_review: 5}]' \
   '.[0] == {slug: "Poetic-Poems/poetic", model: "claude-opus-5", model_key: "project_review.repos[0].model",
-     pr_label: "custom-review", branch_prefix: "custom/", min_days_between_reviews: 1, not_before: "2026-01-01T00:00:00Z",
+     pr_label: "custom-review", branch_prefix: "custom/", min_days_between_reviews: 1, min_prs_between_reviews: 2,
+     not_before: "2026-01-01T00:00:00Z",
      report_directory: "docs/reviews/project-review-%Y-%m-%d", timeout_review: 30, inactivity_review: 5}'
+
+# --- min_prs_between_reviews: absent → 5, defaults-only, per-repo override,
+#     explicit null falls through — the same //-chain shape min_days_between_reviews
+#     already has above, but with a code-level fallback rather than a schema
+#     `default`, since the key is deliberately not in `defaults`' `required`
+#     array (issue #1079). ---
+assert_project_review "min_prs_between_reviews absent everywhere resolves to the code default of 5" \
+  '.project_review.repos = [{slug: "Poetic-Poems/poetic"}]' \
+  '.[0].min_prs_between_reviews == 5'
+assert_project_review "min_prs_between_reviews resolves from defaults when set there" \
+  '.project_review.defaults.min_prs_between_reviews = 25 |
+   .project_review.repos = [{slug: "Poetic-Poems/poetic"}]' \
+  '.[0].min_prs_between_reviews == 25'
+assert_project_review "a repo's own min_prs_between_reviews override wins over defaults" \
+  '.project_review.defaults.min_prs_between_reviews = 25 |
+   .project_review.repos = [{slug: "Poetic-Poems/poetic", min_prs_between_reviews: 10}]' \
+  '.[0].min_prs_between_reviews == 10'
+assert_project_review "an explicit null min_prs_between_reviews falls through to defaults" \
+  '.project_review.defaults.min_prs_between_reviews = 25 |
+   .project_review.repos = [{slug: "Poetic-Poems/poetic", min_prs_between_reviews: null}]' \
+  '.[0].min_prs_between_reviews == 25'
+assert_project_review "an explicit null min_prs_between_reviews falls all the way through to 5 when defaults is also unset" \
+  '.project_review.repos = [{slug: "Poetic-Poems/poetic", min_prs_between_reviews: null}]' \
+  '.[0].min_prs_between_reviews == 5'
 assert_project_review "a per-repo report_directory overrides defaults.report_directory" \
   '.project_review.defaults.report_directory = "reviews/project-review-%Y-%m-%d" |
    .project_review.repos = [{slug: "Poetic-Poems/poetic", report_directory: "docs/reviews/project-review-%Y-%m-%d"}]' \
