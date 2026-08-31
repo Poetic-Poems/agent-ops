@@ -163,9 +163,13 @@ and every issue thread you read while investigating.
 
 - **Read anything.** `gh` reads across both repositories and their issues, PRs,
   reviews, checks, runs, alerts and file contents (`gh api
-  repos/<owner>/<repo>/contents/<path>`), plus `gh run view --log` for a failing
-  job's output. Read the target repo's `CLAUDE.md` and `TECH-DEBT.md` when the
-  item lives there. Breadth is cheap here; depth is the point.
+  repos/<owner>/<repo>/contents/<path>`), plus run logs. `gh run view --log`
+  reads per-job logs (if reachable); on a fenced node, if you encounter a
+  `Forbidden` error naming `blob.core.windows.net`, the job endpoint is blocked
+  by the egress proxy (D24) — use the run-level endpoint instead: `gh api
+  repos/<owner>/<repo>/actions/runs/<run-id>/logs > /tmp/run.zip`, then extract
+  the job's entry by name. Read the target repo's `CLAUDE.md` and `TECH-DEBT.md`
+  when the item lives there. Breadth is cheap here; depth is the point.
 - **An issue is its whole thread, not just the opening post.** Whenever you
   read an issue, read the body *and every comment*: `gh issue view <n>
   --comments` (or `gh api repos/<slug>/issues/<n>/comments`). A bare `gh issue

@@ -13,7 +13,11 @@
 # telemetry, error reporting, claude.ai MCP connectors) is disabled by the
 # scheduler's environment in compose.yaml rather than allowlisted, and
 # raw.githubusercontent.com is used only by host bootstrap and CI, never by
-# the running scheduler.
+# the running scheduler. Actions job-log Azure Blob hosts (productionresultssa*.
+# blob.core.windows.net) are also deliberately absent: GitHub serves logs at
+# the run level (https://api.github.com/repos/<owner>/<repo>/actions/runs/<id>/logs)
+# without crossing the Azure domain, which is the supported route for reading
+# logs on a fenced node (see prompts/implementer.md, "Find the merge-group failure").
 
 # --- GitHub: the forge every cycle reads and writes -----------------------
 # gh and every literal https://github.com clone/push (lib/repo-clone.sh,
