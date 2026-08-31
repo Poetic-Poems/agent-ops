@@ -22,7 +22,23 @@
 # `scripts/sweep-legacy-refinement-assignees.sh` plays for agent-ops#639's own
 # already-written events.
 #
-# For REPO, reads the shared log (LOG_FILE, or stdin if it is "-" or omitted —
+# **Read the union, append to a node's own log.** These are two different files
+# and conflating them gets the sweep wrong in both directions. The ledger is
+# fleet-wide: on 2026-08-31 one node's own `log.jsonl` held 7 of the 81
+# stranded entries and the union held all 81, so reading a single node's log
+# sweeps a fraction and silently calls it done. The union, meanwhile, is
+# `agent-cycle.sh`'s own `$cycle_dir/.fleet-log.jsonl` — rebuilt every cycle
+# and discarded with the cycle directory, so a pointer appended *there* is
+# gone before anything reads it, and the payload it was meant to supersede
+# stays exactly where it was. So: READ_LOG is whatever names the whole fleet's
+# events, and `--append-to` is the durable per-node log the new events must
+# land in (`state_dir/log.jsonl`), from which the state repo propagates them
+# into every later union. `--append-to` defaults to READ_LOG, which is right
+# for a node sweeping its own log and wrong for anything else — the guard
+# below refuses the one case where that default is known to be silent
+# data loss.
+#
+# For REPO, reads the shared log (READ_LOG, or stdin if it is "-" or omitted —
 # the convention `lib/cycle-state.sh`'s own readers use) and, for every
 # refinement against that repo that carries a `spec`, carries no `comment_url`,
 # and whose item is a GitHub issue number:
@@ -42,23 +58,54 @@
 # to real issues, one per stranded entry, and that is not a thing to do by
 # accident or to discover halfway through. Pass `--apply` to actually post.
 #
-# Usage: sweep-inline-refinement-specs.sh [--apply] <owner/repo> [log-file]
+# One `gh issue view` and one `gh issue comment` per stranded entry, so a full
+# sweep is minutes rather than seconds — 81 entries took just over two on
+# 2026-08-31. Run it detached (`nohup`, or a container you do not attach to)
+# rather than under anything that might time out and leave you guessing how
+# far it got.
+#
+# Usage: sweep-inline-refinement-specs.sh [--apply] [--append-to LOG]
+#          <owner/repo> [read-log]
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib/cycle-state.sh
 . "$SCRIPT_DIR/lib/cycle-state.sh"
+# shellcheck source=lib/pipeline-marker.sh
+. "$SCRIPT_DIR/lib/pipeline-marker.sh"
 
 apply=0
-if [[ "${1:-}" == "--apply" ]]; then
-  apply=1
-  shift
-fi
+append_to=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --apply) apply=1; shift ;;
+    --append-to) append_to="${2:-}"; shift 2 || true ;;
+    --) shift; break ;;
+    -*) echo "sweep-inline-refinement-specs: unknown option $1" >&2; exit 2 ;;
+    *) break ;;
+  esac
+done
 repo="${1:-}"
 log_file="${2:--}"
 if [[ -z "$repo" || "$repo" != */* ]]; then
-  echo "usage: sweep-inline-refinement-specs.sh [--apply] <owner/repo> [log-file]" >&2
+  echo "usage: sweep-inline-refinement-specs.sh [--apply] [--append-to LOG] <owner/repo> [read-log]" >&2
+  exit 2
+fi
+
+# The one default that is known to lose data rather than merely be narrow: a
+# per-cycle union log is deleted with its cycle directory, so the pointers
+# would be written into a file nothing reads again. Named by
+# `agent-cycle.sh`'s own `union_log`, so the check is against the artefact
+# rather than a guess about the caller's intent.
+if [[ -z "$append_to" && "$log_file" == *.fleet-log.jsonl ]]; then
+  echo "sweep-inline-refinement-specs: $log_file is a per-cycle union log — it is rebuilt every cycle, so appending the new pointers to it would discard them. Pass --append-to <state_dir>/log.jsonl (the durable per-node log the state repo propagates)." >&2
+  exit 2
+fi
+[[ -n "$append_to" ]] || append_to="$log_file"
+
+if (( apply )) && [[ "$append_to" == "-" || ! -w "$(dirname "$append_to")" ]]; then
+  echo "sweep-inline-refinement-specs: --append-to '$append_to' is not a writable file path — the pointers would have nowhere to land" >&2
   exit 2
 fi
 
@@ -81,6 +128,8 @@ sweep_candidates() {  # <refinements-json> <repo>  -> {item, spec} lines
     | {item: .key, spec: .value.spec}' <<<"${1:-{\}}" 2>/dev/null || true
 }
 
+sweep_cycle_id="sweep-inline-refinement-specs"
+
 refinements="$(refinements_map "$log_file")"
 candidates="$(sweep_candidates "$refinements" "$repo")"
 
@@ -89,14 +138,21 @@ if [[ -z "$candidates" ]]; then
   exit 0
 fi
 
-n=0
-bytes=0
+# `selected` is what the ladder offered; `moved` is what actually reached a
+# thread. They are different numbers whenever an issue is closed, deleted or
+# unreadable, and reporting the first as the second tells an operator the band
+# shrank by bytes that are still in it — which is exactly the class of
+# false-success this script exists to undo. Counted separately for that reason.
+selected=0
+selected_bytes=0
+moved=0
+moved_bytes=0
 while IFS= read -r entry; do
   [[ -n "$entry" ]] || continue
   item="$(jq -r '.item' <<<"$entry")"
   spec="$(jq -r '.spec' <<<"$entry")"
-  n=$(( n + 1 ))
-  bytes=$(( bytes + ${#spec} ))
+  selected=$(( selected + 1 ))
+  selected_bytes=$(( selected_bytes + ${#spec} ))
 
   if (( ! apply )); then
     printf 'would post %6d bytes to %s#%s\n' "${#spec}" "$repo" "$item"
@@ -109,9 +165,22 @@ while IFS= read -r entry; do
     continue
   fi
 
-  body="$(printf '%s\n\n%s\n' \
-    '**Recorded specification.** This is the refinement the pipeline has been acting on for this item. It was held only in the fleet log until now; it is posted here so the thread carries it (agent-ops#1128).' \
-    "$spec")"
+  # Requirement 3f/3e's envelope, not a bare body. Every write this system
+  # makes lands under the maintainer's own GitHub account, so author alone
+  # cannot tell a human's comment from the pipeline's: the visible header is
+  # what tells a human reading the thread who wrote this, and the invisible
+  # marker is what tells `scripts/gather-abandoned-drafts.sh` the same thing.
+  # A sweep posting 81 unmarked comments would read, to both, as the
+  # maintainer suddenly hand-specifying 81 issues.
+  #
+  # Actor `script`: this is a Script-level maintenance write, not a stage's
+  # verdict — no model was engaged to produce this text, it was already in the
+  # ledger.
+  body="$(printf '%s\n\n%s\n\n%s\n\n%s\n' \
+    "$(pipeline_comment_header script "${NODE_NAME:-sweep}")" \
+    'This item'"'"'s recorded specification, moved here from the fleet log so the thread carries it (agent-ops#1128). It is the same specification the pipeline has been acting on — nothing about the work has changed, and this comment asks nothing of anyone.' \
+    "$spec" \
+    "$(pipeline_comment_marker "$sweep_cycle_id" script)")"
 
   url="$(gh issue comment "$item" --repo "$repo" --body "$body" 2>/dev/null || true)"
   if [[ -z "$url" ]]; then
@@ -123,17 +192,25 @@ while IFS= read -r entry; do
   # this from a Refiner's or an Enabler's own record without cross-referencing
   # timestamps, the same reason requirement 3h's own `by` exists.
   jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-         --arg cycle "sweep-inline-refinement-specs" \
+         --arg cycle "$sweep_cycle_id" \
          --arg node "${NODE_NAME:-sweep}" \
          --arg r "$repo" --arg i "$item" --arg u "$url" \
     '{ts: $ts, cycle: $cycle, node: $node, event: "item-refined",
-      repo: $r, item: $i, by: "sweep", comment_url: $u}' >> "$log_file"
+      repo: $r, item: $i, by: "sweep", comment_url: $u}' >> "$append_to"
 
+  moved=$(( moved + 1 ))
+  moved_bytes=$(( moved_bytes + ${#spec} ))
   echo "sweep-inline-refinement-specs: $repo#$item: posted, ${#spec} bytes now a pointer -> $url"
 done <<<"$candidates"
 
 if (( apply )); then
-  printf 'sweep-inline-refinement-specs: %s: %d entr(ies), %d bytes moved out of the unsheddable band\n' "$repo" "$n" "$bytes"
+  printf 'sweep-inline-refinement-specs: %s: %d of %d entr(ies) moved, %d of %d bytes out of the unsheddable band\n' \
+    "$repo" "$moved" "$selected" "$moved_bytes" "$selected_bytes"
+  if (( moved < selected )); then
+    printf 'sweep-inline-refinement-specs: %s: %d entr(ies) were left where they were — see the skips above; re-running is safe and will retry them\n' \
+      "$repo" "$(( selected - moved ))"
+  fi
 else
-  printf 'sweep-inline-refinement-specs: %s: %d entr(ies), %d bytes would move — DRY RUN, pass --apply to post\n' "$repo" "$n" "$bytes"
+  printf 'sweep-inline-refinement-specs: %s: %d entr(ies), %d bytes would move — DRY RUN, pass --apply to post\n' \
+    "$repo" "$selected" "$selected_bytes"
 fi
