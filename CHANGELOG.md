@@ -2284,6 +2284,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   "Not here, deliberately" paragraph now records the Azure Blob hosts as a
   deliberate omission with this endpoint as the supported route, so the gap
   is not re-proposed as a widening of the allowlist.
+- A crash-loop escalation retried after a failed filing could file a false
+  alarm the instant the fault it described had already cleared
+  (agent-ops#1074): the 2026-08-29/30 Ockham outage filed agent-ops#1070 six
+  minutes after the network recovered, in the very cycle whose own
+  Co-Ordinator attempt then succeeded — the retry's verdict was computed
+  before that attempt ran and so could never see the recovery it was about
+  to produce. `crash_loop_escalate_or_defer` (lib/enabler.sh) now files a
+  verdict never before attempted immediately, exactly as before, but queues
+  a deferred retry (or a fresh attempt that itself failed to file) for
+  `crash_loop_refile_pending` to re-verify from `cleanup()`, once every
+  stage the cycle might run — Co-Ordinator included — has had its chance;
+  a run a fresh union-log read then shows broken is dropped
+  (`crash-loop-dropped`) rather than filed. `crash_loop_retire_resolved`
+  closes the other half of the same gap, retiring an already-open
+  Co-Ordinator-class escalation once its run has broken, with a comment
+  naming the success that cleared it.
 
 ### Changed
 

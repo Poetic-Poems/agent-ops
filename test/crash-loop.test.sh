@@ -77,9 +77,18 @@ success_at() {  # success_at TS NODE
   jq -nc --arg ts "$1" --arg node "$2" \
     '{ts: $ts, node: $node, event: "stage-end", stage: "coordinator", exit_code: 0}'
 }
-escalated_at() {  # escalated_at TS DETAIL
+escalated_at() {  # escalated_at TS DETAIL [ISSUE_NUMBER]
+  jq -nc --arg ts "$1" --arg d "$2" --argjson n "${3:-0}" \
+    '{ts: $ts, node: "n1", event: "crash-loop-escalated", stage: "coordinator", detail: $d}
+     + (if $n > 0 then {issue_number: $n, issue_url: "https://github.com/o/r/issues/\($n)"} else {} end)'
+}
+deferred_at() {  # deferred_at TS DETAIL
   jq -nc --arg ts "$1" --arg d "$2" \
-    '{ts: $ts, node: "n1", event: "crash-loop-escalated", stage: "coordinator", detail: $d}'
+    '{ts: $ts, node: "n1", event: "crash-loop-deferred", stage: "coordinator", detail: $d}'
+}
+retired_at() {  # retired_at TS ISSUE_NUMBER
+  jq -nc --arg ts "$1" --argjson n "$2" \
+    '{ts: $ts, node: "n1", event: "crash-loop-retired", stage: "coordinator", issue_number: $n}'
 }
 
 # Event constructors for the pre-selection class (a cycle that dies before
@@ -321,6 +330,105 @@ if crash_loop_escalated_since 2026-08-01T10:00:00Z 'coordinator exited 1' <<<"$w
 else
   printf 'ok   - a different detail never matches\n'
 fi
+
+# --- crash_loop_deferred_since (agent-ops#1074) -----------------------------
+
+with_deferral="$(cat <<<"$four_fails"
+  deferred_at 2026-08-01T11:00:00Z 'coordinator exited 126')"
+
+if crash_loop_deferred_since 2026-08-01T10:00:00Z 'coordinator exited 126' <<<"$with_deferral"; then
+  printf 'ok   - a deferred marker after the run'\''s first failure marks it a retry\n'
+else
+  printf 'FAIL - a deferred marker after the run'\''s first failure should mark it a retry\n'
+  failures=$(( failures + 1 ))
+fi
+
+if crash_loop_deferred_since 2026-08-01T10:00:00Z 'coordinator exited 126' <<<"$four_fails"; then
+  printf 'FAIL - no deferred marker at all should never look like a retry\n'
+  failures=$(( failures + 1 ))
+else
+  printf 'ok   - no deferred marker at all is a fresh verdict, not a retry\n'
+fi
+
+if crash_loop_deferred_since 2026-08-02T00:00:00Z 'coordinator exited 126' <<<"$with_deferral"; then
+  printf 'FAIL - a deferral older than a new run'\''s first failure should not mark it a retry\n'
+  failures=$(( failures + 1 ))
+else
+  printf 'ok   - an old deferral does not mark a fresh loop with the same detail as a retry\n'
+fi
+
+# --- crash_loop_reverify (agent-ops#1074) -----------------------------------
+#
+# The Ockham replay (2026-08-29/30, agent-ops#1070/#1074): 14 consecutive
+# same-detail Co-Ordinator failures, each cycle logging a `crash-loop-
+# deferred` marker because the forge was unreachable too. The retry cycle
+# that finally reaches the network recomputes its verdict *before* its own
+# Co-Ordinator attempt runs, so — at that point — the run still reads active:
+# re-verifying immediately, from the same stale union log, would refile
+# exactly the false alarm #1070 was. Only once that cycle's own Co-Ordinator
+# success is folded into the union (as `crash_loop_refile_pending` does from
+# `cleanup()`) does re-verifying see the run has broken.
+ockham_start_epoch="$(date -u -d '2026-08-29T23:21:19Z' +%s)"
+ockham_fails="$(for i in $(seq 0 13); do
+    fail_at "$(date -u -d "@$(( ockham_start_epoch + i * 900 ))" +%FT%TZ)" n1 'coordinator refused: api_error'
+  done)"
+ockham_first_ts="2026-08-29T23:21:19Z"
+ockham_verdict="$(crash_loop_verdict 4 <<<"$ockham_fails")"
+assert_eq "the Ockham run's own verdict names its first failure" \
+  "$ockham_first_ts" "$(jq -r '.first_ts' <<<"$ockham_verdict")"
+
+assert_eq "re-verified against the same (pre-recovery) log, the run still reads active" \
+  "$ockham_verdict" "$(crash_loop_reverify "$ockham_verdict" 4 <<<"$ockham_fails")"
+
+ockham_with_recovery="$(cat <<<"$ockham_fails"
+  success_at 2026-08-30T02:21:30Z n1)"
+assert_eq "replaying the Ockham sequence through to its own cycle's recovery: no escalation" \
+  "" "$(crash_loop_reverify "$ockham_verdict" 4 <<<"$ockham_with_recovery")"
+
+ockham_still_failing="$(cat <<<"$ockham_fails"
+  fail_at 2026-08-30T02:11:10Z n1 'coordinator refused: api_error')"
+assert_eq "re-verified with one more matching failure and no success, still the same active run" \
+  "coordinator refused: api_error" \
+  "$(crash_loop_reverify "$ockham_verdict" 4 <<<"$ockham_still_failing" | jq -r '.detail')"
+
+new_run_same_detail="$(cat <<<"$ockham_fails"
+  success_at 2026-08-30T03:00:00Z n1
+  fail_at 2026-08-30T03:15:00Z n1 'coordinator refused: api_error'
+  fail_at 2026-08-30T03:30:00Z n1 'coordinator refused: api_error'
+  fail_at 2026-08-30T03:45:00Z n1 'coordinator refused: api_error'
+  fail_at 2026-08-30T04:00:00Z n1 'coordinator refused: api_error')"
+assert_eq "a fresh run with the old run's detail is not mistaken for the old run surviving" \
+  "" "$(crash_loop_reverify "$ockham_verdict" 4 <<<"$new_run_same_detail")"
+
+assert_eq "an unrecognised stage never claims a run active" \
+  "" "$(crash_loop_reverify '{"stage":"bogus","detail":"x","first_ts":"2026-08-01T00:00:00Z"}' 4 <<<"$ockham_fails")"
+
+preselection_verdict="$(crash_loop_preselection_verdict 4 <<<"$four_deaths")"
+assert_eq "crash_loop_reverify dispatches pre-selection verdicts too (in scope for free)" \
+  "$preselection_verdict" "$(crash_loop_reverify "$preselection_verdict" 4 <<<"$four_deaths")"
+assert_eq "and sees a pre-selection run broken by a selection-stage reset" \
+  "" "$(crash_loop_reverify "$preselection_verdict" 4 <<<"$reset_via_stage")"
+
+# --- crash_loop_last_success_since (agent-ops#1074) -------------------------
+
+with_late_success="$(cat <<<"$four_fails"
+  success_at 2026-08-01T12:00:00Z n2)"
+assert_eq "names the clearing success's own timestamp" \
+  "2026-08-01T12:00:00Z" "$(crash_loop_last_success_since coordinator 2026-08-01T10:00:00Z <<<"$with_late_success")"
+assert_eq "nothing printed when no success exists at or after first_ts" \
+  "" "$(crash_loop_last_success_since coordinator 2026-08-01T10:00:00Z <<<"$four_fails")"
+
+# --- crash_loop_open_escalations (agent-ops#1074) ---------------------------
+
+open_and_retired="$(cat <<<"$four_fails"
+  escalated_at 2026-08-01T11:00:00Z 'coordinator exited 126' 501
+  escalated_at 2026-08-05T11:00:00Z 'coordinator timed out' 502
+  retired_at 2026-08-06T00:00:00Z 502)"
+assert_eq "only the still-open escalation is printed" \
+  "501" "$(crash_loop_open_escalations <<<"$open_and_retired" | jq -r '.issue_number')"
+
+assert_eq "no crash-loop-escalated events at all yields nothing" \
+  "" "$(crash_loop_open_escalations <<<"$four_fails")"
 
 printf '\n'
 if (( failures )); then

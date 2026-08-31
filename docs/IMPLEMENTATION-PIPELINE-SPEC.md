@@ -3431,19 +3431,75 @@ implements.
    all — and unless `crash_loop_escalated_since` finds a
    `crash-loop-escalated` event with the same detail at or after the run's
    own first failure (so the same loop is never escalated twice, while a
-   fresh loop with an old detail escalates anew), the Script files an issue
-   on `crash_loop_repo` through the Enabler's own `create_escalation_issue`
-   — same open-issue dedup (item ref `crash-loop:coordinator` for the first
-   class, `crash-loop:pre-selection` for the second, so either can escalate
-   independently of the other), same label, same load-bearing assignee that
-   keeps the pipeline from selecting its own SOS as work — and logs
-   `crash-loop-escalated` with the verdict's fields and the issue's number
-   and URL. If the issue cannot be filed the Script logs a `warning` and
-   leaves no `crash-loop-escalated` event, so the next cycle retries. The
-   cycle then proceeds normally either way: detection must never suppress
-   the recovery attempt that might end the loop. `crash_loop_after` 0 (or
-   absent), or an empty `crash_loop_repo` or `enabler_assignee`, disables
-   both checks; `--dry-run` never files.
+   fresh loop with an old detail escalates anew), `crash_loop_escalate_or_
+   defer` (lib/enabler.sh) decides whether this verdict is safe to file
+   right here. This point in the cycle runs before the Co-Ordinator's own
+   attempt (deliberately — the alarm must fire even on a cycle that stands
+   down before reaching it), so a verdict computed here can never see a
+   recovery that attempt is about to produce.
+
+   - A **fresh** verdict — `crash_loop_deferred_since` finds no prior
+     `crash-loop-deferred` event for this exact first_ts+detail, so nothing
+     has attempted to file it before — is filed immediately, through the
+     Enabler's own `create_escalation_issue`: same open-issue dedup (item ref
+     `crash-loop:coordinator` for the first class, `crash-loop:pre-selection`
+     for the second, so either can escalate independently of the other),
+     same label, same load-bearing assignee that keeps the pipeline from
+     selecting its own SOS as work. Success logs `crash-loop-escalated` with
+     the verdict's fields and the issue's number and URL. Failure logs
+     `crash-loop-deferred` instead, carrying the verdict's own fields
+     (`detail`, `first_ts`, …) untouched plus a human-readable `message`, and
+     queues the same attempt in `crash_loop_pending_refile` for a same-cycle
+     late recheck rather than waiting a full extra cycle.
+   - A **deferred retry** — a `crash-loop-deferred` event already exists for
+     this exact run, meaning an earlier cycle already tried and failed to
+     file it — is not filed here at all: the verdict computed at this point
+     in *this* cycle is exactly as stale as the one that earlier cycle
+     already failed to file. It is queued in `crash_loop_pending_refile`
+     without attempting `create_escalation_issue`.
+
+   `crash_loop_refile_pending` drains that queue from `cleanup()` (agent-
+   ops#1074), after the Enabler, the Refiner, and every stage this cycle
+   might have run — Co-Ordinator included — has had its chance. It
+   re-gathers the union log fresh (`fleet_logs`, the same call the cycle's
+   own opening snapshot makes) so this cycle's own now-complete Co-Ordinator
+   attempt, if any, is folded in, then re-verifies each queued attempt with
+   `crash_loop_reverify` (lib/crash-loop.sh): re-running whichever detector
+   produced the queued verdict and checking whether it still names the same
+   run (same `detail`, same `first_ts`). Still active, it is filed exactly as
+   a fresh verdict is (through `crash_loop_escalate`, the same success/
+   failure paths above). Broken — no verdict at all, or one naming a
+   different run, meaning a Co-Ordinator success (or, for pre-selection, a
+   cycle reaching a selection stage) has happened since — the filing is
+   dropped and `crash-loop-dropped` records why, naming the run's own
+   `detail`/`first_ts`. A union log this step cannot regather (`fleet_logs`
+   returning nothing) is never evidence of recovery: every still-queued
+   attempt is filed on its original verdict instead of being re-verified at
+   all — silence must never retire an alarm. Filing every retry off the
+   stale, pre-Co-Ordinator verdict instead of through this queue is exactly
+   what turned the 2026-08-29/30 Ockham outage's last hour into a false
+   alarm (agent-ops#1070): the escalation and the Co-Ordinator success that
+   refuted it landed in the same cycle, the escalation first only because
+   detection runs before the Co-Ordinator does.
+
+   The cycle proceeds normally regardless of any of the above: detection
+   must never suppress the recovery attempt that might end the loop.
+   `crash_loop_after` 0 (or absent), or an empty `crash_loop_repo` or
+   `enabler_assignee`, disables both checks; `--dry-run` never files.
+
+   `crash_loop_retire_resolved` (lib/enabler.sh) closes the other side of the
+   same gap: an already-open Co-Ordinator-class escalation (`stage:
+   "coordinator"` — pre-selection has no single resetting event to name in
+   the closing comment) whose run has broken since. It runs from step 1b,
+   against the cycle's ordinary start-of-cycle union log — no same-cycle race
+   to lose the way a deferred filing does, since an open issue's run either
+   broke some earlier cycle or it did not, and any union snapshot since would
+   show it either way. For each `crash-loop-escalated` event not yet followed
+   by a `crash-loop-retired` event naming the same `issue_number`
+   (`crash_loop_open_escalations`), a `crash_loop_reverify` finding the run
+   broken closes the issue with a comment naming the Co-Ordinator success
+   that cleared it (`crash_loop_last_success_since`) and logs
+   `crash-loop-retired`; a run still active leaves the issue untouched.
 
    A `crash_loop_verdict` run whose `escalate` is `false` — the API was
    unreachable, not refusing a request — never reaches `crash_loop_escalate`

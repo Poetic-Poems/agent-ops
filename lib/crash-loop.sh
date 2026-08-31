@@ -195,3 +195,108 @@ crash_loop_escalated_since() {
   ' 2>/dev/null || echo 0)"
   [[ "$hits" =~ ^[0-9]+$ ]] && (( hits > 0 ))
 }
+
+# crash_loop_deferred_since FIRST_TS DETAIL < union.jsonl
+# Exit 0 when a `crash-loop-deferred` event with the same detail exists at or
+# after FIRST_TS — a previous cycle already tried and failed to file this
+# exact run's escalation — and 1 otherwise (agent-ops#1074). This is what
+# tells apart a *fresh* verdict (never yet attempted; safe to file the moment
+# it is computed, exactly as `crash_loop_escalate` always has) from a
+# *deferred retry* (already attempted and failed at least once; the verdict
+# computed at this same early point in the cycle cannot see a recovery this
+# cycle's own Co-Ordinator attempt has not run yet, so filing it here would
+# repeat the 2026-08-29/30 Ockham false alarm, agent-ops#1070). Keyed the
+# same way `crash_loop_escalated_since` is, for the same reason: a new run
+# with an old detail must not inherit an old run's deferral.
+crash_loop_deferred_since() {
+  local first_ts="$1" detail="$2" hits
+  hits="$(jq -r -R -n --arg ts "$first_ts" --arg detail "$detail" '
+    [ inputs | select(length > 0) | (fromjson? // empty)
+      | select(.event == "crash-loop-deferred"
+               and (.detail // "") == $detail
+               and (.ts // "") >= $ts) ]
+    | length
+  ' 2>/dev/null || echo 0)"
+  [[ "$hits" =~ ^[0-9]+$ ]] && (( hits > 0 ))
+}
+
+# crash_loop_reverify VERDICT_JSON THRESHOLD < union.jsonl
+# Re-run whichever detector produced VERDICT_JSON (`.stage`: "coordinator"
+# dispatches to `crash_loop_verdict`, "pre-selection" to
+# `crash_loop_preselection_verdict`) against the CURRENT stdin, and print the
+# fresh result iff it still names the exact same run — same `detail`, same
+# `first_ts` — as VERDICT_JSON; print nothing otherwise (agent-ops#1074).
+#
+# "Prints nothing" covers two different facts on stdin, deliberately folded
+# together: no verdict at all (a success, or for pre-selection a cycle
+# reaching a selection stage, has reset the count to zero) and a verdict for
+# a *different* run (the old run broke and a new one, coincidentally sharing
+# the detail, has since started). Both mean the run this VERDICT_JSON
+# describes has ended — which is exactly the question a deferred retry or an
+# open escalation's retirement needs answered, and re-running the detector
+# answers it from the same reduction every other reset already trusts,
+# rather than a second, parallel notion of "recovered".
+#
+# Callers are responsible for telling "the log had nothing to say" apart from
+# "the log could not be read at all" — an empty or missing union log must
+# never reach here, since this function cannot distinguish a stream that is
+# legitimately silent from one a read failure emptied (requirement 2.7's own
+# "silence must never retire an alarm").
+crash_loop_reverify() {
+  local verdict_json="$1" threshold="$2"
+  local stage detail first_ts fresh f_detail f_first_ts
+  stage="$(jq -r '.stage // ""' <<<"$verdict_json" 2>/dev/null)"
+  detail="$(jq -r '.detail // ""' <<<"$verdict_json" 2>/dev/null)"
+  first_ts="$(jq -r '.first_ts // ""' <<<"$verdict_json" 2>/dev/null)"
+  case "$stage" in
+    coordinator) fresh="$(crash_loop_verdict "$threshold")" ;;
+    pre-selection) fresh="$(crash_loop_preselection_verdict "$threshold")" ;;
+    *) return 0 ;;
+  esac
+  [[ -n "$fresh" ]] || return 0
+  f_detail="$(jq -r '.detail // ""' <<<"$fresh" 2>/dev/null)"
+  f_first_ts="$(jq -r '.first_ts // ""' <<<"$fresh" 2>/dev/null)"
+  if [[ "$f_detail" == "$detail" && "$f_first_ts" == "$first_ts" ]]; then
+    printf '%s' "$fresh"
+  fi
+}
+
+# crash_loop_last_success_since STAGE FIRST_TS < union.jsonl
+# Print the timestamp of the earliest `stage-end` for STAGE with exit 0 at or
+# after FIRST_TS — the success that would break a run starting there — or
+# nothing if none exists. Named evidence for the retirement comment a broken
+# run's open escalation is closed with (agent-ops#1074); only meaningful for
+# `STAGE=coordinator`, the only class `crash_loop_reverify` can name a single
+# resetting stage-end for (pre-selection resets on either a clean cycle exit
+# or a selection-path stage-start, no single event answers "the" success).
+crash_loop_last_success_since() {
+  local stage="$1" first_ts="$2"
+  jq -r -R -n --arg stage "$stage" --arg ts "$first_ts" '
+    [ inputs | select(length > 0) | (fromjson? // empty)
+      | select(.event == "stage-end" and (.stage // "") == $stage
+               and ((.exit_code // 1) == 0) and (.ts // "") >= $ts) ]
+    | sort_by(.ts) | first | .ts // empty
+  ' 2>/dev/null || true
+}
+
+# crash_loop_open_escalations < union.jsonl
+# Print one JSON object per line — {stage, detail, first_ts, issue_number,
+# issue_url} — for each crash-loop escalation this fleet has filed (a
+# `crash-loop-escalated` event carrying an `issue_number`) that no
+# `crash-loop-retired` event has since named by that same `issue_number`
+# (agent-ops#1074). One entry per `issue_number`: a dedup'd re-attempt at an
+# already-escalated run never logs a second `crash-loop-escalated` for it, so
+# the first is authoritative.
+crash_loop_open_escalations() {
+  jq -c -R -n '
+    [ inputs | select(length > 0) | (fromjson? // empty) ] as $events
+    | ($events | map(select(.event == "crash-loop-retired") | (.issue_number // empty))
+                | map(select(. != ""))) as $retired
+    | $events
+    | map(select(.event == "crash-loop-escalated" and (.issue_number // empty) != ""))
+    | unique_by(.issue_number)
+    | map(select((.issue_number as $n | $retired | index($n)) == null))
+    | .[]
+    | {stage, detail, first_ts, issue_number, issue_url}
+  ' 2>/dev/null || true
+}
