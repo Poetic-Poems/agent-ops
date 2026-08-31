@@ -96,5 +96,34 @@ assert_eq "a malformed ledger yields no candidates rather than an error" "0" \
 assert_eq "a repo the ledger does not name yields no candidates" "0" \
   "$(sweep_candidates "$refinements" "o/absent" | grep -c . || true)"
 
+# --- Read the union, append to a node's own log -------------------------------
+#
+# The two logs are different files and the script must not let them be
+# confused. A per-cycle union log is rebuilt every cycle and deleted with its
+# cycle directory, so a pointer appended there is discarded before anything
+# reads it — and the payload it was meant to supersede survives, which is a
+# silent no-op dressed as a successful sweep. Refusing that one case is what
+# stops the sweep reporting 81 entries moved and moving none.
+
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
+: > "$tmp_dir/.fleet-log.jsonl"
+
+out="$(bash "$SWEEP" o/r "$tmp_dir/.fleet-log.jsonl" 2>&1)"; rc=$?
+assert_eq "a per-cycle union log with no --append-to is refused" "2" "$rc"
+case "$out" in
+  *"rebuilt every cycle"*) assert_eq "…and the refusal says why" "yes" "yes" ;;
+  *)                       assert_eq "…and the refusal says why" "yes" "no ($out)" ;;
+esac
+
+out="$(bash "$SWEEP" --append-to "$tmp_dir/log.jsonl" o/r "$tmp_dir/.fleet-log.jsonl" 2>&1)"; rc=$?
+assert_eq "…and is accepted once an append target is named" "0" "$rc"
+
+# An ordinary log is not second-guessed: a node sweeping its own log is the
+# shape the default exists for.
+: > "$tmp_dir/log.jsonl"
+out="$(bash "$SWEEP" o/r "$tmp_dir/log.jsonl" 2>&1)"; rc=$?
+assert_eq "an ordinary log needs no --append-to" "0" "$rc"
+
 printf '\n%s\n' "$( (( failures == 0 )) && echo "All assertions passed." || echo "$failures assertion(s) failed." )"
 exit $(( failures > 0 ))

@@ -22,7 +22,23 @@
 # `scripts/sweep-legacy-refinement-assignees.sh` plays for agent-ops#639's own
 # already-written events.
 #
-# For REPO, reads the shared log (LOG_FILE, or stdin if it is "-" or omitted —
+# **Read the union, append to a node's own log.** These are two different files
+# and conflating them gets the sweep wrong in both directions. The ledger is
+# fleet-wide: on 2026-08-31 one node's own `log.jsonl` held 7 of the 81
+# stranded entries and the union held all 81, so reading a single node's log
+# sweeps a fraction and silently calls it done. The union, meanwhile, is
+# `agent-cycle.sh`'s own `$cycle_dir/.fleet-log.jsonl` — rebuilt every cycle
+# and discarded with the cycle directory, so a pointer appended *there* is
+# gone before anything reads it, and the payload it was meant to supersede
+# stays exactly where it was. So: READ_LOG is whatever names the whole fleet's
+# events, and `--append-to` is the durable per-node log the new events must
+# land in (`state_dir/log.jsonl`), from which the state repo propagates them
+# into every later union. `--append-to` defaults to READ_LOG, which is right
+# for a node sweeping its own log and wrong for anything else — the guard
+# below refuses the one case where that default is known to be silent
+# data loss.
+#
+# For REPO, reads the shared log (READ_LOG, or stdin if it is "-" or omitted —
 # the convention `lib/cycle-state.sh`'s own readers use) and, for every
 # refinement against that repo that carries a `spec`, carries no `comment_url`,
 # and whose item is a GitHub issue number:
@@ -42,7 +58,8 @@
 # to real issues, one per stranded entry, and that is not a thing to do by
 # accident or to discover halfway through. Pass `--apply` to actually post.
 #
-# Usage: sweep-inline-refinement-specs.sh [--apply] <owner/repo> [log-file]
+# Usage: sweep-inline-refinement-specs.sh [--apply] [--append-to LOG]
+#          <owner/repo> [read-log]
 
 set -uo pipefail
 
@@ -51,14 +68,36 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$SCRIPT_DIR/lib/cycle-state.sh"
 
 apply=0
-if [[ "${1:-}" == "--apply" ]]; then
-  apply=1
-  shift
-fi
+append_to=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --apply) apply=1; shift ;;
+    --append-to) append_to="${2:-}"; shift 2 || true ;;
+    --) shift; break ;;
+    -*) echo "sweep-inline-refinement-specs: unknown option $1" >&2; exit 2 ;;
+    *) break ;;
+  esac
+done
 repo="${1:-}"
 log_file="${2:--}"
 if [[ -z "$repo" || "$repo" != */* ]]; then
-  echo "usage: sweep-inline-refinement-specs.sh [--apply] <owner/repo> [log-file]" >&2
+  echo "usage: sweep-inline-refinement-specs.sh [--apply] [--append-to LOG] <owner/repo> [read-log]" >&2
+  exit 2
+fi
+
+# The one default that is known to lose data rather than merely be narrow: a
+# per-cycle union log is deleted with its cycle directory, so the pointers
+# would be written into a file nothing reads again. Named by
+# `agent-cycle.sh`'s own `union_log`, so the check is against the artefact
+# rather than a guess about the caller's intent.
+if [[ -z "$append_to" && "$log_file" == *.fleet-log.jsonl ]]; then
+  echo "sweep-inline-refinement-specs: $log_file is a per-cycle union log — it is rebuilt every cycle, so appending the new pointers to it would discard them. Pass --append-to <state_dir>/log.jsonl (the durable per-node log the state repo propagates)." >&2
+  exit 2
+fi
+[[ -n "$append_to" ]] || append_to="$log_file"
+
+if (( apply )) && [[ "$append_to" == "-" || ! -w "$(dirname "$append_to")" ]]; then
+  echo "sweep-inline-refinement-specs: --append-to '$append_to' is not a writable file path — the pointers would have nowhere to land" >&2
   exit 2
 fi
 
@@ -127,7 +166,7 @@ while IFS= read -r entry; do
          --arg node "${NODE_NAME:-sweep}" \
          --arg r "$repo" --arg i "$item" --arg u "$url" \
     '{ts: $ts, cycle: $cycle, node: $node, event: "item-refined",
-      repo: $r, item: $i, by: "sweep", comment_url: $u}' >> "$log_file"
+      repo: $r, item: $i, by: "sweep", comment_url: $u}' >> "$append_to"
 
   echo "sweep-inline-refinement-specs: $repo#$item: posted, ${#spec} bytes now a pointer -> $url"
 done <<<"$candidates"
