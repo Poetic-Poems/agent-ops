@@ -58,6 +58,12 @@
 # to real issues, one per stranded entry, and that is not a thing to do by
 # accident or to discover halfway through. Pass `--apply` to actually post.
 #
+# One `gh issue view` and one `gh issue comment` per stranded entry, so a full
+# sweep is minutes rather than seconds — 81 entries took just over two on
+# 2026-08-31. Run it detached (`nohup`, or a container you do not attach to)
+# rather than under anything that might time out and leave you guessing how
+# far it got.
+#
 # Usage: sweep-inline-refinement-specs.sh [--apply] [--append-to LOG]
 #          <owner/repo> [read-log]
 
@@ -132,14 +138,21 @@ if [[ -z "$candidates" ]]; then
   exit 0
 fi
 
-n=0
-bytes=0
+# `selected` is what the ladder offered; `moved` is what actually reached a
+# thread. They are different numbers whenever an issue is closed, deleted or
+# unreadable, and reporting the first as the second tells an operator the band
+# shrank by bytes that are still in it — which is exactly the class of
+# false-success this script exists to undo. Counted separately for that reason.
+selected=0
+selected_bytes=0
+moved=0
+moved_bytes=0
 while IFS= read -r entry; do
   [[ -n "$entry" ]] || continue
   item="$(jq -r '.item' <<<"$entry")"
   spec="$(jq -r '.spec' <<<"$entry")"
-  n=$(( n + 1 ))
-  bytes=$(( bytes + ${#spec} ))
+  selected=$(( selected + 1 ))
+  selected_bytes=$(( selected_bytes + ${#spec} ))
 
   if (( ! apply )); then
     printf 'would post %6d bytes to %s#%s\n' "${#spec}" "$repo" "$item"
@@ -185,11 +198,19 @@ while IFS= read -r entry; do
     '{ts: $ts, cycle: $cycle, node: $node, event: "item-refined",
       repo: $r, item: $i, by: "sweep", comment_url: $u}' >> "$append_to"
 
+  moved=$(( moved + 1 ))
+  moved_bytes=$(( moved_bytes + ${#spec} ))
   echo "sweep-inline-refinement-specs: $repo#$item: posted, ${#spec} bytes now a pointer -> $url"
 done <<<"$candidates"
 
 if (( apply )); then
-  printf 'sweep-inline-refinement-specs: %s: %d entr(ies), %d bytes moved out of the unsheddable band\n' "$repo" "$n" "$bytes"
+  printf 'sweep-inline-refinement-specs: %s: %d of %d entr(ies) moved, %d of %d bytes out of the unsheddable band\n' \
+    "$repo" "$moved" "$selected" "$moved_bytes" "$selected_bytes"
+  if (( moved < selected )); then
+    printf 'sweep-inline-refinement-specs: %s: %d entr(ies) were left where they were — see the skips above; re-running is safe and will retry them\n' \
+      "$repo" "$(( selected - moved ))"
+  fi
 else
-  printf 'sweep-inline-refinement-specs: %s: %d entr(ies), %d bytes would move — DRY RUN, pass --apply to post\n' "$repo" "$n" "$bytes"
+  printf 'sweep-inline-refinement-specs: %s: %d entr(ies), %d bytes would move — DRY RUN, pass --apply to post\n' \
+    "$repo" "$selected" "$selected_bytes"
 fi
