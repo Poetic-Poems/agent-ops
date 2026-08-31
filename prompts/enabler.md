@@ -168,8 +168,11 @@ and every issue thread you read while investigating.
   `Forbidden` error naming `blob.core.windows.net`, the job endpoint is blocked
   by the egress proxy (D24) — use the run-level endpoint instead: `gh api
   repos/<owner>/<repo>/actions/runs/<run-id>/logs > /tmp/run.zip`, then extract
-  the job's entry by name. Read the target repo's `CLAUDE.md` and `TECH-DEBT.md`
-  when the item lives there. Breadth is cheap here; depth is the point.
+  the job's entry by name — `unzip` is not installed on this image, so read it
+  with `python3 -c "import zipfile, sys; print(zipfile.ZipFile('/tmp/run.zip')
+  .read(sys.argv[1]).decode())" '<n>_<job name>.txt'`. Read the target repo's
+  `CLAUDE.md` and `TECH-DEBT.md` when the item lives there. Breadth is cheap
+  here; depth is the point.
 - **An issue is its whole thread, not just the opening post.** Whenever you
   read an issue, read the body *and every comment*: `gh issue view <n>
   --comments` (or `gh api repos/<slug>/issues/<n>/comments`). A bare `gh issue

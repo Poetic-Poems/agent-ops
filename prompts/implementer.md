@@ -258,7 +258,10 @@ yourself.
   way, then read the run's log via the run-level endpoint (works through the D24
   fence): `gh api repos/<owner>/<repo>/actions/runs/<run-id>/logs > /tmp/run.zip`,
   then extract the failed job's entry by name (the zip contains `<n>_<job name>.txt`
-  for each job, e.g. `2_Build and test (linux_amd64).txt`). If `gh run view --log`
+  for each job, e.g. `2_Build and test (linux_amd64).txt`) — `unzip` is not
+  installed on this image, so read the entry with `python3 -c "import
+  zipfile, sys; print(zipfile.ZipFile('/tmp/run.zip').read(sys.argv[1])
+  .decode())" '2_Build and test (linux_amd64).txt'`. If `gh run view --log`
   or the per-job endpoint gives a `Forbidden` error naming `blob.core.windows.net`,
   that is the node's egress proxy fence (D24), not a credentials issue — the run-level
   endpoint shown above is the supported route on a fenced node. That log names the
