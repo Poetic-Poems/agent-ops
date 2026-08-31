@@ -74,7 +74,7 @@ if [[ -z "$norm_block" || "$norm_block" != *'jq'* ]]; then
 fi
 eval "$norm_block"
 
-for fn in item_live_text item_text_fault item_text_supply; do
+for fn in _span_is_quotable item_live_text item_text_fault item_text_supply; do
   block="$(extract_block "^${fn}\\(\\) \\{" '^\}$' "$CANDIDATE_SELECT")"
   if [[ -z "$block" ]]; then
     echo "FAIL - could not extract $fn from lib/candidate-select.sh — has it moved?" >&2
@@ -82,6 +82,19 @@ for fn in item_live_text item_text_fault item_text_supply; do
   fi
   eval "$block"
 done
+
+# A helper that fails to load would make every span check a no-op — and a
+# no-op reads exactly like a pass here, which is how this file first reported
+# six green assertions against a function that was not defined. Prove it is
+# loaded and discriminating before anything relies on it.
+if ! _span_is_quotable 'plain_identifier'; then
+  echo "FAIL - _span_is_quotable did not load, or rejects a plain identifier" >&2
+  exit 1
+fi
+if _span_is_quotable 'lib/gh-shim.sh'; then
+  echo "FAIL - _span_is_quotable did not load, or accepts a path as quotable" >&2
+  exit 1
+fi
 
 T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
@@ -305,6 +318,55 @@ else
   printf 'FAIL - %s\n' "a fabrication fault does not cleanly skip before the refinement repair runs"
   failures=$(( failures + 1 ))
 fi
+
+# --- Requirement 17g only checks spans that could have been quoted ------------
+#
+# agent-ops#1137: 17g read every backtick span as a quotation of the item, so
+# a work order naming the file it would create was refused as fabrication.
+# Every fault the fleet recorded in the 24 h to 2026-08-31T11:35Z is below,
+# and every one of them was a false positive — while the fleet, whose fit had
+# just been freed to offer all 104 candidates, selected nothing at all.
+#
+# The exemption is shaped by impossibility, not by likelihood: a pattern
+# cannot appear verbatim in the prose it generalises, and a path a work order
+# creates cannot appear in the item that asked for it. Everything else is
+# still checked, and the two assertions after these prove that includes the
+# shape both real fabrications took.
+
+# shellcheck disable=SC2016  # backtick spans are fixture JSON text, not command substitutions
+for span in '`x-ratelimit-*`' '`techdebt_file_*`' '`scripts/gather-*`' '`file_*`' \
+            '`pr-<n>-restale-unreview-<head-sha>`' '`lib/gh-shim.sh`'; do
+  bare="${span//\`/}"
+  cand="$(jq -nc --arg a "Add $span, which this issue does not spell out." \
+    '{repo:"o/r", item:"815", source:"issues", context:"a short note", acceptance:$a}')"
+  assert_empty "an unquotable span is not checked: $bare" \
+    "$(item_text_fault "$cand" "$trimmed" "$refinements")"
+done
+
+# The two fabrications on record are bare identifiers, so they must still
+# fault — an exemption that let these through would disarm 17g entirely.
+# shellcheck disable=SC2016  # the backtick span is fixture JSON text, not a command substitution
+cand_still_caught='{"repo":"o/r","item":"815","source":"issues",
+  "context":"a short note about issue #815",
+  "acceptance":"Add `_verify_stage_claims`, a subsystem this issue never actually names."}'
+assert_nonempty "the #815 fabrication is still caught after the narrowing" \
+  "$(item_text_fault "$cand_still_caught" "$trimmed" "$refinements")"
+# shellcheck disable=SC2016  # the backtick span is fixture JSON text, not a command substitution
+cand_still_caught2='{"repo":"o/r","item":"815","source":"issues",
+  "context":"a short note about issue #815",
+  "acceptance":"Add a new `refinement_policy_matrix` config key that this issue never names."}'
+assert_nonempty "the #821 fabrication is still caught after the narrowing" \
+  "$(item_text_fault "$cand_still_caught2" "$trimmed" "$refinements")"
+
+# A dotted directory holding an extensionless name is a path only by accident
+# and is still checked — the extension test is on the final segment for this
+# reason.
+# shellcheck disable=SC2016  # the backtick span is fixture JSON text, not a command substitution
+cand_dotted='{"repo":"o/r","item":"815","source":"issues",
+  "context":"a short note about issue #815",
+  "acceptance":"Add `some.dir/invented` which this issue never names."}'
+assert_nonempty "a dotted directory with an extensionless name is still checked" \
+  "$(item_text_fault "$cand_dotted" "$trimmed" "$refinements")"
 
 printf '\n%s\n' "$( (( failures == 0 )) && echo "All assertions passed." || echo "$failures assertion(s) failed." )"
 exit $(( failures > 0 ))
