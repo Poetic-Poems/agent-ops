@@ -124,7 +124,7 @@ merge_autonomy_resolution_source() {
   fi
 }
 
-# merge_autonomy_kill_state STATE_REPO STATE_DIR [FRESH]
+# merge_autonomy_kill_state STATE_REPO STATE_DIR [FRESH] [RETRY]
 # The kill switch, in toggle_state's own vocabulary
 # (`{"state":"enabled"}` / `{"state":"disabled","record":{...}}`) — "enabled"
 # here means merge autonomy runs at its configured level; "disabled" means
@@ -164,23 +164,80 @@ merge_autonomy_resolution_source() {
 # about to act on the answer rather than merely compute with it. Leave it
 # empty for every advisory read — the back-pressure count and
 # `void_obsolete_ctx_json` both do, and stay memoised.
+#
+# RETRY (agent-ops#1081) opts into one further attempt when the read fails
+# closed with no cached copy at all — the fresh-node case the header above
+# and TD-PPagop-26081507 already fail closed for. A lone rate-limited
+# refusal is by far the common cause of that (agent-ops#1101's own three call
+# sites hit the identical shape on the same node within the hour): before
+# returning the fail-closed record, a non-empty RETRY classifies whatever
+# `fleet_flag_fetch_status` left in `$cache.err` via `github_limit_kind`
+# (lib/github-limit.sh — reused, not reclassified) and, only when the cause
+# was rate-limiting, waits out `github_limit_wait_plan`'s own wait/backoff
+# and asks GitHub once more. Empty (the default) preserves this function's
+# exact prior behaviour for every caller that does not pass it —
+# `scripts/doctor.sh`, `lib/manage.sh`, `scripts/publish-dashboard.sh` and
+# `landing_autonomy_refusal_reason`'s own diagnostic re-read all leave this
+# unset, since a wait of up to a minute has no business inside a status
+# report or a heartbeat-budgeted dashboard tick. `run_approver_stage`
+# (lib/approver.sh) is the one caller that opts in — the stage that posts a
+# real GitHub review under this answer, and had no retry of its own at all
+# before this.
+#
+# Every returned document now also carries a top-level `retried` boolean —
+# `true` iff RETRY was passed *and* the wait/retry was actually taken (never
+# merely requested — a non-rate-limit cause, or one not worth waiting for,
+# leaves this `false`), `false` otherwise (including every call that never
+# passes RETRY at all, so no existing caller sees a shape it did not already
+# handle). A caller telling a fail-closed `human` apart from a genuinely
+# configured or manually killed one still reads `.record.kind` exactly as
+# before — a global would not survive this function being called inside a
+# `$(...)` command substitution (every real call site's own shape, needed to
+# capture the printed document at all), which a subshell's own writes to a
+# process-wide variable never reach the caller back — so both facts travel
+# in the one document this function already returns, never a side channel.
 merge_autonomy_kill_state() {
-  local combined status raw
-  combined="$(fleet_flag_fetch_status "$1" "$2" "$MERGE_AUTONOMY_KILL_FLAG" probe-404 "${3:-}")"
+  local repo="$1" state_dir="$2" fresh="${3:-}" retry="${4:-}"
+  local combined status raw retried_bool="false"
+  combined="$(fleet_flag_fetch_status "$repo" "$state_dir" "$MERGE_AUTONOMY_KILL_FLAG" probe-404 "$fresh")"
   # Parameter expansion, not `IFS=$'\t' read` — see fleet_flag_fetch_status's
   # own comment: RAW is a file from the state repository and may be several
   # lines, which a `read` would truncate to the first one.
   status="${combined%%$'\t'*}"
   raw="${combined#*$'\t'}"
+  if [[ -z "$raw" && "$status" == "unreachable" && -n "$retry" ]]; then
+    local cache cause kind now reset_epoch wait
+    cache="$(fleet_cache_file "$state_dir" "$MERGE_AUTONOMY_KILL_FLAG")"
+    cause="$(cat "${cache}.err" 2>/dev/null || true)"
+    kind="none"
+    declare -F github_limit_kind >/dev/null 2>&1 && kind="$(github_limit_kind "$cause")"
+    if [[ "$kind" != "none" ]] && declare -F github_limit_wait_plan >/dev/null 2>&1; then
+      now="$(date +%s)"
+      reset_epoch=0
+      if [[ "$kind" == "primary" ]] && declare -F github_limit_primary_reset_epoch >/dev/null 2>&1; then
+        reset_epoch="$(github_limit_primary_reset_epoch "$now")"
+      fi
+      wait="$(github_limit_wait_plan "$kind" "$reset_epoch" "$now" "${GITHUB_LIMIT_WAITED_SECONDS:-0}")"
+      if [[ -n "$wait" ]]; then
+        retried_bool="true"
+        sleep "$wait"
+        GITHUB_LIMIT_WAITED_SECONDS=$(( ${GITHUB_LIMIT_WAITED_SECONDS:-0} + wait ))
+        combined="$(fleet_flag_fetch_status "$repo" "$state_dir" "$MERGE_AUTONOMY_KILL_FLAG" probe-404 "$fresh")"
+        status="${combined%%$'\t'*}"
+        raw="${combined#*$'\t'}"
+      fi
+    fi
+  fi
   if [[ -z "$raw" ]]; then
     if [[ "$status" == "unreachable" ]]; then
-      printf '%s' '{"state":"disabled","record":{"reason":"state repo unreachable and no cached copy of the kill switch — failing closed to human until a fetch succeeds (TD-PPagop-26081507)","expires_at":null,"by":"","disabled_at":"","kind":"fail-closed"}}'
+      jq -nc --argjson r "$retried_bool" \
+        '{state: "disabled", retried: $r, record: {reason: "state repo unreachable and no cached copy of the kill switch — failing closed to human until a fetch succeeds (TD-PPagop-26081507)", expires_at: null, by: "", disabled_at: "", kind: "fail-closed"}}'
       return 0
     fi
-    printf '{"state":"enabled"}'
+    jq -nc --argjson r "$retried_bool" '{state: "enabled", retried: $r}'
     return 0
   fi
-  _toggle_eval "$raw" present
+  jq -c --argjson r "$retried_bool" '. + {retried: $r}' <<<"$(_toggle_eval "$raw" present)"
 }
 
 # merge_autonomy_kill_set STATE_REPO REASON BY [ACTOR]
@@ -208,7 +265,7 @@ merge_autonomy_kill_clear() {
   fleet_flag_delete_outcome "$1" "$2" "$MERGE_AUTONOMY_KILL_FLAG"
 }
 
-# merge_autonomy_effective_level CONFIG_JSON SLUG STATE_REPO STATE_DIR [FRESH]
+# merge_autonomy_effective_level CONFIG_JSON SLUG STATE_REPO STATE_DIR [FRESH] [RETRY]
 # What SLUG is actually governed by right now: `human` whenever the kill
 # switch is set (or its own state cannot be read as clear — see
 # merge_autonomy_kill_state); else, capped at `agent-approves` whenever
@@ -242,10 +299,18 @@ merge_autonomy_kill_clear() {
 # test/backpressure-wiring.test.sh) untouched — and the rank check below still
 # skips the freeze fetch outright for every repository at `agent-approves` or
 # below, fresh or not.
+# RETRY (agent-ops#1081) is threaded straight through to
+# `merge_autonomy_kill_state`'s own RETRY — see that function's header for
+# what it does and why every caller but `run_approver_stage` leaves it
+# unset. This function still returns one word, never a cause: a caller that
+# needs to distinguish a fail-closed `human` from a genuinely configured or
+# manually killed one calls `merge_autonomy_kill_state` itself instead of
+# this function (`run_approver_stage` does, ahead of this one) and reads
+# `.record.kind` off its own returned document.
 merge_autonomy_effective_level() {
-  local config_json="$1" slug="$2" state_repo="$3" state_dir="$4" fresh="${5:-}"
+  local config_json="$1" slug="$2" state_repo="$3" state_dir="$4" fresh="${5:-}" retry="${6:-}"
   local kill_state configured configured_rank cap_rank freeze_state
-  kill_state="$(jq -r '.state' <<<"$(merge_autonomy_kill_state "$state_repo" "$state_dir" "$fresh")" 2>/dev/null)"
+  kill_state="$(jq -r '.state' <<<"$(merge_autonomy_kill_state "$state_repo" "$state_dir" "$fresh" "$retry")" 2>/dev/null)"
   if [[ "$kill_state" != "enabled" ]]; then
     printf 'human'
     return 0

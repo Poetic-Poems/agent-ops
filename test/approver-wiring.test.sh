@@ -138,6 +138,14 @@ set -euo pipefail
 # real (it is pure and cheap) rather than stubbed, so this file keeps
 # verifying the shipped wiring rather than a stand-in for it.
 . "$SCRIPT_DIR/lib/rework.sh"
+# agent-ops#1081: run_approver_stage's own fail-closed warning reads
+# fleet_cache_file (lib/toggle.sh) and MERGE_AUTONOMY_KILL_FLAG
+# (lib/merge-autonomy.sh) directly — sourced for real, cheaply, purely for
+# those two definitions, while merge_autonomy_effective_level itself (below)
+# still stands in for the real lib/merge-autonomy.sh logic this file exists
+# to isolate from.
+. "$SCRIPT_DIR/lib/toggle.sh"
+. "$SCRIPT_DIR/lib/merge-autonomy.sh"
 
 # --- Cycle globals the block reads -------------------------------------------
 selected_repo="Poetic-Poems/agent-ops"
@@ -169,12 +177,33 @@ approver_model_critical="$MODEL_CRITICAL"
 mkdir -p "$cycle_dir" "$clone_dir" "$state_dir"
 
 # --- Stubs: everything that reaches outside this process ----------------------
+# merge_autonomy_kill_state (agent-ops#1081) is what run_approver_stage now
+# asks first, ahead of (and instead of routing through)
+# merge_autonomy_effective_level, since a fail-closed `human` is entirely a
+# property of the kill switch — see lib/approver.sh's own comment at that
+# call site. KILL_KIND/KILL_RETRIED let a case simulate what the real
+# lib/merge-autonomy.sh would have left in the returned document's
+# `.record.kind`/`.retried`; KILL_STATE (default "enabled") simulates the
+# `.state` field itself. Records its own argv so a test can confirm the read
+# is FRESH (issue #513) and, now, RETRY-enabled (agent-ops#1081).
+merge_autonomy_kill_state() {
+  printf '%s\n' "$*" >>"$T/mks_calls"
+  jq -nc --arg s "${KILL_STATE:-enabled}" --arg k "${KILL_KIND:-}" \
+    --argjson r "${KILL_RETRIED:-0}" \
+    '{state: $s, retried: ($r == 1), record: (if $k == "" then {} else {kind: $k} end)}'
+}
 # Records its own argv (issue #513, PR #506 review follow-up) so a test can
 # confirm run_approver_stage asks for a FRESH read of the level rather than
 # the process-lifetime memo every advisory reader uses — this stage posts a
 # real GitHub review under the answer, so a kill set mid-cycle must stop it
-# at this stage boundary, not wait for the next cycle's process.
-merge_autonomy_effective_level() { printf '%s\n' "$*" >>"$T/mal_calls"; printf '%s' "$LEVEL"; }
+# at this stage boundary, not wait for the next cycle's process. Only
+# reached once merge_autonomy_kill_state (above) reports the kill switch
+# `enabled` — every case below that leaves KILL_STATE at its "enabled"
+# default relies on this exactly as before agent-ops#1081.
+merge_autonomy_effective_level() {
+  printf '%s\n' "$*" >>"$T/mal_calls"
+  printf '%s' "$LEVEL"
+}
 approver_token_credential_present() { [[ "${CREDENTIAL:-1}" == "1" ]]; }
 approver_token_identity_login() { printf 'pullwright-approver[bot]'; }
 approver_refuse_streak() { printf '%s' "$STREAK"; }
@@ -267,6 +296,16 @@ HARNESS
   printf '%s\n' "$block"
   printf 'resolved="$(approver_stage_complexity "$PR_URL" "$COMPLEXITY" 0)"\n'
   printf '%s\n' 'printf '"'"'%s'"'"' "$resolved" >"$T/resolved_complexity"'
+  # agent-ops#1081: KILL_CAUSE, when a case sets it, stands in for what
+  # fleet_flag_fetch_status would have left in the kill flag's own
+  # $cache.err — the diagnostic text run_approver_stage's fail-closed
+  # warning reads back once merge_autonomy_kill_state (stubbed above)
+  # reports the document.
+  printf '%s\n' 'if [[ -n "${KILL_CAUSE:-}" ]]; then'
+  printf '%s\n' '  kill_errf="$(fleet_cache_file "$state_dir" "$MERGE_AUTONOMY_KILL_FLAG").err"'
+  printf '%s\n' '  mkdir -p "$(dirname "$kill_errf")"'
+  printf '%s\n' '  printf '"'"'%s'"'"' "$KILL_CAUSE" >"$kill_errf"'
+  printf '%s\n' 'fi'
   printf 'run_approver_stage "$PR_URL" "$resolved"\n'
 } >>"$tmp_dir/harness.sh"
 
@@ -285,7 +324,7 @@ run_case() {
   : >"$tmp_dir/events"; : >"$tmp_dir/posts"
   : >"$tmp_dir/escalations"; : >"$tmp_dir/launches"
   : >"$tmp_dir/resolved_complexity"; : >"$tmp_dir/prompt_override_args"
-  : >"$tmp_dir/mal_calls"; : >"$tmp_dir/protected_calls"
+  : >"$tmp_dir/mal_calls"; : >"$tmp_dir/mks_calls"; : >"$tmp_dir/protected_calls"
   : >"$tmp_dir/token_calls"; rm -f "$tmp_dir/token_calls_count"
   rm -rf "${tmp_dir:?}/cycle" "${tmp_dir:?}/clone" "${tmp_dir:?}/state"
   env -i PATH="$PATH" HOME="$HOME" \
@@ -299,7 +338,7 @@ run_case() {
 }
 
 protected_calls() { cat "$tmp_dir/protected_calls"; }
-mal_calls() { cat "$tmp_dir/mal_calls"; }
+mks_calls() { cat "$tmp_dir/mks_calls"; }
 posts() { cat "$tmp_dir/posts"; }
 launches() { cat "$tmp_dir/launches"; }
 escalations() { cat "$tmp_dir/escalations"; }
@@ -315,9 +354,48 @@ rc="$(run_case human medium 0 '{"verdict":"approve","reasons":["fine"]}')"
 assert_eq "at human the stage returns 0" "0" "$rc"
 assert_eq "  ... posts no review" "0" "$(count posts)"
 assert_eq "  ... launches no model" "0" "$(count launches)"
-assert_eq "  ... and logs nothing at all" "0" "$(count events)"
-assert_eq "  ... but still asks merge_autonomy_effective_level for a FRESH read (issue #513)" \
-  "fresh" "$(mal_calls | awk '{print $NF}')"
+assert_eq "  ... and logs nothing at all — a genuinely configured human is silent" "0" "$(count events)"
+assert_eq "  ... but still asks merge_autonomy_kill_state for a FRESH read (issue #513)" \
+  "fresh" "$(mks_calls | awk '{print $(NF-1)}')"
+assert_eq "  ... and for a retry (agent-ops#1081)" \
+  "retry" "$(mks_calls | awk '{print $NF}')"
+
+# --- agent-ops#1081: a fail-closed kill-switch read is distinguished from a
+#     genuinely configured `human`, and logs a warning naming the pull
+#     request, the flag, and the cause -----------------------------------------
+
+rc="$(run_case human medium 0 '{"verdict":"approve","reasons":["fine"]}' \
+  KILL_STATE=disabled KILL_KIND=fail-closed \
+  KILL_CAUSE='HTTP 403: API rate limit exceeded for user ID 2049303')"
+assert_eq "a fail-closed kill-switch read still returns 0" "0" "$rc"
+assert_eq "  ... posts no review" "0" "$(count posts)"
+assert_eq "  ... launches no model" "0" "$(count launches)"
+assert_eq "  ... but logs exactly one warning, unlike a genuinely configured human" "1" "$(count events)"
+assert_eq "  ... and never even asks merge_autonomy_effective_level — the kill switch alone decided it" \
+  "0" "$(count mal_calls)"
+assert_contains "  ... naming the pull request" "$URL" "$(warnings)"
+assert_contains "  ... the flag it could not read" "merge-autonomy-kill" "$(warnings)"
+assert_contains "  ... and the cause captured in \$cache.err" \
+  "API rate limit exceeded" "$(warnings)"
+assert_eq "  ... marked fail_closed:true, so an operator can tell it from a generic refusal" \
+  'true' "$(jq -c '.fail_closed' <<<"$(warnings)")"
+assert_eq "  ... and retried:false — no retry was actually taken" \
+  'false' "$(jq -c '.retried' <<<"$(warnings)")"
+
+rc="$(run_case human medium 0 '{"verdict":"approve","reasons":["fine"]}' \
+  KILL_STATE=disabled KILL_KIND=fail-closed KILL_RETRIED=1 \
+  KILL_CAUSE='still rate-limited after the retry')"
+assert_eq "a fail-closed read that was retried and still failed still returns 0" "0" "$rc"
+assert_eq "  ... logs exactly one warning" "1" "$(count events)"
+assert_eq "  ... marked retried:true, distinguishing it from an unretried refusal" \
+  'true' "$(jq -c '.retried' <<<"$(warnings)")"
+assert_contains "  ... its detail says a retry was already taken" "even after one retry" "$(warnings)"
+
+rc="$(run_case human medium 0 '{"verdict":"approve","reasons":["fine"]}' \
+  KILL_STATE=disabled KILL_KIND=manual)"
+assert_eq "a genuine (manual) kill switch still returns 0" "0" "$rc"
+assert_eq "  ... and logs nothing — this is not the fail-closed case (requirement 8b unchanged)" \
+  "0" "$(count events)"
 
 # --- Trivial tier: deterministic, no model (requirement 8b) -------------------
 

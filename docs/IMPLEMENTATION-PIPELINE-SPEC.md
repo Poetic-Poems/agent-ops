@@ -6194,6 +6194,45 @@ implements.
    as a human's own `CHANGES_REQUESTED` never has, so nothing about the
    handoff itself waits on this stage or can be affected by how it ends.
 
+   **A fail-closed kill-switch read is distinguished from a configured
+   `human`, and retried once (agent-ops#1081).** The Approver stage's own
+   level resolution does not simply call `merge_autonomy_effective_level` and
+   read `human` off it — that function's own collapsed answer cannot tell a
+   genuinely configured (or manually killed) `human` apart from
+   `merge_autonomy_kill_state` (requirement 2.3b) failing closed on a
+   transport failure reading the kill switch with no cached copy
+   (TD-PPagop-26081507), which a single GitHub REST rate-limit refusal is by
+   far the most common cause of (agent-ops#1101's own three call sites hit the
+   identical shape on the same node within an hour). So the stage calls
+   `merge_autonomy_kill_state` itself first, with its own `RETRY` argument
+   set: on a fail-closed read, that function classifies whatever it left in
+   the kill flag's own `$cache.err` via `github_limit_kind`
+   (`lib/github-limit.sh` — reused, not reclassified) and, only when the
+   cause was rate-limiting, waits out `github_limit_wait_plan`'s existing
+   wait/backoff and asks GitHub once more before giving up — the same
+   "classify, then retry only a rate limit" shape requirement 8c's own
+   `approver_post_or_warn` retry already applies to the write side. Both facts
+   a caller needs travel in the document `merge_autonomy_kill_state` itself
+   returns (`.record.kind`, `.retried`), never a global: this call happens
+   inside a `$(...)` command substitution to capture that document at all, and
+   a subshell's writes to a global never reach the caller back.
+
+   If the kill switch is genuinely enabled, the stage proceeds to
+   `merge_autonomy_effective_level` exactly as before (unaffected — the
+   merge-budget freeze only ever caps a level *down* to `agent-approves`, so a
+   fail-closed `human` is entirely a property of the kill switch and never the
+   freeze). If it is not enabled and the reason was the fail-closed synthesis,
+   the stage logs a `warning` naming the pull request, the kill flag, and the
+   cause captured in `$cache.err`, distinguishing whether a retry was actually
+   taken (per requirement 8b's own contract that every other way this stage
+   cannot run logs a `warning` rather than acting on silently) and then
+   returns exactly as the plain `human` path always has — no App review, no
+   change to the pull request's own state. A genuinely configured or manually
+   killed `human` still logs nothing at all, the same silence as before this
+   fix. This is not a new terminal state: once the retry (if any) is
+   exhausted, the pull request is left carrying no App review — exactly the
+   shape issue #890's own recovery sweep is built to recover, once it lands.
+
    The tier is resolved *after* the Reviewer stage has run, not from the
    `complexity` requirement 8a computed to choose the Reviewer's own model:
    the Reviewer may correct a `complexity:*` label it finds plainly wrong for
@@ -15466,7 +15505,20 @@ What exists, and the requirements each part answers to:
     token, which `fleet_flag_fetch_status` tells apart from a genuine
     missing-flag-file 404 by probing `repos/<state_repo>` itself, in the
     probing mode (`probe-404`) this reader alone asks for
-    (TD-PPagop-26081602).
+    (TD-PPagop-26081602). `merge_autonomy_kill_state` takes an optional
+    `RETRY` argument (agent-ops#1081): on that same fail-closed read, a
+    non-empty `RETRY` classifies whatever `fleet_flag_fetch_status` left in
+    the flag's own `$cache.err` via `github_limit_kind`
+    (`lib/github-limit.sh`) and, only when the cause was rate-limiting, waits
+    out `github_limit_wait_plan`'s existing wait/backoff and asks once more
+    before giving up. Every returned document carries a top-level `retried`
+    boolean either way (`true` only when a wait was actually taken, never
+    merely requested), so both that fact and the `.record.kind` distinction
+    a caller needs travel in the one document this function already returns
+    — never a global, which a `$(...)` command substitution (needed to
+    capture that document at all) would silently drop. Empty (the default)
+    is unchanged behaviour for every caller but `run_approver_stage`
+    (requirement 8b).
     `merge_autonomy_effective_level`
     combines all three: `human` whenever the kill switch is set or
     unreadable; otherwise the configured level capped at `agent-approves`
@@ -15487,7 +15539,15 @@ What exists, and the requirements each part answers to:
     callers, though bash resolves the call at run time rather than at source
     time, so the textual order is readability and not a constraint. Regression-tested in `test/merge-autonomy.test.sh` against the
     same stubbed contents-API `gh` `test/toggle.test.sh` uses for the fleet
-    flags it wraps; the same suite lifts `merge_autonomy_status_report` out
+    flags it wraps, including a rate-limit-shaped stub mode covering `RETRY`
+    (agent-ops#1081): a refusal that clears on the retry resolves the real
+    record with `retried: true`; one that is still rate-limited after the
+    retry fails closed the same as before, `retried: true` and exactly two
+    fetch attempts, never an endless retry; a non-rate-limit cause (the
+    existing transport-unreachable stub mode) is never retried even with
+    `RETRY` passed; and `RETRY` threads through `merge_autonomy_effective_level`
+    unchanged (it still returns one word, never a cause). The same suite
+    lifts `merge_autonomy_status_report` out
     of `lib/manage.sh` and asserts the `--status` headline split — KILLED
     for a real record (cached-set included), FAIL-CLOSED for the unreachable
     synthesis, with the restore pointer only on the former (#454). Must pass
@@ -20034,10 +20094,19 @@ pull request, run the ones the change touches and any it could regress.
     `test/approver-wiring.test.sh` lifts `run_approver_stage`,
     `approver_post_or_warn` and `approver_stage_complexity` verbatim out of
     `lib/approver.sh` and drives them with every GitHub call, model launch and
-    log write stubbed: at `merge_autonomy: human` the stage posts no review,
-    launches no model and logs nothing at all, having asked
-    `merge_autonomy_effective_level` for a *fresh* read of the level rather
-    than the process-lifetime memo (requirement 2.3a); at `agent-approves` a
+    log write stubbed: at a genuinely configured (or manually killed)
+    `merge_autonomy: human` the stage posts no review, launches no model and
+    logs nothing at all, having asked `merge_autonomy_kill_state` for a
+    *fresh*, *retrying* read (requirements 2.3a, 8b's own fail-closed
+    distinguishing behaviour, agent-ops#1081) rather than the
+    process-lifetime memo. A stubbed fail-closed read (`.record.kind ==
+    "fail-closed"`) — unlike the genuinely configured case — logs exactly one
+    `warning` naming the pull request, the kill flag, and the cause, marked
+    `fail_closed: true`; `retried: true` when the stub reports the retry was
+    taken, and the warning's own detail says so; either way
+    `merge_autonomy_effective_level` itself is never even asked, since a
+    fail-closed `human` is decided by the kill switch alone. At
+    `agent-approves` a
     `complexity:low` pull request gets a deterministic `APPROVE` with no
     model launched, `medium` and `high` launch `approver_model_default` and
     `approver_model_complex` respectively — the launched prompt assembled

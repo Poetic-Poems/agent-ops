@@ -192,9 +192,13 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   live gate's own fail-closed reasoning, which only applies once a fetch has
   actually found the repo unreachable. The live GitHub tick calls
   `merge_autonomy_kill_state` for real and overwrites this value with its
-  accurate answer, fail-closed synthesis included. Surfaced as
-  `fleet.flags.merge_autonomy_kill` — `{state, record?}`, `lib/toggle.sh`'s
-  own vocabulary — and rendered as its own banner, deliberately not folded
+  accurate answer, fail-closed synthesis included — which also carries
+  `merge_autonomy_kill_state`'s own `retried` boolean (always `false` here:
+  this Publisher passes no `RETRY`, agent-ops#1081), where the local-only
+  `_toggle_eval` value does not. Surfaced as
+  `fleet.flags.merge_autonomy_kill` — `{state, retried?, record?}`,
+  `lib/toggle.sh`'s own vocabulary — and rendered as its own banner,
+  deliberately not folded
   into the fleet-switch banner above: cycles keep running while the kill
   switch is engaged, only landing collapses to `human` fleet-wide, so "every
   node stands down" would misreport it. A `record.kind` of `"fail-closed"`

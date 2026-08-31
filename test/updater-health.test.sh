@@ -261,12 +261,13 @@ rm -f "$ledger/host-b.jsonl"
 # container, misread by the old hostname-only check as this container's own
 # proof it never rolled.
 
-entry "$(ago '11 seconds')" allow "svc" "$OTHER_STARTED" > "$ledger/host-b.jsonl"
+other_allowed_at="$(ago '11 seconds')"
+entry "$other_allowed_at" allow "svc" "$OTHER_STARTED" > "$ledger/host-b.jsonl"
 out="$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc" "$OWN_STARTED")"
 assert_eq "a roll's own allow, under the hostname it handed forward, reads rolled" \
   "rolled" "$(jq -r '.status' <<<"$out")"
 assert_eq "naming when that roll was allowed" \
-  "$(ago '11 seconds')" "$(jq -r '.at' <<<"$out")"
+  "$other_allowed_at" "$(jq -r '.at' <<<"$out")"
 rm -f "$ledger/host-b.jsonl"
 
 # A container that genuinely never rolled — same start time on the trailing
