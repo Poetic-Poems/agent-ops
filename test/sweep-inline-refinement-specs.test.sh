@@ -138,6 +138,7 @@ assert_eq "the sweep sources the marker library rather than spelling the strings
   "$(grep -q 'lib/pipeline-marker.sh' "$SWEEP" && echo yes || echo no)"
 assert_eq "the comment body opens with the visible header" "yes" \
   "$(grep -q 'pipeline_comment_header script' "$SWEEP" && echo yes || echo no)"
+# shellcheck disable=SC2016  # the pattern is the script's literal source text, not an expansion
 assert_eq "…and closes with the invisible marker" "yes" \
   "$(grep -q 'pipeline_comment_marker "\$sweep_cycle_id" script' "$SWEEP" && echo yes || echo no)"
 
@@ -146,6 +147,7 @@ assert_eq "…and closes with the invisible marker" "yes" \
 . "$SCRIPT_DIR/lib/pipeline-marker.sh"
 rendered="$(printf '%s\n\n%s\n\n%s\n' \
   "$(pipeline_comment_header script node-x)" "PROSE" "$(pipeline_comment_marker c script)")"
+# shellcheck disable=SC2016  # the backticks are literal Markdown in the header, not command substitution — the same disable lib/pipeline-marker.sh carries over the line that prints them
 assert_eq "the rendered header names the Script and the node" "yes" \
   "$(head -n1 <<<"$rendered" | grep -q '^\*\*Script\*\* · autonomous pipeline · node `node-x`$' && echo yes || echo no)"
 assert_eq "the rendered marker carries the detection prefix" "yes" \
