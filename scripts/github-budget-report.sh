@@ -26,7 +26,14 @@
 #     comparison reads: the target is a per-cycle spend low enough that
 #     sixteen cycles an hour fit inside one 5,000 bucket with
 #     `github_min_core_budget`'s floor to spare;
-#   - per node: readings, unreadable readings, and cycles that carry a record.
+#   - per node: readings, unreadable readings, and cycles that carry a record;
+#   - the `gh` transport shim (requirement 2.0e, agent-ops#1084): every call
+#     its own per-call ledger covers, summed by cache outcome — `hit` (a
+#     conditional GET served from a `304`), `miss` (a fresh read), `stale`
+#     (served last-known-good under a refusal) or `bypass` (a write,
+#     `graphql`, or a caller reading its own headers — never cached at all).
+#     This is the per-call ledger the previous paragraph's "exact only once …
+#     a per-call ledger exists" now names as existing.
 #
 # ## What the movement is, and is not
 #
@@ -35,15 +42,19 @@
 # user's aggregate: the whole fleet's, the dashboard publisher's and the
 # owner's own shell together. A segment's `since_previous` is therefore the
 # *bucket's* movement during that segment — an upper bound on what the
-# segment itself spent, exact only once identities are per node or a per-call
-# ledger exists (agent-ops#1084). The report says so in its own preamble
-# rather than leaving a reader to infer a node's spend from a fleet's.
+# segment itself spent, exact only once identities are per node, or read
+# through the shim's own per-identity `budget.json` (lib/gh-shim.sh) rather
+# than from `since_previous`. The report says so in its own preamble rather
+# than leaving a reader to infer a node's spend from a fleet's.
 #
 # Reads the fleet's logs the way `scripts/verdict-fate-report.sh` does —
 # this node's `state_dir/log.jsonl` plus every peer's mirrored copy — or, given
-# log files as arguments, exactly those. Itself adds no event, makes no
-# network call, and changes nothing. Markdown on stdout, followed by a
-# machine-readable JSON block carrying the same figures.
+# log files as arguments, exactly those (the shim's ledger has no such
+# argument-file form: given explicit log files there is no `state_dir` to
+# find `gh-shim/ledger.ndjson` beside, so that section reads as empty rather
+# than erroring). Itself adds no event, makes no network call, and changes
+# nothing. Markdown on stdout, followed by a machine-readable JSON block
+# carrying the same figures.
 
 set -uo pipefail
 
@@ -95,6 +106,26 @@ expand_home() {
   printf '%s\n' "$p"
 }
 
+# resolve_state_and_peers
+# Sets RESOLVED_STATE_DIR/RESOLVED_PEERS_DIR from the --state-dir/--peers-dir
+# overrides or config.json, or leaves both empty (returning 1) when neither
+# is available — never fatal on its own, since some callers (the shim
+# ledger) degrade to "nothing read" rather than aborting the report over a
+# telemetry source `raw_events`'s own explicit-LOG.jsonl mode has no use for.
+RESOLVED_STATE_DIR=""
+RESOLVED_PEERS_DIR=""
+resolve_state_and_peers() {
+  if [[ -n "$state_dir_override" && -n "$peers_dir_override" ]]; then
+    RESOLVED_STATE_DIR="$state_dir_override"; RESOLVED_PEERS_DIR="$peers_dir_override"
+    return 0
+  fi
+  [[ -f "$CONFIG_FILE" ]] || return 1
+  local defaulted
+  defaulted="$(config_defaults "$CONFIG_FILE" "$SCHEMA_FILE")" || return 1
+  RESOLVED_STATE_DIR="${state_dir_override:-$(expand_home "$(jq -r '.state_dir' <<<"$defaulted")")}"
+  RESOLVED_PEERS_DIR="${peers_dir_override:-$(fleet_peers_dir "$(expand_home "$(jq -r '.workspace_root' <<<"$defaulted")")")}"
+}
+
 raw_events() {
   if [[ ${#LOGS[@]} -gt 0 ]]; then
     local f
@@ -104,18 +135,24 @@ raw_events() {
     done
     return 0
   fi
-  local state_dir peers_dir
-  if [[ -n "$state_dir_override" && -n "$peers_dir_override" ]]; then
-    state_dir="$state_dir_override"; peers_dir="$peers_dir_override"
-  else
-    [[ -f "$CONFIG_FILE" ]] || { echo "github-budget-report: config file not found: $CONFIG_FILE" >&2; return 1; }
-    local defaulted
-    defaulted="$(config_defaults "$CONFIG_FILE" "$SCHEMA_FILE")" || {
-      echo "github-budget-report: could not read $CONFIG_FILE against $SCHEMA_FILE" >&2; return 1; }
-    state_dir="${state_dir_override:-$(expand_home "$(jq -r '.state_dir' <<<"$defaulted")")}"
-    peers_dir="${peers_dir_override:-$(fleet_peers_dir "$(expand_home "$(jq -r '.workspace_root' <<<"$defaulted")")")}"
-  fi
-  fleet_logs "$state_dir" "$peers_dir" log.jsonl
+  resolve_state_and_peers || {
+    echo "github-budget-report: config file not found: $CONFIG_FILE" >&2; return 1; }
+  fleet_logs "$RESOLVED_STATE_DIR" "$RESOLVED_PEERS_DIR" log.jsonl
+}
+
+# raw_ledger_events
+# The `gh` transport shim's own per-call ledger (requirement 2.0e,
+# agent-ops#1084): this node's `state_dir/gh-shim/ledger.ndjson` plus every
+# peer's mirrored copy, read the same fleet-shaped way as `raw_events`'s
+# default path. Unlike `raw_events`, never fatal: given explicit LOG.jsonl
+# files (LOGS non-empty) there is no state_dir to find a ledger beside, and
+# an unreadable config here is no reason to fail a report that already read
+# its primary events successfully — both simply mean zero ledger lines,
+# reported as such rather than as an error.
+raw_ledger_events() {
+  [[ ${#LOGS[@]} -eq 0 ]] || return 0
+  resolve_state_and_peers || return 0
+  fleet_logs "$RESOLVED_STATE_DIR" "$RESOLVED_PEERS_DIR" gh-shim/ledger.ndjson
 }
 
 # Damaged lines (NUL runs, a truncated tail) are dropped rather than allowed
@@ -123,6 +160,17 @@ raw_events() {
 events="$(raw_events | jq -c -R 'fromjson? | select(type == "object")' | jq -s -c --arg since "$since" \
   '[.[] | select(($since == "") or ((.ts // "") >= $since))]' 2>/dev/null)" || exit 1
 [[ -n "$events" ]] || events='[]'
+
+ledger_events="$(raw_ledger_events | jq -c -R 'fromjson? | select(type == "object")' | jq -s -c --arg since "$since" \
+  '[.[] | select(($since == "") or ((.ts // "") >= $since))]' 2>/dev/null)" || ledger_events='[]'
+[[ -n "$ledger_events" ]] || ledger_events='[]'
+shim_report="$(jq -c '
+  { calls: length,
+    hit: (map(select(.cache == "hit")) | length),
+    miss: (map(select(.cache == "miss")) | length),
+    stale: (map(select(.cache == "stale")) | length),
+    bypass: (map(select(.cache == "bypass")) | length) }' <<<"$ledger_events" 2>/dev/null)"
+[[ -n "$shim_report" ]] || shim_report='{"calls":0,"hit":0,"miss":0,"stale":0,"bypass":0}'
 
 report="$(jq -c '
   def median: if length == 0 then null else (sort | .[(length / 2) | floor]) end;
@@ -183,6 +231,7 @@ report="$(jq -c '
       refusals: ($ref | length),
       budget_standdowns: ($sd | length)
     }' <<<"$events")"
+report="$(jq -c --argjson shim "$shim_report" '. + {shim: $shim}' <<<"$report")"
 
 cell() { local v="${1:-}"; if [[ -z "$v" || "$v" == "null" ]]; then printf '—'; else printf '%s' "$v"; fi; }
 
@@ -237,6 +286,26 @@ jq -r '.per_node[] | [.node, .readings, .unreadable, .cycles_with_record] | @tsv
   | while IFS=$'\t' read -r n r u c; do
       printf '| %s | %s | %s | %s |\n' "$n" "$(cell "$r")" "$(cell "$u")" "$(cell "$c")"
     done
+echo
+echo "## \`gh\` transport shim (requirement 2.0e)"
+echo
+shim_calls="$(jq -r '.shim.calls' <<<"$report")"
+if [[ "$shim_calls" == "0" ]]; then
+  echo "No \`gh-shim/ledger.ndjson\` entries in the logs read — nothing to report. The ledger is"
+  echo "written by \`lib/gh-shim.sh\` from the first cycle that runs an image carrying it."
+else
+  echo "Every \`gh\` call the ledger covers, by how the shim answered it: a conditional GET"
+  echo "served from a \`304\`, a fresh read, one served last-known-good under a refusal, or a"
+  echo "call the shim never caches at all (a write, \`graphql\`, or a caller reading its own"
+  echo "headers)."
+  echo
+  echo "| calls | hit | miss | stale | bypass |"
+  echo "|---:|---:|---:|---:|---:|"
+  jq -r '.shim | [.calls, .hit, .miss, .stale, .bypass] | @tsv' <<<"$report" \
+    | while IFS=$'\t' read -r calls hit miss stale bypass; do
+        printf '| %s | %s | %s | %s | %s |\n' "$calls" "$hit" "$miss" "$stale" "$bypass"
+      done
+fi
 echo
 echo '```json'
 jq '.' <<<"$report"

@@ -35,6 +35,15 @@
 #                                   generation too when the live file is
 #                                   short — rotating here never has to keep
 #                                   a tail of its own.
+#   gh-shim/ledger.ndjson           the `gh` transport shim's per-call ledger
+#                                   (requirement 2.0e, agent-ops#1084) —
+#                                   published to the node's state branch like
+#                                   cron.log above, but nothing in this
+#                                   pipeline makes a decision from it: only
+#                                   scripts/github-budget-report.sh reads it,
+#                                   as one more telemetry source, so rotating
+#                                   it bounds that report's history and
+#                                   nothing else.
 #   log.jsonl, review-log.jsonl,    NEVER rotated. This is the fleet's
 #   revert-rate.jsonl               memory: the union readers (blocked/void
 #                                   extraction, the no-op fingerprint, the
@@ -100,7 +109,7 @@ generations="${ROTATE_LOGS_GENERATIONS:-$(cfg '.log_generations')}"
 
 # The logs this script owns. log.jsonl, review-log.jsonl and
 # revert-rate.jsonl are deliberately absent — see the file header.
-LOGS=(dashboard.log state-sync.log doctor.log revert-rate.log cron.log review-cron.log)
+LOGS=(dashboard.log state-sync.log doctor.log revert-rate.log cron.log review-cron.log gh-shim/ledger.ndjson)
 
 file_size() {
   stat -c%s -- "$1" 2>/dev/null || stat -f%z -- "$1" 2>/dev/null || echo 0

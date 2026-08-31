@@ -294,6 +294,9 @@ jobs:
             node --version
             gh --version | head -n1
             claude --version
+            # requirement 2.0e: the gh transport shim must sit ahead of the
+            # real binary on PATH, not merely exist somewhere on it.
+            [[ "$(command -v gh)" == "/usr/local/bin/gh" ]] || { echo "gh: expected the transport shim at /usr/local/bin/gh to resolve first, got $(command -v gh)" >&2; exit 1; }
             shellcheck --version | grep -qx "version: 0.10.0" || { echo "shellcheck: expected version 0.10.0" >&2; exit 1; }
           '
 

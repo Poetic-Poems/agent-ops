@@ -165,6 +165,11 @@ cfg_json() { jq -c "$1" <<<"$DEFAULTED_CONFIG"; }
 
 state_dir="$(expand_home "$(cfg '.state_dir')")"
 workspace_root="$(expand_home "$(cfg '.workspace_root')")"
+# Exported so the `gh` transport shim (requirement 2.0e, agent-ops#1084),
+# reached from anywhere this cycle's subprocesses run `gh …` — this
+# repository's own scripts and the reviewer stage's own model-driven calls
+# alike — finds this node's real state_dir/gh-shim/ rather than its default.
+export PW_GH_STATE_DIR="$state_dir"
 # Every per-repository tunable (model, pr_label, branch_prefix,
 # min_days_between_reviews, not_before, report_directory, timeout_review,
 # inactivity_review) is resolved once here, against project_review.defaults

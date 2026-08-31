@@ -269,6 +269,19 @@ EXCLUDES=(
   # peers, folded into the heartbeat's own `updater` field below, exactly as
   # `stage_health`'s raw file is excepted the same way one entry up.
   --exclude=/updater-ledger/
+  # gh-shim/http-cache/ (lib/gh-shim.sh, requirement 2.0e, agent-ops#1084):
+  # this node's own stored HTTP response bodies, keyed by the exact argv that
+  # fetched them — the largest thing under state_dir by some distance (one
+  # entry per distinct `gh api` GET this node has made, each holding a whole
+  # response), and the fastest-churning, since every fresh read rewrites one.
+  # Local to this node on the same reasoning as .image-drift-cache.json
+  # above: it answers for reads nobody on the peer made. The ledger and
+  # budget.json beside it are deliberately absent from this list — the
+  # ledger is fleet-wide telemetry scripts/github-budget-report.sh unions
+  # across nodes, and budget.json is a reading of the shared bucket, so both
+  # must travel. The lock files are this node's own, like lock.json above.
+  --exclude=/gh-shim/http-cache/
+  --exclude=/gh-shim/*.lock
   --exclude=*.stream.jsonl
   --exclude=.fleet-log.jsonl
   --exclude=/dashboard/

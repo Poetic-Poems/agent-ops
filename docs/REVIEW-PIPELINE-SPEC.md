@@ -57,7 +57,11 @@ cron (project_review.defaults.min_days_between_reviews; a daily tick with a
   its own PR label (`project-review`). **Shared where sharing is correct:**
   `config.json`, `state_dir`, `workspace_root`, `lib/limit-detect.sh`,
   `lib/git-identity.sh`, the ephemeral-clone discipline, the `PATH`
-  bootstrap, and the result parser.
+  bootstrap, the `gh` transport shim that bootstrap resolves
+  (`IMPLEMENTATION-PIPELINE-SPEC.md`'s requirement 2.0e — `review-cycle.sh`
+  exports `PW_GH_STATE_DIR` once it resolves `state_dir`, so the shim finds
+  this node's own state from every subprocess the review cycle forks,
+  including its model-driven stage), and the result parser.
 - **The review pipeline defers to the implementation pipeline.** If the
   implementation lock (`lock.json`) is held by a live process, the Review
   Script stands down and waits for the next tick — two heavy `claude` runs
