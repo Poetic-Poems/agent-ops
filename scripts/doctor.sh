@@ -846,7 +846,7 @@ fi
 section "Repository priority"
 
 # Silent when every repo sits at nice 0 — this is a report of what the config
-# already asks for (lib/repo-order.sh's `effective_age = age × 1.25^(-nice)`),
+# already asks for (lib/repo-order.sh's `effective_age = age × 2^(-nice/3)`),
 # not a check with a right answer, so there is nothing to warn or fail on.
 while IFS=$'\t' read -r slug nice weight; do
   [[ -n "$slug" ]] || continue
@@ -859,7 +859,7 @@ done < <(jq -r '
   (.repos // [])[]
   | select((.nice // 0) != 0)
   | (.nice // 0) as $n
-  | [.slug, ($n | tostring), (pow(1.25; -$n) * 100 | round / 100 | tostring)]
+  | [.slug, ($n | tostring), (pow(2; -$n/3) * 100 | round / 100 | tostring)]
   | @tsv
 ' "$config_file")
 

@@ -2224,7 +2224,7 @@
   // ---------- repo nice ----------
   // config.json's per-repo `nice` (pipeline spec, requirement 3): an integer
   // from -19 to 19, absent meaning 0, that multiplies the repo's
-  // default-branch staleness age by 1.25^(-nice) before the Script orders its
+  // default-branch staleness age by 2^(-nice/3) before the Script orders its
   // repo walk. It reaches the page for free — `repos` already ships wholesale
   // into `config` — so all that is here is the rendering, and two properties
   // of the feature decide its shape:
@@ -2260,9 +2260,9 @@
     }
     return 0;
   }
-  // The weighting a `nice` buys, to two decimal places: 1.25^(-nice), i.e. how
+  // The weighting a `nice` buys, to two decimal places: 2^(-nice/3), i.e. how
   // much older than the clock says this repo looks when the walk is ordered.
-  function niceWeight(n) { return Math.pow(1.25, -n).toFixed(2); }
+  function niceWeight(n) { return Math.pow(2, -n/3).toFixed(2); }
   function niceBadge(slug) {
     var n = niceOf(slug);
     if (!n) return null;
@@ -2304,7 +2304,7 @@
     if (slugs.some(function (s) { return niceOf(s) !== 0; })) {
       wrap.appendChild(el("div", {class:"muted", style:"margin:-2px 0 10px", text:
         "A nice badge is that repo's configured attention bias: the Script weights its staleness age by " +
-        "1.25^(-nice) when it orders the repo walk. The Co-Ordinator is never told these values — it is " +
+        "2^(-nice/3) when it orders the repo walk. The Co-Ordinator is never told these values — it is " +
         "handed the finished order."}));
     }
     slugs.forEach(function (slug) {

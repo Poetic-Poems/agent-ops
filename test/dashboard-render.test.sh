@@ -692,7 +692,7 @@ assert_contains "a negative nice renders its badge on that repo" \
 assert_contains "coloured as a promotion rather than a warning" \
   'class="badge b-blue"' "$out"
 assert_contains "and names the weighting it actually buys" \
-  "staleness age ×3.05" "$out"
+  "staleness age ×3.17" "$out"
 assert_contains "in the direction a negative value means" \
   "so it gets earlier attention" "$out"
 assert_contains "a positive nice renders its own badge" \
@@ -700,7 +700,7 @@ assert_contains "a positive nice renders its own badge" \
 assert_contains "muted rather than promoted" \
   'class="badge b-grey"' "$out"
 assert_contains "with the reciprocal weighting" \
-  "staleness age ×0.51" "$out"
+  "staleness age ×0.5" "$out"
 assert_contains "and the opposite direction" \
   "so it gets later attention" "$out"
 assert_contains "the badge disclaims starvation, which is the first thing an operator will ask" \

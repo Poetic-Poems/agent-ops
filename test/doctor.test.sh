@@ -1714,7 +1714,7 @@ niced_config="$tmp/niced-config.json"
 jq '.repos[0].nice = -5' "$base_config" > "$niced_config"
 out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_INSTALLATION_IDS -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$niced_config" 2>&1)"
 assert_contains "a non-zero nice gets its own line, naming the repo and the weighting" \
-  "[ ok ] $slug: nice -5 — effective age ×3.05, earlier attention" "$out"
+  "[ ok ] $slug: nice -5 — effective age ×3.17, earlier attention" "$out"
 
 # --- --offline still runs the crontab and nice checks, and skips the rest --
 

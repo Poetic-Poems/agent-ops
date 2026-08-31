@@ -8,7 +8,7 @@
 # `repos[].nice`, default 0, range -19..19) turns that from a plain
 # least-recently-updated sort into a weighted one:
 #
-#   effective_age = (now − epoch(ts)) × 1.25^(−nice)
+#   effective_age = (now − epoch(ts)) × 2^(−nice/3)
 #
 # A mis-weighted walk fails exactly like the system's signature failure mode
 # (see the spec's Gotchas table on the fingerprint/back-pressure side of this
@@ -84,8 +84,8 @@ assert_eq "neutral tie-break: byte-identical to LC_ALL=C sort of the input" \
 # --- 3. Negative nice reorders ---
 #
 # o/aaa: ts 2026-07-01, nice 0  -> age 31d, effective 31d.
-# o/bbb: ts 2026-07-20, nice -5 -> age 12d, effective 12d * 1.25^5 = 12 *
-#        3.0517578125 =~ 36.62d. 36.62d > 31d, so bbb overtakes aaa despite
+# o/bbb: ts 2026-07-20, nice -5 -> age 12d, effective 12d * 2^(5/3) =~ 12 *
+#        3.1748021039 =~ 38.10d. 38.10d > 31d, so bbb overtakes aaa despite
 #        being chronologically newer.
 neg_input=$'2026-07-01T00:00:00Z\to/aaa\tmain\n2026-07-20T00:00:00Z\to/bbb\tmain'
 neg_repos='[{"slug":"o/aaa","nice":0},{"slug":"o/bbb","nice":-5}]'
@@ -93,8 +93,8 @@ neg_out="$(printf '%s' "$neg_input" | repo_order_by_effective_age "$now" "$neg_r
 assert_eq "negative nice -5: bbb sorts first" "o/bbb" "$(printf '%s' "$neg_out" | head -1 | cut -f2)"
 assert_eq "negative nice -5: aaa sorts second" "o/aaa" "$(printf '%s' "$neg_out" | tail -1 | cut -f2)"
 
-# It is a bias, not a jump: nice -3 (factor 1.953125) gives bbb an effective
-# age of 12d * 1.953125 =~ 23.44d, still short of aaa's plain 31d, so aaa
+# It is a bias, not a jump: nice -3 (factor 2) gives bbb an effective
+# age of 12d * 2 = 24d, still short of aaa's plain 31d, so aaa
 # stays first.
 neg3_repos='[{"slug":"o/aaa","nice":0},{"slug":"o/bbb","nice":-3}]'
 neg3_out="$(printf '%s' "$neg_input" | repo_order_by_effective_age "$now" "$neg3_repos")"
@@ -103,10 +103,10 @@ assert_eq "nice -3 is not enough to overtake: aaa stays first" \
 
 # --- 4. Positive nice reorders ---
 #
-# o/aaa: ts 2026-07-01, nice 5 -> age 31d, effective 31d * 1.25^-5 = 31 *
-#        0.32768 =~ 10.16d.
+# o/aaa: ts 2026-07-01, nice 5 -> age 31d, effective 31d * 2^(-5/3) =~ 31 *
+#        0.31498 =~ 9.76d.
 # o/bbb: ts 2026-07-20, nice 0 -> age 12d, effective 12d.
-# 12d > 10.16d, so bbb — chronologically newer and unweighted — outranks
+# 12d > 9.76d, so bbb — chronologically newer and unweighted — outranks
 # aaa's discounted age.
 pos_input=$'2026-07-01T00:00:00Z\to/aaa\tmain\n2026-07-20T00:00:00Z\to/bbb\tmain'
 pos_repos='[{"slug":"o/aaa","nice":5},{"slug":"o/bbb","nice":0}]'
@@ -117,10 +117,10 @@ assert_eq "positive nice 5: aaa's age is discounted behind it" \
 
 # --- 5. Boundary values -19 and 19 ---
 #
-# o/aaa: ts 2026-07-31 (age 1d), nice -19 -> factor 1.25^19 =~ 69.39,
-#        effective =~ 69.39d.
-# o/bbb: ts 2026-01-01 (age 212d), nice 19 -> factor 1.25^-19 =~ 0.014412,
-#        effective =~ 3.06d.
+# o/aaa: ts 2026-07-31 (age 1d), nice -19 -> factor 2^(19/3) =~ 80.63,
+#        effective =~ 80.63d.
+# o/bbb: ts 2026-01-01 (age 212d), nice 19 -> factor 2^(-19/3) =~ 0.012402,
+#        effective =~ 2.63d.
 # Both extremes are accepted (no error, no clamp) and the arithmetic flips
 # what a plain-age comparison would give: aaa, only a day old, outranks a
 # 212-day-old repo once the boundary weights are applied.

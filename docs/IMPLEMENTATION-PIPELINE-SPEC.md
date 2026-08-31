@@ -876,7 +876,7 @@ The `issues:<band>` tokens are the one source that appears more than once — th
 
 A repo entry may also carry `implementation_plan_path` — the path, relative to that repo's root, of its plan document; required whenever `sources` lists `implementation-plan` (requirement 3k), since that source has no path of its own outside this config. poetic-fiddle's is `docs/IMPLEMENTATION-PLAN.md`.
 
-A repo entry may also carry `nice` — an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo — the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range.
+A repo entry may also carry `nice` — an optional integer from `-19` to `19` (absent means `0`). Inspired by Linux `nice`. Each repo's default-branch staleness age is multiplied by `2^(-nice/3)` (each three steps of `nice` is a 2x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo — the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range.
 
 A repo entry may also carry `stage_timeouts` and `stage_inactivity` — per-actor overrides in minutes, keyed `coordinator`, `implementer`, `reviewer`, `approver` and `enabler`, for that repository alone. They are the most specific level of requirement 4f's precedence, ahead of the plain `timeout_<actor>` / `inactivity_<actor>` key and ahead of the derivation; the Refiner, spanning repositories, has no per-repository form. Configuration is read, never written: requirement 4f's derivation never writes back to `config.json`.
 
@@ -3688,7 +3688,7 @@ implements.
    most recent commit on its default branch via `gh api`. A repo entry may
    also carry `nice`, an optional integer from `-19` to `19` (absent means
    `0`), read from that repo's `config.json` entry. Compute each repo's
-   effective age as `(now − timestamp) × 1.25^(-nice)` and sort
+   effective age as `(now − timestamp) × 2^(-nice/3)` and sort
    most-overdue-first by that effective age: `lib/repo-order.sh`'s
    `repo_order_by_effective_age`, sourced and applied by the Script. The
    prompt's part is descriptive only: `prompts/coordinator.md` presents the
@@ -15624,7 +15624,7 @@ What exists, and the requirements each part answers to:
     read-only, alongside the state and workspace directories. The `nice`
     reordering report is one `ok` line per configured repository whose
     `nice` is non-zero, naming the value and the multiplier
-    `lib/repo-order.sh`'s `1.25^(-nice)` applies to its effective age;
+    `lib/repo-order.sh`'s `2^(-nice/3)` applies to its effective age;
     nothing prints when every repository sits at 0, since this is a report
     of what the config already asks for rather than a check with a right
     answer. Every verdict is `ok`, `warn`, `fail` or `skip`; exit 0 clean, 1
@@ -17800,7 +17800,7 @@ pull request, run the ones the change touches and any it could regress.
    and it never starves a repo (requirement 3).** `test/repo-order.test.sh`
    passes: `repo_order_by_effective_age` returns an order byte-identical to
    a plain least-recently-updated-first `sort` of the same lines when every
-   repo's `nice` is `0` or absent; scaling by `1.25^(-nice)` moves a
+   repo's `nice` is `0` or absent; scaling by `2^(-nice/3)` moves a
    negative-`nice` repo earlier and a positive-`nice` repo later, checked in
    both directions; a missing or unparseable timestamp reads as epoch 0 and
    stays maximally overdue at neutral `nice`; two repos with equal effective
