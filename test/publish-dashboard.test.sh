@@ -453,6 +453,15 @@ run_publish "$gbb"
 assert_eq "core.remaining below its configured floor trips about_to_bind" \
   "true" "$(jq -r '.github_budget.about_to_bind' <<<"$(data_of "$gbb")")"
 
+# A reading below the graphql floor (100), core comfortably clear: "either
+# floor" trips the same badge, not just core's.
+gbg="$(new_home nodeGBBindGraphql)"
+printf '{"ts":"%s","cycle":"c1","node":"nodeGBBindGraphql","event":"github-budget","phase":"cycle-start","readable":true,"core":{"limit":5000,"used":100,"remaining":4900,"reset":9999999999},"graphql":{"limit":5000,"used":950,"remaining":50,"reset":9999999999}}\n' "$gb_fresh" \
+  > "$gbg/.local/state/poetic-agents/log.jsonl"
+run_publish "$gbg"
+assert_eq "graphql.remaining below its configured floor also trips about_to_bind" \
+  "true" "$(jq -r '.github_budget.about_to_bind' <<<"$(data_of "$gbg")")"
+
 # The identical reading, but both pools comfortably above their floors: no badge.
 gbo="$(new_home nodeGBOk)"
 printf '{"ts":"%s","cycle":"c1","node":"nodeGBOk","event":"github-budget","phase":"cycle-start","readable":true,"core":{"limit":5000,"used":100,"remaining":4900,"reset":9999999999},"graphql":{"limit":5000,"used":10,"remaining":4990,"reset":9999999999}}\n' "$gb_fresh" \
