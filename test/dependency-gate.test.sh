@@ -194,17 +194,39 @@ assert_eq "malformed map JSON is not refused" "0" "$?"
 # --- End to end: the #196-199-shaped scenario, against a stubbed gh -------
 #
 # One issue, #196, whose body names a dependency on #195 in the same repo.
-# The stub answers three endpoints gather-issues.sh now calls: the issues
-# listing, one issue's comments, and one issue's own state (the new,
-# per-reference live check) — the last one reading a file this test flips
-# between the two halves of the scenario, so the same stub script serves
-# both "#195 open" and "#195 closed" without being rewritten.
+# The stub answers two things gather-issues.sh now calls: the listing-plus-
+# comments GraphQL walk (`issue_prefetch_open_issues`, lib/issue-prefetch.sh,
+# agent-ops#1085), from the fixture below, and one issue's own state (the
+# REST live-check `issue_blocked_by_ref` still makes — unaffected by that
+# migration) — the latter reading a file this test flips between the two
+# halves of the scenario, so the same stub script serves both "#195 open"
+# and "#195 closed" without being rewritten.
 mkdir -p "$tmp_dir/bin"
 dep_state_file="$tmp_dir/dep-195-state"
 echo "open" > "$dep_state_file"
+dep_issues_file="$tmp_dir/dep-issues.json"
+cat >"$dep_issues_file" <<'EOF'
+{"data": {"repository": {"issues": {"pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": [
+  {"number": 196, "url": "https://github.com/o/r/issues/196", "title": "Needs 195 first",
+   "author": {"login": "warwick"},
+   "labels": {"nodes": []}, "assignees": {"totalCount": 0},
+   "issueFieldValues": {"nodes": []},
+   "createdAt": "2026-08-01T00:00:00Z", "updatedAt": "2026-08-01T00:00:00Z",
+   "body": "Needs #195 first.\n\nBlocked-by: #195", "comments": {"nodes": []}}
+]}}}}
+EOF
 cat >"$tmp_dir/bin/gh" <<STUB
 #!/usr/bin/env bash
 set -uo pipefail
+if [[ "\${1:-}" == "api" && "\${2:-}" == "graphql" ]]; then
+  shift 2
+  filter='.'
+  while [[ \$# -gt 0 ]]; do
+    case "\$1" in --jq) filter="\$2"; shift 2;; *) shift;; esac
+  done
+  jq -c "\$filter" "$dep_issues_file"
+  exit 0
+fi
 [[ "\${1:-}" == "api" ]] || { echo "stub gh: unexpected command: \$*" >&2; exit 1; }
 path="\$2"; shift 2
 filter='.'
@@ -212,13 +234,6 @@ while [[ \$# -gt 0 ]]; do
   case "\$1" in --jq) filter="\$2"; shift 2;; *) shift;; esac
 done
 case "\$path" in
-  repos/o/r/issues/196/comments*) body='[]';;
-  repos/o/r/issues\?*)
-    body='[{"number":196,"html_url":"https://github.com/o/r/issues/196","title":"Needs 195 first",
-            "user":{"login":"warwick"},"labels":[],"assignees":[],
-            "created_at":"2026-08-01T00:00:00Z","updated_at":"2026-08-01T00:00:00Z",
-            "body":"Needs #195 first.\n\nBlocked-by: #195","issue_field_values":[]}]'
-    ;;
   repos/o/r/issues/195)
     state="\$(cat "$dep_state_file")"
     body="{\\"state\\": \\"\$state\\"}"

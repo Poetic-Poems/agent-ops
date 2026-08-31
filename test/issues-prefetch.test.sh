@@ -36,7 +36,12 @@
 #     this system's signature failure (see the Gotchas table).
 #
 # `scripts/gather-issues.sh` is run for real here against a stubbed `gh`, so
-# the assertions are about the shipped filter rather than a copy of it.
+# the assertions are about the shipped filter rather than a copy of it. Since
+# agent-ops#1085 the listing-plus-comments read is one paginated GraphQL walk
+# (`issue_prefetch_open_issues`, lib/issue-prefetch.sh); the stub answers it
+# with a fixture in that function's own node shape, applying the caller's own
+# `--jq` filter for real, the same technique test/issue-prefetch.test.sh's own
+# stub uses.
 #
 # No test framework is used (none exists elsewhere in this repo). Run directly:
 #
@@ -68,33 +73,19 @@ assert_eq() {
 
 # --- A stub `gh`, so the real gatherer runs offline ---
 #
-# It answers the two endpoints gather-issues.sh calls — the issues listing
-# (fetched raw) and per-issue comments (fetched with `--jq`) — and mimics
-# `gh api --jq` printing string results raw via `jq -rc`. Comments must be
-# matched before the listing: both paths contain `/issues`.
+# `api graphql` (the listing-plus-comments walk) applies the caller's own
+# `--jq` filter to $STUB_ISSUES, a single-page GraphQL response fixture.
 mkdir -p "$tmp_dir/bin"
 cat >"$tmp_dir/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 set -uo pipefail
-[[ "${1:-}" == "api" ]] || { echo "stub gh: unexpected command: $*" >&2; exit 1; }
-path="$2"; shift 2
+[[ "${1:-}" == "api" && "${2:-}" == "graphql" ]] || { echo "stub gh: unexpected command: $*" >&2; exit 1; }
+shift 2
 filter='.'
 while [[ $# -gt 0 ]]; do
   case "$1" in --jq) filter="$2"; shift 2;; *) shift;; esac
 done
-case "$path" in
-  */issues/*/comments*)
-    n="${path##*/issues/}"; n="${n%%/*}"
-    if [[ -f "$STUB_COMMENTS_DIR/$n.json" ]]; then
-      body="$(cat "$STUB_COMMENTS_DIR/$n.json")"
-    else
-      body='[]'
-    fi
-    ;;
-  */issues\?*) body="$(cat "$STUB_ISSUES")";;
-  *) echo "stub gh: unexpected path: $path" >&2; exit 1;;
-esac
-jq -rc "$filter" <<<"$body"
+jq -c "$filter" "$STUB_ISSUES"
 STUB
 chmod +x "$tmp_dir/bin/gh"
 export PATH="$tmp_dir/bin:$PATH"
@@ -103,66 +94,84 @@ export PATH="$tmp_dir/bin:$PATH"
 #
 # #5 is clean with an explicit High band, labels and a two-comment thread;
 # #6 is assigned; #7 is labelled `Blocked` (upper case, so the drop is proven
-# case-insensitive); #8 is a pull request; #9 is clean, untriaged (no
-# `Priority` — the Medium default) and commentless.
+# case-insensitive); #8, a pull request, is simply absent — GraphQL's
+# `issues` connection never returns one to begin with, unlike the REST
+# listing this replaced, so there is nothing to fixture for it; #9 is clean,
+# untriaged (no `Priority` — the Medium default) and commentless.
 export STUB_ISSUES="$tmp_dir/issues.json"
-export STUB_COMMENTS_DIR="$tmp_dir/comments"
-mkdir -p "$STUB_COMMENTS_DIR"
 cat >"$STUB_ISSUES" <<'EOF'
-[
-  {"number": 5, "html_url": "https://github.com/o/r/issues/5", "title": "Add the frobnicator",
-   "user": {"login": "warwick"}, "labels": [{"name": "enhancement"}, {"name": "backend"}],
-   "assignees": [], "created_at": "2026-07-19T08:00:00Z", "updated_at": "2026-07-20T09:00:00Z",
+{"data": {"repository": {"issues": {"pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": [
+  {"number": 5, "url": "https://github.com/o/r/issues/5", "title": "Add the frobnicator",
+   "author": {"login": "warwick"},
+   "labels": {"nodes": [{"name": "enhancement"}, {"name": "backend"}]},
+   "assignees": {"totalCount": 0},
+   "issueFieldValues": {"nodes": [
+     {"__typename": "IssueFieldSingleSelectValue", "name": "High",
+      "field": {"__typename": "IssueFieldSingleSelect", "name": "Priority"}}]},
+   "createdAt": "2026-07-19T08:00:00Z", "updatedAt": "2026-07-20T09:00:00Z",
    "body": "The body of five.",
-   "issue_field_values": [{"issue_field_name": "Priority", "single_select_option": {"name": "High"}}]},
-  {"number": 6, "html_url": "https://github.com/o/r/issues/6", "title": "Assigned work",
-   "user": {"login": "warwick"}, "labels": [],
-   "assignees": [{"login": "somebody"}], "created_at": "2026-07-19T08:00:00Z", "updated_at": "2026-07-20T09:00:00Z",
-   "body": "Assigned, so not a candidate.",
-   "issue_field_values": [{"issue_field_name": "Priority", "single_select_option": {"name": "Urgent"}}]},
-  {"number": 7, "html_url": "https://github.com/o/r/issues/7", "title": "Blocked work",
-   "user": {"login": "warwick"}, "labels": [{"name": "Blocked"}],
-   "assignees": [], "created_at": "2026-07-19T08:00:00Z", "updated_at": "2026-07-20T09:00:00Z",
-   "body": "Labelled Blocked, so not a candidate.",
-   "issue_field_values": []},
-  {"number": 8, "html_url": "https://github.com/o/r/pull/8", "title": "A pull request",
-   "user": {"login": "warwick"}, "labels": [], "assignees": [],
-   "pull_request": {"url": "https://api.github.com/repos/o/r/pulls/8"},
-   "created_at": "2026-07-19T08:00:00Z", "updated_at": "2026-07-20T09:00:00Z",
-   "body": "PRs must never reach the array.",
-   "issue_field_values": [{"issue_field_name": "Priority", "single_select_option": {"name": "Urgent"}}]},
-  {"number": 9, "html_url": "https://github.com/o/r/issues/9", "title": "Untriaged work",
-   "user": {"login": "warwick"}, "labels": [], "assignees": [],
-   "created_at": "2026-07-19T08:00:00Z", "updated_at": "2026-07-20T09:00:00Z",
-   "body": "No Priority field set.",
-   "issue_field_values": []},
-  {"number": 11, "html_url": "https://github.com/o/r/issues/11", "title": "An org-added fifth band",
-   "user": {"login": "warwick"}, "labels": [], "assignees": [],
-   "created_at": "2026-07-19T08:00:00Z", "updated_at": "2026-07-20T09:00:00Z",
-   "body": "Banded Critical, an option this pipeline does not rank.",
-   "issue_field_values": [{"issue_field_name": "Priority", "single_select_option": {"name": "Critical"}}]},
-  {"number": 12, "html_url": "https://github.com/o/r/issues/12", "title": "Priority retyped to a text field",
-   "user": {"login": "warwick"}, "labels": [], "assignees": [],
-   "created_at": "2026-07-19T08:00:00Z", "updated_at": "2026-07-20T09:00:00Z",
-   "body": "A valid Priority field value carrying no single_select_option at all.",
-   "issue_field_values": [{"issue_field_name": "Priority", "text_value": "whatever"}]},
-  {"number": 13, "html_url": "https://github.com/o/r/issues/13", "title": "Priority with a null option",
-   "user": {"login": "warwick"}, "labels": [], "assignees": [],
-   "created_at": "2026-07-19T08:00:00Z", "updated_at": "2026-07-20T09:00:00Z",
-   "body": "A malformed Priority field value with single_select_option explicitly null.",
-   "issue_field_values": [{"issue_field_name": "Priority", "single_select_option": null}]},
-  {"number": 14, "html_url": "https://github.com/o/r/issues/14", "title": "Debt mislabelled into this band",
-   "user": {"login": "warwick"}, "labels": [{"name": "pw::type:tech-debt"}], "assignees": [],
-   "created_at": "2026-07-19T08:00:00Z", "updated_at": "2026-07-20T09:00:00Z",
-   "body": "This belongs to the tech-debt band instead (issue #875).",
-   "issue_field_values": [{"issue_field_name": "Priority", "single_select_option": {"name": "High"}}]}
-]
-EOF
-cat >"$STUB_COMMENTS_DIR/5.json" <<'EOF'
-[
-  {"user": {"login": "warwick"}, "created_at": "2026-07-19T10:00:00Z", "body": "Acceptance: it frobnicates."},
-  {"user": {"login": "reviewer"}, "created_at": "2026-07-20T09:00:00Z", "body": "Scope cut: skip the UI."}
-]
+   "comments": {"nodes": [
+     {"author": {"login": "warwick"}, "createdAt": "2026-07-19T10:00:00Z", "body": "Acceptance: it frobnicates."},
+     {"author": {"login": "reviewer"}, "createdAt": "2026-07-20T09:00:00Z", "body": "Scope cut: skip the UI."}
+   ]}},
+  {"number": 6, "url": "https://github.com/o/r/issues/6", "title": "Assigned work",
+   "author": {"login": "warwick"},
+   "labels": {"nodes": []},
+   "assignees": {"totalCount": 1},
+   "issueFieldValues": {"nodes": [
+     {"__typename": "IssueFieldSingleSelectValue", "name": "Urgent",
+      "field": {"__typename": "IssueFieldSingleSelect", "name": "Priority"}}]},
+   "createdAt": "2026-07-19T08:00:00Z", "updatedAt": "2026-07-20T09:00:00Z",
+   "body": "Assigned, so not a candidate.", "comments": {"nodes": []}},
+  {"number": 7, "url": "https://github.com/o/r/issues/7", "title": "Blocked work",
+   "author": {"login": "warwick"},
+   "labels": {"nodes": [{"name": "Blocked"}]},
+   "assignees": {"totalCount": 0},
+   "issueFieldValues": {"nodes": []},
+   "createdAt": "2026-07-19T08:00:00Z", "updatedAt": "2026-07-20T09:00:00Z",
+   "body": "Labelled Blocked, so not a candidate.", "comments": {"nodes": []}},
+  {"number": 9, "url": "https://github.com/o/r/issues/9", "title": "Untriaged work",
+   "author": {"login": "warwick"},
+   "labels": {"nodes": []},
+   "assignees": {"totalCount": 0},
+   "issueFieldValues": {"nodes": []},
+   "createdAt": "2026-07-19T08:00:00Z", "updatedAt": "2026-07-20T09:00:00Z",
+   "body": "No Priority field set.", "comments": {"nodes": []}},
+  {"number": 11, "url": "https://github.com/o/r/issues/11", "title": "An org-added fifth band",
+   "author": {"login": "warwick"},
+   "labels": {"nodes": []},
+   "assignees": {"totalCount": 0},
+   "issueFieldValues": {"nodes": [
+     {"__typename": "IssueFieldSingleSelectValue", "name": "Critical",
+      "field": {"__typename": "IssueFieldSingleSelect", "name": "Priority"}}]},
+   "createdAt": "2026-07-19T08:00:00Z", "updatedAt": "2026-07-20T09:00:00Z",
+   "body": "Banded Critical, an option this pipeline does not rank.", "comments": {"nodes": []}},
+  {"number": 12, "url": "https://github.com/o/r/issues/12", "title": "Priority retyped to a text field",
+   "author": {"login": "warwick"},
+   "labels": {"nodes": []},
+   "assignees": {"totalCount": 0},
+   "issueFieldValues": {"nodes": [{"__typename": "IssueFieldTextValue"}]},
+   "createdAt": "2026-07-19T08:00:00Z", "updatedAt": "2026-07-20T09:00:00Z",
+   "body": "A valid Priority field value carrying no single-select shape at all.",
+   "comments": {"nodes": []}},
+  {"number": 13, "url": "https://github.com/o/r/issues/13", "title": "Priority with no evidence at all",
+   "author": {"login": "warwick"},
+   "labels": {"nodes": []},
+   "assignees": {"totalCount": 0},
+   "issueFieldValues": {"nodes": []},
+   "createdAt": "2026-07-19T08:00:00Z", "updatedAt": "2026-07-20T09:00:00Z",
+   "body": "REST could carry a malformed explicit-null single_select_option here (agent-ops#527); GraphQL's IssueFieldSingleSelectValue.name is non-null by schema, so that shape cannot occur — this is the same unset reading as #9, kept as its own numbered fixture so the assertion below still names its own issue.",
+   "comments": {"nodes": []}},
+  {"number": 14, "url": "https://github.com/o/r/issues/14", "title": "Debt mislabelled into this band",
+   "author": {"login": "warwick"},
+   "labels": {"nodes": [{"name": "pw::type:tech-debt"}]},
+   "assignees": {"totalCount": 0},
+   "issueFieldValues": {"nodes": [
+     {"__typename": "IssueFieldSingleSelectValue", "name": "High",
+      "field": {"__typename": "IssueFieldSingleSelect", "name": "Priority"}}]},
+   "createdAt": "2026-07-19T08:00:00Z", "updatedAt": "2026-07-20T09:00:00Z",
+   "body": "This belongs to the tech-debt band instead (issue #875).", "comments": {"nodes": []}}
+]}}}}
 EOF
 
 issues_json="$("$SCRIPT_DIR/scripts/gather-issues.sh" o/r)"
@@ -312,30 +321,19 @@ fi
 # bytes) the entry build died at execve and, guarded by `degrade`, this
 # repo's whole issues band came out `[]` — loud on stderr, not silent.
 # Requirement 4g moves both onto stdin; this drives the real script, via the
-# same stub gh as above, over a single issue whose comment thread alone is
-# past the cap.
+# same GraphQL-answering stub gh as above (restored here, since the
+# degrading section just above replaced it with an always-failing one), over
+# a single issue whose comment thread alone is past the cap.
 cat >"$tmp_dir/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 set -uo pipefail
-[[ "${1:-}" == "api" ]] || { echo "stub gh: unexpected command: $*" >&2; exit 1; }
-path="$2"; shift 2
+[[ "${1:-}" == "api" && "${2:-}" == "graphql" ]] || { echo "stub gh: unexpected command: $*" >&2; exit 1; }
+shift 2
 filter='.'
 while [[ $# -gt 0 ]]; do
   case "$1" in --jq) filter="$2"; shift 2;; *) shift;; esac
 done
-case "$path" in
-  */issues/*/comments*)
-    n="${path##*/issues/}"; n="${n%%/*}"
-    if [[ -f "$STUB_COMMENTS_DIR/$n.json" ]]; then
-      body="$(cat "$STUB_COMMENTS_DIR/$n.json")"
-    else
-      body='[]'
-    fi
-    ;;
-  */issues\?*) body="$(cat "$STUB_ISSUES")";;
-  *) echo "stub gh: unexpected path: $path" >&2; exit 1;;
-esac
-jq -rc "$filter" <<<"$body"
+jq -c "$filter" "$STUB_ISSUES"
 STUB
 chmod +x "$tmp_dir/bin/gh"
 
@@ -343,17 +341,21 @@ oversized_comment_body="$(head -c 140000 < /dev/zero | tr '\0' 'x')"
 assert_eq "the oversized comment-body fixture really is past MAX_ARG_STRLEN" "1" \
   "$(( ${#oversized_comment_body} > 131072 ))"
 
-cat >"$STUB_ISSUES" <<EOF
-[
-  {"number": 10, "html_url": "https://github.com/o/r/issues/10", "title": "A thread past the argv cap",
-   "user": {"login": "warwick"}, "labels": [], "assignees": [],
-   "created_at": "2026-07-19T08:00:00Z", "updated_at": "2026-07-20T09:00:00Z",
+# Built with `printf`, not `jq --arg`: an oversized `--arg` value would hit
+# the very argv cap this section exists to prove the real code no longer
+# does — $oversized_comment_body is all-`x`, so it needs no JSON escaping to
+# embed literally.
+printf '{"data": {"repository": {"issues": {"pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": [
+  {"number": 10, "url": "https://github.com/o/r/issues/10", "title": "A thread past the argv cap",
+   "author": {"login": "warwick"},
+   "labels": {"nodes": []}, "assignees": {"totalCount": 0},
+   "issueFieldValues": {"nodes": [
+     {"__typename": "IssueFieldSingleSelectValue", "name": "High",
+      "field": {"__typename": "IssueFieldSingleSelect", "name": "Priority"}}]},
+   "createdAt": "2026-07-19T08:00:00Z", "updatedAt": "2026-07-20T09:00:00Z",
    "body": "The oversized thread lives in the comments, not here.",
-   "issue_field_values": [{"issue_field_name": "Priority", "single_select_option": {"name": "High"}}]}
-]
-EOF
-printf '[{"user": {"login": "warwick"}, "created_at": "2026-07-19T10:00:00Z", "body": "%s"}]' \
-  "$oversized_comment_body" > "$STUB_COMMENTS_DIR/10.json"
+   "comments": {"nodes": [{"author": {"login": "warwick"}, "createdAt": "2026-07-19T10:00:00Z", "body": "%s"}]}}
+]}}}}' "$oversized_comment_body" > "$STUB_ISSUES"
 
 oversized_out="$("$SCRIPT_DIR/scripts/gather-issues.sh" o/r 2>"$tmp_dir/oversized.err")"
 oversized_rc=$?

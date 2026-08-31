@@ -155,16 +155,21 @@ while IFS= read -r slug; do
   # query (see its own header for the point-cost measurement and why it is one
   # call per repository rather than one call for all of them); this loop's own
   # fallback contract — the literal values, and a `guard_warn` naming which
-  # half failed — is unchanged, so `$default_branch`/`$commit_ts` are still
-  # validated by shape here rather than trusted from the read.
-  if db_ts="$(_repo_order_default_branch "$slug" 2>&1)"; then
-    IFS=$'\t' read -r default_branch commit_ts <<<"$db_ts"
-  else
-    guard_warn "repo-order:default_branch:$slug" "$db_ts"
-    default_branch="main"; commit_ts="1970-01-01T00:00:00Z"
-  fi
+  # half failed — is unchanged. Captured as one `db_ts` first (`test/guard-
+  # degradation.test.sh`'s structural sweep requires the guarded assignment,
+  # the reported detail and the fallback to name the same variable), then
+  # split into its own `var="$(...)"`-shaped statement per field, each
+  # immediately ahead of its own shape-validation guard below — never a bare
+  # `read`, and never both fields split before either guard — so that same
+  # sweep's backward search (nearest preceding `var="$(` line) still finds
+  # the right target for each of the two shape-validation guards, which need
+  # their own field, not `db_ts`, named throughout.
+  db_ts="$(_repo_order_default_branch "$slug" 2>&1)" \
+    || { guard_warn "repo-order:default_branch:$slug" "$db_ts"; db_ts="main"$'\t'"1970-01-01T00:00:00Z"; }
+  default_branch="$(cut -f1 <<<"$db_ts")"
   [[ "$default_branch" =~ ^[A-Za-z0-9._/-]+$ ]] \
     || { guard_warn "repo-order:default_branch-malformed:$slug" "$default_branch"; default_branch="main"; }
+  commit_ts="$(cut -f2 <<<"$db_ts")"
   [[ "$commit_ts" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
     || { guard_warn "repo-order:commit_ts-malformed:$slug" "$commit_ts"; commit_ts="1970-01-01T00:00:00Z"; }
   printf '%s\t%s\t%s\n' "$commit_ts" "$slug" "$default_branch" >> "$cycle_dir/.repo_ts"
