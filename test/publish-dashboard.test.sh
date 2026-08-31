@@ -390,6 +390,103 @@ assert_eq "  ... carrying the escape's own reason" \
   "touched protected path(s): lib/landing.sh" \
   "$(jq -r '.landings.armed[] | select(.pr_url == "https://github.com/acme/widgets/pull/1") | .audit_reason' <<<"$edata")"
 
+# --- The GitHub API budget card (issue #1090) --------------------------------
+# Real bash/jq aggregation over `github-budget`/`guard-degraded`/`stand-down`
+# events, the same source scripts/github-budget-report.sh sums — no new `gh`
+# call, no test double needed. This repo's own config.json sets
+# schedule.cycle_interval_minutes to 15 (so "two cycle intervals" is 30
+# minutes) and leaves github_min_core_budget/github_min_graphql_budget at
+# their schema defaults, 300 and 100.
+gb_fresh="$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)"
+gb_stale="$(date -u -d '-40 minutes' +%Y-%m-%dT%H:%M:%SZ)"
+
+# A log with no github-budget events at all: the card's own empty state,
+# never a blank card or an error.
+gbe="$(new_home nodeGBEmpty)"
+: > "$gbe/.local/state/poetic-agents/log.jsonl"
+run_publish "$gbe"
+gbedata="$(data_of "$gbe")"
+assert_eq "no github-budget events reads as the empty state (readings: 0)" \
+  "0" "$(jq -r '.github_budget.readings' <<<"$gbedata")"
+assert_eq "never as a failed assemble" "false" \
+  "$(jq -r '.github_budget.readings == null' <<<"$gbedata")"
+assert_eq "with no latest reading" "null" "$(jq -c '.github_budget.latest' <<<"$gbedata")"
+assert_eq "and no bind/quiet judgement to make" "true" \
+  "$(jq -r '.github_budget.about_to_bind == null and .github_budget.quiet == null' <<<"$gbedata")"
+
+# A log with readings: two readable readings (an hour or so apart), a
+# guard-degraded refusal whose detail matches the report's own is_refusal
+# predicate, and a requirement-2.0 stand-down — all inside the trailing 24h
+# window the per-hour roll-up covers.
+gbr="$(new_home nodeGBReadings)"
+{
+  printf '{"ts":"%s","cycle":"c1","node":"nodeGBReadings","event":"github-budget","phase":"cycle-start","readable":true,"core":{"limit":5000,"used":100,"remaining":4900,"reset":9999999999},"graphql":{"limit":5000,"used":10,"remaining":4990,"reset":9999999999}}\n' "$(date -u -d '-70 minutes' +%Y-%m-%dT%H:%M:%SZ)"
+  printf '{"ts":"%s","cycle":"c1","node":"nodeGBReadings","event":"github-budget","phase":"cycle-end","readable":true,"core":{"limit":5000,"used":650,"remaining":4350,"reset":9999999999},"graphql":{"limit":5000,"used":15,"remaining":4985,"reset":9999999999}}\n' "$gb_fresh"
+  printf '{"ts":"%s","cycle":"c1","node":"nodeGBReadings","event":"guard-degraded","source":"gh","detail":"rate limit already exceeded for user ID 1"}\n' "$gb_fresh"
+  printf '{"ts":"%s","cycle":"c1","node":"nodeGBReadings","event":"stand-down","github_resource":"core","reason":"budget"}\n' "$gb_fresh"
+  # Outside the 24h window and not the newest — must not move `latest` or
+  # inflate the per-hour totals below.
+  printf '{"ts":"2020-01-01T00:00:00Z","cycle":"c0","node":"nodeGBReadings","event":"github-budget","phase":"cycle-start","readable":true,"core":{"limit":5000,"used":1,"remaining":4999,"reset":1},"graphql":{"limit":5000,"used":1,"remaining":4999,"reset":1}}\n'
+} > "$gbr/.local/state/poetic-agents/log.jsonl"
+run_publish "$gbr"
+gbrdata="$(data_of "$gbr")"
+assert_eq "readings counts every github-budget event, fleet-wide" \
+  "3" "$(jq -r '.github_budget.readings' <<<"$gbrdata")"
+assert_eq "latest is the newest readable reading's own core figures" \
+  "4350" "$(jq -r '.github_budget.latest.core.remaining' <<<"$gbrdata")"
+assert_eq "  ... never the stale 2020 reading despite it also being readable" \
+  "true" "$(jq -r '.github_budget.latest.ts != "2020-01-01T00:00:00Z"' <<<"$gbrdata")"
+assert_eq "per-hour totals sum to the readings inside the trailing 24h window" \
+  "2" "$(jq -r '[.github_budget.per_hour[].readings] | add' <<<"$gbrdata")"
+assert_eq "  ... the refusal is counted" \
+  "1" "$(jq -r '[.github_budget.per_hour[].refusals] | add' <<<"$gbrdata")"
+assert_eq "  ... and so is the stand-down" \
+  "1" "$(jq -r '[.github_budget.per_hour[].budget_standdowns] | add' <<<"$gbrdata")"
+assert_eq "  ... and the peak core.used across the window's readings is the newer one's" \
+  "650" "$(jq -r '[.github_budget.per_hour[].core_peak_used] | max' <<<"$gbrdata")"
+
+# A reading below the core floor (300): the binding badge.
+gbb="$(new_home nodeGBBind)"
+printf '{"ts":"%s","cycle":"c1","node":"nodeGBBind","event":"github-budget","phase":"cycle-start","readable":true,"core":{"limit":5000,"used":4800,"remaining":200,"reset":9999999999},"graphql":{"limit":5000,"used":10,"remaining":4990,"reset":9999999999}}\n' "$gb_fresh" \
+  > "$gbb/.local/state/poetic-agents/log.jsonl"
+run_publish "$gbb"
+assert_eq "core.remaining below its configured floor trips about_to_bind" \
+  "true" "$(jq -r '.github_budget.about_to_bind' <<<"$(data_of "$gbb")")"
+
+# A reading below the graphql floor (100), core comfortably clear: "either
+# floor" trips the same badge, not just core's.
+gbg="$(new_home nodeGBBindGraphql)"
+printf '{"ts":"%s","cycle":"c1","node":"nodeGBBindGraphql","event":"github-budget","phase":"cycle-start","readable":true,"core":{"limit":5000,"used":100,"remaining":4900,"reset":9999999999},"graphql":{"limit":5000,"used":950,"remaining":50,"reset":9999999999}}\n' "$gb_fresh" \
+  > "$gbg/.local/state/poetic-agents/log.jsonl"
+run_publish "$gbg"
+assert_eq "graphql.remaining below its configured floor also trips about_to_bind" \
+  "true" "$(jq -r '.github_budget.about_to_bind' <<<"$(data_of "$gbg")")"
+
+# The identical reading, but both pools comfortably above their floors: no badge.
+gbo="$(new_home nodeGBOk)"
+printf '{"ts":"%s","cycle":"c1","node":"nodeGBOk","event":"github-budget","phase":"cycle-start","readable":true,"core":{"limit":5000,"used":100,"remaining":4900,"reset":9999999999},"graphql":{"limit":5000,"used":10,"remaining":4990,"reset":9999999999}}\n' "$gb_fresh" \
+  > "$gbo/.local/state/poetic-agents/log.jsonl"
+run_publish "$gbo"
+assert_eq "both pools above their floors never trips about_to_bind" \
+  "false" "$(jq -r '.github_budget.about_to_bind' <<<"$(data_of "$gbo")")"
+
+# A reading older than two cycle intervals (30 min at this repo's 15-minute
+# cadence): the quiet badge.
+gbq="$(new_home nodeGBQuiet)"
+printf '{"ts":"%s","cycle":"c1","node":"nodeGBQuiet","event":"github-budget","phase":"cycle-start","readable":true,"core":{"limit":5000,"used":100,"remaining":4900,"reset":9999999999},"graphql":{"limit":5000,"used":10,"remaining":4990,"reset":9999999999}}\n' "$gb_stale" \
+  > "$gbq/.local/state/poetic-agents/log.jsonl"
+run_publish "$gbq"
+assert_eq "a reading older than two cycle intervals trips the quiet badge" \
+  "true" "$(jq -r '.github_budget.quiet' <<<"$(data_of "$gbq")")"
+
+# The identical stale-timing case but with a fresh reading instead: no badge.
+gbn="$(new_home nodeGBNotQuiet)"
+printf '{"ts":"%s","cycle":"c1","node":"nodeGBNotQuiet","event":"github-budget","phase":"cycle-start","readable":true,"core":{"limit":5000,"used":100,"remaining":4900,"reset":9999999999},"graphql":{"limit":5000,"used":10,"remaining":4990,"reset":9999999999}}\n' "$gb_fresh" \
+  > "$gbn/.local/state/poetic-agents/log.jsonl"
+run_publish "$gbn"
+assert_eq "a reading inside two cycle intervals never trips the quiet badge" \
+  "false" "$(jq -r '.github_budget.quiet' <<<"$(data_of "$gbn")")"
+
 raw="$(cat "$a/.local/state/poetic-agents/dashboard/data.js")"
 assert_contains "token shapes are redacted" "[REDACTED-TOKEN]" "$raw"
 assert_lacks "no raw token survives"        "ghp_0123456789abcdefXYZ0123" "$raw"
@@ -2892,7 +2989,7 @@ assert_eq "and the cycle window is cached per cycle" "1" \
 sleep 1   # generated_at has one-second resolution and must be seen to move
 b798_fast
 fast798="$(data_of "$f798")"
-for _k in counts blocked void landings config; do
+for _k in counts blocked void landings config github_budget; do
   assert_eq "a fast build carries .$_k forward unchanged" \
     "$(jq -Sc ".$_k" <<<"$full798")" "$(jq -Sc ".$_k" <<<"$fast798")"
 done

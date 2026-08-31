@@ -123,6 +123,13 @@ pr_label="$(cfg '.pr_label')"
 max_open_agent_prs="$(cfg '.max_open_agent_prs')"
 state_repo="$(cfg '.state_repo')"
 repos_json="$(cfg_json '.repos')"
+# The GitHub-budget card's own two floors and cadence source (issue #1090) —
+# the same `github_min_core_budget`/`github_min_graphql_budget` requirement
+# 2.0's own gate reads, and `schedule.cycle_interval_minutes`, so the card can
+# never disagree with the gate about what "about to bind" or "quiet" means.
+github_budget_min_core="$(cfg '.github_min_core_budget')"
+github_budget_min_graphql="$(cfg '.github_min_graphql_budget')"
+github_budget_cycle_interval_minutes="$(cfg '.schedule.cycle_interval_minutes')"
 
 out_dir="$state_dir/dashboard"
 data_file="$out_dir/data.js"
@@ -2923,6 +2930,88 @@ counts_with_escapes="$(jq -c --argjson e "$escape_audits_json" '. + {escape_audi
   <<<"$counts_json" 2>/dev/null)"
 [[ -n "$counts_with_escapes" ]] && counts_json="$counts_with_escapes"
 
+# --- GitHub API budget card (issue #1090) ------------------------------------
+# `github_budget`, folded from the fleet-wide `github-budget` events
+# `lib/github-limit.sh`'s `github_budget_record` logs (requirement 2.0d,
+# agent-ops#1088) — the same source `scripts/github-budget-report.sh` sums, no
+# new `gh` call. Answers, at a glance, whether the shared rate-limit bucket is
+# about to bind (requirement 2.0's own gate) before the first `guard-degraded`
+# refusal, not after.
+#
+#   - `latest` is the newest `readable: true` event, by its own `ts` — never
+#     windowed, since the point of the "meter gone quiet" badge below is
+#     noticing a *stale* latest reading, which a 24h window would silently
+#     drop instead of reporting.
+#   - `per_hour` is trailing 24h only (`.ts[0:13]`, matching the report
+#     script's own `hour` grouping): readings, the peak `core.used` among
+#     that hour's readable readings, the `guard-degraded` refusal count
+#     (`is_refusal`) and the requirement-2.0 stand-down count
+#     (`is_budget_standdown`) — both predicates copied verbatim from
+#     scripts/github-budget-report.sh so the two can never disagree about
+#     what counts as either.
+#   - `about_to_bind` is null with no readable reading to judge, else true
+#     when `latest`'s core or graphql remaining is below its configured
+#     floor — the identical `remaining < floor` comparison
+#     `github_limit_verdict` makes, so a `0` floor (disabled) can never trip
+#     it, the same as the gate it mirrors.
+#   - `quiet` is null on a genuinely empty log (nothing to judge yet), else
+#     true when no readable reading falls inside the last two configured
+#     cycle intervals.
+#   - `readings: 0` (with every other field null-shaped) is the card's own
+#     empty state — no `github-budget` event anywhere in the log union — kept
+#     distinct from the degrade-to-null path below, which means the roll-up
+#     itself could not be assembled.
+github_budget_json="$(printf '%s\n' "$ALL_EVENTS" | jq -c -s \
+  --arg now "$now_iso" \
+  --argjson min_core "${github_budget_min_core:-0}" \
+  --argjson min_graphql "${github_budget_min_graphql:-0}" \
+  --argjson interval "${github_budget_cycle_interval_minutes:-15}" '
+  def hour: (.ts // "")[0:13];
+  def is_refusal: (.event == "guard-degraded")
+    and ((.detail // "") | tostring | test("rate limit (already )?exceeded"; "i"));
+  def is_budget_standdown: (.event == "stand-down") and (has("github_resource"));
+  def in_window($from): (.ts // "") as $t
+    | ($t | length) > 0 and (try ($t | fromdateiso8601) catch 0) >= $from;
+  ($now | fromdateiso8601) as $now_s
+  | ($now_s - 86400) as $from_s
+  | (map(select(.event == "github-budget"))) as $b
+  | (map(select(is_refusal))) as $ref
+  | (map(select(is_budget_standdown))) as $sd
+  | ($b | map(select(.readable == true)) | sort_by(.ts // "") | last) as $lat
+  | ($b | map(select(in_window($from_s)))) as $bw
+  | ($ref | map(select(in_window($from_s)))) as $refw
+  | ($sd | map(select(in_window($from_s)))) as $sdw
+  | ($b | length) as $readings
+  | {
+      readings: $readings,
+      latest: (if $lat == null then null else
+        {ts: $lat.ts, core: ($lat.core // null), graphql: ($lat.graphql // null)} end),
+      per_hour: (
+        ([$bw[], $refw[], $sdw[]] | map(hour) | unique | sort) as $hours
+        | [ $hours[] | . as $h
+            | ($bw | map(select(hour == $h and .readable == true))) as $r
+            | { hour: $h,
+                readings: ($bw | map(select(hour == $h)) | length),
+                core_peak_used: ($r | map(.core.used) | map(select(type == "number")) | max),
+                refusals: ($refw | map(select(hour == $h)) | length),
+                budget_standdowns: ($sdw | map(select(hour == $h)) | length) } ]),
+      floors: {core: $min_core, graphql: $min_graphql},
+      cycle_interval_minutes: $interval,
+      about_to_bind: (if $readings == 0 or $lat == null then null else
+        ((($lat.core.remaining) != null and $lat.core.remaining < $min_core)
+         or (($lat.graphql.remaining) != null and $lat.graphql.remaining < $min_graphql)) end),
+      quiet: (if $readings == 0 then null else
+        ($lat == null or (($lat.ts // "" | length) == 0)
+         or (try ($lat.ts | fromdateiso8601) catch 0) < ($now_s - ($interval * 2 * 60))) end)
+    }
+' 2>/dev/null)"
+if ! jq -e 'type == "object"' <<<"$github_budget_json" >/dev/null 2>&1; then
+  # Same explicit-failure discipline as landings_json/escape_audits_json's own
+  # degrade paths: a payload this could not assemble must never render as "no
+  # events yet" — `readings: null` (never `0`) is what tells the two apart.
+  github_budget_json='{"readings":null,"latest":null,"per_hour":null,"floors":{"core":null,"graphql":null},"cycle_interval_minutes":null,"about_to_bind":null,"quiet":null}'
+fi
+
 fi  # FULL
 # --- Revert rate by repository (D18 issue #579) -----------------------------
 #
@@ -3013,6 +3102,7 @@ printf '%s' "$counts_json"  > "$work_tmp/counts.json"
 printf '%s' "$landings_json" > "$work_tmp/landings.json"
 printf '%s' "$blocked_json" > "$work_tmp/blocked.json"
 printf '%s' "$void_json"    > "$work_tmp/void.json"
+printf '%s' "$github_budget_json" > "$work_tmp/github-budget.json"
 data_json="$(jq -n \
   --arg generated_at "$now_iso" \
   --arg self_node "$self_node" \
@@ -3025,6 +3115,7 @@ data_json="$(jq -n \
   --slurpfile void "$work_tmp/void.json" \
   --slurpfile landings "$work_tmp/landings.json" \
   --slurpfile rr "$work_tmp/revert-rate.json" \
+  --slurpfile gb "$work_tmp/github-budget.json" \
   --slurpfile gh "$work_tmp/github.json" \
   --slurpfile lt "$work_tmp/logtail.json" \
   --argjson cron_tail "$cron_tail_json" \
@@ -3034,7 +3125,7 @@ data_json="$(jq -n \
   '{generated_at: $generated_at, node: $self_node, config: $config, status: $status,
     counts: $counts[0], cycles: $cyc[0], noop_ticks: $noop, blocked: $blocked[0],
     void: $void[0], github: $gh[0], log_tail: $lt[0], landings: $landings[0],
-    revert_rate: $rr[0],
+    revert_rate: $rr[0], github_budget: $gb[0],
     cron_tail: $cron_tail, max_open_agent_prs: ($max_prs|tonumber),
     fleet: {nodes: $fleet_nodes, flags: $fleet_flags, claims: ($gh[0].claims // [])}}')"
 else

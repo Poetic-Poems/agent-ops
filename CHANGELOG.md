@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A **GitHub API budget** dashboard card (issue #1090), the first section on
+  the page: the latest readable rate-limit reading (core/graphql used,
+  remaining, reset countdown), a trailing-24h per-hour table of peak core
+  usage alongside refusal and requirement-2.0 stand-down counts, and two
+  badges — **about to bind** (the latest reading is below its configured
+  floor) and **meter gone quiet** (no readable reading in the last two
+  cycle intervals) — answering whether the shared rate-limit bucket is about
+  to bind before the first `guard-degraded` refusal, not after. Folded
+  entirely from the fleet's existing `github-budget` log events
+  (requirement 2.0d); the publish tick spends no new `gh` call for it.
 - A `gh` transport shim, installed on `PATH` ahead of the real binary
   (requirement 2.0e, agent-ops#1084), so every `gh` call — this
   repository's own scripts and a model-driven stage's bare `gh …` alike —
