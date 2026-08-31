@@ -7969,6 +7969,40 @@ implements.
       are checked, after the same whitespace normalization requirement 17f's
       own check applies, against the union of the live text and the item's
       recorded refinement `spec`; free prose around them is never compared.
+
+      **A span that could not have been quoted is not checked**
+      (`_span_is_quotable`, agent-ops#1137). Backticks in Markdown mean code,
+      not quotation, and a work order uses them to name its own output as
+      well as its source: the file it will create, the glob it will walk, the
+      template an identifier follows. Two shapes are therefore exempt, both
+      because a verbatim match is *impossible* rather than merely unlikely —
+      which is what keeps this a narrowing of the check rather than a
+      weakening of it. A **pattern** — a span carrying `*`, `?` or `<…>` —
+      generalises the strings it stands for, so it cannot appear in the prose
+      it generalises: `scripts/gather-*` faults precisely *because* the item
+      says `scripts/gather-human-visibility-hygiene`. A **path** — a
+      separator with an extension on its final segment — is the file the work
+      order creates, absent from the item that asked for it by definition,
+      and absent from the repository too until the order is implemented.
+
+      Every other shape stays checked, and that deliberately includes the
+      bare identifier: both fabrications on record — `_verify_stage_claims`
+      (#815) and `refinement_policy_matrix` (#821) — are bare `snake_case`
+      identifiers, so an exemption wide enough to admit those would disarm
+      this requirement altogether. The cost of drawing the line there is a
+      real identifier the item happens not to spell (`merge_conflicts`, a
+      `sourceToken` from this repo's own schema) still faulting: no rule over
+      a span's *shape* can separate an invented identifier from an inferred
+      one, and agent-ops#1138 is the open investigation into what can —
+      widening the corpus from the item to the repository, changing the
+      disposition below, or removing the trimming premise the whole
+      requirement rests on.
+
+      The narrowing was measured, not supposed: in the 24 h to
+      2026-08-31T11:35Z every one of the eight faults `ockham-container`
+      recorded was a false positive — four globs, one placeholder template, a
+      path twice, and `merge_conflicts` — while the fleet, its fit freed by
+      agent-ops#1128 to offer all 104 candidates, selected nothing at all.
     - **Never repaired.** Unlike a missing refinement, appending the real
       text alongside a false one does not make the false one true, so a
       candidate `item_text_fault` faults is always a hard skip — no repair is

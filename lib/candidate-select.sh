@@ -658,6 +658,55 @@ item_live_text() {  # <repo> <source> <item>
   esac
 }
 
+# requirement 17g (agent-ops#1137): whether a backtick span is the kind of
+# thing that *could* have been quoted from the item, and is therefore evidence
+# of anything when it is absent.
+#
+# 17g reads every backtick span in `acceptance` as a quotation of the item.
+# Backticks in Markdown do not mean that: they mean code, and a work order
+# uses them to name the file it will create, the glob it will walk, the
+# template an id follows. Those are the order's own output, not claims about
+# the item's text, so their absence from the item says nothing — and on
+# 2026-08-31 it said "fabricated" eight times out of eight, with the fleet
+# selecting nothing while it did.
+#
+# Two shapes are exempted, both because a match is impossible rather than
+# merely unlikely — which is what keeps this a narrowing of the check and not
+# a weakening of it:
+#
+#   - a *pattern*: a span carrying `*`, `?`, or `<…>`. A glob generalises the
+#     strings it stands for, so it cannot appear verbatim in the prose it
+#     generalises; `scripts/gather-*` is refused precisely because the item
+#     names `scripts/gather-human-visibility-hygiene` instead.
+#   - a *path*: a span with a directory separator whose last segment carries
+#     an extension. `lib/gh-shim.sh` is the file the work order creates, so it
+#     is absent from the item by definition — and absent from the repository
+#     too, until the order it belongs to is implemented.
+#
+# Everything else stays checked, and that deliberately includes the bare
+# identifier: both fabrications on record — `_verify_stage_claims` (#815) and
+# `refinement_policy_matrix` (#821) — are bare `snake_case` identifiers, so an
+# exemption shaped to let those through would disarm the requirement
+# altogether. It also means a real identifier the item happens not to spell
+# (`merge_conflicts`, a `sourceToken` from this repo's own schema) still
+# faults: shape cannot separate an invented identifier from an inferred one,
+# and agent-ops#1138 is where that is being worked out rather than guessed at
+# here.
+_span_is_quotable() {  # <span> -> 0 iff it could have been quoted verbatim
+  local span="$1"
+  case "$span" in
+    *'*'*|*'?'*|*'<'*|*'>'*) return 1 ;;   # a pattern, not a quotation
+  esac
+  # A path: a separator, and a final segment that carries an extension. Tested
+  # on the segment rather than the whole span so that `a.b/c` — a dotted
+  # directory holding an extensionless name — is still checked.
+  if [[ "$span" == */* && "${span##*/}" == *.* && "${span##*/}" != .* ]]; then
+    return 1
+  fi
+  return 0
+}
+
+
 # Requirement 17g (issue #821): a work order's `acceptance` can name a
 # specific detail — a file, a flag, an identifier — that the model never
 # actually read, presenting invention as the item's own. The #815 incident
@@ -742,6 +791,7 @@ item_text_fault() {  # <candidate-json> <trimmed-json> <refinements-json>
 
   while IFS= read -r span; do
     [[ -n "$span" ]] || continue
+    _span_is_quotable "$span" || continue
     norm_span="$(_traceability_normalize "$span")"
     [[ -n "$norm_span" ]] || continue
     jq -ne --arg h "$norm_live" --arg n "$norm_span" '$h | contains($n)' >/dev/null 2>&1 && continue
