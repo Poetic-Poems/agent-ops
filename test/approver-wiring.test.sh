@@ -214,14 +214,18 @@ approver_refuse_streak() { printf '%s' "$STREAK"; }
 # fix already relied on) lets a case prove the two are genuinely different
 # reads rather than the same value threaded through twice; *_RC lets a case
 # simulate either read failing outright. The count is kept in a file, not a
-# shell variable: `token="$(approver_token_get "")"` runs this function in a
-# command-substitution subshell, whose writes to a plain variable never reach
-# the caller back.
+# shell variable: `token="$(approver_token_get "$selected_repo")"` runs this
+# function in a command-substitution subshell, whose writes to a plain
+# variable never reach the caller back. Each call's own argv is kept the same
+# way, so a case can confirm both mints — the pre-engagement gate at line 509
+# and the post-engagement write at line 670 — pass the repo slug rather than
+# an empty string (agent-ops#945 review follow-up).
 approver_token_get() {
   local calls
   calls=$(( $(cat "$T/token_calls_count" 2>/dev/null || printf '0') + 1 ))
   printf '%s' "$calls" >"$T/token_calls_count"
   printf '%s\n' "$calls" >>"$T/token_calls"
+  printf '%s\n' "$1" >>"$T/token_call_args"
   if (( calls == 1 )); then
     [[ "${GATE_TOKEN_RC:-0}" == "0" ]] || return "${GATE_TOKEN_RC}"
     printf '%s' "${GATE_TOKEN:-a-minted-token}"
@@ -326,6 +330,7 @@ run_case() {
   : >"$tmp_dir/resolved_complexity"; : >"$tmp_dir/prompt_override_args"
   : >"$tmp_dir/mal_calls"; : >"$tmp_dir/mks_calls"; : >"$tmp_dir/protected_calls"
   : >"$tmp_dir/token_calls"; rm -f "$tmp_dir/token_calls_count"
+  : >"$tmp_dir/token_call_args"
   rm -rf "${tmp_dir:?}/cycle" "${tmp_dir:?}/clone" "${tmp_dir:?}/state"
   env -i PATH="$PATH" HOME="$HOME" \
     T="$tmp_dir" SCRIPT_DIR="$SCRIPT_DIR" PR_URL="$URL" \
@@ -344,6 +349,7 @@ launches() { cat "$tmp_dir/launches"; }
 escalations() { cat "$tmp_dir/escalations"; }
 resolved_complexity() { cat "$tmp_dir/resolved_complexity"; }
 token_calls() { wc -l <"$tmp_dir/token_calls" | tr -d ' '; }
+token_call_args() { cat "$tmp_dir/token_call_args"; }
 count() { local f="$tmp_dir/$1"; [[ -s "$f" ]] && wc -l <"$f" | tr -d ' ' || printf '0'; }
 verdict_event() { grep -m1 $'^approver-verdict\t' "$tmp_dir/events" | cut -f2-; }
 warnings() { grep $'^warning\t' "$tmp_dir/events" | cut -f2- || true; }
@@ -590,6 +596,8 @@ assert_contains "  ... only the token re-minted once the engagement returns is" 
   "token=fresh-write-token" "$(posts)"
 assert_eq "  ... exactly two mints: the pre-engagement gate and the post-engagement write" \
   "2" "$(token_calls)"
+assert_eq "  ... and both mints pass the repo slug, never an empty string (agent-ops#945 review follow-up)" \
+  "$(printf 'Poetic-Poems/agent-ops\nPoetic-Poems/agent-ops')" "$(token_call_args)"
 
 run_case agent-approves low 0 '' GATE_TOKEN=only-mint WRITE_TOKEN=never-used >/dev/null
 assert_contains "the trivial tier's one deterministic write spends the pre-engagement mint" \

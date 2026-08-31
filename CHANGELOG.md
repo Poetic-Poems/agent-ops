@@ -62,6 +62,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   carried the decision forward, and `refiner_candidate_items`
   (`lib/refinement.sh`) offers such an item as a full candidate for as long
   as its decision stays pending (agent-ops#1049).
+- Per-owner Approver App installation resolution (agent-ops#913):
+  `PULLWRIGHT_APPROVER_INSTALLATION_IDS`, a JSON object mapping repository
+  owner to installation id, so a fleet whose `repos[]` span more than one
+  GitHub owner mints the right installation token for each — a scalar
+  `PULLWRIGHT_APPROVER_INSTALLATION_ID` alone could no longer do this once
+  `repos[]` spans two accounts. Falls back to that scalar for an owner the
+  map does not name; a single-owner fleet needs no configuration change.
+  `scripts/doctor.sh`'s Approver installation-permissions and
+  repository-selection checks now run once per distinct installation and
+  name the owner in every verdict, and fail naming the owner and both
+  variables when a configured repository's owner resolves to neither — from
+  `agent-approves` upward only (agent-ops#1060): a repository at
+  `merge_autonomy: human` never mints an Approver token, so it is skipped
+  before its owner is even resolved, costing neither a `fail` for an
+  installation nothing will use nor a live GitHub read on one. Resolution is
+  fail-closed on a malformed map value and on an empty repository slug —
+  neither falls back to the fleet-wide scalar, which in a multi-owner fleet
+  would mint one owner's installation token for another owner's repository —
+  and an installation `permissions` payload doctor cannot compare at all is
+  reported as unreadable rather than as the exact-match all-clear
+  (agent-ops#575).
 - New `scripts/migrate-tech-debt-register.sh` (agent-ops#880), a reusable
   per-repo migration script that closes the gap agent-ops#875 above
   deliberately accepted: for every `status: open`/`status: in-progress`

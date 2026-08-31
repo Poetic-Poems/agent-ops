@@ -229,7 +229,10 @@ export PULLWRIGHT_APPROVER_APP_ID PULLWRIGHT_APPROVER_INSTALLATION_ID \
 # shellcheck source=lib/approver-token.sh
 . "$SCRIPT_DIR/lib/approver-token.sh"
 stub_curl 201 '{"token":"ghs_approvershared","expires_at":"2026-08-14T14:00:00Z"}'
-out="$(approver_token_get "$now")"
+# approver_token_get takes the repository slug it mints for first and the
+# clock second (agent-ops#913); no PULLWRIGHT_APPROVER_INSTALLATION_IDS is
+# set here, so any owner resolves to the scalar id set above.
+out="$(approver_token_get "acme-org/widgets" "$now")"
 assert_eq "same installation id, same cache dir, different identity: still mints its own" \
   "ghs_approvershared" "$out"
 assert_true "  ... each identity holds its own cache file" \

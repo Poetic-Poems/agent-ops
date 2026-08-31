@@ -811,7 +811,7 @@ and the schema must carry every one of them.
 | `merge_autonomy_protected_paths` | `[".github/*", "deploy/*", "prompts/*", "lib/*", "config.schema.json", "config.json", "agent-cycle.sh", "review-cycle.sh", "CODEOWNERS"]` | D18 Stage 3 (agent-ops#724, `lib/landing.sh`'s `landing_eligible`/`_landing_is_protected`): the whole-path prefixes a routine-tier landing must touch none of, fleet-wide default; a `repos[]` entry's own `merge_autonomy_protected_paths` overrides it for that repository, the same precedence `merge_autonomy_routine_sources` uses (requirement 4f). Below `agent-merges-all` a hit is an outright `ineligible`; at `agent-merges-all` it is deferred to requirement 8d's own gate 4.5 (D18...[continued below](#extended-notes-merge_autonomy_protected_paths) |
 | `merge_autonomy_routine_complexity` | `["low", "medium"]` | D18 Stage 3 (requirement 8d, `lib/landing.sh`'s `landing_eligible`, agent-ops#725): which `complexity:*` grades may be armed automatically at `agent-merges-routine` and above, fleet-wide default; a `repos[]` entry's own `merge_autonomy_routine_complexity` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). An eligible pull request also needs a `source` in `merge_autonomy_routine_sources` and, below `agent-merges-all`...[continued below](#extended-notes-merge_autonomy_routine_complexity) |
 | `landing_cool_off_hours` | 24 h | D18 WI-12 (Stage 4, §7 risk 1, `lib/landing.sh`'s `landing_protected_path_controls_ok`/`landing_cool_off_effective_hours`/`landing_cool_off_remaining_hours`): the wait between the Approver's own approval of a protected-path pull request and the arming step (requirement 8d) landing it, fleet-wide default; a `repos[]` entry's own `landing_cool_off_hours` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). Binds only at...[continued below](#extended-notes-landing_cool_off_hours) |
-| `approver_app_id` | *(unset)* | The Approver GitHub App's id for this installation (§5.3) — required for any `merge_autonomy` level above `human`, and reconciled by `scripts/doctor.sh` against the `PULLWRIGHT_APPROVER_APP_ID` environment the token wrapper (requirement 14b) mints from: a set pair that differs is a doctor `fail`. Deliberately one fleet-wide scalar string with no per-repo override — see the Design decisions entry on this key's shape. |
+| `approver_app_id` | *(unset)* | The Approver GitHub App's id (§5.3) — required for any `merge_autonomy` level above `human`, and reconciled by `scripts/doctor.sh` against the `PULLWRIGHT_APPROVER_APP_ID` environment the token wrapper (requirement 14b) mints from: a set pair that differs is a doctor `fail`. Deliberately one fleet-wide scalar string with no per-repo override — see the Design decisions entry on this key's shape. |
 | `crash_loop_after` | `4` | Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue (requirement 2.7) — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. At four nodes each hitting the same deterministic failure once per cycle, this crosses within about one `schedule.cycle_interval_minutes` interval. `0` (or absent) disables both checks. |
 | `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where requirement 2.7's escalation issues are filed — the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks. |
 | `escalation_webhook_url` | *(unset)* | A URL POSTed to as a best-effort, `GH_TOKEN`-independent fallback whenever `create_escalation_issue` cannot file (requirement 2m). Empty disables it: the call is skipped rather than attempted, so an installation with none configured is unaffected. Must be `https://` when set — a plain-text channel is not a fit substitute for the credential it stands in for. Fleet-wide like every key here, and inert on a node whose `EGRESS_EXTRA_ALLOW` does not name the webhook's host — see...[continued below](#extended-notes-escalation_webhook_url) |
@@ -15398,18 +15398,39 @@ What exists, and the requirements each part answers to:
     (summed across every active default-branch ruleset) being non-empty is a
     `fail` naming the count, `ok` at zero. Both are silent below
     `agent-merges-routine`, the same convention every pairing check in this
-    component already follows. The App installation's live permissions are a
-    single fleet-wide check (one installation backs every repository this
-    identity reviews), read via `lib/approver-token.sh`'s
-    `approver_token_installation_permissions` — a JWT-signed
-    `GET /app/installations/<id>`, since an installation token cannot ask
-    what it is itself entitled to — and diffed against the exact three
-    required permissions: any difference (missing, narrower, or a permission
-    granted beyond the three) is a `fail` naming the gap, `ok` on an exact
-    match. Gated on `ma_above_human` and `approver_token_credential_present`,
-    the same as the runtime-credential-presence check already in this
-    component — an absent credential is already warned about there, and
-    silent here rather than repeating it.
+    component already follows. The App installation's live permissions are
+    read via `lib/approver-token.sh`'s `approver_token_installation_permissions`
+    — a JWT-signed `GET /app/installations/<id>`, since an installation token
+    cannot ask what it is itself entitled to — and diffed against the exact
+    three required permissions: any difference (missing, narrower, or a
+    permission granted beyond the three) is a `fail` naming the gap, `ok` on
+    an exact match, and a `skip` when the granted permissions came back in a
+    shape this run could not compare at all (a `permissions` that is not an
+    object) — an unreadable comparison is never the exact-match `ok`. Gated
+    on `ma_above_human` and `approver_token_credential_present`, the same as
+    the runtime-credential-presence check already in this component — an
+    absent credential is already warned about there, and silent here rather
+    than repeating it.
+    **One App may hold several installations, one per repository owner
+    (agent-ops#913)** — a GitHub App installation is per account, so once
+    `repos[]` spans more than one owner, one installation no longer backs
+    every repository this identity reviews. Each configured repository's own
+    owner resolves to its installation id
+    (`lib/approver-token.sh`'s `approver_token_installation_id_for`, from
+    `PULLWRIGHT_APPROVER_INSTALLATION_IDS` falling back to
+    `PULLWRIGHT_APPROVER_INSTALLATION_ID`), and this permissions read runs
+    once per *distinct installation id* — not once fleet-wide — naming the
+    owner in every `ok`/`fail`/`skip` line it prints; two owners sharing one
+    installation cost one read, not two. A configured repository **at
+    `agent-approves` or above** whose owner names neither variable is a
+    `fail` right here, naming the owner and both variables, before either
+    read is even attempted. The resolution runs from `agent-approves` upward
+    (agent-ops#1060), the same convention the consolidated readiness verdict
+    below already follows: a repository at `human` never mints an Approver
+    token, so it is skipped *before* its owner is resolved — no `fail` for an
+    installation nothing will ever use, and no live read spent on one. The
+    skip precedes the loop's own de-duplication by owner, so an owner listed
+    first at `human` and again at `agent-approves` still resolves once.
 
     The same installation's **repository selection** is read beside its
     permissions (agent-ops#721), and for the same reason: both live on
@@ -15419,16 +15440,17 @@ What exists, and the requirements each part answers to:
     can neither review nor land in however right its permissions look — so it
     is a `fail` from `agent-approves` upward, naming the repository and the
     owner act that fixes it (adding it to the installation's selection), never
-    the "fully supported" line. Read once, fleet-wide, via
-    `lib/approver-token.sh`'s `approver_token_installation_repositories` — an
-    installation-token-signed `GET /installation/repositories`, since the JWT
-    read above reports `repository_selection` but never the list, so the two
-    questions need the two identities. A `repository_selection` of `all`
-    covers every repository by construction. A listing that could not be read
-    whole — a page shorter than its own `total_count`, a non-200, an
-    unreachable API — is `unconfirmed` for every repository, never "does not
-    cover": that verdict is a `fail` and an owner act, and no read failure may
-    mint one.
+    the "fully supported" line. Read once per distinct installation id,
+    alongside the permissions above, via `lib/approver-token.sh`'s
+    `approver_token_installation_repositories` — an installation-token-signed
+    `GET /installation/repositories`, since the JWT read above reports
+    `repository_selection` but never the list, so the two questions need the
+    two identities. A `repository_selection` of `all` covers every repository
+    on that account by construction. A listing that could not be read whole —
+    a page shorter than its own `total_count`, a non-200, an unreachable API —
+    is `unconfirmed` for every repository that installation covers, never
+    "does not cover": that verdict is a `fail` and an owner act, and no read
+    failure may mint one.
 
     These join every existing per-repository and fleet-wide check above
     (approver_app_id/approver_model_default, the ruleset's approving-review
@@ -15450,8 +15472,10 @@ What exists, and the requirements each part answers to:
     named and tagged **owner act** (a ruleset parameter, a repository merge
     setting, or the App installation's own granted permissions — something
     only a repository/organisation admin can change) or **configuration
-    error** (`approver_app_id`/`approver_model_default` — this fleet's own
-    `config.json`). A repository whose forge configuration does not support
+    error** (`approver_app_id`/`approver_model_default`, or a repository
+    owner named by neither `PULLWRIGHT_APPROVER_INSTALLATION_IDS` nor
+    `PULLWRIGHT_APPROVER_INSTALLATION_ID` — this fleet's own `config.json`/
+    environment). A repository whose forge configuration does not support
     its configured level is a doctor **`fail`, never a `warn`**, from
     `agent-approves` upward — the pipeline would otherwise raise approvals
     or land pull requests nobody has verified the forge can actually clear.
@@ -15465,9 +15489,24 @@ What exists, and the requirements each part answers to:
     this component already gives.
     `test/doctor.test.sh` covers the three new checks and the consolidated
     verdict (satisfied, unsatisfied naming owner acts and configuration
-    errors together, and unconfirmed — acceptance check 8w); `test/approver-token.test.sh` covers
-    `approver_token_installation_permissions` directly, against the same
-    stubbed `curl` and real-JWT-signing seam its sibling functions use.
+    errors together, and unconfirmed — acceptance check 8w), plus
+    agent-ops#913's own scenario: two repository owners, two stubbed
+    installations, each owner's own verdict read and reported independently
+    (never one shared fleet-wide guess), and a third owner named by neither
+    `PULLWRIGHT_APPROVER_INSTALLATION_IDS` nor the scalar default failing
+    outright, naming the owner and both variables. It also pins the rank gate
+    (agent-ops#1060) against a URL-logging `curl` stub, so "no read was spent"
+    is asserted rather than assumed: a `human`-level repository under an
+    unmapped owner is neither a `fail` nor a readiness verdict, an
+    installation only a `human`-level repository names is never read, and an
+    owner listed first at `human` and again at `agent-approves` still
+    resolves and is read exactly once; and a `permissions` payload that
+    cannot be compared is a `skip` leaving readiness unconfirmed, never the
+    exact-match `ok`. `test/approver-token.test.sh` covers
+    `approver_token_installation_permissions` and
+    `approver_token_installation_id_for` directly — including an empty slug
+    and every malformed map value resolving as they do above — against the
+    same stubbed `curl` and real-JWT-signing seam its sibling functions use.
 
     **The forge authoring App's own mint path, exercised once** (D25,
     agent-ops#607, component 14g): independent of `gh_ready` above, since
@@ -15576,29 +15615,71 @@ What exists, and the requirements each part answers to:
     so the mechanics were pulled out once rather than duplicated; this file's
     own public API (below) is unchanged by that move, and
     `test/approver-token.test.sh` passes unmodified against it.
-    `approver_token_credential_present` is the identity check on its
-    own; `approver_token_get [NOW_EPOCH]` prints a valid token on stdout and
-    nothing else, taking `NOW_EPOCH` only so a test can reach an expiry
-    without waiting for one.
+    `approver_token_credential_present [SLUG_OR_OWNER]` is the identity check
+    on its own; `approver_token_get SLUG_OR_OWNER [NOW_EPOCH]` prints a valid
+    token on stdout and nothing else, taking `NOW_EPOCH` only so a test can
+    reach an expiry without waiting for one.
     **Its exit status is the gate**: `0` a token, `2` no credential
     configured or an unreadable key, `1` a mint attempted and refused
     (network, rejected JWT, unparsable body). A caller must treat `1` and `2`
     alike — *gate unreadable*, hand back — and never as a gate read and
     passed; they stay distinct codes only so a log can tell "nothing
     configured" from "something broke".
-    The identity comes from three environment variables, deliberately not
+    The identity comes from four environment variables, deliberately not
     from `config.json` (the discipline `GH_TOKEN` already follows):
-    `PULLWRIGHT_APPROVER_APP_ID`, `PULLWRIGHT_APPROVER_INSTALLATION_ID` and
-    `PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH` — a path, not a key body, since an
-    RSA key is multi-line and `openssl`'s `-sign` wants a file. The App id,
-    unlike the key, is no secret and also lives in `config.json` as
-    `approver_app_id` (requirement 2.3b); `scripts/doctor.sh` reconciles the
-    two so they cannot drift apart silently — a set
+    `PULLWRIGHT_APPROVER_APP_ID`, `PULLWRIGHT_APPROVER_INSTALLATION_ID`,
+    `PULLWRIGHT_APPROVER_INSTALLATION_IDS` and
+    `PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH` — the private key a path, not a
+    key body, since an RSA key is multi-line and `openssl`'s `-sign` wants a
+    file. The App id, unlike the key, is no secret and also lives in
+    `config.json` as `approver_app_id` (requirement 2.3b); `scripts/doctor.sh`
+    reconciles the two so they cannot drift apart silently — a set
     `PULLWRIGHT_APPROVER_APP_ID` differing from a set `approver_app_id` is a
     doctor `fail`, an env id with no config declaration a `warn`, and a
     `merge_autonomy` level above `human` with no readable runtime credential
     in doctor's environment a `warn` (the wrapper fails closed, so the
     surprise is approvals that never come, never a wrong action).
+    **One App, several installations (agent-ops#913).** A GitHub App
+    installation is per account, so a fleet whose `repos[]` span more than
+    one owner needs more than one installation id. `PULLWRIGHT_APPROVER_INSTALLATION_IDS`
+    is a JSON object mapping owner to installation id
+    (`{"Pullwright": 12345678, "Poetic-Poems": 87654321}`); every function
+    above that mints or reads against a specific installation
+    (`approver_token_get`, `approver_token_credential_present`,
+    `approver_token_installation_permissions`,
+    `approver_token_installation_repositories`) takes the repository slug (or
+    bare owner) it acts for as its first argument, and
+    `approver_token_installation_id_for` resolves the installation id by the
+    owner half, case-insensitively, falling back to the scalar
+    `PULLWRIGHT_APPROVER_INSTALLATION_ID` for an owner the map does not name.
+    With neither variable naming that owner, the result is the same "gate
+    unreadable" (exit 2) that every other absent piece of this identity
+    already produces. Two shapes of caller and configuration error resolve
+    the same way rather than falling through to the default, because in a
+    multi-owner fleet the default is affirmatively the wrong answer to both —
+    it mints one owner's installation token for another owner's repository,
+    and the 403/404 surfaces at write time as "GitHub did not issue" rather
+    than as a gate the operator can go and fix. An **empty slug** names no
+    owner and so resolves to nothing (callers with no owner in play ask
+    `approver_token_any_installation_id` instead). A **malformed map value** —
+    `null`, an object, an array, anything that is not a run of digits — is
+    treated exactly as a malformed map is, falling through to the scalar, so
+    a typo under one key cannot shadow a working default;
+    `any_installation_id` likewise takes the first *usable* entry by key
+    rather than the first. Rejected: deriving the installation
+    from `GET /app/installations` with the App JWT — the installation id is
+    an operator *declaration* of where the Approver may act, the same reason
+    `approver_app_id` is declared and reconciled rather than looked up, and a
+    lookup would let an installation added on any account silently widen the
+    fleet's reach. `approver_token_identity_login` alone takes no slug: an
+    App's own login (`GET /app`) is identical across every installation of
+    the same App, so it resolves *any* configured installation
+    (`approver_token_any_installation_id` — the scalar default, or else any
+    one entry of the map) purely to satisfy the shared credential-present
+    gate, never a specific owner's. The token cache stays keyed by
+    installation id (component 14f below), so two installations never share
+    a cache file. A single-owner fleet sets only the scalar and never touches
+    the map at all — no behaviour changes for it.
     **No fallback exists anywhere in it.** The file references no credential
     but the App's own, so an absent key can never silently reroute an
     approve/land call through the owner's token. The minted token reaches
@@ -21958,19 +22039,57 @@ requirements above, which state only what is.
   has no cached copy of "the flag is gone" to fall back to, only the honest
   failure.
 - **`approver_app_id` is one fleet-wide scalar, typed as a string.** D18's
-  end-state is exactly one Approver App identity governing the whole
-  installation (§6 — the same fact that denies the kill switch a
-  `--this-node` form), so a per-repository App id would contradict the
-  design it serves, and the per-repository variation that does exist in
-  GitHub's model lives in the *installation* layer, which WI-4 discovers at
-  token-minting time from the App id and private key rather than from
-  configuration. A string rather than an integer because an App id is an
+  end-state is exactly one Approver App identity (§6 — the same fact that
+  denies the kill switch a `--this-node` form), so a per-repository App id
+  would contradict the design it serves. That one identity may still hold
+  more than one *installation* (agent-ops#913, below) — App and installation
+  are distinct layers in GitHub's own model, and only the latter varies per
+  repository owner. A string rather than an integer because an App id is an
   opaque identifier this system never does arithmetic on. The name and
   shape were chosen at WI-2, before WI-3 creates the App and WI-4 mints
   tokens from it; those two WIs own the key's final surface and may extend
   it (the private key's own configuration, for one) — but any rename or
   reshaping must land with them, while the key is still consumed by
   `scripts/doctor.sh` alone.
+- **The installation id is resolved per repository owner, from a JSON map in
+  the environment, not derived from the API (agent-ops#913).** A GitHub App
+  installation is per account, so once `repos[]` spans more than one owner —
+  the day agent-ops itself moves to the `Pullwright` organisation while
+  `poetic`/`poetic-fiddle`/`agent-ops-state` stay on `Poetic-Poems` (#912) —
+  one `PULLWRIGHT_APPROVER_INSTALLATION_ID` can no longer back every
+  repository this identity reviews. Three shapes were weighed: a per-owner
+  environment variable (`PULLWRIGHT_APPROVER_INSTALLATION_ID_<OWNER>`,
+  rejected — `deploy/docker/compose.yaml`'s `x-agent-ops-env` anchor
+  enumerates every variable it passes through by name, so a new owner would
+  need a compose edit on every node, exactly the per-node drift the anchor
+  exists to prevent); deriving the installation from `GET /app/installations`
+  with the App's own JWT (rejected — the installation id is an operator
+  *declaration* of where the Approver may act, the same reason
+  `approver_app_id` above is declared and doctor-reconciled rather than
+  looked up, and a lookup would let an installation added on any account
+  silently widen the fleet's reach); and the shape shipped, one JSON object
+  (`PULLWRIGHT_APPROVER_INSTALLATION_IDS`, owner to installation id),
+  threaded through the same compose anchor as a single line. Installation
+  ids are not secrets (the App id itself already is not), so the map can
+  live in plain `.env` beside the scalar default it falls back from for any
+  owner it does not name. Resolution is case-insensitive (GitHub logins are)
+  and lives in `lib/approver-token.sh`'s `approver_token_installation_id_for`
+  alone — every caller passes a repository slug or bare owner, never an
+  installation id it resolved itself, so the fallback rule cannot drift
+  between call sites. That one function is also where the fallback *stops*:
+  it accepts only a run of digits as an installation id, from either the map
+  or the scalar, and resolves an empty slug to nothing at all. Both are
+  deliberately fail-closed against the scalar, because in a multi-owner fleet
+  the fleet-wide default is the wrong answer rather than a safe one — it
+  mints one owner's token for another owner's repository, and GitHub's
+  403/404 arrives at write time, diagnosed in the log as "GitHub did not
+  issue a token" rather than as the configuration typo or caller error it
+  was. The digits rule also protects two invariants that live elsewhere: the
+  token cache is keyed by installation id and collapses every character
+  outside `[0-9A-Za-z_-]`, so two malformed ids could otherwise collide on
+  one cache file; and `scripts/doctor.sh` indexes associative arrays by
+  installation id, where a subscript of `*` or `@` expands as every element
+  rather than as a lookup.
 - **The forge authoring App's id has no `config.json` key (D25,
   agent-ops#607), unlike the Approver's `approver_app_id`.** The Approver's
   id is declared in configuration because `merge_autonomy` pairing
