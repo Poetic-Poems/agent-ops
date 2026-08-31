@@ -799,7 +799,7 @@ and the schema must carry every one of them.
 | `tech_debt_branch_prefix` | `td/` | Deprecated (D15 as revised, #869/#879): no longer minted for a fresh claim (requirement 17a) — read only so `lib/claim.sh` and the gatherer/sweep scripts of requirements 3c/3e/3g/3z/17b still recognise a pre-migration human tech-debt-claim branch, or a `td/<ID>` branch minted before this revision, as not their own agent's fresh claim. Branch name `<tech_debt_branch_prefix><ID>`, e.g. `td/TD26051201`. Empty disables the tech-debt namespace: those scripts then match only...[continued below](#extended-notes-tech_debt_branch_prefix) |
 | `max_open_agent_prs` | `8` | Back-pressure: draft PRs, ready PRs still `CHANGES_REQUESTED`, and live claim-registry entries, carrying `pr_label` across all repos — excludes ready PRs whose next action lies outside the pipeline (requirement 2.2). |
 | `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list (requirement 17a), so alternates turn a lost race into the next-best item instead of a wasted cycle. |
-| `coordinator_prompt_max_bytes` | `350000` | The largest assembled prompt the Script will hand the Co-Ordinator (requirement 4i). The default is derived from the 200000-token window of the Co-Ordinator model this installation runs, less the ~50000 tokens of system prompt and tool definitions the Script neither assembles nor can measure, less a reserve for the verdict itself, at the ~2.35 bytes per token JSON-escaped Markdown actually costs. Stated in bytes because bytes are what the Script can count without a tokenizer....[continued below](#extended-notes-coordinator_prompt_max_bytes) |
+| `coordinator_prompt_max_bytes` | `500000` | The largest assembled prompt the Script will hand the Co-Ordinator (requirement 4i). The default is derived from the 200000-token window of the Co-Ordinator model this installation runs, less the system prompt and tool definitions the Script neither assembles nor can measure, less a reserve for the verdict itself, at the bytes per token JSON-escaped Markdown actually costs. All three terms are measured rather than assumed, and all three moved between the key being added and...[continued below](#extended-notes-coordinator_prompt_max_bytes) |
 | `max_chained_cycles` | `3` | Finish-then-continue (requirement 39): the most cycles that may run back-to-back in one lineage — the cron-fired original plus its immediate chained continuations — bounded so a busy fleet still yields the lock periodically. `1` disables chaining. |
 | `claim_ttl_hours` | *(unset)* | Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry — far beyond a whole cycle, so only a dead node's claim ever expires, and beyond the cycle's own worst-case runtime, so `do_gc` cannot sweep a claim (and delete its still-untouched, PR-less branch) out from under a cycle still holding it. "A whole cycle" means 6 cadence firings (requirement 1d), not a fixed 6 h: derived from the worst-case gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`...[continued below](#extended-notes-claim_ttl_hours) |
 | `abandoned_draft_after_hours` | *(unset)* | How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. "A whole cycle" means 4 cadence firings (requirement 1d), not a fixed number of hours...[continued below](#extended-notes-abandoned_draft_after_hours) |
@@ -973,7 +973,7 @@ Deprecated (D15 as revised, #869/#879): no longer minted for a fresh claim (requ
 
 ### Extended notes: `coordinator_prompt_max_bytes`
 
-The largest assembled prompt the Script will hand the Co-Ordinator (requirement 4i). The default is derived from the 200000-token window of the Co-Ordinator model this installation runs, less the ~50000 tokens of system prompt and tool definitions the Script neither assembles nor can measure, less a reserve for the verdict itself, at the ~2.35 bytes per token JSON-escaped Markdown actually costs. Stated in bytes because bytes are what the Script can count without a tokenizer. `0` disables the bound.
+The largest assembled prompt the Script will hand the Co-Ordinator (requirement 4i). The default is derived from the 200000-token window of the Co-Ordinator model this installation runs, less the system prompt and tool definitions the Script neither assembles nor can measure, less a reserve for the verdict itself, at the bytes per token JSON-escaped Markdown actually costs. All three terms are measured rather than assumed, and all three moved between the key being added and agent-ops#1128: the Co-Ordinator stage records its own token usage, and on 2026-08-31 a 453951-byte assembled prompt cost 146102 tokens (3.107 bytes per token, not 2.35) beside a 16512-token cached system prefix (not ~50000), with verdicts running 2052-8752 tokens. 500000 bytes is that arithmetic with the reserve kept generous. Stated in bytes because bytes are what the Script can count without a tokenizer. `0` disables the bound.
 
 ### Extended notes: `claim_ttl_hours`
 
@@ -5868,11 +5868,39 @@ implements.
    `refinements` is a ledger and is never retired: it holds every refinement
    the Enabler or the Refiner has ever settled, keyed by repo and item. Most
    entries are a line — `ts`, `cycle`, and a `comment_url` pointing at the
-   thread where the refinement lives. An entry for an item type with no thread
-   to hold it (tech-debt, a review recommendation, a plan task) instead
-   carries the specification itself, in markdown, several kilobytes of it. Of
-   the 24 such payloads in the ledger that day, 22 — 203,645 bytes — belonged
-   to items no band of that cycle still named as a candidate.
+   thread where the refinement lives. An entry for an item with no thread to
+   hold it (a review recommendation, a plan task) instead carries the
+   specification itself, in markdown, several kilobytes of it. Of the 24 such
+   payloads in the ledger that day, 22 — 203,645 bytes — belonged to items no
+   band of that cycle still named as a candidate.
+
+   **Which of the two an item takes is settled by the item, never by its
+   band.** Requirement 36b's own carrier rule reads the item: an item with a
+   thread takes the pointer, an item without takes the payload. Reading the
+   *source band* instead is what agent-ops#1128 cost: this requirement's list
+   of thread-less types named tech-debt, which was true when it was written and
+   stopped being true when agent-ops#875 moved that band onto
+   `pw::type:tech-debt` issues — issues with a number, a URL and a thread like
+   any other. `lib/refinement.sh` went on keying the two shapes on
+   `source == "issues"`, so every tech-debt refinement took the payload shape
+   it no longer needed: on 2026-08-31 that was 98 of the 106 candidates and
+   229,399 bytes of `spec` in the one band this requirement cannot shed, with
+   the allowance 97,465 bytes negative and requirement 4i's ladder pinned at
+   its last rung on every node of the fleet. The test is the gather entry's own
+   `number`, which every issue-backed source carries and no thread-less one
+   does.
+
+   **One home per refinement.** `refinement_record_fields` records the pointer
+   or the payload and never both: a `comment_url` and a `spec` describing the
+   same refinement are not redundancy that costs nothing, because the payload
+   is kilobytes in the unsheddable band and the pointer already resolves to the
+   same text — requirement 17f's own traceability check reads that comment for
+   exactly this reason. A verdict offering both is recorded as the pointer
+   alone. `coordinator_refinements_view` applies the same rule on the read
+   side, shedding a `spec` that sits beside a `comment_url` whatever its
+   candidacy: the ledger is never retired, so entries written before the rule
+   existed are still read, and those are the ones a fixed writer alone would
+   never reach.
 
    So the Script scopes it. `coordinator_refinements_view` keeps every entry's
    `ts`, `cycle` and `comment_url` for every item, and keeps a `spec` only for
@@ -9911,8 +9939,9 @@ implements.
     that item's entry as `recheck_clean_ts`, for requirement 18a's own
     comparison to read on the next cycle. An
     `item-refined` carries `repo`, `item`, `by` (`"enabler"` or `"refiner"`,
-    the stage that wrote it) and either the `spec` it wrote or the
-    `comment_url` of the comment it posted (requirements 36b, 39c); the
+    the stage that wrote it) and exactly one of the `spec` it wrote or the
+    `comment_url` of the comment it posted — never both, and which one is
+    settled by whether the item has a thread (requirements 36b, 39c, 4j); the
     common `cycle` and `ts` are what requirement 3h reads it back by, and what
     requirement 39a's own read compares against a fresher block's `ts` to
     decide whether the refinement still stands. A
@@ -11787,16 +11816,27 @@ implements.
       anything that belongs to a human — a missing acceptance criterion derivable
       from the code, a scope bound the repo's conventions already imply, a
       reproduction reconstructible from a failing run. The verdict is
-      `unblocked`, and *where the refinement lands is decided by the item type*,
-      because it has to land where a future Co-Ordinator will read it:
-      - an **issue** item: **one** authoritative comment on the issue carrying
-        the refined specification (goal, scope bounds, acceptance criteria,
-        pointers to the relevant files and conventions), its URL returned in
-        `comments_posted`. Requirements 14a and 20 already have the Co-Ordinator
-        read the whole thread and paste it, so this needs no new carrier;
-      - **any other item type**: the specification is returned in `refined_spec`
-        as self-contained markdown, because there is no thread to write into and
-        no actor here may edit the register. Requirement 3h is its carrier.
+      `unblocked`, and *where the refinement lands is decided by whether the
+      item has a thread*, because it has to land where a future Co-Ordinator
+      will read it. The test is the gather entry's own `number` — carried by
+      every issue-backed source and by no other — and never the item's source
+      band, which agent-ops#875 showed can acquire a thread without the rule
+      here changing a word (requirement 4j):
+      - an item **with a thread**, which is every `issues` item and, since
+        agent-ops#875, every `tech-debt` item: **one** authoritative comment on
+        the issue carrying the refined specification (goal, scope bounds,
+        acceptance criteria, pointers to the relevant files and conventions),
+        its URL returned in `comments_posted`. Requirements 14a and 20 already
+        have the Co-Ordinator read the whole thread and paste it, so this needs
+        no new carrier;
+      - an item **with no thread** — a review recommendation, a plan task: the
+        specification is returned in `refined_spec` as self-contained markdown,
+        because there is nowhere to write it to and no actor here may edit the
+        register. Requirement 3h is its carrier.
+
+      Exactly one of the two, never both: a verdict offering a `refined_spec`
+      beside a `comments_posted` URL is recorded as the URL alone
+      (requirement 4j's own "one home per refinement").
 
       **The unselectability note** (agent-ops#447). For an issue item, before
       posting, the Enabler checks the issue's own live assignees — a `gh`

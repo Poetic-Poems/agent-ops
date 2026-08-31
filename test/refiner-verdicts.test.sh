@@ -646,6 +646,35 @@ assert_eq "the warning still carries every one of the 50 claimed items" \
 assert_eq "  ... and no refiner-examined/item-refined/attempt-failed at all" "0" \
   "$(grep -cE '^event (refiner-examined|item-refined|attempt-failed) ' <<<"$calls")"
 
+# --- One home per refinement (agent-ops#1128) ---------------------------------
+#
+# `refinement_record_fields` used to record whatever the verdict offered: a
+# `spec` and a `comment_url` together produced both. That pairing is what put
+# kilobytes of duplicated markdown into requirement 4j's unsheddable band
+# beside a pointer that already resolved to the same text. The pointer wins.
+
+assert_eq "a verdict offering only a comment URL records the pointer" \
+  '{"comment_url":"https://github.com/o/r/issues/7#issuecomment-1"}' \
+  "$(refinement_record_fields '{"comments_posted":["https://github.com/o/r/issues/7#issuecomment-1"]}')"
+
+assert_eq "a verdict offering only a spec records the payload" \
+  '{"spec":"S"}' \
+  "$(refinement_record_fields '{"refined_spec":"S"}')"
+
+assert_eq "a verdict offering both records the pointer alone" \
+  '{"comment_url":"https://github.com/o/r/issues/7#issuecomment-1"}' \
+  "$(refinement_record_fields '{"refined_spec":"S","comments_posted":["https://github.com/o/r/issues/7#issuecomment-1"]}')"
+
+assert_eq "a verdict offering neither records nothing" "" \
+  "$(refinement_record_fields '{}')"
+
+# A `comments_posted[0]` that names no real comment is absent, not a pointer
+# (TD-PPagop-26082819) — so a spec beside it is still the record, and the
+# exclusivity rule must not swallow it.
+assert_eq "a bare issue URL is not a pointer, so the spec beside it survives" \
+  '{"spec":"S"}' \
+  "$(refinement_record_fields '{"refined_spec":"S","comments_posted":["https://github.com/o/r/issues/7"]}')"
+
 printf '\n'
 if (( failures > 0 )); then
   printf '%d assertion(s) failed\n' "$failures"

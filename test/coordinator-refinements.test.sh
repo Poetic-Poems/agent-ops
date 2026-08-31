@@ -4,7 +4,7 @@
 # `coordinator_refinements_view` (agent-ops#643).
 #
 # `refinements` is a ledger that is never retired. Most of its entries are a
-# line — `ts`, `cycle`, a `comment_url` — but an entry for an item type with no
+# line — `ts`, `cycle`, a `comment_url` — but an entry for an item with no
 # thread to hold it carries the whole specification in markdown, and by
 # 2026-08-21 those had grown to 219175 bytes of a 237339-byte band. That band
 # sits in the *unsheddable* half of the Co-Ordinator's input: requirement 4i's
@@ -70,7 +70,8 @@ eval "$view_block"
 repos='[
   {"slug": "o/r",
    "issues":     [{"source": "issues",     "ref": "52", "number": 52}],
-   "tech_debt":  [{"source": "tech-debt",  "ref": "TD-live", "id": "TD-live"}],
+   "tech_debt":  [{"source": "tech-debt",  "ref": "TD-live", "id": "TD-live"},
+                  {"source": "tech-debt",  "ref": "TD-both", "id": "TD-both"}],
    "review_feedback": [{"source": "review-feedback", "ref": "pr-9-review-1"}]},
   {"slug": "o/other", "tech_debt": [{"source": "tech-debt", "ref": "TD-elsewhere"}]}
 ]'
@@ -81,7 +82,8 @@ refinements='{
     "TD-gone":      {"ts": "t", "cycle": "c", "spec": "SPEC-DROPPED-gone"},
     "TD-alsogone":  {"ts": "t", "cycle": "c", "spec": "SPEC-DROPPED-alsogone"},
     "52":           {"ts": "t", "cycle": "c", "comment_url": "https://example/52"},
-    "61":           {"ts": "t", "cycle": "c", "comment_url": "https://example/61"}
+    "61":           {"ts": "t", "cycle": "c", "comment_url": "https://example/61"},
+    "TD-both":      {"ts": "t", "cycle": "c", "comment_url": "https://example/both", "spec": "SPEC-DROPPED-both"}
   },
   "o/other": {
     "TD-elsewhere": {"ts": "t", "cycle": "c", "spec": "SPEC-KEPT-otherrepo"}
@@ -100,6 +102,15 @@ assert_true "a spec is dropped for an item no band offers" \
   "$(jq -e '."o/r"."TD-gone" | has("spec") | not' <<<"$out" >/dev/null && echo true || echo false)"
 assert_true "…and for the second such item too, not just the first" \
   "$(jq -e '."o/r"."TD-alsogone" | has("spec") | not' <<<"$out" >/dev/null && echo true || echo false)"
+
+# A pointer and a payload never both survive, whatever the candidacy
+# (agent-ops#1128). The ledger is never retired, so entries written before
+# `refinement_record_fields` stopped emitting the pair are still read here, and
+# a `comment_url` already resolves to the text the `spec` duplicates.
+assert_true "a spec beside a comment_url is dropped even for a live candidate" \
+  "$(jq -e '."o/r"."TD-both" | has("spec") | not' <<<"$out" >/dev/null && echo true || echo false)"
+assert_true "…and the pointer it sat beside is kept" \
+  "$(jq -e '."o/r"."TD-both".comment_url == "https://example/both"' <<<"$out" >/dev/null && echo true || echo false)"
 
 # Candidacy is per repo, not fleet-wide: an id offered by one repo must not
 # rescue the same id in another, and a repo's own candidates must be found.

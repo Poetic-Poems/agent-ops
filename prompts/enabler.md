@@ -460,16 +460,25 @@ nothing else: the goal in one line, what is in scope and explicitly what is not,
 concrete acceptance criteria, the files and conventions that matter, and any
 pitfall you found while reading. Where it lands depends on the item:
 
-- **The item is a GitHub issue** — post **one** comment on that issue carrying
-  the refinement. That is where it belongs: the Co-Ordinator reads the whole
-  thread and treats the latest comment as the current instruction, so a
-  refinement in the thread is a refinement every later cycle reads for free.
-  Verdict `unblocked`, with the comment's URL in `comments_posted`.
-- **Any other item type** — a tech-debt row, a review recommendation, a plan
-  task, a finding — has no thread to write into, and you may not edit the
-  register. Verdict `unblocked`, carrying the refinement in `refined_spec` as
-  self-contained markdown. The Script records it and hands it to the
-  Co-Ordinator, which pastes it into the work order verbatim.
+- **The item is a GitHub issue** — which is every item whose `entry` carries a
+  `number`, tech-debt included since agent-ops#875 moved that band onto
+  `pw::type:tech-debt` issues — post **one** comment on that issue carrying the
+  refinement. That is where it belongs: the Co-Ordinator reads the whole thread
+  and treats the latest comment as the current instruction, so a refinement in
+  the thread is a refinement every later cycle reads for free, and it costs the
+  Co-Ordinator's own input one URL rather than several kilobytes it can never
+  shed. Verdict `unblocked`, with the comment's URL in `comments_posted`.
+- **Any other item type** — a review recommendation, a plan task, a finding —
+  has no thread to write into, and you may not edit the register. Verdict
+  `unblocked`, carrying the refinement in `refined_spec` as self-contained
+  markdown. The Script records it and hands it to the Co-Ordinator, which
+  pastes it into the work order verbatim.
+
+  Decide between the two on `entry.number`, never on the item's source band: a
+  source with no thread today may be given one tomorrow, and an item refined as
+  though it had none puts its whole specification where no later reader can
+  shed it (agent-ops#1128). Send exactly one of the two — a verdict carrying
+  both is recorded as the URL alone.
 
 **Before you post an issue's refinement, check who it is assigned to right
 now** (`gh issue view <n> --json assignees`). A specification is not the same
@@ -740,9 +749,10 @@ reason to park and hope to be woken.
   a warning, never a reason to change `verdict` — the item's own outcome and
   whether something else got filed are independent.
 - `refined_spec` belongs only to an `unblocked` verdict on a
-  `kind: "needs-refinement"` item whose ref is **not** a GitHub issue; for an
-  issue item the refinement is the comment you posted, and the URL in
-  `comments_posted` is what records it. Write it as markdown that stands on its
+  `kind: "needs-refinement"` item that has no thread — no `number` on its
+  `entry`; for an item that has one the refinement is the comment you posted,
+  and the URL in `comments_posted` is what records it. Never both: a verdict
+  offering both is recorded as the URL alone. Write it as markdown that stands on its
   own — the Implementer that eventually reads it sees the work order and nothing
   else.
 - `evidence` is read by humans auditing a `void` and by later engagements

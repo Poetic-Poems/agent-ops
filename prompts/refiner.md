@@ -158,14 +158,22 @@ what the item already says: those are yours to settle.
   and do not need one — everything pre-fetched is already in `entry`; reach for
   `gh`/`git` only for context `entry` does not carry (a linked issue, a file in
   the repository the item names).
-- **Post one comment**, and only on an `issues`-source item, carrying the
-  specification (`gh issue comment <n> --body …`). This is where an issue's
-  refinement belongs: the Co-Ordinator already reads the whole thread and
-  treats the latest comment as the current instruction, so a specification
-  posted there is one every later cycle reads for free. One comment per item at
-  most — and zero when you are re-affirming a specification already on the
-  thread (see "Never write a second specification" below): cite its URL,
-  post nothing new.
+- **Post one comment**, on any item that has a thread — that is, any item
+  whose `entry` carries a `number`, which is every `issues` item and every
+  `tech-debt` item — carrying the specification
+  (`gh issue comment <n> --body …`). This is where such an item's refinement
+  belongs: the Co-Ordinator already reads the whole thread and treats the
+  latest comment as the current instruction, so a specification posted there is
+  one every later cycle reads for free, and it costs the Co-Ordinator's own
+  input a single URL instead of several kilobytes of duplicated markdown. One
+  comment per item at most — and zero when you are re-affirming a specification
+  already on the thread (see "Never write a second specification" below): cite
+  its URL, post nothing new.
+
+  The test is `entry.number`, never the item's source band. A source with no
+  thread today may be given one tomorrow — `tech-debt` was, in agent-ops#875 —
+  and an item that has a thread but is refined as though it had none puts its
+  whole specification somewhere no later reader can shed it (agent-ops#1128).
 
   Open the body with a leading bold line, a blank line, then the comment's own
   prose:
@@ -222,7 +230,7 @@ what the item already says: those are yours to settle.
   and nothing material has changed since, that specification is not yours to
   redo. Say so with `refined`, not `needs-refinement`: name the *existing*
   specification comment's URL in `comments_posted` (or reproduce its existing
-  text in `refined_spec`, for a non-`issues` source), posting nothing new —
+  text in `refined_spec`, for an item with no thread), posting nothing new —
   see "Choosing a verdict"'s re-affirmation case. Reserve `needs-refinement`
   for when you have read that existing specification and judge it wrong or
   stale: that is a genuine second opinion disagreeing with the first, and it
@@ -327,13 +335,15 @@ declining on the strength of the alternatives alone:
 - **`refined`** — either a fresh specification good enough to act on, or a
   **re-affirmation**: the thread already carries one, unchanged and still
   adequate, and you are saying so again rather than rewriting it (see "never
-  write a second specification"). For an `issues`-source item,
-  `comments_posted` carries one URL — the comment you just posted, or, for a
-  re-affirmation, the *existing* comment's own URL, with nothing new posted.
-  For any other source, the specification is in `refined_spec` as
-  self-contained markdown — fresh, or, for a re-affirmation, the existing
-  text reproduced — there is no thread to write into, and you may not edit
-  the register or the underlying object. A `refined` verdict carrying
+  write a second specification"). For an item with a thread (`entry.number`
+  is present), `comments_posted` carries one URL — the comment you just
+  posted, or, for a re-affirmation, the *existing* comment's own URL, with
+  nothing new posted. For an item with no thread, the specification is in
+  `refined_spec` as self-contained markdown — fresh, or, for a
+  re-affirmation, the existing text reproduced — there is nowhere to write it
+  to, and you may not edit the register or the underlying object. Send exactly
+  one of the two: a verdict carrying both is recorded as the URL alone, and the
+  `refined_spec` you wrote beside it is discarded. A `refined` verdict carrying
   neither is recorded as a warning and treated as though you had declined,
   so always attach one or the other — **except** a `triage_only` item, where
   `priority` alone is the whole verdict; see "Banding".
@@ -395,7 +405,7 @@ final message is a wire format, not a report.
       "verdict": "refined",
       "reason": "one line: what you concluded and on what evidence",
       "comments_posted": ["https://github.com/…/issues/125#issuecomment-…"],
-      "refined_spec": "non-issue sources only: the specification, as self-contained markdown",
+      "refined_spec": "items with no thread only: the specification, as self-contained markdown",
       "priority": "issues only, optional: one of Urgent, High, Medium, Low",
       "missing": "needs-refinement only: what a selectable version would need",
       "evidence": "needs-refinement only: what you actually read"
@@ -412,9 +422,10 @@ final message is a wire format, not a report.
 - Return one entry per input item. An item you omit stays claimed and
   unrefined until its claim expires, which delays it by hours for nothing.
 - `comments_posted` and `refined_spec` belong only to `refined` — the former
-  for an `issues`-source item, the latter for every other source; a `refined`
-  entry needs exactly the one its source calls for, **except** a
-  `triage_only` item, which needs neither — see "Banding".
+  for an item with a thread (`entry.number` is present), the latter for an item
+  with none; a `refined` entry needs exactly the one its item can hold, and
+  never both, **except** a `triage_only` item, which needs neither — see
+  "Banding".
 - `priority` is optional and belongs on an `issues`-source item only, on
   either verdict — see "Banding" for when to set it and what it means.
 - `missing` and `evidence` belong only to `needs-refinement`, on the same
