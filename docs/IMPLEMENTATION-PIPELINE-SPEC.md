@@ -11618,8 +11618,12 @@ implements.
     `pr-<n>-abandoned-<sha>` is tested against this
     cycle's own freshly gathered
     `merge_conflicts`/`dequeued`/`abandoned_drafts` arrays
-    (already assembled into `ordered_repos_json` for the Co-Ordinator, requirements
-    3g, 3z): if that exact ref is not among them — the head moved again, or the PR
+    (requirements 3g, 3z), snapshotted before `ordered_repos_json`'s own copies of
+    those same bands lose every blocked entry to requirements 3t/3u's
+    blocked/void subtraction — the Enabler is eligible only for items that are
+    blocked, so testing against the post-subtraction bands would find every one
+    of them missing and mark it stale forever (issue #1119): if the ref is
+    absent from the pre-subtraction snapshot — the head moved again, or the PR
     resolved outright — the entry is dropped, and the drop is logged
     (`enabler-stale-refs-skipped`, an object payload `{skipped: [{repo,
     item}…]}` — log_event's envelope merge can only add objects, and the
@@ -14268,10 +14272,15 @@ What exists, and the requirements each part answers to:
    `compute_band_eligibility` runs every pre-fetched band but `issues`
    through `exclude_blocked_or_void_items` (`issues` has its own narrower
    pass through `exclude_blocked_or_void_issues`) and settles
-   `refinements_json`. `compute_enabler_eligible_set` derives
+   `refinements_json`; before that subtraction it snapshots
+   `live_pr_refs_json` — requirement 35e's live set — from the untouched
+   gather, because the entries the subtraction removes are exactly the ones
+   that filter is asked about (issue #1119).
+   `compute_enabler_eligible_set` derives
    `enabler_eligible_json` from the source-state digests of the repositories
    that sampled cleanly — how "is that escalation issue still open?" is
-   answered without a `gh` call per escalation — and ends by setting
+   answered without a `gh` call per escalation — consumes that snapshot for
+   requirement 35e's filter, and ends by setting
    `enabler_allowed`. `prefetch_refiner_sources` fetches the Refiner's own
    two extra sources into `refiner_repos_json`, which `ordered_repos_json`
    deliberately never gains. `compute_refiner_candidates` derives
