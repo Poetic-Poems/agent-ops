@@ -802,13 +802,17 @@ most_recent_review_date() {
 # Count of pull requests merged into default_branch on or after since_date —
 # a single `search/issues` request, no pagination, mirroring why the
 # open-PR check above uses `--limit 1`: the question is "how many", answered
-# in one call, not "which ones". Degrades to empty (not 0) on any failure,
-# the same fail-open shape most_recent_review_date already has for a
-# repository gh can't read — a transient API error must not block a review
-# it cannot actually verify.
+# in one call, not "which ones". `-X GET` is required: `gh api` defaults to
+# POST whenever `-f` parameters are given, and `/search/issues` only accepts
+# GET, so without it every call 404s. Does not degrade to empty on failure:
+# `gh` writes a non-2xx response's JSON error body to stdout (only its own
+# summary line goes to stderr), which `--jq` leaves unfiltered on a non-2xx
+# reply, so a failed call instead returns that multi-line JSON blob — it is
+# skip_reason's own `^[0-9]+$` guard on the result, not this function, that
+# keeps a failure from being misread as a PR count.
 merged_pr_count_since() {
   local slug="$1" default_branch="$2" since_date="$3"
-  gh api search/issues -f q="repo:$slug is:pr is:merged base:$default_branch merged:>=$since_date" \
+  gh api -X GET search/issues -f q="repo:$slug is:pr is:merged base:$default_branch merged:>=$since_date" \
     --jq '.total_count' 2>/dev/null || true
 }
 
