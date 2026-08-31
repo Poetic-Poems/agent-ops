@@ -118,12 +118,18 @@ _expensive_gather_node_offset() {
 # ties break on NODE_NAME's own rotation: sort REPOS_JSON's slugs ascending,
 # then break a tie in favour of the slug at index `hash(NODE_NAME) mod M`
 # (`_expensive_gather_node_offset`) in that ascending list — a fixed,
-# per-node offset into the same underlying order, so two differently-named
-# nodes tying on the same cycle pick different repositories, and the same
-# node ties the same way every time it recurs. This bound holds only from a
-# common start — nodes whose caches were populated in the same interval; a
-# node that stands down before the gather (requirement 2's ladder) falls one
-# rotation step behind its peers and the phases drift apart from there.
+# per-node offset into the same underlying order, so two nodes whose names
+# hash to different offsets pick different repositories on the same cycle,
+# and the same node ties the same way every time it recurs. This spreads a
+# fleet without any coordination; it does not guarantee the fleet covers.
+# Two node names can hash to the same offset — N names drawn independently
+# into M buckets ordinarily leave one unoccupied — and the repository at an
+# unoccupied offset is read fresh by no node at all that interval, while the
+# nodes sharing an offset stay aligned with each other. Whatever stagger the
+# hash does give holds only from a common start — nodes whose caches were
+# populated in the same interval; a node that stands down before the gather
+# (requirement 2's ladder) falls one rotation step behind its peers and the
+# phases drift apart from there.
 #
 # REPOS_JSON with no entries prints nothing; the caller must treat that as
 # "nothing to pick" rather than call this with an empty set.

@@ -62,9 +62,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reduced modulo the repository count, instead of slug ascending. Without
   this every node ties the same way and reads the same repository fresh in
   the same cycles, leaving every other one unread for the next
-  `repositories`-1 cycles; with it, a fleet whose nodes started in the same
-  interval reads every configured repository fresh somewhere every
-  interval instead of all-or-nothing.
+  `repositories`-1 cycles; with it, nodes whose names hash to different
+  offsets read different repositories in the same interval. A hash spreads a
+  fleet without coordination but does not make it cover: node names that
+  collide on an offset stay aligned with each other, and a repository whose
+  offset no node holds is still read by none of them that interval.
+  Assigning offsets so that they cover is fleet coordination
+  (agent-ops#1092), not this change.
 - `escalation_autonomy` gains a third rung, `decide-tactical` (agent-ops#936):
   one bounded Enabler decide pass (`prompts/enabler-decide.md`) runs before
   *any* `escalate` verdict is filed as a human escalation — not only a

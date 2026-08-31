@@ -14284,13 +14284,21 @@ with the Reviewer's own.
     configured repository unread for the next `repositories`-1 cycles and
     every aligned node racing the others for the same newly-visible item
     once its shared turn comes round. The offset is a fixed function of
-    `node_name` and the repository count, so it holds — every configured
-    repository read fresh by at least one node every interval — only from a
-    common start: nodes whose caches were all populated in the same
-    interval. A node that stands down before the gather (requirement 2's own
-    ladder — budget, credentials, disk, cooldown) skips a rotation step its
-    peers do not, and its phase drifts from theirs from that cycle on;
-    correcting that drift once it appears is fleet coordination
+    `node_name` and the repository count, so it spreads a fleet across the
+    rotation with no coordination, no new state and no extra GitHub read —
+    but it spreads without guaranteeing coverage, and requirement 48 claims
+    no more than that. Two node names can hash to the same offset: N names
+    drawn independently into M buckets ordinarily leave at least one offset
+    unoccupied, and the repository at an unoccupied offset is read fresh by
+    no node at all that interval, while every node sharing an offset stays
+    aligned with the others that share it. Whatever stagger a given set of
+    node names does yield holds, in turn, only from a common start: nodes
+    whose caches were all populated in the same interval. A node that stands
+    down before the gather (requirement 2's own ladder — budget,
+    credentials, disk, cooldown) skips a rotation step its peers do not, and
+    its phase drifts from theirs from that cycle on. Both the drift and the
+    unoccupied offsets are corrected only by assigning phases across nodes
+    rather than hashing each independently, which is fleet coordination
     (agent-ops#1092's Option 2), out of this requirement's scope.
 
     Every repository entry in `ordered_repos_json` carries
