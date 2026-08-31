@@ -511,6 +511,11 @@ enabler_assignee="$(cfg '.enabler_assignee')"
 crash_loop_after="$(cfg '.crash_loop_after')"
 [[ "$crash_loop_after" =~ ^[0-9]+$ ]] || crash_loop_after=0
 crash_loop_repo="$(cfg '.crash_loop_repo')"
+# Deferred crash-loop escalations this cycle's step-1b block could not file
+# safely (agent-ops#1074): populated by `crash_loop_escalate_or_defer`,
+# drained by `crash_loop_refile_pending` from `cleanup()`, once this cycle's
+# own Co-Ordinator attempt (if any) has had its chance to prove the run over.
+crash_loop_pending_refile=()
 # The out-of-band fallback create_escalation_issue POSTs to when it cannot
 # file (requirement 2m, TD-PPagop-26082304) — fleet-wide like every other key
 # in config.json, which ships in the image, and credential-independent of
@@ -1080,6 +1085,12 @@ cleanup() {
   # after the Enabler so a fleet-limit hit the Enabler's own engagement
   # triggers this cycle is still visible to the live check below.
   maybe_run_refiner "$exit_code" || true
+  # Deferred crash-loop escalations (requirement 2.7, agent-ops#1074): after
+  # the Enabler and the Refiner, same reasoning as both — and after every
+  # stage this cycle might have run, coordinator included, which is the
+  # whole point: `crash_loop_refile_pending` re-gathers the union log fresh
+  # here, so a Co-Ordinator success this very cycle logged already shows.
+  crash_loop_refile_pending || true
   # lib/issue-priority.sh's own cache directory (issue #510): removed here,
   # after the Refiner, since the Refiner's own priority-triage duty is that
   # cache's main consumer.
@@ -1509,12 +1520,52 @@ fi
 # `crash_loop_preselection_verdict` carries no such class — an `execve`
 # failure is never a network refusal — so its run always escalates exactly as
 # it always has.
+#
+# A verdict here is always computed from the union log as it stood before
+# this cycle's own Co-Ordinator attempt (if any) — this point in the script
+# runs first, deliberately (the alarm must fire even on a cycle that stands
+# down before reaching the Co-Ordinator at all). That makes a *first* attempt
+# at filing this exact run reliable — nothing has looked at it before — but
+# not a *retried* one: `crash_loop_escalate_or_defer` (lib/enabler.sh) files
+# a verdict never before attempted immediately, exactly as `crash_loop_
+# escalate` always has, but queues a deferred retry — or a fresh attempt that
+# itself failed to file — for `crash_loop_refile_pending` to re-verify from
+# `cleanup()`, once this cycle's own Co-Ordinator has had its chance to prove
+# the run over (agent-ops#1074). Filing every retry here regardless of
+# staleness is exactly what turned the 2026-08-29/30 Ockham outage's last
+# hour into a false alarm (#1070): the escalation and the Co-Ordinator
+# success that refuted it landed in the same cycle, the escalation first only
+# because this block runs before the Co-Ordinator does. `crash_loop_retire_
+# resolved` closes the other side of the same gap: an already-open Co-
+# Ordinator-class escalation whose run has broken since, on any later cycle's
+# ordinary union snapshot — no same-cycle race to lose, so no need to wait
+# for `cleanup()`.
+#
+# Retirement runs FIRST, before either `crash_loop_escalate_or_defer` call
+# below (agent-ops#1134 review). `create_escalation_issue`'s own open-issue
+# dedup is a live `gh issue list` query, not a read of this cycle's
+# `$union_log` — so if a resolved run's issue is still open when a *new*,
+# same-detail run re-crosses `crash_loop_after` later in this same block,
+# `create_escalation_issue` finds that still-open issue and rebinds it to the
+# new run instead of filing a fresh one, and this retirement step then closes
+# it out from under that live run on the strength of a `$union_log` snapshot
+# that predates the rebind. Running retirement first closes the resolved
+# run's issue before the new run's own filing attempt can see it, so that
+# attempt's `gh issue list` no longer finds anything to reuse and opens a
+# fresh issue instead — the new run gets its own alarm rather than inheriting
+# one already closed for the old.
 if ! (( DRY_RUN )) && (( crash_loop_after > 0 )) \
     && [[ -n "$crash_loop_repo" && -n "$enabler_assignee" && -s "$union_log" ]]; then
+  # Retirement (agent-ops#1074): independent of whether either class fires a
+  # verdict this cycle — an open escalation from a run that broke cycles ago
+  # is exactly what this closes, whatever this cycle's own union log shows
+  # right now.
+  crash_loop_retire_resolved
+
   crash_loop_json="$(crash_loop_verdict "$crash_loop_after" < "$union_log")"
   if [[ -n "$crash_loop_json" ]]; then
     if [[ "$(jq -r '.escalate' <<<"$crash_loop_json")" == "true" ]]; then
-      crash_loop_escalate "$crash_loop_json" "crash-loop:coordinator" \
+      crash_loop_escalate_or_defer "$crash_loop_json" "crash-loop:coordinator" \
         "Co-Ordinator failures" \
         "Crash loop: the Co-Ordinator is failing fleet-wide" \
         "Start with the newest failing cycle's \`coordinator.out\` under \`state_dir/cycles/\` — a stage the API refused outright records the refusal there, as a \`result\` with \`is_error: true\`, and leaves \`coordinator.out.stderr\` empty (agent-ops#641). Read \`coordinator.out.stderr\` too, for a stage that died rather than being refused; the stage transcripts survive every failure."
@@ -1525,7 +1576,7 @@ if ! (( DRY_RUN )) && (( crash_loop_after > 0 )) \
 
   crash_loop_preselection_json="$(crash_loop_preselection_verdict "$crash_loop_after" < "$union_log")"
   if [[ -n "$crash_loop_preselection_json" ]]; then
-    crash_loop_escalate "$crash_loop_preselection_json" "crash-loop:pre-selection" \
+    crash_loop_escalate_or_defer "$crash_loop_preselection_json" "crash-loop:pre-selection" \
       "cycles dying before any stage started" \
       "Crash loop: cycles are dying before any stage starts" \
       "No stage transcript exists for a cycle that dies before any stage begins — start with the newest failing cycle's entry in \`cron.log\` (or \`cron.log.1\` after rotation) under \`state_dir/\`."

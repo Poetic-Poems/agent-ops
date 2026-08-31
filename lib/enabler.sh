@@ -245,6 +245,15 @@ $(pipeline_comment_marker "$cycle_id" script)"
 # start reading differ between them. KIND_LABEL is the plural noun phrase for
 # "N consecutive KIND_LABEL"; EVIDENCE_LINE is a prose line naming what to
 # read first.
+#
+# Files immediately, unconditionally, whatever VERDICT_JSON's own history —
+# callers decide *whether* and *when* it is safe to call this (see
+# `crash_loop_escalate_or_defer` below, agent-ops#1074); this function only
+# ever files or defers, on the dedup check it has always made. Returns 0 on
+# a successful filing (or the dedup no-op) and 1 when `create_escalation_issue`
+# could not file, so a caller that queued this attempt for a later re-check
+# (a fresh verdict's own first attempt, called from `crash_loop_escalate_or_
+# defer`) knows to queue it.
 crash_loop_escalate() {
   local verdict_json="$1" item_ref="$2" kind_label="$3" title_prefix="$4" evidence_line="$5"
   local cl_detail cl_first_ts cl_body cl_created
@@ -294,8 +303,198 @@ CRASH_LOOP_BODY
     # itself: no repo/item.
     log_event "rework" "$(rework_crash_loop_fields "$verdict_json")"
   else
-    log_event "warning" "$(jq -nc --arg d "crash loop detected ($cl_detail) but the escalation issue could not be filed — will retry next cycle" '{detail: $d}')"
+    # Structured, not a bare `warning`, because `crash_loop_deferred_since`
+    # (lib/crash-loop.sh) must recognise this exact run on a later cycle —
+    # the whole reason a deferred retry does not repeat this same premature
+    # filing attempt (agent-ops#1074). Carries VERDICT_JSON's own fields
+    # (`detail`, `first_ts`, …) untouched, under `message` rather than
+    # overwriting `detail` with prose a dedup check would have to re-parse.
+    log_event "crash-loop-deferred" "$(jq -c --arg m "crash loop detected ($cl_detail) but the escalation issue could not be filed — will retry" '. + {message: $m}' <<<"$verdict_json")"
+    return 1
   fi
+}
+
+# crash_loop_escalate_or_defer VERDICT_JSON ITEM_REF KIND_LABEL TITLE_PREFIX EVIDENCE_LINE
+# The step-1b entry point for either crash-loop class (requirement 2.7,
+# agent-ops#1074) — called at the same early point in the cycle
+# `crash_loop_escalate` always was, before this cycle's own Co-Ordinator
+# attempt (if any) has run.
+#
+# A FRESH verdict — nothing has ever tried to file this exact run before
+# (`crash_loop_deferred_since` finds no prior attempt) — is filed here,
+# immediately, exactly as `crash_loop_escalate` always has: at this point in
+# the cycle the verdict is as current as it has ever been, since no earlier
+# attempt existed to have gone stale.
+#
+# A DEFERRED RETRY — a previous cycle already tried and failed to file this
+# exact run — is not filed here at all. The verdict computed at this point in
+# *this* cycle is exactly as stale as the one a previous cycle already
+# failed to file: it was gathered before this cycle's own Co-Ordinator has
+# had its chance, so it can never see a recovery that attempt is about to
+# produce. Filing it here is what turned the 2026-08-29/30 Ockham outage's
+# last hour into a false alarm (agent-ops#1070): the escalation and the
+# success that refuted it landed in the same cycle, the escalation first
+# only because this block runs before the Co-Ordinator does.
+#
+# So a deferred retry (and a fresh verdict that itself failed to file, added
+# by `crash_loop_escalate`'s own new return code — no reason to make it wait
+# a whole extra cycle when this one is not over yet) is queued in
+# `crash_loop_pending_refile` instead, and re-verified against the fleet's
+# freshest state at `cleanup()`, after every stage this cycle might run has
+# had its chance to prove the run over.
+crash_loop_escalate_or_defer() {
+  local verdict_json="$1" item_ref="$2" kind_label="$3" title_prefix="$4" evidence_line="$5"
+  local cl_detail cl_first_ts
+  cl_detail="$(jq -r '.detail // ""' <<<"$verdict_json")"
+  cl_first_ts="$(jq -r '.first_ts // ""' <<<"$verdict_json")"
+  if crash_loop_escalated_since "$cl_first_ts" "$cl_detail" < "$union_log"; then
+    return 0
+  fi
+  if crash_loop_deferred_since "$cl_first_ts" "$cl_detail" < "$union_log"; then
+    crash_loop_pending_refile+=("$(jq -nc \
+      --arg ref "$item_ref" --arg kl "$kind_label" --arg tp "$title_prefix" --arg ev "$evidence_line" \
+      --argjson v "$verdict_json" \
+      '{item_ref: $ref, kind_label: $kl, title_prefix: $tp, evidence_line: $ev, verdict: $v}')")
+    return 0
+  fi
+  if ! crash_loop_escalate "$verdict_json" "$item_ref" "$kind_label" "$title_prefix" "$evidence_line"; then
+    crash_loop_pending_refile+=("$(jq -nc \
+      --arg ref "$item_ref" --arg kl "$kind_label" --arg tp "$title_prefix" --arg ev "$evidence_line" \
+      --argjson v "$verdict_json" \
+      '{item_ref: $ref, kind_label: $kl, title_prefix: $tp, evidence_line: $ev, verdict: $v}')")
+  fi
+}
+
+# crash_loop_refile_pending
+# Runs from `cleanup()` (agent-ops#1074), after every stage this cycle might
+# run has had its chance — the fresh union snapshot `fleet_logs` builds here
+# includes this cycle's own now-complete Co-Ordinator attempt, which the
+# original verdict in `crash_loop_pending_refile` (built at step 1b, before
+# that attempt) could never see.
+#
+# For each queued attempt: re-verify with `crash_loop_reverify`. Broken (the
+# run this verdict named has since ended) drops it — `crash-loop-dropped`
+# records why, naming the run's own detail/first_ts, so this is
+# distinguishable in the log from a run that simply never re-crossed
+# threshold. Still active refiles it, via the same `crash_loop_escalate` a
+# fresh verdict uses (its own dedup guards against a peer having escalated
+# this run meanwhile) — a filing that fails here just logs another
+# `crash-loop-deferred`, exactly as a fresh failure does, and the run is
+# picked up again next cycle.
+#
+# A union log this function cannot read (`fleet_logs` producing nothing) is
+# never evidence of recovery: requirement 2.7's own rule, "silence must never
+# retire an alarm" — every still-queued attempt is filed on the strength of
+# its original (step-1b) verdict instead of being re-verified at all.
+crash_loop_refile_pending() {
+  (( ${#crash_loop_pending_refile[@]} )) || return 0
+  local fresh_union
+  fresh_union="$(fleet_logs "$state_dir" "$peers_dir" log.jsonl)"
+  local entry item_ref kind_label title_prefix evidence_line verdict_json fresh
+  for entry in "${crash_loop_pending_refile[@]}"; do
+    item_ref="$(jq -r '.item_ref' <<<"$entry")"
+    kind_label="$(jq -r '.kind_label' <<<"$entry")"
+    title_prefix="$(jq -r '.title_prefix' <<<"$entry")"
+    evidence_line="$(jq -r '.evidence_line' <<<"$entry")"
+    verdict_json="$(jq -c '.verdict' <<<"$entry")"
+    if [[ -z "$fresh_union" ]]; then
+      crash_loop_escalate "$verdict_json" "$item_ref" "$kind_label" "$title_prefix" "$evidence_line" || true
+      continue
+    fi
+    fresh="$(crash_loop_reverify "$verdict_json" "$crash_loop_after" <<<"$fresh_union")"
+    if [[ -n "$fresh" ]]; then
+      crash_loop_escalate "$fresh" "$item_ref" "$kind_label" "$title_prefix" "$evidence_line" || true
+    else
+      log_event "crash-loop-dropped" "$(jq -c --arg ref "$item_ref" \
+        '. + {item_ref: $ref, reason: "run broken since first_ts; deferred filing dropped"}' \
+        <<<"$verdict_json")"
+    fi
+  done
+}
+
+# crash_loop_retire_resolved
+# Closes any open crash-loop escalation whose run has since broken *and*
+# whose breaking Co-Ordinator success can be named — both conditions, since
+# the detector going quiet alone is not evidence of recovery (see the
+# `success_ts` guard below) — the Co-Ordinator class only (`stage:
+# "coordinator"`, agent-ops#1074);
+# `crash_loop_preselection_verdict`'s own class has no single resetting
+# event `crash_loop_last_success_since` can name for the closing comment (a
+# clean cycle exit and a selection-path stage-start both reset it), and
+# nothing in the issue this exists for asked for that class's retirement.
+#
+# Runs from step 1b, against this cycle's ordinary start-of-cycle
+# `$union_log`: unlike a deferred filing, retirement has no same-cycle race
+# to lose to — an open issue's run either broke some earlier cycle (visible
+# in any union snapshot since) or it did not, so the freshest-available
+# snapshot serves exactly as well as one gathered later would.
+#
+# Before touching any open escalation, this also checks whether the same
+# `$union_log` already shows a *fresh* Co-Ordinator run under the very same
+# detail — regardless of that run's own `first_ts` — via a plain
+# `crash_loop_verdict` recompute, and skips retirement outright if so
+# (agent-ops#1134 review). `crash_loop_reverify` below already refuses to
+# retire the *exact* run an open issue names; it cannot see a *new* run that
+# has since re-crossed `crash_loop_after` under the same detail, because that
+# new run has a different `first_ts` and so reads as a different run to a
+# same-first_ts match. Step 1b in agent-cycle.sh now runs this function
+# before either `crash_loop_escalate_or_defer` call, which closes the
+# single-cycle, single-node version of that gap — but a peer node can still
+# have escalated (and so rebound the still-open issue to) that new run in an
+# earlier cycle whose own rebind event has not yet reached this node's
+# peer-synced union. Without this check, this node would then retire the
+# issue the peer just rebound, on the strength of a union snapshot that is
+# stale only about the rebind, not about the new run's failures themselves —
+# which this same snapshot already shows.
+crash_loop_retire_resolved() {
+  [[ -n "$crash_loop_repo" && -s "$union_log" ]] || return 0
+  local entry stage detail first_ts issue_number issue_url success_ts body
+  local active_detail
+  active_detail="$(jq -r '.detail // empty' <<<"$(crash_loop_verdict "$crash_loop_after" < "$union_log")" 2>/dev/null)"
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    stage="$(jq -r '.stage // ""' <<<"$entry")"
+    [[ "$stage" == "coordinator" ]] || continue
+    detail="$(jq -r '.detail // ""' <<<"$entry")"
+    first_ts="$(jq -r '.first_ts // ""' <<<"$entry")"
+    issue_number="$(jq -r '.issue_number // ""' <<<"$entry")"
+    issue_url="$(jq -r '.issue_url // ""' <<<"$entry")"
+    [[ -n "$detail" && -n "$first_ts" && "$issue_number" =~ ^[0-9]+$ ]] || continue
+    [[ -n "$active_detail" && "$active_detail" == "$detail" ]] && continue
+    [[ -z "$(crash_loop_reverify "$(jq -nc --arg s "$stage" --arg d "$detail" --arg f "$first_ts" \
+                '{stage: $s, detail: $d, first_ts: $f}')" "$crash_loop_after" < "$union_log")" ]] || continue
+    success_ts="$(crash_loop_last_success_since "$stage" "$first_ts" < "$union_log")"
+    # Positive evidence only. `crash_loop_reverify` going quiet is not the
+    # same fact as "the Co-Ordinator recovered": a run stops matching the
+    # detector whenever it stops being *this* run, and a still-broken fleet
+    # does that all the time — every run is same-detail by construction, so
+    # one failing node starting to say `api_error` where it used to say
+    # `coordinator exited 126` ends the run without anything recovering. A
+    # `crash_loop_after` raised between the filing and now, or a peer whose
+    # failures made up the run no longer syncing its log, end it the same
+    # way. Retiring on any of those closes a live alarm and asserts a
+    # success that never happened — the precise mistake, in the opposite
+    # direction, that requirement 2.7's "silence must never retire an alarm"
+    # forbids. So the success must be nameable before the issue is closed,
+    # which is also the only way the closing comment can name it as
+    # requirement 2.7 says it does. Not nameable: leave it open, and let a
+    # human close it.
+    [[ -n "$success_ts" ]] || continue
+    body="The Co-Ordinator has succeeded since this run's first failure (\`$first_ts\`) — at \`$success_ts\`. The loop this escalation reported has broken.
+
+---
+Retired automatically by agent-cycle.sh (requirement 2.7)."
+    if gh issue close "$issue_number" -R "$crash_loop_repo" --comment "$body" \
+         >/dev/null 2>>"$cycle_dir/crash-loop-retire.err"; then
+      log_event "crash-loop-retired" "$(jq -nc --arg s "$stage" --arg d "$detail" --arg f "$first_ts" \
+        --argjson n "$issue_number" --arg u "$issue_url" \
+        '{stage: $s, detail: $d, first_ts: $f, issue_number: $n, issue_url: $u}')"
+    else
+      log_event "warning" "$(jq -nc --argjson n "$issue_number" \
+        --arg d "crash-loop escalation issue #$issue_number has resolved but could not be closed — see crash-loop-retire.err" \
+        '{detail: $d, issue_number: $n}')"
+    fi
+  done < <(crash_loop_open_escalations < "$union_log")
 }
 
 # escalation_autonomy_pass_available REPO ITEM CLAIMED_ENTRY_JSON
