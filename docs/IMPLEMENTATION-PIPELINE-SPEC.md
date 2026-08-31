@@ -11618,8 +11618,12 @@ implements.
     `pr-<n>-abandoned-<sha>` is tested against this
     cycle's own freshly gathered
     `merge_conflicts`/`dequeued`/`abandoned_drafts` arrays
-    (already assembled into `ordered_repos_json` for the Co-Ordinator, requirements
-    3g, 3z): if that exact ref is not among them — the head moved again, or the PR
+    (requirements 3g, 3z), snapshotted before `ordered_repos_json`'s own copies of
+    those same bands lose every blocked entry to requirements 3t/3u's
+    blocked/void subtraction — the Enabler is eligible only for items that are
+    blocked, so testing against the post-subtraction bands would find every one
+    of them missing and mark it stale forever (issue #1119): if the ref is
+    absent from the pre-subtraction snapshot — the head moved again, or the PR
     resolved outright — the entry is dropped, and the drop is logged
     (`enabler-stale-refs-skipped`, an object payload `{skipped: [{repo,
     item}…]}` — log_event's envelope merge can only add objects, and the

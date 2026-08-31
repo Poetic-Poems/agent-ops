@@ -35,6 +35,23 @@
 # `agent-cycle.sh`, after `compute_skip_lists` and before anything reads a
 # band (#771).
 compute_band_eligibility() {
+# --- 35e's snapshot, taken before this function's own subtraction below ---
+# (requirement 35e, issue #1119). `compute_enabler_eligible_set` needs this
+# cycle's actual fresh `merge_conflicts`/`dequeued`/`abandoned_drafts` gather
+# to test a blocked SHA-scoped PR ref for staleness — but every entry in those
+# three bands that is itself blocked is exactly what the subtraction loop
+# below (`exclude_blocked_or_void_items`) is about to remove from
+# `ordered_repos_json`, and the Enabler is only ever eligible for items that
+# are blocked. Deriving the staleness test's live set from `ordered_repos_json`
+# after that loop runs, as requirement 35e once read, would therefore always
+# find the ref missing and mark it stale — forever, for every blocked ref,
+# since the one array it could ever appear in has already had it removed.
+# Taking this snapshot first, from the untouched gather, is what lets a
+# blocked ref that is still at its live head SHA reach the Enabler at all.
+live_pr_refs_json="$(jq -c \
+  '[.[] | .slug as $s | ((.merge_conflicts // []) + (.dequeued // []) + (.abandoned_drafts // []))[] | ($s + "#" + .ref)]' \
+  <<<"$ordered_repos_json" 2>/dev/null || true)"
+
 # --- 3c/3u. Pre-fetched-band eligibility, decided (requirement 3t, issue ---
 # --- #310; extended to every other pre-fetched band by requirement 3u, ---
 # --- issue #320) ---
@@ -146,11 +163,13 @@ enabler_eligible_json="$(enabler_eligible_items "$union_log" \
 # costing a full engagement every time its recheck clock came round only to be
 # voided as stale (as happened to `pr-205-conflict-305ca060016d`, claimed and
 # voided three minutes later). This cycle's own fresh
-# `merge_conflicts`/`dequeued`/`abandoned_drafts` arrays — already gathered
-# into `ordered_repos_json` above — are the current truth for every PR still
-# in any of those states; a SHA-scoped ref absent from them has been
-# superseded (a newer push), resolved, or requeued, either way stale. Only refs
-# shaped `pr-<n>-conflict-<sha>`/`pr-<n>-superseded-<sha>`/
+# `merge_conflicts`/`dequeued`/`abandoned_drafts` arrays — snapshotted into
+# `live_pr_refs_json` by `compute_band_eligibility` above, before its own
+# subtraction loop removes every blocked entry from those same bands in
+# `ordered_repos_json` (requirement 35e, issue #1119) — are the current truth
+# for every PR still in any of those states; a SHA-scoped ref absent from them
+# has been superseded (a newer push), resolved, or requeued, either way stale.
+# Only refs shaped `pr-<n>-conflict-<sha>`/`pr-<n>-superseded-<sha>`/
 # `pr-<n>-dequeued-<sha>`/`pr-<n>-abandoned-<sha>` are tested — the
 # merge-conflicts gather mints the first two (requirement 3g), both scoped to
 # the same head SHA, so both go stale the same way, and a refused supersession
@@ -165,9 +184,6 @@ enabler_eligible_json="$(enabler_eligible_items "$union_log" \
 # `test` on a plain id or number simply never matches the pattern. A jq
 # failure leaves the set unfiltered: this is a cost saving, never the
 # correctness gate (the Enabler still voids a stale item it does reach).
-live_pr_refs_json="$(jq -c \
-  '[.[] | .slug as $s | ((.merge_conflicts // []) + (.dequeued // []) + (.abandoned_drafts // []))[] | ($s + "#" + .ref)]' \
-  <<<"$ordered_repos_json" 2>/dev/null || true)"
 # An *empty* live set and a *failed* derivation of one are opposite facts, and
 # only the guard below keeps them apart. Empty-on-success is meaningful — no PR
 # is in either state this cycle, so every SHA-scoped ref really is superseded or

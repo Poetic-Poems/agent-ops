@@ -281,8 +281,13 @@ fi
 run_claims_fold() {  # <claimed_json> <slug> <repo_claimed_json>
   (
     # slug and repo_claimed_json are consumed only by the eval'd
-    # claims_fold_block, invisible to shellcheck.
-    # shellcheck disable=SC2034
+    # claims_fold_block, invisible to shellcheck. SC2030 is a false positive
+    # from the same cause: -x now also parses lib/eligibility.sh (sourced
+    # below, for the stale-ref filter fixture), and its own unrelated
+    # $claimed_json global (compute_refiner_candidates) is enough for the
+    # whole-program analysis to treat this subshell-local assignment as
+    # shadowing a read that never actually reaches it.
+    # shellcheck disable=SC2034,SC2030
     claimed_json="$1" slug="$2" repo_claimed_json="$3"
     eval "$claims_fold_block"
     printf '%s' "$claimed_json"
@@ -341,16 +346,37 @@ assert_eq "malformed candidate JSON degrades to the ref" "57" \
   "$(pr_number_for_candidate 'not json' 'pr-57-review-1')"
 
 # --- The Enabler stale-conflict/abandoned-draft ref filter ---------------------
-# Not a standalone function (it runs inline, between enabler_eligible_items and
-# the point past which the exit trap may engage the Enabler — inside
-# `compute_enabler_eligible_set` since #771), so it is lifted by
-# its own start/end markers instead of a function signature — same technique,
-# same reason: the real code is what runs here, not a reimplementation of it.
+# `compute_band_eligibility` (lib/eligibility.sh) snapshots this cycle's live
+# merge_conflicts/dequeued/abandoned_drafts refs into `live_pr_refs_json`
+# (requirement 35e, issue #1119) *before* its own subtraction loop
+# (`exclude_blocked_or_void_items`) removes every blocked entry from those same
+# bands in `ordered_repos_json` — the fix for #1119, whose bug was reading that
+# snapshot back out of `ordered_repos_json` *after* the subtraction had already
+# emptied it of exactly the blocked refs the filter needed to test. Run the
+# real `compute_band_eligibility`, sourced whole rather than reimplemented, so
+# a fixture whose ref is both live *and* blocked — the only shape #1119 could
+# ever reproduce, since the Enabler is only ever eligible for a blocked item —
+# proves the interaction the two functions actually have in production,
+# instead of a hand-built `ordered_repos_json` that skips the subtraction a
+# real cycle always runs first.
+#
+# The filter itself (not `compute_band_eligibility`) is still lifted by its own
+# start/end markers rather than called as a function: it runs inline, between
+# `enabler_eligible_items` and the point past which the exit trap may engage
+# the Enabler, inside `compute_enabler_eligible_set` — same technique, same
+# reason, as everywhere else in this file.
+# shellcheck source=lib/candidate-select.sh
+. "$SCRIPT_DIR/lib/candidate-select.sh"
+# shellcheck source=lib/cycle-state.sh
+. "$SCRIPT_DIR/lib/cycle-state.sh"
+# shellcheck source=lib/eligibility.sh
+. "$SCRIPT_DIR/lib/eligibility.sh"
+
 extract_stale_ref_block() {
   awk '
-    /^live_pr_refs_json="\$\(jq -c \\$/ { on = 1 }
-    on                                  { print }
-    on && /^fi$/                        { exit }
+    /^stale_enabler_refs_json='"'"'\[\]'"'"'$/ { on = 1 }
+    on                                          { print }
+    on && /^fi$/                                { exit }
   ' "$SCRIPT_DIR/lib/eligibility.sh"
 }
 stale_ref_block_src="$(extract_stale_ref_block)"
@@ -359,13 +385,18 @@ if [[ "$stale_ref_block_src" != *"stale_enabler_refs_json"* ]]; then
   exit 1
 fi
 
-run_stale_ref_block() {  # run_stale_ref_block <ordered-repos-json> <enabler-eligible-json>
-  # ordered_repos_json and log_event are consumed by the eval'd block below,
-  # which shellcheck cannot see into.
+run_stale_ref_block() {  # run_stale_ref_block <ordered-repos-json> <enabler-eligible-json> [blocked-json]
+  # ordered_repos_json, blocked_json and the rest are consumed by the real
+  # compute_band_eligibility call and the eval'd filter below — neither is
+  # visible to shellcheck's own static analysis.
   # shellcheck disable=SC2034
-  ordered_repos_json="$1" enabler_eligible_json="$2" logged="" logged_fields=""
+  ordered_repos_json="$1" enabler_eligible_json="$2" blocked_json="${3:-[]}" \
+    void_json='[]' union_log='/dev/null' logged="" logged_fields=""
+  # shellcheck disable=SC2317
+  guard_warn() { :; }
   # shellcheck disable=SC2317
   log_event() { logged="$logged$1 $2\n"; logged_fields="$2"; }
+  compute_band_eligibility
   eval "$stale_ref_block_src"
   jq -c -n --argjson e "$enabler_eligible_json" --arg l "$logged" --arg f "$logged_fields" \
     '{eligible: $e, logged: $l, fields: $f}'
@@ -374,15 +405,23 @@ run_stale_ref_block() {  # run_stale_ref_block <ordered-repos-json> <enabler-eli
 ordered='[{"slug": "o/r",
            "merge_conflicts": [{"ref": "pr-205-conflict-6319fee06dfc"}],
            "abandoned_drafts": []}]'
+# The live ref is also blocked — PR #1059's own reproduction shape (issue
+# #1119): a blocked item is the only kind the Enabler is ever eligible for, so
+# this is the one fixture that can actually distinguish the fix from the bug.
+# Pre-fix, `exclude_blocked_or_void_items` (inside `compute_band_eligibility`,
+# run for real above) removes this ref from `ordered_repos_json.merge_conflicts`
+# before the old code re-derived `live_pr_refs_json` from it — so the ref would
+# vanish from the live set and be judged stale despite never having moved.
+blocked='[{"item": "pr-205-conflict-6319fee06dfc", "repo": "o/r", "ts": "2026-08-30T12:00:00Z"}]'
 eligible='[
   {"repo": "o/r", "item": "pr-205-conflict-305ca060016d", "reason": "threshold"},
   {"repo": "o/r", "item": "pr-205-conflict-6319fee06dfc", "reason": "threshold"},
   {"repo": "o/r", "item": "TD123", "reason": "threshold"}
 ]'
-result="$(run_stale_ref_block "$ordered" "$eligible")"
-assert_eq "the stale ref (superseded head SHA) is dropped from enabler_eligible" "0" \
+result="$(run_stale_ref_block "$ordered" "$eligible" "$blocked")"
+assert_eq "the stale ref (superseded head SHA, absent from this cycle's gather) is dropped from enabler_eligible" "0" \
   "$(jq '[.eligible[] | select(.item == "pr-205-conflict-305ca060016d")] | length' <<<"$result")"
-assert_eq "the live conflict ref (matches this cycle's own gather) survives" "1" \
+assert_eq "the live conflict ref (blocked, but still present in this cycle's own gather) survives" "1" \
   "$(jq '[.eligible[] | select(.item == "pr-205-conflict-6319fee06dfc")] | length' <<<"$result")"
 assert_eq "an unrelated blocked item kind (tech-debt) is untouched" "1" \
   "$(jq '[.eligible[] | select(.item == "TD123")] | length' <<<"$result")"
