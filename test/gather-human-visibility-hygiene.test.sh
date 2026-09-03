@@ -12,7 +12,7 @@
 #   - **A violation that still reproduces live becomes exactly one candidate**,
 #     `source: "human-visibility"` (its own source, issue #284's decision 2 —
 #     never `register-hygiene`), with its own `human-visibility-<hash>` ref.
-#   - **The five warning classes are told apart (issue #284's decision 1).** A
+#   - **The six warning classes are told apart (issue #284's decision 1).** A
 #     `could not request review from …` violation clears only once a human
 #     review is live or already given (`reviewRequests` non-empty, or a
 #     non-bot review with state `APPROVED`/`CHANGES_REQUESTED` in the reviews
@@ -24,6 +24,14 @@
 #     `_handoff_pr_approved` call, a different API surface from the `gh pr
 #     view` re-check this function already opened with, and it drops only
 #     once that fresh call succeeds in its own right; a
+#     `could not read the pull request's state …` violation (the sweep's own
+#     broad `gh pr view --json reviewDecision,mergeable,mergeStateStatus,
+#     statusCheckRollup,reviews,comments` call failing — the read that gates
+#     every downstream check the sweep makes for a pull request) is the same
+#     shape: no follow-up action outcome to inspect, and the narrower `gh pr
+#     view` re-check this function already opened with proves nothing about
+#     it either (it omits `statusCheckRollup` entirely), so it re-runs the
+#     sweep's own call verbatim and drops only once that succeeds again; a
 #     `could not post the idle nudge comment` violation — logged only against
 #     an already-`APPROVED` pull request — clears only once a comment carrying
 #     both the exact `<!-- agent-ops:human-nudge -->` HTML-comment form and
@@ -44,8 +52,9 @@
 #   - **A pull-request violation of any class is dropped once merged, closed
 #     or back in draft**, and a repo-level listing failure is dropped only
 #     once the listing itself succeeds live.
-#   - **An unreadable live re-check, or an unrecognised warning shape, keeps
-#     the violation** — the same "never guess a read it could not make was
+#   - **An unreadable live re-check, or a genuinely unrecognised warning
+#     shape (one none of the six classes above matches), keeps the
+#     violation** — the same "never guess a read it could not make was
 #     clean" reasoning `sweep-human-visibility.sh` itself uses.
 #
 # The script is run for real against a stubbed `gh`, so what is asserted is
@@ -104,12 +113,17 @@ assert_eq() {
 # nudge marker at all); `$STUB_DEQUEUE_MARKER` (`yes`/`no`) steers whether the
 # merge-queue-dequeued marker comment is present instead; `$STUB_AUTHOR`
 # (default `author`) and `$STUB_REVIEWS` also steer the no-candidate-class
-# check; `$STUB_VIEW_RC` set nonzero makes the re-check itself unreadable,
-# the fail-safe case. `$STUB_REVIEWS_API_RC` (default 0) steers the separate
-# `gh api …/reviews --paginate` call `_handoff_pr_approved`
-# (`lib/handoff.sh`) makes for the could_not_read_reviews class's own
-# re-check — a distinct API surface from `pr view` above, stubbed separately
-# so a test can fail one while the other stays readable.
+# check; `$STUB_VIEW_RC` set nonzero makes the opening `pr view` re-check
+# itself unreadable, the fail-safe case. `$STUB_REVIEWS_API_RC` (default 0)
+# steers the separate `gh api …/reviews --paginate` call
+# `_handoff_pr_approved` (`lib/handoff.sh`) makes for the
+# could_not_read_reviews class's own re-check — a distinct API surface from
+# `pr view` above, stubbed separately so a test can fail one while the other
+# stays readable. `$STUB_STATE_VIEW_RC` (default 0) likewise steers the
+# could_not_read_state class's own re-check — the sweep's broader `pr view
+# --json …,statusCheckRollup,…` call, distinguished from the opening `pr
+# view` re-check by that field's presence in argv, so a test can fail one
+# while the other stays readable too.
 mkdir -p "$tmp_dir/bin"
 cat > "$tmp_dir/bin/gh" <<'STUB'
 #!/usr/bin/env bash
@@ -122,6 +136,9 @@ case "${1:-} ${2:-}" in
     exit "${STUB_REVIEWS_API_RC:-0}"
     ;;
   "pr view")
+    if [[ "$*" == *statusCheckRollup* ]]; then
+      exit "${STUB_STATE_VIEW_RC:-0}"
+    fi
     (( "${STUB_VIEW_RC:-0}" == 0 )) || exit "$STUB_VIEW_RC"
     reqs="[]"
     [[ "${STUB_REVIEW_REQUESTS:-0}" == "0" ]] || reqs='[{"login":"reviewer"}]'
@@ -159,7 +176,8 @@ repo_level='[{"repo":"o/a","pr_url":"","detail":"could not list o/a'"'"'s open p
 request_level='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":"could not request review from foo","ts":"2026-08-08T02:00:00Z"}]'
 nudge_level='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":"could not post the idle nudge comment","ts":"2026-08-08T02:00:00Z"}]'
 reviews_read_level='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":"could not read the pull request'"'"'s reviews — skipping the idle-nudge check","ts":"2026-08-08T02:00:00Z"}]'
-unknown_level='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":"could not read the pull request'"'"'s state — skipping the idle check","ts":"2026-08-08T02:00:00Z"}]'
+state_read_level='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":"could not read the pull request'"'"'s state — skipping its review-state checks","ts":"2026-08-08T02:00:00Z"}]'
+unknown_level='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":"could not divine the pull request'"'"'s future — skipping everything","ts":"2026-08-08T02:00:00Z"}]'
 no_candidate_level='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":"no legal review-request candidate — known reviewers are empty or only the author; enabler_assignee=author","ts":"2026-08-08T02:00:00Z"}]'
 dequeue_level='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":"could not post the merge-queue-dequeued notice","ts":"2026-08-08T02:00:00Z"}]'
 
@@ -420,6 +438,40 @@ assert_eq "a reviews-read violation is dropped on a merged pull request" "[]" "$
 # --- fail-safe, the same as every other class --------------------------------
 out="$(STUB_VIEW_RC=1 "$GATHER" "o/a" <<<"$reviews_read_level")"
 assert_eq "a reviews-read violation survives an unreadable pr-view re-check" \
+  "1" "$(jq 'length' <<<"$out")"
+assert_eq "  ... source is human-visibility" "human-visibility" "$(jq -r '.[0].source' <<<"$out")"
+
+# --- could_not_read_state: the actual failing read (the sweep's own broader
+# --- `pr view --json …,statusCheckRollup,…` call) succeeding again drops it,
+# --- distinguished in the stub from the narrower opening `pr view` re-check
+# --- by that field's presence -----------------------------------------------
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_STATE_VIEW_RC=0 \
+        "$GATHER" "o/a" <<<"$state_read_level")"
+assert_eq "a state-read violation is dropped once its own failing read succeeds again" \
+  "[]" "$out"
+
+# --- could_not_read_state: the narrower opening `pr view` succeeding is NOT
+# --- enough on its own — the state-read violation survives while the
+# --- sweep's own broader call (carrying `statusCheckRollup`) still fails,
+# --- proving the fix does not infer the answer from the narrower read this
+# --- function already opened with (the defect this class exists to fix) ----
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_STATE_VIEW_RC=1 \
+        "$GATHER" "o/a" <<<"$state_read_level")"
+assert_eq "a state-read violation survives while its own read still fails" \
+  "1" "$(jq 'length' <<<"$out")"
+assert_eq "  ... source is human-visibility" "human-visibility" "$(jq -r '.[0].source' <<<"$out")"
+
+# --- could_not_read_state: a merged/closed/draft pull request still drops it
+# --- too, the same as every other class — decided by the opening `pr view`'s
+# --- own state before the class-specific state-read re-check is even reached
+out="$(STUB_PR_STATE=MERGED STUB_PR_DRAFT=false STUB_STATE_VIEW_RC=1 \
+        "$GATHER" "o/a" <<<"$state_read_level")"
+assert_eq "a state-read violation is dropped on a merged pull request" "[]" "$out"
+
+# --- could_not_read_state: an unreadable opening `pr view` re-check keeps
+# --- it, fail-safe, the same as every other class ---------------------------
+out="$(STUB_VIEW_RC=1 "$GATHER" "o/a" <<<"$state_read_level")"
+assert_eq "a state-read violation survives an unreadable pr-view re-check" \
   "1" "$(jq 'length' <<<"$out")"
 assert_eq "  ... source is human-visibility" "human-visibility" "$(jq -r '.[0].source' <<<"$out")"
 

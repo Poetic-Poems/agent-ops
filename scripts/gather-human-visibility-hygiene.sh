@@ -173,13 +173,30 @@
 #                             would report `already` or `requested`, never
 #                             `no-candidate` again, before this gatherer runs
 #                             again.
-#   (anything else)         — a warning this script does not recognise (e.g.
-#                             "could not read the pull request's state —
-#                             skipping the idle check", or a future warning
-#                             shape) has no live signal of its own to check,
-#                             so it is kept for as long as the pull request
-#                             stays open and not a draft — the same fail-safe
-#                             default an unreadable re-check gets.
+#   could_not_read_state    — "could not read the pull request's state —
+#                             skipping its review-state checks", the read
+#                             that gates every downstream check the sweep
+#                             makes for a pull request (`sweep-human-
+#                             visibility.sh`'s own broad `gh pr view --json
+#                             reviewDecision,mergeable,mergeStateStatus,
+#                             statusCheckRollup,reviews,comments` call). Like
+#                             `could_not_read_reviews`, the read failing was
+#                             the whole violation, and the narrower `gh pr
+#                             view --json state,isDraft,reviewRequests,
+#                             comments,author,reviews` this function already
+#                             opened with above proves nothing about it —
+#                             `statusCheckRollup` alone is not in that field
+#                             list, and a broader query is its own
+#                             opportunity to fail even when a narrower one
+#                             does not. So this class re-runs the sweep's own
+#                             call verbatim and drops the violation only once
+#                             that call succeeds again.
+#   (anything else)         — a warning this script does not recognise (a
+#                             future warning shape) has no live signal of its
+#                             own to check, so it is kept for as long as the
+#                             pull request stays open and not a draft — the
+#                             same fail-safe default an unreadable re-check
+#                             gets.
 #
 # A pull request that has since merged, closed, or gone back to draft drops
 # every class's violation regardless — none of the above can matter to a
@@ -242,6 +259,7 @@ _warning_class() {
   case "$1" in
     "could not request review from"*) printf 'could_not_request' ;;
     "could not read the pull request's reviews"*) printf 'could_not_read_reviews' ;;
+    "could not read the pull request's state"*) printf 'could_not_read_state' ;;
     *"idle nudge comment"*) printf 'could_not_post_nudge' ;;
     "no legal review-request candidate"*) printf 'no_candidate' ;;
     *"merge-queue-dequeued notice"*) printf 'dequeue_notice' ;;
@@ -325,6 +343,25 @@ _pr_violation_survives() {
       local parts
       parts="$(_handoff_pr_parts "$pr_url")" || { printf 'keep'; return; }
       if _handoff_pr_approved "${parts%%$'\t'*}" "${parts##*$'\t'}" >/dev/null 2>&1; then
+        printf 'drop'
+      else
+        printf 'keep'
+      fi
+      ;;
+    could_not_read_state)
+      # No follow-up *action* outcome to inspect either — the read failing
+      # was the whole violation — but the narrower `gh pr view --json
+      # state,isDraft,reviewRequests,comments,author,reviews` this function
+      # already opened with above proves nothing about it: it omits
+      # `statusCheckRollup` entirely, and a broader query is its own
+      # opportunity to fail even when a narrower one succeeds. Re-run the
+      # exact call `sweep-human-visibility.sh` itself makes and drop only
+      # once it succeeds again — its exit status alone, never its content,
+      # since the only question this class asks is whether the read itself
+      # now works.
+      if gh pr view "$pr_url" \
+          --json reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,reviews,comments \
+          >/dev/null 2>&1; then
         printf 'drop'
       else
         printf 'keep'
