@@ -59,17 +59,19 @@
 # uses (an unread state is never guessed at as clean). Only a *definite* "no
 # longer true" answer drops a violation.
 #
-# ## Five warning classes, told apart
+# ## Six warning classes, told apart
 #
-# `sweep-human-visibility.sh` logs five different per-pull-request warnings —
+# `sweep-human-visibility.sh` logs six different per-pull-request warnings —
 # "could not request review from …" (the review-request POST itself failed),
 # "could not read the pull request's reviews …" (`_handoff_pr_approved`'s own
-# read failing, inside the idle-nudge check alone), "could not post the idle
-# nudge comment" (the nudge comment POST itself failed), "no legal
-# review-request candidate" (no POST was even attempted —
+# read failing, inside the idle-nudge check alone), "could not read the pull
+# request's state …" (the sweep's own broader `gh pr view` read failing, the
+# one that gates every downstream check it makes for that pull request),
+# "could not post the idle nudge comment" (the nudge comment POST itself
+# failed), "no legal review-request candidate" (no POST was even attempted —
 # `ensure_human_reviewer`'s `skip\tno-candidate`, tech-debt/TD-PPagop-26081001.md),
 # and "could not post the merge-queue-dequeued notice" (the dequeue-notice
-# comment POST itself failed, requirement 38f) — and they clear on five
+# comment POST itself failed, requirement 38f) — and they clear on six
 # different live facts. A single shared check would get more than one of them wrong: every
 # pull request a nudge warning is logged against is, by the nudge's own gate,
 # already `APPROVED` — so a check that only asks "has a human reviewed this"
@@ -118,7 +120,7 @@
 #                             reviews list rather than that field, read here
 #                             rather than acted on.
 #   could_not_read_reviews — no follow-up *action* outcome to inspect, unlike
-#                             the other four classes: the read failing was the
+#                             the other five classes: the read failing was the
 #                             whole violation. But the `gh pr view` call at the
 #                             top of `_pr_violation_survives` is a GraphQL
 #                             read, and the read that actually failed —
