@@ -20,10 +20,12 @@
 #     `could not read the pull request's reviews …` violation
 #     (`_handoff_pr_approved`'s own read failing inside the idle-nudge check)
 #     has no follow-up action outcome of its own to check — the read failing
-#     was the whole violation — so it re-runs that same read instead: a fresh
-#     `_handoff_pr_approved` call, a different API surface from the `gh pr
-#     view` re-check this function already opened with, and it drops only
-#     once that fresh call succeeds in its own right; a
+#     was the whole violation — and since agent-ops#1085 moved that read onto
+#     the same GraphQL surface (`_handoff_pr_query`) this function's own
+#     `gh pr view` re-check already asks `reviews` from, reaching this class
+#     at all past that call's own success is the answer: it drops
+#     unconditionally, the one class with no live fact of its own left to
+#     check; a
 #     `could not read the pull request's state …` violation (the sweep's own
 #     broad `gh pr view --json reviewDecision,mergeable,mergeStateStatus,
 #     statusCheckRollup,reviews,comments` call failing — the read that gates
@@ -114,16 +116,17 @@ assert_eq() {
 # merge-queue-dequeued marker comment is present instead; `$STUB_AUTHOR`
 # (default `author`) and `$STUB_REVIEWS` also steer the no-candidate-class
 # check; `$STUB_VIEW_RC` set nonzero makes the opening `pr view` re-check
-# itself unreadable, the fail-safe case. `$STUB_REVIEWS_API_RC` (default 0)
-# steers the separate `gh api …/reviews --paginate` call
-# `_handoff_pr_approved` (`lib/handoff.sh`) makes for the
-# could_not_read_reviews class's own re-check — a distinct API surface from
-# `pr view` above, stubbed separately so a test can fail one while the other
-# stays readable. `$STUB_STATE_VIEW_RC` (default 0) likewise steers the
-# could_not_read_state class's own re-check — the sweep's broader `pr view
-# --json …,statusCheckRollup,…` call, distinguished from the opening `pr
-# view` re-check by that field's presence in argv, so a test can fail one
-# while the other stays readable too.
+# itself unreadable, the fail-safe case — including for the
+# could_not_read_reviews class, whose own re-check this stub answers no
+# differently from any other class since agent-ops#1085: that class's read
+# (`_handoff_pr_approved`, via `_handoff_pr_query`) moved onto this same
+# `pr view` call's own GraphQL surface, so there is no longer a second,
+# separately-stubbable endpoint for it (see the script's own header for why
+# that fold is now correct). `$STUB_STATE_VIEW_RC` (default 0) likewise
+# steers the could_not_read_state class's own re-check — the sweep's broader
+# `pr view --json …,statusCheckRollup,…` call, distinguished from the
+# opening `pr view` re-check by that field's presence in argv, so a test can
+# fail one while the other stays readable too.
 mkdir -p "$tmp_dir/bin"
 cat > "$tmp_dir/bin/gh" <<'STUB'
 #!/usr/bin/env bash
@@ -131,9 +134,6 @@ set -uo pipefail
 case "${1:-} ${2:-}" in
   "pr list")
     exit "${STUB_LIST_RC:-0}"
-    ;;
-  "api repos/o/a/pulls/9/reviews")
-    exit "${STUB_REVIEWS_API_RC:-0}"
     ;;
   "pr view")
     if [[ "$*" == *statusCheckRollup* ]]; then
@@ -407,31 +407,23 @@ out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION=APPROVED STUB
         STUB_NUDGE_COMMENT=real "$GATHER" "o/a" <<<"$nudge_level")"
 assert_eq "a nudge-class violation is dropped once the real marker comment appears" "[]" "$out"
 
-# --- could_not_read_reviews: the actual failing read (the `gh api
-# --- …/reviews` call) succeeding again drops it, even though this is a
-# --- different API surface from the `pr view` re-check above -----------------
-out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEWS_API_RC=0 \
-        "$GATHER" "o/a" <<<"$reviews_read_level")"
-assert_eq "a reviews-read violation is dropped once its own failing read succeeds again" \
+# --- could_not_read_reviews: a successful `pr view` re-check is the whole
+# --- answer, since agent-ops#1085 — the read that failed (`_handoff_pr_
+# --- approved`, via `_handoff_pr_query`) is now the same GraphQL surface,
+# --- asking for the same `reviews` field, this call already succeeds at.
+# --- There is no longer a second, separately-failable endpoint behind this
+# --- class to fixture — see the stub's own header for why — so this is now
+# --- the same shape every other class's "the pull request is still open and
+# --- not a draft" baseline gets, proven by state alone below.
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false "$GATHER" "o/a" <<<"$reviews_read_level")"
+assert_eq "a reviews-read violation is dropped once the same read it needs succeeds again" \
   "[]" "$out"
-
-# --- could_not_read_reviews: `pr view` succeeding is NOT enough on its own —
-# --- the reviews-read violation survives while its own read (the `gh api
-# --- …/reviews` call) still fails, proving the fix does not infer the
-# --- answer from the unrelated GraphQL read this function already opened
-# --- with (the defect this class exists to fix: those are separate API
-# --- surfaces with separately breakable code paths) --------------------------
-out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEWS_API_RC=1 \
-        "$GATHER" "o/a" <<<"$reviews_read_level")"
-assert_eq "a reviews-read violation survives while its own read still fails" \
-  "1" "$(jq 'length' <<<"$out")"
-assert_eq "  ... source is human-visibility" "human-visibility" "$(jq -r '.[0].source' <<<"$out")"
 
 # --- could_not_read_reviews: a merged/closed/draft pull request still drops
 # --- it too, the same as every other class — decided by `pr view`'s own
-# --- state before the class-specific reviews-read re-check is even reached --
-out="$(STUB_PR_STATE=MERGED STUB_PR_DRAFT=false STUB_REVIEWS_API_RC=1 \
-        "$GATHER" "o/a" <<<"$reviews_read_level")"
+# --- state before the class-specific (now unconditional) drop is even
+# --- reached ------------------------------------------------------------------
+out="$(STUB_PR_STATE=MERGED STUB_PR_DRAFT=false "$GATHER" "o/a" <<<"$reviews_read_level")"
 assert_eq "a reviews-read violation is dropped on a merged pull request" "[]" "$out"
 
 # --- could_not_read_reviews: an unreadable `pr view` re-check keeps it,

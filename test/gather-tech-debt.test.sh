@@ -27,9 +27,15 @@
 #     scripts/gather-issues.sh's own degrade contract, which this gatherer
 #     now shares in spirit.
 #
-# The gatherer is run for real against a stubbed `gh`, the same stub shape
-# test/issues-prefetch.test.sh uses for scripts/gather-issues.sh, so the
-# assertions are about the shipped script rather than a copy of its logic.
+# The gatherer is run for real against a stubbed `gh`, so the assertions are
+# about the shipped script rather than a copy of its logic. Since
+# agent-ops#1085 the listing-plus-comments read is one GraphQL call
+# (`issue_prefetch_open_issues`, lib/issue-prefetch.sh); the stub answers it
+# with a fixture in that function's own node shape, applying the caller's own
+# `--jq` filter for real, the same technique test/issue-prefetch.test.sh's own
+# stub uses. The `Blocked-by:` live-check (`issue_blocked_by_ref`) is
+# unaffected by that migration — it stays a REST read of one referenced
+# issue's state — so the stub still answers that separately.
 #
 # No test framework is used (none exists elsewhere in this repo). Run
 # directly:
@@ -58,32 +64,27 @@ assert_eq() {
   fi
 }
 
-# --- A stub `gh`, the same shape test/issues-prefetch.test.sh uses for
-#     scripts/gather-issues.sh: it answers the labelled-issues listing (fetched
-#     raw) and per-issue comments (fetched with `--jq`). Comments must be
-#     matched before the listing: both paths contain `/issues`. ---
+# --- A stub `gh`: `api graphql` (the listing-plus-comments walk) applies the
+#     caller's own `--jq` filter to $STUB_ISSUES, a single-page GraphQL
+#     response fixture; `api repos/…/issues/<n>` (the Blocked-by live-check,
+#     unaffected by agent-ops#1085) answers from $STUB_REFS_DIR. ---
 mkdir -p "$tmp_dir/bin"
 cat >"$tmp_dir/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 set -uo pipefail
 [[ "${1:-}" == "api" ]] || { echo "stub gh: unexpected command: $*" >&2; exit 1; }
-path="$2"; shift 2
-filter='.'
-while [[ $# -gt 0 ]]; do
-  case "$1" in --jq) filter="$2"; shift 2;; *) shift;; esac
-done
+if [[ "$2" == "graphql" ]]; then
+  shift 2
+  filter='.'
+  while [[ $# -gt 0 ]]; do
+    case "$1" in --jq) filter="$2"; shift 2;; *) shift;; esac
+  done
+  jq -c "$filter" "$STUB_ISSUES"
+  exit 0
+fi
+path="$2"
 case "$path" in
-  */issues/*/comments*)
-    n="${path##*/issues/}"; n="${n%%/*}"
-    if [[ -f "$STUB_COMMENTS_DIR/$n.json" ]]; then
-      body="$(cat "$STUB_COMMENTS_DIR/$n.json")"
-    else
-      body='[]'
-    fi
-    ;;
-  */issues*labels=pw*) body="$(cat "$STUB_ISSUES")";;
-  */issues/*)
-    # A Blocked-by live-check reading one referenced issue's state.
+  repos/*/issues/*)
     n="${path##*/issues/}"
     if [[ -f "$STUB_REFS_DIR/$n.json" ]]; then
       body="$(cat "$STUB_REFS_DIR/$n.json")"
@@ -93,6 +94,11 @@ case "$path" in
     ;;
   *) echo "stub gh: unexpected path: $path" >&2; exit 1;;
 esac
+filter='.'
+shift 2
+while [[ $# -gt 0 ]]; do
+  case "$1" in --jq) filter="$2"; shift 2;; *) shift;; esac
+done
 jq -rc "$filter" <<<"$body"
 STUB
 chmod +x "$tmp_dir/bin/gh"
@@ -104,40 +110,63 @@ export PATH="$tmp_dir/bin:$PATH"
 # two-comment thread; #21 is assigned; #22 is labelled `Blocked` (upper case,
 # proving the drop case-insensitive); #23 names an unresolved `Blocked-by:
 # #24` (still open); #19 is clean and commentless, the lowest number, to
-# prove ascending sort.
+# prove ascending sort; #18 is open but carries no `pw::type:tech-debt` label
+# at all, proving the label filter (now this script's own `select`, since
+# `issue_prefetch_open_issues` returns every open issue — agent-ops#1085)
+# still excludes it. One page (`hasNextPage: false`) is enough for this
+# fixture's five issues.
 export STUB_ISSUES="$tmp_dir/issues.json"
-export STUB_COMMENTS_DIR="$tmp_dir/comments"
 export STUB_REFS_DIR="$tmp_dir/refs"
-mkdir -p "$STUB_COMMENTS_DIR" "$STUB_REFS_DIR"
+mkdir -p "$STUB_REFS_DIR"
 cat >"$STUB_ISSUES" <<'EOF'
-[
-  {"number": 20, "html_url": "https://github.com/o/r/issues/20", "title": "Untangle the frobnicator",
-   "user": {"login": "warwick"}, "labels": [{"name": "pw::type:tech-debt"}, {"name": "backend"}],
-   "assignees": [], "created_at": "2026-07-19T08:00:00Z", "updated_at": "2026-07-20T09:00:00Z",
-   "body": "The body of twenty."},
-  {"number": 21, "html_url": "https://github.com/o/r/issues/21", "title": "Assigned debt",
-   "user": {"login": "warwick"}, "labels": [{"name": "pw::type:tech-debt"}],
-   "assignees": [{"login": "somebody"}], "created_at": "2026-07-19T08:00:00Z", "updated_at": "2026-07-20T09:00:00Z",
-   "body": "Assigned, so not a candidate."},
-  {"number": 22, "html_url": "https://github.com/o/r/issues/22", "title": "Blocked debt",
-   "user": {"login": "warwick"}, "labels": [{"name": "pw::type:tech-debt"}, {"name": "Blocked"}],
-   "assignees": [], "created_at": "2026-07-19T08:00:00Z", "updated_at": "2026-07-20T09:00:00Z",
-   "body": "Labelled Blocked, so not a candidate."},
-  {"number": 23, "html_url": "https://github.com/o/r/issues/23", "title": "Debt with an open dependency",
-   "user": {"login": "warwick"}, "labels": [{"name": "pw::type:tech-debt"}],
-   "assignees": [], "created_at": "2026-07-19T08:00:00Z", "updated_at": "2026-07-20T09:00:00Z",
-   "body": "Blocked-by: #24"},
-  {"number": 19, "html_url": "https://github.com/o/r/issues/19", "title": "The oldest debt",
-   "user": {"login": "warwick"}, "labels": [{"name": "pw::type:tech-debt"}],
-   "assignees": [], "created_at": "2026-07-18T08:00:00Z", "updated_at": "2026-07-18T08:00:00Z",
-   "body": "No comments, no labels but the one that matters."}
-]
-EOF
-cat >"$STUB_COMMENTS_DIR/20.json" <<'EOF'
-[
-  {"user": {"login": "warwick"}, "created_at": "2026-07-19T10:00:00Z", "body": "Acceptance: it untangles."},
-  {"user": {"login": "reviewer"}, "created_at": "2026-07-20T09:00:00Z", "body": "Scope cut: skip the UI."}
-]
+{"data": {"repository": {"issues": {"pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": [
+  {"number": 20, "url": "https://github.com/o/r/issues/20", "title": "Untangle the frobnicator",
+   "author": {"login": "warwick"},
+   "labels": {"nodes": [{"name": "pw::type:tech-debt"}, {"name": "backend"}]},
+   "assignees": {"totalCount": 0},
+   "issueFieldValues": {"nodes": []},
+   "createdAt": "2026-07-19T08:00:00Z", "updatedAt": "2026-07-20T09:00:00Z",
+   "body": "The body of twenty.",
+   "comments": {"nodes": [
+     {"author": {"login": "warwick"}, "createdAt": "2026-07-19T10:00:00Z", "body": "Acceptance: it untangles."},
+     {"author": {"login": "reviewer"}, "createdAt": "2026-07-20T09:00:00Z", "body": "Scope cut: skip the UI."}
+   ]}},
+  {"number": 21, "url": "https://github.com/o/r/issues/21", "title": "Assigned debt",
+   "author": {"login": "warwick"},
+   "labels": {"nodes": [{"name": "pw::type:tech-debt"}]},
+   "assignees": {"totalCount": 1},
+   "issueFieldValues": {"nodes": []},
+   "createdAt": "2026-07-19T08:00:00Z", "updatedAt": "2026-07-20T09:00:00Z",
+   "body": "Assigned, so not a candidate.", "comments": {"nodes": []}},
+  {"number": 22, "url": "https://github.com/o/r/issues/22", "title": "Blocked debt",
+   "author": {"login": "warwick"},
+   "labels": {"nodes": [{"name": "pw::type:tech-debt"}, {"name": "Blocked"}]},
+   "assignees": {"totalCount": 0},
+   "issueFieldValues": {"nodes": []},
+   "createdAt": "2026-07-19T08:00:00Z", "updatedAt": "2026-07-20T09:00:00Z",
+   "body": "Labelled Blocked, so not a candidate.", "comments": {"nodes": []}},
+  {"number": 23, "url": "https://github.com/o/r/issues/23", "title": "Debt with an open dependency",
+   "author": {"login": "warwick"},
+   "labels": {"nodes": [{"name": "pw::type:tech-debt"}]},
+   "assignees": {"totalCount": 0},
+   "issueFieldValues": {"nodes": []},
+   "createdAt": "2026-07-19T08:00:00Z", "updatedAt": "2026-07-20T09:00:00Z",
+   "body": "Blocked-by: #24", "comments": {"nodes": []}},
+  {"number": 19, "url": "https://github.com/o/r/issues/19", "title": "The oldest debt",
+   "author": {"login": "warwick"},
+   "labels": {"nodes": [{"name": "pw::type:tech-debt"}]},
+   "assignees": {"totalCount": 0},
+   "issueFieldValues": {"nodes": []},
+   "createdAt": "2026-07-18T08:00:00Z", "updatedAt": "2026-07-18T08:00:00Z",
+   "body": "No comments, no labels but the one that matters.", "comments": {"nodes": []}},
+  {"number": 18, "url": "https://github.com/o/r/issues/18", "title": "Not tech debt at all",
+   "author": {"login": "warwick"},
+   "labels": {"nodes": [{"name": "backend"}]},
+   "assignees": {"totalCount": 0},
+   "issueFieldValues": {"nodes": []},
+   "createdAt": "2026-07-17T08:00:00Z", "updatedAt": "2026-07-17T08:00:00Z",
+   "body": "An ordinary issue.", "comments": {"nodes": []}}
+]}}}}
 EOF
 cat >"$STUB_REFS_DIR/24.json" <<'EOF'
 {"state": "open"}
@@ -155,6 +184,8 @@ assert_eq "the Blocked-labelled issue is dropped, case notwithstanding" \
   "false" "$(jq 'any(.[]; .number == 22)' <<<"$out")"
 assert_eq "the issue with an unresolved Blocked-by reference is dropped" \
   "false" "$(jq 'any(.[]; .number == 23)' <<<"$out")"
+assert_eq "an issue carrying no pw::type:tech-debt label at all is never a candidate" \
+  "false" "$(jq 'any(.[]; .number == 18)' <<<"$out")"
 assert_eq "nothing on stderr on the success path" "" "$(cat "$tmp_dir/err")"
 
 # --- Sorted by issue number ascending ---

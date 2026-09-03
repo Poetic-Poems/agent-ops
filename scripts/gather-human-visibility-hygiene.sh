@@ -77,7 +77,8 @@
 # already `APPROVED` — so a check that only asks "has a human reviewed this"
 # would read every nudge-class warning as resolved the moment it is created,
 # silently dropping it before anyone ever saw the nudge that failed to post.
-# So each class re-verifies its own claim:
+# So each class re-verifies its own claim, all but one from the single `gh pr
+# view` read `_pr_violation_survives` opens with below:
 #
 #   could_not_request      — a read-only "is a human review currently
 #                             requested (or already given)" check: `gh pr
@@ -121,21 +122,25 @@
 #                             rather than acted on.
 #   could_not_read_reviews — no follow-up *action* outcome to inspect, unlike
 #                             the other five classes: the read failing was the
-#                             whole violation. But the `gh pr view` call at the
-#                             top of `_pr_violation_survives` is a GraphQL
-#                             read, and the read that actually failed —
-#                             `_handoff_pr_approved`, via `_handoff_latest_
-#                             reviews` (`lib/handoff.sh`) — is a REST `gh api
-#                             …/reviews --paginate` call: a different API
-#                             surface, with its own rate limit and its own
-#                             breakable code path, so a readable `$json` here
-#                             proves nothing about it. This class instead
-#                             re-runs `_handoff_pr_approved` itself, keyed off
-#                             `_handoff_pr_parts`' own read of `pr_url`, and
-#                             drops the violation only on that call's exit
-#                             status (never its printed true/false, since the
-#                             question here is only whether the read
-#                             succeeded, not what it found).
+#                             whole violation. The read that failed —
+#                             `_handoff_pr_approved`, via `_handoff_pr_query`
+#                             (`lib/handoff.sh`) — is, since agent-ops#1085,
+#                             the same GraphQL surface the `gh pr view` call
+#                             at the top of `_pr_violation_survives` already
+#                             opens with, and that call's own `--json` fields
+#                             already include `reviews` — the exact data
+#                             `_handoff_pr_approved` itself reads. So a
+#                             successful `gh pr view` above already *is* the
+#                             answer: reaching this class at all means the
+#                             read that failed now works, and this class
+#                             drops on that alone rather than repeating the
+#                             read a second time. Before agent-ops#1085 that
+#                             read was a REST `gh api …/reviews --paginate`
+#                             call — a different API surface, with its own
+#                             rate limit and its own breakable code path, so a
+#                             readable `$json` here proved nothing about it,
+#                             and this class re-ran `_handoff_pr_approved`
+#                             itself to find out.
 #   could_not_post_nudge   — did the nudge comment land after all: `gh pr
 #                             view --json comments`, searched for a comment
 #                             carrying both the exact `<!-- agent-ops:human-
@@ -235,13 +240,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # requires this stamp on the same comment (agent-ops#390, #428).
 # shellcheck source=lib/pipeline-marker.sh
 . "$SCRIPT_DIR/lib/pipeline-marker.sh"
-# `_handoff_pr_parts` and `_handoff_pr_approved`, for the could_not_read_reviews
-# re-check below: that class's warning is `_handoff_pr_approved`'s own read
-# failing, a REST `gh api …/reviews --paginate` call — a different API surface
-# from the GraphQL `gh pr view` this script already opened with — so only
-# re-running that same call is a definite answer that it works again.
-# shellcheck source=lib/handoff.sh
-. "$SCRIPT_DIR/lib/handoff.sh"
 
 slug="${1:-}"
 pr_label="${2:-autonomous-agent}"
@@ -332,23 +330,14 @@ _pr_violation_survives() {
       ;;
     could_not_read_reviews)
       # No follow-up *action* outcome to inspect — the read failing was the
-      # whole violation — but the `gh pr view` call above this function opened
-      # with is a GraphQL read, and the read that actually failed,
-      # `_handoff_pr_approved` (`lib/handoff.sh`), is a REST `gh api
-      # …/reviews --paginate` call: a different API surface, with its own
-      # rate limit and its own code path, so this function's own successful
-      # `gh pr view` proves nothing about it. Re-run that same call instead —
-      # `_handoff_pr_parts` recovers the owner/repo and number this class's
-      # detail text does not carry, and `_handoff_pr_approved`'s exit status
-      # alone (never its printed true/false) says whether the read itself
-      # succeeded, which is the only question this class asks.
-      local parts
-      parts="$(_handoff_pr_parts "$pr_url")" || { printf 'keep'; return; }
-      if _handoff_pr_approved "${parts%%$'\t'*}" "${parts##*$'\t'}" >/dev/null 2>&1; then
-        printf 'drop'
-      else
-        printf 'keep'
-      fi
+      # whole violation. The read that failed, `_handoff_pr_approved`
+      # (`lib/handoff.sh`), is — since agent-ops#1085 moved it onto
+      # `_handoff_pr_query`'s GraphQL read — the same surface, and the same
+      # `reviews` data, this function's own `gh pr view` call above already
+      # asked for in its `--json` fields. So reaching this class at all,
+      # past that call's own `[[ -z "$json" ]]` guard above, already answers
+      # the only question this class asks: the read that failed now works.
+      printf 'drop'
       ;;
     could_not_read_state)
       # No follow-up *action* outcome to inspect either — the read failing

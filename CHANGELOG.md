@@ -18,6 +18,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   to bind before the first `guard-degraded` refusal, not after. Folded
   entirely from the fleet's existing `github-budget` log events
   (requirement 2.0d); the publish tick spends no new `gh` call for it.
+- Four of the hottest per-pull-request and per-repository GitHub reads move
+  from the REST `core` pool onto the idle `graphql` pool (agent-ops#1085):
+  `lib/handoff.sh`'s review/reviewer/author/pending-review-request reads
+  collapse onto one shared GraphQL query; `lib/candidate-gather.sh`'s
+  per-repository default-branch/tip-commit poll becomes one GraphQL call per
+  repository; `scripts/gather-human-visibility-hygiene.sh`'s
+  `could_not_read_reviews` re-check folds into its own existing GraphQL read,
+  now that both share the same surface; and `lib/issue-prefetch.sh` gains
+  `issue_prefetch_open_issues`, a paginated GraphQL walk replacing
+  `scripts/gather-issues.sh`'s and `scripts/gather-tech-debt.sh`'s REST issue
+  listing plus one REST call per surviving issue for its comments — which,
+  as a side effect, also fixes those two gatherers silently missing every
+  open issue past their REST listing's own uncontrolled first 100-issue
+  page. Each new query validates against GitHub's live schema via the
+  existing `scripts/check-graphql-drift.sh`, discovered automatically with
+  no workflow changes.
 - A `gh` transport shim, installed on `PATH` ahead of the real binary
   (requirement 2.0e, agent-ops#1084), so every `gh` call — this
   repository's own scripts and a model-driven stage's bare `gh …` alike —

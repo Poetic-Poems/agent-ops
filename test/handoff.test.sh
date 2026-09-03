@@ -392,32 +392,63 @@ assert_eq "pr_url_for_branch's call-site shape survives set -e" "0" "$?"
 # sat like that — reviewed, answered, pushed, commented — until a human went
 # looking for it.
 #
-# The stub answers the three REST calls the function makes. State:
-#   $tmp_dir/reviews   the reviews array, verbatim JSON
-#   $tmp_dir/pending   the requested_reviewers logins, one per line
+# `_handoff_blocking_reviewers` and `_handoff_pending_review_targets` (through
+# it, `confirm_review_requested`) now both ask `_handoff_pr_query`'s one
+# GraphQL query (agent-ops#1085) rather than two separate REST endpoints, so
+# the stub answers one call shape, applying whichever `--jq` filter the real
+# call handed it — the same "read the filter back out of argv, never a copy
+# of it" discipline `ensure_human_reviewer`'s own stub below already uses, so
+# a regression in the production filter is what fails these assertions,
+# never a difference from a hand-written copy of it. State:
+#   $tmp_dir/reviews   the reviews array, verbatim REST-shaped JSON (the
+#                      `review()` helper below builds it; the stub folds it
+#                      into the GraphQL document's own `reviews.nodes` shape)
+#   $tmp_dir/pending   the pending reviewers' logins, one per line
 #   $tmp_dir/post      "works" | "silent" — whether the POST changes `pending`
-#   $tmp_dir/api-fail  the path fragment whose GET should fail, if any
+#   $tmp_dir/calls     how many `api graphql` calls have been made so far —
+#                      each of `_handoff_blocking_reviewers`/`_handoff_
+#                      pending_review_targets` asks fresh, never sharing a
+#                      cached read (`_handoff_pr_query`'s own header), so a
+#                      call-numbered failure is how a fixture targets one of
+#                      them without the other
+#   $tmp_dir/api-fail  the call number (1-based) from which every `api
+#                      graphql` call should fail, if any
 #   $tmp_dir/posts     one line per POST, recording its arguments
 cat >"$tmp_dir/gh" <<'STUB'
 #!/usr/bin/env bash
 d="$(dirname "$0")"
-fail="$(cat "$d/api-fail" 2>/dev/null || true)"
 if [[ "$1 $2" == "api -X" ]]; then
   printf '%s\n' "$*" >>"$d/posts"
   [[ "$(cat "$d/post")" == "works" ]] && cat "$d/blocking" >"$d/pending"
   exit 0
 fi
-path="$2"
-[[ -n "$fail" && "$path" == *"$fail" ]] && exit 1
-if [[ "$path" == *"/reviews" ]]; then
-  jq -c '.[] | select(.submitted_at != null)
-             | {login: .user.login,
-                bot: (((.user.type // "User") == "Bot") or (.user.login | endswith("[bot]"))),
-                state: .state}' "$d/reviews"
-else
-  # The PR object; only `requested_reviewers` is read from it.
-  while IFS= read -r l; do [[ -n "$l" ]] && printf '%s\n' "$l"; done <"$d/pending"
+if [[ "$1 $2" == "api graphql" ]]; then
+  n="$(cat "$d/calls" 2>/dev/null || echo 0)"; n=$(( n + 1 )); printf '%s' "$n" >"$d/calls"
+  fail_from="$(cat "$d/api-fail" 2>/dev/null || true)"
+  if [[ -n "$fail_from" && "$n" -ge "$fail_from" ]]; then
+    failmsg="$(cat "$d/api-fail-msg" 2>/dev/null || true)"
+    [[ -n "$failmsg" ]] && printf '%s\n' "$failmsg" >&2
+    exit 1
+  fi
+  jq_filter=""; prev=""
+  for a in "$@"; do
+    if [[ "$prev" == "--jq" ]]; then jq_filter="$a"; break; fi
+    prev="$a"
+  done
+  reviews_nodes="$(jq -c '[.[] | select(.submitted_at != null)
+              | {author: {login: .user.login, __typename: (.user.type // "User")},
+                 state: .state, submittedAt: .submitted_at}]' "$d/reviews")"
+  pending_nodes="$(
+    { while IFS= read -r l; do
+        [[ -n "$l" ]] && printf '{"requestedReviewer":{"__typename":"User","login":"%s"}}\n' "$l"
+      done <"$d/pending"; } | jq -sc '.'
+  )"
+  doc="$(jq -nc --argjson reviews "$reviews_nodes" --argjson pending "$pending_nodes" \
+    '{data:{repository:{pullRequest:{author:{login:""},reviews:{nodes:$reviews},reviewRequests:{nodes:$pending}}}}}')"
+  if [[ -n "$jq_filter" ]]; then printf '%s' "$doc" | jq -c "$jq_filter"; else printf '%s' "$doc"; fi
+  exit 0
 fi
+exit 1
 STUB
 chmod +x "$tmp_dir/gh"
 
@@ -432,7 +463,8 @@ set_reviews() {  # <json review>...
 }
 reset_review_stub() {  # <post-behaviour>
   : >"$tmp_dir/pending"; : >"$tmp_dir/posts"; : >"$tmp_dir/blocking"
-  printf '%s' "$1" >"$tmp_dir/post"; : >"$tmp_dir/api-fail"
+  printf '%s' "$1" >"$tmp_dir/post"; : >"$tmp_dir/api-fail"; : >"$tmp_dir/api-fail-msg"
+  : >"$tmp_dir/calls"
 }
 posts() { wc -l <"$tmp_dir/posts" | tr -d ' '; }
 
@@ -535,7 +567,7 @@ assert_eq "  ... and exits 1" "1" "$rc"
 review_n=0
 reset_review_stub works
 set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
-printf '/reviews' >"$tmp_dir/api-fail"
+printf '1' >"$tmp_dir/api-fail"   # the first call: _handoff_blocking_reviewers's own
 out="$(confirm_review_requested "$URL")"; rc=$?
 assert_eq "unreadable reviews are a failure, never an assumed none" "failed" "$out"
 assert_eq "  ... and exits 1" "1" "$rc"
@@ -545,7 +577,8 @@ review_n=0
 reset_review_stub works
 set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
 printf 'Warwick-Allen\n' >"$tmp_dir/blocking"
-printf 'pulls/111' >"$tmp_dir/api-fail"   # the PR object; `…/pulls/111/reviews` still answers
+printf '2' >"$tmp_dir/api-fail"   # the second call: _handoff_pending_review_targets's own,
+                                   # after _handoff_blocking_reviewers's first succeeds
 out="$(confirm_review_requested "$URL")"; rc=$?
 assert_eq "an unreadable pending list is a failure" "failed" "$out"
 assert_eq "  ... and exits 1" "1" "$rc"
@@ -625,7 +658,7 @@ assert_eq "a bot's approval is not a human's" "false" "$out"
 review_n=0
 reset_review_stub works
 set_reviews "$(review Warwick-Allen APPROVED)"
-printf '/reviews' >"$tmp_dir/api-fail"
+printf '1' >"$tmp_dir/api-fail"
 out="$(_handoff_pr_approved o/r 111)"; rc=$?
 assert_eq "unreadable reviews is a failure, never a guessed answer" "" "$out"
 assert_eq "  ... and exits 1" "1" "$rc"
@@ -707,7 +740,7 @@ assert_eq "nothing blocking prints nothing" "" "$out"
 review_n=0
 reset_review_stub works
 set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
-printf '/reviews' >"$tmp_dir/api-fail"
+printf '1' >"$tmp_dir/api-fail"
 out="$(_handoff_blocking_reviewers o/r 111)"; rc=$?
 assert_eq "unreadable reviews is a failure, never a guessed 'nothing blocking'" "" "$out"
 assert_eq "  ... and exits 1" "1" "$rc"
@@ -719,21 +752,28 @@ assert_eq "  ... and exits 1" "1" "$rc"
 # `none` here — nothing is CHANGES_REQUESTED — which is exactly the case this
 # function exists to cover.
 #
-# The stub answers everything `ensure_human_reviewer` reads:
+# The stub answers everything `ensure_human_reviewer` reads. `_handoff_
+# blocking_reviewers`, `_handoff_known_reviewers`, `_handoff_pr_author` and
+# `_handoff_pending_review_targets` each ask fresh (agent-ops#1085's `_handoff_
+# pr_query`'s own header: nothing memoises across them), so a fixture that
+# targets one call and not another is expressed as a call number, the same
+# `$tmp_dir/calls` mechanism `confirm_review_requested`'s own stub above uses,
+# never a path — there is only the one call shape now. State:
 #   $tmp_dir/draft         "true" | "false" | "error" — same as confirm_pr_ready's
-#   $tmp_dir/reviews       the reviews array, verbatim JSON (as above)
-#   $tmp_dir/pending       the requested_reviewers entries, one per line —
-#                          `login` alone (type defaults to `User`), or
-#                          `login<TAB>type` to fixture a bot-type account
-#   $tmp_dir/pending-teams the requested_teams slugs, one per line
+#   $tmp_dir/reviews       the reviews array, verbatim REST-shaped JSON (as above)
+#   $tmp_dir/pending       the pending reviewers, one per line — `login` alone
+#                          (type defaults to `User`), or `login<TAB>type` to
+#                          fixture a bot-type account
+#   $tmp_dir/pending-teams the pending teams' slugs, one per line
 #   $tmp_dir/author        the pull request author's login
 #   $tmp_dir/post          "works" | "silent" — whether the POST changes `pending`
-#   $tmp_dir/api-fail      the path fragment whose GET should fail, if any
+#   $tmp_dir/calls         how many `api graphql` calls have been made so far
+#   $tmp_dir/api-fail      the call number (1-based) from which every `api
+#                          graphql` call should fail, if any
 #   $tmp_dir/posts         one line per POST, recording its arguments
 cat >"$tmp_dir/gh" <<'STUB'
 #!/usr/bin/env bash
 d="$(dirname "$0")"
-fail="$(cat "$d/api-fail" 2>/dev/null || true)"
 if [[ "$1 $2" == "pr view" ]]; then
   flag="$(cat "$d/draft")"
   [[ "$flag" == "error" ]] && exit 1
@@ -750,68 +790,49 @@ if [[ "$1 $2" == "api -X" ]]; then
   fi
   exit 0
 fi
-path="$2"
-if [[ -n "$fail" && "$path" == *"$fail" ]]; then
+[[ "$1 $2" == "api graphql" ]] || exit 1
+n="$(cat "$d/calls" 2>/dev/null || echo 0)"; n=$(( n + 1 )); printf '%s' "$n" >"$d/calls"
+fail_from="$(cat "$d/api-fail" 2>/dev/null || true)"
+if [[ -n "$fail_from" && "$n" -ge "$fail_from" ]]; then
   failmsg="$(cat "$d/api-fail-msg" 2>/dev/null || true)"
   [[ -n "$failmsg" ]] && printf '%s\n' "$failmsg" >&2
   exit 1
 fi
-if [[ "$path" == *"/reviews" ]]; then
-  jq -c '.[] | select(.submitted_at != null)
-             | {login: .user.login,
-                bot: (((.user.type // "User") == "Bot") or (.user.login | endswith("[bot]"))),
-                state: .state}' "$d/reviews"
-elif [[ "$*" == *"user.login"* ]]; then
-  cat "$d/author"
-else
-  # Builds the raw `requested_reviewers`/`requested_teams` shape a real PR
-  # object carries and runs the production `--jq` filter over it for real —
-  # rather than passing `$d/pending` through untouched, which would let a
-  # bot-filtering regression there go unnoticed (tech-debt/TD-PPagop-26081403.md).
-  #
-  # The filter is the one `ensure_human_reviewer` actually handed this call,
-  # read back out of its own argv, never a copy of it written here: a copy
-  # asserts only that the copy filters, and would keep passing with the
-  # production `--jq` reverted to an unfiltered `[.requested_reviewers[]?
-  # .login]` — which is precisely the regression the previous paragraph
-  # claims to catch.
-  jq_filter=""
-  prev=""
-  for a in "$@"; do
-    if [[ "$prev" == "--jq" ]]; then jq_filter="$a"; break; fi
-    prev="$a"
-  done
-  [[ -n "$jq_filter" ]] || { echo "stub: no --jq in: $*" >&2; exit 1; }
-  # A dedicated fixture for this one read (agent-ops#1082): `_handoff_pr_author`
-  # reads the same bare PR-object path with a different `--jq` filter
-  # (`.user.login`), so the generic `api-fail`/path match above cannot target
-  # this call alone — it is told apart here by its own filter, which only
-  # `_handoff_pending_review_targets` ever hands this stub.
-  if [[ -s "$d/api-fail-pending" && "$jq_filter" == *requested_reviewers* ]]; then
-    failmsg="$(cat "$d/api-fail-msg" 2>/dev/null || true)"
-    [[ -n "$failmsg" ]] && printf '%s\n' "$failmsg" >&2
-    exit 1
-  fi
+# Builds the raw GraphQL document a real `pullRequest(number:)` query would
+# answer with, and runs the production `--jq` filter over it for real —
+# rather than pre-shaping `$d/pending`/`$d/reviews` into the final `{author,
+# reviews, pending}` document, which would let a bot-filtering regression in
+# `_handoff_pr_query`'s own filter go unnoticed
+# (tech-debt/TD-PPagop-26081403.md). The filter is the one `_handoff_pr_query`
+# actually handed this call, read back out of its own argv, never a copy of
+# it written here.
+jq_filter=""
+prev=""
+for a in "$@"; do
+  if [[ "$prev" == "--jq" ]]; then jq_filter="$a"; break; fi
+  prev="$a"
+done
+[[ -n "$jq_filter" ]] || { echo "stub: no --jq in: $*" >&2; exit 1; }
+reviews_nodes="$(jq -c '[.[] | select(.submitted_at != null)
+            | {author: {login: .user.login, __typename: (.user.type // "User")},
+               state: .state, submittedAt: .submitted_at}]' "$d/reviews")"
+pending_nodes="$(
   {
-    printf '{"requested_reviewers":['
-    first=true
     while IFS=$'\t' read -r login rtype; do
       [[ -n "$login" ]] || continue
-      $first || printf ','
-      first=false
-      printf '{"login":"%s","type":"%s"}' "$login" "${rtype:-User}"
+      printf '{"requestedReviewer":{"__typename":"%s","login":"%s"}}\n' "${rtype:-User}" "$login"
     done <"$d/pending"
-    printf '],"requested_teams":['
-    first=true
     while IFS= read -r slug; do
       [[ -n "$slug" ]] || continue
-      $first || printf ','
-      first=false
-      printf '{"slug":"%s"}' "$slug"
+      printf '{"requestedReviewer":{"__typename":"Team","slug":"%s"}}\n' "$slug"
     done <"$d/pending-teams"
-    printf ']}'
-  } | jq -r "$jq_filter"
-fi
+  } | jq -sc '.'
+)"
+author_login="$(tr -d '\n' <"$d/author")"
+doc="$(jq -nc --argjson reviews "$reviews_nodes" --argjson pending "$pending_nodes" --arg author "$author_login" \
+  '{data:{repository:{pullRequest:{author:{login:$author},reviews:{nodes:$reviews},reviewRequests:{nodes:$pending}}}}}')"
+printf '%s' "$doc" | jq -c "$jq_filter"
+exit 0
 STUB
 chmod +x "$tmp_dir/gh"
 
@@ -819,7 +840,7 @@ reset_human_stub() {  # <draft-flag> <post-behaviour>
   printf '%s' "$1" >"$tmp_dir/draft"
   printf '%s' "$2" >"$tmp_dir/post"
   : >"$tmp_dir/pending"; : >"$tmp_dir/pending-teams"; : >"$tmp_dir/posts"; : >"$tmp_dir/api-fail"
-  : >"$tmp_dir/api-fail-msg"; : >"$tmp_dir/api-fail-pending"
+  : >"$tmp_dir/api-fail-msg"; : >"$tmp_dir/calls"
   printf 'warwickallen\n' >"$tmp_dir/author"
 }
 
@@ -1014,31 +1035,34 @@ assert_eq "a request that does not take is a failure" \
 assert_eq "  ... and exits 1" "1" "$rc"
 
 # The silent direction: "could not ask" must never resolve to "skip" or "none".
+# Call 1 is `_handoff_blocking_reviewers`'s own.
 review_n=0
 reset_human_stub false works
 set_reviews "$(review Warwick-Allen APPROVED)"
-printf '/reviews' >"$tmp_dir/api-fail"
+printf '1' >"$tmp_dir/api-fail"
 out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
 assert_eq "unreadable reviews are a failure, never an assumed skip" "failed" "$out"
 assert_eq "  ... and exits 1" "1" "$rc"
 
+# Call 4 is `_handoff_pending_review_targets`'s own — after blocking(1),
+# known(2) and author(3) each succeed in turn.
 review_n=0
 reset_human_stub false works
 set_reviews "$(review Warwick-Allen APPROVED)"
-printf 'pulls/111' >"$tmp_dir/api-fail"
+printf '4' >"$tmp_dir/api-fail"
 out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
 assert_eq "an unreadable pending list is a failure" "failed" "$out"
 assert_eq "  ... and exits 1" "1" "$rc"
 
 # agent-ops#1082: a rate-limit refusal at this same read is told apart from
 # any other cause, distinguishably — an operator reading the log needs to
-# know whether nobody was asked because the shared REST budget was gone,
+# know whether nobody was asked because the shared GitHub budget was gone,
 # never folded into the same bare `failed` a genuine failure gets above.
 review_n=0
 reset_human_stub false works
 set_reviews "$(review Warwick-Allen APPROVED)"
-printf x >"$tmp_dir/api-fail-pending"
-printf 'HTTP 403: API rate limit exceeded for user ID 2049303' >"$tmp_dir/api-fail-msg"
+printf '4' >"$tmp_dir/api-fail"
+printf 'GraphQL: API rate limit already exceeded for user ID 2049303' >"$tmp_dir/api-fail-msg"
 out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
 assert_eq "a rate-limited pending-list read is told apart from a generic failure" \
   "failed-rate-limited" "$out"

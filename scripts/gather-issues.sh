@@ -119,10 +119,13 @@
 # gather-review-feedback.sh's are: an empty result indistinguishable from "no
 # open issues" once cost a debugging round.
 #
-# Both reads take one 100-item page, like every gatherer here. More than 100
-# open unassigned issues, or a thread past 100 comments, is a repo-hygiene
-# problem before it is a gathering one — but the bound is stated here so
-# nobody has to rediscover it from a truncated thread.
+# `issue_prefetch_open_issues` (lib/issue-prefetch.sh, agent-ops#1085) pages
+# the open-issues walk itself up to its own stated cap (2000 issues); each
+# issue's own comment thread takes one 100-comment window, the newest 100
+# where a thread runs longer — a thread past that, or a repository past the
+# page cap, is a repo-hygiene problem before it is a gathering one, but both
+# bounds are stated in that function's own header so nobody has to
+# rediscover either from a truncated thread.
 
 set -uo pipefail
 
@@ -154,8 +157,23 @@ degrade() {
   exit 0
 }
 
-issues_raw="$(gh api "repos/$slug/issues?state=open&per_page=100")" \
-  || degrade "issues list fetch failed"
+# issue_prefetch_open_issues (lib/issue-prefetch.sh, agent-ops#1085) is one
+# paginated GraphQL walk fetching every open issue's whole comment thread
+# alongside it, replacing what was this REST listing call plus one further
+# REST call per surviving candidate below — see that function's own header
+# for the point-cost measurement. Exit 2 means its own page cap was reached
+# before the repository's own open-issue count was: the array it still
+# printed is used rather than discarded, the same "a truncated set is still
+# useful, and the caller decides its own direction of harm" judgement
+# `github_pr_list_truncated`'s own call sites already make explicit — a
+# missed issue here is simply not offered as a candidate this cycle, not a
+# gate silently letting something through it should have stopped.
+issues_raw="$(issue_prefetch_open_issues "$slug")"; issues_raw_rc=$?
+if (( issues_raw_rc == 1 )); then
+  degrade "issues list fetch failed"
+elif (( issues_raw_rc == 2 )); then
+  echo "gather-issues: $slug: issue_prefetch_open_issues hit its own page cap — some open issues may be missing this cycle" >&2
+fi
 jq -e 'type == "array"' <<<"$issues_raw" >/dev/null 2>&1 \
   || degrade "issues list payload is not an array"
 
@@ -207,7 +225,8 @@ candidates="$(jq -c "$ISSUE_DETERMINISTIC_FILTER_JQ"'
       author: (.user.login // ""),
       created_at: .created_at,
       updated_at: .updated_at,
-      body: (.body // "")}]
+      body: (.body // ""),
+      comments: [(.comments // [])[] | {author: (.user.login // ""), created_at: .created_at, body: (.body // "")}]}]
   | sort_by(.number)' <<<"$issues_raw" 2>/dev/null)" \
   || degrade "issues filter failed"
 
@@ -223,21 +242,18 @@ out='[]'
 while IFS= read -r candidate; do
   [[ -n "$candidate" ]] || continue
   n="$(jq -r '.number' <<<"$candidate")"
-  comments="$(gh api "repos/$slug/issues/$n/comments?per_page=100" \
-      --jq '[.[] | {author: (.user.login // ""), created_at: .created_at, body: (.body // "")}]')" \
-    || degrade "comments fetch failed for issue #$n"
-  jq -e 'type == "array"' <<<"$comments" >/dev/null 2>&1 \
-    || degrade "comments payload for issue #$n is not an array"
 
   # Requirement 34j: a `Blocked-by:` reference, in the body or any comment,
   # holds this candidate back until every reference it names is closed —
   # checked live, right here, because this is the one place that has both
   # the whole thread and a `gh` budget for it. `issue_blocked_by_ref`
   # (lib/issue-prefetch.sh, shared with scripts/gather-tech-debt.sh) is the
-  # live check; a printed reference drops the candidate entirely, before the
-  # comparatively expensive comments payload above is put to any other use.
+  # live check; a printed reference drops the candidate entirely. `$candidate`
+  # already carries its own thread (`issue_prefetch_open_issues` fetched it
+  # alongside the listing itself, agent-ops#1085), so no further `gh` call is
+  # made to get it.
   thread_text="$(jq -r '.body' <<<"$candidate")
-$(jq -r '[.[].body] | join("\n")' <<<"$comments")"
+$(jq -r '[.comments[].body] | join("\n")' <<<"$candidate")"
   ref_display="$(issue_blocked_by_ref "$slug" "$thread_text")"
   if [[ -n "$ref_display" ]]; then
     excl_entry="$(jq -nc --argjson n "$n" --arg ref "$ref_display" \
@@ -247,13 +263,11 @@ $(jq -r '[.[].body] | join("\n")' <<<"$comments")"
     continue
   fi
 
-  # $comments is a whole issue thread — requirement 3d/#118 pre-fetches every
-  # comment — unbounded past this call (requirement 4g, TD-PPagop-26081406).
-  # $candidate and $comments arrive on stdin, bound positionally with `input
-  # as $name` in the order printed, never in argv.
-  entry="$(jq -nc 'input as $candidate | input as $comments |
-    {source: "issues", ref: ($candidate.number | tostring)} + $candidate + {comments: $comments}' \
-    <<<"$candidate"$'\n'"$comments")" || degrade "entry assembly failed for issue #$n"
+  # $candidate already carries its own whole issue thread (requirement 3d/
+  # #118) — unbounded past this call (requirement 4g, TD-PPagop-26081406) —
+  # so it arrives on stdin, never in argv.
+  entry="$(jq -c '{source: "issues", ref: (.number | tostring)} + .' \
+    <<<"$candidate")" || degrade "entry assembly failed for issue #$n"
   # $entry and the accumulator both arrive on stdin the same way — never in
   # argv, where a single issue thread past MAX_ARG_STRLEN would abort this
   # append.

@@ -24,6 +24,68 @@
 # by literal pattern, the same way they did out of agent-cycle.sh before
 # the move; only the file path changed for them.
 
+# _repo_order_default_branch SLUG
+# Print `default_branch<TAB>commit_ts` for SLUG's default branch and its tip
+# commit's own committer date — one GraphQL query (agent-ops#1085) replacing
+# the two REST reads `gather_ordered_repos`'s own repo-ordering walk used to
+# make of every configured repository, every cycle, on every node:
+# `repos/<slug>` for `.default_branch`, then `repos/<slug>/commits/
+# <default_branch>` for `.commit.committer.date`. Measured live, 2026-08-31,
+# against this repository's own `Poetic-Poems/agent-ops`: `rateLimit{cost}`
+# on the identical selection set reports 1, against 2 REST `core` points the
+# predecessor always paid per repository — the lopsidedness agent-ops#1085
+# exists to correct (95 REST refusals fleet-wide in the 48 hours to
+# 2026-08-30, against `graphql` sitting at 1513 of 5000).
+#
+# A single-repository query, deliberately, rather than one call aliasing
+# every configured repository at once (which the issue's own text
+# considers): `scripts/check-graphql-drift.sh` discovers documents by a
+# static text search for the literal `-f query='` form (its own header,
+# "DISCOVERY IS A SEARCH, NEVER A LIST"), and an aliased query has to be
+# assembled per cycle from however many repositories are configured — no
+# fixed literal document exists in this file's own source for that search to
+# find, so a file calling `api graphql` that way fails the checker's own
+# "no document could be read from it" rule outright, the false-negative this
+# checker exists to remove reintroduced by the very migration meant to guard
+# against it. This form keeps the fixed, literal `-f query='...'` shape every
+# other migrated read-set in this issue uses, at the cost of one call per
+# repository rather than one call for all of them — still a strict
+# improvement (1 GraphQL point replacing 2 REST points, per repository) and
+# the one shape this checker can actually verify against GitHub's live
+# schema. agent-ops#1084 (conditional REST caching) is where a batched or
+# further-optimised alternative belongs if the fleet's own repository count
+# ever makes the per-repository cost worth avoiding.
+#
+# Prints nothing and returns non-zero — never a guessed value — when the read
+# fails for any reason: bad arguments, an unreachable API, a repository
+# GitHub cannot resolve, or a response missing either field. The caller
+# retains its own pre-existing fallback (`main`/epoch) and its own
+# `guard_warn`, exactly as it did for either REST call failing before this
+# migration (TD-PPagop-26081407) — this function draws no distinction
+# between "the branch was unreadable" and "the tip commit was", the same
+# granularity its two REST predecessors already had between them collapsed
+# into one call.
+_repo_order_default_branch() {
+  local slug="${1:-}" gh_bin="${CANDIDATE_GATHER_GH:-gh}" out db ts
+  [[ "$slug" =~ ^[^/]+/[^/]+$ ]] || return 1
+  local owner="${slug%%/*}" repo="${slug#*/}"
+
+  # shellcheck disable=SC2016  # GraphQL's own $owner/$repo variables, not the shell's.
+  out="$("$gh_bin" api graphql \
+    -f query='query($owner:String!,$repo:String!){
+      repository(owner:$owner,name:$repo){
+        defaultBranchRef{ name target{ ... on Commit { committedDate } } }
+      }
+    }' \
+    -f owner="$owner" -f repo="$repo" \
+    --jq '.data.repository.defaultBranchRef
+          | {default_branch: (.name // ""), commit_ts: (.target.committedDate // "")}')" || return 1
+  db="$(jq -r '.default_branch' <<<"$out")" || return 1
+  ts="$(jq -r '.commit_ts' <<<"$out")" || return 1
+  [[ -n "$db" && -n "$ts" ]] || return 1
+  printf '%s\t%s' "$db" "$ts"
+}
+
 gather_ordered_repos() {
 if [[ -n "$REPO_FILTER" ]]; then
   repos_json="$(jq -c --arg f "$REPO_FILTER" '[.[] | select(.slug == $f or (.slug | endswith("/" + $f)))]' <<<"$all_repos_json")"
@@ -88,25 +150,26 @@ repo_order_now="$(date +%s)"
 while IFS= read -r slug; do
   # TD-PPagop-26081407: gh api can fail (rate limit, auth, network -- test 1);
   # "main" is a plausible real default branch and 1970-01-01 sorts this repo
-  # oldest without saying why (test 2 for both).
-  #
-  # The shape check after each capture is the sibling of the `claim.sh count`
-  # site's `=~ ^[0-9]+$` above, and it closes what `2>&1` opens: swapping
-  # `2>/dev/null` for `2>&1` is what makes `detail` useful on failure, but it
-  # also merges a *successful* command's stderr into the value. These two are
-  # the only converted sites where that matters — every other one feeds jq,
-  # date or wc, while `$default_branch` is interpolated straight into the next
-  # API path and `$commit_ts` into `.repo_ts`'s ordering sort, both
-  # unvalidated. gh 2.97.0 writes nothing to stderr on a successful `api
-  # --jq`, so this is a future-proofing check, not a live defect; it reports
-  # like any other guard rather than silently substituting, which is the whole
-  # point of this item.
-  default_branch="$(gh api "repos/$slug" --jq '.default_branch' 2>&1)" \
-    || { guard_warn "repo-order:default_branch:$slug" "$default_branch"; default_branch="main"; }
+  # oldest without saying why (test 2 for both). agent-ops#1085 moved the read
+  # itself off two REST calls onto `_repo_order_default_branch`'s one GraphQL
+  # query (see its own header for the point-cost measurement and why it is one
+  # call per repository rather than one call for all of them); this loop's own
+  # fallback contract — the literal values, and a `guard_warn` naming which
+  # half failed — is unchanged. Captured as one `db_ts` first (`test/guard-
+  # degradation.test.sh`'s structural sweep requires the guarded assignment,
+  # the reported detail and the fallback to name the same variable), then
+  # split into its own `var="$(...)"`-shaped statement per field, each
+  # immediately ahead of its own shape-validation guard below — never a bare
+  # `read`, and never both fields split before either guard — so that same
+  # sweep's backward search (nearest preceding `var="$(` line) still finds
+  # the right target for each of the two shape-validation guards, which need
+  # their own field, not `db_ts`, named throughout.
+  db_ts="$(_repo_order_default_branch "$slug" 2>&1)" \
+    || { guard_warn "repo-order:default_branch:$slug" "$db_ts"; db_ts="main"$'\t'"1970-01-01T00:00:00Z"; }
+  default_branch="$(cut -f1 <<<"$db_ts")"
   [[ "$default_branch" =~ ^[A-Za-z0-9._/-]+$ ]] \
     || { guard_warn "repo-order:default_branch-malformed:$slug" "$default_branch"; default_branch="main"; }
-  commit_ts="$(gh api "repos/$slug/commits/$default_branch" --jq '.commit.committer.date' 2>&1)" \
-    || { guard_warn "repo-order:commit_ts:$slug" "$commit_ts"; commit_ts="1970-01-01T00:00:00Z"; }
+  commit_ts="$(cut -f2 <<<"$db_ts")"
   [[ "$commit_ts" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
     || { guard_warn "repo-order:commit_ts-malformed:$slug" "$commit_ts"; commit_ts="1970-01-01T00:00:00Z"; }
   printf '%s\t%s\t%s\n' "$commit_ts" "$slug" "$default_branch" >> "$cycle_dir/.repo_ts"

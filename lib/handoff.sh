@@ -358,6 +358,105 @@ _handoff_pr_parts() {
   printf '%s/%s\t%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
 }
 
+# _handoff_pr_query SLUG NUMBER
+# The one GraphQL query behind every per-pull-request read in this file
+# (agent-ops#1085): `_handoff_pr_author`, `_handoff_latest_reviews` (and
+# through it `_handoff_blocking_reviewers`/`_handoff_pr_approved`),
+# `_handoff_known_reviewers` and `_handoff_pending_review_targets` each ask
+# this one question — `pullRequest(number:){ author, reviews, reviewRequests
+# }` — rather than their own REST endpoint. Measured live, 2026-08-31,
+# against agent-ops#1059 (five reviews, one pending request): `rateLimit{cost}`
+# on the identical selection set reports 1, against what was up to four
+# separate REST reads (each caller its own `/pulls/<n>/reviews --paginate` or
+# `/pulls/<n>`) in the 48 hours to 2026-08-30, when the REST `core` pool
+# logged 95 refusals fleet-wide and `graphql` sat at 1513 of 5000 — the
+# lopsidedness this migration exists to correct. Each of the four callers
+# still asks fresh when it runs — nothing here memoises across callers, the
+# same "ask fresh" discipline `handoff_complete_review`'s own header states
+# for its seven callees — so a caller is exactly as current as its REST
+# predecessor was, only cheaper and drawn from the pool with headroom.
+#
+# Prints `{author, reviews: [{login, bot, state, submitted_at}], pending:
+# [login-or-slug, …]}`:
+#   - `author` is the pull request's author's login, or "" if the account was
+#     deleted (GraphQL's `Actor` still resolves, `login` does not).
+#   - `reviews` is every review GitHub returns, unfiltered by `submitted_at`
+#     (a review still being drafted carries a null one) — left to each caller
+#     to filter, exactly as `_handoff_latest_reviews`'s own
+#     `select(.submitted_at != null)` did over the REST shape, so that filter
+#     stays visible at the call site that relies on it rather than hidden in
+#     here. `bot` is true for a `Bot`-typed author or a `[bot]`-suffixed
+#     login, the same two-part test the REST-era filter used — GraphQL's own
+#     `__typename` is authoritative, but the suffix is kept alongside it
+#     rather than dropped, since a caller here has never had to depend on
+#     `__typename` alone before.
+#   - `pending` is every `reviewRequests` entry whose `requestedReviewer` is
+#     not a bot by the same two-part test, named by `login` (`User`/
+#     `Mannequin`) or `slug` (`Team`) — an `EnterpriseTeam` requested
+#     reviewer, an edge case no caller here has ever had to handle over REST
+#     either, is silently excluded exactly as an unrecognised REST `type`
+#     would leave it out of `known`.
+#
+# `reviews(last:100)`/`reviewRequests(first:100)`: a caller only ever wants a
+# reviewer's own *latest* standing review or the reviewers currently pending,
+# so a review or request more than 100 behind the most recent one survives
+# only if nobody has reviewed or been requested since — the same trade
+# `merge_queue_probe`'s own `timelineItems(last:5)` already takes, for the
+# same reason, and never observed against this fleet's own pull requests.
+#
+# Returns non-zero, printing nothing, on the same "could not ask" terms as
+# `_handoff_draft_flag` — bad arguments, an unreachable API, a deleted pull
+# request, an authentication failure. stderr is left to flow to whatever the
+# caller redirects: `_handoff_pr_author`, `_handoff_latest_reviews` and
+# `_handoff_known_reviewers` discard it (they have nothing to classify a
+# failure by), while `_handoff_pending_review_targets` captures it to tell a
+# rate-limit refusal apart from any other cause (agent-ops#1082).
+_handoff_pr_query() {
+  local slug="$1" number="${2:-}" gh_bin="${HANDOFF_GH:-gh}" out
+  [[ "$slug" =~ ^[^/]+/[^/]+$ ]] || return 1
+  local owner="${slug%%/*}" repo="${slug#*/}"
+  [[ "$number" =~ ^[0-9]+$ ]] || return 1
+
+  # shellcheck disable=SC2016  # GraphQL's own $owner/$repo/$number variables, not the shell's.
+  out="$("$gh_bin" api graphql \
+    -f query='query($owner:String!,$repo:String!,$number:Int!){
+      repository(owner:$owner,name:$repo){
+        pullRequest(number:$number){
+          author{ login }
+          reviews(last:100){
+            nodes{ author{ login __typename } state submittedAt }
+          }
+          reviewRequests(first:100){
+            nodes{
+              requestedReviewer{
+                __typename
+                ... on User { login }
+                ... on Team { slug }
+                ... on Mannequin { login }
+              }
+            }
+          }
+        }
+      }
+    }' \
+    -f owner="$owner" -f repo="$repo" -F number="$number" \
+    --jq '.data.repository.pullRequest as $pr
+          | {author: ($pr.author.login // ""),
+             reviews: [$pr.reviews.nodes[] | {
+                 login: (.author.login // ""),
+                 bot: (((.author.__typename // "User") == "Bot")
+                       or ((.author.login // "") | endswith("[bot]"))),
+                 state: .state,
+                 submitted_at: .submittedAt}],
+             pending: [$pr.reviewRequests.nodes[] | .requestedReviewer
+                       | select(((.__typename // "User") != "Bot")
+                                and (((.login // .slug // "") | endswith("[bot]")) | not))
+                       | (.login // .slug // empty) | select(. != "")]}')" || return 1
+  jq -e 'type == "object" and (.reviews | type) == "array" and (.pending | type) == "array"' \
+    <<<"$out" >/dev/null 2>&1 || return 1
+  printf '%s' "$out"
+}
+
 # _handoff_latest_reviews SLUG NUMBER
 # Print a compact JSON array of `{login, state}`, one entry per non-bot
 # reviewer, giving each reviewer's *standing position* — the last of their own
@@ -382,20 +481,12 @@ _handoff_pr_parts() {
 # set safe to POST verbatim: requesting a review from the author is a 422, and
 # it is unreachable here.
 _handoff_latest_reviews() {
-  local slug="$1" number="$2" gh_bin="${HANDOFF_GH:-gh}" lines
-  # One JSON object per line rather than an array: `--paginate` concatenates a
-  # separate document per page, so an aggregate written inside `--jq` would be
-  # computed per page and silently disagree with itself past thirty reviews.
-  # The aggregation happens below, over every page at once.
-  lines="$("$gh_bin" api "repos/$slug/pulls/$number/reviews" --paginate \
-            --jq '.[] | select(.submitted_at != null)
-                      | {login: .user.login,
-                         bot: (((.user.type // "User") == "Bot") or (.user.login | endswith("[bot]"))),
-                         state: .state}' 2>/dev/null)" || return 1
-  jq -s -c '
-    [.[] | select(.bot | not)
-         | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED")]
-    | group_by(.login) | map(last) | map({login, state})' <<<"$lines" 2>/dev/null || return 1
+  local slug="$1" number="$2" out
+  out="$(_handoff_pr_query "$slug" "$number" 2>/dev/null)" || return 1
+  jq -c '
+    [.reviews[] | select(.submitted_at != null) | select(.bot | not)
+                | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED")]
+    | group_by(.login) | map(last) | map({login, state})' <<<"$out" 2>/dev/null || return 1
 }
 
 # _handoff_blocking_reviewers SLUG NUMBER
@@ -452,23 +543,19 @@ _handoff_pr_approved() {
 # contain them, and `ensure_human_reviewer` filters them out of it rather than
 # trusting the reviews list to have done so.
 _handoff_known_reviewers() {
-  local slug="$1" number="$2" gh_bin="${HANDOFF_GH:-gh}" lines
-  lines="$("$gh_bin" api "repos/$slug/pulls/$number/reviews" --paginate \
-            --jq '.[] | select(.submitted_at != null)
-                      | {login: .user.login,
-                         bot: (((.user.type // "User") == "Bot") or (.user.login | endswith("[bot]")))}' \
-            2>/dev/null)" || return 1
-  jq -s -r '[.[] | select(.bot | not) | .login] | unique | .[]' <<<"$lines" 2>/dev/null || return 1
+  local slug="$1" number="$2" out
+  out="$(_handoff_pr_query "$slug" "$number" 2>/dev/null)" || return 1
+  jq -r '[.reviews[] | select(.submitted_at != null) | select(.bot | not) | .login] | unique | .[]' \
+    <<<"$out" 2>/dev/null || return 1
 }
 
 # _handoff_pr_author SLUG NUMBER
 # Print the login of the pull request's author, or return non-zero, printing
 # nothing, when GitHub could not be asked.
 _handoff_pr_author() {
-  local slug="$1" number="$2" gh_bin="${HANDOFF_GH:-gh}" login
-  login="$("$gh_bin" api "repos/$slug/pulls/$number" --jq '.user.login // empty' 2>/dev/null)" \
-    || return 1
-  printf '%s' "$login"
+  local slug="$1" number="$2" out
+  out="$(_handoff_pr_query "$slug" "$number" 2>/dev/null)" || return 1
+  jq -r '.author' <<<"$out" 2>/dev/null || return 1
 }
 
 # confirm_review_requested PR_URL
@@ -556,8 +643,14 @@ confirm_review_requested() {
   # this list by GitHub, which is the whole defect; a reviewer who is on it has
   # been asked and has not answered, and asking twice is a no-op that would
   # nonetheless report `requested` and read in the log as work done.
-  if ! pending="$("$gh_bin" api "repos/$slug/pulls/$number" \
-                    --jq '[.requested_reviewers[]?.login] | .[]' 2>/dev/null)"; then
+  #
+  # `_handoff_pending_review_targets` below is the one definition of "who is
+  # already pending" this file has — `ensure_human_reviewer` reads the same
+  # question — so this reuses it rather than its own now-removed copy of the
+  # read (agent-ops#1085). Its `rate-limited` detail is not distinguished
+  # here: this call's own contract has never carried that third shape, and a
+  # caller that only ever matched on `failed` must keep seeing exactly that.
+  if ! pending="$(_handoff_pending_review_targets "$slug" "$number")"; then
     printf 'failed'
     return 1
   fi
@@ -579,8 +672,7 @@ confirm_review_requested() {
   "$gh_bin" api -X POST "repos/$slug/pulls/$number/requested_reviewers" \
     "${args[@]}" >/dev/null 2>&1 || true
 
-  if ! pending="$("$gh_bin" api "repos/$slug/pulls/$number" \
-                    --jq '[.requested_reviewers[]?.login] | .[]' 2>/dev/null)"; then
+  if ! pending="$(_handoff_pending_review_targets "$slug" "$number")"; then
     printf 'failed'
     return 1
   fi
@@ -594,29 +686,30 @@ confirm_review_requested() {
 }
 
 # _handoff_pending_review_targets SLUG NUMBER
-# Print, one per line, the non-bot logins in `requested_reviewers` and the
-# slugs in `requested_teams` for pull request NUMBER on SLUG — the "who has
-# already been asked" list `ensure_human_reviewer` reads both before and
-# after its own POST. On failure prints nothing and returns 1, *except* when
-# the underlying `gh api` read failed specifically on a GitHub REST
-# rate-limit refusal: then it prints `rate-limited` (still returning 1), so
-# `ensure_human_reviewer` can tell that apart from any other read failure
-# (agent-ops#1082) instead of folding both into the same bare `failed` an
-# operator cannot act on. Classification reuses `github_limit_kind`
+# Print, one per line, the non-bot review-request targets — `_handoff_pr_
+# query`'s own `pending` — for pull request NUMBER on SLUG: the "who has
+# already been asked" list both `confirm_review_requested` and
+# `ensure_human_reviewer` read, each before and after its own POST. On failure
+# prints nothing and returns 1, *except* when the underlying read failed
+# specifically on a GitHub rate-limit refusal: then it prints `rate-limited`
+# (still returning 1), so a caller can tell that apart from any other read
+# failure (agent-ops#1082) instead of folding both into the same bare `failed`
+# an operator cannot act on. Classification reuses `github_limit_kind`
 # (lib/github-limit.sh) — sourced ahead of this file by every real caller,
 # per the header, but only if it happens to be available: an unreadable
 # result is `failed`, the same as before this existed, when it is not.
+# `github_limit_kind` already recognises GraphQL's own primary-limit phrasing
+# ("API rate limit already exceeded…") alongside REST's, so this needed no
+# change of its own to keep classifying correctly once the read beneath it
+# moved off REST (agent-ops#1085).
 _handoff_pending_review_targets() {
-  local slug="$1" number="$2" gh_bin="${HANDOFF_GH:-gh}"
+  local slug="$1" number="$2"
   local out errfile rc kind diag
-  local filter='[(.requested_reviewers[]? | select(((.type // "User") == "Bot")
-                   or (.login | endswith("[bot]")) | not) | .login),
-                 (.requested_teams[]? | .slug)] | .[]'
   errfile="$(mktemp 2>/dev/null || true)"
   if [[ -n "$errfile" ]]; then
-    out="$("$gh_bin" api "repos/$slug/pulls/$number" --jq "$filter" 2>"$errfile")"; rc=$?
+    out="$(_handoff_pr_query "$slug" "$number" 2>"$errfile")"; rc=$?
   else
-    out="$("$gh_bin" api "repos/$slug/pulls/$number" --jq "$filter" 2>/dev/null)"; rc=$?
+    out="$(_handoff_pr_query "$slug" "$number" 2>/dev/null)"; rc=$?
   fi
   if (( rc != 0 )); then
     kind="none"
@@ -629,7 +722,7 @@ _handoff_pending_review_targets() {
     return 1
   fi
   [[ -n "$errfile" ]] && rm -f "$errfile"
-  printf '%s' "$out"
+  jq -r '.pending[]' <<<"$out" 2>/dev/null
 }
 
 # ensure_human_reviewer PR_URL ASSIGNEE
