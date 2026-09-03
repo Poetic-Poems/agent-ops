@@ -1109,6 +1109,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A `human-visibility` violation logged as "could not read the pull
+  request's state — skipping its review-state checks" no longer survives
+  forever once the underlying read starts working again (requirement 38e;
+  agent-ops#1127). This is the read that gates every downstream check
+  `scripts/sweep-human-visibility.sh` makes for a pull request, so it
+  previously fell through as an unrecognised warning shape in
+  `scripts/gather-human-visibility-hygiene.sh`'s own live re-check —
+  kept indefinitely for as long as the pull request stayed open, since
+  that catch-all has no live signal of its own to test. It now has its own
+  `could_not_read_state` class there: the live re-check re-runs the sweep's
+  own broad `gh pr view --json reviewDecision,mergeable,mergeStateStatus,
+  statusCheckRollup,reviews,comments` call verbatim — the narrower `gh pr
+  view` this function already opened with proves nothing about it, since it
+  omits `statusCheckRollup` entirely — and drops the violation only once
+  that call succeeds again.
 - The Approver stage skipped a ready pull request silently whenever the
   merge-autonomy kill switch's own read failed closed with no cached copy
   (TD-PPagop-26081507) — a lone rate-limited refusal, the everyday cause,

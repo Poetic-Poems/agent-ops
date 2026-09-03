@@ -13076,7 +13076,25 @@ implements.
       now-answered pull request is never visited again either way). An answer
       this re-check itself cannot get is never read as "resolved" — the
       violation is kept, the same reasoning the sweep itself applies to its
-      own reads.
+      own reads. Two further classes have no follow-up *action* outcome to
+      inspect at all — the read failing was the whole violation, so each
+      re-runs the exact call that failed rather than inferring an answer
+      from a different one this re-check already opened with. A
+      `could not read the pull request's reviews …` warning
+      (`_handoff_pr_approved`'s own REST `gh api …/reviews --paginate` read
+      failing, inside the idle-nudge check alone) drops only once a fresh
+      call to that same function succeeds — the GraphQL `gh pr view`
+      read this re-check opened with is a different API surface, with its
+      own rate limit and its own breakable code path, and proves nothing
+      about it. A `could not read the pull request's state …` warning
+      (`scripts/sweep-human-visibility.sh`'s own broad `gh pr view --json
+      reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,reviews,
+      comments` call — the read that gates every downstream check the
+      sweep makes for a pull request — failing) is the same shape: it
+      re-runs that exact call verbatim and drops only once it succeeds
+      again, since the narrower `gh pr view` this re-check opened with
+      omits `statusCheckRollup` entirely and a broader query is its own
+      opportunity to fail even when a narrower one does not.
     - A survivor becomes a candidate carrying its own source,
       `source: "human-visibility"` — ranked immediately after
       `merge-conflicts` (config.schema.json's `sources` enum and priority-order
@@ -13200,8 +13218,9 @@ implements.
       family and clears it only off a later `human-dequeue-notice` success
       for the same pull request. `gather-human-visibility-hygiene.sh`'s own
       live re-check, one step further on, has its own dedicated
-      `dequeue_notice` class (TD-PPagop-26081504) alongside its other three
-      (`could_not_request`/`could_not_post_nudge`/`no_candidate`) — it
+      `dequeue_notice` class (TD-PPagop-26081504) alongside its other five
+      (`could_not_request`/`could_not_post_nudge`/`no_candidate`/
+      `could_not_read_reviews`/`could_not_read_state`) — it
       re-verifies that a posted comment actually landed by reading the pull
       request's comments for the `agent-ops:merge-queue-dequeued:` marker,
       the same kind of read `could_not_post_nudge` already makes for the
@@ -13212,7 +13231,7 @@ implements.
       whose marker genuinely is not there, still falls into that script's
       own fail-safe default: kept selectable for as long as the pull
       request stays open and not a draft, the same as any warning shape
-      none of its four classes recognise. The notice's own
+      none of its six classes recognise. The notice's own
       gate is `merge_queue_dequeue_actionable`'s, above, and it is
       deliberately *wider* than requirement 3z's: requirement 3z admits only
       `failed_checks`, an allow-list, because it pushes a fix to the branch;
@@ -14727,6 +14746,14 @@ What exists, and the requirements each part answers to:
    opens with is a different API surface (GraphQL, versus that call's own
    REST `gh api …/reviews --paginate`) and proves nothing about it on its
    own; a
+   `could not read the pull request's state …` warning
+   (`scripts/sweep-human-visibility.sh`'s own broad `gh pr view --json
+   reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,reviews,
+   comments` call — the read that gates every downstream check the sweep
+   makes for a pull request — failing) only while re-running that same call
+   verbatim still fails; the narrower `gh pr view` this re-check opens with
+   omits `statusCheckRollup` entirely and proves nothing about it on its own
+   either; a
    `could not post the idle nudge comment` warning only while no comment
    carries both the exact `agent-ops:human-nudge` HTML-comment form and the
    pipeline-marker stamp on the same comment (agent-ops#390, #428); a `no legal
@@ -14734,7 +14761,11 @@ What exists, and the requirements each part answers to:
    while `gh pr view --json author,reviews,reviewRequests` still shows no
    non-author, non-bot, submitted review, no review request already pending
    under that same filter, and `enabler_assignee` — read back out of the
-   warning's own detail text — still names the pull request's own author;
+   warning's own detail text — still names the pull request's own author; a
+   `could not post the merge-queue-dequeued notice` warning
+   (TD-PPagop-26081504) only while no comment carries the
+   `agent-ops:merge-queue-dequeued:` marker, the same kind of read the idle
+   nudge's own class makes for its own marker;
    any other warning shape for as long as the pull request stays open and
    not a draft; an unreadable re-check is kept, not dropped) — carrying a
    ref scoped to the surviving violations' own identities and details
@@ -20367,8 +20398,20 @@ pull request, run the ones the change touches and any it could regress.
     true/false, since the question here is only whether the read now
     succeeds; survives while that same call still fails, even though the
     outer `gh pr view` re-check — a different API surface — succeeds, proving
-    the fix does not infer the answer from that unrelated read; an
-    unrecognised warning shape
+    the fix does not infer the answer from that unrelated read; a
+    `could not read the pull request's state …` violation
+    (`scripts/sweep-human-visibility.sh`'s own broad `gh pr view --json
+    reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,reviews,
+    comments` call failing) is the same shape — no follow-up action outcome
+    of its own, so it re-runs that exact call instead: dropped only once it
+    succeeds again, judged on exit status alone; survives while it still
+    fails, even though the narrower opening `gh pr view` re-check (which
+    omits `statusCheckRollup`) succeeds, proving the fix does not infer the
+    answer from that narrower read either; and is dropped on a merged,
+    closed or draft pull request the same as every other class,
+    decided before the class-specific re-check is even reached; a
+    genuinely unrecognised warning shape (one none of the six classes
+    above match)
     survives for as long as its pull request
     stays open and not a draft; an unreadable live re-check keeps the
     violation rather than dropping it; a repo-level and a pull-request

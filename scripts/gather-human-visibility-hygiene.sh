@@ -59,17 +59,19 @@
 # uses (an unread state is never guessed at as clean). Only a *definite* "no
 # longer true" answer drops a violation.
 #
-# ## Five warning classes, told apart
+# ## Six warning classes, told apart
 #
-# `sweep-human-visibility.sh` logs five different per-pull-request warnings —
+# `sweep-human-visibility.sh` logs six different per-pull-request warnings —
 # "could not request review from …" (the review-request POST itself failed),
 # "could not read the pull request's reviews …" (`_handoff_pr_approved`'s own
-# read failing, inside the idle-nudge check alone), "could not post the idle
-# nudge comment" (the nudge comment POST itself failed), "no legal
-# review-request candidate" (no POST was even attempted —
+# read failing, inside the idle-nudge check alone), "could not read the pull
+# request's state …" (the sweep's own broader `gh pr view` read failing, the
+# one that gates every downstream check it makes for that pull request),
+# "could not post the idle nudge comment" (the nudge comment POST itself
+# failed), "no legal review-request candidate" (no POST was even attempted —
 # `ensure_human_reviewer`'s `skip\tno-candidate`, tech-debt/TD-PPagop-26081001.md),
 # and "could not post the merge-queue-dequeued notice" (the dequeue-notice
-# comment POST itself failed, requirement 38f) — and they clear on five
+# comment POST itself failed, requirement 38f) — and they clear on six
 # different live facts. A single shared check would get more than one of them wrong: every
 # pull request a nudge warning is logged against is, by the nudge's own gate,
 # already `APPROVED` — so a check that only asks "has a human reviewed this"
@@ -118,7 +120,7 @@
 #                             reviews list rather than that field, read here
 #                             rather than acted on.
 #   could_not_read_reviews — no follow-up *action* outcome to inspect, unlike
-#                             the other four classes: the read failing was the
+#                             the other five classes: the read failing was the
 #                             whole violation. But the `gh pr view` call at the
 #                             top of `_pr_violation_survives` is a GraphQL
 #                             read, and the read that actually failed —
@@ -173,13 +175,30 @@
 #                             would report `already` or `requested`, never
 #                             `no-candidate` again, before this gatherer runs
 #                             again.
-#   (anything else)         — a warning this script does not recognise (e.g.
-#                             "could not read the pull request's state —
-#                             skipping the idle check", or a future warning
-#                             shape) has no live signal of its own to check,
-#                             so it is kept for as long as the pull request
-#                             stays open and not a draft — the same fail-safe
-#                             default an unreadable re-check gets.
+#   could_not_read_state    — "could not read the pull request's state —
+#                             skipping its review-state checks", the read
+#                             that gates every downstream check the sweep
+#                             makes for a pull request (`sweep-human-
+#                             visibility.sh`'s own broad `gh pr view --json
+#                             reviewDecision,mergeable,mergeStateStatus,
+#                             statusCheckRollup,reviews,comments` call). Like
+#                             `could_not_read_reviews`, the read failing was
+#                             the whole violation, and the narrower `gh pr
+#                             view --json state,isDraft,reviewRequests,
+#                             comments,author,reviews` this function already
+#                             opened with above proves nothing about it —
+#                             `statusCheckRollup` alone is not in that field
+#                             list, and a broader query is its own
+#                             opportunity to fail even when a narrower one
+#                             does not. So this class re-runs the sweep's own
+#                             call verbatim and drops the violation only once
+#                             that call succeeds again.
+#   (anything else)         — a warning this script does not recognise (a
+#                             future warning shape) has no live signal of its
+#                             own to check, so it is kept for as long as the
+#                             pull request stays open and not a draft — the
+#                             same fail-safe default an unreadable re-check
+#                             gets.
 #
 # A pull request that has since merged, closed, or gone back to draft drops
 # every class's violation regardless — none of the above can matter to a
@@ -242,6 +261,7 @@ _warning_class() {
   case "$1" in
     "could not request review from"*) printf 'could_not_request' ;;
     "could not read the pull request's reviews"*) printf 'could_not_read_reviews' ;;
+    "could not read the pull request's state"*) printf 'could_not_read_state' ;;
     *"idle nudge comment"*) printf 'could_not_post_nudge' ;;
     "no legal review-request candidate"*) printf 'no_candidate' ;;
     *"merge-queue-dequeued notice"*) printf 'dequeue_notice' ;;
@@ -325,6 +345,25 @@ _pr_violation_survives() {
       local parts
       parts="$(_handoff_pr_parts "$pr_url")" || { printf 'keep'; return; }
       if _handoff_pr_approved "${parts%%$'\t'*}" "${parts##*$'\t'}" >/dev/null 2>&1; then
+        printf 'drop'
+      else
+        printf 'keep'
+      fi
+      ;;
+    could_not_read_state)
+      # No follow-up *action* outcome to inspect either — the read failing
+      # was the whole violation — but the narrower `gh pr view --json
+      # state,isDraft,reviewRequests,comments,author,reviews` this function
+      # already opened with above proves nothing about it: it omits
+      # `statusCheckRollup` entirely, and a broader query is its own
+      # opportunity to fail even when a narrower one succeeds. Re-run the
+      # exact call `sweep-human-visibility.sh` itself makes and drop only
+      # once it succeeds again — its exit status alone, never its content,
+      # since the only question this class asks is whether the read itself
+      # now works.
+      if gh pr view "$pr_url" \
+          --json reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,reviews,comments \
+          >/dev/null 2>&1; then
         printf 'drop'
       else
         printf 'keep'
