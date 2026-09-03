@@ -614,6 +614,33 @@ induced outage rather than only over a quiet afternoon.
       independent of the drift it eventually causes — the drift check is a
       backstop against the *symptom*, and it was never meant to be the only
       thing watching. *[fleet]*
+- [ ] A host-side vantage for the facts no container can see. The runtime
+      deliberately holds neither the Docker socket nor the updater's log —
+      a design property since the agent-ops#603 postmortem — so today a
+      host-only fact reaches the pipeline one of two ways: a human runs
+      `scripts/check-node-compose.sh` and reads the result, or the Enabler
+      files an escalation asking the owner to run the exact commands and
+      paste the output back (the owner-only boundary's conditions 7 and 8,
+      requirement 36a of the implementation spec). agent-ops#1099 is the
+      worked example: deciding whether the watchtower Conflict noise had
+      stopped after the roll-deferral fix required reading watchtower's own
+      log, nothing in the fleet could ever read it, and the answer arrived
+      only when escalation agent-ops#1157 put three commands in front of
+      the owner at a terminal (2026-09-04). The escalation is the correct
+      floor and carries into the product unchanged, whatever the
+      orchestration target — but it should be the fallback, not the
+      mechanism. The control plane is the component that runs where the
+      runtime does not, so it should own a collector at the host vantage
+      (Compose) or the cluster vantage (Kubernetes) that reads what the
+      runtime cannot and republishes it where the pipeline already looks,
+      turning this class of owner data-ask into an automated read. On
+      Kubernetes it is the missing consumer of the reporting gap the
+      deployment item below records — `ImagePullBackOff`, a stalled
+      rollout, a silent CronJob; on Compose it is the productised form of
+      `check-node-compose.sh` and the updater ledger. What it does not
+      retire: conditions 7 and 8 themselves — a fact that exists only in
+      someone's head, or behind an account the installation does not hold,
+      stays an escalation however good the vantage. *[interactive]*
 - [ ] Self-healing derived state: every local store that is a cache of
       something else — the state-sync mirror first among them, and the
       workspace clones — is integrity-checked before use and rebuilt from
