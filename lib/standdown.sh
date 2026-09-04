@@ -206,6 +206,38 @@ if (( min_free_workspace_bytes > 0 )); then
   fi
 fi
 
+# 2.0f Free host memory (requirement 2.0f). Free, and for the same reason as
+# 2.0c immediately above: reading `/proc/meminfo` touches no network and costs
+# nothing, so it runs ahead of every check below that can spend. 2.0c stands a
+# cycle down when the host is short of disk; nothing did the same for memory,
+# and on the ockham WSL2 host that is the half that keeps biting. The VM is
+# capped at 6 GiB, both nodes' cycles overlap for most of every hour, and a
+# cycle that starts into a host with no headroom pushes the VM into a
+# Windows-backed swap file — whereupon the machine stalls, and a git write
+# truncated by the stall leaves the zero-length objects that permanently
+# disabled `git gc` (#604). A stand-down costs one cycle; the freeze costs the
+# host.
+#
+# MemAvailable, not MemFree, and the host's rather than this cgroup's — see
+# lib/memory.sh's header for why each is the right meter. `lib/memory.sh` is
+# the one place free memory is read and judged, so doctor.sh's own advisory
+# warning and this gate cannot silently disagree about what "low" means.
+#
+# An unreadable `/proc/meminfo` is not a stand-down, the same "no evidence"
+# reasoning 2.0's `unknown` and 2.0c's own gate rest on: `memory_verdict`
+# reads it as `ok`.
+if (( min_free_memory_bytes > 0 )); then
+  memory_free_kb="$(memory_available_kb)"
+  if [[ "$(memory_verdict "$memory_free_kb" "$min_free_memory_bytes")" == "low" ]]; then
+    log_event "stand-down" "$(jq -nc \
+      --arg r "$(memory_describe "$memory_free_kb" "$min_free_memory_bytes")" \
+      --arg cause "memory-low" --arg free_kb "$memory_free_kb" \
+      --arg total_kb "$(memory_total_kb)" \
+      '{reason: $r, cause: $cause, free_kb: $free_kb, total_kb: $total_kb}')"
+    exit 0
+  fi
+fi
+
 # 2.1 Usage-limit cooldown (fleet-wide: every node shares one Claude account,
 # so a limit any node hit stands this one down too). Two carriers of the same
 # signal, and the later resume wins: the log union is as fresh as the last

@@ -83,6 +83,8 @@ source "$SCRIPT_DIR/lib/author-token.sh"
 source "$SCRIPT_DIR/lib/issue-priority.sh"
 # shellcheck source=lib/disk-space.sh
 source "$SCRIPT_DIR/lib/disk-space.sh"
+# shellcheck source=lib/memory.sh
+source "$SCRIPT_DIR/lib/memory.sh"
 # shellcheck source=lib/token-expiry.sh
 source "$SCRIPT_DIR/lib/token-expiry.sh"
 # doctor.sh has no other trap and exits from several points below (bad
@@ -751,6 +753,41 @@ for entry in "state_dir=$state_dir" "workspace_root=$workspace_root"; do
     fail "$key ($dir) cannot be created or is not writable"
   fi
 done
+
+# --- Memory ---
+
+section "Memory"
+
+# The same floor requirement 2.0f's pre-cycle stand-down reads (lib/memory.sh),
+# so this warning and that gate can never disagree about what "low" means.
+min_free_memory_bytes="$(cfg '.min_free_memory_bytes')"
+[[ "$min_free_memory_bytes" =~ ^[0-9]+$ ]] || min_free_memory_bytes=$(( 512 * 1024 * 1024 ))
+memory_free_kb="$(memory_available_kb)"
+if [[ -z "$memory_free_kb" ]]; then
+  warn "host memory: /proc/meminfo could not be read, so requirement 2.0f's stand-down cannot measure this host"
+elif (( min_free_memory_bytes == 0 )); then
+  ok "host memory: $(( memory_free_kb / 1024 )) MiB available (the 2.0f floor is off)"
+elif [[ "$(memory_verdict "$memory_free_kb" "$min_free_memory_bytes")" == "low" ]]; then
+  warn "host memory: $(memory_describe "$memory_free_kb" "$min_free_memory_bytes")"
+else
+  ok "host memory: $(( memory_free_kb / 1024 )) MiB of $(( $(memory_total_kb) / 1024 )) MiB available"
+fi
+
+# Whether anything reclaims this container's own memory before its hard
+# ceiling. Advisory, and unavoidably so: Docker exposes no `memory.high`
+# setting, and a container can read its cgroup but never write it — so the
+# most this pass can do is name the condition and point at the recipe. An
+# `unbounded` cgroup ratchets: page cache accumulates to `memory.max` and is
+# returned only under pressure, which on a memory-capped VM means the host is
+# already in trouble. Measured on the ockham node 2026-09-04, two schedulers
+# left unbounded held 2465 MiB between them while idle, against 891 MiB once
+# `memory.high` was set.
+case "$(memory_cgroup_verdict)" in
+  unbounded) warn "container memory: $(memory_cgroup_describe)" ;;
+  bounded)   ok "container memory: memory.high is set, so the kernel reclaims before the hard ceiling" ;;
+  unlimited) ok "container memory: no cgroup ceiling, so there is nothing to reclaim against" ;;
+  *)         ok "container memory: no cgroup v2 memory files to read (not a cgroup v2 container)" ;;
+esac
 
 # --- Crontab ---
 

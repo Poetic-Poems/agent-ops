@@ -838,6 +838,7 @@ and the schema must carry every one of them.
 | `github_min_graphql_budget` | 100 points | The `graphql` floor of the GitHub API budget check (requirement 2.0). Separate from `github_min_core_budget` because GitHub meters the two pools independently and either can be the binding one — on 2026-08-12 the fleet exhausted `graphql` with 96% of its `core` hour unspent. `0` disables the floor. |
 | `github_retry_max_wait_seconds` | 60 s | The per-call wait bound of the `gh` wrapper (requirement 2.0a). A secondary rate limit waits a fixed fallback, a primary one waits until GitHub's stated reset, and either is abandoned if it exceeds this — the cycle holds a lock and runs on a `cycle_interval_minutes` tick, so a wrapper that waited out a primary limit would collide with the next tick. `0` turns retrying off. |
 | `min_free_workspace_bytes` | 2 GiB | The free-space floor of the pre-clone stand-down (requirement 2.0c, agent-ops#756): below this, `workspace_root`'s filesystem is read via `lib/disk-space.sh` and the cycle stands down before the clone rather than cloning into whatever room is actually left. `scripts/doctor.sh` reads the same key for its own advisory warning, so the two cannot silently disagree about what "low" means. `0` turns the check off. |
+| `min_free_memory_bytes` | 512 MiB | The free-memory floor of the pre-cycle stand-down (requirement 2.0f): below this, the host's `MemAvailable` is read via `lib/memory.sh` and the cycle stands down before any stage runs rather than starting a model stage into a host with no headroom. The disk counterpart of this floor is `min_free_workspace_bytes` (requirement 2.0c), and the two are deliberately the same shape. `scripts/doctor.sh` reads the same key for its own advisory warning, so the two cannot silently...[continued below](#extended-notes-min_free_memory_bytes) |
 | `disable_default_ttl` | *(unset)* | How long `--disable` lasts when neither `--for` nor `--until` says (requirement 2.3). Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one. "A few cycles" means 4 cadence firings (requirement 1d), not a fixed 4 h: derived from the worst-case gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`); a configured value floors the derivation rather than replacing it. |
 | `none_selected_recheck_hours` | *(unset)* | The no-op short-circuit's safety valve (requirement 3b): the Co-Ordinator is engaged regardless once the last `none-selected` is this old, even if nothing changed. Bounds how long a gap in fingerprint coverage can stall the pipeline. "This old" means 24 cadence firings (requirement 1d), not a fixed 24 h: derived from the worst-case gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`); a configured non-zero value floors the derivation...[continued below](#extended-notes-none_selected_recheck_hours) |
 | `image_behind_grace_hours` | 3 h | The dashboard badge's (and `scripts/check-node-image.sh`'s) tolerance for a node behind the registry's newest image (`lib/image-drift.sh`, requirement 2.5, #155) before it turns amber / fails: a roll defers while a cycle is in flight, so being behind an image published more recently than this is the ordinary mid-roll state, not a fault. |
@@ -1023,6 +1024,10 @@ D18 WI-12 (Stage 4, §7 risk 1, `lib/landing.sh`'s `landing_protected_path_contr
 ### Extended notes: `escalation_webhook_url`
 
 A URL POSTed to as a best-effort, `GH_TOKEN`-independent fallback whenever `create_escalation_issue` cannot file (requirement 2m). Empty disables it: the call is skipped rather than attempted, so an installation with none configured is unaffected. Must be `https://` when set — a plain-text channel is not a fit substitute for the credential it stands in for. Fleet-wide like every key here, and inert on a node whose `EGRESS_EXTRA_ALLOW` does not name the webhook's host — see the requirement-2m entry.
+
+### Extended notes: `min_free_memory_bytes`
+
+The free-memory floor of the pre-cycle stand-down (requirement 2.0f): below this, the host's `MemAvailable` is read via `lib/memory.sh` and the cycle stands down before any stage runs rather than starting a model stage into a host with no headroom. The disk counterpart of this floor is `min_free_workspace_bytes` (requirement 2.0c), and the two are deliberately the same shape. `scripts/doctor.sh` reads the same key for its own advisory warning, so the two cannot silently disagree about what "low" means. `0` turns the check off.
 
 ### Extended notes: `none_selected_recheck_hours`
 
@@ -2004,6 +2009,58 @@ implements.
       node's other diagnostic logs (component 21); `scripts/github-budget-report.sh`
       (component 22b) sums it by cache outcome fleet-wide, the same
       `state_dir`/peers union `log.jsonl` already reads.
+
+   0f. *Free host memory* (requirement 2.0f). Free, and for the same reason
+      as 0c: reading `/proc/meminfo` touches no network and costs nothing, so
+      it runs ahead of every check below that can spend. 0c refuses to start
+      a cycle into a host that has no room to finish it; this refuses to
+      start one into a host that has no memory to run it, which until this
+      check existed nothing did. On the ockham WSL2 host — a VM capped at
+      6 GiB, running two nodes whose cycles overlap for most of every hour —
+      a cycle that started into no headroom pushed the VM into a
+      Windows-backed swap file and stalled the whole machine; a git write
+      truncated by that stall is what left the zero-length objects that
+      permanently disabled `git gc` (#604). A stand-down costs one cycle, and
+      the freeze it avoids costs the host.
+
+      `lib/memory.sh` reads and judges free memory the one way both
+      `doctor.sh`'s advisory warning (component 14) and this gate use, so the
+      two cannot silently disagree about what "low" means:
+      `memory_available_kb` reads the host's available KiB (empty, never `0`,
+      when `/proc/meminfo` cannot be read — an unreadable meter is no
+      evidence of an exhausted host, the same reasoning 0's own `unknown`
+      rests on), `memory_verdict` compares it against `min_free_memory_bytes`
+      (converted to KiB), and `memory_describe` renders the one-line
+      explanation both the stand-down event and the warning use verbatim.
+
+      Two deliberate choices about *which* meter. **MemAvailable, not
+      MemFree**: the kernel's own estimate of what an allocation can have
+      without swapping, which counts reclaimable page cache as available —
+      MemFree would read a host whose cache is doing its job as critically
+      short and stand down every cycle on a healthy machine. And **the
+      host's, not this cgroup's**: `/proc/meminfo` is not namespaced, so a
+      container reads the real machine, which is the only figure that
+      describes what a gate protecting the host must protect. The cgroup's
+      own accounting would describe this container alone and miss the peer
+      node, the editor, and everything else sharing the machine.
+
+      Below the floor, the `stand-down` event's `cause` is `memory-low`, and
+      it carries both the available and the total KiB so a reader can tell a
+      small host from a busy one. There is no `memory-full` counterpart to
+      0c's `disk-full`: a host at exactly zero available memory is not a
+      distinct state worth naming, only a more extreme shortfall.
+      `min_free_memory_bytes` set to `0` turns the check off, the same
+      convention `min_free_workspace_bytes` and
+      `github_min_core_budget`/`github_min_graphql_budget` use.
+
+      What this check does **not** do is make the container give memory back.
+      It cannot: Docker exposes no `memory.high` setting, and a container can
+      read its own cgroup v2 files but never write them, so nothing in this
+      repository can set the one knob that stops a cgroup ratcheting up to
+      its hard ceiling and holding there. That remains an operator recipe,
+      documented in `deploy/docker/compose.yaml`; what the pipeline
+      contributes is the detection that tells an operator to run it —
+      `memory_cgroup_verdict`, reported by `doctor.sh` (component 14).
 
    1. *Usage-limit cooldown*: the same signal arrives on two carriers, and
       the **later** `resume_at` wins. The log union's most recent `limit-hit`
@@ -15264,6 +15321,15 @@ What exists, and the requirements each part answers to:
    22c for its own functions; reuses this file's `github_limit_kind` and
    `github_limit_headers_to_resource` rather than re-implementing either.
    Unit-tested, `test/gh-shim.test.sh`),
+   `lib/memory.sh` (requirement 2.0f's `memory_available_kb`,
+   `memory_total_kb`, `memory_verdict` and `memory_describe` — the one place
+   free host memory is read and judged, sourced by both `agent-cycle.sh`,
+   whose pre-cycle stand-down acts on the verdict, and `scripts/doctor.sh`,
+   whose advisory warning reports it; plus `memory_cgroup_field`,
+   `memory_cgroup_stat`, `memory_cgroup_verdict` and
+   `memory_cgroup_describe`, the read-only cgroup v2 inspection doctor.sh
+   reports an unbounded container with. Unit-tested, `test/memory.test.sh`
+   and `test/memory-wiring.test.sh`),
    `lib/disk-space.sh` (requirement 2.0c's `disk_space_free_kb`,
    `disk_space_verdict` and `disk_space_describe` — the one place free space
    on a directory's filesystem is read and judged, sourced by both
@@ -18198,6 +18264,23 @@ pull request, run the ones the change touches and any it could regress.
    `workspace_root`, naming the configured floor's own MiB figure, without
    turning the pass into a failure; set to `0` it warns on neither, however
    little free space actually remains.
+2n-i. **A cycle does not start work the host has no memory to run (requirement
+   2.0f).** `test/memory.test.sh` passes: `memory_available_kb` reads
+   MemAvailable rather than MemFree and is empty (never `0`) when
+   `/proc/meminfo` cannot be read; `memory_verdict` reads `low` only when
+   available KiB falls below `min_free_memory_bytes` converted to KiB, and
+   `ok` for a `0` floor, an unreadable meter, a non-numeric floor, or memory
+   at or above it; `memory_describe` names both the available MiB and the
+   floor; `memory_cgroup_verdict` reads `unbounded` for a real `memory.max`
+   with `memory.high` unset, `bounded` once `memory.high` is set, `unlimited`
+   when there is no ceiling at all, and `unknown` — never a verdict — when
+   the cgroup files cannot be read. `test/memory-wiring.test.sh` passes
+   against the block lifted verbatim from `lib/standdown.sh`: memory below
+   the floor exits 0 without falling through to the rest of the cycle, the
+   logged `stand-down` event carries `cause: "memory-low"` and both the
+   available and total KiB; memory at or above the floor, an unreadable
+   `/proc/meminfo`, and `min_free_memory_bytes: 0` all fall through
+   untouched, standing nothing down.
 2c. `scripts/gather-merge-conflicts.sh Poetic-Poems/does-not-exist autonomous-agent agent/`
    prints `[]` and exits 0 — a missing repo, a disabled feature, or an API error
    never aborts the cycle. Its candidate rule, including the `bot`,

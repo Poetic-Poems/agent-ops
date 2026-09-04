@@ -1306,6 +1306,19 @@
         }
       }
     },
+    "min_free_memory_bytes": {
+      "description": "Memory the host must have available before a cycle is worth starting one (requirement 2.0f). Below this the Script stands the cycle down before any stage runs, rather than starting a model stage the host cannot hold alongside every other node sharing it. Read from `/proc/meminfo`'s `MemAvailable`, which a container sees unnamespaced and so reports the real host, not this cgroup. `scripts/doctor.sh` reads the same key for its own advisory warning. `0` turns the check off.",
+      "type": "integer",
+      "minimum": 0,
+      "default": 536870912,
+      "x-docs": {
+        "readme": "Bytes. Memory the host must have available before a cycle starts one; below it the cycle stands down before any stage runs. `scripts/doctor.sh` warns on the same floor. `0` turns the check off.",
+        "spec": "The free-memory floor of the pre-cycle stand-down (requirement 2.0f): below this, the host's `MemAvailable` is read via `lib/memory.sh` and the cycle stands down before any stage runs rather than starting a model stage into a host with no headroom. The disk counterpart of this floor is `min_free_workspace_bytes` (requirement 2.0c), and the two are deliberately the same shape. `scripts/doctor.sh` reads the same key for its own advisory warning, so the two cannot silently disagree about what \"low\" means. `0` turns the check off.",
+        "value": {
+          "spec": "512 MiB"
+        }
+      }
+    },
     "disable_default_ttl": {
       "description": "Hours `--disable` lasts when `--for` does not say. Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one. \"A few cycles\" is 4 cadence firings, not a literal count of hours (requirement 1d): absent, it is derived from schedule.cycle_interval_minutes (and cycle_hours/excluded_minutes) so it stays 4 firings wide at whatever cadence is configured; a configured value is a floor under that derivation, never a ceiling.",
       "type": "number",

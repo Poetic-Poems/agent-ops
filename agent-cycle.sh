@@ -55,6 +55,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/github-limit.sh"
 # shellcheck source=lib/disk-space.sh
 . "$SCRIPT_DIR/lib/disk-space.sh"
+# shellcheck source=lib/memory.sh
+. "$SCRIPT_DIR/lib/memory.sh"
 # shellcheck source=lib/repo-clone.sh
 . "$SCRIPT_DIR/lib/repo-clone.sh"
 # shellcheck source=lib/model-id.sh
@@ -760,6 +762,14 @@ export GITHUB_LIMIT_MAX_WAIT_SECONDS GITHUB_LIMIT_TOTAL_WAIT_SECONDS
 # 4.2 GB of orphaned clones (#605). `0` turns the check off.
 min_free_workspace_bytes="$(cfg '.min_free_workspace_bytes')"
 [[ "$min_free_workspace_bytes" =~ ^[0-9]+$ ]] || min_free_workspace_bytes=0
+# The free-memory floor the host must clear before a cycle is worth starting
+# one (requirement 2.0f): a cycle runs a model stage whose working set the
+# host has to hold alongside every other node sharing it, and on the ockham
+# WSL2 laptop — 6 GiB, two nodes whose cycles overlap for most of every hour —
+# starting into no headroom is what pushes the VM into a Windows-backed swap
+# file and stalls the whole machine. `0` turns the check off.
+min_free_memory_bytes="$(cfg '.min_free_memory_bytes')"
+[[ "$min_free_memory_bytes" =~ ^[0-9]+$ ]] || min_free_memory_bytes=0
 none_selected_recheck_hours="$(cfg '.none_selected_recheck_hours')"
 candidates_max="$(cfg '.candidates_max')"
 # Requirement 4i (agent-ops#641): the largest assembled prompt the Co-Ordinator
