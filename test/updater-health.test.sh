@@ -243,14 +243,23 @@ assert_eq "distinguished from an overlong defer by reason" "allow" "$(jq -r '.re
 # And the run starts where the last non-allow entry left off: a deferral in
 # between means watchtower was told to hold off, so the clock starts again
 # with the allow that followed it.
+#
+# The allow's timestamp is read from the clock once and used for both the
+# ledger entry and the expectation. Two reads — one when the entry was
+# written, one inside the assertion — are a second apart whenever a second
+# boundary happens to fall between them, and on 2026-08-30 it did, on CI's
+# arm64 leg (expected 07:44:22Z, actual 07:44:21Z), failing the build of a
+# merge commit that had passed the merge queue minutes earlier. The same
+# race, and the same fix, as `streak_start` above.
+run_start="$(ago '25 minutes')"
 {
   entry "$(ago '2 hours')" allow "svc" "$OWN_STARTED"
   entry "$(ago '90 minutes')" defer "svc" "$OWN_STARTED"
-  entry "$(ago '25 minutes')" allow "svc" "$OWN_STARTED"
+  entry "$run_start" allow "svc" "$OWN_STARTED"
   entry "$(ago '5 minutes')" allow "svc" "$OWN_STARTED"
 } > "$ledger/host-b.jsonl"
 assert_eq "a defer in between ends the run, so the clock starts at the allow after it" \
-  "$(ago '25 minutes')" "$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc" "$OWN_STARTED" | jq -r '.at')"
+  "$run_start" "$(updater_status "$ledger" "$STUCK_AFTER" "$DEFER_STUCK_AFTER" "host-b" "svc" "$OWN_STARTED" | jq -r '.at')"
 rm -f "$ledger/host-b.jsonl"
 
 # --- Identity: a rolled container must not read its own creation as proof it
