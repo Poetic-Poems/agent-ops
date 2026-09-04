@@ -462,9 +462,15 @@ approver_model_critical="$(cfg '.approver_model_critical')"
 [[ -n "$approver_model_critical" ]] || approver_model_critical="$approver_model_complex"
 approver_model_critical="$(resolve_model_id approver_model_critical "$approver_model_critical")"
 # The restale sweep's own no-progress escalation threshold (requirement 46,
-# agent-ops#682) — how long a rebase-only-stale Approver review is retried
-# before it is handed to a human instead.
+# agent-ops#682) — how long a rebase-only-stale Approver review, or an
+# unreviewed pull request whose recovery engagements are not producing one
+# (agent-ops#890), is retried before it is handed to a human instead.
 approver_restale_escalate_after_hours="$(cfg '.approver_restale_escalate_after_hours')"
+# The unreviewed trigger's own arming threshold (requirement 46,
+# agent-ops#890) — how long a ready, non-draft, `pr_label` pull request may
+# carry no Approver review at all before the sweep treats it as stranded
+# rather than as ordinary in-flight work.
+approver_unreviewed_engage_after_hours="$(cfg '.approver_unreviewed_engage_after_hours')"
 # The Enabler (requirements 35–37). Its model is the most expensive this system
 # runs, which is affordable only because the eligibility rule engages it rarely:
 # an empty `enabler_model` disables the stage outright.

@@ -401,16 +401,30 @@
       }
     },
     "approver_restale_escalate_after_hours": {
-      "description": "Hours a pull request may carry a standing Approver CHANGES_REQUESTED whose commit_id is stale (a push landed since, but with no commit authored after the review — a rebase-only push, never genuine progress) before the fleet-wide restale sweep escalates it instead of retrying. Bounds a rebase-only cycle from masquerading as progress and looping forever between the sweep and a peer's own force-push.",
+      "description": "Hours the fleet-wide restale sweep tolerates a pull request making no recoverable progress before escalating instead of retrying. For a standing Approver CHANGES_REQUESTED whose commit_id is stale with no commit authored since (a rebase-only push, never genuine progress), measured from the review's own submitted_at; for a ready pull request with no Approver review at all whose recovery engagements are not producing one (agent-ops#890), measured from the first recovery engagement at the current head.",
       "type": "number",
       "minimum": 0,
       "default": 24,
       "x-docs": {
-        "readme": "Hours a pull request may sit with a stale Approver `CHANGES_REQUESTED` — its `commit_id` no longer matching the head, but with no commit authored since (a rebase-only push, never a fix) — before the restale sweep escalates it to `enabler_assignee` instead of retrying forever.",
-        "spec": "Requirement 46: how long the restale sweep (agent-ops#682) tolerates a rebase-only-stale Approver review — its standing `CHANGES_REQUESTED` `commit_id` mismatched against the pull request's head, but its most recently authored commit no older than the review itself — before escalating rather than leaving it to retry every cycle indefinitely. Measured from the standing review's own `submitted_at`, which a rebase does not move.",
+        "readme": "Hours the restale sweep retries a pull request before escalating it to `enabler_assignee` instead: a stale Approver `CHANGES_REQUESTED` — its `commit_id` no longer matching the head, but with no commit authored since (a rebase-only push, never a fix) — measured from the review's own `submitted_at`, or a ready pull request with no Approver review at all whose recovery engagements are not producing one, measured from the first such engagement at its current head.",
+        "spec": "Requirement 46: how long the restale sweep tolerates a pull request making no recoverable progress before escalating rather than retrying every cycle indefinitely. For the stale-review trigger (agent-ops#682) — a standing `CHANGES_REQUESTED` `commit_id` mismatched against the pull request's head, but its most recently authored commit no older than the review itself — measured from the standing review's own `submitted_at`, which a rebase does not move. For the unreviewed trigger (agent-ops#890) — a ready pull request with no Approver review at all whose recovery engagements are not producing one — measured from the first `approver-unreviewed-engaged` event at the pull request's current head.",
         "value": {
           "readme": "`24`",
           "spec": "24 h"
+        }
+      }
+    },
+    "approver_unreviewed_engage_after_hours": {
+      "description": "Hours an open, non-draft, pr_label pull request may sit with no Approver review at all — from the App identity, at any commit — before the fleet-wide restale sweep's unreviewed trigger (requirement 46, agent-ops#890) arms a recovery Approver engagement for it. Measured from the pull request's createdAt. Bounds the sweep out of racing the live cycle that just raised or readied the pull request, whose own chained Approver stage is the ordinary path; the fleet-wide pr-<n> claim is what actually excludes a working peer.",
+      "type": "number",
+      "minimum": 0,
+      "default": 2,
+      "x-docs": {
+        "readme": "Hours an open, ready pull request the pipeline raised may carry no Approver review at all before the restale sweep engages the Approver for it — the recovery for a cycle that died, or a verdict write that was refused, between the Reviewer's handoff and the Approver (agent-ops#890).",
+        "spec": "Requirement 46: how long the unreviewed trigger (agent-ops#890) waits, from a pull request's own `createdAt`, before treating a ready, non-draft, `pr_label` pull request with no Approver review at all as stranded rather than as ordinary in-flight work, and arming a recovery engagement.",
+        "value": {
+          "readme": "`2`",
+          "spec": "2 h"
         }
       }
     },
