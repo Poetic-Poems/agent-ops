@@ -102,16 +102,19 @@ source_states_json="[]"
 unvoid_requests_json="[]"
 hand_flagged_refinements_json="[]"
 claimed_json="[]"
-# Requirement 48 (agent-ops#1086): of every repo `repos_json` names, the one
-# whose expensive per-repository sources (findings, review-feedback,
-# abandoned-drafts, merge-conflicts, dequeued, register-hygiene, issues,
-# tech-debt) this cycle actually reads fresh from GitHub — every other one
-# reuses the snapshot this same node captured the last time its own turn came
-# around (lib/expensive-gather-cache.sh). Picked once, ahead of the per-repo
-# loop below, from `repos_json` rather than `all_repos_json`: a `--repo`
-# filter narrows this cycle to one repository, and that one repository must
-# always be the one read fresh, exactly as before this feature existed.
-expensive_gather_slug="$(expensive_gather_pick_repo "$state_dir" "$repos_json")"
+# Requirement 48 (agent-ops#1086, offset agent-ops#1106): of every repo
+# `repos_json` names, the one whose expensive per-repository sources
+# (findings, review-feedback, abandoned-drafts, merge-conflicts, dequeued,
+# register-hygiene, issues, tech-debt) this cycle actually reads fresh from
+# GitHub — every other one reuses the snapshot this same node captured the
+# last time its own turn came around (lib/expensive-gather-cache.sh). Picked
+# once, ahead of the per-repo loop below, from `repos_json` rather than
+# `all_repos_json`: a `--repo` filter narrows this cycle to one repository,
+# and that one repository must always be the one read fresh, exactly as
+# before this feature existed. `node_name` offsets which slug wins a tie
+# (every configured repository scoring the same), so a fleet of nodes
+# started together does not all pick the same repository every interval.
+expensive_gather_slug="$(expensive_gather_pick_repo "$state_dir" "$repos_json" "$node_name")"
 # Issue #248 acceptance 4 (TD-PPagop-26081405): the fleet's already-logged
 # `first-seen` set, read once off the union log snapshotted at 1a1 above —
 # every emit_first_seen call below both consults and grows this — and

@@ -14469,6 +14469,35 @@ with the Reviewer's own.
     eventually gets its own turn, regardless of commit activity, the same
     way `labels_ensure_stamped`'s per-repo stamps already do.
 
+    A full tie among a node's own candidates — most often every configured
+    repository uncached, on a node's first cycle, or after a fleet-wide
+    image roll or a `state_dir` wipe — breaks on a per-node offset, not on
+    slug ascending (agent-ops#1106): `_expensive_gather_node_offset` reduces
+    a stable hash of `node_name` (`cksum`) modulo the number of configured
+    repositories, and `expensive_gather_pick_repo` breaks a tie in favour of
+    the slug at that offset into the ascending-sorted slug list, rather than
+    always the first. Without this, every node ties the same way and picks
+    the same repository fresh in the same cycles, leaving every other
+    configured repository unread for the next `repositories`-1 cycles and
+    every aligned node racing the others for the same newly-visible item
+    once its shared turn comes round. The offset is a fixed function of
+    `node_name` and the repository count, so it spreads a fleet across the
+    rotation with no coordination, no new state and no extra GitHub read —
+    but it spreads without guaranteeing coverage, and requirement 48 claims
+    no more than that. Two node names can hash to the same offset: N names
+    drawn independently into M buckets ordinarily leave at least one offset
+    unoccupied, and the repository at an unoccupied offset is read fresh by
+    no node at all that interval, while every node sharing an offset stays
+    aligned with the others that share it. Whatever stagger a given set of
+    node names does yield holds, in turn, only from a common start: nodes
+    whose caches were all populated in the same interval. A node that stands
+    down before the gather (requirement 2's own ladder — budget,
+    credentials, disk, cooldown) skips a rotation step its peers do not, and
+    its phase drifts from theirs from that cycle on. Both the drift and the
+    unoccupied offsets are corrected only by assigning phases across nodes
+    rather than hashing each independently, which is fleet coordination
+    (agent-ops#1092's Option 2), out of this requirement's scope.
+
     Every repository entry in `ordered_repos_json` carries
     `expensive_gather: {fresh, gathered_at}` — `fresh: true` for the one
     repository this cycle actually read, `gathered_at` naming when the
@@ -21595,12 +21624,18 @@ pull request, run the ones the change touches and any it could regress.
     skipped rather than fatal to the reduction. `scripts/lint-shell.sh` is
     clean on every file this requirement touches.
 
-48. **Expensive per-repository gather runs for one repository per cycle
-    (requirement 48).** `test/expensive-gather-cache.test.sh` passes:
+48. **Expensive per-repository gather runs for one repository per cycle,
+    offset per node (requirement 48, agent-ops#1106).**
+    `test/expensive-gather-cache.test.sh` passes:
     `expensive_gather_pick_repo` picks a never-cached repository over any
-    already-cached one, breaks a tie among never-cached repositories on
-    slug ascending, and picks the oldest cache file once every configured
-    repository has one; `expensive_gather_cache_load` round-trips a saved
+    already-cached one, breaks a tie among never-cached repositories on the
+    calling node's own offset (`_expensive_gather_node_offset`, a stable
+    `cksum` hash of `node_name` reduced modulo the repository count) rather
+    than slug ascending — two node names that hash to different offsets
+    pick different slugs against the identical never-cached pair, and the
+    same node name picks the same slug again on a re-run — and picks the
+    oldest cache file once every configured repository has one;
+    `expensive_gather_cache_load` round-trips a saved
     object exactly, a band past `MAX_ARG_STRLEN` (131072 bytes) included, and
     reads a zero-byte or corrupt cache file as absent — not `{}` — logging a
     `warning` that names the slug; `expensive_gather_pick_repo` treats that

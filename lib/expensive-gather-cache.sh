@@ -90,14 +90,46 @@ _expensive_gather_cache_valid() {
   jq -e 'type == "object"' "$path" >/dev/null 2>&1
 }
 
-# expensive_gather_pick_repo STATE_DIR REPOS_JSON
+# _expensive_gather_node_offset NODE M
+# A stable hash of NODE's own name, reduced mod M (the number of configured
+# repositories) — `cksum` is a POSIX utility, so this is stable across
+# hosts and shells, unlike `$RANDOM` (unseeded by design) or a hash keyed on
+# process state. Print 0 (rather than divide by zero) when M is not a
+# positive integer; the caller never invokes this with an empty repo set,
+# but a defensive default is one line cheaper than a precondition.
+_expensive_gather_node_offset() {
+  local node="$1" m="$2" hash
+  [[ "$m" =~ ^[1-9][0-9]*$ ]] || { printf '0'; return; }
+  hash="$(cksum <<<"$node" | cut -d' ' -f1)"
+  [[ "$hash" =~ ^[0-9]+$ ]] || hash=0
+  printf '%d' "$(( hash % m ))"
+}
+
+# expensive_gather_pick_repo STATE_DIR REPOS_JSON NODE_NAME
 # Print the slug, among REPOS_JSON's `.[].slug` entries, whose cache file is
 # oldest — a repository never yet cached, or whose cache file exists but is
 # zero-byte or unparseable (`_expensive_gather_cache_valid`), sorts as epoch
 # 0, so it is always picked ahead of one this node holds a genuinely usable
-# cache for. Ties (every configured repository uncached, most often the
-# fleet's first-ever cycle) break on slug, ascending, for a deterministic
-# answer rather than one that depends on `jq`'s own array order.
+# cache for. Ties (every configured repository scoring the same — most often
+# the fleet's first-ever cycle, when every configured repository is
+# uncached) no longer break on slug ascending: every node that ties the same
+# way would then pick the same repository every interval, which is exactly
+# the starvation requirement 48 exists to prevent (agent-ops#1106). Instead,
+# ties break on NODE_NAME's own rotation: sort REPOS_JSON's slugs ascending,
+# then break a tie in favour of the slug at index `hash(NODE_NAME) mod M`
+# (`_expensive_gather_node_offset`) in that ascending list — a fixed,
+# per-node offset into the same underlying order, so two nodes whose names
+# hash to different offsets pick different repositories on the same cycle,
+# and the same node ties the same way every time it recurs. This spreads a
+# fleet without any coordination; it does not guarantee the fleet covers.
+# Two node names can hash to the same offset — N names drawn independently
+# into M buckets ordinarily leave one unoccupied — and the repository at an
+# unoccupied offset is read fresh by no node at all that interval, while the
+# nodes sharing an offset stay aligned with each other. Whatever stagger the
+# hash does give holds only from a common start — nodes whose caches were
+# populated in the same interval; a node that stands down before the gather
+# (requirement 2's ladder) falls one rotation step behind its peers and the
+# phases drift apart from there.
 #
 # REPOS_JSON with no entries prints nothing; the caller must treat that as
 # "nothing to pick" rather than call this with an empty set.
@@ -113,20 +145,32 @@ _expensive_gather_cache_valid() {
 # than merely yield an empty pick. `sed` without `q` reads its input to the
 # end, so nothing upstream is ever signalled.
 expensive_gather_pick_repo() {
-  local state_dir="$1" repos_json="$2" slug path mtime
+  local state_dir="$1" repos_json="$2" node_name_arg="$3"
+  local -a slugs=()
+  local slug
   while IFS= read -r slug; do
     [[ -n "$slug" ]] || continue
+    slugs+=("$slug")
+  done < <(jq -r '.[]?.slug // empty' <<<"$repos_json" 2>/dev/null | sort)
+  local m="${#slugs[@]}"
+  (( m > 0 )) || return 0
+  local offset
+  offset="$(_expensive_gather_node_offset "$node_name_arg" "$m")"
+  local i path mtime rank
+  for (( i = 0; i < m; i++ )); do
+    slug="${slugs[$i]}"
     path="$(_expensive_gather_cache_path "$state_dir" "$slug")"
     mtime=0
     if [[ -f "$path" ]] && _expensive_gather_cache_valid "$path"; then
       mtime="$(stat -c %Y "$path" 2>/dev/null || echo 0)"
       [[ "$mtime" =~ ^[0-9]+$ ]] || mtime=0
     fi
-    printf '%012d\t%s\n' "$mtime" "$slug"
-  done < <(jq -r '.[]?.slug // empty' <<<"$repos_json" 2>/dev/null) \
+    rank=$(( (i - offset + m) % m ))
+    printf '%012d\t%06d\t%s\n' "$mtime" "$rank" "$slug"
+  done \
     | sort \
     | sed -n '1p' \
-    | cut -f2-
+    | cut -f3-
 }
 
 # expensive_gather_cache_load STATE_DIR SLUG

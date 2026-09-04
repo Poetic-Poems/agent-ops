@@ -63,46 +63,65 @@ log_file="$tmp_state/log.jsonl"
 repos_ab='[{"slug":"o/a"},{"slug":"o/b"}]'
 repos_abc='[{"slug":"o/a"},{"slug":"o/b"},{"slug":"o/c"}]'
 
-# --- Nothing cached yet: ties break on slug, ascending ----------------------
-assert_eq "with two never-cached repos, the alphabetically first slug wins the tie" \
-  "o/a" "$(expensive_gather_pick_repo "$tmp_state" "$repos_ab")"
+# --- Nothing cached yet: ties break on the node's own offset (requirement 48,
+#     agent-ops#1106), not on slug ascending — every node tying the same way
+#     would otherwise pick the same repository fresh every interval and
+#     starve every other one. `node_name` ("node-a", set above for
+#     `log_event`) hashes to offset 1 of 2 for `repos_ab`, so the tie winner
+#     is the second slug in ascending order, o/b, not the first -------------
+assert_eq "with two never-cached repos, node-a's offset picks the second slug ascending" \
+  "o/b" "$(expensive_gather_pick_repo "$tmp_state" "$repos_ab" "$node_name")"
+
+# --- A different node name offsets the same tie differently: "node-b"
+#     hashes to offset 0 of 2, so it picks the first slug ascending instead,
+#     proving the offset actually varies by node (acceptance (a)) ----------
+assert_eq "the same never-cached pair offsets differently for a different node name" \
+  "o/a" "$(expensive_gather_pick_repo "$tmp_state" "$repos_ab" "node-b")"
+
+# --- The same node picks the same slug again — determinism (acceptance (b)) -
+assert_eq "the same node name picks the same slug again on a re-run" \
+  "$(expensive_gather_pick_repo "$tmp_state" "$repos_ab" "$node_name")" \
+  "$(expensive_gather_pick_repo "$tmp_state" "$repos_ab" "$node_name")"
 
 # --- A cache load before any save returns nothing ---------------------------
 assert_eq "loading an uncached repo prints nothing" \
   "" "$(expensive_gather_cache_load "$tmp_state" "o/a")"
 
-# --- Save, then pick rotates to the other repo ------------------------------
+# --- Save, then pick rotates to the other repo — not a tie, so the node's
+#     own offset makes no difference: o/a is now genuinely cached and o/b is
+#     still uncached, which outranks it regardless of node --------------
 snapshot_a='{"gathered_at":"2026-08-30T00:00:00Z","issues_raw":[{"ref":"1"}]}'
 assert_eq "save reports success" "0" \
   "$(expensive_gather_cache_save "$tmp_state" "o/a" "$snapshot_a"; echo "$?")"
 assert_eq "once o/a is cached, o/b (never cached) is picked next" \
-  "o/b" "$(expensive_gather_pick_repo "$tmp_state" "$repos_ab")"
+  "o/b" "$(expensive_gather_pick_repo "$tmp_state" "$repos_ab" "$node_name")"
 
 # --- Load round-trips exactly what was saved --------------------------------
 assert_eq "load round-trips the saved object" \
   "$(jq -c . <<<"$snapshot_a")" \
   "$(expensive_gather_cache_load "$tmp_state" "o/a")"
 
-# --- Saving o/b, then the oldest-mtime repo (o/a) is picked again -----------
+# --- Saving o/b, then the oldest-mtime repo (o/a) is picked again — again not
+#     a tie, so the offset makes no difference ------------------------------
 sleep 1
 assert_eq "save o/b succeeds" "0" \
   "$(expensive_gather_cache_save "$tmp_state" "o/b" '{"gathered_at":"2026-08-30T00:01:00Z"}'; echo "$?")"
 assert_eq "with both cached, the older cache file (o/a) is picked" \
-  "o/a" "$(expensive_gather_pick_repo "$tmp_state" "$repos_ab")"
+  "o/a" "$(expensive_gather_pick_repo "$tmp_state" "$repos_ab" "$node_name")"
 
 # --- A third, never-cached repo always outranks two already-cached ones ----
 assert_eq "a never-cached repo (o/c) is picked over two already-cached ones" \
-  "o/c" "$(expensive_gather_pick_repo "$tmp_state" "$repos_abc")"
+  "o/c" "$(expensive_gather_pick_repo "$tmp_state" "$repos_abc" "$node_name")"
 
 # --- A repo with no configured entries picks nothing ------------------------
 assert_eq "an empty repo set picks nothing" \
-  "" "$(expensive_gather_pick_repo "$tmp_state" "[]")"
+  "" "$(expensive_gather_pick_repo "$tmp_state" "[]" "$node_name")"
 
 # --- A single configured repo is always picked, cached or not (--repo) -----
 sleep 1
 expensive_gather_cache_save "$tmp_state" "o/a" '{"gathered_at":"2026-08-30T00:02:00Z"}' >/dev/null
 assert_eq "the one repo in a --repo-filtered set is always picked" \
-  "o/a" "$(expensive_gather_pick_repo "$tmp_state" '[{"slug":"o/a"}]')"
+  "o/a" "$(expensive_gather_pick_repo "$tmp_state" '[{"slug":"o/a"}]' "$node_name")"
 
 # --- A corrupt cache file loads as nothing, not a crash, and logs a warning
 #     naming the slug (agent-ops#1107 acceptance 3) --------------------------
@@ -118,7 +137,7 @@ assert_eq "...and logs a warning naming the slug" \
 #     o/b was cached (further up, "save o/b succeeds") after o/a's last good
 #     save ------------------------------------------------------------------
 assert_eq "a corrupt cache is picked over a genuinely cached one, not left for a full rotation" \
-  "o/a" "$(expensive_gather_pick_repo "$tmp_state" "$repos_ab")"
+  "o/a" "$(expensive_gather_pick_repo "$tmp_state" "$repos_ab" "$node_name")"
 
 # --- A zero-byte cache file (the exact shape a failed argv build used to
 #     leave behind) loads the same way as a corrupt one ---------------------
@@ -126,7 +145,7 @@ assert_eq "a corrupt cache is picked over a genuinely cached one, not left for a
 assert_eq "a zero-byte cache file loads as empty too" \
   "" "$(expensive_gather_cache_load "$tmp_state" "o/b")"
 assert_eq "...and o/b is picked over nothing else uncached" \
-  "o/b" "$(expensive_gather_pick_repo "$tmp_state" '[{"slug":"o/b"}]')"
+  "o/b" "$(expensive_gather_pick_repo "$tmp_state" '[{"slug":"o/b"}]' "$node_name")"
 
 # --- Saving is atomic: no partial file is ever visible mid-write -----------
 assert_eq "save leaves no stray .tmp file behind" \
@@ -189,8 +208,8 @@ jq -nc '[range(2000)
 bash -c '
   set -euo pipefail
   . "$1/lib/expensive-gather-cache.sh"
-  picked="$(expensive_gather_pick_repo "$2" "$(cat "$3")")"
-  [[ -n "$picked" ]]' _ "$SCRIPT_DIR" "$tmp_state" "$tmp_state/big-repos.json" >/dev/null 2>&1
+  picked="$(expensive_gather_pick_repo "$2" "$(cat "$3")" "$4")"
+  [[ -n "$picked" ]]' _ "$SCRIPT_DIR" "$tmp_state" "$tmp_state/big-repos.json" "$node_name" >/dev/null 2>&1
 big_status=$?
 assert_eq "a repo set larger than one pipe buffer picks cleanly, never SIGPIPE" \
   "0" "$big_status"
