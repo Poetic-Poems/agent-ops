@@ -511,11 +511,11 @@ Array of `{"slug": "...", "sources": [...]}`. `sources` is that repo's work sour
 
 The four `issues:<band>` tokens are the *same* source at four ranks, banded by each issue's `Priority` field — see "Issue priority" below; list a subset to have the pipeline see only those bands, or none to turn issues off for that repo. Adding a repo or source is a config-only change.
 
-At runtime, repos are ordered most-overdue first — each repo's default-branch staleness age scaled by `1.25^(-nice)` — ahead of this list order; with no `nice` set anywhere that is least-recently-updated first, exactly as before.
+At runtime, repos are ordered most-overdue first — each repo's default-branch staleness age scaled by `2^(-nice/3)` — ahead of this list order; with no `nice` set anywhere that is least-recently-updated first, exactly as before.
 
 A repo entry that lists `implementation-plan` must also carry `implementation_plan_path` — the path, relative to that repo's root, of its plan document (poetic-fiddle's is `docs/IMPLEMENTATION-PLAN.md`); the Co-Ordinator reads whatever this says, so a repo with a differently named or located plan needs no prompt change, only its own path. The Script refuses to start a cycle if a repo lists the source without it — a repo that doesn't list `implementation-plan` needs no such key.
 
-A repo entry may also carry `nice` — an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo — the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range.
+A repo entry may also carry `nice` — an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `2^(-nice/3)` (each three steps of `nice` is a 2x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo — the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range.
 
 A non-zero `nice` shows as a badge against that repo in the dashboard's work-sources panel, naming the value and the weighting it buys; a repo at `0` or with no key shows nothing there, so a fleet that has set none sees the panel unchanged.
 

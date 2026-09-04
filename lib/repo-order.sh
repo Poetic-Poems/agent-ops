@@ -10,7 +10,7 @@
 # more attention" — modelled on Linux's `nice`) turns that plain age
 # comparison into a weighted one:
 #
-#   effective_age = (now − epoch(ts)) × 1.25^(−nice)
+#   effective_age = (now − epoch(ts)) × 2^(−nice/3)
 #
 # A repo at nice 0 sorts exactly as before; a negative nice inflates its age
 # so it looks more overdue than the clock alone says; a positive nice shrinks
@@ -29,7 +29,7 @@
 #     float-formatting, no `LC_NUMERIC`, no `sort -g` hazard anywhere in this
 #     path.
 #   - **Nice absent or 0 everywhere reproduces the old order exactly.**
-#     `1.25^0` is exactly `1.0` in IEEE doubles, so effective_age reduces to
+#     `2^(0/3)` is exactly `1.0` in IEEE doubles, so effective_age reduces to
 #     `now − epoch(ts)` — exact integer arithmetic in doubles for gh's
 #     Z-normalised UTC timestamps — and `sort_by([-.eff, .slug])` orders
 #     identically to the old ascending-ISO `sort` over whole lines. The
@@ -77,7 +77,7 @@
 #   stdin:  "ISO_ts \t slug \t default_branch" lines (agent-cycle.sh's
 #           .repo_ts, one repo per line, any order)
 #   stdout: the same lines, reordered most-overdue-first by
-#           effective_age = (NOW_EPOCH − epoch(ISO_ts)) × 1.25^(−nice)
+#           effective_age = (NOW_EPOCH − epoch(ISO_ts)) × 2^(−nice/3)
 repo_order_by_effective_age() {
   local now="$1" repos_json="$2"
   # shellcheck disable=SC2016  # jq's $ vars ($now/$repos/$nice), not the shell's.
@@ -86,7 +86,7 @@ repo_order_by_effective_age() {
     | split("\n") | map(select(length > 0) | split("\t"))
     | map({ts: .[0], slug: (.[1] // ""), db: (.[2] // "")})
     | map(. + {eff: (($now - ((.ts | fromdateiso8601?) // 0))
-                     * pow(1.25; -($nice[.slug] // 0)))})
+                     * pow(2; -($nice[.slug] // 0)/3))})
     | sort_by([-.eff, .slug])
     | .[] | [.ts, .slug, .db] | @tsv
   '

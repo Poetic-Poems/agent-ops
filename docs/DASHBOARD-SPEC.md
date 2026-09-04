@@ -1089,7 +1089,7 @@ open issues, listed in `Priority` band order with the band on each, which is
 the order the Co-Ordinator reaches them in);
 each repo whose `config.json` entry carries a non-zero `nice` (pipeline spec,
 requirement 3) also carries a **badge** naming that value, blue below zero and
-grey above, with the weighting it buys — `1.25^(-nice)`, the multiple by which
+grey above, with the weighting it buys — `2^(-nice/3)`, the multiple by which
 the Script inflates that repo's staleness age when it orders the repo walk —
 and the disclaimer that it biases the walk without starving anything. A note
 above the panel says the **Script** is what acts on a `nice`, because the panel
@@ -2034,8 +2034,8 @@ number's twins elsewhere on the page.
   no such line. The
   per-repo `nice` badge is asserted from two fixtures, because both of its
   silences are load-bearing and neither is visible on the page that has them:
-  a repo at `-5` carries a blue badge naming `×3.05` and earlier attention, one
-  at `3` a grey badge naming `×0.51` and later, both disclaiming starvation,
+  a repo at `-5` carries a blue badge naming `×3.17` and earlier attention, one
+  at `3` a grey badge naming `×0.5` and later, both disclaiming starvation,
   under a note naming the Script rather than the Co-Ordinator; a repo with no
   key beside them carries nothing; and a config whose repos are all `0` or
   keyless renders no badge and no note anywhere on the page. A node behind an
