@@ -57,7 +57,12 @@ extract_block() {
   ' "$file"
 }
 
-disk_block="$(extract_block '^# 2\.0c Free disk space' '^# 2\.1 Usage-limit cooldown' "$AGENT_CYCLE")"
+# Ends at 2.0f's own heading, not 2.1's: requirement 2.0f's free-memory gate
+# (test/memory-wiring.test.sh) sits between them, and extracting through it
+# would eval that block here too — where its helpers are not stubbed, so the
+# fall-through cases below would abort under `set -e` and read as a false
+# "never fell through".
+disk_block="$(extract_block '^# 2\.0c Free disk space' '^# 2\.0f Free host memory' "$AGENT_CYCLE")"
 if [[ -z "$disk_block" ]]; then
   echo "FAIL - could not extract the free-disk-space check block from agent-cycle.sh — has it moved?" >&2
   exit 1

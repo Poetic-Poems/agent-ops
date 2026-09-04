@@ -1887,6 +1887,38 @@ assert_contains "0 turns the warning off entirely, regardless of real free space
 assert_contains "…for workspace_root too" \
   "[ ok ] workspace_root" "$out"
 
+# --- Memory: the free-memory floor is configurable (requirement 2.0f) -------
+#
+# The same trick as the free-space floor immediately above, for the same
+# reason: min_free_memory_bytes set absurdly high forces the warning
+# deterministically with no need to fake /proc/meminfo, since this host's real
+# available memory — whatever it actually is — is certainly below an exbibyte.
+# Exercises the same lib/memory.sh requirement 2.0f's own stand-down reads
+# (test/memory.test.sh, test/memory-wiring.test.sh), from doctor.sh's side of
+# the shared floor.
+huge_mem_config="$tmp/huge-mem-config.json"
+jq '.min_free_memory_bytes = 1152921504606846976' "$base_config" > "$huge_mem_config"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_INSTALLATION_IDS -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$huge_mem_config" 2>&1)"
+rc=$?
+assert_contains "a memory floor above real available memory warns" \
+  "host memory: " "$out"
+assert_contains "…stating the configured floor in MiB (1 EiB = 1099511627776 MiB)" \
+  "1099511627776 MiB this cycle needs" "$out"
+assert_eq "a memory warning alone (not a failure) still exits 0" "0" "$rc"
+
+zero_mem_config="$tmp/zero-mem-config.json"
+jq '.min_free_memory_bytes = 0' "$base_config" > "$zero_mem_config"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_INSTALLATION_IDS -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$zero_mem_config" 2>&1)"
+assert_contains "0 turns the memory warning off entirely, regardless of real available memory" \
+  "[ ok ] host memory" "$out"
+
+# The cgroup line is advisory and reports whatever this host actually is, so
+# the assertion is that it always says one of the four things it can say —
+# never that it says a particular one, which would make the test depend on
+# whether it happens to be run inside a container.
+assert_eq "the container-memory line always reports one of its four verdicts" \
+  "yes" "$(if grep -qE 'container memory: (memory\.high is set|no cgroup ceiling|no cgroup v2 memory files|this container holds)' <<<"$out"; then echo yes; else echo no; fi)"
+
 # --- shellcheck ---
 
 if command -v shellcheck >/dev/null 2>&1; then

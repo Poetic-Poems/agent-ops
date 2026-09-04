@@ -251,17 +251,65 @@ services:
     <<: *agent-ops
     command: ["supercronic", "/app/deploy/docker/crontab"]
     # Measured 2026-08-24 over a 30-second window with a cycle in flight:
-    # 190-290 MiB resident, CPU pinning 1.0-1.3 cores. The ceiling is ~5x the
-    # observed peak, which is headroom for a stage that reads more than the
-    # measured ones did rather than a guess dressed as a budget — and it is the
-    # number to revise first when #606's real measurements land.
+    # 190-290 MiB resident, CPU pinning 1.0-1.3 cores.
+    #
+    # That reading was `docker stats`', and `docker stats` is not the meter
+    # this ceiling is compared against. It reports `memory.current` minus
+    # `inactive_file`, so it excludes most of the page cache the cgroup is in
+    # fact holding — and `memory.max`, the number below, bounds the *total*.
+    # Re-measured 2026-09-04 on the ockham node against `memory.current`
+    # itself, sampled every 20 s across live cycles: the two schedulers peaked
+    # at 1423 MiB and 1326 MiB against this 1536 MiB ceiling, 7% and 14% below
+    # it, of which only 250 MiB and 444 MiB were anonymous — the rest was page
+    # cache. So this ceiling is **not** the ~5x headroom an earlier version of
+    # this comment claimed; against the meter that governs it, it is ~1.05x,
+    # and it is one heavy stage from binding. #606's measurements are still
+    # the ones that should set it; what changed is that the number is now
+    # known to be tight rather than believed to be generous.
     #
     # The trade this makes, stated because D14 requires it stated: a stage whose
     # working set exceeds 1.5 GiB is now killed by the OOM killer mid-cycle
     # instead of taking the host down with it. That is the intended exchange —
     # one lost cycle, loudly, over a frozen machine — but it is an exchange, and
     # a node that starts losing cycles to exit 137 should raise this rather than
-    # conclude the pipeline is broken.
+    # conclude the pipeline is broken. Note that on a host where `docker info`
+    # warns "No swap limit support" the exchange does not actually happen: the
+    # cgroup's `memory.swap.max` stays `max`, so a container over its ceiling
+    # swaps rather than dying, and on a memory-capped VM that swap file is
+    # exactly what freezes the host. See the recipe below.
+    #
+    # --- Operator recipe: bounding a scheduler that ratchets ----------------
+    #
+    # A `mem_limit` is a hard ceiling and nothing else. Below it, nothing
+    # reclaims: the cgroup accumulates page cache up to `memory.max` and
+    # returns it only under pressure. Measured on the ockham node, two idle
+    # schedulers held 2465 MiB between them — with 51 MiB of that anonymous —
+    # purely because no cycle had needed the host to ask for it back.
+    #
+    # The knob that fixes this is cgroup v2's `memory.high`: a soft ceiling
+    # above which the kernel reclaims proactively and throttles the allocator
+    # rather than killing anything. Compose cannot express it and Docker has
+    # no flag for it, so it has to be written to the cgroup directly, and it
+    # is reset whenever a container is recreated (`up -d`, a watchtower roll,
+    # a reboot) — so this is a host-level habit, not a setting this file can
+    # carry:
+    #
+    #   for c in agent-ops-scheduler-1 agent-ops-2-scheduler-1; do
+    #     id=$(docker inspect -f '{{.Id}}' "$c") || continue
+    #     echo $((768*1024*1024)) | sudo tee \
+    #       "/sys/fs/cgroup/docker/$id/memory.high" >/dev/null
+    #   done
+    #
+    # Measured effect on the ockham node, same 25-minute window shape before
+    # and after: combined scheduler peak 2490 MiB -> 1476 MiB, with peak
+    # anonymous memory ~170 MiB (far below the 768 MiB threshold), no new
+    # `memory.events` `max` hits and no OOM kills. Pick a value comfortably
+    # above the anonymous peak, not the total: the cache above it is what you
+    # are asking the kernel to keep trimming.
+    #
+    # `scripts/doctor.sh` reports whether this is in force — its "container
+    # memory" line reads `unbounded` on a cgroup whose `memory.high` is unset
+    # against a real ceiling, which is the state this recipe fixes.
     mem_limit: ${AGENT_OPS_SCHEDULER_MEMORY:-1536m}
     cpus: ${AGENT_OPS_SCHEDULER_CPUS:-2.0}
     # --- The egress fence (D24) -------------------------------------------

@@ -8,6 +8,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A **free-memory stand-down** before every cycle (requirement 2.0f), the
+  memory counterpart of requirement 2.0c's free-disk gate and deliberately
+  the same shape. `lib/memory.sh` is the one place free host memory is read
+  and judged — `memory_available_kb` (MemAvailable, not MemFree, and the
+  host's rather than this cgroup's, since `/proc/meminfo` is not namespaced),
+  `memory_verdict`, `memory_describe` — so `agent-cycle.sh`'s gate and
+  `scripts/doctor.sh`'s advisory warning cannot disagree about what "low"
+  means. Below the new `min_free_memory_bytes` floor (default 512 MiB; `0`
+  turns it off) the cycle stands down with `cause: "memory-low"`, carrying
+  both the available and the total KiB, before any stage the host cannot hold
+  ever runs. An unreadable `/proc/meminfo` falls through rather than standing
+  down on a guess, the same "no evidence" reasoning requirement 2.0's
+  `unknown` rests on.
+
+  The gap this closes: requirement 2.0c refuses to start a cycle into a host
+  with no room to finish it, and nothing refused to start one into a host
+  with no memory to run it. On the ockham WSL2 host — a VM capped at 6 GiB
+  running two nodes whose cycles overlap for most of every hour — that is the
+  half that kept freezing the machine.
+- `scripts/doctor.sh` gains a **Memory** section: the host's available memory
+  against the same `min_free_memory_bytes` floor the gate uses, and whether
+  anything reclaims this container's own memory before its hard ceiling
+  (`memory_cgroup_verdict`, reading cgroup v2 read-only). A cgroup with a real
+  `memory.max` but `memory.high` unset reports `unbounded` — it ratchets up to
+  its ceiling and returns memory only under pressure — and points at the
+  operator recipe now documented in `deploy/docker/compose.yaml`. The
+  pipeline cannot fix this itself: Docker exposes no `memory.high` setting and
+  a container can read its cgroup but never write it, so detection is the
+  whole of what this repository can contribute.
+
+### Fixed
+
+- `deploy/docker/compose.yaml`'s scheduler `mem_limit` comment claimed the
+  1.5 GiB ceiling was "~5x the observed peak". It is not. That 2026-08-24
+  figure was `docker stats`', which reports `memory.current` minus
+  `inactive_file` and so excludes most of the page cache the cgroup actually
+  holds, while `mem_limit` bounds the total. Re-measured 2026-09-04 against
+  `memory.current` itself across live cycles, the two schedulers peaked at
+  1423 MiB and 1326 MiB against the 1536 MiB ceiling — 7% and 14% below it,
+  or ~1.05x rather than ~5x. The comment now states the meter alongside the
+  measurement, and records that the OOM-kill exchange it describes does not
+  actually happen on a host where `docker info` warns "No swap limit
+  support": `memory.swap.max` stays `max` there, so a container over its
+  ceiling swaps instead of dying, which on a memory-capped VM is what freezes
+  the host.
+
 - A **GitHub API budget** dashboard card (issue #1090), the first section on
   the page: the latest readable rate-limit reading (core/graphql used,
   remaining, reset countdown), a trailing-24h per-hour table of peak core
