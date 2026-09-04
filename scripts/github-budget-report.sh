@@ -278,9 +278,9 @@ echo "## Per cycle (core/graphql spent while that cycle ran; window rolls exclud
 echo
 echo "| cycle | node | readings | core spend | graphql spend |"
 echo "|---|---|---:|---:|---:|"
-jq -r '.per_cycle[] | [.cycle, .node, .readings, .core_spend, .graphql_spend] | @tsv' <<<"$report" \
+jq -r "$def_dash"' .per_cycle[] | [.cycle, .node, .readings, .core_spend, .graphql_spend] | map(dash) | @tsv' <<<"$report" \
   | while IFS=$'\t' read -r c n r cs gs; do
-      printf '| %s | %s | %s | %s | %s |\n' "$(cell "$c")" "$(cell "$n")" "$(cell "$r")" "$(cell "$cs")" "$(cell "$gs")"
+      printf '| %s | %s | %s | %s | %s |\n' "$c" "$n" "$r" "$cs" "$gs"
     done
 echo
 echo "## Per node"
