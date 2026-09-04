@@ -40,7 +40,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- `deploy/docker/compose.yaml`'s scheduler `mem_limit` comment claimed the
+- `refinements_map` and `decisions_map` (`lib/cycle-state.sh`) now skip a
+  **phantom `item-refined` event** — `comment_url` present but naming no
+  comment, the pre-TD-PPagop-26082819 shape — on the same
+  `refinement_comment_url_valid` terms `enabler_eligible_items` already
+  applied. PR #950 fixed the recording seam and the thrash-guard's
+  `refined_before` derivation but left these two extracts trusting the raw
+  event, so a phantom already on the union log split the pipeline against
+  itself: the map said the item was refined (the Co-Ordinator kept proposing
+  it, `refiner_candidate_items` kept excluding it from a fresh
+  specification), while requirement 17f's traceability gate could never
+  resolve the recorded URL — every claim faulted `untraceable`, and once
+  Co-Ordinator variance answered "nothing to do", the no-op fingerprint
+  (whose refinements projection the phantom sat inside, unchanging) held the
+  whole fleet in stand-down indefinitely. That is exactly how #874's
+  2026-08-28 phantom idled all four nodes from 2026-09-04T17:15Z: cycles ran,
+  every one stood down, and nothing on the log's own terms could repair it.
+  With the skip, the phantom items read unrefined (the Refiner owes them a
+  genuine specification), the traceability gate has nothing unresolvable to
+  fault, the dropped entries change the fingerprint's refinements projection
+  so the fix itself wakes the fleet, and a phantom never supersedes a pending
+  tactical decision. Requirement 3h states the rule; requirement 35a now
+  names all three reading seams.
   1.5 GiB ceiling was "~5x the observed peak". It is not. That 2026-08-24
   figure was `docker stats`', which reports `memory.current` minus
   `inactive_file` and so excludes most of the page cache the cgroup actually
