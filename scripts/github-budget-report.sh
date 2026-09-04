@@ -233,7 +233,12 @@ report="$(jq -c '
     }' <<<"$events")"
 report="$(jq -c --argjson shim "$shim_report" '. + {shim: $shim}' <<<"$report")"
 
-cell() { local v="${1:-}"; if [[ -z "$v" || "$v" == "null" ]]; then printf '—'; else printf '%s' "$v"; fi; }
+# A null figure is rendered as an em dash *inside jq*, before `@tsv`, never
+# after: `read -r` under a tab IFS collapses consecutive tabs, so an empty
+# field in the middle of a row would vanish and every column after it would
+# shift left — an hour with refusals but no readings printed its refusal
+# count under "core peak used" on the first live run (2026-08-30).
+def_dash='def dash: if . == null then "—" else . end;'
 
 echo "# GitHub API budget report"
 echo
@@ -255,36 +260,36 @@ echo "## Per hour (UTC)"
 echo
 echo "| hour | readings | core peak used | core min remaining | graphql peak used | refusals | budget stand-downs |"
 echo "|---|---:|---:|---:|---:|---:|---:|"
-jq -r '.per_hour[] | [.hour, .readings, .core_peak_used, .core_min_remaining, .graphql_peak_used, .refusals, .budget_standdowns] | @tsv' <<<"$report" \
+jq -r "$def_dash"' .per_hour[] | [.hour, .readings, .core_peak_used, .core_min_remaining, .graphql_peak_used, .refusals, .budget_standdowns] | map(dash) | @tsv' <<<"$report" \
   | while IFS=$'\t' read -r h r cu cr gu rf sd; do
-      printf '| %s | %s | %s | %s | %s | %s | %s |\n' "$h" "$(cell "$r")" "$(cell "$cu")" "$(cell "$cr")" "$(cell "$gu")" "$(cell "$rf")" "$(cell "$sd")"
+      printf '| %s | %s | %s | %s | %s | %s | %s |\n' "$h" "$r" "$cu" "$cr" "$gu" "$rf" "$sd"
     done
 echo
 echo "## Per stage (bucket movement while the stage ran; window rolls excluded)"
 echo
 echo "| stage | readings | core median | core max | graphql median |"
 echo "|---|---:|---:|---:|---:|"
-jq -r '.per_stage[] | [.stage, .readings, .core_movement_median, .core_movement_max, .graphql_movement_median] | @tsv' <<<"$report" \
+jq -r "$def_dash"' .per_stage[] | [.stage, .readings, .core_movement_median, .core_movement_max, .graphql_movement_median] | map(dash) | @tsv' <<<"$report" \
   | while IFS=$'\t' read -r st r cm cx gm; do
-      printf '| %s | %s | %s | %s | %s |\n' "$st" "$(cell "$r")" "$(cell "$cm")" "$(cell "$cx")" "$(cell "$gm")"
+      printf '| %s | %s | %s | %s | %s |\n' "$st" "$r" "$cm" "$cx" "$gm"
     done
 echo
 echo "## Per cycle (core/graphql spent while that cycle ran; window rolls excluded)"
 echo
 echo "| cycle | node | readings | core spend | graphql spend |"
 echo "|---|---|---:|---:|---:|"
-jq -r '.per_cycle[] | [.cycle, .node, .readings, .core_spend, .graphql_spend] | @tsv' <<<"$report" \
+jq -r "$def_dash"' .per_cycle[] | [.cycle, .node, .readings, .core_spend, .graphql_spend] | map(dash) | @tsv' <<<"$report" \
   | while IFS=$'\t' read -r c n r cs gs; do
-      printf '| %s | %s | %s | %s | %s |\n' "$(cell "$c")" "$(cell "$n")" "$(cell "$r")" "$(cell "$cs")" "$(cell "$gs")"
+      printf '| %s | %s | %s | %s | %s |\n' "$c" "$n" "$r" "$cs" "$gs"
     done
 echo
 echo "## Per node"
 echo
 echo "| node | readings | unreadable | cycles with a record |"
 echo "|---|---:|---:|---:|"
-jq -r '.per_node[] | [.node, .readings, .unreadable, .cycles_with_record] | @tsv' <<<"$report" \
+jq -r "$def_dash"' .per_node[] | [.node, .readings, .unreadable, .cycles_with_record] | map(dash) | @tsv' <<<"$report" \
   | while IFS=$'\t' read -r n r u c; do
-      printf '| %s | %s | %s | %s |\n' "$n" "$(cell "$r")" "$(cell "$u")" "$(cell "$c")"
+      printf '| %s | %s | %s | %s |\n' "$n" "$r" "$u" "$c"
     done
 echo
 echo "## \`gh\` transport shim (requirement 2.0e)"
