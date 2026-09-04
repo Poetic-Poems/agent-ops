@@ -75,6 +75,13 @@ recent_at="$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)"
 old_at="$(date -u -d '-30 hours' +%Y-%m-%dT%H:%M:%SZ)"
 older_at="$(date -u -d '-35 hours' +%Y-%m-%dT%H:%M:%SZ)"
 progressed_at="$(date -u -d '-30 minutes' +%Y-%m-%dT%H:%M:%SZ)"
+# The unreviewed trigger's own clocks (agent-ops#890): `created_old` is past
+# the 2 h default engage bound, `created_recent` inside it; `engaged_old` is
+# past the 24 h default escalation bound, `engaged_recent` inside it.
+created_old="$(date -u -d '-3 hours' +%Y-%m-%dT%H:%M:%SZ)"
+created_recent="$(date -u -d '-10 minutes' +%Y-%m-%dT%H:%M:%SZ)"
+engaged_old="$old_at"
+engaged_recent="$recent_at"
 
 # --- Assembly -----------------------------------------------------------------
 
@@ -89,7 +96,15 @@ DEFAULTED_CONFIG='{}'
 state_repo="acme/widgets"
 state_dir="$T/state"
 approver_restale_escalate_after_hours="${APPROVER_RESTALE_ESCALATE_AFTER_HOURS:-24}"
+approver_unreviewed_engage_after_hours="${APPROVER_UNREVIEWED_ENGAGE_AFTER_HOURS:-2}"
 mkdir -p "$state_dir"
+
+# The unreviewed trigger's own union-log memory (agent-ops#890): a real file,
+# because `approver_unreviewed_prior_engagement` is lifted verbatim below and
+# reads one — steered per case through UNION_JSON.
+union_log="$T/union.jsonl"
+: >"$union_log"
+[[ -z "${UNION_JSON:-}" ]] || printf '%s\n' "$UNION_JSON" >"$union_log"
 
 log_event() { printf '%s\t%s\n' "$1" "$2" >>"$T/events"; }
 
@@ -136,14 +151,23 @@ approver_newest_commit_authored_at() {
 }
 
 _approver_restale_review() {
-  printf 'slug=%s\tpr_url=%s\tnumber=%s\tbranch=%s\tcomplexity=%s\ttitle=%s\n' \
-    "$1" "$2" "$3" "$4" "$5" "$6" >>"$T/review-calls"
+  printf 'slug=%s\tpr_url=%s\tnumber=%s\tbranch=%s\tcomplexity=%s\ttitle=%s\tmode=%s\n' \
+    "$1" "$2" "$3" "$4" "$5" "$6" "${7:-restale}" >>"$T/review-calls"
   local num="$3" var
   var="REVIEW_ACTION_$num"
   # The real function's own contract: the outcome comes back in a global, not
   # on stdout — see its header, and the second harness at the foot of this
   # file, which pins that the shipped one really does set it.
   _approver_restale_review_result="${!var:-unavailable}"
+}
+
+_approver_sweep_claimed_pr_numbers() {
+  printf '%s' "${CLAIMED_PRS:-[]}"
+}
+
+_approver_unreviewed_escalate() {
+  printf 'slug=%s\tpr_url=%s\tnumber=%s\titem_ref=%s\tfirst_engaged_at=%s\n' \
+    "$1" "$2" "$3" "$4" "$5" >>"$T/unreviewed-escalate-calls"
 }
 
 _approver_restale_dismiss() {
@@ -157,18 +181,29 @@ _approver_restale_escalate() {
 
 HARNESS
 
+prior_block="$(extract approver_unreviewed_prior_engagement)"
+if [[ -z "$prior_block" || "$prior_block" != *"approver-unreviewed-engaged"* ]]; then
+  echo "FAIL - could not extract approver_unreviewed_prior_engagement from lib/approver.sh — has it moved?" >&2
+  exit 1
+fi
+
 {
+  # The union-log reduction is lifted verbatim too — the unreviewed trigger's
+  # bound is only as good as this reduction, so it runs against a real
+  # fixture file rather than a stub.
+  printf '%s\n' "$prior_block"
   printf '%s\n' "$sweep_block"
   printf '_approver_restale_sweep_repo "acme/widgets" "pullwright-approver[bot]"\n'
 } >>"$tmp_dir/harness.sh"
 
 # --- Fixtures -----------------------------------------------------------------
 
-pr_row() {  # number url branch head draft reviewDecision title complexity_label
+pr_row() {  # number url branch head draft reviewDecision title complexity_label [createdAt]
   jq -nc --argjson n "$1" --arg u "$2" --arg b "$3" --arg h "$4" --argjson d "$5" \
-    --arg rd "$6" --arg t "$7" --arg c "$8" \
+    --arg rd "$6" --arg t "$7" --arg c "$8" --arg ca "${9:-}" \
     '{number: $n, url: $u, headRefName: $b, headRefOid: $h, isDraft: $d, reviewDecision: $rd,
-      title: $t, labels: (if $c == "" then [] else [{name: $c}] end)}'
+      title: $t, labels: (if $c == "" then [] else [{name: $c}] end)}
+     + (if $ca == "" then {} else {createdAt: $ca} end)'
 }
 
 review_row() {  # id login at
@@ -177,6 +212,7 @@ review_row() {  # id login at
 
 run_case() {  # PR_LIST_JSON=... plus any stub-steering env
   : >"$tmp_dir/events"; : >"$tmp_dir/review-calls"; : >"$tmp_dir/dismiss-calls"; : >"$tmp_dir/escalate-calls"
+  : >"$tmp_dir/unreviewed-escalate-calls"
   env -i PATH="$PATH" HOME="$HOME" \
     T="$tmp_dir" SCRIPT_DIR="$SCRIPT_DIR" \
     LEVEL="agent-merges-routine" \
@@ -188,6 +224,7 @@ run_case() {  # PR_LIST_JSON=... plus any stub-steering env
 review_calls() { cat "$tmp_dir/review-calls" 2>/dev/null || true; }
 dismiss_calls() { cat "$tmp_dir/dismiss-calls" 2>/dev/null || true; }
 escalate_calls() { cat "$tmp_dir/escalate-calls" 2>/dev/null || true; }
+unreviewed_escalate_calls() { cat "$tmp_dir/unreviewed-escalate-calls" 2>/dev/null || true; }
 events() { cat "$tmp_dir/events" 2>/dev/null || true; }
 count() { [[ -s "$1" ]] && wc -l <"$1" | tr -d ' ' || printf '0'; }
 
@@ -321,6 +358,89 @@ assert_contains "a truncated pull-request listing logs a warning naming the repo
 assert_contains "  ... and says a stale review beyond it is not swept this cycle" \
   "not swept this cycle" "$(events)"
 
+# --- The unreviewed trigger (requirement 46, agent-ops#890) -------------------
+# The constructed case #890's acceptance criterion 6 asks for: handed off
+# (ready, non-draft, `pr_label`), green, zero Approver reviews, past the
+# engage bound.
+
+unreviewed_list="$(jq -sc '.' <(
+  pr_row 30 "https://github.com/acme/widgets/pull/30" "agent/890-30" "sha30" false "REVIEW_REQUIRED" "fix: stranded" "complexity:low" "$created_old"
+))"
+
+rc="$(run_case PR_LIST_JSON="$unreviewed_list" REVIEW_ACTION_30="posted")"
+assert_eq "a ready, unreviewed pull request past the engage bound is engaged exactly once" \
+  "1" "$(count "$tmp_dir/review-calls")"
+assert_contains "  ... in unreviewed mode" "mode=unreviewed" "$(review_calls)"
+assert_contains "  ... with its own url" "pr_url=https://github.com/acme/widgets/pull/30" "$(review_calls)"
+assert_contains "  ... and its own complexity" "complexity=low" "$(review_calls)"
+assert_contains "the engagement is recorded for the union log" "approver-unreviewed-engaged" "$(events)"
+assert_contains "  ... keyed on the exact head" '"head":"sha30"' "$(events)"
+assert_contains "  ... carrying the outcome" '"result":"posted"' "$(events)"
+assert_eq "  ... and never escalates on the same pass" "0" "$(count "$tmp_dir/unreviewed-escalate-calls")"
+
+rc="$(run_case PR_LIST_JSON="$(jq -sc '.' <(
+  pr_row 31 "https://github.com/acme/widgets/pull/31" "agent/890-31" "sha31" true "REVIEW_REQUIRED" "x" "complexity:low" "$created_old"
+))")"
+assert_eq "a draft — the Implementer's own claim marker, never handed off — is not engaged" \
+  "0" "$(count "$tmp_dir/review-calls")"
+
+rc="$(run_case PR_LIST_JSON="$(jq -sc '.' <(
+  pr_row 32 "https://github.com/acme/widgets/pull/32" "agent/890-32" "sha32" false "REVIEW_REQUIRED" "x" "complexity:low" "$created_recent"
+))")"
+assert_eq "a ready pull request inside the engage bound is ordinary in-flight work, not engaged" \
+  "0" "$(count "$tmp_dir/review-calls")"
+
+rc="$(run_case PR_LIST_JSON="$unreviewed_list" CLAIMED_PRS='[30]')"
+assert_eq "a pull request under a live fleet claim is a peer's, never engaged" \
+  "0" "$(count "$tmp_dir/review-calls")"
+assert_eq "  ... and nothing is logged for it" "" "$(events)"
+
+rc="$(run_case PR_LIST_JSON="$(jq -sc '.' <(
+  pr_row 33 "https://github.com/acme/widgets/pull/33" "agent/890-33" "sha33" false "APPROVED" "x" "complexity:low" "$created_old"
+))" STANDING_STATE_33="APPROVED" STANDING_AT_33="$recent_at" STANDING_COMMIT_33="sha33")"
+assert_eq "a standing APPROVED review means requirement 8u's business, not this trigger's" \
+  "0" "$(count "$tmp_dir/review-calls")"
+
+rc="$(run_case PR_LIST_JSON="$unreviewed_list" STANDING_STATE_30="RC1")"
+assert_eq "an unreadable standing-review read is skipped, never read as unreviewed" \
+  "0" "$(count "$tmp_dir/review-calls")"
+assert_eq "  ... and nothing is logged for it" "" "$(events)"
+
+rc="$(run_case PR_LIST_JSON="$(jq -sc '.' <(
+  pr_row 34 "https://github.com/acme/widgets/pull/34" "agent/890-34" "sha34" false "CHANGES_REQUESTED" "x" "complexity:low" "$created_old"
+))")"
+assert_eq "a CHANGES_REQUESTED pull request belongs to the stale trigger and review-feedback, never this one" \
+  "0" "$(count "$tmp_dir/review-calls")"
+
+prior_posted="$(jq -nc --arg ts "$engaged_recent" \
+  '{ts: $ts, event: "approver-unreviewed-engaged", pr_url: "https://github.com/acme/widgets/pull/30", head: "sha30", result: "posted"}')"
+rc="$(run_case PR_LIST_JSON="$unreviewed_list" UNION_JSON="$prior_posted")"
+assert_eq "a head whose engagement already posted a verdict is never re-engaged" \
+  "0" "$(count "$tmp_dir/review-calls")"
+assert_eq "  ... nor escalated inside the escalation bound" "0" "$(count "$tmp_dir/unreviewed-escalate-calls")"
+
+prior_unavailable="$(jq -nc --arg ts "$engaged_recent" \
+  '{ts: $ts, event: "approver-unreviewed-engaged", pr_url: "https://github.com/acme/widgets/pull/30", head: "sha30", result: "unavailable"}')"
+rc="$(run_case PR_LIST_JSON="$unreviewed_list" UNION_JSON="$prior_unavailable" REVIEW_ACTION_30="posted")"
+assert_eq "an engagement that could not even be attempted is retried" \
+  "1" "$(count "$tmp_dir/review-calls")"
+
+prior_stuck="$(jq -nc --arg ts "$engaged_old" \
+  '{ts: $ts, event: "approver-unreviewed-engaged", pr_url: "https://github.com/acme/widgets/pull/30", head: "sha30", result: "posted"}')"
+rc="$(run_case PR_LIST_JSON="$unreviewed_list" UNION_JSON="$prior_stuck")"
+assert_eq "still no standing review once the first engagement is past the bound escalates" \
+  "1" "$(count "$tmp_dir/unreviewed-escalate-calls")"
+assert_contains "  ... naming a head-scoped item ref" "item_ref=pr-30-approver-unreviewed-sha30" "$(unreviewed_escalate_calls)"
+assert_contains "  ... and the first engagement's own timestamp" "first_engaged_at=$engaged_old" "$(unreviewed_escalate_calls)"
+assert_eq "  ... never a fresh engagement" "0" "$(count "$tmp_dir/review-calls")"
+
+prior_other_head="$(jq -nc --arg ts "$engaged_old" \
+  '{ts: $ts, event: "approver-unreviewed-engaged", pr_url: "https://github.com/acme/widgets/pull/30", head: "oldsha30", result: "posted"}')"
+rc="$(run_case PR_LIST_JSON="$unreviewed_list" UNION_JSON="$prior_other_head" REVIEW_ACTION_30="posted")"
+assert_eq "a push resets the memory: an engagement at an older head neither blocks nor escalates the new one" \
+  "1" "$(count "$tmp_dir/review-calls")"
+assert_eq "  ... and does not escalate" "0" "$(count "$tmp_dir/unreviewed-escalate-calls")"
+
 # --- `_approver_restale_review` itself, lifted verbatim -----------------------
 # The sweep harness above stubs it out, which is the right split for asking
 # *which* helper the sweep reaches for — and is exactly why the function's own
@@ -376,6 +496,8 @@ printf 'result=%s\n' "$_approver_restale_review_result"
 printf 'restored_wo=[%s] restored_impl=[%s] restored_rev=[%s] restored_repo=[%s] restored_clone=[%s]\n' \
   "$work_order_json" "$impl_status_json" "$rev_status_json" "$selected_repo" "$clone_dir"
 printf 'clone_left=%s\n' "$([[ -d "$workspace_root/cyc1-restale-7" ]] && printf 'yes' || printf 'no')"
+_approver_restale_review "acme/widgets" "https://github.com/acme/widgets/pull/7" 7 "agent/682" "high" "feat: thing" unreviewed
+printf 'unreviewed_result=%s\n' "$_approver_restale_review_result"
 RTAIL
 } >>"$tmp_dir/review-harness.sh"
 
@@ -398,6 +520,9 @@ assert_contains "the stage really was engaged, under the pull request's own repo
 assert_contains "  ... its own fresh clone" "clone=$tmp_dir/ws/cyc1-restale-7" "$(cat "$tmp_dir/stage-calls")"
 assert_contains "  ... and a synthetic work order naming the pull request" \
   "wo_item=pr-7-approver-restale" "$(cat "$tmp_dir/stage-calls")"
+assert_contains "in unreviewed mode the synthetic work order names the unreviewed item instead" \
+  "wo_item=pr-7-approver-unreviewed" "$(cat "$tmp_dir/stage-calls")"
+assert_contains "  ... and its outcome reports the same way" "unreviewed_result=posted" "$review_out"
 assert_contains "  ... a complete Implementer summary" "impl_status=complete" "$(cat "$tmp_dir/stage-calls")"
 assert_contains "  ... and a ready Reviewer summary" "rev_status=ready" "$(cat "$tmp_dir/stage-calls")"
 assert_contains "the borrowed globals are restored, never left mutated" \

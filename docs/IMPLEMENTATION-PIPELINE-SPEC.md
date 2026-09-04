@@ -775,7 +775,8 @@ and the schema must carry every one of them.
 | `approver_model_default` | `claude-sonnet-5` | Standard-tier Approver engagements: work graded `complexity:medium` (requirement 8b). Empty disables the Approver stage. |
 | `approver_model_complex` | `claude-opus-5` | High-tier Approver engagements: work graded `complexity:high` (requirement 8b). Empty falls back to `approver_model_default`, which switches the escalation off. |
 | `approver_model_critical` | `claude-fable-5` | Adjudication engagements, triggered by a refuse streak of two rather than by complexity (requirement 8c). Empty falls back to `approver_model_complex`. |
-| `approver_restale_escalate_after_hours` | 24 h | Requirement 46: how long the restale sweep (agent-ops#682) tolerates a rebase-only-stale Approver review — its standing `CHANGES_REQUESTED` `commit_id` mismatched against the pull request's head, but its most recently authored commit no older than the review itself — before escalating rather than leaving it to retry every cycle indefinitely. Measured from the standing review's own `submitted_at`, which a rebase does not move. |
+| `approver_restale_escalate_after_hours` | 24 h | Requirement 46: how long the restale sweep tolerates a pull request making no recoverable progress before escalating rather than retrying every cycle indefinitely. For the stale-review trigger (agent-ops#682) — a standing `CHANGES_REQUESTED` `commit_id` mismatched against the pull request's head, but its most recently authored commit no older than the review itself — measured from the standing review's own `submitted_at`, which a rebase does not move. For the unreviewed...[continued below](#extended-notes-approver_restale_escalate_after_hours) |
+| `approver_unreviewed_engage_after_hours` | 2 h | Requirement 46: how long the unreviewed trigger (agent-ops#890) waits, from a pull request's own `createdAt`, before treating a ready, non-draft, `pr_label` pull request with no Approver review at all as stranded rather than as ordinary in-flight work, and arming a recovery engagement. |
 | `enabler_model` | `claude-opus-5` | The Enabler (requirement 35). The highest-tier model this system runs, affordable only because the eligibility rule of 35a engages it rarely and the claims of 35c stop it being engaged twice. Empty disables the stage. |
 | `enabler_model_critical` | `claude-fable-5` | The Enabler's critical tier (requirement 36d, D18 §6): both `run_enabler_adjudication` (`adjudicate-first`) and `run_enabler_decide` (`decide-tactical`) run at this model rather than `enabler_model` — the Enabler's own first appearance of a second tier, on the same empty-falls-back pattern `approver_model_critical` uses for the Approver's own adjudication. Empty falls back to `enabler_model`. |
 | `enabler_assignee` | `warwickallen` | GitHub login assigned to every escalation issue the Enabler raises (requirement 36a). Required whenever `enabler_model` is set: the Script exits with an error at startup rather than run with it unset, since an unassigned escalation would not be excluded by requirement 16.4 and could be selected as work by the pipeline itself. |
@@ -926,6 +927,10 @@ Cycle and review directories the node's *own* `state_dir` keeps; the same push t
 ### Extended notes: `state_local_streams_retained`
 
 Cycle and review directories whose derived files are kept — the stage event streams (`<stage>.stream.jsonl`, requirement 4d) and the fleet-log snapshot (`.fleet-log.jsonl`, requirement 2.5); the push that replicates prunes to it (requirement 2.5). Far below `state_local_cycles_retained` because each is a different order of size from the record holding it — a cycle directory without them is kilobytes, one Reviewer stream megabytes, one snapshot the whole fleet's history to that moment — so they go early and their records stay. Neither reaches the state repository. A span of history, not a literal cycle count (requirement 1d): derived from the mean gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`) to hold the ~2.1 days 50 cycles represented at the historical hourly cadence; a configured value floors the derivation rather than replacing it. `STATE_SYNC_STREAMS_RETAINED` overrides it for tests. At the shipped 15-minute cadence this raises the derived count 50 → 200 (TD-PPagop-26082830) — the one of these three keys worth quantifying rather than only ratioed, since it alone bounds files this large: with each retained cycle's stream-plus-snapshot pair running from under a megabyte to several megabytes on an ordinary cycle (`scripts/state-sync.sh`'s own 'megabytes' figure), 200 retained cycles is an order-of-magnitude estimate of low hundreds of megabytes on a busy repository, against `cycles_retained`'s and `state_local_cycles_retained`'s tens of megabytes each — not a measurement of any live node's actual `state_dir`, which is what would replace this estimate with a real baseline, but still well inside `min_free_workspace_bytes`'s 2 GiB pre-clone floor, the one check a derivation raising this key could actually trip.
+
+### Extended notes: `approver_restale_escalate_after_hours`
+
+Requirement 46: how long the restale sweep tolerates a pull request making no recoverable progress before escalating rather than retrying every cycle indefinitely. For the stale-review trigger (agent-ops#682) — a standing `CHANGES_REQUESTED` `commit_id` mismatched against the pull request's head, but its most recently authored commit no older than the review itself — measured from the standing review's own `submitted_at`, which a rebase does not move. For the unreviewed trigger (agent-ops#890) — a ready pull request with no Approver review at all whose recovery engagements are not producing one — measured from the first `approver-unreviewed-engaged` event at the pull request's current head.
 
 ### Extended notes: `escalation_autonomy`
 
@@ -14155,8 +14160,8 @@ with the Reviewer's own.
     no review posted (requirement 43) — never a blocked pull request, since
     nothing about the human's own path to merging depends on this stage
     having run at all.
-46. **A pull request the Approver refused cannot rely on the cycle that
-    fixed it to also re-review it (agent-ops#682).** The ordinary path —
+46. **A pull request cannot rely on the cycle that owed it an Approver
+    round to also deliver one (agent-ops#682, #890).** The ordinary path —
     requirement 8b's own engagement, launched again once the same cycle's
     Reviewer next reports `ready` — already clears an ordinary standing
     review the moment the round that answered it completes. The gap is the
@@ -14171,9 +14176,10 @@ with the Reviewer's own.
     The **restale sweep** (`_approver_restale_sweep_repo`, `lib/approver.sh`,
     run fleet-wide every cycle immediately before the requirement-8u
     landing-retry sweep, skipped on `--dry-run`) is the independent recovery
-    path: for every repository whose effective `merge_autonomy` is above
-    `human`, every open, non-draft, `pr_label` pull request whose
-    `reviewDecision` is `CHANGES_REQUESTED` is read fresh
+    path, under two triggers sharing one pull-request listing: for every
+    repository whose effective `merge_autonomy` is above `human`, every
+    open, non-draft, `pr_label` pull request whose `reviewDecision` is
+    `CHANGES_REQUESTED` is read fresh
     (`landing_approver_standing_review_at`, the same read `_landing_stage_
     attempt`'s gate 4 already makes — requirement 8u's own sweep calls its
     state-only sibling, `landing_approver_standing_review`, which carries no
@@ -14251,6 +14257,66 @@ with the Reviewer's own.
     leaving it stand. Every write this requirement makes is best-effort: a
     failure at any step logs a `warning` and leaves the pull request exactly
     as it was, for the sweep to find again next cycle.
+
+    The sweep's **unreviewed trigger** (agent-ops#890) recovers the pull
+    request the stale trigger structurally cannot see: one that is ready but
+    carries **no Approver review at all**. Every other recovery path is
+    keyed on an event or a review state — `CHANGES_REQUESTED` for the stale
+    trigger and the review-feedback source, a conflict, a draft, a dequeue,
+    failed checks — so a cycle dying between the Reviewer's handoff and the
+    Approver, an Approver verdict whose own GitHub write was refused, or the
+    stage's silent fail-closed skip used to strand such a pull request
+    permanently rather than for one cycle (PR #828 sat days this way; #1049
+    and #1059 followed). This trigger is keyed on the *state*, so all three
+    routes into the gap are recovered by the one path. A candidate is open,
+    non-draft, carries `pr_label`, its `reviewDecision` is anything but
+    `CHANGES_REQUESTED`, its `createdAt` is older than
+    `approver_unreviewed_engage_after_hours` — younger is ordinary in-flight
+    work whose own cycle's chained requirement-8b engagement is the ordinary
+    path — and the same fresh `landing_approver_standing_review_at` read the
+    stale trigger makes reports no standing Approver review at all (an
+    unreadable read is skipped, never guessed at; any standing review at all
+    routes elsewhere: `APPROVED` to requirement 8u, `CHANGES_REQUESTED` to
+    the stale trigger). Non-draft under `pr_label` is itself the handoff
+    record: an Implementer raises its pull request as a draft — the draft is
+    its claim marker (requirement 23) — and only the Reviewer's handoff
+    readies it, so a mid-Reviewer pull request is still a draft and never a
+    candidate. A pull request a peer's cycle holds right now is excluded by
+    the fleet-wide `pr-<n>` claim, read from the live claim registry
+    (`_approver_sweep_claimed_pr_numbers`, one `claim.sh claims` listing per
+    repository, taken only when a candidate exists to spend it on); the
+    registry is advisory by its own contract, and the second, fleet-wide
+    guard is the union log.
+
+    A candidate gets a recovery engagement through the same
+    `_approver_restale_review` above (mode `unreviewed`: the synthetic work
+    order carries item `pr-<n>-approver-unreviewed`, source
+    `approver-unreviewed`, and acceptance prose naming this trigger; the
+    clone, borrowed globals and outcome contract are identical), and every
+    engagement is recorded as an `approver-unreviewed-engaged` event
+    (`pr_url`, `head`, `result`). That event is the trigger's own bound,
+    read back from the fleet's union log
+    (`approver_unreviewed_prior_engagement`, keyed on the exact head sha —
+    a push makes the pull request a genuinely new judgement, so the count
+    and the escalation clock start over with it): a head whose most recent
+    engagement reported `posted` is never re-engaged — the verdict was
+    reached, and re-judging the same head would spend a full engagement to
+    reach the same verdict; the review write's own `approver_post_or_warn`
+    retry (PR #1101) owns a refused post, and a write that still never
+    lands is exactly what the escalation below exists for — while an
+    `unavailable` one is retried next cycle.
+    Once the *first* engagement at the current head is older than
+    `approver_restale_escalate_after_hours` with still no standing review,
+    `_approver_unreviewed_escalate` hands the pull request to a human
+    instead of engaging forever: an escalation through the same
+    duplicate-guarded `create_escalation_issue` (`enabler_assignee`) as
+    everything else in this requirement, deduplicated per head
+    (`pr-<n>-approver-unreviewed-<head>`), logged as
+    `approver-unreviewed-escalated`. Like every reduction the union log
+    backs, the engagement memory is approximate across nodes for one
+    propagation interval; the worst transient outcome is a doubled
+    engagement whose second review lands under the same App identity, which
+    GitHub folds into one standing position.
 
 47. **Rework record.** D23 of `docs/ROADMAP.md` names nine classes of
     repetition, the pipeline's only honest quality signal, and this
@@ -21053,8 +21119,8 @@ pull request, run the ones the change touches and any it could regress.
     `anomaly` it reports stay exactly what the (unmodified) merged-PR count
     read — an ALREADY_ARMED-driven hold never reports `anomaly: true` on its
     own.
-46. **A pull request the Approver refused cannot rely on the cycle that
-    fixed it to also re-review it (requirement 46, agent-ops#682).**
+46. **A pull request cannot rely on the cycle that owed it an Approver
+    round to also deliver one (requirement 46, agent-ops#682, #890).**
     `test/approver.test.sh` passes against a stubbed `gh`: `approver_review_
     stale` reads `CHANGES_REQUESTED` with a mismatched commit as stale and
     everything else — an `APPROVED` state, an empty state, an empty commit,
@@ -21103,6 +21169,26 @@ pull request, run the ones the change touches and any it could regress.
     listing logs one `warning` naming the repository and saying a stale
     review beyond it is not swept this cycle.
 
+    The same harness lifts `approver_unreviewed_prior_engagement` verbatim
+    alongside the sweep and pins the unreviewed trigger (agent-ops#890)
+    against the constructed case its acceptance criterion 6 asks for —
+    ready, non-draft, `pr_label`, zero Approver reviews, past
+    `approver_unreviewed_engage_after_hours` — never a live backlog item
+    (criterion 7): that candidate reaches `_approver_restale_review` exactly
+    once, in `unreviewed` mode, and its engagement is logged as
+    `approver-unreviewed-engaged` keyed on the exact head and carrying the
+    outcome; a draft, a candidate inside the engage bound, one under a live
+    fleet `pr-<n>` claim, one with a standing `APPROVED` review, one whose
+    standing-review read is unreadable, and a `CHANGES_REQUESTED` one are
+    all left alone (the claim-held and unreadable cases logging nothing); a
+    head whose prior engagement reported `posted` is never re-engaged while
+    an `unavailable` one is retried; a first engagement at the current head
+    older than `approver_restale_escalate_after_hours` with still no
+    standing review reaches `_approver_unreviewed_escalate` — naming the
+    head-scoped item ref and that first engagement's own timestamp, never a
+    fresh engagement — and an engagement recorded at a different head
+    neither blocks nor escalates the current one.
+
     A second harness in the same file lifts `_approver_restale_review` itself
     verbatim, run under `set -euo pipefail` with none of the five globals it
     borrows defined — the sweep's own context, since it runs before the cycle
@@ -21113,7 +21199,10 @@ pull request, run the ones the change touches and any it could regress.
     `_approver_restale_review_result` even when the stage writes its whole
     transcript to stdout (`--once`), reports `unavailable` for a stage that
     reached no verdict and for a clone that failed (engaging nothing in that
-    case), restores every borrowed global, and tears its recovery clone down.
+    case), restores every borrowed global, and tears its recovery clone down;
+    called again in `unreviewed` mode it engages the stage under a synthetic
+    work order naming `pr-<n>-approver-unreviewed` instead, reporting its
+    outcome through the same global.
 8v. **A D18 rollout stage's own exit criteria are measured, not recalled
     (component 22).** `test/autonomy-stage-report.test.sh` passes: a
     repository at `human` (Stage 0) verdicts `met` once a baseline file

@@ -943,7 +943,7 @@ $node_name
 # `run_approver_stage` above, the way that one re-enters `_landing_stage_
 # attempt` — so it follows the stage it drives rather than the sweep it
 # precedes.
-# _approver_restale_review SLUG PR_URL NUMBER BRANCH COMPLEXITY TITLE
+# _approver_restale_review SLUG PR_URL NUMBER BRANCH COMPLEXITY TITLE [MODE]
 # Requirement 46 (agent-ops#682), acceptance criterion 1: trigger a genuine
 # re-review of PR_URL, reusing `run_approver_stage` itself rather than a
 # second copy of its tiering/adjudication/escalation/tech-debt-filing logic —
@@ -962,6 +962,15 @@ $node_name
 # that, then borrows `run_approver_stage`'s own globals for the one call —
 # saved and restored around it, never left mutated for whatever this cycle's
 # own selected work order does next.
+#
+# MODE (default `restale`) names which of requirement 46's two triggers is
+# asking: `restale` — the original stale-`CHANGES_REQUESTED` re-review — or
+# `unreviewed` (agent-ops#890) — a ready pull request the Approver never
+# reviewed at all. The mode picks the synthetic work order's item ref,
+# source and acceptance prose; everything else — the fresh clone, the
+# borrowed globals, the outcome contract — is identical, which is exactly
+# why #890's acceptance criterion 2 routes its trigger through this function
+# rather than a second copy of it.
 #
 # Reports its outcome through the global `_approver_restale_review_result`,
 # set on every path before this function returns — `posted` once
@@ -982,9 +991,9 @@ $node_name
 # the stage output with the outcome word glued to the end of it and route a
 # re-review that did post into the dismissal fallback.
 _approver_restale_review() {
-  local slug="$1" pr_url="$2" number="$3" branch="$4" complexity="$5" title="$6"
+  local slug="$1" pr_url="$2" number="$3" branch="$4" complexity="$5" title="$6" mode="${7:-restale}"
   local restale_clone_dir saved_repo saved_clone saved_wo saved_impl saved_rev
-  local synthetic_wo synthetic_impl synthetic_rev restale_acceptance
+  local synthetic_wo synthetic_impl synthetic_rev restale_acceptance restale_item restale_source
 
   _approver_restale_review_result="unavailable"
 
@@ -1006,10 +1015,18 @@ _approver_restale_review() {
   if clone_repo "$slug" "$restale_clone_dir" 2>"$cycle_dir/restale-clone-${number}.err" \
      && git -C "$restale_clone_dir" fetch --quiet origin "$branch" 2>>"$cycle_dir/restale-clone-${number}.err" \
      && git -C "$restale_clone_dir" checkout --quiet "$branch" 2>>"$cycle_dir/restale-clone-${number}.err"; then
-    restale_acceptance="Recovery re-review (requirement 46, agent-ops#682): the Approver's own most recent CHANGES_REQUESTED review on this pull request no longer matches its current head — a commit was authored after that review was submitted, so real work happened, but no fresh Approver round ever reached GitHub (most likely the cycle that pushed it did not finish; see this repository's own Implementer prompt, 'Long-running commands'). Judge the diff as it stands now, against this pull request's own description and history."
-    synthetic_wo="$(jq -nc --arg r "$slug" --arg i "pr-${number}-approver-restale" \
+    if [[ "$mode" == "unreviewed" ]]; then
+      restale_item="pr-${number}-approver-unreviewed"
+      restale_source="approver-unreviewed"
+      restale_acceptance="Recovery review (requirement 46, agent-ops#890): this pull request was raised by the pipeline and stands ready, but carries no Approver review at all — the cycle that owed it one died between the Reviewer's handoff and the Approver, or the verdict's own write never reached GitHub (see this repository's own Implementer prompt, 'Long-running commands'). Judge the diff as it stands now, against this pull request's own description and history."
+    else
+      restale_item="pr-${number}-approver-restale"
+      restale_source="approver-restale"
+      restale_acceptance="Recovery re-review (requirement 46, agent-ops#682): the Approver's own most recent CHANGES_REQUESTED review on this pull request no longer matches its current head — a commit was authored after that review was submitted, so real work happened, but no fresh Approver round ever reached GitHub (most likely the cycle that pushed it did not finish; see this repository's own Implementer prompt, 'Long-running commands'). Judge the diff as it stands now, against this pull request's own description and history."
+    fi
+    synthetic_wo="$(jq -nc --arg r "$slug" --arg i "$restale_item" --arg s "$restale_source" \
       --arg b "$branch" --arg t "$title" --arg acc "$restale_acceptance" \
-      '{repo: $r, item: $i, source: "approver-restale", branch: $b, title: $t, acceptance: $acc}')"
+      '{repo: $r, item: $i, source: $s, branch: $b, title: $t, acceptance: $acc}')"
     synthetic_impl="$(jq -nc --arg u "$pr_url" \
       --arg n "synthetic recovery summary (requirement 46, agent-ops#682) — the original Implementer round's own summary is not available to this recovery engagement" \
       '{status: "complete", pr_url: $u, notes: $n}')"
@@ -1118,21 +1135,123 @@ RESTALE_ESC_BODY
   fi
 }
 
+# _approver_sweep_claimed_pr_numbers SLUG
+# The fleet-wide claim registry's view of which pull requests in SLUG a node
+# currently holds (requirement 17a) — every live entry that names one at
+# all: a `pr-<n>` key's own item, an item-keyed `pr-<n>-<kind>-<scope>`
+# ref's leading number, or the `pr_number` recorded on any other claim.
+# Printed as a JSON array of numbers, `[]` when nothing named one. The
+# unreviewed trigger (agent-ops#890, acceptance criterion 4) reads this so
+# it never engages a pull request a peer's cycle is working right now —
+# unlike the other fleet-wide pull-request sweeps, which act without
+# consulting the claim at all (TD-PPagop-26082509; this function is the seam
+# they should move onto rather than a rule to re-derive). `claim.sh claims`
+# prints `[]` for an unreadable registry by its own contract, so an empty
+# answer here is advisory, not proof of absence — acceptable because the
+# registry is advisory by design (the claim's lock is the branch or file,
+# and the union-log engagement memory below is the second, fleet-wide guard
+# against a doubled engagement).
+_approver_sweep_claimed_pr_numbers() {
+  local slug="$1" out
+  out="$("$SCRIPT_DIR/lib/claim.sh" claims "$slug" 2>/dev/null)" || out='[]'
+  jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1 || out='[]'
+  jq -c '[.[] | (.pr_number // ((.item // "") | capture("^pr-(?<n>[0-9]+)(-|$)") | (.n | tonumber))?) | select(. != null)] | unique' \
+    <<<"$out" 2>/dev/null || printf '[]'
+}
+
+# approver_unreviewed_prior_engagement UNION_LOG PR_URL HEAD
+# The unreviewed trigger's own memory (requirement 46, agent-ops#890,
+# acceptance criterion 5), reduced from the fleet's union log the same way
+# `blocked_items` and its siblings are (lib/cycle-state.sh): every
+# `approver-unreviewed-engaged` event any node has logged for PR_URL at
+# exactly HEAD. Prints `FIRST_TS<TAB>LAST_RESULT` — when the first
+# engagement at this head happened, and how the most recent one ended
+# (`posted`/`unavailable`) — or nothing at all when no node has engaged this
+# head. Always exits 0: an unreadable or malformed union reads as "never
+# engaged", which re-engages rather than strands — the recoverable
+# direction, and the same one the sweep's own header already takes for a
+# listing it cannot read. Keyed on the head sha deliberately: a push makes
+# the pull request a genuinely new judgement, so its engagement count — and
+# the escalation clock below — start over with it.
+approver_unreviewed_prior_engagement() {
+  local union="$1" pr_url="$2" head="$3"
+  [[ -s "$union" ]] || return 0
+  jq -s -r --arg u "$pr_url" --arg h "$head" '
+    [.[] | select((.event // "") == "approver-unreviewed-engaged"
+                  and (.pr_url // "") == $u and (.head // "") == $h)]
+    | sort_by(.ts // "")
+    | if length == 0 then empty
+      else ((first.ts // "") + "\t" + (last.result // "")) end
+  ' "$union" 2>/dev/null || true
+  return 0
+}
+
+# _approver_unreviewed_escalate SLUG PR_URL NUMBER ITEM_REF FIRST_ENGAGED_AT
+# Requirement 46's unreviewed trigger, terminal state (agent-ops#890,
+# acceptance criterion 5): a ready pull request the sweep has been engaging
+# whose Approver review is still not standing once FIRST_ENGAGED_AT — the
+# first recovery engagement at the current head — is older than
+# `approver_restale_escalate_after_hours` is handed to a human instead of
+# being retried forever, through the same duplicate-guarded
+# `create_escalation_issue` (`enabler_assignee`) `_approver_restale_escalate`
+# above already uses, never a destination this function names itself (D18,
+# agent-ops#627/#679). ITEM_REF carries the head sha
+# (`pr-<n>-approver-unreviewed-<head>`), so a push after a human acts gets a
+# fresh escalation rather than colliding with the old one's.
+_approver_unreviewed_escalate() {
+  local slug="$1" pr_url="$2" number="$3" item_ref="$4" first_engaged_at="$5"
+  local body_file created
+
+  body_file="$cycle_dir/approver-unreviewed-escalation-${number}.md"
+  {
+    printf '## What the autonomous pipeline needs from you\n\n'
+    printf 'Review %s yourself — it is ready, raised by this pipeline, and carries no Approver review at all, and the recovery engagements the restale sweep has been arming for it are not producing one.\n\n' "$pr_url"
+    printf '## Why the pipeline is blocked\n\n'
+    printf "The cycle that owed this pull request its Approver round never delivered one (requirement 46's unreviewed trigger, agent-ops#890), and recovery engagements since %s have not left a standing review either — most likely the verdict's own GitHub write keeps failing. \`approver_restale_escalate_after_hours\` (%s h) has now passed since that first engagement.\n\n" \
+      "$first_engaged_at" "$approver_restale_escalate_after_hours"
+    cat <<UNREVIEWED_ESC_BODY
+## When you're done: close this issue
+
+Close this issue once you have looked at the pull request yourself — review
+and merge or close it, or fix whatever is refusing the Approver's own review
+writes and let the sweep pick it up again next cycle.
+
+---
+Item: \`$item_ref\` · pull request $pr_url
+Raised by the Approver restale sweep's unreviewed trigger (requirement 46, agent-ops#890) · cycle \`$cycle_id\` · node \`$node_name\`
+UNREVIEWED_ESC_BODY
+  } > "$body_file"
+
+  if created="$(create_escalation_issue "$slug" "$item_ref" \
+        "$enabler_escalation_label" \
+        "Ready pull request $pr_url has no Approver review, and recovery engagements are not producing one" \
+        "$body_file")" && [[ -n "$created" ]]; then
+    log_event "approver-unreviewed-escalated" "$(jq -nc --arg u "$pr_url" --arg r "$slug" \
+      --arg n "${created%%$'\t'*}" --arg iu "${created#*$'\t'}" \
+      '{pr_url: $u, repo: $r, issue_number: ($n | tonumber), issue_url: $iu}')"
+  else
+    log_event "warning" "$(jq -nc --arg u "$pr_url" \
+      --arg d "$pr_url is ready with no Approver review past the escalation threshold, and the escalation issue could not be filed — will retry next cycle" \
+      '{detail: $d, pr_url: $u}')"
+  fi
+}
+
 # _approver_restale_sweep_repo SLUG LOGIN
-# Requirement 46 (agent-ops#682): the fleet-wide sweep that keeps a pull
-# request from sitting silently behind the Approver's own stale
-# `CHANGES_REQUESTED` — the gap PR #621 fell into for 13.5 hours before a
-# human dismissed it by hand. Same shape as `_landing_retry_sweep_repo`
-# immediately above: skip a repository the kill switch or a freeze currently
-# holds at `human` before any further GitHub call, then walk every open,
-# non-draft, `pr_label` pull request whose `reviewDecision` is
-# `CHANGES_REQUESTED`.
+# Requirement 46: the fleet-wide sweep that keeps a pull request from
+# sitting silently with no live Approver position on it, under two triggers
+# sharing one listing. Same shape as `_landing_retry_sweep_repo` immediately
+# above: skip a repository the kill switch or a freeze currently holds at
+# `human` before any further GitHub call, then walk every open, non-draft,
+# `pr_label` pull request.
 #
-# The deterministic trigger (`approver_review_stale`, lib/approver.sh) is the
-# Approver's own standing review (`landing_approver_standing_review_at`, the
-# same fresh read `_landing_retry_sweep_repo` and `_landing_stage_attempt`'s
-# own gate 4 already make) carrying a `commit_id` that no longer matches the
-# pull request's current head — never GitHub's `requested_reviewers`, which
+# **Stale trigger** (agent-ops#682) — a `CHANGES_REQUESTED` pull request
+# whose Approver review has gone stale: the gap PR #621 fell into for 13.5
+# hours before a human dismissed it by hand. The deterministic trigger
+# (`approver_review_stale`, lib/approver.sh) is the Approver's own standing
+# review (`landing_approver_standing_review_at`, the same fresh read
+# `_landing_retry_sweep_repo` and `_landing_stage_attempt`'s own gate 4
+# already make) carrying a `commit_id` that no longer matches the pull
+# request's current head — never GitHub's `requested_reviewers`, which
 # silently no-ops for the Approver's own Bot identity (the exact failure
 # `prompts/implementer.md`'s review-feedback section already documents
 # best-effort around, and the reason this sweep exists at all rather than
@@ -1150,6 +1269,40 @@ RESTALE_ESC_BODY
 # action to judge — and is left alone until `approver_restale_escalate_after_
 # hours` hands it to a human instead (`_approver_restale_escalate`, criteria 3
 # and 4).
+#
+# **Unreviewed trigger** (agent-ops#890) — a ready pull request that carries
+# no Approver review at all: the gap PR #828 fell into for days, and #1049
+# and #1059 after it. Every other recovery path is keyed on an event or a
+# review state (`CHANGES_REQUESTED`, a conflict, a draft, a dequeue, failed
+# checks), so a cycle dying between the Reviewer's handoff and the Approver
+# — or an Approver verdict whose own GitHub write was refused, or the
+# stage's silent fail-closed skip — used to strand the pull request
+# permanently rather than for one cycle. This trigger is keyed on the
+# *state* instead, exactly as the issue's follow-up analysis asks, so all
+# three routes into the gap are recovered by the one path: open, non-draft,
+# `pr_label`, `reviewDecision` anything but `CHANGES_REQUESTED` (that one
+# belongs to the stale trigger above or to the review-feedback source), no
+# standing Approver review at all on the same fresh read the stale trigger
+# makes, and `createdAt` older than `approver_unreviewed_engage_after_hours`
+# — a ready pull request younger than that is ordinary in-flight work whose
+# own cycle's chained Approver stage is still the ordinary path. The
+# pipeline's own construction is what makes non-draft the handoff record
+# (acceptance criterion 3): an Implementer raises its pull request as a
+# draft — the draft *is* its claim marker — and only the Reviewer's handoff
+# readies it, so a mid-Reviewer pull request is still a draft and never a
+# candidate here. A peer working the pull request right now is excluded by
+# the fleet-wide `pr-<n>` claim (criterion 4, `_approver_sweep_claimed_pr_
+# numbers`), and the union-log engagement memory
+# (`approver_unreviewed_prior_engagement`) bounds the trigger (criterion 5):
+# one engagement per head — a `posted` verdict is never re-engaged (the
+# write's own retry machinery owns it from there), only an `unavailable` one
+# is retried — and once the first engagement at the current head is older
+# than `approver_restale_escalate_after_hours` with still no standing
+# review, `_approver_unreviewed_escalate` hands the pull request to a human
+# instead. Like every count the union log backs, the memory is approximate
+# across nodes for one propagation interval; the worst transient outcome is
+# a doubled engagement whose second review lands under the same App
+# identity, which GitHub folds into one standing position.
 _approver_restale_sweep_repo() {
   local slug="$1" login="$2"
   local level open
@@ -1158,7 +1311,7 @@ _approver_restale_sweep_repo() {
   [[ "$level" != "human" ]] || return 0
 
   open="$(gh pr list -R "$slug" --state open --label "$pr_label" \
-    --json number,url,headRefName,headRefOid,isDraft,reviewDecision,title,labels \
+    --json number,url,headRefName,headRefOid,isDraft,reviewDecision,title,labels,createdAt \
     --limit "$GITHUB_PR_LIST_LIMIT" 2>/dev/null || true)"
   jq -e 'type == "array"' <<<"$open" >/dev/null 2>&1 || open='[]'
   if github_pr_list_truncated "$(jq 'length' <<<"$open")"; then
@@ -1217,5 +1370,65 @@ _approver_restale_sweep_repo() {
       _approver_restale_escalate "$slug" "$pr_url" "$number" "$item_ref" "$review_at"
     fi
   done < <(jq -c '.[]' <<<"$candidates" 2>/dev/null || true)
+
+  # --- The unreviewed trigger (agent-ops#890) — see the header above. -------
+  local unreviewed engage_cutoff escalate_cutoff claimed_prs prior first_engaged_at last_result
+  engage_cutoff="$(date -u -d "${approver_unreviewed_engage_after_hours} hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+  [[ -n "$engage_cutoff" ]] || return 0
+  unreviewed="$(jq -c --arg cutoff "$engage_cutoff" '[.[] | select(.isDraft | not)
+    | select((.reviewDecision // "") != "CHANGES_REQUESTED")
+    | select((.createdAt // "") != "" and .createdAt < $cutoff)
+    | . + {complexity: ((.labels // []) | map(.name) | map(select(startswith("complexity:"))) | first // "" | sub("^complexity:";""))}
+    | {number, url, branch: .headRefName, head: (.headRefOid // ""), title, complexity}]' <<<"$open" 2>/dev/null || echo '[]')"
+  [[ "$(jq 'length' <<<"$unreviewed" 2>/dev/null || echo 0)" != "0" ]] || return 0
+
+  # One registry listing for the whole arm, taken only once a candidate
+  # exists to spend it on — the common cycle has none.
+  claimed_prs="$(_approver_sweep_claimed_pr_numbers "$slug")"
+
+  while IFS= read -r cand; do
+    [[ -n "$cand" ]] || continue
+    pr_url="$(jq -r '.url' <<<"$cand")"
+    branch="$(jq -r '.branch' <<<"$cand")"
+    number="$(jq -r '.number' <<<"$cand")"
+    head="$(jq -r '.head' <<<"$cand")"
+    title="$(jq -r '.title' <<<"$cand")"
+    complexity="$(jq -r '.complexity' <<<"$cand")"
+    [[ -n "$head" ]] || continue
+
+    # Acceptance criterion 4: a peer's cycle is working this pull request
+    # right now — its claim, not this sweep, owns the next engagement.
+    if jq -e --argjson n "$number" 'index($n) != null' <<<"$claimed_prs" >/dev/null 2>&1; then
+      continue
+    fi
+
+    # The same fresh read the stale trigger makes. Unreadable is skipped,
+    # never guessed at; any standing review at all — APPROVED is the
+    # requirement-8u sweep's business, CHANGES_REQUESTED the stale
+    # trigger's — means this is not the review-less stranding #890 names.
+    standing="$(landing_approver_standing_review_at "$slug" "$number" "$login" 2>/dev/null)" || continue
+    IFS=$'\t' read -r state review_at commit <<<"$standing"
+    [[ -z "$state" ]] || continue
+
+    prior="$(approver_unreviewed_prior_engagement "$union_log" "$pr_url" "$head")"
+    if [[ -n "$prior" ]]; then
+      IFS=$'\t' read -r first_engaged_at last_result <<<"$prior"
+      escalate_cutoff="$(date -u -d "${approver_restale_escalate_after_hours} hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+      if [[ -n "$escalate_cutoff" && -n "$first_engaged_at" && "$first_engaged_at" < "$escalate_cutoff" ]]; then
+        _approver_unreviewed_escalate "$slug" "$pr_url" "$number" \
+          "pr-${number}-approver-unreviewed-${head}" "$first_engaged_at"
+        continue
+      fi
+      # A verdict that was reached is never re-engaged from here: the review
+      # write's own retry machinery owns it now, and re-judging the same
+      # head would only spend a full engagement to reach the same verdict.
+      [[ "$last_result" != "posted" ]] || continue
+    fi
+
+    _approver_restale_review "$slug" "$pr_url" "$number" "$branch" "$complexity" "$title" unreviewed
+    log_event "approver-unreviewed-engaged" "$(jq -nc --arg u "$pr_url" --arg r "$slug" \
+      --arg h "$head" --arg res "$_approver_restale_review_result" \
+      '{pr_url: $u, repo: $r, head: $h, result: $res}')"
+  done < <(jq -c '.[]' <<<"$unreviewed" 2>/dev/null || true)
   return 0
 }
