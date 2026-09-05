@@ -305,13 +305,13 @@
       }
     },
     "log_retained_bytes": {
-      "description": "Size at which scripts/rotate-logs.sh rotates dashboard.log, state-sync.log, doctor.log, revert-rate.log, cron.log and review-cron.log. log.jsonl, review-log.jsonl and revert-rate.jsonl are never rotated regardless of size. Independent of `schedule.cycle_interval_minutes` (requirement 1d): rotation triggers on size, which self-corrects regardless of how often the log is written to.",
+      "description": "Size at which scripts/rotate-logs.sh rotates dashboard.log, state-sync.log, doctor.log, revert-rate.log, tech-debt-archive.log, cron.log and review-cron.log. log.jsonl, review-log.jsonl and revert-rate.jsonl are never rotated regardless of size. Independent of `schedule.cycle_interval_minutes` (requirement 1d): rotation triggers on size, which self-corrects regardless of how often the log is written to.",
       "type": "integer",
       "minimum": 1,
       "default": 2000000,
       "x-docs": {
-        "readme": "Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `doctor.log`, `revert-rate.log`, `cron.log` and `review-cron.log`. `log.jsonl`, `review-log.jsonl` and `revert-rate.jsonl` are never rotated.",
-        "spec": "Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `doctor.log`, `revert-rate.log`, `cron.log` and `review-cron.log` (requirement 2.6). `log.jsonl`, `review-log.jsonl` and `revert-rate.jsonl` are never rotated regardless of size. `ROTATE_LOGS_RETAINED_BYTES` overrides it for tests."
+        "readme": "Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `doctor.log`, `revert-rate.log`, `tech-debt-archive.log`, `cron.log` and `review-cron.log`. `log.jsonl`, `review-log.jsonl` and `revert-rate.jsonl` are never rotated.",
+        "spec": "Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `doctor.log`, `revert-rate.log`, `tech-debt-archive.log`, `cron.log` and `review-cron.log` (requirement 2.6). `log.jsonl`, `review-log.jsonl` and `revert-rate.jsonl` are never rotated regardless of size. `ROTATE_LOGS_RETAINED_BYTES` overrides it for tests."
       }
     },
     "log_generations": {
@@ -1533,6 +1533,28 @@
           "x-docs": {
             "readme": "Minutes past `CYCLE_MINUTE` (mod 60) the daily revert-rate publishing tick's minute is set to (agent-ops#579), on the same per-node jitter `doctor_offset_minutes` uses.",
             "spec": "Minutes past `CYCLE_MINUTE` (mod 60) the daily revert-rate publishing tick's minute is set to, jittering it across the fleet the same way `doctor_offset_minutes` jitters the unattended doctor pass."
+          }
+        },
+        "tech_debt_archive_hour": {
+          "description": "The hour the daily tech-debt archive publishing tick (scripts/publish-tech-debt-archive.sh) fires.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 23,
+          "default": 4,
+          "x-docs": {
+            "readme": "The hour the containerised node's daily tech-debt archive publishing tick (`scripts/publish-tech-debt-archive.sh`, agent-ops#878) fires.",
+            "spec": "The hour the daily tech-debt archive publishing tick fires."
+          }
+        },
+        "tech_debt_archive_offset_minutes": {
+          "description": "Minutes past the node's cycle minute (mod 60) the daily tech-debt archive publishing tick's minute is set to, jittering it across the fleet the same way revert_rate_offset_minutes jitters the revert-rate publish.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 59,
+          "default": 37,
+          "x-docs": {
+            "readme": "Minutes past `CYCLE_MINUTE` (mod 60) the daily tech-debt archive publishing tick's minute is set to (agent-ops#878), on the same per-node jitter `revert_rate_offset_minutes` uses.",
+            "spec": "Minutes past `CYCLE_MINUTE` (mod 60) the daily tech-debt archive publishing tick's minute is set to, jittering it across the fleet the same way `revert_rate_offset_minutes` jitters the revert-rate publish."
           }
         }
       }

@@ -232,6 +232,13 @@ EXCLUDES=(
   # a peer would read, so it stays local on the same reasoning as
   # .doctor-status.json above.
   --exclude=revert-rate-cumulative-state.json
+  # tech-debt-archive.log (scripts/publish-tech-debt-archive.sh, agent-
+  # ops#878): the daily pass's own text output, local to this node on the
+  # same reasoning as doctor.log above — unlike revert-rate.log, it has no
+  # structured sibling at all, since what it publishes lands in the state
+  # repository's own `tech-debt-archive/` tree directly, not in a local
+  # file this replication would otherwise need to carry.
+  --exclude=tech-debt-archive.log
   --exclude=.dashboard-github.json
   --exclude=.dashboard-tick-cost
   --exclude=.dashboard-payload

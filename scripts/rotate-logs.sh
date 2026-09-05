@@ -13,8 +13,8 @@
 # not interchangeable:
 #
 #   dashboard.log, state-sync.log,  pure diagnostics, excluded from the
-#   doctor.log, revert-rate.log    state branch (scripts/state-sync.sh) —
-#                                   safe to rotate on size alone. doctor.log
+#   doctor.log, revert-rate.log,   state branch (scripts/state-sync.sh) —
+#   tech-debt-archive.log          safe to rotate on size alone. doctor.log
 #                                   is the hourly `doctor.sh --unattended`
 #                                   pass's own text output (agent-ops#543);
 #                                   the dashboard reads the structured
@@ -26,7 +26,14 @@
 #                                   role doctor.log plays for `doctor.sh
 #                                   --unattended`: the dashboard reads the
 #                                   structured revert-rate.jsonl beside it,
-#                                   not this file.
+#                                   not this file. tech-debt-archive.log is
+#                                   the daily `publish-tech-debt-archive.sh`
+#                                   pass's own text output (agent-ops#878) —
+#                                   this one has no structured local
+#                                   counterpart at all, since what it
+#                                   publishes lands in the state repository
+#                                   itself (`tech-debt-archive/`), not in a
+#                                   local file beside this log.
 #   cron.log, review-cron.log       published to the node's state branch, so
 #                                   bounding them here also bounds the
 #                                   mirror. scripts/publish-dashboard.sh
@@ -109,7 +116,7 @@ generations="${ROTATE_LOGS_GENERATIONS:-$(cfg '.log_generations')}"
 
 # The logs this script owns. log.jsonl, review-log.jsonl and
 # revert-rate.jsonl are deliberately absent — see the file header.
-LOGS=(dashboard.log state-sync.log doctor.log revert-rate.log cron.log review-cron.log gh-shim/ledger.ndjson)
+LOGS=(dashboard.log state-sync.log doctor.log revert-rate.log tech-debt-archive.log cron.log review-cron.log gh-shim/ledger.ndjson)
 
 file_size() {
   stat -c%s -- "$1" 2>/dev/null || stat -f%z -- "$1" 2>/dev/null || echo 0
