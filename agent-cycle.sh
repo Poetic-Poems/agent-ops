@@ -2765,7 +2765,9 @@ else
 fi
 # shellcheck disable=SC2154  # stage_kill_reason/stage_gaps_json: run_claude_stage (lib/stage-run.sh) assigns both.
 log_event "stage-end" "$(jq -nc --argjson rc "$impl_rc" --arg kr "$stage_kill_reason" --argjson m "$(metering_fields "$impl_model" "$impl_out" "$stage_gaps_json")" \
-  '{stage: "implementer", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m')"
+  --arg r "$selected_repo" --arg i "$selected_item" \
+  '{stage: "implementer", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m
+   + (if $r == "" then {} else {repo: $r} end) + (if $i == "" then {} else {item: $i} end)')"
 rework_stage_rerun_maybe "implementer" "$stage_kill_reason" "$selected_repo" "$selected_item"
 # `if`, not `&&`: an empty warning is the common case, and a trailing
 # `&&` whose test fails is a non-zero status at exactly the place
@@ -3039,7 +3041,9 @@ else
 fi
 # shellcheck disable=SC2154  # stage_kill_reason/stage_gaps_json: run_claude_stage (lib/stage-run.sh) assigns both.
 log_event "stage-end" "$(jq -nc --argjson rc "$rev_rc" --arg kr "$stage_kill_reason" --argjson m "$(metering_fields "$rev_model" "$rev_out" "$stage_gaps_json")" \
-  '{stage: "reviewer", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m')"
+  --arg r "$selected_repo" --arg i "$selected_item" \
+  '{stage: "reviewer", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m
+   + (if $r == "" then {} else {repo: $r} end) + (if $i == "" then {} else {item: $i} end)')"
 rework_stage_rerun_maybe "reviewer" "$stage_kill_reason" "$selected_repo" "$selected_item" "$impl_pr_url"
 # `if`, not `&&`: an empty warning is the common case, and a trailing
 # `&&` whose test fails is a non-zero status at exactly the place

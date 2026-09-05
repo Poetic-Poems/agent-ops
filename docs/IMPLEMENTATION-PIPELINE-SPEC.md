@@ -21902,7 +21902,10 @@ pull request, run the ones the change touches and any it could regress.
     knows both and omitted, never `null`, otherwise — is pinned at each
     producing site by lifting the real code: `test/stage-budget-apply-join-
     key.test.sh` (`stage-start`, including the fleet-wide-REPO omission
-    case), `test/pr-raised-join-key.test.sh`, `test/checks-green-join-
+    case), `test/stage-end-join-key.test.sh` (`agent-cycle.sh`'s own two
+    item-scoped `stage-end` sites, the Implementer's and the Reviewer's,
+    which `stage_budget_apply` does not write and the test above therefore
+    does not reach), `test/pr-raised-join-key.test.sh`, `test/checks-green-join-
     key.test.sh` (`checks-green` and `review-gate-checks-read`, both call
     sites of each), `test/standdown-sweep-join-key.test.sh`
     (`issue-closed-post-merge` and `merge-observed` as wired from

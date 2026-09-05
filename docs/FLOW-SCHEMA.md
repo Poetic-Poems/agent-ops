@@ -441,8 +441,9 @@ above and the item lifecycle record above — on the same terms:
 
 - **Produced:** the join key, `{repo, item}`, added at each of the sites
   named in "The item lifecycle record" above — `agent-cycle.sh`'s
-  `stage_budget_apply` (`stage-start`) and its four `stage-end`/`pr-raised`/
-  `pr-ready`/`review-gate-checks-read` sites, `lib/approver.sh`'s own
+  `stage_budget_apply` (`stage-start`) and its own `stage-end` (the
+  Implementer's and the Reviewer's), `pr-raised`, `pr-ready` and
+  `review-gate-checks-read` sites, `lib/approver.sh`'s own
   `stage-end`/`approver-verdict`, `lib/enabler.sh`'s `stage-end` (its two
   per-item adjudication sites) and its own copies of `pr-ready`/
   `review-gate-checks-read`, `lib/landing.sh`'s `landing-armed`/
@@ -495,8 +496,11 @@ rather than aborting. `test/pickup-metrics.test.sh` covers
 `scripts/pickup-metrics.sh` end to end. The join key itself is asserted at
 each producing site directly, lifting the real code the same way
 `test/rework-record.test.sh`'s own detector reductions do:
-`test/stage-budget-apply-join-key.test.sh`, `test/pr-raised-join-key.test.sh`,
-`test/checks-green-join-key.test.sh`, `test/standdown-sweep-join-key.test.sh`,
+`test/stage-budget-apply-join-key.test.sh` (`stage-start`),
+`test/stage-end-join-key.test.sh` (`agent-cycle.sh`'s own two item-scoped
+`stage-end` sites, which `stage_budget_apply` does not write),
+`test/pr-raised-join-key.test.sh`, `test/checks-green-join-key.test.sh`,
+`test/standdown-sweep-join-key.test.sh`,
 and dedicated assertions folded into `test/landing-wiring.test.sh`,
 `test/landing-retry-sweep.test.sh`, `test/approver-wiring.test.sh`,
 `test/human-reviewer-handoff-wiring.test.sh` and
