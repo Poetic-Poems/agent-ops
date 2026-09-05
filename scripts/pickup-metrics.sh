@@ -71,6 +71,13 @@ SCHEMA_FILE="$SCRIPT_DIR/config.schema.json"
 . "$SCRIPT_DIR/lib/config-schema.sh"
 # shellcheck source=lib/fleet.sh
 . "$SCRIPT_DIR/lib/fleet.sh"
+# shellcheck source=lib/item-lifecycle.sh
+# `item_lifecycle_pickup_pairs` (requirement 49, issue #595) is this script's
+# own first-seen/selection pairing, generalised onto the shared item-lifecycle
+# fold rather than duplicated — see that function's own header. This script's
+# CLI contract, output field names and this file's own test all stay
+# unchanged; only where the pairing/coverage figures are computed moved.
+. "$SCRIPT_DIR/lib/item-lifecycle.sh"
 
 usage() {
   cat <<'EOF'
@@ -153,48 +160,23 @@ fi
 cadence_bound_minutes="$(cfg '.schedule.cycle_interval_minutes')"
 [[ "$cadence_bound_minutes" =~ ^[0-9]+$ ]] || cadence_bound_minutes=null
 
-fleet_logs "$state_dir" "$peers_dir" log.jsonl \
-  | jq -c -R 'fromjson? // empty' \
-  | jq -s --arg since "$since" --argjson cadence "$cadence_bound_minutes" '
+# The log travels through a temp file, read twice below: once for this
+# script's own before/after-era reduction (unrelated to the item lifecycle —
+# `chained`/`claim-lost` streaks), and once for `item_lifecycle_pickup_pairs`'
+# shared first-seen/selection pairing (requirement 49, issue #595). A pipe
+# can only be drained once; a file can be read as many times as a caller
+# needs.
+log_tmp="$(mktemp)"
+trap 'rm -f "$log_tmp"' EXIT
+fleet_logs "$state_dir" "$peers_dir" log.jsonl > "$log_tmp"
+
+pairs_json="$(item_lifecycle_pickup_pairs "$since" "$log_tmp")"
+
+jq -c -R 'fromjson? // empty' "$log_tmp" \
+  | jq -s --arg since "$since" --argjson cadence "$cadence_bound_minutes" --argjson pairs "$pairs_json" '
       def era($fc; $node; $ts):
         if $fc[$node] and $ts >= $fc[$node] then "after" else "before" end;
       def ratio($c; $s): (if $s == 0 then null else ($c / $s) end);
-      # Linear-interpolation percentile over a numeric array, null on empty —
-      # same "null rather than a divide-by-zero guess" convention as ratio.
-      def percentile($p; $arr):
-        ($arr | sort) as $s
-        | ($s | length) as $n
-        | if $n == 0 then null
-          else
-            (($n - 1) * $p) as $idx
-            | ($idx | floor) as $lo
-            | ($idx | ceil) as $hi
-            | if $lo == $hi then $s[$lo]
-              else $s[$lo] + ($idx - $lo) * ($s[$hi] - $s[$lo])
-              end
-          end;
-      def latency_stats($arr):
-        {count: ($arr | length), median_seconds: percentile(0.5; $arr), p90_seconds: percentile(0.9; $arr)};
-      # The {repo, item} pair as one "|"-joined key, the same shape the
-      # extracts in lib/cycle-state.sh group on. `item` is coerced with
-      # `tostring` rather than concatenated raw because the fleet log is
-      # never rotated (scripts/rotate-logs.sh keeps log.jsonl whole
-      # deliberately), so it still holds `selection` events from before
-      # scripts/gather-issues.sh minted its `ref` as `(.number | tostring)` —
-      # those carry a *numeric* `item`, and `"repo" + "|" + 45` is a jq type
-      # error that would abort the whole report rather than skip one line.
-      # Coercing also unifies the two shapes onto one key, which is what we
-      # want: issue 45 and issue "45" are the same item.
-      def item_key: ((.repo // "") | tostring) + "|" + ((.item // "") | tostring);
-      # A record this report can key on at all: both halves present and
-      # non-empty once stringified.
-      def keyed($e):
-        select(.event == $e
-               and (((.repo // "") | tostring) != "")
-               and (((.item // "") | tostring) != ""));
-      # first-wins: the earliest-ts record for each {repo, item} pair.
-      def first_per_key:
-        group_by(item_key) | map(sort_by(.ts) | first);
 
       map(select(type == "object")) as $all
       | ($all
@@ -218,33 +200,6 @@ fleet_logs "$state_dir" "$peers_dir" log.jsonl \
       | (reduce $sel_eras[]  as $e ({before: 0, after: 0}; .[$e] += 1)) as $sel
       | (reduce $cont_eras[] as $e ({before: 0, after: 0}; .[$e] += 1)) as $cont
 
-      | ($ev | map(keyed("first-seen")) | first_per_key) as $fs_list
-      | ($ev | map(keyed("selection"))  | first_per_key) as $sel_list
-      | ($fs_list  | map({key: item_key, value: .}) | from_entries) as $fs_by_key
-      | ($sel_list | map({key: item_key, value: .}) | from_entries) as $sel_by_key
-      | ($fs_list  | map(item_key)) as $fs_keys
-      | ($sel_list | map(item_key)) as $sel_keys
-      | ([$fs_keys[]  | select(. as $k | $sel_by_key | has($k))])         as $paired_keys
-      | ([$fs_keys[]  | select(. as $k | ($sel_by_key | has($k)) | not)]) as $fs_only_keys
-      | ([$sel_keys[] | select(. as $k | ($fs_by_key  | has($k)) | not)]) as $sel_only_keys
-      | ($paired_keys | map(
-           $fs_by_key[.] as $fs | $sel_by_key[.] as $sel
-           | {node: $sel.node, bootstrap: ($fs.bootstrap // false),
-              latency_seconds: (($sel.ts | fromdateiso8601) - ($fs.ts | fromdateiso8601))}
-         )) as $paired
-      | ($paired | map(select(.bootstrap | not))) as $measured
-      | ($paired | map(select(.bootstrap)) | length) as $bootstrap_excluded_count
-      # `by_node` is keyed on the claiming node, so a paired item whose
-      # `selection` carries no `node` — the same never-rotated legacy events
-      # `item_key` accommodates above — has no bucket to go in, and a null
-      # object key is another whole-report jq error. Such a pair still counts
-      # fleet-wide, where its latency is just as valid; only the attribution
-      # is missing, and `.fleet.count` minus the summed `.by_node` counts is
-      # how many.
-      | ($measured | map(select(((.node // "") | tostring) != "")) | group_by(.node)
-           | map({key: .[0].node, value: (map(.latency_seconds) | latency_stats(.))})
-           | from_entries) as $by_node
-
       | {
           since: (if $since == "" then null else $since end),
           window: {
@@ -261,16 +216,6 @@ fleet_logs "$state_dir" "$peers_dir" log.jsonl \
             selections: $sel.after,
             contended_losses: $cont.after,
             ratio: ratio($cont.after; $sel.after)
-          },
-          coverage: {
-            paired: ($paired_keys | length),
-            first_seen_only: ($fs_only_keys | length),
-            selection_only: ($sel_only_keys | length)
-          },
-          pickup_latency: {
-            bootstrap_excluded_count: $bootstrap_excluded_count,
-            fleet: ($measured | map(.latency_seconds) | latency_stats(.)),
-            by_node: $by_node
           }
-        }
+        } + $pairs
     '

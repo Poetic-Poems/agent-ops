@@ -1,39 +1,54 @@
 # Flow schema — as-built specification
 
-Sibling to `docs/METERING-SCHEMA.md` (requirement 47 of
+Sibling to `docs/METERING-SCHEMA.md` (requirements 47 and 49 of
 `docs/IMPLEMENTATION-PIPELINE-SPEC.md`), under the same stability policy.
 Where that document is the field-by-field contract for what a stage *spent*,
-this one is the contract for the **rework record** — D23 of `docs/ROADMAP.md`,
-the pipeline's account of repetition: work that reruns, bounces back, or is
-duplicated, without producing anything that did not already exist. Like its
-companion this document is as-built: it describes the record that exists
-today, not a plan for one that will exist later. Where it says "requirement
-N", it means requirement N of `docs/IMPLEMENTATION-PIPELINE-SPEC.md`.
+this one is the contract for D21/D23 of `docs/ROADMAP.md`'s **flow-and-outcome**
+records — two of them, each its own major section below:
 
-D21's flow-and-outcome contract also names a second record — the **item
-lifecycle**, one durable entry per work item from first sighting to terminal
-fate (issue #595). That record does not exist yet; whichever of this document
-or a lifecycle-record document lands first is where the other's requirement
-names it landing. Nothing below depends on the lifecycle record existing.
+- **The rework record** (requirement 47, issue #596) — the pipeline's account
+  of repetition: work that reruns, bounces back, or is duplicated, without
+  producing anything that did not already exist.
+- **The item lifecycle record** (requirement 49, issue #595) — one durable
+  entry per work item, folded from the union log's own item-scoped events,
+  from first sighting to an explicit terminal fate.
+
+Like its companion this document is as-built: it describes the records that
+exist today, not a plan for ones that will exist later. Where it says
+"requirement N", it means requirement N of
+`docs/IMPLEMENTATION-PIPELINE-SPEC.md`.
 
 ## What this covers
 
-One thing: the **rework record**, one entry per repetition, emitted by the
-detector that already exists for it, the instant it fires. Never emitted from
-a later scan of the transcripts, and never from a model asked to classify what
-happened — a repetition's class, its detector and its evidence are facts a
-script already has in hand at the moment the repetition occurs; recording them
-then is the entire difference between an account and a guess. A
-`CHANGES_REQUESTED` review round and a stage re-run after a kill both look
-like "two Implementer passes" to anything reading the transcripts afterwards,
-and they have nothing in common but the cost — which is exactly why each
-class's own detector, not a shared heuristic, is what fires the record.
+Two things, each a durable account built from facts already in hand at the
+moment they happen — never from a later scan of the transcripts, and never
+from a model asked to classify what happened:
 
-**A repetition carries no judgement.** D23 is explicit that rework is never a
-target of zero: a Reviewer catching a defect before a human does is the
-system working, not failing. The record below carries no severity field and
-nothing a reader could mistake for a verdict — only what happened, where, and
-(when the evidence says so) which stage it is attributed to.
+- **The rework record**, one entry per repetition, emitted by the detector
+  that already exists for it, the instant it fires. A repetition's class, its
+  detector and its evidence are facts a script already has in hand at the
+  moment the repetition occurs; recording them then is the entire difference
+  between an account and a guess. A `CHANGES_REQUESTED` review round and a
+  stage re-run after a kill both look like "two Implementer passes" to
+  anything reading the transcripts afterwards, and they have nothing in
+  common but the cost — which is exactly why each class's own detector, not a
+  shared heuristic, is what fires the record.
+
+  **A repetition carries no judgement.** D23 is explicit that rework is never
+  a target of zero: a Reviewer catching a defect before a human does is the
+  system working, not failing. The record carries no severity field and
+  nothing a reader could mistake for a verdict — only what happened, where,
+  and (when the evidence says so) which stage it is attributed to.
+
+- **The item lifecycle record**, one entry per work item, *derived* rather
+  than emitted: a read-only fold (`lib/item-lifecycle.sh`, behind
+  `scripts/item-lifecycle.sh`) over instants that already exist as ordinary
+  events in the union log — the join key this document's own "Item lifecycle
+  record" section below adds to the ones that lacked it, plus the two genuine
+  gaps (`checks-green`, and a `merge-observed` at every point this pipeline
+  can observe a merge) nothing emitted before requirement 49. The fold itself
+  writes nothing back to the log; it only reads what happened and assigns
+  each item the terminal fate its own evidence supports.
 
 ## The rework record
 
@@ -237,21 +252,195 @@ et al., `docs/METERING-SCHEMA.md`) already reduces over the union rather than
 per-node. This document defines the record only; computing a rate from it —
 the rework panel — is D23's Phase 2, out of this document's scope.
 
+## The item lifecycle record
+
+D21's flow account (`docs/ROADMAP.md`) states the invariant this record
+exists to make checkable: **every work item carries a lifecycle from first
+sighting to terminal fate, and items entering equals items leaving plus work
+in progress** — a count, a token or an item that cannot be classified lands
+in an explicit `unaccounted` bucket and is never dropped. Requirement 49
+implements it: one record per `{repo, item}`, folded from the union log by
+`lib/item-lifecycle.sh`'s `item_lifecycle_fold` (behind the read-only
+`scripts/item-lifecycle.sh`), never a second event stream — the record is
+*derived*, not emitted, so it costs nothing to keep accumulating history from
+the moment this document lands, and it can be recomputed from scratch at any
+time against whatever of the log survives.
+
+Most of the instants this record accumulates already existed as scattered
+facts before requirement 49 — the roadmap's own list is `first-seen`,
+refinement, `selection`, stage starts and ends, `pr-raised`, checks green,
+review verdict, `pr-ready`, landing, and the item closed. What was missing
+was narrower than that list suggests:
+
+1. **The join key.** Several of those events carried a pull request or a
+   stage name but not `{repo, item}` — `stage-start`, `stage-end`,
+   `pr-raised`, `pr-ready`, `landing-armed`, `landing-refused`,
+   `approver-verdict`, `review-gate-checks-read` and `issue-closed-post-merge`
+   now all carry it, additive and non-breaking, whenever the emitting site
+   knows both. A stage that runs ahead of or across selection — the
+   Co-Ordinator, the Enabler's and the Refiner's own top-level engagement —
+   still carries neither: it has no one item to name (see each site's own
+   comment). `review-gate-checks-degraded` is deliberately **not** one of
+   these: it is a streak escalation over a run of consecutive per-node
+   failures that can span several different items, so naming one item on it
+   would misattribute the others'.
+2. **Checks green.** `review-gate-checks-read`'s own `ok` field has always
+   named whether the required-checks *read* succeeded, never whether what it
+   found was clean — a genuinely dirty gate and an unreadable one both left
+   no positive record that checks had actually gone green. A `checks-green`
+   event now fires at both sites that reach `handoff_complete_review`'s gate
+   (the Reviewer's own handoff in `agent-cycle.sh`, and the Enabler's
+   `complete_handoff` recovery path in `lib/enabler.sh`) the moment its
+   `gate.word` reads `"clean"` — the first point in the pipeline that fact is
+   knowable at all.
+3. **The merge itself.** Nothing emitted an event for a pull request actually
+   merging; `scripts/mine-merge-history.sh` only reconstructs it after the
+   fact from the GitHub API, over every merged pull request back to the
+   repository's own beginning, keyed by pull request rather than by item — a
+   miner and a Stage 0 autonomy baseline (#404/D18 §6) requirement 49 leaves
+   untouched. A `merge-observed` event (`lib/merge-observed.sh`, requirement
+   32c) now fires at every point this pipeline can observe a merge as it
+   happens: the Reviewer's own mid-pass reads (`reviewer_merge_observed`, at
+   its stage-start and its handoff, agent-ops#916), `lib/landing.sh`'s own arm
+   site (a synchronous merge the no-queue auto-merge fallback sometimes
+   performs directly — see that file's own header on the distinction, and
+   `pr_merge_state`'s read confirming which one just happened rather than
+   assuming from the arm method alone), and `scripts/sweep-closed-issues.sh`'s
+   own periodic sweep (a catch-all: it already lists every merged,
+   `pr_label`-labelled pull request fleet-wide, every stand-down, whether the
+   pipeline armed it, a human clicked merge, or GitHub's merge queue resolved
+   it well after any other site last looked). The sweep's own emission is
+   bounded and de-duplicated per node against a small seen-file — see its own
+   header for why a pull request re-emits nothing once it ages out of the
+   window it lists.
+
+### Identity and instants
+
+| Field | Meaning |
+| --- | --- |
+| `repo` | The item's own repository slug. |
+| `item` | The item's own reference — a bare issue number, a finishing source's own id (`pr-<n>-abandoned-…` and siblings), a review recommendation ref, or a register-hygiene/human-visibility ref. Always paired with `repo`: an id is only unique within its own repository (`lib/cycle-state.sh`'s own header gives the reason — both repositories carry a `dependabot-alert-1`). |
+| `source` | The most recent `selection` event's own `.source` for this item, or `null` if the item was never selected (a `first-seen` with no claim yet, or an item this fold only knows from a non-`selection` event such as `orphan-branch-released`). |
+| `first_seen` | The earliest `first-seen` event's own `ts` for this item, or `null` if none was ever logged (a finishing-source item, whose branch and pull request already exist before any cycle "discovers" it the way `first-seen` means). |
+| `instants` | Every event this fold found for the item, in timestamp order: `{event, ts, node, cycle, fields}`, where `fields` is that event's own payload minus `repo`/`item`/`event`/`ts`/`node`/`cycle` — the originating event and everything it carried, exactly as logged, never summarised or re-derived. |
+| `fate` | One of the six values below, or `unaccounted` — the one case that sits outside their priority order rather than inside it. |
+
+### Terminal fates
+
+Assigned by one strict priority — each rule checked only once every rule
+ahead of it has failed to match — over the item's own whole event history,
+which under `--since` is wider than the `instants` this run reports (see the
+window caveat below), reusing
+`lib/cycle-state.sh`'s existing `void_items`/`blocked_items`/
+`draft_obsolete_flags` extracts for the set/clear resolution rather than
+re-deriving that logic a second time (the drift requirement 34a already
+warns against, generalised here to a third reader):
+
+| Fate | Rule |
+| --- | --- |
+| `landed` | A `merge-observed` or `issue-closed-post-merge` event exists for this item. The strongest possible evidence — a real merge was observed — outranks every other mark, including a stale void. |
+| `voided` | `void_items` still carries this pair: the latest `item-void` has no later `unvoided`. |
+| `superseded` | An `orphan-branch-released {reason: "superseded"}` event resolves to this item. That event carries no `item` field of its own — `scripts/sweep-orphan-branches.sh` is not one of the sites requirement 49 touches — so the fold resolves one the same way `scripts/sweep-closed-issues.sh` already does: a head branch of exactly `agent/<N>`, the name this pipeline mints only for an issue- or tech-debt-sourced work order. A branch that does not match that shape names no item this fold can key on, and is silently excluded from consideration — never guessed at. |
+| `blocked` | `blocked_items` still carries this pair: the latest `attempt-failed` has no later `unblocked`. A currently-blocked item is demonstrably still in the system, which outranks the merely uncorroborated intent `abandoned` records below. |
+| `abandoned` | A `draft-obsolete-flagged` event exists for this item: the pipeline's own recorded intent to abandon a draft (design doc §5.5, issue #413, WI-10), pending the human corroboration (the `obsolete` label, `lib/void-guard.sh`) that would otherwise retire it as `voided` on a later fold. A standing block is stronger evidence than this uncorroborated intent, hence ranked below it. |
+| `open` | None of the above: the item has entered (some event names it) but nothing yet says it has left. |
+
+One case sits outside this priority order rather than inside it:
+**`unaccounted`**. An item is `unaccounted`, not `landed`, when it is *also*
+void *and* that void's own `ts` is later than the earliest landing evidence —
+a human or the Enabler recorded "no work exists" for an item that, on the
+log's own evidence, had already merged. The fold does not resolve that
+contradiction by guessing which side is right; it surfaces the item, and the
+reason, in `unaccounted[]` — the same discipline D21 states for the flow
+account generally. The mirror-image order — a void recorded *before* the
+merge that follows it — is not a contradiction: the void was simply wrong,
+and the later merge is the stronger evidence, so `landed` wins outright. An
+`unaccounted` item still appears in `records[]` with `fate: "unaccounted"`,
+exactly as every other item does; `unaccounted[]` is a convenience projection
+of the same records carrying the reason, never a second population.
+
+### The flow invariant
+
+`totals.balanced` states, and `test/item-lifecycle.test.sh` asserts on a
+fixture built to exercise every fate at once, that `entered` (every distinct
+`{repo, item}` pair with any event) equals `leaving` (`landed` + `voided` +
+`superseded` + `abandoned`) plus `in_progress` (`blocked` + `open`) plus
+`unaccounted`. This holds by construction — fate is a total function over the
+entered set into exactly one of seven buckets — and is computed and printed
+rather than merely asserted in prose: a future change that lets an item fall
+through every rule above, or match two, is exactly the defect this field
+exists to catch.
+
+### The window caveat
+
+`window.from`/`window.to` name the earliest and latest timestamp this run
+actually read, bounded by `--since` and by whatever the union log currently
+holds. `log.jsonl` is **never rotated** (`scripts/rotate-logs.sh`'s own
+header: "NEVER rotated — this is the fleet's memory") — unlike the metering
+schema's own roll-ups, which are bounded by `log_retained_bytes`, this
+record's only real bound is how far back this pipeline's own logging began,
+not a retention limit. That is still a bound worth stating: a fleet whose
+`state_dir` was reset, or whose oldest node joined after this record's own
+instants started emitting, reads a shorter history than the pipeline's true
+age, and `window.from` is how a reader tells the difference between "nothing
+happened before this" and "nothing was recorded before this."
+
+**`--since` bounds the population, never the fate.** Which items appear in
+`records[]` at all is decided by whether an item has any event at or after
+`--since` — an item with no such event is simply absent, exactly as if it
+had never entered. An item that *does* appear, though, is resolved to its
+true current fate from the whole log, regardless of `--since`: `voided`,
+`blocked` and `abandoned` are read off `void_items`/`blocked_items`/
+`draft_obsolete_flags`, each already computed from the unfiltered log, and
+`landed`/`superseded` are read the same way, off the item's own full event
+history rather than only the events inside the window. So an item entering
+the population on the strength of one recent event still reports the fate
+its full history supports — an older merge, an older void, an older block —
+never the weaker fate a truncated view of the same item would otherwise
+produce. Put another way: **fate is current state; `--since` bounds only the
+population**, not "fate is whatever the window alone can see." `instants`,
+`first_seen` and `source` are the one place the window still shows through —
+they answer "what did this run see for this item," not "everything this item
+ever did," so a reader wanting the item's full history reads `fate` and
+re-runs with an earlier `--since` for the rest.
+
+### Generalising, not duplicating: `scripts/pickup-metrics.sh`
+
+`scripts/pickup-metrics.sh` already paired `first-seen` with `selection` for
+pickup-latency accounting (TD-PPagop-26081405, issue #248 acceptance 4)
+before this record existed. That pairing is now `lib/item-lifecycle.sh`'s own
+`item_lifecycle_pickup_pairs` — the identical reduction, moved rather than
+rewritten — and `pickup-metrics.sh` calls it instead of carrying a second
+copy. Its CLI contract, output field names and its own test
+(`test/pickup-metrics.test.sh`) are unchanged; only where the computation
+lives moved. `scripts/mine-merge-history.sh` is explicitly **not**
+generalised the same way (escalation #827): it is a GitHub-API miner and a
+Stage 0 autonomy baseline, keyed by pull request rather than by item, reading
+no event log at all — its population, its key, its `--since` semantics and
+its own tests all stay exactly as they are.
+
 ## Stability policy
 
 Identical to `docs/METERING-SCHEMA.md`'s own, restated here rather than
 merely referenced because this is a contract other code will depend on the
-same way:
+same way. It binds both records this document defines — the rework record
+above and the item lifecycle record above — on the same terms:
 
-- **Additive, non-breaking:** a new field on the record; a tenth class; a new
-  detector site for an existing class; a new `attributed_stage` value.
+- **Additive, non-breaking:** a new field on either record; a tenth rework
+  class; a new detector site for an existing rework class; a new
+  `attributed_stage` value; a new item-lifecycle instant; a new terminal
+  fate; `{repo, item}` added to a further event.
 - **Breaking, and must land in the same pull request as the code that makes
   it (`CLAUDE.md`, "As-built specifications"):** renaming or removing a
-  field; changing `class`'s or `attributed_stage`'s meaning for an existing
-  value; changing what a class's `evidence` carries in a way an existing
-  reader could misread as the old shape.
+  field on either record; changing `class`'s or `attributed_stage`'s meaning
+  for an existing rework value; changing what a rework class's `evidence`
+  carries in a way an existing reader could misread as the old shape;
+  changing an existing fate's own assignment rule; changing the fate
+  priority order.
 
 ## Where it's produced and consumed
+
+**The rework record:**
 
 - **Produced:** `lib/rework.sh`'s `rework_fields`, called from each class's
   own site above — `agent-cycle.sh` and the libraries it sources for eight of
@@ -269,16 +458,71 @@ same way:
   rate per detection stage, first-pass yield, rework's share of tokens and of
   elapsed time — is D23's Phase 2, and is not built by this document.
 
+**The item lifecycle record:**
+
+- **Produced:** the join key, `{repo, item}`, added at each of the sites
+  named in "The item lifecycle record" above — `agent-cycle.sh`'s
+  `stage_budget_apply` (`stage-start`) and its own `stage-end` (the
+  Implementer's and the Reviewer's), `pr-raised`, `pr-ready` and
+  `review-gate-checks-read` sites, `lib/approver.sh`'s own
+  `stage-end`/`approver-verdict`, `lib/enabler.sh`'s `stage-end` (its two
+  per-item adjudication sites) and its own copies of `pr-ready`/
+  `review-gate-checks-read`, `lib/landing.sh`'s `landing-armed`/
+  `landing-refused` (threaded through `_landing_stage_attempt`, resolved from
+  the fleet log via `landing_retry_item` on the 2.1e retry sweep's own
+  candidates, which have no in-process item to read) and its
+  `approver-adjudicate-open-question` `stage-end`, and
+  `lib/standdown.sh`'s own `issue-closed-post-merge` wiring (`item`, alongside
+  the existing `issue` field, derived from `scripts/sweep-closed-issues.sh`'s
+  own already-resolved marker/branch). `checks-green`:
+  `agent-cycle.sh`'s Reviewer handoff and `lib/enabler.sh`'s
+  `complete_handoff` recovery path, both immediately after
+  `handoff_complete_review` returns. `merge-observed`: `lib/merge-observed.sh`
+  (unchanged since agent-ops#916), plus `lib/landing.sh`'s own arm site and
+  `scripts/sweep-closed-issues.sh`'s sweep (wired through
+  `lib/standdown.sh`), both new. The fold itself: `lib/item-lifecycle.sh`'s
+  `item_lifecycle_fold`, behind the read-only `scripts/item-lifecycle.sh`.
+- **Consumed:** `scripts/pickup-metrics.sh`, via `item_lifecycle_pickup_pairs`
+  (see "Generalising, not duplicating" above) — the one existing reader this
+  requirement moved onto the shared fold rather than left duplicating it. The
+  panels that would read `scripts/item-lifecycle.sh`'s own output as a trend
+  — a rate, a percentile, a dashboard tile — are Phase 2, the same as the
+  rework panel above, and are not built by this document.
+
 ## Verifying conformance
 
-`test/rework-record.test.sh` drives `lib/rework.sh`'s `rework_fields`
-directly against a well-formed evidence object, an unparseable one (asserts
-it degrades to `evidence: null` rather than failing), a supplied
-`attributed_stage` and an omitted one, and `repo`/`item`/`pr_url` present
-versus omitted. It separately drives each detector's own reduction against a
-canned event stream — a `review-gate-checks-read {ok: false}` produces a
-`check-failure` record and `review-gate-checks-degraded` produces none; a
-`claim-lost` with `cause: held`/`pr-held` produces a `claim-race-duplicate`
-record and one with no `cause`, or `cause: unreachable`, produces none; a
-malformed line in the stream is skipped rather than fatal to the reduction —
-covering the degradations named in requirement 47's own acceptance check.
+**The rework record:** `test/rework-record.test.sh` drives `lib/rework.sh`'s
+`rework_fields` directly against a well-formed evidence object, an
+unparseable one (asserts it degrades to `evidence: null` rather than
+failing), a supplied `attributed_stage` and an omitted one, and
+`repo`/`item`/`pr_url` present versus omitted. It separately drives each
+detector's own reduction against a canned event stream — a
+`review-gate-checks-read {ok: false}` produces a `check-failure` record and
+`review-gate-checks-degraded` produces none; a `claim-lost` with `cause:
+held`/`pr-held` produces a `claim-race-duplicate` record and one with no
+`cause`, or `cause: unreachable`, produces none; a malformed line in the
+stream is skipped rather than fatal to the reduction — covering the
+degradations named in requirement 47's own acceptance check.
+
+**The item lifecycle record:** `test/item-lifecycle.test.sh` drives
+`lib/item-lifecycle.sh`'s `item_lifecycle_fold` directly against one fixture
+per terminal fate, the flow invariant balancing on a fixture carrying every
+fate at once, the voided-after-landed contradiction landing in `unaccounted`
+(and its mirror image, voided-before-landed, resolving to `landed` outright),
+`--since` bounding both the population and `window.from`, and the
+degradations requirement 49's own acceptance check names: a malformed line, a
+missing field, and an event naming no item, all yielding a conforming report
+rather than aborting. `test/pickup-metrics.test.sh` covers
+`item_lifecycle_pickup_pairs` indirectly, unchanged, by continuing to drive
+`scripts/pickup-metrics.sh` end to end. The join key itself is asserted at
+each producing site directly, lifting the real code the same way
+`test/rework-record.test.sh`'s own detector reductions do:
+`test/stage-budget-apply-join-key.test.sh` (`stage-start`),
+`test/stage-end-join-key.test.sh` (`agent-cycle.sh`'s own two item-scoped
+`stage-end` sites, which `stage_budget_apply` does not write),
+`test/pr-raised-join-key.test.sh`, `test/checks-green-join-key.test.sh`,
+`test/standdown-sweep-join-key.test.sh`,
+and dedicated assertions folded into `test/landing-wiring.test.sh`,
+`test/landing-retry-sweep.test.sh`, `test/approver-wiring.test.sh`,
+`test/human-reviewer-handoff-wiring.test.sh` and
+`test/sweep-closed-issues.test.sh`.

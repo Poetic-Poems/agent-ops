@@ -509,6 +509,8 @@ assert_contains "  ... warning which verdict it could not read" \
   "unrecognised verdict" "$(warnings)"
 assert_eq "  ... and its own approver-verdict event is posted:false (agent-ops#573)" \
   'false' "$(jq -c '.posted' <<<"$(verdict_event)")"
+assert_eq "  ... and carries the item-lifecycle join key (requirement 49)" \
+  '"408"' "$(jq -c '.item' <<<"$(verdict_event)")"
 
 rc="$(run_case agent-approves medium 0 '{"verdict":"approve","reasons":["fine"]}' POST_RC=1)"
 assert_eq "a review GitHub refused still returns 0" "0" "$rc"

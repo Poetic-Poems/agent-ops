@@ -37,6 +37,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   pipeline cannot fix this itself: Docker exposes no `memory.high` setting and
   a container can read its cgroup but never write it, so detection is the
   whole of what this repository can contribute.
+- The **item lifecycle record** (D21 of `docs/ROADMAP.md`, requirement 49,
+  issue #595): one durable record per work item, *derived* rather than
+  emitted — `lib/item-lifecycle.sh`'s `item_lifecycle_fold`, behind the
+  read-only `scripts/item-lifecycle.sh` — folding the union log's own
+  item-scoped events into an explicit terminal fate (`landed`, `voided`,
+  `superseded`, `blocked`, `abandoned` or `open`), with a checked flow
+  invariant and an `unaccounted` bucket for whatever the fold cannot resolve
+  automatically rather than dropping it. Two genuine gaps are filled to make
+  the fold possible: a `checks-green` event where nothing before named a
+  required-checks read that actually came back clean, and a `merge-observed`
+  event at `lib/landing.sh`'s own arm site and `scripts/sweep-closed-
+  issues.sh`'s periodic sweep — the two merge-observation points issue #916's
+  own `merge-observed` event had not yet reached. `{repo, item}` is added, additive, to every
+  item-scoped event the fold needs that lacked it (`stage-start`,
+  `stage-end`, `pr-raised`, `pr-ready`, `landing-armed`, `landing-refused`,
+  `approver-verdict`, `review-gate-checks-read`, `issue-closed-post-merge`).
+  `docs/FLOW-SCHEMA.md`'s "The item lifecycle record" section is the
+  field-by-field contract, sibling to the rework record above it under the
+  same stability policy. `scripts/pickup-metrics.sh`'s own first-seen/
+  selection pairing is generalised onto the same fold rather than left
+  duplicating it, with its CLI contract and output unchanged;
+  `scripts/mine-merge-history.sh` is explicitly out of this item's scope
+  (escalation #827) and is untouched.
 
 ### Fixed
 

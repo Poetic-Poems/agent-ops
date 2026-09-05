@@ -112,6 +112,7 @@ source "$SCRIPT_DIR/lib/landing.sh"
 
 # --- Cycle globals the block reads -------------------------------------------
 selected_repo="Poetic-Poems/agent-ops"
+selected_item="512"
 selected_source="tech-debt"
 state_repo="Poetic-Poems/agent-ops"
 state_dir="$T/state"

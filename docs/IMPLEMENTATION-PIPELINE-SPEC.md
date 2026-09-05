@@ -14648,6 +14648,112 @@ with the Reviewer's own.
     carries the close, from `gather_source_state`'s own already-sampled
     labels and assignee, which costs no further GitHub read.
 
+49. **Item lifecycle record.** D21 of `docs/ROADMAP.md` names the flow
+    account's own invariant — every work item carries a lifecycle from first
+    sighting to terminal fate, and items entering equals items leaving plus
+    work in progress, with an explicit `unaccounted` bucket for whatever
+    cannot be classified — and this requirement is where it is made
+    checkable: one durable record per `{repo, item}`, *derived* rather than
+    emitted, folded from the union log by `lib/item-lifecycle.sh`'s
+    `item_lifecycle_fold`, behind the read-only `scripts/item-lifecycle.sh`.
+    `docs/FLOW-SCHEMA.md`'s "The item lifecycle record" section is the
+    field-by-field contract — identity, every instant and its originating
+    event, the six terminal fates and their assignment priority, the
+    `unaccounted` case, and the window caveat — under the same stability
+    policy `docs/METERING-SCHEMA.md` already established.
+
+    Most of the instants this record accumulates already existed as
+    scattered facts; what this requirement adds is narrower than the
+    roadmap's own list of them suggests:
+
+    - **The join key.** `{repo, item}`, additive, is added to `stage-start`
+      (`agent-cycle.sh`'s `stage_budget_apply`, an optional fifth ITEM
+      argument threaded from every item-scoped caller — `$selected_item` on
+      the Implementer/Reviewer/Approver/`approver-adjudicate-open-question`
+      sites, omitted where REPO itself is the fleet-wide `*` the
+      Co-Ordinator/Enabler/Refiner top-level engagements pass), `stage-end`
+      (the same four sites, plus `lib/enabler.sh`'s two per-item adjudication
+      sites — `enabler-adjudicate`/`enabler-decide` — and
+      `lib/landing.sh`'s `approver-adjudicate-open-question`), `pr-raised`,
+      `pr-ready` (both call sites — the Reviewer's own handoff and the
+      Enabler's `complete_handoff` recovery path), `landing-armed`/
+      `landing-refused` (threaded through `_landing_stage_attempt`'s own
+      ITEM parameter — `$selected_item` on `run_landing_stage`'s direct
+      path, a new `landing_retry_item` fleet-log lookup, mirroring
+      `landing_retry_source`, on the 2.1e retry sweep's own candidates),
+      `approver-verdict`, `review-gate-checks-read` (both call sites), and
+      `issue-closed-post-merge` (`item`, alongside the existing `issue`
+      field). `review-gate-checks-degraded` deliberately does not gain one:
+      it is a streak escalation spanning whatever items happened to fail
+      consecutively, not a fact about any one of them.
+    - **`checks-green`.** `review-gate-checks-read`'s own `ok` has always
+      named whether the required-checks *read* succeeded, never whether what
+      it found was clean, so no event before this requirement recorded a
+      genuinely green gate. A `checks-green` event now fires, carrying
+      `{repo, item, pr_url}`, at both sites that reach
+      `handoff_complete_review`'s gate the moment its `gate.word` reads
+      `"clean"` — the Reviewer's own handoff in `agent-cycle.sh`, and the
+      Enabler's `complete_handoff` recovery path in `lib/enabler.sh`.
+    - **The merge itself.** `lib/merge-observed.sh`'s `merge-observed` event
+      (requirement 32c, agent-ops#916) already fires at the Reviewer's own
+      mid-pass reads. It now additionally fires at `lib/landing.sh`'s own arm
+      site — `pr_merge_state` (`lib/handoff.sh`) confirms, rather than
+      assumes from the arm method alone, whether that file's own no-queue
+      auto-merge fallback merged the pull request synchronously (see that
+      file's header on when it does) — and at
+      `scripts/sweep-closed-issues.sh`'s own periodic sweep (wired through
+      `lib/standdown.sh`), which already lists every merged, `pr_label`-
+      labelled pull request fleet-wide, every stand-down, and so is the
+      catch-all for a human-clicked merge or one GitHub's merge queue
+      resolved after any other site last looked. The sweep's own emission is
+      bounded by the same `pr_search_limit` its existing close action
+      already is, and de-duplicated per node against a small, self-pruning
+      seen-file (`<state_dir>/sweep-closed-issues-merge-observed-seen.json`).
+      A seen-file the sweep cannot write does not fail the sweep — the
+      caller still gets this run's own actions — but it does not pass
+      unnoticed either: the sweep reports a `warning` action naming the
+      file, since losing that write silently re-emits every key in the
+      window on every future stand-down, into a log that is never rotated.
+      `scripts/mine-merge-history.sh` — a GitHub-API miner and Stage 0
+      autonomy baseline (#404/D18 §6), keyed by pull request rather than by
+      item, reading no event log — is explicitly out of this requirement's
+      scope (escalation #827) and is untouched.
+
+    The fold itself assigns each item exactly one of six terminal fates —
+    `landed`, `voided`, `superseded`, `blocked`, `abandoned`, `open`, checked
+    in that priority order — over the item's own whole event history, which
+    under `--since` is wider than the `instants` it reports, reusing
+    `lib/cycle-state.sh`'s existing `void_items`/`blocked_items`/
+    `draft_obsolete_flags` extracts for the set/clear resolution rather than
+    re-deriving that logic a second time (the drift requirement 34a already
+    warns against): each is matched to the item by the same `{repo, item}`
+    lookup, so all three read the whole log regardless of `--since`. `blocked`
+    outranks `abandoned` — a currently-blocked item is demonstrably still in
+    the system, which is stronger evidence than the merely uncorroborated
+    intent to abandon a draft that `abandoned` records. A `superseded` fate is
+    read off an `orphan-branch-released {reason: "superseded"}` event whose
+    `item` the fold itself derives from an `agent/<N>` branch, the same
+    convention `scripts/sweep-closed-issues.sh` already uses — that event's
+    own producer (`scripts/sweep-orphan-branches.sh`) is not one of the
+    join-key sites above and is not touched. Like `landed`, `superseded` is
+    read off the item's own whole event history, not only the events inside
+    `--since`'s window: `--since` bounds which items are reported at all
+    (population), never the fate an item that is reported resolves to (see
+    `docs/FLOW-SCHEMA.md`'s window caveat). An item that is both void and
+    already landed, with the void's own `ts` later than the earliest landing
+    evidence, is a contradiction the fold does not resolve by guessing: it
+    lands in `unaccounted[]` with the reason, counted, never dropped —
+    `totals.balanced` states, and is asserted on a fixture exercising every
+    fate at once, that `entered` equals `landed + voided + superseded +
+    abandoned` (`leaving`) plus `blocked + open` (`in_progress`) plus
+    `unaccounted`, which holds by construction.
+
+    `scripts/pickup-metrics.sh`'s own first-seen/selection pairing
+    (TD-PPagop-26081405, issue #248 acceptance 4) is generalised onto this
+    same fold — `lib/item-lifecycle.sh`'s `item_lifecycle_pickup_pairs`, the
+    identical reduction moved rather than duplicated — with its CLI contract,
+    output field names and its own test unchanged.
+
 ## Components
 
 What exists, and the requirements each part answers to:
@@ -21787,6 +21893,59 @@ pull request, run the ones the change touches and any it could regress.
     rather than the build dying silently at `execve` and leaving a 0-byte
     cache (agent-ops#1107). `scripts/lint-shell.sh` is clean on every file
     this requirement touches.
+
+49. **The item lifecycle record matches `docs/FLOW-SCHEMA.md`, the join key
+    reaches every site requirement 49 names, and the fold balances
+    (requirement 49).** `test/item-lifecycle.test.sh` drives
+    `lib/item-lifecycle.sh`'s `item_lifecycle_fold` directly against one
+    fixture per terminal fate (`landed` via `merge-observed`, `voided` via an
+    unresolved `item-void`, `superseded` via `orphan-branch-released
+    {reason: "superseded"}` with its item derived from an `agent/<N>`
+    branch, `abandoned` via `draft-obsolete-flagged`, `blocked` via an
+    unresolved `attempt-failed`, `open` via a bare `first-seen`), the flow
+    invariant balancing (`totals.balanced`) on a fixture carrying every fate
+    at once, a voided-after-landed contradiction landing in `unaccounted[]`
+    with its reason — and its mirror image, voided-before-landed, resolving
+    to `landed` outright, not treated as a contradiction — an item carrying
+    both a standing block and a draft-obsolete-flagged event resolving to
+    `blocked`, never `abandoned`, `--since` bounding the population but never
+    the fate an included item resolves to (an item entering the population on
+    one within-window event still reports `landed`/`abandoned` from
+    merge/draft-obsolete-flagged evidence that sits before the bound), and the
+    degradation cases a malformed line, a missing field, an event naming
+    no item, and an event whose `repo` is valid JSON but not a string all
+    yielding a conforming report rather than aborting. The same
+    test file drives `item_lifecycle_pickup_pairs` directly against a fixture
+    carrying a bare, valid-JSON scalar line ahead of its object lines,
+    asserting pairing is computed from the object lines rather than collapsing
+    to the all-zero fallback the way an unguarded `.ts`/`.event` index on the
+    scalar would. `test/pickup-metrics.test.sh` passes unchanged, exercising
+    `item_lifecycle_pickup_pairs` indirectly through `scripts/pickup-
+    metrics.sh`'s own unchanged CLI and output shape.
+    The join key itself — `{repo, item}`, present whenever the emitting site
+    knows both and omitted, never `null`, otherwise — is pinned at each
+    producing site by lifting the real code: `test/stage-budget-apply-join-
+    key.test.sh` (`stage-start`, including the fleet-wide-REPO omission
+    case), `test/stage-end-join-key.test.sh` (`agent-cycle.sh`'s own two
+    item-scoped `stage-end` sites, the Implementer's and the Reviewer's,
+    which `stage_budget_apply` does not write and the test above therefore
+    does not reach), `test/pr-raised-join-key.test.sh`, `test/checks-green-join-
+    key.test.sh` (`checks-green` and `review-gate-checks-read`, both call
+    sites of each), `test/standdown-sweep-join-key.test.sh`
+    (`issue-closed-post-merge` and `merge-observed` as wired from
+    `scripts/sweep-closed-issues.sh`'s own actions), and dedicated
+    assertions in `test/landing-wiring.test.sh` (`landing-armed`/
+    `landing-refused`, and the new `merge-observed` at `lib/landing.sh`'s own
+    arm site — fires only once `pr_merge_state` confirms a synchronous merge,
+    never on an enqueued arm), `test/landing-retry-sweep.test.sh`
+    (`landing_retry_item`), `test/approver-wiring.test.sh`
+    (`approver-verdict`), `test/human-reviewer-handoff-wiring.test.sh`
+    (`pr-ready`, both call sites) and `test/sweep-closed-issues.test.sh`
+    (the sweep's own `merge-observed` action, bounded by `pr_search_limit`
+    and de-duplicated per node across repeated runs of the same window, and
+    a seen-file write the sweep cannot perform reporting a `warning` action
+    rather than losing the memo silently).
+    `scripts/lint-shell.sh` is clean on every file this requirement touches.
 
 9. **An open question the Reviewer could not settle holds unattended landing,
    resolves through the configured ladder, and never through a new commit

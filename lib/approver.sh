@@ -715,14 +715,16 @@ $node_name
 "
     out="$cycle_dir/approver.out"
     stage_budget_apply approver "$selected_repo" "$model" \
-      "$(jq -nc --arg t "$tier" --arg m "$mode" '{complexity: $t, mode: $m}')"
+      "$(jq -nc --arg t "$tier" --arg m "$mode" '{complexity: $t, mode: $m}')" "$selected_item"
     if run_claude_stage approver "$(( stage_backstop_min * 60 ))" "$model" "$prompt" "$out" "$clone_dir" "$(( stage_inactivity_min * 60 ))"; then
       rc=0
     else
       rc=$?
     fi
     log_event "stage-end" "$(jq -nc --argjson rc "$rc" --arg kr "$stage_kill_reason" --argjson m "$(metering_fields "$model" "$out" "$stage_gaps_json")" \
-      '{stage: "approver", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m')"
+      --arg r "$selected_repo" --arg i "$selected_item" \
+      '{stage: "approver", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m
+       + (if $r == "" then {} else {repo: $r} end) + (if $i == "" then {} else {item: $i} end)')"
     rework_stage_rerun_maybe "approver" "$stage_kill_reason" "$selected_repo" "$selected_item" "$pr_url"
     approver_watchdog_warning="$(stage_watchdog_warning approver || true)"
     [[ -n "$approver_watchdog_warning" ]] && log_event "warning" "$approver_watchdog_warning"
@@ -926,9 +928,10 @@ $node_name
   (( adjudicating )) && adj_bool="true"
   log_event "approver-verdict" "$(jq -nc --arg u "$pr_url" --arg r "$selected_repo" --arg t "$tier" \
     --arg m "$model" --arg v "${verdict:-none}" --argjson s "$streak" --argjson adj "$adj_bool" \
-    --argjson posted "$posted_bool" --arg cr "$critical_reason" \
+    --argjson posted "$posted_bool" --arg cr "$critical_reason" --arg i "$selected_item" \
     '{pr_url: $u, repo: $r, tier: $t, model: $m, verdict: $v, refuse_streak: $s, adjudication: $adj, posted: $posted}
-     + (if $cr == "" then {} else {critical_reason: $cr} end)')"
+     + (if $cr == "" then {} else {critical_reason: $cr} end)
+     + (if $i == "" then {} else {item: $i} end)')"
   approver_stage_verdict="$verdict"
   approver_stage_adjudicating="$adjudicating"
   approver_stage_tier="$tier"
