@@ -2703,3 +2703,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   still running, and that an adopter who wants a check to hold a merge
   must mark it required (TD-PPagop-26082101, closed `not-debt`:
   documentation only, no behaviour change).
+- `config.schema.json`'s entries for `cycles_retained`,
+  `state_local_cycles_retained` and `state_local_streams_retained` now say
+  that a configured value below requirement 1d's derivation is inert, and
+  why: the floor preserves the span of history the base count was sized for
+  at this installation's own cadence, disk is bounded separately by
+  `min_free_workspace_bytes` (requirement 2.0c) and its own derivation
+  (#904, still open), and the `STATE_SYNC_*` overrides two of the three keys
+  have are test-only, never an operator lever — `cycles_retained` has no
+  such override, so a configured value is its only lever (owner decision,
+  escalation #918: floor-never-ceiling stands for the count keys too; no
+  behaviour change, requirement 1d's contract paragraph unchanged; #901).
