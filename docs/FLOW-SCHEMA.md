@@ -323,12 +323,14 @@ was narrower than that list suggests:
 | `source` | The most recent `selection` event's own `.source` for this item, or `null` if the item was never selected (a `first-seen` with no claim yet, or an item this fold only knows from a non-`selection` event such as `orphan-branch-released`). |
 | `first_seen` | The earliest `first-seen` event's own `ts` for this item, or `null` if none was ever logged (a finishing-source item, whose branch and pull request already exist before any cycle "discovers" it the way `first-seen` means). |
 | `instants` | Every event this fold found for the item, in timestamp order: `{event, ts, node, cycle, fields}`, where `fields` is that event's own payload minus `repo`/`item`/`event`/`ts`/`node`/`cycle` — the originating event and everything it carried, exactly as logged, never summarised or re-derived. |
-| `fate` | One of the six values below. |
+| `fate` | One of the six values below, or `unaccounted` — the one case that sits outside their priority order rather than inside it. |
 
 ### Terminal fates
 
 Assigned by one strict priority — each rule checked only once every rule
-ahead of it has failed to match — over the item's own `instants`, reusing
+ahead of it has failed to match — over the item's own whole event history,
+which under `--since` is wider than the `instants` this run reports (see the
+window caveat below), reusing
 `lib/cycle-state.sh`'s existing `void_items`/`blocked_items`/
 `draft_obsolete_flags` extracts for the set/clear resolution rather than
 re-deriving that logic a second time (the drift requirement 34a already

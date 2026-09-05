@@ -14716,7 +14716,8 @@ with the Reviewer's own.
 
     The fold itself assigns each item exactly one of six terminal fates —
     `landed`, `voided`, `superseded`, `blocked`, `abandoned`, `open`, checked
-    in that priority order — over the item's own instants, reusing
+    in that priority order — over the item's own whole event history, which
+    under `--since` is wider than the `instants` it reports, reusing
     `lib/cycle-state.sh`'s existing `void_items`/`blocked_items`/
     `draft_obsolete_flags` extracts for the set/clear resolution rather than
     re-deriving that logic a second time (the drift requirement 34a already
@@ -21906,8 +21907,9 @@ pull request, run the ones the change touches and any it could regress.
     the fate an included item resolves to (an item entering the population on
     one within-window event still reports `landed`/`abandoned` from
     merge/draft-obsolete-flagged evidence that sits before the bound), and the
-    degradation cases a malformed line, a missing field, and an event naming
-    no item all yielding a conforming report rather than aborting. The same
+    degradation cases a malformed line, a missing field, an event naming
+    no item, and an event whose `repo` is valid JSON but not a string all
+    yielding a conforming report rather than aborting. The same
     test file drives `item_lifecycle_pickup_pairs` directly against a fixture
     carrying a bare, valid-JSON scalar line ahead of its object lines,
     asserting pairing is computed from the object lines rather than collapsing

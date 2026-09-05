@@ -16,9 +16,9 @@
 #   unaccounted         a voided-after-landed contradiction is not silently
 #                        resolved either way — it is named, with its reason,
 #                        and still counted (never dropped).
-#   degradation         a malformed line, a missing field, and an event
-#                        naming no item all yield a conforming report rather
-#                        than aborting the fold.
+#   degradation         a malformed line, a missing field, an event naming
+#                        no item, and a non-string `repo` all yield a
+#                        conforming report rather than aborting the fold.
 #
 # No test framework is used (none exists elsewhere in this repo). Run
 # directly:
@@ -171,6 +171,25 @@ assert_eq "  ... the one fully-keyed event still enters" \
   "open" "$(fate_of "$out" acme/widgets 21)"
 assert_eq "  ... and the fold prints a conforming report throughout" \
   "true" "$(jq -c '.totals.balanced' <<<"$out")"
+
+# A `repo` that is valid JSON but not a string keys the item like any other
+# (`item_key` coerces both halves) — it must not error the per-item lookup of
+# the unwindowed evidence index and collapse the whole fold to its all-zero
+# fallback, the way concatenating the raw `repo` and `item` would.
+
+nonstring_repo="$tmp_dir/non-string-repo.jsonl"
+cat > "$nonstring_repo" <<'EOF'
+{"ts":"2026-04-02T00:00:00Z","node":"n1","event":"first-seen","repo":42,"item":"22"}
+{"ts":"2026-04-02T00:01:00Z","node":"n1","event":"first-seen","repo":"acme/widgets","item":"23"}
+{"ts":"2026-04-02T00:02:00Z","node":"n1","event":"merge-observed","repo":"acme/widgets","item":"23","pr_url":"https://github.com/acme/widgets/pull/23"}
+EOF
+out="$(fold_of "$nonstring_repo")"
+assert_eq "a non-string repo does not collapse the fold to its all-zero fallback" \
+  "2" "$(jq -c '.totals.entered' <<<"$out")"
+assert_eq "  ... the well-formed item beside it still resolves from its own evidence" \
+  "landed" "$(fate_of "$out" acme/widgets 23)"
+assert_eq "  ... and the odd one still enters, keyed on its coerced repo" \
+  "open" "$(jq -r '.records[] | select((.repo | tostring) == "42") | .fate' <<<"$out")"
 
 # --- --since bounds what the fold reads, same as every other reader --------
 

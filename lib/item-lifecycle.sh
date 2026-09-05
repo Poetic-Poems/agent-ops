@@ -150,6 +150,14 @@ item_lifecycle_pickup_pairs() {
 # they are windowed by design, so they answer "what did this run see for this
 # item," not "everything this item ever did.")
 #
+# Both sides of that index — building it and reading it — go through
+# `item_key` itself rather than concatenating the record's own `repo`/`item`,
+# so a line whose `repo` is a number rather than a string keys identically on
+# both sides. Concatenating instead would be a type error on the lookup, and
+# jq errors here are not local: one such line aborts the whole program and
+# the fold degrades to its all-zero fallback, exactly the failure the
+# object-type guard above exists to prevent.
+#
 # Fate is assigned by one strict priority, each rule checked only once every
 # rule ahead of it has failed to match:
 #
@@ -225,7 +233,7 @@ ITEM_LIFECYCLE_FOLD_JQ='
                          fields: (del(.event,.ts,.node,.cycle,.repo,.item))})) as $instants
       | ([$sorted[] | select(.event == "first-seen") | (.ts // "")] | map(select(. != "")) | sort | first) as $first_seen_ts
       | ([$sorted[] | select(.event == "selection")] | sort_by(.ts // "") | last | .source) as $source
-      | ($full_by_key[$r + "|" + $i] // []) as $full_events
+      | ($full_by_key[$sorted[0] | item_key] // []) as $full_events
       | ([$full_events[] | select(.event == "merge-observed" or .event == "issue-closed-post-merge") | (.ts // "")]
           | map(select(. != "")) | sort | first) as $landed_ts
       | ($landed_ts != null) as $landed
