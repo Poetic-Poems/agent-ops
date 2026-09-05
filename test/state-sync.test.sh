@@ -135,6 +135,11 @@ printf '{"until":"2026-08-30T10:00:00Z"}\n' > "$state/roll-pending.json"
 printf 'server noise\n' > "$state/dashboard.log"
 printf '{}\n' > "$state/.dashboard-github.json"
 printf '{"ok":false}\n' > "$state/.image-drift-cache.json"
+# This node's own read-back of what the shared state holds for its own branch
+# (agent-ops#602) — local to this node on the identical reasoning as the
+# image-drift cache above; no peer ever needs this node's own answer to "am I
+# fresh".
+printf '{"ts":"2026-07-20T00:00:00Z"}\n' > "$state/.state-sync-published.json"
 # The expensive-gather cache (lib/expensive-gather-cache.sh, requirement 48,
 # agent-ops#1086): local to this node, like the caches above —
 # expensive_gather_pick_repo keys on cache-file mtime, and a copy restored
@@ -199,6 +204,7 @@ assert_eq "the roll-pending marker does not replicate" "0" "$(test -e "$pushed/r
 assert_eq "the dashboard log does not replicate" "0" "$(test -e "$pushed/dashboard.log" && echo 1 || echo 0)"
 assert_eq "the GitHub cache does not replicate" "0" "$(test -e "$pushed/.dashboard-github.json" && echo 1 || echo 0)"
 assert_eq "the image-drift cache does not replicate" "0" "$(test -e "$pushed/.image-drift-cache.json" && echo 1 || echo 0)"
+assert_eq "the publication cache does not replicate" "0" "$(test -e "$pushed/.state-sync-published.json" && echo 1 || echo 0)"
 assert_eq "the expensive-gather cache does not replicate" "0" "$(test -e "$pushed/expensive-gather" && echo 1 || echo 0)"
 assert_eq "the doctor log does not replicate" "0" "$(test -e "$pushed/doctor.log" && echo 1 || echo 0)"
 assert_eq "the doctor status cache does not replicate" "0" "$(test -e "$pushed/.doctor-status.json" && echo 1 || echo 0)"
@@ -607,6 +613,47 @@ assert_eq "the active node's fetch exits 0" "0" "$?"
 a_peers="$(fleet_peers_dir "$active_home/.cache/poetic-agents/workspaces")"
 assert_eq "the active node holds its peers too" "1" \
   "$(test -f "$a_peers/standby-node/log.jsonl" && echo 1 || echo 0)"
+
+# ==============================================================================
+# fetch — the outbound answer for self (agent-ops#602)
+# ==============================================================================
+# The fetch above already brought this node's own branch down alongside every
+# peer's (`+refs/heads/nodes/*`), so reading it back costs no extra network
+# round trip: a node's own freshness must be read from what the shared state
+# holds for it, never from its own clock — the read that went missing on
+# 2026-08-08.
+published_file="$active_home/.local/state/poetic-agents/.state-sync-published.json"
+assert_eq "a fetch writes this node's own publication cache" "1" \
+  "$(test -f "$published_file" && echo 1 || echo 0)"
+remote_hb_ts="$(git -C "$remote" show nodes/active-node:heartbeat.json 2>/dev/null | jq -r '.ts')"
+assert_eq "…carrying the ts the remote branch's own heartbeat holds" "$remote_hb_ts" \
+  "$(jq -r '.ts' "$published_file" 2>/dev/null)"
+
+# A branch with no heartbeat.json at all (unreachable in practice — every push
+# writes one, but the read-back must not crash on it) falls back to the ref's
+# own committer date rather than leaving the cache empty. A dedicated remote
+# and mirror, never the shared one above: this fixture's own log.jsonl is not
+# valid JSON, and letting it leak into the shared remote would poison the
+# union read further down in this file for every peer of it.
+no_hb_remote="$tmp_dir/no-heartbeat-remote.git"
+git init --quiet --bare --initial-branch=main "$no_hb_remote"
+worktree="$tmp_dir/no-hb-worktree"
+git init --quiet "$worktree"
+printf 'no heartbeat here\n' > "$worktree/log.jsonl"
+git -C "$worktree" add -A
+git -C "$worktree" -c user.name=test -c user.email=test@test \
+  commit --quiet -m "state: no-heartbeat-node (no heartbeat.json)"
+git -C "$worktree" push --quiet "$no_hb_remote" "HEAD:refs/heads/nodes/no-heartbeat-node"
+committer_epoch="$(git -C "$worktree" log -1 --format=%ct)"
+no_hb_home="$(new_node no-heartbeat-node)"
+env HOME="$no_hb_home" AGENT_OPS_ROLE=standby NODE_NAME=no-heartbeat-node \
+  STATE_SYNC_REMOTE="$no_hb_remote" "$SYNC" fetch >/dev/null
+assert_eq "the no-heartbeat fetch exits 0" "0" "$?"
+no_hb_published="$no_hb_home/.local/state/poetic-agents/.state-sync-published.json"
+assert_eq "a branch with no heartbeat.json still writes a publication cache" "1" \
+  "$(test -f "$no_hb_published" && echo 1 || echo 0)"
+assert_eq "…falling back to the ref's own committer date" "$committer_epoch" \
+  "$(date -u -d "$(jq -r '.ts' "$no_hb_published" 2>/dev/null)" +%s 2>/dev/null)"
 
 # A deleted branch is a decommissioned node: its peer copy goes on the next
 # fetch.

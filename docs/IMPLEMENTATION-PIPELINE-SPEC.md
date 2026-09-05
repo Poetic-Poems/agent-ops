@@ -843,6 +843,7 @@ and the schema must carry every one of them.
 | `none_selected_recheck_hours` | *(unset)* | The no-op short-circuit's safety valve (requirement 3b): the Co-Ordinator is engaged regardless once the last `none-selected` is this old, even if nothing changed. Bounds how long a gap in fingerprint coverage can stall the pipeline. "This old" means 24 cadence firings (requirement 1d), not a fixed 24 h: derived from the worst-case gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`); a configured non-zero value floors the derivation...[continued below](#extended-notes-none_selected_recheck_hours) |
 | `image_behind_grace_hours` | 3 h | The dashboard badge's (and `scripts/check-node-image.sh`'s) tolerance for a node behind the registry's newest image (`lib/image-drift.sh`, requirement 2.5, #155) before it turns amber / fails: a roll defers while a cycle is in flight, so being behind an image published more recently than this is the ordinary mid-roll state, not a fault. |
 | `updater_stuck_after_minutes` | 20 min | The dashboard badge's tolerance for a container that was allowed to roll (`lib/updater-health.sh`'s `updater_status`, requirement 2.5, #603) before it turns amber: past this, the container the hook told to go ahead is still running, which a healthy roll never takes this long to resolve on its own — unlike `image_behind_grace_hours`, this is not an ordinary mid-roll wait. |
+| `node_stale_after_minutes` | 30 min | The dashboard fleet strip's (and `scripts/doctor.sh`'s) tolerance for a node's last confirmed publication into the shared state (`lib/fleet.sh`'s `fleet_publication_status`, requirement 2.5, #602) before it turns stale: three missed heartbeat/fetch cycles at the shipped cadence, not clock jitter — applied identically to a peer's row and to a node's own, so the two implementations that used to compute this (a hardcoded literal for peers, a hardcoded `false` for self) can no longer disagree. |
 | `dashboard_refresh_seconds` | `5` | How often an open dashboard tab reloads to pick up freshly-written data (`docs/DASHBOARD-SPEC.md`). Match it to the heartbeat cadence: a shorter interval re-reads a file nothing has rewritten, a longer one shows a cycle that has already moved on. |
 | `schedule.cycle_hours` | `*` | The hour field of the implementation cycle's crontab line, rendered by `deploy/docker/render-crontab.sh`; `*` is every hour. |
 | `schedule.cycle_interval_minutes` | `15` | How often, in minutes, the implementation cycle's crontab line fires within an allowed hour, rendered by `deploy/docker/render-crontab.sh`; `60` reproduces the single-firing-per-hour shape every release before this key carried. |
@@ -2876,7 +2877,9 @@ implements.
    dashboard's own
    machinery (`dashboard/`, `dashboard.log`, `dashboard-server.log`,
    `.dashboard-github.json`, `.dashboard-claims.json`,
-   `.image-drift-cache.json`), `state-sync.log`, the unattended doctor
+   `.image-drift-cache.json`), this node's own read-back of what the shared
+   state holds for its own branch (`.state-sync-published.json`, "Publication
+   freshness" below, agent-ops#602), `state-sync.log`, the unattended doctor
    pass's own local artefacts (`doctor.log`, `.doctor-status.json` —
    requirement 2.6a), the per-stage health snapshot's own raw file
    (`.stage-health.json` — requirement 2.8, its content excepted, below), the
@@ -2903,7 +2906,13 @@ implements.
    copying a derivative of what is already being copied; a copied
    `.image-drift-cache.json` would answer for a registry query nobody on the
    peer ran, and a copied `.mirror-rebuild-state.json` likewise would answer
-   for a rebuild nobody on the peer needed; `doctor.log`/`revert-rate.log`
+   for a rebuild nobody on the peer needed; a copied
+   `.state-sync-published.json` would likewise answer for a fetch nobody on
+   the peer ran — and unlike `.stage-health.json` below, no peer ever needs
+   this node's own answer to "am I fresh", since a peer already judges this
+   node by this node's own `heartbeat.json` `ts`, which a failed push simply
+   never advances, so nothing folds it into the heartbeat either;
+   `doctor.log`/`revert-rate.log`
    are each a local pass's own text
    output, superseded for a reader by the structured sibling that pass also
    writes (`.doctor-status.json` locally, `revert-rate.jsonl` fleet-wide —
@@ -3226,6 +3235,52 @@ implements.
    sees neither the old answer nor the new one. The marker is
    absent only in the bootstrap case, where there has never been a real peer
    to be stale about.
+
+   **Publication freshness** (agent-ops#602). A node's freshness is a fact
+   about what it has *published*, never about its own clock: on 2026-08-08
+   both laptop nodes reported themselves fresh for four days while
+   `state-sync.sh push` was failing the whole time, because the dashboard's
+   self row used to be built from `date` and a hardcoded `false` rather than
+   read back from anywhere — every signal either node emitted was one it also
+   consumed. The fix is one computation, `lib/fleet.sh`'s
+   `fleet_publication_status`, applied identically to a peer's row and to a
+   node's own (requirement 34a): given a publication timestamp and the
+   configured threshold (`node_stale_after_minutes`, 30 by default — three
+   missed heartbeat/fetch cycles at the shipped cadence, not clock jitter, the
+   same reasoning `image_behind_grace_hours` and `updater_stuck_after_minutes`
+   already carry one layer up), it returns `{ts, age_s, verdict}`, `verdict`
+   one of `"fresh"`, `"stale"` or `"unknown"` (no timestamp has ever been read
+   back for this node/peer — a fresh install, or the short window before a
+   node's first successful push has been fetched back at all, not itself a
+   fault).
+   A peer's timestamp is its `heartbeat.json`'s own `ts` — already correct,
+   since a failed push simply never advances it. Self's timestamp comes from
+   this fetch: since the `git fetch` above already brings down this node's own
+   branch alongside every peer's (`+refs/heads/nodes/*`), reading it back costs
+   no extra network round trip (D14). Immediately after a successful fetch —
+   never on the bootstrap no-op or a real failure, both of which `return`
+   above before reaching this point — `do_fetch` reads
+   `origin/nodes/$NODE_NAME`'s own `heartbeat.json` `ts` (falling back to the
+   ref's own committer date on the unreachable-in-practice case of a branch
+   with no `heartbeat.json` at all) and writes it to a local derived cache,
+   `.state-sync-published.json` (`{ts}`, excluded from replication above like
+   `.image-drift-cache.json` — no peer ever needs this node's own answer to
+   "am I fresh"). A fetch that fails leaves this cache exactly as it was, so
+   its age against the local clock grows into staleness on its own — the same
+   property a frozen or missing cache needs to make a broken push visible
+   without a second signal.
+   `scripts/publish-dashboard.sh` reads this cache for the fleet strip's self
+   row (falling back to a hardcoded fresh reading when `state_repo` is unset —
+   single-node operation has no shared state to have gone stale against) and
+   the identical `heartbeat.json` `ts` for every peer row, both through
+   `fleet_publication_status`, so the two rows can never disagree about what
+   counts as fresh. `scripts/doctor.sh` reads the same cache and the same
+   function for this node's own check, gated on `state_repo` being configured
+   (inert otherwise, per "What replicates" above): `"fresh"` is `ok`,
+   `"unknown"` is `warn` (not itself a fault), and `"stale"` is `fail` — a
+   push that has stopped working even while local cycles carry on, distinct
+   from a genuinely idle node, which still pushes a heartbeat on its own
+   schedule regardless of whether it has run a cycle.
 
    **The union.** What the fleet shares is memory, not authority: the
    blocked and void extractions (requirements 34/34c), the no-op fingerprint

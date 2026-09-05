@@ -1372,6 +1372,78 @@ run_publish "$g" NODE_NAME=nodeG-self
 assert_eq "a node with no history reports no live state" "null" \
   "$(jq -r '.fleet.nodes[0].live' <<<"$(data_of "$g")")"
 
+# --- Publication freshness: self obeys the same rule a peer does (agent-ops#602) --
+# Self's row used to be built from `date` and a hardcoded `false`; both read
+# fresh for four days on 2026-08-08 while state-sync push silently failed.
+# Now self's `heartbeat_ts`/`heartbeat_age_s`/`stale` come from
+# `.state-sync-published.json` (state-sync.sh's own read-back of the shared
+# state), through the identical `fleet_publication_status` a peer's row uses —
+# this repo's own config.json carries a real `state_repo`, so every publish
+# below is judged against the shared state, not the single-node exemption.
+i="$(new_home nodeI)"
+i_state="$i/.local/state/poetic-agents"
+
+# No publication ever confirmed yet (the bootstrap case: a fetch has never
+# read this node's own branch back) — "unknown", not a green "fresh".
+run_publish "$i" NODE_NAME=nodeI-self
+idata="$(data_of "$i")"
+assert_eq "with no publication cache at all, self reads stale (unknown, not fresh)" "true" \
+  "$(jq -r '.fleet.nodes[0].stale' <<<"$idata")"
+assert_eq "…and carries no timestamp to have been unknown about" "null" \
+  "$(jq -r '.fleet.nodes[0].heartbeat_ts' <<<"$idata")"
+assert_eq "…nor an age" "null" \
+  "$(jq -r '.fleet.nodes[0].heartbeat_age_s' <<<"$idata")"
+
+# A publication confirmed minutes ago is fresh — the genuinely idle case
+# (acceptance criterion 3, agent-ops#602): no cycle has ever run on this node
+# (new_home starts empty), yet a current publication keeps it healthy.
+printf '{"ts":"%s"}' "$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)" \
+  > "$i_state/.state-sync-published.json"
+run_publish "$i" NODE_NAME=nodeI-self
+idata="$(data_of "$i")"
+assert_eq "an idle node with a fresh publication is not stale" "false" \
+  "$(jq -r '.fleet.nodes[0].stale' <<<"$idata")"
+assert_eq "…with an age in the right ballpark" "true" \
+  "$(jq -r '(.fleet.nodes[0].heartbeat_age_s | . >= 250 and . <= 400)' <<<"$idata")"
+
+# A publication confirmed well past node_stale_after_minutes (30 by default)
+# is stale — a push that has stopped working (acceptance criterion 4),
+# distinguished from the idle-but-fresh case above by age alone.
+printf '{"ts":"%s"}' "$(date -u -d '-40 minutes' +%Y-%m-%dT%H:%M:%SZ)" \
+  > "$i_state/.state-sync-published.json"
+run_publish "$i" NODE_NAME=nodeI-self
+idata="$(data_of "$i")"
+assert_eq "a publication older than the threshold makes the node stale" "true" \
+  "$(jq -r '.fleet.nodes[0].stale' <<<"$idata")"
+
+# state_repo unset is single-node operation (requirement 2.5): the check is
+# wholly inert and self stays definitionally fresh, whatever the cache says —
+# there is no shared state to have gone stale against.
+i_solo="$tmp_dir/nodeI-solo-app"
+mkdir -p "$i_solo"
+tar -C "$SCRIPT_DIR" --exclude=.git -cf - . | tar -C "$i_solo" -xf -
+jq '.state_repo = ""' "$SCRIPT_DIR/config.json" > "$i_solo/config.json"
+env HOME="$i" NODE_NAME=nodeI-self "$i_solo/scripts/publish-dashboard.sh" --no-github >/dev/null 2>&1
+idata="$(data_of "$i")"
+assert_eq "with state_repo unset, self stays fresh regardless of a stale cache" "false" \
+  "$(jq -r '.fleet.nodes[0].stale' <<<"$idata")"
+
+# The threshold is genuinely configuration, not a literal — a peer's own
+# heartbeat is judged against node_stale_after_minutes exactly as self is.
+j="$(new_home nodeJ)"
+j_peer="$j/.cache/poetic-agents/workspaces/.agent-ops-peers/peerJ"
+mkdir -p "$j_peer"
+printf '{"node":"peerJ","role":"active","ts":"%s"}' "$(date -u -d '-90 seconds' +%Y-%m-%dT%H:%M:%SZ)" \
+  > "$j_peer/heartbeat.json"
+j_app="$tmp_dir/nodeJ-tight-threshold-app"
+mkdir -p "$j_app"
+tar -C "$SCRIPT_DIR" --exclude=.git -cf - . | tar -C "$j_app" -xf -
+jq '.node_stale_after_minutes = 1' "$SCRIPT_DIR/config.json" > "$j_app/config.json"
+env HOME="$j" NODE_NAME=nodeJ-self "$j_app/scripts/publish-dashboard.sh" --no-github >/dev/null 2>&1
+jdata="$(data_of "$j")"
+assert_eq "a 90s-old peer heartbeat reads stale under a configured 1-minute threshold — the default 30-minute one would call it fresh" \
+  "true" "$(jq -r '.fleet.nodes[] | select(.node=="peerJ") | .stale' <<<"$jdata")"
+
 # --- Lock-liveness is host-aware (TD-PPagop-26080101) -----------------------------
 # The dashboard shares the scheduler's state volume but never its PID
 # namespace (deploy/docker/compose.yaml: dashboard and scheduler are separate

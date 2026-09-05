@@ -1371,6 +1371,19 @@
         }
       }
     },
+    "node_stale_after_minutes": {
+      "description": "How long a node's last confirmed publication into the shared state (state_repo) may age before lib/fleet.sh's fleet_publication_status calls it stale (agent-ops#602) — applied identically to a peer's row and to a node's own, so the two can never disagree about what counts as fresh. Derived from the heartbeat/state-sync cadence: pushed every schedule.heartbeat_minutes (5 by default) and read back every schedule.state_sync_fetch_minutes (7 by default), so three missed cycles of either is the ordinary reasoning behind the default, not clock jitter. Independent of schedule.cycle_interval_minutes (requirement 1d): a property of the fleet's replication cadence, not the implementation cycle's. A node's own row reads this off `.state-sync-published.json` (state_dir), state-sync.sh fetch's read-back of what the shared state holds for this node's own branch, never off the local clock — the read that went missing is what let both laptop nodes report themselves fresh for four days on 2026-08-08 while publishing nothing.",
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "default": 30,
+      "x-docs": {
+        "readme": "Minutes a node's last confirmed publication into the shared state may age before the dashboard's fleet strip (and `scripts/doctor.sh`) call it stale, applied identically to a peer's row and to a node's own. Roughly three missed heartbeat/fetch cycles at the shipped cadence.",
+        "spec": "The dashboard fleet strip's (and `scripts/doctor.sh`'s) tolerance for a node's last confirmed publication into the shared state (`lib/fleet.sh`'s `fleet_publication_status`, requirement 2.5, #602) before it turns stale: three missed heartbeat/fetch cycles at the shipped cadence, not clock jitter — applied identically to a peer's row and to a node's own, so the two implementations that used to compute this (a hardcoded literal for peers, a hardcoded `false` for self) can no longer disagree.",
+        "value": {
+          "spec": "30 min"
+        }
+      }
+    },
     "dashboard_refresh_seconds": {
       "description": "How often an open dashboard tab reloads to pick up freshly-written data. Match it to the heartbeat cadence.",
       "type": "number",

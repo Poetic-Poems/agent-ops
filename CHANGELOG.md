@@ -2476,6 +2476,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   issue`'s live open-issue dedup) to a new same-detail run and is then
   retired out from under it, closing the alarm for that run's entire
   remaining life.
+- A node's freshness is now a fact about what it has **published**, never
+  about its own clock (agent-ops#602): on 2026-08-08 both laptop nodes
+  reported themselves fresh for four days while `state-sync.sh push` was
+  failing the whole time, because the dashboard's self row was built from
+  `date` and a hardcoded `false` rather than read back from anywhere.
+  `state-sync.sh fetch` now reads back this node's own branch — already
+  brought down by the same fetch that materialises every peer's — into a
+  local cache, `.state-sync-published.json`; `lib/fleet.sh`'s new
+  `fleet_publication_status` applies the identical verdict (fresh/stale/
+  unknown) to that cache for self and to a peer's `heartbeat.json` alike, so
+  the two can never disagree. The threshold is now `node_stale_after_minutes`
+  (default 30) rather than a literal `1800` buried in the dashboard script.
+  `scripts/doctor.sh` gains a matching check: `warn` when this node has never
+  confirmed a publication yet (not itself a fault), `fail` once a
+  once-confirmed publication has gone stale — distinct from a genuinely idle
+  node, which still publishes a heartbeat on its own schedule regardless of
+  whether it has run a cycle.
 
 ### Changed
 

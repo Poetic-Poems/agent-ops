@@ -1589,11 +1589,17 @@
     var providerUnreachable = providerUnreachableLine(n);
     if (providerUnreachable) card.appendChild(providerUnreachable);
 
-    card.appendChild(el("div", {class:"hb" + (n.stale ? " stale" : ""),
+    // This line is about the freshness of the VERSION/compose/image info above
+    // it, which for self is always read live regardless of n.stale (self's own
+    // publication verdict, agent-ops#602, is a separate fact — shown by the
+    // card's own red border, nodestale — not by this line, whose text never
+    // changes for self and so must not carry the "stale" style either).
+    var staleMinutes = Math.max(1, +((D.config || {}).node_stale_after_minutes) || 30);
+    card.appendChild(el("div", {class:"hb" + (!n.self && n.stale ? " stale" : ""),
       title: n.self ? "read from this node's own lock and log"
                     : "derived from the state this peer last pushed — no fresher than its heartbeat",
       text: n.self ? "this node — read live"
-           : n.stale ? "STALE — last push >30 min ago"
+           : n.stale ? "STALE — last push >" + staleMinutes + " min ago"
            : n.heartbeat_age_s == null ? "no heartbeat"
            : "as of its last push, " + fmtAgo(n.heartbeat_ts)}));
 
@@ -3035,12 +3041,18 @@
         el("span", {class:"sub", text: lsub})
       ]));
     }
+    // A node's own row can read stale here exactly like a peer's
+    // (fleet_publication_status, agent-ops#602): self obeys the identical
+    // publication-freshness rule rather than being definitionally fresh, so
+    // the banner names "this node" instead of a peer's name where it applies.
     var staleNodes = fleetNodes().filter(function (n) { return n.stale; });
     if (staleNodes.length) {
+      var staleMinutes = Math.max(1, +((D.config || {}).node_stale_after_minutes) || 30);
       banners.appendChild(el("div", {class:"banner amber"}, [
-        el("span", {text: "⚠ Peer state is stale."}),
-        el("span", {class:"sub", text: staleNodes.map(function (n) { return n.node; }).join(", ") +
-          " last pushed more than 30 minutes ago — the fleet view may lag; check state-sync on those nodes."})
+        el("span", {text: "⚠ Node state is stale."}),
+        el("span", {class:"sub", text: staleNodes.map(function (n) { return n.self ? "this node" : n.node; }).join(", ") +
+          " last confirmed publishing into the shared state more than " + staleMinutes +
+          " minute(s) ago — the fleet view may lag; check state-sync there."})
       ]));
     }
     // The unattended doctor pass (agent-ops#543): a `fail` earns a banner the
@@ -3413,7 +3425,9 @@
       title: doubted.map(function (n) { return n.node + ": " + livenessDoubt(n); }).join("; "),
       text: doubted.length + " may be dead"}));
     if (stale.length) live.appendChild(el("span", {class:"badge b-red", style:"margin-left:8px",
-      title: stale.map(function (n) { return n.node; }).join(", ") + " last pushed more than 30 minutes ago",
+      title: stale.map(function (n) { return n.self ? "this node" : n.node; }).join(", ") +
+        " last confirmed publishing into the shared state more than " +
+        Math.max(1, +((D.config || {}).node_stale_after_minutes) || 30) + " minute(s) ago",
       text: stale.length + " stale"}));
   }
 
