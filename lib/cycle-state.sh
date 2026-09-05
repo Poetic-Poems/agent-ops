@@ -250,6 +250,42 @@ void_object_closed_items() {
   printf '%s' "$out"
 }
 
+# decision_vetoes_processed_items [LOG_FILE]
+# Print, as a JSON array of {repo, item}, every `pw::decision` decision-log
+# issue requirement 937's veto sweep has already handled — logged
+# `decision-vetoed` for. `item` here is the *log issue's own number*
+# (stringified), not the original work item's ref: one work item's decision
+# could in principle be re-decided and re-vetoed later under a fresh log
+# issue, and keying on the log issue number, exactly like
+# `void_object_closed_items` keys on the void'd object above, is what lets
+# `scripts/sweep-decision-vetoes.sh` skip only the veto instance it already
+# processed rather than every veto this item will ever have.
+#
+# This is the sweep's own idempotency (agent-ops#937's "once, not every
+# cycle"): without it, an open (reopened) `pw::decision` issue would be
+# re-detected, re-logged and re-acted on — a fresh needs-refinement block, a
+# fresh comment, a fresh draft flip — on every cycle for as long as a human
+# leaves it open before commenting their own decision and closing it again.
+# `decision-vetoed` is a fact, not a state with a clearing event: once a veto
+# has been recorded for a given log issue, it stays recorded, so the latest
+# occurrence (there should only ever be one) is enough.
+decision_vetoes_processed_items() {
+  local src="${1:--}" out=""
+  local jq_prog='
+    [ .[] | select(.event == "decision-vetoed"
+                   and (.repo // "") != "" and (.issue_number // "") != "")
+      | {repo, item: (.issue_number | tostring)} ] | unique'
+  if [[ "$src" == "-" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' 2>/dev/null \
+      | jq -sc "$jq_prog" 2>/dev/null || true)"
+  elif [[ -s "$src" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null \
+      | jq -sc "$jq_prog" 2>/dev/null || true)"
+  fi
+  [[ -n "$out" ]] || out='[]'
+  printf '%s' "$out"
+}
+
 # void_retired_items [LOG_FILE]
 # Print, as a JSON array of {repo, item, ts}, the most recent `void-retired`
 # event for every {repo, item} pair one was ever recorded against (requirement
@@ -683,7 +719,9 @@ DECISIONS_MAP_JQ='
       .[$d.repo][($d.item | tostring)] =
         {ts: ($d.ts // ""), decision: ($d.decision // ""), rationale: ($d.rationale // "")}
         + (if ($d.options_considered // "") == "" then {} else {options_considered: $d.options_considered} end)
-        + (if ($d.comment_url // "") == "" then {} else {comment_url: $d.comment_url} end))
+        + (if ($d.comment_url // "") == "" then {} else {comment_url: $d.comment_url} end)
+        + (if ($d.issue_number // "") == "" then {} else {issue_number: $d.issue_number} end)
+        + (if ($d.issue_url // "") == "" then {} else {issue_url: $d.issue_url} end))
 '
 
 # decisions_map [LOG_FILE]

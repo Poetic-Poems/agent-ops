@@ -1472,6 +1472,19 @@ one further pass beyond that cap, each time you do. The same question a
 second time still comes to you, on the same terms `adjudicate-first`'s own
 bound already uses.
 
+**Every `decide` verdict also files a closed, unassigned issue** labelled
+`pw::decision` — a durable log of the decision, not a further ask — with the
+decision, the rationale and the options considered. Reopen it to veto the
+decision: the pipeline re-blocks the item, comments on it, flips any open
+pull request for it back to draft, and waits for your own decision, posted
+as a comment on the reopened issue, before you close it again. No window —
+a reopen is honoured whenever it comes. If the item has already merged or
+closed by the time you veto it, there is nothing left to re-block, so the
+pipeline instead files a fresh "revisit: …" issue quoting your comment. Every
+decision taken in the last 7 days shows on the dashboard's Decisions panel,
+vetoed ones marked as such, and `--status` carries a one-line count of
+decisions taken in the last 24h.
+
 **Closing that issue is the whole protocol.** Do the thing it asks, close it, and
 say nothing: the next cycle notices the closure, the Enabler re-checks the item
 against reality, and the work resumes (or the issue's thread gets a note saying

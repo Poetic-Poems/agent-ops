@@ -100,6 +100,12 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 # and a function call resolves at run time regardless of source order — this
 # position is for a reader, not the interpreter.
 . "$SCRIPT_DIR/lib/standdown.sh"
+# shellcheck source=lib/decision-veto.sh
+# After lib/eligibility.sh (compute_band_eligibility) and lib/candidate-select.sh
+# (record_needs_refinement_block): run_decision_veto_sweep is called after both
+# have run, deliberately later than run_standdown_checks's own sweeps — see its
+# own header for why.
+. "$SCRIPT_DIR/lib/decision-veto.sh"
 # shellcheck source=lib/toggle.sh
 . "$SCRIPT_DIR/lib/toggle.sh"
 # shellcheck source=lib/merge-budget.sh
@@ -1698,6 +1704,13 @@ compute_band_eligibility
 compute_enabler_eligible_set
 prefetch_refiner_sources
 compute_refiner_candidates
+
+# --- Decision-veto sweep (agent-ops#937) ---
+# Here, not inside run_standdown_checks above: `record_needs_refinement_block`
+# needs `blocked_json`, which compute_skip_lists (called above, in step 3) has
+# only just set — run_standdown_checks runs before that. See
+# lib/decision-veto.sh's own header.
+run_decision_veto_sweep
 
 # --- 2.2a Back-pressure, decided (requirement 2.2a) ---
 # Deferred from step 2.2 until the sources were gathered. Back-pressure's stated

@@ -390,6 +390,39 @@ assert_eq "  ... carrying the escape's own reason" \
   "touched protected path(s): lib/landing.sh" \
   "$(jq -r '.landings.armed[] | select(.pr_url == "https://github.com/acme/widgets/pull/1") | .audit_reason' <<<"$edata")"
 
+# --- The Decisions panel (agent-ops#937) -------------------------------------
+# Two decision-taken events in the 7-day window, one followed by a
+# decision-vetoed event naming the same log issue number — the fixture the
+# acceptance check asks for. A third decision-taken event outside the window
+# is included to prove it is excluded rather than merely never having tested
+# the window at all.
+dec="$(new_home nodeDecisions)"
+dec_now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+dec_recent_iso="$(date -u -d '-1 day' +%Y-%m-%dT%H:%M:%SZ)"
+dec_stale_iso="$(date -u -d '-30 days' +%Y-%m-%dT%H:%M:%SZ)"
+{
+  printf '{"ts":"%s","cycle":"c1","node":"nodeDecisions","event":"decision-taken","repo":"acme/widgets","item":"41","decision":"use option A","rationale":"cheaper","issue_number":901,"issue_url":"https://github.com/acme/widgets/issues/901"}\n' "$dec_now_iso"
+  printf '{"ts":"%s","cycle":"c1","node":"nodeDecisions","event":"decision-vetoed","repo":"acme/widgets","item":"41","issue_number":901,"issue_url":"https://github.com/acme/widgets/issues/901","by":"warwickallen"}\n' "$dec_recent_iso"
+  printf '{"ts":"%s","cycle":"c1","node":"nodeDecisions","event":"decision-taken","repo":"acme/widgets","item":"55","decision":"use option B","rationale":"reversible","issue_number":902,"issue_url":"https://github.com/acme/widgets/issues/902"}\n' "$dec_now_iso"
+  printf '{"ts":"%s","cycle":"c1","node":"nodeDecisions","event":"decision-taken","repo":"acme/widgets","item":"12","decision":"a decision outside the window","issue_number":800,"issue_url":"https://github.com/acme/widgets/issues/800"}\n' "$dec_stale_iso"
+} > "$dec/.local/state/poetic-agents/log.jsonl"
+run_publish "$dec"
+ddata="$(data_of "$dec")"
+
+assert_eq "the window defaults to 7 days" "7" "$(jq -r '.decisions.window_days' <<<"$ddata")"
+assert_eq "exactly the two in-window decisions are reported" "2" \
+  "$(jq '.decisions.decisions | length' <<<"$ddata")"
+assert_eq "the stale decision outside the window is excluded" "0" \
+  "$(jq '[.decisions.decisions[] | select(.item == "12")] | length' <<<"$ddata")"
+assert_eq "the vetoed decision is marked vetoed" "true" \
+  "$(jq -r '.decisions.decisions[] | select(.item == "41") | .vetoed' <<<"$ddata")"
+assert_eq "  ... naming its own decision text" "use option A" \
+  "$(jq -r '.decisions.decisions[] | select(.item == "41") | .decision' <<<"$ddata")"
+assert_eq "  ... and its log issue" "https://github.com/acme/widgets/issues/901" \
+  "$(jq -r '.decisions.decisions[] | select(.item == "41") | .issue_url' <<<"$ddata")"
+assert_eq "the un-vetoed decision is not marked vetoed" "false" \
+  "$(jq -r '.decisions.decisions[] | select(.item == "55") | .vetoed' <<<"$ddata")"
+
 # --- The GitHub API budget card (issue #1090) --------------------------------
 # Real bash/jq aggregation over `github-budget`/`guard-degraded`/`stand-down`
 # events, the same source scripts/github-budget-report.sh sums — no new `gh`
@@ -2989,7 +3022,7 @@ assert_eq "and the cycle window is cached per cycle" "1" \
 sleep 1   # generated_at has one-second resolution and must be seen to move
 b798_fast
 fast798="$(data_of "$f798")"
-for _k in counts blocked void landings config github_budget; do
+for _k in counts blocked void landings decisions config github_budget; do
   assert_eq "a fast build carries .$_k forward unchanged" \
     "$(jq -Sc ".$_k" <<<"$full798")" "$(jq -Sc ".$_k" <<<"$fast798")"
 done

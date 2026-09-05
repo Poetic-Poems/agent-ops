@@ -92,6 +92,10 @@
 # `needs-refinement` (prompts/refiner.md, requirement 39d), so a configurable
 # name here would let a renamed label silently stop being read the same way
 # everywhere this system checks for it.
+# `pw::decision` (agent-ops#937) is fixed for the same reason again: it is
+# what `scripts/sweep-decision-vetoes.sh` searches for across every
+# configured repository to find decision logs to check for a veto (a
+# reopen), so a renamed label would silently stop being swept.
 
 # labels_catalogue CONFIG_FILE SCHEMA_FILE ROLE [REVIEW_PR_LABEL]
 # Print the labels a repository in ROLE needs, one per line, as
@@ -142,6 +146,8 @@ labels_catalogue() {
                "Tech debt: a known gap or shortcut with a knowable fix. Managed by Pullwright."),
          entry("pw::owner-decision"; "5319e7";
                "Filed with an owner-only choice still open; the Refiner escalates rather than guessing"),
+         entry("pw::decision"; "5319e7";
+               "A tactical decision the pipeline took under decide-tactical; reopen to veto"),
          entry("open-question"; "d4c5f9";
                "Reviewer-projected: an open scope question blocks unattended landing until adjudicated (D18 #668)"),
          entry("complexity:low"; "c2e0c6";
@@ -155,7 +161,9 @@ labels_catalogue() {
                "Raised by the project-review pipeline") ]
      elif $role == "escalation" then
        [ entry(.enabler_escalation_label; "b60205";
-               "Raised by the Enabler: a blocked item that escalates") ]
+               "Raised by the Enabler: a blocked item that escalates"),
+         entry("pw::decision"; "5319e7";
+               "A tactical decision the pipeline took under decide-tactical; reopen to veto") ]
      else [] end)
     | .[] | @tsv
   ' <<<"$defaulted" 2>/dev/null || true

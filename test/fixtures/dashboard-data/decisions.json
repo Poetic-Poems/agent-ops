@@ -1,0 +1,185 @@
+{
+  "generated_at": "@now",
+  "node": "poetic-1",
+  "config": {
+    "timeout_coordinator": 15,
+    "timeout_implementer": 90,
+    "timeout_reviewer": 30,
+    "timeout_enabler": 30,
+    "lock_stale_after": 4,
+    "dashboard_refresh_seconds": 5
+  },
+  "status": {
+    "switch": {
+      "disabled": false
+    },
+    "limit": {
+      "active": false
+    },
+    "running": false,
+    "lock": null,
+    "current": null,
+    "last_cycle": null
+  },
+  "counts": {
+    "spend_today_usd": 0,
+    "spend_total_usd": 0,
+    "failures_shown": 0,
+    "cycles_shown": 0,
+    "prs_reached_ready": 0,
+    "by_day": [],
+    "by_model": [],
+    "by_actor": []
+  },
+  "cycles": [],
+  "blocked": [],
+  "void": [
+    {
+      "item": "TD-PPagop-26071801",
+      "repo": "Poetic-Poems/agent-ops",
+      "ts": "@ago:11d",
+      "stage": "implementer",
+      "detail": "the eleventh-newest void, past the cap",
+      "evidence": "hidden until the control is used"
+    },
+    {
+      "item": "TD-PPagop-26071802",
+      "repo": "Poetic-Poems/agent-ops",
+      "ts": "@ago:1h",
+      "stage": "implementer",
+      "detail": "the newest void, and the one whose reason runs long enough to be clipped: the Enabler writes the whole story of why an item was retired into this field, which is why the cap is a clip that opens rather than a truncation that cannot",
+      "evidence": "already done in #144"
+    },
+    {
+      "item": "TD-PPagop-26071803",
+      "repo": "Poetic-Poems/agent-ops",
+      "ts": "@ago:2h",
+      "stage": "coordinator",
+      "detail": "the file it names no longer exists",
+      "evidence": "removed in #145"
+    },
+    {
+      "item": "TD-PPagop-26071804",
+      "repo": "Poetic-Poems/poetic",
+      "ts": "@ago:3h",
+      "stage": "implementer",
+      "detail": "the flag it asks for was never shipped",
+      "evidence": ""
+    },
+    {
+      "item": "TD-PPagop-26071805",
+      "repo": "Poetic-Poems/poetic",
+      "ts": "@ago:4h",
+      "stage": "reviewer",
+      "detail": "superseded by the rewrite",
+      "evidence": ""
+    },
+    {
+      "item": "TD-PPagop-26071806",
+      "repo": "Poetic-Poems/agent-ops",
+      "ts": "@ago:5h",
+      "stage": "implementer",
+      "detail": "duplicate of an item already closed",
+      "evidence": ""
+    },
+    {
+      "item": "TD-PPagop-26071807",
+      "repo": "Poetic-Poems/agent-ops",
+      "ts": "@ago:6h",
+      "stage": "coordinator",
+      "detail": "the premise is false — that path is generated",
+      "evidence": ""
+    },
+    {
+      "item": "TD-PPagop-26071808",
+      "repo": "Poetic-Poems/poetic-fiddle",
+      "ts": "@ago:7h",
+      "stage": "implementer",
+      "detail": "fixed upstream before the cycle reached it",
+      "evidence": ""
+    },
+    {
+      "item": "TD-PPagop-26071809",
+      "repo": "Poetic-Poems/poetic-fiddle",
+      "ts": "@ago:8h",
+      "stage": "reviewer",
+      "detail": "the test it asks for already exists",
+      "evidence": ""
+    },
+    {
+      "item": "TD-PPagop-26071810",
+      "repo": "Poetic-Poems/agent-ops",
+      "ts": "@ago:9h",
+      "stage": "implementer",
+      "detail": "the config key was renamed two releases ago",
+      "evidence": ""
+    },
+    {
+      "item": "TD-PPagop-26071811",
+      "repo": "Poetic-Poems/agent-ops",
+      "ts": "@ago:10h",
+      "stage": "coordinator",
+      "detail": "the tenth-newest void, the last one inside the cap",
+      "evidence": ""
+    },
+    {
+      "item": "TD-PPagop-26071812",
+      "repo": "Poetic-Poems/agent-ops",
+      "ts": "@ago:12d",
+      "stage": "implementer",
+      "detail": "the twelfth-newest void, past the cap",
+      "evidence": "hidden until the control is used"
+    }
+  ],
+  "github": {
+    "ok": true,
+    "fetched_at": "@ago:1m",
+    "prs": [],
+    "pr_index": {},
+    "inputs": {}
+  },
+  "log_tail": [],
+  "cron_tail": [
+    "30 * * * *  /app/agent-cycle.sh"
+  ],
+  "max_open_agent_prs": 3,
+  "landings": {
+    "window_hours": 24,
+    "generated_at": "@now",
+    "armed": [],
+    "refused": [],
+    "budget": [
+      {
+        "repo": "Poetic-Poems/agent-ops",
+        "cap": 8,
+        "consumed": 0,
+        "unlimited": false,
+        "remaining": 8
+      }
+    ]
+  },
+  "decisions": {
+    "window_days": 7,
+    "generated_at": "@now",
+    "decisions": [
+      {
+        "ts": "@ago:2h",
+        "repo": "Poetic-Poems/agent-ops",
+        "item": "41",
+        "decision": "use option A: read the disk gate off state_dir too",
+        "issue_number": 901,
+        "issue_url": "https://github.com/Poetic-Poems/agent-ops/issues/901",
+        "vetoed": true
+      },
+      {
+        "ts": "@ago:1h",
+        "repo": "Poetic-Poems/agent-ops",
+        "item": "55",
+        "decision": "use option B: cap the retry count at 3",
+        "issue_number": 902,
+        "issue_url": "https://github.com/Poetic-Poems/agent-ops/issues/902",
+        "vetoed": false
+      }
+    ]
+  }
+}

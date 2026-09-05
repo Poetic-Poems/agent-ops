@@ -165,6 +165,27 @@ stage_health_status_report() {
   stage_health_status_lines "$state_dir/.stage-health.json"
 }
 
+# The `--status` line counting `decide-tactical` decisions taken fleet-wide in
+# the last 24h (agent-ops#937) — "where the owner sees them" 3 of that issue's
+# own list, alongside the dashboard's Decisions panel. Built the same way
+# `current_limit_record` above is: the management commands run long before
+# the cycle's own union log snapshot exists, so this reads the fleet log
+# fresh rather than reusing one.
+decisions_status_report() {
+  local count now_iso
+  now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  count="$(fleet_logs "$state_dir" "$(fleet_peers_dir "$workspace_root")" log.jsonl \
+    | jq -sc --arg now "$now_iso" '
+        ($now | fromdateiso8601) as $now_s
+        | ($now_s - 86400) as $from_s
+        | [ .[] | select(.event == "decision-taken")
+                | select(((.ts // "") | length) > 0
+                         and (try (.ts | fromdateiso8601) catch 0) >= $from_s) ]
+        | length' 2>/dev/null)"
+  [[ "$count" =~ ^[0-9]+$ ]] || count=0
+  printf 'decisions: %s taken in the last 24h\n' "$count"
+}
+
 # run_manage_command — the `--disable`/`--enable`/`--status`/`--clear-limit`/
 # `--kill-merge-autonomy` handling itself, called once from `agent-cycle.sh`
 # in place of the inline block it replaces (#771). Returns without doing
@@ -179,6 +200,7 @@ if [[ -n "$MANAGE_ACTION" ]]; then
       limit_status_report
       merge_autonomy_status_report
       stage_health_status_report
+      decisions_status_report
       exit 0
       ;;
     disable)

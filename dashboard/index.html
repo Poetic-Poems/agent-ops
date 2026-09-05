@@ -1895,6 +1895,43 @@
     return el("div", {}, body);
   }
 
+  // Decisions (agent-ops#937): every `decide-tactical` decision taken in the
+  // window, and whether it was vetoed (a human reopened its own closed
+  // `pw::decision` log issue). The log-issue link is the lever — the reason
+  // this panel exists at all rather than leaving the decision only in
+  // log.jsonl — so it is rendered even when a decision's own log issue
+  // failed to file (no `issue_url`), the same "still show the row, note what
+  // is missing" rule the landings panel's own anomaly flag uses.
+  function decisionsPanel() {
+    var Dec = D.decisions;
+    if (!Dec || Dec.decisions == null) {
+      return el("div", {class:"panel"}, el("div", {class:"empty",
+        text:"The decisions digest could not be assembled this tick — this is not the same as no decisions having been taken."}));
+    }
+    var decisions = Dec.decisions || [];
+    var days = Dec.window_days || 7;
+    if (!decisions.length) {
+      return el("div", {class:"panel"}, el("div", {class:"empty",
+        text:"No decide-tactical decisions were taken in the last " + days + " days."}));
+    }
+    var rows = decisions.map(function (d) {
+      var logCell = d.issue_url
+        ? el("a", {href: d.issue_url, target:"_blank", text: "#" + (d.issue_number || "?")})
+        : el("span", {class:"muted", text:"not filed"});
+      return el("tr", {}, [
+        el("td", {class:"muted", text: fmtAgo(d.ts)}),
+        el("td", {class:"mono", text: (d.repo || "?").split("/")[1] || d.repo || "?"}),
+        el("td", {class:"mono", text: d.item || "?"}),
+        el("td", {class:"wrap", text: d.decision || "—"}),
+        el("td", {}, logCell),
+        el("td", {}, d.vetoed
+          ? el("span", {class:"badge b-red", text:"vetoed"})
+          : el("span", {class:"badge b-green", text:"stands"}))
+      ]);
+    });
+    return tableOf(["Taken","Repo","Item","Decision","Log issue","Status"], rows);
+  }
+
   // Revert rate by repository (D18 issue #579): scripts/publish-revert-
   // rate.sh's own three figures per repository — rolling window (the day-of
   // operational signal), cumulative-since-baseline (what Stage 2's own exit
@@ -3290,6 +3327,12 @@
     // requests, because it is the same question one step later: these are the
     // pull requests that stopped being anybody's to merge.
     app.appendChild(sectionOf("Autonomous landings (last " + (((D.landings || {}).window_hours) || 24) + " h)", landingsPanel()));
+
+    // ---------- decisions ----------
+    // Directly under the landings it sits beside in the D18 pattern: both are
+    // audits of an autonomous act a human did not approve inline — a landing
+    // logged and audited, a decision logged and vetoable.
+    app.appendChild(sectionOf("Decisions (last " + (((D.decisions || {}).window_days) || 7) + " days)", decisionsPanel()));
 
     // ---------- revert rate by repository ----------
     // Directly under the landings it audits: D18's Stage 2 exit criterion
