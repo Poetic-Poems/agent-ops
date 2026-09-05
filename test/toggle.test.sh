@@ -923,7 +923,7 @@ assert_eq "the fleet flag is actually gone, not just locally forgotten" "0" \
 # --this-node is a modifier on --disable/--enable only.
 this_status_out="$(run_node "$a_home" agent-cycle.sh --status --this-node 2>&1)"
 assert_eq "--this-node with --status is a usage error" "64" "$?"
-assert_contains "and says so" "only modifies --disable or --enable" "$this_status_out"
+assert_contains "and says so" "only modifies --disable, --drain or --enable" "$this_status_out"
 
 # --- `scope` (requirement 2.3): the local half of a fleet-wide --disable is a
 # mirror, not a second decision ----------------------------------------------
