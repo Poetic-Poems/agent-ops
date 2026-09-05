@@ -187,18 +187,23 @@ a node updates by pulling a new image rather than by pulling a branch.
   push`, which publishes this node's state and heartbeat to its own branch,
   and a `state-sync.sh fetch`, which materialises every peer's for the union
   readers; one log-rotation line (requirement 2.6), `rotate-logs.sh`,
-  which bounds the six logs those schedules append to; one
+  which bounds the seven logs those schedules append to; one
   unattended-doctor line (requirement 2.6a), `doctor.sh --unattended`, which
   runs the same configuration and GitHub checks an operator would run by
-  hand, once an hour, with nobody watching; and one revert-rate line
+  hand, once an hour, with nobody watching; one revert-rate line
   (requirement 2.6b), `publish-revert-rate.sh`, which runs the merged-PR
-  miner over a bounded window once a day, with nobody watching either. Every
+  miner over a bounded window once a day, with nobody watching either; and
+  one tech-debt-archive line (requirement 2.6c), `publish-tech-debt-
+  archive.sh`, which mirrors every `pw::type:tech-debt`-labelled issue into
+  the state repository once a day, with nobody watching that either. Every
   cadence named above — the heartbeat and both fleet lines' intervals, the
-  log-rotation minute, and the doctor and revert-rate passes' own offsets —
-  comes from `config.json`'s `schedule` (`heartbeat_minutes`,
-  `state_sync_push_minutes`, `state_sync_fetch_minutes`, `log_rotation_minute`,
-  `doctor_offset_minutes`, `revert_rate_hour`, `revert_rate_offset_minutes`;
-  see Configuration), baked at 5, 5, 7, 19, 44, 2 and 51 in the checked-in
+  log-rotation minute, and the doctor, revert-rate and tech-debt-archive
+  passes' own offsets — comes from `config.json`'s `schedule`
+  (`heartbeat_minutes`, `state_sync_push_minutes`, `state_sync_fetch_minutes`,
+  `log_rotation_minute`, `doctor_offset_minutes`, `revert_rate_hour`,
+  `revert_rate_offset_minutes`, `tech_debt_archive_hour`,
+  `tech_debt_archive_offset_minutes`; see Configuration), baked at 5, 5, 7,
+  19, 44, 2, 51, 4 and 37 in the checked-in
   config. The same redirections into `state_dir` apply, so the dashboard's log-derived
   views work identically. It deliberately omits the laptop's personal
   `update-main-branches.sh` entry: that refreshes interactive checkouts, and
@@ -765,7 +770,7 @@ and the schema must carry every one of them.
 | `cycles_retained` | *(unset)* | Cycle directories kept in the replicated mirror — bounds a repository that is force-pushed after every cycle. A span of history, not a literal cycle count (requirement 1d): derived from the mean gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`) to hold the ~8.3 days 200 cycles represented at the historical hourly cadence; a configured value floors the derivation rather than replacing it, the same shape `lock_stale_after` (requirement...[continued below](#extended-notes-cycles_retained) |
 | `state_local_cycles_retained` | *(unset)* | Cycle and review directories the node's *own* `state_dir` keeps; the same push that replicates prunes to it (requirement 2.5). Deliberately far above `cycles_retained`, so the local machine is always the longer record, with a floor of one protecting the cycle being recorded. A span of history, not a literal cycle count (requirement 1d): derived from the mean gap between cycles (`schedule.cycle_interval_minutes`, `cycle_hours`, `excluded_minutes`) to hold the ~41.7 days 1000...[continued below](#extended-notes-state_local_cycles_retained) |
 | `state_local_streams_retained` | *(unset)* | Cycle and review directories whose derived files are kept — the stage event streams (`<stage>.stream.jsonl`, requirement 4d) and the fleet-log snapshot (`.fleet-log.jsonl`, requirement 2.5); the push that replicates prunes to it (requirement 2.5). Far below `state_local_cycles_retained` because each is a different order of size from the record holding it — a cycle directory without them is kilobytes, one Reviewer stream megabytes, one snapshot the whole fleet's history to...[continued below](#extended-notes-state_local_streams_retained) |
-| `log_retained_bytes` | `2000000` | Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `doctor.log`, `revert-rate.log`, `cron.log` and `review-cron.log` (requirement 2.6). `log.jsonl`, `review-log.jsonl` and `revert-rate.jsonl` are never rotated regardless of size. `ROTATE_LOGS_RETAINED_BYTES` overrides it for tests. |
+| `log_retained_bytes` | `2000000` | Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `doctor.log`, `revert-rate.log`, `tech-debt-archive.log`, `cron.log` and `review-cron.log` (requirement 2.6). `log.jsonl`, `review-log.jsonl` and `revert-rate.jsonl` are never rotated regardless of size. `ROTATE_LOGS_RETAINED_BYTES` overrides it for tests. |
 | `log_generations` | `3` | Rotated generations of each log kept beside the live file (`<name>.1` … `<name>.<log_generations>`), floored at one. `ROTATE_LOGS_GENERATIONS` overrides it for tests. |
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
 | `implementer_model_default` | `claude-sonnet-5` | Any change that affects runtime behaviour. |
@@ -857,6 +862,8 @@ and the schema must carry every one of them.
 | `schedule.doctor_offset_minutes` | `44` | Minutes past `CYCLE_MINUTE` (mod 60) the hourly `doctor.sh --unattended` pass's minute is set to, jittering it across the fleet the same way `review_offset_minutes` jitters the review tick. |
 | `schedule.revert_rate_hour` | `2` | The hour the daily revert-rate publishing tick fires. |
 | `schedule.revert_rate_offset_minutes` | `51` | Minutes past `CYCLE_MINUTE` (mod 60) the daily revert-rate publishing tick's minute is set to, jittering it across the fleet the same way `doctor_offset_minutes` jitters the unattended doctor pass. |
+| `schedule.tech_debt_archive_hour` | `4` | The hour the daily tech-debt archive publishing tick fires. |
+| `schedule.tech_debt_archive_offset_minutes` | `37` | Minutes past `CYCLE_MINUTE` (mod 60) the daily tech-debt archive publishing tick's minute is set to, jittering it across the fleet the same way `revert_rate_offset_minutes` jitters the revert-rate publish. |
 | `revert_rate_baseline` | `{"source": "docs/reviews/2026-08-15-merge-autonomy-baseline.md", "generated": "2026-08-15", "repos": [{"slug": "Poetic-Poems/poetic", "count": 84, "reverts": 0, "follow_up_fixes": 31}, {"slug": "Poetic-Poems/poetic-fiddle", "count": 119, "reverts": 0, "follow_up_fixes": 44}, {"slug": "Poetic-Poems/agent-ops", "count": 120, "reverts": 0, "follow_up_fixes": 106}]}` | The D18 Stage 0 merge-autonomy baseline (docs/reviews/2026-08-15-merge-autonomy-baseline.md §6), copied here once as a fixed reference rather than re-derived at runtime (issue #579): `scripts/publish-revert-rate.sh` compares every window's revert-or-follow-up rate against these figures. A repository absent from `repos` reports its baseline comparison `unavailable` rather than failing. |
 <!-- config-table:end -->
 
@@ -2883,7 +2890,11 @@ implements.
    revert-rate publishing tick's own local text output and
    cumulative-since-baseline cache (`revert-rate.log`,
    `revert-rate-cumulative-state.json` — requirement 2.6b, the structured
-   `revert-rate.jsonl` excepted, below), the stage event streams
+   `revert-rate.jsonl` excepted, below), the tech-debt archive publishing
+   tick's own local text output (`tech-debt-archive.log` — requirement
+   2.6c, which has no structured sibling to except, since what it publishes
+   lands directly in the state repository's own `tech-debt-archive/` tree),
+   the stage event streams
    (`*.stream.jsonl`, requirement 4d), the fleet-log snapshot
    (`.fleet-log.jsonl`, "The union" below), the mirror's own durable
    rebuild record (`.mirror-rebuild-state.json`, "Mirror integrity" above),
@@ -2907,7 +2918,12 @@ implements.
    are each a local pass's own text
    output, superseded for a reader by the structured sibling that pass also
    writes (`.doctor-status.json` locally, `revert-rate.jsonl` fleet-wide —
-   the asymmetry is exactly why one is excluded and the other is not); a
+   the asymmetry is exactly why one is excluded and the other is not);
+   `tech-debt-archive.log` is excluded on the same "local pass's own text
+   output" reasoning, but with no structured sibling to be superseded by at
+   all — what it publishes goes straight into the state repository's own
+   `tech-debt-archive/` tree, so nothing about it is fleet-wide data in the
+   first place; a
    copied `.stage-health.json` would answer for a computation nobody on the
    peer ran, on the identical reasoning as `.image-drift-cache.json` — but
    unlike that cache, its *content* is meant to reach peers regardless, which
@@ -3249,9 +3265,9 @@ implements.
 2.6. **Log rotation.** Requirement 2.5 bounds the *records* in `state_dir` —
    `cycles/` and `reviews/` are pruned on every push — but its logs are
    appended to forever otherwise. `scripts/rotate-logs.sh`, on its own
-   crontab line independent of the pipelines, bounds six of them:
+   crontab line independent of the pipelines, bounds seven of them:
    `dashboard.log`, `state-sync.log`, `doctor.log`, `revert-rate.log`,
-   `cron.log` and `review-cron.log`. Each
+   `tech-debt-archive.log`, `cron.log` and `review-cron.log`. Each
    is renamed to `<name>.1` (an existing `.1` first shifts to `.2`, and so
    on) once it reaches `log_retained_bytes`, keeping the newest
    `log_generations` generations; a fresh, empty file replaces it
@@ -3269,16 +3285,19 @@ implements.
    `DASHBOARD-SPEC.md` cron panel), `scripts/publish-dashboard.sh` reads
    `cron.log.1` too whenever the live file alone is shorter than the tail
    window, so a rotation never empties the panel. `doctor.log` (requirement
-   2.6a) and `revert-rate.log` (requirement 2.6b) are bounded here on size
-   alone, like `dashboard.log` and
-   `state-sync.log`: both are local to the node and excluded from the state
-   branch, and the dashboard reads their structured siblings
-   (`.doctor-status.json`, `revert-rate.jsonl`)
-   instead, not either text file, so nothing needs either one's tail kept
-   across a
-   rotation. `.doctor-status.json` itself is not in this rotation set at
-   all — each unattended pass overwrites it in place (`mv -f` over the
-   previous run), so it never grows.
+   2.6a), `revert-rate.log` (requirement 2.6b) and `tech-debt-archive.log`
+   (requirement 2.6c) are bounded here on size alone, like `dashboard.log`
+   and `state-sync.log`: all three are local to the node and excluded from
+   the state branch. The dashboard reads `doctor.log`'s and
+   `revert-rate.log`'s structured siblings (`.doctor-status.json`,
+   `revert-rate.jsonl`) instead of either text file, so nothing needs
+   either one's tail kept across a rotation; `tech-debt-archive.log` has no
+   such sibling at all — nothing reads it back, on this node or any other,
+   since what it publishes lands directly in the state repository's own
+   `tech-debt-archive/` tree, so it is rotated purely to keep the file
+   itself from growing unbounded. `.doctor-status.json` itself is not in
+   this rotation set at all — each unattended pass overwrites it in place
+   (`mv -f` over the previous run), so it never grows.
 2.6a. **The unattended doctor pass** (agent-ops#543). `scripts/doctor.sh
    --unattended`, on its own hourly crontab line, runs unprompted the same
    configuration and GitHub checks requirement 1b's acceptance check 1m
@@ -3435,6 +3454,71 @@ implements.
    `scripts/publish-dashboard.sh` reads the union and surfaces it as
    `revert_rate` (`docs/DASHBOARD-SPEC.md`, "Revert rate by repository"),
    reduced to the newest row per repository across every node.
+2.6c. **The tech-debt archive publishing tick** (D15 as revised, issue #878,
+   following #869/#875/#879). `scripts/publish-tech-debt-archive.sh`, on its
+   own daily crontab line, mirrors every `pw::type:tech-debt`-labelled issue,
+   per configured repository, into the state repository (`state_repo`) as
+   one JSON file per issue under `tech-debt-archive/<owner>/<repo>/
+   <number>.json` — `{number, title, state, state_reason, author, labels,
+   created_at, updated_at, closed_at, body}`, read straight off the label
+   search below. The working store (a GitHub issue) is mutable and its
+   membership of the `pw::type:tech-debt` band can change or vanish at any
+   time — an edit, a close, a relabel, a delete — so this mirror's guarantee
+   lives in the state repository's own git history rather than in the file's
+   current content: every write here is a commit on `main`, and this script
+   never deletes a file, so an issue that is later edited, closed, deleted or
+   relabelled away still has its last-archived state on record, on the
+   identical durability terms `claims/` (requirement 17a) and `fleet/*.json`
+   (requirements 2.1 and 2.3a) already rely on.
+
+   **Placement (D14).** A GitHub Actions workflow was rejected as needing its
+   own cross-repo credential for `state_repo` — a component paying for a
+   capability every node already has through its own `gh` login — and riding
+   `scripts/publish-dashboard.sh`'s 5-minute heartbeat was rejected the other
+   way: that cadence exists so the dashboard's own panels stay near-live, and
+   tech-debt volume does not move anywhere near that fast. A once-a-day
+   cadence, on its own crontab line exactly like `scripts/publish-revert-
+   rate.sh`'s (requirement 2.6b), costs this node nothing between runs and
+   needs no new secret.
+
+   **Budgeting the API cost.** Two listings per configured repository,
+   whatever the archive's size: one label search — `GET /repos/{slug}/
+   issues?labels=pw::type:tech-debt&state=all`, paginated, which doubles as
+   the empty-body audit's own source (no separate call, since the search
+   already returns each issue's body) — and one open-pull-request listing,
+   for the legacy-filing audit below. Past those two, every further call is
+   bounded by what changed, never by how much debt exists: a per-repository
+   memo of each issue's last-seen `updated_at`
+   (`tech-debt-archive/<owner>/<repo>/_index.json`, itself one more GET)
+   decides which issues are unchanged since the last run and skips them
+   outright. An issue whose `updated_at` moved costs one GET (the archive
+   file's current blob `sha`, needed for the contents API's optimistic
+   concurrency — absent when the file is new) and one PUT; the index itself
+   costs one further PUT, only when at least one issue changed.
+
+   **The audits**, both logged and neither fixed here — this script only
+   ever writes into `state_repo`, never into a target repository:
+
+   - an empty body on a `pw::type:tech-debt` issue is a data-quality defect
+     in the working store itself, read off the label search with no extra
+     call;
+   - an open pull request whose head branch starts with
+     `TECHDEBT_RECORD_BRANCH_PREFIX` (`td-record/`, `lib/tech-debt-file.sh`)
+     is a debt record filed the pre-migration way —
+     `techdebt_file_debt`'s own `tech-debt/<id>.md`-on-a-branch shape, never
+     labelled `pw::type:tech-debt` by construction — and is therefore
+     invisible to the label search above regardless of whether the filing
+     itself succeeded; flagging it is what gives an operator visibility into
+     debt this archive cannot yet mirror, until that filing path is itself
+     migrated.
+
+   Exit status is 0 iff every configured repository's label search and
+   archive writes succeeded; 1 if any repository's search failed or any
+   individual write failed — a failed write's issue keeps its old
+   `updated_at` in the index, so it is picked up and retried again on the
+   next scheduled run rather than being fabricated or silently dropped. The
+   crontab line's own `|| true` keeps a partial run from reading as a
+   crashed script, the same reasoning 2.6b's own line uses.
 2.7. **Crash-loop escalation.** A Co-Ordinator failure pins no repo/item
    (requirement 33's fields are set only after selection), so the entire
    blocked → Enabler → escalation ladder that covers item failures never
@@ -15197,8 +15281,10 @@ What exists, and the requirements each part answers to:
    run. Unit-tested against a local bare repository
    (`test/state-sync.test.sh`); must pass `shellcheck`.
 3i. `scripts/rotate-logs.sh` implementing requirement 2.6: rotates
-   `dashboard.log`, `state-sync.log`, `cron.log` and `review-cron.log` by
-   size, leaving `log.jsonl` and `review-log.jsonl` untouched. Called by its
+   `dashboard.log`, `state-sync.log`, `doctor.log`, `revert-rate.log`,
+   `tech-debt-archive.log`, `cron.log` and `review-cron.log` by
+   size, leaving `log.jsonl`, `review-log.jsonl` and `revert-rate.jsonl`
+   untouched. Called by its
    own container crontab line, independent of both pipelines. Unit-tested
    against a synthesised `state_dir` (`test/rotate-logs.test.sh`); must pass
    `shellcheck`.

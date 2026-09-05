@@ -508,7 +508,7 @@ except what the Publisher and its heartbeat write themselves (the served
 directory, `dashboard.log*`, and the `.dashboard-fingerprint`,
 `.dashboard-skips`, `.dashboard-tick-cost`, `.dashboard-payload` and
 `.dashboard-cycle-cache/` bookkeeping beside it), what the
-Publisher never reads (`state-sync.log`, `doctor.log`, and the `*.err`
+Publisher never reads (`state-sync.log`, `doctor.log`, `tech-debt-archive.log`, and the `*.err`
 sidecars), and the caches a timer rewrites with identical content — so an
 input a later panel adds is covered on the day it is added, and the failure
 direction of a mistake is a needless rebuild, never a stale page. Those caches

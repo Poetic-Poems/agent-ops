@@ -313,9 +313,16 @@ local_state_fingerprint() {
     # from mtime to content rather than dropping it.
     #
     #   not read at all — other cron entries' logs and error sidecars:
-    #     state-sync.log, doctor.log, fleet-cache/*.err, *.repo-err. Anchored
-    #     with -path, not -name, so a same-named file inside a cycle directory
-    #     is not caught by accident.
+    #     state-sync.log, doctor.log, tech-debt-archive.log, fleet-cache/*.err,
+    #     *.repo-err. Anchored with -path, not -name, so a same-named file
+    #     inside a cycle directory is not caught by accident. revert-rate.log
+    #     needs no prune of its own: every write to it lands beside a write to
+    #     revert-rate.jsonl, which already forces the rebuild a stale
+    #     revert-rate panel would need — excluding it would save nothing.
+    #     tech-debt-archive.log has no such structured sibling under
+    #     state_dir at all (what it publishes lands in the state repository's
+    #     own tech-debt-archive/ tree, never here), so without its own prune
+    #     every daily run would force one rebuild nothing on the page needs.
     #
     #   read, but rewritten on a timer with normally identical content:
     #     .image-drift-cache.json, .doctor-status.json, .dashboard-*.json and
@@ -344,6 +351,7 @@ local_state_fingerprint() {
       -path "$state_dir/.dashboard-cycle-cache" -prune -o \
       -path "$state_dir/state-sync.log" -prune -o \
       -path "$state_dir/doctor.log" -prune -o \
+      -path "$state_dir/tech-debt-archive.log" -prune -o \
       -path "$state_dir/fleet-cache" -prune -o \
       -path "$state_dir/.image-drift-cache.json" -prune -o \
       -path "$state_dir/.doctor-status.json" -prune -o \

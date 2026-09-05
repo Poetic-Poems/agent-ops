@@ -6,10 +6,10 @@
 # What matters here:
 #
 #   what rotates      dashboard.log, state-sync.log, doctor.log,
-#                     revert-rate.log, cron.log, review-cron.log and
-#                     gh-shim/ledger.ndjson (requirement 2.0e), and only once
-#                     they cross the threshold — a log still under it is left
-#                     byte-identical.
+#                     revert-rate.log, tech-debt-archive.log, cron.log,
+#                     review-cron.log and gh-shim/ledger.ndjson (requirement
+#                     2.0e), and only once they cross the threshold — a log
+#                     still under it is left byte-identical.
 #   what never does   log.jsonl, review-log.jsonl and revert-rate.jsonl are
 #                     the fleet's memory (the union readers scan them whole);
 #                     no size, however large, may rotate them.
@@ -124,6 +124,13 @@ make_log "$d/revert-rate.log" 2000
 run_rotate "$d" ROTATE_LOGS_RETAINED_BYTES=1000 ROTATE_LOGS_GENERATIONS=3
 assert_eq "the oversized revert-rate.log is renamed to .1" "2000" "$(stat -c%s "$d/revert-rate.log.1" 2>/dev/null || stat -f%z "$d/revert-rate.log.1")"
 assert_eq "  ... and the live file reappears immediately, empty" "0" "$(stat -c%s "$d/revert-rate.log" 2>/dev/null || stat -f%z "$d/revert-rate.log")"
+
+# --- tech-debt-archive.log rotates like every other diagnostic log (agent-ops#878) -
+
+make_log "$d/tech-debt-archive.log" 2000
+run_rotate "$d" ROTATE_LOGS_RETAINED_BYTES=1000 ROTATE_LOGS_GENERATIONS=3
+assert_eq "the oversized tech-debt-archive.log is renamed to .1" "2000" "$(stat -c%s "$d/tech-debt-archive.log.1" 2>/dev/null || stat -f%z "$d/tech-debt-archive.log.1")"
+assert_eq "  ... and the live file reappears immediately, empty" "0" "$(stat -c%s "$d/tech-debt-archive.log" 2>/dev/null || stat -f%z "$d/tech-debt-archive.log")"
 
 # --- A second rotation shifts .1 to .2, dropping what falls off the end ----
 d="$(new_home stack)"

@@ -8,6 +8,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- D15-as-revised's durable-ledger mitigation gains its archive mirror
+  (issue #878, following #869/#875/#879): a new daily
+  `scripts/publish-tech-debt-archive.sh`, on its own crontab line
+  (`schedule.tech_debt_archive_hour`/`tech_debt_archive_offset_minutes`),
+  mirrors every `pw::type:tech-debt`-labelled issue, per configured
+  repository, into the state repository as one JSON file per issue
+  (`tech-debt-archive/<owner>/<repo>/<number>.json` —
+  `{number, title, state, state_reason, author, labels, created_at,
+  updated_at, closed_at, body}`). The working store is a mutable GitHub
+  issue; this mirror's guarantee lives in the state repository's own git
+  history instead, since the script only ever adds or updates a file, never
+  deletes one — an issue that is later edited, closed, deleted or
+  relabelled away still has its last-archived state on record. Costs one
+  label search and one open-pull-request listing per repository per run,
+  whatever the archive's size; every further call is bounded by what
+  changed since the last run, tracked in a small per-repository index file.
+  Also audits (and logs, never fixes) two shapes of gap: a labelled issue
+  with an empty body, and an open pull request already filed the
+  pre-migration way (`lib/tech-debt-file.sh`'s `techdebt_file_debt`, never
+  labelled `pw::type:tech-debt` by construction) that is therefore
+  invisible to this archive.
 - A **free-memory stand-down** before every cycle (requirement 2.0f), the
   memory counterpart of requirement 2.0c's free-disk gate and deliberately
   the same shape. `lib/memory.sh` is the one place free host memory is read
