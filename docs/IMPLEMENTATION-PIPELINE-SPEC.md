@@ -2386,18 +2386,46 @@ implements.
    cross-cycle read of live PR state rather than one cycle's stand-down
    decision, and has no access to the `mergeable`/queue-membership data this
    fold-in needs.
+2.2c. **A drain (requirement 2.3d) narrows unconditionally.** 2.2a's own
+   restriction — every repo's `sources` cut to `["review-feedback",
+   "merge-conflicts", "dequeued", "abandoned-drafts"]`, `issues` and
+   `tech_debt` emptied — is not only a back-pressure response: while a
+   `mode: "drain"` record is active (agent-cycle.sh's own `DRAINING`, set at
+   the switch check in requirement 2.3d, before this site), the same
+   restriction applies regardless of whether `adjusted_open_count` ever
+   reaches `max_open_agent_prs`. A drain's whole purpose is refusing new
+   intake while finishing work already open, and 2.2a already is exactly that
+   restriction — reusing it rather than inventing a second narrowing keeps
+   every downstream consumer of `ordered_repos_json.sources` (the
+   Co-Ordinator's own runtime input, `coordinator_eligible_items`, the
+   Refiner's candidate set) blind to *why* it is narrowed, only that it is,
+   which is the same property 2.2a's own design note claims for back-pressure.
+
+   The one place this and 2.2a diverge is what happens when the restricted
+   set turns out empty (`finishing_waiting == 0`): 2.2a alone stands the cycle
+   down and exits, exactly as before back-pressure existed. A drain does not
+   merely stand down — it is requirement 2.9's own at-rest check, described
+   there, and it never treats "nothing to do this cycle" as a reason to
+   revert to intake or to exit any differently than an ordinary quiet cycle
+   would. Both conditions reaching this site simultaneously (back-pressure
+   tripped *and* a drain active) narrow exactly once — the mechanism does not
+   stack — and 2.6's own bookkeeping (the cached remaining count, the
+   `drained` event) runs whenever `DRAINING` is set, whether or not
+   back-pressure was what would have narrowed anyway.
 2.3. **The switch.** A file, `state_dir/disabled.json`, whose presence stops
    cycles starting. Checked *before* the lock and before any `gh` call — a
    disabled pipeline should cost nothing — and honoured by both this Script and
    `review-cycle.sh` (`docs/REVIEW-PIPELINE-SPEC.md`, R2a) through one shared
    implementation (requirement 34a), with `agent-cycle.sh` the only writer.
-   Managed by three flags that manage the switch and run no cycle:
+   Managed by four flags that manage the switch and run no cycle:
    `--disable [<reason>] [--for <90m|4h|2d|forever>] [--until <timestamp>] [--this-node]`,
-   `--enable [--this-node]`, `--status`. `--until` takes a GNU `date`-compatible
-   absolute timestamp, an alternative to `--for`'s relative duration; with both
-   given, the later of the two deadlines wins and a warning names which.
-   Transitions are logged (`disabled`, `enabled`), carrying the `scope` and
-   `fleet_flag` vocabulary requirement 33 defines.
+   `--drain <reason> [--for <90m|4h|2d|forever>] [--until <timestamp>] [--this-node]`
+   (requirement 2.3d), `--enable [--this-node]`, `--status`. `--until` takes a
+   GNU `date`-compatible absolute timestamp, an alternative to `--for`'s
+   relative duration; with both given, the later of the two deadlines wins and
+   a warning names which. Transitions are logged (`disabled`, `enabled`),
+   carrying the `scope` and `fleet_flag` vocabulary requirement 33 defines,
+   and — since requirement 2.3d — the record's own `mode`.
 
    **`--this-node` (issue #379)** modifies `--disable` or `--enable` to act on
    this node alone, never on the fleet switch of requirement 2.3a: `--disable
@@ -2827,6 +2855,60 @@ implements.
    is unaffected by any of this: a freeze only ever lowers a level already
    above `agent-approves`, and a repository configured at or below it stays
    exactly as configured, frozen or not.
+2.3d. **The drain mode** (agent-ops#865, agent-ops#903). The switch's record
+   (requirement 2.3) carries a second field, `mode`: `"stop"` — the switch's
+   original, only behaviour, and what every record written before this field
+   existed reads as — or `"drain"`, written by `--drain <reason> [--for
+   <90m|4h|2d|forever>] [--until <timestamp>] [--this-node]`. Same TTL
+   resolution, same scope/fleet-flag mechanics, same mandatory reason, same
+   `--this-node` handling as `--disable` (requirement 2.3) — `--disable` and
+   `--drain` are the same write with one field different, so every mechanic
+   requirement 2.3/2.3a already define for the switch — expiry, the "resolve
+   toward disabled" failure direction, `--this-node`'s node/fleet split, the
+   fleet-write-failure retag — applies to a drain unchanged, without a second
+   implementation of any of them. `--enable` (or `--enable --this-node`)
+   clears either mode identically, since it deletes the record outright
+   rather than inspecting it.
+
+   A stop and a drain do not coexist quietly — one always governs, and moving
+   between them is one-directional except through `--enable`:
+   - **`--disable` issued while a drain is active tightens it to a full stop
+     immediately** — the same overwrite an ordinary repeated `--disable`
+     already performs, with `mode` reverting to `"stop"`.
+   - **`--drain` issued while a stop is active is a usage error** (exit 64):
+     writing a drain over a stop would *loosen* the stand-down, and only
+     `--enable` may loosen — silently downgrading an operator's or a peer's
+     stop to a drain would let new work move again under whatever the stop
+     was protecting against.
+   - **`--drain` issued while a drain is already active extends it** — the
+     same `extends`-in-the-log behaviour a repeated `--disable` already has,
+     with a fresh `disabled_at` (and therefore a fresh window for requirement
+     2.9's at-rest check, since a `drained` event is keyed on that field).
+
+   Behaviourally, the two modes diverge only downstream of the switch check
+   itself. A `mode: "stop"` record is unchanged from before this
+   requirement existed: `agent-cycle.sh` exits immediately at the check
+   (requirement 2.3/2.3a's own site), before the lock, before any `gh` call,
+   and `review-cycle.sh` stands down identically (`docs/REVIEW-PIPELINE-SPEC.md`,
+   R2a). A `mode: "drain"` record does not exit there: `agent-cycle.sh` sets
+   `DRAINING` (and `DRAIN_DISABLED_AT`, from whichever of the local or fleet
+   record is active — the fleet one winning if both are, since it is the
+   broader-scoped decision and the two ordinarily share one `disabled_at`
+   anyway) and continues past the check; what a drain actually restricts is
+   requirement 2.2c's own narrowing, applied unconditionally rather than only
+   on back-pressure, and requirement 2.9 describes the at-rest detection and
+   reporting built on top of it. `review-cycle.sh` stands down under a drain
+   exactly as under a stop — it has no finishing set of its own to keep
+   working, since every review it starts is new work by construction — so its
+   existing `.state == "disabled"` check needs no `mode` branch at all; only
+   its stand-down log line names which mode it was, for a reader wondering why
+   a drain — nominally about letting existing work finish — stood this
+   pipeline down entirely.
+
+   The `disabled`/`enabled` events requirement 2.3/33 already define carry
+   `mode` (`"stop"`/`"drain"`) alongside `scope` and `fleet_flag`, so a log
+   reader can tell which was in force without cross-referencing the record
+   file, which may have since been cleared or overwritten.
 2.4. **The role guard.** The environment variable `AGENT_OPS_ROLE` names the
    one node that runs unattended cycles. Compared case-insensitively and
    ignoring surrounding whitespace against the single value `active`;
@@ -3748,6 +3830,84 @@ implements.
    heartbeat's `stage_health` field or reads null, never a verdict this node
    derives on that peer's behalf. `docs/DASHBOARD-SPEC.md` documents the
    page's own Stage health section and fleet-strip badge.
+2.9. **Drain at-rest detection and reporting** (agent-ops#865, `lib/drain.sh`).
+   While `DRAINING` is set (requirement 2.3d), the site that applies
+   requirement 2.2c's unconditional narrowing also decides whether the drain
+   has reached rest, and caches that decision for the readers that must not
+   pay for a fresh one.
+
+   **At rest** ⇔ requirement 2.2a/2.2c's own finishing set — every repo's
+   `review_feedback`/`merge_conflicts`/`dequeued`/`abandoned_drafts` bands,
+   combined — is empty across every configured repo *and* no live claim
+   (requirement 17a) names a finishing-source ref (`pr-<n>-review-…`,
+   `-conflict-…`, `-dequeued-…`, `-abandoned-…`) in any of them. The second
+   half exists because a claim can be won moments before its pull request is
+   opened: this cycle's own gather would see no PR yet in that case, and a
+   `drained` event fired on that gap would tell a reader "nothing is left" of
+   work that is, in fact, still in flight. `drain_remaining_count` (checked
+   before either the stand-down or the narrowing decision, in the same
+   `finishing_waiting`-gated block requirement 2.2a's own restriction lives
+   in) is the larger of the finishing bands' combined length and the live
+   finishing-claim count — a floor, not a sum, since the ordinary case is a
+   claim whose pull request this same gather already counted and adding both
+   would double it; `drain_at_rest` is simply whether that floor is zero.
+
+   **The cache** (`drain-state.json` in `state_dir`: `{disabled_at, remaining,
+   at_rest, checked_at}`) exists because `--status`, the heartbeat
+   (`scripts/state-sync.sh`) and the dashboard (`scripts/publish-dashboard.sh`)
+   are each read far more often than a cycle runs, and a fresh gather (the
+   per-repo `lib/claim.sh claims` calls requirement 17a's own listing needs)
+   on every one of those reads would be exactly the expense a cache exists to
+   avoid — the same reasoning `fleet-cache/` already applies to the fleet
+   switch (requirement 2.3a). Written once per cycle that actually ran the
+   check (whether or not the restricted set turned out empty), and read by
+   name against the *live* record's own `disabled_at`: a reader whose cached
+   `disabled_at` does not match the switch's current one reports honestly
+   that no cycle has checked since the current drain began (a fresh `--drain`
+   just issued, or an extension), rather than showing a stale count from a
+   drain that has since ended or restarted.
+
+   **The `drained` event** fires once at-rest first becomes true, keyed on
+   `disabled_at` and deduplicated across the union log (`lib/fleet.sh`'s
+   `fleet_logs`, the same union `current_limit_record`/
+   `landing_approver_adjudication_history` already read for their own
+   once-per-record dedup): before logging it, the cycle that just found rest
+   scans the union for an existing `drained` event carrying the same
+   `disabled_at` and logs nothing if one is already there. This is the
+   correctness property a fleet needs and a single node does not — two nodes
+   can independently reach "at rest" for the same drain in the same window,
+   and only one `drained` event may exist for it, or a reader counting drains
+   over time would overcount. No escalation and no webhook follow it: this is
+   advisory, the same as `--status`'s own report, and a drain does not exit or
+   auto-convert to a stop on reaching rest — it keeps ticking, and a cycle
+   with nothing to finish continues to report `at_rest: true` on every
+   subsequent check without repeating the event.
+
+   **Reporting.** `agent-cycle.sh --status` prints a `drain:` line
+   (`drain_status_line`, `lib/drain.sh`) whenever the local record's `mode` is
+   `"drain"` — `DRAINING — N finishing-source item(s) left` or `DRAINED — at
+   rest as of <time>`, or an honest "no cycle has checked yet" when the cache
+   is absent or stale. `toggle_switch_summary` (requirement 34a) carries the
+   record's `mode` unconditionally; `scripts/publish-dashboard.sh` and
+   `scripts/state-sync.sh` each additionally fold the cache into that same
+   object as `drain: {remaining, at_rest, checked_at}` when the mode is
+   `"drain"` and the cache's own `disabled_at` matches — never a stale count —
+   so the dashboard badge and the heartbeat's `switch.drain` field read
+   identically to `--status`'s own line. `docs/DASHBOARD-SPEC.md` documents
+   the badge and banner text this drives.
+
+   **Stage interaction.** The Enabler (requirement 35) is unaffected: its own
+   eligible set (`compute_enabler_eligible_set`) is computed ahead of
+   requirement 2.2c's narrowing, from the unrestricted gather, so it keeps
+   acting on a blocked pull request regardless of source — the only route by
+   which one gets further action while draining, exactly as for a
+   back-pressured cycle. The Refiner needs no special-casing at all: it reads
+   only the `issues`/`tech_debt` arrays requirement 2.2c already empties, so
+   it goes idle by construction the moment intake is narrowed, whether by
+   back-pressure or by a drain. Chaining (requirement 39) is unchanged — a
+   drain that finished something still chains under its existing rule,
+   `chain_sources_remain`'s own count of `.sources` lengths, unaffected by
+   which mechanism narrowed them.
 3. **Repo ordering.** For each configured repo, fetch the timestamp of the
    most recent commit on its default branch via `gh api`. A repo entry may
    also carry `nice`, an optional integer from `-19` to `19` (absent means

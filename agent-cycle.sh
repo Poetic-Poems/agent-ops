@@ -128,6 +128,10 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/noop-skip.sh"
 # shellcheck source=lib/fleet.sh
 . "$SCRIPT_DIR/lib/fleet.sh"
+# shellcheck source=lib/drain.sh
+# Sourced after toggle.sh (uses _toggle_iso) and fleet.sh (uses fleet_logs),
+# and ahead of manage.sh below, whose --status/--drain handling calls into it.
+. "$SCRIPT_DIR/lib/drain.sh"
 # shellcheck source=lib/manage.sh
 # Sourced after toggle.sh, limit-detect.sh, fleet.sh and merge-autonomy.sh —
 # the four its own --status reports are built from; like standdown.sh above,
@@ -234,6 +238,7 @@ usage() {
   cat <<'EOF'
 usage: agent-cycle.sh [--dry-run] [--once] [--repo <slug>]
        agent-cycle.sh --disable [<reason>] [--for <90m|4h|2d|forever>] [--until <timestamp>] [--this-node]
+       agent-cycle.sh --drain <reason> [--for <90m|4h|2d|forever>] [--until <timestamp>] [--this-node]
        agent-cycle.sh --enable [--this-node]
        agent-cycle.sh --clear-limit [<reason>]
        agent-cycle.sh --kill-merge-autonomy [<reason>]
@@ -246,28 +251,46 @@ stops cycles from starting (shared with review-cycle.sh).
   --dry-run          Select an item and print the work order; implement nothing.
   --once             One verbose cycle in the foreground.
   --repo <slug>      Restrict selection to one configured repo (testing).
-  --disable [reason] Stop future cycles starting. A reason is required — the
-                     next person to wonder why nothing is happening is entitled
-                     to one. Expires after `disable_default_ttl` unless --for
-                     or --until says otherwise.
-  --for <duration>   How long --disable lasts: 90m, 4h, 2d, or `forever`.
-  --until <timestamp> When --disable lasts until: a GNU `date`-compatible
-                     absolute timestamp (e.g. '2026-08-10 18:00', 'tomorrow
-                     12:00'), an alternative to --for. With both given, the
-                     later of the two deadlines wins and a warning is issued.
-  --enable           Clear the switch and let cycles run again.
-  --this-node        Modifies --disable or --enable to act on this node alone,
-                     never on the fleet switch: `--disable --this-node` writes
-                     only this node's own record, and `--enable --this-node`
-                     clears only that record, leaving `fleet/disabled.json`
-                     untouched either way. Stands this one node down without a
-                     container recreate — the rest of the fleet keeps working.
-                     Combining it with anything but --disable or --enable is
-                     an error. An unmodified --disable also writes a local
-                     record, but tags it `scope: "fleet"` to mark it a mirror
-                     of the fleet switch rather than a node-scoped stand-down;
-                     --enable --this-node refuses to clear one of those, since
-                     plain --enable is what undoes a fleet-wide disable.
+  --disable [reason] Stop future cycles starting outright — in-flight work
+                     included. A reason is required — the next person to
+                     wonder why nothing is happening is entitled to one.
+                     Expires after `disable_default_ttl` unless --for or
+                     --until says otherwise. Issued while a --drain is active,
+                     this tightens it to a full stop immediately.
+  --drain <reason>   Stop new work being picked up, but keep finishing
+                     whatever is already in flight — an open changes-requested,
+                     merge-conflict, dequeued, or abandoned-draft pull request
+                     — until every repo has nothing left to finish, then rest
+                     there rather than exiting. A reason is required, on the
+                     same terms as --disable. Same --for/--until/--this-node
+                     handling as --disable, including which of --enable or
+                     --enable --this-node clears it. Issued while a --disable
+                     is active, this is a usage error — it would loosen a
+                     stricter stand-down, which only --enable may do; issued
+                     while a --drain is already active, it extends it, same as
+                     re-issuing --disable does.
+  --for <duration>   How long --disable or --drain lasts: 90m, 4h, 2d, or
+                     `forever`.
+  --until <timestamp> When --disable or --drain lasts until: a GNU
+                     `date`-compatible absolute timestamp (e.g. '2026-08-10
+                     18:00', 'tomorrow 12:00'), an alternative to --for. With
+                     both given, the later of the two deadlines wins and a
+                     warning is issued.
+  --enable           Clear the switch — whichever mode it is in — and let
+                     cycles run (or resume picking up new work) again.
+  --this-node        Modifies --disable, --drain or --enable to act on this
+                     node alone, never on the fleet switch: writes only this
+                     node's own record, and for --enable clears only that
+                     record, leaving `fleet/disabled.json` untouched either
+                     way. Stands this one node down without a container
+                     recreate — the rest of the fleet keeps working.
+                     Combining it with anything but --disable, --drain or
+                     --enable is an error. An unmodified --disable or --drain
+                     also writes a local record, but tags it `scope: "fleet"`
+                     to mark it a mirror of the fleet switch rather than a
+                     node-scoped stand-down; --enable --this-node refuses to
+                     clear one of those, since plain --enable is what undoes a
+                     fleet-wide disable.
   --clear-limit      Lift a usage-limit stand-down across the fleet (2.1). Use
                      it once the limit is actually gone — you raised the cap,
                      or the plan rolled over. Unlike --enable this touches no
@@ -288,9 +311,11 @@ stops cycles from starting (shared with review-cycle.sh).
                      `merge_autonomy` level — and any per-repo override —
                      govern again.
   --status           Report the switch — distinguishing a node-scoped disable,
-                     a fleet disable, or both, and what clearing each leaves —
-                     any usage-limit stand-down, the merge-autonomy kill
-                     switch, and whether either pipeline is running.
+                     a fleet disable, or both, whether it is a full stop or a
+                     drain (and, while draining, how much finishing-source
+                     work is left as of the last cycle to check) — any
+                     usage-limit stand-down, the merge-autonomy kill switch,
+                     and whether either pipeline is running.
   --help             Display this help and exit.
 
 --dry-run and --once bypass the no-op short-circuit (requirement 3b): a human
@@ -317,6 +342,7 @@ ONCE=0
 REPO_FILTER=""
 MANAGE_ACTION=""
 DISABLE_REASON=""
+DRAIN_REASON=""
 DISABLE_FOR=""
 DISABLE_UNTIL=""
 CLEAR_LIMIT_REASON=""
@@ -324,7 +350,7 @@ KILL_MERGE_AUTONOMY_REASON=""
 THIS_NODE=0
 set_manage_action() {
   if [[ -n "$MANAGE_ACTION" ]]; then
-    echo "agent-cycle: --disable, --enable, --clear-limit, --kill-merge-autonomy, --restore-merge-autonomy and --status are mutually exclusive" >&2
+    echo "agent-cycle: --disable, --drain, --enable, --clear-limit, --kill-merge-autonomy, --restore-merge-autonomy and --status are mutually exclusive" >&2
     exit 64
   fi
   MANAGE_ACTION="$1"
@@ -339,6 +365,14 @@ while [[ $# -gt 0 ]]; do
       # A bare `--disable "editing lib/"` reads far better than forcing
       # `--reason`, and the next token can only be a reason if it isn't a flag.
       if [[ $# -gt 0 && "$1" != --* ]]; then DISABLE_REASON="$1"; shift; fi
+      ;;
+    --drain)
+      set_manage_action drain; shift
+      # Required, unlike --disable's optional reason (below): a drain that
+      # never says why is doubly hard to explain, since it looks like a
+      # working pipeline (cycles run, PRs finish) right up until nothing new
+      # appears.
+      if [[ $# -gt 0 && "$1" != --* ]]; then DRAIN_REASON="$1"; shift; fi
       ;;
     --enable) set_manage_action enable; shift ;;
     --clear-limit)
@@ -365,15 +399,19 @@ done
 
 if [[ -n "$MANAGE_ACTION" ]]; then
   if (( DRY_RUN || ONCE )) || [[ -n "$REPO_FILTER" ]]; then
-    echo "agent-cycle: --disable/--enable/--clear-limit/--kill-merge-autonomy/--restore-merge-autonomy/--status manage stand-down state; they do not run a cycle" >&2
+    echo "agent-cycle: --disable/--drain/--enable/--clear-limit/--kill-merge-autonomy/--restore-merge-autonomy/--status manage stand-down state; they do not run a cycle" >&2
     exit 64
   fi
-  if [[ "$MANAGE_ACTION" != "disable" ]] && [[ -n "$DISABLE_FOR" || -n "$DISABLE_UNTIL" ]]; then
-    echo "agent-cycle: --for and --until only apply to --disable" >&2
+  if [[ "$MANAGE_ACTION" != "disable" && "$MANAGE_ACTION" != "drain" ]] && [[ -n "$DISABLE_FOR" || -n "$DISABLE_UNTIL" ]]; then
+    echo "agent-cycle: --for and --until only apply to --disable or --drain" >&2
     exit 64
   fi
   if [[ "$MANAGE_ACTION" == "disable" && -z "$DISABLE_REASON" ]]; then
     echo "agent-cycle: --disable needs a reason, e.g. --disable 'editing lib/cycle-state.sh'" >&2
+    exit 64
+  fi
+  if [[ "$MANAGE_ACTION" == "drain" && -z "$DRAIN_REASON" ]]; then
+    echo "agent-cycle: --drain needs a reason, e.g. --drain 'clearing the backlog before a Kubernetes migration'" >&2
     exit 64
   fi
   if [[ "$MANAGE_ACTION" == "kill-merge-autonomy" && -z "$KILL_MERGE_AUTONOMY_REASON" ]]; then
@@ -381,8 +419,8 @@ if [[ -n "$MANAGE_ACTION" ]]; then
     exit 64
   fi
 fi
-if (( THIS_NODE )) && [[ "$MANAGE_ACTION" != "disable" && "$MANAGE_ACTION" != "enable" ]]; then
-  echo "agent-cycle: --this-node only modifies --disable or --enable" >&2
+if (( THIS_NODE )) && [[ "$MANAGE_ACTION" != "disable" && "$MANAGE_ACTION" != "drain" && "$MANAGE_ACTION" != "enable" ]]; then
+  echo "agent-cycle: --this-node only modifies --disable, --drain or --enable" >&2
   exit 64
 fi
 
@@ -1292,6 +1330,16 @@ log_event "cycle-start" "$(jq -nc --argjson once "$([[ $ONCE == 1 ]] && echo tru
 # that is, by then, gone. Deliberately not gated on --once or --dry-run — the
 # switch means "these files are being edited, do not run them", which is no
 # less true when a human is the one running them.
+#
+# A `mode: "drain"` record does not exit here (requirement 2.3d/2.6): unlike a
+# full stop it means "finish what is open, refuse only new work", so the
+# cycle keeps going and `DRAINING`/`DRAIN_DISABLED_AT` below carry that
+# decision to the 2.2a-adjacent narrowing further down, the one site that
+# actually restricts what gets picked up. A `mode: "stop"` record — the only
+# kind before this field existed, and every plain `--disable` since — is
+# unchanged: exit immediately, before the lock, before any `gh` call.
+DRAINING=0
+DRAIN_DISABLED_AT=""
 switch_state="$(toggle_state "$state_dir")"
 case "$(jq -r '.state' <<<"$switch_state")" in
   expired)
@@ -1301,11 +1349,17 @@ case "$(jq -r '.state' <<<"$switch_state")" in
       '{detail: "disable expired", was: $r, scope: "node"}')"
     ;;
   disabled)
-    log_event "stand-down" "$(jq -nc \
-      --arg r "disabled: $(toggle_describe "$(jq -c '.record' <<<"$switch_state")")" \
-      '{reason: $r}')"
-    (( ONCE )) && echo "agent-cycle: the pipeline is disabled — run --status for detail, --enable to resume" >&2
-    exit 0
+    switch_record="$(jq -c '.record' <<<"$switch_state")"
+    if [[ "$(toggle_mode "$switch_record")" == "drain" ]]; then
+      DRAINING=1
+      DRAIN_DISABLED_AT="$(jq -r '.disabled_at // ""' <<<"$switch_record")"
+    else
+      log_event "stand-down" "$(jq -nc \
+        --arg r "disabled: $(toggle_describe "$switch_record")" \
+        '{reason: $r}')"
+      (( ONCE )) && echo "agent-cycle: the pipeline is disabled — run --status for detail, --enable to resume" >&2
+      exit 0
+    fi
     ;;
 esac
 
@@ -1335,11 +1389,22 @@ case "$(jq -r '.state' <<<"$fleet_switch_state")" in
       '{detail: "fleet disable expired", was: $r, scope: "fleet", fleet_flag: $ff}')"
     ;;
   disabled)
-    log_event "stand-down" "$(jq -nc \
-      --arg r "fleet switch: $(toggle_describe "$(jq -c '.record' <<<"$fleet_switch_state")")" \
-      '{reason: $r}')"
-    (( ONCE )) && echo "agent-cycle: the fleet switch is set — agent-cycle.sh --enable clears it everywhere" >&2
-    exit 0
+    fleet_switch_record="$(jq -c '.record' <<<"$fleet_switch_state")"
+    if [[ "$(toggle_mode "$fleet_switch_record")" == "drain" ]]; then
+      # A fleet-wide drain wins over a node-scoped one for the purpose of
+      # DRAIN_DISABLED_AT (checked after the local switch above, so this
+      # simply overwrites it when both are active): the fleet decision is the
+      # broader-scoped one, and the two share a disabled_at in the ordinary
+      # case anyway (an unmodified --drain writes both levels at once).
+      DRAINING=1
+      DRAIN_DISABLED_AT="$(jq -r '.disabled_at // ""' <<<"$fleet_switch_record")"
+    else
+      log_event "stand-down" "$(jq -nc \
+        --arg r "fleet switch: $(toggle_describe "$fleet_switch_record")" \
+        '{reason: $r}')"
+      (( ONCE )) && echo "agent-cycle: the fleet switch is set — agent-cycle.sh --enable clears it everywhere" >&2
+      exit 0
+    fi
     ;;
 esac
 
@@ -1756,9 +1821,42 @@ if (( finishing_extra_count > 0 )); then
   fi
 fi
 
-if (( backpressure_tripped )); then
+# A drain narrows unconditionally, not only when back-pressure trips
+# (requirement 2.6): it must stop new intake regardless of how full the gate
+# is, so it reaches this same restriction whether or not `backpressure_tripped`
+# is itself set — the two conditions merely share the one narrowing mechanism
+# 2.2a already provides.
+if (( backpressure_tripped )) || (( DRAINING )); then
   finishing_waiting="$(jq '[.[].review_feedback[]?, .[].merge_conflicts[]?, .[].dequeued[]?, .[].abandoned_drafts[]?] | length' <<<"$ordered_repos_json")"
   if (( finishing_waiting == 0 )); then
+    if (( DRAINING )); then
+      # At-rest detection (requirement 2.6): this cycle's own gather already
+      # found nothing in any of the four finishing bands, but a claim can be
+      # taken moments before its PR exists, so drain_remaining_count also
+      # checks the claim registry before calling it "at rest" — see
+      # lib/drain.sh's header for why a band count alone is not enough.
+      drain_remaining="$(drain_remaining_count "$ordered_repos_json")"
+      drain_at_rest=0
+      (( drain_remaining == 0 )) && drain_at_rest=1
+      drain_write_state "$state_dir" "$DRAIN_DISABLED_AT" "$drain_remaining" "$drain_at_rest"
+      if (( drain_at_rest )); then
+        # One `drained` event per disabled_at, deduplicated across the union
+        # log (requirement 2.6): a peer node can reach "at rest" first, and
+        # this reads its event before deciding to log its own.
+        drain_union_log="$(fleet_logs "$state_dir" "$(fleet_peers_dir "$workspace_root")" log.jsonl 2>/dev/null || true)"
+        if [[ "$(drain_event_logged "$drain_union_log" "$DRAIN_DISABLED_AT")" != "1" ]]; then
+          log_event "drained" "$(jq -nc --arg d "$DRAIN_DISABLED_AT" '{disabled_at: $d}')"
+        fi
+        log_event "stand-down" "$(jq -nc \
+          --arg r "draining: at rest — no finishing-source pull request waiting and no live claim on one; waiting for --enable or the drain's own expiry" \
+          '{reason: $r}')"
+      else
+        log_event "stand-down" "$(jq -nc \
+          --arg r "draining: no finishing-source pull request waiting, but $drain_remaining live claim(s) on a finishing-source ref elsewhere have not yet resolved" \
+          '{reason: $r}')"
+      fi
+      exit 0
+    fi
     log_event "stand-down" "$(jq -nc \
       --arg r "back-pressure: $adjusted_open_count open agent PRs with a pipeline-side next action >= $max_open_agent_prs ($open_composition), and no review feedback, merge conflict, dequeued pull request, or abandoned draft is waiting to be finished" \
       '{reason: $r}')"
@@ -1782,12 +1880,23 @@ if (( backpressure_tripped )); then
   # when the gate is fullest. The narrowing of `sources` just below does the
   # same job for the bands this block leaves populated (`findings`,
   # `register_hygiene`, `human_visibility`): `coordinator_eligible_items` reads
-  # the list, not the array.
+  # the list, not the array. A drain narrows exactly the same way — refusing
+  # new intake means every non-finishing source, not merely `issues`/
+  # `tech_debt` — so the Refiner (which reads only those two, requirement 2.6)
+  # goes idle by construction with no special-casing of its own.
   ordered_repos_json="$(handoff_narrow_repos_to_finishing_sources "$ordered_repos_json")"
   ordered_repos_json="$(jq -c '[.[] | .issues = [] | .tech_debt = []]' <<<"$ordered_repos_json")"
-  log_event "warning" "$(jq -nc \
-    --arg d "back-pressure: $adjusted_open_count open agent PRs with a pipeline-side next action >= $max_open_agent_prs ($open_composition) — restricted to finishing sources ($finishing_waiting PR(s) awaiting review-feedback, merge-conflict, dequeued, or abandoned-draft completion)" \
-    '{detail: $d}')"
+  if (( DRAINING )); then
+    drain_write_state "$state_dir" "$DRAIN_DISABLED_AT" "$(drain_remaining_count "$ordered_repos_json")" 0
+    log_event "warning" "$(jq -nc \
+      --arg d "draining: restricted to finishing sources ($finishing_waiting PR(s) awaiting review-feedback, merge-conflict, dequeued, or abandoned-draft completion) — no new intake while draining" \
+      '{detail: $d}')"
+  fi
+  if (( backpressure_tripped )); then
+    log_event "warning" "$(jq -nc \
+      --arg d "back-pressure: $adjusted_open_count open agent PRs with a pipeline-side next action >= $max_open_agent_prs ($open_composition) — restricted to finishing sources ($finishing_waiting PR(s) awaiting review-feedback, merge-conflict, dequeued, or abandoned-draft completion)" \
+      '{detail: $d}')"
+  fi
 fi
 
 # The repo/work-sources table prompts/coordinator.md used to hand-maintain is

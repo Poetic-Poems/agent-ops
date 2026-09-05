@@ -173,6 +173,31 @@ assert_eq "disable derives the actor when none is given" \
   "$(toggle_actor)" "$(jq -r '.actor' <<<"$record")"
 assert_eq "a set switch reads as disabled" "disabled" "$(state_of)"
 
+# --- mode (requirement 2.3d): stop vs drain ---
+
+assert_eq "toggle_disable defaults mode to stop" "stop" "$(jq -r '.mode' <<<"$record")"
+assert_eq "toggle_mode reads the default back" "stop" "$(toggle_mode "$record")"
+
+drain_record="$(toggle_disable "$state_dir" "clearing the backlog" "2h" 4 "tester pid 1" \
+  "" manual node drain)"
+assert_eq "toggle_disable writes mode drain when asked" "drain" "$(jq -r '.mode' <<<"$drain_record")"
+assert_eq "toggle_mode reads drain back" "drain" "$(toggle_mode "$drain_record")"
+assert_eq "a drain still reads as disabled at the state level — mode is orthogonal to state" \
+  "disabled" "$(state_of)"
+
+assert_eq "toggle_mode defaults a record with no mode field to stop" "stop" \
+  "$(toggle_mode '{"reason":"pre-existing record"}')"
+assert_eq "toggle_mode defaults an empty record to stop" "stop" "$(toggle_mode '{}')"
+assert_eq "toggle_mode defaults no argument at all to stop" "stop" "$(toggle_mode)"
+
+assert_eq "toggle_switch_summary carries mode" "drain" \
+  "$(jq -r '.mode' <<<"$(toggle_switch_summary "$state_dir")")"
+
+toggle_clear "$state_dir" >/dev/null
+record="$(toggle_disable "$state_dir" "editing lib/toggle.sh" "2h" 4 "tester pid 1")"
+assert_eq "an unmodified toggle_disable is mode stop again (restoring fixture state)" \
+  "stop" "$(jq -r '.mode' <<<"$record")"
+
 # --- toggle_actor (#244): attribution, never "unknown" ---
 # The record's actor is what tells a reader whose decision a stand-down was;
 # `unknown@<container-id>` is exactly the reading requirement 2.3 forbids.
@@ -1137,6 +1162,75 @@ assert_eq "a cycle under a stale automatic freeze exits cleanly" "0" "$?"
 assert_contains "the freeze escalation is attempted and its failure recorded" \
   'automatic usage-limit freeze since 2026-01-01T00:00:00Z' \
   "$(cat "$b_log" 2>/dev/null)"
+
+# --- --drain (requirement 2.3d): CLI plumbing and mode precedence ----------
+# The mode field itself is covered above (lib/toggle.sh unit tests); this
+# section is the CLI surface and the tighten/error/extend precedence rules,
+# end to end through agent-cycle.sh and lib/manage.sh.
+
+d_home="$(new_home drain-node)"
+d_switch="$d_home/.local/state/poetic-agents/disabled.json"
+d_log="$d_home/.local/state/poetic-agents/log.jsonl"
+d_review_log="$d_home/.local/state/poetic-agents/review-log.jsonl"
+
+drain_no_reason_out="$(run_node "$d_home" agent-cycle.sh --drain 2>&1)"
+assert_eq "--drain with no reason is a usage error" "64" "$?"
+assert_contains "and says so" "--drain needs a reason" "$drain_no_reason_out"
+
+run_node "$d_home" agent-cycle.sh --drain "clearing the backlog" --for 4h >/dev/null 2>&1
+assert_eq "--drain writes mode drain" "drain" "$(jq -r '.mode' "$d_switch" 2>/dev/null)"
+assert_eq "--drain writes an ordinary switch record otherwise" "clearing the backlog" \
+  "$(jq -r '.reason' "$d_switch" 2>/dev/null)"
+assert_contains "the disabled event names mode drain" '"mode":"drain"' "$(cat "$d_log" 2>/dev/null)"
+
+drain_status_out="$(run_node "$d_home" agent-cycle.sh --status 2>&1)"
+assert_contains "--status reports DRAINING for a drain record" "switch:   DRAINING" "$drain_status_out"
+assert_not_contains "and never DISABLED, which a stop alone reads as" "switch:   DISABLED" "$drain_status_out"
+
+# Loosening a stop into a drain is refused outright — only --enable may loosen.
+run_node "$d_home" agent-cycle.sh --enable >/dev/null 2>&1
+run_node "$d_home" agent-cycle.sh --disable "full stop" --for 4h >/dev/null 2>&1
+drain_over_stop_out="$(run_node "$d_home" agent-cycle.sh --drain "trying to loosen" 2>&1)"
+assert_eq "--drain over an active --disable is a usage error" "64" "$?"
+assert_contains "and names --enable as the way out" "run --enable first" "$drain_over_stop_out"
+assert_eq "the stop record is untouched by the refused --drain" "stop" \
+  "$(jq -r '.mode' "$d_switch" 2>/dev/null)"
+assert_eq "and its reason is untouched too" "full stop" "$(jq -r '.reason' "$d_switch" 2>/dev/null)"
+
+# --disable over an active drain tightens it to a full stop immediately.
+run_node "$d_home" agent-cycle.sh --enable >/dev/null 2>&1
+run_node "$d_home" agent-cycle.sh --drain "clearing the backlog" --for 4h >/dev/null 2>&1
+run_node "$d_home" agent-cycle.sh --disable "actually need it fully stopped" >/dev/null 2>&1
+assert_eq "--disable over an active drain tightens it to mode stop" "stop" \
+  "$(jq -r '.mode' "$d_switch" 2>/dev/null)"
+assert_eq "and overwrites the reason, like an ordinary re-disable" \
+  "actually need it fully stopped" "$(jq -r '.reason' "$d_switch" 2>/dev/null)"
+
+# --drain over an active drain extends it — a fresh disabled_at, same as
+# re-issuing --disable over a live stop already does.
+run_node "$d_home" agent-cycle.sh --enable >/dev/null 2>&1
+run_node "$d_home" agent-cycle.sh --drain "first drain" --for 1h >/dev/null 2>&1
+run_node "$d_home" agent-cycle.sh --drain "extending the drain" --for 2h >/dev/null 2>&1
+assert_eq "extending a drain succeeds" "0" "$?"
+assert_eq "the reason is updated" "extending the drain" "$(jq -r '.reason' "$d_switch" 2>/dev/null)"
+assert_eq "and mode stays drain" "drain" "$(jq -r '.mode' "$d_switch" 2>/dev/null)"
+assert_contains "the log records the extension" '"extends"' "$(cat "$d_log" 2>/dev/null)"
+
+# --enable clears a drain exactly as it clears a stop.
+run_node "$d_home" agent-cycle.sh --enable >/dev/null 2>&1
+assert_eq "--enable clears a drain record" "0" "$(test -f "$d_switch" && echo 1 || echo 0)"
+
+# review-cycle.sh stands down under a drain exactly as under a stop (R2a):
+# `.state == "disabled"` already reads true regardless of mode, so this
+# asserts the observable behaviour rather than the (absent) branch.
+run_node "$d_home" agent-cycle.sh --drain "reviewer should stand down too" --for 1h >/dev/null 2>&1
+run_node "$d_home" review-cycle.sh >/dev/null 2>&1
+assert_eq "a review cycle exits cleanly under a drain" "0" "$?"
+assert_contains "and logs a review-stand-down" '"event":"review-stand-down"' \
+  "$(cat "$d_review_log" 2>/dev/null)"
+assert_contains "naming drain mode in its reason, not a bare disabled" \
+  "drain mode" "$(cat "$d_review_log" 2>/dev/null)"
+run_node "$d_home" agent-cycle.sh --enable >/dev/null 2>&1
 
 printf '\n'
 if (( failures > 0 )); then

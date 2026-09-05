@@ -561,7 +561,7 @@ container has a stated resource budget it demonstrably runs within (D14).
 **Entry:** Phase 1 exit gate passed.
 
 **Exit gate:** a new node reaches its first successful cycle with zero
-interactive steps; a rollout during a cycle results in a drained, completed,
+interactive steps; a rollout during a cycle results in a wound-down, completed,
 or cleanly handed-off cycle — never a killed one; the suite runs on a
 Kubernetes cluster from published manifests/chart; scale-to-zero is
 demonstrated (no idle compute cost between ticks); per-container CPU,
@@ -575,12 +575,19 @@ classified into exactly one state, the states summing to node-count × window
 with any remainder shown as `unaccounted`, demonstrated across a rollout and an
 induced outage rather than only over a quiet afternoon.
 
-- [ ] Graceful drain: a shutting-down node finishes or hands off its
+- [ ] Graceful shutdown: a shutting-down node finishes or hands off its
       in-flight cycle before exiting. The auto-update case is already
       retired — watchtower's pre-update hook defers a roll while a cycle
-      holds either lock — but that only covers the roll. A drain covers
-      every other way a container goes away: a manual `up -d`, `restart`,
-      `down`, a host reboot, an evicted pod. *[interactive]*
+      holds either lock — but that only covers the roll. A graceful shutdown
+      covers every other way a container goes away: a manual `up -d`,
+      `restart`, `down`, a host reboot, an evicted pod. Distinct from
+      `--drain` (agent-ops#865, `docs/IMPLEMENTATION-PIPELINE-SPEC.md`
+      requirement 2.3d): this item is one node finishing its own one
+      in-flight cycle at shutdown, with no operator action and no effect on
+      intake; `--drain` is an operator-issued, node- or fleet-wide mode that
+      keeps running many cycles — refusing only new intake — until every
+      repo's finishing-source backlog is clear, and rests there rather than
+      exiting. *[interactive]*
 - [x] Secrets-based provisioning: tokens and API keys arrive as
       secrets/environment, never via `exec` logins into a running
       container (agent-ops#607) — the sole exception is the Claude
@@ -1115,7 +1122,7 @@ Parked deliberately, each with a decide-by gate:
 
 - **An orchestrator does not make derived state safe.** Kubernetes improves
   *detection*: a sync modelled as its own CronJob fails as a first-class Job
-  status rather than as a line in a log nobody reads, and graceful drain
+  status rather than as a line in a log nobody reads, and graceful shutdown
   removes one of the triggers. It does not repair anything. A corrupt
   PersistentVolumeClaim survives every pod restart, eviction and
   rescheduling the platform can perform, so the failure recurs on each tick

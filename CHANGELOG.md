@@ -8,6 +8,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A **`--drain` mode** (agent-ops#865, requirements 2.2c/2.3d/2.6): a third
+  `disabled.json` `mode`, alongside the switch's original `"stop"`, that stops
+  new work being picked up while letting the four finishing sources
+  (review-feedback, merge-conflicts, dequeued, abandoned-drafts) keep landing
+  until every configured repo has nothing left to finish, then rests there
+  rather than exiting. `agent-cycle.sh --drain '<reason>' [--for|--until]
+  [--this-node]`, mirroring `--disable`'s own TTL/scope handling; `--enable`
+  clears either mode. A `--disable` issued over an active drain tightens it to
+  a full stop immediately; a `--drain` issued over an active stop is a usage
+  error (`--enable` first); a `--drain` over a `--drain` extends it, same as
+  re-issuing `--disable`. `review-cycle.sh` stands down under either mode
+  unchanged. `--status`, the dashboard badge and the heartbeat report
+  **draining**/**drained** with the finishing-source items still outstanding,
+  and log a single deduplicated `drained` event once a drain reaches rest.
+  Renames the roadmap's existing Phase 2 *Graceful drain* item — a single
+  node finishing its own in-flight cycle before exiting — to *Graceful
+  shutdown*, freeing the name for this unrelated, operator-issued mode.
+
 - A **free-memory stand-down** before every cycle (requirement 2.0f), the
   memory counterpart of requirement 2.0c's free-disk gate and deliberately
   the same shape. `lib/memory.sh` is the one place free host memory is read

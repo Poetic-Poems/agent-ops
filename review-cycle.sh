@@ -470,24 +470,40 @@ log_event "review-start" "$(jq -nc --argjson once "$([[ $ONCE == 1 ]] && echo tr
 # (`project_review.defaults.min_days_between_reviews`); letting it clear a
 # switch would mean the event that explains why cycles resumed could land
 # days after they did.
+#
+# Stands down for `mode: "drain"` exactly as for a plain stop (requirement
+# 2.6): a drain's whole point is finishing already-open pull requests, and
+# this pipeline never opens one of its own — every review it starts is new
+# work by construction, so there is nothing for it to finish and no reason to
+# distinguish the two modes here the way agent-cycle.sh's own 2.2a-adjacent
+# narrowing must. `.state == "disabled"` already reads true for a `mode:
+# "drain"` record exactly as for a `mode: "stop"` one (mode is an orthogonal
+# field on the same record, requirement 2.3d), so no extra check is needed —
+# only the log line below names which mode it was, for a reader of the log
+# wondering why a drain — nominally about letting existing work finish —
+# also stood this pipeline down entirely.
 review_switch_state="$(toggle_state "$state_dir")"
 if [[ "$(jq -r '.state' <<<"$review_switch_state")" == "disabled" ]]; then
+  review_switch_record="$(jq -c '.record' <<<"$review_switch_state")"
   log_event "review-stand-down" "$(jq -nc \
-    --arg r "disabled: $(toggle_describe "$(jq -c '.record' <<<"$review_switch_state")")" \
+    --arg r "$(toggle_mode "$review_switch_record") mode: $(toggle_describe "$review_switch_record")" \
     '{reason: $r}')"
-  (( ONCE )) && echo "review-cycle: the pipeline is disabled — agent-cycle.sh --status for detail" >&2
+  (( ONCE )) && echo "review-cycle: the pipeline is disabled or draining — agent-cycle.sh --status for detail" >&2
   exit 0
 fi
 
 # The fleet switch (requirement 2.3a), honoured on the same terms: this
 # pipeline stands down for it but never sets or clears it — an expired fleet
 # flag, like an expired local one, is agent-cycle.sh's to clear and log.
+# Mode is unchecked here for the same reason as above: this pipeline stands
+# down under either.
 fleet_review_switch="$(fleet_disabled_state "$state_repo" "$state_dir")"
 if [[ "$(jq -r '.state' <<<"$fleet_review_switch")" == "disabled" ]]; then
+  fleet_review_switch_record="$(jq -c '.record' <<<"$fleet_review_switch")"
   log_event "review-stand-down" "$(jq -nc \
-    --arg r "fleet switch: $(toggle_describe "$(jq -c '.record' <<<"$fleet_review_switch")")" \
+    --arg r "fleet switch, $(toggle_mode "$fleet_review_switch_record") mode: $(toggle_describe "$fleet_review_switch_record")" \
     '{reason: $r}')"
-  (( ONCE )) && echo "review-cycle: the fleet switch is set — agent-cycle.sh --enable clears it everywhere" >&2
+  (( ONCE )) && echo "review-cycle: the fleet switch is set (disabled or draining) — agent-cycle.sh --enable clears it everywhere" >&2
   exit 0
 fi
 
