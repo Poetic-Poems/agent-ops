@@ -187,7 +187,7 @@ config() { jq "${1:-.}" "$SCRIPT_DIR/config.json" > "$tmp/config.json"; }
 #     rather than from this library. ---
 config
 assert_eq "the target role wants every label the pipeline applies" \
-  "autonomous-agent enabler-escalation needs-refinement refined unvoided blocked blocked:needs-refinement obsolete pw::type:tech-debt pw::owner-decision open-question complexity:low complexity:medium complexity:high" \
+  "autonomous-agent enabler-escalation needs-refinement refined unvoided blocked blocked:needs-refinement obsolete pw::type:tech-debt pw::owner-decision pw::decision open-question complexity:low complexity:medium complexity:high" \
   "$(labels_catalogue "$tmp/config.json" "$SCHEMA" target | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
 assert_eq "the review role wants only the caller's resolved review pull request label" \
   "project-review" \
@@ -198,8 +198,8 @@ assert_eq "the review role wants nothing when no label is passed (project_review
 assert_eq "the review role reflects whatever resolved label the caller passes, e.g. a repo's own project_review override" \
   "custom-review-label" \
   "$(labels_catalogue "$tmp/config.json" "$SCHEMA" review "custom-review-label" | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
-assert_eq "the escalation role wants only the escalation label" \
-  "enabler-escalation" \
+assert_eq "the escalation role wants the escalation label and the decision-log label" \
+  "enabler-escalation pw::decision" \
   "$(labels_catalogue "$tmp/config.json" "$SCHEMA" escalation | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
 assert_eq "an unknown role wants nothing" "" \
   "$(labels_catalogue "$tmp/config.json" "$SCHEMA" nonsense)"
@@ -213,7 +213,7 @@ assert_eq "a renamed label is created under the name the config gives it" \
 # anyway would put a label in the repository that nothing will ever apply.
 config '.needs_refinement_label = "" | .unvoid_label = "" | .refined_label = ""'
 assert_eq "a label switched off by an empty value is not created" \
-  "autonomous-agent enabler-escalation blocked blocked:needs-refinement obsolete pw::type:tech-debt pw::owner-decision open-question complexity:low complexity:medium complexity:high" \
+  "autonomous-agent enabler-escalation blocked blocked:needs-refinement obsolete pw::type:tech-debt pw::owner-decision pw::decision open-question complexity:low complexity:medium complexity:high" \
   "$(labels_catalogue "$tmp/config.json" "$SCHEMA" target | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
 
 # Every catalogue entry must be complete: a create with an empty colour is
@@ -244,7 +244,7 @@ config
 reset_stub
 out="$(labels_catalogue "$tmp/config.json" "$SCHEMA" target | labels_ensure "Owner/repo")"
 assert_eq "an empty repository gets every label, each reported created" \
-  "autonomous-agent enabler-escalation needs-refinement refined unvoided blocked blocked:needs-refinement obsolete pw::type:tech-debt pw::owner-decision open-question complexity:low complexity:medium complexity:high" \
+  "autonomous-agent enabler-escalation needs-refinement refined unvoided blocked blocked:needs-refinement obsolete pw::type:tech-debt pw::owner-decision pw::decision open-question complexity:low complexity:medium complexity:high" \
   "$(cut -f2 <<<"$out" | tr '\n' ' ' | sed 's/ $//')"
 assert_eq "and every line reports a creation" "" \
   "$(grep -v '^created' <<<"$out")"
@@ -256,7 +256,7 @@ assert_eq "a second pass over the same repository reports nothing" "" "$out"
 reset_stub autonomous-agent blocked obsolete complexity:low complexity:medium complexity:high
 out="$(labels_catalogue "$tmp/config.json" "$SCHEMA" target | labels_ensure "Owner/repo")"
 assert_eq "a partly-labelled repository gets only what it is missing" \
-  "enabler-escalation needs-refinement refined unvoided blocked:needs-refinement pw::type:tech-debt pw::owner-decision open-question" \
+  "enabler-escalation needs-refinement refined unvoided blocked:needs-refinement pw::type:tech-debt pw::owner-decision pw::decision open-question" \
   "$(cut -f2 <<<"$out" | tr '\n' ' ' | sed 's/ $//')"
 
 # GitHub compares label names case-insensitively, so a differently-cased match
@@ -283,7 +283,7 @@ rc=$?
 assert_eq "a label the token may not create is reported failed" \
   "failed	unvoided" "$(grep '^failed' <<<"$out")"
 assert_eq "and the labels either side of it are still created" \
-  "autonomous-agent enabler-escalation needs-refinement refined blocked blocked:needs-refinement obsolete pw::type:tech-debt pw::owner-decision open-question complexity:low complexity:medium complexity:high" \
+  "autonomous-agent enabler-escalation needs-refinement refined blocked blocked:needs-refinement obsolete pw::type:tech-debt pw::owner-decision pw::decision open-question complexity:low complexity:medium complexity:high" \
   "$(grep '^created' <<<"$out" | cut -f2 | tr '\n' ' ' | sed 's/ $//')"
 assert_eq "and one refused create does not fail the pass" "0" "$rc"
 
@@ -371,7 +371,7 @@ stamp_file="$stamp_root/labels-ensured/Owner_repo.escalation"
 rm -rf "$stamp_root"
 reset_stub
 out="$(labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 24)"
-assert_eq "a first call with no stamp ensures the catalogue" "created" "$(cut -f1 <<<"$out")"
+assert_eq "a first call with no stamp ensures the catalogue" $'created\ncreated' "$(cut -f1 <<<"$out")"
 assert_eq "  ... and leaves a stamp behind" "1" \
   "$([[ -f "$stamp_file" ]] && echo 1 || echo 0)"
 
@@ -393,7 +393,7 @@ assert_eq "  ... and refreshes the stamp" "1" \
 rm -rf "$stamp_root"
 reset_stub
 out="$(labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 0)"
-assert_eq "an interval of 0 always ensures, stamp or no stamp" "created" "$(cut -f1 <<<"$out")"
+assert_eq "an interval of 0 always ensures, stamp or no stamp" $'created\ncreated' "$(cut -f1 <<<"$out")"
 rm -rf "$stamp_root"
 touch_dummy="$stamp_root/labels-ensured"
 mkdir -p "$touch_dummy" && touch "$touch_dummy/Owner_repo.escalation"
@@ -433,7 +433,7 @@ rm -rf "$stamp_root"
 # with nothing to say so.
 reset_stub
 out="$(labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 24.0)"
-assert_eq "a decimal interval ensures on the first call" "created" "$(cut -f1 <<<"$out")"
+assert_eq "a decimal interval ensures on the first call" $'created\ncreated' "$(cut -f1 <<<"$out")"
 : > "$tmp/log"
 out="$(labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 24.0)"
 assert_eq "  ... and still rate-limits the second, rather than falling through" "" "$out"
@@ -552,7 +552,7 @@ config
 reset_stub
 out="$(labels_reconcile_role "$tmp/config.json" "$SCHEMA" "Owner/repo" target)"
 assert_eq "the target role reconciles against an empty repository the same as labels_ensure would (nothing to reconcile or delete yet)" \
-  "autonomous-agent enabler-escalation needs-refinement refined unvoided blocked blocked:needs-refinement obsolete pw::type:tech-debt pw::owner-decision open-question complexity:low complexity:medium complexity:high" \
+  "autonomous-agent enabler-escalation needs-refinement refined unvoided blocked blocked:needs-refinement obsolete pw::type:tech-debt pw::owner-decision pw::decision open-question complexity:low complexity:medium complexity:high" \
   "$(cut -f2 <<<"$out" | tr '\n' ' ' | sed 's/ $//')"
 
 reset_stub $'pw::stale-target\t1d76db\tstale\npw::wanted\t1d76db\told desc'
