@@ -215,6 +215,23 @@ out2="$(run_sweep "$c")"
 assert_eq "a second sighting of the same window reports it not at all" '' \
   "$(jq -c 'select(.action == "merge-observed")' <<<"$out2" 2>/dev/null || true)"
 
+# --- Case 6: a seen-file the sweep cannot write is warned about, not lost ---------
+# Silently losing the memo re-emits every merge-observed key in the window,
+# up to `pr_search_limit` of them, on every future stand-down — into a log
+# that is never rotated. The sweep still succeeds (the caller keeps this
+# run's own actions); it just says so. A state-dir whose parent is a regular
+# file makes `mkdir -p` fail for any user, root included.
+printf 'not a directory\n' > "$tmp_dir/blocking-file"
+out="$(SWEEP_STUB_DIR="$c" SWEEP_GH="$stub" AGENT_OPS_CONFIG="$config" \
+  bash "$SWEEP" x/y node-1 cycle-1 "$tmp_dir/blocking-file/state")"
+assert_eq "an unwritable state-dir still lets the sweep exit 0" "0" "$?"
+assert_contains "  ... and warns that the seen-file write failed" \
+  'failed to write merge-observed seen-file' \
+  "$(jq -r 'select(.action == "warning") | .detail' <<<"$out")"
+assert_eq "  ... while this run's own merge instant is still reported" \
+  '{"action":"merge-observed","pr_number":700,"pr_url":"https://github.com/x/y/pull/700","item":"701","merge_sha":"pqr901"}' \
+  "$(jq -c 'select(.action == "merge-observed")' <<<"$out")"
+
 if (( failures > 0 )); then
   echo "$failures failure(s)"
   exit 1

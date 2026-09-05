@@ -14709,6 +14709,11 @@ with the Reviewer's own.
       bounded by the same `pr_search_limit` its existing close action
       already is, and de-duplicated per node against a small, self-pruning
       seen-file (`<state_dir>/sweep-closed-issues-merge-observed-seen.json`).
+      A seen-file the sweep cannot write does not fail the sweep — the
+      caller still gets this run's own actions — but it does not pass
+      unnoticed either: the sweep reports a `warning` action naming the
+      file, since losing that write silently re-emits every key in the
+      window on every future stand-down, into a log that is never rotated.
       `scripts/mine-merge-history.sh` — a GitHub-API miner and Stage 0
       autonomy baseline (#404/D18 §6), keyed by pull request rather than by
       item, reading no event log — is explicitly out of this requirement's
@@ -21937,7 +21942,9 @@ pull request, run the ones the change touches and any it could regress.
     (`approver-verdict`), `test/human-reviewer-handoff-wiring.test.sh`
     (`pr-ready`, both call sites) and `test/sweep-closed-issues.test.sh`
     (the sweep's own `merge-observed` action, bounded by `pr_search_limit`
-    and de-duplicated per node across repeated runs of the same window).
+    and de-duplicated per node across repeated runs of the same window, and
+    a seen-file write the sweep cannot perform reporting a `warning` action
+    rather than losing the memo silently).
     `scripts/lint-shell.sh` is clean on every file this requirement touches.
 
 9. **An open question the Reviewer could not settle holds unattended landing,
