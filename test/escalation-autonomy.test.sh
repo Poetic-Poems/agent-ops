@@ -290,6 +290,7 @@ reset_decision_log_stubs() {
 }
 
 body_file="$cycle_dir/decision-body.md"
+# shellcheck disable=SC2016  # the backticks are literal Markdown, not command substitution
 printf 'Item: `42` . repo `acme/widgets`\n' > "$body_file"
 
 # --- filing: creates labelled, then closes ---
@@ -306,6 +307,7 @@ assert_eq "filing: the duplicate guard searched --state all, not just open" "1" 
 # --- dedup: an existing issue (open OR closed) already quoting the item is
 # reused, whatever its own state — never filed twice ---
 reset_decision_log_stubs
+# shellcheck disable=SC2016  # the backticks are literal Markdown, not command substitution
 GH_LIST_RESULT='[{"number":77,"url":"https://github.com/acme/widgets/issues/77","body":"...Item: `42` . repo `acme/widgets`..."}]'
 result="$(create_decision_log_issue "acme/widgets" "42" "pw::decision" "widgets: decision" "$body_file")"
 assert_eq "dedup: reuses the existing issue's own number and url" \
