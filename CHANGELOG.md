@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A **decision log and veto** for `decide-tactical` (D18, agent-ops#937): every
+  `decide` verdict now files a closed, unassigned `pw::decision` issue — the
+  decision, the rationale, the options considered — as a durable record a
+  human can scan in one place, alongside a one-click way to undo it.
+  Reopening that issue vetoes the decision: `scripts/sweep-decision-vetoes.sh`
+  (wired via the new `lib/decision-veto.sh`) re-blocks a non-terminal item
+  with a fresh `needs-refinement`, comments on its thread, flips any open
+  pull request for it back to draft, and, for a terminal item, files a fresh
+  "revisit: …" issue quoting the veto's own comment. The dashboard's new
+  **Decisions** panel lists every decision taken in the last 7 days, vetoed
+  ones marked as such, and `agent-cycle.sh --status` carries a one-line count
+  of decisions taken in the last 24h.
 - A **free-memory stand-down** before every cycle (requirement 2.0f), the
   memory counterpart of requirement 2.0c's free-disk gate and deliberately
   the same shape. `lib/memory.sh` is the one place free host memory is read

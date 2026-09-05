@@ -1134,6 +1134,21 @@ assert_contains "  ... and still reports the budget, so a quiet night is not mis
 assert_not_contains "  ... and claims no refusals it did not have" \
   "refused in the same window" "$out"
 
+# The Decisions panel (agent-ops#937): two decide-tactical decisions, one
+# vetoed — the fixture the acceptance check asks for.
+out="$(render decisions.json)" || { printf 'FAIL - decisions.json did not render:\n%s\n' "$out"; exit 1; }
+
+assert_contains "the decisions section names its own window" \
+  "Decisions (last 7 days)" "$out"
+assert_contains "a decision's own text renders" \
+  "use option A: read the disk gate off state_dir too" "$out"
+assert_contains "its log issue links to the decision-log issue's number" \
+  "901" "$out"
+assert_contains "a vetoed decision is marked vetoed" \
+  "vetoed" "$out"
+assert_contains "an un-vetoed decision is marked as standing" \
+  "stands" "$out"
+
 # D18 issue #574: a repository the governor is currently holding or has
 # frozen must render as its own distinguishable row, never folded into the
 # quiet "consumed/cap" text an ordinary repository gets, and never folded

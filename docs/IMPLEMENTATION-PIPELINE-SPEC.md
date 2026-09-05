@@ -6335,13 +6335,16 @@ implements.
    `needs_refinement_label`, `refined_label`, `unvoid_label`,
    `complexity:low|medium|high`, `blocked`, `blocked:needs-refinement`,
    `obsolete`, `open-question` (the Reviewer's own projection,
-   requirement 8f), `pw::type:tech-debt` and `pw::owner-decision`
+   requirement 8f), `pw::type:tech-debt`, `pw::owner-decision`
    (`techdebt_file_issue`'s own marker for an owner-only `file_debt`/
    `file_issue`, requirements 23d, 36c, 42a — a fourth fixed name, for the
    same reason as `pw::type:tech-debt`: only a collaborator with triage can
    apply a label, so a filed issue's membership of the owner-only band is
-   trustable even though its body stays untrusted data) — `blocked` and
-   `obsolete` being
+   trustable even though its body stays untrusted data) and `pw::decision`
+   (requirement 36e's decision-log issue — a fifth fixed name, for the same
+   reason again: it is what `scripts/sweep-decision-vetoes.sh` searches
+   every configured repository for, and only a fixed name is trustable
+   across a fleet of them) — `blocked` and `obsolete` being
    human-only controls no pipeline stage ever applies itself: `blocked`
    excludes an issue from selection (requirement 16.4), and `obsolete`
    corroborates closing a still-open, still-diff-carrying
@@ -12521,6 +12524,108 @@ implements.
     remains — the genuine two-models-disagree loop `adjudicate-first`'s own
     bound exists to stop, one rung wider; a *fresh* reason still earns its own
     pass, up to the cap.
+36e. **The decision log and veto (D18, agent-ops#937).** A `decide-tactical`
+    decision is taken on the pipeline's own authority (requirement 36d) rather
+    than paged to a human before the fact — the round-trip agent-ops#627
+    exists to remove — but it must not thereby become invisible or
+    irreversible: the D18 pattern requirement 36a's own escalation issue and
+    the Autonomous landings dashboard panel already give an escalation and a
+    landing (a log a human can scan in one place, a lever they can pull) is
+    what a decision gets here.
+
+    **The log.** Every `decide` verdict (requirement 36d) files, in addition
+    to everything that verdict already does, one decision-log issue in the
+    item's own repository: `create_decision_log_issue` (`lib/enabler.sh`),
+    modelled on `create_escalation_issue` but filed **closed** and
+    **unassigned** — a record, not an ask — labelled `pw::decision` (a fixed,
+    unconfigurable name, `lib/labels.sh`'s `labels_catalogue`, `target` and
+    `escalation` roles both, for the same reason `pw::type:tech-debt` and
+    `pw::owner-decision` are fixed: it is what `scripts/sweep-decision-vetoes.sh`
+    below searches every configured repository for, and a renamed label would
+    silently stop being swept). Its body carries a leading machine marker
+    (`<!-- agent-ops:decision-log item=<item> repo=<repo> -->`, invisible on
+    GitHub) naming the original item, a "## Decision taken by the pipeline"
+    section (the decision, the rationale, `options_considered`, the model and
+    cycle, a link to the item-thread comment where one exists), and the same
+    body-footer item reference `create_escalation_issue`'s own duplicate guard
+    keys on (`Item: `<item>` · repo `<repo>``) — reused so both guards find
+    the same set of issues for the same item, per this requirement's own
+    origin; unlike that guard, this one searches `--state all`, since the log
+    issue is filed closed and stays closed until vetoed. `decision-taken`
+    (requirement 36d) carries the log issue's own `issue_number`/`issue_url`
+    once filed — merged in conditionally, the same way it already carries
+    `comment_url` — and `decisions_map` (`lib/cycle-state.sh`) threads both
+    through to `decisions_json` unchanged. Filing (or closing) the issue is
+    best-effort like every other `gh` write the Enabler makes (requirement
+    37): a failure costs a `warning`, never the decision itself — it is still
+    recorded on `decision-taken` and the item is still unblocked, only
+    without a durable log or a lever to veto it.
+
+    **The veto.** Reopening the log issue is the veto — a reopen is honoured
+    whenever it comes, with no window. `scripts/sweep-decision-vetoes.sh`, a
+    per-cycle, fleet-wide sweep run from `run_decision_veto_sweep`
+    (`lib/decision-veto.sh`) — deliberately *not* from `run_standdown_checks`
+    (`lib/standdown.sh`), since that function runs before `compute_skip_lists`
+    sets `blocked_json`, which the needs-refinement recording below needs
+    current — searches every configured repository for an open `pw::decision`
+    issue, reads the original item's repo/ref back off the issue body's own
+    machine marker, and acts on each one this cycle has not already processed
+    (`decision_vetoes_processed_items`, `lib/cycle-state.sh`, keyed on the log
+    issue's own number — not the original item's ref, since one item can
+    carry more than one decision, and hence more than one veto, over time —
+    over the log's own `decision-vetoed` events; the sweep script itself never
+    writes the log, `lib/decision-veto.sh` does, from its stdout, the same
+    contract every sweep in `lib/standdown.sh` keeps):
+
+    - logs `decision-vetoed` (`repo`, `item`, `issue_number`, `issue_url`,
+      `by` — the reopening actor GitHub's own issue-events API reports) —
+      exactly once per veto, never once per cycle the log issue stays open,
+      by construction of the exclusion above;
+    - where the original item is **not terminal** (its own GitHub issue is
+      still open, or, for an item with no thread, its implementing pull
+      request is still open or none can be found — a classification failure
+      fails open toward "not terminal", so a needless re-block costs one
+      wasted needs-refinement cycle rather than silently dropping a veto on
+      an item still active): records a `needs-refinement` block against it
+      (`record_needs_refinement_block`, `lib/candidate-select.sh` — called
+      in-process from `lib/decision-veto.sh`, since only that function
+      projects the requirement 38b labels the same way every other
+      needs-refinement block does), `unblock_condition` naming the owner's
+      own comment on the log issue as the decision of record, and posts one
+      comment on the item's own thread (issue-shaped items only) naming the
+      veto and the log issue;
+    - where the item has an **open pull request** (found the same
+      marker-or-branch way `scripts/sweep-closed-issues.sh` already finds
+      one): posts one comment on it naming the veto and flips it back to
+      draft (requirement 34's draft flip, re-verified by re-reading
+      `isDraft` rather than trusted from `gh`'s own exit code, the same
+      caution `confirm_pr_draft`, `lib/handoff.sh`, applies) — the human's
+      own `CHANGES_REQUESTED` path is unaffected and still stronger;
+    - where the item is **terminal** (merged or closed): files a fresh
+      "revisit: `<decision title>`" issue, labelled `bug`, quoting the log
+      issue's own most recent comment (the veto's own explanation, where one
+      was given), and comments once on the log issue naming it — there is no
+      open work left to re-block.
+
+    The owner then comments their own decision on the log issue and closes it
+    again — that close is the human touch. No new eligibility logic is
+    needed for it: `ENABLER_ELIGIBLE_JQ`'s existing `issue-closed` branch
+    (requirement 35a) reads whichever of an `escalated` or a `decision-taken`
+    event for this item is latest to determine the escalation issue's own
+    open/closed state, so once the sweep's own `needs-refinement` block is in
+    place, closing the reopened log issue is read exactly as closing an
+    ordinary escalation issue is — the block clears, the item is examined
+    again, and the next Refiner engagement writes its specification from the
+    owner's own comment, the same way it would from an answer on a closed
+    escalation. (Depends on the raise-time fix `TD-PPagop-26082901` reading
+    the block a decision was taken for, already landed — PR #939.)
+
+    **Where the owner sees them.** The dashboard's **Decisions** panel
+    (`docs/DASHBOARD-SPEC.md`) — last 7 days, per repository: item, decision,
+    taken-at, log-issue link, a `vetoed`/`stands` status — sourced from the
+    fleet log the same way every other panel is. `agent-cycle.sh --status`
+    carries a `decisions:` line counting `decision-taken` events in the last
+    24 h (`decisions_status_report`, `lib/manage.sh`).
 37. **Failure containment.** The Enabler must never change a cycle's outcome.
     A timeout, a non-zero exit, or an unparseable final message produces the
     stage's `stage-end`, a `warning`, and **no state events at all**: no

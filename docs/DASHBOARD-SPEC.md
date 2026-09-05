@@ -1382,6 +1382,28 @@ request, and letting it age out of a 24 h window would recreate the exact
 not assemble sets every field to `null`, the same "outage, not a quiet night"
 distinction `armed` above makes.
 
+The **Decisions** panel (agent-ops#937) is the same D18 pattern applied to a
+decision rather than a landing: `escalation_autonomy: "decide-tactical"`
+(agent-ops#936) lets the pipeline take a tactical decision on its own
+authority instead of paging the owner, and this panel is the log a human can
+scan in one place, alongside the lever they can pull — reopening the closed
+`pw::decision` issue `lib/enabler.sh`'s `create_decision_log_issue` files for
+every `decide` verdict, which vetoes the decision
+(`scripts/sweep-decision-vetoes.sh`, `lib/decision-veto.sh`). It renders
+`decisions`, sourced from the fleet-wide event union, never a private log:
+one row per `decision-taken` event inside the window — default 7 days,
+overridable for tests by `DECISIONS_DIGEST_WINDOW_DAYS` — carrying when it
+was taken, the repository, the item, the decision's own text, a link to its
+log issue (its own `issue_number`/`issue_url`, present unless filing it
+failed, in which case the row still renders, its own cell reading "not
+filed" rather than being dropped for want of one), and a status badge:
+`vetoed` where a `decision-vetoed` event for the same log issue postdates it,
+`stands` otherwise. A payload the Publisher could not assemble sets
+`decisions` to `null`, rendered as "the decisions digest could not be
+assembled this tick", the same outage-not-a-quiet-night distinction `armed`
+above makes; an empty window is a real, reportable "no decisions taken",
+never confused with it.
+
 The **Revert rate by repository** panel (D18 issue #579) is the continuous
 half of Stage 2's exit criterion ("revert rate ≤ baseline"):
 `scripts/mine-merge-history.sh` produced that criterion's Stage 0 baseline

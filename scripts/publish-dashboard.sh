@@ -2898,6 +2898,46 @@ if ! jq -e 'type == "object"' <<<"$landings_json" >/dev/null 2>&1; then
     '{window_hours: null, generated_at: $now, armed: null, refused: null, budget: null}')"
 fi
 
+# --- Decisions panel (agent-ops#937): every `decide-tactical` decision taken
+# in the last 7 days, and whether a `decision-vetoed` event followed it. A
+# `decision-taken` event's own `issue_number` (the closed `pw::decision` log
+# issue `lib/enabler.sh`'s `create_decision_log_issue` files) is what a veto
+# is joined against when one exists, since one item can in principle carry
+# more than one decision over time and only the log issue number tells two
+# decisions for the same item apart; a decision whose own log issue failed to
+# file (no `issue_number` at all) falls back to the repo+item+ts ordering
+# every other join in this file uses when there is nothing more specific to
+# key on.
+decisions_json="$(printf '%s\n' "$ALL_EVENTS" | jq -c -s \
+  --arg now "$now_iso" --argjson days "${DECISIONS_DIGEST_WINDOW_DAYS:-7}" '
+  ($now | fromdateiso8601) as $now_s
+  | ($now_s - ($days * 86400)) as $from_s
+  | def in_window: (.ts // "") as $t
+      | ($t | length) > 0
+      and (try ($t | fromdateiso8601) catch 0) >= $from_s;
+  ([ .[] | select(.event == "decision-taken") | select(in_window) ]
+    | sort_by(.ts // "") | reverse) as $taken
+  | ([ .[] | select(.event == "decision-vetoed") ]) as $vetoes
+  | {
+      window_days: $days,
+      generated_at: $now,
+      decisions: [ $taken[] | . as $d
+        | (($d.issue_number // null) != null) as $has_issue
+        | ($vetoes | any(
+            (if $has_issue then (.issue_number // null) == $d.issue_number
+             else (.repo // "") == ($d.repo // "") and (.item // "") == ($d.item // "")
+                  and (.ts // "") > ($d.ts // "") end))) as $v
+        | { ts: ($d.ts // ""), repo: ($d.repo // ""), item: ($d.item // ""),
+            decision: ($d.decision // ""),
+            issue_number: ($d.issue_number // null),
+            issue_url: ($d.issue_url // ""),
+            vetoed: $v } ]
+    }' 2>/dev/null)"
+if ! jq -e 'type == "object"' <<<"$decisions_json" >/dev/null 2>&1; then
+  decisions_json="$(jq -nc --arg now "$now_iso" \
+    '{window_days: null, generated_at: $now, decisions: null}')"
+fi
+
 # --- Classifier-escape audit roll-up (requirement 8e, agent-ops#572) --------
 # `counts.escape_audits`, never windowed like `landings_json` above — an
 # escape is a permanent fact about one merged pull request, and letting it
@@ -3100,6 +3140,7 @@ if (( FULL )); then
 # still ride argv.
 printf '%s' "$counts_json"  > "$work_tmp/counts.json"
 printf '%s' "$landings_json" > "$work_tmp/landings.json"
+printf '%s' "$decisions_json" > "$work_tmp/decisions.json"
 printf '%s' "$blocked_json" > "$work_tmp/blocked.json"
 printf '%s' "$void_json"    > "$work_tmp/void.json"
 printf '%s' "$github_budget_json" > "$work_tmp/github-budget.json"
@@ -3114,6 +3155,7 @@ data_json="$(jq -n \
   --slurpfile blocked "$work_tmp/blocked.json" \
   --slurpfile void "$work_tmp/void.json" \
   --slurpfile landings "$work_tmp/landings.json" \
+  --slurpfile decisions "$work_tmp/decisions.json" \
   --slurpfile rr "$work_tmp/revert-rate.json" \
   --slurpfile gb "$work_tmp/github-budget.json" \
   --slurpfile gh "$work_tmp/github.json" \
@@ -3125,6 +3167,7 @@ data_json="$(jq -n \
   '{generated_at: $generated_at, node: $self_node, config: $config, status: $status,
     counts: $counts[0], cycles: $cyc[0], noop_ticks: $noop, blocked: $blocked[0],
     void: $void[0], github: $gh[0], log_tail: $lt[0], landings: $landings[0],
+    decisions: $decisions[0],
     revert_rate: $rr[0], github_budget: $gb[0],
     cron_tail: $cron_tail, max_open_agent_prs: ($max_prs|tonumber),
     fleet: {nodes: $fleet_nodes, flags: $fleet_flags, claims: ($gh[0].claims // [])}}')"
