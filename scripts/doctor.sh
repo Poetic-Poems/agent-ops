@@ -1611,6 +1611,36 @@ if ((gh_ready)); then
       "is readable and writable — the fleet's shared state can replicate" \
       "is readable but not writable with this token — this node could fetch fleet state and never publish its own" \
       "is unreachable with this token — claims, fleet flags and the shared log would not replicate"
+
+    # Outbound health (agent-ops#602): a node whose own clock says it is fine
+    # is exactly what read fresh for four days on 2026-08-08 while its
+    # state-sync push was silently failing. The one fact worth trusting is
+    # what the shared state itself last held for this node's own branch
+    # (`.state-sync-published.json`, `state-sync.sh`'s `do_fetch`, read back
+    # through the identical computation `scripts/publish-dashboard.sh` applies
+    # to every fleet-strip row — `lib/fleet.sh`'s `fleet_publication_status`,
+    # requirement 34a). "unknown" (no publication ever read back yet) is a
+    # `warn`, not a `fail`: a fresh install, or the short window before this
+    # node's first successful push has been fetched back at all, is not a
+    # fault. "stale" — a publication was read back before, and has now aged
+    # past `node_stale_after_minutes` — is the fault this check exists to
+    # catch: a push that has stopped working even while local cycles carry on.
+    node_stale_after_seconds="$(cfg '.node_stale_after_minutes * 60 | floor')"
+    published_ts="$(jq -r '.ts // empty' "$state_dir/.state-sync-published.json" 2>/dev/null)"
+    pub_status_json="$(fleet_publication_status "$published_ts" "$node_stale_after_seconds")"
+    pub_verdict="$(jq -r '.verdict' <<<"$pub_status_json" 2>/dev/null)"
+    pub_age_s="$(jq -r '.age_s // empty' <<<"$pub_status_json" 2>/dev/null)"
+    case "$pub_verdict" in
+      fresh)
+        ok "this node's last confirmed publication into $state_repo is ${pub_age_s}s old, under the ${node_stale_after_seconds}s node_stale_after_minutes threshold"
+        ;;
+      stale)
+        fail "this node's last confirmed publication into $state_repo is ${pub_age_s}s old, over the ${node_stale_after_seconds}s node_stale_after_minutes threshold — state-sync.sh push has likely stopped working even if local cycles are still running (agent-ops#602)"
+        ;;
+      *)
+        warn "this node has no confirmed publication into $state_repo yet — state-sync.sh fetch has not read back this node's own branch, which is expected before its first successful fetch"
+        ;;
+    esac
   fi
 
   # The D18 kill switch (requirement 2.3b) — a fleet flag, so reading it costs

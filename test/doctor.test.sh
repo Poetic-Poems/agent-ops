@@ -320,6 +320,63 @@ out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID 
 assert_contains "state_repo unwritable is reported with its own wording" \
   "[fail] $slug is readable but not writable with this token" "$out"
 
+# --- Publication freshness: outbound health, not self-report (agent-ops#602) --
+# A node whose own clock says it is fine is exactly what read fresh for four
+# days on 2026-08-08 while state-sync.sh push was silently failing. This
+# check reads back `.state-sync-published.json` — state-sync.sh fetch's own
+# read-back of what the shared state holds for this node's own branch —
+# through the identical `fleet_publication_status` scripts/publish-dashboard.sh
+# applies to every fleet-strip row, so the two can never disagree. A `.state_dir`
+# override keeps this fixture off the real machine's own state directory.
+pub_state_dir="$tmp/pub-state-dir"
+mkdir -p "$pub_state_dir"
+pub_config="$tmp/pub-config.json"
+jq --arg slug "$slug" --arg sd "$pub_state_dir" \
+  '.state_repo = $slug | .state_dir = $sd' \
+  "$base_config" > "$pub_config"
+run_pub_doctor() {
+  out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_INSTALLATION_IDS -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" STUB_REPO_JSON='{"permissions":{"push":true},"archived":false}' \
+    bash "$DOCTOR" --config "$pub_config" 2>&1)"
+  rc=$?
+}
+
+# No publication ever confirmed yet — a warn, not a fail: a fresh install, or
+# the short window before this node's first successful fetch, is not a fault.
+rm -f "$pub_state_dir/.state-sync-published.json"
+run_pub_doctor
+assert_contains "no publication cache at all is a warn, not a fail" \
+  "[warn] this node has no confirmed publication into $slug yet" "$out"
+assert_eq "…and does not fail the run on its own" "0" "$rc"
+
+# A publication confirmed minutes ago is fresh — an idle node with a current
+# publication is healthy, exactly the case acceptance criterion 3 asks for.
+printf '{"ts":"%s"}' "$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)" \
+  > "$pub_state_dir/.state-sync-published.json"
+run_pub_doctor
+assert_contains "a fresh publication is reported ok, under the configured threshold" \
+  "[ ok ] this node's last confirmed publication into $slug is" "$out"
+assert_contains "  ... naming the threshold by its config key" \
+  "node_stale_after_minutes threshold" "$out"
+assert_eq "and doctor.sh exits 0" "0" "$rc"
+
+# A publication confirmed well past node_stale_after_minutes (30 by default)
+# is a fail — a push that has stopped working even while local cycles carry
+# on, acceptance criterion 4.
+printf '{"ts":"%s"}' "$(date -u -d '-40 minutes' +%Y-%m-%dT%H:%M:%SZ)" \
+  > "$pub_state_dir/.state-sync-published.json"
+run_pub_doctor
+assert_contains "a publication older than the threshold is reported as a fail" \
+  "[fail] this node's last confirmed publication into $slug is" "$out"
+assert_contains "  ... naming what is likely wrong" \
+  "state-sync.sh push has likely stopped working" "$out"
+assert_eq "and doctor.sh exits 1" "1" "$rc"
+
+# state_repo unset (single-node operation) leaves the check wholly inert — no
+# finding at all, never a warn or a fail.
+run_doctor
+assert_not_contains "with no state_repo configured, publication freshness is not even asked about" \
+  "node_stale_after_minutes" "$out"
+
 # --- closing-keyword ruleset drift (requirement 25a, TD-PPagop-26080802) ---
 # doctor.sh resolves its own repository's slug via lib/version.sh, not from
 # config.repos, so every case below fires regardless of what $base_config

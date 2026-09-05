@@ -63,6 +63,49 @@ fleet_logs_healthy() {  # <state_dir> <peers_dir> <union_log>
   return 0
 }
 
+# fleet_publication_status <ts> <threshold_s> [now_epoch]
+#
+# The one verdict over a publication timestamp — self's or a peer's alike
+# (agent-ops#602). A node's freshness is a fact about what it last actually
+# published into the shared state, never about its own local clock: on
+# 2026-08-08 both laptop nodes reported themselves fresh for four days while
+# publishing nothing, because the self row used to be built from `date` and
+# a hardcoded `false` rather than read back from anywhere. Called once per
+# row by both scripts/publish-dashboard.sh (every fleet.nodes[] row, self
+# included) and scripts/doctor.sh (this node's own row), so the two can
+# never derive it differently (requirement 34a) — a peer's <ts> is its
+# heartbeat's own `ts`; self's is `.state-sync-published.json`'s `ts`
+# (scripts/state-sync.sh's `do_fetch`, reading back what the shared state
+# holds for this node's own branch).
+#
+#   {ts: null, age_s: null, verdict: "unknown"}
+#     <ts> is empty or does not parse — no publication has ever been read
+#     back for this node/peer. Not itself a failure: a fresh install, or the
+#     short window before a node's first successful push has been fetched
+#     back at all.
+#   {ts: "…", age_s: N, verdict: "fresh"|"stale"}
+#     N seconds have passed since the shared state last held a publication
+#     from this node/peer; "stale" once N exceeds <threshold_s>
+#     (`node_stale_after_minutes * 60`).
+fleet_publication_status() {
+  local ts="${1:-}" threshold="${2:-1800}" now="${3:-}" then_epoch age verdict
+  [[ -n "$now" ]] || now="$(date -u +%s)"
+  if [[ -z "$ts" ]]; then
+    jq -nc '{ts: null, age_s: null, verdict: "unknown"}'
+    return 0
+  fi
+  if ! then_epoch="$(date -u -d "$ts" +%s 2>/dev/null)" || [[ -z "$then_epoch" ]]; then
+    jq -nc '{ts: null, age_s: null, verdict: "unknown"}'
+    return 0
+  fi
+  age=$(( now - then_epoch ))
+  (( age < 0 )) && age=0
+  verdict="fresh"
+  (( age > threshold )) && verdict="stale"
+  jq -nc --arg ts "$ts" --argjson age "$age" --arg v "$verdict" \
+    '{ts: $ts, age_s: $age, verdict: $v}'
+}
+
 # The fleet's event stream: this node's own log followed by every peer's,
 # sorted into time order (each line begins {"ts":"…", so a plain byte sort is
 # a time sort). The consumers that reduce by most-recent-event-wins — the
