@@ -146,10 +146,17 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   `lock_stale_after` takes hours. A Co-Ordinator capped at twenty minutes
   against that rule's several hours is the whole of the gap: a node rolled
   mid-cycle read as
-  "coordinator choosing work" for most of the way to its next cycle. Both bounds
-  are measured to the node's own heartbeat rather than to the reader's clock —
-  what is known is what that node had published, and both timestamps are stamped
-  by its clock, so the difference carries no skew between machines.
+  "coordinator choosing work" for most of the way to its next cycle. A *peer's*
+  bounds are measured to that peer's own heartbeat rather than to the reader's
+  clock — what is known is what that node had published, and both timestamps are
+  stamped by its clock, so the difference carries no skew between machines. Our
+  own row is measured to `generated_at`, which is that same clock: self's
+  `heartbeat_ts` is what the shared state last held for this node
+  (`fleet_publication_status`, agent-ops#602), so it lags this render by a push
+  interval plus a fetch interval even when publication is healthy, and by the
+  whole outage when it is not — bounding our own live stage by it would delay
+  the overrun badge, and suppress it outright on exactly the row an operator
+  reads during a publication failure.
   `live.stage_since` is what makes this answerable, and `live.stage_backstop_min`
   — the cap that stage was actually given, announced on its own `stage-start`
   and carried through unchanged — is what it is held against. Every stage now
@@ -991,7 +998,9 @@ pull request carrying its record card, a grey `behind` marker when the fleet
 holds a newer build and an amber `modified` one on a checkout with uncommitted
 work, and how
 fresh that answer is: read live for our own row, "as of its last push" for a
-peer); a red **N stage(s) failing** badge (agent-ops#662) beside the
+peer — or "no publication seen yet" for a peer nothing has ever been read back
+for, `fleet_publication_status`'s `unknown` being a different claim from an
+aged publication and never worded as one); a red **N stage(s) failing** badge (agent-ops#662) beside the
 running/idle state, independent of it — the whole point being a node whose
 process is alive and whose cycles are completing, which reads as plain
 "running" or "idle", while one or more stages have failed every attempt for
