@@ -556,7 +556,25 @@ open_blocked_items() {
 # is what lets the item be refined again afterwards: a later `item-refined`
 # clears an older block exactly the way `unblocked` already does, and this rule
 # must not re-shadow that recovery.
-# shellcheck disable=SC2016  # jq's $set/$clear/$r, not the shell's.
+#
+# A phantom `item-refined` event — `comment_url` present but naming no comment
+# (`$re`, bound to `REFINEMENT_COMMENT_URL_RE` by the caller), the shape logged
+# before the recording seam validated it (TD-PPagop-26082819) — is skipped
+# exactly as `ENABLER_ELIGIBLE_JQ`'s `refined_before` derivation already skips
+# it, and the latest event that does pass the shape check is used instead.
+# Without this, the two seams disagree about the same event: this map said
+# #874 was refined — so the Co-Ordinator kept proposing it and
+# `refiner_candidate_items` kept excluding it — while requirement 17f's
+# traceability gate could never resolve the recorded URL to a comment, so
+# every claim of it faulted `untraceable` and the fleet stood down on an item
+# nothing on the log's own terms could ever repair (the 2026-09-04 outage).
+# Skipping it here restores one answer everywhere: the item reads unrefined,
+# the Refiner owes it a genuine specification, and the entry leaves the no-op
+# fingerprint's refinements projection so the change wakes the fleet on its
+# own. The skip is silent by design — the recording seam now refuses the
+# shape, so the set of phantom events is closed, and `enabler_eligible_items`
+# already warns for any of them still standing behind an open block.
+# shellcheck disable=SC2016  # jq's $set/$clear/$r/$re, not the shell's.
 REFINEMENTS_MAP_JQ='
   def latest_unresolved($set; $clear): '"$LATEST_UNRESOLVED_JQ"';
   . as $all
@@ -565,6 +583,7 @@ REFINEMENTS_MAP_JQ='
   | [ $all[]
       | select(.event == "item-refined"
                and (.item // "") != "" and (.repo // "") != "")
+      | select(((.comment_url // "") == "") or ((.comment_url // "") | test($re)))
       | . as $r
       | select($void
                | any((.item // "") == ($r.item // "")
@@ -595,12 +614,17 @@ REFINEMENTS_MAP_JQ='
 # one input, never the cycle.
 refinements_map() {
   local src="${1:--}" out=""
+  # The same literal-copy fallback `enabler_eligible_items` keeps, for the
+  # same reason: a caller testing this file in isolation may not have sourced
+  # lib/refinement.sh, and the two must still agree — production always has
+  # the real one (agent-cycle.sh sources every lib/*.sh file, requirement 4a).
+  local comment_url_re="${REFINEMENT_COMMENT_URL_RE:-(#issuecomment-[0-9]+|/issues/comments/[0-9]+)$}"
   if [[ "$src" == "-" ]]; then
     out="$(jq -c -R 'fromjson? // empty' 2>/dev/null \
-      | jq -sc "$REFINEMENTS_MAP_JQ" 2>/dev/null || true)"
+      | jq -sc --arg re "$comment_url_re" "$REFINEMENTS_MAP_JQ" 2>/dev/null || true)"
   elif [[ -s "$src" ]]; then
     out="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null \
-      | jq -sc "$REFINEMENTS_MAP_JQ" 2>/dev/null || true)"
+      | jq -sc --arg re "$comment_url_re" "$REFINEMENTS_MAP_JQ" 2>/dev/null || true)"
   fi
   [[ -n "$out" ]] || out='{}'
   printf '%s' "$out"
@@ -629,13 +653,18 @@ refinements_map() {
 # fresh-spec write (lib/refinement.sh) — supersedes a decision. A refined
 # non-issue item with a decision still pending stays a candidate despite
 # `refinements_map` showing it refined (`refiner_candidate_items`,
-# lib/refinement.sh) for exactly this reason.
-# shellcheck disable=SC2016  # jq's $set/$clear/$r, not the shell's.
+# lib/refinement.sh) for exactly this reason. A phantom `item-refined` —
+# `comment_url` present but naming no comment (TD-PPagop-26082819) — never
+# supersedes either, on `REFINEMENTS_MAP_JQ`'s own terms just above: no
+# specification was actually written, so the decision it would shadow is
+# still owed its spec.
+# shellcheck disable=SC2016  # jq's $set/$clear/$r/$re, not the shell's.
 DECISIONS_MAP_JQ='
   def latest_unresolved($set; $clear): '"$LATEST_UNRESOLVED_JQ"';
   . as $all
   | ($all | latest_unresolved("item-void"; "unvoided")) as $void
-  | [ $all[] | select(.event == "item-refined" and (.unchanged // false) != true) ] as $refined
+  | [ $all[] | select(.event == "item-refined" and (.unchanged // false) != true)
+             | select(((.comment_url // "") == "") or ((.comment_url // "") | test($re))) ] as $refined
   | [ $all[]
       | select(.event == "decision-taken"
                and (.item // "") != "" and (.repo // "") != "")
@@ -665,12 +694,14 @@ DECISIONS_MAP_JQ='
 # unreadable log, on the same terms `refinements_map` does.
 decisions_map() {
   local src="${1:--}" out=""
+  # Same fallback as refinements_map above, same reason.
+  local comment_url_re="${REFINEMENT_COMMENT_URL_RE:-(#issuecomment-[0-9]+|/issues/comments/[0-9]+)$}"
   if [[ "$src" == "-" ]]; then
     out="$(jq -c -R 'fromjson? // empty' 2>/dev/null \
-      | jq -sc "$DECISIONS_MAP_JQ" 2>/dev/null || true)"
+      | jq -sc --arg re "$comment_url_re" "$DECISIONS_MAP_JQ" 2>/dev/null || true)"
   elif [[ -s "$src" ]]; then
     out="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null \
-      | jq -sc "$DECISIONS_MAP_JQ" 2>/dev/null || true)"
+      | jq -sc --arg re "$comment_url_re" "$DECISIONS_MAP_JQ" 2>/dev/null || true)"
   fi
   [[ -n "$out" ]] || out='{}'
   printf '%s' "$out"

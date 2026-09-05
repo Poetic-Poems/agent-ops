@@ -853,6 +853,39 @@ assert_eq "a refinement written after an older block is not shadowed by it" \
   "$(refinements_map "$stale_log" | jq -r '."o/r"."77".spec')"
 rm -f "$stale_log"
 
+# --- TD-PPagop-26082819, the refinements_map seam: a phantom is not a refinement --
+# The recording seam above already refuses to *write* an item-refined whose
+# comment_url names no comment, and `enabler_eligible_items` already skips one
+# when deriving `refined_before` — but events logged before that fix are still
+# on the union log, and this map read them as refinements: the Co-Ordinator
+# kept proposing the item, `refiner_candidate_items` kept excluding it from a
+# fresh refinement, and requirement 17f's traceability gate could never
+# resolve the URL — every claim faulted `untraceable`, and the fleet stood
+# down on an item with no route to repair (the 2026-09-04 outage, issues
+# #874/#877/#878). The map must judge the shape by the same one predicate.
+phantom_log="$(mktemp)"
+cat > "$phantom_log" <<'EOF'
+{"ts":"2026-08-28T11:54:37Z","cycle":"c1","event":"item-refined","repo":"o/r","item":"874","by":"refiner","comment_url":"https://github.com/o/r/issues/874"}
+EOF
+assert_eq "a phantom item-refined (bare issue URL) yields no map entry at all" "null" \
+  "$(refinements_map "$phantom_log" | jq -r '."o/r"."874" // "null"')"
+
+printf '%s\n' '{"ts":"2026-08-28T12:00:00Z","cycle":"c2","event":"item-refined","repo":"o/r","item":"874","comment_url":"https://github.com/o/r/issues/874#issuecomment-77"}' >> "$phantom_log"
+assert_eq "a genuine refinement logged after the phantom wins as if the phantom never was" \
+  "https://github.com/o/r/issues/874#issuecomment-77" \
+  "$(refinements_map "$phantom_log" | jq -r '."o/r"."874".comment_url')"
+
+printf '%s\n' '{"ts":"2026-08-28T13:00:00Z","cycle":"c3","event":"item-refined","repo":"o/r","item":"874","comment_url":"https://github.com/o/r/issues/874"}' >> "$phantom_log"
+assert_eq "a phantom logged after a genuine refinement does not displace it" \
+  "https://github.com/o/r/issues/874#issuecomment-77" \
+  "$(refinements_map "$phantom_log" | jq -r '."o/r"."874".comment_url')"
+
+printf '%s\n' '{"ts":"2026-08-28T14:00:00Z","cycle":"c4","event":"item-refined","repo":"o/r","item":"TD26082801","spec":"a spec travels with no comment_url"}' >> "$phantom_log"
+assert_eq "a spec-shaped refinement carries no comment_url and is not a phantom" \
+  "a spec travels with no comment_url" \
+  "$(refinements_map "$phantom_log" | jq -r '."o/r".TD26082801.spec')"
+rm -f "$phantom_log"
+
 # --- Requirement 36d: decisions_map, refinements_map's sibling carrier -----------
 # A `decide-tactical` pass answers a policy question rather than writing a
 # specification, so an item can carry a decision with no refinement at all —
@@ -907,6 +940,13 @@ assert_eq "...but a decision taken after that refinement stands again" "a later 
 printf '%s\n' '{"ts":"2026-08-09T09:00:00Z","cycle":"c0","event":"item-refined","repo":"o/r","item":"TD26081001","spec":"written before the decision"}' >> "$dec_log"
 assert_eq "a refinement older than the decision does not suppress it" "the current answer" \
   "$(decisions_map "$dec_log" | jq -r '."o/r".TD26081001.decision')"
+
+# TD-PPagop-26082819, this map's own seam: a phantom item-refined — comment_url
+# present but naming no comment — wrote no specification, so it never
+# supersedes a decision. Same one predicate as refinements_map's skip.
+printf '%s\n' '{"ts":"2026-08-15T09:00:00Z","cycle":"c7","event":"item-refined","repo":"o/r","item":"310","comment_url":"https://github.com/o/r/issues/310"}' >> "$dec_log"
+assert_eq "a phantom refinement never supersedes a decision" "a later decision still" \
+  "$(decisions_map "$dec_log" | jq -r '."o/r"."310".decision')"
 
 assert_eq "a missing log yields no decisions" "{}" "$(decisions_map "$tmp_dir/nonexistent.jsonl")"
 printf '%s' '{"ts":"2026-08-14T10:00:00Z","event":"decision-tak' >> "$dec_log"

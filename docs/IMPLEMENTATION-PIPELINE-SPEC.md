@@ -4507,6 +4507,31 @@ implements.
    Void items are excluded: a refined specification of work that does not exist
    would arrive in the Co-Ordinator's input arguing, in the pipeline's own voice
    and in detail, for an item requirement 34c says must never be selected again.
+
+   **A phantom `item-refined` event is skipped here on requirement 35a's own
+   terms (TD-PPagop-26082819):** an event whose `comment_url` names no comment
+   — no `#issuecomment-` anchor or REST API comment form
+   (`refinement_comment_url_valid`, `lib/refinement.sh`, the one predicate) —
+   is excluded from the map exactly as if it had never been logged, and the
+   latest event that does pass the shape check is used instead; no entry if
+   none does. The readers of this judgement must never disagree: this map
+   decides both what the Co-Ordinator sees as refined and what
+   `refiner_candidate_items` (requirement 39a) excludes from a fresh
+   refinement, while requirement 17f's traceability gate resolves the recorded
+   URL at claim time — so an entry only this map trusts is an item the
+   Co-Ordinator keeps proposing, the Refiner never re-specifies, and the gate
+   can never admit: every claim faults `untraceable`, and the fleet stands
+   down on work nothing in the log's own lifecycle can repair. Skipping the
+   phantom restores one answer everywhere: the item reads unrefined, the
+   Refiner owes it a genuine specification under its unchanged
+   `refinement_policy`, and the dropped entry leaves the no-op fingerprint's
+   refinements projection (requirement 3b), so the correction itself wakes a
+   fleet the phantom idled. The same skip governs `decisions_map`'s
+   superseded test (requirement 36d): a phantom wrote no specification, so it
+   never retires a pending decision. The skip is silent here — requirement
+   39c's recording seam refuses the shape, so the phantom set cannot grow,
+   and requirement 35a's own warning still names any phantom standing behind
+   an open block.
 3o. **Claim visibility (issue #175).** The Co-Ordinator's runtime input carries
    a `claimed` array — `{repo, item, age_hours}`, plus `pr_number` where the
    claim is known to target one (issue #238; see requirement 17a's PR-keyed
@@ -11853,7 +11878,10 @@ implements.
     change to the log itself. `enabler_eligible_items` logs one `warning`
     naming every phantom event's timestamp and repo+item it skipped this way,
     each time it is called with one in scope, so a still-live phantom is
-    visible rather than only inferred from the item's own eligibility.
+    visible rather than only inferred from the item's own eligibility. The
+    same shape judgement governs every reading seam: `refinements_map` and
+    `decisions_map` skip a phantom event on identical terms (requirement 3h),
+    so no extract in this codebase reads one as a refinement.
 
     Like requirements 34 and 34c, this rule has exactly **one** implementation
     (requirement 34a): `enabler_eligible_items` in `lib/cycle-state.sh`, whose
