@@ -40,6 +40,17 @@
 # status, and a routine `not-met` reading against the stored baseline is not a
 # crashed script.
 #
+# 15 4 is schedule.tech_debt_archive_offset_minutes
+# past the node's own base minute (mod 60), the same jitter shape the
+# revert-rate line above uses, daily rather than hourly — one node's own
+# `scripts/publish-tech-debt-archive.sh` pass (agent-ops#878, D15 as revised)
+# mirrors every `pw::type:tech-debt`-labelled issue, per configured
+# repository, into the state repository's own git history, one JSON file per
+# issue. It ends `|| true` for the same reason the revert-rate line does:
+# nothing on this image reads a cron job's exit status, and a repository
+# whose label search or archive write failed this run is simply retried on
+# the next one, not a crashed script.
+#
 # Everything not a placeholder is documented in the baked crontab, which is
 # also the fallback whenever this template cannot be rendered.
 
@@ -50,6 +61,7 @@ LOGDIR=/home/agent/.local/state/poetic-agents
 7 3 * * *  /app/review-cycle.sh >> $LOGDIR/review-cron.log 2>&1
 22 * * * *  /app/scripts/doctor.sh --unattended >> $LOGDIR/doctor.log 2>&1 || true
 29 2 * * *  /app/scripts/publish-revert-rate.sh >> $LOGDIR/revert-rate.log 2>&1 || true
+15 4 * * *  /app/scripts/publish-tech-debt-archive.sh >> $LOGDIR/tech-debt-archive.log 2>&1 || true
 
 */5 * * * *  /app/scripts/state-sync.sh push  >> $LOGDIR/state-sync.log 2>&1
 */7 * * * *  /app/scripts/state-sync.sh fetch >> $LOGDIR/state-sync.log 2>&1
