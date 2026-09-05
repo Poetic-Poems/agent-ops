@@ -142,10 +142,20 @@ landing_retry_source() {
   printf '%s' "${!key:-}"
 }
 
+# landing_retry_item, requirement 49 (issue #595): steered by ITEM_<branch,
+# sanitised>, mirroring landing_retry_source's own stub above — this file is
+# about what reaches _landing_stage_attempt, not the item-lifecycle join
+# key's own resolution, so a fixed-shape stub is enough.
+landing_retry_item() {
+  local slug="$1" branch="$2"
+  local key="ITEM_${branch//[^A-Za-z0-9]/_}"
+  printf '%s' "${!key:-}"
+}
+
 _landing_stage_attempt() {
-  local pr_url="$2" already_armed="${7:-0}" num="${2##*/}" armvar
-  printf 'slug=%s\tpr_url=%s\tcomplexity=%s\tsource=%s\tdefault_branch=%s\tretry=%s\talready_armed=%s\n' \
-    "$1" "$2" "$3" "$4" "$5" "${6:-}" "$already_armed" >>"$T/attempts"
+  local pr_url="$2" already_armed="${7:-0}" item="${8:-}" num="${2##*/}" armvar
+  printf 'slug=%s\tpr_url=%s\tcomplexity=%s\tsource=%s\tdefault_branch=%s\tretry=%s\talready_armed=%s\titem=%s\n' \
+    "$1" "$2" "$3" "$4" "$5" "${6:-}" "$already_armed" "$item" >>"$T/attempts"
   # Simulates an arm/refusal outcome per candidate, steered by ARM_<number>
   # (mirroring STANDING_<number> above), so a test can pin how the caller's
   # own running tally (`armed_this_pass`) grows across a pass — PR #557
@@ -201,7 +211,7 @@ open_list="$(jq -sc '.' <(
 
 # --- The happy path: one eligible candidate reaches _landing_stage_attempt --
 
-rc="$(run_case PR_LIST_JSON="$open_list" STANDING_1="APPROVED" SOURCE_td_TD_1="tech-debt")"
+rc="$(run_case PR_LIST_JSON="$open_list" STANDING_1="APPROVED" SOURCE_td_TD_1="tech-debt" ITEM_td_TD_1="42")"
 assert_eq "a well-formed sweep returns 0" "0" "$rc"
 assert_eq "exactly the one open, non-draft, low/medium, approved candidate is offered" \
   "1" "$(count_attempts)"
@@ -209,6 +219,7 @@ assert_contains "  ... with its own slug" "slug=acme/widgets" "$(attempts)"
 assert_contains "  ... its own pull request url" "pr_url=https://github.com/acme/widgets/pull/1" "$(attempts)"
 assert_contains "  ... the complexity read off its own label" "complexity=low" "$(attempts)"
 assert_contains "  ... the source landing_retry_source resolved" "source=tech-debt" "$(attempts)"
+assert_contains "  ... and the item landing_retry_item resolved (requirement 49)" "item=42" "$(attempts)"
 assert_contains "  ... and RETRY set" "retry=retry" "$(attempts)"
 
 # --- Level pre-check: no candidate is even listed below agent-merges-routine -

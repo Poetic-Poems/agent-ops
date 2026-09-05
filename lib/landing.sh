@@ -893,6 +893,34 @@ landing_retry_source() {
   printf '%s' "$out"
 }
 
+# landing_retry_item REPO BRANCH [LOG_FILE]
+# Print the `item` of the same `selection` event `landing_retry_source`
+# reads — the join key requirement 49 (issue #595) adds to `landing-armed`/
+# `landing-refused`, for the 2.1e retry sweep's own pull requests, which have
+# no `$selected_item` to read the way `run_landing_stage`'s own direct path
+# does. Same log, same key, same first-wins-by-ts and empty-on-no-match
+# contract as `landing_retry_source` — kept as a sibling function rather than
+# folded into one call that returns both, since a caller wanting only the
+# source (there is one: the retry sweep itself, before it knows whether this
+# candidate is even eligible) should not pay for a second field it may never
+# use.
+landing_retry_item() {
+  local repo="$1" branch="$2" src="${3:--}" out=""
+  # shellcheck disable=SC2016  # $repo/$branch are jq's own --arg variables, not the shell's.
+  local jq_prog='
+    [ .[] | select(.event == "selection" and (.repo // "") == $repo
+                   and (.branch // "") == $branch and (.item // "") != "") ]
+    | sort_by(.ts) | last | .item // empty'
+  if [[ "$src" == "-" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' 2>/dev/null \
+      | jq -rs --arg repo "$repo" --arg branch "$branch" "$jq_prog" 2>/dev/null || true)"
+  elif [[ -s "$src" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null \
+      | jq -rs --arg repo "$repo" --arg branch "$branch" "$jq_prog" 2>/dev/null || true)"
+  fi
+  printf '%s' "$out"
+}
+
 # landing_retry_tier PR_URL [LOG_FILE]
 # Print the tier (`trivial`, `standard`, `high` or `critical`) of the most
 # recent `approver-verdict` event for PR_URL — the same "fixed at the
@@ -996,19 +1024,23 @@ landing_approver_adjudication_history() {
 # they did inline; `landing_armed_by_repo` itself stays declared in
 # agent-cycle.sh, ahead of both this file's functions and the Enabler/Refiner
 # state beside it, so nothing here reads it unset under `set -u`.
-# _landing_refuse PR_URL REPO REASON [RETRY]
+# _landing_refuse PR_URL REPO REASON [RETRY [ITEM]]
 # Log `landing-refused` (requirement 8d, requirement 33). The one write
 # every refusal path in `_landing_stage_attempt` makes — never a blocked pull
 # request, never a withheld claim, exactly as an Approver refusal (8b/8c)
 # costs a missing review and nothing else. RETRY, when non-empty, marks the
 # event `retry: true` (TD-PPagop-26081701) — a fact worth keeping distinct in
 # the log, since it means the refusal happened outside the round that first
-# approved this pull request.
+# approved this pull request. ITEM (requirement 49, issue #595) is omitted,
+# never logged `null`, when the caller could not resolve one — see
+# `_landing_stage_attempt`'s own header for where it comes from on each path.
 _landing_refuse() {
-  local retry_bool="false"
+  local retry_bool="false" item="${5:-}"
   [[ -z "${4:-}" ]] || retry_bool="true"
   log_event "landing-refused" "$(jq -nc --arg u "$1" --arg r "$2" --arg reason "$3" --argjson retry "$retry_bool" \
-    '{pr_url: $u, repo: $r, reason: $reason} + (if $retry then {retry: true} else {} end)')"
+    --arg i "$item" \
+    '{pr_url: $u, repo: $r, reason: $reason} + (if $retry then {retry: true} else {} end)
+     + (if $i == "" then {} else {item: $i} end)')"
 }
 
 # run_landing_stage PR_URL COMPLEXITY
@@ -1042,7 +1074,7 @@ run_landing_stage() {
   local pr_url="$1" complexity="$2"
   [[ "$approver_stage_verdict" == "approve" && "$approver_stage_adjudicating" != "1" ]] || return 0
   local already_armed="${landing_armed_by_repo[$selected_repo]:-0}"
-  _landing_stage_attempt "$selected_repo" "$pr_url" "$complexity" "$selected_source" "$gate_default_branch" "" "$already_armed"
+  _landing_stage_attempt "$selected_repo" "$pr_url" "$complexity" "$selected_source" "$gate_default_branch" "" "$already_armed" "$selected_item"
   if (( _landing_stage_attempt_armed )); then
     # shellcheck disable=SC2004  # false positive: landing_armed_by_repo is
     # declare -A (agent-cycle.sh) — its subscript is a literal string key,
@@ -1245,15 +1277,23 @@ run_landing_stage() {
 # WI-8 digest reads this record instead of re-joining `approver-verdict`
 # events against `landing-armed`, and reports a `landing-armed` with no
 # matching record as an anomaly in its own right.
+#
+# ITEM (requirement 49, issue #595) is `$selected_item` on `run_landing_stage`'s
+# own direct-path call, and `landing_retry_item`'s read of the fleet log on
+# the 2.1e retry sweep's call — the same split `source` already has between
+# its two callers, for the same reason (a repo/branch this process never
+# claimed has no in-process fact to read). Carried on `landing-armed` and
+# `landing-refused` via `_landing_refuse`; omitted, never logged `null`, on
+# the rare candidate neither path can resolve one for.
 _landing_stage_attempt() {
-  local slug="$1" pr_url="$2" complexity="$3" source="$4" default_branch="${5:-main}" retry="${6:-}" already_armed="${7:-0}"
+  local slug="$1" pr_url="$2" complexity="$3" source="$4" default_branch="${5:-main}" retry="${6:-}" already_armed="${7:-0}" item="${8:-}"
   local number level
   _landing_stage_attempt_armed=0
 
   if [[ "$pr_url" =~ /pull/([0-9]+)$ ]]; then
     number="${BASH_REMATCH[1]}"
   else
-    _landing_refuse "$pr_url" "$slug" "malformed-pr-url:could not parse a pull request number from $pr_url" "$retry"
+    _landing_refuse "$pr_url" "$slug" "malformed-pr-url:could not parse a pull request number from $pr_url" "$retry" "$item"
     return 0
   fi
 
@@ -1266,7 +1306,7 @@ _landing_stage_attempt() {
   case "$level" in
     agent-merges-routine|agent-merges-all) ;;
     *)
-      _landing_refuse "$pr_url" "$slug" "$(landing_autonomy_refusal_reason "$state_repo" "$state_dir" "$level" fresh)" "$retry"
+      _landing_refuse "$pr_url" "$slug" "$(landing_autonomy_refusal_reason "$state_repo" "$state_dir" "$level" fresh)" "$retry" "$item"
       return 0
       ;;
   esac
@@ -1274,7 +1314,7 @@ _landing_stage_attempt() {
   local elig
   elig="$(landing_eligible "$DEFAULTED_CONFIG" "$slug" "$number" "$complexity" "$source" "$level")"
   if [[ "$elig" != "eligible" ]]; then
-    _landing_refuse "$pr_url" "$slug" "$elig" "$retry"
+    _landing_refuse "$pr_url" "$slug" "$elig" "$retry" "$item"
     return 0
   fi
 
@@ -1298,11 +1338,11 @@ _landing_stage_attempt() {
   case "$oq_hit_rc" in
     1) ;; # clear — no open question stands.
     2)
-      _landing_refuse "$pr_url" "$slug" "open-question-unreadable:could not read $pr_url's own labels to confirm no open question stands" "$retry"
+      _landing_refuse "$pr_url" "$slug" "open-question-unreadable:could not read $pr_url's own labels to confirm no open question stands" "$retry" "$item"
       return 0
       ;;
     0)
-      if ! _landing_open_question_resolve "$slug" "$pr_url" "$number" "$retry"; then
+      if ! _landing_open_question_resolve "$slug" "$pr_url" "$number" "$retry" "$item"; then
         return 0
       fi
       oq_word="settled"
@@ -1325,13 +1365,13 @@ _landing_stage_attempt() {
   gate_reason="${gate_combined#*$'\t'}"
   if [[ "$gate_word" != "clean" || "$gate_rc" != "0" ]]; then
     _landing_refuse "$pr_url" "$slug" \
-      "review gate: ${gate_reason:-${gate_word:-unreadable (review_gate_verdict exited $gate_rc)}}" "$retry"
+      "review gate: ${gate_reason:-${gate_word:-unreadable (review_gate_verdict exited $gate_rc)}}" "$retry" "$item"
     return 0
   fi
 
   local login
   if ! login="$(approver_token_identity_login "")" || [[ -z "$login" ]]; then
-    _landing_refuse "$pr_url" "$slug" "could not read the Approver App's own login" "$retry"
+    _landing_refuse "$pr_url" "$slug" "could not read the Approver App's own login" "$retry" "$item"
     return 0
   fi
 
@@ -1342,7 +1382,7 @@ _landing_stage_attempt() {
   # own header).
   local standing_at standing submitted_at review_commit rest
   if ! standing_at="$(landing_approver_standing_review_at "$slug" "$number" "$login")"; then
-    _landing_refuse "$pr_url" "$slug" "approver-review-unreadable:could not read $pr_url's own review list to confirm the Approver's review actually landed" "$retry"
+    _landing_refuse "$pr_url" "$slug" "approver-review-unreadable:could not read $pr_url's own review list to confirm the Approver's review actually landed" "$retry" "$item"
     return 0
   fi
   standing="${standing_at%%$'\t'*}"
@@ -1350,17 +1390,17 @@ _landing_stage_attempt() {
   submitted_at="${rest%%$'\t'*}"
   review_commit="${rest#*$'\t'}"
   if [[ "$standing" != "APPROVED" ]]; then
-    _landing_refuse "$pr_url" "$slug" "approver-review-not-approved:the Approver's own review is not standing APPROVED on GitHub (state: ${standing:-none})" "$retry"
+    _landing_refuse "$pr_url" "$slug" "approver-review-not-approved:the Approver's own review is not standing APPROVED on GitHub (state: ${standing:-none})" "$retry" "$item"
     return 0
   fi
 
   local blocking
   if ! blocking="$(_handoff_blocking_reviewers "$slug" "$number")"; then
-    _landing_refuse "$pr_url" "$slug" "human-veto-unreadable:could not read $pr_url's own review list to confirm no human CHANGES_REQUESTED stands" "$retry"
+    _landing_refuse "$pr_url" "$slug" "human-veto-unreadable:could not read $pr_url's own review list to confirm no human CHANGES_REQUESTED stands" "$retry" "$item"
     return 0
   fi
   if [[ -n "$blocking" ]]; then
-    _landing_refuse "$pr_url" "$slug" "human-changes-requested:a human CHANGES_REQUESTED stands ($(paste -sd, - <<<"$blocking"))" "$retry"
+    _landing_refuse "$pr_url" "$slug" "human-changes-requested:a human CHANGES_REQUESTED stands ($(paste -sd, - <<<"$blocking"))" "$retry" "$item"
     return 0
   fi
 
@@ -1376,7 +1416,7 @@ _landing_stage_attempt() {
   rc_combined="$(reconciliation_gate "$pr_url")" || true
   IFS=$'\t' read -r rc_word rc_reason <<<"$rc_combined"
   if [[ "$rc_word" == "dirty" ]]; then
-    _landing_refuse "$pr_url" "$slug" "reconciliation-unanswered:$rc_reason" "$retry"
+    _landing_refuse "$pr_url" "$slug" "reconciliation-unanswered:$rc_reason" "$retry" "$item"
     return 0
   fi
   # Anything that is not `clean` refuses arming outright, never falls through
@@ -1393,7 +1433,7 @@ _landing_stage_attempt() {
   # merge is not that.
   if [[ "$rc_word" != "clean" ]]; then
     _landing_refuse "$pr_url" "$slug" \
-      "reconciliation-unreadable:could not confirm every human comment on $pr_url since it last left draft is reconciled: ${rc_reason:-reconciliation_gate answered ${rc_word:-nothing at all}}" "$retry"
+      "reconciliation-unreadable:could not confirm every human comment on $pr_url since it last left draft is reconciled: ${rc_reason:-reconciliation_gate answered ${rc_word:-nothing at all}}" "$retry" "$item"
     return 0
   fi
 
@@ -1420,7 +1460,7 @@ _landing_stage_attempt() {
     fi
     pp_ctl="$(landing_protected_path_controls_ok "$DEFAULTED_CONFIG" "$slug" "$number" "$pp_tier" "$submitted_at" "$review_commit")"
     if [[ "$pp_ctl" != "ok" ]]; then
-      _landing_refuse "$pr_url" "$slug" "$pp_ctl" "$retry"
+      _landing_refuse "$pr_url" "$slug" "$pp_ctl" "$retry" "$item"
       return 0
     fi
   fi
@@ -1435,12 +1475,12 @@ _landing_stage_attempt() {
 
   local queue_json queued dequeue_reason
   if ! queue_json="$(merge_queue_probe "$slug" "$number")"; then
-    _landing_refuse "$pr_url" "$slug" "merge-queue-unreadable:could not read $pr_url's merge-queue status" "$retry"
+    _landing_refuse "$pr_url" "$slug" "merge-queue-unreadable:could not read $pr_url's merge-queue status" "$retry" "$item"
     return 0
   fi
   queued="$(jq -r '.queued' <<<"$queue_json" 2>/dev/null)"
   if [[ "$queued" != "false" ]]; then
-    _landing_refuse "$pr_url" "$slug" "already in the merge queue" "$retry"
+    _landing_refuse "$pr_url" "$slug" "already in the merge queue" "$retry" "$item"
     return 0
   fi
   # A dequeue is otherwise invisible on an open pull request (PR #557 review
@@ -1463,17 +1503,17 @@ _landing_stage_attempt() {
   if [[ -n "$dequeue_reason" ]]; then
     if merge_queue_dequeue_actionable "$dequeue_reason"; then
       _landing_refuse "$pr_url" "$slug" \
-        "dequeued-actionable:GitHub's merge queue removed $pr_url over a $dequeue_reason failure — the dequeued source's own diagnose-and-fix path and a fresh human 'Merge when ready' click land this, never a blind re-arm here" "$retry"
+        "dequeued-actionable:GitHub's merge queue removed $pr_url over a $dequeue_reason failure — the dequeued source's own diagnose-and-fix path and a fresh human 'Merge when ready' click land this, never a blind re-arm here" "$retry" "$item"
     else
       _landing_refuse "$pr_url" "$slug" \
-        "dequeued-manual:GitHub's merge queue removed $pr_url (reason: $dequeue_reason) — a deliberate removal, so this stage never re-enqueues it" "$retry"
+        "dequeued-manual:GitHub's merge queue removed $pr_url (reason: $dequeue_reason) — a deliberate removal, so this stage never re-enqueues it" "$retry" "$item"
     fi
     return 0
   fi
 
   local token method arm_rc=0
   if ! token="$(approver_token_get "$slug")"; then
-    _landing_refuse "$pr_url" "$slug" "could not mint the Approver's installation token" "$retry"
+    _landing_refuse "$pr_url" "$slug" "could not mint the Approver's installation token" "$retry" "$item"
     return 0
   fi
   # Captured with `|| arm_rc=$?` rather than a bare `if ! …; then`, matching
@@ -1484,11 +1524,11 @@ _landing_stage_attempt() {
   method="$(landing_arm "$slug" "$number" "$token")" || arm_rc=$?
   if (( arm_rc != 0 )); then
     _landing_refuse "$pr_url" "$slug" \
-      "arm-failed:landing_arm could not enqueue or auto-merge $pr_url: $(_landing_arm_failure_reason "$arm_rc")" "$retry"
+      "arm-failed:landing_arm could not enqueue or auto-merge $pr_url: $(_landing_arm_failure_reason "$arm_rc")" "$retry" "$item"
     return 0
   fi
   if [[ -z "$method" ]]; then
-    _landing_refuse "$pr_url" "$slug" "arm-failed:landing_arm could not enqueue or auto-merge $pr_url: printed no method despite exiting 0" "$retry"
+    _landing_refuse "$pr_url" "$slug" "arm-failed:landing_arm could not enqueue or auto-merge $pr_url: printed no method despite exiting 0" "$retry" "$item"
     return 0
   fi
 
@@ -1522,8 +1562,35 @@ _landing_stage_attempt() {
   # actually forbade landing as one that permitted it. One field closes both.
   log_event "landing-armed" "$(jq -nc --arg u "$pr_url" --arg r "$slug" --arg src "$source" \
     --arg c "$complexity" --arg m "$method" --arg lvl "$level" --argjson retry "$retry_bool" \
-    --argjson cap "$budget_cap" --argjson count "$budget_count" \
-    '{pr_url: $u, repo: $r, source: $src, complexity: $c, method: $m, level: $lvl, cap: $cap, count: $count} + (if $retry then {retry: true} else {} end)')"
+    --argjson cap "$budget_cap" --argjson count "$budget_count" --arg i "$item" \
+    '{pr_url: $u, repo: $r, source: $src, complexity: $c, method: $m, level: $lvl, cap: $cap, count: $count}
+     + (if $retry then {retry: true} else {} end)
+     + (if $i == "" then {} else {item: $i} end)')"
+
+  # The item-lifecycle record's merge instant (requirement 49, issue #595).
+  # `method == "enqueued"` never merges synchronously — GitHub's merge queue
+  # always resolves later, asynchronously, so there is nothing to observe
+  # here and `scripts/sweep-closed-issues.sh`'s own sweep is what eventually
+  # catches it. `method == "auto-merge"` sometimes does merge synchronously,
+  # per this file's own header on the no-queue fallback (a `gh` that sends
+  # `mergePullRequest` directly, not `enablePullRequestAutoMerge`, whenever
+  # the pull request is already mergeable) — but not always (`BLOCKED` still
+  # arms and waits). `pr_merge_state` (lib/handoff.sh) asks GitHub which one
+  # just happened rather than assuming from `method` alone, the same
+  # evidence-not-inference discipline `reviewer_merge_observed`
+  # (lib/merge-observed.sh) already applies at its own two call sites.
+  if [[ "$method" != "enqueued" ]]; then
+    local merge_state="" merge_sha="" merge_state_result
+    merge_state_result="$(pr_merge_state "$pr_url" 2>/dev/null)" || true
+    IFS=$'\t' read -r merge_state merge_sha <<<"$merge_state_result"
+    if [[ "$merge_state" == "merged" ]]; then
+      log_event "merge-observed" "$(jq -nc --arg r "$slug" --arg i "$item" --arg u "$pr_url" \
+        --arg sha "$merge_sha" \
+        '{repo: $r, pr_url: $u, stage: "landing"}
+         + (if $i == "" then {} else {item: $i} end)
+         + (if $sha == "" then {} else {merge_sha: $sha} end)')"
+    fi
+  fi
 
   # requirement 8x (D18, agent-ops#578) — see this function's own header for
   # what each field is and why it costs no extra read beyond the one line
@@ -1607,22 +1674,24 @@ _landing_stage_attempt() {
   _landing_stage_attempt_armed=1
 }
 
-# _landing_open_question_resolve SLUG PR_URL NUMBER [RETRY]
+# _landing_open_question_resolve SLUG PR_URL NUMBER [RETRY [ITEM]]
 # Requirement 8f's own escalation/adjudication ladder, factored out of
 # `_landing_stage_attempt`'s gate 2.5 so that gate's own `case` stays as
 # short as every other gate's inline check. Returns 0 when the question is
 # settled this round — the caller falls through to the next gate exactly as
 # a `clear` read would have — and 1 when it refused and logged
 # `landing-refused` itself, in which case the caller must return without
-# running any further gate.
+# running any further gate. ITEM (requirement 49, issue #595) is
+# `_landing_stage_attempt`'s own, threaded through to `run_open_question_
+# adjudication` and every `_landing_refuse` call this function makes.
 _landing_open_question_resolve() {
-  local slug="$1" pr_url="$2" number="$3" retry="${4:-}"
+  local slug="$1" pr_url="$2" number="$3" retry="${4:-}" item="${5:-}"
   local item_ref level adjudication verdict evidence answer
   item_ref="pr-${number}-open-question"
   level="$(escalation_autonomy_configured_level "$DEFAULTED_CONFIG" "$slug")"
 
   if [[ "$level" == "adjudicate-first" ]] && open_question_pass_available "$slug" "$pr_url" "$item_ref"; then
-    adjudication="$(run_open_question_adjudication "$slug" "$pr_url" "$number")"
+    adjudication="$(run_open_question_adjudication "$slug" "$pr_url" "$number" "$item")"
     verdict="$(jq -r '.verdict // ""' <<<"$adjudication" 2>/dev/null)"
     evidence="$(jq -r '.evidence // ""' <<<"$adjudication" 2>/dev/null)"
     [[ "$verdict" == "settled" ]] || verdict="escalate"
@@ -1651,13 +1720,13 @@ $(pipeline_comment_marker "$cycle_id" approver-adjudicate-open-question)" >/dev/
     fi
     open_question_escalate "$slug" "$pr_url" "$item_ref" \
       "$(landing_open_question_latest "$pr_url" "${union_log:-$log_file}")" "$adjudication"
-    _landing_refuse "$pr_url" "$slug" "open-question:$pr_url carries an unresolved open question the adjudication pass could not settle — see the escalation issue" "$retry"
+    _landing_refuse "$pr_url" "$slug" "open-question:$pr_url carries an unresolved open question the adjudication pass could not settle — see the escalation issue" "$retry" "$item"
     return 1
   fi
 
   open_question_escalate "$slug" "$pr_url" "$item_ref" \
     "$(landing_open_question_latest "$pr_url" "${union_log:-$log_file}")"
-  _landing_refuse "$pr_url" "$slug" "open-question:$pr_url carries an unresolved open question — see the escalation issue" "$retry"
+  _landing_refuse "$pr_url" "$slug" "open-question:$pr_url carries an unresolved open question — see the escalation issue" "$retry" "$item"
   return 1
 }
 
@@ -1709,7 +1778,7 @@ open_question_pass_available() {
   return 1
 }
 
-# run_open_question_adjudication SLUG PR_URL NUMBER
+# run_open_question_adjudication SLUG PR_URL NUMBER [ITEM]
 # One bounded adjudication pass (requirement 8f, mirroring requirement 36b's
 # own `run_enabler_adjudication` in shape: bounded, once, verdict-plus-
 # evidence logged) over a Reviewer's own open question against PR_URL — a
@@ -1735,7 +1804,7 @@ open_question_pass_available() {
 # `evidence` string naming why — "cannot settle" is not read as "nothing to
 # settle" (requirement 8c).
 run_open_question_adjudication() {
-  local slug="$1" pr_url="$2" number="$3"
+  local slug="$1" pr_url="$2" number="$3" item="${4:-}"
   local questions input prompt out rc=0 result parsed verdict evidence answer
 
   if [[ -z "$approver_model_critical" ]]; then
@@ -1766,7 +1835,7 @@ $(jq . <<<"$input")
 \`\`\`
 "
   out="$cycle_dir/approver-adjudicate-open-question-${number}.out"
-  stage_budget_apply approver-adjudicate-open-question "$slug" "$approver_model_critical" '{}'
+  stage_budget_apply approver-adjudicate-open-question "$slug" "$approver_model_critical" '{}' "$item"
   if run_claude_stage approver-adjudicate-open-question "$(( stage_backstop_min * 60 ))" "$approver_model_critical" "$prompt" "$out" "$cycle_dir" "$(( stage_inactivity_min * 60 ))"; then
     rc=0
   else
@@ -1774,8 +1843,10 @@ $(jq . <<<"$input")
   fi
   log_event "stage-end" "$(jq -nc --argjson rc "$rc" --arg kr "$stage_kill_reason" \
     --argjson m "$(metering_fields "$approver_model_critical" "$out" "$stage_gaps_json")" \
-    '{stage: "approver-adjudicate-open-question", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m')"
-  rework_stage_rerun_maybe "approver-adjudicate-open-question" "$stage_kill_reason" "$slug" "" "$pr_url"
+    --arg r "$slug" --arg i "$item" \
+    '{stage: "approver-adjudicate-open-question", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m
+     + (if $r == "" then {} else {repo: $r} end) + (if $i == "" then {} else {item: $i} end)')"
+  rework_stage_rerun_maybe "approver-adjudicate-open-question" "$stage_kill_reason" "$slug" "$item" "$pr_url"
 
   result="$(jq -r '.result // empty' "$out" 2>/dev/null || true)"
   parsed="$(extract_json_result "$result" 2>/dev/null || true)"
@@ -1949,7 +2020,7 @@ _landing_retry_sweep_repo() {
     | select(.complexity == "low" or .complexity == "medium")
     | {number, url, branch: .headRefName, complexity}]' <<<"$open" 2>/dev/null || echo '[]')"
 
-  local cand pr_url branch number complexity standing source
+  local cand pr_url branch number complexity standing source item
   while IFS= read -r cand; do
     [[ -n "$cand" ]] || continue
     pr_url="$(jq -r '.url' <<<"$cand")"
@@ -1962,8 +2033,9 @@ _landing_retry_sweep_repo() {
 
     source="$(landing_retry_source "$slug" "$branch" "$union_log")"
     [[ -n "$source" ]] || continue
+    item="$(landing_retry_item "$slug" "$branch" "$union_log")"
 
-    _landing_stage_attempt "$slug" "$pr_url" "$complexity" "$source" "$default_branch" "retry" "$armed_this_pass"
+    _landing_stage_attempt "$slug" "$pr_url" "$complexity" "$source" "$default_branch" "retry" "$armed_this_pass" "$item"
     if (( _landing_stage_attempt_armed )); then
       armed_this_pass=$(( armed_this_pass + 1 ))
       # shellcheck disable=SC2004  # false positive: see the sibling

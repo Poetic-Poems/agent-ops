@@ -83,7 +83,7 @@ chmod +x "$stub"
 
 run_sweep() {
   SWEEP_STUB_DIR="$1" SWEEP_GH="$stub" AGENT_OPS_CONFIG="$config" \
-    bash "$SWEEP" x/y node-1 cycle-1
+    bash "$SWEEP" x/y node-1 cycle-1 "$tmp_dir/state"
 }
 
 # --- Case 1: a merged, marker-carrying PR whose issue is still open --------------
@@ -101,6 +101,9 @@ assert_eq "the issue is closed" \
   "$(jq -c 'select(.action == "closed")' <<<"$out")"
 assert_contains "with the PR's merge cited in the close call" \
   'issue close 198 -R x/y --comment' "$calls"
+assert_eq "  ... and the item-lifecycle merge instant is reported too (requirement 49)" \
+  '{"action":"merge-observed","pr_number":206,"pr_url":"https://github.com/x/y/pull/206","item":"198","merge_sha":"abc123"}' \
+  "$(jq -c 'select(.action == "merge-observed")' <<<"$out")"
 
 # --- Case 2: the issue already closed (GitHub's own auto-close worked) -----------
 c="$tmp_dir/case2"; mkdir -p "$c"
@@ -112,6 +115,9 @@ jq -n '{state: "closed"}' > "$c/issue-301"
 out="$(run_sweep "$c")"
 assert_eq "an already-closed issue is left alone" '' \
   "$(jq -c 'select(.action == "closed")' <<<"$out" 2>/dev/null || true)"
+assert_eq "  ... but the merge instant still fires — it costs no issue lookup" \
+  '{"action":"merge-observed","pr_number":300,"pr_url":"https://github.com/x/y/pull/300","item":"301","merge_sha":"def456"}' \
+  "$(jq -c 'select(.action == "merge-observed")' <<<"$out")"
 
 # --- Case 3: a merged PR with no marker and no numeric agent branch ----------------
 c="$tmp_dir/case3"; mkdir -p "$c"
@@ -125,6 +131,8 @@ calls="$(cat "$c/calls.log")"
 assert_eq "no action for a PR naming no issue either way" '' \
   "$(jq -c 'select(.action == "closed")' <<<"$out" 2>/dev/null || true)"
 assert_not_contains "and no issue lookup is even made" "issues/" "$calls"
+assert_eq "  ... and no merge instant either — there is no item to key it to" '' \
+  "$(jq -c 'select(.action == "merge-observed")' <<<"$out" 2>/dev/null || true)"
 
 # --- Case 3a: no marker, but the head branch is agent/<N> --------------------------
 # The branch is the Script's own name for an issue-sourced work order — the
@@ -184,6 +192,28 @@ assert_eq "closes exactly the per-run cap" 3 \
 assert_eq "and reports the rest as deferred" \
   '{"action":"deferred","remaining":1}' \
   "$(jq -c 'select(.action == "deferred")' <<<"$out")"
+assert_eq "  ... but the merge instant is never capped (requirement 49)" 4 \
+  "$(jq -c 'select(.action == "merge-observed")' <<<"$out" | wc -l | tr -d ' ')"
+
+# --- Case 5: the merge instant is not re-reported once a node has seen it ---------
+# `sweep-closed-issues.sh` re-lists the same recently-merged window every
+# stand-down; without the seen-file this PR's merge-observed action would
+# repeat forever. A shared state-dir (this file's own `run_sweep`) is what
+# lets the second call see the first's own memo.
+c="$tmp_dir/case5"; mkdir -p "$c"
+jq -n '[{number: 700, url: "https://github.com/x/y/pull/700",
+         body: "<!-- agent-ops:closes-issue item=701 -->",
+         mergeCommit: {oid: "pqr901"}}]' > "$c/prs.json"
+jq -n '{state: "closed"}' > "$c/issue-701"
+
+out1="$(run_sweep "$c")"
+assert_eq "the first sighting reports the merge instant" \
+  '{"action":"merge-observed","pr_number":700,"pr_url":"https://github.com/x/y/pull/700","item":"701","merge_sha":"pqr901"}' \
+  "$(jq -c 'select(.action == "merge-observed")' <<<"$out1")"
+
+out2="$(run_sweep "$c")"
+assert_eq "a second sighting of the same window reports it not at all" '' \
+  "$(jq -c 'select(.action == "merge-observed")' <<<"$out2" 2>/dev/null || true)"
 
 if (( failures > 0 )); then
   echo "$failures failure(s)"

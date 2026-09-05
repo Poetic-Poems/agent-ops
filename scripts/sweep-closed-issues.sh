@@ -44,14 +44,37 @@
 # an unbounded historical scan would cost every cycle to protect against a
 # defect this same change makes rare.
 #
+# This same listing is also one of the item-lifecycle record's two merge
+# observation points (requirement 49, issue #595) — the other is
+# `lib/landing.sh`'s own arm site, which only ever sees a landing this
+# pipeline itself armed. A pull request a human merged by hand, or one
+# GitHub's merge queue resolved well after `lib/landing.sh` last looked, has
+# no other site that ever notices — this sweep already lists every merged,
+# labelled pull request fleet-wide, every stand-down, and already resolves
+# each back to its item (marker or branch), so it costs nothing further to
+# emit a `merge-observed` action for every one it can identify. Bounded the
+# same way the close action already is by `pr_search_limit`, and de-duplicated
+# per node against `<state-dir>/sweep-closed-issues-merge-observed-seen.json`
+# — a small, self-pruning list of `repo#number` keys this call has already
+# reported, replaced wholesale each run with exactly the current window's own
+# keys, so a pull request re-emits nothing once it ages out of
+# `pr_search_limit` and nothing is retained past what could ever be re-seen.
+# Cross-node duplication is not de-duplicated here — several nodes each
+# noticing the same merge is the ordinary fleet-wide shape every other record
+# in `docs/FLOW-SCHEMA.md` already tolerates, reduced first-wins-by-`ts` by
+# whatever reads the union log.
+#
 # Output: one JSON object per action on stdout —
 #   {"action":"closed","issue":198,"pr_number":206,"pr_url":…}
+#   {"action":"merge-observed","pr_number":206,"pr_url":…,"item":"198","merge_sha":…}
 #   {"action":"warning","detail":…}
 #   {"action":"deferred","remaining":N}
 # The caller logs them; this script logs nothing itself. Exit 0 unless the
 # arguments are unusable.
 #
-# Usage: sweep-closed-issues.sh <owner/repo> <node-name> <cycle-id>
+# Usage: sweep-closed-issues.sh <owner/repo> <node-name> <cycle-id> [state-dir]
+# STATE-DIR defaults to this repository's own `config.json`'s `state_dir`;
+# pass it explicitly to keep a test hermetic against a real home directory.
 # Environment: SWEEP_GH overrides `gh` (tests stub it); AGENT_OPS_CONFIG
 # overrides the config path.
 
@@ -75,8 +98,9 @@ GH="${SWEEP_GH:-gh}"
 slug="${1:-}"
 node_name="${2:-}"
 cycle_id="${3:-}"
+state_dir_override="${4:-}"
 if [[ -z "$slug" || -z "$node_name" || -z "$cycle_id" ]]; then
-  echo "usage: sweep-closed-issues.sh <owner/repo> <node-name> <cycle-id>" >&2
+  echo "usage: sweep-closed-issues.sh <owner/repo> <node-name> <cycle-id> [state-dir]" >&2
   exit 64
 fi
 
@@ -84,6 +108,19 @@ DEFAULTED_CONFIG="$(config_defaults "$CONFIG_FILE" "$SCHEMA_FILE" 2>/dev/null)"
 cfg() { jq -r "$1" <<<"$DEFAULTED_CONFIG" 2>/dev/null; }
 
 pr_label="$(cfg '.pr_label')"
+
+expand_home() {
+  local p="$1"
+  [[ "$p" == "~"* ]] && p="$HOME${p:1}"
+  printf '%s\n' "$p"
+}
+
+if [[ -n "$state_dir_override" ]]; then
+  state_dir="$state_dir_override"
+else
+  state_dir="$(expand_home "$(cfg '.state_dir')")"
+fi
+merge_observed_seen_file="$state_dir/sweep-closed-issues-merge-observed-seen.json"
 
 # The bounded window (see header): recently-updated merged PRs only.
 pr_search_limit=30
@@ -93,6 +130,11 @@ max_actions=3
 
 actions=0
 deferred=0
+
+merge_observed_seen='[]'
+[[ -n "$state_dir" && -s "$merge_observed_seen_file" ]] && \
+  merge_observed_seen="$(jq -c 'if type == "array" then . else [] end' "$merge_observed_seen_file" 2>/dev/null || echo '[]')"
+merge_observed_window=()
 
 warn() { jq -nc --arg d "$1" '{action: "warning", detail: $d}'; }  # warn DETAIL
 
@@ -112,6 +154,19 @@ while IFS=$'\t' read -r pr_number pr_url item merge_sha named_by; do
   # for "no marker" specifically to keep the five columns aligned.
   [[ "$item" == "-" ]] && item=""
   [[ -n "$pr_number" && -n "$item" ]] || continue
+
+  # The item-lifecycle record's merge instant (requirement 49, issue #595) —
+  # see this script's own header. Never subject to `max_actions`: it costs no
+  # GitHub call (everything it needs is already in `prs_json`), and gating it
+  # on the same cap as the close action would silently drop merge evidence
+  # behind whatever backlog of issue-closes this pass is also working through.
+  merge_key="$slug#$pr_number"
+  merge_observed_window+=("$merge_key")
+  if ! jq -e --arg k "$merge_key" 'index($k) != null' <<<"$merge_observed_seen" >/dev/null 2>&1; then
+    jq -nc --argjson n "$pr_number" --arg url "$pr_url" --arg item "$item" --arg sha "$merge_sha" \
+      '{action: "merge-observed", pr_number: $n, pr_url: $url, item: $item}
+       + (if $sha == "" or $sha == "-" then {} else {merge_sha: $sha} end)'
+  fi
 
   if (( actions >= max_actions )); then
     deferred=$(( deferred + 1 ))
@@ -184,6 +239,16 @@ done < <(jq -r '.[]
 
 if (( deferred > 0 )); then
   jq -nc --argjson n "$deferred" '{action: "deferred", remaining: $n}'
+fi
+
+# Replace the seen-file wholesale with exactly this run's own window (see
+# this script's own header) — self-pruning, and small: bounded by
+# `pr_search_limit` regardless of how long the sweep has run.
+if [[ -n "$state_dir" ]]; then
+  mkdir -p "$state_dir" 2>/dev/null && \
+    printf '%s\n' "${merge_observed_window[@]:-}" | jq -R 'select(length > 0)' | jq -sc 'unique' \
+      > "$merge_observed_seen_file.tmp" 2>/dev/null && \
+    mv "$merge_observed_seen_file.tmp" "$merge_observed_seen_file" 2>/dev/null
 fi
 
 exit 0

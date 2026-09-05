@@ -693,7 +693,7 @@ stage_budget_overrides() {
   printf '%s' "$out"
 }
 
-# stage_budget_apply ACTOR REPO MODEL
+# stage_budget_apply ACTOR REPO MODEL [EXTRA [ITEM]]
 # Resolve this launch's two caps, announce them on the stage-start event, and
 # leave them in `stage_backstop_min` / `stage_inactivity_min` for the launch.
 #
@@ -703,8 +703,16 @@ stage_budget_overrides() {
 # (`config`, `cell`, `pooled` or `prior`) and, when it came from the
 # derivation, whether the cell had enough of its own evidence to speak for
 # itself or is still sitting on the pooled estimate.
+#
+# ITEM (requirement 49, issue #595) is the item-lifecycle join key's other
+# half — REPO already is one, once it names a real repository rather than the
+# `*` a fleet-wide actor (Co-Ordinator, Enabler, Refiner) passes for its own
+# cell lookup. Both are omitted, never logged `null`, when there is none: `*`
+# for REPO (a stage that runs ahead of or across selection has no one repo to
+# name — see the coordinator/enabler/refiner call sites' own comments) or an
+# empty ITEM (every other caller passes `$selected_item`).
 stage_budget_apply() {
-  local actor="$1" repo="${2:-*}" model="${3:-*}" extra="${4:-{\}}" budget
+  local actor="$1" repo="${2:-*}" model="${3:-*}" extra="${4:-{\}}" item="${5:-}" budget
   budget="$(stage_budget_resolve "$stage_budget_json" "$actor" "$repo" "$model" \
     "$(stage_budget_overrides "$actor" "$repo")")"
   # TD-PPagop-26081407: passes triage test 2 — a failure here yields empty
@@ -723,12 +731,14 @@ stage_budget_apply() {
     || stage_inactivity_min="$(jq -nr --argjson p "$STAGE_BUDGET_PRIORS" --arg a "$actor" \
          '($p[$a] // $p.implementer).inactivity')"
   log_event "stage-start" "$(jq -nc --arg s "$actor" --arg m "$model" \
-    --argjson e "$extra" \
+    --argjson e "$extra" --arg r "$repo" --arg i "$item" \
     --argjson b "$(jq -nc --argjson x "$budget" \
       --argjson bs "$stage_backstop_min" --argjson is "$stage_inactivity_min" \
       'if ($x | type) == "object" then $x else {} end
        + {backstop_min: $bs, inactivity_min: $is}')" \
-    '{stage: $s, model: $m} + (if ($e | type) == "object" then $e else {} end) + $b')"
+    '{stage: $s, model: $m} + (if ($e | type) == "object" then $e else {} end) + $b
+     + (if $r == "" or $r == "*" then {} else {repo: $r} end)
+     + (if $i == "" then {} else {item: $i} end)')"
 }
 limit_cooldown_default_hours="$(cfg '.limit_cooldown_default')"
 disable_default_ttl_hours="$(cfg '.disable_default_ttl')"
@@ -2747,7 +2757,7 @@ $node_name
 "
 impl_out="$cycle_dir/implementer.out"
 
-stage_budget_apply implementer "$selected_repo" "$impl_model"
+stage_budget_apply implementer "$selected_repo" "$impl_model" "{}" "$selected_item"
 if run_claude_stage implementer "$(( stage_backstop_min * 60 ))" "$impl_model" "$implementer_prompt" "$impl_out" "$clone_dir" "$(( stage_inactivity_min * 60 ))"; then
   impl_rc=0
 else
@@ -2899,7 +2909,8 @@ fi
 closing_keyword_finding=""
 
 if [[ -n "$impl_pr_url" ]]; then
-  log_event "pr-raised" "$(jq -nc --arg u "$impl_pr_url" --arg r "$repo_slug" '{pr_url: $u, repo: $r}')"
+  log_event "pr-raised" "$(jq -nc --arg u "$impl_pr_url" --arg r "$repo_slug" --arg i "$selected_item" \
+    '{pr_url: $u, repo: $r} + (if $i == "" then {} else {item: $i} end)')"
   # The open PR is now the visible claim for the item-keyed entry; back-pressure
   # counts the PR from here on, not that entry (lib/claim.sh count excludes the
   # PR-keyed entry below from its own count for the same reason). The PR-keyed
@@ -3020,7 +3031,7 @@ $node_name
 rev_out="$cycle_dir/reviewer.out"
 
 stage_budget_apply reviewer "$selected_repo" "$rev_model" \
-  "$(jq -nc --arg c "$rev_complexity" '{complexity: $c}')"
+  "$(jq -nc --arg c "$rev_complexity" '{complexity: $c}')" "$selected_item"
 if run_claude_stage reviewer "$(( stage_backstop_min * 60 ))" "$rev_model" "$reviewer_prompt" "$rev_out" "$clone_dir" "$(( stage_inactivity_min * 60 ))"; then
   rev_rc=0
 else
@@ -3103,6 +3114,15 @@ if [[ "$rev_status" == "ready" ]]; then
   gate_word="$(jq -r '.gate.word // ""' <<<"$review_json")"
   gate_reason="$(jq -r '.gate.reason // ""' <<<"$review_json")"
   gate_checks_unreadable="$(jq -r '.gate.checks_unreadable // false' <<<"$review_json")"
+  # The item-lifecycle record's "checks green" instant (requirement 49, issue
+  # #595) — the one genuine gap `review-gate-checks-read` never closed, since
+  # its own `ok` names whether the *read* succeeded, not what it found:
+  # `gate_word` is "clean" only once the required-checks read succeeded *and*
+  # reported nothing outstanding (`review_gate_verdict`, lib/review-gate.sh),
+  # so this is the first point in the whole pipeline that fact is knowable.
+  [[ "$gate_word" != "clean" ]] || log_event "checks-green" "$(jq -nc --arg u "$impl_pr_url" \
+    --arg r "$selected_repo" --arg i "$selected_item" \
+    '{pr_url: $u} + (if $r == "" then {} else {repo: $r} end) + (if $i == "" then {} else {item: $i} end)')"
   ck_word="$(jq -r '.closing_keyword.word // ""' <<<"$review_json")"
   ck_reason="$(jq -r '.closing_keyword.reason // ""' <<<"$review_json")"
   rc_word="$(jq -r '.reconciliation.word // ""' <<<"$review_json")"
@@ -3121,7 +3141,9 @@ if [[ "$rev_status" == "ready" ]]; then
   # exists to count.
   gate_checks_ok=true
   [[ "$gate_checks_unreadable" == "true" ]] && gate_checks_ok=false
-  log_event "review-gate-checks-read" "$(jq -nc --argjson ok "$gate_checks_ok" '{ok: $ok}')"
+  log_event "review-gate-checks-read" "$(jq -nc --argjson ok "$gate_checks_ok" \
+    --arg r "$selected_repo" --arg i "$selected_item" \
+    '{ok: $ok} + (if $r == "" then {} else {repo: $r} end) + (if $i == "" then {} else {item: $i} end)')"
   # check-failure (docs/FLOW-SCHEMA.md, D23, issue #596's own detector
   # naming): `ok: false` here is this per-attempt read failing — the same
   # node/API fact `review_gate_unknown_streak_verdict` counts a run of
@@ -3315,7 +3337,10 @@ if [[ "$rev_status" == "ready" ]]; then
   log_event "pr-ready" "$(jq -nc --arg u "$impl_pr_url" --arg h "$handoff_by" \
     --arg rr "$rereview_state" --arg w "$rereview_who" \
     --arg hr "$human_reviewer_state" --arg ha "$enabler_assignee" \
+    --arg r "$selected_repo" --arg i "$selected_item" \
     '{pr_url: $u, handoff: $h}
+     + (if $r == "" then {} else {repo: $r} end)
+     + (if $i == "" then {} else {item: $i} end)
      + (if $rr == "" or $rr == "none" then {} else {review_requested: $rr} end)
      + (if $w == "" then {} else {reviewers: ($w | split(","))} end)
      + (if $hr == "" or $hr == "skip" then {}
