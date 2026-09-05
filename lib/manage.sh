@@ -176,7 +176,7 @@ if [[ -n "$MANAGE_ACTION" ]]; then
     status)
       toggle_status_report "$state_dir" "cycle=$lock_file" "review=$review_lock_file"
       # A drain's own progress line, alongside the switch line above: printed
-      # only while the local record is actually a drain (requirement 2.6),
+      # only while the local record is actually a drain (requirement 2.9),
       # since a plain stop or an enabled pipeline has no "how much is left"
       # to report and drain_status_line would otherwise print a misleading
       # "no cycle has checked yet" for a switch that was never a drain at all.

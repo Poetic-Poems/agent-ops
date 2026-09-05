@@ -1331,7 +1331,7 @@ log_event "cycle-start" "$(jq -nc --argjson once "$([[ $ONCE == 1 ]] && echo tru
 # switch means "these files are being edited, do not run them", which is no
 # less true when a human is the one running them.
 #
-# A `mode: "drain"` record does not exit here (requirement 2.3d/2.6): unlike a
+# A `mode: "drain"` record does not exit here (requirement 2.3d/2.9): unlike a
 # full stop it means "finish what is open, refuse only new work", so the
 # cycle keeps going and `DRAINING`/`DRAIN_DISABLED_AT` below carry that
 # decision to the 2.2a-adjacent narrowing further down, the one site that
@@ -1822,7 +1822,7 @@ if (( finishing_extra_count > 0 )); then
 fi
 
 # A drain narrows unconditionally, not only when back-pressure trips
-# (requirement 2.6): it must stop new intake regardless of how full the gate
+# (requirement 2.9): it must stop new intake regardless of how full the gate
 # is, so it reaches this same restriction whether or not `backpressure_tripped`
 # is itself set — the two conditions merely share the one narrowing mechanism
 # 2.2a already provides.
@@ -1830,7 +1830,7 @@ if (( backpressure_tripped )) || (( DRAINING )); then
   finishing_waiting="$(jq '[.[].review_feedback[]?, .[].merge_conflicts[]?, .[].dequeued[]?, .[].abandoned_drafts[]?] | length' <<<"$ordered_repos_json")"
   if (( finishing_waiting == 0 )); then
     if (( DRAINING )); then
-      # At-rest detection (requirement 2.6): this cycle's own gather already
+      # At-rest detection (requirement 2.9): this cycle's own gather already
       # found nothing in any of the four finishing bands, but a claim can be
       # taken moments before its PR exists, so drain_remaining_count also
       # checks the claim registry before calling it "at rest" — see
@@ -1841,7 +1841,7 @@ if (( backpressure_tripped )) || (( DRAINING )); then
       drain_write_state "$state_dir" "$DRAIN_DISABLED_AT" "$drain_remaining" "$drain_at_rest"
       if (( drain_at_rest )); then
         # One `drained` event per disabled_at, deduplicated across the union
-        # log (requirement 2.6): a peer node can reach "at rest" first, and
+        # log (requirement 2.9): a peer node can reach "at rest" first, and
         # this reads its event before deciding to log its own.
         drain_union_log="$(fleet_logs "$state_dir" "$(fleet_peers_dir "$workspace_root")" log.jsonl 2>/dev/null || true)"
         if [[ "$(drain_event_logged "$drain_union_log" "$DRAIN_DISABLED_AT")" != "1" ]]; then
@@ -1882,7 +1882,7 @@ if (( backpressure_tripped )) || (( DRAINING )); then
   # `register_hygiene`, `human_visibility`): `coordinator_eligible_items` reads
   # the list, not the array. A drain narrows exactly the same way — refusing
   # new intake means every non-finishing source, not merely `issues`/
-  # `tech_debt` — so the Refiner (which reads only those two, requirement 2.6)
+  # `tech_debt` — so the Refiner (which reads only those two, requirement 2.9)
   # goes idle by construction with no special-casing of its own.
   ordered_repos_json="$(handoff_narrow_repos_to_finishing_sources "$ordered_repos_json")"
   ordered_repos_json="$(jq -c '[.[] | .issues = [] | .tech_debt = []]' <<<"$ordered_repos_json")"

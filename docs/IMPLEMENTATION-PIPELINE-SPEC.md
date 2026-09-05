@@ -2409,7 +2409,7 @@ implements.
    revert to intake or to exit any differently than an ordinary quiet cycle
    would. Both conditions reaching this site simultaneously (back-pressure
    tripped *and* a drain active) narrow exactly once — the mechanism does not
-   stack — and 2.6's own bookkeeping (the cached remaining count, the
+   stack — and 2.9's own bookkeeping (the cached remaining count, the
    `drained` event) runs whenever `DRAINING` is set, whether or not
    back-pressure was what would have narrowed anyway.
 2.3. **The switch.** A file, `state_dir/disabled.json`, whose presence stops

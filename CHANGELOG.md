@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- A **`--drain` mode** (agent-ops#865, requirements 2.2c/2.3d/2.6): a third
+- A **`--drain` mode** (agent-ops#865, requirements 2.2c/2.3d/2.9): a third
   `disabled.json` `mode`, alongside the switch's original `"stop"`, that stops
   new work being picked up while letting the four finishing sources
   (review-feedback, merge-conflicts, dequeued, abandoned-drafts) keep landing

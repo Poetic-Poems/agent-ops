@@ -556,7 +556,7 @@ do_push() {
   last_cycle="${cycles_newest_first%%$'\n'*}"
   version_json="$(agent_ops_version "$SCRIPT_DIR")"
   # The switch, plus a drain's own cached progress alongside it (requirement
-  # 2.6) — the same drain-state.json a cycle wrote and publish-dashboard.sh
+  # 2.9) — the same drain-state.json a cycle wrote and publish-dashboard.sh
   # reads, so the heartbeat and the dashboard never disagree about how much a
   # drain has left. Omitted outside drain mode, and when the cache's own
   # disabled_at no longer matches the live record's (a stale count from a

@@ -472,7 +472,7 @@ log_event "review-start" "$(jq -nc --argjson once "$([[ $ONCE == 1 ]] && echo tr
 # days after they did.
 #
 # Stands down for `mode: "drain"` exactly as for a plain stop (requirement
-# 2.6): a drain's whole point is finishing already-open pull requests, and
+# 2.9): a drain's whole point is finishing already-open pull requests, and
 # this pipeline never opens one of its own — every review it starts is new
 # work by construction, so there is nothing for it to finish and no reason to
 # distinguish the two modes here the way agent-cycle.sh's own 2.2a-adjacent

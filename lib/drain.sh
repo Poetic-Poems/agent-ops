@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # lib/drain.sh — at-rest detection and reporting for the `--drain` switch
-# mode (requirement 2.6). `lib/toggle.sh` owns the switch itself, including
+# mode (requirement 2.9). `lib/toggle.sh` owns the switch itself, including
 # the `mode` field a `--drain` record carries (requirement 2.3d); this file
 # is everything downstream of "a drain is active", read only by
 # `agent-cycle.sh` and the management/status/dashboard/heartbeat readers of
