@@ -184,6 +184,64 @@ assert_eq "--since excludes an item first seen before the bound" "1" "$(jq -c '.
 assert_eq "  ... window.from reflects the bound, not the log's own start" \
   '"2026-05-02T00:00:00Z"' "$(jq -c '.window.from' <<<"$out")"
 
+# --- Priority: blocked outranks abandoned when both apply --------------------
+# A currently-blocked item is demonstrably still in the system, which
+# outranks the merely uncorroborated intent `abandoned` records.
+
+both="$tmp_dir/blocked-and-abandoned.jsonl"
+cat > "$both" <<'EOF'
+{"ts":"2026-06-01T00:00:00Z","node":"n1","cycle":"c20","event":"pr-raised","repo":"acme/widgets","item":"40","pr_url":"https://github.com/acme/widgets/pull/40"}
+{"ts":"2026-06-01T00:01:00Z","node":"n1","cycle":"c20","event":"draft-obsolete-flagged","repo":"acme/widgets","item":"40","pr":"https://github.com/acme/widgets/pull/40","evidence":"stale"}
+{"ts":"2026-06-01T00:02:00Z","node":"n1","cycle":"c20","event":"attempt-failed","repo":"acme/widgets","item":"40","stage":"implementer","detail":"build failed"}
+EOF
+out="$(fold_of "$both")"
+assert_eq "blocked outranks abandoned when both apply" "blocked" "$(fate_of "$out" acme/widgets 40)"
+
+# --- --since bounds the population, never the fate --------------------------
+# An item entering the reported population on the strength of one recent
+# event still resolves to its true fate from the whole log, even when the
+# evidence deciding that fate sits before --since.
+
+full_history="$tmp_dir/full-history.jsonl"
+cat > "$full_history" <<'EOF'
+{"ts":"2026-07-01T00:00:00Z","node":"n1","cycle":"c21","event":"first-seen","repo":"acme/widgets","item":"50"}
+{"ts":"2026-07-05T00:00:00Z","node":"n1","cycle":"c22","event":"first-seen","repo":"acme/widgets","item":"51"}
+{"ts":"2026-07-01T00:00:00Z","node":"n1","cycle":"c23","event":"first-seen","repo":"acme/widgets","item":"52"}
+{"ts":"2026-07-01T00:01:00Z","node":"n1","cycle":"c23","event":"merge-observed","repo":"acme/widgets","item":"52","pr_url":"https://github.com/acme/widgets/pull/52","stage":"landing"}
+{"ts":"2026-07-05T00:00:00Z","node":"n1","cycle":"c23","event":"first-seen","repo":"acme/widgets","item":"52"}
+{"ts":"2026-07-01T00:00:00Z","node":"n1","cycle":"c24","event":"pr-raised","repo":"acme/widgets","item":"53","pr_url":"https://github.com/acme/widgets/pull/53"}
+{"ts":"2026-07-01T00:01:00Z","node":"n1","cycle":"c24","event":"draft-obsolete-flagged","repo":"acme/widgets","item":"53","pr":"https://github.com/acme/widgets/pull/53","evidence":"stale"}
+{"ts":"2026-07-05T00:00:00Z","node":"n1","cycle":"c24","event":"first-seen","repo":"acme/widgets","item":"53"}
+EOF
+out="$(fold_of "$full_history" "2026-07-04T00:00:00Z")"
+assert_eq "item 50 has no event inside the window, so it is not in the population at all" \
+  "" "$(fate_of "$out" acme/widgets 50)"
+assert_eq "item 51 enters the population from a within-window event alone, no other evidence anywhere" \
+  "open" "$(fate_of "$out" acme/widgets 51)"
+assert_eq "item 52 enters the population from a within-window event, but its merge evidence from before --since still governs its fate" \
+  "landed" "$(fate_of "$out" acme/widgets 52)"
+assert_eq "item 53 enters the population from a within-window event, but its draft-obsolete-flagged evidence from before --since still governs its fate" \
+  "abandoned" "$(fate_of "$out" acme/widgets 53)"
+
+# --- item_lifecycle_pickup_pairs tolerates a valid-JSON, non-object line -----
+# A bare scalar (e.g. a torn/interleaved append leaving `42` on its own line)
+# is valid JSON but not an object; indexing `.ts`/`.event` on it must not
+# error the whole jq program and silently collapse pairing to the all-zero
+# fallback (the same object-type guard `ITEM_LIFECYCLE_FOLD_JQ` already
+# applies to `$all` before this guard was added here too).
+
+pickup_fixture="$tmp_dir/pickup-guard.jsonl"
+cat > "$pickup_fixture" <<'EOF'
+42
+{"ts":"2026-08-01T00:00:00Z","node":"n1","event":"first-seen","repo":"acme/widgets","item":"60"}
+{"ts":"2026-08-01T00:05:00Z","node":"n1","event":"selection","repo":"acme/widgets","item":"60","source":"issues"}
+EOF
+out="$(item_lifecycle_pickup_pairs "" "$pickup_fixture")"
+assert_eq "a bare scalar JSON line does not zero out pickup pairing" \
+  "1" "$(jq -c '.coverage.paired' <<<"$out")"
+assert_eq "  ... and the paired latency is computed, not the all-zero fallback" \
+  "1" "$(jq -c '.pickup_latency.fleet.count' <<<"$out")"
+
 # --- An empty or unreadable log prints a conforming, all-zero report ---------
 
 empty_out="$(fold_of "$tmp_dir/does-not-exist.jsonl")"

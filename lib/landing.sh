@@ -898,7 +898,7 @@ landing_retry_source() {
 # reads — the join key requirement 49 (issue #595) adds to `landing-armed`/
 # `landing-refused`, for the 2.1e retry sweep's own pull requests, which have
 # no `$selected_item` to read the way `run_landing_stage`'s own direct path
-# does. Same log, same key, same first-wins-by-ts and empty-on-no-match
+# does. Same log, same key, same most-recent-wins-by-ts and empty-on-no-match
 # contract as `landing_retry_source` — kept as a sibling function rather than
 # folded into one call that returns both, since a caller wanting only the
 # source (there is one: the retry sweep itself, before it knows whether this

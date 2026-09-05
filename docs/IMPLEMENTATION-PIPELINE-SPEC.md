@@ -14715,24 +14715,32 @@ with the Reviewer's own.
       scope (escalation #827) and is untouched.
 
     The fold itself assigns each item exactly one of six terminal fates —
-    `landed`, `voided`, `superseded`, `abandoned`, `blocked`, `open` — by one
-    strict priority over the item's own instants, reusing
+    `landed`, `voided`, `superseded`, `blocked`, `abandoned`, `open`, checked
+    in that priority order — over the item's own instants, reusing
     `lib/cycle-state.sh`'s existing `void_items`/`blocked_items`/
     `draft_obsolete_flags` extracts for the set/clear resolution rather than
     re-deriving that logic a second time (the drift requirement 34a already
-    warns against). A `superseded` fate is read off an
-    `orphan-branch-released {reason: "superseded"}` event whose `item` the
-    fold itself derives from an `agent/<N>` branch, the same convention
-    `scripts/sweep-closed-issues.sh` already uses — that event's own producer
-    (`scripts/sweep-orphan-branches.sh`) is not one of the join-key sites
-    above and is not touched. An item that is both void and already landed,
-    with the void's own `ts` later than the earliest landing evidence, is a
-    contradiction the fold does not resolve by guessing: it lands in
-    `unaccounted[]` with the reason, counted, never dropped — `totals.balanced`
-    states, and is asserted on a fixture exercising every fate at once, that
-    `entered` equals `landed + voided + superseded + abandoned` (`leaving`)
-    plus `blocked + open` (`in_progress`) plus `unaccounted`, which holds by
-    construction.
+    warns against): each is matched to the item by the same `{repo, item}`
+    lookup, so all three read the whole log regardless of `--since`. `blocked`
+    outranks `abandoned` — a currently-blocked item is demonstrably still in
+    the system, which is stronger evidence than the merely uncorroborated
+    intent to abandon a draft that `abandoned` records. A `superseded` fate is
+    read off an `orphan-branch-released {reason: "superseded"}` event whose
+    `item` the fold itself derives from an `agent/<N>` branch, the same
+    convention `scripts/sweep-closed-issues.sh` already uses — that event's
+    own producer (`scripts/sweep-orphan-branches.sh`) is not one of the
+    join-key sites above and is not touched. Like `landed`, `superseded` is
+    read off the item's own whole event history, not only the events inside
+    `--since`'s window: `--since` bounds which items are reported at all
+    (population), never the fate an item that is reported resolves to (see
+    `docs/FLOW-SCHEMA.md`'s window caveat). An item that is both void and
+    already landed, with the void's own `ts` later than the earliest landing
+    evidence, is a contradiction the fold does not resolve by guessing: it
+    lands in `unaccounted[]` with the reason, counted, never dropped —
+    `totals.balanced` states, and is asserted on a fixture exercising every
+    fate at once, that `entered` equals `landed + voided + superseded +
+    abandoned` (`leaving`) plus `blocked + open` (`in_progress`) plus
+    `unaccounted`, which holds by construction.
 
     `scripts/pickup-metrics.sh`'s own first-seen/selection pairing
     (TD-PPagop-26081405, issue #248 acceptance 4) is generalised onto this
@@ -21892,12 +21900,21 @@ pull request, run the ones the change touches and any it could regress.
     invariant balancing (`totals.balanced`) on a fixture carrying every fate
     at once, a voided-after-landed contradiction landing in `unaccounted[]`
     with its reason — and its mirror image, voided-before-landed, resolving
-    to `landed` outright, not treated as a contradiction — `--since` bounding
-    both the population and `window.from`, and the degradation cases a
-    malformed line, a missing field, and an event naming no item all yielding
-    a conforming report rather than aborting. `test/pickup-metrics.test.sh`
-    passes unchanged, exercising `item_lifecycle_pickup_pairs` indirectly
-    through `scripts/pickup-metrics.sh`'s own unchanged CLI and output shape.
+    to `landed` outright, not treated as a contradiction — an item carrying
+    both a standing block and a draft-obsolete-flagged event resolving to
+    `blocked`, never `abandoned`, `--since` bounding the population but never
+    the fate an included item resolves to (an item entering the population on
+    one within-window event still reports `landed`/`abandoned` from
+    merge/draft-obsolete-flagged evidence that sits before the bound), and the
+    degradation cases a malformed line, a missing field, and an event naming
+    no item all yielding a conforming report rather than aborting. The same
+    test file drives `item_lifecycle_pickup_pairs` directly against a fixture
+    carrying a bare, valid-JSON scalar line ahead of its object lines,
+    asserting pairing is computed from the object lines rather than collapsing
+    to the all-zero fallback the way an unguarded `.ts`/`.event` index on the
+    scalar would. `test/pickup-metrics.test.sh` passes unchanged, exercising
+    `item_lifecycle_pickup_pairs` indirectly through `scripts/pickup-
+    metrics.sh`'s own unchanged CLI and output shape.
     The join key itself — `{repo, item}`, present whenever the emitting site
     knows both and omitted, never `null`, otherwise — is pinned at each
     producing site by lifting the real code: `test/stage-budget-apply-join-

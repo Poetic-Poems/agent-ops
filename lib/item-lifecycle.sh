@@ -58,7 +58,7 @@ ITEM_LIFECYCLE_PICKUP_PAIRS_JQ='
   def first_per_key:
     group_by(item_key) | map(sort_by(.ts) | first);
 
-  ($all | map(select($since == "" or (.ts // "") >= $since))) as $ev
+  ($all | map(select(type == "object")) | map(select($since == "" or (.ts // "") >= $since))) as $ev
   | ($ev | map(keyed("first-seen")) | first_per_key) as $fs_list
   | ($ev | map(keyed("selection"))  | first_per_key) as $sel_list
   | ($fs_list  | map({key: item_key, value: .}) | from_entries) as $fs_by_key
@@ -121,9 +121,10 @@ item_lifecycle_pickup_pairs() {
 #             pairs, each carrying the winning item-void's own `ts`.
 #   $blocked  `blocked_items`'s own output — the currently-blocked pairs.
 #   $obsolete `draft_obsolete_flags`'s own output — every
-#             draft-obsolete-flagged event ever logged, filtered to this
-#             item inside the fold itself (the source function does no
-#             repo/item filtering of its own, by design — see its header).
+#             draft-obsolete-flagged event ever logged (the source function
+#             does no repo/item filtering of its own, by design — see its
+#             header); the fold matches it to `{$r, $i}` itself, the same
+#             `resolved()` lookup $void and $blocked already go through.
 #
 # `orphan-branch-released` carries no `item` field of its own (out of this
 # item's scope — `scripts/sweep-orphan-branches.sh` is not one of the sites
@@ -133,6 +134,21 @@ item_lifecycle_pickup_pairs() {
 # mints only for an issue- or tech-debt-sourced work order. An entry whose
 # branch does not match that shape names no item this fold can key on, and is
 # silently excluded from consideration for `superseded` — never guessed at.
+#
+# `$since` bounds the *population* — which items appear in `records[]` at all
+# is decided by `group_by(item_key)` over `$ev`, the `$all2` events at or
+# after `$since` — never the *fate* of an item that does appear. `landed` and
+# `superseded` are read off `$full_by_key`, an unwindowed per-item index built
+# from `$all2` before `$since` is applied, on the same terms `$void`/
+# `$blocked`/`$obsolete` already are (each computed by the caller from the
+# whole raw log, not from `$ev`). So an item entering the population because
+# of one recent event still reports its true current fate even when the
+# evidence that decides it — an older merge, an older void, an older block —
+# sits before the window: "fate is current state; `--since` bounds only the
+# population," never "fate is what the window alone can see." (`instants`,
+# `first_seen` and `source` are the one place the window still shows through:
+# they are windowed by design, so they answer "what did this run see for this
+# item," not "everything this item ever did.")
 #
 # Fate is assigned by one strict priority, each rule checked only once every
 # rule ahead of it has failed to match:
@@ -145,12 +161,15 @@ item_lifecycle_pickup_pairs() {
 #                     `item-void`, no later `unvoided`).
 #   3. superseded   — an `orphan-branch-released {reason: "superseded"}`
 #                     resolves to this item (see above).
-#   4. abandoned    — a `draft-obsolete-flagged` event exists for this item:
+#   4. blocked      — `blocked_items` still carries this pair: a currently-
+#                     blocked item is demonstrably still in the system, which
+#                     outranks the merely uncorroborated intent below.
+#   5. abandoned    — a `draft-obsolete-flagged` event exists for this item:
 #                     the pipeline's own recorded intent to abandon a draft,
 #                     pending the human corroboration (`lib/void-guard.sh`)
 #                     that would otherwise retire it as `voided` on a later
-#                     fold.
-#   5. blocked      — `blocked_items` still carries this pair.
+#                     fold. A standing block is stronger evidence than this
+#                     uncorroborated intent, hence rule 4 above it.
 #   6. open         — none of the above: the item has entered (some event
 #                     names it) but nothing yet says it has left.
 #
@@ -188,6 +207,8 @@ ITEM_LIFECYCLE_FOLD_JQ='
          then . + {item: (.branch | capture("^agent/(?<n>[0-9]+)$").n)}
          else . end)
   ) as $all2
+  | ($all2 | map(select(((.repo // "") | tostring) != "" and ((.item // "") | tostring) != ""))
+     | group_by(item_key) | map({key: (.[0] | item_key), value: .}) | from_entries) as $full_by_key
   | ($all2 | map(select($since == "" or (.ts // "") >= $since))) as $ev
   | ($ev | map(.ts // "") | map(select(. != "")) | sort) as $ts_all
   | {from: (if ($ts_all | length) == 0 then null else $ts_all[0] end),
@@ -204,11 +225,12 @@ ITEM_LIFECYCLE_FOLD_JQ='
                          fields: (del(.event,.ts,.node,.cycle,.repo,.item))})) as $instants
       | ([$sorted[] | select(.event == "first-seen") | (.ts // "")] | map(select(. != "")) | sort | first) as $first_seen_ts
       | ([$sorted[] | select(.event == "selection")] | sort_by(.ts // "") | last | .source) as $source
-      | ([$sorted[] | select(.event == "merge-observed" or .event == "issue-closed-post-merge") | (.ts // "")]
+      | ($full_by_key[$r + "|" + $i] // []) as $full_events
+      | ([$full_events[] | select(.event == "merge-observed" or .event == "issue-closed-post-merge") | (.ts // "")]
           | map(select(. != "")) | sort | first) as $landed_ts
       | ($landed_ts != null) as $landed
-      | ([$sorted[] | select(.event == "orphan-branch-released" and (.reason // "") == "superseded")] | length > 0) as $superseded_evidence
-      | ([$sorted[] | select(.event == "draft-obsolete-flagged")] | length > 0) as $abandoned_evidence
+      | ([$full_events[] | select(.event == "orphan-branch-released" and (.reason // "") == "superseded")] | length > 0) as $superseded_evidence
+      | (resolved($obsolete; $r; $i)) as $abandoned_evidence
       | (resolved($void; $r; $i)) as $voided
       | (resolved_ts($void; $r; $i)) as $void_ts
       | (resolved($blocked; $r; $i)) as $blocked_flag
@@ -220,8 +242,8 @@ ITEM_LIFECYCLE_FOLD_JQ='
          elif $landed then {fate: "landed"}
          elif $voided then {fate: "voided"}
          elif $superseded_evidence then {fate: "superseded"}
-         elif $abandoned_evidence then {fate: "abandoned"}
          elif $blocked_flag then {fate: "blocked"}
+         elif $abandoned_evidence then {fate: "abandoned"}
          else {fate: "open"}
          end) as $fate_obj
       | {repo: $r, item: $i, source: $source, first_seen: $first_seen_ts, instants: $instants}

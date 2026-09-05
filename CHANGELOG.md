@@ -42,7 +42,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   emitted — `lib/item-lifecycle.sh`'s `item_lifecycle_fold`, behind the
   read-only `scripts/item-lifecycle.sh` — folding the union log's own
   item-scoped events into an explicit terminal fate (`landed`, `voided`,
-  `superseded`, `abandoned`, `blocked` or `open`), with a checked flow
+  `superseded`, `blocked`, `abandoned` or `open`), with a checked flow
   invariant and an `unaccounted` bucket for whatever the fold cannot resolve
   automatically rather than dropping it. Two genuine gaps are filled to make
   the fold possible: a `checks-green` event where nothing before named a

@@ -243,12 +243,18 @@ fi
 
 # Replace the seen-file wholesale with exactly this run's own window (see
 # this script's own header) — self-pruning, and small: bounded by
-# `pr_search_limit` regardless of how long the sweep has run.
+# `pr_search_limit` regardless of how long the sweep has run. An unwritable
+# state_dir must not fail the sweep — the caller still gets this run's
+# actions — but it must not go unnoticed either: silently losing the write
+# means every merge-observed key re-emits, up to `pr_search_limit` of them,
+# on every future stand-down until the directory is writable again.
 if [[ -n "$state_dir" ]]; then
-  mkdir -p "$state_dir" 2>/dev/null && \
-    printf '%s\n' "${merge_observed_window[@]:-}" | jq -R 'select(length > 0)' | jq -sc 'unique' \
-      > "$merge_observed_seen_file.tmp" 2>/dev/null && \
-    mv "$merge_observed_seen_file.tmp" "$merge_observed_seen_file" 2>/dev/null
+  if ! { mkdir -p "$state_dir" 2>/dev/null && \
+      printf '%s\n' "${merge_observed_window[@]:-}" | jq -R 'select(length > 0)' | jq -sc 'unique' \
+        > "$merge_observed_seen_file.tmp" 2>/dev/null && \
+      mv "$merge_observed_seen_file.tmp" "$merge_observed_seen_file" 2>/dev/null; }; then
+    warn "failed to write merge-observed seen-file $merge_observed_seen_file — merge-observed events may re-emit on future runs"
+  fi
 fi
 
 exit 0

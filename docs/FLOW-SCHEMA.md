@@ -339,8 +339,8 @@ warns against, generalised here to a third reader):
 | `landed` | A `merge-observed` or `issue-closed-post-merge` event exists for this item. The strongest possible evidence — a real merge was observed — outranks every other mark, including a stale void. |
 | `voided` | `void_items` still carries this pair: the latest `item-void` has no later `unvoided`. |
 | `superseded` | An `orphan-branch-released {reason: "superseded"}` event resolves to this item. That event carries no `item` field of its own — `scripts/sweep-orphan-branches.sh` is not one of the sites requirement 49 touches — so the fold resolves one the same way `scripts/sweep-closed-issues.sh` already does: a head branch of exactly `agent/<N>`, the name this pipeline mints only for an issue- or tech-debt-sourced work order. A branch that does not match that shape names no item this fold can key on, and is silently excluded from consideration — never guessed at. |
-| `abandoned` | A `draft-obsolete-flagged` event exists for this item: the pipeline's own recorded intent to abandon a draft (design doc §5.5, issue #413, WI-10), pending the human corroboration (the `obsolete` label, `lib/void-guard.sh`) that would otherwise retire it as `voided` on a later fold. |
-| `blocked` | `blocked_items` still carries this pair: the latest `attempt-failed` has no later `unblocked`. |
+| `blocked` | `blocked_items` still carries this pair: the latest `attempt-failed` has no later `unblocked`. A currently-blocked item is demonstrably still in the system, which outranks the merely uncorroborated intent `abandoned` records below. |
+| `abandoned` | A `draft-obsolete-flagged` event exists for this item: the pipeline's own recorded intent to abandon a draft (design doc §5.5, issue #413, WI-10), pending the human corroboration (the `obsolete` label, `lib/void-guard.sh`) that would otherwise retire it as `voided` on a later fold. A standing block is stronger evidence than this uncorroborated intent, hence ranked below it. |
 | `open` | None of the above: the item has entered (some event names it) but nothing yet says it has left. |
 
 One case sits outside this priority order rather than inside it:
@@ -382,6 +382,25 @@ not a retention limit. That is still a bound worth stating: a fleet whose
 instants started emitting, reads a shorter history than the pipeline's true
 age, and `window.from` is how a reader tells the difference between "nothing
 happened before this" and "nothing was recorded before this."
+
+**`--since` bounds the population, never the fate.** Which items appear in
+`records[]` at all is decided by whether an item has any event at or after
+`--since` — an item with no such event is simply absent, exactly as if it
+had never entered. An item that *does* appear, though, is resolved to its
+true current fate from the whole log, regardless of `--since`: `voided`,
+`blocked` and `abandoned` are read off `void_items`/`blocked_items`/
+`draft_obsolete_flags`, each already computed from the unfiltered log, and
+`landed`/`superseded` are read the same way, off the item's own full event
+history rather than only the events inside the window. So an item entering
+the population on the strength of one recent event still reports the fate
+its full history supports — an older merge, an older void, an older block —
+never the weaker fate a truncated view of the same item would otherwise
+produce. Put another way: **fate is current state; `--since` bounds only the
+population**, not "fate is whatever the window alone can see." `instants`,
+`first_seen` and `source` are the one place the window still shows through —
+they answer "what did this run see for this item," not "everything this item
+ever did," so a reader wanting the item's full history reads `fate` and
+re-runs with an earlier `--since` for the rest.
 
 ### Generalising, not duplicating: `scripts/pickup-metrics.sh`
 
