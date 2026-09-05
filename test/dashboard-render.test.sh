@@ -1275,6 +1275,37 @@ assert_contains "  ... an idle stage never invoked reads idle, not ok" \
 assert_contains "  ... with no last success to report, rather than a blank cell" \
   "never" "$stage_health_section"
 
+# --- node-stale-self.json: self can read stale too (agent-ops#602) ---------
+# Self's row is judged by the same fleet_publication_status verdict a peer's
+# is — read back from what the shared state actually holds, never from this
+# node's own clock — so it can carry `stale: true` exactly like a peer's.
+out="$(render node-stale-self.json)" || { printf 'FAIL - node-stale-self.json did not render:\n%s\n' "$out"; exit 1; }
+assert_contains "a stale self row gets the same red-bordered card a stale peer would" \
+  'class="card clickable nodestale' "$out"
+assert_contains "the configured threshold reaches the stale-node banner text, not a hardcoded 30" \
+  "within the last 30 minute(s)" "$out"
+assert_contains "  ... naming this node rather than a peer's own name" \
+  "this node" "$out"
+assert_contains "the version-freshness line still reads 'read live' for self despite the stale publication verdict" \
+  "this node — read live" "$out"
+assert_not_contains "  ... and self's own card never reports its live state as unknown, unlike a stale peer's would" \
+  "state unknown" "$out"
+
+# --- node-unpublished-self.json: "unknown" is not "stale" (agent-ops#602) ---
+# fleet_publication_status's third verdict — nothing has ever been read back
+# for this node, so its row carries a null timestamp. That is not the same
+# claim as an aged publication, and the page must not assert one: a node on
+# its first fetch after this landed has published nothing to have gone stale.
+out="$(render node-unpublished-self.json)" || { printf 'FAIL - node-unpublished-self.json did not render:\n%s\n' "$out"; exit 1; }
+assert_not_contains "a node that has never published is never described as having last published N minutes ago" \
+  "last confirmed publishing" "$out"
+assert_contains "  ... the banner says only that no publication has been confirmed lately" \
+  "no publication into the shared state confirmed within the last 30 minute(s)" "$out"
+assert_contains "a peer with no publication read back at all says so, rather than reporting a push it never made" \
+  "no publication seen yet" "$out"
+assert_not_contains "  ... and never quotes a push age it does not have" \
+  "STALE — last push" "$out"
+
 printf '\n'
 if (( failures > 0 )); then
   printf '%d assertion(s) failed\n' "$failures"

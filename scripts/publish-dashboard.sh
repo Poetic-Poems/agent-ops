@@ -213,6 +213,11 @@ updater_stuck_after_seconds="$(cfg '.updater_stuck_after_minutes * 60 | floor')"
 # reads them.
 updater_defer_stuck_after_seconds="$(cfg \
   '([.lock_stale_after // 4, .project_review.lock_stale_after // 6] | max) * 3600 | floor')"
+# The fleet strip's publication-freshness tolerance (lib/fleet.sh's
+# fleet_publication_status, requirement 2.5, agent-ops#602), applied
+# identically to a peer's row and to this node's own below — minutes → seconds
+# for the same reason updater_stuck_after_seconds converts above.
+node_stale_after_seconds="$(cfg '.node_stale_after_minutes * 60 | floor')"
 # The fleet-wide transient-refusal verdict (lib/crash-loop.sh, issue #1073):
 # a `crash_loop_verdict` run whose `escalate` is `false` — every failure it
 # counted was the API being unreachable, not refusing a request — never
@@ -1881,11 +1886,20 @@ self_live_json="$(jq -nc \
 
 # --- The fleet (requirement 2.5 / DASHBOARD-SPEC "one fleet view") -----------
 # Who exists and how alive they are, from the peers the last state-sync fetch
-# materialised. Self is listed too — definitionally fresh — so every node's
-# dashboard shows the same set. A peer's heartbeat is its freshness: pushed
-# every 5 minutes, fetched every 7, so anything older than 30 minutes means
-# missed pushes or missed fetches, and the entry is flagged stale rather than
-# silently trusted.
+# materialised. Self is listed too, judged by the identical rule a peer is
+# (lib/fleet.sh's fleet_publication_status, agent-ops#602): self's row used to
+# be built from the local clock and a hardcoded `false`, which is exactly what
+# read fresh for four days on 2026-08-08 while this node's own state-sync push
+# was failing the whole time. Both rows are now read back from what the shared
+# state actually holds — self's from `.state-sync-published.json`
+# (state-sync.sh's `do_fetch`, which reads back this node's own branch the
+# same fetch already brought down), a peer's from its `heartbeat.json` —
+# against the same configured threshold (`node_stale_after_minutes`, three
+# missed heartbeat/fetch cycles by default), so anything older means missed
+# pushes or missed fetches and the entry is flagged stale rather than silently
+# trusted. `state_repo` unset is single-node operation (requirement 2.5):
+# there is no shared state to have gone stale against, so self stays
+# definitionally fresh exactly as before.
 #
 # Each row also carries the node's `version` (lib/version.sh) — the code that
 # node is running, ours read directly and a peer's from the heartbeat it
@@ -1903,7 +1917,13 @@ for entry in "$cycles_dir"/*; do
   last_local_cycle="${entry##*/}"
 done
 self_version_json="$(agent_ops_version "$SCRIPT_DIR")"
-jq -nc --arg n "$self_node" --arg r "$(role_current)" --arg ts "$now_iso" --arg lc "$last_local_cycle" \
+if [[ -n "$state_repo" ]]; then
+  self_published_ts="$(jq -r '.ts // empty' "$state_dir/.state-sync-published.json" 2>/dev/null)"
+  self_pub_json="$(fleet_publication_status "$self_published_ts" "$node_stale_after_seconds" "$now_epoch")"
+else
+  self_pub_json="$(jq -nc --arg ts "$now_iso" '{ts: $ts, age_s: 0, verdict: "fresh"}')"
+fi
+jq -nc --arg n "$self_node" --arg r "$(role_current)" --arg lc "$last_local_cycle" \
   --argjson live "$self_live_json" \
   --argjson version "$self_version_json" \
   --argjson compose "$(compose_drift_status)" \
@@ -1912,22 +1932,25 @@ jq -nc --arg n "$self_node" --arg r "$(role_current)" --arg ts "$now_iso" --arg 
   --argjson stage_health "$stage_health_json" \
   --argjson updater "$updater_json" \
   --argjson pu "$provider_unreachable_json" \
-  '{node: $n, role: $r, heartbeat_ts: $ts, heartbeat_age_s: 0,
-    last_cycle: (if $lc == "" then null else $lc end), self: true, stale: false,
+  --argjson pub "$self_pub_json" \
+  '{node: $n, role: $r, heartbeat_ts: $pub.ts, heartbeat_age_s: $pub.age_s,
+    last_cycle: (if $lc == "" then null else $lc end), self: true,
+    stale: ($pub.verdict != "fresh"),
     live: $live, version: $version, compose: $compose, image: $image, switch: $switch,
     stage_health: $stage_health, updater: $updater,
     provider_unreachable: (if $pu != null and (($pu.nodes // []) | index($n) != null) then $pu else null end)}' > "$nodes_rows"
 for hb in "$peers_dir"/*/heartbeat.json; do
   [[ -f "$hb" ]] || continue
-  jq -c --argjson now "$now_epoch" --argjson live "$node_live_json" \
-    --argjson pu "$provider_unreachable_json" '
+  hb_ts="$(jq -r '.ts // empty' "$hb" 2>/dev/null)"
+  pub_json="$(fleet_publication_status "$hb_ts" "$node_stale_after_seconds" "$now_epoch")"
+  jq -c --argjson live "$node_live_json" \
+    --argjson pu "$provider_unreachable_json" --argjson pub "$pub_json" '
     . as $h
-    | (try ($h.ts | fromdateiso8601) catch 0) as $t
     | {node: ($h.node // "unknown"), role: ($h.role // "unknown"),
-       heartbeat_ts: ($h.ts // null),
-       heartbeat_age_s: (if $t > 0 then ([$now - $t, 0] | max) else null end),
+       heartbeat_ts: $pub.ts,
+       heartbeat_age_s: $pub.age_s,
        last_cycle: ($h.last_cycle // null), self: false,
-       stale: (if $t > 0 then (($now - $t) > 1800) else true end),
+       stale: ($pub.verdict != "fresh"),
        live: ($live[($h.node // "")] // null),
        # Absent on a peer still running an image built before the heartbeat
        # carried one, which is exactly the case the card must render as
@@ -3069,7 +3092,7 @@ config_json="$(jq -c --argjson t "$stage_budget_json" --argjson lock "$lock_stal
   '{repos, coordinator_model, implementer_model_default, implementer_model_trivial,
     reviewer_model_default, reviewer_model_complex, pr_label, branch_prefix,
     max_open_agent_prs, limit_cooldown_default, dashboard_refresh_seconds,
-    image_behind_grace_hours,
+    image_behind_grace_hours, node_stale_after_minutes,
     merge_autonomy, merge_autonomy_routine_complexity}
    + {lock_stale_after: $lock,
       stage_backstops: (($t.cells // {}) | to_entries

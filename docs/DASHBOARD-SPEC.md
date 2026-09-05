@@ -95,8 +95,10 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
 - **`<workspace_root>/.agent-ops-peers/<node>/`** — each fetched peer's state
   tree (implementation spec 2.5): its `heartbeat.json` becomes a `fleet.nodes[]`
   entry ({node, role, heartbeat, last cycle, version, compose, image, switch};
-  older than 30 minutes → `stale: true` — three missed pushes, not clock
-  jitter); its `cycles/<id>/`
+  older than `node_stale_after_minutes` (30 by default — three missed
+  heartbeat/fetch cycles, not clock jitter) → `stale: true`, through the one
+  verdict `lib/fleet.sh`'s `fleet_publication_status` computes for a peer's row
+  and a node's own row alike (agent-ops#602)); its `cycles/<id>/`
   and `reviews/<id>/` transcripts
   render peer cycles with exactly the fidelity of local ones, and its `.out`
   envelopes join the fleet-wide cost roll-ups (every node spends one Claude
@@ -144,10 +146,17 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   `lock_stale_after` takes hours. A Co-Ordinator capped at twenty minutes
   against that rule's several hours is the whole of the gap: a node rolled
   mid-cycle read as
-  "coordinator choosing work" for most of the way to its next cycle. Both bounds
-  are measured to the node's own heartbeat rather than to the reader's clock —
-  what is known is what that node had published, and both timestamps are stamped
-  by its clock, so the difference carries no skew between machines.
+  "coordinator choosing work" for most of the way to its next cycle. A *peer's*
+  bounds are measured to that peer's own heartbeat rather than to the reader's
+  clock — what is known is what that node had published, and both timestamps are
+  stamped by its clock, so the difference carries no skew between machines. Our
+  own row is measured to `generated_at`, which is that same clock: self's
+  `heartbeat_ts` is what the shared state last held for this node
+  (`fleet_publication_status`, agent-ops#602), so it lags this render by a push
+  interval plus a fetch interval even when publication is healthy, and by the
+  whole outage when it is not — bounding our own live stage by it would delay
+  the overrun badge, and suppress it outright on exactly the row an operator
+  reads during a publication failure.
   `live.stage_since` is what makes this answerable, and `live.stage_backstop_min`
   — the cap that stage was actually given, announced on its own `stage-start`
   and carried through unchanged — is what it is held against. Every stage now
@@ -765,7 +774,14 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                            merge_commit, review_decision,
                            mergeable, checks, cached_at } } },
   fleet:   { nodes:  [ { node, role, heartbeat_ts, heartbeat_age_s,
-                         last_cycle, self, stale,       // self first
+                         last_cycle, self, stale,       // self first; self's
+                                            //   heartbeat_ts/_age_s/stale are
+                                            //   read back from the shared
+                                            //   state exactly like a peer's
+                                            //   (`fleet_publication_status`,
+                                            //   agent-ops#602) rather than
+                                            //   from this node's own clock —
+                                            //   self CAN read stale here
                          version: { pr, commit, short, built_at,
                                     repo, source, dirty },  // null if unknown
                          compose: { status, diff_lines },   // the node's own
@@ -967,7 +983,7 @@ followed by six links — README, the three pipeline specs, the metering
 schema, the roadmap — each opening the file at `blob/main/<path>` on GitHub
 in a new tab; no data behind it, so it renders identically on every load) +
 disabled / fleet-switch / merge-autonomy-kill-switch / usage-limit
-/ fleet-limit / failing-checks / dequeued-pr / gh-down / stale-peer /
+/ fleet-limit / failing-checks / dequeued-pr / gh-down / node-stale /
 doctor-fail / doctor-warn / stage-health-failing banners
 (the switch first: when it is set, every other quiet signal on the page
 is a consequence of it rather than news, and an operator reading them in the
@@ -982,13 +998,18 @@ pull request carrying its record card, a grey `behind` marker when the fleet
 holds a newer build and an amber `modified` one on a checkout with uncommitted
 work, and how
 fresh that answer is: read live for our own row, "as of its last push" for a
-peer); a red **N stage(s) failing** badge (agent-ops#662) beside the
+peer — or "no publication seen yet" for a peer nothing has ever been read back
+for, `fleet_publication_status`'s `unknown` being a different claim from an
+aged publication and never worded as one); a red **N stage(s) failing** badge (agent-ops#662) beside the
 running/idle state, independent of it — the whole point being a node whose
 process is alive and whose cycles are completing, which reads as plain
 "running" or "idle", while one or more stages have failed every attempt for
 `threshold` cycles running (see the Stage health section below for which,
-and since when); stale peers bordered red and reported as state unknown;
-click a card to
+and since when); any stale node — self included (agent-ops#602) — bordered
+red; a stale *peer* additionally reports its running/idle state as "state
+unknown", since only a peer's own liveness claim depends on a heartbeat that
+can go stale — self's is read straight from its own lock and log regardless
+of its publication verdict; click a card to
 filter the cycle list and the recent log to that node, click again to clear —
 the filter survives refreshes like every other UI state; **live claims** — the
 registry rows, i.e. work no other node will pick up. Both, plus the cycles

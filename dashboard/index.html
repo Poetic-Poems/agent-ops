@@ -1038,9 +1038,22 @@
   // alive, not that the stage it last logged still is — and were that script
   // alive, its own timer would have ended the stage. So an overrun is worth
   // saying on any row, ours included.
+  //
+  // Self is bounded by `generated_at` rather than by its own `heartbeat_ts`,
+  // which since agent-ops#602 is what the *shared state* last held for this
+  // node rather than this render's clock. The no-skew reasoning above is why:
+  // it asks that both timestamps be stamped by the judged node's clock, and
+  // for our own row the reader's clock IS that clock, while the publication
+  // ts lags it by a push interval plus a fetch interval even when everything
+  // is working — and by however long the outage has lasted when publication
+  // has gone stale, which would silently suppress this badge on exactly the
+  // row an operator is looking at during the failure #602 exists to surface.
+  // `generated_at` is `now_iso`, the identical value self's `heartbeat_ts`
+  // carried before that change.
   function nodeStageOverrun(n) {
     if (!n || !n.live || n.live.running !== true) return null;
-    return stageOverrun(n.live.stage, n.live.stage_since, n.heartbeat_ts || D.generated_at,
+    return stageOverrun(n.live.stage, n.live.stage_since,
+                        n.self ? D.generated_at : (n.heartbeat_ts || D.generated_at),
                         n.live.stage_backstop_min);
   }
 
@@ -1108,7 +1121,8 @@
     var doubt = livenessDoubt(n) || nodeStageOverrun(n), stale = nodeUnknown(n), stage = (n.live || {}).stage;
     return el("span", {class:"badge " + (doubt ? "b-amber" : stale ? "b-grey" : "b-blue"),
       title: doubt ? n.node + ": " + doubt
-           : stale ? "running as of " + n.node + "'s last push more than 30 minutes ago — that answer can no longer be called current"
+           : stale ? "running as of " + n.node + "'s last confirmed publication into the shared state, more than "
+                     + staleAfterMinutes() + " minute(s) ago — that answer can no longer be called current"
            : "running on " + n.node + (stage ? " — " + stage : "")},
       [ el("span", {class:"dot " + (doubt || stale ? "idle" : "live")}),
         document.createTextNode(doubt ? "In progress?" : "In progress") ]);
@@ -1505,6 +1519,16 @@
     return wrap;
   }
 
+  // The configured publication-freshness tolerance every stale wording on this
+  // page quotes (`node_stale_after_minutes`, agent-ops#602) — read once here so
+  // the four places that name it cannot drift apart, the way the literal `30`
+  // they replaced already had between the fleet card, the banner, the fleet
+  // badge and the cycle-list badge. The `|| 30` is the schema's own default,
+  // for a `data.js` written before this key existed.
+  function staleAfterMinutes() {
+    return Math.max(1, +((D.config || {}).node_stale_after_minutes) || 30);
+  }
+
   // Is this node's state knowable at all? A peer's is only ever as fresh as its
   // last push, so once that has gone stale the card reports "unknown" rather
   // than half-hour-old news dressed as current.
@@ -1589,12 +1613,21 @@
     var providerUnreachable = providerUnreachableLine(n);
     if (providerUnreachable) card.appendChild(providerUnreachable);
 
-    card.appendChild(el("div", {class:"hb" + (n.stale ? " stale" : ""),
+    // This line is about the freshness of the VERSION/compose/image info above
+    // it, which for self is always read live regardless of n.stale (self's own
+    // publication verdict, agent-ops#602, is a separate fact — shown by the
+    // card's own red border, nodestale — not by this line, whose text never
+    // changes for self and so must not carry the "stale" style either).
+    // A row with no timestamp at all is `fleet_publication_status`'s "unknown"
+    // — nothing has ever been read back for it — which is not the same claim
+    // as an aged publication, so it is asked before staleness rather than
+    // after, where the old ordering left it unreachable.
+    card.appendChild(el("div", {class:"hb" + (!n.self && n.stale ? " stale" : ""),
       title: n.self ? "read from this node's own lock and log"
                     : "derived from the state this peer last pushed — no fresher than its heartbeat",
       text: n.self ? "this node — read live"
-           : n.stale ? "STALE — last push >30 min ago"
-           : n.heartbeat_age_s == null ? "no heartbeat"
+           : n.heartbeat_ts == null ? "no publication seen yet"
+           : n.stale ? "STALE — last push >" + staleAfterMinutes() + " min ago"
            : "as of its last push, " + fmtAgo(n.heartbeat_ts)}));
 
     card.addEventListener("click", function (ev) {
@@ -3035,12 +3068,23 @@
         el("span", {class:"sub", text: lsub})
       ]));
     }
+    // A node's own row can read stale here exactly like a peer's
+    // (fleet_publication_status, agent-ops#602): self obeys the identical
+    // publication-freshness rule rather than being definitionally fresh, so
+    // the banner names "this node" instead of a peer's name where it applies.
+    // The wording is the one sentence true of both verdicts this set holds:
+    // "stale" (a publication was read back and has aged past the threshold)
+    // and "unknown" (none ever was — a fresh install, or the window before a
+    // node's first push has been fetched back). Saying "last confirmed
+    // publishing … more than N minutes ago" would assert an aged publication
+    // for a node that has published nothing at all.
     var staleNodes = fleetNodes().filter(function (n) { return n.stale; });
     if (staleNodes.length) {
       banners.appendChild(el("div", {class:"banner amber"}, [
-        el("span", {text: "⚠ Peer state is stale."}),
-        el("span", {class:"sub", text: staleNodes.map(function (n) { return n.node; }).join(", ") +
-          " last pushed more than 30 minutes ago — the fleet view may lag; check state-sync on those nodes."})
+        el("span", {text: "⚠ Node state is stale."}),
+        el("span", {class:"sub", text: staleNodes.map(function (n) { return n.self ? "this node" : n.node; }).join(", ") +
+          " — no publication into the shared state confirmed within the last " + staleAfterMinutes() +
+          " minute(s); the fleet view may lag; check state-sync there."})
       ]));
     }
     // The unattended doctor pass (agent-ops#543): a `fail` earns a banner the
@@ -3413,7 +3457,9 @@
       title: doubted.map(function (n) { return n.node + ": " + livenessDoubt(n); }).join("; "),
       text: doubted.length + " may be dead"}));
     if (stale.length) live.appendChild(el("span", {class:"badge b-red", style:"margin-left:8px",
-      title: stale.map(function (n) { return n.node; }).join(", ") + " last pushed more than 30 minutes ago",
+      title: stale.map(function (n) { return n.self ? "this node" : n.node; }).join(", ") +
+        " — no publication into the shared state confirmed within the last " +
+        staleAfterMinutes() + " minute(s)",
       text: stale.length + " stale"}));
   }
 

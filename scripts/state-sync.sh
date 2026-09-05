@@ -161,6 +161,18 @@ peers_dir="$(fleet_peers_dir "$workspace_root")"
 #   cache            the registry (lib/image-drift.sh) — a peer's copy of it
 #                   would answer for a registry query nobody there ran, not
 #                   for that peer.
+#   the publication `.state-sync-published.json` (agent-ops#602) is this
+#   cache            node's own read-back of what the shared state holds for
+#                   its own branch — a peer's copy of it would answer for a
+#                   fetch nobody there ran, on the identical reasoning as
+#                   the image-drift cache above. Unlike `.stage-health.json`
+#                   below, no peer ever needs this node's own answer to "am
+#                   I fresh" — a peer already judges this node by this
+#                   node's `heartbeat.json` `ts`, which a failed push simply
+#                   never advances — so nothing folds it into the heartbeat
+#                   either; it exists purely for this node's own dashboard
+#                   and doctor.sh to read back its own published state
+#                   instead of trusting its own clock.
 #   the stage-      `.stage-health.json` (lib/stage-health.sh, agent-ops#662)
 #   health snapshot  is excluded as a raw file for the same reason
 #                   `.doctor-status.json` is — a peer's copy of the file
@@ -238,6 +250,7 @@ EXCLUDES=(
   --exclude=/.dashboard-cycle-cache/
   --exclude=.dashboard-claims.json
   --exclude=.image-drift-cache.json
+  --exclude=.state-sync-published.json
   # .mirror-rebuild-state.json (lib/mirror-integrity.sh, agent-ops#604): this
   # node's own durable record of whether/when it last discarded and rebuilt
   # its state-sync mirror — memoisation like .image-drift-cache.json above,
@@ -632,6 +645,37 @@ do_fetch() {
     say "WARNING: fetch failed — $(cat "$err_file")"
     fleet_mark_peers "$peers_dir" false
     return 1
+  fi
+
+  # The outbound answer for self (agent-ops#602, requirement 2.5): the fetch
+  # above already brought down this node's own branch along with every
+  # peer's (`+refs/heads/nodes/*`), so reading it back costs no extra
+  # network round trip (D14). What the *remote* holds is the only fact
+  # worth trusting — a node cannot self-certify freshness from its own
+  # clock, which is exactly what read fresh for four days on 2026-08-08
+  # while `state-sync.sh push` was failing the whole time. Written only on
+  # a fetch that reaches this far (a real failure above already
+  # `return`ed): a fetch that fails leaves the previous cache in place, and
+  # its age against the local clock grows into staleness on its own — the
+  # same property a frozen or missing cache needs for `scripts/doctor.sh`
+  # and `scripts/publish-dashboard.sh` (`lib/fleet.sh`'s
+  # `fleet_publication_status`) to read a broken push off it.
+  local self_ref="refs/remotes/origin/nodes/$node_name" self_ts="" published_file
+  if git -C "$mirror" rev-parse --verify --quiet "$self_ref" >/dev/null; then
+    self_ts="$(git -C "$mirror" archive "$self_ref" -- heartbeat.json 2>/dev/null \
+      | tar -xO 2>/dev/null | jq -r '.ts // empty' 2>/dev/null || true)"
+    # A branch with no heartbeat.json to read (unreachable in practice — every
+    # push writes one) falls back to the ref's own committer date, which is at
+    # least as old as whatever this branch's tip actually records.
+    if [[ -z "$self_ts" ]]; then
+      self_ts="$(git -C "$mirror" log -1 --format=%cI "$self_ref" 2>/dev/null || true)"
+    fi
+    if [[ -n "$self_ts" ]]; then
+      published_file="$state_dir/.state-sync-published.json"
+      mkdir -p "$state_dir"
+      jq -nc --arg ts "$self_ts" '{ts: $ts}' > "$published_file.tmp.$$" \
+        && mv -f "$published_file.tmp.$$" "$published_file"
+    fi
   fi
 
   mkdir -p "$peers_dir"

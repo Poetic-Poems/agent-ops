@@ -127,6 +127,12 @@ verdicts="$(node -e '
                                            stage_backstop_min: 60}}),
     row_self:     nodeStageOverrun({heartbeat_ts: T(40), self: true,
                                     live: {running: true, stage: "coordinator", stage_since: T(0)}}),
+    row_self_lagging_publication:
+                  nodeStageOverrun({heartbeat_ts: T(5), self: true,
+                                    live: {running: true, stage: "coordinator", stage_since: T(0)}}),
+    row_peer_lagging_heartbeat:
+                  nodeStageOverrun({heartbeat_ts: T(5), self: false,
+                                    live: {running: true, stage: "coordinator", stage_since: T(0)}}),
     row_idle:     nodeStageOverrun({heartbeat_ts: T(40), self: false,
                                     live: {running: false, stage: "coordinator", stage_since: T(0)}}),
     row_no_live:  nodeStageOverrun({heartbeat_ts: T(40), self: false, live: null})
@@ -173,6 +179,16 @@ assert_eq "a row carrying its own cap is judged against that" "null" "$(v row_an
 # live script would have ended the stage itself.
 assert_contains "our own row is judged too, unlike the liveness rule" \
   "coordinator" "$(v row_self)"
+# …and judged against `generated_at`, not against our own `heartbeat_ts`, which
+# since agent-ops#602 is what the shared state last held for this node rather
+# than this render's clock. A publication 35 minutes behind the render — a
+# state-sync push that has stopped working, exactly the case #602 exists to
+# surface — must not also hide our own overrunning stage. A *peer's* row keeps
+# the opposite rule: its heartbeat is the only clock we may measure it by.
+assert_contains "our own row is bounded by the render clock, not by a lagging publication" \
+  "coordinator has been live 40m" "$(v row_self_lagging_publication)"
+assert_eq "a peer's row is still bounded by its own heartbeat, lag and all" \
+  "null" "$(v row_peer_lagging_heartbeat)"
 assert_eq "an idle row is not" "null" "$(v row_idle)"
 assert_eq "nor is a node with no live state" "null" "$(v row_no_live)"
 
