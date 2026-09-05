@@ -1112,7 +1112,11 @@ fleet-wide-by-default reach; `--enable` (or `--enable --this-node`) clears
 either mode. The two modes never coexist quietly: issuing `--disable` while a
 drain is running tightens it to a full stop immediately, and issuing `--drain`
 while a plain stop is active is refused — `--enable` first, if you actually
-want to switch from stopping to draining. Once every repo is at rest,
+want to switch from stopping to draining. That refusal covers a stop a *peer*
+set, too: a fleet-wide `--disable` blocks `--drain` on every node, not only
+on the one that issued it. (`--drain --this-node` is still allowed under a
+fleet stop, since it publishes nothing and the node stays down either way.)
+Once every repo is at rest,
 `--status`, the dashboard badge and the heartbeat all say **drained**; nothing
 escalates and nothing auto-converts back to a stop — it stays that way until
 `--enable` or the drain's own TTL expires.

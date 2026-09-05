@@ -17,7 +17,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   [--this-node]`, mirroring `--disable`'s own TTL/scope handling; `--enable`
   clears either mode. A `--disable` issued over an active drain tightens it to
   a full stop immediately; a `--drain` issued over an active stop is a usage
-  error (`--enable` first); a `--drain` over a `--drain` extends it, same as
+  error (`--enable` first), whether that stop is this node's own record or a
+  fleet-wide one a peer set; a `--drain` over a `--drain` extends it, same as
   re-issuing `--disable`. `review-cycle.sh` stands down under either mode
   unchanged. `--status`, the dashboard badge and the heartbeat report
   **draining**/**drained** with the finishing-source items still outstanding,

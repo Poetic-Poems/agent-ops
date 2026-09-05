@@ -2879,7 +2879,20 @@ implements.
      writing a drain over a stop would *loosen* the stand-down, and only
      `--enable` may loosen — silently downgrading an operator's or a peer's
      stop to a drain would let new work move again under whatever the stop
-     was protecting against.
+     was protecting against. "Active" means either level: this node's own
+     record, *and* — for a fleet-scoped `--drain`, the only kind that
+     publishes a flag — the fleet switch of requirement 2.3a, which a peer's
+     unmodified `--disable` sets without writing anything to this node's
+     `state_dir` at all. Reading the local record alone would leave the one
+     case that matters most unguarded, since republishing
+     `fleet/disabled.json` as a drain downgrades every node at once. The
+     fleet half is read on the same fail-open terms as every other reader of
+     that flag: an unreachable state repo reads `enabled`, and in that same
+     window the drain's own fleet write fails and retags itself `node`
+     anyway. A `--drain --this-node` is unguarded by the fleet half by
+     design — it publishes no flag, so it can loosen nothing, and the node
+     stays stood down by the fleet stop regardless of what its own record
+     says.
    - **`--drain` issued while a drain is already active extends it** — the
      same `extends`-in-the-log behaviour a repeated `--disable` already has,
      with a fresh `disabled_at` (and therefore a fresh window for requirement
@@ -17899,7 +17912,11 @@ pull request, run the ones the change touches and any it could regress.
    `mode: "drain"` and logs a `disabled` event carrying `mode` beside `scope`;
    `--status` reports `DRAINING` for it and never `DISABLED`; `--drain` over
    an active stop exits 64 naming `--enable` as the way out and leaves the
-   stop's own record and reason untouched; `--disable` over an active drain
+   stop's own record and reason untouched; a peer's unmodified `--disable`
+   likewise refuses a fleet-scoped `--drain` on a *second* node that carries
+   no local record at all, leaving `fleet/disabled.json` a stop and writing
+   no record on the refusing node, while `--drain --this-node` under that
+   same fleet stop is allowed and leaves the flag untouched; `--disable` over an active drain
    tightens it to `mode: "stop"` with the new reason; `--drain` over an active
    drain extends it, logging `extends`; `--enable` clears a drain exactly as
    it clears a stop; and a real `review-cycle.sh` run under a drain exits 0

@@ -1232,6 +1232,37 @@ assert_contains "naming drain mode in its reason, not a bare disabled" \
   "drain mode" "$(cat "$d_review_log" 2>/dev/null)"
 run_node "$d_home" agent-cycle.sh --enable >/dev/null 2>&1
 
+# A *peer's* fleet-wide stop is a stop this node may not loosen either, even
+# though it has no local record of its own to read: an unmodified --disable
+# publishes fleet/disabled.json and writes nothing to any other node's
+# state_dir, so reading only the local record would let a fleet-scoped --drain
+# here republish that flag as a drain and downgrade the whole fleet
+# (requirement 2.3d).
+p_home="$(new_home drain-peer-a)"
+q_home="$(new_home drain-peer-b)"
+q_switch="$q_home/.local/state/poetic-agents/disabled.json"
+run_node "$p_home" agent-cycle.sh --disable "peer's full stop" --for forever >/dev/null 2>&1
+assert_eq "the peer's --disable published a stop to the fleet flag" "stop" \
+  "$(jq -r '.mode' "$gh_backing/fleet/disabled.json" 2>/dev/null)"
+drain_over_fleet_out="$(run_node "$q_home" agent-cycle.sh --drain "trying to loosen the fleet" 2>&1)"
+assert_eq "--drain over a peer's fleet-wide --disable is a usage error" "64" "$?"
+assert_contains "and names --enable as the way out" "run --enable first" "$drain_over_fleet_out"
+assert_eq "the fleet flag is still a full stop, not downgraded to a drain" "stop" \
+  "$(jq -r '.mode' "$gh_backing/fleet/disabled.json" 2>/dev/null)"
+assert_eq "and the refusing node wrote no local record of its own" "0" \
+  "$(test -f "$q_switch" && echo 1 || echo 0)"
+
+# --drain --this-node publishes no fleet flag, so it cannot loosen one and is
+# allowed: the node stays stood down by the fleet stop regardless of what its
+# own record says.
+run_node "$q_home" agent-cycle.sh --drain "node-scoped drain under a fleet stop" --this-node >/dev/null 2>&1
+assert_eq "--drain --this-node under a fleet stop is allowed" "drain" \
+  "$(jq -r '.mode' "$q_switch" 2>/dev/null)"
+assert_eq "and leaves the fleet flag a full stop" "stop" \
+  "$(jq -r '.mode' "$gh_backing/fleet/disabled.json" 2>/dev/null)"
+run_node "$q_home" agent-cycle.sh --enable --this-node >/dev/null 2>&1
+run_node "$p_home" agent-cycle.sh --enable >/dev/null 2>&1
+
 printf '\n'
 if (( failures > 0 )); then
   printf '%d assertion(s) failed\n' "$failures"

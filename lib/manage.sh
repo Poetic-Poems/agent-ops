@@ -301,6 +301,28 @@ if [[ -n "$MANAGE_ACTION" ]]; then
         echo "agent-cycle: --drain cannot loosen an active --disable (a full stop) — run --enable first if you want to switch to draining instead" >&2
         exit 64
       fi
+      # The fleet switch counts as a prior stop too, and this node need not
+      # carry a mirror of one: an unmodified `--disable` on a *peer* publishes
+      # `fleet/disabled.json` and writes nothing to this node's own
+      # `state_dir` (which is exactly why `--enable` below logs for the
+      # no-local-record case, issue #426). Reading only the local record would
+      # therefore let a fleet-scoped `--drain` here republish that flag as a
+      # drain and downgrade the peer's stop across the whole fleet — the loosening
+      # requirement 2.3d forbids in as many words. Checked only where the
+      # loosening could actually happen: a `--this-node` drain, or one on a
+      # node with no `state_repo`, publishes no flag and so cannot discard
+      # anyone's stop. Fail-open on the same terms as every other reader of
+      # this flag (requirement 2.3a) — an unreachable state repo reads
+      # `enabled`, and in that same window the drain's own fleet write would
+      # fail and retag itself `node` anyway.
+      if (( ! THIS_NODE )) && [[ -n "$state_repo" ]]; then
+        fleet_prior_switch="$(fleet_disabled_state "$state_repo" "$state_dir")"
+        if [[ "$(jq -r '.state' <<<"$fleet_prior_switch")" == "disabled" ]] \
+           && [[ "$(toggle_mode "$(jq -c '.record // {}' <<<"$fleet_prior_switch")")" == "stop" ]]; then
+          echo "agent-cycle: --drain cannot loosen the fleet-wide --disable already in force (a full stop) — run --enable first if you want the fleet to drain instead" >&2
+          exit 64
+        fi
+      fi
       extends="$(jq -c 'select(.state == "disabled") | .record' <<<"$prior_switch" 2>/dev/null || true)"
       if ! disable_spec="$(toggle_resolve_disable_spec "$DISABLE_FOR" "$DISABLE_UNTIL" \
                              "$disable_default_ttl_hours")"; then
