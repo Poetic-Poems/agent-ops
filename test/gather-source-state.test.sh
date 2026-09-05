@@ -2,7 +2,11 @@
 #
 # test/gather-source-state.test.sh — regression test for the argv cap
 # (docs/IMPLEMENTATION-PIPELINE-SPEC.md, requirement 4g; TD-PPagop-26081503)
-# in scripts/gather-source-state.sh's final state build.
+# in scripts/gather-source-state.sh's final state build, and for the issues
+# and open-PR listings being paged to completion (requirement 3b) — the two
+# samples requirement 34i's work-gone sweep reads *absence* from, so a
+# one-page sample on a repo past the page size clears real blocks as
+# "closed" (the 2026-09-04 false unblock of #874).
 #
 # `$issues`, `$workflows` and `$open_prs` each grow with the repo — one
 # repo's whole open-issue list, workflow digest and open-PR list — and used
@@ -44,19 +48,31 @@ assert_eq() {
 
 # --- A stub `gh`, so the real gatherer runs offline ---
 #
-# Mimics the one behaviour of `gh api --jq` the script depends on: string
-# results print raw, not JSON (jq -rc reproduces that exactly). `$STUB_ISSUES`
-# names a file holding the raw (unfiltered) issues-endpoint body, fixtured
-# past the argv cap below; the other three endpoints stay small.
+# Mimics the two behaviours of `gh api --jq` the script depends on: string
+# results print raw, not JSON (jq -rc reproduces that exactly), and — for an
+# array endpoint — GitHub's own page semantics: one `per_page` slice without
+# `--paginate`, every slice (the filter re-run once per page, outputs
+# concatenated) with it. The page emulation is what makes the 1500-issue
+# assertion below a real regression test: a gatherer that forgets
+# `--paginate` sees only the first slice here, exactly as it would against
+# GitHub, instead of the whole fixture by stub accident — which is how the
+# truncation that requirement 34i turned into false "issue is closed"
+# clearances stayed invisible to this suite. `$STUB_ISSUES` names a file
+# holding the raw (unfiltered) issues-endpoint body, fixtured past the argv
+# cap below; the other three endpoints stay small.
 mkdir -p "$tmp_dir/bin"
 cat >"$tmp_dir/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 set -uo pipefail
 [[ "${1:-}" == "api" ]] || { echo "stub gh: unexpected command: $*" >&2; exit 1; }
-path="$2"; shift 2
-filter='.'
+shift
+paginate=0; filter='.'; path=''
 while [[ $# -gt 0 ]]; do
-  case "$1" in --jq) filter="$2"; shift 2;; *) shift;; esac
+  case "$1" in
+    --paginate) paginate=1; shift;;
+    --jq) filter="$2"; shift 2;;
+    *) if [[ -z "$path" ]]; then path="$1"; fi; shift;;
+  esac
 done
 case "$path" in
   */commits/*)     body='{"sha":"aaa111"}';;
@@ -65,7 +81,20 @@ case "$path" in
   */pulls\?*)      body='[]';;
   *) echo "stub gh: unexpected path: $path" >&2; exit 1;;
 esac
-jq -rc "$filter" <<<"$body"
+if jq -e 'type == "array"' <<<"$body" >/dev/null 2>&1; then
+  per_page=30
+  [[ "$path" =~ per_page=([0-9]+) ]] && per_page="${BASH_REMATCH[1]}"
+  len="$(jq 'length' <<<"$body")"
+  if (( paginate )); then
+    for (( off = 0; off == 0 || off < len; off += per_page )); do
+      jq -c ".[$off:$(( off + per_page ))]" <<<"$body" | jq -rc "$filter"
+    done
+  else
+    jq -c ".[0:$per_page]" <<<"$body" | jq -rc "$filter"
+  fi
+else
+  jq -rc "$filter" <<<"$body"
+fi
 STUB
 chmod +x "$tmp_dir/bin/gh"
 export PATH="$tmp_dir/bin:$PATH"
@@ -83,6 +112,8 @@ assert_eq "the gatherer still exits 0 with an oversized issues source" "0" "$rc"
 assert_eq "the sample is still marked ok" "true" "$(jq -r '.ok' <<<"$state")"
 assert_eq "every one of the 1500 issues survives into the digest" \
   "1500" "$(jq '.issues | length' <<<"$state")"
+assert_eq "…spanning every page, in number order after the page join" \
+  "0 1499" "$(jq -r '.issues | "\(first.n) \(last.n)"' <<<"$state")"
 assert_eq "the digested issues array really is past MAX_ARG_STRLEN (131072 bytes)" "1" \
   "$(( $(jq -c '.issues' <<<"$state" | wc -c) > 131072 ))"
 assert_eq "workflows and open_prs still arrive alongside the oversized issues array" \
