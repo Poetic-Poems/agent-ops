@@ -285,7 +285,7 @@ _toggle_eval() {
   jq -nc --argjson r "$rec" '{state: "disabled", record: $r}'
 }
 
-# toggle_disable STATE_DIR REASON TTL_SPEC DEFAULT_HOURS BY [ACTOR] [KIND] [SCOPE]
+# toggle_disable STATE_DIR REASON TTL_SPEC DEFAULT_HOURS BY [ACTOR] [KIND] [SCOPE] [MODE]
 # Set the switch and print the record written. Returns 64 if TTL_SPEC does not
 # parse (nothing is written in that case — a half-set switch is worse than
 # none, since the operator believes the pipeline is down and it is not).
@@ -294,24 +294,42 @@ _toggle_eval() {
 # that writes its own evidence-bearing record. SCOPE defaults to `node`; the
 # caller passes `fleet` only when this record is the local half of a
 # fleet-wide stand-down (see the header, and toggle_mark_scope below for what
-# happens when the fleet half then fails).
+# happens when the fleet half then fails). MODE defaults to `stop` — the
+# switch's original, only behaviour before `--drain` existed — and is the
+# other value `--drain` writes instead (requirement 2.3d): a full stop refuses
+# new work and everything in flight alike, a drain refuses only new work.
+# `--disable` and `--drain` are otherwise the same write: same record shape,
+# same TTL handling, same `extends`-on-repeat behaviour — they differ in
+# nothing but this one field, which is exactly what lets every existing
+# scope/fleet-flag/expiry mechanic serve both without its own copy.
 toggle_disable() {
   local state_dir="$1" reason="$2" spec="$3" default_hours="$4" by="$5"
-  local actor="${6:-}" kind="${7:-manual}" scope="${8:-node}" f exp rc
+  local actor="${6:-}" kind="${7:-manual}" scope="${8:-node}" mode="${9:-stop}" f exp rc
   [[ -n "$actor" ]] || actor="$(toggle_actor)"
   exp="$(toggle_parse_ttl "$spec" "$default_hours")" || { rc=$?; return "$rc"; }
   mkdir -p "$state_dir"
   f="$(toggle_file "$state_dir")"
   jq -n --arg at "$(_toggle_iso)" --arg exp "$exp" --arg by "$by" --arg r "$reason" \
-    --arg actor "$actor" --arg kind "$kind" --arg scope "$scope" \
+    --arg actor "$actor" --arg kind "$kind" --arg scope "$scope" --arg mode "$mode" \
     '{disabled_at: $at,
       expires_at: (if $exp == "" then null else $exp end),
       by: $by,
       reason: $r,
       actor: $actor,
       kind: $kind,
-      scope: $scope}' > "$f"
+      scope: $scope,
+      mode: $mode}' > "$f"
   jq -c '.' "$f"
+}
+
+# toggle_mode RECORD
+# The mode a record claims, defaulting to `stop` for one written before the
+# field existed (requirement 2.3d) — the reading that keeps the switch's
+# original, stricter behaviour for every record that never named a mode at
+# all. One reader, for the same reason toggle_scope is: "stop or drain?" is a
+# question every caller must answer identically.
+toggle_mode() {
+  jq -r '.mode // "stop"' <<<"${1:-{\}}" 2>/dev/null || printf 'stop'
 }
 
 # toggle_scope RECORD
@@ -380,7 +398,11 @@ toggle_describe() {
 # card and this node's own banner cannot disagree about what the switch says
 # (requirement 34a). `scope` travels with the rest: a peer's card has to be
 # able to tell that node's own stand-down from its mirror of the fleet's, and
-# only the node holding the record knows which it is.
+# only the node holding the record knows which it is. `mode` travels the same
+# way (requirement 2.3d): `"stop"` for every record before `--drain` existed
+# and every plain `--disable` since, `"drain"` for one `--drain` wrote — a
+# reader needs this to tell a hard stop from a drain still finishing work
+# apart from the bare `disabled` boolean, which is true for both.
 toggle_switch_summary() {
   local s
   s="$(toggle_state "$1")"
@@ -391,6 +413,7 @@ toggle_switch_summary() {
       actor: ($s.record.actor // ""),
       kind: ($s.record.kind // "manual"),
       scope: ($s.record.scope // "node"),
+      mode: ($s.record.mode // "stop"),
       since: ($s.record.disabled_at // ""),
       expires_at: ($s.record.expires_at // null)}'
 }
@@ -424,11 +447,12 @@ toggle_lock_held() {
 # is mid-flight has achieved nothing, and would have no way to know.
 toggle_status_report() {
   local state_dir="$1"; shift
-  local st state rec spec name lock held any_held=0
+  local st state rec mode spec name lock held any_held=0
 
   st="$(toggle_state "$state_dir")"
   state="$(jq -r '.state' <<<"$st")"
   rec="$(jq -c '.record // {}' <<<"$st")"
+  mode="$(toggle_mode "$rec")"
 
   case "$state" in
     enabled)
@@ -439,7 +463,18 @@ toggle_status_report() {
         "$(jq -r '.disabled_at // "?"' <<<"$rec")" "$(jq -r '.expires_at // "?"' <<<"$rec")"
       ;;
     disabled)
-      printf 'switch:   DISABLED — %s\n' "$(toggle_describe "$rec")"
+      # A drain reads DRAINING/DRAINED rather than DISABLED: unlike a stop it
+      # never halts a cycle outright, so reporting it identically to a full
+      # stop would tell an operator nothing is happening when finishing work
+      # may still be in flight (requirement 2.3d). The progress word itself —
+      # draining vs drained, and what is left — is drain_status_line's own
+      # (lib/drain.sh), read from the last cycle's own at-rest check; this
+      # line only ever says which of the two modes is active.
+      if [[ "$mode" == "drain" ]]; then
+        printf 'switch:   DRAINING — %s\n' "$(toggle_describe "$rec")"
+      else
+        printf 'switch:   DISABLED — %s\n' "$(toggle_describe "$rec")"
+      fi
       ;;
   esac
   printf 'record:   %s\n' "$(toggle_file "$state_dir")"

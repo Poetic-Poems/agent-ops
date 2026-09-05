@@ -175,6 +175,16 @@ if [[ -n "$MANAGE_ACTION" ]]; then
   case "$MANAGE_ACTION" in
     status)
       toggle_status_report "$state_dir" "cycle=$lock_file" "review=$review_lock_file"
+      # A drain's own progress line, alongside the switch line above: printed
+      # only while the local record is actually a drain (requirement 2.9),
+      # since a plain stop or an enabled pipeline has no "how much is left"
+      # to report and drain_status_line would otherwise print a misleading
+      # "no cycle has checked yet" for a switch that was never a drain at all.
+      status_switch_state="$(toggle_state "$state_dir")"
+      if [[ "$(jq -r '.state' <<<"$status_switch_state")" == "disabled" ]] \
+         && [[ "$(toggle_mode "$(jq -c '.record // {}' <<<"$status_switch_state")")" == "drain" ]]; then
+        drain_status_line "$state_dir" "$(jq -c '.record' <<<"$status_switch_state")"
+      fi
       fleet_status_report
       limit_status_report
       merge_autonomy_status_report
@@ -212,8 +222,14 @@ if [[ -n "$MANAGE_ACTION" ]]; then
       # down. Under --this-node both agree on `node`, for the same reason.
       record_scope=node
       if (( ! THIS_NODE )) && [[ -n "$state_repo" ]]; then record_scope=fleet; fi
+      # mode "stop", explicit rather than left to toggle_disable's own default
+      # (requirement 2.3d): a --disable issued while a --drain is active must
+      # *tighten* it to a full stop immediately, and writing "stop" here is
+      # what makes that the same code path as an ordinary fresh --disable
+      # rather than a special case — the record this overwrites is simply
+      # whatever mode it was in before.
       if ! record="$(toggle_disable "$state_dir" "$DISABLE_REASON" "$disable_spec" \
-                       "$disable_default_ttl_hours" "$by" "$actor" manual "$record_scope")"; then
+                       "$disable_default_ttl_hours" "$by" "$actor" manual "$record_scope" stop)"; then
         exit 64
       fi
       printf 'agent-cycle: disabled — %s\n' "$(toggle_describe "$record")"
@@ -255,7 +271,7 @@ if [[ -n "$MANAGE_ACTION" ]]; then
       log_event "disabled" "$(jq -nc --argjson r "$record" --argjson x "${extends:-null}" \
         --arg scope "$disable_scope" --arg ff "$fleet_flag_outcome" \
         '{reason: $r.reason, expires_at: $r.expires_at, by: $r.by,
-          actor: $r.actor, kind: $r.kind, scope: $scope}
+          actor: $r.actor, kind: $r.kind, scope: $scope, mode: ($r.mode // "stop")}
          + (if $x == null then {} else {extends: $x} end)
          + (if $ff == "" then {} else {fleet_flag: $ff} end)')"
       # Say it plainly rather than leaving it to be discovered: an agent that
@@ -265,6 +281,83 @@ if [[ -n "$MANAGE_ACTION" ]]; then
       [[ -n "$held" ]] && printf 'agent-cycle: WARNING — a cycle is still running (%s); it will finish.\n' "$held"
       held="$(toggle_lock_held "$review_lock_file")"
       [[ -n "$held" ]] && printf 'agent-cycle: WARNING — a review cycle is still running (%s); it will finish.\n' "$held"
+      refresh_dashboard
+      exit 0
+      ;;
+    drain)
+      # requirement 2.3d. Same shape as `disable)` above — same record, same
+      # scope/fleet-flag handling, same TTL resolution, same log fields — with
+      # two differences: the record's `mode` is `"drain"` rather than the
+      # default `"stop"`, and precedence is checked first, because a drain is
+      # not simply "another disable": it may never *loosen* a stop already in
+      # force (only --enable may), and issuing it must not silently discard
+      # the plain --disable a peer or operator already imposed.
+      actor="$(toggle_actor)"
+      by="$actor pid $$"
+      prior_switch="$(toggle_state "$state_dir")"
+      prior_state="$(jq -r '.state' <<<"$prior_switch")"
+      prior_mode="$(toggle_mode "$(jq -c '.record // {}' <<<"$prior_switch")")"
+      if [[ "$prior_state" == "disabled" && "$prior_mode" == "stop" ]]; then
+        echo "agent-cycle: --drain cannot loosen an active --disable (a full stop) — run --enable first if you want to switch to draining instead" >&2
+        exit 64
+      fi
+      # The fleet switch counts as a prior stop too, and this node need not
+      # carry a mirror of one: an unmodified `--disable` on a *peer* publishes
+      # `fleet/disabled.json` and writes nothing to this node's own
+      # `state_dir` (which is exactly why `--enable` below logs for the
+      # no-local-record case, issue #426). Reading only the local record would
+      # therefore let a fleet-scoped `--drain` here republish that flag as a
+      # drain and downgrade the peer's stop across the whole fleet — the loosening
+      # requirement 2.3d forbids in as many words. Checked only where the
+      # loosening could actually happen: a `--this-node` drain, or one on a
+      # node with no `state_repo`, publishes no flag and so cannot discard
+      # anyone's stop. Fail-open on the same terms as every other reader of
+      # this flag (requirement 2.3a) — an unreachable state repo reads
+      # `enabled`, and in that same window the drain's own fleet write would
+      # fail and retag itself `node` anyway.
+      if (( ! THIS_NODE )) && [[ -n "$state_repo" ]]; then
+        fleet_prior_switch="$(fleet_disabled_state "$state_repo" "$state_dir")"
+        if [[ "$(jq -r '.state' <<<"$fleet_prior_switch")" == "disabled" ]] \
+           && [[ "$(toggle_mode "$(jq -c '.record // {}' <<<"$fleet_prior_switch")")" == "stop" ]]; then
+          echo "agent-cycle: --drain cannot loosen the fleet-wide --disable already in force (a full stop) — run --enable first if you want the fleet to drain instead" >&2
+          exit 64
+        fi
+      fi
+      extends="$(jq -c 'select(.state == "disabled") | .record' <<<"$prior_switch" 2>/dev/null || true)"
+      if ! disable_spec="$(toggle_resolve_disable_spec "$DISABLE_FOR" "$DISABLE_UNTIL" \
+                             "$disable_default_ttl_hours")"; then
+        exit 64
+      fi
+      record_scope=node
+      if (( ! THIS_NODE )) && [[ -n "$state_repo" ]]; then record_scope=fleet; fi
+      if ! record="$(toggle_disable "$state_dir" "$DRAIN_REASON" "$disable_spec" \
+                       "$disable_default_ttl_hours" "$by" "$actor" manual "$record_scope" drain)"; then
+        exit 64
+      fi
+      printf 'agent-cycle: draining — %s\n' "$(toggle_describe "$record")"
+      printf 'agent-cycle: new work will not be picked up; open review-feedback, merge-conflict, dequeued and abandoned-draft pull requests will still be finished\n'
+      disable_scope="fleet"
+      fleet_flag_outcome=""
+      if (( THIS_NODE )); then
+        disable_scope="node"
+        printf 'agent-cycle: node-scoped drain — only %s stands down from new work; the rest of the fleet keeps working\n' "$actor"
+      else
+        fleet_flag_outcome="$(fleet_flag_write_outcome "$state_repo" disabled "$record" \
+          "fleet: drain started by $by — $DRAIN_REASON" "$state_dir")"
+        case "$fleet_flag_outcome" in
+          ok) printf 'agent-cycle: fleet switch set — every node will drain\n' ;;
+          failed)
+            toggle_mark_scope "$state_dir" node
+            printf 'agent-cycle: WARNING — could not set the fleet switch (state repo unreachable?); only this node is draining\n' >&2
+            ;;
+        esac
+      fi
+      log_event "disabled" "$(jq -nc --argjson r "$record" --argjson x "${extends:-null}" \
+        --arg scope "$disable_scope" --arg ff "$fleet_flag_outcome" \
+        '{reason: $r.reason, expires_at: $r.expires_at, by: $r.by,
+          actor: $r.actor, kind: $r.kind, scope: $scope, mode: "drain"}
+         + (if $x == null then {} else {extends: $x} end)
+         + (if $ff == "" then {} else {fleet_flag: $ff} end)')"
       refresh_dashboard
       exit 0
       ;;

@@ -1091,6 +1091,36 @@ Three things worth knowing:
   happened is entitled to one. It shows up in `--status`, in the log, and on
   the dashboard banner.
 
+### Draining instead of stopping
+
+`--disable` stops everything, in-flight work included. `--drain` is the
+gentler alternative: it stops new work being picked up, but keeps finishing
+whatever pull requests are already open — a changes-requested review to
+answer, a merge conflict to rebase, a dequeued pull request to fix, an
+abandoned draft to complete — until every configured repo has nothing left to
+finish. It then rests there, ticking on future cycles without picking up
+anything new, rather than exiting:
+
+```bash
+docker compose exec scheduler /app/agent-cycle.sh --drain "clearing the backlog before a Kubernetes migration"
+docker compose exec scheduler /app/agent-cycle.sh --status   # DRAINING (N left) → DRAINED
+docker compose exec scheduler /app/agent-cycle.sh --enable   # resume ordinary intake
+```
+
+Same `--for`/`--until`/`--this-node` handling as `--disable`, and the same
+fleet-wide-by-default reach; `--enable` (or `--enable --this-node`) clears
+either mode. The two modes never coexist quietly: issuing `--disable` while a
+drain is running tightens it to a full stop immediately, and issuing `--drain`
+while a plain stop is active is refused — `--enable` first, if you actually
+want to switch from stopping to draining. That refusal covers a stop a *peer*
+set, too: a fleet-wide `--disable` blocks `--drain` on every node, not only
+on the one that issued it. (`--drain --this-node` is still allowed under a
+fleet stop, since it publishes nothing and the node stays down either way.)
+Once every repo is at rest,
+`--status`, the dashboard badge and the heartbeat all say **drained**; nothing
+escalates and nothing auto-converts back to a stop — it stays that way until
+`--enable` or the drain's own TTL expires.
+
 ### Lifting a usage-limit stand-down
 
 The switch is not the only thing that stops cycles. Hitting the account's
@@ -2104,13 +2134,25 @@ docker compose exec scheduler /app/agent-cycle.sh --status   # until both read i
 `--this-node` is the node-scoped form (see [Taking one node out while the
 rest keep working](#taking-one-node-out-while-the-rest-keep-working)): it
 never touches the fleet-wide switch, so the rest of the fleet keeps working
-while this one drains, and there is nothing to remember to `--enable` from a
-surviving node once this one is gone — the record is destroyed along with the
-node. Reach for plain `--disable` (no `--this-node`) instead only if you
-actually want the whole fleet paused for the duration; that one *is*
-fleet-wide, so `--enable` from a *surviving* node once this one is gone, or
-every other node stays down until the disable expires. On a standby node
-either disable is unnecessary — a standby starts no cycles.
+while this one finishes its current cycle, and there is nothing to remember
+to `--enable` from a surviving node once this one is gone — the record is
+destroyed along with the node. Reach for plain `--disable` (no `--this-node`)
+instead only if you actually want the whole fleet paused for the duration;
+that one *is* fleet-wide, so `--enable` from a *surviving* node once this one
+is gone, or every other node stays down until the disable expires. On a
+standby node either disable is unnecessary — a standby starts no cycles.
+
+`--disable` here is deliberately the blunt tool, and deliberately not
+`--drain`: decommissioning wants this node stopped as soon as its current
+cycle ends, not kept running until every repo's finishing-source backlog is
+clear — which could be a long wait on a busy fleet, for a node that is about
+to be deleted anyway. `--drain` exists for the opposite situation: an
+operator who wants the *whole fleet* to finish its open work before a
+disruptive change, with every other node still picking up new work in the
+meantime. Neither is the roadmap's *graceful shutdown* (`docs/ROADMAP.md`,
+Phase 2): that one is automatic, requires no operator action, and only ever
+concerns the one cycle a container happens to be mid-flight on when it exits
+— it says nothing about intake and finishes nothing beyond that single cycle.
 
 ### 3. Take off it anything you want to keep
 
