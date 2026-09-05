@@ -17849,8 +17849,9 @@ pull request, run the ones the change touches and any it could regress.
    the same way, logging `fleet disable expired` carrying `scope: "fleet"`
    and `fleet_flag: "ok"` and actually removing `fleet/disabled.json`
    (issue #426, defect 3 — the outcome used to be discarded); and
-   `--this-node` given with a command other than `--disable`/`--enable`
-   (`--status` here) exits 64 naming the two it modifies. Every `disabled`/
+   `--this-node` given with a command other than
+   `--disable`/`--drain`/`--enable` (`--status` here) exits 64 naming the
+   three it modifies (requirement 2.3d). Every `disabled`/
    `enabled` event this file's e2e block logs is asserted for `scope` — a
    plain `--disable`/`--enable` carries `"fleet"`, a `--this-node` one
    `"node"` and no `fleet_flag` at all — and a fleet-scoped `--enable` for
@@ -17885,6 +17886,42 @@ pull request, run the ones the change touches and any it could regress.
    which probes for itself and reads `unreachable`; and a memo entry that is
    empty, or that has vanished since it was written, falls through to a live
    fetch rather than being served as a confirmed answer.
+1e-i. **The drain is a mode on the same switch, and never loosens a stop
+   (requirements 2.3d, 2.2c, 2.9).** `test/toggle.test.sh` passes: at the
+   library level, `toggle_disable` defaults the record's `mode` to `"stop"`
+   and writes `"drain"` when asked, `toggle_mode` reads either back and
+   defaults a record with no field, an empty record and no argument at all to
+   `"stop"`, `toggle_switch_summary` carries `mode` to peers, and a drain
+   record still reads `.state == "disabled"` — mode is orthogonal to state,
+   which is why `review-cycle.sh` needs no branch of its own. End to end,
+   offline: `--drain` with no reason exits 64 naming the requirement;
+   `--drain <reason>` writes an otherwise ordinary switch record carrying
+   `mode: "drain"` and logs a `disabled` event carrying `mode` beside `scope`;
+   `--status` reports `DRAINING` for it and never `DISABLED`; `--drain` over
+   an active stop exits 64 naming `--enable` as the way out and leaves the
+   stop's own record and reason untouched; `--disable` over an active drain
+   tightens it to `mode: "stop"` with the new reason; `--drain` over an active
+   drain extends it, logging `extends`; `--enable` clears a drain exactly as
+   it clears a stop; and a real `review-cycle.sh` run under a drain exits 0
+   logging a `review-stand-down` whose reason names the drain mode rather than
+   a bare `disabled`.
+
+   `test/drain.test.sh` passes, covering `lib/drain.sh`'s own pure functions
+   against a stubbed `lib/claim.sh` (the same `"$AGENT_OPS_ROOT/lib/claim.sh"
+   claims <slug>` seam `agent-cycle.sh` uses, so no `gh`, lock or cycle is
+   involved): `drain_remaining_count`/`drain_at_rest` read zero and at-rest
+   for empty bands and no claims, count the four finishing bands across
+   repos, still surface a live finishing-source claim whose pull request the
+   gather has not seen yet, ignore a claim that names no finishing-source ref,
+   and take the *larger* of the two counts rather than their sum so a claim
+   its own band already counts is not doubled; `drain_write_state`/
+   `drain_read_state` round-trip `{disabled_at, remaining, at_rest,
+   checked_at}` and read as `null` before any cycle has written one; and
+   `drain_status_line` says so honestly when no cache exists or the cache
+   belongs to an older drain, and otherwise reports `DRAINING` with the
+   remaining count or `DRAINED` with the check's own timestamp. The
+   `drained` event's own dedup (`drain_event_logged`) is asserted against a
+   union log carrying a matching `disabled_at`, a differing one, and none.
 1f. **A provider-qualified model id resolves; an unsupported one fails fast
    (requirement 1a).** `test/model-id.test.sh` passes: a bare id and its
    `anthropic/`-qualified form resolve to the same value; an empty value (the
