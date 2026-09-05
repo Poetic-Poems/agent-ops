@@ -95,6 +95,47 @@ api_json() {
   return 1
 }
 
+# api_json_paged FALLBACK PAGE_FILTER JOIN_FILTER API_PATH
+# `api_json` for a list endpoint whose *completeness* downstream readers
+# depend on. A single `gh api` call returns one page — the newest `per_page`
+# entries — and requirement 34i's work-gone sweep reads an issue's or pull
+# request's *absence* from the digest as "closed": on a repository with more
+# open issues than one page holds, every issue past the first page read as
+# closed, and the sweep cleared real blocks out from under real work the
+# moment they formed (this is what falsely unblocked #874 on 2026-09-04 and
+# handed the fleet-wide phantom-refinement stand-down its trigger; it also
+# defeated the hand-flag lever the same day, clearing the blocks 11 seconds
+# after they formed). `--paginate` walks every page; PAGE_FILTER runs once
+# per page (that is `gh api --jq`'s own `--paginate` behaviour, the same
+# per-page streaming every other paginated gatherer in scripts/ already
+# leans on) and must yield one JSON array per page; JOIN_FILTER runs over
+# the slurped array-of-pages to flatten and order them.
+#
+# The fail-safe direction is preserved by construction: `gh api --paginate`
+# exits non-zero when any page fails, the pipeline's status is the pipe's
+# (this script runs under `set -o pipefail`), and the caller flips `ok` —
+# so a half-walked listing decides nothing, exactly as a failed single page
+# never did. A truncated-but-2xx listing is no longer a representable state.
+api_json_paged() {
+  local fallback="$1" page_filter="$2" join_filter="$3" path="$4" raw out
+  # The page stream is captured and tested non-empty *before* the join, not
+  # piped straight into it: `jq -s` turns no input at all into `[]`, so a
+  # joined-first pipeline would print a healthy empty digest for a `gh` that
+  # produced nothing — the exact degraded-to-`[]` shape this file's header
+  # warns clears every block on the fleet. Empty output fails here on the
+  # same terms it fails `api_json`.
+  if raw="$(gh api --paginate "$path" --jq "$page_filter" 2>/dev/null)" \
+     && [[ -n "$raw" ]] \
+     && out="$(jq -sc "$join_filter" <<<"$raw" 2>/dev/null)" \
+     && [[ -n "$out" ]] \
+     && jq -e . <<<"$out" >/dev/null 2>&1; then
+    printf '%s' "$out"
+    return 0
+  fi
+  printf '%s' "$fallback"
+  return 1
+}
+
 ok=true
 
 # The default branch's head. One SHA covers every file-backed source at once —
@@ -125,6 +166,13 @@ head_sha="$(api_json '""' '.sha | @json' "repos/$slug/commits/$branch")" || ok=f
 # `repos/<slug>/issues` returns pull requests too; they are dropped here and
 # sampled properly below.
 #
+# Paged to completion (`api_json_paged` above), and so is the open-PR listing
+# below: requirement 34i's work-gone sweep reads absence from these two lists
+# as "the work is closed", so they are the two samples in this file whose
+# *completeness* is load-bearing, not just their freshness. The workflow-runs
+# window below stays a single page by design — its own comment names that the
+# safe direction.
+#
 # `p`'s parse is deliberately identical to gather-issues.sh's own — same
 # field, same four names, same Medium default — and stays that way on
 # purpose (requirement 3b). gather-issues.sh additionally emits
@@ -134,14 +182,14 @@ head_sha="$(api_json '""' '.sha | @json' "repos/$slug/commits/$branch")" || ok=f
 # it: `maybe_run_refiner` (agent-cycle.sh) engages the Refiner from every
 # cycle's own exit trap, unconditionally on the no-op fingerprint this file
 # feeds, so a candidate set this digest never causes a skipped cycle to miss.
-issues="$(api_json '[]' \
+issues="$(api_json_paged '[]' \
   '[.[] | select(has("pull_request") | not)
         | {n: .number, u: .updated_at, l: ([.labels[].name] | sort), a: (.assignee.login // ""),
            p: (([.issue_field_values[]? | select(.issue_field_name == "Priority")
                                         | .single_select_option.name
                                         | select(. == "Urgent" or . == "High"
-                                                 or . == "Medium" or . == "Low")] | first) // "Medium")}]
-   | sort_by(.n)' \
+                                                 or . == "Medium" or . == "Low")] | first) // "Medium")}]' \
+  'add // [] | sort_by(.n)' \
   "repos/$slug/issues?state=open&per_page=100")" || ok=false
 
 # The conclusion of each workflow's latest *completed* run on the default
@@ -185,8 +233,9 @@ workflows="$(api_json '[]' \
 # 16.3). Closing a PR releases its claim and makes the item selectable again
 # without touching a commit, an issue, or an alert — so without this signal a
 # fingerprint could sit unchanged across exactly the event that created work.
-open_prs="$(api_json '[]' \
-  '[.[] | {n: .number, u: .updated_at, h: .head.ref, d: .draft}] | sort_by(.n)' \
+open_prs="$(api_json_paged '[]' \
+  '[.[] | {n: .number, u: .updated_at, h: .head.ref, d: .draft}]' \
+  'add // [] | sort_by(.n)' \
   "repos/$slug/pulls?state=open&per_page=100")" || ok=false
 
 # $issues, $workflows and $open_prs each grow with the repo, unbounded past

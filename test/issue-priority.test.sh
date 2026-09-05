@@ -59,16 +59,24 @@ assert_eq() {
 # It answers the four endpoints gather-source-state.sh calls and mimics the one
 # behaviour of `gh api --jq` that the script depends on: string results print
 # raw, not as JSON (which is why the script pipes scalars through `@json`).
-# `jq -rc` reproduces that exactly.
+# `jq -rc` reproduces that exactly. `--paginate` (the issues and open-PR
+# listings, requirement 3b's completeness rule) is accepted and answered with
+# the single page the fixture is — it fits one page, so paging adds nothing
+# here; test/gather-source-state.test.sh is where the page semantics
+# themselves are emulated and pinned.
 mkdir -p "$tmp_dir/bin"
 cat >"$tmp_dir/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 set -uo pipefail
 [[ "${1:-}" == "api" ]] || { echo "stub gh: unexpected command: $*" >&2; exit 1; }
-path="$2"; shift 2
-filter='.'
+shift
+filter='.'; path=''
 while [[ $# -gt 0 ]]; do
-  case "$1" in --jq) filter="$2"; shift 2;; *) shift;; esac
+  case "$1" in
+    --paginate) shift;;
+    --jq) filter="$2"; shift 2;;
+    *) if [[ -z "$path" ]]; then path="$1"; fi; shift;;
+  esac
 done
 case "$path" in
   */commits/*)     body='{"sha":"aaa111"}';;

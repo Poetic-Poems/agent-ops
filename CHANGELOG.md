@@ -40,6 +40,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `scripts/gather-source-state.sh` now pages its open-issue and open-PR
+  listings to completion (`api_json_paged`). A single `gh api` call returns
+  one page, and requirement 34i's work-gone sweep reads a blocked item's
+  *absence* from these two lists as "the work is closed" — so on a
+  repository holding more open issues than one page carries (agent-ops
+  passed 100 open issues in early September), every issue past the first
+  page read as closed, and the sweep cleared real blocks the moment they
+  formed. This is what falsely unblocked #874 on 2026-09-04T14:13Z —
+  returning the phantom-refined item to the Co-Ordinator's pool and handing
+  the fleet-wide stand-down its trigger — and what cleared the hand-applied
+  `needs-refinement` blocks on #874/#877/#878 eleven seconds after they
+  formed later the same day, defeating the one human lever for routing an
+  item back to the Refiner. A page that fails mid-walk fails the whole
+  sample into `ok: false` (deciding nothing), and no output at all is a
+  failed sample rather than an empty digest, so the fail-safe direction is
+  unchanged. The test suite's stub `gh` now emulates GitHub's real page
+  semantics — one page without `--paginate`, every page with it — so a
+  gatherer that forgets to paginate loses data in the suite exactly as it
+  does against GitHub, instead of passing by stub accident. The workflow-runs
+  window deliberately stays a single page; nothing reads absence from it.
+
 - `refinements_map` and `decisions_map` (`lib/cycle-state.sh`) now skip a
   **phantom `item-refined` event** — `comment_url` present but naming no
   comment, the pre-TD-PPagop-26082819 shape — on the same
@@ -62,6 +83,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   so the fix itself wakes the fleet, and a phantom never supersedes a pending
   tactical decision. Requirement 3h states the rule; requirement 35a now
   names all three reading seams.
+
+- `deploy/docker/compose.yaml`'s scheduler `mem_limit` comment claimed the
   1.5 GiB ceiling was "~5x the observed peak". It is not. That 2026-08-24
   figure was `docker stats`', which reports `memory.current` minus
   `inactive_file` and so excludes most of the page cache the cgroup actually

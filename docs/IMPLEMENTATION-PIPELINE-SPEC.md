@@ -5347,6 +5347,22 @@ implements.
      records what the model saw. A failing issues API degrading to `[]` would
      instead be a stable lie — it would match the next equally-failed sample
      and skip, and go on skipping for as long as the outage lasted.
+   - **A sample read for absence must be complete.** The open-issue and
+     open-PR listings are paged to completion (`api_json_paged`,
+     `scripts/gather-source-state.sh`), because requirement 34i reads a
+     blocked item's *absence* from them as "the work is closed": a
+     single-page sample on a repository holding more open issues than one
+     page carries reports every issue past the page as closed, and the
+     work-gone sweep then clears real blocks out from under real work —
+     which is what falsely unblocked #874 on 2026-09-04 and handed the
+     phantom-refinement fleet stand-down its trigger, and what cleared the
+     hand-flag blocks on #874/#877/#878 eleven seconds after they formed
+     the same day. A page that fails mid-walk fails the whole sample into
+     `ok: false` (deciding nothing), and a `gh` that returns no output at
+     all is a failed sample, never an empty digest — both the same
+     direction the previous bullet already demands. The workflow-runs
+     window stays a single page by design: nothing reads absence from it,
+     and its own clause above names the drop-off the safe direction.
    - **Fingerprint before the Co-Ordinator runs, and record that value.**
      Anything that changed while it was working is something it may not have
      seen, so it must be allowed to bust the next cycle's fingerprint. A
@@ -11022,7 +11038,8 @@ implements.
     `by: "work-gone"` and a `detail` naming the fact that decided it:
 
     - **an issue** (a bare number) — the number is not in that repo's open-issue
-      digest (requirement 3b);
+      digest (requirement 3b — paged to completion, precisely because this
+      test reads absence as closed);
     - **a pull request** (`pr-<n>-abandoned-…`, `-conflict-…`, `-superseded-…`,
       `-review-…` — `WORK_GONE_PR_RE` reads the number off any `pr-<n>-…` shape,
       which is what keeps this rule indifferent to which source minted it) —
