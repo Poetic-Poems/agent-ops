@@ -410,14 +410,12 @@ fi
 # below all show what the whole operation did, from any node's dashboard.
 # Events carry `node` (requirement 33); with no peers this reduces exactly
 # to the old local read.
-# Given a path, parses a union already on disk instead of taking one itself —
-# the parse rule stays in one place for a caller that has to count what the
-# rule dropped (agent-ops#794) and so needs both sides of it from the one
-# snapshot.
-read_events() {
-  if (( $# )); then jq -c -R 'fromjson? // empty' "$1" 2>/dev/null
-  else fleet_logs "$state_dir" "$peers_dir" log.jsonl | jq -c -R 'fromjson? // empty' 2>/dev/null; fi
-}
+# read_events RAW — the union is materialised by its one caller and handed
+# here as a path rather than taken afresh, because what this parse drops is
+# only knowable by counting the same snapshot both before and after it
+# (agent-ops#794); a union read a second time counts what the pipelines
+# appended in between.
+read_events() { jq -c -R 'fromjson? // empty' "$1" 2>/dev/null; }
 
 # count_lines [PATH] — records present (stdin if PATH is omitted), whether or
 # not the last one ends in a newline (an unclean stop's own signature): `wc -l`
@@ -809,8 +807,7 @@ raw_events_jsonl="$work_tmp/raw-events.jsonl"
 # it also keeps this to a single `fleet_logs` — a second one is a whole extra
 # read-and-sort of the fleet's nine megabytes on the per-tick hot path, which
 # is the cost the file-not-a-pipe note above was written about in the first
-# place. `read_events` itself stays as it is: other call sites want the parsed
-# stream and nothing else.
+# place.
 fleet_logs "$state_dir" "$peers_dir" log.jsonl > "$raw_events_jsonl" 2>/dev/null \
   || : > "$raw_events_jsonl"
 read_events "$raw_events_jsonl" > "$events_jsonl" 2>/dev/null || : > "$events_jsonl"
