@@ -63,6 +63,101 @@ fleet_logs_healthy() {  # <state_dir> <peers_dir> <union_log>
   return 0
 }
 
+# fleet_ts_field <file>
+#
+# A one-line JSON file's own top-level `.ts` string field — the shared read
+# behind `fleet_publication_status` below, for both call sites: self's
+# `.state-sync-published.json` (`{"ts":"…"}`, whole) and a peer's
+# `heartbeat.json` (`{"node":…,"role":…,"ts":…,…}`, `ts` mid-object). Every
+# writer of either file uses `jq -nc`, whose compact encoding is always one
+# line with no inserted whitespace, so a plain prefix match is exact for the
+# shape `jq -nc '{ts: $ts}'` itself produces — the fast path below, no fork —
+# falling back to an actual jq parse for any other shape (`ts` not first, a
+# hand-edited file, a future writer that pretty-prints) so correctness never
+# depends on which shape a caller happens to hold. D14: called once per
+# fleet-strip row, self included, on both a full and a fast
+# publish-dashboard.sh tick, so a jq fork saved here is saved on every tick.
+fleet_ts_field() {
+  local file="${1:-}" line stripped
+  [[ -s "$file" ]] || return 0
+  # Not `read ... || return 0`: `read` itself reports failure on a file with
+  # no trailing newline (every writer's `jq -nc` output has one; a test
+  # fixture built with a bare `printf` does not) even though `line` still
+  # holds the whole thing correctly — the read is genuinely done at EOF
+  # either way, so only an empty result (an empty file, already excluded
+  # above, or truly nothing readable) means bail.
+  IFS= read -r line < "$file" 2>/dev/null
+  [[ -n "$line" ]] || return 0
+  case "$line" in
+    '{"ts":"'*)
+      stripped="${line#\{\"ts\":\"}"
+      stripped="${stripped%%\"*}"
+      printf '%s' "$stripped"
+      return 0
+      ;;
+  esac
+  # The fallback reads the whole *file*, never the one line the fast-path test
+  # above needed: a pretty-printed object's first line is `{` alone, which no
+  # jq parse can answer, and answering it with empty would report the node
+  # `unknown` — silently stale — on the one page whose job is to be believed
+  # about staleness. The fork is spent either way, so parsing all of what is
+  # there costs nothing over parsing the first line of it.
+  #
+  # `|| true` because jq exits 5 on input it cannot parse, and this reader owes
+  # its callers "the ts if there is one" rather than a status: every consumer
+  # already treats an empty answer as `fleet_publication_status`'s `unknown`,
+  # and `scripts/state-sync.sh` — which sources this file — runs under `set -e`,
+  # where a corrupt peer heartbeat would otherwise end the run rather than the
+  # read.
+  jq -r '.ts // empty' < "$file" 2>/dev/null || true
+}
+
+# fleet_publication_status <ts> <threshold_s> [now_epoch]
+#
+# The one verdict over a publication timestamp — self's or a peer's alike
+# (agent-ops#602). A node's freshness is a fact about what it last actually
+# published into the shared state, never about its own local clock: on
+# 2026-08-08 both laptop nodes reported themselves fresh for four days while
+# publishing nothing, because the self row used to be built from `date` and
+# a hardcoded `false` rather than read back from anywhere. Called once per
+# row by both scripts/publish-dashboard.sh (every fleet.nodes[] row, self
+# included) and scripts/doctor.sh (this node's own row), so the two can
+# never derive it differently (requirement 34a) — a peer's <ts> is its
+# heartbeat's own `ts`; self's is `.state-sync-published.json`'s `ts`
+# (scripts/state-sync.sh's `do_fetch`, reading back what the shared state
+# holds for this node's own branch).
+#
+#   {ts: null, age_s: null, verdict: "unknown"}
+#     <ts> is empty or does not parse — no publication has ever been read
+#     back for this node/peer. Not itself a failure: a fresh install, or the
+#     short window before a node's first successful push has been fetched
+#     back at all.
+#   {ts: "…", age_s: N, verdict: "fresh"|"stale"}
+#     N seconds have passed since the shared state last held a publication
+#     from this node/peer; "stale" once N exceeds <threshold_s>
+#     (`node_stale_after_minutes * 60`).
+#
+# Built with `printf`, not `jq` (D14: called once per fleet-strip row, self
+# included, on both a full and a fast publish-dashboard.sh tick, so a jq fork
+# here counts directly against #798's fast/full cost ratio) — every field is
+# already known safe: <ts> is always machine-generated (`date -u`'s own
+# output or a git committer date), never free text, and <age>/verdict are
+# ours to choose.
+fleet_publication_status() {
+  local ts="${1:-}" threshold="${2:-1800}" now="${3:-}" then_epoch age verdict
+  [[ -n "$now" ]] || now="$(date -u +%s)"
+  if [[ -z "$ts" ]] || ! then_epoch="$(date -u -d "$ts" +%s 2>/dev/null)" \
+      || [[ -z "$then_epoch" ]]; then
+    printf '{"ts":null,"age_s":null,"verdict":"unknown"}'
+    return 0
+  fi
+  age=$(( now - then_epoch ))
+  (( age < 0 )) && age=0
+  verdict="fresh"
+  (( age > threshold )) && verdict="stale"
+  printf '{"ts":"%s","age_s":%s,"verdict":"%s"}' "$ts" "$age" "$verdict"
+}
+
 # The fleet's event stream: this node's own log followed by every peer's,
 # sorted into time order (each line begins {"ts":"…", so a plain byte sort is
 # a time sort). The consumers that reduce by most-recent-event-wins — the
