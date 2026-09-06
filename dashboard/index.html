@@ -2443,8 +2443,15 @@
     var insufficient = m.status === "insufficient-sample";
     switch (m.kind) {
       case "coordinator-corroboration":
+        // Two rates over two different populations, each gated on its own
+        // sample: a row can have enough corroborated verdicts to state a
+        // rejection rate and nowhere near enough picked items to state a
+        // landing rate, or the reverse.
         return (insufficient ? "insufficient evidence" : pct(m.rate) + " rejected (" + m.corroborated + " corroborated)")
-          + " · picks landed " + (m.picks_total ? pct(m.picks_landed_rate) + " of " + m.picks_total : "—");
+          + " · picks landed " + (!m.picks_total ? "—"
+              : m.picks_status === "insufficient-sample"
+                ? "insufficient evidence (" + m.picks_total + " picked)"
+                : pct(m.picks_landed_rate) + " of " + m.picks_total);
       case "reviewer-escape-rate":
         return insufficient ? "insufficient evidence (" + m.of + " reviewed)"
           : pct(m.rate) + " escaped review (" + m.escapes + " of " + m.of + ")";

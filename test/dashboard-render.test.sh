@@ -487,13 +487,15 @@ assert_contains "each card's table heads its columns" \
 
 # The Co-Ordinator: its base outcome columns are always insufficient (it never
 # joins to one item), but its own `measure` — the folded verdict-quality rate
-# — states its own sample and can clear the bar on its own.
+# — states its own sample and can clear the bar on its own. The measure states
+# *two* rates over two different populations, so each carries its own gate:
+# `status` over corroborated verdicts, `picks_status` over picked items.
 assert_contains "the Co-Ordinator's own measure folds the old verdict-quality rate in, per model" \
   "75% rejected (8 corroborated) · picks landed 80% of 10" "$scflat"
 assert_contains "a second Co-Ordinator model gets its own separately attributable row" \
   "haiku-4-5" "$sc"
 assert_contains "below the stated minimum sample, its own measure reads insufficient evidence too" \
-  "insufficient evidence · picks landed 0% of 2" "$scflat"
+  "insufficient evidence · picks landed insufficient evidence (2 picked)" "$scflat"
 
 # The Implementer: outcome split, tier, cost and wall-clock per landed item.
 assert_contains "landed splits into unchanged vs. after rework, per row" \

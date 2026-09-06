@@ -36,7 +36,8 @@
               "sample": 0, "status": "insufficient-sample",
               "measure": {"kind": "coordinator-corroboration", "corroborated": 8, "rejected": 6,
                 "rate": 0.75, "sample": 8, "status": "ok",
-                "picks_total": 10, "picks_landed": 8, "picks_landed_rate": 0.8}
+                "picks_total": 10, "picks_landed": 8, "picks_landed_rate": 0.8,
+                "picks_status": "ok"}
             },
             {
               "model": "claude-haiku-4-5-20251001", "tier": "default",
@@ -47,7 +48,8 @@
               "sample": 0, "status": "insufficient-sample",
               "measure": {"kind": "coordinator-corroboration", "corroborated": 2, "rejected": 2,
                 "rate": 1, "sample": 2, "status": "insufficient-sample",
-                "picks_total": 2, "picks_landed": 0, "picks_landed_rate": 0}
+                "picks_total": 2, "picks_landed": 0, "picks_landed_rate": 0,
+                "picks_status": "insufficient-sample"}
             }
           ]
         },

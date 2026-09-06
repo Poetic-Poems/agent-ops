@@ -749,6 +749,12 @@ assert_eq "a model's corroboration measure below the minimum sample reads insuff
   "insufficient-sample" "$(jq -r --arg m "$haiku" '.rows[] | select(.model == $m) | .measure.status' <<<"$vdata")"
 assert_eq "the Co-Ordinator's own base outcome columns are always insufficient — it never joins to one item" \
   "insufficient-sample" "$(jq -r --arg m "$haiku" '.rows[] | select(.model == $m) | .status' <<<"$vdata")"
+# The picks-landed rate is a second rate over a *different* population (items
+# picked, not verdicts corroborated), so it carries its own gate rather than
+# riding on the corroboration rate's: one pick landing out of one is not
+# evidence that this model picks well, whatever its verdict sample.
+assert_eq "the picks-landed rate is gated on its own sample, not the corroboration rate's" \
+  "insufficient-sample" "$(jq -r --arg m "$haiku" '.rows[] | select(.model == $m) | .measure.picks_status' <<<"$vdata")"
 
 # --- Actor and model scorecards: outcome joins across the other four actors
 # (issue #610, D22) -----------------------------------------------------------
@@ -756,8 +762,10 @@ assert_eq "the Co-Ordinator's own base outcome columns are always insufficient �
 # to it) and landed on a rerun; one landed unchanged on a different, trivial-
 # tier model. The Reviewer of the first item earns a human-change-request and
 # a post-merge-revert (the latter keyed only by the pull request's own
-# number, re-keyed onto the work item via `pr_url`). One Enabler adjudication
-# lands, one is voided. The Refiner refines two items, one bounced back.
+# number, re-keyed onto the work item via `pr_url`), and a second reviewed
+# item earns a post-merge-revert and nothing else, so the re-key is what
+# decides whether it counts at all. One Enabler adjudication lands, one is
+# voided. The Refiner refines two items, one bounced back.
 o="$(new_home nodeO)"
 o_today="$(date -u +%Y-%m-%d)"
 sonnet="claude-sonnet-5"
@@ -780,10 +788,27 @@ o_repo="Poetic-Poems/agent-ops"
   printf '{"ts":"%sT04:00:00Z","cycle":"c501b","node":"nodeO","event":"merge-observed","repo":"%s","item":"501","pr_url":"https://github.com/%s/pull/201"}\n' "$o_today" "$o_repo" "$o_repo"
   printf '{"ts":"%sT05:00:00Z","node":"nodeO","cycle":null,"event":"rework","class":"post-merge-revert","detector":"y","evidence":{"kind":"revert","by":9},"repo":"%s","item":"201","pr_url":"https://github.com/%s/pull/201"}\n' "$o_today" "$o_repo" "$o_repo"
 
+  # A second reviewed item whose *only* escape record is a post-merge-revert,
+  # keyed by the pull request's own number (507's PR is 207) and joinable to
+  # the work item through `pr_url` alone. Item 501 above cannot prove the
+  # re-key on its own: it already carries a `human-change-request` keyed
+  # directly to the work item, so it reads as escaped whether or not the
+  # revert ever joins.
+  printf '{"ts":"%sT03:30:00Z","cycle":"c507","node":"nodeO","event":"stage-end","stage":"reviewer","exit_code":0,"model":"%s","cost_usd":0.5,"duration_ms":200000,"repo":"%s","item":"507"}\n' "$o_today" "$sonnet" "$o_repo"
+  printf '{"ts":"%sT03:35:00Z","cycle":"c507","node":"nodeO","event":"pr-raised","pr_url":"https://github.com/%s/pull/207","repo":"%s","item":"507"}\n' "$o_today" "$o_repo" "$o_repo"
+  printf '{"ts":"%sT04:30:00Z","cycle":"c507","node":"nodeO","event":"merge-observed","repo":"%s","item":"507","pr_url":"https://github.com/%s/pull/207"}\n' "$o_today" "$o_repo" "$o_repo"
+  printf '{"ts":"%sT05:30:00Z","node":"nodeO","cycle":null,"event":"rework","class":"post-merge-revert","detector":"y","evidence":{"kind":"revert","by":11},"repo":"%s","item":"207","pr_url":"https://github.com/%s/pull/207"}\n' "$o_today" "$o_repo" "$o_repo"
+
   printf '{"ts":"%sT06:00:00Z","cycle":"c503","node":"nodeO","event":"stage-end","stage":"enabler-adjudicate","exit_code":0,"model":"%s","cost_usd":3.0,"duration_ms":900000,"repo":"%s","item":"503"}\n' "$o_today" "$fable" "$o_repo"
   printf '{"ts":"%sT07:00:00Z","cycle":"c503","node":"nodeO","event":"merge-observed","repo":"%s","item":"503"}\n' "$o_today" "$o_repo"
   printf '{"ts":"%sT08:00:00Z","cycle":"c504","node":"nodeO","event":"stage-end","stage":"enabler-decide","exit_code":0,"model":"%s","cost_usd":1.0,"duration_ms":100000,"repo":"%s","item":"504"}\n' "$o_today" "$fable" "$o_repo"
   printf '{"ts":"%sT09:00:00Z","cycle":"c504","node":"nodeO","event":"item-void","repo":"%s","item":"504"}\n' "$o_today" "$o_repo"
+  # A third item met by *both* critical stages, in two cycles — the shape the
+  # row-level (not stage-level) item dedup exists for: 508 is one examined
+  # item, not one per stage name feeding the row.
+  printf '{"ts":"%sT09:10:00Z","cycle":"c508a","node":"nodeO","event":"stage-end","stage":"enabler-adjudicate","exit_code":0,"model":"%s","cost_usd":0.4,"duration_ms":40000,"repo":"%s","item":"508"}\n' "$o_today" "$fable" "$o_repo"
+  printf '{"ts":"%sT09:20:00Z","cycle":"c508b","node":"nodeO","event":"stage-end","stage":"enabler-decide","exit_code":0,"model":"%s","cost_usd":0.6,"duration_ms":60000,"repo":"%s","item":"508"}\n' "$o_today" "$fable" "$o_repo"
+  printf '{"ts":"%sT09:30:00Z","cycle":"c508b","node":"nodeO","event":"item-void","repo":"%s","item":"508"}\n' "$o_today" "$o_repo"
 
   printf '{"ts":"%sT10:00:00Z","cycle":"c505","node":"nodeO","event":"stage-end","stage":"refiner","exit_code":0,"model":"%s"}\n' "$o_today" "$sonnet"
   printf '{"ts":"%sT10:05:00Z","cycle":"c505","node":"nodeO","event":"item-refined","repo":"%s","item":"505","by":"refiner"}\n' "$o_today" "$o_repo"
@@ -815,20 +840,32 @@ assert_eq "a different, trivial-tier model gets its own row, landed unchanged" "
 rdata="$(jq -c '.counts.actor_scorecards.actors[] | select(.actor=="reviewer")' <<<"$odata")"
 assert_eq "the Reviewer's own row also reads the rework attributed to it as landed-with-rework" "1" \
   "$(jq -r '.rows[0].landed_with_rework' <<<"$rdata")"
-assert_eq "its own measure counts the item as escaped once, not twice for two escape classes" "1" \
-  "$(jq -r '.rows[0].measure.escapes' <<<"$rdata")"
-assert_eq "a post-merge-revert keyed only by the pull request number still joins, via pr_url" \
-  "1" "$(jq -r '.rows[0].measure.of' <<<"$rdata")"
+# Three escape records over two reviewed items — 501 carries both a
+# human-change-request and a post-merge-revert, 507 carries a post-merge-revert
+# alone — and the measure counts *items*, so the answer is 2, not 3. It is also
+# 2, not 1, only because both reverts are keyed by their pull request's own
+# number and re-keyed onto the work item through `pr_url`: 507 has nothing else
+# to make it read as escaped.
+assert_eq "escaped items are counted once each, and a revert keyed by PR number joins via pr_url" \
+  "2" "$(jq -r '.rows[0].measure.escapes' <<<"$rdata")"
+assert_eq "over both items this row reviewed" "2" \
+  "$(jq -r '.rows[0].measure.of' <<<"$rdata")"
 
 edata="$(jq -c '.counts.actor_scorecards.actors[] | select(.actor=="enabler")' <<<"$odata")"
 assert_eq "enabler-adjudicate and enabler-decide share the critical tier" \
   "critical" "$(jq -r '.rows[0].tier' <<<"$edata")"
-assert_eq "one item landed, one was voided" "1" \
+assert_eq "one item landed, two were voided" "1" \
   "$(jq -r '.rows[0].landed' <<<"$edata")"
-assert_eq "...voided" "1" "$(jq -r '.rows[0].voided' <<<"$edata")"
+assert_eq "...voided" "2" "$(jq -r '.rows[0].voided' <<<"$edata")"
+# 508 was met by both critical stages and is still one examined item: the item
+# dedup is per row, not per stage name feeding it. Were it per stage, this
+# would read 4 — and cost-per-landed would halve on the next item that landed
+# the same way.
+assert_eq "an item met by both critical stages is examined once, not once per stage" "3" \
+  "$(jq -r '.rows[0].items_examined' <<<"$edata")"
 assert_eq "cost per landed item counts only the landed one's own spend" "3" \
   "$(jq -r '.rows[0].cost_per_landed_usd' <<<"$edata")"
-assert_eq "its own measure is unblock success — landed over examined" "0.5" \
+assert_eq "its own measure is unblock success — landed over examined" "0.3333333333333333" \
   "$(jq -r '.rows[0].measure.rate' <<<"$edata")"
 
 fdata="$(jq -c '.counts.actor_scorecards.actors[] | select(.actor=="refiner")' <<<"$odata")"

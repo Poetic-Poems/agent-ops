@@ -1674,13 +1674,22 @@ jq -c --arg cut "$day_cut" --argjson min_sample "$SCORECARD_MIN_SAMPLE" \
     ) as $attempt_rows
 
   # terminal fate / cost / wall-clock / escapes, over the item-carrying subset
-  # only (see header) — grouped first by [stage, model] (so tier_of still
-  # knows which stage it is), merged into [actor, model, tier] below.
-  | ($stage_ends | map(select(((.repo // "") | tostring) != "" and ((.item // "") | tostring) != ""))) as $joinable
-  | ($joinable | group_by([.stage, (.model // "unknown")])
+  # only (see header). Grouped by [actor, model, tier] — the row identity —
+  # rather than by [stage, model], so the per-item dedup below happens *once*
+  # per row rather than once per stage name feeding it: `enabler-adjudicate`
+  # and `enabler-decide` both feed the Enabler critical row, and an item that
+  # met both (an adjudication in one cycle, an escalation decision in a later
+  # one) would otherwise count as two examined items and, if it landed, two
+  # landed ones, halving that row cost-per-landed figure. `tier_of` needs the
+  # stage name, so it is resolved per event before the grouping rather than
+  # from a group representative after it.
+  | ($stage_ends | map(select(((.repo // "") | tostring) != "" and ((.item // "") | tostring) != ""))
+                 | map(. + {row_actor: actor_of(.stage),
+                            row_tier:  tier_of(.stage; (.model // "unknown"))})) as $joinable
+  | ($joinable | group_by([.row_actor, (.model // "unknown"), .row_tier])
      | map(
-         (.[0].stage) as $stage | (.[0].model // "unknown") as $model
-         | (actor_of($stage)) as $actor | (tier_of($stage; $model)) as $tier
+         (.[0].model // "unknown") as $model
+         | (.[0].row_actor) as $actor | (.[0].row_tier) as $tier
          | (map({key: item_key(.repo; .item), cost: (.cost_usd // 0), dur: (.duration_ms // 0)})
             | group_by(.key) | map({key: .[0].key, cost: (map(.cost) | add), dur: (map(.dur) | add)})
            ) as $items
@@ -1812,11 +1821,19 @@ jq -c --arg cut "$day_cut" --argjson min_sample "$SCORECARD_MIN_SAMPLE" \
                  // {corroborated: 0, rejected: 0, rate: null}) as $cv
                | (($coord_picks_by_model | map(select(.model == $parts[1])) | first)
                    // {picks_total: 0, picks_landed: 0}) as $cp
+               # Two rates over two different populations, so two independent
+               # gates: `status` answers for the corroboration rate (sample =
+               # corroborated verdicts), `picks_status` for the picks-landed
+               # rate (sample = picked items). One shared gate would state a
+               # picks-landed figure off two picks on the strength of eight
+               # corroborated verdicts, which is the spurious ordering D22
+               # "stratify or abstain" exists to refuse.
                | {measure: {kind: "coordinator-corroboration",
                    corroborated: $cv.corroborated, rejected: $cv.rejected, rate: $cv.rate,
                    sample: $cv.corroborated,
                    status: (if $cv.corroborated < $min_sample then "insufficient-sample" else "ok" end),
                    picks_total: $cp.picks_total, picks_landed: $cp.picks_landed,
+                   picks_status: (if $cp.picks_total < $min_sample then "insufficient-sample" else "ok" end),
                    picks_landed_rate: (if $cp.picks_total > 0 then ($cp.picks_landed / $cp.picks_total) else null end)}}
              elif $parts[0] == "refiner" then
                (($refiner_by_model | map(select(.model == $parts[1])) | first)

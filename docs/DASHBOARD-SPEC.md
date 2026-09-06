@@ -763,7 +763,15 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                       //   corroborated, rejected, rate,      folds
                                       //   sample, status,                    issue
                                       //   picks_total, picks_landed,         #319's
-                                      //   picks_landed_rate}                 rate in
+                                      //   picks_landed_rate, picks_status}   rate in
+                                      //   — two rates over two populations, so
+                                      //   two gates: `status` is the
+                                      //   corroboration rate's (sample =
+                                      //   `corroborated`), `picks_status` the
+                                      //   picks-landed rate's (sample =
+                                      //   `picks_total`), each
+                                      //   "insufficient-sample" below
+                                      //   `min_sample` on its own count
                                       // Reviewer: {kind:"reviewer-escape-rate",
                                       //   escapes, of, rate, sample, status} —
                                       //   items (not records) carrying a
@@ -1570,7 +1578,14 @@ always do, the Enabler's two per-item adjudication stages do, and the
 Co-Ordinator's own engagement and the top-level Enabler's and Refiner's own
 do not — each spans several items in one engagement, so `items_examined`
 reads `0` there by construction and that actor's own measure (below) is built
-from a different, genuinely per-item event instead. `landed_with_rework`
+from a different, genuinely per-item event instead. That subset is reduced to
+distinct `{repo, item}` **once per row**, not once per stage name feeding it:
+a row can be fed by more than one stage — the Enabler's `critical` row by both
+`enabler-adjudicate` and `enabler-decide` — and an item that met both would
+otherwise count as two examined items and, if it landed, two landed ones,
+halving that row's own cost-per-landed. Cost and wall-clock still sum across
+every one of that item's own stage-ends in the row; only the item count is
+deduplicated. `landed_with_rework`
 reads a landed item's deduped `rework` records (docs/FLOW-SCHEMA.md, "Do not
 double-count") for one whose own `attributed_stage` names this row's actor —
 today that is only ever non-empty for a `stage-rerun` (any actor) or a
@@ -1596,7 +1611,14 @@ Each actor's own **measure** answers the question specific to it, D22's own
 list: the **Co-Ordinator's** is issue #319's own corroboration rate, folded in
 here per model rather than left as its own panel — `corroborated`/`rejected`/
 `rate`, plus whether the items it picked (`selection`) went on to land,
-`picks_landed` of `picks_total`. The **Reviewer's** is an escape rate:
+`picks_landed` of `picks_total`. That is two rates over two different
+populations, so each carries its own gate rather than sharing one: `status`
+answers for the corroboration rate over `corroborated`, `picks_status` for the
+picks-landed rate over `picks_total`. A row can have verdict history enough to
+state a rejection rate and two picked items — a landing rate off two picks is
+the spurious ordering "stratify or abstain" exists to refuse, and it must not
+reach the page on the strength of the *other* rate's sample.
+The **Reviewer's** is an escape rate:
 items — not raw rework records — carrying a deduped `human-change-request` or
 `post-merge-revert` record against items reviewed; a `post-merge-revert`
 record's own `item` is the reverted pull request's number, not the work item a
@@ -1619,9 +1641,10 @@ per-item identity of its own to count.
 rather than a second threshold invented for this card) or `"ok"` otherwise;
 below the minimum the row's first-pass yield, cost and wall-clock read
 "insufficient evidence" rather than a number too thin to mean anything. A
-row's own `measure` carries the same gate on its own sample, since the two
-populations are often different — the Co-Ordinator's corroborated-verdict
-count is rarely the same as its picked-item count. A row's **stratum** is its
+row's own `measure` carries the same gate on its own sample — and one gate per
+rate it states, not one per measure, since the populations are often different:
+the Co-Ordinator's corroborated-verdict count is rarely the same as its
+picked-item count. A row's **stratum** is its
 own `model` and `tier`: Implementer splits `trivial`/`default`, Reviewer
 `default`/`complex`, Enabler `default`/`critical` by stage name
 (`enabler` vs. `enabler-adjudicate`/`enabler-decide`); the Co-Ordinator and
@@ -2047,19 +2070,27 @@ number's twins elsewhere on the page.
   denominator by exactly the cycles that stood down cleanly — and two models
   in the same window carry separate rates and separate `picks_landed` counts;
   a `selection` is attributed to the Co-Ordinator model and never to the
-  Implementer `model` the event itself carries. The second log drives the
+  Implementer `model` the event itself carries; and the picks-landed rate is
+  gated on `picks_status` over its own two picks rather than riding on the
+  corroboration rate's sample, so a rate the page must not state cannot reach
+  it through the other population. The second log drives the
   outcome join across the other four actors: an Implementer item killed once
   (a deduped `stage-rerun` rework record attributed to it) then landed on a
   clean rerun — `landed_with_rework`, not `landed_unchanged`, and cost/
   wall-clock summed across *both* attempts, not just the one that landed it —
   beside a second, trivial-tier item landed unchanged on a different model,
   proving the two tiers stratify into separate rows; a Reviewer earning both a
-  `human-change-request` and a `post-merge-revert` on the same item, the
-  latter keyed only by the pull request's own number and re-keyed onto the
-  work item via `pr_url`, counted as one escaped item, not two escape
-  records; an Enabler's `enabler-adjudicate` and `enabler-decide` stage-ends
+  `human-change-request` and a `post-merge-revert` on one item and a
+  `post-merge-revert` alone on a second — three escape records over two
+  reviewed items reading as **two** escaped items, so the count is of items
+  rather than records, and the second item, whose only record is keyed by its
+  pull request's own number, counts at all only because `pr_url` re-keys it
+  onto the work item; an Enabler's `enabler-adjudicate` and `enabler-decide` stage-ends
   sharing the critical tier though each names a different item, one landed and
-  one voided, with cost-per-landed reading only the landed one's own spend;
+  one voided, with cost-per-landed reading only the landed one's own spend,
+  plus a third item met by *both* of those stages that is examined **once**,
+  not once per stage name feeding the row — the count the row-level item dedup
+  exists for, and the one whose absence would halve cost-per-landed;
   and a Refiner's two `item-refined` events, one bounced back
   (`refinement-bounce-back`) and one landed, read from the refined-item count
   rather than from the Refiner's own (itemless) stage-end. A log with no
@@ -2172,7 +2203,9 @@ number's twins elsewhere on the page.
   columns read "insufficient evidence" (it never joins to one item) beside a
   `measure` that clears its own sample and states a real corroboration rate
   and picks-landed ratio, and a second Co-Ordinator row below the minimum
-  sample on both; an Implementer row split `unchanged`/`w/ rework` with its
+  sample on both of that measure's two independent gates — rendering
+  "insufficient evidence" in place of each rate rather than stating a
+  picks-landed percentage off two picks; an Implementer row split `unchanged`/`w/ rework` with its
   own cost-per-landed and wall-clock-per-landed figures, and a second,
   trivial-tier row rendered `insufficient evidence` below the minimum sample;
   a Reviewer row whose own `measure` reads as an escape rate, not a
