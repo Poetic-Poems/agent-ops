@@ -525,7 +525,7 @@ run_approver_stage() {
   local token review_body prior_section adj_bool
   local number="" protected_rc=0 protected_hit=0 critical_reason=""
   local posted_review="" posted_bool="false"
-  local ap_file_debt ap_fd_title ap_fd_body ap_fd_pr_label ap_fd_result ap_fd_id ap_fd_pr_url \
+  local ap_file_debt ap_fd_title ap_fd_body ap_fd_result ap_fd_number ap_fd_url \
     ap_fd_default_fix ap_fd_owner_decision
   local ap_file_issue ap_fi_title ap_fi_body ap_fi_body_file ap_fi_result ap_fi_number ap_fi_url \
     ap_fi_default_fix ap_fi_owner_decision
@@ -774,12 +774,10 @@ $node_name
     # GitHub itself, so lib/tech-debt-file.sh is what actually files it,
     # here, under the Approver's own App token — the same identity
     # approver_post_or_warn already posts its review under — never the
-    # ordinary pipeline login. `clone_dir` is reused as-is for the tech-debt
-    # id reservation: it is still on disk at this point in the cycle (torn
-    # down only in the EXIT trap, well after this stage returns), and
-    # techdebt_file_debt never reads or writes its checked-out branch or
-    # working tree, only `origin/main` — safe regardless of what this pull
-    # request's own branch happens to be checked out to.
+    # ordinary pipeline login. techdebt_file_debt (agent-ops#874) files
+    # straight to a `pw::type:tech-debt`-labelled issue, a single API call
+    # with no clone or branch involved, so `clone_dir` is no longer threaded
+    # through here.
     ap_file_debt="$(jq -c '.file_debt // empty' <<<"$status_json" 2>/dev/null || true)"
     if [[ -n "$ap_file_debt" && "$ap_file_debt" != "null" ]]; then
       ap_fd_title="$(jq -r '.title // ""' <<<"$ap_file_debt" 2>/dev/null || true)"
@@ -793,16 +791,6 @@ $node_name
         'if (.owner_decision // false) == true then "true" else "false" end' \
         <<<"$ap_file_debt" 2>/dev/null || true)"
       [[ -n "$ap_fd_owner_decision" ]] || ap_fd_owner_decision="false"
-      # The fleet's configured `pr_label` (agent-ops TD-PPagop-26082426): this
-      # call site does not otherwise have it in hand, so it is read from
-      # `DEFAULTED_CONFIG` here and threaded through to techdebt_file_debt,
-      # which would otherwise open its filing pull request unlabelled and
-      # invisible to every gatherer that filters on it. Read here rather than
-      # taken from the ambient `pr_label` agent-cycle.sh resolves (which
-      # `_approver_restale_sweep_repo` below does rely on) so that the value
-      # this stage files under is its own, and testable as such.
-      ap_fd_pr_label="$(jq -r '.pr_label // empty' <<<"$DEFAULTED_CONFIG" 2>/dev/null || true)"
-      [[ -n "$ap_fd_pr_label" ]] || ap_fd_pr_label="autonomous-agent"
       if [[ -z "$ap_fd_title" || -z "$ap_fd_body" ]]; then
         log_event "warning" "$(jq -nc --arg u "$pr_url" \
           --arg d "approver set file_debt for $pr_url, but it carries no title or body — ignored" \
@@ -818,13 +806,13 @@ $node_name
             '{detail: $d, pr_url: $u}')"
         fi
         if ap_fd_result="$(techdebt_file_debt "$selected_repo" "$ap_fd_title" "$ap_fd_body" \
-               "while the Approver was judging $pr_url" "$token" "$clone_dir" "$ap_fd_pr_label" \
+               "while the Approver was judging $pr_url" "$token" \
                "$ap_fd_default_fix" "$ap_fd_owner_decision")" \
                && [[ -n "$ap_fd_result" ]]; then
-          IFS=$'\t' read -r ap_fd_id ap_fd_pr_url <<<"$ap_fd_result"
+          IFS=$'\t' read -r ap_fd_number ap_fd_url <<<"$ap_fd_result"
           log_event "tech-debt-filed" "$(jq -nc --arg u "$pr_url" --arg r "$selected_repo" \
-            --arg id "$ap_fd_id" --arg fu "$ap_fd_pr_url" \
-            '{pr_url: $u, repo: $r, by: "approver", id: $id, filed_pr_url: $fu}')"
+            --argjson n "$ap_fd_number" --arg iu "$ap_fd_url" \
+            '{pr_url: $u, repo: $r, by: "approver", issue_number: $n, issue_url: $iu}')"
         else
           log_event "warning" "$(jq -nc --arg u "$pr_url" \
             --arg d "approver: could not file the tech-debt record for $pr_url (see tech-debt-file.err)" \
