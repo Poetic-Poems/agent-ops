@@ -711,8 +711,10 @@ assert_eq "a populated union with a peers directory never fetched (no marker at 
 # fleet_repair_log — NUL-run repair for the JSONL logs and dashboard.log alike
 # (agent-ops#794): a container killed mid-append leaves NUL bytes where the
 # last writes should be, which makes the whole file binary to grep/jq. The
-# repair strips them and records what was dropped, in a shape each target
-# format can actually still read: a JSON line for `.jsonl`, so no
+# repair clears them — for a `.jsonl` target, along with whatever record the
+# run left too truncated to parse, since the bytes alone gone still leaves a
+# join no reader can read — and records what was dropped, in a shape each
+# target format can actually still read: a JSON line for `.jsonl`, so no
 # `fromjson? // empty` reader silently swallows the record of its own repair,
 # and a plain-text line otherwise (the pre-existing dashboard.log behaviour).
 # ==============================================================================
@@ -750,6 +752,53 @@ assert_eq "jsonl target: the repair record carries a ts" "true" \
 assert_contains "jsonl target: the lines around the hole survive" \
   '"event":"before"' "$(cat "$repair_jsonl")"
 assert_contains "jsonl target: and after" '"event":"after"' "$(cat "$repair_jsonl")"
+assert_eq "jsonl target: a hole that cost no whole record counts none dropped" "0" \
+  "$(jq -r '.dropped_lines' <<<"$repair_record")"
+
+# The shape agent-ops#794 was actually opened on: the run falls *inside* a
+# record, taking the newline that ended it with it. Removing the NUL bytes
+# alone would splice the truncated head onto the whole of the next record, on
+# one line — `jq -s` refuses that join exactly as it refused the NULs, which is
+# the abort the issue's own acceptance criterion names. The stump is
+# unrecoverable, so it goes and is counted; the intact record it ran into is
+# not, so it stays.
+mid_record="$tmp_dir/repair-mid-record.jsonl"
+{ printf '{"ts":"2026-08-08T16:00:00Z","cycle":"20260808T160000Z-node-a","event":"cycle-start"'
+  printf '\0%.0s' $(seq 60)
+  printf '{"ts":"2026-08-08T16:36:00Z","event":"cycle-end"}\n'
+  printf '{"ts":"2026-08-08T17:00:00Z","event":"later"}\n'; } > "$mid_record"
+assert_eq "jsonl target, run mid-record: jq -s refuses the file before repair" "refused" \
+  "$(if jq -s 'length' < "$mid_record" >/dev/null 2>&1; then echo read; else echo refused; fi)"
+fleet_repair_log "$mid_record" "repair-node"
+assert_eq "  ... and reads it whole afterwards" "3" \
+  "$(jq -s 'length' < "$mid_record" 2>/dev/null)"
+assert_eq "  ... the truncated head of the damaged record is gone" "0" \
+  "$(grep -c 'cycle-start' "$mid_record")"
+assert_eq "  ... the intact record the run ran into is kept, not dropped with it" "1" \
+  "$(jq -s '[.[] | select(.event == "cycle-end")] | length' < "$mid_record")"
+assert_eq "  ... and the record after it" "1" \
+  "$(jq -s '[.[] | select(.event == "later")] | length' < "$mid_record")"
+assert_eq "  ... the repair record counts the line that went" "1" \
+  "$(jq -r '.dropped_lines' <<<"$(tail -n1 "$mid_record")")"
+assert_eq "  ... alongside the bytes" "60" \
+  "$(jq -r '.dropped_nul_bytes' <<<"$(tail -n1 "$mid_record")")"
+
+# The commonest shape of all: the writes still in flight were the file's own
+# tail, so what survives ends mid-record with no closing newline. The repair
+# record has to start a line of its own — appended to the stump instead, the
+# one line whose job is to say something was lost would itself be the line no
+# reader can parse.
+tail_lost="$tmp_dir/repair-tail-lost.jsonl"
+{ printf '{"ts":"2026-08-08T16:36:00Z","event":"intact"}\n'
+  printf '{"ts":"2026-08-08T16:37:00Z","event":"tru'
+  printf '\0%.0s' $(seq 40); } > "$tail_lost"
+fleet_repair_log "$tail_lost" "repair-node"
+assert_eq "jsonl target, tail lost: jq -s reads the repaired file whole" "2" \
+  "$(jq -s 'length' < "$tail_lost" 2>/dev/null)"
+assert_eq "  ... the repair record is a line of its own, not appended to the stump" \
+  "log-repaired" "$(jq -r '.event' <<<"$(tail -n1 "$tail_lost")")"
+assert_eq "  ... and the intact record before it survives" "1" \
+  "$(jq -s '[.[] | select(.event == "intact")] | length' < "$tail_lost")"
 
 # An intact target of either format is left exactly as it is: no rewrite, no
 # repair record — repairing what was never holed would be its own false

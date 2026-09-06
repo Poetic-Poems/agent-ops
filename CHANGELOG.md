@@ -156,8 +156,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is generalised into `fleet_repair_log` (`lib/fleet.sh`) and now also runs
   once per launcher window on `log.jsonl`, `review-log.jsonl` and
   `revert-rate.jsonl`; a `.jsonl` target gets a JSON repair record
-  (`log-repaired`, `dropped_nul_bytes`) rather than the plain-text line every
-  `fromjson? // empty` reader would otherwise silently drop. `agent-cycle.sh`
+  (`log-repaired`, `dropped_nul_bytes`, `dropped_lines`) rather than the
+  plain-text line every `fromjson? // empty` reader would otherwise silently
+  drop, and the run itself becomes the line break it destroyed — so the record
+  it truncated goes and is counted, the intact record it ran into is recovered,
+  and `jq -s` reads the whole file again rather than aborting over the splice
+  the NUL bytes' removal would otherwise leave. `agent-cycle.sh`
   and `review-cycle.sh` apply the same repair to their own per-cycle/
   per-review `.fleet-log.jsonl` union snapshot immediately after building it,
   since a peer that has not deployed this repair yet can still hand a

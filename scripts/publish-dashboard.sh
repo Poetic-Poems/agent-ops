@@ -410,7 +410,14 @@ fi
 # below all show what the whole operation did, from any node's dashboard.
 # Events carry `node` (requirement 33); with no peers this reduces exactly
 # to the old local read.
-read_events() { fleet_logs "$state_dir" "$peers_dir" log.jsonl | jq -c -R 'fromjson? // empty' 2>/dev/null; }
+# Given a path, parses a union already on disk instead of taking one itself —
+# the parse rule stays in one place for a caller that has to count what the
+# rule dropped (agent-ops#794) and so needs both sides of it from the one
+# snapshot.
+read_events() {
+  if (( $# )); then jq -c -R 'fromjson? // empty' "$1" 2>/dev/null
+  else fleet_logs "$state_dir" "$peers_dir" log.jsonl | jq -c -R 'fromjson? // empty' 2>/dev/null; fi
+}
 
 # count_lines [PATH] — records present (stdin if PATH is omitted), whether or
 # not the last one ends in a newline (an unclean stop's own signature): `wc -l`
@@ -790,17 +797,24 @@ JQDEFS
 # Consumers below still read `$ALL_EVENTS`; the ones on the per-tick hot path
 # read the file directly.
 events_jsonl="$work_tmp/events.jsonl"
-read_events > "$events_jsonl" 2>/dev/null || : > "$events_jsonl"
-# What `fromjson? // empty` above silently dropped — a NUL-holed line
+raw_events_jsonl="$work_tmp/raw-events.jsonl"
+# The union lands raw first and is parsed *from the file*, rather than
+# `read_events` piping it straight through, because what `fromjson? // empty`
+# drops is only knowable by counting both sides — a NUL-holed line
 # `fleet_repair_log` hasn't reached yet (a peer not yet upgraded, or a race
-# between its repair and this read), or any other line malformed for some
-# other reason. Counted rather than left invisible (agent-ops#794): the raw
-# union is re-read once more for its own line count, the same redundant
-# fleet_logs call the crash-loop read above already makes for an unrelated
-# reason, and never rides on read_events itself, which only ever hands back
-# what already parsed.
-dropped_log_lines=$(( $(fleet_logs "$state_dir" "$peers_dir" log.jsonl | count_lines) \
-    - $(count_lines "$events_jsonl") ))
+# between its repair and this read), or any other line malformed for some other
+# reason. Counted rather than left invisible (agent-ops#794). Both counts come
+# from the one snapshot, which is what makes the difference a fact about the
+# window rather than about how much the pipelines appended between two reads;
+# it also keeps this to a single `fleet_logs` — a second one is a whole extra
+# read-and-sort of the fleet's nine megabytes on the per-tick hot path, which
+# is the cost the file-not-a-pipe note above was written about in the first
+# place. `read_events` itself stays as it is: other call sites want the parsed
+# stream and nothing else.
+fleet_logs "$state_dir" "$peers_dir" log.jsonl > "$raw_events_jsonl" 2>/dev/null \
+  || : > "$raw_events_jsonl"
+read_events "$raw_events_jsonl" > "$events_jsonl" 2>/dev/null || : > "$events_jsonl"
+dropped_log_lines=$(( $(count_lines "$raw_events_jsonl") - $(count_lines "$events_jsonl") ))
 (( dropped_log_lines >= 0 )) || dropped_log_lines=0
 # Only a full build still has consumers that want it as a string; filling it
 # costs a nine-megabyte read the fast path would never look at.

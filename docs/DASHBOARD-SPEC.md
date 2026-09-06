@@ -75,8 +75,10 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   appending) never aborts the parse — and, separately, so a line a NUL run
   (an unclean stop, "Integration" below) has made unparseable is dropped
   rather than aborting the whole read. What that drop costs is not left
-  invisible: the raw union is counted once more against what parsed, and the
-  difference rides the payload as `log_repair.dropped_log_lines`
+  invisible: the union lands raw on disk once and is parsed from there, so both
+  line counts describe the one snapshot rather than two reads a pipeline's own
+  appends can separate, and the difference rides the payload as
+  `log_repair.dropped_log_lines`
   (agent-ops#794) — the log tail panel's own title names it whenever it is
   non-zero, "The Site" below. `revert-rate.jsonl`'s own read (below) is
   counted the identical way, into `log_repair.dropped_revert_rate_lines`,
@@ -1781,13 +1783,22 @@ number's twins elsewhere on the page.
   writes' data blocks missing, and they read back as NULs. The lost lines are
   lost, but one NUL makes the whole file binary, and grep then stops printing
   matches for every intact line around it — GNU grep says "binary file
-  matches", ugrep says nothing at all and exits 1. The repair strips them and
-  appends a record of how many bytes went, so the loss stays on the record
+  matches", ugrep says nothing at all and exits 1. The repair clears them and
+  appends a record of what went, so the loss stays on the record
   instead of being closed over silently — a plain-text line for
   `dashboard.log`, and, since a plain-text line appended to a JSONL file is
   exactly what every `fromjson? // empty` reader silently drops, a JSON line
-  (`{"ts", "node", "event": "log-repaired", "dropped_nul_bytes"}`) for the
-  other three. `agent-cycle.sh` and `review-cycle.sh` apply the identical
+  (`{"ts", "node", "event": "log-repaired", "dropped_nul_bytes",
+  "dropped_lines"}`) for the other three. For a JSONL target the bytes alone
+  are not enough: the run takes the newline separators inside it too, so
+  deleting just the NULs splices the head of one record onto the whole of a
+  later one and `jq -s` still refuses the file over the join — and a file whose
+  own tail was in flight ends mid-record, which would make the appended repair
+  record itself the unparseable line. So the run becomes the line break it
+  destroyed, and each line either side survives only if it parses: the
+  truncated stump goes and is counted in `dropped_lines`, the intact record the
+  run ran into is recovered, and `jq -s` reads the whole file afterwards.
+  `agent-cycle.sh` and `review-cycle.sh` apply the identical
   repair to their own per-cycle/per-review `.fleet-log.jsonl` union snapshot,
   immediately after building it and before anything reads it — a peer that
   has not deployed this repair yet, or history replicated before it did, can
