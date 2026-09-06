@@ -31,6 +31,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # shellcheck source=lib/escalation-autonomy.sh
 . "$SCRIPT_DIR/lib/escalation-autonomy.sh"
+# shellcheck source=lib/enabler.sh
+# create_decision_log_issue lives here (agent-ops#937); its own tests below
+# stub `gh`, `labels_ensure_role` and `log_event` rather than write for real.
+. "$SCRIPT_DIR/lib/enabler.sh"
 
 failures=0
 assert_eq() {
@@ -39,6 +43,28 @@ assert_eq() {
     printf 'ok   - %s\n' "$desc"
   else
     printf 'FAIL - %s\n     expected: %s\n     actual:   %s\n' "$desc" "$expected" "$actual"
+    failures=$(( failures + 1 ))
+  fi
+}
+
+assert_contains() {
+  local desc="$1" needle="$2" haystack="$3"
+  if [[ "$haystack" == *"$needle"* ]]; then
+    printf 'ok   - %s\n' "$desc"
+  else
+    printf 'FAIL - %s\n     expected to contain: %s\n     actual:             %s\n' \
+      "$desc" "$needle" "$haystack"
+    failures=$(( failures + 1 ))
+  fi
+}
+
+assert_not_contains() {
+  local desc="$1" needle="$2" haystack="$3"
+  if [[ "$haystack" != *"$needle"* ]]; then
+    printf 'ok   - %s\n' "$desc"
+  else
+    printf 'FAIL - %s\n     expected NOT to contain: %s\n     actual:                 %s\n' \
+      "$desc" "$needle" "$haystack"
     failures=$(( failures + 1 ))
   fi
 }
@@ -212,6 +238,136 @@ assert_eq "three decide-tactical passes over three different reasons all count t
   "$(escalation_autonomy_decide_pass_count acme/widgets TD001 < "$tmp_dir/three-decides.jsonl")"
 assert_reason_seen "a fourth, genuinely new reason has not itself been seen" 1 \
   acme/widgets TD001 "key4" "$tmp_dir/three-decides.jsonl"
+
+# --- create_decision_log_issue (agent-ops#937): filing, dedup, and — unlike
+# create_escalation_issue — no retry without the label on a failed create
+# (agent-ops#1198). `gh` is stubbed to a small case dispatch over its own
+# argv, in the style test/sweep-closed-issues.test.sh uses for the same
+# purpose; every call is appended to $gh_calls so a test can assert on
+# exactly what was sent without a real GitHub write. `labels_ensure_role` and
+# `log_event` are stubbed too — this is a test of the issue-filing contract,
+# not of the label catalogue or the fleet log. ---
+cycle_dir="$(mktemp -d)"
+# Both directories, not just this one: a bare `trap … EXIT` here would replace
+# the earlier trap on $tmp_dir rather than adding to it, and leak it.
+trap 'rm -rf "$tmp_dir" "$cycle_dir"' EXIT
+CONFIG_FILE=""
+SCHEMA_FILE=""
+gh_calls="$cycle_dir/gh-calls.log"
+# shellcheck disable=SC2317  # invoked only by create_decision_log_issue
+labels_ensure_role() { :; }
+# shellcheck disable=SC2317  # invoked only by create_decision_log_issue on a close failure
+log_event() { printf 'event %s %s\n' "$1" "$2" >> "$gh_calls"; }
+
+# GH_LIST_RESULT / GH_CREATE_RESULT / GH_CREATE_LABELLED_FAILS / GH_CLOSE_FAILS
+# are the knobs each case below sets before calling `gh`.
+# shellcheck disable=SC2317  # invoked only by create_decision_log_issue
+gh() {
+  printf '%s\n' "$*" >> "$gh_calls"
+  case "$1 $2" in
+    "issue list")
+      printf '%s' "${GH_LIST_RESULT:-[]}"
+      ;;
+    "issue create")
+      if [[ " $* " == *" --label "* && "${GH_CREATE_LABELLED_FAILS:-0}" == "1" ]]; then
+        return 1
+      fi
+      printf '%s' "${GH_CREATE_RESULT:-}"
+      ;;
+    "issue close")
+      [[ "${GH_CLOSE_FAILS:-0}" == "1" ]] && return 1
+      return 0
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
+reset_decision_log_stubs() {
+  : > "$gh_calls"
+  GH_LIST_RESULT='[]'
+  GH_CREATE_RESULT='https://github.com/acme/widgets/issues/501'
+  GH_CREATE_LABELLED_FAILS=0
+  GH_CLOSE_FAILS=0
+}
+
+body_file="$cycle_dir/decision-body.md"
+# shellcheck disable=SC2016  # the backticks are literal Markdown, not command substitution
+printf 'Item: `42` . repo `acme/widgets`\n' > "$body_file"
+
+# --- filing: creates labelled, then closes ---
+reset_decision_log_stubs
+result="$(create_decision_log_issue "acme/widgets" "42" "pw::decision" "widgets: decision" "$body_file")"
+assert_eq "filing: prints the new number and url" $'501\thttps://github.com/acme/widgets/issues/501' "$result"
+assert_contains "filing: creates with the label" "issue create -R acme/widgets --title widgets: decision --body-file $body_file --label pw::decision" \
+  "$(cat "$gh_calls")"
+assert_contains "filing: closes the newly-created issue" "issue close 501 -R acme/widgets" "$(cat "$gh_calls")"
+assert_not_contains "filing: never assigns anyone (a log, not an ask)" "--assignee" "$(cat "$gh_calls")"
+assert_eq "filing: the duplicate guard searched --state all, not just open" "1" \
+  "$(grep -c -- '--state all' "$gh_calls")"
+
+# --- dedup: an existing issue (open OR closed) already quoting the item is
+# reused, whatever its own state — never filed twice ---
+reset_decision_log_stubs
+# shellcheck disable=SC2016  # the backticks are literal Markdown, not command substitution
+GH_LIST_RESULT='[{"number":77,"url":"https://github.com/acme/widgets/issues/77","body":"...Item: `42` . repo `acme/widgets`..."}]'
+result="$(create_decision_log_issue "acme/widgets" "42" "pw::decision" "widgets: decision" "$body_file")"
+assert_eq "dedup: reuses the existing issue's own number and url" \
+  $'77\thttps://github.com/acme/widgets/issues/77' "$result"
+assert_not_contains "dedup: never creates a second issue" "issue create" "$(cat "$gh_calls")"
+
+# --- reason_key narrows the dedup guard (agent-ops#1198, review round 2): an
+# item ref alone matches *every* decision this item has ever carried, so a
+# second, distinct decision must file its own fresh issue rather than reusing
+# the first's — otherwise its body would go on showing the first decision's
+# text, and a veto of the first would leave decision_vetoes_processed_items
+# (keyed on that one issue number) unable to ever process a veto of the
+# second. ---
+reset_decision_log_stubs
+# shellcheck disable=SC2016  # the backticks are literal Markdown, not command substitution
+GH_LIST_RESULT='[{"number":77,"url":"https://github.com/acme/widgets/issues/77","body":"<!-- agent-ops:decision-log item=42 repo=acme/widgets reason_key=aaaa1111 -->\nItem: `42` . repo `acme/widgets`"}]'
+result="$(create_decision_log_issue "acme/widgets" "42" "pw::decision" "widgets: decision" "$body_file" "bbbb2222")"
+assert_eq "distinct reason_key: files a fresh issue rather than reusing the old one" \
+  $'501\thttps://github.com/acme/widgets/issues/501' "$result"
+assert_contains "distinct reason_key: really did create a new issue" "issue create" "$(cat "$gh_calls")"
+
+reset_decision_log_stubs
+# shellcheck disable=SC2016  # the backticks are literal Markdown, not command substitution
+GH_LIST_RESULT='[{"number":77,"url":"https://github.com/acme/widgets/issues/77","body":"<!-- agent-ops:decision-log item=42 repo=acme/widgets reason_key=aaaa1111 -->\nItem: `42` . repo `acme/widgets`"}]'
+result="$(create_decision_log_issue "acme/widgets" "42" "pw::decision" "widgets: decision" "$body_file" "aaaa1111")"
+assert_eq "same reason_key: still reuses the existing issue" \
+  $'77\thttps://github.com/acme/widgets/issues/77' "$result"
+assert_not_contains "same reason_key: never creates a second issue" "issue create" "$(cat "$gh_calls")"
+
+# --- no label-less fallback (agent-ops#1198): unlike create_escalation_issue,
+# a labelled create failure is a straight failure — pw::decision is the
+# mechanism the sweep and this function's own duplicate guard both search on,
+# so an issue filed without it would be a veto lever dead on arrival. No
+# second, label-less create attempt is ever made. ---
+reset_decision_log_stubs
+GH_CREATE_LABELLED_FAILS=1
+rc=0
+result="$(create_decision_log_issue "acme/widgets" "42" "pw::decision" "widgets: decision" "$body_file")" || rc=$?
+assert_eq "labelled create fails: prints nothing" "" "$result"
+assert_eq "labelled create fails: returns non-zero" "1" "$rc"
+assert_eq "labelled create fails: attempted the labelled create exactly once" "1" \
+  "$(grep -c '^issue create' "$gh_calls")"
+assert_not_contains "labelled create fails: never retried without the label" \
+  "issue create -R acme/widgets --title widgets: decision --body-file $body_file"$'\n' "$(cat "$gh_calls")"
+assert_not_contains "labelled create fails: never closed anything (nothing was filed)" \
+  "issue close" "$(cat "$gh_calls")"
+
+# --- close failure: the issue still exists and is still returned; the
+# caller (lib/enabler.sh) is the one that logs a warning about the close,
+# via log_event, which this stub records as an event line ---
+reset_decision_log_stubs
+GH_CLOSE_FAILS=1
+result="$(create_decision_log_issue "acme/widgets" "42" "pw::decision" "widgets: decision" "$body_file")"
+assert_eq "close failure: still returns the number and url" \
+  $'501\thttps://github.com/acme/widgets/issues/501' "$result"
+assert_contains "close failure: a warning names the repo and issue" \
+  "could not close it" "$(cat "$gh_calls")"
 
 echo
 if (( failures == 0 )); then

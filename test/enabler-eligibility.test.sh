@@ -575,6 +575,38 @@ assert_eq "the oversized open-issues fixture really is past MAX_ARG_STRLEN" "1" 
 assert_eq "an open-issues map past the argv cap still reads the escalation as closed" \
   "issue-closed" "$(reason_for TD1 3 0 "$big_open")"
 
+# --- The decision-veto tie (agent-ops#937, agent-ops#1198) ---
+#
+# `lib/decision-veto.sh` logs its `escalated` registration in the very same
+# pass — often the very same whole-second timestamp — as the
+# `needs-refinement` block it re-blocks the item with, unlike an ordinary
+# escalation which is always filed cycles after its own block. This proves
+# the `issue-closed` branch's `>=` (not strict `>`) comparison actually
+# closes the loop on that same-second tie: while the log issue (#900) stays
+# open the item is a mechanical hold no threshold ever overrides, and the
+# moment it is re-closed the item is `issue-closed` eligible immediately.
+open_900='{"o/r":[900]}'
+decision_veto_log() {  # a same-ts needs-refinement block plus its escalated registration
+  cat > "$log" <<'EOF'
+{"ts":"2026-08-25T09:00:00Z","cycle":"c20","event":"attempt-failed","stage":"script","repo":"o/r","item":"TD1","kind":"needs-refinement","detail":"a human vetoed the pipeline's decision by reopening https://github.com/o/r/issues/900","unblock_condition":"the owner's own decision, posted as a comment on https://github.com/o/r/issues/900 before it is closed again"}
+{"ts":"2026-08-25T09:00:00Z","cycle":"c20","event":"escalated","repo":"o/r","item":"TD1","issue_number":900,"issue_url":"https://github.com/o/r/issues/900","decision":true}
+EOF
+}
+
+decision_veto_log
+assert_eq "a standing veto is a mechanical hold, not merely a low-priority item" "" \
+  "$(reason_for TD1 3 0 "$open_900")"
+decision_veto_log
+coord_cycles_after "2026-08-25T09:00:00Z" 10 >> "$log"
+assert_eq "...even after ten coordinator cycles, while the log issue stays open" "" \
+  "$(reason_for TD1 3 0 "$open_900")"
+
+decision_veto_log
+assert_eq "re-closing the log issue releases it immediately — issue-closed, not threshold" \
+  "issue-closed" "$(reason_for TD1 3 0 "$open_none")"
+assert_eq "the entry names the same log issue to verify" "900|https://github.com/o/r/issues/900" \
+  "$(eligible 3 0 "$open_none" | jq -r '.[0].escalation | [(.issue_number | tostring), .issue_url] | join("|")')"
+
 # The call-site shape under `set -e`: the Script computes this inside a cycle
 # that must survive whatever the log contains, and calls it from the exit trap's
 # path. An unreadable log is a normal outcome, not a reason to die.

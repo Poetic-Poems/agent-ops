@@ -153,6 +153,131 @@ create_escalation_issue() {
   printf '%s\t%s' "$number" "$url"
 }
 
+# create_decision_log_issue REPO ITEM LABEL TITLE BODY_FILE REASON_KEY
+# File one decision-log issue (agent-ops#937): the durable record of a
+# `decide-tactical` `decide` verdict, filed closed and unassigned — a log, not
+# an ask. Prints "<number>\t<url>"; prints nothing and returns 1 if it could
+# not be filed. Mirrors `create_escalation_issue` above, with five
+# differences that follow from being a log rather than a request:
+#
+#   - The duplicate guard searches `--state all`, not `--state open`: the log
+#     issue is filed closed and *stays* closed until a human vetoes it by
+#     reopening it, so "already filed" must match regardless of its current
+#     state. Reusing the same body-footer item ref `create_escalation_issue`
+#     keys its own guard on (agent-ops#937's own instruction) means the two
+#     dedup guards find exactly the same set of issues for the same item —
+#     but REASON_KEY narrows the match further: an item ref alone matches
+#     *every* decision this item has ever carried, so without this a second,
+#     legitimate decide verdict over a distinct reason_key (permitted —
+#     `escalation_autonomy_decide_pass_available` bounds by reason, not by
+#     item) would silently reuse the first decision's own closed issue rather
+#     than filing a fresh one (agent-ops#1198, review round 2): its body would
+#     go on showing decision #1's text while decision #2 is the decision of
+#     record, `decision_vetoes_processed_items` would already hold that issue
+#     number from decision #1's own veto history (if any) and refuse to
+#     process a second one, and the whole premise
+#     `decision_vetoes_processed_items`'s own header states — "a re-decide
+#     arrives under a fresh log issue" — would not hold. REASON_KEY is
+#     matched against the same `reason_key=` marker
+#     `enabler_decision_log_body` embeds, empty matching any body (no
+#     narrowing) the way an absent value always has here.
+#   - No `--assignee`: an assigned issue is a request the human closes when
+#     done; this is a record veto by reopening, not by any hand-applied
+#     assignee, and an assignee here would only exclude it from the `issues`
+#     source for no reason (requirement 16.4's assignment exclusion has
+#     nothing to key off, since nobody is meant to work this issue).
+#   - Filed open (the API has no other option) and immediately closed. A
+#     close failure is reported as a warning by the caller, not by returning
+#     1 here — the log issue exists and carries the decision either way; an
+#     unclosed one only costs the human seeing it briefly on an
+#     open-issue-labelled filter before the next cycle's sweep or a human
+#     closes it by hand.
+#   - No retry without the label on a failed create. `create_escalation_issue`
+#     accepts that trade for an ordinary escalation, where the label is only a
+#     human's own filter and the issue's assignee is what actually excludes it
+#     from the `issues` source — losing the label there costs nothing this
+#     system depends on. Here the label *is* the mechanism:
+#     `scripts/sweep-decision-vetoes.sh` finds every log issue to check for a
+#     veto by searching `pw::decision`, and this function's own duplicate guard
+#     above searches the same label — an issue filed without it is invisible
+#     to both, a veto lever dead from the moment it is filed, and a later
+#     `decide-tactical` pass for the same item would file a second log issue
+#     never knowing this one existed (agent-ops#1198). `labels_ensure_role`
+#     just above already makes the label likely before the one create attempt
+#     this function makes; a create that still fails is a genuine failure,
+#     reported by the caller's own warning (see requirement 37) exactly as a
+#     missing URL or issue number already is below, never silently retried
+#     into a record the rest of this feature can never find again.
+create_decision_log_issue() {
+  local repo="$1" item="$2" label="$3" title="$4" body_file="$5" reason_key="${6:-}"
+  local existing raw url number
+  existing="$(gh issue list -R "$repo" --label "$label" --state all --search "$item" \
+                --json number,url,body 2>/dev/null \
+              | jq -r --arg it "$item" --arg rk "$reason_key" \
+                  'map(select(((.body // "") | contains($it))
+                             and (($rk == "") or ((.body // "") | contains("reason_key=" + $rk)))))
+                   | first
+                   | if . == null then empty else "\(.number)\t\(.url)" end' 2>/dev/null || true)"
+  if [[ -n "$existing" ]]; then
+    printf '%s' "$existing"
+    return 0
+  fi
+  labels_ensure_role "$CONFIG_FILE" "$SCHEMA_FILE" "$repo" escalation >/dev/null 2>&1 || true
+  raw="$(gh issue create -R "$repo" --title "$title" --body-file "$body_file" \
+           --label "$label" 2>>"$cycle_dir/enabler-decision-issue.err" || true)"
+  url="$(grep -oE 'https://github\.com/[A-Za-z0-9_./-]+/issues/[0-9]+' <<<"$raw" | tail -n1 || true)"
+  [[ -n "$url" ]] || return 1
+  number="${url##*/}"
+  [[ "$number" =~ ^[0-9]+$ ]] || return 1
+  gh issue close "$number" -R "$repo" >/dev/null 2>>"$cycle_dir/enabler-decision-issue.err" \
+    || log_event "warning" "$(jq -nc --arg r "$repo" --argjson n "$number" \
+         --arg d "enabler: filed decision-log issue #$number in $repo but could not close it — it will read as an ordinary open issue until a human or a later cycle closes it" \
+         '{detail: $d, repo: $r, issue_number: $n}')"
+  printf '%s\t%s' "$number" "$url"
+}
+
+# enabler_decision_log_body DECISION RATIONALE OPTIONS MODEL CYCLE COMMENT_URL REPO ITEM REASON_KEY
+# The body of the decision-log issue `create_decision_log_issue` files
+# (agent-ops#937): the "## Decision taken by the pipeline" section the issue
+# asks for, plus the same machine-readable item-ref footer
+# `create_escalation_issue`'s own dedup guard keys on — and, in a leading HTML
+# comment invisible on GitHub, a `repo=`/`item=`/`reason_key=` triple a script
+# can parse back out without scraping prose (`scripts/sweep-decision-vetoes.sh`
+# reads `item=`/`repo=`; `create_decision_log_issue`'s own duplicate guard
+# reads `reason_key=`, so a second decision over a distinct reason_key is
+# never mistaken for a repeat of this one — agent-ops#1198, review round 2).
+enabler_decision_log_body() {
+  local decision="$1" rationale="$2" options="$3" model="$4" cycle="$5" comment_url="$6" repo="$7" item="$8"
+  local reason_key="${9:-}"
+  local body
+  body="<!-- agent-ops:decision-log item=$item repo=$repo reason_key=$reason_key -->
+
+## Decision taken by the pipeline
+
+$decision
+
+**Rationale:** $rationale"
+  [[ -n "$options" ]] && body="$body
+
+**Options considered:** $options"
+  body="$body
+
+Model: \`$model\` · cycle \`$cycle\`"
+  [[ -n "$comment_url" ]] && body="$body
+Comment: $comment_url"
+  body="$body
+
+Reopening this issue vetoes the decision: the pipeline will re-block the
+item, flip any open pull request for it back to draft, and wait for your own
+decision — posted as a comment here before you close this issue again — to
+take its place.
+
+---
+Item: \`$item\` · repo \`$repo\`
+Decided by the pipeline (decide-tactical) · cycle \`$cycle\`"
+  printf '%s' "$body"
+}
+
 # escalation_thread_reconcile REPO ITEM OUTCOME NUMBER URL
 # The Script's own completing or correcting comment on a `needs-refinement`
 # item that is itself a GitHub issue, once this engagement has established
@@ -805,6 +930,7 @@ maybe_run_enabler() {
   local e_ea_level e_kind e_refined_before_present
   local e_decided e_decision e_dec_verdict e_dec_evidence e_dec_reason_key e_refined_dec
   local e_dec_decision_text e_dec_rationale e_dec_options e_dec_comment_url
+  local e_dec_log_number e_dec_log_url e_dec_log_title e_dec_log_body_file e_dec_log_created
   local e_file_debt fd_title fd_body fd_pr_label fd_result fd_id fd_pr_url \
     fd_default_fix fd_owner_decision
   local e_file_issue fi_title fi_body fi_body_file fi_result fi_number fi_url \
@@ -1395,12 +1521,41 @@ $(jq . <<<"$input")
                 e_dec_comment_url="$(enabler_decision_comment "$e_repo" "$e_item" \
                   "$e_dec_decision_text" "$e_dec_rationale" "$e_dec_options" "$e_refined_before_present")"
               fi
+
+              # The decision log (agent-ops#937): a closed `pw::decision`
+              # issue is the durable record a human can scan in one place and
+              # veto by reopening — the fleet-log `decision-taken` event below
+              # is the pipeline's own memory of the decision, but nothing
+              # short of a GitHub object puts it in front of a human who is
+              # not reading the log. Best-effort like every other `gh` write
+              # in this file (requirement 37): a failed filing still leaves
+              # the decision recorded and the item unblocked, just without
+              # the durable log or a lever to veto it — a `warning` says so.
+              e_dec_log_number=""
+              e_dec_log_url=""
+              e_dec_log_title="$(printf '%s #%s: decision — %s' "$e_repo" "$e_item" \
+                "$(tr '\n' ' ' <<<"$e_dec_decision_text" | cut -c1-80)")"
+              e_dec_log_body_file="$cycle_dir/decision-log-$j.md"
+              enabler_decision_log_body "$e_dec_decision_text" "$e_dec_rationale" "$e_dec_options" \
+                "${enabler_model_critical:-$enabler_model}" "$cycle_id" "$e_dec_comment_url" \
+                "$e_repo" "$e_item" "$e_dec_reason_key" > "$e_dec_log_body_file"
+              if e_dec_log_created="$(create_decision_log_issue "$e_repo" "$e_item" "pw::decision" \
+                                        "$e_dec_log_title" "$e_dec_log_body_file" "$e_dec_reason_key")" \
+                   && [[ -n "$e_dec_log_created" ]]; then
+                IFS=$'\t' read -r e_dec_log_number e_dec_log_url <<<"$e_dec_log_created"
+              else
+                log_event "warning" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" \
+                  --arg d "enabler: could not file the decision-log issue for $e_repo $e_item (see enabler-decision-issue.err) — the decision is recorded on the log but has no durable issue and no veto lever" \
+                  '{detail: $d, repo: $r, item: $i}')"
+              fi
+
               log_event "decision-taken" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" \
                 --arg d "$e_dec_decision_text" --arg ra "$e_dec_rationale" --arg op "$e_dec_options" \
                 --arg cu "$e_dec_comment_url" --arg m "${enabler_model_critical:-$enabler_model}" \
-                --arg rk "$e_dec_reason_key" \
+                --arg rk "$e_dec_reason_key" --arg n "$e_dec_log_number" --arg u "$e_dec_log_url" \
                 '{repo: $r, item: $i, decision: $d, rationale: $ra, options_considered: $op}
                  + (if $cu == "" then {} else {comment_url: $cu} end)
+                 + (if $n == "" then {} else {issue_number: ($n | tonumber), issue_url: $u} end)
                  + {model: $m, reason_key: $rk}')"
               log_event "unblocked" "$(jq -nc --arg i "$e_item" --arg r "$e_repo" \
                 --arg reason "decided: $e_dec_decision_text" \

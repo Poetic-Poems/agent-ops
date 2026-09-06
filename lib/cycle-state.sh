@@ -250,6 +250,42 @@ void_object_closed_items() {
   printf '%s' "$out"
 }
 
+# decision_vetoes_processed_items [LOG_FILE]
+# Print, as a JSON array of {repo, item}, every `pw::decision` decision-log
+# issue requirement 937's veto sweep has already handled — logged
+# `decision-vetoed` for. `item` here is the *log issue's own number*
+# (stringified), not the original work item's ref: one work item's decision
+# could in principle be re-decided and re-vetoed later under a fresh log
+# issue, and keying on the log issue number, exactly like
+# `void_object_closed_items` keys on the void'd object above, is what lets
+# `scripts/sweep-decision-vetoes.sh` skip only the veto instance it already
+# processed rather than every veto this item will ever have.
+#
+# This is the sweep's own idempotency (agent-ops#937's "once, not every
+# cycle"): without it, an open (reopened) `pw::decision` issue would be
+# re-detected, re-logged and re-acted on — a fresh needs-refinement block, a
+# fresh comment, a fresh draft flip — on every cycle for as long as a human
+# leaves it open before commenting their own decision and closing it again.
+# `decision-vetoed` is a fact, not a state with a clearing event: once a veto
+# has been recorded for a given log issue, it stays recorded, so the latest
+# occurrence (there should only ever be one) is enough.
+decision_vetoes_processed_items() {
+  local src="${1:--}" out=""
+  local jq_prog='
+    [ .[] | select(.event == "decision-vetoed"
+                   and (.repo // "") != "" and (.issue_number // "") != "")
+      | {repo, item: (.issue_number | tostring)} ] | unique'
+  if [[ "$src" == "-" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' 2>/dev/null \
+      | jq -sc "$jq_prog" 2>/dev/null || true)"
+  elif [[ -s "$src" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null \
+      | jq -sc "$jq_prog" 2>/dev/null || true)"
+  fi
+  [[ -n "$out" ]] || out='[]'
+  printf '%s' "$out"
+}
+
 # void_retired_items [LOG_FILE]
 # Print, as a JSON array of {repo, item, ts}, the most recent `void-retired`
 # event for every {repo, item} pair one was ever recorded against (requirement
@@ -658,6 +694,15 @@ refinements_map() {
 # supersedes either, on `REFINEMENTS_MAP_JQ`'s own terms just above: no
 # specification was actually written, so the decision it would shadow is
 # still owed its spec.
+#
+# A `decision-vetoed` event postdating the decision drops it too
+# (agent-ops#937, agent-ops#1198): reopening the log issue withdraws the
+# decision it logged, and a Refiner engagement the veto's own re-block leads
+# to must not be handed the very decision the owner just vetoed as though it
+# still stood. `decision-vetoed`'s own `item` names the *original* work item
+# (never the log issue's own number — that is `decision_vetoes_processed_items`'
+# own remapping, not this event's own field), so it matches `$d` the same
+# `same_item`-shaped way `$refined` does above.
 # shellcheck disable=SC2016  # jq's $set/$clear/$r/$re, not the shell's.
 DECISIONS_MAP_JQ='
   def latest_unresolved($set; $clear): '"$LATEST_UNRESOLVED_JQ"';
@@ -665,6 +710,7 @@ DECISIONS_MAP_JQ='
   | ($all | latest_unresolved("item-void"; "unvoided")) as $void
   | [ $all[] | select(.event == "item-refined" and (.unchanged // false) != true)
              | select(((.comment_url // "") == "") or ((.comment_url // "") | test($re))) ] as $refined
+  | [ $all[] | select(.event == "decision-vetoed" and (.item // "") != "") ] as $vetoed
   | [ $all[]
       | select(.event == "decision-taken"
                and (.item // "") != "" and (.repo // "") != "")
@@ -677,13 +723,20 @@ DECISIONS_MAP_JQ='
                | any((.item // "") == ($d.item // "")
                      and ((.repo // "") == "" or (.repo // "") == ($d.repo // ""))
                      and (((.ts // "") > ($d.ts // ""))))
+               | not)
+      | select($vetoed
+               | any((.item // "") == ($d.item // "")
+                     and ((.repo // "") == "" or (.repo // "") == ($d.repo // ""))
+                     and (((.ts // "") > ($d.ts // ""))))
                | not) ]
   | sort_by(.ts)
   | reduce .[] as $d ({};
       .[$d.repo][($d.item | tostring)] =
         {ts: ($d.ts // ""), decision: ($d.decision // ""), rationale: ($d.rationale // "")}
         + (if ($d.options_considered // "") == "" then {} else {options_considered: $d.options_considered} end)
-        + (if ($d.comment_url // "") == "" then {} else {comment_url: $d.comment_url} end))
+        + (if ($d.comment_url // "") == "" then {} else {comment_url: $d.comment_url} end)
+        + (if ($d.issue_number // "") == "" then {} else {issue_number: $d.issue_number} end)
+        + (if ($d.issue_url // "") == "" then {} else {issue_url: $d.issue_url} end))
 '
 
 # decisions_map [LOG_FILE]
@@ -816,6 +869,20 @@ decisions_map() {
 # $all and $phantom are bound by the caller, via `input as $all`/`input as
 # $phantom` (requirement 4g) — never a leading `. as $all` here, since the
 # caller runs this body with `jq -n`.
+#
+# The `issue-closed` branch's own timestamp guard reads `$escalation.ts >=
+# $b.ts`, not strictly `>` (agent-ops#937, agent-ops#1198): an ordinary
+# escalation is filed cycles after the block it answers, so the two never
+# tie, but the decision-veto sweep (`lib/decision-veto.sh`) logs its
+# `escalated` registration in the very same pass — and often the very same
+# wall-clock second — as the `needs-refinement` block it re-blocks the item
+# with, since both describe the same veto discovered in the same cycle.
+# `log_event` (`agent-cycle.sh`) stamps whole-second timestamps, so a strict
+# `>` would coin-flip that tie and strand the veto's own release the way
+# #1198 named. Widening to `>=` costs nothing on the ordinary path — the two
+# events there are never this close — and is exactly what makes the veto's
+# escalation registration observe the same "closing it releases the item"
+# contract an ordinary escalation already gets.
 ENABLER_ELIGIBLE_JQ='
   def same_item($e): (.item // "") == ($e.item // "")
                      and ((.repo // "") == "" or (.repo // "") == ($e.repo // ""));
@@ -861,7 +928,7 @@ ENABLER_ELIGIBLE_JQ='
       | (if $issue_state == "open" or $issue_state == "unknown" then null
          elif $issue_state == "closed"
               and ($examined_since_escalation | length) == 0
-              and ($escalation.ts > $b.ts
+              and ($escalation.ts >= $b.ts
                    or (($b.kind // "") == "needs-refinement"
                        and $refined != null
                        and $refined.ts < $escalation.ts))

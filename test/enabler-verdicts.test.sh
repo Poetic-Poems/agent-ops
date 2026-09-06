@@ -419,6 +419,19 @@ enabler_decision_comment() {
   printf 'https://github.com/%s/issues/%s#issuecomment-999' "$1" "$2"
 }
 
+# create_decision_log_issue (agent-ops#937) files the durable decision-log
+# issue via `gh` on every `decide` verdict, issue-shaped item or not — stubbed
+# for the same reason enabler_decision_comment above is: this file tests the
+# switch's wiring, not a real GitHub write. Records the call and returns a
+# fixed number/url so decision-taken's own issue_number/issue_url are
+# checkable without a real filing. test/escalation-autonomy.test.sh covers
+# create_decision_log_issue itself (filing, dedup, label-missing fallback).
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+create_decision_log_issue() {
+  record "create_decision_log_issue $1 $2 $3"
+  printf '999\thttps://github.com/%s/issues/999' "$1"
+}
+
 # run_case DESC ELIGIBLE_JSON EXAMINED_JSON [CYCLE_RC]
 # One isolated engagement: a fresh cycle_dir and calls.log, the given eligible
 # set claimed in full (the stub claim.sh never loses), the given verdicts
@@ -871,6 +884,8 @@ unblk_evt="$(events_named "$calls" unblocked | head -n1)"
 assert_eq "settle/TD: ...crediting the enabler" "enabler" "$(jq -r '.by' <<<"$unblk_evt")"
 assert_eq "settle/TD: no decision-taken event (settle never decides)" "0" \
   "$(grep -cE '^event decision-taken ' <<<"$calls")"
+assert_eq "settle/TD: no decision-log issue is ever filed (settle never decides)" "0" \
+  "$(grep -cE '^create_decision_log_issue ' <<<"$calls")"
 assert_eq "settle/TD: no item-refined event (ordinary item, no refinement to re-record)" "0" \
   "$(grep -cE '^event item-refined ' <<<"$calls")"
 assert_eq "settle/TD: no decision comment posted (nothing to post for settle)" "0" \
@@ -942,10 +957,38 @@ assert_eq "decide/TD: ...carrying the decision" "use option B" "$(jq -r '.decisi
 assert_eq "decide/TD: ...the rationale" "cheaper and fully reversible" "$(jq -r '.rationale' <<<"$dt_evt")"
 assert_eq "decide/TD: ...no comment_url" "" "$(jq -r '.comment_url // ""' <<<"$dt_evt")"
 assert_eq "decide/TD: ...the resolved model" "claude-test-model" "$(jq -r '.model' <<<"$dt_evt")"
+assert_contains "decide/TD: the decision-log issue is filed for every decide verdict, issue-shaped or not" \
+  "create_decision_log_issue acme/widgets TD26080001" "$calls"
+assert_eq "decide/TD: ...decision-taken carries its number" "999" "$(jq -r '.issue_number' <<<"$dt_evt")"
+assert_eq "decide/TD: ...and its URL" "https://github.com/acme/widgets/issues/999" \
+  "$(jq -r '.issue_url' <<<"$dt_evt")"
 assert_eq "decide/TD: exactly one unblocked event" "1" "$(grep -cE '^event unblocked ' <<<"$calls")"
 unblk_evt="$(events_named "$calls" unblocked | head -n1)"
 assert_contains "decide/TD: ...naming the decision in its reason" "use option B" "$(jq -r '.reason' <<<"$unblk_evt")"
 assert_eq "decide/TD: no item-refined (ordinary item)" "0" "$(grep -cE '^event item-refined ' <<<"$calls")"
+
+# --- decide, decision-log filing fails: the decision still stands (recorded,
+# item unblocked), just without a durable log issue or a veto lever — a
+# warning names it, exactly the best-effort contract every other `gh` write
+# in this file keeps ---
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+create_decision_log_issue() { record "create_decision_log_issue $1 $2 $3"; return 1; }
+calls="$(run_case "decide-tactical: decide, decision-log filing fails" "$eligible_ordinary_td" "$examined_ordinary")"
+
+dt_evt="$(events_named "$calls" decision-taken | head -n1)"
+assert_eq "decide/log-filing-failed: the decision is still recorded" "use option B" "$(jq -r '.decision' <<<"$dt_evt")"
+assert_eq "decide/log-filing-failed: decision-taken carries no issue_number" "" \
+  "$(jq -r '.issue_number // ""' <<<"$dt_evt")"
+assert_eq "decide/log-filing-failed: the item is still unblocked" "1" "$(grep -cE '^event unblocked ' <<<"$calls")"
+assert_eq "decide/log-filing-failed: exactly one warning" "1" "$(grep -cE '^event warning ' <<<"$calls")"
+warn_evt="$(events_named "$calls" warning | head -n1)"
+assert_contains "decide/log-filing-failed: the warning names the missing decision log" \
+  "could not file the decision-log issue" "$(jq -r '.detail' <<<"$warn_evt")"
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+create_decision_log_issue() {
+  record "create_decision_log_issue $1 $2 $3"
+  printf '999\thttps://github.com/%s/issues/999' "$1"
+}
 
 # --- decide, register record that is ALSO a refinement disagreement
 # (agent-ops#1049 review fix): the item-refined re-record this verdict writes
@@ -1011,6 +1054,30 @@ assert_eq "decide/TD-disagreement: ...carrying the pending decision" "use option
 assert_eq "decide/TD-disagreement: ...as a full candidate, not triage_only (it needs a real spec, not one field)" \
   "null" "$(jq -r '.[0].triage_only // "null"' <<<"$candidates")"
 
+# --- decision-vetoed clears the decision (agent-ops#937, agent-ops#1198):
+# reopening the log issue withdraws the decision it logged, and a Refiner
+# engagement afterwards must not be handed it as though it still stood. ---
+vetoed_log="$tmp_dir/decision-vetoed.jsonl"
+cat > "$vetoed_log" <<'EOF'
+{"ts":"2026-08-20T10:00:00Z","event":"decision-taken","repo":"acme/widgets","item":"TD9","decision":"use option B","rationale":"cheaper","issue_number":501,"issue_url":"https://github.com/acme/widgets/issues/501"}
+{"ts":"2026-08-21T09:00:00Z","event":"decision-vetoed","repo":"acme/widgets","item":"TD9","issue_number":501,"issue_url":"https://github.com/acme/widgets/issues/501","by":"warwickallen"}
+EOF
+dmap_vetoed="$(decisions_map "$vetoed_log")"
+assert_eq "decisions_map drops a decision once it is vetoed" "null" \
+  "$(jq -r '."acme/widgets".TD9.decision // "null"' <<<"$dmap_vetoed")"
+
+# A veto that predates the decision it names (a stale replay, or a fresh
+# decide taken after an earlier veto already cleared) must not clear this
+# newer, unrelated decision.
+vetoed_before_log="$tmp_dir/decision-vetoed-before.jsonl"
+cat > "$vetoed_before_log" <<'EOF'
+{"ts":"2026-08-19T09:00:00Z","event":"decision-vetoed","repo":"acme/widgets","item":"TD9","issue_number":500,"issue_url":"https://github.com/acme/widgets/issues/500","by":"warwickallen"}
+{"ts":"2026-08-20T10:00:00Z","event":"decision-taken","repo":"acme/widgets","item":"TD9","decision":"use option B","rationale":"cheaper","issue_number":501,"issue_url":"https://github.com/acme/widgets/issues/501"}
+EOF
+dmap_after="$(decisions_map "$vetoed_before_log")"
+assert_eq "decisions_map keeps a decision a stale/earlier veto does not postdate" "use option B" \
+  "$(jq -r '."acme/widgets".TD9.decision // "null"' <<<"$dmap_after")"
+
 # --- decide, issue item: posts the decision comment, and its URL rides on
 # decision-taken as comment_url ---
 calls="$(run_case "decide-tactical: decide (issue, ordinary item)" \
@@ -1021,6 +1088,10 @@ assert_contains "decide/issue: the decision comment was posted" \
 dt_evt="$(events_named "$calls" decision-taken | head -n1)"
 assert_eq "decide/issue: decision-taken carries the comment's own URL" \
   "https://github.com/acme/widgets/issues/210#issuecomment-999" "$(jq -r '.comment_url' <<<"$dt_evt")"
+assert_eq "decide/issue: decision-taken also carries the decision-log issue's number" \
+  "999" "$(jq -r '.issue_number' <<<"$dt_evt")"
+assert_eq "decide/issue: ...and its URL" "https://github.com/acme/widgets/issues/999" \
+  "$(jq -r '.issue_url' <<<"$dt_evt")"
 
 # --- decide honours enabler_model_critical over enabler_model when set ---
 # shellcheck disable=SC2034
