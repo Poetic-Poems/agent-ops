@@ -12995,7 +12995,12 @@ implements.
     (`lib/standdown.sh`), since that function runs before `compute_skip_lists`
     sets `blocked_json`, which the needs-refinement recording below needs
     current — searches every configured repository for an open `pw::decision`
-    issue, reads the original item's repo/ref back off the issue body's own
+    issue that GitHub's own issue-events API says was *reopened* (an open log
+    issue carrying no `reopened` event is one whose own filing could not close
+    it, per the best-effort close above, never a veto — it is reported as a
+    warning and left alone; a failed events read falls open toward honouring
+    the veto, on the same terms the terminal classification below does),
+    reads the original item's repo/ref back off the issue body's own
     machine marker, and acts on each one this cycle has not already processed
     (`decision_vetoes_processed_items`, `lib/cycle-state.sh`, keyed on the log
     issue's own number — not the original item's ref, since one item can
@@ -13035,17 +13040,18 @@ implements.
       open work left to re-block.
 
     The owner then comments their own decision on the log issue and closes it
-    again — that close is the human touch. No new eligibility logic is
-    needed for it: `ENABLER_ELIGIBLE_JQ`'s existing `issue-closed` branch
-    (requirement 35a) reads whichever of an `escalated` or a `decision-taken`
-    event for this item is latest to determine the escalation issue's own
-    open/closed state, so once the sweep's own `needs-refinement` block is in
-    place, closing the reopened log issue is read exactly as closing an
-    ordinary escalation issue is — the block clears, the item is examined
-    again, and the next Refiner engagement writes its specification from the
-    owner's own comment, the same way it would from an answer on a closed
-    escalation. (Depends on the raise-time fix `TD-PPagop-26082901` reading
-    the block a decision was taken for, already landed — PR #939.)
+    again. The block the sweep recorded is an ordinary `needs-refinement`
+    block and reaches the Enabler on requirement 35a's ordinary terms — the
+    coordinator-cycle threshold, or the recheck interval — not on the log
+    issue's own closure: the log issue is not registered as the item's
+    escalation, and `ENABLER_ELIGIBLE_JQ`'s `issue-closed` branch derives its
+    escalation issue from `escalated` events alone, so a `decision-taken`
+    event's `issue_number` is never what that branch reads. What carries the
+    owner's answer forward is the block itself: its `detail` names the veto
+    and its `unblock_condition` names the owner's own comment on the log issue
+    as the decision of record, so the Enabler engagement that picks the block
+    up, and the Refiner engagement it leads to, are pointed at that comment
+    the same way they would be pointed at an answer on a closed escalation.
 
     **Where the owner sees them.** The dashboard's **Decisions** panel
     (`docs/DASHBOARD-SPEC.md`) — last 7 days, per repository: item, decision,

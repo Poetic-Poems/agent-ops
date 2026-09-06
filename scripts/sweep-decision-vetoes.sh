@@ -12,8 +12,10 @@
 # they can pull) applied to decisions the way requirement 36a already applies
 # it to escalations.
 #
-# For each open `pw::decision` issue this repository carries that this sweep
-# has not already processed (the caller pre-filters stdin against
+# For each `pw::decision` issue this repository carries that is open, carries a
+# `reopened` event (an open issue that was never closed is one whose own filing
+# could not close it, not a veto — see the check itself below), and that this
+# sweep has not already processed (the caller pre-filters stdin against
 # `decision_vetoes_processed_items`, lib/cycle-state.sh — the `decision-vetoed`
 # events already on the log, keyed on the log issue's own number so a later
 # decision under a fresh log issue is never mistaken for one already
@@ -118,8 +120,29 @@ while IFS=$'\t' read -r number url title marker_item marker_repo; do
     continue
   fi
 
-  by="$("$GH" api "repos/$slug/issues/$number/events" --paginate 2>/dev/null \
-    | jq -rs '[.[][] | select(.event == "reopened")] | last | .actor.login // ""' 2>/dev/null || true)"
+  # A veto is a *reopen*, never merely an issue that happens to be open.
+  # `create_decision_log_issue` (lib/enabler.sh) tolerates a failed
+  # `gh issue close` — it warns and keeps the issue rather than losing the
+  # decision's own record — so a log issue that was filed and never closed is
+  # open with nobody having objected to anything, and acting on it would
+  # re-block a live item, comment on its thread and flip its pull request back
+  # to draft over a decision that was never vetoed. GitHub's own `reopened`
+  # event is what tells the two apart. Where the events read itself fails
+  # (`gh` exited non-zero, or printed nothing at all — never `[]`, which is
+  # what an issue with no events returns) this falls open toward honouring the
+  # veto, on the same reasoning the terminal classification below gives: a
+  # needless re-block costs one wasted needs-refinement cycle, where dropping
+  # a real veto costs the lever this whole sweep exists to provide.
+  events_json="$("$GH" api "repos/$slug/issues/$number/events" --paginate 2>/dev/null || true)"
+  by=""
+  if [[ -n "$events_json" ]]; then
+    if ! jq -es 'any(.[][]; (.event // "") == "reopened")' <<<"$events_json" >/dev/null 2>&1; then
+      warn "decision-log issue #$number in $slug is open but carries no reopened event — it was filed and never closed rather than vetoed; leaving it alone"
+      continue
+    fi
+    by="$(jq -rs '[.[][] | select((.event // "") == "reopened")] | last | .actor.login // ""' \
+      <<<"$events_json" 2>/dev/null || true)"
+  fi
 
   # Terminal iff the original item's own GitHub object (an issue) is closed,
   # or (a non-issue item) its implementing pull request has merged or closed.

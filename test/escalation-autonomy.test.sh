@@ -247,7 +247,9 @@ assert_reason_seen "a fourth, genuinely new reason has not itself been seen" 1 \
 # stubbed too — this is a test of the issue-filing contract, not of the label
 # catalogue or the fleet log. ---
 cycle_dir="$(mktemp -d)"
-trap 'rm -rf "$cycle_dir"' EXIT
+# Both directories, not just this one: a bare `trap … EXIT` here would replace
+# the earlier trap on $tmp_dir rather than adding to it, and leak it.
+trap 'rm -rf "$tmp_dir" "$cycle_dir"' EXIT
 CONFIG_FILE=""
 SCHEMA_FILE=""
 gh_calls="$cycle_dir/gh-calls.log"

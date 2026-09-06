@@ -153,7 +153,7 @@ create_escalation_issue() {
   printf '%s\t%s' "$number" "$url"
 }
 
-# create_decision_log_issue REPO ITEM TITLE BODY_FILE
+# create_decision_log_issue REPO ITEM LABEL TITLE BODY_FILE
 # File one decision-log issue (agent-ops#937): the durable record of a
 # `decide-tactical` `decide` verdict, filed closed and unassigned — a log, not
 # an ask. Prints "<number>\t<url>"; prints nothing and returns 1 if it could

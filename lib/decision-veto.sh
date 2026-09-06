@@ -63,7 +63,8 @@ run_decision_veto_sweep() {
           ;;
         warning)
           log_event "warning" "$(jq -c --arg r "$sweep_slug" \
-            '{detail: ("decision-veto sweep (" + $r + "): " + (del(.action) | tostring))}' \
+            '{detail: ("decision-veto sweep (" + $r + "): "
+                       + ((.detail // "") | if . == "" then (del(.action) | tostring) else . end))}' \
             <<<"$sweep_action" 2>/dev/null || printf '{}')"
           ;;
         deferred) ;; # nothing to record — a future cycle picks up where this one capped out

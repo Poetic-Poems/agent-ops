@@ -196,6 +196,30 @@ assert_eq "no vetoed action for an unmarked issue" "" \
 assert_contains "a warning names the unmarked issue" "no agent-ops:decision-log marker" \
   "$(jq -r 'select(.action == "warning") | .detail' <<<"$out")"
 
+# --- Case 5a: an open log issue that was never *reopened* is not a veto ------
+# `create_decision_log_issue` (lib/enabler.sh) tolerates a failed
+# `gh issue close`, so a log issue can be open simply because its own filing
+# could not close it. Acting on that would re-block a live item over a decision
+# nobody objected to.
+c="$tmp_dir/case5a"; mkdir -p "$c"
+jq -n --arg body "$(marker 46)" \
+  '[{number: 506, url: "https://github.com/acme/widgets/issues/506",
+     title: "widgets: decision", body: $body}]' > "$c/decision-issues.json"
+jq -n '[{"actor": {"login": "warwickallen"}, "event": "labeled"}]' > "$c/events-506.json"
+printf 'OPEN' > "$c/item-state-46"
+echo '[]' > "$c/open-prs.json"
+
+out="$(run_sweep "$c")"
+calls="$(cat "$c/calls.log")"
+assert_eq "an open-but-never-reopened log issue is not vetoed" "" \
+  "$(jq -c 'select(.action == "vetoed")' <<<"$out" 2>/dev/null || true)"
+assert_eq "...and its item is not re-blocked" "" \
+  "$(jq -c 'select(.action == "needs-refinement")' <<<"$out" 2>/dev/null || true)"
+assert_contains "...but a warning says why it was left alone" "carries no reopened event" \
+  "$(jq -r 'select(.action == "warning") | .detail' <<<"$out")"
+assert_not_contains "...and nothing is commented on the item's own thread" \
+  "issue comment 46" "$calls"
+
 # --- Case 6: the action cap defers the rest ---------------------------------
 c="$tmp_dir/case6"; mkdir -p "$c"
 jq -n --arg b1 "$(marker 61)" --arg b2 "$(marker 62)" --arg b3 "$(marker 63)" --arg b4 "$(marker 64)" '
@@ -204,7 +228,9 @@ jq -n --arg b1 "$(marker 61)" --arg b2 "$(marker 62)" --arg b3 "$(marker 63)" --
    {number: 603, url: "https://github.com/acme/widgets/issues/603", title: "d3", body: $b3},
    {number: 604, url: "https://github.com/acme/widgets/issues/604", title: "d4", body: $b4}]' \
   > "$c/decision-issues.json"
-for n in 601 602 603 604; do echo '[]' > "$c/events-$n.json"; done
+for n in 601 602 603 604; do
+  jq -n '[{"actor": {"login": "warwickallen"}, "event": "reopened"}]' > "$c/events-$n.json"
+done
 for n in 61 62 63 64; do printf 'OPEN' > "$c/item-state-$n"; done
 echo '[]' > "$c/open-prs.json"
 
