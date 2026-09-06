@@ -152,6 +152,29 @@ assert_eq "  ... and says why, distinctly from the terminal row's own null reaso
   "$(row_of "$report" human-gate | jq -c '.cost_to_catch_at_next_note')"
 assert_eq "agent-review's own 'cost to catch at next' (human-gate) is measurable: item 3's cycle c3 cost 4 USD" \
   "4" "$(row_of "$report" agent-review | jq -c '.cost_to_catch_at_next.cost_usd')"
+assert_eq "  ... over exactly the catches this log actually meters, never the catch count" \
+  "1" "$(row_of "$report" agent-review | jq -c '.cost_to_catch_at_next.n')"
+
+# A catch whose own cycle carries no stage-end at all (a peer log that failed
+# to fetch, a cycle whose stage events no longer survive) is unmeasured, not
+# free: folding it in as a zero-cost sample would report "$0.00 avg (n=1)" for
+# a rung whose cost is simply unknown.
+unmetered="$tmp_dir/unmetered.jsonl"
+cat > "$unmetered" <<'EOF'
+{"ts":"2026-06-01T00:00:00Z","node":"n1","cycle":"c1","event":"stage-end","stage":"implementer","repo":"o/r","item":"1","cost_usd":1,"duration_ms":1000,"tokens":{"input":10,"output":10}}
+{"ts":"2026-06-01T00:01:00Z","node":"n1","cycle":"c1","event":"rework","class":"review-round-trip","detector":"d","evidence":{},"attributed_stage":null,"repo":"o/r","item":"1"}
+{"ts":"2026-06-01T00:02:00Z","node":"n1","cycle":"c1","event":"merge-observed","repo":"o/r","item":"1","pr_url":"https://github.com/o/r/pull/1"}
+{"ts":"2026-06-02T00:00:00Z","node":"n1","cycle":"gone","event":"rework","class":"human-change-request","detector":"d","evidence":{},"attributed_stage":"reviewer","repo":"o/r","item":"2"}
+{"ts":"2026-06-02T00:01:00Z","node":"n1","cycle":"gone","event":"merge-observed","repo":"o/r","item":"2","pr_url":"https://github.com/o/r/pull/2"}
+EOF
+unmetered_report="$(panel_of "$unmetered")"
+assert_eq "a human-gate catch whose cycle this log meters nothing for is unmeasured, never a zero-cost sample" \
+  "null" "$(row_of "$unmetered_report" agent-review | jq -c '.cost_to_catch_at_next')"
+assert_eq "  ... and says so, rather than reading \$0.00 for a rung whose cost is simply unknown" \
+  '"no human-gate catch with metered cycle spend in this window to measure"' \
+  "$(row_of "$unmetered_report" agent-review | jq -c '.cost_to_catch_at_next_note')"
+assert_eq "  ... the catch itself still counts on the ladder — only its cost is missing" \
+  "1" "$(row_of "$unmetered_report" human-gate | jq -c '.caught')"
 
 # =====================================================================
 # Dedup: a repetition two nodes both logged counts once; post-merge-revert
@@ -172,6 +195,22 @@ assert_eq "two nodes logging the same repetition ({repo,item,class}) count once,
 assert_eq "  ... one review-round-trip (deduped from two nodes) and two post-merge-revert (different evidence.by, not deduped)" \
   '[{"class":"post-merge-revert","count":2},{"class":"review-round-trip","count":1}]' \
   "$(jq -Sc '[.whose.not_attributed.by_class[] | {class, count}]' <<<"$dup_report")"
+
+# Which copy survives dedup is first-wins-by-ts, the reduction
+# docs/FLOW-SCHEMA.md's own "Do not double-count" states — visible here in the
+# cost join, since the two nodes' copies of the same repetition name different
+# cycles: the cycle that first observed it (c-first, 100 tokens) is the one
+# charged to rework, not whichever node echoed it later (c-late, 900).
+first_wins="$tmp_dir/first-wins.jsonl"
+cat > "$first_wins" <<'EOF'
+{"ts":"2026-07-01T00:00:00Z","node":"n1","cycle":"c-first","event":"stage-end","stage":"implementer","repo":"o/r","item":"1","cost_usd":1,"duration_ms":100,"tokens":{"input":50,"output":50}}
+{"ts":"2026-07-01T00:00:10Z","node":"n2","cycle":"c-late","event":"stage-end","stage":"implementer","repo":"o/r","item":"1","cost_usd":9,"duration_ms":900,"tokens":{"input":450,"output":450}}
+{"ts":"2026-07-01T00:01:00Z","node":"n1","cycle":"c-first","event":"rework","class":"review-round-trip","detector":"d","evidence":{},"attributed_stage":null,"repo":"o/r","item":"1"}
+{"ts":"2026-07-01T00:01:30Z","node":"n2","cycle":"c-late","event":"rework","class":"review-round-trip","detector":"d","evidence":{},"attributed_stage":null,"repo":"o/r","item":"1"}
+EOF
+first_wins_report="$(panel_of "$first_wins")"
+assert_eq "dedup keeps the first copy by ts, so the cycle that first observed the repetition is the one charged" \
+  "100" "$(jq -c '.how_much.tokens.rework' <<<"$first_wins_report")"
 
 # =====================================================================
 # The Reviewer-waving-work-through signature: escape rate and raw rework

@@ -2082,6 +2082,15 @@
     }
     var body = [];
     body.push(el("div", {class:"panel", text: reworkHowMuchLine(r.how_much)}));
+    // The share is cycle-granular, and saying so here is the difference
+    // between an upper bound a reader can weigh and a measured split they
+    // cannot: `stage-end` meters a stage, and the rework record does not say
+    // which part of a cycle a repetition consumed, so a cycle carrying any
+    // rework record counts in full.
+    body.push(el("div", {class:"panel muted", text:
+      "Rework share is cycle-granular: a cycle carrying at least one rework record counts in full, " +
+      "since the record does not say which part of a cycle the repetition consumed. Read it as an " +
+      "upper bound on what repetition cost, not a measured split."}));
     body.push(reworkWhoseTable(r.whose));
     body.push(reworkEscapeLadderTable(r.escape_ladder));
     body.push(el("div", {class:"panel muted", text:

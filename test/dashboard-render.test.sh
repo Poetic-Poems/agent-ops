@@ -1253,7 +1253,7 @@ assert_not_contains "  ... and never quotes a push age it does not have" \
 # --- rework.json / rework-outage.json: the rework panel (D23, issue #611) --
 # lib/rework-panel.sh's own fold is unit-tested directly in
 # test/rework-panel.test.sh; this only checks that `D.rework` renders as the
-# three sections and the two static caveats the panel's own text promises,
+# three sections and the three static caveats the panel's own text promises,
 # and that a Publisher-side assembly failure (every field `null`) reads as an
 # outage rather than as a quiet "nothing to report" — the same distinction
 # every other roll-up on this page makes.
@@ -1263,6 +1263,9 @@ assert_contains "how_much renders tokens/elapsed share and first-pass yield" \
   "Rework share: 70% of tokens, 66.7% of elapsed time" "$rework_section"
 assert_contains "  ... and first-pass yield, with the literal zero-attributed definition stated" \
   "First-pass yield: 75% (3 of 4 landed items carried zero rework records attributed to a stage)" \
+  "$rework_section"
+assert_contains "  ... and the share's own cycle granularity, so it never reads as a measured split" \
+  "Rework share is cycle-granular: a cycle carrying at least one rework record counts in full" \
   "$rework_section"
 assert_contains "whose: the one attributed class lists its stage" \
   '<td class="mono">

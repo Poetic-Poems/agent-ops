@@ -1582,7 +1582,13 @@ rework bad":
   (`stage-end`'s own `cost_usd`/`duration_ms`/`tokens.*`, summed null-as-zero
   per `docs/METERING-SCHEMA.md`, joined to a `rework` event by the `cycle`
   field both carry from the same `log_event` envelope) against the subset
-  spent on a cycle that also carries at least one rework record.
+  spent on a cycle that also carries at least one rework record. That join is
+  cycle-granular and the page says so in those words beneath the figure: a
+  `stage-end` meters a stage, and the rework record does not say which part
+  of a cycle a repetition consumed, so no apportionment within a cycle is
+  derivable and a rework-bearing cycle counts in full — `rework_share` is an
+  upper bound on what repetition cost, never a measured split, and a reader
+  meets that sentence on the panel rather than only here.
   `how_much.first_pass_yield` is `{landed_total, first_pass, yield}` —
   `first_pass` is deliberately the narrow, literal reading issue #611's own
   refinement specifies: a landed item with **zero rework records whose
@@ -1632,6 +1638,14 @@ rework bad":
   `cycle` at all (mined after the fact, outside any cycle,
   `docs/FLOW-SCHEMA.md`) and so its cost is genuinely unmeasurable — a
   different reason for the same `null`, and the panel never conflates them.
+  A catch whose own `cycle` the log carries no `stage-end` for (a peer's log
+  that failed to fetch, a cycle whose stage events no longer survive) is
+  dropped from that average rather than folded in as a zero-cost sample, so
+  `n` counts the catches actually measured and never the catches that
+  happened; a rung with catches but metering for none of them reads `null`
+  with the note "no human-gate catch with metered cycle spend in this window
+  to measure," on the same "an outage is not a quiet zero" distinction every
+  other roll-up on this page makes.
 
 **The Reviewer-waving-work-through signature.** A rising escape rate at the
 `agent-review` rung alongside a *falling* `caught` count at that same row is
@@ -2429,17 +2443,24 @@ number's twins elsewhere on the page.
   zero-attributed definition, `whose`'s attributed/not-attributed split, the
   escape ladder's population/caught/escaped/escape_rate at each rung, and
   the two distinct reasons a `cost_to_catch_at_next` reads `null` — terminal
-  rung versus genuinely unmeasurable); dedup, including that two genuinely
+  rung versus genuinely unmeasurable, and a third: a catch whose own cycle
+  this log meters nothing for, dropped from the average rather than counted
+  as a zero-cost sample); dedup, including that two genuinely
   distinct `post-merge-revert` corrections on the same item (different
-  `evidence.by`) both count while two nodes logging the same repetition
-  count once; the Reviewer-waving-work-through signature demonstrated
+  `evidence.by`) both count, that two nodes logging the same repetition
+  count once, and that the copy kept is the first by `ts` — visible in the
+  cost join, where the cycle that first observed the repetition is the one
+  charged rather than whichever node echoed it later; the
+  Reviewer-waving-work-through signature demonstrated
   against a constructed before/after fixture (a rising `escape_rate` at the
   `agent-review` rung alongside a *falling* `caught` count at that same
   row); and the degradations (a malformed line, a missing log) that yield a
   conforming report rather than aborting the fold. `test/dashboard-
   render.test.sh`'s own `rework.json`/`rework-outage.json` fixtures then
   check only that `D.rework` renders as the panel's own three sections and
-  its two static caveats, and that an unassembled payload (every field
+  its three static caveats (the share's cycle granularity, rework never being
+  a target of zero, and the human-gate coverage gap), and that an unassembled
+  payload (every field
   `null`) reads as an outage rather than a quiet zero-rework tick — the
   fold's own correctness is `rework-panel.test.sh`'s job, not this one's.
 - `claim-expired-tombstone.json` (agent-ops#839) holds one claim backdated to

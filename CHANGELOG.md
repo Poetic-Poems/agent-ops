@@ -62,7 +62,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   figures on the same row precisely so a falling catch count alongside a
   rising escape rate — the signature of a Reviewer waving work through —
   stays legible as a regression rather than reading as an improvement.
-  States its own residual coverage gap on the panel's face: the human-gate
+  States its own limits on the panel's face: the rework share is
+  cycle-granular (a cycle carrying any rework record counts in full, so the
+  share is an upper bound rather than a measured split), and the human-gate
   rung only catches what the reconciliation gate observes at the Reviewer's
   own ready handoff (`TD-PPagop-26082919`). New `lib/rework-panel.sh`,
   wired into `scripts/publish-dashboard.sh` and `dashboard/index.html`.

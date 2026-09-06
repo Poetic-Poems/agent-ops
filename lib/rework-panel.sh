@@ -37,9 +37,9 @@
 # `item_lifecycle_fold` for first-pass yield and the escape ladder's own
 # population (landed items) rather than re-deriving fate from the log a
 # second time. Callers must source lib/cycle-state.sh and
-# lib/item-lifecycle.sh before this file (production always does —
-# agent-cycle.sh and scripts/publish-dashboard.sh source every lib/*.sh,
-# requirement 4a; test/rework-panel.test.sh sources both explicitly).
+# lib/item-lifecycle.sh before this file; the one production caller,
+# scripts/publish-dashboard.sh, sources all three in that order, and
+# test/rework-panel.test.sh does the same.
 #
 # Sourced, never executed: no shell options are set here, matching every
 # other lib/*.sh — the caller owns those.
@@ -60,8 +60,10 @@ REWORK_PANEL_KEY_JQ='
 #
 # --- Deduping the rework stream (docs/FLOW-SCHEMA.md, "Do not double-count")
 # The union log carries every node's own copy of a repetition two or more
-# nodes each observed, so this reduces latest-wins-by-`ts`, on the record's
-# own stable identity: `{repo, item, class}` for every
+# nodes each observed, so this reduces first-wins-by-`ts` — the reduction that
+# section states in its own words, and the copy whose `cycle` actually first
+# observed the repetition rather than whichever node echoed it last — on the
+# record's own stable identity: `{repo, item, class}` for every
 # class but `post-merge-revert`, which adds `evidence.by` (the reverting or
 # following-up pull request), since more than one corrective pull request can
 # in principle be detected for the same original. A fleet-wide class with
@@ -117,6 +119,23 @@ REWORK_PANEL_KEY_JQ='
 # row's own "next" (post-merge) — reported as `null` with its own
 # `cost_to_catch_at_next_note` explaining why, distinct from the post-merge
 # row's `null` (which means "terminal, no next rung" instead).
+#
+# A catch whose own `cycle` this log carries no `stage-end` for at all — a
+# peer's log that failed to fetch, a cycle whose stage events have aged out of
+# what survives — is dropped from the average rather than folded in as a
+# zero-cost sample: an unmeasured cycle counted as `0` would drag the reported
+# cost of catching a defect toward zero and read as measured, which is the same
+# "an outage is not a quiet zero" distinction every other roll-up on the page
+# makes. So `n` is the number of catches actually measured, never the number
+# that happened, and a rung with catches but no metering for any of them reads
+# `null` with its own note rather than `$0.00`.
+#
+# The whole of a rework-bearing cycle's spend counts as rework in `how_much`:
+# `stage-end` meters a stage, and nothing in docs/FLOW-SCHEMA.md's record says
+# which part of a cycle a repetition consumed, so no apportionment within a
+# cycle is derivable here. That makes `rework_share` an upper bound rather than
+# a measured split — stated in those words on the panel's own face, and in
+# docs/DASHBOARD-SPEC.md.
 # shellcheck disable=SC2016  # jq's own $all/$lifecycle/etc, not the shell's.
 REWORK_PANEL_JQ='
   '"$REWORK_PANEL_KEY_JQ"'
@@ -134,7 +153,7 @@ REWORK_PANEL_JQ='
   ($all | map(select(type == "object"))) as $ev
 
   | ($ev | map(select(.event == "rework"))
-     | group_by(dedup_key) | map(sort_by(.ts // "") | last)
+     | group_by(dedup_key) | map(sort_by(.ts // "") | first)
      | map(. + {rung: rung_of})) as $rew
 
   | ($ev | map(select(.event == "stage-end" and ((.cycle // "") | tostring) != ""))
@@ -148,9 +167,9 @@ REWORK_PANEL_JQ='
          tokens: (map(.tokens) | add)}})
      | from_entries) as $cost_by_cycle
 
-  | def cost_of($c): $cost_by_cycle[$c] // {cost_usd: 0, duration_ms: 0, tokens: 0};
-    def avg_cost($rows):
-       ($rows | map(select((.cycle // null) != null)) | map(cost_of(.cycle))) as $costs
+  | def avg_cost($rows):
+       ($rows | map(.cycle // null) | map(select(. != null)) | map(tostring)
+              | map($cost_by_cycle[.]) | map(select(. != null))) as $costs
        | if ($costs | length) == 0 then null
          else { n: ($costs | length),
                 tokens: (($costs | map(.tokens) | add) / ($costs | length)),
@@ -222,7 +241,8 @@ REWORK_PANEL_JQ='
         escape_rate: share($pop_agent_review; ($pop_agent_review - $n_agent_review)),
         cost_to_catch_at_next: $cost_human_gate,
         cost_to_catch_at_next_note: (if $cost_human_gate == null
-          then "no human-gate catch in this window to measure" else null end) },
+          then "no human-gate catch with metered cycle spend in this window to measure"
+          else null end) },
       { stage: "human-gate", population: $pop_human_gate, caught: $n_human_gate,
         escaped: ($pop_human_gate - $n_human_gate),
         escape_rate: share($pop_human_gate; ($pop_human_gate - $n_human_gate)),
@@ -276,6 +296,6 @@ rework_panel_build() {
 
   out="$(jq -nc 'input as $all | input as $lifecycle | ('"$REWORK_PANEL_JQ"')' \
       <<<"$all_json"$'\n'"$lifecycle_json" 2>/dev/null || true)"
-  [[ -n "$out" ]] || out='{"how_much":{"tokens":{"total":0,"rework":0,"rework_share":null},"elapsed_ms":{"total":0,"rework":0,"rework_share":null},"cost_usd":{"total":0,"rework":0,"rework_share":null},"first_pass_yield":{"landed_total":0,"first_pass":0,"yield":null},"rework_count":0},"whose":{"by_attributed_stage":[],"not_attributed":{"count":0,"by_class":[]}},"escape_ladder":[{"stage":"agent-review","population":0,"caught":0,"escaped":0,"escape_rate":null,"cost_to_catch_at_next":null,"cost_to_catch_at_next_note":"no human-gate catch in this window to measure"},{"stage":"human-gate","population":0,"caught":0,"escaped":0,"escape_rate":null,"cost_to_catch_at_next":null,"cost_to_catch_at_next_note":"not measurable: post-merge-revert records carry no cycle (mined after the fact, outside any cycle)"},{"stage":"post-merge","population":0,"caught":0,"escaped":null,"escape_rate":null,"cost_to_catch_at_next":null,"cost_to_catch_at_next_note":"terminal rung: nothing further to escape to"}],"clean_count":0}'
+  [[ -n "$out" ]] || out='{"how_much":{"tokens":{"total":0,"rework":0,"rework_share":null},"elapsed_ms":{"total":0,"rework":0,"rework_share":null},"cost_usd":{"total":0,"rework":0,"rework_share":null},"first_pass_yield":{"landed_total":0,"first_pass":0,"yield":null},"rework_count":0},"whose":{"by_attributed_stage":[],"not_attributed":{"count":0,"by_class":[]}},"escape_ladder":[{"stage":"agent-review","population":0,"caught":0,"escaped":0,"escape_rate":null,"cost_to_catch_at_next":null,"cost_to_catch_at_next_note":"no human-gate catch with metered cycle spend in this window to measure"},{"stage":"human-gate","population":0,"caught":0,"escaped":0,"escape_rate":null,"cost_to_catch_at_next":null,"cost_to_catch_at_next_note":"not measurable: post-merge-revert records carry no cycle (mined after the fact, outside any cycle)"},{"stage":"post-merge","population":0,"caught":0,"escaped":null,"escape_rate":null,"cost_to_catch_at_next":null,"cost_to_catch_at_next_note":"terminal rung: nothing further to escape to"}],"clean_count":0}'
   printf '%s' "$out"
 }
