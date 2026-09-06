@@ -589,7 +589,9 @@ $(jq . <<<"$input")
   fi
   log_event "stage-end" "$(jq -nc --argjson rc "$rc" --arg kr "$stage_kill_reason" \
     --argjson m "$(metering_fields "$critical_model" "$out" "$stage_gaps_json")" \
-    '{stage: "enabler-adjudicate", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m')"
+    --arg r "$repo" --arg i "$item" \
+    '{stage: "enabler-adjudicate", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m
+     + (if $r == "" then {} else {repo: $r} end) + (if $i == "" then {} else {item: $i} end)')"
   rework_stage_rerun_maybe "enabler-adjudicate" "$stage_kill_reason" "$repo" "$item" \
     "$(jq -r '.pr_url // ""' <<<"$claimed_entry")"
 
@@ -701,7 +703,9 @@ $(jq . <<<"$input")
   fi
   log_event "stage-end" "$(jq -nc --argjson rc "$rc" --arg kr "$stage_kill_reason" \
     --argjson m "$(metering_fields "$critical_model" "$out" "$stage_gaps_json")" \
-    '{stage: "enabler-decide", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m')"
+    --arg r "$repo" --arg i "$item" \
+    '{stage: "enabler-decide", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m
+     + (if $r == "" then {} else {repo: $r} end) + (if $i == "" then {} else {item: $i} end)')"
   rework_stage_rerun_maybe "enabler-decide" "$stage_kill_reason" "$repo" "$item" \
     "$(jq -r '.pr_url // ""' <<<"$claimed_entry")"
 
@@ -1086,6 +1090,14 @@ $(jq . <<<"$input")
               e_gate_word="$(jq -r '.gate.word // ""' <<<"$e_review_json")"
               e_gate_reason="$(jq -r '.gate.reason // ""' <<<"$e_review_json")"
               e_gate_checks_unreadable="$(jq -r '.gate.checks_unreadable // false' <<<"$e_review_json")"
+              # The item-lifecycle "checks green" instant (requirement 49,
+              # issue #595) — same terms as the Reviewer's own handoff site in
+              # agent-cycle.sh, since this is the same shared
+              # `handoff_complete_review` gate reached from the Enabler's own
+              # recovery path.
+              [[ "$e_gate_word" != "clean" ]] || log_event "checks-green" "$(jq -nc --arg u "$e_pr_url" \
+                --arg r "$e_repo" --arg i "$e_item" \
+                '{pr_url: $u} + (if $r == "" then {} else {repo: $r} end) + (if $i == "" then {} else {item: $i} end)')"
               e_ck_word="$(jq -r '.closing_keyword.word // ""' <<<"$e_review_json")"
               e_ck_reason="$(jq -r '.closing_keyword.reason // ""' <<<"$e_review_json")"
               e_rc_word="$(jq -r '.reconciliation.word // ""' <<<"$e_review_json")"
@@ -1101,7 +1113,9 @@ $(jq . <<<"$input")
               # rather than only naming the fault per item.
               e_gate_checks_ok=true
               [[ "$e_gate_checks_unreadable" == "true" ]] && e_gate_checks_ok=false
-              log_event "review-gate-checks-read" "$(jq -nc --argjson ok "$e_gate_checks_ok" '{ok: $ok}')"
+              log_event "review-gate-checks-read" "$(jq -nc --argjson ok "$e_gate_checks_ok" \
+                --arg r "$e_repo" --arg i "$e_item" \
+                '{ok: $ok} + (if $r == "" then {} else {repo: $r} end) + (if $i == "" then {} else {item: $i} end)')"
 
               if [[ "$e_review_safe" != "true" ]]; then
                 if [[ "$e_gate_word" == "dirty" ]]; then
@@ -1183,7 +1197,10 @@ $(jq . <<<"$input")
                 log_event "pr-ready" "$(jq -nc --arg u "$e_pr_url" --arg h "$e_handoff" \
                   --arg rr "$e_rereview_state" --arg w "$e_rereview_who" \
                   --arg hr "$e_human_reviewer_state" --arg ha "$enabler_assignee" \
+                  --arg r "$e_repo" --arg i "$e_item" \
                   '{pr_url: $u, handoff: "enabler", state: $h}
+                   + (if $r == "" then {} else {repo: $r} end)
+                   + (if $i == "" then {} else {item: $i} end)
                    + (if $rr == "" or $rr == "none" then {} else {review_requested: $rr} end)
                    + (if $w == "" then {} else {reviewers: ($w | split(","))} end)
                    + (if $hr == "" or $hr == "skip" then {}

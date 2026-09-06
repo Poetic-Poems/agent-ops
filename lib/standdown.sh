@@ -460,12 +460,14 @@ if ! (( DRY_RUN )); then
       [[ -n "$sweep_action" ]] || continue
       case "$(jq -r '.action // ""' <<<"$sweep_action" 2>/dev/null || true)" in
         closed) log_event "issue-closed-post-merge" \
-          "$(jq -c --arg r "$sweep_slug" '{repo: $r} + del(.action)' <<<"$sweep_action")" ;;
+          "$(jq -c --arg r "$sweep_slug" '{repo: $r, item: (.issue | tostring)} + del(.action)' <<<"$sweep_action")" ;;
+        merge-observed) log_event "merge-observed" \
+          "$(jq -c --arg r "$sweep_slug" '{repo: $r, stage: "sweep-closed-issues"} + del(.action)' <<<"$sweep_action")" ;;
         deferred|warning) log_event "warning" "$(jq -c --arg r "$sweep_slug" \
           '{detail: ("closed-issue sweep (" + $r + "): " + (del(.repo) | tostring))}' \
           <<<"$sweep_action")" ;;
       esac
-    done < <(timeout 120 "$SCRIPT_DIR/scripts/sweep-closed-issues.sh" "$sweep_slug" "$node_name" "$cycle_id" \
+    done < <(timeout 120 "$SCRIPT_DIR/scripts/sweep-closed-issues.sh" "$sweep_slug" "$node_name" "$cycle_id" "$state_dir" \
                2>>"$cycle_dir/closed-issue-sweep.err" || true)
   done < <(jq -r '.repos[].slug' "$CONFIG_FILE" 2>/dev/null || true)
 fi

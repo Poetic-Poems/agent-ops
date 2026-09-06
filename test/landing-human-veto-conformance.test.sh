@@ -150,6 +150,7 @@ source "$SCRIPT_DIR/lib/merge-queue.sh"
 
 # --- Cycle globals the block reads -------------------------------------------
 selected_repo="Poetic-Poems/agent-ops"
+selected_item="512"
 selected_source="tech-debt"
 state_repo="Poetic-Poems/agent-ops"
 state_dir="$T/state"
@@ -222,6 +223,12 @@ landing_arm() {
   printf 'slug=%s\tnumber=%s\ttoken=%s\n' "$1" "$2" "$3" >>"$T/arms"
   printf '%s' "$ARM_METHOD"
 }
+
+# The item-lifecycle merge instant's own confirmation read (requirement 49,
+# issue #595) — stubbed "open" (never merged), same neutral default
+# landing-wiring.test.sh's own copy uses: this file's axis is the human veto,
+# never reached once the veto already refused this attempt.
+pr_merge_state() { printf 'open\t'; }
 
 # The landing audit record's own reads (requirement 8x, agent-ops#578) —
 # stubbed the same way every other gate helper here is; this file's axis is

@@ -151,6 +151,15 @@ run_block() {
     printf '%s=%q\n' "$handoff_var" "$handoff_val"
     printf '%s=%q\n' "$review_json_var" "$review_json_val"
     printf 'enabler_assignee=%q\n' "$assignee"
+    # requirement 49 (issue #595): both extracted blocks' own `pr-ready` jq
+    # now reads the item-lifecycle join key — `$selected_repo`/`$selected_item`
+    # on the Reviewer's own block, `$e_repo`/`$e_item` on the Enabler's — so
+    # the harness must define all four under this file's own `set -u`, even
+    # though only one pair is ever read by whichever block actually runs.
+    printf 'selected_repo=%q\n' "Poetic-Poems/agent-ops"
+    printf 'selected_item=%q\n' "368"
+    printf 'e_repo=%q\n' "Poetic-Poems/agent-ops"
+    printf 'e_item=%q\n' "368"
     printf '%s\n' 'log_event() { printf "%s\t%s\n" "$1" "$2" >>'"$(printf '%q' "$tmp_dir/events")"'; }'
     printf '%s\n' "$block"
   } > "$harness"
@@ -244,6 +253,8 @@ run_case() {
     "could not be requested from" "$warn"
   assert_eq "  ... and pr-ready carries the requested state" \
     '"requested"' "$(jq -c '.human_review_requested' <<<"$ready")"
+  assert_eq "  ... and the item-lifecycle join key too (requirement 49)" \
+    '{"repo":"Poetic-Poems/agent-ops","item":"368"}' "$(jq -c '{repo, item}' <<<"$ready")"
 }
 
 run_case "reviewer's own handoff" impl_pr_url handoff_by "reviewer" review_json "$reviewer_block"

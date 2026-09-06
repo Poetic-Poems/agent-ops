@@ -144,6 +144,7 @@ source "$SCRIPT_DIR/lib/merge-autonomy.sh"
 
 # --- Cycle globals the block reads -------------------------------------------
 selected_repo="Poetic-Poems/agent-ops"
+selected_item="512"
 selected_source="tech-debt"
 state_repo="Poetic-Poems/agent-ops"
 state_dir="$T/state"
@@ -333,6 +334,17 @@ landing_arm() {
   printf '%s' "${ARM_METHOD-enqueued}"
 }
 
+# The item-lifecycle merge instant's own confirmation read (requirement 49,
+# issue #595), run once arming succeeds by a non-"enqueued" method. Defaults
+# to "open" — not (yet) merged — the neutral case every existing happy-path
+# assertion in this file already assumes; MERGE_STATE/MERGE_SHA steer the
+# dedicated merge-observed case below.
+pr_merge_state() {
+  printf '%s\n' "$*" >>"$T/pr_merge_state_calls"
+  printf '%s\t%s' "${MERGE_STATE:-open}" "${MERGE_SHA:-}"
+  [[ "${MERGE_STATE:-open}" != "failed" ]]
+}
+
 # The landing audit record's own second, independent read of the
 # protected-path classifier (requirement 8x, agent-ops#578) — stubbed
 # exactly like every other gate helper here rather than left to the real
@@ -383,6 +395,7 @@ run_case() {
   : >"$tmp_dir/pp_ctl_args"; : >"$tmp_dir/retry_tier_args"; : >"$tmp_dir/kill_state_calls"
   : >"$tmp_dir/pp_hit_args"; : >"$tmp_dir/reconciliation_args"
   : >"$tmp_dir/oq_hit_args"; : >"$tmp_dir/oq_resolve_args"
+  : >"$tmp_dir/pr_merge_state_calls"
   rm -rf "${tmp_dir:?}/state"
   env -i PATH="$PATH" HOME="$HOME" \
     T="$tmp_dir" SCRIPT_DIR="$SCRIPT_DIR" PR_URL="$URL" COMPLEXITY="medium" \
@@ -491,6 +504,27 @@ rc="$(run_case ARM_METHOD="auto-merge")"
 assert_eq "the method landing_arm actually used is what is logged" \
   '"auto-merge"' "$(jq -c '.method' <<<"$(event_of landing-armed)")"
 assert_eq "  ... and the stage still returns 0" "0" "$rc"
+assert_eq "  ... and no merge instant fires — pr_merge_state defaults to 'open' (requirement 49)" \
+  "" "$(event_of merge-observed)"
+
+# --- The item-lifecycle merge instant fires when the no-queue fallback ------
+# --- genuinely merged synchronously (requirement 49, issue #595) -----------
+
+rc="$(run_case ARM_METHOD="auto-merge" MERGE_STATE="merged" MERGE_SHA="deadbeef")"
+assert_eq "a confirmed synchronous merge logs merge-observed" "0" "$rc"
+assert_eq "  ... naming the repo and item" \
+  '{"repo":"Poetic-Poems/agent-ops","item":"512"}' \
+  "$(jq -c '{repo, item}' <<<"$(event_of merge-observed)")"
+assert_eq "  ... the pull request and its merge sha" \
+  '{"pr_url":"https://github.com/Poetic-Poems/agent-ops/pull/512","merge_sha":"deadbeef"}' \
+  "$(jq -c '{pr_url, merge_sha}' <<<"$(event_of merge-observed)")"
+assert_eq "  ... and the landing stage that caught it" \
+  '"landing"' "$(jq -c '.stage' <<<"$(event_of merge-observed)")"
+
+rc="$(run_case ARM_METHOD="enqueued" MERGE_STATE="merged" MERGE_SHA="deadbeef")"
+assert_eq "an enqueued arm never even checks — a queue never merges synchronously" \
+  "" "$(event_of merge-observed)"
+assert_eq "  ... pr_merge_state itself is never called" "" "$(cat "$tmp_dir/pr_merge_state_calls" 2>/dev/null || true)"
 
 # --- Gate 0: only this round's own explicit, non-adjudicating approve --------
 # Not even a `landing-refused`: no landing decision was reached to refuse.
@@ -522,6 +556,8 @@ for level in human agent-approves; do
   assert_eq "  ... never mentions the kill switch (it is clear)" "" \
     "$(refusal | grep -o 'kill switch' || true)"
   assert_eq "  ... returning 0" "0" "$rc"
+  assert_eq "  ... and the landing-refused event carries the item-lifecycle join key too (requirement 49)" \
+    '"512"' "$(jq -c '.item' <<<"$(event_of landing-refused)")"
 done
 
 # --- Gate 1, the kill switch (D18 issue #576): distinguishable in the log
@@ -626,8 +662,8 @@ assert_eq "  ... returning 0" "0" "$rc"
 rc="$(run_case OQ_RC="0" OQ_RESOLVE_RC="1")"
 assert_eq "a hit that the resolve ladder refuses is never armed" "0" "$(count arms)"
 assert_contains "  ... carrying the ladder's own reason" "open-question:stubbed" "$(refusal)"
-assert_eq "  ... having dispatched slug, pr_url, number and retry in that order" \
-  "Poetic-Poems/agent-ops $URL 512 " "$(cat "$tmp_dir/oq_resolve_args")"
+assert_eq "  ... having dispatched slug, pr_url, number, retry and item (requirement 49) in that order" \
+  "Poetic-Poems/agent-ops $URL 512  512" "$(cat "$tmp_dir/oq_resolve_args")"
 assert_eq "  ... returning 0" "0" "$rc"
 
 rc="$(run_case OQ_RC="0" OQ_RESOLVE_RC="0")"
@@ -848,6 +884,8 @@ assert_eq "  ... returning 0" "0" "$rc"
 rc="$(run_case)"
 assert_eq "the ordinary path's landing-armed carries no retry field" \
   "null" "$(jq -c '.retry // null' <<<"$(event_of landing-armed)")"
+assert_eq "  ... and carries the item-lifecycle join key (requirement 49)" \
+  '"512"' "$(jq -c '.item' <<<"$(event_of landing-armed)")"
 
 # --- `_landing_stage_attempt`, called directly with RETRY set (2.1e) --------
 # TD-PPagop-26081701: the landing-retry sweep calls this function directly,
