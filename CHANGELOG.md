@@ -8,6 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`--now <iso8601>` on `scripts/publish-dashboard.sh`** (issue #957):
+  overrides the single instant every rolling window in the script measures
+  from — `day_cut`/`today`/`recent_cut` and the WI-8 landing digest's
+  `in_window`/`stale()` cutoffs alike — mirroring the seam
+  `scripts/publish-revert-rate.sh` and `scripts/autonomy-stage-report.sh`
+  already provide, so a test can pin a fixed calendar date instead of
+  computing fixture timestamps as offsets from the real clock. Fixes two
+  latent bugs found in the process: `day_cut`/`today`/`recent_cut` read the
+  real clock independently of `now_iso` rather than deriving from it (no
+  production effect without `--now`, since both were always the real clock
+  anyway, but it meant `--now` could not reach them), and the no-op
+  short-circuit's fingerprint (#787) did not account for `--now`, so two
+  ticks over unchanged on-disk state but a different pinned instant would
+  have incorrectly served a stale page. Omitted, behaviour is unchanged.
+
 - **Actor and model scorecards** (issue #610, D22): one dashboard card per
   actor with a model choice (coordinator, implementer, reviewer, enabler,
   refiner), one row per model and tier, graded on outcome — attempts and how

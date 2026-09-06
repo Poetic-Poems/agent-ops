@@ -511,6 +511,16 @@ work sources and ok/error state all persist, and no false "GitHub unavailable"
 banner fires. That is what lets the sub-minute heartbeat refresh local state
 every few seconds while hitting the GitHub API only once per window.
 
+`--now <iso8601>` overrides the single instant (`now_iso`/`now_epoch`) every
+rolling window in this script measures from — the WI-8 landing digest's
+`in_window`/`stale()` cutoffs, the merge-budget reading, the decisions digest,
+the GitHub-budget card, and the cost roll-ups' `day_cut`/`today`/`recent_cut`
+— the same test seam `scripts/publish-revert-rate.sh` and
+`scripts/autonomy-stage-report.sh` already provide. Omitted, it defaults to
+the real wall clock; it exists only so a test can pin every window this
+script computes to a calendar date it controls, rather than the clock the
+test happens to run under.
+
 Those measures bound a rebuild; they do not make one cheap. A full publish
 grew from 5.1 s when they were introduced (#51) to 18.1 s by 2026-08-25 —
 roughly fifteen dashboard panels later, each legitimately adding a `jq` pass

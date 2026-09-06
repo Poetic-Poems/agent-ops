@@ -102,12 +102,24 @@ WITH_GITHUB=1
 # costs what the volatile part of the page costs rather than what all of it
 # does. See "The tiered publish" in docs/DASHBOARD-SPEC.md (#798).
 FULL=1
-for _arg in "$@"; do
-  case "$_arg" in
-    --no-github) WITH_GITHUB=0 ;;
-    --fast)      FULL=0 ;;
+# --now overrides the "now" every rolling window in this script measures from
+# (now_iso/now_epoch below, and everything derived from them), the same test
+# seam scripts/publish-revert-rate.sh and scripts/autonomy-stage-report.sh
+# already provide. Empty means "no override" — the real wall clock, as before.
+now_override=""
+NOW_ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --no-github) WITH_GITHUB=0; shift ;;
+    --fast)      FULL=0; shift ;;
+    --now)       now_override="$2"; NOW_ARGS=(--now "$2"); shift 2 ;;
+    *) shift ;;
   esac
 done
+if [[ -n "$now_override" ]]; then
+  jq -n --arg n "$now_override" '$n | fromdateiso8601' >/dev/null 2>&1 \
+    || { echo "publish-dashboard: --now is not a valid ISO 8601 instant: $now_override" >&2; exit 64; }
+fi
 # A GitHub tick is always a full build. It is the only thing bounding how stale
 # a carried-forward roll-up may get, and it is already the tick that never
 # skips — so "full" needs no clock of its own, and cannot drift out of step with
@@ -258,8 +270,13 @@ mkdir -p "$out_dir"
 work_tmp="$(mktemp -d)"
 trap 'rm -rf "$work_tmp"' EXIT
 
-now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-now_epoch="$(date +%s)"
+if [[ -n "$now_override" ]]; then
+  now_iso="$now_override"
+  now_epoch="$(date -u -d "$now_iso" +%s)"
+else
+  now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  now_epoch="$(date +%s)"
+fi
 
 # --- The no-op short-circuit (#787) -------------------------------------------
 # The Publisher is a pure function of its inputs, and the heartbeat asks it for
@@ -385,6 +402,13 @@ local_state_fingerprint() {
     # the last two, and a page that would render differently has to be rewritten
     # even when the data behind it has not moved.
     stat -c '%n %s %Y' "$CONFIG_FILE" "$TEMPLATE" "$0" 2>/dev/null
+    # --now is the one input that never touches disk: every windowed reader
+    # keys off it, so two ticks over byte-identical state can still owe
+    # different pages when it differs (a test pinning "now" to two different
+    # instants against the same fixture, most concretely). An empty value
+    # (the production default — no override) is a fixed line like any other,
+    # so it never perturbs the fingerprint a run without --now already produced.
+    printf 'now_override %s\n' "$now_override"
   } | LC_ALL=C sort | sha256sum | cut -d' ' -f1
 }
 
@@ -1311,7 +1335,7 @@ if (( FULL )); then
 # most the remainder of its batch for one tick; the next tick reads it whole,
 # and sorting puts the newest (the only ones ever mid-write) in the last batch.
 # The rows go to jq as a file: at 60 days of history they outgrow argv's cap.
-day_cut="$(date -u -d "-${COST_SCAN_DAYS} days" +%Y%m%d 2>/dev/null || echo 00000000)"
+day_cut="$(date -u -d "$now_iso -${COST_SCAN_DAYS} days" +%Y%m%d 2>/dev/null || echo 00000000)"
 costs_file="$work_tmp/costs.json"
 # Fleet-wide: every node spends the same Claude account, so the roll-ups scan
 # the peers' replicated transcripts too (bounded — a peer's branch carries at
@@ -1404,7 +1428,7 @@ find "${cost_dirs[@]}" -name '*.out' -type f -print0 2>/dev/null | sort -z \
   > "$costs_file" 2>/dev/null
 jq -e 'type == "array"' "$costs_file" >/dev/null 2>&1 || printf '[]' > "$costs_file"
 
-today="$(date -u +%Y%m%d)"
+today="$(date -u -d "$now_iso" +%Y%m%d)"
 # `recent_costs` backs the "today (local)" and "last 24h" readings of the
 # spend-today card (#186): both need each row's own instant, not just its GMT
 # day, and which instants count as "today" depends on the *reader's* zone, so
@@ -1413,7 +1437,7 @@ today="$(date -u +%Y%m%d)"
 # is +14 (Kiribati), so "today" there can start 14h before UTC midnight, and
 # "last 24h" only ever reaches 24h back — while staying a rounding error next
 # to the 60-day `by_day` window it rides alongside.
-recent_cut="$(date -u -d "-3 days" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "1970-01-01T00:00:00Z")"
+recent_cut="$(date -u -d "$now_iso -3 days" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "1970-01-01T00:00:00Z")"
 # `cost_rows[]`'s join (issue #593, D21): which work item the money bought,
 # derived from the same fleet-wide event union `$events_file` already holds
 # (`$ev` below) rather than from `$cycles_file` — `$cycles_file` is capped at
@@ -3393,7 +3417,7 @@ if ! jq -e . >/dev/null 2>&1 <<<"$data_json"; then
   if (( ! FULL )); then
     echo "publish-dashboard: fast assemble failed; rebuilding in full" >&2
     rm -f "$payload_cache" 2>/dev/null || true
-    exec "$0" --no-github
+    exec "$0" --no-github "${NOW_ARGS[@]}"
   fi
   echo "publish-dashboard: could not assemble the payload; $data_file left unchanged" >&2
   exit 1

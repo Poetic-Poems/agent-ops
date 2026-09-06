@@ -151,6 +151,11 @@ run_publish() {  # run_publish <home> [env assignments…]
   env HOME="$home" "$@" "$PUBLISH" --no-github >/dev/null 2>&1
 }
 
+run_publish_now() {  # run_publish_now <home> <now-iso8601> [env assignments…]
+  local home="$1" now="$2"; shift 2
+  env HOME="$home" "$@" "$PUBLISH" --no-github --now "$now" >/dev/null 2>&1
+}
+
 data_of() {  # the JSON inside data.js, wrapper stripped
   local home="$1"
   tail -n +2 "$home/.local/state/poetic-agents/dashboard/data.js" \
@@ -3178,6 +3183,63 @@ _n_full="$(wc -l < "$_c_full")"; _n_fast="$(wc -l < "$_c_fast")"
 printf '# tiered publish: full %s jq invocations, fast %s\n' "$_n_full" "$_n_fast"
 assert_eq "a fast build costs materially less than a full one" "1" \
   "$(( _n_fast * 3 < _n_full * 2 ))"
+
+# --- --now pins every rolling window to a caller-chosen instant (agent-ops#957) --
+# Without it, day_cut/today/recent_cut and the landing digest's in_window/
+# stale() all read the real wall clock, so a test asserting against them has
+# no way to say *when* it is running and must instead compute fixture
+# timestamps as offsets from `date` at run time — precisely what let PR #685's
+# fixed-calendar-date fixture pass its own checks and then fail, over 24h
+# later, once the real clock carried its rolling window past them.
+_now_bad_rc=0
+env HOME="$tmp_dir/nodeNowBad" "$PUBLISH" --no-github --now "not-a-date" >/dev/null 2>&1 || _now_bad_rc=$?
+assert_eq "an invalid --now exits non-zero rather than silently using it" "1" \
+  "$(( _now_bad_rc != 0 ))"
+
+now_n="$(new_home nodeNowCost)"
+# One cycle on 2026-08-22, read back at three different pinned instants: 5
+# days later (inside both the 60-day cost scan and "today" only at the
+# earlier date), on its own calendar day (so today == the cycle's day), and
+# 61 days later (outside COST_SCAN_DAYS entirely). None of this depends on
+# when the test actually runs.
+make_cycle "$now_n" "20260822T010000Z-nowcost" 1.5 model-now
+
+run_publish_now "$now_n" "2026-08-27T00:00:00Z"
+ndata="$(data_of "$now_n")"
+assert_eq "--now pins day_cut: a cycle 5 days before it is inside the 60-day scan" \
+  "1.5" "$(jq -r '.counts.by_day[] | select(.day=="20260822") | .usd' <<<"$ndata")"
+assert_eq "--now pins today: 5 days later, spend_today_usd excludes the earlier cycle" \
+  "0" "$(jq -r '.counts.spend_today_usd' <<<"$ndata")"
+
+run_publish_now "$now_n" "2026-08-22T23:00:00Z"
+ndata="$(data_of "$now_n")"
+assert_eq "--now pins today: on the cycle's own calendar day, spend_today_usd includes it" \
+  "1.5" "$(jq -r '.counts.spend_today_usd' <<<"$ndata")"
+
+run_publish_now "$now_n" "2026-10-23T00:00:00Z"
+ndata="$(data_of "$now_n")"
+assert_eq "--now pins day_cut: 61 days later, the cycle has aged out of the 60-day scan" \
+  "0" "$(jq -r '[.counts.by_day[] | select(.day=="20260822")] | length' <<<"$ndata")"
+
+now_l="$(new_home nodeNowLanding)"
+printf '{"ts":"2026-08-22T01:00:00Z","cycle":"c1","node":"nodeNowLanding","event":"landing-armed","repo":"acme/widgets","pr_url":"https://github.com/acme/widgets/pull/1","source":"tech-debt","complexity":"low","method":"auto-merge"}\n' \
+  > "$now_l/.local/state/poetic-agents/log.jsonl"
+
+run_publish_now "$now_l" "2026-08-22T05:00:00Z"
+ldata="$(data_of "$now_l")"
+assert_eq "--now pins the landing digest: 4h after the arm, it is inside the 24h window" \
+  "1" "$(jq -r '.landings.armed | length' <<<"$ldata")"
+
+# Same unchanged fixture, only --now differs: this is the case the no-op
+# short-circuit (#787) would defeat if --now were not part of its fingerprint
+# — a page built for one pinned "now" quietly served forever after, however
+# many later ticks pinned a different one.
+run_publish_now "$now_l" "2026-08-24T05:00:00Z"
+ldata="$(data_of "$now_l")"
+assert_eq "changing only --now still rebuilds, even though nothing on disk moved" \
+  "2026-08-24T05:00:00Z" "$(jq -r '.landings.generated_at' <<<"$ldata")"
+assert_eq "--now pins the landing digest: 2 days after the arm, it has aged out of the 24h window" \
+  "0" "$(jq -r '.landings.armed | length' <<<"$ldata")"
 
 # ---------------------------------------------------------------------------------
 if (( failures > 0 )); then
