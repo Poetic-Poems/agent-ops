@@ -8,6 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Actor and model scorecards** (issue #610, D22): one dashboard card per
+  actor with a model choice (coordinator, implementer, reviewer, enabler,
+  refiner), one row per model and tier, graded on outcome — attempts and how
+  many ended cleanly, terminal fate (landed unchanged / landed after rework /
+  voided / abandoned), first-pass yield, cost and wall-clock per landed item,
+  and each actor's own measure (the Co-Ordinator's corroboration rate and
+  whether its picks landed, the Reviewer's escape rate, the Enabler's unblock
+  success, the Refiner's refinement-hold rate). Every row states its stratum
+  and sample size and reads "insufficient evidence" below the minimum sample
+  rather than ranking on too little data. Supersedes the Co-Ordinator
+  verdict-quality panel (issue #319, folded into the Co-Ordinator card's own
+  measure) and retires the two "model used" pies (issue #529, folded into
+  every row's own `attempts`).
+
 - A **`--drain` mode** (agent-ops#865, requirements 2.2c/2.3d/2.9): a third
   `disabled.json` `mode`, alongside the switch's original `"stop"`, that stops
   new work being picked up while letting the four finishing sources

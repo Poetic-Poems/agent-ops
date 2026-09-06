@@ -2773,9 +2773,12 @@ selected_default_branch="$(jq -r '.default_branch // "main"' <<<"$work_order_jso
 # `race_losses` is present only when this selection recovered from at least
 # one lost claim (issue #245) — an ordinary first-try selection, still the
 # overwhelming majority, carries nothing new on this event. `selected_by`
-# (requirement 3v, issue #321) is present only for a mechanical fallback pick,
-# so the dashboard and the verdict-quality metrics can tell model picks from
-# fallback picks apart without cross-referencing the corroboration events.
+# (requirement 3v, issue #321) is present only for a mechanical fallback
+# pick, letting a human reading the raw log tell a fallback pick from a
+# model pick by eye; no downstream reader in this repository keys on it —
+# the dashboard's actor and model scorecards panel (issue #610) reports
+# verdict quality as the corroboration rate computed from `corroboration`
+# events instead.
 log_event "selection" "$(jq -c --argjson n "$race_losses" --argjson fb "$selected_by_fallback" \
   '{repo, item, source, model, title, branch} + (if $n > 0 then {race_losses: $n} else {} end)
    + (if $fb == 1 then {selected_by: "script-fallback"} else {} end)' \

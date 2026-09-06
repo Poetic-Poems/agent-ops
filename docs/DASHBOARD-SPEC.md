@@ -576,10 +576,10 @@ So a tick has two kinds, and `--fast` chooses:
 - A **fast build** recomputes only what moves between ticks — `status`,
   `cycles`, `log_tail`, `cron_tail`, `fleet`, `revert_rate`, `log_repair` —
   and merges those keys over the last full payload. The history roll-ups
-  (`counts` and its verdict-quality, model-selection and classifier-escape
-  enrichments, `blocked`, `void`, `landings`, `github_budget`, and the stage
-  budgets inside `config`) are not computed at all: they read the fleet's
-  whole history and change on the scale of cycles, not ticks.
+  (`counts` and its actor-scorecard and classifier-escape enrichments,
+  `blocked`, `void`, `landings`, `github_budget`, and the stage budgets
+  inside `config`) are not computed at all: they read the fleet's whole
+  history and change on the scale of cycles, not ticks.
 
 A fast build emits only the keys it recomputed and merges them **over** the
 cached payload rather than assembling a whole object from variables the skipped
@@ -694,56 +694,112 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                      //   dropping the row itself. See
                                      //   docs/METERING-SCHEMA.md for the
                                      //   field-by-field contract
-             coordinator_verdicts: {   // how often the Script rejects a
-               window_from, window_to, //   Co-Ordinator verdict, and what
-               runs, retries,          //   the fleet spent recovering
-               selections, fallbacks,  //   (implementation spec 3t/3v/3w)
-               none_selected, corroborated, rejected, rate,
-               by_day:   [ {day, model, runs, retries, selections, fallbacks,
-                            none_selected, corroborated, rejected, rate} ],
-               by_model: [ {model, runs, retries, selections, fallbacks,
-                            none_selected, corroborated, rejected, rate} ],
-               by_band:  [ {band, rejected, unaccounted} ],
-                                       // counts, not a rate (issue #345):
-                                       //   rejected verdicts naming this band,
-                                       //   and the item count behind that;
-                                       //   "unknown" for a rejection logged
-                                       //   before spec 3x's `bands` existed
-               last_rejection: { ts, node, cycle, attempt, model, reason,
-                                 detail, eligible_total, unaccounted_total,
-                                 bands,  // {source: count}, spec 3x; null pre-3x
-                                 unaccounted:[{repo,item,source}],
-                                 outcome } },  // what became of that cycle
-             stage_models: {        // which model the Implementer/Reviewer
-               window_from, window_to,  //   stages were each *asked* to run
-               by_stage: [ {stage, model, n} ],   // (issue #529); the dashboard's
-                                      //   two "model used" pies. `model` is
-                                      //   `lib/metering.sh`'s own field — what
-                                      //   the invocation was asked for, never
-                                      //   re-derived from `cost_rows`/`modelUsage`,
-                                      //   which are spend attribution and would
-                                      //   report a stage's subagent models
-                                      //   instead of its own (the #536 failure
-                                      //   this issue was asked not to repeat).
-                                      //   One stage-end is one unit, including a
-                                      //   failed run (`exit_code != 0`) or a
-                                      //   retry; no readable `model` lands under
-                                      //   "unknown" rather than being dropped,
-                                      //   matching `by_model` above. `by_stage`
-                                      //   is the whole retained window's totals,
-                                      //   for the page's "Lifetime" default
-               rows: [ {day, stage, model, n} ] } },  // day-summed, so the page can
-                                      //   re-aggregate over its shared cost-chart
-                                      //   time-frame selector, exactly as
-                                      //   `cost_rows` does for the bar charts —
-                                      //   `window_from`/`window_to` are the span
-                                      //   of the *whole* retained log (not just
-                                      //   these two stages' own events), since
-                                      //   `log.jsonl` is rotated at
-                                      //   `log_retained_bytes` independently of
-                                      //   `COST_SCAN_DAYS`, so these pies can
-                                      //   span less history than the cost charts
-                                      //   beside them
+             actor_scorecards: {    // one card per actor with a model choice
+               window_from, window_to, //   (D12), one row per model and tier,
+               min_sample,             //   graded on outcome (issue #610, D22)
+                                      //   — supersedes `coordinator_verdicts`
+                                      //   (issue #319) and the two "model
+                                      //   used" pies (issue #529). `min_sample`
+                                      //   is `lib/verdict-fate.sh`'s own
+                                      //   `MIN_SAMPLE` convention (agent-ops#573).
+               actors: [ {
+                 actor,               // "coordinator"|"implementer"|"reviewer"
+                                      //   |"enabler"|"refiner" — always all
+                                      //   five, `rows: []` when a card has
+                                      //   nothing to report, never absent
+                 rows: [ {
+                   model, tier,       // the stratum (D22): Implementer splits
+                                      //   trivial/default, Reviewer default/
+                                      //   complex, Enabler default/critical
+                                      //   (by stage name); the Co-Ordinator
+                                      //   and the Refiner have one tier,
+                                      //   "default". "unmapped" when a
+                                      //   historical model id matches neither
+                                      //   of an actor's two *current* tier
+                                      //   configs
+                   attempts, clean,   // every stage-end for this row (item-
+                                      //   carrying or not); `clean` has no
+                                      //   `kill_reason` — a fleet-wide crash-
+                                      //   loop escalation cannot be pinned to
+                                      //   one attempt and is not subtracted
+                   items_examined,    // the item-carrying subset only (the
+                                      //   Co-Ordinator's and the top-level
+                                      //   Enabler's/Refiner's own engagements
+                                      //   never carry one — see each actor's
+                                      //   own `measure` below instead)
+                   landed, landed_unchanged, landed_with_rework,
+                   voided, abandoned, other_fate,
+                                      // terminal fate (`lib/item-lifecycle.sh`,
+                                      //   requirement 49) of the items this
+                                      //   row's stage-ends touched;
+                                      //   `landed_with_rework` is a landed
+                                      //   item carrying a deduped `rework`
+                                      //   record (docs/FLOW-SCHEMA.md) whose
+                                      //   `attributed_stage` names this row's
+                                      //   own actor; `other_fate` sums
+                                      //   blocked/open/superseded/unaccounted
+                   first_pass_yield,  // landed_unchanged / landed, null only
+                                      //   if landed is 0 — computed
+                                      //   whatever `sample` is, since a
+                                      //   consumer other than the renderer
+                                      //   below may want the raw figure
+                   cost_per_landed_usd, wallclock_per_landed_ms,
+                                      // summed from the landed item's own
+                                      //   stage-end(s) `cost_usd`/
+                                      //   `duration_ms` (docs/METERING-SCHEMA.md)
+                                      //   divided by items landed — not
+                                      //   `cost_rows`, which is never
+                                      //   `attributed` for the Enabler or the
+                                      //   Refiner and would leave those two
+                                      //   permanently null
+                   sample, status,    // sample = landed+voided+abandoned;
+                                      //   status is "insufficient-sample"
+                                      //   below `min_sample`, "ok" otherwise
+                                      //   — the renderer swaps first_pass_
+                                      //   yield/cost/wall-clock above for an
+                                      //   "insufficient evidence" badge on
+                                      //   this status, D22's "stratify or
+                                      //   abstain"; the gate is display-side
+                                      //   only, and the payload fields above
+                                      //   carry their computed figure either
+                                      //   way
+                   measure            // this row's own actor-specific
+                 } ] } ] },           //   measure, absent for no row (every
+                                      //   actor below has one) — see below
+                                      // Co-Ordinator: {kind:"coordinator-corroboration",
+                                      //   corroborated, rejected, rate,      folds
+                                      //   sample, status,                    issue
+                                      //   picks_total, picks_landed,         #319's
+                                      //   picks_landed_rate, picks_status}   rate in
+                                      //   — two rates over two populations, so
+                                      //   two gates: `status` is the
+                                      //   corroboration rate's (sample =
+                                      //   `corroborated`), `picks_status` the
+                                      //   picks-landed rate's (sample =
+                                      //   `picks_total`), each
+                                      //   "insufficient-sample" below
+                                      //   `min_sample` on its own count
+                                      // Reviewer: {kind:"reviewer-escape-rate",
+                                      //   escapes, of, rate, sample, status} —
+                                      //   items (not records) carrying a
+                                      //   deduped `human-change-request` or
+                                      //   `post-merge-revert` rework record
+                                      //   against items reviewed;
+                                      //   post-merge-revert's own `item` is the
+                                      //   reverted pull request's number, re-
+                                      //   keyed onto the work item via `pr_url`
+                                      //   (`pr-raised`/`pr-ready` carry both)
+                                      // Enabler: {kind:"enabler-unblock-success",
+                                      //   examined, landed, rate, sample, status}
+                                      //   — `examined`/`landed` are this row's
+                                      //   own `items_examined`/`landed`
+                                      // Refiner: {kind:"refiner-refinement-success",
+                                      //   refined, landed, bounced_back, rate,
+                                      //   sample, status} — items refined
+                                      //   (`item-refined` events with
+                                      //   `by:"refiner"`), never stage-end
+                                      //   attempts, since the Refiner's own
+                                      //   stage-end spans several items
   cycles:  [ { id, node, started_at, ended_at, outcome, repo, item, source, title,
                pr_url, reason, fail_detail, warning, total_cost_usd, limit_hit,
                raced, race_losses,          // true/count iff the cycle lost a claim
@@ -1134,16 +1190,15 @@ do. A repo at `0` or with no key carries neither badge nor note, so a fleet
 that has set no `nice` anywhere renders the panel it rendered before the
 feature existed. The values reach the page unaided — `config.repos` already
 ships wholesale — so this is rendering only: the Publisher is unchanged;
-**Co-Ordinator verdict quality** (immediately below the work sources, and
+**Actor and model scorecards** (immediately below the work sources, and
 deliberately: that panel is what the Co-Ordinator was handed, this one is how
-often its answer about it survived the Script checking that answer);
-the cost charts — by-day, by-model, by-actor, the two cost notes, then the two
-"model used" pies (Implementer and Reviewer, issue #529) and their own note —
+each actor's model choice did with what it was handed — issue #610, D22);
+the cost charts — by-day, by-model, by-actor, then the two cost notes —
 flowed through a CSS multi-column layout in that reading order, letting the
 browser balance the split by height rather than pinning by-day to a column of
 its own, since it runs to sixty rows against five each for by-model/by-actor,
 with a **time-frame selector** (issue #334) above the grid — one `<select>`,
-labelled as covering the model, actor and model-used charts, offering 1/7/30/90
+labelled as covering the model and actor charts, offering 1/7/30/90
 days and the unlabelled lifetime default — that re-aggregates `counts.cost_rows`
 client-side on change rather than re-fetching, so all the windowed charts
 redraw from the same choice with no round trip; recent log; `cron.log` tail. An
@@ -1156,22 +1211,6 @@ persisted choice the control has since disabled this way (grown stale as
 `cost_rows` moved) renders, and aggregates, as Lifetime instead — keeping the
 selected `<option>` and the chart it drives in agreement — and reverts to the
 persisted choice on its own once the window it names is available again.
-
-The two **model-used pies** re-aggregate `counts.stage_models.rows` off the
-same selector rather than `cost_rows` — a different Publisher aggregate, since
-`stage_models` counts stage-end runs by the model they were *asked* to run,
-never spend attribution — and render as a `<div>` with a CSS `conic-gradient`
-background plus a text legend rather than SVG, since `el()` never calls
-`createElementNS`. A model this page has not seen falls open to a grey slice
-rather than dropping it, the same as every other vocabulary table here (`ACTOR`,
-`VERDICT_OUTCOME`). Because `stage_models` reads `log.jsonl` directly rather
-than retained transcripts, its window can be shorter than `cost_rows`' — a
-muted caption under the pies states the aggregate's own `window_from`/
-`window_to` rather than letting a reader assume it matches the selector's
-label, and states that a failed run or a retry each count as their own slice.
-A stage with nothing in the selected window renders the same `.empty` panel
-every other chart on this page uses for "no data here", never a blank or a
-zero-slice pie.
 
 The **GitHub API budget** panel (issue #1090) is the first section on the
 page, deliberately: it answers the same question requirement 2.0's own gate
@@ -1529,83 +1568,105 @@ page's own node — a peer's badge comes from its heartbeat's `stage_health`
 field or renders nothing at all, never a verdict this page derives for that
 peer.
 
-The **Co-Ordinator verdict quality** panel renders
-`counts.coordinator_verdicts` (issue #319). Implementation spec 3t
-corroborates a `selected: false` verdict against the Script's own eligible
-tech-debt set and rejects one that cannot account for the band; spec 3v then
-retries it once and, failing that, picks mechanically. Both act one cycle at a
-time, and per cycle they can only say whether it happened. The operator
-question they leave behind — is `coordinator_model` the wrong model for this
-job — is a **rate**, so the panel leads with one: the rejected count, the
-corroborated count it is over, and the percentage, with a red badge at or above
-half and amber below.
+The **Actor and model scorecards** panel renders `counts.actor_scorecards`
+(issue #610, D22) — one card per actor with a model choice (D12), one row per
+model and tier, graded on **outcome**: what a stage-end's own attempts
+*produced*, not how many of them there were. It supersedes the Co-Ordinator
+verdict-quality panel (issue #319 — its corroboration rate is folded into the
+Co-Ordinator card's own `measure` rather than left rendering beside it) and
+the two "model used" pies (issue #529 — that ratio is now every row's own
+`attempts`, split by model and tier rather than drawn as a chart of its own).
 
-The unit is the **verdict, not the cycle**, because spec 3v lets one cycle
-produce two and a retry rejected in turn is a second wrong answer rather than
-the same one restated. What the fleet spent on those rejections is a second
-line — retry engagements, and items the Script had to pick itself — because
-that cost is real and is invisible in the rate above it.
+Every row's outcome figures — `landed`/`voided`/`abandoned`, first-pass yield,
+cost and wall-clock per landed item — are joined through
+`lib/item-lifecycle.sh`'s own fold (requirement 49) over the subset of that
+row's stage-ends that carry `{repo, item}`: the Implementer's and Reviewer's
+always do, the Enabler's two per-item adjudication stages do, and the
+Co-Ordinator's own engagement and the top-level Enabler's and Refiner's own
+do not — each spans several items in one engagement, so `items_examined`
+reads `0` there by construction and that actor's own measure (below) is built
+from a different, genuinely per-item event instead. That subset is reduced to
+distinct `{repo, item}` **once per row**, not once per stage name feeding it:
+a row can be fed by more than one stage — the Enabler's `critical` row by both
+`enabler-adjudicate` and `enabler-decide` — and an item that met both would
+otherwise count as two examined items and, if it landed, two landed ones,
+halving that row's own cost-per-landed. Cost and wall-clock still sum across
+every one of that item's own stage-ends in the row; only the item count is
+deduplicated. `landed_with_rework`
+reads a landed item's deduped `rework` records (docs/FLOW-SCHEMA.md, "Do not
+double-count") for one whose own `attributed_stage` names this row's actor —
+today that is only ever non-empty for a `stage-rerun` (any actor) or a
+`human-change-request` (Reviewer only), per that document's own "Attribution"
+section; every other class carries `attributed_stage: null` and so never
+moves a row from `landed_unchanged` to `landed_with_rework`. `attempts`/
+`clean` count *every* stage-end for the row's stage name(s), item-carrying or
+not, so the Co-Ordinator's and the top-level Enabler's/Refiner's own
+engagements are not undercounted the way restricting to the joinable subset
+would; `clean` is a stage-end with no `kill_reason` — the other half of
+`stage-rerun`, a fleet-wide crash-loop escalation, cannot be pinned to one
+attempt among several sharing a stage and node and is not subtracted here.
 
-Beneath, one row per UTC day **per Co-Ordinator model**, newest day first and
-models in a stable order within a day, so an installation that changes
-`coordinator_model` on one node gets two separately attributable rates rather
-than one blended figure. Beneath that, the newest rejection itself — which
-attempt it was, the verdict's own stated reason, the Script's machine detail,
-the unaccounted item refs (capped at twenty with the full count stated beside
-them), and **what became of that cycle**: recovered by the retry, recovered by
-the Script's own pick, accepted on retry with nothing selected, or stood down.
-A rate with no instance is not actionable; an instance that does not say
-whether the fleet recovered is half the story spec 3v now has to tell.
+Cost and wall-clock per landed item read the landed stage-end's own
+`cost_usd`/`duration_ms` (docs/METERING-SCHEMA.md) directly, summed across
+every stage-end that touched the item and divided by items landed — not
+`counts.cost_rows[]`, whose own `attributed` field is `false` by construction
+for the Enabler and the Refiner (they share their triggering cycle's id with
+whichever stage of that cycle owns the item), which would leave those two
+actors' cost/wall-clock permanently null.
 
-A third breakdown, alongside `by_day` and `by_model`, answers the question the
-rate alone cannot: **which band** the fleet is getting wrong, and whether it
-is the same one every time — a rejection rate concentrated in `issues` is a
-different failure, and a different fix, from one concentrated in
-`merge-conflicts` (issue #345). It reports **counts, not a rate**: `rejected`
-(how many rejected verdicts named the band at all) and `unaccounted` (the item
-count behind that, summed across those verdicts). There is deliberately no
-per-band rate — a verdict rejected over `issues` was not "a verdict about
-issues", it was a verdict about everything the Script handed over that cycle,
-so a per-band figure has no sound denominator to divide by; the single
-per-verdict rate above stays the only rate the panel states. Rows are ranked
-most-rejected first and capped like the day/model table (`VERDICT_ROWS_MAX`),
-with the overflow stated rather than silent. A rejected verdict logged before
-spec 3x's `bands` object existed carries no band breakdown at all; it lands
-under an explicit `unknown` row rather than vanishing from the tally or being
-guessed into a real band, its `unaccounted` taken from the event's own
-`unaccounted_total` where it carries one, else from its cycle's sibling
-`warning` — the same fallback the newest-rejection panel uses — since a
-pre-3v `none-selected` carries no figure at all.
+Each actor's own **measure** answers the question specific to it, D22's own
+list: the **Co-Ordinator's** is issue #319's own corroboration rate, folded in
+here per model rather than left as its own panel — `corroborated`/`rejected`/
+`rate`, plus whether the items it picked (`selection`) went on to land,
+`picks_landed` of `picks_total`. That is two rates over two different
+populations, so each carries its own gate rather than sharing one: `status`
+answers for the corroboration rate over `corroborated`, `picks_status` for the
+picks-landed rate over `picks_total`. A row can have verdict history enough to
+state a rejection rate and two picked items — a landing rate off two picks is
+the spurious ordering "stratify or abstain" exists to refuse, and it must not
+reach the page on the strength of the *other* rate's sample.
+The **Reviewer's** is an escape rate:
+items — not raw rework records — carrying a deduped `human-change-request` or
+`post-merge-revert` record against items reviewed; a `post-merge-revert`
+record's own `item` is the reverted pull request's number, not the work item a
+stage-end names, so it is re-keyed onto the work item via `pr_url`
+(`pr-raised`/`pr-ready` already carry both) before the join, and is left
+unjoined — excluded from every row — where no such mapping is on record. The
+**Enabler's** is unblock success: `landed` of `items_examined`, the same two
+figures its own row already states. The **Refiner's** is refinement success:
+items it refined (`item-refined` events carrying `by: "refiner"` — the
+Enabler logs the same event, with no `by`, for its own unblock-as-refined act,
+and is excluded here) against how many were later bounced back
+(docs/FLOW-SCHEMA.md's `refinement-bounce-back`) — never the Refiner's own
+stage-end attempts, since that engagement spans several items and has no
+per-item identity of its own to count.
 
-Its three empty states mean three different things and are rendered as three
-different things: **no Co-Ordinator runs in the retained log** (missing data
-— a log too short or too new), **no rate yet** (verdicts, but none over a
-non-empty eligible set, so there was nothing to corroborate), and **no
-rejected verdicts in this window** in green (the healthy answer, which must
-not read as silence). A `data.js` written before the Publisher recorded any
-of this says so outright rather than rendering a clean-looking zero it has no
-data for.
+**Stratify or abstain** (D22): every row states its own `sample` — `landed` +
+`voided` + `abandoned`, the closed population its rate is drawn from — and
+`status`, `"insufficient-sample"` below `counts.actor_scorecards.min_sample`
+(`lib/verdict-fate.sh`'s own `MIN_SAMPLE` default of 5, agent-ops#573, reused
+rather than a second threshold invented for this card) or `"ok"` otherwise;
+below the minimum the row's first-pass yield, cost and wall-clock read
+"insufficient evidence" rather than a number too thin to mean anything. A
+row's own `measure` carries the same gate on its own sample — and one gate per
+rate it states, not one per measure, since the populations are often different:
+the Co-Ordinator's corroborated-verdict count is rarely the same as its
+picked-item count. A row's **stratum** is its
+own `model` and `tier`: Implementer splits `trivial`/`default`, Reviewer
+`default`/`complex`, Enabler `default`/`critical` by stage name
+(`enabler` vs. `enabler-adjudicate`/`enabler-decide`); the Co-Ordinator and
+the Refiner each have one configured model and so one tier, `default`. Tier
+is derived by comparing a stage-end's own `model` id against that actor's two
+*currently* configured tier values — there is no per-event record of which
+config key resolved it at the time — so a historical run under a
+since-changed mapping reads `"unmapped"` rather than a guess.
 
-The window is the **retained log union and nothing more**, and the panel says
-so under its own figures: `log.jsonl` is rotated at `log_retained_bytes` and
-`fleet_logs` reads only the live generation, so the aggregate is honestly "over
-the log we still have", carrying `window_from`/`window_to` rather than leaving
-the page to imply a history it cannot see. Persisting counters across publishes
-was the alternative and was not taken: four nodes publish the same union
-independently, and a double-counted rejection is a worse answer than an
-honestly bounded one.
-
-Verdicts are read from spec 3v's `corroboration` events where a cycle has
-them and from its `none-selected` where it does not — never both for one
-cycle, or a rejection that reached the fallback path with nothing to pick
-would be counted twice. Attribution comes from the event
-(`coordinator_model`, implementation spec 3w), falling back to the model that
-cycle recorded on its coordinator `stage-end` — the same invocation id, so the
-two cannot disagree — which is what lets the panel populate from history
-already on disk rather than only from cycles run after it shipped. `selection`
-carries a `model` of its own and it is deliberately never read here: that is
-the *Implementer* model chosen for the item, and reading it would attribute a
-Co-Ordinator verdict to whichever model was about to do the work.
+The card ships even on a log with no stage-end for any of the five actors,
+each carrying `rows: []` rather than the card itself going missing — the page
+distinguishes "nothing recorded in this window" from "this Publisher never
+recorded any of this," and a `data.js` written before the aggregate existed
+says so outright rather than rendering a clean-looking empty card set it has
+no data for.
 
 The **recent log** is the newest 80 events, one row each: time, the event as a
 badge, **Node**, **Repo**, **Actor**, and the event's own detail. A
@@ -2002,45 +2063,46 @@ number's twins elsewhere on the page.
   unrelated repo's own legitimate 404 still reads `answered_404` in the same
   tick, proving the two are told apart from each other and not just from the
   healthy case.
-  The verdict-quality aggregate (issue #319) counts **both** terms of the
-  rate and tells five shapes apart in one synthetic log: a verdict rejected
-  then recovered by the retry that followed it, an accepted one over a
-  non-empty eligible set (denominator only), one written before implementation
-  spec 3v recorded `corroboration` events, an empty eligible set (neither
-  term), and a verdict rejected twice that the Script then had to pick for.
-  A cycle counts its verdict **once** — spec 3v writes both a `corroboration`
-  and a `none-selected` for the same answer, and counting both would inflate
-  every denominator by exactly the cycles that stood down cleanly. Two models
-  in the same window carry separate rates and separate fallback counts; a
-  `selection` is attributed to the Co-Ordinator model and never to the
-  Implementer `model` the event itself carries; the newest rejection names its
-  attempt, its own `unaccounted` refs and count, and what became of the cycle
-  it happened on; and a log holding no Co-Ordinator record at all still ships
-  the aggregate zeroed with a `null` rate, since the page can only distinguish
-  a clean window from missing data if an empty window is still an object.
-  The per-band tally (issue #345) sums `rejected` and `unaccounted` per band
-  from a mix of shapes in the same synthetic log: one rejection naming two
-  bands at once (counted in both), a second rejection naming one of the same
-  bands again (summed, not overwritten), and a rejection logged with no
-  `bands` at all, which lands under `unknown` rather than being dropped or
-  folded into a real band, its `unaccounted` read from the sibling `warning`
-  of its cycle since the legacy event carries no figure of its own.
-  `counts.stage_models` (issue #529) is asserted from a synthetic log of six
-  `stage-end` events: an Implementer run, a second that failed
-  (`exit_code != 0`), that same cycle's retry, a Reviewer run with no `model`
-  field, a second Reviewer run that has one, and a Co-Ordinator run — the
-  failed run and its retry both count (one unit per stage-end, regardless of
-  outcome), the model-less Reviewer event lands under `by_stage`'s "unknown"
-  rather than being dropped, the Co-Ordinator's own stage-end contributes to
-  neither stage, and a seventh event outside `COST_SCAN_DAYS` is excluded from
-  both `by_stage` and `rows` while still being the log's oldest event and
-  therefore setting `window_from` — proving that field spans the *whole*
-  retained log, not just these two stages' own events. `rows` carries the same
-  day-summed `{day, stage, model, n}` shape the page re-aggregates client-side.
-  A log with no Implementer or Reviewer `stage-end` at all still ships the
-  aggregate as a real, zeroed object (empty `by_stage`/`rows`) rather than
-  omitting the key, the same "empty window, not missing data" contract
-  `coordinator_verdicts` keeps.
+  The actor-scorecards aggregate (issue #610, D22) is asserted from two
+  synthetic logs. The first drives the Co-Ordinator's own `measure` — the
+  folded issue #319 corroboration rate — through the same five shapes its
+  predecessor's test did: a verdict rejected then recovered by the retry that
+  followed it (and whose picked item later lands, proving the `picks_landed`
+  join), an accepted one over a non-empty eligible set (denominator only), one
+  written before implementation spec 3v recorded `corroboration` events, an
+  empty eligible set (neither term), and a verdict rejected twice that the
+  Script then had to pick for (whose picked item never lands). A cycle counts
+  its verdict **once** — spec 3v writes both a `corroboration` and a
+  `none-selected` for the same answer, and counting both would inflate every
+  denominator by exactly the cycles that stood down cleanly — and two models
+  in the same window carry separate rates and separate `picks_landed` counts;
+  a `selection` is attributed to the Co-Ordinator model and never to the
+  Implementer `model` the event itself carries; and the picks-landed rate is
+  gated on `picks_status` over its own two picks rather than riding on the
+  corroboration rate's sample, so a rate the page must not state cannot reach
+  it through the other population. The second log drives the
+  outcome join across the other four actors: an Implementer item killed once
+  (a deduped `stage-rerun` rework record attributed to it) then landed on a
+  clean rerun — `landed_with_rework`, not `landed_unchanged`, and cost/
+  wall-clock summed across *both* attempts, not just the one that landed it —
+  beside a second, trivial-tier item landed unchanged on a different model,
+  proving the two tiers stratify into separate rows; a Reviewer earning both a
+  `human-change-request` and a `post-merge-revert` on one item and a
+  `post-merge-revert` alone on a second — three escape records over two
+  reviewed items reading as **two** escaped items, so the count is of items
+  rather than records, and the second item, whose only record is keyed by its
+  pull request's own number, counts at all only because `pr_url` re-keys it
+  onto the work item; an Enabler's `enabler-adjudicate` and `enabler-decide` stage-ends
+  sharing the critical tier though each names a different item, one landed and
+  one voided, with cost-per-landed reading only the landed one's own spend,
+  plus a third item met by *both* of those stages that is examined **once**,
+  not once per stage name feeding the row — the count the row-level item dedup
+  exists for, and the one whose absence would halve cost-per-landed;
+  and a Refiner's two `item-refined` events, one bounced back
+  (`refinement-bounce-back`) and one landed, read from the refined-item count
+  rather than from the Refiner's own (itemless) stage-end. A log with no
+  stage-end for any of the five actors still ships the card as a real object,
+  `rows: []` on each of the five, rather than omitting the key.
 
 - `test/dashboard-render.test.sh` passes its plain-`grep` check, run without
   `node` and independent of the harness below, that the header's documentation
@@ -2141,49 +2203,35 @@ number's twins elsewhere on the page.
   see-more control names how many are held back, and every row carries both
   the height cap and the class that makes it open. A fixture inside the cap
   renders no control at all.
-  The Co-Ordinator verdict-quality card (issue #319) is asserted in both its
-  populated and its zero state, because they are the two readings an operator
-  acts on and only one of them was ever going to be exercised by accident: a
-  fixture carrying rejections renders the rate *and* both terms of it, a red
-  badge at three-quarters, the recovery line naming the retries and the picks
-  the Script had to make itself, a row per day per model with the second model
-  attributed apart from the first, a day with nothing to corroborate showing
-  no rate rather than a zero one, and the newest rejection beneath — its
-  attempt, reason, machine detail, unaccounted refs, the stated count of the
-  ones the cap held back, and what became of the cycle it happened on. A second fixture with verdicts but no rejections renders
-  the green "no rejected verdicts in this window" against its own denominator
-  and no contradiction block at all, while a `data.js` from before the
-  aggregate existed says so outright rather than rendering that same clean
-  zero for data it does not have.
+  The actor and model scorecards (issue #610, D22) are asserted from
+  `actor-scorecards.json`, which carries a populated row for every shape the
+  card renders: all five actors' cards appear, in D12 order, each headed and
+  each table's columns named; a Co-Ordinator row whose own base outcome
+  columns read "insufficient evidence" (it never joins to one item) beside a
+  `measure` that clears its own sample and states a real corroboration rate
+  and picks-landed ratio, and a second Co-Ordinator row below the minimum
+  sample on both of that measure's two independent gates — rendering
+  "insufficient evidence" in place of each rate rather than stating a
+  picks-landed percentage off two picks; an Implementer row split `unchanged`/`w/ rework` with its
+  own cost-per-landed and wall-clock-per-landed figures, and a second,
+  trivial-tier row rendered `insufficient evidence` below the minimum sample;
+  a Reviewer row whose own `measure` reads as an escape rate, not a
+  corroboration rate; an Enabler row naming the `critical` tier and an
+  unblock-success measure; and a Refiner row whose measure counts bounce-backs
+  against items refined. A `finished.json`-shaped fixture predating the
+  aggregate entirely renders the "written by a Publisher that did not record
+  it yet" empty state rather than a clean-looking empty card set it has no
+  data for.
   The cost section's blocks (issue #330) render inside one `.costgrid`
-  container in reading order — by-day, by-model, by-actor, both cost notes,
-  then (issue #529) the two model-used pies — at the same depth as the charts
-  rather than as paragraphs beside the section. Document order is what is
-  asserted because it is what the layout rests on: a multi-column flow fills
-  each column top-to-bottom in document order, so the order of the appends
-  *is* the order a reader sees, whichever column each block lands in.
-  Out of scope by the same tree-building limit:
+  container in reading order — by-day, by-model, by-actor, then both cost
+  notes — at the same depth as the charts rather than as paragraphs beside the
+  section. Document order is what is asserted because it is what the layout
+  rests on: a multi-column flow fills each column top-to-bottom in document
+  order, so the order of the appends *is* the order a reader sees, whichever
+  column each block lands in. Out of scope by the same tree-building limit:
   the pull-request hover card's pointer/focus behaviour, and which column the
   browser balances each cost block into — that is layout, and layout is what
   this stub does not do; it is covered by the manual check below.
-  The model-used pies themselves (issue #529) are asserted from
-  `stage-models.json`, which carries Implementer rows at day 0 (sonnet, opus)
-  and day 3 (sonnet), and Reviewer rows at day 3 (sonnet) and day 40 (a
-  model-less event): the default (Lifetime) render sums the Publisher's own
-  `by_stage` totals straight through, including the day-40 row folded into
-  "unknown" rather than dropped, with each slice's full model id in `title=`,
-  its `shortModel()` label, and its percentage and count in the legend; a
-  1-day window re-aggregates the Implementer pie to that day alone (50/50) and
-  renders the Reviewer panel as `.empty` — its only row that day was never
-  logged — rather than a blank or a zero-slice pie; a 7-day window restores the
-  Implementer pie's lifetime ratio and gives Reviewer its one (day-3) model at
-  100%, still excluding the day-40 "unknown" row; and the caption states both
-  the aggregate's own retained-log window and that a failed run or a retry each
-  count as their own slice. A `finished.json`-shaped fixture predating
-  `counts.stage_models` entirely still renders both pie headings — reading `[]`
-  off the absent aggregate, same as any other pre-#529 payload — with no third
-  costnote, since that caption only exists once the Publisher actually ships
-  the aggregate.
   A fixture with no `status.stage_health` renders "No cycle has completed
   on this node" in the Stage health section and raises no banner (agent-ops
   #662); one carrying a `failing` stage raises the red banner naming it,
@@ -2589,10 +2637,9 @@ number's twins elsewhere on the page.
   relative height rather than measured against it. `column-count: 2` with
   `break-inside: avoid` on each block instead lets the browser's own balance
   algorithm decide the split from the rendered heights on every load: the
-  blocks — day, model, actor, both cost notes, then the two model-used pies
-  (issue #529) and their own note — stay in that reading order and simply
-  land wherever the shorter side is, no JS layout code and no new data
-  needed.
+  blocks — day, model, actor, then both cost notes — stay in that reading
+  order and simply land wherever the shorter side is, no JS layout code and
+  no new data needed.
 
   What this buys is a split that is right for the data in front of it rather
   than for the data the layout was written against, plus the note's own

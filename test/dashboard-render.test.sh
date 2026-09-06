@@ -462,96 +462,73 @@ assert_not_contains "a zero aggregate renders no summary line" \
 assert_not_contains "nor does a data.js from before the field existed" \
   "no-op tick" "$(render finished.json)"
 
-# --- verdict-quality.json: the Co-Ordinator verdict-quality card (issue #319) ----
-# The card exists to answer a question one cycle never can: how often the
-# Script rejects a Co-Ordinator verdict (implementation spec 3t/3v), and
-# whether that rate is a property of `coordinator_model`. So the rate, its two
-# terms, the split by model, and what the fleet spent recovering are each
-# asserted — a card that renders a count without the denominator it was
-# divided by is the page the issue was filed against.
-vq="$(render verdict-quality.json)" || { printf 'FAIL - verdict-quality.json did not render:\n%s\n' "$vq"; exit 1; }
-assert_contains "the card leads with the rejection rate" \
-  "75% rejected" "$vq"
-assert_contains "and names both terms of it, so the denominator is never implied" \
-  "3 of 4 corroborated verdicts rejected" "$vq"
-assert_contains "a rate at or above half is coloured as a fault, not a warning" \
-  'class="badge b-red"' "$vq"
-assert_contains "the recovery line names what the rejections cost (spec 3v)" \
-  "2 retry engagement(s), 1 item(s) the Script had to pick itself" "$vq"
-assert_contains "the counts name the window they were taken over" \
-  "11 Co-Ordinator run(s), 3 selected, 6 nothing-selected" "$vq"
-assert_contains "and say what bounds that window, so silence is not read as history" \
-  "the retained log union" "$vq"
-# Split by model: the whole point of the split is that changing
-# `coordinator_model` on one node produces separately attributable rates, so
-# both models must appear as their own rows with their own figures.
-vqflat="$(tr '\n' ' ' <<<"$vq" | tr -s ' ')"
-assert_contains "the by-day table heads its columns as counts and a rate" \
-  "<th> Day <th> Co-Ord model <th> Runs <th> Selected <th> Nothing selected <th> Corroborated <th> Rejected <th> Rate" \
-  "$vqflat"
-assert_contains "the model that produced the rejections has its own row" \
-  "haiku-4-5" "$vq"
-assert_contains "and the model that did not is attributed separately" \
-  "sonnet-5" "$vq"
-assert_contains "a day/model row with nothing to corroborate shows no rate rather than a zero one" \
-  '<td class="mono"> 0 <td class="mono"> 0 <td> <span class="mono muted"> 0 <td class="mono"> — ' "$vqflat"
-assert_contains "while a corroborated day with no rejection shows a real zero rate" \
-  '<td class="mono"> 1 <td class="mono"> 1 <td> <span class="mono muted"> 0 <td class="mono"> 0%' "$vqflat"
-# The example beneath the rate: a rate with no instance is not actionable.
-assert_contains "the newest contradiction is shown beneath the counts" \
-  "most recent contradiction" "$vq"
-assert_contains "with the verdict's own stated reason" \
-  "every eligible tech-debt item is recorded void" "$vq"
-assert_contains "the Script's machine detail" \
-  "the Script found 33 eligible open tech-debt item(s)" "$vq"
-assert_contains "and the unaccounted item refs it named" \
-  "TD-PPagop-26080801" "$vq"
-assert_contains "counted against the eligible set they were drawn from" \
-  "Unaccounted items (33 of 33 eligible)" "$vq"
-assert_contains "with the display cap stated rather than silently truncating" \
-  "… and 31 more" "$vq"
-assert_contains "the node that produced it is named, since a fleet has four" \
-  "poetic-2" "$vq"
-# Requirement 3v means a contradiction is no longer the same thing as a lost
-# cycle, and the card must not imply that it is.
-assert_contains "the attempt that produced it is named, since a cycle now has two" \
-  "attempt 2" "$vq"
-assert_contains "and what became of the cycle it happened on" \
-  "recovered — the Script picked" "$vq"
+# --- actor-scorecards.json: the actor/model scorecards (issue #610, D22) --------
+# One card per actor with a model choice, one row per model and tier, graded
+# on outcome — supersedes the Co-Ordinator verdict-quality panel (#319, its
+# corroboration rate now the Co-Ordinator card's own `measure`) and the two
+# "model used" pies (#529, folded into every row's own `attempts`).
+sc="$(render actor-scorecards.json)" || { printf 'FAIL - actor-scorecards.json did not render:\n%s\n' "$sc"; exit 1; }
+scflat="$(tr '\n' ' ' <<<"$sc" | tr -s ' ')"
 
-# --- the per-band tally (issue #345): which band, not just how often -------------
-# Counts, not a rate, ranked most-rejected first as the aggregate already
-# sorts it — and a rejection logged before spec 3x's `bands` object existed
-# renders under an explicit "unknown" row rather than vanishing.
-assert_contains "the per-band table heads its columns as counts, not a rate" \
-  "<th> Band <th> Rejected <th> Unaccounted" "$vqflat"
-assert_contains "the band with the most rejections leads the table" \
-  '<td class="mono"> tech-debt' "$vqflat"
-assert_contains "carrying its own rejected and unaccounted counts" \
-  '<td class="mono"> tech-debt <td> <span class="badge b-red"> 2 <td class="mono"> 34' \
-  "$vqflat"
-assert_contains "a second band appears as its own row" \
-  "issues" "$vq"
-assert_contains "a rejection from before spec 3x lands under an explicit unknown row" \
-  '<td class="mono"> unknown <td> <span class="badge b-red"> 1 <td class="mono"> 7' \
-  "$vqflat"
+assert_contains "all five D12 actors get their own card, in order" \
+  "Co-Ordinator" "$sc"
+assert_contains "...Implementer" "Implementer" "$sc"
+assert_contains "...Reviewer" "Reviewer" "$sc"
+assert_contains "...Enabler" "Enabler" "$sc"
+assert_contains "...Refiner" "Refiner" "$sc"
+assert_contains "the window is named, so silence is not read as history" \
+  "the retained log union" "$sc"
+assert_contains "and states the minimum sample a row declines to rank below" \
+  "a row below 5 landed+voided+abandoned outcomes reads" "$sc"
 
-# The zero state, which must read as an answer rather than as missing data —
-# the distinction the issue asks for explicitly.
-vqc="$(render verdict-quality-clean.json)" || { printf 'FAIL - verdict-quality-clean.json did not render:\n%s\n' "$vqc"; exit 1; }
-assert_contains "a window with no rejected verdict says so explicitly" \
-  "no rejected verdicts in this window" "$vqc"
-assert_contains "coloured as the healthy answer it is" \
-  'class="badge b-green"' "$vqc"
-assert_contains "and still names the denominator, so zero is legible as a rate" \
-  "0 of 3 corroborated verdicts rejected" "$vqc"
-assert_not_contains "with no contradiction block to imply one happened" \
-  "most recent contradiction" "$vqc"
-assert_not_contains "nor a per-band table where no data.js key names one" \
-  "Unaccounted" "$vqc"
+assert_contains "each card's table heads its columns" \
+  "<th> Model <th> Tier <th> Attempts <th> Landed <th> Voided <th> Abandoned <th> 1st-pass yield <th> \$/landed <th> Wall-clock/landed <th> Own measure" \
+  "$scflat"
 
-# A page written before the Publisher recorded any of this must say that,
-# rather than rendering a clean-looking zero it has no data for.
+# The Co-Ordinator: its base outcome columns are always insufficient (it never
+# joins to one item), but its own `measure` — the folded verdict-quality rate
+# — states its own sample and can clear the bar on its own. The measure states
+# *two* rates over two different populations, so each carries its own gate:
+# `status` over corroborated verdicts, `picks_status` over picked items.
+assert_contains "the Co-Ordinator's own measure folds the old verdict-quality rate in, per model" \
+  "75% rejected (8 corroborated) · picks landed 80% of 10" "$scflat"
+assert_contains "a second Co-Ordinator model gets its own separately attributable row" \
+  "haiku-4-5" "$sc"
+assert_contains "below the stated minimum sample, its own measure reads insufficient evidence too" \
+  "insufficient evidence · picks landed insufficient evidence (2 picked)" "$scflat"
+
+# The Implementer: outcome split, tier, cost and wall-clock per landed item.
+assert_contains "landed splits into unchanged vs. after rework, per row" \
+  "5 (4 unchanged, 1 w/ rework)" "$scflat"
+assert_contains "first-pass yield renders as a percentage once the sample clears the bar" \
+  "80%" "$scflat"
+assert_contains "cost per landed item" \
+  "\$1.23" "$scflat"
+assert_contains "wall-clock per landed item" \
+  "12m05s" "$scflat"
+assert_contains "the Implementer's trivial tier is its own row, stratified from default" \
+  "trivial" "$sc"
+assert_contains "a row below the stated minimum reads insufficient evidence instead of ranking" \
+  '<span class="badge b-grey" title="sample 1 below the stated minimum"> insufficient evidence' \
+  "$scflat"
+
+# The Reviewer: its own escape-rate measure (human-change-request /
+# post-merge-revert against items reviewed).
+assert_contains "the Reviewer's own measure is an escape rate, not a corroboration rate" \
+  "16.7% escaped review (1 of 6)" "$scflat"
+
+# The Enabler: critical tier, unblock-success measure.
+assert_contains "the Enabler's per-item adjudication stages report the critical tier" \
+  "critical" "$sc"
+assert_contains "and its own measure is unblock success" \
+  "83.3% landed (5 of 6)" "$scflat"
+
+# The Refiner: refinement-hold measure (bounce-backs against items refined).
+assert_contains "the Refiner's own measure counts bounce-backs against items it refined" \
+  "85.7% held (1 of 7 bounced back)" "$scflat"
+
+# A page written before the Publisher recorded any of this must say so,
+# rather than rendering a clean-looking empty card set it has no data for.
 assert_contains "a data.js from before the aggregate existed reads as missing data" \
   "written by a Publisher that did not record it yet" "$(render finished.json)"
 
@@ -774,11 +751,6 @@ assert_contains "an enqueued-then-dequeued pull request belongs in the attention
 # moved: the first used to be a paragraph appended after the section, and
 # only counts as a block of the flow if it is inside the container.
 #
-# finished.json carries no `counts.stage_models` (issue #529 predates every
-# fixture but its own), so the two model-used pies render — reading `[]` off
-# an absent aggregate, same as any other pre-#529 fixture — but the third
-# costnote naming their retained-log window does not: that costnote only
-# exists once the Publisher actually ships the aggregate.
 out="$(render finished.json)" || { printf 'FAIL - finished.json did not render:\n%s\n' "$out"; exit 1; }
 
 assert_contains "the cost blocks share one multi-column container" \
@@ -793,10 +765,10 @@ assert_contains "a second cost note names the page's fixed currency (issue #438)
 # drop the rest.
 cost_order="$(printf '%s\n' "$out" \
   | sed -n '/<div class="costgrid">/,/Recent log events/p' \
-  | grep -oE 'Est\. token cost by (day|model|actor)|Model used . (Implementer|Reviewer)|class="costnote"' \
+  | grep -oE 'Est\. token cost by (day|model|actor)|class="costnote"' \
   | tr '\n' ' ')"
-assert_eq "the cost blocks flow in reading order — day, model, actor, both cost notes, then the two model-used pies" \
-  'Est. token cost by day Est. token cost by model Est. token cost by actor class="costnote" class="costnote" Model used — Implementer Model used — Reviewer ' \
+assert_eq "the cost blocks flow in reading order — day, model, actor, then both cost notes" \
+  'Est. token cost by day Est. token cost by model Est. token cost by actor class="costnote" class="costnote" ' \
   "$cost_order"
 
 # The serialiser indents two spaces per level, so six spaces is a child of the
@@ -815,7 +787,7 @@ assert_contains "the notes are blocks of that container, not paragraphs after th
 out="$(render cost-window.json)" || { printf 'FAIL - cost-window.json did not render:\n%s\n' "$out"; exit 1; }
 
 assert_contains "the selector renders above the model/actor charts, labelled to name them" \
-  "Time frame (model, actor & model-used charts)" "$out"
+  "Time frame (model & actor charts)" "$out"
 assert_contains "with no persisted choice it defaults to the lifetime option" \
   '<option value="all" selected="">' "$out"
 # shellcheck disable=SC2016
@@ -892,59 +864,6 @@ assert_not_contains "not twice, one per model it happened to touch" \
   '$3.00 · 2' "$out_split"
 assert_contains "the windowed model chart still credits each model only its own split" \
   'title="1 stage run(s)"' "$out_split"
-
-# --- stage-models.json: the Implementer/Reviewer "model used" pies (#529) --------
-# `counts.stage_models` carries Implementer rows at day 0 (sonnet, opus) and
-# day 3 (sonnet), and Reviewer rows at day 3 (sonnet) and day 40 (a model-less
-# event, which the Publisher folds into "unknown" rather than dropping). The
-# default render (below, no persisted `costWindow`) reads the Publisher's own
-# lifetime `by_stage` totals directly — the same "cheap path when untouched"
-# `spendByModel()` already follows — so it sees every row including day 40's.
-out="$(render stage-models.json)" || { printf 'FAIL - stage-models.json did not render:\n%s\n' "$out"; exit 1; }
-
-assert_contains "the time-frame label now names the model-used charts too" \
-  "Time frame (model, actor & model-used charts)" "$out"
-assert_contains "the Implementer pie heading is present" \
-  "Model used — Implementer" "$out"
-assert_contains "the Reviewer pie heading is present" \
-  "Model used — Reviewer" "$out"
-assert_contains "Lifetime sums the Implementer rows straight off by_stage: 3 sonnet" \
-  "75% · 3" "$out"
-assert_contains "and 1 opus" \
-  "25% · 1" "$out"
-assert_contains "a stage-end with no readable model counts under unknown rather than being dropped" \
-  "unknown" "$out"
-assert_contains "the unknown slice still carries its own share and count" \
-  "33.3% · 1" "$out"
-assert_contains "full model ids stay in the title= attribute, matching spendByModel()" \
-  'title="claude-sonnet-5-20260101"' "$out"
-assert_contains "the caption states failed runs and retries both count" \
-  "including runs that failed and retries" "$out"
-assert_contains "and reports the aggregate's own retained-log window" \
-  "These two pies read the retained log directly" "$out"
-
-# A 1-day window drops every row but day 0's: Implementer still has one of
-# each model (50/50), but Reviewer's only row that day was never logged (its
-# sonnet row is day 3, its unknown row day 40) — an empty stage in the
-# selected window renders the .empty panel, not a blank or a zero-slice pie.
-out_1d="$(render stage-models.json '{"dashboard.costWindow":"1"}')" || \
-  { printf 'FAIL - stage-models.json (1-day window) did not render:\n%s\n' "$out_1d"; exit 1; }
-assert_contains "a 1-day window re-aggregates the Implementer pie to that day alone" \
-  "50% · 1" "$out_1d"
-assert_contains "a stage with nothing in the selected window renders the empty panel" \
-  "No Reviewer runs recorded in this time frame." "$out_1d"
-
-# A 7-day window pulls in day 3 for both stages, so Reviewer now has its
-# sonnet row (day 40's unknown row is still outside it) and Implementer's
-# split returns to the lifetime ratio.
-out_7d="$(render stage-models.json '{"dashboard.costWindow":"7"}')" || \
-  { printf 'FAIL - stage-models.json (7-day window) did not render:\n%s\n' "$out_7d"; exit 1; }
-assert_contains "a 7-day window includes the day-3 Implementer row alongside day 0's" \
-  "75% · 3" "$out_7d"
-assert_contains "and gives the Reviewer pie its one (day-3) model, at 100%" \
-  "100% · 2" "$out_7d"
-assert_not_contains "still excluding the day-40 unknown row" \
-  "unknown" "$out_7d"
 
 # --- switch-scope-*.json: which switch a node card is actually claiming ----------
 # A fleet-wide --disable writes a local record on the node that issued it as

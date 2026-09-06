@@ -330,19 +330,20 @@ assert_eq "and carries nulls too" "true" \
 assert_eq "the sum property (issue #536) still holds with the join in place" \
   "true" "$(jq -r '([.counts.cost_rows[].usd] | add) == .counts.spend_total_usd' <<<"$wdata")"
 
-# The verdict-quality aggregate (issue #319) ships even when the log holds no
-# Co-Ordinator record at all, zeroed rather than absent: the page distinguishes
-# "no rejected verdicts in the window" from "this Publisher never recorded any
-# of this", and it can only draw that line if an empty window is still an
-# object.
-assert_eq "the verdict aggregate is present on a log with no Co-Ordinator record" \
-  "object" "$(jq -r '.counts.coordinator_verdicts | type' <<<"$data")"
-assert_eq "and reads as a real zero rather than a missing key" "0" \
-  "$(jq -r '.counts.coordinator_verdicts.runs' <<<"$data")"
-assert_eq "with no rate at all, since nothing was corroborated" "null" \
-  "$(jq -r '.counts.coordinator_verdicts.rate' <<<"$data")"
-assert_eq "and the per-band tally reads as a real empty array too" "[]" \
-  "$(jq -c '.counts.coordinator_verdicts.by_band' <<<"$data")"
+# The actor-scorecards aggregate (issue #610) ships even when the log holds
+# no stage-end for any of the five actors, zeroed rather than absent: the
+# page distinguishes "nothing recorded in this window" from "this Publisher
+# never recorded any of this", and it can only draw that line if an empty
+# window still carries a real card per actor.
+assert_eq "the scorecards aggregate is present on a log with no actor stage-ends" \
+  "object" "$(jq -r '.counts.actor_scorecards | type' <<<"$data")"
+assert_eq "all five D12 actors ship a card, even with nothing to report" \
+  '["coordinator","implementer","reviewer","enabler","refiner"]' \
+  "$(jq -c '[.counts.actor_scorecards.actors[].actor]' <<<"$data")"
+assert_eq "and each card reads as a real empty array rather than a missing key" "true" \
+  "$(jq -r '[.counts.actor_scorecards.actors[].rows] | all(. == [])' <<<"$data")"
+assert_eq "the stated minimum sample rides alongside" "5" \
+  "$(jq -r '.counts.actor_scorecards.min_sample' <<<"$data")"
 
 # --- The classifier-escape audit roll-up (requirement 8e, agent-ops#572) ----
 # Real bash/jq aggregation over classifier-escape/landing-audit events,
@@ -649,27 +650,28 @@ assert_eq "and the lock-held skips" "21" \
 assert_eq "carrying the newest tick's own timestamp" "2026-08-01T12:41:02Z" \
   "$(jq -r '.noop_ticks.last_ts' <<<"$ndata")"
 
-# --- Co-Ordinator verdict quality (issue #319) ----------------------------------
+# --- Actor and model scorecards: the Co-Ordinator's own measure (issue #610,
+# D22; supersedes issue #319's verdict-quality aggregate) --------------------
 # The rate the Script rejects a Co-Ordinator verdict at (implementation spec
-# 3t/3v), by UTC day and by the model that produced it. Both terms are counted
-# here, not just the rejections: the incident this came from (#310) was one
-# node standing the whole fleet down for a day, and the operator question it
-# left behind — is `coordinator_model` the wrong model — is a ratio, so a
-# numerator with no denominator answers nothing.
+# 3t/3v), by the model that produced it, now folded into the Co-Ordinator
+# card's own `measure` rather than a panel of its own. Both terms are counted,
+# not just the rejections: the incident this came from (#310) was one node
+# standing the whole fleet down for a day, and the operator question it left
+# behind — is `coordinator_model` the wrong model — is a ratio, so a numerator
+# with no denominator answers nothing.
 #
 # The unit is the verdict, not the cycle, because requirement 3v made a cycle
 # able to produce two. The fixture holds one of each shape the aggregate must
 # tell apart:
 #
-#   V1  rejected, then a retry that selected      2 verdicts, 1 rejected
+#   V1  rejected, then a retry that selected — and that pick later lands
 #   V2  accepted over a non-empty eligible set    denominator only — and its
 #                                                 `none-selected` must not be
 #                                                 counted as a second verdict
 #   V3  a `none-selected` from before 3v          1 rejected, attributed by
 #                                                 its cycle's own stage-end
 #   V4  an empty eligible set                     neither term
-#   V5  rejected twice, then the Script picked    2 verdicts, 2 rejected, on
-#                                                 the other model
+#   V5  rejected twice, then the Script picked — and that pick never lands
 v="$(new_home nodeV)"
 v_today="$(date -u +%Y-%m-%d)"
 v_yest="$(date -u -d '-1 day' +%Y-%m-%d 2>/dev/null || echo "$v_today")"
@@ -683,13 +685,14 @@ v_run() {  # v_run <iso-date> <hh:mm:ss> <cycle> <model> [retry-suffix]
     "$1" "$2" "$3" "$4" "${5:-}"
 }
 {
-  # V1 — rejected, retried, and the retry selected.
+  # V1 — rejected, retried, and the retry selected; the pick later lands.
   v_run "$v_yest" "02:00:00" "${v_yest_day}T020000Z-nodeV-1" "$haiku"
   printf '{"ts":"%sT02:00:01Z","cycle":"%sT020000Z-nodeV-1","node":"nodeV","event":"warning","detail":"tech-debt verdict contradiction: the Script found 33 eligible open tech-debt item(s)","eligible_total":33,"unaccounted":[{"repo":"o/a","item":"TD-1"}]}\n' "$v_yest" "$v_yest_day"
   printf '{"ts":"%sT02:00:02Z","cycle":"%sT020000Z-nodeV-1","node":"nodeV","event":"corroboration","attempt":1,"verdict":"rejected","eligible_total":33,"unaccounted_total":1,"unaccounted":[{"repo":"o/a","item":"TD-1"}],"reason":"all recorded void","coordinator_model":"%s","bands":{"tech-debt":1}}\n' "$v_yest" "$v_yest_day" "$haiku"
   v_run "$v_yest" "02:05:00" "${v_yest_day}T020000Z-nodeV-1" "$haiku" ',"retry":true'
   printf '{"ts":"%sT02:05:02Z","cycle":"%sT020000Z-nodeV-1","node":"nodeV","event":"corroboration","attempt":2,"verdict":"accepted-by-selection","eligible_total":33,"coordinator_model":"%s"}\n' "$v_yest" "$v_yest_day" "$haiku"
   printf '{"ts":"%sT02:05:03Z","cycle":"%sT020000Z-nodeV-1","node":"nodeV","event":"selection","repo":"o/a","item":"TD-1","source":"tech-debt","model":"claude-opus-5","title":"t"}\n' "$v_yest" "$v_yest_day"
+  printf '{"ts":"%sT03:00:00Z","node":"nodeV","cycle":"%sT020000Z-nodeV-1","event":"merge-observed","repo":"o/a","item":"TD-1"}\n' "$v_yest" "$v_yest_day"
   # V2 — accepted over a non-empty eligible set: the denominator, once.
   v_run "$v_yest" "03:00:00" "${v_yest_day}T030000Z-nodeV-2" "$haiku"
   printf '{"ts":"%sT03:00:02Z","cycle":"%sT030000Z-nodeV-2","node":"nodeV","event":"corroboration","attempt":1,"verdict":"accepted","eligible_total":4,"unaccounted_total":0,"coordinator_model":"%s"}\n' "$v_yest" "$v_yest_day" "$haiku"
@@ -701,7 +704,8 @@ v_run() {  # v_run <iso-date> <hh:mm:ss> <cycle> <model> [retry-suffix]
   # V4 — nothing was eligible, so there was nothing to corroborate.
   v_run "$v_today" "05:00:00" "${v_today_day}T050000Z-nodeV-4" "$haiku"
   printf '{"ts":"%sT05:00:02Z","cycle":"%sT050000Z-nodeV-4","node":"nodeV","event":"none-selected","reason":"nothing eligible","fingerprint":"def","eligible_total":0,"coordinator_model":"%s"}\n' "$v_today" "$v_today_day" "$haiku"
-  # V5 — rejected twice on the other model, and the Script picked for it.
+  # V5 — rejected twice on the other model, and the Script picked for it; that
+  # pick never lands.
   v_run "$v_today" "06:00:00" "${v_today_day}T060000Z-nodeV-5" "claude-sonnet-5"
   printf '{"ts":"%sT06:00:02Z","cycle":"%sT060000Z-nodeV-5","node":"nodeV","event":"corroboration","attempt":1,"verdict":"rejected","eligible_total":9,"unaccounted_total":9,"unaccounted":[{"repo":"o/b","item":"TD-9"}],"reason":"nothing to do","coordinator_model":"claude-sonnet-5","bands":{"issues":1}}\n' "$v_today" "$v_today_day"
   v_run "$v_today" "06:05:00" "${v_today_day}T060000Z-nodeV-5" "claude-sonnet-5" ',"retry":true'
@@ -709,172 +713,168 @@ v_run() {  # v_run <iso-date> <hh:mm:ss> <cycle> <model> [retry-suffix]
   printf '{"ts":"%sT06:05:03Z","cycle":"%sT060000Z-nodeV-5","node":"nodeV","event":"selection","repo":"o/b","item":"TD-9","source":"tech-debt","model":"claude-opus-5","title":"t","selected_by":"script-fallback"}\n' "$v_today" "$v_today_day"
 } > "$v/.local/state/poetic-agents/log.jsonl"
 run_publish "$v" NODE_NAME=nodeV
-vdata="$(jq -c '.counts.coordinator_verdicts' <<<"$(data_of "$v")")"
+vdata="$(jq -c '.counts.actor_scorecards.actors[] | select(.actor=="coordinator")' <<<"$(data_of "$v")")"
 
-assert_eq "every Co-Ordinator engagement in the window is counted" "7" "$(jq -r '.runs' <<<"$vdata")"
-assert_eq "including the retries, counted again on their own" "2" "$(jq -r '.retries' <<<"$vdata")"
-assert_eq "every selection" "2" "$(jq -r '.selections' <<<"$vdata")"
-assert_eq "and the ones the Script had to make itself" "1" "$(jq -r '.fallbacks' <<<"$vdata")"
-assert_eq "every nothing-selected outcome" "3" "$(jq -r '.none_selected' <<<"$vdata")"
-assert_eq "the denominator is the verdicts there was something to corroborate" "6" \
-  "$(jq -r '.corroborated' <<<"$vdata")"
-assert_eq "the numerator is the rejected ones" "4" "$(jq -r '.rejected' <<<"$vdata")"
-assert_eq "and the rate is one over the other" "0.6666666666666666" "$(jq -r '.rate' <<<"$vdata")"
-assert_eq "an empty eligible set enters neither term" "1" \
-  "$(jq -r --arg d "$v_today_day" --arg m "$haiku" \
-     '[.by_day[] | select(.day == $d and .model == $m and .none_selected == 1
-                          and .corroborated == 0 and .rejected == 0)] | length' <<<"$vdata")"
-# A cycle records its verdict once. Requirement 3v writes a `corroboration`
-# *and* a `none-selected` for the same verdict, and counting both would inflate
-# every denominator by exactly the cycles that stood down cleanly.
-assert_eq "a cycle that logged both records is one verdict, not two" "4" \
-  "$(jq -r --arg m "$haiku" '.by_model[] | select(.model == $m) | .corroborated' <<<"$vdata")"
-
-# Changing `coordinator_model` on one node must produce separately
-# attributable rates — the whole reason the split exists.
-assert_eq "the model that was rejected twice carries both" "2" \
-  "$(jq -r '.by_model[] | select(.model == "claude-sonnet-5") | .rejected' <<<"$vdata")"
+assert_eq "the Co-Ordinator card carries one row per model" "2" \
+  "$(jq -r '.rows | length' <<<"$vdata")"
+assert_eq "the model rejected twice carries its own corroborated/rejected counts" "2" \
+  "$(jq -r '.rows[] | select(.model == "claude-sonnet-5") | .measure.corroborated' <<<"$vdata")"
+assert_eq "and its rejected count" "2" \
+  "$(jq -r '.rows[] | select(.model == "claude-sonnet-5") | .measure.rejected' <<<"$vdata")"
 assert_eq "at its own rate" "1" \
-  "$(jq -r '.by_model[] | select(.model == "claude-sonnet-5") | .rate' <<<"$vdata")"
-assert_eq "and the other model is counted apart from it" "2" \
-  "$(jq -r --arg m "$haiku" '.by_model[] | select(.model == $m) | .rejected' <<<"$vdata")"
-assert_eq "at its own rate too" "0.5" \
-  "$(jq -r --arg m "$haiku" '.by_model[] | select(.model == $m) | .rate' <<<"$vdata")"
+  "$(jq -r '.rows[] | select(.model == "claude-sonnet-5") | .measure.rate' <<<"$vdata")"
+assert_eq "and its pick never landed" "0" \
+  "$(jq -r '.rows[] | select(.model == "claude-sonnet-5") | .measure.picks_landed' <<<"$vdata")"
+assert_eq "of its one pick" "1" \
+  "$(jq -r '.rows[] | select(.model == "claude-sonnet-5") | .measure.picks_total' <<<"$vdata")"
+# The denominator (V1's two attempts + V2 + V3) is 4 corroborated with 2
+# rejected (V1's first attempt, V3) — V4's empty eligible set enters neither
+# term, and V2's sibling `none-selected` for the same verdict is not counted
+# again (it is one verdict, not two).
+assert_eq "and the other model is counted apart from it, over its own four verdicts" "4" \
+  "$(jq -r --arg m "$haiku" '.rows[] | select(.model == $m) | .measure.corroborated' <<<"$vdata")"
+assert_eq "with two of them rejected" "2" \
+  "$(jq -r --arg m "$haiku" '.rows[] | select(.model == $m) | .measure.rejected' <<<"$vdata")"
+assert_eq "at its own rate" "0.5" \
+  "$(jq -r --arg m "$haiku" '.rows[] | select(.model == $m) | .measure.rate' <<<"$vdata")"
 assert_eq "a selection is attributed to the Co-Ordinator model, never the Implementer one" "0" \
-  "$(jq -r '[.by_model[] | select(.model == "claude-opus-5")] | length' <<<"$vdata")"
-assert_eq "a verdict written before 3v is still attributed by its own cycle" "3" \
-  "$(jq -r --arg m "$haiku" '.by_model[] | select(.model == $m) | .none_selected' <<<"$vdata")"
-assert_eq "and the Script fallback is attributed to the model it had to rescue" "1" \
-  "$(jq -r '.by_model[] | select(.model == "claude-sonnet-5") | .fallbacks' <<<"$vdata")"
+  "$(jq -r '[.rows[] | select(.model == "claude-opus-5")] | length' <<<"$vdata")"
+assert_eq "and the model whose retry landed the item it picked shows so" "1" \
+  "$(jq -r --arg m "$haiku" '.rows[] | select(.model == $m) | .measure.picks_landed' <<<"$vdata")"
+assert_eq "of its one pick" "1" \
+  "$(jq -r --arg m "$haiku" '.rows[] | select(.model == $m) | .measure.picks_total' <<<"$vdata")"
+# Below the stated minimum sample, the measure's own status says so — the same
+# gate every other row's outcome figures carry.
+assert_eq "a model's corroboration measure below the minimum sample reads insufficient" \
+  "insufficient-sample" "$(jq -r --arg m "$haiku" '.rows[] | select(.model == $m) | .measure.status' <<<"$vdata")"
+assert_eq "the Co-Ordinator's own base outcome columns are always insufficient — it never joins to one item" \
+  "insufficient-sample" "$(jq -r --arg m "$haiku" '.rows[] | select(.model == $m) | .status' <<<"$vdata")"
+# The picks-landed rate is a second rate over a *different* population (items
+# picked, not verdicts corroborated), so it carries its own gate rather than
+# riding on the corroboration rate's: one pick landing out of one is not
+# evidence that this model picks well, whatever its verdict sample.
+assert_eq "the picks-landed rate is gated on its own sample, not the corroboration rate's" \
+  "insufficient-sample" "$(jq -r --arg m "$haiku" '.rows[] | select(.model == $m) | .measure.picks_status' <<<"$vdata")"
 
-assert_eq "the day the fallback happened carries it" "1" \
-  "$(jq -r --arg d "$v_today_day" \
-     '.by_day[] | select(.day == $d and .model == "claude-sonnet-5") | .fallbacks' <<<"$vdata")"
-assert_eq "and the day it did not, does not" "0" \
-  "$(jq -r --arg d "$v_yest_day" --arg m "$haiku" \
-     '.by_day[] | select(.day == $d and .model == $m) | .fallbacks' <<<"$vdata")"
-
-# The example beneath the rate, and what became of the cycle it happened on.
-assert_eq "the newest rejection names its cycle" "${v_today_day}T060000Z-nodeV-5" \
-  "$(jq -r '.last_rejection.cycle' <<<"$vdata")"
-assert_eq "and which of the cycle's two attempts it was" "2" \
-  "$(jq -r '.last_rejection.attempt' <<<"$vdata")"
-assert_eq "and the model that produced it" "claude-sonnet-5" \
-  "$(jq -r '.last_rejection.model' <<<"$vdata")"
-assert_eq "carrying the eligible total it failed to account for" "9" \
-  "$(jq -r '.last_rejection.eligible_total' <<<"$vdata")"
-assert_eq "the unaccounted refs, from the corroboration record itself" "2" \
-  "$(jq -r '.last_rejection.unaccounted | length' <<<"$vdata")"
-assert_eq "with the record's own count beside them, not the shown one" "3" \
-  "$(jq -r '.last_rejection.unaccounted_total' <<<"$vdata")"
-assert_eq "and what the fleet did about it — a contradiction is no longer a lost cycle" \
-  "recovered-by-fallback" "$(jq -r '.last_rejection.outcome' <<<"$vdata")"
-
-# --- Co-Ordinator verdict quality: the per-band tally (issue #345) --------------
-# Counts, not a rate: which band a rejection named, and how many items in it
-# went unaccounted, summed across every rejected verdict in the window — never
-# per-verdict figures, since a verdict rejected over one band is not "a
-# verdict about that band" and has no sound per-band denominator. V1's one
-# rejection names `tech-debt` alone; V5's two rejections both name `issues`
-# (summed across attempts) and its second also names `tech-debt` again
-# (summed with V1's); V3 is a rejection recorded before spec 3x's `bands`
-# object existed and must land under an explicit `unknown` bucket rather than
-# vanishing or being folded into a real band — carrying the count of its
-# sibling `warning`'s `unaccounted` refs, since a pre-3v `none-selected`
-# carries no figure of its own (the same sibling `last_rejection` reads).
-assert_eq "a band named by two different rejections sums across them" "2" \
-  "$(jq -r '.by_band[] | select(.band == "issues") | .rejected' <<<"$vdata")"
-assert_eq "and its unaccounted count sums the same way" "2" \
-  "$(jq -r '.by_band[] | select(.band == "issues") | .unaccounted' <<<"$vdata")"
-assert_eq "a band named by rejections on two different verdicts also sums" "2" \
-  "$(jq -r '.by_band[] | select(.band == "tech-debt") | .rejected' <<<"$vdata")"
-assert_eq "unaccounted 1 (V1) + 2 (V5 attempt 2)" "3" \
-  "$(jq -r '.by_band[] | select(.band == "tech-debt") | .unaccounted' <<<"$vdata")"
-assert_eq "a rejection from before spec 3x's bands lands under an explicit unknown bucket" "1" \
-  "$(jq -r '.by_band[] | select(.band == "unknown") | .rejected' <<<"$vdata")"
-assert_eq "whose unaccounted count comes from the sibling warning the event predates" "1" \
-  "$(jq -r '.by_band[] | select(.band == "unknown") | .unaccounted' <<<"$vdata")"
-assert_eq "ranked most-rejected first" "issues" \
-  "$(jq -r '.by_band[0].band' <<<"$vdata")"
-assert_eq "with exactly the three bands this window saw" "3" \
-  "$(jq -r '.by_band | length' <<<"$vdata")"
-
-# The window is the retained log union and says so, so a short log cannot pass
-# for a clean history.
-assert_eq "the window names its own oldest event" "${v_yest}T02:00:00Z" \
-  "$(jq -r '.window_from' <<<"$vdata")"
-assert_eq "and its newest" "${v_today}T06:05:03Z" "$(jq -r '.window_to' <<<"$vdata")"
-
-# --- The Implementer/Reviewer model pies (issue #529) ----------------------------
-# `counts.stage_models`: which model each Implementer/Reviewer stage-end event
-# was *asked* to run — the dashboard's "model used" pies. `model` here is
-# `lib/metering.sh`'s field, already present on the event, never re-derived
-# from spend attribution (`cost_rows`/`modelUsage`).
-s="$(new_home nodeS)"
-s_today="$(date -u +%Y-%m-%d)"
-s_old="$(date -u -d '-90 days' +%Y-%m-%d 2>/dev/null || echo "1970-01-01")"
-s_today_day="${s_today//-/}"
+# --- Actor and model scorecards: outcome joins across the other four actors
+# (issue #610, D22) -----------------------------------------------------------
+# One implementer item killed once (a `stage-rerun` rework record attributed
+# to it) and landed on a rerun; one landed unchanged on a different, trivial-
+# tier model. The Reviewer of the first item earns a human-change-request and
+# a post-merge-revert (the latter keyed only by the pull request's own
+# number, re-keyed onto the work item via `pr_url`), and a second reviewed
+# item earns a post-merge-revert and nothing else, so the re-key is what
+# decides whether it counts at all. One Enabler adjudication lands, one is
+# voided. The Refiner refines two items, one bounced back.
+o="$(new_home nodeO)"
+o_today="$(date -u +%Y-%m-%d)"
 sonnet="claude-sonnet-5"
-opus="claude-opus-5"
-s_stage_end() {  # s_stage_end <iso-date> <hh:mm:ss> <cycle> <stage> <exit_code> [model-field] [retry-suffix]
-  printf '{"ts":"%sT%sZ","cycle":"%s","node":"nodeS","event":"stage-end","stage":"%s","exit_code":%s%s%s}\n' \
-    "$1" "$2" "$3" "$4" "$5" "${6:-}" "${7:-}"
-}
+haiku="claude-haiku-4-5-20251001"
+fable="claude-fable-5"
+o_repo="Poetic-Poems/agent-ops"
 {
-  # A failed run (exit_code 1) still counts — the question is which model was
-  # dispatched, not whether it succeeded.
-  s_stage_end "$s_today" "01:00:00" "${s_today_day}T010000Z-nodeS-1" "implementer" 0 ",\"model\":\"$sonnet\""
-  s_stage_end "$s_today" "02:00:00" "${s_today_day}T020000Z-nodeS-2" "implementer" 1 ",\"model\":\"$opus\""
-  # A retry of the same cycle is a second stage-end and counts again, on its
-  # own — unlike coordinator_verdicts above, there is no dedup by cycle here:
-  # requirement 33a logs one stage-end per engagement, and a retried
-  # Implementer really did run the model twice.
-  s_stage_end "$s_today" "02:30:00" "${s_today_day}T020000Z-nodeS-2" "implementer" 0 ",\"model\":\"$opus\"" ',"retry":true'
-  # A stage-end with no readable model — an envelope metering_fields could not
-  # parse — falls under "unknown" rather than being dropped.
-  s_stage_end "$s_today" "03:00:00" "${s_today_day}T030000Z-nodeS-3" "reviewer" 0
-  s_stage_end "$s_today" "04:00:00" "${s_today_day}T040000Z-nodeS-4" "reviewer" 0 ",\"model\":\"$sonnet\""
-  # A Co-Ordinator stage-end must never be counted here — only Implementer and
-  # Reviewer are in scope.
-  s_stage_end "$s_today" "05:00:00" "${s_today_day}T050000Z-nodeS-5" "coordinator" 0 ",\"model\":\"$sonnet\""
-  # Outside COST_SCAN_DAYS: excluded from by_stage/rows, but (being the
-  # oldest event in the log) still sets window_from — the window is the whole
-  # retained log, not just these two stages' own events.
-  s_stage_end "$s_old" "00:00:00" "${s_old//-/}T000000Z-nodeS-0" "implementer" 0 ",\"model\":\"$sonnet\""
-} > "$s/.local/state/poetic-agents/log.jsonl"
-run_publish "$s" NODE_NAME=nodeS
-sdata="$(jq -c '.counts.stage_models' <<<"$(data_of "$s")")"
+  printf '{"ts":"%sT01:00:00Z","cycle":"c501a","node":"nodeO","event":"stage-end","stage":"implementer","exit_code":1,"kill_reason":"inactivity","model":"%s","cost_usd":1.0,"duration_ms":100000,"repo":"%s","item":"501"}\n' "$o_today" "$sonnet" "$o_repo"
+  printf '{"ts":"%sT01:00:01Z","cycle":"c501a","node":"nodeO","event":"rework","class":"stage-rerun","detector":"x","evidence":{"kill_reason":"inactivity"},"attributed_stage":"implementer","repo":"%s","item":"501"}\n' "$o_today" "$o_repo"
+  printf '{"ts":"%sT02:00:00Z","cycle":"c501b","node":"nodeO","event":"stage-end","stage":"implementer","exit_code":0,"model":"%s","cost_usd":2.0,"duration_ms":500000,"repo":"%s","item":"501"}\n' "$o_today" "$sonnet" "$o_repo"
+  printf '{"ts":"%sT02:05:00Z","cycle":"c501b","node":"nodeO","event":"pr-raised","pr_url":"https://github.com/%s/pull/201","repo":"%s","item":"501"}\n' "$o_today" "$o_repo" "$o_repo"
 
-assert_eq "the aggregate is present" "object" "$(jq -r 'type' <<<"$sdata")"
-assert_eq "every Implementer stage-end counts once, including the failed run and the retry" "3" \
-  "$(jq -r '[.by_stage[] | select(.stage=="implementer") | .n] | add' <<<"$sdata")"
-assert_eq "opus alone covers the failed run and its retry" "2" \
-  "$(jq -r '.by_stage[] | select(.stage=="implementer" and .model=="claude-opus-5") | .n' <<<"$sdata")"
-assert_eq "a stage-end with no readable model lands under unknown rather than being dropped" "1" \
-  "$(jq -r '.by_stage[] | select(.stage=="reviewer" and .model=="unknown") | .n' <<<"$sdata")"
-assert_eq "the Reviewer total is both its runs, unknown included" "2" \
-  "$(jq -r '[.by_stage[] | select(.stage=="reviewer") | .n] | add' <<<"$sdata")"
-assert_eq "the Co-Ordinator's own stage-end is out of scope for this aggregate" "0" \
-  "$(jq -r '[.by_stage[] | select(.stage=="coordinator")] | length' <<<"$sdata")"
-assert_eq "a stage-end outside COST_SCAN_DAYS is excluded from by_stage — only the in-window sonnet run counts" "1" \
-  "$(jq -r '.by_stage[] | select(.stage=="implementer" and .model=="claude-sonnet-5") | .n' <<<"$sdata")"
-assert_eq "rows carry the same day-summed shape the page re-aggregates client-side" "1" \
-  "$(jq -r --arg d "$s_today_day" '[.rows[] | select(.day==$d and .stage=="implementer" and .model=="claude-opus-5" and .n==2)] | length' <<<"$sdata")"
-assert_eq "the out-of-window stage-end is excluded from rows too" "0" \
-  "$(jq -r --arg d "${s_old//-/}" '[.rows[] | select(.day==$d)] | length' <<<"$sdata")"
-assert_eq "window_from is the oldest event in the whole retained log, not just these two stages'" \
-  "${s_old}T00:00:00Z" "$(jq -r '.window_from' <<<"$sdata")"
-assert_eq "window_to is the newest" "${s_today}T05:00:00Z" "$(jq -r '.window_to' <<<"$sdata")"
+  printf '{"ts":"%sT01:00:00Z","cycle":"c502","node":"nodeO","event":"stage-end","stage":"implementer","exit_code":0,"model":"%s","cost_usd":0.2,"duration_ms":50000,"repo":"%s","item":"502"}\n' "$o_today" "$haiku" "$o_repo"
+  printf '{"ts":"%sT01:05:00Z","cycle":"c502","node":"nodeO","event":"pr-raised","pr_url":"https://github.com/%s/pull/202","repo":"%s","item":"502"}\n' "$o_today" "$o_repo" "$o_repo"
+  printf '{"ts":"%sT02:00:00Z","cycle":"c502","node":"nodeO","event":"merge-observed","repo":"%s","item":"502","pr_url":"https://github.com/%s/pull/202"}\n' "$o_today" "$o_repo" "$o_repo"
 
-# On a log with no stage-end for either stage at all, the aggregate still
-# ships as a real (zeroed) object rather than being absent — same reasoning
-# as coordinator_verdicts above.
-e="$(new_home nodeSEmpty)"
-run_publish "$e"
-edata="$(jq -c '.counts.stage_models' <<<"$(data_of "$e")")"
-assert_eq "an empty log still yields a real object" "object" "$(jq -r 'type' <<<"$edata")"
-assert_eq "with an empty by_stage" "[]" "$(jq -c '.by_stage' <<<"$edata")"
-assert_eq "an empty rows" "[]" "$(jq -c '.rows' <<<"$edata")"
+  printf '{"ts":"%sT03:00:00Z","cycle":"c501b","node":"nodeO","event":"stage-end","stage":"reviewer","exit_code":0,"model":"%s","cost_usd":0.5,"duration_ms":200000,"repo":"%s","item":"501"}\n' "$o_today" "$sonnet" "$o_repo"
+  printf '{"ts":"%sT03:00:01Z","cycle":"c501b","node":"nodeO","event":"rework","class":"human-change-request","detector":"x","evidence":{},"attributed_stage":"reviewer","repo":"%s","item":"501"}\n' "$o_today" "$o_repo"
+  printf '{"ts":"%sT03:05:00Z","cycle":"c501b","node":"nodeO","event":"pr-ready","pr_url":"https://github.com/%s/pull/201","repo":"%s","item":"501","handoff":"reviewer"}\n' "$o_today" "$o_repo" "$o_repo"
+  printf '{"ts":"%sT04:00:00Z","cycle":"c501b","node":"nodeO","event":"merge-observed","repo":"%s","item":"501","pr_url":"https://github.com/%s/pull/201"}\n' "$o_today" "$o_repo" "$o_repo"
+  printf '{"ts":"%sT05:00:00Z","node":"nodeO","cycle":null,"event":"rework","class":"post-merge-revert","detector":"y","evidence":{"kind":"revert","by":9},"repo":"%s","item":"201","pr_url":"https://github.com/%s/pull/201"}\n' "$o_today" "$o_repo" "$o_repo"
+
+  # A second reviewed item whose *only* escape record is a post-merge-revert,
+  # keyed by the pull request's own number (507's PR is 207) and joinable to
+  # the work item through `pr_url` alone. Item 501 above cannot prove the
+  # re-key on its own: it already carries a `human-change-request` keyed
+  # directly to the work item, so it reads as escaped whether or not the
+  # revert ever joins.
+  printf '{"ts":"%sT03:30:00Z","cycle":"c507","node":"nodeO","event":"stage-end","stage":"reviewer","exit_code":0,"model":"%s","cost_usd":0.5,"duration_ms":200000,"repo":"%s","item":"507"}\n' "$o_today" "$sonnet" "$o_repo"
+  printf '{"ts":"%sT03:35:00Z","cycle":"c507","node":"nodeO","event":"pr-raised","pr_url":"https://github.com/%s/pull/207","repo":"%s","item":"507"}\n' "$o_today" "$o_repo" "$o_repo"
+  printf '{"ts":"%sT04:30:00Z","cycle":"c507","node":"nodeO","event":"merge-observed","repo":"%s","item":"507","pr_url":"https://github.com/%s/pull/207"}\n' "$o_today" "$o_repo" "$o_repo"
+  printf '{"ts":"%sT05:30:00Z","node":"nodeO","cycle":null,"event":"rework","class":"post-merge-revert","detector":"y","evidence":{"kind":"revert","by":11},"repo":"%s","item":"207","pr_url":"https://github.com/%s/pull/207"}\n' "$o_today" "$o_repo" "$o_repo"
+
+  printf '{"ts":"%sT06:00:00Z","cycle":"c503","node":"nodeO","event":"stage-end","stage":"enabler-adjudicate","exit_code":0,"model":"%s","cost_usd":3.0,"duration_ms":900000,"repo":"%s","item":"503"}\n' "$o_today" "$fable" "$o_repo"
+  printf '{"ts":"%sT07:00:00Z","cycle":"c503","node":"nodeO","event":"merge-observed","repo":"%s","item":"503"}\n' "$o_today" "$o_repo"
+  printf '{"ts":"%sT08:00:00Z","cycle":"c504","node":"nodeO","event":"stage-end","stage":"enabler-decide","exit_code":0,"model":"%s","cost_usd":1.0,"duration_ms":100000,"repo":"%s","item":"504"}\n' "$o_today" "$fable" "$o_repo"
+  printf '{"ts":"%sT09:00:00Z","cycle":"c504","node":"nodeO","event":"item-void","repo":"%s","item":"504"}\n' "$o_today" "$o_repo"
+  # A third item met by *both* critical stages, in two cycles — the shape the
+  # row-level (not stage-level) item dedup exists for: 508 is one examined
+  # item, not one per stage name feeding the row.
+  printf '{"ts":"%sT09:10:00Z","cycle":"c508a","node":"nodeO","event":"stage-end","stage":"enabler-adjudicate","exit_code":0,"model":"%s","cost_usd":0.4,"duration_ms":40000,"repo":"%s","item":"508"}\n' "$o_today" "$fable" "$o_repo"
+  printf '{"ts":"%sT09:20:00Z","cycle":"c508b","node":"nodeO","event":"stage-end","stage":"enabler-decide","exit_code":0,"model":"%s","cost_usd":0.6,"duration_ms":60000,"repo":"%s","item":"508"}\n' "$o_today" "$fable" "$o_repo"
+  printf '{"ts":"%sT09:30:00Z","cycle":"c508b","node":"nodeO","event":"item-void","repo":"%s","item":"508"}\n' "$o_today" "$o_repo"
+
+  printf '{"ts":"%sT10:00:00Z","cycle":"c505","node":"nodeO","event":"stage-end","stage":"refiner","exit_code":0,"model":"%s"}\n' "$o_today" "$sonnet"
+  printf '{"ts":"%sT10:05:00Z","cycle":"c505","node":"nodeO","event":"item-refined","repo":"%s","item":"505","by":"refiner"}\n' "$o_today" "$o_repo"
+  printf '{"ts":"%sT10:10:00Z","cycle":"c505","node":"nodeO","event":"rework","class":"refinement-bounce-back","detector":"z","evidence":{},"repo":"%s","item":"505"}\n' "$o_today" "$o_repo"
+  printf '{"ts":"%sT10:15:00Z","cycle":"c505","node":"nodeO","event":"item-refined","repo":"%s","item":"506","by":"refiner"}\n' "$o_today" "$o_repo"
+  printf '{"ts":"%sT11:00:00Z","node":"nodeO","cycle":"c506","event":"merge-observed","repo":"%s","item":"506"}\n' "$o_today" "$o_repo"
+} > "$o/.local/state/poetic-agents/log.jsonl"
+run_publish "$o" NODE_NAME=nodeO
+odata="$(data_of "$o")"
+
+idata="$(jq -c '.counts.actor_scorecards.actors[] | select(.actor=="implementer")' <<<"$odata")"
+assert_eq "the Implementer stratifies by tier, not just model" "2" \
+  "$(jq -r '.rows | length' <<<"$idata")"
+assert_eq "the default-tier row counts both the killed attempt and its clean rerun" "2" \
+  "$(jq -r '.rows[] | select(.tier=="default") | .attempts' <<<"$idata")"
+assert_eq "but only the rerun as clean" "1" \
+  "$(jq -r '.rows[] | select(.tier=="default") | .clean' <<<"$idata")"
+assert_eq "the item still landed, on the strength of the successful rerun" "1" \
+  "$(jq -r '.rows[] | select(.tier=="default") | .landed' <<<"$idata")"
+assert_eq "but attributed as landed-after-rework, never landed-unchanged" "1" \
+  "$(jq -r '.rows[] | select(.tier=="default") | .landed_with_rework' <<<"$idata")"
+assert_eq "cost per landed item sums every attempt that landed item made, not just the last" \
+  "3" "$(jq -r '.rows[] | select(.tier=="default") | .cost_per_landed_usd' <<<"$idata")"
+assert_eq "and so does wall-clock" "600000" \
+  "$(jq -r '.rows[] | select(.tier=="default") | .wallclock_per_landed_ms' <<<"$idata")"
+assert_eq "a different, trivial-tier model gets its own row, landed unchanged" "1" \
+  "$(jq -r '.rows[] | select(.tier=="trivial") | .landed_unchanged' <<<"$idata")"
+
+rdata="$(jq -c '.counts.actor_scorecards.actors[] | select(.actor=="reviewer")' <<<"$odata")"
+assert_eq "the Reviewer's own row also reads the rework attributed to it as landed-with-rework" "1" \
+  "$(jq -r '.rows[0].landed_with_rework' <<<"$rdata")"
+# Three escape records over two reviewed items — 501 carries both a
+# human-change-request and a post-merge-revert, 507 carries a post-merge-revert
+# alone — and the measure counts *items*, so the answer is 2, not 3. It is also
+# 2, not 1, only because both reverts are keyed by their pull request's own
+# number and re-keyed onto the work item through `pr_url`: 507 has nothing else
+# to make it read as escaped.
+assert_eq "escaped items are counted once each, and a revert keyed by PR number joins via pr_url" \
+  "2" "$(jq -r '.rows[0].measure.escapes' <<<"$rdata")"
+assert_eq "over both items this row reviewed" "2" \
+  "$(jq -r '.rows[0].measure.of' <<<"$rdata")"
+
+edata="$(jq -c '.counts.actor_scorecards.actors[] | select(.actor=="enabler")' <<<"$odata")"
+assert_eq "enabler-adjudicate and enabler-decide share the critical tier" \
+  "critical" "$(jq -r '.rows[0].tier' <<<"$edata")"
+assert_eq "one item landed, two were voided" "1" \
+  "$(jq -r '.rows[0].landed' <<<"$edata")"
+assert_eq "...voided" "2" "$(jq -r '.rows[0].voided' <<<"$edata")"
+# 508 was met by both critical stages and is still one examined item: the item
+# dedup is per row, not per stage name feeding it. Were it per stage, this
+# would read 4 — and cost-per-landed would halve on the next item that landed
+# the same way.
+assert_eq "an item met by both critical stages is examined once, not once per stage" "3" \
+  "$(jq -r '.rows[0].items_examined' <<<"$edata")"
+assert_eq "cost per landed item counts only the landed one's own spend" "3" \
+  "$(jq -r '.rows[0].cost_per_landed_usd' <<<"$edata")"
+assert_eq "its own measure is unblock success — landed over examined" "0.3333333333333333" \
+  "$(jq -r '.rows[0].measure.rate' <<<"$edata")"
+
+fdata="$(jq -c '.counts.actor_scorecards.actors[] | select(.actor=="refiner")' <<<"$odata")"
+assert_eq "the Refiner's own measure counts items refined, not stage-end attempts" "2" \
+  "$(jq -r '.rows[0].measure.refined' <<<"$fdata")"
+assert_eq "one of which bounced back" "1" \
+  "$(jq -r '.rows[0].measure.bounced_back' <<<"$fdata")"
+assert_eq "and one of which landed" "1" \
+  "$(jq -r '.rows[0].measure.landed' <<<"$fdata")"
 
 # --- The process budget on a long history ---------------------------------------
 # 300 single-stage cycles ≈ months of history. The per-file scan forked two jq
