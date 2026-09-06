@@ -134,6 +134,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The claim loop (`agent-cycle.sh`) now stamps the configured `pr_label`
+  onto every claimed work order, alongside `branch`, unconditionally —
+  overriding whatever value the candidate already carried, including none
+  (agent-ops#956). Previously a claimed work order's `pr_label` came only
+  from the Co-Ordinator's own copy of its runtime input, or from
+  `fallback_select_candidate`'s composition on the mechanical-selection path
+  (PR #715): a Co-Ordinator whose model output omitted or mistyped the field
+  raised a pull request no gatherer — `gather-review-feedback.sh`,
+  `gather-abandoned-drafts.sh`, `gather-merge-conflicts.sh`,
+  `gather-dequeued.sh`, `gather-human-visibility-hygiene.sh`,
+  `scripts/sweep-closed-issues.sh`, `lib/merge-budget.sh` — could ever find
+  again, and requirement 2.2's back-pressure count silently missed it. The
+  Co-Ordinator's own copy and the mechanical fallback's composition are now
+  belt-and-braces rather than load-bearing.
+
 - `scripts/gather-source-state.sh` now pages its open-issue and open-PR
   listings to completion (`api_json_paged`). A single `gh api` call returns
   one page, and requirement 34i's work-gone sweep reads a blocked item's
