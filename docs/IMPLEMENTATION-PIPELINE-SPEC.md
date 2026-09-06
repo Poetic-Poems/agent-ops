@@ -22394,7 +22394,11 @@ pull request, run the ones the change touches and any it could regress.
     `blocked`, never `abandoned`, `--since` bounding the population but never
     the fate an included item resolves to (an item entering the population on
     one within-window event still reports `landed`/`abandoned` from
-    merge/draft-obsolete-flagged evidence that sits before the bound), and the
+    merge/draft-obsolete-flagged evidence that sits before the bound), a
+    landed item carrying a later item-scoped event (a second `pr-raised`)
+    resolving `fate: "landed"` with `reworked_after_landed` present and naming
+    that event and its own timestamp, an ordinary landed item with no later
+    activity carrying no `reworked_after_landed` field at all, and the
     degradation cases a malformed line, a missing field, an event naming
     no item, and an event whose `repo` is valid JSON but not a string all
     yielding a conforming report rather than aborting. The same

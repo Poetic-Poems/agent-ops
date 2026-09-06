@@ -16,6 +16,9 @@
 #   unaccounted         a voided-after-landed contradiction is not silently
 #                        resolved either way — it is named, with its reason,
 #                        and still counted (never dropped).
+#   reworked_after_      additive alongside fate: "landed" — present, naming
+#   landed               the earliest later item-scoped event, when one
+#                        exists; absent (never false/null) otherwise.
 #   degradation         a malformed line, a missing field, an event naming
 #                        no item, and a non-string `repo` all yield a
 #                        conforming report rather than aborting the fold.
@@ -154,6 +157,28 @@ out="$(fold_of "$resolved_order")"
 assert_eq "voided before a later merge is landed outright, no contradiction" \
   "landed" "$(fate_of "$out" acme/widgets 10)"
 assert_eq "  ... and it is not counted as unaccounted" "0" "$(jq -c '.totals.unaccounted' <<<"$out")"
+
+# --- reworked_after_landed: an item-scoped event later than the earliest ----
+# landing evidence, additive alongside fate: "landed" (issue #1181).
+
+reworked="$tmp_dir/reworked.jsonl"
+cat > "$reworked" <<'EOF'
+{"ts":"2026-01-10T00:00:00Z","node":"n1","cycle":"c30","event":"first-seen","repo":"acme/widgets","item":"70"}
+{"ts":"2026-01-10T00:01:00Z","node":"n1","cycle":"c30","event":"pr-raised","repo":"acme/widgets","item":"70","pr_url":"https://github.com/acme/widgets/pull/70"}
+{"ts":"2026-01-10T00:02:00Z","node":"n1","cycle":"c30","event":"merge-observed","repo":"acme/widgets","item":"70","pr_url":"https://github.com/acme/widgets/pull/70","stage":"landing"}
+{"ts":"2026-01-11T00:00:00Z","node":"n1","cycle":"c31","event":"pr-raised","repo":"acme/widgets","item":"70","pr_url":"https://github.com/acme/widgets/pull/71"}
+{"ts":"2026-01-12T00:00:00Z","node":"n1","cycle":"c32","event":"first-seen","repo":"acme/widgets","item":"72"}
+{"ts":"2026-01-12T00:01:00Z","node":"n1","cycle":"c32","event":"pr-raised","repo":"acme/widgets","item":"72","pr_url":"https://github.com/acme/widgets/pull/72"}
+{"ts":"2026-01-12T00:02:00Z","node":"n1","cycle":"c32","event":"merge-observed","repo":"acme/widgets","item":"72","pr_url":"https://github.com/acme/widgets/pull/72","stage":"landing"}
+EOF
+out="$(fold_of "$reworked")"
+assert_eq "a landed item with a later pr-raised still resolves landed" \
+  "landed" "$(fate_of "$out" acme/widgets 70)"
+assert_eq "  ... and carries reworked_after_landed naming the earliest later event" \
+  '{"since":"2026-01-11T00:00:00Z","event":"pr-raised"}' \
+  "$(jq -c '.records[] | select(.item == "70") | .reworked_after_landed' <<<"$out")"
+assert_eq "an ordinary landed item with no later activity carries no reworked_after_landed field" \
+  "false" "$(jq -c '.records[] | select(.item == "72") | has("reworked_after_landed")' <<<"$out")"
 
 # --- Degradation: a malformed line, a missing field, an event with no item ----
 
