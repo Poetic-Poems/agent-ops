@@ -293,6 +293,10 @@ approver_escalate() {
   printf 'url=%s\treasons=%s\tcondition=%s\n' "$1" "$2" "${3:-}" >>"$T/escalations"
 }
 
+approver_escalation_retire() {
+  printf 'url=%s\tcause=%s\tdetail=%s\n' "$1" "$2" "$3" >>"$T/retirements"
+}
+
 # The one model launch. Records the model it was asked for, and writes the
 # `.out` file the block then reads a verdict out of. An empty VERDICT stands
 # for a stage that returned nothing parseable.
@@ -340,7 +344,7 @@ run_case() {
   local level="$1" complexity="$2" streak="$3" verdict="$4"
   shift 4
   : >"$tmp_dir/events"; : >"$tmp_dir/posts"
-  : >"$tmp_dir/escalations"; : >"$tmp_dir/launches"
+  : >"$tmp_dir/escalations"; : >"$tmp_dir/launches"; : >"$tmp_dir/retirements"
   : >"$tmp_dir/resolved_complexity"; : >"$tmp_dir/prompt_override_args"
   : >"$tmp_dir/mal_calls"; : >"$tmp_dir/mks_calls"; : >"$tmp_dir/protected_calls"
   : >"$tmp_dir/token_calls"; rm -f "$tmp_dir/token_calls_count"
@@ -361,6 +365,7 @@ mks_calls() { cat "$tmp_dir/mks_calls"; }
 posts() { cat "$tmp_dir/posts"; }
 launches() { cat "$tmp_dir/launches"; }
 escalations() { cat "$tmp_dir/escalations"; }
+retirements() { cat "$tmp_dir/retirements"; }
 resolved_complexity() { cat "$tmp_dir/resolved_complexity"; }
 token_calls() { wc -l <"$tmp_dir/token_calls" | tr -d ' '; }
 token_call_args() { cat "$tmp_dir/token_call_args"; }
@@ -483,6 +488,16 @@ run_case agent-approves high 2 '{"verdict":"land","reasons":["both refusals are 
 assert_contains 'an adjudication land posts an APPROVE' "event=APPROVE" "$(posts)"
 assert_eq "  ... and raises no escalation" "0" "$(count escalations)"
 assert_eq "  ... and is logged as posted:true" 'true' "$(jq -c '.posted' <<<"$(verdict_event)")"
+assert_eq "  ... and retires the approver-adjudication escalation (agent-ops#1215)" \
+  "1" "$(count retirements)"
+assert_contains "  ... naming this pull request" "url=$URL" "$(retirements)"
+assert_contains "  ... with cause \"land\"" "cause=land" "$(retirements)"
+
+run_case agent-approves high 2 '{"verdict":"land","reasons":["both refusals are answered"]}' POST_RC=1 >/dev/null
+assert_contains "an adjudication land whose review GitHub refused still posts APPROVE" \
+  "event=APPROVE" "$(posts)"
+assert_eq "  ... but never retires the escalation — the disagreement is not confirmed resolved on GitHub" \
+  "0" "$(count retirements)"
 
 run_case agent-approves high 2 '{"verdict":"refuse","reasons":["the same defect, moved"]}' >/dev/null
 assert_contains 'an adjudication refuse below the recurrence threshold posts REQUEST_CHANGES' \

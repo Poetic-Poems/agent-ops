@@ -475,6 +475,71 @@ APPROVER_ESC_BODY
   fi
 }
 
+# approver_escalation_retire PR_URL CAUSE DETAIL
+# The other half of requirement 8c's escalation: `approver_escalate` above is
+# the only writer of a `pr-<n>-approver-adjudication` issue, and nothing ever
+# read it back before this (agent-ops#1215, agent-ops#1202's own instance) —
+# an adjudication `land` posted its APPROVE and the pull request went on to
+# merge, and the escalation it had raised sat open for eight hours afterward,
+# still asking a human to review and merge a pull request that was already
+# merged, until they closed it by hand. This closes it the moment the
+# pipeline itself can see the disagreement is over, from either of the two
+# places that can happen without the human ever touching the issue:
+#
+#   - CAUSE "land": this round's own adjudication engagement posted an
+#     APPROVE that actually reached GitHub — called from run_approver_stage's
+#     `land)` branch, immediately after `approver_post_or_warn` confirms the
+#     write landed (`approver_last_post_ok`), never on the strength of the
+#     verdict alone, which `approver_post_or_warn` always returns 0 for even
+#     when the write itself failed.
+#   - CAUSE "merged": the pull request has since merged, however that
+#     happened — a human's own click, a later automatic landing, or GitHub's
+#     merge queue resolving well after this round — called from
+#     scripts/sweep-closed-issues.sh's own fleet-wide merged-pull-request
+#     listing (requirement 17c), the same "no other site ever notices a
+#     human merge" reach that sweep already has for the post-merge
+#     closing-keyword backstop.
+#
+# DETAIL is the one fact the closing comment names — the landing SHA for
+# "land", "<login> at <ts>" for "merged". Mirrors approver_escalate's own
+# dedup lookup (create_escalation_issue's, requirement 8c) rather than
+# reusing that function directly: this finds and closes, never creates, so
+# there is no shared call to make. A no-op, logging nothing, when no open
+# issue matches — the common case, since most pull requests never escalate
+# at all.
+approver_escalation_retire() {
+  local pr_url="$1" cause="$2" detail="$3" gh_bin="${APPROVER_GH:-gh}"
+  local number item_ref existing issue_number issue_url comment
+  number="${pr_url##*/}"
+  item_ref="pr-${number}-approver-adjudication"
+  existing="$("$gh_bin" issue list -R "$selected_repo" --label "$enabler_escalation_label" \
+                --state open --search "$item_ref" --json number,url,body 2>/dev/null \
+              | jq -r --arg it "$item_ref" \
+                  'map(select(((.body // "") | contains($it)))) | first
+                   | if . == null then empty else "\(.number)\t\(.url)" end' 2>/dev/null || true)"
+  [[ -n "$existing" ]] || return 0
+  IFS=$'\t' read -r issue_number issue_url <<<"$existing"
+  case "$cause" in
+    land)   comment="The Approver's own adjudication landed this pull request on \`$detail\`." ;;
+    merged) comment="This pull request merged — $detail." ;;
+    *)      comment="This pull request's disagreement has ended ($detail)." ;;
+  esac
+  comment="$comment
+
+---
+Retired automatically by agent-cycle.sh (requirement 8c)."
+  if "$gh_bin" issue close "$issue_number" -R "$selected_repo" --comment "$comment" \
+       >/dev/null 2>>"$cycle_dir/approver-escalation-retire.err"; then
+    log_event "approver-escalation-retired" "$(jq -nc --arg u "$pr_url" \
+      --argjson n "$issue_number" --arg iu "$issue_url" --arg c "$cause" \
+      '{pr_url: $u, issue_number: $n, issue_url: $iu, cause: $c}')"
+  else
+    log_event "warning" "$(jq -nc --arg u "$pr_url" --argjson n "$issue_number" \
+      --arg d "approver-adjudication escalation issue #$issue_number for $pr_url has resolved ($cause) but could not be closed — see approver-escalation-retire.err" \
+      '{detail: $d, pr_url: $u, issue_number: $n}')"
+  fi
+}
+
 # approver_stage_complexity PR_URL PRE_REVIEW_COMPLEXITY TRIVIAL
 # Requirement 8b: the Approver's tier is resolved from the complexity as it
 # stands *after* the Reviewer stage has run, not the value requirement 8a
@@ -911,6 +976,12 @@ $node_name
       land)
         posted_review="APPROVE"
         approver_post_or_warn "$pr_url" APPROVE "$review_body" "$token"
+        if [[ "$approver_last_post_ok" == "1" ]]; then
+          local land_sha
+          land_sha="$("${APPROVER_GH:-gh}" pr view "$number" -R "$selected_repo" \
+            --json headRefOid --jq '.headRefOid' 2>/dev/null)"
+          approver_escalation_retire "$pr_url" "land" "${land_sha:-unknown}"
+        fi
         ;;
       refuse)
         posted_review="REQUEST_CHANGES"

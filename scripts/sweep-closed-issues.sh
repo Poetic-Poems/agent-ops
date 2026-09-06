@@ -67,6 +67,8 @@
 # Output: one JSON object per action on stdout —
 #   {"action":"closed","issue":198,"pr_number":206,"pr_url":…}
 #   {"action":"merge-observed","pr_number":206,"pr_url":…,"item":"198","merge_sha":…}
+#   {"action":"approver-escalation-retired","issue":199,"issue_url":…,"pr_number":206,
+#    "cause":"merged","merged_by":…,"merged_at":…}
 #   {"action":"warning","detail":…}
 #   {"action":"deferred","remaining":N}
 # The caller logs them; this script logs nothing itself. Exit 0 unless the
@@ -108,6 +110,7 @@ DEFAULTED_CONFIG="$(config_defaults "$CONFIG_FILE" "$SCHEMA_FILE" 2>/dev/null)"
 cfg() { jq -r "$1" <<<"$DEFAULTED_CONFIG" 2>/dev/null; }
 
 pr_label="$(cfg '.pr_label')"
+enabler_escalation_label="$(cfg '.enabler_escalation_label')"
 
 expand_home() {
   local p="$1"
@@ -141,10 +144,69 @@ warn() { jq -nc --arg d "$1" '{action: "warning", detail: $d}'; }  # warn DETAIL
 [[ -n "$pr_label" ]] || { warn "no pr_label configured — nothing to sweep"; exit 0; }
 
 prs_json="$("$GH" pr list -R "$slug" --state merged --label "$pr_label" \
-  --json number,body,url,mergeCommit,headRefName --limit "$pr_search_limit" 2>/dev/null)" || prs_json=""
+  --json number,body,url,mergeCommit,headRefName,mergedAt,mergedBy \
+  --limit "$pr_search_limit" 2>/dev/null)" || prs_json=""
 if [[ -z "$prs_json" ]]; then
   warn "could not list merged, $pr_label-labelled pull requests — skipping this pass"
   exit 0
+fi
+
+# The Approver-adjudication escalation retirement (agent-ops#1215, requirement
+# 8c/17c): `lib/approver.sh`'s own `land` path retires the escalation the
+# moment its own adjudication's APPROVE reaches GitHub, but a pull request a
+# human merges directly — without an adjudication `land` ever posting, or
+# merging well after one did — leaves that same `pr-<n>-approver-adjudication`
+# issue open indefinitely, since nothing else ever reads it back. This is the
+# one fleet-wide site that already notices a pull request merged some way
+# other than this pipeline's own arm (see lib/landing.sh's own header on why),
+# so it is also the only place a human's own merge click can retire one. One
+# extra `gh issue list` call per repo — never per pull request — matched
+# locally against the merged-PR listing already fetched above, and bounded by
+# the same $max_actions/$deferred budget the closing-keyword sweep below
+# shares this run with. Searched by $enabler_escalation_label, never
+# $pr_label: an escalation issue carries the former, not the latter.
+if [[ -n "$enabler_escalation_label" ]]; then
+  esc_json="$("$GH" issue list -R "$slug" --label "$enabler_escalation_label" --state open \
+    --search "approver-adjudication" --json number,url,body --limit 100 2>/dev/null)" || esc_json=""
+  if [[ -n "$esc_json" ]]; then
+    while IFS=$'\t' read -r esc_number esc_url esc_pr_number; do
+      [[ -n "$esc_number" && "$esc_pr_number" =~ ^[0-9]+$ ]] || continue
+      merged_fields="$(jq -r --argjson n "$esc_pr_number" \
+        '.[] | select(.number == $n) | [(.mergedBy.login // "someone"), (.mergedAt // "")] | @tsv' \
+        <<<"$prs_json" 2>/dev/null)"
+      [[ -n "$merged_fields" ]] || continue
+      IFS=$'\t' read -r merged_by merged_at <<<"$merged_fields"
+
+      if (( actions >= max_actions )); then
+        deferred=$(( deferred + 1 ))
+        continue
+      fi
+
+      esc_comment_body="$(pipeline_comment_header script "$node_name")
+
+This pull request merged — by \`$merged_by\` at \`$merged_at\` — so the
+Approver-adjudication disagreement this issue was raised for has ended,
+whether or not an adjudication \`land\` verdict is what actually did it.
+
+Retiring this escalation now so it stops paging you for a pull request that
+is already done.
+
+$(pipeline_comment_marker "$cycle_id" script)"
+
+      if "$GH" issue close "$esc_number" -R "$slug" --comment "$esc_comment_body" >/dev/null 2>&1; then
+        jq -nc --argjson issue "$esc_number" --arg issue_url "$esc_url" \
+          --argjson pr "$esc_pr_number" --arg by "$merged_by" --arg at "$merged_at" \
+          '{action: "approver-escalation-retired", issue: $issue, issue_url: $issue_url,
+            pr_number: $pr, cause: "merged", merged_by: $by, merged_at: $at}'
+        actions=$(( actions + 1 ))
+      else
+        warn "could not close approver-adjudication escalation issue #$esc_number (pull request #$esc_pr_number merged)"
+      fi
+    done < <(jq -r '.[]
+      | ((.body // "") | capture("pr-(?<n>[0-9]+)-approver-adjudication")? // null) as $m
+      | select($m != null)
+      | [(.number|tostring), .url, $m.n] | @tsv' <<<"$esc_json" 2>/dev/null || true)
+  fi
 fi
 
 while IFS=$'\t' read -r pr_number pr_url item merge_sha named_by; do

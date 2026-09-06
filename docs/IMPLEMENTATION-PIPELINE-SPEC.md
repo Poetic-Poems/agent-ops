@@ -7017,6 +7017,29 @@ implements.
    repeated rounds, so a persisting disagreement raises one issue, not one
    per cycle.
 
+   The escalation is retired — closed with a comment naming what ended the
+   disagreement, and an `approver-escalation-retired` event (`pr_url`,
+   `issue_number`, `issue_url`, `cause`) — the moment the pipeline can see
+   that disagreement is over, from either of the two places that can happen
+   without the human ever touching the issue (agent-ops#1215): `cause:
+   "land"`, the instant this round's own adjudication posts an `APPROVE` that
+   actually reaches GitHub (`approver_escalation_retire`, called from this
+   same `land` branch, gated on `approver_post_or_warn`'s own delivery
+   confirmation rather than the verdict alone); or `cause: "merged"`, when
+   `scripts/sweep-closed-issues.sh`'s fleet-wide merged-pull-request listing
+   (requirement 17c) finds the pull request merged some other way — a
+   human's own click, a later automatic landing, or a merge queue resolving
+   well after this round. Both read back the same dedup lookup
+   `create_escalation_issue` performs on the way in — an open issue carrying
+   `enabler_escalation_label` whose body quotes this `pr-<n>-approver-
+   adjudication` reference — and both are a no-op, logging nothing, when no
+   such issue is open, which is the common case: most pull requests never
+   escalate at all. Left unretired before this, the escalation survived its
+   own disagreement indefinitely — agent-ops#1202 sat open for eight hours
+   after the adjudication that answered it, asking a human to review and
+   merge a pull request that had already merged, until they closed it by
+   hand.
+
    No *Approver* engagement merges, at any tier, at any `merge_autonomy`
    level. `agent-merges-routine` and `agent-merges-all` run the identical
    Approver review this requirement and 8b describe, but this stage never
@@ -9164,6 +9187,21 @@ implements.
     events, and every node may sweep concurrently: GitHub's own issue-close
     is idempotent, so the worst race outcome is two nodes both finding
     nothing left to do. Skipped on `--dry-run`.
+
+    The same pass also retires the requirement 8c `cause: "merged"` half of
+    an Approver-adjudication escalation (agent-ops#1215): one extra `gh issue
+    list` call per repo, never per pull request, for every open issue
+    carrying `enabler_escalation_label` whose body names a `pr-<n>-approver-
+    adjudication` reference, matched locally against the merged-pull-request
+    listing this sweep already fetched. A match closes the issue with a
+    comment naming who merged the pull request and when, and reports
+    `{"action":"approver-escalation-retired", …, "cause":"merged", …}` for
+    the caller to log as `approver-escalation-retired` — this is the only
+    fleet-wide site that ever notices a pull request merged some way other
+    than this pipeline's own arm (`lib/landing.sh`), so it is also the only
+    place a human's own merge click can retire one. Shares this pass's
+    `$max_actions`/deferred budget with the closing-keyword sweep above,
+    rather than a separate cap of its own.
 17g. **The reservation-release retry sweep.** A `td/<id>`/`td-record/<id>`
     tech-debt reservation branch a failed cleanup delete could not remove is
     not left orphaned for good: since TD-PPagop-26082427, that

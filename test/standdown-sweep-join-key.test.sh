@@ -79,6 +79,11 @@ assert_eq "merge-observed carries repo and the sweep's own stage naming" \
   '{"repo":"acme/widgets","stage":"sweep-closed-issues","pr_number":300,"pr_url":"https://github.com/acme/widgets/pull/300","item":"301","merge_sha":"abc123"}' \
   "$(event_of merge-observed)"
 
+run_it '{"action":"approver-escalation-retired","issue":850,"issue_url":"https://github.com/acme/widgets/issues/850","pr_number":800,"cause":"merged","merged_by":"a-human","merged_at":"2026-09-06T11:09:07Z"}'
+assert_eq "approver-escalation-retired (requirement 8c, agent-ops#1215) carries repo alongside the sweep's own fields" \
+  '{"repo":"acme/widgets","issue":850,"issue_url":"https://github.com/acme/widgets/issues/850","pr_number":800,"cause":"merged","merged_by":"a-human","merged_at":"2026-09-06T11:09:07Z"}' \
+  "$(event_of approver-escalation-retired)"
+
 if (( failures > 0 )); then
   echo "$failures failure(s)"
   exit 1

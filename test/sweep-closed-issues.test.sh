@@ -57,7 +57,7 @@ assert_not_contains() {
 }
 
 config="$tmp_dir/config.json"
-jq -n '{pr_label: "autonomous-agent"}' > "$config"
+jq -n '{pr_label: "autonomous-agent", enabler_escalation_label: "enabler-escalation"}' > "$config"
 
 stub="$tmp_dir/gh"
 cat > "$stub" <<'STUB'
@@ -68,6 +68,8 @@ args="$*"
 case "$args" in
   "pr list -R x/y --state merged --label autonomous-agent "*)
     cat "$S/prs.json" ;;
+  "issue list -R x/y --label enabler-escalation --state open --search approver-adjudication "*)
+    cat "$S/esc-issues.json" 2>/dev/null || echo '[]' ;;
   "api repos/x/y/issues/"*)
     n="${args##*issues/}"
     if [[ -f "$S/issue-$n" ]]; then cat "$S/issue-$n"; else exit 1; fi ;;
@@ -231,6 +233,59 @@ assert_contains "  ... and warns that the seen-file write failed" \
 assert_eq "  ... while this run's own merge instant is still reported" \
   '{"action":"merge-observed","pr_number":700,"pr_url":"https://github.com/x/y/pull/700","item":"701","merge_sha":"pqr901"}' \
   "$(jq -c 'select(.action == "merge-observed")' <<<"$out")"
+
+# --- Case 7: an Approver-adjudication escalation for a merged pull request -------
+# requirement 8c/17c, agent-ops#1215: `lib/approver.sh`'s own `land`-path
+# retirement never runs for a pull request a human merges directly, so this
+# sweep is the only fleet-wide site that ever notices and retires it.
+c="$tmp_dir/case7"; mkdir -p "$c"
+jq -n '[{number: 800, url: "https://github.com/x/y/pull/800",
+         body: "<!-- agent-ops:closes-issue item=801 -->",
+         mergeCommit: {oid: "stu234"},
+         mergedAt: "2026-09-06T11:09:07Z", mergedBy: {login: "a-human"}}]' > "$c/prs.json"
+jq -n '{state: "closed"}' > "$c/issue-801"
+jq -n '[{number: 850, url: "https://github.com/x/y/issues/850",
+         body: "Item: `pr-800-approver-adjudication` · pull request https://github.com/x/y/pull/800"}]' \
+  > "$c/esc-issues.json"
+
+out="$(run_sweep "$c")"
+calls="$(cat "$c/calls.log")"
+assert_eq "the escalation is retired" \
+  '{"action":"approver-escalation-retired","issue":850,"issue_url":"https://github.com/x/y/issues/850","pr_number":800,"cause":"merged","merged_by":"a-human","merged_at":"2026-09-06T11:09:07Z"}' \
+  "$(jq -c 'select(.action == "approver-escalation-retired")' <<<"$out")"
+assert_contains "  ... with a real close call naming issue 850" \
+  "issue close 850 -R x/y --comment" "$calls"
+
+# --- Case 8: the same escalation shape, but its pull request has not merged ------
+c="$tmp_dir/case8"; mkdir -p "$c"
+jq -n '[]' > "$c/prs.json"
+jq -n '[{number: 851, url: "https://github.com/x/y/issues/851",
+         body: "Item: `pr-802-approver-adjudication` · pull request https://github.com/x/y/pull/802"}]' \
+  > "$c/esc-issues.json"
+
+out="$(run_sweep "$c")"
+calls="$(cat "$c/calls.log")"
+assert_eq "an escalation for a pull request that has not merged is left alone" '' \
+  "$(jq -c 'select(.action == "approver-escalation-retired")' <<<"$out" 2>/dev/null || true)"
+assert_not_contains "  ... and no close call is made for it" "issue close 851" "$calls"
+
+# --- Case 9: closing the escalation issue itself fails ----------------------------
+c="$tmp_dir/case9"; mkdir -p "$c"
+jq -n '[{number: 900, url: "https://github.com/x/y/pull/900",
+         body: "<!-- agent-ops:closes-issue item=901 -->",
+         mergeCommit: {oid: "vwx567"},
+         mergedAt: "2026-09-06T12:00:00Z", mergedBy: {login: "another-human"}}]' > "$c/prs.json"
+jq -n '{state: "closed"}' > "$c/issue-901"
+jq -n '[{number: 950, url: "https://github.com/x/y/issues/950",
+         body: "Item: `pr-900-approver-adjudication` · pull request https://github.com/x/y/pull/900"}]' \
+  > "$c/esc-issues.json"
+: > "$c/fail-close-950"
+
+out="$(run_sweep "$c")"
+assert_eq "a close GitHub refuses is reported as a warning, not silently dropped" '' \
+  "$(jq -c 'select(.action == "approver-escalation-retired")' <<<"$out" 2>/dev/null || true)"
+assert_contains "  ... naming the issue it could not close" "950" \
+  "$(jq -r 'select(.action == "warning") | .detail' <<<"$out")"
 
 if (( failures > 0 )); then
   echo "$failures failure(s)"
