@@ -43,15 +43,6 @@ assert_eq() {
   fi
 }
 assert_empty() { assert_eq "$1" "" "$2"; }
-assert_nonempty() {
-  local desc="$1" actual="$2"
-  if [[ -n "$actual" ]]; then
-    printf 'ok   - %s\n' "$desc"
-  else
-    printf 'FAIL - %s\n     expected: <non-empty>\n     actual:   <empty>\n' "$desc"
-    failures=$(( failures + 1 ))
-  fi
-}
 assert_contains() {
   local desc="$1" haystack="$2" needle="$3"
   if [[ "$haystack" == *"$needle"* ]]; then
@@ -119,7 +110,6 @@ GUARD_WARN_CALLS_FILE="$T/guard_warn_calls"
 # shellcheck disable=SC2317  # reached only from the lifted compose block.
 guard_warn() { printf '%s\t%s\n' "$1" "$2" >>"$GUARD_WARN_CALLS_FILE"; }
 guard_warn_calls() { [[ -f "$GUARD_WARN_CALLS_FILE" ]] && wc -l <"$GUARD_WARN_CALLS_FILE" | tr -d ' ' || printf '0'; }
-reset_guard_warn_calls() { rm -f "$GUARD_WARN_CALLS_FILE"; }
 
 # --- item_live_entry ----------------------------------------------------------
 
@@ -204,6 +194,7 @@ cand_missing='{"repo":"o/r","source":"issues","item":"999"}'
 out_missing="$(compose_selected_candidate_text "$cand_missing" "$repos" "$refinements")"
 rc=$?
 assert_eq "an item absent from ordered_repos_json fails closed" "1" "$rc"
+assert_empty "…and nothing is printed" "$out_missing"
 assert_eq "…without ever attempting a gh call" "0" "$(gh_calls)"
 
 # --- compose_selected_candidate_text: a never-trimmed source (no live fetch
@@ -246,6 +237,7 @@ assert_eq "an ordinary (non-takeover) merge-conflicts candidate keeps the rebase
 # --- compose failure into the existing "untraceable" cause ------------------
 
 loop_src="$(extract_block '^  c_composed=0' '^  # Requirement 17g ' "$AGENT_CYCLE")"
+# shellcheck disable=SC2016  # the literal source text is what is being matched
 if [[ -n "$loop_src" && "$loop_src" == *'compose_selected_candidate_text'* \
       && "$loop_src" == *'cause: "untraceable"'* && "$loop_src" == *'trace_faults=$(( trace_faults + 1 ))'* ]]; then
   printf 'ok   - %s\n' "the claim loop calls compose_selected_candidate_text and folds a compose failure into the untraceable cause"

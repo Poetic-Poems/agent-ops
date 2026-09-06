@@ -904,6 +904,7 @@ item_live_entry() {  # <repo> <source> <item>
 # Prints the matching entry, or nothing if the repo or the item is not found
 # (a candidate naming a stale or nonexistent item — treated as a compose
 # failure by the caller, never assumed away).
+# shellcheck disable=SC2016  # jq's own $repo/$source/$item, bound via --arg below — not the shell's.
 CANDIDATE_ENTRY_LOOKUP_JQ='
   (.[] | select(.slug == $repo)) as $r
   | [ if $source == "issues" then ($r.issues // [])[] | select(((.ref // (.number | tostring))) == $item)
@@ -929,6 +930,7 @@ CANDIDATE_ENTRY_LOOKUP_JQ='
 # where its "(script-fallback selection)" framing would be false of an
 # ordinary Co-Ordinator pick — `security`/`code-quality` are the only two
 # that said so.
+# shellcheck disable=SC2016  # jq's own $source/$item, bound via --arg below — not the shell's.
 CANDIDATE_TEMPLATE_JQ='
   def issue_ctx: "Issue #" + $item + ": " + (.title // "") + "\n\n"
     + (.body // "") + "\n\nComments:\n"
