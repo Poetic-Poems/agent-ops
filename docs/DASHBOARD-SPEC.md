@@ -2475,18 +2475,17 @@ number's twins elsewhere on the page.
   one deduped repetition (the fixture asserts the full 1000 of the fleet's
   1000 tokens here, never the 100-of-1000 undercount dropping the echoing
   node's cycle would produce); the Reviewer-waving-work-through signature
-  demonstrated
-  against a constructed before/after fixture (a rising `escape_rate` at the
-  `agent-review` rung alongside a *falling* `caught` count at that same
-  row); and the degradations (a malformed line, a missing log) that yield a
-  conforming report rather than aborting the fold. `test/dashboard-
-  render.test.sh`'s own `rework.json`/`rework-outage.json` fixtures then
-  check only that `D.rework` renders as the panel's own three sections and
-  its three static caveats (the share's cycle granularity, rework never being
-  a target of zero, and the human-gate coverage gap), and that an unassembled
-  payload (every field
-  `null`) reads as an outage rather than a quiet zero-rework tick — the
-  fold's own correctness is `rework-panel.test.sh`'s job, not this one's.
+  demonstrated against a constructed before/after fixture (a rising
+  `escape_rate` at the `agent-review` rung alongside a *falling* `caught`
+  count at that same row); and the degradations (a malformed line, a missing
+  log) that yield a conforming report rather than aborting the fold.
+  `test/dashboard-render.test.sh`'s own `rework.json`/`rework-outage.json`
+  fixtures then check only that `D.rework` renders as the panel's own three
+  sections and its three static caveats (the share's cycle granularity,
+  rework never being a target of zero, and the human-gate coverage gap), and
+  that an unassembled payload (every field `null`) reads as an outage rather
+  than a quiet zero-rework tick — the fold's own correctness is
+  `rework-panel.test.sh`'s job, not this one's.
 - `claim-expired-tombstone.json` (agent-ops#839) holds one claim backdated to
   `do_expire()`'s sentinel `1970-01-01T00:00:01Z` alongside one with a real,
   recent `ts`: the live-claims panel's Held column reads the first "expired —
