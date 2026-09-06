@@ -2321,8 +2321,9 @@ race_losses=0
 # meaning only the second.
 claim_skips=0
 # trace_faults: candidates dropped by requirement 17f that the repair above
-# could not rescue. Counted separately from both of the above for the reason
-# issue #767 exists: without it, a cycle whose every candidate failed
+# could not rescue, or by requirement 17h (agent-ops#769) failing to compose
+# a work order at all. Counted separately from both of the above for the
+# reason issue #767 exists: without it, a cycle whose every candidate failed
 # traceability left `claim_attempts` and `claim_skips` at zero and fell
 # through the reason ladder below to `raced` — reporting healthy contention,
 # with `race_losses: 0` and not one `claim-lost` event to its name, for 15
@@ -2345,15 +2346,49 @@ for (( ci = 0; ci < n_cand; ci++ )); do
   c_db="$(jq -r '.default_branch // "main"' <<<"$cand")"
   c_takeover="$(jq -r '.takeover // false' <<<"$cand")"
   [[ -n "$c_repo" && -n "$c_item" ]] || continue
+  # Requirement 17h (agent-ops#769, resolving #844 option (b)): for every
+  # source the Script already gathers as structured data, `context`/
+  # `acceptance`/`title` are composed here — from a live fetch for
+  # `issues`/`tech-debt` (the only two the fit ladder ever trims), from the
+  # never-trimmed pre-fetched entry otherwise — never left as whatever the
+  # model (or the fallback) wrote. `compose_selected_candidate_text` returns
+  # 2 for the three sources the Co-Ordinator still derives itself live
+  # (`project-review`, `failed-runs`, `implementation-plan`, which have no
+  # band entry to compose from and were never subject to the trimming this
+  # requirement exists to close) — `cand` is left exactly as selected for
+  # those, and requirement 17f/17g below still check the model's own text the
+  # way they always have. A compose failure (1: the item was not found in
+  # this cycle's own gather, or the live fetch failed) is fail-closed, folded
+  # into the same `untraceable` cause requirement 17f already uses for "a
+  # construction-time check refused to hand this candidate on, no peer
+  # involved" — a failed live read is exactly that, not a reason to fall back
+  # to a trimmed or stale entry.
+  c_composed=0
+  if [[ -n "$c_source" ]]; then
+    c_compose_out=""
+    c_compose_rc=0
+    c_compose_out="$(compose_selected_candidate_text "$cand" "$ordered_repos_json" "$refinements_json")" \
+      || c_compose_rc=$?
+    if (( c_compose_rc == 0 )); then
+      cand="$c_compose_out"
+      c_composed=1
+    elif (( c_compose_rc == 1 )); then
+      trace_faults=$(( trace_faults + 1 ))
+      log_event "claim-skipped" "$(jq -nc --arg r "$c_repo" --arg i "$c_item" --arg s "$c_source" \
+        --arg d "the Script could not compose this candidate's context/acceptance from a live read or this cycle's own gather — treated as untraceable rather than assumed compliant" \
+        '{repo: $r, item: $i, source: $s, cause: "untraceable", detail: $d}')"
+      continue
+    fi
+  fi
   # Requirement 17g (issue #821): checked before requirement 17f below, and
   # before the pre-claimed check further down — cheaper and unrelated to
-  # either. Guarded by `selected_by_fallback` for the same reason 17f's own
-  # check is: a fallback pick's `context` is Script-built from the entry's
-  # own record (lib/stage-attempt.sh's `fallback_select_candidate`), never
-  # from prose a model wrote, so it cannot fabricate anything and this would
+  # either. Guarded by `selected_by_fallback`/`c_composed` for the same
+  # reason 17f's own check is: a fallback pick's, or a requirement 17h
+  # compose's, `context` is Script-built from the entry's own record — never
+  # from prose a model wrote — so it cannot fabricate anything and this would
   # only ever cost a wasted `gh` read there.
   c_fab_fault=""
-  (( selected_by_fallback )) \
+  (( selected_by_fallback || c_composed )) \
     || c_fab_fault="$(item_text_fault "$cand" "$coordinator_fit_trimmed_json" "$refinements_json")"
   if [[ -n "$c_fab_fault" ]]; then
     # Never repaired (requirement 17g): appending the real text alongside a
@@ -2378,10 +2413,15 @@ for (( ci = 0; ci < n_cand; ci++ )); do
   # verbatim check every single time — and, the fallback's own candidate list
   # being one candidate long, faulting it would leave the cycle with nothing
   # to claim, disarming the one path that exists to keep the fleet moving
-  # when the model will not select.
+  # when the model will not select. A requirement 17h compose (`c_composed`)
+  # is exempt for the identical reason: `compose_selected_candidate_text`
+  # already calls `refinement_traceability_repair` itself, unconditionally,
+  # so the splice this check exists to verify has already happened by
+  # construction — checking it again would only ever pass, at the cost of a
+  # redundant `gh` read for a `comment_url`-recorded refinement.
   c_trace_fault=""
   c_repaired=""
-  (( selected_by_fallback )) \
+  (( selected_by_fallback || c_composed )) \
     || c_trace_fault="$(refinement_traceability_fault "$cand" "$refinements_json")"
   if [[ -n "$c_trace_fault" ]]; then
     # Supply the refinement rather than discard the work (issue #767). The
@@ -2412,7 +2452,7 @@ for (( ci = 0; ci < n_cand; ci++ )); do
   # something incomplete. Supply the live text itself so the Implementer
   # never starts from less than the item actually says — a no-op
   # (prints nothing) when context already carries it in full.
-  if (( ! selected_by_fallback )); then
+  if (( ! (selected_by_fallback || c_composed) )); then
     c_supplied="$(item_text_supply "$cand" "$coordinator_fit_trimmed_json")"
     if [[ -n "$c_supplied" ]]; then
       cand="$c_supplied"
@@ -2550,11 +2590,13 @@ if [[ -z "$claimed_json" ]]; then
     standdown_cause="fabricated"
   elif (( claim_attempts == 0 && trace_faults > 0 )); then
     # Requirement 17f dropped every candidate and the repair could not rescue
-    # one (issue #767). Nothing was claimed, nothing was raced, and nothing
-    # about the fleet is busy — this is a defect in the work orders reaching
-    # the gate, and it is named as one so no reader mistakes it for
-    # contention again.
-    standdown_reason="every candidate failed the refinement traceability check — no claim was attempted"
+    # one (issue #767), or requirement 17h (agent-ops#769) could not compose
+    # one at all — the item was missing from this cycle's own gather, or its
+    # live fetch failed. Both share this one cause: nothing was claimed,
+    # nothing was raced, and nothing about the fleet is busy — this is a
+    # defect in the work orders reaching the gate, and it is named as one so
+    # no reader mistakes it for contention again.
+    standdown_reason="every candidate failed the refinement traceability or compose check — no claim was attempted"
     standdown_cause="untraceable"
   else
     standdown_reason="every candidate is already claimed elsewhere"
