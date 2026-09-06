@@ -363,6 +363,14 @@ issue_priority_current() {
 # reached after a fallback band has been picked — are each logged by the
 # caller as a `warning` naming BAND itself, so the substitution is not lost.
 #
+# `"mutation-failed"` additionally carries an `"error"` key — the first line
+# of the mutation's own stderr, captured rather than discarded (agent-ops#960;
+# before this, a one-token schema mismatch rejected every write fleet-wide for
+# three days with nothing but a bare `mutation-failed` in the logs to go on;
+# see the mutation call below). Always present on this reason, even as an
+# empty string when the mutation produced no stderr at all — never omitted,
+# unlike `"requested"`, so a caller can log it unconditionally.
+#
 # "skipped-unrankable" is the band an org admin can add to the field at any
 # time (issue #509, requirement 39g's own promise never to overwrite a band a
 # human set): the issue's current option is present but is not one of the
@@ -393,7 +401,7 @@ issue_priority_current() {
 issue_priority_apply() {
   local slug="$1" number="$2" band="$3" gh_bin="${ISSUE_PRIORITY_GH:-gh}"
   local field_json field_id opt_id cur_json issue_node cur_band cur_rank new_rank
-  local write_band requested=""
+  local write_band requested="" mutation_stderr mutation_status error_line
 
   [[ "$slug" =~ ^[^/]+/[^/]+$ ]] || { printf '{"applied":false,"reason":"bad-slug"}'; return 1; }
   [[ "$number" =~ ^[0-9]+$ ]] || { printf '{"applied":false,"reason":"bad-number"}'; return 1; }
@@ -444,25 +452,33 @@ issue_priority_apply() {
   # All three are `ID!`. `singleSelectOptionId` is typed `ID` by the schema,
   # and declaring the variable `String!` made every write fail the whole
   # mutation with "Type mismatch on variable $optionId and argument
-  # singleSelectOptionId (String! / ID)" — silently, since the call below
-  # discards stderr and the caller only ever sees `mutation-failed`. That
-  # cost the fleet every Priority write it attempted (agent-ops#737).
+  # singleSelectOptionId (String! / ID)" — a message that names the defect
+  # precisely, but one the fleet could not see: the call below used to
+  # discard stderr outright, so the caller only ever saw `mutation-failed`.
+  # That cost the fleet every Priority write it attempted (agent-ops#737),
+  # unnoticed for three days (agent-ops#960). stderr is captured now — stdout
+  # to `/dev/null` first, then stderr onto the descriptor the command
+  # substitution below is already reading, so only the mutation's own error
+  # text, not its (empty, on success) stdout, ends up in `mutation_stderr`.
   # shellcheck disable=SC2016  # GraphQL's own $issueId/$fieldId/$optionId.
-  if "$gh_bin" api graphql \
+  mutation_stderr="$("$gh_bin" api graphql \
       -f query='mutation($issueId:ID!,$fieldId:ID!,$optionId:ID!){
         setIssueFieldValue(input:{issueId:$issueId, issueFields:[{fieldId:$fieldId, singleSelectOptionId:$optionId}]}){
           clientMutationId
         }
       }' \
       -f issueId="$issue_node" -f fieldId="$field_id" -f optionId="$opt_id" \
-      >/dev/null 2>&1; then
+      2>&1 >/dev/null)"
+  mutation_status=$?
+  if (( mutation_status == 0 )); then
     jq -nc --arg p "$write_band" --arg prev "$cur_band" --arg req "$requested" \
       '{applied: true, priority: $p, previous: (if $prev == "" then null else $prev end)}
        + (if $req == "" then {} else {requested: $req} end)'
     return 0
   fi
-  jq -nc --arg p "$write_band" --arg prev "$cur_band" --arg req "$requested" \
-    '{applied: false, reason: "mutation-failed", priority: $p, previous: (if $prev == "" then null else $prev end)}
+  error_line="$(head -n1 <<<"$mutation_stderr" 2>/dev/null || true)"
+  jq -nc --arg p "$write_band" --arg prev "$cur_band" --arg req "$requested" --arg err "$error_line" \
+    '{applied: false, reason: "mutation-failed", priority: $p, previous: (if $prev == "" then null else $prev end), error: $err}
      + (if $req == "" then {} else {requested: $req} end)'
   return 1
 }

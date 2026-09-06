@@ -14798,7 +14798,13 @@ implements.
     band; when it does carry `requested`, the warning names both the band
     the failed mutation actually targeted and the band the verdict asked
     for, since naming the requested band alone would blame a write that was
-    never attempted (agent-ops#551).
+    never attempted (agent-ops#551). `mutation-failed` additionally carries
+    an `error` key — the first line of the `setIssueFieldValue` mutation's
+    own stderr, captured rather than discarded — and the warning appends it
+    when non-empty (agent-ops#960): before this, a one-token schema mismatch
+    (`$optionId` declared `String!` against an `ID` argument) rejected every
+    Priority write fleet-wide for three days with nothing in the logs beyond
+    a bare `mutation-failed` to diagnose it from.
 
     `scripts/doctor.sh` warns, for every configured repository whose
     `sources` lists any of the four `issues:<band>` tokens, when its

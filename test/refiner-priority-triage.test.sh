@@ -207,7 +207,10 @@ if [[ "$1" == "api" && "$2" == "graphql" ]]; then
   done
   if [[ "$query" == *setIssueFieldValue* ]]; then
     printf '1\n' >> "$d/mutation-calls"
-    [[ -f "$d/fail-mutation" ]] && exit 1
+    if [[ -f "$d/fail-mutation" ]]; then
+      cat "$d/fail-mutation" >&2
+      exit 1
+    fi
     exit 0
   fi
   [[ -f "$d/fail-fields" ]] && exit 1
@@ -407,6 +410,35 @@ touch "$tmp_dir/gh-b/fail-mutation"
 result="$(issue_priority_apply "o/case-apply-8" 17 High)"
 assert_eq "a failed mutation is mutation-failed, not silently applied" "false" "$(jq -r '.applied' <<<"$result")"
 assert_eq "  ... reason is mutation-failed" "mutation-failed" "$(jq -r '.reason' <<<"$result")"
+rm -f "$tmp_dir/gh-b/fail-mutation"
+
+# agent-ops#960: the mutation's own GraphQL error, previously discarded at
+# `>/dev/null 2>&1`, must be captured and surfaced as `error` — the exact
+# failure mode that let a one-token schema mismatch reject every write
+# fleet-wide for three days with nothing to diagnose it from.
+reset_b
+current_response "I_node_17b"
+# shellcheck disable=SC2016  # a stubbed GraphQL error's literal text, not meant to expand
+printf 'gh: Type mismatch on variable $optionId and argument singleSelectOptionId (String! / ID) (setIssueFieldValue)\nSecond line should not appear\n' \
+  > "$tmp_dir/gh-b/fail-mutation"
+result="$(issue_priority_apply "o/case-apply-8b" 17 High)"
+assert_eq "a failed mutation still reports mutation-failed" "mutation-failed" "$(jq -r '.reason' <<<"$result")"
+# shellcheck disable=SC2016  # the literal error text to compare against, not meant to expand
+assert_eq "  ... and its error key carries the first line of the captured stderr" \
+  'gh: Type mismatch on variable $optionId and argument singleSelectOptionId (String! / ID) (setIssueFieldValue)' \
+  "$(jq -r '.error' <<<"$result")"
+rm -f "$tmp_dir/gh-b/fail-mutation"
+
+# A mutation failure with no stderr at all (the pre-#960 shape a genuinely
+# silent failure could still produce) carries an empty, never absent, error
+# key — callers rely on the key always being present for this reason.
+reset_b
+current_response "I_node_17c"
+touch "$tmp_dir/gh-b/fail-mutation"
+result="$(issue_priority_apply "o/case-apply-8c" 17 High)"
+assert_eq "no stderr at all: error is present but empty, not omitted" "0" \
+  "$(jq -e 'has("error")' <<<"$result" >/dev/null 2>&1; echo $?)"
+assert_eq "  ... and empty" "" "$(jq -r '.error' <<<"$result")"
 rm -f "$tmp_dir/gh-b/fail-mutation"
 
 # --- issue_priority_apply: the field resolves but is missing one of the
@@ -846,7 +878,10 @@ if [[ "$1" == "api" && "$2" == "graphql" ]]; then
   done
   if [[ "$query" == *setIssueFieldValue* ]]; then
     printf '1\n' >> "$d/mutation-calls"
-    [[ -f "$d/fail-mutation" ]] && exit 1
+    if [[ -f "$d/fail-mutation" ]]; then
+      cat "$d/fail-mutation" >&2
+      exit 1
+    fi
     exit 0
   fi
   [[ -f "$d/fail-fields" ]] && exit 1
@@ -1127,7 +1162,9 @@ EOF
 # (iv) a failed write: warning, but the refinement verdict is unaffected
 # ----------------------------------------------------------------------------
 jq -nc '{node_id: "I_c55", issue_field_values: []}' > "$gh_c/current-response.json"
-touch "$gh_c/fail-mutation"
+# shellcheck disable=SC2016  # a stubbed GraphQL error's literal text, not meant to expand
+printf 'gh: Type mismatch on variable $optionId and argument singleSelectOptionId (String! / ID) (setIssueFieldValue)\n' \
+  > "$gh_c/fail-mutation"
 verdicts='[{"repo":"o/r","item":"55","verdict":"refined","reason":"specified fine, band fails",
             "comments_posted":["https://github.com/o/r/issues/55#issuecomment-3"],
             "priority":"High"}]'
@@ -1138,6 +1175,10 @@ assert_eq "write failure: item-refined is recorded either way" "1" \
   "$(grep -cE '^event item-refined ' <<<"$calls")"
 assert_contains "write failure: a warning names the failed band write" \
   "could not set Priority on o/r#55 to High" "$calls"
+# shellcheck disable=SC2016  # the literal error text to compare against, not meant to expand
+assert_contains "write failure: ...and the captured GraphQL error (agent-ops#960)" \
+  'error: gh: Type mismatch on variable $optionId and argument singleSelectOptionId (String! / ID) (setIssueFieldValue)' \
+  "$calls"
 assert_eq "write failure: no issue-prioritised event" "0" \
   "$(grep -cE '^event issue-prioritised ' <<<"$calls")"
 assert_not_contains "write failure: no fallback here, so no 'asked for' clause" \
@@ -1170,6 +1211,8 @@ assert_contains "write failure+fallback: the warning names the band actually att
   "could not set Priority on o/r#55 to Medium (mutation-failed)" "$calls"
 assert_contains "write failure+fallback: ...and the band the verdict asked for" \
   "the verdict asked for Low" "$calls"
+assert_not_contains "write failure+fallback: no captured stderr here, so no error clause" \
+  "— error:" "$calls"
 assert_eq "write failure+fallback: no issue-prioritised event" "0" \
   "$(grep -cE '^event issue-prioritised ' <<<"$calls")"
 
