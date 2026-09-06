@@ -87,7 +87,7 @@ DRY_RUN=0
 LOG_EVENT_CALLS_FILE="$tmp_dir/log_event_calls"
 log_event() { printf '%s\t%s\n' "$1" "$2" >> "$LOG_EVENT_CALLS_FILE"; }
 reset_log_event_calls() { rm -f "$LOG_EVENT_CALLS_FILE"; }
-log_event_calls() { [[ -f "$LOG_EVENT_CALLS_FILE" ]] && cat "$LOG_EVENT_CALLS_FILE" || true; }
+log_event_calls() { [[ -f "$LOG_EVENT_CALLS_FILE" ]] && cat "$LOG_EVENT_CALLS_FILE"; return 0; }
 
 # RECORD_RESULT controls whether the stubbed recorder reports the block as
 # newly recorded (0, the ordinary case) or refused (1 — already blocked, or
