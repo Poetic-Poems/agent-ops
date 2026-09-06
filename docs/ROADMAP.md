@@ -757,36 +757,45 @@ induced outage rather than only over a quiet afternoon.
       "model used" pies for the Implementer and the Reviewer — is retired as
       redundant with this card's own per-model, per-tier rows, which is now
       where that ratio lives. *[fleet]*
-- [ ] Report rework by class, cause and escape (D23). The pipeline already
-      emits every detector this needs and joins none of them: `attempt-failed`
-      and `kill_reason` for a stage that had to be re-run, the review gate's
-      own `CHANGES_REQUESTED` rounds, `claim-lost` contention for duplicated
-      work, `abandoned_draft_after_hours` for a draft another cycle resumes,
-      the `merge-conflicts` work source for a pull request `main` moved under,
-      the refinement block for an item bounced back as under-specified, and
-      `scripts/mine-merge-history.sh`'s 48-hour revert-or-follow-up check for
-      what escaped a merge. One class has no sound detector yet and this item
-      inherits rather than closes the gap: a human change request arriving as
-      a plain comment is invisible to the review gate, which is #533 — so the
-      most expensive rung but one is precisely the one currently least well
-      observed, and the escape ladder below understates itself until that
-      lands. Assemble the rest into one panel that answers three
+- [x] Report rework by class, cause and escape (D23, issue #611). The
+      pipeline already emitted every detector this needed and joined none of
+      them: `attempt-failed` and `kill_reason` for a stage that had to be
+      re-run, the review gate's own `CHANGES_REQUESTED` rounds, `claim-lost`
+      contention for duplicated work, `abandoned_draft_after_hours` for a
+      draft another cycle resumes, the `merge-conflicts` work source for a
+      pull request `main` moved under, the refinement block for an item
+      bounced back as under-specified, and `scripts/mine-merge-history.sh`'s
+      48-hour revert-or-follow-up check for what escaped a merge — all now
+      recorded as the rework record (requirement 47, `docs/FLOW-SCHEMA.md`)
+      before being joined into this panel. The gap this item once inherited
+      (a human change request arriving as a plain comment, invisible to the
+      review gate) closed separately, ahead of this one — agent-ops#533, PR
+      #539 — and a narrower residual remains: the human-gate rung only
+      catches what the reconciliation gate observes at the Reviewer's own
+      ready handoff, and the Enabler's own handoff-recovery path shares that
+      check but only warns, never records, on a dirty verdict there
+      (`TD-PPagop-26082919`, stated on the panel's own face). The panel
+      (`scripts/publish-dashboard.sh` + `lib/rework-panel.sh`) answers three
       questions and nothing else. **How much?** — rework's share of tokens and
-      of elapsed time, against first-pass yield: the fraction of items that go
-      from first sighting to landed with no repetition of any class. **Whose?**
+      of elapsed time, against first-pass yield: the fraction of landed items
+      carrying zero rework records attributed to a stage — narrower than "no
+      repetition of any class", per issue #611's own refinement, since
+      attribution and outcome severity are different axes. **Whose?**
       — repetitions grouped by the stage they are attributed to rather than
       the stage that performed them, which is what turns "the Implementer is
       expensive" into "items are arriving under-specified" and points the fix
       at the Refiner. **How far did it get?** — the escape ladder, one row per
-      detection stage (agent review, the landing gate at `human`, post-merge), each
+      detection stage (agent review, the human gate, post-merge), each
       carrying what share of defects passed that rung and the measured cost of
       catching one at the next: this is the panel's actual quality-control
-      output, and it is why the page must never present rework as a quantity
-      to minimise. A rising escape rate at the agent-review rung with a
-      falling rework rate is the signature of a Reviewer that has started
-      waving work through, and the panel has to make that legible as a
-      regression rather than as an improvement. Feeds the actor and model
-      scorecards above: rework attributed to a stage is that stage's model's
+      output, and it is why the page never presents rework as a quantity
+      to minimise. A rising escape rate at the agent-review rung alongside a
+      falling catch count at that same row is the signature of a Reviewer
+      that has started waving work through; the panel keeps the two figures
+      separate rather than blending them into one score, which is what keeps
+      that regression legible instead of reading as an improvement. Feeds the
+      actor and model scorecards above: rework attributed to a stage is that
+      stage's model's
       record, and it is the outcome half of D22's grading. *[fleet]*
 - [ ] Price the fleet and the tokens (D21, D14). Two questions the accounts
       make answerable and nothing asks today. **Is this fleet the right

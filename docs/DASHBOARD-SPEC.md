@@ -596,9 +596,9 @@ So a tick has two kinds, and `--fast` chooses:
   `cycles`, `log_tail`, `cron_tail`, `fleet`, `revert_rate`, `log_repair` —
   and merges those keys over the last full payload. The history roll-ups
   (`counts` and its actor-scorecard and classifier-escape enrichments,
-  `blocked`, `void`, `landings`, `github_budget`, and the stage budgets
-  inside `config`) are not computed at all: they read the fleet's whole
-  history and change on the scale of cycles, not ticks.
+  `blocked`, `void`, `landings`, `github_budget`, `rework`, and the stage
+  budgets inside `config`) are not computed at all: they read the fleet's
+  whole history and change on the scale of cycles, not ticks.
 
 A fast build emits only the keys it recomputed and merges them **over** the
 cached payload rather than assembling a whole object from variables the skipped
@@ -1558,6 +1558,107 @@ reading `no data` rather than a comparison against nothing. All three figures
 render as a percentage with the sample size that produced it (`25% (n=12)`),
 never a bare percentage a reader cannot judge the weight of.
 
+The **Rework** panel (D23, `docs/ROADMAP.md`; issue #611) answers exactly
+three questions from the rework record and the item lifecycle record
+(`docs/FLOW-SCHEMA.md`, requirements 47 and 49) and adds nothing else. It
+renders `rework`, assembled by `lib/rework-panel.sh`'s `rework_panel_build`
+from the same fleet-wide event union `escape_audits` above already reads,
+and — like that panel, never `revert_rate`'s own rolling window — **never
+windowed**: which rung eventually caught a given defect is a permanent fact
+about it, on the same argument `escape_audits`' own paragraph above makes for
+never letting an escape age out of a 24 h window. A payload the Publisher
+could not assemble sets every top-level field to `null`
+(`{how_much: null, whose: null, escape_ladder: null, clean_count: null}`),
+the same "outage, not a quiet log" distinction every other roll-up on this
+page makes.
+
+D23 is emphatic that rework is never a target of zero — a Reviewer catching
+a defect is the system working, not failing — so this panel never collapses
+its three questions into one score a reader could misread as "rework good,
+rework bad":
+
+- **How much?** `how_much.tokens`/`.elapsed_ms`/`.cost_usd`, each
+  `{total, rework, rework_share}` — the fleet's whole per-cycle spend
+  (`stage-end`'s own `cost_usd`/`duration_ms`/`tokens.*`, summed null-as-zero
+  per `docs/METERING-SCHEMA.md`, joined to a `rework` event by the `cycle`
+  field both carry from the same `log_event` envelope) against the subset
+  spent on a cycle that also carries at least one rework record.
+  `how_much.first_pass_yield` is `{landed_total, first_pass, yield}` —
+  `first_pass` is deliberately the narrow, literal reading issue #611's own
+  refinement specifies: a landed item with **zero rework records whose
+  `attributed_stage` is non-null**, not zero rework records of any class. A
+  landed item that bounced once on `review-round-trip` (attribution `null`,
+  D23's own attribution rule) still counts as first-pass by this definition
+  — including, perhaps surprisingly, an item whose only rework record is a
+  `post-merge-revert` (also unattributed): the worst outcome the ladder below
+  can show still reads as "first-pass" here, because attribution and outcome
+  severity are two different axes and this figure reads only the former.
+  `how_much.rework_count` is the raw, deduped rework record count, reported
+  once more explicitly for the same reason the escape ladder's own `caught`
+  figures are — see the signature below.
+- **Whose?** `whose.by_attributed_stage` — one `{stage, count}` row per
+  non-null `attributed_stage` value actually present (today: `reviewer`,
+  from `human-change-request`, and whichever stage names its own
+  `stage-rerun`) — plus `whose.not_attributed`, `{count, by_class}`: the
+  seven classes `docs/FLOW-SCHEMA.md`'s own attribution rule leaves `null`
+  by design, broken down by class. Never inferred: a class with no
+  detector-supplied attribution stays in `not_attributed` here exactly as it
+  does in the record itself.
+- **How far did it get?** `escape_ladder`, one row per detection stage in
+  the pipeline's own rising cost order — `agent-review` (every class but the
+  two below: a Reviewer or an earlier stage catching something before a
+  human ever looks), `human-gate` (`human-change-request` — the
+  reconciliation gate's own dirty verdict at the Reviewer's handoff),
+  `post-merge` (`post-merge-revert` — nothing caught it until a corrective
+  pull request landed after merge). Each row is
+  `{stage, population, caught, escaped, escape_rate, cost_to_catch_at_next,
+  cost_to_catch_at_next_note}`. The ladder's population is deliberately
+  narrower than "every landed item": only landed items with **at least one
+  caught defect, at any rung** — a landed item with zero rework records of
+  any class may have had zero real defects, or one nothing here ever caught,
+  and the two are indistinguishable from this record alone, so this panel
+  does not guess which. That excluded population is `clean_count`, reported
+  once, separately, rather than folded into a rate that would otherwise
+  overstate how much passed undetected. `escape_rate` at a rung is the share
+  of that rung's own population — items not yet caught when they reached
+  it — that went on uncaught to a later rung; `post-merge` is terminal and
+  reports `escaped`/`escape_rate` as `null`, never a `0` that would misread
+  as "always caught here." `cost_to_catch_at_next` is the average
+  tokens/elapsed-time/cost of the cycles that caught a defect at the row's
+  own next rung (the same per-cycle metering join `how_much` uses) — `null`
+  with its own `cost_to_catch_at_next_note` explaining why: `post-merge`'s
+  row states "terminal rung, nothing further to escape to," while
+  `human-gate`'s row states that a `post-merge-revert` record carries no
+  `cycle` at all (mined after the fact, outside any cycle,
+  `docs/FLOW-SCHEMA.md`) and so its cost is genuinely unmeasurable — a
+  different reason for the same `null`, and the panel never conflates them.
+
+**The Reviewer-waving-work-through signature.** A rising escape rate at the
+`agent-review` rung alongside a *falling* `caught` count at that same row is
+the signature D23 warns a naive reader could mistake for improvement: a
+Reviewer that stops bouncing work back looks, by that one figure alone, like
+a Reviewer catching fewer defects — when the defects still happen and
+simply surface later, at a more expensive rung. This panel never blends
+`caught` and `escape_rate` into one score for exactly that reason: reading
+them side by side on the same row is what keeps the regression legible
+rather than cancelling out. `test/rework-panel.test.sh` demonstrates this
+directly against a constructed before/after fixture, on
+`test/item-lifecycle.test.sh`'s own precedent of a hand-built log exercising
+every case at once.
+
+**A residual coverage gap, stated on the panel's own face** (issue #611's
+own correction to its original filing, which had named a different, already-
+resolved gap — agent-ops#533, `lib/reconciliation-gate.sh`, PR #539): the
+`human-gate` rung can only see what the reconciliation gate itself observes,
+at the Reviewer's own ready handoff. A human change request posted *after* a
+pull request is already ready, or acted on directly with no handoff ever
+running, is invisible to that detector, and the Enabler's own handoff-
+recovery path shares the identical check but emits only a `warning`, never a
+`rework` record, on a dirty verdict there (`TD-PPagop-26082919`, parked as a
+Phase 2 attribution question, not a gap this panel closes). The page states
+this immediately beneath the escape ladder, in the same words, so a reader
+never mistakes the `human-gate` row's own count for a complete one.
+
 The **Doctor** panel (agent-ops#543) renders `status.doctor`: the most recent
 hourly `scripts/doctor.sh --unattended` pass on *this* node, read from
 `state_dir/.doctor-status.json` rather than recomputed — its GitHub section is
@@ -2321,6 +2422,26 @@ number's twins elsewhere on the page.
   pull request rather than every ready one, and that the narrowing itself
   never reaches a `CHANGES_REQUESTED` pull request, which the pipeline owes a
   change at every level.
+- `test/rework-panel.test.sh` drives `lib/rework-panel.sh`'s own fold
+  directly, on `test/item-lifecycle.test.sh`'s own precedent: the three
+  questions computed correctly over one hand-traceable fixture (tokens'/
+  elapsed time's rework share against first-pass yield's literal
+  zero-attributed definition, `whose`'s attributed/not-attributed split, the
+  escape ladder's population/caught/escaped/escape_rate at each rung, and
+  the two distinct reasons a `cost_to_catch_at_next` reads `null` — terminal
+  rung versus genuinely unmeasurable); dedup, including that two genuinely
+  distinct `post-merge-revert` corrections on the same item (different
+  `evidence.by`) both count while two nodes logging the same repetition
+  count once; the Reviewer-waving-work-through signature demonstrated
+  against a constructed before/after fixture (a rising `escape_rate` at the
+  `agent-review` rung alongside a *falling* `caught` count at that same
+  row); and the degradations (a malformed line, a missing log) that yield a
+  conforming report rather than aborting the fold. `test/dashboard-
+  render.test.sh`'s own `rework.json`/`rework-outage.json` fixtures then
+  check only that `D.rework` renders as the panel's own three sections and
+  its two static caveats, and that an unassembled payload (every field
+  `null`) reads as an outage rather than a quiet zero-rework tick — the
+  fold's own correctness is `rework-panel.test.sh`'s job, not this one's.
 - `claim-expired-tombstone.json` (agent-ops#839) holds one claim backdated to
   `do_expire()`'s sentinel `1970-01-01T00:00:01Z` alongside one with a real,
   recent `ts`: the live-claims panel's Held column reads the first "expired —
