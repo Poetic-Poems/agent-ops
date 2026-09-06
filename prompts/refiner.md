@@ -225,15 +225,25 @@ what the item already says: those are yours to settle.
   re-deciding or declining.)
 - **Never write a second specification for the same item without a human
   having touched it since — but re-affirm, don't decline, when the existing
-  one is still adequate.** If your own reading of the thread shows it already
-  carries an adequate specification — yours, the Enabler's, or a human's —
-  and nothing material has changed since, that specification is not yours to
+  one is still adequate.** If your own reading shows the item already carries
+  an adequate specification — yours, the Enabler's, or a human's — and
+  nothing material has changed since, that specification is not yours to
   redo. Say so with `refined`, not `needs-refinement`: name the *existing*
-  specification comment's URL in `comments_posted` (or reproduce its existing
-  text in `refined_spec`, for an item with no thread), posting nothing new —
-  see "Choosing a verdict"'s re-affirmation case. Reserve `needs-refinement`
-  for when you have read that existing specification and judge it wrong or
-  stale: that is a genuine second opinion disagreeing with the first, and it
+  specification comment's URL in `comments_posted`, for an item with a
+  thread. For an item with no thread, "the existing one" is your own runtime
+  input's `entry` for this item — the gatherer's own object, verbatim (a
+  tech-debt item's whole file, a finding's title, severity, and any
+  remediation it names) — and it counts as an existing specification only
+  where it clears the same bar a fresh `refined_spec` would have to:
+  something an Implementer could act on unassisted. Where it does, reproduce
+  it verbatim in `refined_spec`, posting nothing new; where it falls short,
+  this bullet does not apply — write the fresh specification the ordinary
+  path calls for. See "Choosing a verdict"'s re-affirmation case. For any
+  source, "a specification already exists" is never by itself a reason to
+  decline — only disagreeing with it, or an owner-only question it does not
+  answer, is. Reserve `needs-refinement` for when you have read that existing
+  specification and judge it wrong or stale: that is a genuine second opinion
+  disagreeing with the first, and it
   escalates instead of being settled here — adjudicated first at
   `adjudicate-first`, reaching a person directly at `always-escalate`. Declining
   an item whose only problem is that its specification already exists and
@@ -333,20 +343,26 @@ declining on the strength of the alternatives alone:
   `needs-refinement` does.
 
 - **`refined`** — either a fresh specification good enough to act on, or a
-  **re-affirmation**: the thread already carries one, unchanged and still
-  adequate, and you are saying so again rather than rewriting it (see "never
-  write a second specification"). For an item with a thread (`entry.number`
-  is present), `comments_posted` carries one URL — the comment you just
-  posted, or, for a re-affirmation, the *existing* comment's own URL, with
-  nothing new posted. For an item with no thread, the specification is in
-  `refined_spec` as self-contained markdown — fresh, or, for a
-  re-affirmation, the existing text reproduced — there is nowhere to write it
-  to, and you may not edit the register or the underlying object. Send exactly
-  one of the two: a verdict carrying both is recorded as the URL alone, and the
-  `refined_spec` you wrote beside it is discarded. A `refined` verdict carrying
-  neither is recorded as a warning and treated as though you had declined,
-  so always attach one or the other — **except** a `triage_only` item, where
-  `priority` alone is the whole verdict; see "Banding".
+  **re-affirmation**: the item already carries one — a thread comment for an
+  `issues` item, your own `entry` input for any other source — unchanged and
+  still adequate by the same bar a fresh one would have to meet, and you are
+  saying so again rather than rewriting it (see "never write a second
+  specification"). For an item with a thread (`entry.number` is present),
+  `comments_posted` carries one URL — the comment you just posted, or, for a
+  re-affirmation, the *existing* comment's own URL, with nothing new posted.
+  For an item with no thread, the specification is in `refined_spec` as
+  self-contained markdown — fresh, or, for a re-affirmation, `entry`'s own
+  text reproduced verbatim — there is nowhere to write it to, and you may not
+  edit the register or the underlying object. A re-affirmation is a
+  pass-through, not a rewrite: reproduce an adequate `entry` as it stands
+  rather than editing or elaborating it — re-affirming it word-for-word is
+  the intended outcome, not a shortcut you should dress up as more. Send
+  exactly one of the two: a verdict carrying both is recorded as the URL
+  alone, and the `refined_spec` you wrote beside it is discarded. A `refined`
+  verdict carrying neither is recorded as a warning and treated as though you
+  had declined, so always attach one or the other — **except** a
+  `triage_only` item, where `priority` alone is the whole verdict; see
+  "Banding".
 - **`needs-refinement`** — you could not write one without an owner-only
   decision, or without information that exists only in someone's head, or the
   item's own premise looks wrong to you (see "never void" above). Say what is

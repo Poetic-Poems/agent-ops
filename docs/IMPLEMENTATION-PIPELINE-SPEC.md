@@ -14292,22 +14292,48 @@ implements.
     function, so both writers reject a phantom `comment_url` identically.
 
     **A `refined` verdict may be a re-affirmation, not only a fresh
-    specification (agent-ops#670 Part 2).** The Refiner may find the item's
-    thread already carrying an adequate specification — its own, the
-    Enabler's, or a human's — with nothing material changed since, and return
-    `refined` naming that *existing* comment's URL (or, for a non-`issues`
-    source, reproducing its existing text) without posting or writing
-    anything new. The Script's recording is unchanged either way:
-    `refinement_record_fields` requires only that the verdict carry a
-    `comment_url` or `spec`, never that either be this cycle's own write, so
-    a re-affirmation is corroborated on the same terms as a fresh
-    specification and re-enters `refinements_map` (requirement 3h) the same
-    way. This is what closes the item's only path back to a block: once
-    re-affirmed, requirement 39a's candidate rule excludes it again, exactly
-    as a fresh refinement would. Re-affirmation is not available where the
-    Refiner disagrees with the existing specification — that is a second
-    opinion against a first, and stays a `needs-refinement` decline (39d),
-    escalated rather than settled here.
+    specification (agent-ops#670 Part 2).** The Refiner may find an item
+    already carrying an adequate specification — its own, the Enabler's, or a
+    human's — with nothing material changed since, and return `refined`
+    citing that existing text rather than writing anything new, posting or
+    writing nothing else. For an `issues`-source item this is the thread:
+    name the *existing* specification comment's URL in `comments_posted`.
+    **For any other source, "an existing specification" is the candidate's
+    own gatherer `entry` — the same object `refiner_candidate_items` already
+    hands the Refiner verbatim (a tech-debt item's whole file body; a
+    finding's title, severity, and any remediation it names) — and it counts
+    as one only where the Refiner judges it adequate by the same bar a fresh
+    `refined_spec` must meet: something an Implementer could act on
+    unassisted** (agent-ops#810, resolving agent-ops#813 option 2). Where it
+    meets that bar, re-affirm by reproducing it verbatim in `refined_spec`;
+    where it falls short, the ordinary path is unchanged and the Refiner
+    writes a fresh specification. Either way the Refiner writes nothing back
+    to the register or the underlying object — a non-`issues` item's `entry`
+    is read-only input, the same as an issue's thread — so "never write a
+    second specification" (below) binds only where adequate re-affirmable
+    text already exists, never where the entry falls short of the bar.
+
+    The Script's recording is unchanged either way: `refinement_record_fields`
+    requires only that the verdict carry a `comment_url` or `spec`, never that
+    either be this cycle's own write, so a re-affirmation is corroborated on
+    the same terms as a fresh specification and re-enters `refinements_map`
+    (requirement 3h) the same way. This is what closes the item's only path
+    back to a block: once re-affirmed, requirement 39a's candidate rule
+    excludes it again, exactly as a fresh refinement would.
+
+    Re-affirmation is not available where the Refiner disagrees with the
+    existing specification — that is a second opinion against a first, and
+    stays a `needs-refinement` decline (39d), escalated rather than settled
+    here. **For any source, "a specification already exists" is never by
+    itself grounds for `needs-refinement`** — that verdict stays reserved for
+    an owner-only decision (36a), information that exists only in someone's
+    head, or a premise the Refiner judges wrong or stale; an adequate
+    existing specification is `refined` by re-affirmation, not a reason to
+    decline. Pass-through re-affirmation of an already-adequate
+    human-authored `entry` is intended behaviour, not a defect: refinement's
+    product is the adequacy **verdict**, not additional text, and the Refiner
+    must not gold-plate an adequate entry — rewriting or elaborating it —
+    merely to make refinement look additive.
 
 39d. **The default-first rule (agent-ops#938).** Before reaching for
     `needs-refinement` on the strength of enumerated alternatives alone, the
@@ -23720,6 +23746,39 @@ requirements above, which state only what is.
   verdict schema for every reader of it to learn. A third verdict would have
   bought nothing a re-affirmed `refined` does not already give: the item
   re-enters `refinements_map` (3h) and proceeds to selection either way.
+
+- **Re-affirmation's non-`issues` scope (39c) reads the candidate's own
+  gatherer `entry` as "an existing specification," gated by the same
+  adequacy bar as a fresh one (agent-ops#810, resolving agent-ops#813).**
+  #670's Part 2 design described re-affirmation only for the `issues` case,
+  where the Refiner cites a comment on a thread it can see; PR #805 shipped a
+  parenthetical generalising it to every other source without saying what
+  "an existing specification" means there — a prior `refined_spec` never
+  enters the Refiner's own input, since `refiner_candidate_items` reads
+  `$refinements` only for its `is_refined` exclusion and never folds a
+  cleared entry into the `{repo, source, item, entry}` payload it builds.
+  Three options were weighed: **1.** confine re-affirmation to the `issues`
+  case and revert the parenthetical; **2.** define a non-`issues` "existing
+  specification" as the candidate's own `entry`, counted only where the
+  Refiner judges it adequate by the fresh-specification bar; **3.** fold each
+  candidate's own prior `refinements_map` entry into the payload
+  `refiner_candidate_items` builds, so a genuine prior `refined_spec` becomes
+  visible and re-affirmation means citing that rather than the raw `entry`.
+  Option 2, answered "yes," is what shipped. Option 1 was rejected because it
+  recreates, for every non-`issues` source, the exact deadlock shape
+  requirement 34e's own incident wrote out of the `issues` path: an item
+  carrying a good human-written `entry` would have no honest `refined` to
+  return and would fall to `needs-refinement`. Option 3 was rejected because
+  a candidate carries no `refinements_map` entry by construction —
+  requirement 39a's already-refined exclusion is *why* it is a candidate at
+  all — so the fold would carry nothing in the incident's own shape (a block
+  clearing what dropped the item from the map), and making it real would
+  mean retaining cleared refinements as visible history when the commonest
+  clearing cause — a block that has itself since cleared — is itself
+  evidence against the prior text's adequacy. Revisiting this trade-off is
+  warranted only on measurement — redundant re-specification of unchanged
+  non-`issues` items shown to recur at material scale — never on a guess
+  about how often it happens.
 
 - **The GitHub credential check (0b) escalates unconditionally, never through
   `escalation_autonomy`.** That ladder decides whether one specific
