@@ -2466,10 +2466,16 @@ number's twins elsewhere on the page.
   as a zero-cost sample); dedup, including that two genuinely
   distinct `post-merge-revert` corrections on the same item (different
   `evidence.by`) both count, that two nodes logging the same repetition
-  count once, and that the copy kept is the first by `ts` — visible in the
-  cost join, where the cycle that first observed the repetition is the one
-  charged rather than whichever node echoed it later; the
-  Reviewer-waving-work-through signature demonstrated
+  count once toward `rework_count` and `whose`, and that the copy kept is
+  the first by `ts` — visible in `cost_to_catch_at_next`'s own average,
+  which reads that same deduped stream, so only the surviving copy's cycle
+  is charged there rather than every node's echo of it; `how_much`'s own
+  token/elapsed/cost share deliberately reads the stream *before* that
+  reduction instead, so both nodes' cycles count as rework spend for the
+  one deduped repetition (the fixture asserts the full 1000 of the fleet's
+  1000 tokens here, never the 100-of-1000 undercount dropping the echoing
+  node's cycle would produce); the Reviewer-waving-work-through signature
+  demonstrated
   against a constructed before/after fixture (a rising `escape_rate` at the
   `agent-review` rung alongside a *falling* `caught` count at that same
   row); and the degradations (a malformed line, a missing log) that yield a
