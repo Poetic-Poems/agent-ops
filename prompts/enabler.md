@@ -132,7 +132,7 @@ heading, the Script gives you one JSON object:
   compose (see "Escalating well"); the Script applies the label and the
   assignment itself.
 
-Items may come from either repository, and there may be several. Handle each on
+Items may come from any of the configured repositories, and there may be several. Handle each on
 its own evidence — one item's answer says nothing about another's — and return a
 verdict for **every** item you were given.
 
@@ -161,7 +161,7 @@ and every issue thread you read while investigating.
 
 ## What you may do
 
-- **Read anything.** `gh` reads across both repositories and their issues, PRs,
+- **Read anything.** `gh` reads across all the configured repositories and their issues, PRs,
   reviews, checks, runs, alerts and file contents (`gh api
   repos/<owner>/<repo>/contents/<path>`), plus run logs. `gh run view --log`
   reads per-job logs (if reachable); on a fenced node, if you encounter a

@@ -98,16 +98,17 @@ cron (project_review.defaults.min_days_between_reviews; a daily tick with a
 ## Environment
 
 Identical to `docs/IMPLEMENTATION-PIPELINE-SPEC.md` ("Environment" and "Target
-repositories"); not repeated here. The two target repositories are the same
-`Poetic-Poems/poetic` and `Poetic-Poems/poetic-fiddle`, and their shared
-conventions (protected `main`, squash-merge so the PR title becomes the
-commit, Conventional Commits) bind the Reviewer-Agent exactly as they bind
-the Implementer. Where either repository still carries a per-item tech-debt
-register (`tech-debt/`, with `scripts/reserve-tech-debt-id.pl` allocating new
-IDs), that register binds the Implementer's own filing as it always has; the
-Reviewer-Agent only ever reads it, to update an item it finds already
-resolved (R12) — new debt this review surfaces is filed as a labelled GitHub
-issue instead, never into that register.
+repositories"); not repeated here. The target repositories are the same as
+that document's, currently `Poetic-Poems/poetic` and
+`Poetic-Poems/poetic-fiddle`, and their shared conventions (protected `main`,
+squash-merge so the PR title becomes the commit, Conventional Commits) bind
+the Reviewer-Agent exactly as they bind the Implementer. Where a configured
+repository still carries a per-item tech-debt register (`tech-debt/`, with
+`scripts/reserve-tech-debt-id.pl` allocating new IDs), that register binds
+the Implementer's own filing as it always has; the Reviewer-Agent only ever
+reads it, to update an item it finds already resolved (R12) — new debt this
+review surfaces is filed as a labelled GitHub issue instead, never into that
+register.
 
 One repository-specific fact worth noting: `poetic` already stores prior
 reviews under `reviews/project-review-YYYY-MM-DD/`; `poetic-fiddle` does not
@@ -1040,9 +1041,9 @@ a pull request, run the ones the change touches and any it could regress.
 All of this is in place on the current host; it is needed again only when
 standing the pipeline up on a new machine.
 
-1. Create the review label in both repos:
+1. Create the review label in each configured repo:
    `gh api -X POST repos/Poetic-Poems/<repo>/labels -f name='project-review' -f color='5319e7' -f description='Raised by the project-review pipeline'`
-   (for `poetic` and `poetic-fiddle`).
+   (for each repository in `project_review.repos`).
 2. Install the cron entry. **Recommended — a daily tick guarded by
    `min_days_between_reviews`**, which is robust to a machine that sleeps:
    ```
