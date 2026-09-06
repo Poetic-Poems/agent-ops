@@ -42,6 +42,8 @@ SCHEMA_FILE="$SCRIPT_DIR/config.schema.json"
 . "$SCRIPT_DIR/lib/updater-health.sh"
 # shellcheck source=lib/toggle.sh
 . "$SCRIPT_DIR/lib/toggle.sh"
+# shellcheck source=lib/drain.sh
+. "$SCRIPT_DIR/lib/drain.sh"
 # shellcheck source=lib/mirror-integrity.sh
 . "$SCRIPT_DIR/lib/mirror-integrity.sh"
 
@@ -553,6 +555,20 @@ do_push() {
     | sort -r)"
   last_cycle="${cycles_newest_first%%$'\n'*}"
   version_json="$(agent_ops_version "$SCRIPT_DIR")"
+  # The switch, plus a drain's own cached progress alongside it (requirement
+  # 2.9) — the same drain-state.json a cycle wrote and publish-dashboard.sh
+  # reads, so the heartbeat and the dashboard never disagree about how much a
+  # drain has left. Omitted outside drain mode, and when the cache's own
+  # disabled_at no longer matches the live record's (a stale count from a
+  # drain that has since ended or been extended).
+  heartbeat_switch_json="$(toggle_switch_summary "$state_dir")"
+  if [[ "$(jq -r '.mode' <<<"$heartbeat_switch_json")" == "drain" ]]; then
+    heartbeat_drain_cached="$(drain_read_state "$state_dir")"
+    if [[ "$heartbeat_drain_cached" != "null" ]] \
+       && [[ "$(jq -r '.disabled_at // ""' <<<"$heartbeat_drain_cached")" == "$(jq -r '.since // ""' <<<"$heartbeat_switch_json")" ]]; then
+      heartbeat_switch_json="$(jq -c --argjson d "$heartbeat_drain_cached" '. + {drain: $d}' <<<"$heartbeat_switch_json")"
+    fi
+  fi
   jq -nc \
     --arg node "$node_name" \
     --arg role "${AGENT_OPS_ROLE:-standby}" \
@@ -561,7 +577,7 @@ do_push() {
     --argjson version "$version_json" \
     --argjson compose "$(compose_drift_status)" \
     --argjson image "$(image_drift_status "$version_json" "$state_dir/.image-drift-cache.json")" \
-    --argjson switch "$(toggle_switch_summary "$state_dir")" \
+    --argjson switch "$heartbeat_switch_json" \
     --argjson stage_health "$(jq -c '.' "$state_dir/.stage-health.json" 2>/dev/null || echo null)" \
     --argjson mirror_rebuild "$(mirror_rebuild_verdict "$state_dir")" \
     --argjson updater "$(updater_status "$state_dir/updater-ledger" "$updater_stuck_after_seconds" \

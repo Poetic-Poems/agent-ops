@@ -381,6 +381,19 @@ R2a. **The switch.** Before the lock, read the shared switch
    cannot disagree about whether they are meant to be running (requirement
    34a).
 
+   **Stands down under either of the switch's two modes** (implementation
+   spec 2.3d) — a full stop (`mode: "stop"`, the default for every record
+   before that field existed) and a drain (`mode: "drain"`) alike. `.state ==
+   "disabled"` already reads true for both, since `mode` is a field on the
+   same record rather than a different `state`, so this requires no branch of
+   its own: unlike `agent-cycle.sh`, which keeps finishing already-open pull
+   requests during a drain (implementation spec 2.2c/2.9), this pipeline has
+   no finishing set to keep working — every review it starts is new work by
+   construction — so a drain leaves it nothing to do differently from a full
+   stop. Only the logged reason names which mode was in force, for a reader
+   of the log wondering why a drain — nominally about letting existing work
+   finish — stood this pipeline down entirely.
+
    The switch is **shared, not per-pipeline**, and this pipeline is the reason
    that matters rather than an afterthought. It exists because an agent editing
    the agent-ops working tree is editing files the next cron tick will source —

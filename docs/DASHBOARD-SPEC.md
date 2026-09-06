@@ -245,6 +245,24 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   standing down under a fleet decision lifted elsewhere — `--enable` on a peer
   clears the flag but cannot reach this node's file — and nothing else on the
   page would account for it.
+
+  **`mode` (implementation spec 2.3d/2.9) changes the label, never the
+  scope/mirror logic above.** `toggle_switch_summary` carries `mode`
+  (`"stop"`/`"drain"`) alongside `scope`, so the same badge and the same two
+  banners (node-scoped, fleet-wide) this section already describes render for
+  a drain exactly as for a stop — only the text differs: **disabled** becomes
+  **draining (N left)** or **drained**, and the banner headline reads "is
+  draining"/"has drained" rather than "is disabled". `N` and whether it is
+  `drained` come from `switch.drain` (`{remaining, at_rest, checked_at}`),
+  folded in by `scripts/publish-dashboard.sh`/`scripts/state-sync.sh` from the
+  last cycle's own at-rest check (requirement 2.9's cache) only when its
+  `disabled_at` still matches the live record's — omitted, and rendered as a
+  bare "draining" with no count, when no cycle has checked yet since this
+  drain began (a `--drain` just issued, or one just extended). A drain never
+  suppresses the badge/banner the way an *enabled* pipeline does — it is
+  exactly as visible as a full stop, since "no new work, but existing work
+  still landing" is just as easy to mistake for a quiet week as an outright
+  stop is.
 - **`cycles/<cycle-id>/<stage>.out`** — the stage's `result` envelope: the
   final line of the event stream `claude --output-format stream-json` wrote,
   truncated into this file by `run_claude_stage` and identical to what
@@ -778,15 +796,20 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                             //   published one (#155); null if
                                             //   unreported
                          switch: { disabled, reason, by,    // the node's OWN
-                                    actor, kind, scope,      //   disable record
-                                    since, expires_at },     //   (#379); `scope`
-                                            //   is "node" for a real
-                                            //   `--disable --this-node` and
-                                            //   "fleet" for the local mirror a
+                                    actor, kind, scope, mode, //   disable record
+                                    since, expires_at,        //   (#379); `scope`
+                                    drain: { remaining,       //   is "node" for a real
+                                              at_rest,        //   `--disable --this-node` and
+                                              checked_at } }, //   "fleet" for the local mirror a
                                             //   fleet-wide --disable leaves on
                                             //   the node that issued it (2.3);
                                             //   never the fleet flag itself;
-                                            //   null if unreported
+                                            //   null if unreported. `mode` is
+                                            //   "stop" or "drain" (2.3d); `drain`
+                                            //   is present only in drain mode and
+                                            //   only once a cycle's own at-rest
+                                            //   check matches this record's
+                                            //   `since` (2.9) — absent otherwise
                          stage_health: { computed_at, threshold,
                                           idle_after_hours,           // the
                                             //   node's own per-stage verdict

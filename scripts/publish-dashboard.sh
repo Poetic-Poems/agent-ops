@@ -51,6 +51,8 @@ TEMPLATE="$SCRIPT_DIR/dashboard/index.html"
 . "$SCRIPT_DIR/lib/toggle.sh"
 # shellcheck source=lib/fleet.sh
 . "$SCRIPT_DIR/lib/fleet.sh"
+# shellcheck source=lib/drain.sh
+. "$SCRIPT_DIR/lib/drain.sh"
 # shellcheck source=lib/role.sh
 . "$SCRIPT_DIR/lib/role.sh"
 # shellcheck source=lib/version.sh
@@ -1159,6 +1161,24 @@ fi
 # Friday — and the whole reason acceptance check 8b insists an operator can
 # tell "waiting on something" from "there is nothing to do here" at a glance.
 switch_json="$(toggle_switch_summary "$state_dir")"
+# A drain's own progress rides alongside the switch it belongs to (requirement
+# 2.9): `mode` alone (already in toggle_switch_summary's output) tells a
+# reader stop from drain, but not how much finishing-source work a drain is
+# still waiting on, which is what the badge needs to say DRAINING (N left) vs
+# DRAINED. Read from the last cycle's own at-rest check (lib/drain.sh) rather
+# than recomputed here — this script runs far more often than a cycle does,
+# and a fresh gather on every dashboard publish would be the exact expense
+# requirement 2.9 avoided by caching it in the first place. Omitted entirely
+# outside drain mode, and when the cache is stale (a different disabled_at,
+# or none at all) — a reader must not be shown a count from a drain that has
+# since ended.
+if [[ "$(jq -r '.mode' <<<"$switch_json")" == "drain" ]]; then
+  drain_cached="$(drain_read_state "$state_dir")"
+  if [[ "$drain_cached" != "null" ]] \
+     && [[ "$(jq -r '.disabled_at // ""' <<<"$drain_cached")" == "$(jq -r '.since // ""' <<<"$switch_json")" ]]; then
+    switch_json="$(jq -c --argjson d "$drain_cached" '. + {drain: $d}' <<<"$switch_json")"
+  fi
+fi
 
 status_json="$(jq -n \
   --argjson alive "$lock_alive" \
