@@ -1054,6 +1054,30 @@ assert_eq "decide/TD-disagreement: ...carrying the pending decision" "use option
 assert_eq "decide/TD-disagreement: ...as a full candidate, not triage_only (it needs a real spec, not one field)" \
   "null" "$(jq -r '.[0].triage_only // "null"' <<<"$candidates")"
 
+# --- decision-vetoed clears the decision (agent-ops#937, agent-ops#1198):
+# reopening the log issue withdraws the decision it logged, and a Refiner
+# engagement afterwards must not be handed it as though it still stood. ---
+vetoed_log="$tmp_dir/decision-vetoed.jsonl"
+cat > "$vetoed_log" <<'EOF'
+{"ts":"2026-08-20T10:00:00Z","event":"decision-taken","repo":"acme/widgets","item":"TD9","decision":"use option B","rationale":"cheaper","issue_number":501,"issue_url":"https://github.com/acme/widgets/issues/501"}
+{"ts":"2026-08-21T09:00:00Z","event":"decision-vetoed","repo":"acme/widgets","item":"TD9","issue_number":501,"issue_url":"https://github.com/acme/widgets/issues/501","by":"warwickallen"}
+EOF
+dmap_vetoed="$(decisions_map "$vetoed_log")"
+assert_eq "decisions_map drops a decision once it is vetoed" "null" \
+  "$(jq -r '."acme/widgets".TD9.decision // "null"' <<<"$dmap_vetoed")"
+
+# A veto that predates the decision it names (a stale replay, or a fresh
+# decide taken after an earlier veto already cleared) must not clear this
+# newer, unrelated decision.
+vetoed_before_log="$tmp_dir/decision-vetoed-before.jsonl"
+cat > "$vetoed_before_log" <<'EOF'
+{"ts":"2026-08-19T09:00:00Z","event":"decision-vetoed","repo":"acme/widgets","item":"TD9","issue_number":500,"issue_url":"https://github.com/acme/widgets/issues/500","by":"warwickallen"}
+{"ts":"2026-08-20T10:00:00Z","event":"decision-taken","repo":"acme/widgets","item":"TD9","decision":"use option B","rationale":"cheaper","issue_number":501,"issue_url":"https://github.com/acme/widgets/issues/501"}
+EOF
+dmap_after="$(decisions_map "$vetoed_before_log")"
+assert_eq "decisions_map keeps a decision a stale/earlier veto does not postdate" "use option B" \
+  "$(jq -r '."acme/widgets".TD9.decision // "null"' <<<"$dmap_after")"
+
 # --- decide, issue item: posts the decision comment, and its URL rides on
 # decision-taken as comment_url ---
 calls="$(run_case "decide-tactical: decide (issue, ordinary item)" \

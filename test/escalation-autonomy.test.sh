@@ -239,13 +239,14 @@ assert_eq "three decide-tactical passes over three different reasons all count t
 assert_reason_seen "a fourth, genuinely new reason has not itself been seen" 1 \
   acme/widgets TD001 "key4" "$tmp_dir/three-decides.jsonl"
 
-# --- create_decision_log_issue (agent-ops#937): filing, dedup, label-missing
-# fallback. `gh` is stubbed to a small case dispatch over its own argv, in the
-# style test/sweep-closed-issues.test.sh uses for the same purpose; every call
-# is appended to $gh_calls so a test can assert on exactly what was sent
-# without a real GitHub write. `labels_ensure_role` and `log_event` are
-# stubbed too — this is a test of the issue-filing contract, not of the label
-# catalogue or the fleet log. ---
+# --- create_decision_log_issue (agent-ops#937): filing, dedup, and — unlike
+# create_escalation_issue — no retry without the label on a failed create
+# (agent-ops#1198). `gh` is stubbed to a small case dispatch over its own
+# argv, in the style test/sweep-closed-issues.test.sh uses for the same
+# purpose; every call is appended to $gh_calls so a test can assert on
+# exactly what was sent without a real GitHub write. `labels_ensure_role` and
+# `log_event` are stubbed too — this is a test of the issue-filing contract,
+# not of the label catalogue or the fleet log. ---
 cycle_dir="$(mktemp -d)"
 # Both directories, not just this one: a bare `trap … EXIT` here would replace
 # the earlier trap on $tmp_dir rather than adding to it, and leak it.
@@ -316,29 +317,23 @@ assert_eq "dedup: reuses the existing issue's own number and url" \
   $'77\thttps://github.com/acme/widgets/issues/77' "$result"
 assert_not_contains "dedup: never creates a second issue" "issue create" "$(cat "$gh_calls")"
 
-# --- label-missing fallback: the labelled create fails (label does not exist
-# yet on this repo); one retry without the label still files the log ---
+# --- no label-less fallback (agent-ops#1198): unlike create_escalation_issue,
+# a labelled create failure is a straight failure — pw::decision is the
+# mechanism the sweep and this function's own duplicate guard both search on,
+# so an issue filed without it would be a veto lever dead on arrival. No
+# second, label-less create attempt is ever made. ---
 reset_decision_log_stubs
 GH_CREATE_LABELLED_FAILS=1
-result="$(create_decision_log_issue "acme/widgets" "42" "pw::decision" "widgets: decision" "$body_file")"
-assert_eq "label-missing fallback: still prints the number and url" \
-  $'501\thttps://github.com/acme/widgets/issues/501' "$result"
-assert_eq "label-missing fallback: attempted the labelled create once" "1" \
-  "$(grep '^issue create' "$gh_calls" | grep -c -- '--label pw::decision')"
-assert_contains "label-missing fallback: retried without the label" \
-  "issue create -R acme/widgets --title widgets: decision --body-file $body_file" "$(cat "$gh_calls")"
-assert_contains "label-missing fallback: the retry still closed the issue" "issue close 501 -R acme/widgets" \
-  "$(cat "$gh_calls")"
-
-# --- filing fails outright: nothing is printed, and the function reports
-# failure rather than a half-filed issue ---
-reset_decision_log_stubs
-GH_CREATE_LABELLED_FAILS=1
-GH_CREATE_RESULT=""
 rc=0
 result="$(create_decision_log_issue "acme/widgets" "42" "pw::decision" "widgets: decision" "$body_file")" || rc=$?
-assert_eq "filing fails: prints nothing" "" "$result"
-assert_eq "filing fails: returns non-zero" "1" "$rc"
+assert_eq "labelled create fails: prints nothing" "" "$result"
+assert_eq "labelled create fails: returns non-zero" "1" "$rc"
+assert_eq "labelled create fails: attempted the labelled create exactly once" "1" \
+  "$(grep -c '^issue create' "$gh_calls")"
+assert_not_contains "labelled create fails: never retried without the label" \
+  "issue create -R acme/widgets --title widgets: decision --body-file $body_file"$'\n' "$(cat "$gh_calls")"
+assert_not_contains "labelled create fails: never closed anything (nothing was filed)" \
+  "issue close" "$(cat "$gh_calls")"
 
 # --- close failure: the issue still exists and is still returned; the
 # caller (lib/enabler.sh) is the one that logs a warning about the close,

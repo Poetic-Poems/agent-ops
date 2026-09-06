@@ -12978,7 +12978,13 @@ implements.
     keys on (`Item: `<item>` · repo `<repo>``) — reused so both guards find
     the same set of issues for the same item, per this requirement's own
     origin; unlike that guard, this one searches `--state all`, since the log
-    issue is filed closed and stays closed until vetoed. `decision-taken`
+    issue is filed closed and stays closed until vetoed, and `pw::decision`
+    is never dropped on a failed create the way `create_escalation_issue`
+    will retry an ordinary escalation without its own label — the label here
+    is what the veto sweep below and this same duplicate guard both search
+    on, so an issue filed without it would be a veto lever dead on arrival; a
+    create that fails with the label is a plain failure instead (a `warning`,
+    per the failure-containment note below). `decision-taken`
     (requirement 36d) carries the log issue's own `issue_number`/`issue_url`
     once filed — merged in conditionally, the same way it already carries
     `comment_url` — and `decisions_map` (`lib/cycle-state.sh`) threads both
@@ -13039,19 +13045,34 @@ implements.
       was given), and comments once on the log issue naming it — there is no
       open work left to re-block.
 
+    Alongside the `needs-refinement` block, `lib/decision-veto.sh` logs one
+    `escalated` event naming the same log issue (`issue_number`/`issue_url`,
+    `decision: true`) — the log issue *is* registered as the item's
+    escalation, on the same `escalated` event `ENABLER_ELIGIBLE_JQ`
+    (`lib/cycle-state.sh`) already reads for an ordinary Enabler escalation.
+    While the log issue stays open (reopened), `$issue_state` reads `open`
+    and the item is not eligible at all — a mechanical hold, not merely a
+    request the pipeline is expected to honour: the item never reaches the
+    Enabler to be re-examined, so nothing (`decide-tactical` included) can
+    talk its way past a standing veto. `ENABLER_ELIGIBLE_JQ`'s `issue-closed`
+    timestamp guard reads `$escalation.ts >= $b.ts`, not strictly `>`, because
+    this escalation is logged in the very same pass — often the same
+    whole-second `log_event` timestamp — as the block it registers, unlike an
+    ordinary escalation which is always filed cycles after its own block.
+
     The owner then comments their own decision on the log issue and closes it
-    again. The block the sweep recorded is an ordinary `needs-refinement`
-    block and reaches the Enabler on requirement 35a's ordinary terms — the
-    coordinator-cycle threshold, or the recheck interval — not on the log
-    issue's own closure: the log issue is not registered as the item's
-    escalation, and `ENABLER_ELIGIBLE_JQ`'s `issue-closed` branch derives its
-    escalation issue from `escalated` events alone, so a `decision-taken`
-    event's `issue_number` is never what that branch reads. What carries the
-    owner's answer forward is the block itself: its `detail` names the veto
-    and its `unblock_condition` names the owner's own comment on the log issue
-    as the decision of record, so the Enabler engagement that picks the block
-    up, and the Refiner engagement it leads to, are pointed at that comment
-    the same way they would be pointed at an answer on a closed escalation.
+    again: the very next cycle reads the issue closed and, through that same
+    `issue-closed` branch, the item is eligible immediately — no
+    coordinator-cycle threshold to wait out. `DECISIONS_MAP_JQ` drops a
+    `decision-taken` entry once a later `decision-vetoed` event names the same
+    item, exactly as it already drops one superseded by a refinement, so the
+    next Refiner engagement is never handed the vetoed decision as though it
+    still stood. What carries the owner's answer forward is the block itself:
+    its `detail` names the veto and its `unblock_condition` names the owner's
+    own comment on the log issue as the decision of record, so the Enabler
+    engagement the `issue-closed` reason hands the item to, and the Refiner
+    engagement it leads to, are pointed at that comment the same way they
+    would be pointed at an answer on an ordinary closed escalation.
 
     **Where the owner sees them.** The dashboard's **Decisions** panel
     (`docs/DASHBOARD-SPEC.md`) — last 7 days, per repository: item, decision,

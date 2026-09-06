@@ -157,7 +157,7 @@ create_escalation_issue() {
 # File one decision-log issue (agent-ops#937): the durable record of a
 # `decide-tactical` `decide` verdict, filed closed and unassigned — a log, not
 # an ask. Prints "<number>\t<url>"; prints nothing and returns 1 if it could
-# not be filed. Mirrors `create_escalation_issue` above, with three
+# not be filed. Mirrors `create_escalation_issue` above, with four
 # differences that follow from being a log rather than a request:
 #
 #   - The duplicate guard searches `--state all`, not `--state open`: the log
@@ -177,6 +177,22 @@ create_escalation_issue() {
 #     unclosed one only costs the human seeing it briefly on an
 #     open-issue-labelled filter before the next cycle's sweep or a human
 #     closes it by hand.
+#   - No retry without the label on a failed create. `create_escalation_issue`
+#     accepts that trade for an ordinary escalation, where the label is only a
+#     human's own filter and the issue's assignee is what actually excludes it
+#     from the `issues` source — losing the label there costs nothing this
+#     system depends on. Here the label *is* the mechanism:
+#     `scripts/sweep-decision-vetoes.sh` finds every log issue to check for a
+#     veto by searching `pw::decision`, and this function's own duplicate guard
+#     above searches the same label — an issue filed without it is invisible
+#     to both, a veto lever dead from the moment it is filed, and a later
+#     `decide-tactical` pass for the same item would file a second log issue
+#     never knowing this one existed (agent-ops#1198). `labels_ensure_role`
+#     just above already makes the label likely before the one create attempt
+#     this function makes; a create that still fails is a genuine failure,
+#     reported by the caller's own warning (see requirement 37) exactly as a
+#     missing URL or issue number already is below, never silently retried
+#     into a record the rest of this feature can never find again.
 create_decision_log_issue() {
   local repo="$1" item="$2" label="$3" title="$4" body_file="$5"
   local existing raw url number
@@ -192,10 +208,6 @@ create_decision_log_issue() {
   labels_ensure_role "$CONFIG_FILE" "$SCHEMA_FILE" "$repo" escalation >/dev/null 2>&1 || true
   raw="$(gh issue create -R "$repo" --title "$title" --body-file "$body_file" \
            --label "$label" 2>>"$cycle_dir/enabler-decision-issue.err" || true)"
-  if [[ -z "$raw" ]]; then
-    raw="$(gh issue create -R "$repo" --title "$title" --body-file "$body_file" \
-             2>>"$cycle_dir/enabler-decision-issue.err" || true)"
-  fi
   url="$(grep -oE 'https://github\.com/[A-Za-z0-9_./-]+/issues/[0-9]+' <<<"$raw" | tail -n1 || true)"
   [[ -n "$url" ]] || return 1
   number="${url##*/}"
