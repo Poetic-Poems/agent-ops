@@ -12970,21 +12970,35 @@ implements.
     `pw::owner-decision` are fixed: it is what `scripts/sweep-decision-vetoes.sh`
     below searches every configured repository for, and a renamed label would
     silently stop being swept). Its body carries a leading machine marker
-    (`<!-- agent-ops:decision-log item=<item> repo=<repo> -->`, invisible on
-    GitHub) naming the original item, a "## Decision taken by the pipeline"
-    section (the decision, the rationale, `options_considered`, the model and
-    cycle, a link to the item-thread comment where one exists), and the same
-    body-footer item reference `create_escalation_issue`'s own duplicate guard
-    keys on (`Item: `<item>` · repo `<repo>``) — reused so both guards find
-    the same set of issues for the same item, per this requirement's own
-    origin; unlike that guard, this one searches `--state all`, since the log
-    issue is filed closed and stays closed until vetoed, and `pw::decision`
-    is never dropped on a failed create the way `create_escalation_issue`
-    will retry an ordinary escalation without its own label — the label here
-    is what the veto sweep below and this same duplicate guard both search
-    on, so an issue filed without it would be a veto lever dead on arrival; a
-    create that fails with the label is a plain failure instead (a `warning`,
-    per the failure-containment note below). `decision-taken`
+    (`<!-- agent-ops:decision-log item=<item> repo=<repo> reason_key=<key> -->`,
+    invisible on GitHub) naming the original item, a "## Decision taken by the
+    pipeline" section (the decision, the rationale, `options_considered`, the
+    model and cycle, a link to the item-thread comment where one exists), and
+    the same body-footer item reference `create_escalation_issue`'s own
+    duplicate guard keys on (`Item: `<item>` · repo `<repo>``) — reused so
+    both guards find the same set of issues for the same item, per this
+    requirement's own origin; unlike that guard, this one searches
+    `--state all`, since the log issue is filed closed and stays closed until
+    vetoed, and `pw::decision` is never dropped on a failed create the way
+    `create_escalation_issue` will retry an ordinary escalation without its
+    own label — the label here is what the veto sweep below and this same
+    duplicate guard both search on, so an issue filed without it would be a
+    veto lever dead on arrival; a create that fails with the label is a plain
+    failure instead (a `warning`, per the failure-containment note below).
+    The guard's match on the item reference alone is additionally narrowed by
+    `reason_key` (`escalation_autonomy_decide_reason_key`, requirement 36d) —
+    matched against the marker's own `reason_key=` field, empty matching
+    every body the way an absent value always does here: an item ref alone
+    matches *every* decision this item has ever carried, so without this a
+    second, legitimate decide verdict over a distinct reason (permitted —
+    the per-reason bound counts passes, not decisions) would silently reuse
+    the first decision's own closed issue rather than filing a fresh one
+    (agent-ops#1198) — its body would go on showing the first decision's
+    text while the second is the decision of record, and a veto of the first
+    would leave `decision_vetoes_processed_items` (keyed on that one issue
+    number) refusing to ever process a veto of the second.
+    `scripts/sweep-decision-vetoes.sh`'s own marker read treats `reason_key`
+    as optional, so a log issue filed before this fix still parses. `decision-taken`
     (requirement 36d) carries the log issue's own `issue_number`/`issue_url`
     once filed — merged in conditionally, the same way it already carries
     `comment_url` — and `decisions_map` (`lib/cycle-state.sh`) threads both

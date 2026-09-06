@@ -39,9 +39,12 @@
 #
 # The original item's repo/ref are read from the log issue body's own
 # machine marker (`enabler_decision_log_body`, lib/enabler.sh):
-#   <!-- agent-ops:decision-log item=<item> repo=<repo> -->
-# A log issue missing this marker is not one this pipeline filed — reported
-# as a warning, left alone.
+#   <!-- agent-ops:decision-log item=<item> repo=<repo> reason_key=<key> -->
+# (`reason_key` is optional in the match below — a log issue filed before
+# agent-ops#1198's review-round-2 fix carries the marker without it, and this
+# sweep only ever needs `item`/`repo` from it). A log issue missing the
+# marker entirely is not one this pipeline filed — reported as a warning,
+# left alone.
 #
 # Output: one JSON object per action on stdout —
 #   {"action":"vetoed","repo":…,"item":…,"issue_number":…,"issue_url":…,"by":…,"terminal":true|false}
@@ -258,7 +261,7 @@ $(pipeline_comment_marker "$cycle_id" script)"
     fi
   fi
 done < <(jq -r '.[]
-  | ((.body // "") | capture("<!-- agent-ops:decision-log item=(?<i>[^ ]+) repo=(?<r>[^ ]+) -->")? // null) as $m
+  | ((.body // "") | capture("<!-- agent-ops:decision-log item=(?<i>[^ ]+) repo=(?<r>[^ ]+)(?: reason_key=[^ ]+)? -->")? // null) as $m
   | [ (.number|tostring), .url, .title, ($m.i // "-"), ($m.r // "-") ] | @tsv' \
   <<<"$decision_issues_json" 2>/dev/null || true)
 

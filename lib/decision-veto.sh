@@ -42,6 +42,20 @@
 # whether the log issue was ever closed, and nothing would have stopped a
 # later `decide-tactical` pass from silently re-deciding over the still-open
 # veto.
+#
+# The registration is not conditioned on `record_needs_refinement_block`
+# actually recording a *fresh* block (review round 2): that call refuses —
+# and returns 1 — for an item this cycle's own `blocked_json` already shows
+# blocked, the ordinary case being an Implementer's own needs-refinement
+# bounce landing between the decision and the owner's reopen, which is
+# exactly the situation most likely to prompt a veto. Registering the
+# escalation only on a successful *fresh* record would leave that real,
+# common case with no registration at all — the existing block ages out on
+# its own unrelated threshold, oblivious to the veto standing over it. The
+# escalated event is logged whenever this cycle's own `blocked_json` already
+# carried the item *or* the fresh record succeeds — the two ways a live
+# block for this item can exist the moment the veto is discovered — so it
+# always has a block to attach to.
 
 # run_decision_veto_sweep
 # Called once, after `compute_band_eligibility`/`compute_enabler_eligible_set`/
@@ -57,6 +71,7 @@ run_decision_veto_sweep() {
 
   local processed_json sweep_slug slug_processed_json sweep_action action
   local veto_repo="" veto_item="" veto_issue_number="" veto_issue_url=""
+  local na_repo="" na_item="" na_already_blocked=0 na_recorded=0
   processed_json="$(decision_vetoes_processed_items "$union_log")"
 
   while IFS= read -r sweep_slug; do
@@ -75,11 +90,21 @@ run_decision_veto_sweep() {
           veto_issue_url="$(jq -r '.issue_url // ""' <<<"$sweep_action" 2>/dev/null || true)"
           ;;
         needs-refinement)
-          if record_needs_refinement_block "$(jq -c 'del(.action)' <<<"$sweep_action" 2>/dev/null || printf '{}')" \
-               "script" \
+          na_repo="$(jq -r '.repo // ""' <<<"$sweep_action" 2>/dev/null || true)"
+          na_item="$(jq -r '.item // ""' <<<"$sweep_action" 2>/dev/null || true)"
+          na_already_blocked=0
+          if jq -e --arg r "$na_repo" --arg i "$na_item" \
+               'any(.[]?; (.repo // "") == $r and ((.item // "") | tostring) == $i)' \
+               <<<"${blocked_json:-[]}" >/dev/null 2>&1; then
+            na_already_blocked=1
+          fi
+          na_recorded=0
+          record_needs_refinement_block "$(jq -c 'del(.action)' <<<"$sweep_action" 2>/dev/null || printf '{}')" \
+            "script" && na_recorded=1
+          if (( na_recorded || na_already_blocked )) \
              && [[ -n "$veto_issue_number" ]] \
-             && [[ "$(jq -r '.repo // ""' <<<"$sweep_action" 2>/dev/null || true)" == "$veto_repo" ]] \
-             && [[ "$(jq -r '.item // ""' <<<"$sweep_action" 2>/dev/null || true)" == "$veto_item" ]]; then
+             && [[ "$na_repo" == "$veto_repo" ]] \
+             && [[ "$na_item" == "$veto_item" ]]; then
             log_event "escalated" "$(jq -nc --arg r "$veto_repo" --arg i "$veto_item" \
               --argjson n "$veto_issue_number" --arg u "$veto_issue_url" \
               '{repo: $r, item: $i, issue_number: $n, issue_url: $u, decision: true}')"

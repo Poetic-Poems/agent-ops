@@ -241,6 +241,23 @@ assert_eq "and reports the rest as deferred" \
   '{"action":"deferred","remaining":1}' \
   "$(jq -c 'select(.action == "deferred")' <<<"$out")"
 
+# --- Case 7 (agent-ops#1198, review round 2): a marker carrying the newer
+# `reason_key=` field (`enabler_decision_log_body`'s own scoped-dedup fix)
+# still parses — this sweep only ever needs `item`/`repo` out of it, so the
+# field's presence or absence must not change what it finds ------------------
+c="$tmp_dir/case7"; mkdir -p "$c"
+jq -n --arg body "<!-- agent-ops:decision-log item=47 repo=acme/widgets reason_key=aaaa1111 -->" \
+  '[{number: 507, url: "https://github.com/acme/widgets/issues/507",
+     title: "widgets: decision", body: $body}]' > "$c/decision-issues.json"
+jq -n '[{"actor": {"login": "warwickallen"}, "event": "reopened"}]' > "$c/events-507.json"
+printf 'OPEN' > "$c/item-state-47"
+echo '[]' > "$c/open-prs.json"
+
+out="$(run_sweep "$c")"
+vetoed="$(jq -c 'select(.action == "vetoed")' <<<"$out")"
+assert_eq "a reason_key-bearing marker still names the right item" "47" "$(jq -r '.item' <<<"$vetoed")"
+assert_eq "...and the right log issue" "507" "$(jq -r '.issue_number' <<<"$vetoed")"
+
 if (( failures > 0 )); then
   echo "$failures failure(s)"
   exit 1

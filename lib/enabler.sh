@@ -153,11 +153,11 @@ create_escalation_issue() {
   printf '%s\t%s' "$number" "$url"
 }
 
-# create_decision_log_issue REPO ITEM LABEL TITLE BODY_FILE
+# create_decision_log_issue REPO ITEM LABEL TITLE BODY_FILE REASON_KEY
 # File one decision-log issue (agent-ops#937): the durable record of a
 # `decide-tactical` `decide` verdict, filed closed and unassigned — a log, not
 # an ask. Prints "<number>\t<url>"; prints nothing and returns 1 if it could
-# not be filed. Mirrors `create_escalation_issue` above, with four
+# not be filed. Mirrors `create_escalation_issue` above, with five
 # differences that follow from being a log rather than a request:
 #
 #   - The duplicate guard searches `--state all`, not `--state open`: the log
@@ -165,7 +165,22 @@ create_escalation_issue() {
 #     reopening it, so "already filed" must match regardless of its current
 #     state. Reusing the same body-footer item ref `create_escalation_issue`
 #     keys its own guard on (agent-ops#937's own instruction) means the two
-#     dedup guards find exactly the same set of issues for the same item.
+#     dedup guards find exactly the same set of issues for the same item —
+#     but REASON_KEY narrows the match further: an item ref alone matches
+#     *every* decision this item has ever carried, so without this a second,
+#     legitimate decide verdict over a distinct reason_key (permitted —
+#     `escalation_autonomy_decide_pass_available` bounds by reason, not by
+#     item) would silently reuse the first decision's own closed issue rather
+#     than filing a fresh one (agent-ops#1198, review round 2): its body would
+#     go on showing decision #1's text while decision #2 is the decision of
+#     record, `decision_vetoes_processed_items` would already hold that issue
+#     number from decision #1's own veto history (if any) and refuse to
+#     process a second one, and the whole premise
+#     `decision_vetoes_processed_items`'s own header states — "a re-decide
+#     arrives under a fresh log issue" — would not hold. REASON_KEY is
+#     matched against the same `reason_key=` marker
+#     `enabler_decision_log_body` embeds, empty matching any body (no
+#     narrowing) the way an absent value always has here.
 #   - No `--assignee`: an assigned issue is a request the human closes when
 #     done; this is a record veto by reopening, not by any hand-applied
 #     assignee, and an assignee here would only exclude it from the `issues`
@@ -194,12 +209,14 @@ create_escalation_issue() {
 #     missing URL or issue number already is below, never silently retried
 #     into a record the rest of this feature can never find again.
 create_decision_log_issue() {
-  local repo="$1" item="$2" label="$3" title="$4" body_file="$5"
+  local repo="$1" item="$2" label="$3" title="$4" body_file="$5" reason_key="${6:-}"
   local existing raw url number
   existing="$(gh issue list -R "$repo" --label "$label" --state all --search "$item" \
                 --json number,url,body 2>/dev/null \
-              | jq -r --arg it "$item" \
-                  'map(select(((.body // "") | contains($it)))) | first
+              | jq -r --arg it "$item" --arg rk "$reason_key" \
+                  'map(select(((.body // "") | contains($it))
+                             and (($rk == "") or ((.body // "") | contains("reason_key=" + $rk)))))
+                   | first
                    | if . == null then empty else "\(.number)\t\(.url)" end' 2>/dev/null || true)"
   if [[ -n "$existing" ]]; then
     printf '%s' "$existing"
@@ -219,17 +236,21 @@ create_decision_log_issue() {
   printf '%s\t%s' "$number" "$url"
 }
 
-# enabler_decision_log_body DECISION RATIONALE OPTIONS MODEL CYCLE COMMENT_URL REPO ITEM
+# enabler_decision_log_body DECISION RATIONALE OPTIONS MODEL CYCLE COMMENT_URL REPO ITEM REASON_KEY
 # The body of the decision-log issue `create_decision_log_issue` files
 # (agent-ops#937): the "## Decision taken by the pipeline" section the issue
 # asks for, plus the same machine-readable item-ref footer
 # `create_escalation_issue`'s own dedup guard keys on — and, in a leading HTML
-# comment invisible on GitHub, a `repo=`/`item=` pair a script can parse back
-# out without scraping prose (`scripts/sweep-decision-vetoes.sh` reads it).
+# comment invisible on GitHub, a `repo=`/`item=`/`reason_key=` triple a script
+# can parse back out without scraping prose (`scripts/sweep-decision-vetoes.sh`
+# reads `item=`/`repo=`; `create_decision_log_issue`'s own duplicate guard
+# reads `reason_key=`, so a second decision over a distinct reason_key is
+# never mistaken for a repeat of this one — agent-ops#1198, review round 2).
 enabler_decision_log_body() {
   local decision="$1" rationale="$2" options="$3" model="$4" cycle="$5" comment_url="$6" repo="$7" item="$8"
+  local reason_key="${9:-}"
   local body
-  body="<!-- agent-ops:decision-log item=$item repo=$repo -->
+  body="<!-- agent-ops:decision-log item=$item repo=$repo reason_key=$reason_key -->
 
 ## Decision taken by the pipeline
 
@@ -1517,9 +1538,9 @@ $(jq . <<<"$input")
               e_dec_log_body_file="$cycle_dir/decision-log-$j.md"
               enabler_decision_log_body "$e_dec_decision_text" "$e_dec_rationale" "$e_dec_options" \
                 "${enabler_model_critical:-$enabler_model}" "$cycle_id" "$e_dec_comment_url" \
-                "$e_repo" "$e_item" > "$e_dec_log_body_file"
+                "$e_repo" "$e_item" "$e_dec_reason_key" > "$e_dec_log_body_file"
               if e_dec_log_created="$(create_decision_log_issue "$e_repo" "$e_item" "pw::decision" \
-                                        "$e_dec_log_title" "$e_dec_log_body_file")" \
+                                        "$e_dec_log_title" "$e_dec_log_body_file" "$e_dec_reason_key")" \
                    && [[ -n "$e_dec_log_created" ]]; then
                 IFS=$'\t' read -r e_dec_log_number e_dec_log_url <<<"$e_dec_log_created"
               else

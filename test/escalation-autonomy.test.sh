@@ -317,6 +317,29 @@ assert_eq "dedup: reuses the existing issue's own number and url" \
   $'77\thttps://github.com/acme/widgets/issues/77' "$result"
 assert_not_contains "dedup: never creates a second issue" "issue create" "$(cat "$gh_calls")"
 
+# --- reason_key narrows the dedup guard (agent-ops#1198, review round 2): an
+# item ref alone matches *every* decision this item has ever carried, so a
+# second, distinct decision must file its own fresh issue rather than reusing
+# the first's — otherwise its body would go on showing the first decision's
+# text, and a veto of the first would leave decision_vetoes_processed_items
+# (keyed on that one issue number) unable to ever process a veto of the
+# second. ---
+reset_decision_log_stubs
+# shellcheck disable=SC2016  # the backticks are literal Markdown, not command substitution
+GH_LIST_RESULT='[{"number":77,"url":"https://github.com/acme/widgets/issues/77","body":"<!-- agent-ops:decision-log item=42 repo=acme/widgets reason_key=aaaa1111 -->\nItem: `42` . repo `acme/widgets`"}]'
+result="$(create_decision_log_issue "acme/widgets" "42" "pw::decision" "widgets: decision" "$body_file" "bbbb2222")"
+assert_eq "distinct reason_key: files a fresh issue rather than reusing the old one" \
+  $'501\thttps://github.com/acme/widgets/issues/501' "$result"
+assert_contains "distinct reason_key: really did create a new issue" "issue create" "$(cat "$gh_calls")"
+
+reset_decision_log_stubs
+# shellcheck disable=SC2016  # the backticks are literal Markdown, not command substitution
+GH_LIST_RESULT='[{"number":77,"url":"https://github.com/acme/widgets/issues/77","body":"<!-- agent-ops:decision-log item=42 repo=acme/widgets reason_key=aaaa1111 -->\nItem: `42` . repo `acme/widgets`"}]'
+result="$(create_decision_log_issue "acme/widgets" "42" "pw::decision" "widgets: decision" "$body_file" "aaaa1111")"
+assert_eq "same reason_key: still reuses the existing issue" \
+  $'77\thttps://github.com/acme/widgets/issues/77' "$result"
+assert_not_contains "same reason_key: never creates a second issue" "issue create" "$(cat "$gh_calls")"
+
 # --- no label-less fallback (agent-ops#1198): unlike create_escalation_issue,
 # a labelled create failure is a straight failure — pw::decision is the
 # mechanism the sweep and this function's own duplicate guard both search on,
