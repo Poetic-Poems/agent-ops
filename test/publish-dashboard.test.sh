@@ -3192,7 +3192,7 @@ assert_eq "a fast build costs materially less than a full one" "1" \
 # fixed-calendar-date fixture pass its own checks and then fail, over 24h
 # later, once the real clock carried its rolling window past them.
 _now_bad_rc=0
-env HOME="$tmp_dir/nodeNowBad" "$PUBLISH" --no-github --now "not-a-date" >/tmp/dev-null-nownow 2>&1 || _now_bad_rc=$?
+env HOME="$tmp_dir/nodeNowBad" "$PUBLISH" --no-github --now "not-a-date" >/dev/null 2>&1 || _now_bad_rc=$?
 assert_eq "an invalid --now exits non-zero rather than silently using it" "1" \
   "$(( _now_bad_rc != 0 ))"
 
