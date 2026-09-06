@@ -1576,7 +1576,9 @@ counts_json="$(jq -n --slurpfile cyc "$cycles_file" --slurpfile costs_in "$costs
 # a different population) and its `status` — `insufficient-sample` below
 # `SCORECARD_MIN_SAMPLE`, reusing `lib/verdict-fate.sh`'s own convention
 # (agent-ops#573) and its default of 5 rather than inventing a second
-# threshold — and declines to state the corresponding rate(s) at all below it,
+# threshold. The gate is display-side: a row below the minimum still carries
+# its computed rate(s) here, for a consumer of this aggregate other than the
+# page, and it is the page that reads "insufficient evidence" in their place
 # rather than ranking on too little evidence.
 SCORECARD_MIN_SAMPLE=5
 
