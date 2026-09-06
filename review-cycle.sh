@@ -655,6 +655,11 @@ acquire_lock() {
 peers_dir="$(fleet_peers_dir "$workspace_root")"
 union_log="$review_dir/.fleet-log.jsonl"
 fleet_logs "$state_dir" "$peers_dir" log.jsonl > "$union_log" || true
+# A peer that has not deployed the JSONL NUL repair yet — or history
+# replicated before it did — can still hand this node a NUL-holed line via
+# peers_dir/*/log.jsonl; repair the snapshot itself before anything below
+# reads it (agent-ops#794).
+fleet_repair_log "$union_log" "$node_name"
 
 # What the Reviewer-Agent is allowed this run (requirement 4f), and — derived
 # from it — how long this pipeline's own lock may be held. The review lock has
@@ -1107,6 +1112,7 @@ while IFS= read -r entry; do
   # immediately — and fleet/limit.json is re-read live, which is how a hit a
   # *peer* took during our first review reaches us before their branch does.
   fleet_logs "$state_dir" "$peers_dir" log.jsonl > "$union_log" || true
+  fleet_repair_log "$union_log" "$node_name"
   union_record=""
   if [[ -s "$union_log" ]]; then
     union_record="$(limit_union_record < "$union_log")"

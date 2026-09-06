@@ -48,10 +48,18 @@ duty_divisor="${LAUNCHER_DUTY_DIVISOR:-9}"
 
 scriptdir="$(cd "$(dirname "$0")" && pwd)"
 appdir="$(dirname "$scriptdir")"
+# shellcheck source=lib/fleet.sh
+. "$appdir/lib/fleet.sh"
 # LAUNCHER_PUBLISH_CMD exists for the test suite, which must be able to watch
 # which mode each tick chose without a network call; cron always runs the
 # Publisher itself.
 cmd="${LAUNCHER_PUBLISH_CMD:-$scriptdir/publish-dashboard.sh}"
+
+# Same convention as agent-cycle.sh/review-cycle.sh: stamps the JSON repair
+# records fleet_repair_log below writes for the JSONL logs, so a reader can
+# tell which node's launcher found and fixed the hole.
+node_name="${NODE_NAME:-$(hostname 2>/dev/null || echo node)}"
+node_name="${node_name//[^A-Za-z0-9._-]/-}"
 
 # Derive the state dir from config.json (same source publish-dashboard.sh
 # uses) so the lock and log always land where the dashboard is written.
@@ -126,26 +134,14 @@ mkdir -p "$logdir"
 # life of the log.
 #
 # So strip the NULs once per window and record what was dropped, rather than
-# closing the gap silently — the loss is a fact about the node worth keeping.
-# Cost when there is nothing to do (the normal case) is one read of the log and
-# no write; the rewrite is safe because every writer here reopens by name per
-# append, so none of them holds a descriptor across the rename.
-repair_log() {
-  [[ -s "$log" ]] || return 0
-  local size clean tmp
-  size="$(stat -c %s "$log" 2>/dev/null)" || return 0
-  clean="$(tr -d '\0' < "$log" 2>/dev/null | wc -c)" || return 0
-  (( clean < size )) || return 0
-  tmp="$log.repair.$$"
-  if tr -d '\0' < "$log" > "$tmp" 2>/dev/null; then
-    printf '%(%Y-%m-%dT%H:%M:%S%z)T repaired: dropped %s NUL byte(s) — an unclean stop lost the log lines in flight\n' \
-      -1 "$(( size - clean ))" >> "$tmp"
-    mv "$tmp" "$log"
-  else
-    rm -f "$tmp"
-  fi
-}
-repair_log
+# closing the gap silently — the loss is a fact about the node worth keeping
+# (`fleet_repair_log`, lib/fleet.sh). It hits the same hazard in `log.jsonl`,
+# `review-log.jsonl` and `revert-rate.jsonl` too, so repair those the same way
+# each window, alongside `dashboard.log`.
+fleet_repair_log "$log" "$node_name"
+for f in "$logdir/log.jsonl" "$logdir/review-log.jsonl" "$logdir/revert-rate.jsonl"; do
+  fleet_repair_log "$f" "$node_name"
+done
 
 # EPOCHSECONDS is too coarse to pace with: it rounds a 0.4s no-op tick to 0 and
 # a 0.6s one to 1, and the backoff below multiplies whatever it is given, so

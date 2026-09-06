@@ -1123,6 +1123,16 @@ assert_contains "a cumulative rate below the stored baseline is badged at/below 
 assert_contains "a repository with no revert-rate publish yet still gets a row" \
   "no revert-rate publish yet" "$out"
 
+# agent-ops#794: what fromjson? // empty silently dropped from a union read is
+# folded into that panel's own title — never a separate badge — so it renders
+# only when this window's read actually lost something.
+assert_contains "a revert-rate read that dropped lines names the count in its own title" \
+  "Revert rate by repository — 3 corrupted lines dropped this window" "$out"
+assert_not_contains "a log.jsonl read that dropped nothing adds no suffix to its title" \
+  "Recent log events — " "$out"
+assert_contains "  ... the plain title renders instead" \
+  "Recent log events" "$out"
+
 # A quiet window is a real, reportable nothing — and still accounts for the
 # budget, so "nothing landed" and "nothing could land" stay distinguishable.
 out="$(render landings-quiet.json)" || { printf 'FAIL - landings-quiet.json did not render:\n%s\n' "$out"; exit 1; }

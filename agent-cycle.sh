@@ -1495,6 +1495,11 @@ acquire_lock() {
 peers_dir="$(fleet_peers_dir "$workspace_root")"
 union_log="$cycle_dir/.fleet-log.jsonl"
 fleet_logs "$state_dir" "$peers_dir" log.jsonl > "$union_log" || true
+# A peer that has not deployed the JSONL NUL repair yet — or history
+# replicated before it did — can still hand this node a NUL-holed line via
+# peers_dir/*/log.jsonl; repair the snapshot itself before anything below
+# reads it (agent-ops#794).
+fleet_repair_log "$union_log" "$node_name"
 # The snapshot's own horizon (requirement 39f, #670): the newest `.ts` the
 # union above reaches, not wall clock — in practice this cycle's own
 # `cycle-start` event, already in this node's log by the time `fleet_logs`

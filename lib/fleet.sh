@@ -81,3 +81,42 @@ fleet_logs() {  # <state_dir> <peers_dir> [log-basename]
   } 2>/dev/null | sort
   return 0
 }
+
+# fleet_repair_log <path> <node>
+# A container killed mid-append can leave a log's size recorded while the
+# data blocks behind the last few writes never reach disk: they read back as
+# NUL bytes. One NUL makes the whole file binary to grep, which then stops
+# printing matches for everything around it — so the damage is not the lost
+# lines but every later read of whatever survived. Strip the NUL run and
+# record what was dropped, rather than closing the gap silently: the loss is
+# a fact about the node worth keeping.
+#
+# A JSONL target (PATH ending `.jsonl`) gets a JSON repair record so every
+# `fromjson? // empty` reader still sees it; anything else (dashboard.log)
+# gets the plain-text line that predates this generalisation. A plain-text
+# line appended to a `.jsonl` file would be exactly what those readers
+# silently drop, reproducing the same "loss recorded nowhere" failure this
+# exists to close.
+#
+# Cost when there is nothing to do (the normal case) is one read of PATH and
+# no write; the rewrite is safe because every writer reopens by name per
+# append, so none holds a descriptor across the rename.
+fleet_repair_log() {
+  local target="$1" node="$2" size clean tmp dropped
+  [[ -s "$target" ]] || return 0
+  size="$(stat -c %s "$target" 2>/dev/null)" || return 0
+  clean="$(tr -d '\0' < "$target" 2>/dev/null | wc -c)" || return 0
+  (( clean < size )) || return 0
+  dropped=$(( size - clean ))
+  tmp="$target.repair.$$"
+  tr -d '\0' < "$target" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+  if [[ "$target" == *.jsonl ]]; then
+    jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg node "$node" --argjson dropped "$dropped" \
+      '{ts: $ts, node: $node, event: "log-repaired", dropped_nul_bytes: $dropped}' >> "$tmp"
+  else
+    printf '%(%Y-%m-%dT%H:%M:%S%z)T repaired: dropped %s NUL byte(s) — an unclean stop lost the log lines in flight\n' \
+      -1 "$dropped" >> "$tmp"
+  fi
+  mv -f "$tmp" "$target" 2>/dev/null || rm -f "$tmp"
+  return 0
+}
