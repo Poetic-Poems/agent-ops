@@ -852,6 +852,209 @@ item_text_supply() {  # <candidate-json> <trimmed-json>
   printf '%s' "$out"
 }
 
+# Requirement 17h (agent-ops#769, resolving agent-ops#844 option (b)): a
+# richer live fetch than item_live_text above — the whole shape a template
+# needs (title, body, every comment attributed and dated), not just the
+# concatenated text a containment check compares against. Used by
+# compose_selected_candidate_text below to rebuild an issues/tech-debt
+# candidate's `context`/`acceptance`/`title` from the item's *current*
+# thread, unconditionally, rather than from the band entry the Co-Ordinator
+# saw — which the fit ladder (lib/coordinator-input.sh) may have trimmed.
+#
+# `tech-debt` fetches identically to `issues`: a tech-debt item has been a
+# GitHub issue carrying `pw::type:tech-debt` since the register's D15
+# migration (Poetic-Poems/poetic#869/#875/#879), and
+# scripts/gather-tech-debt.sh already reads it exactly the way
+# scripts/gather-issues.sh reads an `issues` entry. This deliberately does
+# NOT reuse item_live_text's own `tech-debt` branch (a
+# `repos/<repo>/contents/tech-debt/<item>.md` content read): that path
+# predates the migration and treats `item` as a register filename rather
+# than an issue number, a pre-existing mismatch tracked separately
+# (TD-PPagop-26090603) rather than carried into this new call site.
+#
+# Prints `{title, body, comments: [{author, created_at, body}]}` on success —
+# the same field names scripts/gather-issues.sh's own band entry uses, so the
+# template below reads either one identically. A non-zero exit leaves stdout
+# whatever `gh` already wrote to it, matching item_live_text's own contract:
+# the caller reads the exit code, never emptiness.
+item_live_entry() {  # <repo> <source> <item>
+  local repo="$1" source="$2" item="$3"
+  case "$source" in
+    issues|tech-debt)
+      gh issue view "$item" --repo "$repo" --json title,body,comments \
+        --jq '{title: (.title // ""), body: (.body // ""),
+               comments: [(.comments // [])[]
+                 | {author: (.author.login // ""), created_at: .createdAt, body: (.body // "")}]}'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# Requirement 17h's entry-lookup half: given the one selected candidate's
+# `{repo, source, item}`, find its own band entry inside `ordered_repos_json`
+# — the Script's already-gathered, per-repo data the Co-Ordinator's whole
+# runtime input was built from — regardless of what the model's own
+# `candidates[]` entry carries. Every array name and `ref`/`number` match
+# here mirrors `fallback_select_candidate`'s own per-source `mk()` defs
+# (lib/stage-attempt.sh) exactly, because that is the one other place this
+# codebase already answers "which entry does this candidate's `item` name" —
+# see that function's own header for why each source uses the field it does.
+# Prints the matching entry, or nothing if the repo or the item is not found
+# (a candidate naming a stale or nonexistent item — treated as a compose
+# failure by the caller, never assumed away).
+# shellcheck disable=SC2016  # jq's own $repo/$source/$item, bound via --arg below — not the shell's.
+CANDIDATE_ENTRY_LOOKUP_JQ='
+  (.[] | select(.slug == $repo)) as $r
+  | [ if $source == "issues" then ($r.issues // [])[] | select(((.ref // (.number | tostring))) == $item)
+      elif $source == "tech-debt" then ($r.tech_debt // [])[] | select(.ref == $item)
+      elif $source == "security" then ($r.findings // [])[] | select(.source == "security" and .ref == $item)
+      elif $source == "code-quality" then ($r.findings // [])[] | select(.source == "code-quality" and .ref == $item)
+      elif $source == "review-feedback" then ($r.review_feedback // [])[] | select(.ref == $item)
+      elif $source == "merge-conflicts" then ($r.merge_conflicts // [])[] | select(.ref == $item)
+      elif $source == "dequeued" then ($r.dequeued // [])[] | select(.ref == $item)
+      elif $source == "abandoned-drafts" then ($r.abandoned_drafts // [])[] | select(.ref == $item)
+      elif $source == "human-visibility" then ($r.human_visibility // [])[] | select(.ref == $item)
+      elif $source == "register-hygiene" then ($r.register_hygiene // [])[] | select(.ref == $item)
+      else empty
+      end
+    ] | .[0] // empty
+'
+
+# Requirement 17h's template half: the same deterministic per-source
+# `context`/`acceptance`/`title` `fallback_select_candidate` already composes
+# (lib/stage-attempt.sh:478-579) — the working precedent agent-ops#769 names
+# — applied here to one live-or-pre-fetched entry instead of mapped across a
+# whole band. Wording is kept identical to that function's own strings except
+# where its "(script-fallback selection)" framing would be false of an
+# ordinary Co-Ordinator pick — `security`/`code-quality` are the only two
+# that said so.
+# shellcheck disable=SC2016  # jq's own $source/$item, bound via --arg below — not the shell's.
+CANDIDATE_TEMPLATE_JQ='
+  def issue_ctx: "Issue #" + $item + ": " + (.title // "") + "\n\n"
+    + (.body // "") + "\n\nComments:\n"
+    + ([(.comments // [])[] | (.author // "") + " (" + (.created_at // "") + "):\n" + (.body // "")] | join("\n\n"));
+  if $source == "issues" then
+    {title: ("Issue #" + $item + ": " + (.title // "")), context: issue_ctx,
+     acceptance: "Resolve per the current state of the issue thread above (body and every comment), not just the opening post."}
+  elif $source == "tech-debt" then
+    {title: (.title // ""), context: (.body // ""),
+     acceptance: "Resolve per the tech-debt record verbatim above; standard tech-debt closing procedure applies."}
+  elif $source == "security" then
+    {title: (.title // ""),
+     context: ("Security finding.\nkind: " + (.kind // "") + "\nseverity: " + (.severity // "")
+                + "\npackage: " + (.package // "") + "\nrule: " + (.rule // "") + "\nlocation: " + (.location // "")
+                + "\nurl: " + (.url // "") + "\ntitle: " + (.title // "")),
+     acceptance: "Resolve the finding per its own record above, following this repo'"'"'s standard security-finding handling."}
+  elif $source == "code-quality" then
+    {title: (.title // ""),
+     context: ("Code-quality finding.\nkind: " + (.kind // "") + "\nrule: " + (.rule // "")
+                + "\nlocation: " + (.location // "") + "\nurl: " + (.url // "") + "\ntitle: " + (.title // "")),
+     acceptance: "Resolve the finding per its own record above, following this repo'"'"'s standard code-quality handling."}
+  elif $source == "review-feedback" then
+    {title: (.title // ""), context: (.body // ""),
+     acceptance: "Address the review feedback above and push to the existing pull request."}
+  elif $source == "merge-conflicts" then
+    (((.bot // false) and (.rebase_requested // false)) as $takeover
+     | {title: (.title // ""), context: (.body // ""),
+        acceptance: (if $takeover then
+          "A new pull request exists carrying the same dependency bump as Dependabot'"'"'s own pull request (same package, same target version), mergeable with CI green, left as a draft for the Reviewer; Dependabot'"'"'s own pull request is closed referencing the replacement."
+        else
+          "Rebase the existing pull request onto its base and resolve the conflict."
+        end)})
+  elif $source == "dequeued" then
+    {title: (.title // ""), context: (.body // ""),
+     acceptance: "Diagnose and fix the merge-group checks failure that got this pull request dequeued, then push to the existing branch."}
+  elif $source == "abandoned-drafts" then
+    {title: (.title // ""), context: (.body // ""),
+     acceptance: "Finish the existing draft pull request to the item'"'"'s own acceptance."}
+  elif $source == "human-visibility" then
+    {title: ("human-visibility: " + $item), context: ((.body // "") + "\n\nurl: " + (.url // "")),
+     acceptance: "Diagnose and fix the named human-visibility failure per its own record above; report blocked if the cause is outside this repository."}
+  elif $source == "register-hygiene" then
+    {title: ("register-hygiene: " + $item),
+     context: ((.body // "") + "\n\nurl: " + (.url // "") + "\nblob_sha: " + (.blob_sha // "")
+                + "\nproblems: " + ((.problems // []) | join("; "))),
+     acceptance: "Repair only the flagged register inconsistencies per TECH-DEBT.md'"'"'s claiming/filing discipline; touch nothing else."}
+  else empty
+  end
+'
+
+# Requirement 17h (agent-ops#769): composes `context`/`acceptance`/`title` for
+# the one candidate the Co-Ordinator (or the fallback, requirement 3v) has
+# already selected, so neither ever authors those three fields for a
+# pre-fetched source — the model's own job narrows to selection (and to
+# `model`/`model_reason`, a judgement call this does not touch). Scoped to
+# the ten sources the Script already gathers as structured data
+# (`CANDIDATE_ENTRY_LOOKUP_JQ` above); the three sources the Co-Ordinator
+# still derives itself live — `project-review`, `failed-runs`,
+# `implementation-plan` — have no pre-fetched band for the Script to compose
+# from and were never subject to the fit ladder's own trimming (the problem
+# agent-ops#769 exists to close), so this prints nothing and returns 2 for
+# them: the caller keeps the model's own `context`/`acceptance` unchanged,
+# exactly as before this requirement existed.
+#
+# For `issues`/`tech-debt` — the only two bands the fit ladder ever trims
+# (lib/coordinator-input.sh) — the entry found is refreshed with a live fetch
+# (`item_live_entry` above) before templating, unconditionally, whether or
+# not this cycle actually trimmed it: a work order's `context` must never
+# depend on the band entry's freshness at all, not merely recover when it was
+# visibly short this cycle. For the other seven sources, the pre-fetched
+# entry is used directly — `lib/coordinator-input.sh`'s own header confirms
+# the fit ladder never touches these, so there is nothing for a live fetch to
+# correct.
+#
+# Once composed, `refinement_traceability_repair` (agent-ops#767) is called
+# unconditionally — never gated behind a fault check, since there is no
+# model-authored text left to fault — so a recorded refinement is always
+# spliced onto the freshly composed `context`, generalising that repair from
+# "rescue a candidate the model got wrong" to "the one way a refinement ever
+# reaches a Script-composed work order."
+#
+# Exit 0: prints the candidate with `context`/`acceptance`/`title` replaced
+# (every other field — `repo`, `default_branch`, `pr_label`, `source`,
+# `item`, `model`, `model_reason`, and any per-source `branch`/`pr_url`/
+# `pr_number`/`base`/`takeover` — is carried over unchanged). Exit 1: the
+# entry could not be found in `ordered_repos_json`, or the live fetch failed
+# — a fail-closed compose failure the caller must treat as a hard skip, never
+# a fallback to the trimmed band entry (requirement 17f's own "untraceable"
+# cause already names exactly this: a construction-time check refusing to
+# hand a candidate on, no peer involved). Exit 2: `source` is one of the
+# three self-derived sources above — not a fault, just "nothing to compose
+# here."
+compose_selected_candidate_text() {  # <cand-json> <ordered-repos-json> <refinements-json>
+  local cand="$1" repos="$2" refinements="${3:-{\}}" repo source item entry live composed out repaired
+  repo="$(jq -r '.repo // ""' <<<"$cand" 2>/dev/null || true)"
+  source="$(jq -r '.source // ""' <<<"$cand" 2>/dev/null || true)"
+  item="$(jq -r '.item // ""' <<<"$cand" 2>/dev/null || true)"
+  [[ -n "$repo" && -n "$item" ]] || return 2
+
+  case "$source" in
+    project-review|failed-runs|implementation-plan) return 2 ;;
+  esac
+
+  entry="$(jq -ce --arg repo "$repo" --arg source "$source" --arg item "$item" \
+    "$CANDIDATE_ENTRY_LOOKUP_JQ" <<<"$repos" 2>/dev/null)" || entry=""
+  [[ -n "$entry" && "$entry" != "null" ]] || return 1
+
+  case "$source" in
+    issues|tech-debt)
+      live="$(item_live_entry "$repo" "$source" "$item" 2>&1)" \
+        || { guard_warn "compose-candidate-live:$repo#$item" "$live"; live=""; return 1; }
+      entry="$(jq -c --argjson live "$live" '. + $live' <<<"$entry" 2>/dev/null)" || return 1
+      ;;
+  esac
+
+  composed="$(jq -ce --arg source "$source" --arg item "$item" "$CANDIDATE_TEMPLATE_JQ" <<<"$entry" 2>/dev/null)" \
+    || return 1
+  out="$(jq -c --argjson c "$composed" '. + $c' <<<"$cand" 2>/dev/null)" || return 1
+  repaired="$(refinement_traceability_repair "$out" "$refinements" 2>/dev/null)"
+  [[ -n "$repaired" ]] && out="$repaired"
+  printf '%s\n' "$out"
+  return 0
+}
+
 # Requirement 3u/issue #320: the same deterministic-code-not-model-judgement
 # exclusion as exclude_blocked_or_void_items above, purpose-built for the one
 # pre-fetched band that function cannot be reused for as-is. Requirement 3t
