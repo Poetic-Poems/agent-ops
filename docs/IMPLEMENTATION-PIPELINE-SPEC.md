@@ -5248,8 +5248,13 @@ implements.
      way any exhausted candidate list would.
    - **Distinguishable in the log.** A fallback-won `selection` event carries
      `selected_by: "script-fallback"` (present only then — a model pick's
-     event has no such field), so the dashboard and issue #319's
-     verdict-quality metrics can tell model picks from fallback picks apart.
+     event has no such field), which lets a human reading the raw log tell a
+     fallback pick from a model pick by eye. The field has no reader outside
+     `agent-cycle.sh`'s own two write sites: the dashboard's actor and model
+     scorecards panel (`docs/DASHBOARD-SPEC.md`, issue #610) reports the
+     Co-Ordinator's verdict quality as the corroboration rate requirement 3w
+     computes from `corroboration` events, not from a fallback count keyed on
+     this field.
      Every corroboration check — both attempts, accepted or rejected — logs
      its own `corroboration` event (`attempt: 1|2`, `verdict:
      "accepted"|"rejected"|"accepted-by-selection"`, `eligible_total`,
