@@ -96,7 +96,20 @@ fleet_ts_field() {
       return 0
       ;;
   esac
-  jq -r '.ts // empty' <<<"$line" 2>/dev/null
+  # The fallback reads the whole *file*, never the one line the fast-path test
+  # above needed: a pretty-printed object's first line is `{` alone, which no
+  # jq parse can answer, and answering it with empty would report the node
+  # `unknown` — silently stale — on the one page whose job is to be believed
+  # about staleness. The fork is spent either way, so parsing all of what is
+  # there costs nothing over parsing the first line of it.
+  #
+  # `|| true` because jq exits 5 on input it cannot parse, and this reader owes
+  # its callers "the ts if there is one" rather than a status: every consumer
+  # already treats an empty answer as `fleet_publication_status`'s `unknown`,
+  # and `scripts/state-sync.sh` — which sources this file — runs under `set -e`,
+  # where a corrupt peer heartbeat would otherwise end the run rather than the
+  # read.
+  jq -r '.ts // empty' < "$file" 2>/dev/null || true
 }
 
 # fleet_publication_status <ts> <threshold_s> [now_epoch]
