@@ -234,7 +234,15 @@ chmod +x "$stub_bin/claude"
 #     (#546). Deleting them here restores the known-empty baseline those
 #     assertions are written against, so each test states its own combination
 #     explicitly and none of them depends on what the fleet's current stage
-#     happens to be. ---
+#     happens to be.
+#
+#     `schedule` is pinned for a third reason, and the plainest one: the
+#     crontab report below asserts the exact minutes it renders, and every one
+#     of those minutes came from whatever the shipped `schedule` happened to
+#     say. Changing a cadence in config.json is a configuration change, and it
+#     must not oblige anyone to re-derive an assertion here — so the block
+#     states its own, deliberately unlike the shipped values, and the
+#     assertions read from it. ---
 slug="acme-org/target-repo"
 base_config="$tmp/base-config.json"
 jq --arg slug "$slug" '
@@ -243,6 +251,10 @@ jq --arg slug "$slug" '
   | .state_repo = ""
   | .enabler_model = ""
   | .enabler_assignee = ""
+  | .schedule = {cycle_hours: "*", cycle_interval_minutes: 20, excluded_minutes: [],
+                 review_hour: 4, review_offset_minutes: 25, heartbeat_minutes: 6,
+                 state_sync_push_minutes: 8, state_sync_fetch_minutes: 9,
+                 log_rotation_minute: 23}
   | del(.merge_autonomy, .approver_app_id, .approver_model_default,
         .approver_model_complex, .approver_model_critical, .escalation_autonomy)
 ' "$CONFIG" > "$base_config"
@@ -1629,19 +1641,20 @@ assert_eq "a warning alone still exits 0" "0" "$rc"
 # --- The rendered crontab ---------------------------------------------------
 
 # CYCLE_MINUTE=1 makes the cycle (and therefore review) minute deterministic —
-# 1, repeating every base_config's schedule.cycle_interval_minutes (15) —
-# 1,16,31,46 — plus base_config's schedule.review_offset_minutes (29), past
-# schedule.review_hour (3) — so the report's minute math is checked exactly,
-# not just for the presence of expected substrings.
+# 1, repeating every base_config's own schedule.cycle_interval_minutes (20) —
+# 1,21,41 — plus its schedule.review_offset_minutes (25), past its
+# schedule.review_hour (4) — so the report's minute math is checked exactly,
+# not just for the presence of expected substrings. Every number here is one
+# base_config sets for itself, none of them the shipped installation's.
 run_doctor CYCLE_MINUTE=1
 assert_contains "a successful render reports the node name" "node " "$out"
 assert_contains "and the cycle minute(s) CYCLE_MINUTE asks for, every cycle_interval_minutes" \
-  "cycle at minute(s) 1,16,31,46 past" "$out"
+  "cycle at minute(s) 1,21,41 past" "$out"
 assert_contains "and the review minute derived from cycle + review_offset_minutes" \
-  "review at 30 past 3:00" "$out"
-assert_contains "and the heartbeat cadence" "heartbeat every 5 min" "$out"
+  "review at 26 past 4:00" "$out"
+assert_contains "and the heartbeat cadence" "heartbeat every 6 min" "$out"
 assert_contains "and the background timer minutes the config asks for" \
-  "state sync push every 5 min, fetch every 7 min, log rotation at :19" "$out"
+  "state sync push every 8 min, fetch every 9 min, log rotation at :23" "$out"
 assert_contains "and an allowed, explicit CYCLE_MINUTE is named as the source" \
   "cycle minute set explicitly by CYCLE_MINUTE=1" "$out"
 assert_eq "a clean render does not fail the run by itself" "0" "$rc"
@@ -1721,7 +1734,7 @@ assert_contains "a non-zero nice gets its own line, naming the repo and the weig
 out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_INSTALLATION_IDS -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$niced_config" --offline 2>&1)"
 assert_contains "--offline still renders the crontab" "cycle at minute" "$out"
 assert_contains "--offline still reports the background timer minutes" \
-  "state sync push every 5 min, fetch every 7 min, log rotation at :19" "$out"
+  "state sync push every 8 min, fetch every 9 min, log rotation at :23" "$out"
 assert_contains "--offline still reports nice reordering" \
   "$slug: nice -5" "$out"
 assert_contains "--offline skips write access" "[skip] every GitHub check (--offline)" "$out"

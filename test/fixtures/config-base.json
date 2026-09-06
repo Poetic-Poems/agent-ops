@@ -1,0 +1,47 @@
+{
+  "repos": [
+    {
+      "slug": "Test-Org/first-repo",
+      "sources": ["security", "issues:urgent", "abandoned-drafts", "tech-debt", "register-hygiene", "issues:low"]
+    },
+    {
+      "slug": "Test-Org/second-repo",
+      "sources": ["security", "abandoned-drafts", "tech-debt", "register-hygiene", "code-quality"],
+      "nice": 6
+    }
+  ],
+  "state_dir": "~/.cache/agent-ops-test/state",
+  "workspace_root": "~/.cache/agent-ops-test/workspaces",
+  "state_repo": "Test-Org/state-repo",
+  "coordinator_model": "claude-haiku-4-5-20251001",
+  "implementer_model_default": "claude-sonnet-5",
+  "implementer_model_trivial": "claude-haiku-4-5-20251001",
+  "reviewer_model_default": "claude-sonnet-5",
+  "enabler_model": "claude-opus-5",
+  "enabler_assignee": "test-enabler-assignee",
+  "refiner_model": "claude-sonnet-5",
+  "refinement_policy": {"issues": "required", "tech-debt": "required"},
+  "pr_label": "test-implementation",
+  "branch_prefix": "test-agent/",
+  "max_open_agent_prs": 8,
+  "limit_cooldown_default": 3,
+  "crash_loop_after": 4,
+  "crash_loop_repo": "Test-Org/first-repo",
+  "schedule": {
+    "cycle_hours": "*",
+    "cycle_interval_minutes": 15,
+    "excluded_minutes": [0]
+  },
+  "project_review": {
+    "defaults": {
+      "model": "claude-sonnet-5",
+      "pr_label": "test-project-review",
+      "branch_prefix": "test-review/",
+      "min_days_between_reviews": 13
+    },
+    "repos": [
+      {"slug": "Test-Org/first-repo"},
+      {"slug": "Test-Org/second-repo"}
+    ]
+  }
+}

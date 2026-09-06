@@ -906,6 +906,14 @@ What exists, and the requirements each part answers to:
 Every change to this pipeline must leave all of these passing; before opening
 a pull request, run the ones the change touches and any it could regress.
 
+The implementation pipeline's *Acceptance checks* preamble carries one rule
+that applies here unchanged: **no check may expect a particular value from
+`config.json`.** The shipped file is asserted to be valid; every fixture
+supplies its own `project_review` block, or mutates
+`test/fixtures/config-base.json`. Changing a threshold, a cadence or a
+reviewed repository is a configuration change, and must not oblige anyone to
+edit a test.
+
 1. `shellcheck review-cycle.sh` is clean.
 2. `--dry-run` completes against the real repos: the stand-down and skip-guard
    checks are evaluated, the Script prints which repos it *would* review,
