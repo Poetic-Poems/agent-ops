@@ -600,9 +600,19 @@ value would strand the PR:
   gh api -X POST repos/<slug>/pulls/<n>/requested_reviewers -f 'reviewers[]=<login>'
   ```
 
-  `<login>` is whoever's review blocks it — the account that submitted
+  `<login>` is whoever's review blocks it — the *human* account that submitted
   `CHANGES_REQUESTED`, which on this project is often not the account that wrote
-  the substance. The Implementer may have done it already; asking again is
+  the substance. Only a human or a team can be named here: GitHub's
+  `requested_reviewers` holds users and teams, not App identities, so POSTing
+  a GitHub App's or `[bot]`-suffixed login still returns 200 but never lands —
+  the login is silently absent from `requested_reviewers` on the very next
+  read. Where the only account that requested changes is an App, there is
+  nothing to POST: say so in your reply comment instead. This is expected, not
+  a fault — the Script's own re-request (requirement 31b) excludes bots from
+  its blocking set for the same reason and reaches the human through
+  `ensure_human_reviewer` instead, so the human is still notified even when
+  you have nothing to POST.
+  The Implementer may have done it already; asking again is
   harmless. This does **not** clear the block and is not an attempt to:
   `reviewDecision` stays `CHANGES_REQUESTED` and the PR stays un-mergeable. It
   only puts the PR back in the queue the human reads. If it fails, say so in a

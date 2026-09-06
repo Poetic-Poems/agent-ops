@@ -9902,7 +9902,12 @@ implements.
     the way GitHub computes `reviewDecision` — the last APPROVED or
     CHANGES_REQUESTED review *per reviewer*, bots excluded — so a human who
     requested changes and later added a `COMMENTED` review is still blocking,
-    and one who later approved is not. Then:
+    and one who later approved is not. A blocking review from a GitHub App is
+    therefore never in this set — GitHub's `requested_reviewers` holds users
+    and teams, not App identities, so there is no request `confirm_review_
+    requested` could make of one — and a pull request whose only
+    `CHANGES_REQUESTED` review is an App's yields `none` here, never `failed`;
+    `ensure_human_reviewer` reaches the human instead. Then:
     - nobody blocking — nothing to do. The answer on every first-round pull
       request, at the cost of one API read, and the reason the check is
       unconditional rather than gated on `source == "review-feedback"`: the
