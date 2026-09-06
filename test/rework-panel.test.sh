@@ -230,6 +230,27 @@ assert_eq "rework_count still dedups to the one repetition" \
 assert_eq "but both cycles that logged a copy of it count as rework spend (upper bound, not a measured split)" \
   "1000" "$(jq -c '.how_much.tokens.rework' <<<"$first_wins_report")"
 
+# Neither assertion above can tell *which* copy survived — a last-wins
+# reduction would satisfy both — so survivorship needs its own observation.
+# `cost_to_catch_at_next` is where it is observable: that average reads the
+# deduped stream, joining each surviving record's own `cycle` to the cost
+# table, so two nodes' copies of one human-gate catch charge the first
+# observer's cycle (c-early, $3) and never the echo's (c-echo, $7) or a blend
+# of the two ($5). This is the same sentence docs/DASHBOARD-SPEC.md's
+# acceptance-check bullet states for this file.
+survivor="$tmp_dir/first-wins-survivor.jsonl"
+cat > "$survivor" <<'EOF'
+{"ts":"2026-07-10T00:00:00Z","node":"n1","cycle":"c-early","event":"stage-end","stage":"reviewer","repo":"o/r","item":"2","cost_usd":3,"duration_ms":300,"tokens":{"input":10,"output":10}}
+{"ts":"2026-07-10T00:00:10Z","node":"n2","cycle":"c-echo","event":"stage-end","stage":"reviewer","repo":"o/r","item":"2","cost_usd":7,"duration_ms":700,"tokens":{"input":90,"output":90}}
+{"ts":"2026-07-10T00:01:00Z","node":"n1","cycle":"c-early","event":"rework","class":"human-change-request","detector":"lib/reconciliation-gate.sh","evidence":{},"attributed_stage":"reviewer","repo":"o/r","item":"2"}
+{"ts":"2026-07-10T00:01:30Z","node":"n2","cycle":"c-echo","event":"rework","class":"human-change-request","detector":"lib/reconciliation-gate.sh","evidence":{},"attributed_stage":"reviewer","repo":"o/r","item":"2"}
+EOF
+survivor_report="$(panel_of "$survivor")"
+assert_eq "the copy kept is the first by ts — cost_to_catch_at_next charges c-early's own cycle, never c-echo's" \
+  "3" "$(row_of "$survivor_report" agent-review | jq -c '.cost_to_catch_at_next.cost_usd')"
+assert_eq "  ... over the one surviving copy, never both nodes' echoes of the same catch" \
+  "1" "$(row_of "$survivor_report" agent-review | jq -c '.cost_to_catch_at_next.n')"
+
 # =====================================================================
 # Item-less dedup: a fleet-wide class (repo and item both omitted, per
 # docs/FLOW-SCHEMA.md) has no {repo, item, class} identity to speak of —
