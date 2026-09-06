@@ -149,6 +149,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Co-Ordinator's own copy and the mechanical fallback's composition are now
   belt-and-braces rather than load-bearing.
 
+- **NUL byte runs in the pipeline's JSONL logs are now repaired, and what a
+  read still drops is counted rather than silently dropped** (agent-ops#794).
+  `scripts/publish-dashboard-launcher.sh`'s `repair_log()` — which stripped
+  NUL runs from `dashboard.log` only, left by a container killed mid-append —
+  is generalised into `fleet_repair_log` (`lib/fleet.sh`) and now also runs
+  once per launcher window on `log.jsonl`, `review-log.jsonl` and
+  `revert-rate.jsonl`; a `.jsonl` target gets a JSON repair record
+  (`log-repaired`, `dropped_nul_bytes`) rather than the plain-text line every
+  `fromjson? // empty` reader would otherwise silently drop. `agent-cycle.sh`
+  and `review-cycle.sh` apply the same repair to their own per-cycle/
+  per-review `.fleet-log.jsonl` union snapshot immediately after building it,
+  since a peer that has not deployed this repair yet can still hand a
+  NUL-holed line to an otherwise-clean node. `scripts/publish-dashboard.sh`
+  now counts what its own reads of `log.jsonl` and `revert-rate.jsonl` drop
+  and carries it as `log_repair` in the payload; the dashboard folds a
+  non-zero count into the affected panel's own title.
+
 - `scripts/gather-source-state.sh` now pages its open-issue and open-PR
   listings to completion (`api_json_paged`). A single `gh api` call returns
   one page, and requirement 34i's work-gone sweep reads a blocked item's
