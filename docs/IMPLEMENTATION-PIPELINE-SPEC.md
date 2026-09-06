@@ -797,7 +797,7 @@ and the schema must carry every one of them.
 | `label_prefix` | `pw::` | Namespace prefix `lib/labels.sh`'s `labels_reconcile` reconciles full CRUD for (create, PATCH colour/description on drift, DELETE once no longer catalogued) rather than `labels_ensure`'s own create-only treatment. `labels_reconcile_role`'s `target` role — the one catalogue call that is a repository's complete desired label set — reconciles with deletion; `review` and `escalation`, each a partial subset of `target`'s own catalogue, reconcile colour/description drift but never...[continued below](#extended-notes-label_prefix) |
 | `void_retire_after_days` | 30 d | How old a fully-actioned void must be, in days, before requirement 34n drops it from the extract. `0` disables retirement, which is also the safe fallback for an unparseable value — never retiring costs bytes, wrongly retiring costs nothing observable, so the failure mode this guards is silent growth, not a wrongly-reopened item. |
 | `prompt_overrides` | `{}` | Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementer`/`reviewer`/`enabler`/`refiner`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. `approver` is deliberately absent from the enumeration: the Approver's...[continued below](#extended-notes-prompt_overrides) |
-| `pr_label` | `autonomous-agent` | Applied to every PR this system raises. It must not be `obsolete`: the pipeline would then project requirement 34k's human-only corroboration onto every draft it raises, and the void guard would close live drafts on the pipeline's own say-so — `scripts/doctor.sh` fails the config. Threaded through the Co-Ordinator's runtime input (requirement 4) into every work order's own `pr_label` field, which the Implementer labels its pull request with (requirement 23). |
+| `pr_label` | `autonomous-agent` | Applied to every PR this system raises. It must not be `obsolete`: the pipeline would then project requirement 34k's human-only corroboration onto every draft it raises, and the void guard would close live drafts on the pipeline's own say-so — `scripts/doctor.sh` fails the config. The claim loop (requirement 17a) stamps this value onto every claimed work order's own `pr_label` field unconditionally, the guaranteed source regardless of whether the Co-Ordinator's runtime input...[continued below](#extended-notes-pr_label) |
 | `branch_prefix` | `agent/` | Branch name `agent/<item-slug>`, e.g. `agent/td26051201-fix-xyz`. |
 | `tech_debt_branch_prefix` | `td/` | Deprecated (D15 as revised, #869/#879): no longer minted for a fresh claim (requirement 17a) — read only so `lib/claim.sh` and the gatherer/sweep scripts of requirements 3c/3e/3g/3z/17b still recognise a pre-migration human tech-debt-claim branch, or a `td/<ID>` branch minted before this revision, as not their own agent's fresh claim. Branch name `<tech_debt_branch_prefix><ID>`, e.g. `td/TD26051201`. Empty disables the tech-debt namespace: those scripts then match only...[continued below](#extended-notes-tech_debt_branch_prefix) |
 | `max_open_agent_prs` | `8` | Back-pressure: draft PRs, ready PRs still `CHANGES_REQUESTED`, and live claim-registry entries, carrying `pr_label` across all repos — excludes ready PRs whose next action lies outside the pipeline (requirement 2.2). |
@@ -974,6 +974,10 @@ Namespace prefix `lib/labels.sh`'s `labels_reconcile` reconciles full CRUD for (
 ### Extended notes: `prompt_overrides`
 
 Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementer`/`reviewer`/`enabler`/`refiner`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. `approver` is deliberately absent from the enumeration: the Approver's adversarial prompt is the gate the D18 trust ladder rests on, and no installation may extend or replace it (requirement 4a, #469). A `replace` file substitutes the whole shipped prompt, its `## Untrusted external content` section included (requirement 45): preserving the canonical marker-delimited block is part of the replacement's contract — `test/prompt-untrusted-framing.test.sh` pins only the shipped prompts.
+
+### Extended notes: `pr_label`
+
+Applied to every PR this system raises. It must not be `obsolete`: the pipeline would then project requirement 34k's human-only corroboration onto every draft it raises, and the void guard would close live drafts on the pipeline's own say-so — `scripts/doctor.sh` fails the config. The claim loop (requirement 17a) stamps this value onto every claimed work order's own `pr_label` field unconditionally, the guaranteed source regardless of whether the Co-Ordinator's runtime input copy (requirement 4) or its own candidate (requirement 20) carries it correctly; the Implementer labels its pull request with that field (requirement 23).
 
 ### Extended notes: `tech_debt_branch_prefix`
 
@@ -5141,9 +5145,12 @@ implements.
      `implementer_model_default` and a fixed string naming this as a
      mechanical pick, and `pr_label` is `config.json`'s own key — the same
      value the Co-Ordinator copies from its runtime input into every
-     candidate (requirement 20), without which the Implementer
-     (requirement 23) would raise a pull request carrying no label for any
-     gatherer, or the back-pressure count, to find it by. The single winning candidate is fed into requirement
+     candidate (requirement 20). Composing it here is redundant-but-harmless
+     rather than load-bearing (agent-ops#956): the claim loop
+     (requirement 17a) stamps the configured `pr_label` onto whichever
+     candidate wins — this mechanical one included — unconditionally, so the
+     Implementer (requirement 23) is labelled correctly regardless of
+     whether this composition ran at all. The single winning candidate is fed into requirement
      17a's ordinary claim loop exactly as a model-ranked candidate would be —
      no special-cased race, so a lost claim stands the cycle down the same
      way any exhausted candidate list would.
@@ -8815,6 +8822,22 @@ implements.
       vacuously won and the registry is skipped; branch claims still work.
     - `--dry-run` claims nothing. `--once` claims exactly like an unattended
       cycle: a supervised run contends with the fleet on equal terms.
+    - **The winning candidate's `pr_label` (agent-ops#956).** The instant a
+      claim is won, the Script stamps the configured `pr_label` — the same
+      `config.json` value threaded into the Co-Ordinator's runtime input —
+      onto the claimed work order, alongside `branch`, unconditionally
+      overriding whatever value the candidate already carried (including
+      none). This is the guaranteed source of the field the Implementer
+      labels its pull request with (requirement 23): the Co-Ordinator's own
+      copy (requirement 20) and `fallback_select_candidate`'s composition
+      (requirement 3v) are belt-and-braces, never load-bearing, since a
+      Co-Ordinator whose model output omits or mistypes `pr_label` would
+      otherwise raise a pull request no gatherer — `gather-review-
+      feedback.sh`, `gather-abandoned-drafts.sh`, `gather-merge-
+      conflicts.sh`, `gather-dequeued.sh`,
+      `gather-human-visibility-hygiene.sh`, `scripts/sweep-closed-issues.sh`,
+      `lib/merge-budget.sh` — or the back-pressure count (2.2), could ever
+      find again.
 17b. **The orphan-branch sweep.** The gc's only-if-untouched rule (17a)
     leaves one state behind on purpose that is right for the work and wrong
     for the item: an Implementer that pushed commits and died before its
@@ -9105,7 +9128,13 @@ implements.
     `branch`: the Script derives and injects the claim branch (requirement
     17a), except for the finishing sources `review-feedback`, `merge-conflicts`
     and `abandoned-drafts`, whose `branch` is the PR's existing branch carried from
-    the entry. For a `failed-runs` entry,
+    the entry. The Co-Ordinator does copy `pr_label` from its own runtime
+    input into every candidate, but that copy is belt-and-braces, never
+    load-bearing: the claim loop (requirement 17a) stamps the configured
+    `pr_label` onto the winning candidate unconditionally, the same way it
+    injects `branch`, so a work order's `pr_label` is guaranteed correct
+    regardless of whether the model included or correctly copied it
+    (agent-ops#956). For a `failed-runs` entry,
     `item` is `failed-run-` plus the workflow file's basename without extension —
     deterministic, so every node derives the same claim key. `source` is one of
     `security`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`,
@@ -9219,9 +9248,11 @@ implements.
     17a) — and never creates, renames, or deletes a branch of its own.
 23. **Makes the claim visible before implementing.** The branch is the
     lock, but humans read PRs, not refs: opens a draft PR immediately,
-    labelled with the work order's `pr_label` (requirement 20's Co-Ordinator
-    copies it verbatim from `config.json`'s own `pr_label` key), with a
-    Conventional-Commits title (it will become the squash commit on `main`)
+    labelled with the work order's `pr_label` — guaranteed correct because
+    the claim loop stamps it from `config.json`'s own `pr_label` key
+    unconditionally (requirement 17a), the Co-Ordinator's own verbatim copy
+    (requirement 20) being belt-and-braces rather than the load-bearing
+    source — with a Conventional-Commits title (it will become the squash commit on `main`)
     and a body giving the item reference and planned approach. Immediately
     records the PR's URL at `.git/agent-ops-pr-url` in the clone — `.git/` is
     never part of the tracked tree, so this can't leak into a commit — so the

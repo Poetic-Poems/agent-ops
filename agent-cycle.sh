@@ -2646,7 +2646,13 @@ for (( ci = 0; ci < n_cand; ci++ )); do
   if (( claim_rc == 0 )); then
     claim_active=1
     claim_pr_key="$c_pr_key"
-    claimed_json="$(jq -c --arg b "$c_branch" '. + {branch: $b}' <<<"$cand")"
+    # Requirement 20/23 (agent-ops#956): pr_label is how every gatherer finds
+    # this system's own pull requests again, so the Script stamps its own
+    # configured value here unconditionally, the same way it stamps `branch`
+    # above — never trusting the Co-Ordinator's copy or the mechanical
+    # fallback's composition to be present or correct.
+    claimed_json="$(jq -c --arg b "$c_branch" --arg pl "$pr_label" \
+      '. + {branch: $b, pr_label: $pl}' <<<"$cand")"
     break
   fi
   # 3 = a peer holds it (healthy contention: the work is being done, just not
