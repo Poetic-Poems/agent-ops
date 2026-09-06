@@ -36,7 +36,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   verdict-quality panel (issue #319, folded into the Co-Ordinator card's own
   measure) and retires the two "model used" pies (issue #529, folded into
   every row's own `attempts`).
-
+- The **item lifecycle record** additively flags a `landed` item that was
+  reworked afterwards (requirement 49, agent-ops#1181): a
+  `reworked_after_landed: {since, event}` field, naming the earliest
+  item-scoped event later than the item's own earliest landing evidence — a
+  reopened or re-worked item, e.g. a second `pr-raised` for another pull
+  request — and omitted entirely, never `false`/`null`, when no such later
+  event exists. Further landing evidence itself (a second `merge-observed`/
+  `issue-closed-post-merge`) does not count as rework. The fate priority
+  order and every existing fate's assignment rule are unchanged;
+  `docs/FLOW-SCHEMA.md`'s `landed` row and requirement 49's acceptance check
+  in `docs/IMPLEMENTATION-PIPELINE-SPEC.md` document the new field.
 - A **`--drain` mode** (agent-ops#865, requirements 2.2c/2.3d/2.9): a third
   `disabled.json` `mode`, alongside the switch's original `"stop"`, that stops
   new work being picked up while letting the four finishing sources

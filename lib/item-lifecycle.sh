@@ -181,6 +181,16 @@ item_lifecycle_pickup_pairs() {
 #   6. open         — none of the above: the item has entered (some event
 #                     names it) but nothing yet says it has left.
 #
+# An item resolving to `landed` under rule 1 additionally carries
+# `reworked_after_landed: {since, event}` — additive, alongside `fate`, never
+# changing which rule wins — when its own full event history holds an
+# item-scoped event later than the earliest landing evidence, naming the
+# earliest such event. Further landing evidence itself (a second
+# `merge-observed`/`issue-closed-post-merge`) is excluded from consideration:
+# multiple merges is not rework. The field is omitted entirely, never
+# `false`/`null`, when no such later event exists (docs/FLOW-SCHEMA.md,
+# issue #1181).
+#
 # One case is deliberately not folded into the priority order above:
 # `unaccounted`. An item is `unaccounted`, not `landed`, when it is *also*
 # void *and* that void's own `ts` is later than the earliest landing
@@ -237,6 +247,11 @@ ITEM_LIFECYCLE_FOLD_JQ='
       | ([$full_events[] | select(.event == "merge-observed" or .event == "issue-closed-post-merge") | (.ts // "")]
           | map(select(. != "")) | sort | first) as $landed_ts
       | ($landed_ts != null) as $landed
+      | (if $landed then
+           ([$full_events[] | select((.event != "merge-observed" and .event != "issue-closed-post-merge")
+                                       and ((.ts // "") > $landed_ts))]
+             | sort_by(.ts // "") | first)
+         else null end) as $earliest_rework
       | ([$full_events[] | select(.event == "orphan-branch-released" and (.reason // "") == "superseded")] | length > 0) as $superseded_evidence
       | (resolved($obsolete; $r; $i)) as $abandoned_evidence
       | (resolved($void; $r; $i)) as $voided
@@ -247,7 +262,11 @@ ITEM_LIFECYCLE_FOLD_JQ='
            {fate: "unaccounted",
             reason: ("voided (at " + $void_ts + ") after merge evidence at " + $landed_ts
                       + " — contradictory, not resolved automatically")}
-         elif $landed then {fate: "landed"}
+         elif $landed then
+           {fate: "landed"}
+           + (if $earliest_rework != null
+              then {reworked_after_landed: {since: $earliest_rework.ts, event: $earliest_rework.event}}
+              else {} end)
          elif $voided then {fate: "voided"}
          elif $superseded_evidence then {fate: "superseded"}
          elif $blocked_flag then {fate: "blocked"}
