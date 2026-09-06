@@ -2877,8 +2877,9 @@ assert_eq "  ... and settles back to skipping" "" "$out"
 # inert on every real node, because they fixed the one file caught in the act.
 # `.image-drift-cache.json` was not special: `fleet-cache/*.json` is rewritten
 # on a ~90-second timer with byte-identical content, which on its own meant no
-# tick could ever skip, and `state-sync.log` and `doctor.log` grow continuously
-# while the Publisher never reads either.
+# tick could ever skip, and `state-sync.log`, `doctor.log` and
+# `tech-debt-archive.log` grow continuously while the Publisher never reads
+# any of them.
 #
 # So this asserts the *class* rather than another instance: nothing the
 # Publisher does not read may move the fingerprint, and nothing it does read may
@@ -2890,6 +2891,7 @@ printf '{"limit":null}'      > "$np_fc/limit.json"
 printf 'stale error text'    > "$np_fc/limit.json.err"
 printf 'sync log line\n'     > "$np_state/state-sync.log"
 printf 'doctor log line\n'   > "$np_state/doctor.log"
+printf 'archive log line\n'  > "$np_state/tech-debt-archive.log"
 printf '{"ok":true}'         > "$np_state/.doctor-status.json"
 np_publish >/dev/null   # a rebuild that takes them all into the fingerprint
 
@@ -2904,6 +2906,7 @@ assert_eq "caches rewritten with identical content do not move the fingerprint" 
 # Logs the Publisher never reads, growing as their own cron entries append.
 printf 'more sync\n'  >> "$np_state/state-sync.log"
 printf 'more doctor\n' >> "$np_state/doctor.log"
+printf 'more archive\n' >> "$np_state/tech-debt-archive.log"
 printf 'more error'    >> "$np_fc/limit.json.err"
 out="$(np_publish)"
 assert_eq "logs and error sidecars the Publisher never reads do not move it" "" "$out"

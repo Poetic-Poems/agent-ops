@@ -103,6 +103,7 @@ cycle_line()  { grep -E '^[0-9,]+ ' "$1" | grep 'agent-cycle.sh'; }
 review_line() { grep 'review-cycle.sh' "$1"; }
 doctor_line() { grep 'doctor.sh --unattended' "$1"; }
 revert_rate_line() { grep 'publish-revert-rate.sh' "$1"; }
+tech_debt_archive_line() { grep 'publish-tech-debt-archive.sh' "$1"; }
 heartbeat_line() { grep 'publish-dashboard-launcher.sh' "$1"; }
 push_line() { grep 'state-sync.sh push' "$1"; }
 fetch_line() { grep 'state-sync.sh fetch' "$1"; }
@@ -123,6 +124,7 @@ ml="$(expected_minute_list "$m" '[0]' 15)"
 r=$(( (m + 29) % 60 ))
 dm=$(( (m + 44) % 60 ))
 rrm=$(( (m + 51) % 60 ))
+tdam=$(( (m + 37) % 60 ))
 assert_eq "a default render exits 0" "0" "$rc"
 assert_eq "the hash minute is in 1..59 (0 stays excluded)" "1" "$(( m >= 1 && m <= 59 ))"
 assert_contains "the cycle line carries the node's hash minute, every 15m" "$ml * * * *  /app/agent-cycle.sh" "$(cycle_line "$out")"
@@ -131,6 +133,8 @@ assert_contains "the doctor line is base-cycle+44 mod 60, hourly" "$dm * * * *  
 assert_contains "and its non-zero exit is deliberately swallowed" "|| true" "$(doctor_line "$out")"
 assert_contains "the revert-rate line is base-cycle+51 mod 60, hour 2, daily" "$rrm 2 * * *  /app/scripts/publish-revert-rate.sh" "$(revert_rate_line "$out")"
 assert_contains "and its non-zero exit is deliberately swallowed too" "|| true" "$(revert_rate_line "$out")"
+assert_contains "the tech-debt archive line is base-cycle+37 mod 60, hour 4, daily" "$tdam 4 * * *  /app/scripts/publish-tech-debt-archive.sh" "$(tech_debt_archive_line "$out")"
+assert_contains "and its non-zero exit is deliberately swallowed too" "|| true" "$(tech_debt_archive_line "$out")"
 assert_contains "the heartbeat is every 5 minutes" "*/5 * * * *  /app/scripts/publish-dashboard-launcher.sh" "$(heartbeat_line "$out")"
 assert_contains "state-sync push is every 5 minutes" "*/5 * * * *  /app/scripts/state-sync.sh push" "$(push_line "$out")"
 assert_contains "state-sync fetch is every 7 minutes" "*/7 * * * *  /app/scripts/state-sync.sh fetch" "$(fetch_line "$out")"
@@ -148,6 +152,7 @@ assert_contains "an explicit minute wins, and repeats every 15m from it" "17,32,
 assert_contains "and moves the review with it (base minute only)" "46 3 * * *" "$(review_line "$out")"
 assert_contains "and moves the doctor pass with it too" "1 * * * *  /app/scripts/doctor.sh --unattended" "$(doctor_line "$out")"
 assert_contains "and moves the revert-rate pass with it too" "8 2 * * *  /app/scripts/publish-revert-rate.sh" "$(revert_rate_line "$out")"
+assert_contains "and moves the tech-debt archive pass with it too" "54 4 * * *  /app/scripts/publish-tech-debt-archive.sh" "$(tech_debt_archive_line "$out")"
 
 env NODE_NAME=poetic-1 CYCLE_MINUTE=31 "$RENDER" "$TMPL" "$out" "$CONFIG" 2>/dev/null
 assert_contains "the review minute wraps mod 60" "0 3 * * *" "$(review_line "$out")"
@@ -212,12 +217,14 @@ cml="$(expected_minute_list "$cm" '[0,30,45]' 15)"
 cr=$(( (cm + 10) % 60 ))
 cdm=$(( (cm + 44) % 60 ))
 crr=$(( (cm + 51) % 60 ))
+ctda=$(( (cm + 37) % 60 ))
 env NODE_NAME=poetic-1 "$RENDER" "$TMPL" "$out" "$custom_cfg" 2>/dev/null
 assert_eq "a custom config still renders cleanly" "0" "$?"
 assert_contains "the hash never lands on a configured excluded minute, at any occurrence" "$cml */2 * * *  /app/agent-cycle.sh" "$(cycle_line "$out")"
 assert_contains "the review hour and offset come from config" "$cr 4 * * *  /app/review-cycle.sh" "$(review_line "$out")"
 assert_contains "the doctor pass keeps its own default offset when schedule omits it" "$cdm * * * *  /app/scripts/doctor.sh --unattended" "$(doctor_line "$out")"
 assert_contains "the revert-rate hour comes from config, keeping its own default offset" "$crr 5 * * *  /app/scripts/publish-revert-rate.sh" "$(revert_rate_line "$out")"
+assert_contains "the tech-debt archive pass keeps its own default hour and offset when schedule omits both" "$ctda 4 * * *  /app/scripts/publish-tech-debt-archive.sh" "$(tech_debt_archive_line "$out")"
 assert_contains "the heartbeat cadence comes from config" "*/2 * * * *  /app/scripts/publish-dashboard-launcher.sh" "$(heartbeat_line "$out")"
 assert_contains "the state-sync push cadence comes from config" "*/3 * * * *  /app/scripts/state-sync.sh push" "$(push_line "$out")"
 assert_contains "the state-sync fetch cadence comes from config" "*/11 * * * *  /app/scripts/state-sync.sh fetch" "$(fetch_line "$out")"
@@ -251,6 +258,18 @@ env NODE_NAME=poetic-1 CYCLE_MINUTE=58 "$RENDER" "$TMPL" "$out" "$revert_rate_of
 assert_contains "and wraps mod 60 like the doctor offset does" \
   "3 2 * * *  /app/scripts/publish-revert-rate.sh" "$(revert_rate_line "$out")"
 
+# --- schedule.tech_debt_archive_offset_minutes, set explicitly --------------
+
+tech_debt_archive_offset_cfg="$tmp_dir/tech-debt-archive-offset-config.json"
+write_config "$tech_debt_archive_offset_cfg" '{"tech_debt_archive_offset_minutes": 5}'
+env NODE_NAME=poetic-1 CYCLE_MINUTE=10 "$RENDER" "$TMPL" "$out" "$tech_debt_archive_offset_cfg" 2>/dev/null
+assert_contains "an explicit tech_debt_archive_offset_minutes moves the tech-debt archive pass" \
+  "15 4 * * *  /app/scripts/publish-tech-debt-archive.sh" "$(tech_debt_archive_line "$out")"
+
+env NODE_NAME=poetic-1 CYCLE_MINUTE=58 "$RENDER" "$TMPL" "$out" "$tech_debt_archive_offset_cfg" 2>/dev/null
+assert_contains "and wraps mod 60 like the revert-rate offset does" \
+  "3 4 * * *  /app/scripts/publish-tech-debt-archive.sh" "$(tech_debt_archive_line "$out")"
+
 # --- No `schedule` block at all still renders every documented default
 #     (config.schema.json's `schedule.*` defaults, via config_defaults) -------
 
@@ -260,12 +279,14 @@ nm="$(expected_minute poetic-1 '[]')"
 nr=$(( (nm + 29) % 60 ))
 ndm=$(( (nm + 44) % 60 ))
 nrr=$(( (nm + 51) % 60 ))
+ntda=$(( (nm + 37) % 60 ))
 env NODE_NAME=poetic-1 "$RENDER" "$TMPL" "$out" "$no_schedule_cfg" 2>/dev/null
 assert_eq "a config with no schedule block at all still renders" "0" "$?"
 assert_contains "the cycle hour defaults to every hour" "* * * *  /app/agent-cycle.sh" "$(cycle_line "$out")"
 assert_contains "the review hour and offset default to 3 and 29" "$nr 3 * * *  /app/review-cycle.sh" "$(review_line "$out")"
 assert_contains "the doctor offset defaults to 44" "$ndm * * * *  /app/scripts/doctor.sh --unattended" "$(doctor_line "$out")"
 assert_contains "the revert-rate hour and offset default to 2 and 51" "$nrr 2 * * *  /app/scripts/publish-revert-rate.sh" "$(revert_rate_line "$out")"
+assert_contains "the tech-debt archive hour and offset default to 4 and 37" "$ntda 4 * * *  /app/scripts/publish-tech-debt-archive.sh" "$(tech_debt_archive_line "$out")"
 assert_contains "the heartbeat defaults to every 5 minutes" "*/5 * * * *  /app/scripts/publish-dashboard-launcher.sh" "$(heartbeat_line "$out")"
 assert_contains "state-sync push defaults to every 5 minutes" "*/5 * * * *  /app/scripts/state-sync.sh push" "$(push_line "$out")"
 assert_contains "state-sync fetch defaults to every 7 minutes" "*/7 * * * *  /app/scripts/state-sync.sh fetch" "$(fetch_line "$out")"
