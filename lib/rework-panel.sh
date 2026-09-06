@@ -67,10 +67,20 @@ REWORK_PANEL_KEY_JQ='
 # class but `post-merge-revert`, which adds `evidence.by` (the reverting or
 # following-up pull request), since more than one corrective pull request can
 # in principle be detected for the same original. A fleet-wide class with
-# neither `repo` nor `item` (crash-loop escalation foremost) therefore dedups
-# on `class` alone across the whole log — a known coarsening the schema's own
-# "for most classes" wording accepts rather than carves an exception for;
-# this module does not invent a finer identity the schema does not document.
+# neither `repo` nor `item` (crash-loop escalation, and every Co-Ordinator/
+# Enabler/Refiner backstop `stage-rerun`) has no such identity — `{repo, item,
+# class}` alone degenerates to one key shared by every occurrence of that
+# class across the whole log's history, not just the one repetition several
+# nodes echoed — so these additionally carry `ts` and `evidence` into the key,
+# distinguishing genuinely separate occurrences while still collapsing exact
+# same-instant copies of one occurrence the same way the item-bearing classes
+# do. `evidence.by` on a non-object `evidence` (a bare string or number,
+# `docs/FLOW-SCHEMA.md`'s "any | null") would abort the whole fold from inside
+# this `def` if indexed directly, so the `post-merge-revert` branch routes it
+# through `objects` first — an empty result there (not an object) falls
+# through `//` to `""` exactly like a genuinely absent field would. The
+# item-less branch embeds `.evidence` itself rather than indexing into it, so
+# it needs no such guard.
 #
 # --- The escape ladder's rung mapping
 # Three rungs, in the pipeline's own rising cost order (issue #611's own
@@ -145,14 +155,22 @@ REWORK_PANEL_JQ='
     else "agent-review" end;
   def dedup_key:
     if .class == "post-merge-revert"
-    then [(.repo // ""), (.item // ""), .class, (.evidence.by // "")]
+    then [(.repo // ""), (.item // ""), .class, ((.evidence | objects | .by) // "")]
+    elif (.repo // "") == "" and (.item // "") == ""
+    then [(.repo // ""), (.item // ""), .class, (.ts // ""), (.evidence // null)]
     else [(.repo // ""), (.item // ""), .class] end;
   def sum_field($f): (map(.[$f] // 0) | add) // 0;
   def share($total; $part): if $total == 0 then null else ($part / $total) end;
 
   ($all | map(select(type == "object"))) as $ev
 
-  | ($ev | map(select(.event == "rework"))
+  # $rew_raw is every parsed rework event, pre-dedup — used only where a
+  # cycle being present in the rework stream at all is what matters (the
+  # tokens/time share below), never for a count, which always reads the
+  # deduped $rew instead.
+  | ($ev | map(select(.event == "rework"))) as $rew_raw
+
+  | ($rew_raw
      | group_by(dedup_key) | map(sort_by(.ts // "") | first)
      | map(. + {rung: rung_of})) as $rew
 
@@ -196,7 +214,17 @@ REWORK_PANEL_JQ='
     }) as $whose
 
   # --- How much: tokens/elapsed share, first-pass yield -------------------
-  | ($rew | map(.cycle) | map(select(. != null)) | unique) as $rework_cycles
+  # $rework_cycles reads $rew_raw, not the deduped $rew: a cycle carrying a
+  # rework record whose copy lost the {repo, item, class} first-wins dedup
+  # (a peer node echoing the same repetition, or — before this fix — any
+  # second same-class repetition landing in the same review-feedback round)
+  # is still a cycle real rework work happened in, so it still belongs in the
+  # rework-spend bucket below. The record-level dedup above still governs
+  # every *count* (`rework_count`, `whose`, the escape ladder) — only this
+  # cycle-membership test reads the raw stream, which is what keeps
+  # `rework_share` the upper bound its own comment below and
+  # docs/DASHBOARD-SPEC.md promise, never an undercount.
+  | ($rew_raw | map(.cycle) | map(select(. != null)) | unique) as $rework_cycles
   | ($cost_by_cycle | to_entries) as $cost_entries
   | ($cost_entries | map(.value)) as $all_costs
   | ($cost_entries | map(select(.key as $k | $rework_cycles | index($k) != null)) | map(.value)) as $rework_costs

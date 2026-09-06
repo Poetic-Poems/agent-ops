@@ -22,7 +22,14 @@
 #   dedup                 a repetition two nodes both logged counts once;
 #                         post-merge-revert dedups additionally by
 #                         evidence.by, since two distinct corrective pull
-#                         requests can name the same original.
+#                         requests can name the same original; an item-less
+#                         fleet-wide class (crash-loop escalation, a
+#                         Co-Ordinator/Enabler/Refiner backstop kill) needs
+#                         ts and evidence in its dedup key too, since two
+#                         genuinely distinct occurrences months apart would
+#                         otherwise share the one {"","",class} key forever;
+#                         and a scalar (non-object) evidence on
+#                         post-merge-revert does not abort the fold.
 #   degradation           a malformed line and a missing log both yield a
 #                         conforming report rather than aborting the fold.
 #
@@ -197,10 +204,16 @@ assert_eq "  ... one review-round-trip (deduped from two nodes) and two post-mer
   "$(jq -Sc '[.whose.not_attributed.by_class[] | {class, count}]' <<<"$dup_report")"
 
 # Which copy survives dedup is first-wins-by-ts, the reduction
-# docs/FLOW-SCHEMA.md's own "Do not double-count" states — visible here in the
-# cost join, since the two nodes' copies of the same repetition name different
-# cycles: the cycle that first observed it (c-first, 100 tokens) is the one
-# charged to rework, not whichever node echoed it later (c-late, 900).
+# docs/FLOW-SCHEMA.md's own "Do not double-count" states — visible in
+# rework_count and whose below, which read the deduped stream and so count
+# this repetition once, keeping the first-observed copy (c-first). But the
+# two nodes' copies name two different cycles that each really spent tokens
+# on this repetition, so the tokens/elapsed/cost share reads the pre-dedup
+# stream instead (lib/rework-panel.sh's own $rew_raw): both c-first (100
+# tokens) and c-late (900 tokens) count toward rework spend, all 1000 of the
+# fleet's 1000 tokens here — the dedup that keeps a *count* honest must not
+# also make the *cost* an undercount by dropping a cycle that genuinely did
+# rework just because a peer's echo of the same repetition lost the count.
 first_wins="$tmp_dir/first-wins.jsonl"
 cat > "$first_wins" <<'EOF'
 {"ts":"2026-07-01T00:00:00Z","node":"n1","cycle":"c-first","event":"stage-end","stage":"implementer","repo":"o/r","item":"1","cost_usd":1,"duration_ms":100,"tokens":{"input":50,"output":50}}
@@ -209,8 +222,54 @@ cat > "$first_wins" <<'EOF'
 {"ts":"2026-07-01T00:01:30Z","node":"n2","cycle":"c-late","event":"rework","class":"review-round-trip","detector":"d","evidence":{},"attributed_stage":null,"repo":"o/r","item":"1"}
 EOF
 first_wins_report="$(panel_of "$first_wins")"
-assert_eq "dedup keeps the first copy by ts, so the cycle that first observed the repetition is the one charged" \
-  "100" "$(jq -c '.how_much.tokens.rework' <<<"$first_wins_report")"
+assert_eq "rework_count still dedups to the one repetition" \
+  "1" "$(jq -c '.how_much.rework_count' <<<"$first_wins_report")"
+assert_eq "but both cycles that logged a copy of it count as rework spend (upper bound, not a measured split)" \
+  "1000" "$(jq -c '.how_much.tokens.rework' <<<"$first_wins_report")"
+
+# =====================================================================
+# Item-less dedup: a fleet-wide class (repo and item both omitted, per
+# docs/FLOW-SCHEMA.md) has no {repo, item, class} identity to speak of —
+# without ts/evidence in the key too, every occurrence of the class across
+# the log's whole history shares the one ["", "", class] key, so only the
+# first-ever such kill in fleet history would ever be counted.
+# =====================================================================
+
+itemless="$tmp_dir/itemless.jsonl"
+cat > "$itemless" <<'EOF'
+{"ts":"2026-03-01T00:00:00Z","node":"n1","cycle":"c20","event":"rework","class":"stage-rerun","detector":"agent-cycle.sh","evidence":"kill_reason:budget","attributed_stage":"pre-selection"}
+{"ts":"2026-03-01T00:00:00Z","node":"n2","cycle":"c20","event":"rework","class":"stage-rerun","detector":"agent-cycle.sh","evidence":"kill_reason:budget","attributed_stage":"pre-selection"}
+{"ts":"2026-03-15T00:00:00Z","node":"n1","cycle":"c21","event":"rework","class":"stage-rerun","detector":"lib/crash-loop.sh","evidence":"crash_loop_escalate","attributed_stage":"pre-selection"}
+EOF
+itemless_report="$(panel_of "$itemless")"
+assert_eq "two occurrences of the same item-less class, weeks apart, are genuinely distinct — not collapsed to one forever" \
+  "2" "$(jq -c '.how_much.rework_count' <<<"$itemless_report")"
+assert_eq "  ... but two nodes' copies of the *same* occurrence (same ts, same evidence) still dedup to one" \
+  '[{"count":2,"stage":"pre-selection"}]' \
+  "$(jq -Sc '.whose.by_attributed_stage' <<<"$itemless_report")"
+
+# =====================================================================
+# A post-merge-revert record whose evidence is a bare JSON scalar (legal per
+# docs/FLOW-SCHEMA.md's evidence type, "any | null") must not abort the whole
+# fold from indexing `.evidence.by` inside dedup_key — that would send
+# rework_panel_build to its internal-error fallback, which renders
+# identically to a genuine zero-rework fleet rather than the "an outage is
+# not a quiet zero" shape every other degrade path on this panel keeps.
+# =====================================================================
+
+scalar_evidence="$tmp_dir/scalar-evidence.jsonl"
+cat > "$scalar_evidence" <<'EOF'
+{"ts":"2026-04-01T00:00:00Z","node":"n1","cycle":"c30","event":"stage-end","stage":"reviewer","repo":"o/r","item":"30","cost_usd":1,"duration_ms":1000,"tokens":{"input":10,"output":10}}
+{"ts":"2026-04-01T00:01:00Z","node":"n1","cycle":"c30","event":"rework","class":"review-round-trip","detector":"d","evidence":{},"attributed_stage":null,"repo":"o/r","item":"30"}
+{"ts":"2026-04-02T00:00:00Z","node":"n1","cycle":null,"event":"rework","class":"post-merge-revert","detector":"scripts/mine-merge-history.sh:AGGREGATE_JQ","evidence":"not-an-object","attributed_stage":null,"repo":"o/r","item":"31"}
+EOF
+scalar_report="$(panel_of "$scalar_evidence")"
+assert_eq "a scalar evidence on post-merge-revert doesn't abort the fold: both records still resolve through dedup" \
+  "2" "$(jq -c '.how_much.rework_count' <<<"$scalar_report")"
+assert_eq "  ... and real rework spend is still measured, not the internal-error fallback's quiet zero" \
+  "20" "$(jq -c '.how_much.tokens.rework' <<<"$scalar_report")"
+assert_eq "  ... the escape ladder still renders its three rungs rather than an empty/null shape" \
+  "3" "$(jq -c '.escape_ladder | length' <<<"$scalar_report")"
 
 # =====================================================================
 # The Reviewer-waving-work-through signature: escape rate and raw rework
