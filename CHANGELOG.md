@@ -185,6 +185,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`prompts/implementer.md` and `prompts/reviewer.md` no longer tell a stage
+  to POST a GitHub App's login for a review-feedback re-request**
+  (agent-ops#959). Both prompts said `<login>` was "whoever's review blocks
+  the PR" without saying that GitHub's `requested_reviewers` holds only users
+  and teams — so on this installation, where
+  `pullwright-approver-poetic[bot]` is the account that submits
+  `CHANGES_REQUESTED`, a stage following the instruction literally POSTed a
+  bot login, got a 200, and found it silently absent from
+  `requested_reviewers` on the very next read (PR #713). Both prompts now say
+  `<login>` must be a human or team account and that there is nothing to POST
+  when the only blocking review is an App's; requirement 31b in
+  `docs/IMPLEMENTATION-PIPELINE-SPEC.md` states the same consequence
+  explicitly — a blocking App review yields `none`, never `failed`, and
+  `ensure_human_reviewer` reaches the human instead. No script or library
+  change: `lib/handoff.sh` already excluded bots from its blocking set
+  (#194/#257).
+
 - The claim loop (`agent-cycle.sh`) now stamps the configured `pr_label`
   onto every claimed work order, alongside `branch`, unconditionally —
   overriding whatever value the candidate already carried, including none
