@@ -129,7 +129,7 @@ every *other* kind of work the pipeline could pick instead:
 
 | Priority | Where the issue is picked up |
 |---|---|
-| `Urgent` | **Second overall, across both repos** — ahead of everything except security work, including ahead of your review feedback and of finishing a stalled PR. |
+| `Urgent` | **Second overall, across all configured repositories** — ahead of everything except security work, including ahead of your review feedback and of finishing a stalled PR. |
 | `High` | After a red default branch, but ahead of `TECH-DEBT.md`. |
 | `Medium` | After `TECH-DEBT.md`, ahead of the implementation plan and the repository review's recommendations. |
 | `Low` | After the review recommendations, ahead of only the automated code-quality findings. |
@@ -424,7 +424,7 @@ Keys:
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. Do not name it `obsolete`, which is reserved for a human to mark one of these PRs as unwanted. The claim loop stamps this value onto every work order's own `pr_label` field, guaranteed regardless of the Co-Ordinator's own output, and the Implementer labels its pull request with it. |
 | `branch_prefix` | `agent/` | Branch naming: `agent/<item-slug>`. |
 | `tech_debt_branch_prefix` | `td/` | Deprecated: legacy recognition only, for a pre-migration human tech-debt-claim branch or a `td/<ID>` branch minted before D15's revision. A fresh tech-debt selection now claims `branch_prefix` like any other item. Leave it empty for a repository that never followed the `TECH-DEBT.md` convention — the affected scripts then match only `branch_prefix`. |
-| `max_open_agent_prs` | `8` | Back-pressure limit: draft PRs, changes-requested PRs and claims across both repos — not PRs only waiting on approval or merge. |
+| `max_open_agent_prs` | `8` | Back-pressure limit: draft PRs, changes-requested PRs and claims across all configured repositories — not PRs only waiting on approval or merge. |
 | `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list, so a lost race costs the next-best item rather than the cycle. |
 | `coordinator_prompt_max_bytes` | `500000` | The largest assembled prompt the Script will hand the Co-Ordinator. What a context window rejects is the whole prompt, not the runtime input alone, so the Script measures the rendered base prompt, subtracts it, and trims the two bands that carry a whole document each — an issue's entire thread and a tech-debt issue's entire thread — into what is left. Prose is shed and candidacy is not: every entry stays selectable, and every cut carries a marker naming how many bytes went...[continued below](#extended-notes-coordinator_prompt_max_bytes) |
 | `max_chained_cycles` | `3` | The most cycles that may run back-to-back in one lineage — the cron-fired original plus its immediate continuations, instead of each waiting for the next cron firing. A productive cycle chains to this cap regardless of remaining work (the remaining-sources gate counts enabled source categories, which back-pressure never empties) — up to `max_chained_cycles − 1` further full Co-Ordinator passes, the accepted price of the drain rate. `1` disables chaining. |
@@ -920,7 +920,7 @@ is a container: Docker and the `.env` above are the whole of it.
    that repository, that permission is what to check — `./scripts/doctor.sh`
    names each absent label and says so.
 
-5. **Enable the security work sources on both repos.** The `security` and `code-quality` sources read GitHub's own Dependabot alerts and code-scanning (CodeQL) alerts, so those features must be turned on for the alerts to exist:
+5. **Enable the security work sources on each configured repo.** The `security` and `code-quality` sources read GitHub's own Dependabot alerts and code-scanning (CodeQL) alerts, so those features must be turned on for the alerts to exist:
    - In each repo's **Settings → Code security**, enable **Dependabot alerts** and **Code scanning** (a default CodeQL setup is fine). Free for public repos; private repos need GitHub Advanced Security.
    - The `gh` token must be able to read the alerts — the `security_events` scope (or `repo` on a classic token). Verify:
      ```bash
@@ -1267,7 +1267,7 @@ Leave `state_repo` out of `config.json` and none of this happens at all.
 ## Skipping no-op cycles
 
 The Co-Ordinator costs the same to say "nothing to do" as it does to select
-work — about 2½ minutes of Haiku, reading both repos. Firing every
+work — about 2½ minutes of Haiku, reading the configured repositories. Firing every
 `schedule.cycle_interval_minutes` (15 by default; see [Configuration](#configuration)) instead
 of once an hour is only affordable because of this check: without it, a quiet
 week would be a Co-Ordinator call roughly every 15 minutes, all of them paid
@@ -1793,12 +1793,11 @@ Optional. Where the review pipeline writes its report set (`README.md`, `01-summ
 
 ### Install
 
-Create the review PR label in both repos (once):
+Create the review PR label in each configured repo (once):
 ```bash
-gh api -X POST repos/Poetic-Poems/poetic/labels \
+gh api -X POST repos/Poetic-Poems/<repo>/labels \
   -f name='project-review' -f color='5319e7' \
   -f description='Raised by the project-review pipeline'
-# ...and the same for Poetic-Poems/poetic-fiddle
 ```
 
 Add the cron entry. **Recommended** — a daily tick guarded by
@@ -2359,9 +2358,8 @@ follow [Removing a node for good](#removing-a-node-for-good) instead.
    This deletes the log, lock, and stage transcripts. Any open PRs the
    system already raised are untouched — they're ordinary GitHub PRs on the
    target repos and are yours to merge, close, or hand-finish.
-4. **Optional:** remove the `autonomous-agent` label from both repos
-   (`gh api -X DELETE repos/Poetic-Poems/poetic/labels/autonomous-agent`, likewise for
-   `poetic-fiddle`) and uninstall the standalone `claude` CLI if nothing
+4. **Optional:** remove the `autonomous-agent` label from each configured repo
+   (`gh api -X DELETE repos/Poetic-Poems/<repo>/labels/autonomous-agent` for each repo) and uninstall the standalone `claude` CLI if nothing
    else on the machine uses it.
 
 ## For maintainers: the as-built specifications

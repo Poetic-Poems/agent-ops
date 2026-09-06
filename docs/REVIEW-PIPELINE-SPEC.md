@@ -1040,9 +1040,9 @@ a pull request, run the ones the change touches and any it could regress.
 All of this is in place on the current host; it is needed again only when
 standing the pipeline up on a new machine.
 
-1. Create the review label in both repos:
+1. Create the review label in each configured repo:
    `gh api -X POST repos/Poetic-Poems/<repo>/labels -f name='project-review' -f color='5319e7' -f description='Raised by the project-review pipeline'`
-   (for `poetic` and `poetic-fiddle`).
+   (for each repository in `project_review.repos`).
 2. Install the cron entry. **Recommended — a daily tick guarded by
    `min_days_between_reviews`**, which is robust to a machine that sleeps:
    ```

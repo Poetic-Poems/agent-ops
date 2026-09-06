@@ -758,8 +758,8 @@
       "type": "integer",
       "minimum": 1,
       "x-docs": {
-        "readme": "Back-pressure limit: draft PRs, changes-requested PRs and claims across both repos — not PRs only waiting on approval or merge.",
-        "spec": "Back-pressure: draft PRs, ready PRs still `CHANGES_REQUESTED`, and live claim-registry entries, carrying `pr_label` across all repos — excludes ready PRs whose next action lies outside the pipeline (requirement 2.2).",
+        "readme": "Back-pressure limit: draft PRs, changes-requested PRs and claims across all configured repositories — not PRs only waiting on approval or merge.",
+        "spec": "Back-pressure: draft PRs, ready PRs still `CHANGES_REQUESTED`, and live claim-registry entries, carrying `pr_label` across all repositories — excludes ready PRs whose next action lies outside the pipeline (requirement 2.2).",
         "value": "`8`"
       }
     },

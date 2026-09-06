@@ -15,7 +15,7 @@ silent, follow the conventions of the two target repositories (their
 
 A pipeline that, on a configured cadence
 (`schedule.cycle_interval_minutes`), picks **at most one** well-scoped item
-of pending work from one of two GitHub repositories, implements it on a
+of pending work from the configured GitHub repositories, implements it on a
 feature branch in an ephemeral clone, reviews and corrects the result, and
 leaves a mergeable pull request for approval and landing at the repository's
 configured `merge_autonomy` level (see "## The Landing Gate"). It runs
@@ -87,7 +87,7 @@ cron (schedule.cycle_interval_minutes)
 ## Environment (verified 2026-07-20)
 
 - WSL2 Ubuntu; `bash`, `git`, `jq` and `gh` available.
-- `gh` is authenticated as `warwickallen`, with push access to both target
+- `gh` is authenticated as `warwickallen`, with push access to all configured
   repositories.
 - The standalone `claude` CLI is installed and resolvable from cron's
   minimal environment.
@@ -719,7 +719,7 @@ the compact result into the Co-Ordinator's runtime input, so the Co-Ordinator
 does not spend model tokens paginating those endpoints itself (see
 requirement 3a and 20).
 
-Conventions shared by both repos (agents must honour all of these):
+Conventions shared by all configured repos (agents must honour all of these):
 
 - `main` is protected: no direct pushes by anyone or anything; every change
   lands via a pull request, squash-merged, so **the PR title becomes the
@@ -805,7 +805,7 @@ and the schema must carry every one of them.
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. It must not be `obsolete`: the pipeline would then project requirement 34k's human-only corroboration onto every draft it raises, and the void guard would close live drafts on the pipeline's own say-so — `scripts/doctor.sh` fails the config. The claim loop (requirement 17a) stamps this value onto every claimed work order's own `pr_label` field unconditionally, the guaranteed source regardless of whether the Co-Ordinator's runtime input...[continued below](#extended-notes-pr_label) |
 | `branch_prefix` | `agent/` | Branch name `agent/<item-slug>`, e.g. `agent/td26051201-fix-xyz`. |
 | `tech_debt_branch_prefix` | `td/` | Deprecated (D15 as revised, #869/#879): no longer minted for a fresh claim (requirement 17a) — read only so `lib/claim.sh` and the gatherer/sweep scripts of requirements 3c/3e/3g/3z/17b still recognise a pre-migration human tech-debt-claim branch, or a `td/<ID>` branch minted before this revision, as not their own agent's fresh claim. Branch name `<tech_debt_branch_prefix><ID>`, e.g. `td/TD26051201`. Empty disables the tech-debt namespace: those scripts then match only...[continued below](#extended-notes-tech_debt_branch_prefix) |
-| `max_open_agent_prs` | `8` | Back-pressure: draft PRs, ready PRs still `CHANGES_REQUESTED`, and live claim-registry entries, carrying `pr_label` across all repos — excludes ready PRs whose next action lies outside the pipeline (requirement 2.2). |
+| `max_open_agent_prs` | `8` | Back-pressure: draft PRs, ready PRs still `CHANGES_REQUESTED`, and live claim-registry entries, carrying `pr_label` across all repositories — excludes ready PRs whose next action lies outside the pipeline (requirement 2.2). |
 | `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list (requirement 17a), so alternates turn a lost race into the next-best item instead of a wasted cycle. |
 | `coordinator_prompt_max_bytes` | `500000` | The largest assembled prompt the Script will hand the Co-Ordinator (requirement 4i). The default is derived from the 200000-token window of the Co-Ordinator model this installation runs, less the system prompt and tool definitions the Script neither assembles nor can measure, less a reserve for the verdict itself, at the bytes per token JSON-escaped Markdown actually costs. All three terms are measured rather than assumed, and all three moved between the key being added and...[continued below](#extended-notes-coordinator_prompt_max_bytes) |
 | `max_chained_cycles` | `3` | Finish-then-continue (requirement 39): the most cycles that may run back-to-back in one lineage — the cron-fired original plus its immediate chained continuations — bounded so a busy fleet still yields the lock periodically. `1` disables chaining. |
@@ -11846,7 +11846,7 @@ implements.
     `issues`/`tech-debt` claim, whose branch the Script has just created at
     `default_branch`'s own head: comparing it against that same head the
     moment the claim is won would always read `identical` and void every
-    ordinary claim on its first tick. Under squash-merge — both target
+    ordinary claim on its first tick. Under squash-merge — the configured
     repositories' merge mode — a merged branch reads `diverged`, so this
     signal actually catches only a true merge, a fast-forward, or a branch
     carrying nothing of its own; the narrowing is false-negative-only (a
@@ -22705,22 +22705,22 @@ standing the system up on a new machine.
    the node's configured cadence (`schedule.cycle_interval_minutes`).
    Either way, cycles only run while the machine is awake — a missed cycle
    simply waits for the next tick, which is harmless.
-3. Create the label in both repos:
+3. Create the label in each configured repo:
    `gh api -X POST repos/Poetic-Poems/<repo>/labels -f name='autonomous-agent' -f color='ededed' -f description='PR raised by the autonomous agent system'`.
    If your `gh` version already supports `gh label create`, that form also works; the API form above is the most compatible fallback.
-3c. Create the Enabler's escalation label in both repos, the same way:
+3c. Create the Enabler's escalation label in each configured repo, the same way:
    `gh api -X POST repos/Poetic-Poems/<repo>/labels -f name='enabler-escalation' -f color='b60205' -f description='Raised by the Enabler: a blocked item that escalates'`
    (`enabler_escalation_label`, requirement 36a). Without it an escalation is
    still raised — the create is retried unlabelled — but it arrives with only
    the assignment to distinguish it, so the human's filter and the duplicate
    guard both lose their handle.
-3d. Create the refinement label in both repos, the same way:
+3d. Create the refinement label in each configured repo, the same way:
    `gh api -X POST repos/Poetic-Poems/<repo>/labels -f name='needs-refinement' -f color='fbca04' -f description='The autonomous pipeline cannot tell what done would mean for this item'`
    (`needs_refinement_label`, requirement 34e). Without it the block is still
    recorded and the item still reaches the Enabler — the projection is a
    courtesy to whoever is browsing the issue list, not the record — but the
    Script logs a warning each time it cannot apply it.
-3a. Enable the security work sources on both repos so the alerts the
+3a. Enable the security work sources on each configured repo so the alerts the
    `security`/`code-quality` sources read actually exist: turn on the
    Dependabot alerts and code-scanning (CodeQL) features (Settings → Code
    security, or the equivalent org policy — free for public repos; requires
@@ -22769,8 +22769,8 @@ the design accepts as noise (§5.2).
 The floor matters as much as the ceiling, because it is paid on every quiet
 day and nothing about it looks like waste. Before requirement 3b, an idle
 repository still bought 24 full Co-Ordinator passes a day, each one reading
-both repos and concluding, correctly and expensively, that there was nothing to
-do (measured: ~2m35s of Haiku per pass against these repos). The no-op
+the configured repositories and concluding, correctly and expensively, that there was nothing to
+do (measured: ~2m35s of Haiku per pass against the configured repositories). The no-op
 short-circuit replaces those with a handful of `gh` calls and a hash, leaving
 one forced pass a day (`none_selected_recheck_hours`) as the safety valve —
 roughly a 96% cut in the idle floor, and no change at all to a busy day, where
@@ -23154,7 +23154,7 @@ requirements above, which state only what is.
   claims`/`branches`) replaces a live judgement call with a lookup against
   pre-fetched data, complete over both claim shapes and immune to model size.
 - **Tech-debt handling uses the repos' own claiming workflow directly**
-  (both repos today keep identical per-item `tech-debt/` machinery and a
+  (all configured repos today keep identical per-item `tech-debt/` machinery and a
   `/td` skill, but the Implementer follows the documented workflow rather
   than dispatching through the skill, which exists to launch agents — the
   Implementer already is one).
