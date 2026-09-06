@@ -22,8 +22,12 @@
 #   - **DEFAULT_FIX/OWNER_DECISION (agent-ops#938)** land in the filed body
 #     (or the dedup comment) via techdebt_default_section, identically to
 #     techdebt_file_issue.
+#   - **The dedup search states its own page cap** (`--limit
+#     TECHDEBT_DEDUP_LIST_LIMIT`) rather than inheriting `gh issue list`'s
+#     undeclared default of 30, which would dedup against only the newest
+#     page of a repository's open debt and file duplicates against the rest.
 #   - **No id reservation, no branch, no pull request** — filing (or the
-#     dedup comment) is the only GitHub write techndebt_file_debt makes;
+#     dedup comment) is the only GitHub write techdebt_file_debt makes;
 #     there is nothing left to half-finish, so a failed create simply
 #     returns 1 with no cleanup step to assert.
 #   - **techdebt_file_issue returns an existing issue that already covers
@@ -150,6 +154,13 @@ assert_eq "file_debt: no dedup hit, exit 0" "0" "$rc"
 assert_eq "  ... number/url returned" "77	https://github.com/o/r/issues/77" "$out"
 assert_eq "  ... exactly one issue list (the dedup search)" "1" \
   "$(grep -c '^<none> issue list -R o/r --label pw::type:tech-debt --state open' "$tmp_dir/calls")"
+# The page cap is stated, never inherited: `gh issue list`'s own undeclared
+# default is 30, and a repository carrying more open debt than that would
+# dedup against only its newest page — filing duplicates against the oldest
+# records, silently, which is the one failure a passing suite could otherwise
+# hide entirely.
+assert_eq "  ... and it states its own --limit rather than inheriting gh's 30" "1" \
+  "$(grep -c -- "--state open --limit $TECHDEBT_DEDUP_LIST_LIMIT --json number,url,title" "$tmp_dir/calls")"
 assert_eq "  ... exactly one issue create, labelled" "1" \
   "$(grep -c -- '^<none> issue create -R o/r --title A finding worth filing .*--label pw::type:tech-debt$' "$tmp_dir/calls")"
 assert_eq "  ... no issue comment attempted" "0" "$(grep -c 'issue comment' "$tmp_dir/calls")"

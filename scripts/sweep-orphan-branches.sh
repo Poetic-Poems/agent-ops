@@ -15,10 +15,13 @@
 # same way with nothing to recover at all.
 #
 # For one repository, this sweeps every `<tech_debt_branch_prefix>*`,
-# `<branch_prefix>*`, and `td-record/*` ref — the last unconditionally,
-# never gated by `tech_debt_branch_prefix`, since `techdebt_file_debt`
-# (`lib/tech-debt-file.sh`) mints a filing's record branch there regardless
-# of that setting — and, for each one that is provably an orphan — **no
+# `<branch_prefix>*`, and `td-record/*` ref — the last unconditionally, never
+# gated by `tech_debt_branch_prefix`, since a `td-record/<id>` branch is never
+# itself claim-prefixed the way the other two are. `techdebt_file_debt`
+# (`lib/tech-debt-file.sh`) no longer mints one — agent-ops#874 moved its
+# filing to a `pw::type:tech-debt`-labelled issue — but this walk still has to
+# recognise and retire any branch a filing from before that move left behind
+# (agent-ops#1219) — and, for each one that is provably an orphan — **no
 # open PR** uses it, **no registry entry** stands for it, and its tip commit
 # is **older than `abandoned_draft_after_hours`** (the same judgement that
 # makes a draft abandoned) — does the one thing that makes the state
@@ -478,9 +481,10 @@ ORPHAN_BODY
 }
 
 # Both claim namespaces, prefix-listed server-side, plus td-record/ —
-# unconditional, never gated by tech_debt_branch_prefix, since
-# techdebt_file_debt mints a filing's record branch there regardless of that
-# setting (TECHDEBT_RECORD_BRANCH_PREFIX, lib/tech-debt-file.sh). A failed
+# unconditional, never gated by tech_debt_branch_prefix, since a td-record/
+# branch is never itself claim-prefixed (TECHDEBT_RECORD_BRANCH_PREFIX,
+# lib/tech-debt-file.sh). techdebt_file_debt no longer mints one
+# (agent-ops#874); this walk drains whatever a pre-#874 filing left. A failed
 # listing is an unanswered question about the whole namespace: warn and move
 # on.
 for prefix in "$tech_debt_branch_prefix" "$branch_prefix" "$TECHDEBT_RECORD_BRANCH_PREFIX"; do

@@ -66,17 +66,17 @@
 #     data-quality defect in the working store itself (nothing to archive
 #     that says why the debt matters), read off the same label search that
 #     builds the archive.
-#   - **unlabelled debt from `file_debt`'s degrade path**: `techdebt_file_debt`
-#     (`lib/tech-debt-file.sh`) predates this repository's own D15-as-revised
-#     migration and still files a debt record the old way — a
-#     `tech-debt/<id>.md` file on a `td-record/<id>` branch, carried by a
-#     pull request labelled `pr_label`, never `pw::type:tech-debt` — so
-#     every record it produces is invisible to the label search above by
-#     construction, not merely on a failure path. An open pull request whose
-#     head branch starts with `TECHDEBT_RECORD_BRANCH_PREFIX`
-#     (`lib/tech-debt-file.sh`) is exactly one of these; flagging it here is
-#     what gives an operator visibility into debt this archive cannot yet
-#     see, until that filing path is itself migrated.
+#   - **debt filed the pre-migration way**: `techdebt_file_debt`
+#     (`lib/tech-debt-file.sh`) files a `pw::type:tech-debt`-labelled issue
+#     since agent-ops#874, so every filing it makes from here on is one the
+#     label search above already sees. What it produced *before* that move is
+#     not — a `tech-debt/<id>.md` file on a `td-record/<id>` branch, carried
+#     by a pull request labelled `pr_label`, never `pw::type:tech-debt`. An
+#     open pull request whose head branch starts with
+#     `TECHDEBT_RECORD_BRANCH_PREFIX` (`lib/tech-debt-file.sh`) is exactly one
+#     of those; flagging it here is what gives an operator visibility into
+#     debt this archive cannot mirror, until a human resolves the pull request
+#     itself (agent-ops#1219).
 #
 # ## What is never done here
 #

@@ -85,24 +85,25 @@ carries (or is about to).
    — delete the branch by hand instead: `git push origin --delete td/<id>`,
    the fallback "Claiming an item" has always needed for an abandoned claim.
 5. A stage with no branch of its own to ride on — the Approver, the Enabler,
-   neither of which ever writes code or pushes — cannot add
-   `tech-debt/<id>.md` to "the current branch" as step 3 above describes,
-   since it has none. `lib/tech-debt-file.sh`'s `techdebt_file_debt` follows
-   this same reservation-and-record shape on their behalf, except the record
-   commit lands on a `td-record/<id>` branch minted for it alone, carried by
-   a small pull request of its own (labelled `pr_label`) rather than riding
-   on anyone else's. Abandoning *that* filing — a human closing the
-   `td-record/<id>` pull request without merging it, because the record is a
-   duplicate, unwanted, or superseded — releases two branches, not one:
-   `td-record/<id>`, carrying the record commit, and `td/<id>`, the
-   reservation behind it. `scripts/sweep-orphan-branches.sh` clears both
-   unattended once that pull request is closed — for `td/<id>`, only once it
-   has confirmed `<id>`'s record never reached `main` some other way — so
-   nothing needs to be done by hand; where the sweep cannot run, delete both
-   directly instead: `git push origin --delete td-record/<id> td/<id>`.
+   or a Reviewer whose subject merged mid-pass, none of which ever writes
+   code or pushes — cannot add `tech-debt/<id>.md` to "the current branch" as
+   step 3 above describes, since it has none. It uses no branch and no
+   reservation at all: `lib/tech-debt-file.sh`'s `techdebt_file_debt` files on
+   its behalf as a single GitHub issue labelled `pw::type:tech-debt`
+   (agent-ops#874, D15 as revised #869), deduped first by normalised title
+   against that repository's own open `pw::type:tech-debt` issues — the same
+   "is this already tracked" question step 1 above asks of the register — so a
+   match gets the new evidence as a comment rather than a second filing.
+   Where a filing made *before* that move left a `td-record/<id>` branch and
+   its `td/<id>` reservation behind, `scripts/sweep-orphan-branches.sh` clears
+   both unattended once the filing pull request is closed — for `td/<id>`,
+   only once it has confirmed `<id>`'s record never reached `main` some other
+   way — so nothing needs to be done by hand; where the sweep cannot run,
+   delete both directly instead:
+   `git push origin --delete td-record/<id> td/<id>`.
 
-This is the same reservation lock "Claiming an item" and "Filing an item"
-both use; only where the filing commit lands changes.
+Steps 1–4 use the same reservation lock "Claiming an item" and "Filing an
+item" both use; only where the filing commit lands changes.
 
 ## Claiming an item
 

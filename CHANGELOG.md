@@ -198,7 +198,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `pw::type:tech-debt`-labelled GitHub issue, not a register pull request**
   (agent-ops#874, D15 as revised #869): `techdebt_file_debt()`
   (`lib/tech-debt-file.sh`) dedups first against the target repository's own
-  open `pw::type:tech-debt` issues by normalised title, commenting new
+  open `pw::type:tech-debt` issues by normalised title — every one of them,
+  since that search states its own page cap rather than inheriting `gh issue
+  list`'s default of 30 — commenting new
   evidence onto a match rather than filing a duplicate, and otherwise creates
   a fresh labelled issue — retrying unlabelled where a fresh repository has
   not had the label ensured yet. The id-reservation branch

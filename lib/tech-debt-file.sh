@@ -34,7 +34,9 @@
 #   (_techdebt_title_dedup_match, below): a match gets BODY/PROVENANCE as a
 #   comment instead of a second filing, the same "don't file a duplicate"
 #   outcome TECH-DEBT.md's "Filing alongside other work" always asked of a
-#   human filer, now applied automatically here. Prints "<number>\t<url>" on
+#   human filer, now applied automatically here. That search states its own
+#   page cap (TECHDEBT_DEDUP_LIST_LIMIT, below) rather than inheriting `gh`'s
+#   default of 30. Prints "<number>\t<url>" on
 #   success — the new issue's, or the matched one's — and prints nothing and
 #   returns 1 otherwise.
 #
@@ -61,6 +63,20 @@
 # than the (now dormant) minting it used to name.
 # shellcheck disable=SC2034  # read by scripts/sweep-orphan-branches.sh and scripts/publish-tech-debt-archive.sh, which source this file for it
 readonly TECHDEBT_RECORD_BRANCH_PREFIX="td-record/"
+
+# TECHDEBT_DEDUP_LIST_LIMIT — the page cap techdebt_file_debt's dedup search
+# states rather than inherits, for the reason lib/candidate-gather.sh's own
+# `gh issue list` states its: `gh`'s undeclared default of 30 truncates the
+# listing silently, and a truncated listing is indistinguishable from a
+# complete one. The direction of harm here is not mild — a dedup that cannot
+# see an issue files a duplicate against it, the one outcome the dedup exists
+# to prevent — and it does not self-heal, because the listing is newest-first
+# and the debt most likely to be re-noticed is the oldest. agent-ops alone
+# carries well over a hundred open `pw::type:tech-debt` issues, so the
+# inherited cap would have hidden most of its own register from every filing.
+# A listing that comes back *at* the cap is logged to the error log rather
+# than passed off as complete.
+TECHDEBT_DEDUP_LIST_LIMIT="${TECHDEBT_DEDUP_LIST_LIMIT:-500}"
 
 # TOKEN, given to either function, files under that identity
 # (GH_TOKEN="$TOKEN") rather than the ordinary pipeline login — the
@@ -215,14 +231,23 @@ _techdebt_title_dedup_match() {
 techdebt_file_debt() {
   local repo="$1" title="$2" body="$3" provenance="$4" token="${5:-}" \
         default_fix="${6:-}" owner_decision="${7:-false}"
-  local errlog needle list match_number match_url combined_file raw url number
+  local errlog needle list list_n match_number match_url combined_file raw url number
   errlog="$(_techdebt_err_log)"
 
   needle="$(_techdebt_normalize_title "$title")"
   if [[ -n "$needle" ]]; then
     list="$(_techdebt_gh "$token" issue list -R "$repo" --label pw::type:tech-debt \
-              --state open --json number,url,title 2>>"$errlog" || true)"
+              --state open --limit "$TECHDEBT_DEDUP_LIST_LIMIT" --json number,url,title \
+              2>>"$errlog" || true)"
     if jq -e 'type == "array"' <<<"$list" >/dev/null 2>&1; then
+      list_n="$(jq 'length' <<<"$list" 2>/dev/null || printf '0')"
+      # Never a silent cap: a listing at the limit is one this search cannot
+      # prove complete, so a duplicate filed past it is at least explicable
+      # afterwards rather than invisible.
+      if [[ "$list_n" =~ ^[0-9]+$ ]] && (( list_n >= TECHDEBT_DEDUP_LIST_LIMIT )); then
+        printf 'techdebt_file_debt: %s dedup search came back at the %s cap -- an older open issue past it is not deduped against\n' \
+          "$repo" "$TECHDEBT_DEDUP_LIST_LIMIT" >>"$errlog"
+      fi
       match_number="$(_techdebt_title_dedup_match "$needle" "$list")"
       if [[ -n "$match_number" ]]; then
         match_url="$(jq -r --argjson n "$match_number" \

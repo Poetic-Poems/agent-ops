@@ -18023,7 +18023,16 @@ What exists, and the requirements each part answers to:
       containment either way, the same algorithm
       `scripts/find-similar-tech-debt.sh` uses against this repository's own
       register, reimplemented rather than shared since the two read different
-      data for the same question). A dedup hit gets `BODY`/`PROVENANCE`, plus
+      data for the same question). That search states its own page cap —
+      `--limit TECHDEBT_DEDUP_LIST_LIMIT` (default 500), never `gh issue
+      list`'s undeclared default of 30 — for the reason every other listing in
+      this pipeline states one ("A listing that silently comes back at its
+      page size", Gotchas): a truncated listing is indistinguishable from a
+      complete one, and here the cost of not seeing an issue is the duplicate
+      filing the dedup exists to prevent, against the *oldest* debt, since the
+      listing is newest-first. A listing that comes back at the cap is
+      recorded in `tech-debt-file.err` rather than passed off as complete. A
+      dedup hit gets `BODY`/`PROVENANCE`, plus
       `techdebt_default_section`'s trailing section, as a comment on the
       matched issue instead of a second filing, and returns that issue's own
       number/url untouched — no re-labelling, no re-titling. No dedup hit
@@ -22348,7 +22357,10 @@ oblige anyone to edit a test.
     comment on the matched issue rather than a second filing, returning that
     issue's own number/url; a short needle never matches an unrelated long
     title by containment, only by exact equality; an unusable dedup search
-    (not a JSON array) is skipped rather than failing the filing. No dedup hit
+    (not a JSON array) is skipped rather than failing the filing; and the
+    search itself carries `--limit TECHDEBT_DEDUP_LIST_LIMIT` rather than
+    inheriting `gh`'s own default of 30, so a repository with more open debt
+    than that page still dedups against all of it. No dedup hit
     creates a fresh issue labelled `pw::type:tech-debt`; a labelled create
     that fails is retried once unlabelled and still succeeds, while an
     unlabelled create that fails returns 1 with no output. A `TOKEN` argument
