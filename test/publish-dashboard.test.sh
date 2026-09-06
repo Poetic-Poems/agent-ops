@@ -92,6 +92,30 @@ assert_lacks() {
   fi
 }
 
+# The Publisher resolves CONFIG_FILE from its own location and iterates every
+# configured repository, so a count like "15 calls across 3 repos" below is a
+# function of config.json rather than a constant: read it back, never write it
+# down. Adding or removing a repository is a configuration change, and must not
+# oblige anyone to re-derive an assertion here.
+REPO_COUNT="$(jq '.repos | length' "$SCRIPT_DIR/config.json")"
+
+# Two of those repositories are named by fixtures further down — the GitHub
+# stubs answer per-repository paths for them, and the `.github.inputs[<slug>]`
+# assertions key on them. Counts are derived above, so adding or removing a
+# repository needs nothing here; *renaming* one of these two still does, and
+# this says so in one line rather than as a scattering of missing-key failures
+# 900 lines apart (TD-PPagop-26090610).
+PUB_REPO_ISSUES="Poetic-Poems/poetic"
+PUB_REPO_TECH_DEBT="Poetic-Poems/agent-ops"
+for pub_repo in "$PUB_REPO_ISSUES" "$PUB_REPO_TECH_DEBT"; do
+  if jq -e --arg r "$pub_repo" 'any(.repos[]; .slug == $r)' "$SCRIPT_DIR/config.json" >/dev/null; then
+    continue
+  fi
+  printf 'FAIL - the repositories this suite'"'"'s fixtures name are configured\n     %s is not among config.json'"'"'s repos, and the fixtures below name it\n' \
+    "$pub_repo"
+  failures=$(( failures + 1 ))
+done
+
 # --- A node --------------------------------------------------------------------
 # Each node is a HOME: config.json's state_dir is ~-relative, so a throwaway
 # home is a throwaway state dir.
@@ -2087,8 +2111,8 @@ assert_eq "and the page-wide alarm fires for it" "false" "$(jq -r '.github.ok' <
 # reader nothing to act on, where "rate limit hit" does.
 assert_contains "naming the classified cause, not the raw per-source message" \
   "GitHub rate limit hit (HTTP 403)" "$(jq -r '.github.error' <<<"$fdata")"
-assert_contains "with a call/repo count (all 3 configured repos fail this one source)" \
-  "3 calls across 3 repos" "$(jq -r '.github.error' <<<"$fdata")"
+assert_contains "with a call/repo count (every configured repo fails this one source)" \
+  "$REPO_COUNT calls across $REPO_COUNT repos" "$(jq -r '.github.error' <<<"$fdata")"
 assert_contains "pointing at dashboard.log rather than inlining every message" \
   "dashboard.log" "$(jq -r '.github.error' <<<"$fdata")"
 
@@ -2160,20 +2184,21 @@ esac
 STUB
 chmod +x "$gh_401_stub"
 
-# Every one of the five sources fails, for all three configured repos: the
-# exact 5-sources-by-3-repos shape #695 was filed against.
+# Every one of the five sources fails, for every configured repo: the exact
+# five-sources-by-every-repo shape #695 was filed against (three repositories
+# when it was filed; whatever config.json says now).
 n="$(new_home node401)"
 n_log="$n/.local/state/poetic-agents/dashboard.log"
 env HOME="$n" NODE_NAME=node401-self GH_CALL_LOG="$gh_calls" \
     DASHBOARD_GH_CMD="$gh_401_stub" "$PUBLISH" >/dev/null 2>"$n_log"
 ndata="$(data_of "$n")"
 assert_eq "an all-401 tick still raises the page-wide alarm" "false" "$(jq -r '.github.ok' <<<"$ndata")"
-assert_contains "collapses to one auth line, not fifteen raw messages" \
-  "GitHub authentication failed (HTTP 401) — GH_TOKEN is invalid or expired · 15 calls across 3 repos" \
+assert_contains "collapses to one auth line, not one raw message per call" \
+  "GitHub authentication failed (HTTP 401) — GH_TOKEN is invalid or expired · $(( REPO_COUNT * 5 )) calls across $REPO_COUNT repos" \
   "$(jq -r '.github.error' <<<"$ndata")"
 assert_eq "github.error carries exactly one line — every failure shared one cause" "1" \
   "$(jq -r '.github.error' <<<"$ndata" | tr ';' '\n' | grep -c 'GitHub ')"
-assert_eq "all fifteen raw failures still reach dashboard.log" "15" \
+assert_eq "every raw failure still reaches dashboard.log" "$(( REPO_COUNT * 5 ))" \
   "$(grep -c 'publish-dashboard: gh failure:' "$n_log")"
 assert_contains "including the raw 401 body, for anyone debugging from the log" \
   "Bad credentials" "$(cat "$n_log")"
@@ -2224,9 +2249,9 @@ env HOME="$m" NODE_NAME=nodeMixed-self GH_CALL_LOG="$gh_calls" \
 mdata="$(data_of "$m")"
 merr="$(jq -r '.github.error' <<<"$mdata")"
 assert_contains "the auth line" \
-  "GitHub authentication failed (HTTP 401) — GH_TOKEN is invalid or expired · 3 calls across 3 repos" "$merr"
+  "GitHub authentication failed (HTTP 401) — GH_TOKEN is invalid or expired · $REPO_COUNT calls across $REPO_COUNT repos" "$merr"
 assert_contains "the rate-limit line" \
-  "GitHub rate limit hit (HTTP 403) — wait for it to reset · 3 calls across 3 repos" "$merr"
+  "GitHub rate limit hit (HTTP 403) — wait for it to reset · $REPO_COUNT calls across $REPO_COUNT repos" "$merr"
 assert_eq "auth is named ahead of rate-limit, a stable order across ticks" "true" \
   "$([[ "$merr" == "GitHub authentication failed"* ]] && echo true || echo false)"
 assert_eq "github.error carries exactly two lines — the two distinct causes, no more" "2" \
@@ -2916,10 +2941,9 @@ assert_eq "  ... carrying as_of even well outside the window" \
 # replicated exactly like log.jsonl — lib/fleet.sh's fleet_logs), reduced to
 # the newest row per repository across every node, and joined against
 # config.repos so a repository with no publish yet still gets a bare
-# `{repo}` row rather than vanishing. This repo's own config.json names
-# Poetic-Poems/poetic, Poetic-Poems/poetic-fiddle and Poetic-Poems/agent-ops
-# — the same three real repositories --no-github already lets this whole
-# suite run against.
+# `{repo}` row rather than vanishing, so the row count is config.json's own
+# repository count (REPO_COUNT, read back at the head of this file) rather
+# than a number written down here.
 rr="$(new_home nodeRevertRate)"
 rr_old="$(date -u -d '-2 days' +%Y-%m-%dT%H:%M:%SZ)"
 rr_new="$(date -u -d '-1 hours' +%Y-%m-%dT%H:%M:%SZ)"
@@ -2932,7 +2956,7 @@ run_publish "$rr"
 rrdata="$(data_of "$rr")"
 rr_row() { jq -c --arg r "$1" '.revert_rate[] | select(.repo == $r)' <<<"$rrdata"; }
 
-assert_eq "one row per configured repository" "3" "$(jq '.revert_rate | length' <<<"$rrdata")"
+assert_eq "one row per configured repository" "$REPO_COUNT" "$(jq '.revert_rate | length' <<<"$rrdata")"
 assert_eq "the newest row per repository wins, across nodes, by its own ts" \
   "node-b" "$(rr_row "Poetic-Poems/agent-ops" | jq -r '.node')"
 assert_eq "  ... carrying that row's own rolling n" \

@@ -21,9 +21,12 @@
 #   - the review minute is still (cycle + review_offset_minutes) mod 60, at
 #     review_hour, using only the node's first/base minute — the review tick
 #     keeps a single fixed daily slot regardless of the cycle's interval;
-#   - poetic's own config.json reproduces today's schedule exactly: the hash
-#     spread over 1..59 (minute 0 excluded), firing every 15 minutes from
-#     there, review 29 minutes past the base minute at hour 3;
+#   - the shipped config.json renders whatever schedule it happens to ask
+#     for: every expectation in that block is read back out of the file
+#     (through config_defaults, the renderer's own source of truth) rather
+#     than written down here, so changing a cadence is a configuration change
+#     and never a test edit — what is asserted is that the renderer honours
+#     the file, not what the file currently says;
 #   - every failure leaves the previous crontab byte-identical: the baked
 #     schedule is the fallback, and half a schedule is worse than either.
 #
@@ -43,6 +46,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RENDER="$SCRIPT_DIR/deploy/docker/render-crontab.sh"
 TMPL="$SCRIPT_DIR/deploy/docker/crontab.tmpl"
 CONFIG="$SCRIPT_DIR/config.json"
+
+# The shipped schedule, resolved exactly as render-crontab.sh resolves it —
+# config_defaults over the same schema, so an absent leaf reads back as the
+# default the renderer will use rather than as a fallback restated here. Every
+# expectation in the "shipped config" block below is derived from this, never
+# written down: `schedule` is configuration, and a cadence change must not
+# oblige anyone to re-derive an assertion.
+# shellcheck source=lib/config-schema.sh
+. "$SCRIPT_DIR/lib/config-schema.sh"
+shipped_schedule="$(config_defaults "$CONFIG" "$SCRIPT_DIR/config.schema.json" | jq -c '.schedule')"
+sched() { jq -r "$1" <<<"$shipped_schedule"; }
+sched_json() { jq -c "$1" <<<"$shipped_schedule"; }
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -113,32 +128,47 @@ write_config() {  # write_config <path> <schedule-json>
   jq -n --argjson schedule "$2" '{schedule: $schedule}' > "$1"
 }
 
-# --- poetic's own config.json reproduces today's schedule exactly --------------
+# --- The shipped config.json renders the schedule it asks for ------------------
+
+excluded="$(sched_json '.excluded_minutes')"
+interval="$(sched '.cycle_interval_minutes')"
+review_hour="$(sched '.review_hour')"
+review_offset="$(sched '.review_offset_minutes')"
+doctor_offset="$(sched '.doctor_offset_minutes')"
+revert_rate_hour="$(sched '.revert_rate_hour')"
+revert_rate_offset="$(sched '.revert_rate_offset_minutes')"
+tda_hour="$(sched '.tech_debt_archive_hour')"
+tda_offset="$(sched '.tech_debt_archive_offset_minutes')"
+heartbeat="$(sched '.heartbeat_minutes')"
+push_every="$(sched '.state_sync_push_minutes')"
+fetch_every="$(sched '.state_sync_fetch_minutes')"
+rotation="$(sched '.log_rotation_minute')"
 
 out="$tmp_dir/crontab"
 printf 'BAKED SENTINEL\n' > "$out"
 env NODE_NAME=poetic-1 "$RENDER" "$TMPL" "$out" "$CONFIG" 2>/dev/null
 rc=$?
-m="$(expected_minute poetic-1 '[0]')"
-ml="$(expected_minute_list "$m" '[0]' 15)"
-r=$(( (m + 29) % 60 ))
-dm=$(( (m + 44) % 60 ))
-rrm=$(( (m + 51) % 60 ))
-tdam=$(( (m + 37) % 60 ))
+m="$(expected_minute poetic-1 "$excluded")"
+ml="$(expected_minute_list "$m" "$excluded" "$interval")"
+r=$(( (m + review_offset) % 60 ))
+dm=$(( (m + doctor_offset) % 60 ))
+rrm=$(( (m + revert_rate_offset) % 60 ))
+tdam=$(( (m + tda_offset) % 60 ))
 assert_eq "a default render exits 0" "0" "$rc"
-assert_eq "the hash minute is in 1..59 (0 stays excluded)" "1" "$(( m >= 1 && m <= 59 ))"
-assert_contains "the cycle line carries the node's hash minute, every 15m" "$ml * * * *  /app/agent-cycle.sh" "$(cycle_line "$out")"
-assert_contains "the review line is base-cycle+29 mod 60, hour 3" "$r 3 * * *  /app/review-cycle.sh" "$(review_line "$out")"
-assert_contains "the doctor line is base-cycle+44 mod 60, hourly" "$dm * * * *  /app/scripts/doctor.sh --unattended" "$(doctor_line "$out")"
+assert_eq "the hash minute is one schedule.excluded_minutes allows" "true" \
+  "$(jq -r --argjson m "$m" 'index($m) == null' <<<"$excluded")"
+assert_contains "the cycle line carries the node's hash minute, every cycle_interval_minutes" "$ml * * * *  /app/agent-cycle.sh" "$(cycle_line "$out")"
+assert_contains "the review line is base-cycle+review_offset_minutes mod 60, at review_hour" "$r $review_hour * * *  /app/review-cycle.sh" "$(review_line "$out")"
+assert_contains "the doctor line is base-cycle+doctor_offset_minutes mod 60, hourly" "$dm * * * *  /app/scripts/doctor.sh --unattended" "$(doctor_line "$out")"
 assert_contains "and its non-zero exit is deliberately swallowed" "|| true" "$(doctor_line "$out")"
-assert_contains "the revert-rate line is base-cycle+51 mod 60, hour 2, daily" "$rrm 2 * * *  /app/scripts/publish-revert-rate.sh" "$(revert_rate_line "$out")"
+assert_contains "the revert-rate line is base-cycle+revert_rate_offset_minutes mod 60, at revert_rate_hour, daily" "$rrm $revert_rate_hour * * *  /app/scripts/publish-revert-rate.sh" "$(revert_rate_line "$out")"
 assert_contains "and its non-zero exit is deliberately swallowed too" "|| true" "$(revert_rate_line "$out")"
-assert_contains "the tech-debt archive line is base-cycle+37 mod 60, hour 4, daily" "$tdam 4 * * *  /app/scripts/publish-tech-debt-archive.sh" "$(tech_debt_archive_line "$out")"
+assert_contains "the tech-debt archive line is base-cycle+tech_debt_archive_offset_minutes mod 60, at tech_debt_archive_hour, daily" "$tdam $tda_hour * * *  /app/scripts/publish-tech-debt-archive.sh" "$(tech_debt_archive_line "$out")"
 assert_contains "and its non-zero exit is deliberately swallowed too" "|| true" "$(tech_debt_archive_line "$out")"
-assert_contains "the heartbeat is every 5 minutes" "*/5 * * * *  /app/scripts/publish-dashboard-launcher.sh" "$(heartbeat_line "$out")"
-assert_contains "state-sync push is every 5 minutes" "*/5 * * * *  /app/scripts/state-sync.sh push" "$(push_line "$out")"
-assert_contains "state-sync fetch is every 7 minutes" "*/7 * * * *  /app/scripts/state-sync.sh fetch" "$(fetch_line "$out")"
-assert_contains "log rotation is at :19" "19 * * * *  /app/scripts/rotate-logs.sh" "$(rotate_line "$out")"
+assert_contains "the heartbeat is every heartbeat_minutes" "*/$heartbeat * * * *  /app/scripts/publish-dashboard-launcher.sh" "$(heartbeat_line "$out")"
+assert_contains "state-sync push is every state_sync_push_minutes" "*/$push_every * * * *  /app/scripts/state-sync.sh push" "$(push_line "$out")"
+assert_contains "state-sync fetch is every state_sync_fetch_minutes" "*/$fetch_every * * * *  /app/scripts/state-sync.sh fetch" "$(fetch_line "$out")"
+assert_contains "log rotation is at log_rotation_minute" "$rotation * * * *  /app/scripts/rotate-logs.sh" "$(rotate_line "$out")"
 assert_eq "no placeholder survives a render" "0" "$(grep -c '@' "$out")"
 
 out2="$tmp_dir/crontab2"
@@ -147,25 +177,44 @@ assert_eq "the same node renders the same schedule every time" "0" "$(cmp -s "$o
 
 # --- An explicit CYCLE_MINUTE ---------------------------------------------------
 
-env NODE_NAME=poetic-1 CYCLE_MINUTE=17 "$RENDER" "$TMPL" "$out" "$CONFIG" 2>/dev/null
+# A schedule this file owns, so the arithmetic below is checkable by eye and
+# the shipped cadence cannot move it: 17 every 15 min is 17,32,47; the review
+# is 17+29 = 46 past hour 3; doctor 17+44 = 1; revert-rate 17+51 = 8 past hour
+# 2; the tech-debt archive 17+37 = 54 past hour 4.
+explicit_cfg="$tmp_dir/explicit-minute-config.json"
+write_config "$explicit_cfg" '{"excluded_minutes": [0], "cycle_interval_minutes": 15,
+  "review_hour": 3, "review_offset_minutes": 29, "doctor_offset_minutes": 44,
+  "revert_rate_hour": 2, "revert_rate_offset_minutes": 51,
+  "tech_debt_archive_hour": 4, "tech_debt_archive_offset_minutes": 37}'
+env NODE_NAME=poetic-1 CYCLE_MINUTE=17 "$RENDER" "$TMPL" "$out" "$explicit_cfg" 2>/dev/null
 assert_contains "an explicit minute wins, and repeats every 15m from it" "17,32,47 * * * *  /app/agent-cycle.sh" "$(cycle_line "$out")"
 assert_contains "and moves the review with it (base minute only)" "46 3 * * *" "$(review_line "$out")"
 assert_contains "and moves the doctor pass with it too" "1 * * * *  /app/scripts/doctor.sh --unattended" "$(doctor_line "$out")"
 assert_contains "and moves the revert-rate pass with it too" "8 2 * * *  /app/scripts/publish-revert-rate.sh" "$(revert_rate_line "$out")"
 assert_contains "and moves the tech-debt archive pass with it too" "54 4 * * *  /app/scripts/publish-tech-debt-archive.sh" "$(tech_debt_archive_line "$out")"
 
-env NODE_NAME=poetic-1 CYCLE_MINUTE=31 "$RENDER" "$TMPL" "$out" "$CONFIG" 2>/dev/null
+# 31 + 29 = 60, so the wrap is constructed here rather than inherited: a
+# configured review_offset_minutes that stopped summing past 60 would leave
+# this case asserting nothing at all.
+env NODE_NAME=poetic-1 CYCLE_MINUTE=31 "$RENDER" "$TMPL" "$out" "$explicit_cfg" 2>/dev/null
 assert_contains "the review minute wraps mod 60" "0 3 * * *" "$(review_line "$out")"
 
 # --- Bad values warn and fall back to the hash ----------------------------------
 
-err="$(env NODE_NAME=poetic-1 CYCLE_MINUTE=0 "$RENDER" "$TMPL" "$out" "$CONFIG" 2>&1 >/dev/null)"
-assert_contains "an excluded minute is rejected, naming the config it came from" "schedule.excluded_minutes" "$err"
-assert_contains "and the hash default is used instead" "$ml * * * *" "$(cycle_line "$out")"
+# The excluded minute is this file's own, not one the shipped config happens
+# to rule out: a config that stopped excluding 0 would leave the first case
+# below asserting that a perfectly legal minute is rejected.
+excluded_cfg="$tmp_dir/excluded-minute-config.json"
+write_config "$excluded_cfg" '{"excluded_minutes": [0], "cycle_interval_minutes": 15}'
+excluded_ml="$(expected_minute_list "$(expected_minute poetic-1 '[0]')" '[0]' 15)"
 
-err="$(env NODE_NAME=poetic-1 CYCLE_MINUTE=banana "$RENDER" "$TMPL" "$out" "$CONFIG" 2>&1 >/dev/null)"
+err="$(env NODE_NAME=poetic-1 CYCLE_MINUTE=0 "$RENDER" "$TMPL" "$out" "$excluded_cfg" 2>&1 >/dev/null)"
+assert_contains "an excluded minute is rejected, naming the config it came from" "schedule.excluded_minutes" "$err"
+assert_contains "and the hash default is used instead" "$excluded_ml * * * *" "$(cycle_line "$out")"
+
+err="$(env NODE_NAME=poetic-1 CYCLE_MINUTE=banana "$RENDER" "$TMPL" "$out" "$excluded_cfg" 2>&1 >/dev/null)"
 assert_contains "junk is rejected with a warning" "WARNING" "$err"
-assert_contains "junk also falls back to the hash" "$ml * * * *" "$(cycle_line "$out")"
+assert_contains "junk also falls back to the hash" "$excluded_ml * * * *" "$(cycle_line "$out")"
 
 # --- schedule.cycle_interval_minutes ---------------------------------------------
 

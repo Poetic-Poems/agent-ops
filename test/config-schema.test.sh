@@ -21,11 +21,26 @@
 #   - **doctor.sh's cross-key rules fire.** These are the checks the schema
 #     cannot express, each mirroring a startup guard in agent-cycle.sh or a
 #     requirement whose breach is silent. They are asserted through the shipped
-#     script, against mutations of the shipped config, so what is tested is
-#     doctor.sh rather than a restatement of its logic.
+#     script, so what is tested is doctor.sh rather than a restatement of its
+#     logic.
 #
-# Every case is a mutation of the repository's own config.json, so a key added
-# to the config without a schema entry fails the very first assertion.
+# **What this file may and may not read from config.json.** Two assertions are
+# about the shipped file — that it validates, and that doctor.sh passes it —
+# and every other case is a mutation of test/fixtures/config-base.json, a
+# configuration this suite owns. Nothing here asserts a *value* the shipped
+# file carries, so changing one is a configuration change and nothing else:
+# raising a threshold, promoting an autonomy rung or adding a repository must
+# never oblige anyone to edit a test. That rule was learnt the expensive way —
+# TD-PPagop-26081801, TD-PPagop-26082201 and TD-PPagop-26082302 are all the
+# same failure, a fixture silently inheriting state it never named, patched
+# one key at a time — and a shared base only postpones it: the fix is that the
+# base is not the live installation at all. A fixture that wants a key set
+# says so in its own mutation; one that wants it unset deletes it.
+#
+# The shipped config's own keys are still covered, because the schema is what
+# both files are read against: a key added to config.json without a schema
+# entry fails the first assertion below, on the shipped file, exactly as
+# before.
 #
 # No test framework is used (none exists elsewhere in this repo); this is a
 # plain bash script with hand-rolled assertions. Run it directly:
@@ -42,7 +57,24 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib/config-schema.sh
 . "$SCRIPT_DIR/lib/config-schema.sh"
 
-CONFIG="$SCRIPT_DIR/config.json"
+# The shipped configuration, read for exactly two things: that it validates
+# against the schema, and that scripts/doctor.sh passes it. Nothing below
+# asserts a *value* it carries, so changing one is a configuration change and
+# nothing else.
+SHIPPED_CONFIG="$SCRIPT_DIR/config.json"
+# Every other fixture here is a mutation of this test-owned base instead. It is
+# plain JSON and so carries no note of its own; what it is for is the paragraph
+# at the head of this file, and it is asserted valid below before anything is
+# built on it.
+BASE_CONFIG="$SCRIPT_DIR/test/fixtures/config-base.json"
+# The slugs the base fixture names. The jq mutations below spell them out
+# literally, because a `$jq_variable` inside a single-quoted program reads to
+# the linter as a shell expansion, and silencing that at every site costs more
+# than the literal does — so these are read back and checked against the
+# fixture once, below: the one thing that could otherwise drift silently is a
+# repository renamed in the fixture alone.
+BASE_REPO_1="Test-Org/first-repo"
+BASE_REPO_2="Test-Org/second-repo"
 SCHEMA="$SCRIPT_DIR/config.schema.json"
 
 tmp="$(mktemp -d)"
@@ -56,7 +88,7 @@ bad()  { printf 'FAIL - %s\n' "$1"; failures=$(( failures + 1 )); }
 # The mutated config must validate cleanly.
 assert_valid() {
   local desc="$1" mutation="$2" out
-  jq "$mutation" "$CONFIG" > "$tmp/c.json" || { bad "$desc (mutation did not apply)"; return; }
+  jq "$mutation" "$BASE_CONFIG" > "$tmp/c.json" || { bad "$desc (mutation did not apply)"; return; }
   if out="$(config_schema_errors "$tmp/c.json" "$SCHEMA")"; then
     pass "$desc"
   else
@@ -71,7 +103,7 @@ assert_valid() {
 # a fifty-key file.
 assert_rejected() {
   local desc="$1" mutation="$2" expect="$3" out
-  jq "$mutation" "$CONFIG" > "$tmp/c.json" || { bad "$desc (mutation did not apply)"; return; }
+  jq "$mutation" "$BASE_CONFIG" > "$tmp/c.json" || { bad "$desc (mutation did not apply)"; return; }
   if out="$(config_schema_errors "$tmp/c.json" "$SCHEMA")"; then
     printf 'FAIL - %s\n     expected a rejection, got none\n' "$desc"
     failures=$(( failures + 1 ))
@@ -90,8 +122,8 @@ assert_rejected() {
 # they build the fixture the check runs against.
 #
 # Clears the three Approver runtime-credential variables from doctor.sh's own
-# environment before running it, the same way DOCTOR_NEUTRAL_MUTATION clears
-# their config.json counterparts before a fixture's own mutation runs: on a
+# environment before running it, the same way the base fixture leaves their
+# config.json counterparts unset before a fixture's own mutation runs: on a
 # host where these are set for real (the deployed container, where doctor.sh
 # ordinarily runs), lib/approver-token.sh's own reconciliation
 # (scripts/doctor.sh, requirement 14b) compares a fixture's constructed
@@ -122,55 +154,70 @@ _assert_doctor_check() {
   fi
 }
 
-# DOCTOR_NEUTRAL_MUTATION clears every merge_autonomy(-adjacent) key —
-# top-level and per-repo merge_autonomy, merge_autonomy_routine_sources and
-# merge_autonomy_routine_complexity, and the four approver_* keys — back to
-# its schema default before an assert_doctor fixture's own mutation is
-# applied on top. Without this, a fixture whose mutation never mentions
-# these keys still silently inherits whatever config.json currently says
-# about them, so a routine change to one (a merge-autonomy Stage promotion,
-# an Approver key rotation) can flip an assertion that was never about that
-# key at all (TD-PPagop-26081801, recurring as agent-ops#546 and
-# agent-ops#560). A fixture that wants one of these keys set now has to say
-# so itself, in its own mutation.
-# shellcheck disable=SC2016  # a jq program, not meant to expand
-DOCTOR_NEUTRAL_MUTATION='
-  del(.merge_autonomy, .merge_autonomy_routine_sources,
-      .merge_autonomy_routine_complexity,
-      .approver_app_id, .approver_model_default,
-      .approver_model_complex, .approver_model_critical)
-  | .repos = [ .repos[]? | del(.merge_autonomy, .merge_autonomy_routine_sources,
-                               .merge_autonomy_routine_complexity) ]
-'
-
 # assert_doctor DESC JQ_MUTATION EXPECTED_EXIT SUBSTRING
-# Builds the fixture from the neutral base above, so it opts in to whatever
-# merge_autonomy/Approver state it needs rather than inheriting it.
+# Builds the fixture from the test-owned base, which names no merge_autonomy
+# key and no approver_* key at all, so a fixture opts in to whatever
+# autonomy/Approver state it needs rather than inheriting it. That inheritance
+# is what TD-PPagop-26081801 was filed for, and it flipped assertions twice
+# from the shipped file alone (agent-ops#546 at Stage 1 entry, agent-ops#560
+# at Stage 2): a cross-key rule's negative case has to state both halves —
+# what is set, and what is not — and it can only do that against a base whose
+# answer does not change under it.
 assert_doctor() {
   local desc="$1" mutation="$2" expected_exit="$3" expect="$4"
-  jq "$DOCTOR_NEUTRAL_MUTATION | ($mutation)" "$CONFIG" > "$tmp/c.json" \
+  jq "$mutation" "$BASE_CONFIG" > "$tmp/c.json" \
     || { bad "$desc (mutation did not apply)"; return; }
   _assert_doctor_check "$desc" "$expected_exit" "$expect" "$tmp/c.json"
 }
 
 # assert_doctor_shipped DESC JQ_MUTATION EXPECTED_EXIT SUBSTRING
-# Same as assert_doctor, but builds the fixture straight from config.json
-# with none of the normalisation above — for the handful of assertions that
-# are deliberately about the shipped file's own merge_autonomy/Approver
-# state, not a constructed fixture, so they must keep reading it for real.
+# Same as assert_doctor, but against the *shipped* config.json — for the
+# handful of assertions that are deliberately about the file this repository
+# actually runs on, rather than a constructed fixture. Each one asserts only
+# that doctor reaches a verdict on it (and that a rule ran at all), never
+# what any particular key is set to, so a configuration change cannot land
+# here.
 assert_doctor_shipped() {
   local desc="$1" mutation="$2" expected_exit="$3" expect="$4"
-  jq "$mutation" "$CONFIG" > "$tmp/c.json" \
+  jq "$mutation" "$SHIPPED_CONFIG" > "$tmp/c.json" \
     || { bad "$desc (mutation did not apply)"; return; }
   _assert_doctor_check "$desc" "$expected_exit" "$expect" "$tmp/c.json"
 }
 
 # --- The shipped configuration is the schema's first and most important
-#     witness: it is the one config known to run a real fleet. ---
-if out="$(config_schema_errors "$CONFIG" "$SCHEMA")"; then
+#     witness: it is the one config known to run a real fleet. This is the
+#     only thing this file asks of it — that it is *valid*, not that it says
+#     anything in particular. ---
+if out="$(config_schema_errors "$SHIPPED_CONFIG" "$SCHEMA")"; then
   pass "the repository's own config.json validates against the schema"
 else
   printf 'FAIL - the repository'"'"'s own config.json validates against the schema\n     %s\n' "$out"
+  failures=$(( failures + 1 ))
+fi
+
+# --- ...and the base every fixture below is built from is valid too. A
+#     required key added to the schema, or a constraint tightened past what
+#     the fixture says, fails here — once, in one place, naming the fixture —
+#     rather than as a scattering of unrelated assertions further down. ---
+if out="$(config_schema_errors "$BASE_CONFIG" "$SCHEMA")"; then
+  pass "the test suite's own base fixture validates against the schema"
+else
+  printf 'FAIL - the test suite'"'"'s own base fixture validates against the schema\n     %s\n' "$out"
+  failures=$(( failures + 1 ))
+fi
+
+# --- ...and it is the fixture these assertions think it is. Every mutation
+#     below names a repository literally, so a slug renamed in the fixture
+#     alone would otherwise mutate an entry that is not there and assert
+#     against a message that never names it. ---
+if [[ "$(jq -r '.repos[0].slug' "$BASE_CONFIG")" == "$BASE_REPO_1"
+   && "$(jq -r '.repos[1].slug' "$BASE_CONFIG")" == "$BASE_REPO_2"
+   && "$(jq -r '.project_review.repos[0].slug' "$BASE_CONFIG")" == "$BASE_REPO_1"
+   && "$(jq -r '.project_review.repos[1].slug' "$BASE_CONFIG")" == "$BASE_REPO_2" ]]; then
+  pass "the base fixture names the repositories these assertions mutate"
+else
+  printf 'FAIL - the base fixture names the repositories these assertions mutate\n     expected %s and %s, under both repos and project_review.repos\n' \
+    "$BASE_REPO_1" "$BASE_REPO_2"
   failures=$(( failures + 1 ))
 fi
 
@@ -299,7 +346,7 @@ assert_valid "an optional key may be absent" \
 #     instead of its own `// literal`. ---
 assert_defaults() {
   local desc="$1" mutation="$2" jq_check="$3" out
-  jq "$mutation" "$CONFIG" > "$tmp/c.json" || { bad "$desc (mutation did not apply)"; return; }
+  jq "$mutation" "$BASE_CONFIG" > "$tmp/c.json" || { bad "$desc (mutation did not apply)"; return; }
   if ! out="$(config_defaults "$tmp/c.json" "$SCHEMA")"; then
     printf 'FAIL - %s\n     config_defaults itself failed\n' "$desc"
     failures=$(( failures + 1 ))
@@ -340,8 +387,8 @@ assert_defaults "a nested object's non-defaultable properties are not fabricated
 # keys under `project_review.repos[]` fails here rather than silently in a
 # review a week later.
 assert_defaults "no project_review per-repo override is fabricated into a repos entry" \
-  '.project_review.repos = [{slug: "Poetic-Poems/poetic"}]' \
-  '.project_review.repos[0] == {slug: "Poetic-Poems/poetic"}'
+  '.project_review.repos = [{slug: "Test-Org/first-repo"}]' \
+  '.project_review.repos[0] == {slug: "Test-Org/first-repo"}'
 assert_defaults "config_defaults performs no schema validation of its own" \
   '.pr_labell = "x"' '.pr_labell == "x"'
 
@@ -378,9 +425,9 @@ RUNTIME_FLOOR_HOURS=$(( (RUNTIME_FLOOR_LOCK_SEC + 3599) / 3600 ))
 # assert_defaults call cannot express.
 assert_cadence_cmp() {
   local desc="$1" mutation_a="$2" mutation_b="$3" jq_check="$4" out_a out_b
-  jq "$CADENCE_BASE_MUTATION | ($mutation_a)" "$CONFIG" > "$tmp/cadence-a.json" \
+  jq "$CADENCE_BASE_MUTATION | ($mutation_a)" "$BASE_CONFIG" > "$tmp/cadence-a.json" \
     || { bad "$desc (fixture A did not apply)"; return; }
-  jq "$CADENCE_BASE_MUTATION | ($mutation_b)" "$CONFIG" > "$tmp/cadence-b.json" \
+  jq "$CADENCE_BASE_MUTATION | ($mutation_b)" "$BASE_CONFIG" > "$tmp/cadence-b.json" \
     || { bad "$desc (fixture B did not apply)"; return; }
   if ! out_a="$(config_defaults "$tmp/cadence-a.json" "$SCHEMA")"; then
     printf 'FAIL - %s\n     config_defaults itself failed on fixture A\n' "$desc"
@@ -584,7 +631,7 @@ assert_defaults "...and a schedule.excluded_minutes carrying a non-numeric item"
 assert_valid_ref() {
   local desc="$1" schema_mutation="$2" config_mutation="$3" out
   jq "$schema_mutation" "$SCHEMA" > "$tmp/s.json" || { bad "$desc (schema mutation did not apply)"; return; }
-  jq "$config_mutation" "$CONFIG" > "$tmp/c.json" || { bad "$desc (config mutation did not apply)"; return; }
+  jq "$config_mutation" "$BASE_CONFIG" > "$tmp/c.json" || { bad "$desc (config mutation did not apply)"; return; }
   if out="$(config_schema_errors "$tmp/c.json" "$tmp/s.json")"; then
     pass "$desc"
   else
@@ -595,7 +642,7 @@ assert_valid_ref() {
 assert_rejected_ref() {
   local desc="$1" schema_mutation="$2" config_mutation="$3" expect="$4" out
   jq "$schema_mutation" "$SCHEMA" > "$tmp/s.json" || { bad "$desc (schema mutation did not apply)"; return; }
-  jq "$config_mutation" "$CONFIG" > "$tmp/c.json" || { bad "$desc (config mutation did not apply)"; return; }
+  jq "$config_mutation" "$BASE_CONFIG" > "$tmp/c.json" || { bad "$desc (config mutation did not apply)"; return; }
   if out="$(config_schema_errors "$tmp/c.json" "$tmp/s.json")"; then
     printf 'FAIL - %s\n     expected a rejection, got none\n' "$desc"
     failures=$(( failures + 1 ))
@@ -610,7 +657,7 @@ assert_rejected_ref() {
 assert_defaults_ref() {
   local desc="$1" schema_mutation="$2" config_mutation="$3" jq_check="$4" out
   jq "$schema_mutation" "$SCHEMA" > "$tmp/s.json" || { bad "$desc (schema mutation did not apply)"; return; }
-  jq "$config_mutation" "$CONFIG" > "$tmp/c.json" || { bad "$desc (config mutation did not apply)"; return; }
+  jq "$config_mutation" "$BASE_CONFIG" > "$tmp/c.json" || { bad "$desc (config mutation did not apply)"; return; }
   if ! out="$(config_defaults "$tmp/c.json" "$tmp/s.json")"; then
     printf 'FAIL - %s\n     config_defaults itself failed\n' "$desc"
     failures=$(( failures + 1 ))
@@ -751,8 +798,13 @@ fi
 #     — reported against the `repos[]` path, not only `defaults`' — which is
 #     the drift a second, unshared copy of the constraint would have missed. ---
 tightened_schema="$tmp/tightened-schema.json"
-jq '.["$defs"].branchPrefix.pattern = "^review/"' "$SCHEMA" > "$tightened_schema"
-jq '.project_review.repos[0].branch_prefix = "not-review-prefixed/"' "$CONFIG" > "$tmp/c.json"
+# The pattern is built from the fixture's own defaults.branch_prefix, so the
+# only thing it rejects is the repos[] override below — a hand-written pattern
+# would have to be kept agreeing with the fixture, and a disagreement would
+# report a second error that could mask the one under test.
+jq --arg prefix "$(jq -r '.project_review.defaults.branch_prefix' "$BASE_CONFIG")" \
+  '.["$defs"].branchPrefix.pattern = "^" + $prefix' "$SCHEMA" > "$tightened_schema"
+jq '.project_review.repos[0].branch_prefix = "not-the-configured-prefix/"' "$BASE_CONFIG" > "$tmp/c.json"
 desc="a constraint tightened on the shared branchPrefix \$def is enforced against a repos[] override"
 if out="$(config_schema_errors "$tmp/c.json" "$tightened_schema")"; then
   printf 'FAIL - %s\n     expected a rejection, got none\n' "$desc"
@@ -839,7 +891,7 @@ assert_rejected "a misspelt key inside a project_review repo entry is rejected" 
 assert_valid "a project_review repo entry may override any of defaults' own keys" \
   '.project_review.repos[0] += {model: "claude-opus-5", pr_label: "custom-review", branch_prefix: "custom/", timeout_review: 30, inactivity_review: 5, min_days_between_reviews: 1, min_prs_between_reviews: 10, not_before: "2026-01-01T00:00:00Z", report_directory: "docs/reviews/project-review-%Y-%m-%d"}'
 assert_valid "a project_review repo entry carrying only slug inherits every default" \
-  '.project_review.repos = [{slug: "Poetic-Poems/poetic"}]'
+  '.project_review.repos = [{slug: "Test-Org/first-repo"}]'
 assert_rejected "a non-string report_directory is rejected" \
   '.project_review.defaults.report_directory = 5' \
   'config.project_review.defaults.report_directory: expected string, got number'
@@ -887,7 +939,7 @@ assert_valid "a repo with no merge_budget_per_day override is accepted (inherits
 #     otherwise, and a repo carrying only `slug` inherits every default. ---
 assert_project_review() {
   local desc="$1" mutation="$2" jq_check="$3" out
-  jq "$mutation" "$CONFIG" > "$tmp/c.json" || { bad "$desc (mutation did not apply)"; return; }
+  jq "$mutation" "$BASE_CONFIG" > "$tmp/c.json" || { bad "$desc (mutation did not apply)"; return; }
   out="$(config_defaults "$tmp/c.json" "$SCHEMA")" || { bad "$desc (config_defaults failed)"; return; }
   out="$(config_project_review_repos "$out")" || { bad "$desc (config_project_review_repos failed)"; return; }
   if jq -e "$jq_check" <<<"$out" >/dev/null 2>&1; then
@@ -900,23 +952,23 @@ assert_project_review() {
 
 assert_project_review "a repo entry with no overrides resolves to every default" \
   '.project_review.defaults = {model: "test-model-1", pr_label: "test-label-1", branch_prefix: "test-prefix/", min_days_between_reviews: 99, not_before: "2025-01-01T00:00:00Z", timeout_review: 60, inactivity_review: 7} |
-   .project_review.repos = [{slug: "Poetic-Poems/poetic"}]' \
+   .project_review.repos = [{slug: "Test-Org/first-repo"}]' \
   '.[0].model == "test-model-1" and .[0].pr_label == "test-label-1"
    and .[0].branch_prefix == "test-prefix/" and .[0].min_days_between_reviews == 99
    and .[0].not_before == "2025-01-01T00:00:00Z"
    and .[0].model_key == "project_review.defaults.model"'
 assert_project_review "a repo's own override wins over the default, for that key alone" \
   '.project_review.defaults = {model: "test-model-1", pr_label: "test-label-1", branch_prefix: "test-prefix/", min_days_between_reviews: 99, not_before: "2025-01-01T00:00:00Z", timeout_review: 60, inactivity_review: 7} |
-   .project_review.repos = [{slug: "Poetic-Poems/poetic", model: "claude-opus-5"}]' \
+   .project_review.repos = [{slug: "Test-Org/first-repo", model: "claude-opus-5"}]' \
   '.[0].model == "claude-opus-5" and .[0].pr_label == "test-label-1"
    and .[0].model_key == "project_review.repos[0].model"'
 assert_project_review "a repo may override every key defaults carries" \
-  '.project_review.repos = [{slug: "Poetic-Poems/poetic", model: "claude-opus-5",
+  '.project_review.repos = [{slug: "Test-Org/first-repo", model: "claude-opus-5",
      pr_label: "custom-review", branch_prefix: "custom/", min_days_between_reviews: 1,
      min_prs_between_reviews: 2,
      not_before: "2026-01-01T00:00:00Z", report_directory: "docs/reviews/project-review-%Y-%m-%d",
      timeout_review: 30, inactivity_review: 5}]' \
-  '.[0] == {slug: "Poetic-Poems/poetic", model: "claude-opus-5", model_key: "project_review.repos[0].model",
+  '.[0] == {slug: "Test-Org/first-repo", model: "claude-opus-5", model_key: "project_review.repos[0].model",
      pr_label: "custom-review", branch_prefix: "custom/", min_days_between_reviews: 1, min_prs_between_reviews: 2,
      not_before: "2026-01-01T00:00:00Z",
      report_directory: "docs/reviews/project-review-%Y-%m-%d", timeout_review: 30, inactivity_review: 5}'
@@ -927,43 +979,46 @@ assert_project_review "a repo may override every key defaults carries" \
 #     `default`, since the key is deliberately not in `defaults`' `required`
 #     array (issue #1079). ---
 assert_project_review "min_prs_between_reviews absent everywhere resolves to the code default of 5" \
-  '.project_review.repos = [{slug: "Poetic-Poems/poetic"}]' \
+  'del(.project_review.defaults.min_prs_between_reviews)
+   | .project_review.repos = [{slug: "Test-Org/first-repo"}]' \
   '.[0].min_prs_between_reviews == 5'
 assert_project_review "min_prs_between_reviews resolves from defaults when set there" \
   '.project_review.defaults.min_prs_between_reviews = 25 |
-   .project_review.repos = [{slug: "Poetic-Poems/poetic"}]' \
+   .project_review.repos = [{slug: "Test-Org/first-repo"}]' \
   '.[0].min_prs_between_reviews == 25'
 assert_project_review "a repo's own min_prs_between_reviews override wins over defaults" \
   '.project_review.defaults.min_prs_between_reviews = 25 |
-   .project_review.repos = [{slug: "Poetic-Poems/poetic", min_prs_between_reviews: 10}]' \
+   .project_review.repos = [{slug: "Test-Org/first-repo", min_prs_between_reviews: 10}]' \
   '.[0].min_prs_between_reviews == 10'
 assert_project_review "an explicit null min_prs_between_reviews falls through to defaults" \
   '.project_review.defaults.min_prs_between_reviews = 25 |
-   .project_review.repos = [{slug: "Poetic-Poems/poetic", min_prs_between_reviews: null}]' \
+   .project_review.repos = [{slug: "Test-Org/first-repo", min_prs_between_reviews: null}]' \
   '.[0].min_prs_between_reviews == 25'
 assert_project_review "an explicit null min_prs_between_reviews falls all the way through to 5 when defaults is also unset" \
-  '.project_review.repos = [{slug: "Poetic-Poems/poetic", min_prs_between_reviews: null}]' \
+  'del(.project_review.defaults.min_prs_between_reviews)
+   | .project_review.repos = [{slug: "Test-Org/first-repo", min_prs_between_reviews: null}]' \
   '.[0].min_prs_between_reviews == 5'
 assert_project_review "a per-repo report_directory overrides defaults.report_directory" \
   '.project_review.defaults.report_directory = "reviews/project-review-%Y-%m-%d" |
-   .project_review.repos = [{slug: "Poetic-Poems/poetic", report_directory: "docs/reviews/project-review-%Y-%m-%d"}]' \
+   .project_review.repos = [{slug: "Test-Org/first-repo", report_directory: "docs/reviews/project-review-%Y-%m-%d"}]' \
   '.[0].report_directory == "docs/reviews/project-review-%Y-%m-%d"'
 assert_project_review "a repo with no report_directory override inherits defaults.report_directory" \
   '.project_review.defaults.report_directory = "reviews/project-review-%Y-%m-%d" |
-   .project_review.repos = [{slug: "Poetic-Poems/poetic"}]' \
+   .project_review.repos = [{slug: "Test-Org/first-repo"}]' \
   '.[0].report_directory == "reviews/project-review-%Y-%m-%d"'
 assert_project_review "report_directory absent everywhere resolves to empty, never fabricated" \
-  '.project_review.repos = [{slug: "Poetic-Poems/poetic"}]' \
+  'del(.project_review.defaults.report_directory)
+   | .project_review.repos = [{slug: "Test-Org/first-repo"}]' \
   '.[0].report_directory == ""'
 assert_project_review "an explicit null inherits, exactly as an absent key does" \
   '.project_review.defaults = {model: "test-model-1", pr_label: "test-label-1", branch_prefix: "test-prefix/", min_days_between_reviews: 99, not_before: "2025-01-01T00:00:00Z", timeout_review: 60, inactivity_review: 7} |
-   .project_review.repos = [{slug: "Poetic-Poems/poetic", model: null, min_days_between_reviews: null}]' \
+   .project_review.repos = [{slug: "Test-Org/first-repo", model: null, min_days_between_reviews: null}]' \
   '.[0].model == "test-model-1" and .[0].min_days_between_reviews == 99
    and .[0].model_key == "project_review.defaults.model"'
 assert_project_review "two repos resolve independently — one overriding, one inheriting" \
   '.project_review.defaults = {model: "test-model-1", pr_label: "test-label-1", branch_prefix: "test-prefix/", min_days_between_reviews: 99, not_before: "2025-01-01T00:00:00Z", timeout_review: 60, inactivity_review: 7} |
-   .project_review.repos = [{slug: "Poetic-Poems/poetic", model: "claude-opus-5"},
-     {slug: "Poetic-Poems/poetic-fiddle"}]' \
+   .project_review.repos = [{slug: "Test-Org/first-repo", model: "claude-opus-5"},
+     {slug: "Test-Org/second-repo"}]' \
   '.[0].model == "claude-opus-5" and .[1].model == "test-model-1"
    and .[0].model_key == "project_review.repos[0].model"
    and .[1].model_key == "project_review.defaults.model"'
@@ -997,7 +1052,7 @@ assert_doctor "doctor fails an implementation-plan source with no path, as agent
   '.repos[0].sources += ["implementation-plan"]' 1 'list the implementation-plan source with no implementation_plan_path'
 assert_doctor "doctor fails duplicate slugs in project_review.repos, as review-cycle.sh would" \
   '.project_review.repos[1].slug = .project_review.repos[0].slug' 1 \
-  'project_review.repos lists [Poetic-Poems/poetic] more than once'
+  "project_review.repos lists [$BASE_REPO_1] more than once"
 assert_doctor_shipped "doctor passes distinct project_review.repos slugs" \
   '.' 0 'every project_review.repos entry names a distinct repository'
 # --- requirement 1c, "the floor" (agent-ops#822): refiner_model/enabler_model
@@ -1056,19 +1111,26 @@ assert_doctor "doctor warns that a configured Approver watchdog pins itself too"
   '.inactivity_approver = 5' 0 "inactivity_approver is set, which pins"
 assert_doctor "doctor warns on a per-repo stage_timeouts.approver override, naming the repo" \
   '.repos[0].stage_timeouts = {"approver": 45}' 0 \
-  "Poetic-Poems/poetic's stage_timeouts.approver is set, which pins"
+  "$BASE_REPO_1's stage_timeouts.approver is set, which pins"
 assert_doctor "doctor warns on a per-repo stage_timeouts override, naming the repo" \
   '.repos[0].stage_timeouts = {"implementer": 90}' 0 \
-  "Poetic-Poems/poetic's stage_timeouts.implementer is set, which pins"
+  "$BASE_REPO_1's stage_timeouts.implementer is set, which pins"
 assert_doctor "doctor warns on a per-repo stage_inactivity override, naming the repo" \
   '.repos[0].stage_inactivity = {"reviewer": 5}' 0 \
-  "Poetic-Poems/poetic's stage_inactivity.reviewer is set, which pins"
+  "$BASE_REPO_1's stage_inactivity.reviewer is set, which pins"
+# Computed the same way RUNTIME_FLOOR_LOCK_SEC above is — from
+# stage_budget_lock_seconds itself, over the very fixture the assertion runs —
+# rather than hand-copied, so neither a change to the priors nor one to the
+# fixture's own backstops can leave a stale number here.
+wide_override_config="$(jq -c '.repos[0].stage_timeouts = {"implementer": 300}' "$BASE_CONFIG")"
+WIDE_OVERRIDE_LOCK_MIN=$(( $(stage_budget_lock_seconds '{}' \
+  "$(stage_budget_all_overrides "$wide_override_config")" 30 0) / 60 ))
 assert_doctor "a per-repo override wider than every prior widens the reported lock, matching what agent-cycle.sh derives" \
   '.repos[0].stage_timeouts = {"implementer": 300}' 0 \
-  "the cycle lock is derived at 530 min"
+  "the cycle lock is derived at $WIDE_OVERRIDE_LOCK_MIN min"
 assert_doctor "doctor warns when a repo's project_review label collides with the implementation one" \
   '.project_review.repos[0].pr_label = .pr_label' 0 \
-  "Poetic-Poems/poetic's project_review pr_label ($(jq -r '.pr_label' "$CONFIG")) equals pr_label"
+  "$BASE_REPO_1's project_review pr_label ($(jq -r '.pr_label' "$BASE_CONFIG")) equals pr_label"
 assert_doctor "doctor warns when the mirror would outlive the node that writes it" \
   '.cycles_retained = 5000 | .state_local_cycles_retained = 10' 0 'is below cycles_retained'
 assert_doctor "doctor warns when crash-loop escalation is configured with nowhere to file" \
@@ -1084,11 +1146,10 @@ assert_doctor_shipped "doctor passes the shipped configuration" \
 #     unlike the two shared cross-key rules above.
 #
 #     Every "no approver_*" case below deletes the key explicitly rather than
-#     relying on the shipped config not to carry it — belt and suspenders
-#     with DOCTOR_NEUTRAL_MUTATION, which now clears the same keys for every
-#     assert_doctor fixture before this mutation ever runs
-#     (TD-PPagop-26081801). These assertions were written when the fleet ran
-#     at Stage 0, where every one of these keys was absent, so
+#     relying on the base fixture not to carry it — belt and suspenders with
+#     the fixture, which names none of them (TD-PPagop-26081801). These
+#     assertions were written against the shipped file when the fleet ran at
+#     Stage 0, where every one of these keys was absent, so
 #     `.merge_autonomy = "agent-approves"` alone did construct an unpaired
 #     config — and then Stage 1 entry set them for real and three of these
 #     assertions inverted, because the fixture they thought they were
@@ -1099,7 +1160,7 @@ assert_doctor "doctor fails a merge_autonomy level above human with no approver_
   'merge_autonomy is "agent-approves" with no approver_app_id configured'
 assert_doctor "doctor fails a per-repo merge_autonomy override above human with no approver_app_id, naming the repo" \
   '.repos[0].merge_autonomy = "agent-merges-all" | del(.approver_app_id)' 1 \
-  "Poetic-Poems/poetic's merge_autonomy override is \"agent-merges-all\" with no approver_app_id configured"
+  "$BASE_REPO_1's merge_autonomy override is \"agent-merges-all\" with no approver_app_id configured"
 assert_doctor "doctor fails a merge_autonomy level above human with approver_app_id set but no approver_model_default (D18 WI-5, requirement 8b)" \
   '.merge_autonomy = "agent-approves" | .approver_app_id = "123456" | del(.approver_model_default)' 1 \
   'merge_autonomy is "agent-approves" with no approver_model_default configured'
@@ -1110,22 +1171,25 @@ assert_doctor "doctor passes a merge_autonomy level above human once approver_ap
 #     (agent-ops#560): setting the *top-level* key to `human` did construct a
 #     wholly-human fleet only while no `repos[]` entry carried an override of
 #     its own, which agent-ops' promotion to `agent-merges-routine` ended. The
-#     per-repo overrides are now cleared explicitly here for the same reason
+#     per-repo overrides are still cleared explicitly here for the same reason
 #     the approver keys are deleted explicitly above — a fixture must build
-#     the state it claims to test, never inherit half of it from whatever the
-#     shipped configuration happens to say this month.
+#     the state it claims to test, never inherit half of it from a file it
+#     does not own.
 assert_doctor "doctor passes human explicitly, same as the default, with no approver_app_id or approver_model_default" \
   '.merge_autonomy = "human" | del(.repos[].merge_autonomy) | del(.approver_app_id) | del(.approver_model_default)' 0 \
   'merge_autonomy is "human"'
 # The shipped configuration's own pairing, asserted as a fact rather than left
-# implicit in "doctor passes the shipped configuration" above: at Stage 1 the
-# fleet runs above `human`, so both keys must be set, and a config change that
+# implicit in "doctor passes the shipped configuration" above: whenever the
+# fleet runs above `human`, both keys must be set, and a config change that
 # raised the level while dropping either would otherwise fail only through a
 # generic pass/fail assertion that names neither key. Deliberately
-# assert_doctor_shipped, not assert_doctor: this one is about what
-# config.json really says, so it must not be normalised away.
+# assert_doctor_shipped, not assert_doctor: this one is about what config.json
+# really says, so it must not be normalised away. The level itself is read
+# back from the file rather than named here — which rung the fleet is on is a
+# configuration decision, and promoting it is not a test change.
+shipped_merge_autonomy="$(config_defaults "$SHIPPED_CONFIG" "$SCHEMA" | jq -r '.merge_autonomy')"
 assert_doctor_shipped "the shipped configuration's own merge_autonomy is paired with both Approver keys" \
-  '.' 0 'merge_autonomy is "agent-approves"'
+  '.' 0 "merge_autonomy is \"$shipped_merge_autonomy\""
 
 # --- requirement 14b: the reconciliation between the environment's
 #     PULLWRIGHT_APPROVER_APP_ID and the configured approver_app_id
@@ -1136,9 +1200,9 @@ assert_doctor_shipped "the shipped configuration's own merge_autonomy is paired 
 #     runtime-credential variables (TD-PPagop-26082201), so a mismatch fixture
 #     cannot go through assert_doctor and instead calls doctor.sh directly,
 #     setting PULLWRIGHT_APPROVER_APP_ID for this one invocation only — the
-#     same way DOCTOR_NEUTRAL_MUTATION sets the config counterpart only for
-#     the fixture that asks for it (TD-PPagop-26082302). ---
-jq "$DOCTOR_NEUTRAL_MUTATION"' | .approver_app_id = "555555"' "$CONFIG" > "$tmp/c.json"
+#     same way the mutation sets the config counterpart only for this one
+#     fixture (TD-PPagop-26082302). ---
+jq '.approver_app_id = "555555"' "$BASE_CONFIG" > "$tmp/c.json"
 mismatch_out="$(env -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH \
   PULLWRIGHT_APPROVER_APP_ID=999999 \
   bash "$SCRIPT_DIR/scripts/doctor.sh" --offline --config "$tmp/c.json" 2>&1)"
@@ -1161,7 +1225,7 @@ assert_doctor "doctor reports the top-level merge_budget_per_day" \
   '.merge_budget_per_day = 3' 0 'merge_budget_per_day is 3'
 assert_doctor "doctor reports a per-repo merge_budget_per_day override, naming the repo" \
   '.repos[0].merge_budget_per_day = 0' 0 \
-  "Poetic-Poems/poetic's merge_budget_per_day override is 0 (unlimited)"
+  "$BASE_REPO_1's merge_budget_per_day override is 0 (unlimited)"
 assert_doctor "doctor warns on an unlimited budget at agent-merges-routine or above, naming the repo and level" \
   '.repos[0].merge_autonomy = "agent-merges-routine" | .repos[0].merge_budget_per_day = 0
    | .approver_app_id = "123456" | .approver_model_default = "claude-sonnet-5"' 0 \
@@ -1175,7 +1239,7 @@ assert_doctor "…but a warn, never a fail — nothing arms automatic landing ye
 # must NOT earn the pairing warning — assert_doctor only checks a substring
 # is present, so these two run doctor.sh directly and check its absence.
 jq '.repos[0].merge_autonomy = "agent-merges-routine" | .repos[0].merge_budget_per_day = 3
-    | .approver_app_id = "123456" | .approver_model_default = "claude-sonnet-5"' "$CONFIG" > "$tmp/c.json"
+    | .approver_app_id = "123456" | .approver_model_default = "claude-sonnet-5"' "$BASE_CONFIG" > "$tmp/c.json"
 no_warn_out="$(bash "$SCRIPT_DIR/scripts/doctor.sh" --offline --config "$tmp/c.json" 2>&1)"
 if [[ "$no_warn_out" != *"no cap will bound its landing rate"* ]]; then
   pass "a bounded budget at agent-merges-routine earns no unlimited-budget warning"
@@ -1184,7 +1248,7 @@ else
   failures=$(( failures + 1 ))
 fi
 jq '.repos[0].merge_autonomy = "agent-approves" | .repos[0].merge_budget_per_day = 0
-    | .approver_app_id = "123456" | .approver_model_default = "claude-sonnet-5"' "$CONFIG" > "$tmp/c.json"
+    | .approver_app_id = "123456" | .approver_model_default = "claude-sonnet-5"' "$BASE_CONFIG" > "$tmp/c.json"
 no_warn_out="$(bash "$SCRIPT_DIR/scripts/doctor.sh" --offline --config "$tmp/c.json" 2>&1)"
 if [[ "$no_warn_out" != *"no cap will bound its landing rate"* ]]; then
   pass "an unlimited budget below agent-merges-routine earns no warning either"
@@ -1248,22 +1312,30 @@ assert_not_contains() {
 # this fixture for a different reason than the one under test here — opus
 # ranks above sonnet, so it still resolves differently from what is
 # documented without tripping that check.
+# The documented value is read back from the schema, never repeated here: it
+# is `x-docs.value`'s content, so keeping the docs and the installation in step
+# — which is the whole point of the check — is a schema edit and not a test
+# one. Only the *resolved* side is this fixture's own choice, and it is picked
+# to rank at or above implementer_model_default so requirement 1c's floor
+# cannot fail it first.
+DOCUMENTED_REFINER_MODEL="$(jq -r '.properties.refiner_model["x-docs"].value' "$SCHEMA")"
 # shellcheck disable=SC2016  # backticks here are literal Markdown, not command substitution
 assert_doctor "doctor warns when a documented installation value drifts from what config.json resolves" \
   '.refiner_model = "claude-opus-5"' 0 \
-  'refiner_model is documented (README.md/docs/IMPLEMENTATION-PIPELINE-SPEC.md) as `claude-sonnet-5` but resolves to `claude-opus-5`'
-# refinement_policy is cleared too: the shipped config now sets issues/
-# tech-debt to "required" (agent-ops#822), and an empty refiner_model with a
-# "required" source configured is itself a fail (requirement 1c) — a
-# different check than the doc-mismatch rendering convention under test here.
-# shellcheck disable=SC2016  # backticks here are literal Markdown, not command substitution
+  "refiner_model is documented (README.md/docs/IMPLEMENTATION-PIPELINE-SPEC.md) as $DOCUMENTED_REFINER_MODEL but resolves to \`claude-opus-5\`"
+# refinement_policy is cleared too: the base fixture sets issues/tech-debt to
+# "required" (agent-ops#822, the shape the shipped installation runs), and an
+# empty refiner_model with a "required" source configured is itself a fail
+# (requirement 1c) — a different check than the doc-mismatch rendering
+# convention under test here.
 assert_doctor "doctor renders an empty resolved value as *(unset)*, the same convention the docs use for one" \
   '.refiner_model = "" | .refinement_policy = {}' 0 \
-  'refiner_model is documented (README.md/docs/IMPLEMENTATION-PIPELINE-SPEC.md) as `claude-sonnet-5` but resolves to *(unset)*'
+  "refiner_model is documented (README.md/docs/IMPLEMENTATION-PIPELINE-SPEC.md) as $DOCUMENTED_REFINER_MODEL but resolves to *(unset)*"
+DOCUMENTED_EXCLUDED_MINUTES="$(jq -r '.properties.schedule.properties.excluded_minutes["x-docs"].value' "$SCHEMA")"
 # shellcheck disable=SC2016  # backticks here are literal Markdown, not command substitution
 assert_doctor "doctor compares an array-valued x-docs.value by its parsed JSON, naming the resolved array" \
   '.schedule.excluded_minutes = [5]' 0 \
-  'schedule.excluded_minutes is documented (README.md/docs/IMPLEMENTATION-PIPELINE-SPEC.md) as `[0]` but resolves to `[5]`'
+  "schedule.excluded_minutes is documented (README.md/docs/IMPLEMENTATION-PIPELINE-SPEC.md) as $DOCUMENTED_EXCLUDED_MINUTES but resolves to \`[5]\`"
 
 # A key whose `x-docs.value` equals its own schema `default` documents the
 # product's shipped behaviour, not this installation's — `merge_autonomy` is
@@ -1272,7 +1344,7 @@ assert_doctor "doctor compares an array-valued x-docs.value by its parsed JSON, 
 # assert_doctor only checks a substring is present, so this runs doctor.sh
 # directly and checks the absence instead.
 jq '.merge_autonomy = "agent-merges-routine" | .repos[0].merge_autonomy = "agent-merges-all"
-    | .approver_app_id = "123456" | .approver_model_default = "claude-sonnet-5"' "$CONFIG" > "$tmp/c.json"
+    | .approver_app_id = "123456" | .approver_model_default = "claude-sonnet-5"' "$BASE_CONFIG" > "$tmp/c.json"
 merge_autonomy_out="$(bash "$SCRIPT_DIR/scripts/doctor.sh" --offline --config "$tmp/c.json" 2>&1)"
 assert_not_contains "doctor never reports merge_autonomy as a documented-value mismatch, at any rung" \
   "merge_autonomy is documented" "$merge_autonomy_out"
@@ -1285,7 +1357,7 @@ assert_not_contains "doctor never reports merge_autonomy as a documented-value m
 # even when set far from what is documented.
 jq '.log_generations = 99 | .cycles_retained = 999999 | .approver_app_id = "999999999"
     | .void_retire_after_days = 1
-    | .approver_model_default = "claude-sonnet-5"' "$CONFIG" > "$tmp/c.json"
+    | .approver_model_default = "claude-sonnet-5"' "$BASE_CONFIG" > "$tmp/c.json"
 skip_out="$(bash "$SCRIPT_DIR/scripts/doctor.sh" --offline --config "$tmp/c.json" 2>&1)"
 assert_not_contains "a key with no x-docs.value is never reported (log_generations)" \
   "log_generations is documented" "$skip_out"
@@ -1341,14 +1413,14 @@ run_review_guard() {
   guard_rc=$?
 }
 
-run_cycle_guard "$(jq -c '.pr_labell = "x"' "$CONFIG")"
+run_cycle_guard "$(jq -c '.pr_labell = "x"' "$BASE_CONFIG")"
 assert_eq "agent-cycle.sh exits 1 on a config that fails the schema" "1" "$guard_rc"
 assert_contains "agent-cycle.sh's refusal names the schema" \
   "does not match config.schema.json" "$guard_out"
 assert_contains "agent-cycle.sh's refusal names the offending path" \
   'unknown key "pr_labell"' "$guard_out"
 
-run_review_guard "$(jq -c '.pr_labell = "x"' "$CONFIG")"
+run_review_guard "$(jq -c '.pr_labell = "x"' "$BASE_CONFIG")"
 assert_eq "review-cycle.sh exits 1 on a config that fails the schema" "1" "$guard_rc"
 assert_contains "review-cycle.sh's refusal names the schema" \
   "does not match config.schema.json" "$guard_out"
@@ -1359,14 +1431,14 @@ assert_contains "review-cycle.sh's refusal names the offending path" \
 #     `nice` and a malformed `prompt_overrides` are refused by the schema
 #     gate itself, in its own wording — the retired guards' own messages
 #     ("invalid nice", "config.json prompt_overrides:") appear nowhere. ---
-run_cycle_guard "$(jq -c '.repos[0].nice = 20' "$CONFIG")"
+run_cycle_guard "$(jq -c '.repos[0].nice = 20' "$BASE_CONFIG")"
 assert_eq "a nice above 19 exits 1 via the schema gate" "1" "$guard_rc"
 assert_contains "the schema names the offending path" \
   "config.repos[0].nice: 20 is above the maximum 19" "$guard_out"
 assert_not_contains "the retired nice guard's own wording is gone" \
   "invalid nice" "$guard_out"
 
-run_cycle_guard "$(jq -c '.prompt_overrides = {coordinator: {extned: ["x.md"]}}' "$CONFIG")"
+run_cycle_guard "$(jq -c '.prompt_overrides = {coordinator: {extned: ["x.md"]}}' "$BASE_CONFIG")"
 assert_eq "a malformed prompt_overrides exits 1 via the schema gate" "1" "$guard_rc"
 assert_contains "the schema names the offending path" \
   'config.prompt_overrides.coordinator: unknown key "extned"' "$guard_out"
@@ -1376,7 +1448,7 @@ assert_not_contains "the retired prompt_overrides guard's own wording is gone" \
 # --- A config the schema accepts must still clear agent-cycle.sh's two
 #     surviving cross-key guards — the schema gate passing is not the whole
 #     of requirement 1b. ---
-run_cycle_guard "$(jq -c '.enabler_assignee = ""' "$CONFIG")"
+run_cycle_guard "$(jq -c '.enabler_assignee = ""' "$BASE_CONFIG")"
 assert_eq "an unassigned enabled Enabler still exits 1, past the schema gate" "1" "$guard_rc"
 assert_contains "the enabler_assignee guard still fires, shared with doctor.sh" \
   "enabler_model is set but enabler_assignee is not configured" "$guard_out"
@@ -1385,7 +1457,7 @@ assert_not_contains "a config the schema accepts is not reported as a schema fai
 
 # requirement 1c (agent-ops#822): the model-tier floor guard, shared with
 # doctor.sh's own `fail` above through the same lib/config-schema.sh function.
-run_cycle_guard "$(jq -c '.refiner_model = "claude-haiku-4-5-20251001"' "$CONFIG")"
+run_cycle_guard "$(jq -c '.refiner_model = "claude-haiku-4-5-20251001"' "$BASE_CONFIG")"
 assert_eq "refiner_model below implementer_model_default still exits 1, past the schema gate" "1" "$guard_rc"
 assert_contains "the model-tier floor guard names both sides of the violation" \
   "refiner_model (claude-haiku-4-5-20251001) ranks below implementer_model_default (claude-sonnet-5)" "$guard_out"
@@ -1394,7 +1466,7 @@ assert_not_contains "a config the schema accepts is not reported as a schema fai
 
 # requirement 1c: a "required" refinement_policy source with refiner_model
 # empty still exits 1, shared the same way.
-run_cycle_guard "$(jq -c '.refiner_model = ""' "$CONFIG")"
+run_cycle_guard "$(jq -c '.refiner_model = ""' "$BASE_CONFIG")"
 assert_eq "a required refinement source with refiner_model empty still exits 1, past the schema gate" "1" "$guard_rc"
 assert_contains "the refiner-required guard names the source(s) left unrefinable" \
   "refinement_policy requires [issues, tech-debt] but refiner_model is empty" "$guard_out"
@@ -1404,10 +1476,10 @@ assert_not_contains "a config the schema accepts is not reported as a schema fai
 # review-cycle.sh's own cross-key guard: duplicate project_review.repos slugs
 # (requirement R1b), shared with doctor.sh's own `fail` above through the same
 # lib/config-schema.sh function.
-run_review_guard "$(jq -c '.project_review.repos[1].slug = .project_review.repos[0].slug' "$CONFIG")"
+run_review_guard "$(jq -c '.project_review.repos[1].slug = .project_review.repos[0].slug' "$BASE_CONFIG")"
 assert_eq "duplicate project_review.repos slugs exit 1, past the schema gate" "1" "$guard_rc"
 assert_contains "the duplicate-slug guard names the repeated slug" \
-  "project_review.repos lists [Poetic-Poems/poetic] more than once" "$guard_out"
+  "project_review.repos lists [$BASE_REPO_1] more than once" "$guard_out"
 assert_not_contains "a config the schema accepts is not reported as a schema failure" \
   "does not match config.schema.json" "$guard_out"
 
