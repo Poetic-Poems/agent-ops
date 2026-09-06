@@ -153,6 +153,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The test suite no longer expects any particular value from
+  `config.json`.** Changing a configured value — a threshold, a cadence, an
+  autonomy rung, a repository added or removed — is a configuration change,
+  and now touches no test. The shipped file is still asserted to be *valid*
+  (it matches `config.schema.json`, and `scripts/doctor.sh` passes it), and
+  `scripts/render-config-table.sh --check` still gates the documentation
+  regeneration; what is gone is every assertion that quoted a value it
+  happens to carry. `test/config-schema.test.sh` now mutates a new
+  `test/fixtures/config-base.json` — a configuration the suite owns, asserted
+  valid in its own right, naming no `merge_autonomy` or `approver_*` key at
+  all — instead of the shipped file, which retires `DOCTOR_NEUTRAL_MUTATION`
+  and the per-key normalisations that had accreted around the same failure
+  (TD-PPagop-26081801, TD-PPagop-26082201, TD-PPagop-26082302,
+  agent-ops#546, agent-ops#560). `test/doctor.test.sh` pins its own
+  `schedule` in the single-target-repo fixture, and
+  `test/render-crontab.test.sh` derives every expectation for the shipped
+  config from the file itself, through `config_defaults` — the renderer's own
+  resolution — rather than repeating its minutes, and gives its
+  explicit-`CYCLE_MINUTE` and excluded-minute cases schedules of their own.
+  `test/publish-dashboard.test.sh` derives its repository counts, so
+  "15 calls across 3 repos" follows the file rather than pinning it. The rule
+  is now written down in both pipelines' *Acceptance checks* preambles, so a
+  new check inherits it; `TD-PPagop-26090610` records the two couplings this
+  change does not reach — ten suites still spell out the shipped `state_dir`
+  path, and two repository slugs are still written into
+  `publish-dashboard`'s GitHub stubs.
+
 - **The Script, not the Co-Ordinator, now composes a work order's `context`,
   `acceptance` and `title`** (requirement 17h, `compose_selected_candidate_text`
   in `lib/candidate-select.sh`) — agent-ops#769, resolving the escalation at

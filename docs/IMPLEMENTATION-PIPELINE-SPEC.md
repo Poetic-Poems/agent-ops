@@ -18207,6 +18207,18 @@ What exists, and the requirements each part answers to:
 Every change to the system must leave all of these passing; before opening a
 pull request, run the ones the change touches and any it could regress.
 
+**No check below may expect a particular value from `config.json`.** The
+shipped configuration is asserted to be *valid* — that it matches
+`config.schema.json`, and that `scripts/doctor.sh` passes it — and every other
+fixture supplies its own configuration, either a block the test writes itself
+or `test/fixtures/config-base.json`, the base `test/config-schema.test.sh`
+mutates. Where a check is genuinely about the shipped file rendering or
+resolving correctly, it reads the values it needs back out of it (through
+`config_defaults`, the same resolution the code uses) rather than repeating
+them. Changing a configured value — a threshold, a cadence, an autonomy rung,
+a repository added or removed — is a configuration change, and must never
+oblige anyone to edit a test.
+
 1. `shellcheck agent-cycle.sh scripts/*.sh lib/*.sh` is clean.
 1a. **The role guard holds in both directions.** `test/role.test.sh` passes:
    every value that is not `active` stands the node down with a cron-log line,
@@ -21124,10 +21136,18 @@ pull request, run the ones the change touches and any it could regress.
     stub is ever reached; the retired `nice` and `prompt_overrides` guards'
     own wording is asserted gone in favour of the schema's, and the
     surviving Enabler-assignee guard is asserted to still fire on a config
-    the schema itself accepts. Every case is a mutation of the shipped
-    configuration, run against the shipped scripts, so what is asserted is
-    the product rather than a restatement of it. `--offline` throughout: no
-    assertion here needs the network.
+    the schema itself accepts. Every case is a mutation of
+    `test/fixtures/config-base.json` — a configuration the suite owns, which
+    names no `merge_autonomy` or `approver_*` key at all, so a cross-key
+    rule's negative case builds the state it claims to test instead of
+    inheriting half of it — run against the shipped scripts, so what is
+    asserted is the product rather than a restatement of it. That fixture is
+    itself asserted to validate against the schema, so a required key added
+    to the schema fails once, naming it. The shipped `config.json` is read
+    for two things only: that it validates, and that `doctor.sh` passes it
+    (including its own `merge_autonomy` pairing, at whichever rung the file
+    names — read back from it, never written down here). `--offline`
+    throughout: no assertion here needs the network.
 
     A documented installation value is checked against the live config the
     same way (`config_documented_value_mismatches`, issue #567): a key whose
