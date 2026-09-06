@@ -1,0 +1,130 @@
+{
+  "generated_at": "@now",
+  "node": "poetic-1",
+  "config": {
+    "timeout_coordinator": 15, "timeout_implementer": 90,
+    "timeout_reviewer": 30, "timeout_enabler": 30,
+    "lock_stale_after": 4, "dashboard_refresh_seconds": 5,
+    "coordinator_model": "claude-sonnet-5"
+  },
+  "status": {
+    "switch": {"disabled": false},
+    "limit": {"active": false},
+    "running": false,
+    "lock": null,
+    "current": null,
+    "last_cycle": null
+  },
+  "counts": {
+    "spend_today_usd": 0, "spend_total_usd": 0,
+    "failures_shown": 0, "cycles_shown": 0, "prs_reached_ready": 0,
+    "by_day": [], "by_model": [], "by_actor": [],
+    "actor_scorecards": {
+      "window_from": "@ago:3d",
+      "window_to": "@now",
+      "min_sample": 5,
+      "actors": [
+        {
+          "actor": "coordinator",
+          "rows": [
+            {
+              "model": "claude-sonnet-5", "tier": "default",
+              "attempts": 8, "clean": 8,
+              "items_examined": 0, "landed": 0, "landed_unchanged": 0, "landed_with_rework": 0,
+              "voided": 0, "abandoned": 0, "other_fate": 0,
+              "first_pass_yield": null, "cost_per_landed_usd": null, "wallclock_per_landed_ms": null,
+              "sample": 0, "status": "insufficient-sample",
+              "measure": {"kind": "coordinator-corroboration", "corroborated": 8, "rejected": 6,
+                "rate": 0.75, "sample": 8, "status": "ok",
+                "picks_total": 10, "picks_landed": 8, "picks_landed_rate": 0.8}
+            },
+            {
+              "model": "claude-haiku-4-5-20251001", "tier": "default",
+              "attempts": 2, "clean": 2,
+              "items_examined": 0, "landed": 0, "landed_unchanged": 0, "landed_with_rework": 0,
+              "voided": 0, "abandoned": 0, "other_fate": 0,
+              "first_pass_yield": null, "cost_per_landed_usd": null, "wallclock_per_landed_ms": null,
+              "sample": 0, "status": "insufficient-sample",
+              "measure": {"kind": "coordinator-corroboration", "corroborated": 2, "rejected": 2,
+                "rate": 1, "sample": 2, "status": "insufficient-sample",
+                "picks_total": 2, "picks_landed": 0, "picks_landed_rate": 0}
+            }
+          ]
+        },
+        {
+          "actor": "implementer",
+          "rows": [
+            {
+              "model": "claude-sonnet-5", "tier": "default",
+              "attempts": 6, "clean": 6,
+              "items_examined": 5, "landed": 5, "landed_unchanged": 4, "landed_with_rework": 1,
+              "voided": 0, "abandoned": 0, "other_fate": 0,
+              "first_pass_yield": 0.8, "cost_per_landed_usd": 1.2345, "wallclock_per_landed_ms": 725000,
+              "sample": 5, "status": "ok"
+            },
+            {
+              "model": "claude-haiku-4-5-20251001", "tier": "trivial",
+              "attempts": 2, "clean": 2,
+              "items_examined": 1, "landed": 1, "landed_unchanged": 1, "landed_with_rework": 0,
+              "voided": 0, "abandoned": 0, "other_fate": 0,
+              "first_pass_yield": 1, "cost_per_landed_usd": 0.1, "wallclock_per_landed_ms": 90000,
+              "sample": 1, "status": "insufficient-sample"
+            }
+          ]
+        },
+        {
+          "actor": "reviewer",
+          "rows": [
+            {
+              "model": "claude-sonnet-5", "tier": "default",
+              "attempts": 6, "clean": 6,
+              "items_examined": 6, "landed": 6, "landed_unchanged": 6, "landed_with_rework": 0,
+              "voided": 0, "abandoned": 0, "other_fate": 0,
+              "first_pass_yield": 1, "cost_per_landed_usd": 0.4, "wallclock_per_landed_ms": 180000,
+              "sample": 6, "status": "ok",
+              "measure": {"kind": "reviewer-escape-rate", "escapes": 1, "of": 6,
+                "rate": 0.1667, "sample": 6, "status": "ok"}
+            }
+          ]
+        },
+        {
+          "actor": "enabler",
+          "rows": [
+            {
+              "model": "claude-opus-5", "tier": "critical",
+              "attempts": 6, "clean": 6,
+              "items_examined": 6, "landed": 5, "landed_unchanged": 5, "landed_with_rework": 0,
+              "voided": 1, "abandoned": 0, "other_fate": 0,
+              "first_pass_yield": 1, "cost_per_landed_usd": 3.5, "wallclock_per_landed_ms": 900000,
+              "sample": 6, "status": "ok",
+              "measure": {"kind": "enabler-unblock-success", "examined": 6, "landed": 5,
+                "rate": 0.8333, "sample": 6, "status": "ok"}
+            }
+          ]
+        },
+        {
+          "actor": "refiner",
+          "rows": [
+            {
+              "model": "claude-sonnet-5", "tier": "default",
+              "attempts": 7, "clean": 7,
+              "items_examined": 0, "landed": 0, "landed_unchanged": 0, "landed_with_rework": 0,
+              "voided": 0, "abandoned": 0, "other_fate": 0,
+              "first_pass_yield": null, "cost_per_landed_usd": null, "wallclock_per_landed_ms": null,
+              "sample": 0, "status": "insufficient-sample",
+              "measure": {"kind": "refiner-refinement-success", "refined": 7, "landed": 6,
+                "bounced_back": 1, "rate": 0.8571, "sample": 7, "status": "ok"}
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "cycles": [],
+  "blocked": [],
+  "void": [],
+  "github": {"ok": true, "fetched_at": "@ago:1m", "prs": [], "pr_index": {}, "inputs": {}},
+  "log_tail": [],
+  "cron_tail": [],
+  "max_open_agent_prs": 3
+}

@@ -5344,8 +5344,8 @@ implements.
    A reader that meets a verdict from before this requirement may fall back to
    the model on that cycle's own coordinator `stage-end` — the same invocation
    id, so the fallback never disagrees with the field — which is what lets the
-   dashboard's aggregate (`docs/DASHBOARD-SPEC.md`,
-   `counts.coordinator_verdicts`) populate from history already on disk rather
+   dashboard's aggregate (`docs/DASHBOARD-SPEC.md`, the Co-Ordinator's own row
+   of `counts.actor_scorecards`) populate from history already on disk rather
    than only from cycles run after this shipped. What it must **not** do is
    count a cycle's `corroboration` and its `none-selected` as two verdicts:
    requirement 3v writes both for the same answer whenever a rejection reaches

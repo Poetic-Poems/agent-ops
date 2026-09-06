@@ -740,23 +740,23 @@ induced outage rather than only over a quiet afternoon.
       rung of D18's ladder or a higher `max_open_agent_prs` would buy it, and
       one whose fleet is mostly idle without demand is told to shrink rather
       than being sold more nodes. *[fleet]*
-- [ ] Actor and model scorecards, superseding the Co-Ordinator verdict-quality
-      panel and subsuming #529 (D22). One card per actor and, within it, one
+- [x] Actor and model scorecards, superseding the Co-Ordinator verdict-quality
+      panel and subsuming #529 (D22, issue #610, `counts.actor_scorecards`,
+      docs/DASHBOARD-SPEC.md). One card per actor and, within it, one
       row per model and tier, reporting outcomes rather than activity:
       attempts, and how many ended cleanly (no `kill_reason`, no contribution
       to a crash loop); what those attempts *produced* — landed unchanged,
       landed after N further passes, voided, abandoned; first-pass yield; cost
       and wall-clock per landed item; and each actor's own measure — the
-      Reviewer's findings raised against findings that led to a change, and
-      against defects that reached the landing gate or a revert past it; the
-      Co-Ordinator's corroboration rate, today's panel folded in, alongside
-      whether the items it picked went on to land; the Enabler's and Refiner's
-      unblock and refinement success. Every row states its stratum and its
-      sample size and declines to rank below the minimum (D22). #529's model
-      ratios become one facet of this card rather than a chart of their own,
-      and they must not be built before the Phase 1 attribution fix lands:
-      built on today's `keys[0]` join, a usage ratio inherits the same error
-      that puts 98.7% of the fleet's spend on the wrong model. *[fleet]*
+      Reviewer's own escape rate (rework of class `human-change-request`/
+      `post-merge-revert` against items reviewed); the Co-Ordinator's
+      corroboration rate, the old panel folded in, alongside whether the items
+      it picked went on to land; the Enabler's and Refiner's unblock and
+      refinement success. Every row states its stratum and its sample size and
+      declines to rank below the minimum (D22). #529's own delivery — the two
+      "model used" pies for the Implementer and the Reviewer — is retired as
+      redundant with this card's own per-model, per-tier rows, which is now
+      where that ratio lives. *[fleet]*
 - [ ] Report rework by class, cause and escape (D23). The pipeline already
       emits every detector this needs and joins none of them: `attempt-failed`
       and `kill_reason` for a stage that had to be re-run, the review gate's

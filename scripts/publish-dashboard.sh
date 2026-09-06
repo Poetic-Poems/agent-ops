@@ -75,6 +75,19 @@ TEMPLATE="$SCRIPT_DIR/dashboard/index.html"
 # also needs lib/merge-budget.sh, which merge_autonomy_effective_level alone
 # (never called from this script) would require.
 . "$SCRIPT_DIR/lib/merge-autonomy.sh"
+# shellcheck source=lib/item-lifecycle.sh
+# `item_lifecycle_fold` (requirement 49) backs the actor/model scorecards'
+# terminal-fate join (issue #610, D22) — the same read-only derivation
+# scripts/item-lifecycle.sh wraps, called here directly rather than shelled
+# out to, since this script already holds the events on disk and the
+# `blocked_items`/`void_items`/`draft_obsolete_flags` extracts it needs
+# (lib/cycle-state.sh, sourced above).
+. "$SCRIPT_DIR/lib/item-lifecycle.sh"
+# shellcheck source=lib/model-id.sh
+# `resolve_model_id` alone — the actor/model scorecards (issue #610) use it to
+# strip an `anthropic/`-qualified tier config value before comparing it
+# against the bare id every stage-end's own `model` field already carries.
+. "$SCRIPT_DIR/lib/model-id.sh"
 
 MAX_CYCLES=40        # recent substantive cycles shown in detail (with
                      # transcripts); no-op ticks aggregate instead (#271)
@@ -1491,287 +1504,355 @@ counts_json="$(jq -n --slurpfile cyc "$cycles_file" --slurpfile costs_in "$costs
            attributed: $attributed}])
   }')"
 
-# --- Co-Ordinator verdict quality (requirement 3w, issue #319) ----------------
-# How often the Script rejects a Co-Ordinator verdict, by UTC day and by the
-# model that produced it. Requirement 3t made a confabulated verdict
-# *detectable* and requirement 3v made it *recoverable* — a retry, then a
-# mechanical fallback pick — but both act one cycle at a time, and the
-# question the detection exists to serve is a rate: does it justify changing
-# `coordinator_model`? A rate needs both terms, and only the rejections were
-# ever counted.
+# --- Actor and model scorecards (issue #610, D22) -----------------------------
+# One card per actor with a model choice (D12) — coordinator, implementer,
+# reviewer, enabler, refiner — one row per model and tier within each,
+# graded on outcome rather than activity. Supersedes the Co-Ordinator
+# verdict-quality panel (issue #319, folded into the Co-Ordinator's own row's
+# `measure` below rather than left rendering beside it) and subsumes the two
+# "model used" pies (issue #529: their ratio is now one facet of a row —
+# `attempts`/`clean` per model and tier — rather than a chart of their own).
+# The Approver is not one of these five: its own verdict/fate divergence is
+# already tracked on its own terms by `scripts/verdict-fate-report.sh`
+# (D18/agent-ops#573) and is not folded into this card.
 #
-# The unit is the **verdict**, not the cycle, because requirement 3v made a
-# cycle able to produce two: the first engagement and its one retry are two
-# separate answers from the model, each corroborated against the same eligible
-# set on its own. `corroboration` events (3v) are therefore the primary
-# record — one per verdict, carrying the Script's own `eligible_total`, the
-# outcome, and (3w) the model. A cycle that logged none, which is every cycle
-# from before 3v shipped and every cycle whose band was genuinely empty, falls
-# back to its `none-selected` events instead; the two are never mixed for one
-# cycle, or a rejection that reached the fallback path would be counted twice
-# — 3v writes both a rejected `corroboration` and a `td_verdict_rejected`
-# `none-selected` when no fallback candidate exists.
+# The join key is `{repo, item}` (`item_key` below), the same one every other
+# reader of this log uses (`lib/cycle-state.sh`, `scripts/pickup-metrics.sh`,
+# `lib/item-lifecycle.sh`). Three sources feed it, each read exactly once:
 #
-# `accepted-by-selection` counts in the denominator like any other verdict:
-# it is the retry getting it right, and leaving it out would credit a recovery
-# to nobody and flatter every model that recovers that way.
+#   attempts/clean   every `stage-end` for that actor's stage name(s)
+#                    (requirement 33), whether or not it carries an item —
+#                    the Co-Ordinator's own engagement and the Enabler's and
+#                    Refiner's top-level ones never do (they span several
+#                    items), so counting only the item-carrying subset would
+#                    undercount exactly those three actors' own attempts.
+#                    `clean` is a stage-end with no `kill_reason` (requirement
+#                    4e); a fleet-wide crash-loop escalation (the other half
+#                    of `stage-rerun`, docs/FLOW-SCHEMA.md) cannot be pinned to
+#                    one attempt among several and is not subtracted here.
+#   terminal fate    joined through `lib/item-lifecycle.sh`'s own fold
+#                    (requirement 49) — never re-derived — restricted to the
+#                    subset of stage-ends above that *do* carry `{repo, item}`
+#                    (Implementer, Reviewer, and the Enabler's two per-item
+#                    adjudication stages; the Co-Ordinator's and the top-level
+#                    Enabler's/Refiner's own engagements still cannot join
+#                    here, on the same grounds as `attempts` above — their own
+#                    measures below are built from their own per-item events
+#                    instead: `selection` for the Co-Ordinator, `item-refined`
+#                    for the Refiner).
+#   rework           `rework` events (docs/FLOW-SCHEMA.md), deduped first-by-
+#                    ts over `{repo, item, class}` (`{repo, item, class,
+#                    evidence.by}` for `post-merge-revert`) per that
+#                    document's own "Do not double-count" rule before anything
+#                    is counted from them. `post-merge-revert`'s own `item` is
+#                    the reverted *pull request*'s number, not the work item a
+#                    stage-end names, so it is re-keyed onto the work item via
+#                    `pr_url` (`pr-raised`/`pr-ready` already carry both) before
+#                    the join below, or left unjoined (and so excluded from
+#                    every row) when no such mapping is on record.
 #
-# The window is the retained union log and nothing more — `log.jsonl` is
-# rotated at `log_retained_bytes` and `fleet_logs` reads only the live
-# generation, so a figure here is "over the log we still have", which is why
-# `window_from`/`window_to` ship alongside the counts rather than leaving the
-# page to imply a window it cannot see. Persisting counters across publishes
-# was the alternative; it would have to survive four nodes publishing the same
-# union independently, and a double-counted rejection is a worse answer than
-# an honestly bounded one.
+# Cost and wall-clock per landed item read the landed stage-end's own
+# `cost_usd`/`duration_ms` (requirement 33a) directly, not
+# `counts.cost_rows[]`: that field is deliberately never `attributed` for the
+# Enabler or the Refiner (docs/METERING-SCHEMA.md — it shares its triggering
+# cycle's id with whichever stage of that cycle owns the item), which would
+# leave those two actors' rows permanently null, whereas the metering record
+# already carries the exact invocation's own total (subagents included) keyed
+# to the item its own stage-end names — a sound join `cost_rows` cannot offer
+# for two of these five actors and needs no re-deriving for the other three.
 #
-# Attribution comes from the event itself (`coordinator_model`, requirement
-# 3w), falling back to the model that cycle recorded on its coordinator
-# `stage-end` — which is the same invocation id, so the two never disagree —
-# so the card populates from history already in the log rather than only from
-# cycles run after this ships. `selection` carries a `model` of its own; it is
-# the *Implementer* model chosen for the item, and reading it here would
-# attribute a Co-Ordinator verdict to whichever model was about to do the
-# work, so this reads the cycle map and never that field.
-#
-# The events arrive as a file, and the aggregate leaves as one (requirement
-# 4g) — neither is large today, and neither is bounded by anything that would
-# keep it that way.
-coord_verdicts_file="$work_tmp/coord-verdicts.json"
-jq -c --arg cut "$day_cut" '
+# **Stratify or abstain** (D22): each row's stratum is its own `model` and
+# `tier` — Implementer splits `trivial`/`default`, Reviewer `default`/
+# `complex`, Enabler `default`/`critical` by its stage name
+# (`enabler`/`enabler-adjudicate`+`enabler-decide`); the Co-Ordinator and the
+# Refiner each have one configured model and so one tier, `default`. A model
+# id matching neither of an actor's two *currently* configured tier values —
+# a historical run under a since-changed mapping — reads `unmapped` rather
+# than a guess; there is no per-stage-end record of which config key resolved
+# it at the time, only the model id it resolved to. Every row states its own
+# `sample` (the closed population its rate is computed over — `landed` +
+# `voided` + `abandoned`; the Co-Ordinator's, Reviewer's, Refiner's and
+# Enabler's own further `measure` block states its own sample, since each is
+# a different population) and its `status` — `insufficient-sample` below
+# `SCORECARD_MIN_SAMPLE`, reusing `lib/verdict-fate.sh`'s own convention
+# (agent-ops#573) and its default of 5 rather than inventing a second
+# threshold — and declines to state the corresponding rate(s) at all below it,
+# rather than ranking on too little evidence.
+SCORECARD_MIN_SAMPLE=5
+
+impl_tier_default="$(resolve_model_id implementer_model_default "$(cfg '.implementer_model_default')" 2>/dev/null \
+  || cfg '.implementer_model_default')"
+impl_tier_trivial="$(resolve_model_id implementer_model_trivial "$(cfg '.implementer_model_trivial')" 2>/dev/null \
+  || cfg '.implementer_model_trivial')"
+rev_tier_default="$(resolve_model_id reviewer_model_default "$(cfg '.reviewer_model_default')" 2>/dev/null \
+  || cfg '.reviewer_model_default')"
+rev_tier_complex_raw="$(cfg '.reviewer_model_complex')"
+[[ -n "$rev_tier_complex_raw" ]] || rev_tier_complex_raw="$(cfg '.reviewer_model_default')"
+rev_tier_complex="$(resolve_model_id reviewer_model_complex "$rev_tier_complex_raw" 2>/dev/null \
+  || printf '%s' "$rev_tier_complex_raw")"
+
+# The item-lifecycle fold (requirement 49), unwindowed: this run's own day cut
+# still bounds which stage-ends count as an "attempt" or a "landed item" below
+# (`$cut`, matching every other roll-up on this page), but a landed/voided/
+# abandoned item's *fate* must read the same whether the evidence that settled
+# it sits inside or outside that window — the fold's own "fate is current
+# state; `--since` bounds only the population" rule (docs/FLOW-SCHEMA.md).
+lifecycle_file="$work_tmp/item-lifecycle.json"
+item_lifecycle_fold "$events_jsonl" "" > "$lifecycle_file" 2>/dev/null
+jq -e 'type == "object"' "$lifecycle_file" >/dev/null 2>&1 || printf '{"records":[]}' > "$lifecycle_file"
+
+scorecards_file="$work_tmp/actor-scorecards.json"
+jq -c --arg cut "$day_cut" --argjson min_sample "$SCORECARD_MIN_SAMPLE" \
+      --arg impl_default "$impl_tier_default" --arg impl_trivial "$impl_tier_trivial" \
+      --arg rev_default "$rev_tier_default" --arg rev_complex "$rev_tier_complex" \
+      --slurpfile lc "$lifecycle_file" '
   . as $ev
-  # cycle -> the model its Co-Ordinator stage ran under. Both attempts of a
-  # cycle run under the same id, so one entry per cycle is enough.
-  | ($ev
-     | map(select(.event == "stage-end" and .stage == "coordinator" and ((.cycle // "") != "")))
-     | reduce .[] as $s ({}; .[$s.cycle] = ($s.model // null))) as $cyc_model
-  # The cycles whose verdicts are on the record as `corroboration` events. A
-  # `none-selected` from one of these is the same verdict said twice, so it is
-  # read for the cycle outcome and never again as a verdict.
-  # A map, not a list: the membership test below sits inside a `select`, where
-  # `$list | index(.cycle)` would evaluate `.cycle` against the list rather
-  # than against the event, and abort the whole program on the first cycle
-  # that has one.
-  | ($ev | map(select(.event == "corroboration") | .cycle // "")
-         | reduce .[] as $c ({}; .[$c] = true)) as $corr_cycles
   | def day_of: ((.ts // "" | tostring)
                  | if test("^[0-9]{4}-[0-9]{2}-[0-9]{2}")
                    then (.[0:4] + .[5:7] + .[8:10]) else null end);
-    def model_of: (.coordinator_model // $cyc_model[(.cycle // "")] // "unknown");
-    def zero: {runs: 0, retries: 0, selections: 0, fallbacks: 0,
-               none_selected: 0, corroborated: 0, rejected: 0};
-    def cell: {day: day_of, model: model_of} + zero;
-    def rate: (if .corroborated > 0 then (.rejected / .corroborated) else null end);
-    def total($k): (map(.[$k]) | add // 0);
+    def item_key($r; $i): (($r // "") | tostring) + "|" + (($i // "") | tostring);
+    def sumby(f): (map(f) | add // 0);
+    # Which of the five scorecard actors a stage-end/rework `attributed_stage`
+    # spelling belongs to — `null` for anything else (`approver`,
+    # `approver-adjudicate-open-question`, `pre-selection`), which excludes it
+    # from every row rather than guessing at one.
+    def actor_of($stage):
+      if   $stage == "coordinator" then "coordinator"
+      elif $stage == "implementer" then "implementer"
+      elif $stage == "reviewer"    then "reviewer"
+      elif ($stage == "enabler" or $stage == "enabler-adjudicate" or $stage == "enabler-decide") then "enabler"
+      elif $stage == "refiner"     then "refiner"
+      else null end;
+    # See the header comment above for why this compares against *current*
+    # config rather than reading a per-event tier field that does not exist.
+    def tier_of($stage; $model):
+      if $stage == "implementer" then
+        (if $model == $impl_default then "default"
+         elif $model == $impl_trivial then "trivial"
+         else "unmapped" end)
+      elif $stage == "reviewer" then
+        (if $model == $rev_default then "default"
+         elif $model == $rev_complex then "complex"
+         else "unmapped" end)
+      elif $stage == "enabler" then "default"
+      elif ($stage == "enabler-adjudicate" or $stage == "enabler-decide") then "critical"
+      else "default" end;
 
-    # Engagements: both attempts of a cycle are runs, the second is also a
-    # retry.
-    [ $ev[] | select(.event == "stage-end" and .stage == "coordinator")
-            | cell + {runs: 1, retries: (if .retry == true then 1 else 0 end)} ]
-    # Outcomes: what the cycle did, as distinct from what its verdicts were.
-  + [ $ev[] | select(.event == "selection")
-            | cell + {selections: 1,
-                      fallbacks: (if .selected_by == "script-fallback" then 1 else 0 end)} ]
-  + [ $ev[] | select(.event == "none-selected") | cell + {none_selected: 1} ]
-    # Verdicts, from the corroboration record where there is one…
-  + [ $ev[] | select(.event == "corroboration")
-            | cell + {corroborated: (if ((.eligible_total // 0) > 0)
-                                        or (.verdict == "rejected")
-                                        or (.verdict == "accepted-by-selection")
-                                     then 1 else 0 end),
-                      rejected: (if .verdict == "rejected" then 1 else 0 end)} ]
-    # …and from the verdict event itself where there is not. A rejection is by
-    # construction over a non-empty eligible set (requirement 3t corroborates
-    # nothing else), so it counts in both terms even on an event too old to
-    # carry the total.
-  + [ $ev[] | select(.event == "none-selected"
-                     and (($corr_cycles[(.cycle // "")] // false) | not))
-            | cell + {corroborated: (if ((.eligible_total // 0) > 0)
-                                        or (.td_verdict_rejected == true)
-                                     then 1 else 0 end),
-                      rejected: (if .td_verdict_rejected == true then 1 else 0 end)} ]
-  | map(select(.day != null and .day >= $cut))
-  | group_by([.day, .model])
-  | map({day: .[0].day, model: .[0].model,
-         runs:          total("runs"),
-         retries:       total("retries"),
-         selections:    total("selections"),
-         fallbacks:     total("fallbacks"),
-         none_selected: total("none_selected"),
-         corroborated:  total("corroborated"),
-         rejected:      total("rejected")}
-        | . + {rate: rate})
-  | sort_by([.day, .model])
-  | . as $by_day
-  | ($by_day | group_by(.model)
-     | map({model: .[0].model,
-            runs:          total("runs"),
-            retries:       total("retries"),
-            selections:    total("selections"),
-            fallbacks:     total("fallbacks"),
-            none_selected: total("none_selected"),
-            corroborated:  total("corroborated"),
-            rejected:      total("rejected")}
-           | . + {rate: rate})
-     | sort_by([- .rejected, .model])) as $by_model
-  # Requirement 3x per-band tally (issue #322), rolled up rather than
-  # rendered per verdict: counts, not a rate — a verdict rejected over
-  # `issues` was not "a verdict about issues", it was a verdict about
-  # everything the Script handed over that cycle, so there is no sound
-  # per-band denominator to divide by (the single rate above stays the only
-  # one). `rejected` is how many rejected verdicts named this band at all;
-  # `unaccounted` is the item count behind that, summed across those
-  # verdicts — the two answer "which band" and "how much", respectively.
-  # Same source selection as `rejected` above (corroboration first, the
-  # fallback `none-selected` only where no corroboration event exists for
-  # that cycle), restricted to the same day window, and the same
-  # sibling-`warning` fallback `last_rejection` already uses for a record
-  # logged before the field it needs existed. A rejection with no `bands`
-  # at all — every event from before #322 — lands in an explicit `unknown`
-  # bucket rather than vanishing or being guessed into a real band; its
-  # `unaccounted` is that same events own `unaccounted_total` where it
-  # carries one (a `corroboration` always does), else the count of the
-  # sibling `warning` events `unaccounted` refs — a pre-3v `none-selected`
-  # carries no figure at all, and only the warning of its cycle holds it.
-  | ([ $ev[] | select(.event == "corroboration" and .verdict == "rejected")
-             | select(day_of != null and day_of >= $cut) ]
-     + [ $ev[] | select(.event == "none-selected" and .td_verdict_rejected == true
-                        and (($corr_cycles[(.cycle // "")] // false) | not))
-               | select(day_of != null and day_of >= $cut) ]
+  ($lc[0].records // []) as $lc_records
+  | ($lc_records | map({key: item_key(.repo; .item), value: .}) | from_entries) as $fate_by_key
+
+  # pr_url -> {repo, item}: the re-key `post-merge-revert` needs (see header).
+  | ($ev | map(select((.event == "pr-raised" or .event == "pr-ready")
+                       and ((.pr_url // "") != "")
+                       and ((.repo // "") | tostring) != "" and ((.item // "") | tostring) != ""))
+         | map({key: .pr_url, value: {repo: (.repo | tostring), item: (.item | tostring)}})
+         | from_entries) as $pr_to_item
+
+  # rework, re-keyed then deduped per docs/FLOW-SCHEMA.md, "Do not
+  # double-count" — first-wins-by-ts over {repo, item, class} ({+evidence.by}
+  # for post-merge-revert).
+  | ($ev | map(select(.event == "rework"))
+         | map(if .class == "post-merge-revert" and ($pr_to_item[(.pr_url // "")] != null)
+               then . + $pr_to_item[(.pr_url // "")] else . end)
+         | map(. + {dedup_key:
+             (item_key(.repo; .item) + "|" + (.class // "")
+              + (if .class == "post-merge-revert" then "|" + ((.evidence.by // "") | tostring) else "" end))})
+         | group_by(.dedup_key) | map(sort_by(.ts // "") | first)) as $rework
+  | ($rework | map(select(((.repo // "") | tostring) != "" and ((.item // "") | tostring) != ""))
+             | group_by(item_key(.repo; .item))
+             | map({key: item_key(.[0].repo; .[0].item), value: .})
+             | from_entries) as $rework_by_item
+
+  # attempts/clean: every stage-end for one of the five actors own stage names,
+  # item-carrying or not (see header).
+  | ([ $ev[] | select(.event == "stage-end") | . + {day: day_of} ]
+     | map(select(.day != null and .day >= $cut and actor_of(.stage) != null))) as $stage_ends
+  | ($stage_ends | group_by([.stage, (.model // "unknown")])
+     | map({actor: actor_of(.[0].stage), model: (.[0].model // "unknown"),
+            tier: tier_of(.[0].stage; (.[0].model // "unknown")),
+            attempts: length, clean: (map(select((.kill_reason // "") == "")) | length)})
+    ) as $attempt_rows
+
+  # terminal fate / cost / wall-clock / escapes, over the item-carrying subset
+  # only (see header) — grouped first by [stage, model] (so tier_of still
+  # knows which stage it is), merged into [actor, model, tier] below.
+  | ($stage_ends | map(select(((.repo // "") | tostring) != "" and ((.item // "") | tostring) != ""))) as $joinable
+  | ($joinable | group_by([.stage, (.model // "unknown")])
      | map(
-         . as $r
-         | ([ $ev[] | select(.event == "warning" and (.cycle // "") == ($r.cycle // "")
-                             and ((.unaccounted | type) == "array")) ]
-            | max_by(.ts // "")) as $w
-         | ($r.bands // ($w // {}).bands // null) as $b
-         | if $b == null
-           then [{band: "unknown", rejected: 1,
-                  unaccounted: ($r.unaccounted_total // ((($w // {}).unaccounted // []) | length))}]
-           else ($b | to_entries | map({band: .key, rejected: 1, unaccounted: .value}))
-           end)
-     | flatten
-     | group_by(.band)
-     | map({band: .[0].band,
-            rejected:    (map(.rejected)    | add),
-            unaccounted: (map(.unaccounted) | add)})
-     | sort_by([- .rejected, .band])) as $by_band
-  # The newest rejection, whichever record carries it, with what became of the
-  # cycle that produced it — a rate with no instance is not actionable, and an
-  # instance that does not say whether the fleet recovered is half the story
-  # requirement 3v now has to tell. The refs are capped because 33 of them is a
-  # real, observed case and data.js is a byte budget; the full count rides
-  # alongside so the cap is visible rather than silent.
-  | ([ $ev[] | select(.event == "corroboration" and .verdict == "rejected") ]
-     | max_by(.ts // "")) as $rc
-  | ([ $ev[] | select(.event == "none-selected" and .td_verdict_rejected == true
-                      and (($corr_cycles[(.cycle // "")] // false) | not)) ]
-     | max_by(.ts // "")) as $rn
-  | (if   $rc == null then $rn
-     elif $rn == null then $rc
-     elif ($rn.ts // "") > ($rc.ts // "") then $rn
-     else $rc end) as $rej
-  | ($rej
-     | if . == null then null
-       else . as $r
-       # The sibling `warning` of the same verdict, for a rejection recorded
-       # before `corroboration` events carried the detail themselves.
-       | ([ $ev[] | select(.event == "warning" and (.cycle // "") == ($r.cycle // "")
-                           and ((.unaccounted | type) == "array")) ]
-          | max_by(.ts // "")) as $w
-       | (($r.unaccounted // ($w // {}).unaccounted // [])) as $un
-       | ([ $ev[] | select((.cycle // "") == ($r.cycle // "") and (.ts // "") > ($r.ts // "")) ]) as $after
-       | {ts: ($r.ts // null), node: ($r.node // null), cycle: ($r.cycle // null),
-          attempt: ($r.attempt // null),
-          model: ($r.coordinator_model // $cyc_model[($r.cycle // "")] // "unknown"),
-          reason: ($r.reason // ""),
-          detail: (($w // {}).detail // ""),
-          eligible_total: ($r.eligible_total // ($w // {}).eligible_total // null),
-          unaccounted_total: ($r.unaccounted_total // ($un | length)),
-          unaccounted: ($un | map({repo: (.repo // ""), item: (.item // ""),
-                                   source: (.source // "")}) | .[0:20]),
-          bands: ($r.bands // ($w // {}).bands // null),
-          outcome: (if   ($after | any(.event == "selection" and .selected_by == "script-fallback"))
-                         then "recovered-by-fallback"
-                    elif ($after | any(.event == "selection")) then "recovered-by-retry"
-                    elif ($after | any(.event == "corroboration" and .verdict == "accepted"))
-                         then "accepted-on-retry"
-                    else "stood-down" end)}
-       end) as $last
+         (.[0].stage) as $stage | (.[0].model // "unknown") as $model
+         | (actor_of($stage)) as $actor | (tier_of($stage; $model)) as $tier
+         | (map({key: item_key(.repo; .item), cost: (.cost_usd // 0), dur: (.duration_ms // 0)})
+            | group_by(.key) | map({key: .[0].key, cost: (map(.cost) | add), dur: (map(.dur) | add)})
+           ) as $items
+         | ($items | map(. + {fate: ($fate_by_key[.key].fate // "open")})) as $fated
+         | ($fated | map(select(.fate == "landed"))) as $landed_items
+         | ($landed_items | map(($rework_by_item[.key] // [])
+                                 | map(select(actor_of(.attributed_stage) == $actor)) | length)
+           ) as $landed_rework_counts
+         | ($fated | map(($rework_by_item[.key] // [])
+                          | map(select(.class == "human-change-request" or .class == "post-merge-revert"))
+                          | length)
+           ) as $escape_counts
+         | {actor: $actor, model: $model, tier: $tier,
+            items_examined: ($items | length),
+            landed: ($landed_items | length),
+            landed_unchanged:   ([$landed_rework_counts[] | select(. == 0)] | length),
+            landed_with_rework: ([$landed_rework_counts[] | select(. > 0)]  | length),
+            voided:     ($fated | map(select(.fate == "voided"))     | length),
+            abandoned:  ($fated | map(select(.fate == "abandoned"))  | length),
+            other_fate: ($fated | map(select(.fate | IN("blocked","open","superseded","unaccounted"))) | length),
+            cost_total_usd:     ($landed_items | map(.cost) | add // 0),
+            duration_total_ms:  ($landed_items | map(.dur)  | add // 0),
+            # Items with at least one escape record, not the raw record count:
+            # an item can carry both a human-change-request and a later
+            # post-merge-revert, and counting each separately could push this
+            # rate past 100%, which is not a sensible reading of "how often
+            # did this row escape review."
+            escapes:    ([$escape_counts[] | select(. > 0)] | length),
+            escapes_of: ($fated | length)}
+       )
+    ) as $fate_rows
+
+  # The Co-Ordinator own measure: requirement 3v/3w own corroboration rate
+  # (issue #319), by model, plus whether the items a cycle under that model
+  # picked went on to land (join through `selection`, never through the
+  # Implementer model `selection` also carries — see header).
+  | ($ev | map(select(.event == "stage-end" and .stage == "coordinator" and ((.cycle // "") != "")))
+         | reduce .[] as $s ({}; .[$s.cycle] = ($s.model // null))) as $cyc_model_coord
+  | ($ev | map(select(.event == "corroboration") | .cycle // "")
+         | reduce .[] as $c ({}; .[$c] = true)) as $corr_cycles
+  | (
+      [ $ev[] | select(.event == "corroboration" and day_of != null and day_of >= $cut)
+              | {model: (.coordinator_model // $cyc_model_coord[(.cycle // "")] // "unknown"),
+                 corroborated: (if ((.eligible_total // 0) > 0) or (.verdict == "rejected")
+                                   or (.verdict == "accepted-by-selection") then 1 else 0 end),
+                 rejected: (if .verdict == "rejected" then 1 else 0 end)} ]
+    + [ $ev[] | select(.event == "none-selected" and day_of != null and day_of >= $cut
+                       and (($corr_cycles[(.cycle // "")] // false) | not))
+              | {model: (.coordinator_model // $cyc_model_coord[(.cycle // "")] // "unknown"),
+                 corroborated: (if ((.eligible_total // 0) > 0) or (.td_verdict_rejected == true) then 1 else 0 end),
+                 rejected: (if .td_verdict_rejected == true then 1 else 0 end)} ]
+    ) as $verdict_rows
+  | ($verdict_rows | group_by(.model)
+     | map({model: .[0].model, corroborated: sumby(.corroborated), rejected: sumby(.rejected)}
+           | . + {rate: (if .corroborated > 0 then (.rejected / .corroborated) else null end)})
+    ) as $coord_verdict_by_model
+  | ([ $ev[] | select(.event == "selection" and day_of != null and day_of >= $cut)
+             | select(((.repo // "") | tostring) != "" and ((.item // "") | tostring) != "")
+             | {model: ($cyc_model_coord[(.cycle // "")] // "unknown"), key: item_key(.repo; .item)} ]
+    ) as $sel_rows
+  | ($sel_rows | group_by(.model)
+     | map({model: .[0].model, picks_total: length,
+            picks_landed: (map(select(($fate_by_key[.key].fate // "") == "landed")) | length)})
+    ) as $coord_picks_by_model
+
+  # The Refiner own measure: items it refined (`item-refined` events with
+  # `by == "refiner"` — the Enabler logs the same event for its own unblock-
+  # as-refined act, with no `by`, and is excluded here) that landed, and how
+  # many were bounced back (docs/FLOW-SCHEMA.md, `refinement-bounce-back`).
+  | ($ev | map(select(.event == "stage-end" and .stage == "refiner" and ((.cycle // "") != "")))
+         | reduce .[] as $s ({}; .[$s.cycle] = ($s.model // null))) as $cyc_model_refiner
+  | ([ $ev[] | select(.event == "item-refined" and (.by // "") == "refiner"
+                      and day_of != null and day_of >= $cut)
+             | select(((.repo // "") | tostring) != "" and ((.item // "") | tostring) != "")
+             | {model: ($cyc_model_refiner[(.cycle // "")] // "unknown"), key: item_key(.repo; .item)} ]
+    ) as $refined_rows
+  | ($refined_rows | group_by(.model)
+     | map(
+         (.[0].model) as $model | (map(.key) | unique) as $keys
+         | {model: $model, refined: ($keys | length),
+            landed: ([$keys[] | select(($fate_by_key[.].fate // "") == "landed")] | length),
+            bounced_back: ([$keys[] | select((($rework_by_item[.] // [])
+                                               | map(select(.class == "refinement-bounce-back")) | length) > 0)]
+                            | length)}
+       )
+    ) as $refiner_by_model
+
+  | ($attempt_rows | group_by([.actor, .model, .tier])
+     | map({actor: .[0].actor, model: .[0].model, tier: .[0].tier,
+            attempts: sumby(.attempts), clean: sumby(.clean)})
+    ) as $attempts_grouped
+  | ($fate_rows | group_by([.actor, .model, .tier])
+     | map({actor: .[0].actor, model: .[0].model, tier: .[0].tier,
+            items_examined: sumby(.items_examined),
+            landed: sumby(.landed), landed_unchanged: sumby(.landed_unchanged),
+            landed_with_rework: sumby(.landed_with_rework),
+            voided: sumby(.voided), abandoned: sumby(.abandoned), other_fate: sumby(.other_fate),
+            cost_total_usd: sumby(.cost_total_usd), duration_total_ms: sumby(.duration_total_ms),
+            escapes: sumby(.escapes), escapes_of: sumby(.escapes_of)})
+    ) as $fate_grouped
+  | ($attempts_grouped | map({key: (.actor + "|" + .model + "|" + .tier), value: .}) | from_entries) as $ag
+  | ($fate_grouped     | map({key: (.actor + "|" + .model + "|" + .tier), value: .}) | from_entries) as $fg
+  | (($ag | keys) + ($fg | keys) | unique) as $all_keys
+  | ($all_keys | map(
+       . as $k | ($k | split("|")) as $parts
+       | ($ag[$k] // {attempts: 0, clean: 0}) as $a
+       | ($fg[$k] // {items_examined: 0, landed: 0, landed_unchanged: 0, landed_with_rework: 0,
+                       voided: 0, abandoned: 0, other_fate: 0, cost_total_usd: 0, duration_total_ms: 0,
+                       escapes: 0, escapes_of: 0}) as $f
+       | ($f.landed) as $landed
+       | ($landed + $f.voided + $f.abandoned) as $sample
+       | {actor: $parts[0], model: $parts[1], tier: $parts[2],
+          attempts: $a.attempts, clean: $a.clean,
+          items_examined: $f.items_examined,
+          landed: $landed, landed_unchanged: $f.landed_unchanged, landed_with_rework: $f.landed_with_rework,
+          voided: $f.voided, abandoned: $f.abandoned, other_fate: $f.other_fate,
+          first_pass_yield:        (if $landed > 0 then ($f.landed_unchanged / $landed) else null end),
+          cost_per_landed_usd:     (if $landed > 0 then ($f.cost_total_usd / $landed) else null end),
+          wallclock_per_landed_ms: (if $landed > 0 then ($f.duration_total_ms / $landed) else null end),
+          sample: $sample, status: (if $sample < $min_sample then "insufficient-sample" else "ok" end)}
+         + (
+             if $parts[0] == "reviewer" then
+               {measure: {kind: "reviewer-escape-rate", escapes: $f.escapes, of: $f.escapes_of,
+                 sample: $f.escapes_of,
+                 status: (if $f.escapes_of < $min_sample then "insufficient-sample" else "ok" end),
+                 rate: (if $f.escapes_of > 0 then ($f.escapes / $f.escapes_of) else null end)}}
+             elif $parts[0] == "coordinator" then
+               (($coord_verdict_by_model | map(select(.model == $parts[1])) | first)
+                 // {corroborated: 0, rejected: 0, rate: null}) as $cv
+               | (($coord_picks_by_model | map(select(.model == $parts[1])) | first)
+                   // {picks_total: 0, picks_landed: 0}) as $cp
+               | {measure: {kind: "coordinator-corroboration",
+                   corroborated: $cv.corroborated, rejected: $cv.rejected, rate: $cv.rate,
+                   sample: $cv.corroborated,
+                   status: (if $cv.corroborated < $min_sample then "insufficient-sample" else "ok" end),
+                   picks_total: $cp.picks_total, picks_landed: $cp.picks_landed,
+                   picks_landed_rate: (if $cp.picks_total > 0 then ($cp.picks_landed / $cp.picks_total) else null end)}}
+             elif $parts[0] == "refiner" then
+               (($refiner_by_model | map(select(.model == $parts[1])) | first)
+                 // {refined: 0, landed: 0, bounced_back: 0}) as $rf
+               | {measure: {kind: "refiner-refinement-success",
+                   refined: $rf.refined, landed: $rf.landed, bounced_back: $rf.bounced_back,
+                   sample: $rf.refined,
+                   status: (if $rf.refined < $min_sample then "insufficient-sample" else "ok" end),
+                   rate: (if $rf.refined > 0 then (($rf.refined - $rf.bounced_back) / $rf.refined) else null end)}}
+             elif $parts[0] == "enabler" then
+               {measure: {kind: "enabler-unblock-success", examined: $f.items_examined, landed: $f.landed,
+                 sample: $f.items_examined,
+                 status: (if $f.items_examined < $min_sample then "insufficient-sample" else "ok" end),
+                 rate: (if $f.items_examined > 0 then ($f.landed / $f.items_examined) else null end)}}
+             else {} end
+           )
+     )
+    ) as $rows
+  | (["coordinator", "implementer", "reviewer", "enabler", "refiner"] | map(
+       . as $a | {actor: $a,
+         rows: ([$rows[] | select(.actor == $a) | del(.actor)] | sort_by([.model, .tier]))}
+     )) as $actors_out
   | ([ $ev[] | .ts // empty ]) as $tss
-  | {window_from: ($tss | min), window_to: ($tss | max)}
-    + ($by_day
-       | {runs:          total("runs"),
-          retries:       total("retries"),
-          selections:    total("selections"),
-          fallbacks:     total("fallbacks"),
-          none_selected: total("none_selected"),
-          corroborated:  total("corroborated"),
-          rejected:      total("rejected")})
-  | . + {rate: rate, by_day: $by_day, by_model: $by_model, by_band: $by_band, last_rejection: $last}
-' "$events_file" > "$coord_verdicts_file" 2>/dev/null
-if ! jq -e 'type == "object"' "$coord_verdicts_file" >/dev/null 2>&1; then
-  printf '%s' '{"window_from":null,"window_to":null,"runs":0,"retries":0,"selections":0,"fallbacks":0,"none_selected":0,"corroborated":0,"rejected":0,"rate":null,"by_day":[],"by_model":[],"by_band":[],"last_rejection":null}' \
-    > "$coord_verdicts_file"
+  | {window_from: ($tss | min), window_to: ($tss | max), min_sample: $min_sample, actors: $actors_out}
+' "$events_file" > "$scorecards_file" 2>/dev/null
+if ! jq -e 'type == "object"' "$scorecards_file" >/dev/null 2>&1; then
+  printf '%s' '{"window_from":null,"window_to":null,"min_sample":5,"actors":[
+    {"actor":"coordinator","rows":[]},{"actor":"implementer","rows":[]},{"actor":"reviewer","rows":[]},
+    {"actor":"enabler","rows":[]},{"actor":"refiner","rows":[]}]}' \
+    > "$scorecards_file"
 fi
 # Merged into `counts` rather than shipped as a key of its own: it is a
 # roll-up over the same window as everything else there, and the page reads
 # one object for its metric cards.
-counts_merged="$(jq -c --slurpfile v "$coord_verdicts_file" \
-  '. + {coordinator_verdicts: $v[0]}' <<<"$counts_json" 2>/dev/null)"
-[[ -n "$counts_merged" ]] && counts_json="$counts_merged"
-
-# --- Implementer/Reviewer model selection (issue #529) -----------------------
-# Which model each of these two stages was *asked* to run, as a ratio — the
-# dashboard's two "model used" pies. The unit is the stage-end event, not the
-# cycle: a cycle logs at most one Implementer and one Reviewer stage-end, so
-# double-counting is not a risk here the way it is for the Co-Ordinator block
-# above (which can see two verdicts from one cycle's retry).
-#
-# `.model` is `lib/metering.sh`'s own field — the id passed to the `claude`
-# invocation, not read back out of the transcript envelope — deliberately not
-# `counts.cost_rows[]`/`modelUsage`: those are spend attribution, and a single
-# Implementer stage running on Sonnet still emits Haiku `modelUsage` rows for
-# the subagents its own invocation spawns, so a ratio built from them would
-# report Haiku for most Implementer runs, which is the #536 failure this issue
-# was explicitly asked not to repeat. Every stage-end for these two stages
-# counts once, including a failed run (`exit_code != 0`) or a retry: the
-# question is which model was dispatched, and a failed run still consumed
-# one. A stage-end with no readable model falls back to `unknown`, exactly as
-# `by_model` above does, rather than being dropped.
-#
-# Shaped like `coordinator_verdicts` just above: `by_stage` is the whole
-# retained window's totals for the client's "Lifetime" default, `rows` is
-# per-day so the page can re-aggregate over whatever narrower window its
-# shared time-frame selector picks, and `window_from`/`window_to` are the span
-# of the *whole* retained log (not just these two stages' own events) — the
-# same "figure here is 'over the log we still have'" reasoning
-# `coordinator_verdicts` already documents, since `log.jsonl` is rotated at
-# `log_retained_bytes` independently of `COST_SCAN_DAYS`, so these pies can
-# span less history than the cost charts beside them.
-stage_models_file="$work_tmp/stage-models.json"
-jq -c --arg cut "$day_cut" '
-  . as $ev
-  | def day_of: ((.ts // "" | tostring)
-                 | if test("^[0-9]{4}-[0-9]{2}-[0-9]{2}")
-                   then (.[0:4] + .[5:7] + .[8:10]) else null end);
-    ([ $ev[] | select(.event == "stage-end" and (.stage == "implementer" or .stage == "reviewer"))
-             | {day: day_of, stage: .stage, model: (.model // "unknown")} ]
-     | map(select(.day != null and .day >= $cut))) as $recs
-  | ($recs | group_by([.stage, .model])
-           | map({stage: .[0].stage, model: .[0].model, n: length})
-           | sort_by([.stage, - .n, .model])) as $by_stage
-  | ($recs | group_by([.day, .stage, .model])
-           | map({day: .[0].day, stage: .[0].stage, model: .[0].model, n: length})
-           | sort_by([.day, .stage, .model])) as $rows
-  | ([ $ev[] | .ts // empty ]) as $tss
-  | {window_from: ($tss | min), window_to: ($tss | max), by_stage: $by_stage, rows: $rows}
-' "$events_file" > "$stage_models_file" 2>/dev/null
-if ! jq -e 'type == "object"' "$stage_models_file" >/dev/null 2>&1; then
-  printf '%s' '{"window_from":null,"window_to":null,"by_stage":[],"rows":[]}' \
-    > "$stage_models_file"
-fi
-counts_merged="$(jq -c --slurpfile v "$stage_models_file" \
-  '. + {stage_models: $v[0]}' <<<"$counts_json" 2>/dev/null)"
+counts_merged="$(jq -c --slurpfile v "$scorecards_file" \
+  '. + {actor_scorecards: $v[0]}' <<<"$counts_json" 2>/dev/null)"
 [[ -n "$counts_merged" ]] && counts_json="$counts_merged"
 
 # --- Blocked and void items (requirements 34, 34c, 34h) ----------------------
