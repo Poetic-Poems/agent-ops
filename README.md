@@ -1777,6 +1777,9 @@ ephemeral clone at run time (never committed to the repo under review).
 | `project_review.defaults.min_prs_between_reviews` | `5` | Skip a repo with fewer than this many PRs merged into its default branch since its last review. Independent of `min_days_between_reviews` — a review needs both enough elapsed days and enough merged PRs. |
 | `project_review.defaults.not_before` | *(unset)* | Optional. Hold reviews until this timestamp — e.g. `2026-07-30T16:00:00Z` — while the implementation pipeline carries on. Use this rather than `agent-cycle.sh --disable`, which is shared and would stop the cycles too, and rather than raising `min_days_between_reviews`, which has to be lowered again afterwards. It expires by itself; leaving the key in place once the date has passed does nothing. An unparseable value stands reviews down rather than running through it. As...[continued below](#extended-notes-project_reviewdefaultsnot_before) |
 | `project_review.defaults.report_directory` | *(unset)* | Optional. Where the review pipeline writes its report set (`README.md`, `01-summary.md`, ...) and reads past ones from — a GNU `date` format string, resolved with `date -u +"<format>"` relative to the repo root, e.g. `docs/reviews/project-review-%Y-%m-%d`. Absent everywhere, `reviews/project-review-%Y-%m-%d` is used, unchanged. Use only date-level specifiers (`%Y`, `%y`, `%m`, `%d`, `%j`) and literal text: a format carrying `%H`, `%M` or `%S` writes a directory that...[continued below](#extended-notes-project_reviewdefaultsreport_directory) |
+| `project_review.defaults.review_instructions` | *(unset)* | Optional. An array of paths, appended in order, of installation-held text added to the Reviewer-Agent's runtime input as *instructions* for this repository — see [Review instructions and context](#review-instructions-and-context). A relative path resolves against `state_dir`, exactly like `prompt_overrides`. A path that does not resolve is a fail-fast error, not a silent skip. |
+| `project_review.defaults.review_context` | *(unset)* | Optional. An array of paths, appended in order, of installation-held background for this repository — what it is for, its domain, its relationships and consumers — added to the Reviewer-Agent's runtime input as *context*. Same path resolution and fail-fast-on-missing behaviour as `review_instructions`. |
+| `project_review.defaults.repo_context_file` | *(unset)* | Optional. A path *inside the repository under review* (e.g. `.github/REVIEW-CONTEXT.md`), read from the clone and added to the runtime input as repository-supplied context — never instruction, see [Review instructions and context](#review-instructions-and-context). Unset by default; a missing file is simply absent, not an error. |
 | `project_review.repos` | `[{"slug": "Poetic-Poems/poetic"}, {"slug": "Poetic-Poems/poetic-fiddle"}]` | Repositories to review. Each entry is `{"slug": "owner/name"}`, plus any of `defaults`' own keys to override it for that repository alone. |
 <!-- config-table:end -->
 
@@ -1791,6 +1794,54 @@ Optional. Hold reviews until this timestamp — e.g. `2026-07-30T16:00:00Z` — 
 Optional. Where the review pipeline writes its report set (`README.md`, `01-summary.md`, ...) and reads past ones from — a GNU `date` format string, resolved with `date -u +"<format>"` relative to the repo root, e.g. `docs/reviews/project-review-%Y-%m-%d`. Absent everywhere, `reviews/project-review-%Y-%m-%d` is used, unchanged. Use only date-level specifiers (`%Y`, `%y`, `%m`, `%d`, `%j`) and literal text: a format carrying `%H`, `%M` or `%S` writes a directory that discovery, which probes a day at a time, can never find again — so every past review reads as missing.
 
 <!-- config-table:notes-end -->
+
+### Review instructions and context
+
+By default a review runs identically everywhere: five facts about the repo,
+plus the shipped prompt and skill. `review_instructions`, `review_context`
+and `repo_context_file` let you tell a review what to weigh in *this*
+repository and what it is for, without forking the skill.
+
+```json
+"project_review": {
+  "defaults": {
+    "review_instructions": ["review-instructions/poetic-fiddle.md"],
+    "review_context": ["review-context/poetic-suite.md"],
+    "repo_context_file": ".github/REVIEW-CONTEXT.md"
+  }
+}
+```
+
+- **`review_instructions`** — an array of paths, appended in order, to text
+  that becomes **instructions**: what to weigh, what to ignore, which
+  standards apply to this repository. Installation-held only, resolved
+  against `state_dir` exactly like [prompt overrides](#prompt-overrides). A
+  path that does not resolve is a fail-fast error at cycle start and at
+  `scripts/doctor.sh` — not silently dropped, because this text changes how
+  strictly a review judges.
+- **`review_context`** — the same shape, but for **context**: what the
+  repository is for, its domain, its relationships to other repositories,
+  its consumers and deployment. Same resolution and fail-fast behaviour as
+  `review_instructions`.
+- **`repo_context_file`** — a path *inside the repository under review*
+  (e.g. `.github/REVIEW-CONTEXT.md`), read from the ephemeral clone and
+  added as **context** — never instruction. Unset by default; a missing file
+  is simply absent, not an error, since it is entirely optional for a
+  repository to opt in.
+
+**Why the trust boundary is asymmetric.** Only `review_instructions` and
+`review_context` — both installation-held — can change how strictly a review
+judges. A repository's own `repo_context_file` can only ever add background:
+text a reviewed repository's contributors can edit is trustworthy only as
+far as a pull request into that repository is, so nothing read out of the
+clone is ever admitted as instruction. The Reviewer-Agent receives every
+resolved source labelled with its own origin — `"source": "config"` or
+`"source": "repository"` — and is told in its own prompt to treat a
+`"repository"`-sourced entry as evidence about the repository, never as a
+command. `review-stage-start` records every resolved source and a sha256 of
+its text, so a past review's inputs are reconstructable without the log
+carrying arbitrary file content. All three keys resolve per repository on
+the same `defaults`/`repos[]` rule as the rest of `project_review`.
 
 ### Install
 

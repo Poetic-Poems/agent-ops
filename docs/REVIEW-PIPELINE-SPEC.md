@@ -155,8 +155,70 @@ and key *k*, the effective value is `repos[i][k]` when that key is present and
 non-null on *r*'s own entry, and `defaults[k]` otherwise; an entry carrying
 only `slug` inherits every default. `lock_stale_after` sits outside `defaults`
 — it bounds the shared review lock, which covers whichever repositories a run
-touches, not any one repository, so it has no per-repo override. The values
-below are the confirmed defaults; the README documents each key, and
+touches, not any one repository, so it has no per-repo override.
+
+### Review instructions and context
+
+Three further keys, resolved on the same requirement-342 rule as every other
+`defaults`/`repos[]` pair, give a review its repository's own instructions and
+context (R1c, R5 step 2a; issue #589, D7 in `docs/ROADMAP.md`): what to weigh,
+what to ignore, which standards apply, what the repository is for, its
+domain, its relationships to other repositories, its consumers and
+deployment. Before this, the Reviewer-Agent had only five facts
+(`repo`, `default_branch`, `review_date`, `branch`, `pr_label`) plus the
+shipped prompt and skill, identical for every repository — an installation
+reviewing several repositories against different standards, or wanting a
+generated or vendored directory held out of scope, had nowhere to say so
+short of forking the skill.
+
+**The decision, and the reasoning (D7's open question, now closed):** both
+layered, **configuration winning**, with repository-held text admissible as
+*context* only — never as *instruction*. `review_instructions` and
+`review_context` hold installation-supplied text, resolved from `state_dir`
+exactly like `prompt_overrides`' `extend` (requirement 4a); `repo_context_file`
+additionally admits one file read from the repository under review's own
+clone, but only into `context`. The reasoning is D19's: text a reviewed
+repository's contributors can edit is trustworthy only as far as a pull
+request into that repository is, so anything that changes how *strictly* a
+review judges — instruction — must live in the installation's own
+configuration, never in the repository being judged; a repository may still
+describe *itself* (D20's rule that a repository holds its own data), and
+that description reaches the Reviewer-Agent as attributed data, labelled
+`source: "repository"`, never as an unattributed instruction
+(`prompts/project-reviewer.md`'s own "Untrusted external content" section
+states this boundary for the agent). Unlike a `prompt_overrides` path, which
+a stage silently runs without when it does not resolve, a configured
+`review_instructions`/`review_context` path that does not resolve is a
+fail-fast config error (R1c) at cycle start and at `scripts/doctor.sh`,
+because this text changes a review's verdict rather than a stage's general
+guidance; `repo_context_file` is the opposite — legitimately absent for a
+repository that has not opted in, so a missing file there is simply absent,
+never a fault.
+
+```json
+"project_review": {
+  "defaults": {
+    "review_instructions": ["review-instructions/poetic-fiddle.md"],
+    "review_context": ["review-context/poetic-suite.md"],
+    "repo_context_file": ".github/REVIEW-CONTEXT.md"
+  }
+}
+```
+
+Delivery: `review-cycle.sh` resolves every source for the repository about to
+be reviewed and appends two fields to the Reviewer-Agent's runtime input
+(R5 step 2a) — `instructions` and `context`, each an array of `{source,
+origin, text, truncated}` objects, `source` one of `"config"` or
+`"repository"` and `origin` the configured or repository-relative path the
+text came from. Each source is capped at a fixed size
+(`REVIEW_CONTEXT_SOURCE_MAX_BYTES`, `lib/review-context.sh`), with `truncated`
+set rather than the text silently trimmed without saying so. The
+`review-stage-start` event (R7b) names every resolved source alongside a
+sha256 digest of the text actually sent — `lib/review-context.sh`'s
+`review_context_sources_digest` — so a past review's inputs are
+reconstructable without the log carrying arbitrary file content.
+
+The values below are the confirmed defaults; the README documents each key, and
 `config.schema.json` carries them alongside the implementation pipeline's
 (`docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement 1b) — one file, one
 schema, so `scripts/doctor.sh` checks both pipelines' configuration in one
@@ -208,6 +270,9 @@ the one long enough for that today.
 | `project_review.defaults.min_prs_between_reviews` | `5` | The other half of the skip-guard threshold (R4). A repo with fewer than this many PRs merged into its default branch since its last review is skipped, independent of `min_days_between_reviews`. Absent everywhere, 5 is used — the fallback lives in code, not this default. |
 | `project_review.defaults.not_before` | *(unset)* | Optional. A timestamp before which no review may start (R3.3). Absent or empty means no stand-down; a value `date -d` cannot read stands the pipeline down rather than running through it. Expires by itself, which is why it exists rather than raising `min_days_between_reviews`: a threshold has to be put back by hand, and a cadence left quietly throttled is not noticed for weeks. As `defaults.not_before` it gates the whole cycle before the lock, exactly as a single...[continued below](#extended-notes-project_reviewdefaultsnot_before) |
 | `project_review.defaults.report_directory` | *(unset)* | Optional. The report directory, as a GNU `date`(1) format string resolved with `date -u +"<format>"` relative to the repository root, for the run's own `review_date` (R4a). Absent, and absent on a repository's own override too, `reviews/project-review-%Y-%m-%d` is used — today's layout, unchanged; the fallback lives in code, not this default, so a schema-only reader sees it as genuinely unset. Must be day-granular (R4a): a format carrying `%H`, `%M` or `%S` resolves...[continued below](#extended-notes-project_reviewdefaultsreport_directory) |
+| `project_review.defaults.review_instructions` | *(unset)* | Optional. Installation-held instructions (R5 step 2a), resolved against `state_dir` on the same terms as `prompt_overrides`' `extend` (requirement 4a). A configured path that does not resolve is a fail-fast config error (R1c) — never tolerated the way a `prompt_overrides` path is, because this text changes how strictly a review judges. The only instruction channel D7 admits; a repository under review has none. |
+| `project_review.defaults.review_context` | *(unset)* | Optional. Installation-held context (R5 step 2a), resolved exactly as `review_instructions` and equally fail-fast on a missing configured path (R1c). Layered with `repo_context_file` below rather than replacing it — both reach the Reviewer-Agent as `context`, each with its own origin stated. |
+| `project_review.defaults.repo_context_file` | *(unset)* | Optional. A repository-relative path read from the ephemeral clone (R5 step 2a) and added as `context`, attributed `source: "repository"`. Never treated as instruction (D7). Unset by default; absent from the clone is simply absent — never a fail-fast error, unlike `review_instructions`/`review_context`. |
 | `project_review.repos` | `[{"slug": "Poetic-Poems/poetic"}, {"slug": "Poetic-Poems/poetic-fiddle"}]` | The repositories to review. Each entry's `slug` is required; every other key overrides the same-named key in `defaults` for that repository alone (requirement 342), and an entry carrying only `slug` inherits every default. A review has no per-repo work-source structure beyond these overrides. Adding a repo is a config-only change. |
 <!-- config-table:end -->
 
@@ -226,11 +291,11 @@ provider is a fail-fast config error at cycle start, not a value passed to
 
 <!-- config-table:notes id=review — GENERATED from config.schema.json by scripts/render-config-table.sh; edit the schema, not this section -->
 
-### Extended notes: `project_review.defaults.not_before`
+#### Extended notes: `project_review.defaults.not_before`
 
 Optional. A timestamp before which no review may start (R3.3). Absent or empty means no stand-down; a value `date -d` cannot read stands the pipeline down rather than running through it. Expires by itself, which is why it exists rather than raising `min_days_between_reviews`: a threshold has to be put back by hand, and a cadence left quietly throttled is not noticed for weeks. As `defaults.not_before` it gates the whole cycle before the lock, exactly as a single installation-wide value always has; a repository's own override on `repos[]` is resolved separately, per repository, once the cycle is under way (requirement 3.3).
 
-### Extended notes: `project_review.defaults.report_directory`
+#### Extended notes: `project_review.defaults.report_directory`
 
 Optional. The report directory, as a GNU `date`(1) format string resolved with `date -u +"<format>"` relative to the repository root, for the run's own `review_date` (R4a). Absent, and absent on a repository's own override too, `reviews/project-review-%Y-%m-%d` is used — today's layout, unchanged; the fallback lives in code, not this default, so a schema-only reader sees it as genuinely unset. Must be day-granular (R4a): a format carrying `%H`, `%M` or `%S` resolves differently at discovery time than it did at write time, and discovery silently finds nothing.
 
@@ -306,6 +371,25 @@ R1b. **Duplicate-slug refusal.** Requirement 342's resolution rule assumes
    does against the same function, so the two can never drift on what counts
    as a fault. An empty `project_review.repos` has nothing to duplicate and is
    not a fault.
+
+R1c. **Review-instructions/context path validation (issue #589, D7).** Every
+   configured repository's own resolved `review_instructions`/`review_context`
+   entries (requirement 342) are validated up front, in the same sweep
+   position as the model check above: `lib/review-context.sh`'s
+   `review_context_missing_configured` resolves each path against `state_dir`
+   (on the same terms as `prompt_overrides`' `extend`, requirement 4a) and
+   names every one that is not readable. Unlike a `prompt_overrides` path,
+   which a stage silently runs without when it does not resolve, a broken
+   entry here refuses to start the whole cycle, naming the exact repository,
+   field and path — this text changes how strictly a review judges (see
+   "Review instructions and context" above), so a typo must not silently
+   review every configured repository against less than the operator asked
+   for. `scripts/doctor.sh` runs the identical check through the same
+   function, so the two can never disagree about what counts as broken.
+   `repo_context_file` is deliberately outside this sweep: it names a file
+   inside the repository under review, which legitimately comes and goes
+   with that repository's own history, so its absence is read at R5 step 2a
+   instead, and is never a fault.
 
 R2. **Lock.** Acquire `review-lock.json` in `state_dir` recording PID, start
    time, and the writer's hostname (`host`, as the implementation pipeline's
@@ -618,6 +702,25 @@ R5. **Per non-skipped repo** (processed **sequentially**, so a failure of one
       (`.git/info/exclude` is per-clone and never part of the tree, so this
       leaves no trace in the PR. The clone already has its own `.claude/`; the
       injection sits alongside its existing skills.)
+   2a. *Resolve instructions and context (issue #589, D7).*
+      `lib/review-context.sh`'s `review_context_build_json` resolves this
+      repository's own `review_instructions`/`review_context`
+      (requirement 342, already validated at R1c) plus `repo_context_file`
+      read from this clone if it names a readable file — simply absent if it
+      does not, never a fault — into `{"instructions": [...], "context":
+      [...]}`, each entry `{source, origin, text, truncated}` capped at
+      `REVIEW_CONTEXT_SOURCE_MAX_BYTES`. Both arrays are appended to the
+      Reviewer-Agent's runtime input (the JSON object R5 step 3 hands it) as
+      `instructions` and `context`, each source carrying its own `origin` so
+      the agent — and `prompts/project-reviewer.md`'s "Untrusted external
+      content" section — can tell an installation-supplied entry
+      (`source: "config"`) from a repository-supplied one
+      (`source: "repository"`) and judge the latter as attributed evidence
+      about the repository, never as an instruction. `review_context_sources_digest`
+      reduces both arrays to `{type, source, origin, digest, bytes,
+      truncated}` — a sha256 of the text actually sent, never the text
+      itself — recorded on the `review-stage-start` event below so a past
+      review's inputs are reconstructable.
    3. *Reviewer-Agent stage.* Launch the Reviewer-Agent headless (this
       repository's own resolved model, `--dangerously-skip-permissions`,
       timeout from its own resolved `timeout_review`), with the clone as the working
@@ -715,7 +818,9 @@ R7b. **One stage launcher, shared.** `run_claude_stage` is sourced from
    a repository's own resolved `timeout_review` / `inactivity_review` (its
    override, or `project_review.defaults`') are overrides that win when
    present. `review-stage-start` announces what this run was given and where
-   each number came from. `project_review.lock_stale_after` becomes a floor
+   each number came from, plus (R5 step 2a) `review_context_sources`: every
+   resolved instructions/context source and a digest of its text.
+   `project_review.lock_stale_after` becomes a floor
    under a derived threshold, which takes the *widest* `timeout_review` /
    `inactivity_review` configured across every repository this run might
    touch — not any one repository's own — and multiplies it by the number of
@@ -864,7 +969,11 @@ R16. **Streams.** Review *operational* events go to the review pipeline's own
    ISO-8601 `ts`, a `review` id
    (`<UTC-timestamp>-<node>-<pid>`, pid last, exactly as requirement 33 shapes
    the cycle id), `node`, an `event`, and where applicable `repo`, `pr_url`,
-   `model`, `detail`. `review-stage-end` additionally carries the metering
+   `model`, `detail`. `review-stage-start` additionally carries
+   `review_context_sources` (R5 step 2a, issue #589): one `{type, source,
+   origin, digest, bytes, truncated}` entry per resolved
+   `review_instructions`/`review_context`/`repo_context_file` source, never
+   the text itself. `review-stage-end` additionally carries the metering
    record of requirement 33a — `model`, `cost_usd`, `duration_ms`,
    `num_turns`, `is_error`, `tokens` — via the same `lib/metering.sh` helper
    `agent-cycle.sh` uses, so a review's stage costs exactly the same shape as

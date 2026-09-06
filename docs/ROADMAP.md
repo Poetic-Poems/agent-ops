@@ -361,36 +361,31 @@ Poetic-Poems, with no pipeline code in it.
       so a per-repo selection prompt needs that invocation split first; the
       Implementer and Reviewer stages already run against a single known repo
       and could take a per-repo override without it. *[fleet]*
-- [ ] Give a review its repository's own instructions and context (D7). A
-      Reviewer-Agent is launched today with five facts — `repo`,
+- [x] Give a review its repository's own instructions and context (D7,
+      issue #589). A Reviewer-Agent used to launch with five facts — `repo`,
       `default_branch`, `review_date`, `branch`, `pr_label` — plus the
       shipped `prompts/project-reviewer.md` and the injected `project-review`
-      skill, identical for every repository; everything else it knows it has
-      to infer from the clone. `prompt_overrides` (requirement 4a) does not
-      help: its enumeration covers the implementation pipeline's five stages,
-      and `review-cycle.sh` never reads it, so the review pipeline has no
-      override facility at all — per-installation or per-repository. An
-      installation that wants one repository reviewed against a standard
-      another does not follow, a deliberate convention left alone rather than
-      re-reported at every review, or a generated or vendored directory held
-      out of scope, has nowhere to say so short of forking the skill. Build
-      the facility: per-repository **instructions** (how to review this
-      repository — what to weigh, what to ignore, which standards apply) and
-      per-repository **context** (what it is for, its domain, its
-      relationships to other repositories, its consumers and deployment),
-      resolved by the Script and appended to the Reviewer-Agent's runtime
-      input, layered installation-wide → per-repository on the same
-      resolution rule as the rest of `project_review` (requirement 342), and
-      recorded in the run's record so a review's inputs are reconstructable.
-      Where the text lives is an open question below, and one caution shapes
-      it: anything read out of the repository under review is content that
-      repository's contributors can edit, so it is trustworthy only as far as
-      a pull request into that repository is — the class of concern D19
-      records about rendered pages — which argues for the installation's own
-      configuration holding whatever changes how strictly a review judges.
-      This is the review pipeline's counterpart to the per-repo prompt-override
-      item above; if one mechanism will serve both, they should land on it.
-      *[fleet]*
+      skill, identical for every repository. Two further keys,
+      `project_review.defaults`/`repos[]`' `review_instructions` and
+      `review_context`, hold installation-supplied text (how to review this
+      repository, and what it is for), resolved on the same requirement-342
+      rule as the rest of `project_review` and appended to the
+      Reviewer-Agent's runtime input as `instructions`/`context`, each entry
+      naming its own origin; `repo_context_file` additionally admits one file
+      read from the repository under review's own clone, but only into
+      `context`. **The trust boundary is decided, not open**: configuration
+      wins and layers with repository-held text, which is admissible as
+      context only, never as instruction — text a reviewed repository's
+      contributors can edit is trustworthy only as far as a pull request
+      into that repository is (D19's own reasoning), so anything that
+      changes how strictly a review judges lives in the installation's
+      configuration alone. `review-stage-start` records every resolved
+      source and a digest of its text, so a review's inputs are
+      reconstructable (`docs/REVIEW-PIPELINE-SPEC.md` R1c, R5 step 2a).
+      This is the review pipeline's counterpart to the per-repo
+      prompt-override item above; the two remain separate mechanisms — the
+      per-repo prompt-override item is still open and may yet reuse this
+      one's resolver. *[fleet]*
 - [x] Config schema with validation and a `doctor` command that checks an
       installation end to end — the skeleton: `config.schema.json` (every key,
       its type, its constraints, and the value the code falls back to),
@@ -1102,7 +1097,6 @@ Parked deliberately, each with a decide-by gate:
 |---|---|
 | Which capabilities sit in the paid tier (D26) — the analytics surface (D21–D23) and the enterprise track (SSO, RBAC, audit trails) are the working hypothesis — and whether the tier boundary is the same on the hosted and self-hosted paths | Phase 2, with the pricing hypothesis; settled with design partners in Phase 3 |
 | Entitlement mechanism for a self-hosted installation (D26) — a signed offline key, a periodic check against a licensing endpoint, or both — priced under D14 and against the air-gapped installations D3's mid-size segment may include | Phase 2, with the control-plane skeleton |
-| Where a repository's review instructions and context live (D7) — a block in the installation's versioned configuration (D16), a file in the repository under review (D20's rule that a repository holds its own data), or both layered with configuration winning; and how far text taken from the repository may be trusted as instruction rather than merely read as evidence | Phase 1, with the item that builds the facility |
 | Control-plane language (Go and TypeScript are the front-runners) | First control-plane commit, Phase 2 |
 | Execution substrate for non-Claude providers — abstraction over agentic CLIs, a provider-neutral runtime, or an API gateway | Interface fixed with the control-plane skeleton, Phase 2; first non-Claude provider lands in Phase 3 |
 | State store beyond git state-sync | Interface fixed in Phase 2; replacement whenever scale or measured resource cost (D14) demands |

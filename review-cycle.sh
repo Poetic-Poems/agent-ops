@@ -64,6 +64,8 @@ SKILL_SRC="$SCRIPT_DIR/.claude/skills/project-review"
 . "$SCRIPT_DIR/lib/model-id.sh"
 # shellcheck source=lib/config-schema.sh
 . "$SCRIPT_DIR/lib/config-schema.sh"
+# shellcheck source=lib/review-context.sh
+. "$SCRIPT_DIR/lib/review-context.sh"
 # shellcheck source=lib/metering.sh
 . "$SCRIPT_DIR/lib/metering.sh"
 # shellcheck source=lib/stage-run.sh
@@ -203,6 +205,26 @@ while IFS=$'\t' read -r configured_model_key configured_model; do
   [[ -n "$configured_model" ]] || continue
   resolve_model_id "$configured_model_key" "$configured_model" >/dev/null
 done < <(jq -r '[.[] | [.model_key, .model]] | unique | .[] | @tsv' <<<"$project_review_repos_json")
+# Every configured review_instructions/review_context path is validated up
+# front too, at the same fail-fast position and for the same reason as the
+# model sweep above (R1c, issue #589/D7): unlike a `prompt_overrides` path,
+# which a stage silently runs without, this text changes how strictly a
+# review judges, so a typo here must stop the cycle rather than quietly
+# review every configured repository against less than the operator asked
+# for. `scripts/doctor.sh` runs the identical check, through the same
+# lib/review-context.sh function, so the two can never disagree about what
+# counts as broken. `repo_context_file` is deliberately absent from this
+# sweep: it names a file inside the repository under review, which legitimately
+# comes and goes with that repository's own history (D7).
+missing_review_context_paths="$(review_context_missing_configured "$state_dir" "$project_review_repos_json")"
+if [[ -n "$missing_review_context_paths" ]]; then
+  echo "review-cycle: configured review instructions/context paths do not resolve to a readable file — refusing to start:" >&2
+  while IFS=$'\t' read -r mrc_slug mrc_field mrc_configured mrc_resolved; do
+    [[ -n "$mrc_slug" ]] || continue
+    echo "review-cycle:   $mrc_slug: $mrc_field \"$mrc_configured\" → $mrc_resolved" >&2
+  done <<<"$missing_review_context_paths"
+  exit 1
+fi
 # A stand-down with a date on it (R3.3), read from project_review.defaults
 # directly rather than from project_review_repos_json above: this is the
 # installation-wide gate, checked once before the lock is even taken, exactly
@@ -1015,10 +1037,23 @@ review_one() {
   cp -r "$SKILL_SRC" "$clone_dir/.claude/skills/project-review"
   printf '/.claude/skills/project-review/\n' >> "$clone_dir/.git/info/exclude"
 
+  # Per-repository instructions and context (issue #589, D7): every
+  # configured review_instructions/review_context path was already validated
+  # readable before the lock (R1c) — this is a straight read, not a fresh
+  # check — plus repo_context_file, read from this clone if it resolves,
+  # simply absent if it does not (never a fault, unlike the two configured
+  # keys). review_context_sources digests it for the event below without
+  # copying the text itself into the log.
+  local review_context_json review_context_sources
+  review_context_json="$(review_context_build_json "$state_dir" "$clone_dir" "$entry")"
+  review_context_sources="$(review_context_sources_digest "$review_context_json")"
+
   local reviewer_input
   reviewer_input="$(jq -nc --arg repo "$slug" --arg db "$default_branch" --arg date "$review_date" \
     --arg branch "$branch" --arg label "$pr_label" --arg report_dir "$report_dir" \
-    '{repo: $repo, default_branch: $db, review_date: $date, branch: $branch, pr_label: $label, report_dir: $report_dir}')"
+    --argjson ctx "$review_context_json" \
+    '{repo: $repo, default_branch: $db, review_date: $date, branch: $branch, pr_label: $label, report_dir: $report_dir}
+     + {instructions: $ctx.instructions, context: $ctx.context}')"
   local reviewer_prompt
   reviewer_prompt="$(cat "$PROMPTS_DIR/project-reviewer.md")
 
@@ -1045,13 +1080,18 @@ $(jq . <<<"$reviewer_input")
   [[ "$review_inactivity_min" =~ ^[0-9]+$ ]] \
     || review_inactivity_min="$(jq -nr --argjson p "$STAGE_BUDGET_PRIORS" '$p["project-reviewer"].inactivity')"
   # Announced on the event, not merely applied: a self-tuning number that
-  # cannot be traced is a mystery number (requirement 4f).
+  # cannot be traced is a mystery number (requirement 4f). `review_context_sources`
+  # (issue #589, D7) names every resolved instructions/context source and a
+  # digest of its text, so this run's inputs are reconstructable without
+  # copying the text itself into the log — the same discipline as `backstop_min`
+  # /`inactivity_min` just above.
   log_event "review-stage-start" "$(jq -nc --arg r "$slug" --arg m "$model" \
     --argjson b "$review_budget" \
     --argjson bs "$review_backstop_min" --argjson is "$review_inactivity_min" \
+    --argjson rcs "$review_context_sources" \
     '{repo: $r, model: $m}
      + (if ($b | type) == "object" then $b else {} end)
-     + {backstop_min: $bs, inactivity_min: $is}')"
+     + {backstop_min: $bs, inactivity_min: $is, review_context_sources: $rcs}')"
   if run_claude_stage reviewer "$(( review_backstop_min * 60 ))" "$model" "$reviewer_prompt" "$out_file" "$clone_dir" "$(( review_inactivity_min * 60 ))"; then
     rc=0
   else
