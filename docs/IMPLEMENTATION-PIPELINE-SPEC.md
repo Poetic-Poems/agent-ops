@@ -1470,24 +1470,36 @@ implements.
     `"required"` never selects an unrefined item from that source, so its
     `context`/`acceptance` can only ever have come from the Refiner or the
     Enabler — both held to the floor above — never from `coordinator_model`
-    composing one itself. `issues` and `tech-debt` are the two sources whose
-    items can otherwise carry a specification `coordinator_model` composed
-    from ambiguous material (an issue thread's current state, a tech-debt
-    row's own body) rather than one already fully written elsewhere the way a
-    merge conflict, a review comment or a security finding's own remediation
-    is — every other source `refinement_policy` can name is `exempt` by
-    default for exactly that reason, and stays so. The schema's own shipped
-    default therefore names both explicitly as `"preferred"`
-    (`config.schema.json`'s `refinement_policy.default`), and this
-    installation's `config.json` sets both to `"required"` outright, since it
-    already runs a Refiner (`refiner_model` is set) to back that choice. An
-    installation that runs no Refiner cannot safely set either to
+    composing one itself. `project-review` and `implementation-plan` are the
+    two remaining sources whose items can carry a specification
+    `coordinator_model` composed from ambiguous material rather than one
+    already fully written elsewhere — every other source `refinement_policy`
+    can name is `exempt` by default for exactly that reason, and stays so.
+    An installation that runs no Refiner cannot safely set either to
     `"required"` — see the next paragraph — and is left, by the shipped
     `"preferred"` default, exactly as exposed to `coordinator_model`
     authorship as before this requirement for those two sources alone; every
     other source remains `exempt` and therefore Script- or gatherer-composed,
     never model-authored, with nothing here to validate because there is
     nothing here that can go wrong.
+
+    `issues` and `tech-debt` used to belong in the list above — a
+    `coordinator_model` composing `context`/`acceptance` for either from an
+    issue thread's current state or a tech-debt row's own body was exactly
+    the ambiguous-material gap this requirement exists to close, and the
+    schema's own shipped default still names both `"preferred"`
+    (`config.schema.json`'s `refinement_policy.default`), with this
+    installation's `config.json` setting both to `"required"` outright.
+    Requirement 17h (agent-ops#769) has since closed that gap structurally
+    rather than through `refinement_policy` alone: the Script composes
+    `context`/`acceptance` for every `issues`/`tech-debt` candidate itself,
+    from a live read, regardless of the item's refinement state — so
+    `coordinator_model` cannot author either field for these two sources at
+    all any more, whatever `refinement_policy` says about them.
+    `refinement_policy`'s `"required"`/`"preferred"` distinction still governs
+    whether an *unrefined* `issues`/`tech-debt` item may be selected in the
+    first place (requirement 39a) — that judgement is unchanged — but no
+    longer decides who authors its work order text once selected.
 
     **Resolving `refiner_model`'s optionality.** A `"required"` policy with no
     Refiner to ever refine anything is a configuration nobody can act on:
@@ -8086,14 +8098,20 @@ implements.
     one-line reason.
 17b. **A refined item is selected on what the refinement says.** Where
     requirement 3h's `refinements` map names an item the Co-Ordinator is putting
-    in a work order, an entry carrying a `spec` is pasted into the work order's
+    in a work order, an entry carrying a `spec` is carried into the work order's
     `context` **verbatim** — it exists nowhere else, and the Implementer starts
     with nothing but the work order, so a summarised refinement is one that was
-    written by an expensive model and read by nobody. An entry carrying a
-    `comment_url` needs no special handling: the refinement is a comment on the
-    item's own issue, which requirement 20 already pastes in full, and
-    requirement 14a already makes the latest contradicting comment the current
-    instruction.
+    written by an expensive model and read by nobody. For `project-review` and
+    `implementation-plan` — the two sources that still carry a `spec` and whose
+    `context` the Co-Ordinator still authors itself (requirement 17h) — the
+    Co-Ordinator pastes it; for `tech-debt`, requirement 17h's own compose step
+    splices it in unconditionally instead, since the model no longer authors
+    that source's `context` at all. An entry carrying a `comment_url` needs no
+    special handling: the refinement is a comment on the item's own issue,
+    which requirement 17h's live read (for `issues`/`tech-debt`) or requirement
+    20's own paste instruction (for the sources that still have one) already
+    carries in full, and requirement 14a already makes the latest contradicting
+    comment the current instruction.
 17f. **The Script verifies traceability before claiming, rather than trusting
     the model's own account (agent-ops#626).** A work order composed alongside
     others in the same Co-Ordinator engagement can carry one candidate's
@@ -8204,6 +8222,19 @@ implements.
     list is one candidate long, so that fault would leave the cycle with
     nothing to claim — disarming the path requirement 3v exists to provide
     precisely when the model will not select.
+
+    **Since requirement 17h (agent-ops#769), this check's own reachable scope
+    has narrowed to the three sources whose `context`/`acceptance` the
+    Co-Ordinator still authors itself** — `project-review`, `failed-runs`,
+    `implementation-plan`. Every other source's candidate is composed by
+    requirement 17h before it ever reaches this check (`c_composed` in the
+    claim loop), which calls `refinement_traceability_repair` unconditionally
+    as part of composing — so the splice this requirement exists to verify
+    has already happened, by construction, before this check would run. This
+    is the same exemption a fallback pick already had, generalised: neither a
+    fallback pick nor a requirement 17h compose can hold another item's
+    refinement, because neither ever reads `refinements` for anything but the
+    one item it is building.
 17g. **The Script verifies a trimmed candidate's `acceptance` against the
     item's own live text, not only its recorded refinement (agent-ops#821,
     shape decided agent-ops#830 option (c)).** Requirement 17f closes the
@@ -8346,6 +8377,93 @@ implements.
       not complete would let a stale token or a narrowed scope disarm the
       whole gate while it kept reading as green. Reported via `guard_warn`,
       never swallowed.
+
+    **Since requirement 17h (agent-ops#769), this requirement's own scope —
+    `coordinator_fit_trimmed_items`' output — can no longer contain a
+    candidate that reaches this check un-composed.** The fit ladder only ever
+    trims the `issues`/`tech_debt` bands (the scope note above), and every
+    `issues`/`tech-debt` candidate is now composed by requirement 17h before
+    the claim loop ever calls `item_text_fault`/`item_text_supply`
+    (`c_composed` in the claim loop) — from a fresh live read, never the
+    trimmed extract this requirement exists to check a model's paste against.
+    `item_text_fault`/`item_text_supply` are therefore unreachable as written:
+    kept as a defence against a regression in requirement 17h's own compose
+    step rather than because either currently intercepts anything. Their
+    removal, and `cause: "fabricated"`'s retirement from the claim loop's own
+    stand-down ladder, is tracked as a follow-up
+    (TD-PPagop-26090604) rather than done in the same change that made them
+    unreachable, on the same "small, reviewable" discipline every Implementer
+    engagement already follows.
+17h. **The Script composes `context`/`acceptance`/`title` for a Co-Ordinator
+    selection, from a live read or the pre-fetched band entry — never from
+    the model, and never from a trimmed extract (agent-ops#769, resolving the
+    escalation at agent-ops#844 with option (b)).** Requirements 17f/17g exist
+    because the Co-Ordinator runs on the fleet's cheapest model
+    (`coordinator_model`, `claude-haiku-4-5-20251001`) against input the fit
+    ladder (requirement 4i) may already have trimmed, and are asked to
+    reproduce kilobytes of that input verbatim — a task requirements 17f/17g
+    could only ever catch failing after the fact. This requirement removes
+    the task instead of catching its failure: for the ten sources the Script
+    already gathers as structured data (`security`, `code-quality`,
+    `review-feedback`, `merge-conflicts`, `dequeued`, `abandoned-drafts`,
+    `human-visibility`, `register-hygiene`, `tech-debt`, `issues`), the
+    Co-Ordinator selects `{repo, source, item}` and the Script itself builds
+    `context`, `acceptance` and `title` immediately before the claim
+    (`compose_selected_candidate_text`, `lib/candidate-select.sh`) — the model
+    authors neither field for these sources. The three sources the
+    Co-Ordinator still derives itself live — `project-review`, `failed-runs`,
+    `implementation-plan` — are unaffected: they have no pre-fetched band for
+    the Script to compose from, and were never subject to the fit ladder's
+    trimming in the first place, so this requirement does not reach them and
+    the Co-Ordinator still authors `context`/`acceptance` for them exactly as
+    requirement 20 describes.
+
+    - **A live read for the only two trimmed bands, the pre-fetched entry for
+      the rest.** `issues` and `tech-debt` are the only bands the fit ladder
+      (requirement 4i) ever trims, so these two are rebuilt from a fresh `gh
+      issue view` (`item_live_entry`) every time they are selected, whether or
+      not this particular cycle actually trimmed them — a work order's
+      `context` must never depend on the band entry's freshness at all, not
+      merely recover when it happened to be visibly short. Tech-debt has been
+      a GitHub issue carrying `pw::type:tech-debt` since the register's D15
+      migration, so it is fetched identically to an `issues` entry. The other
+      eight sources' band entries are never trimmed at all (the fit ladder's
+      own scope, requirement 17g above), so the Script composes directly from
+      the entry `coordinator_eligible_items` already located for this
+      candidate's own `{repo, source, item}` — a lookup, not a second fetch.
+    - **The per-source template mirrors `fallback_select_candidate`'s own**
+      (requirement 3v) — the working precedent this requirement generalises
+      from a last-resort mechanical pick to the ordinary selection path,
+      keeping the same wording so a work order reads the same regardless of
+      which path produced it. A Dependabot takeover (`merge-conflicts` with
+      `bot`/`rebase_requested` both true) is templated on its own terms —
+      naming the replacement pull request and the bot's own closure — never
+      the ordinary rebase instruction, since a takeover is fresh work on a new
+      branch, not a finish of the existing one.
+    - **The recorded refinement is spliced unconditionally, generalising
+      agent-ops#767.** `refinement_traceability_repair` — the repair half of
+      requirement 17f — is called on every freshly composed candidate,
+      always, rather than only after a fault check finds one missing: there
+      is no model-authored text left to fault, so the one way a refinement
+      ever reaches a Script-composed work order now is this unconditional
+      splice.
+    - **A failed live fetch is fail-closed, folded into `cause: "untraceable"`
+      (requirement 17f's own cause), not a fallback to the trimmed or stale
+      entry.** So is a candidate naming an `{repo, source, item}` this cycle's
+      own gather (`ordered_repos_json`) no longer contains — a stale or
+      malformed candidate the Co-Ordinator should never have named. Both skip
+      the candidate exactly as an unrepaired requirement 17f fault does: the
+      next-ranked candidate gets the slot, and a cycle that loses every
+      candidate this way stands down `untraceable`, never `raced`.
+    - **A fallback selection (requirement 3v) is composed the same way.** The
+      claim loop runs this requirement's compose step for a fallback pick too
+      (`c_composed`, alongside `selected_by_fallback`), so an `issues`/
+      `tech-debt` item the mechanical fallback picks is rebuilt from a live
+      read the same as an ordinary selection would be — `fallback_select_candidate`'s
+      own band-entry composition for these two sources was subject to exactly
+      the trimming this requirement exists to close, and unifying the two
+      paths costs nothing extra for the other eight sources, whose template
+      output is identical either way.
 17a. **The claim.** The Script — never the model — takes an atomic per-item
     claim before the Implementer starts, walking the ranked candidates in
     order and handing the first successful claim onward (`lib/claim.sh`).
@@ -8814,65 +8932,78 @@ implements.
     `code-quality` or `register-hygiene`
     — an issue is `issues` whichever band it was selected from
     (requirement 15e); the `issues:<band>` tokens exist only in `sources`, to
-    place the source in the walk, and never in a work order. For a
+    place the source in the walk, and never in a work order.
+
+    **For every source except `project-review`, `failed-runs` and
+    `implementation-plan`, the Co-Ordinator does not set `context` or
+    `acceptance` at all — requirement 17h composes both, from a live read or
+    the pre-fetched band entry, once the candidate is selected.** What
+    follows here is what requirement 17h's own compose step produces for each
+    of those sources, not something the Co-Ordinator writes: for a
     `review-feedback` entry, `item` is its `ref`, `branch` is the PR's
     **existing** branch, the order also carries `pr_url` and `pr_number`, and
-    `context` must paste the entry's `body` **verbatim** — it is a human's
-    specific, considered request and it is the entire brief. A model
-    summarising a review before handing it to the model that must act on it is
-    a lossy telephone game about what a person actually asked for. For a
-    `merge-conflicts` entry, `item` is its `ref`, `branch` is the PR's
-    **existing** branch, the order also carries `pr_url`, `pr_number` and the PR's
-    `base`, and `context` must carry the PR's own `body` verbatim plus the existing
-    branch, base and head SHA, telling the Implementer to rebase onto `base` and
-    resolve the conflict — not to re-do or extend the work; `acceptance` is the PR
-    mergeable again (no longer `CONFLICTING`) with CI green and the PR left in the
-    ready state it was already in, the underlying item deliberately left for its
-    own eventual merge. **Exception — a Dependabot takeover** (requirement 3s: the
-    entry carries `bot: true`, `rebase_requested: true`, no `superseded_by`): the
-    order instead carries `"takeover": true` and **omits `branch`** — the Script
-    derives `agent/<ref>` for it exactly as for a non-finishing source (requirement
-    17a's carve-out), since the PR named in `context` is Dependabot's, never
-    rebased or force-pushed. `context` still carries the bot PR's `body`, `url`,
-    `number`, `branch` (named as Dependabot's own, not to be checked out), `base`
-    and `head_sha` verbatim, telling the Implementer to recreate the same bump on
-    its new branch and close the bot's PR referencing the replacement; `acceptance`
-    is a new, mergeable, CI-green PR carrying the same dependency bump, left a
-    **draft**, with the bot's PR closed. A `superseded_by` entry never becomes a
-    work order at all — it belongs in `voided`, evidence copied from the entry's
-    own `superseded_evidence` verbatim (requirement 3s). For an
-    `abandoned-drafts` entry, `item` is its `ref`, `branch` is the draft PR's
-    **existing** branch, the order also carries `pr_url` and `pr_number`, and
-    `context` must carry the draft PR's own `body` verbatim (the original plan)
-    plus the existing branch and head SHA, telling the Implementer to read the
-    existing diff and *finish* the draft rather than restart it; `acceptance` is
-    completion to the originating item's standard with the PR left a **draft** for
-    the Reviewer to flip to ready. For a `register-hygiene` entry, `item` is its
-    `ref`, there is no PR to carry (the Script derives the ordinary
-    `agent/<ref>` claim branch), `model` is always `implementer_model_trivial` —
-    register-only editing, no behaviour change — and `context` must paste the
-    entry's `body`, the consistency check's whole output, **verbatim**: each
-    line names an id, a problem class and a line number, and that is precisely
-    what makes the repair mechanical. `acceptance` is argless
-    `perl scripts/td-check.pl` exiting 0, with the repair discipline of
-    requirement 25 followed. For a
-    `security`/`code-quality`
-    finding, `item` is the finding's stable `ref` (e.g. `dependabot-alert-42`,
-    `code-scanning-alert-17`) and `context` must paste the finding verbatim
-    (package/rule, severity, affected location, advisory summary, and the
-    alert URL) so the Implementer can act without re-querying the API. For a
+    `context` is the entry's `body` **verbatim** — it is a human's specific,
+    considered request and it is the entire brief. For a `merge-conflicts`
+    entry, `item` is its `ref`, `branch` is the PR's **existing** branch, the
+    order also carries `pr_url`, `pr_number` and the PR's `base`, and
+    `context` is the PR's own `body` verbatim; `acceptance` names rebasing
+    onto `base` and resolving the conflict — not re-doing or extending the
+    work — with the PR left in the ready state it was already in, the
+    underlying item deliberately left for its own eventual merge.
+    **Exception — a Dependabot takeover** (requirement 3s: the entry carries
+    `bot: true`, `rebase_requested: true`, no `superseded_by`): the
+    Co-Ordinator's own candidate carries `"takeover": true` and **omits
+    `branch`** — the Script derives `agent/<ref>` for it exactly as for a
+    non-finishing source (requirement 17a's carve-out), since the PR named in
+    `context` is Dependabot's, never rebased or force-pushed. `context` still
+    carries the bot PR's `body` verbatim; `acceptance` names a new,
+    mergeable, CI-green PR carrying the same dependency bump, left a
+    **draft**, with the bot's PR closed — never the ordinary rebase
+    acceptance, which a takeover's fresh-branch shape cannot satisfy. A
+    `superseded_by` entry never becomes a work order at all — it belongs in
+    `voided`, evidence copied from the entry's own `superseded_evidence`
+    verbatim (requirement 3s). For an `abandoned-drafts` entry, `item` is its
+    `ref`, `branch` is the draft PR's **existing** branch, the order also
+    carries `pr_url` and `pr_number`, and `context` is the draft PR's own
+    `body` verbatim (the original plan); `acceptance` names completion to the
+    originating item's standard with the PR left a **draft** for the Reviewer
+    to flip to ready. For a `dequeued` entry, `item` is its `ref`, `branch`
+    is the PR's **existing** branch, the order also carries `pr_url`,
+    `pr_number` and `base`, and `context` is the PR's own `body` verbatim;
+    `acceptance` names diagnosing and fixing the merge-group's own checks
+    failure, pushed to the existing branch, with the PR left ready for a
+    human's fresh "Merge when ready". For a `register-hygiene` entry, `item`
+    is its `ref`, there is no PR to carry (the Script derives the ordinary
+    `agent/<ref>` claim branch), `model` is always
+    `implementer_model_trivial` — register-only editing, no behaviour change
+    — and `context` is the entry's `body`, the consistency check's whole
+    output, verbatim, plus its `url` and `blob_sha`. `acceptance` names
+    argless `perl scripts/td-check.pl` exiting 0, with the repair discipline
+    of requirement 25 followed. For a `human-visibility` entry, `item` is its
+    `ref`, there is no PR to carry, `model` is always
+    `implementer_model_default` (a diagnosis, not an edit), and `context` is
+    the entry's `body` verbatim plus its `url`. For a `security`/
+    `code-quality` finding, `item` is the finding's stable `ref` (e.g.
+    `dependabot-alert-42`, `code-scanning-alert-17`) and `context` names the
+    finding (package/rule, severity, affected location, advisory summary, and
+    the alert URL) so the Implementer can act without re-querying the API.
+    For an `issues` or `tech-debt` entry, `item` is the issue number and
+    `context` is a *fresh* live read of the issue body **and every comment**
+    (each attributed to its author, in order) — never the band entry the
+    Co-Ordinator was shown, which the fit ladder (requirement 4i) may have
+    trimmed; where the comments changed the ask, `acceptance` still names
+    resolving per the current state of the thread, not the original body
+    alone (requirement 17h).
+
+    Only for `project-review`, `failed-runs` and `implementation-plan` — the
+    three sources with no pre-fetched band for the Script to compose from,
+    and never subject to the fit ladder's trimming in the first place — does
+    the Co-Ordinator still author `context`/`acceptance` itself. For a
     `project-review` recommendation, `item` is its ref
     (`review-<review-date>-R-NN`) and `context` must paste the recommendation's
     improvement prompt (from `04-improvement-prompts.md`) verbatim, together
     with the review folder path and the `R-NN` detail; `acceptance` is the
-    recommendation's *Intended end state*. For an `issues` entry, `item` is the
-    issue number and `context` must paste the issue body **and every comment**
-    verbatim (each attributed to its author, in order) — not the opening post
-    alone. The Implementer starts with nothing but this work order, so a
-    clarification or acceptance criterion left in a comment is lost unless the
-    Co-Ordinator carries it across; where the comments changed the ask,
-    `acceptance` is set from the current state of the thread, not the original
-    body.
+    recommendation's *Intended end state*.
 
     ```json
     {
