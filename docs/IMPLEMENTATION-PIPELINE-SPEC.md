@@ -18042,8 +18042,14 @@ What exists, and the requirements each part answers to:
       retried once unlabelled — a repository whose `pw::type:tech-debt` label
       the ensure pass (component 6a) has not reached yet — exactly as
       `techdebt_file_issue`'s own `pw::owner-decision` retry above, logged to
-      `tech-debt-file.err` so the archive mirror's audit (2.6b) can flag the
-      unlabelled issue for reconciliation. Prints `"<number>\t<url>"` on
+      `tech-debt-file.err`. Nothing reconciles the result: the filed issue
+      carries no `pw::type:tech-debt` label, so it is invisible by
+      construction both to `scripts/gather-tech-debt.sh`'s own label search
+      and to the archive mirror's (2.6c), and neither of 2.6c's own audits
+      catches it either — the empty-body audit reads only what that same
+      label search already returned, and the legacy-filing audit looks for
+      an open pull request on a `td-record/` branch, not an unlabelled issue
+      (agent-ops#1223). Prints `"<number>\t<url>"` on
       success (the new issue's, or the matched one's), nothing on failure.
       There is no id reservation, no branch, and no pull request: a create or
       a comment either lands or it doesn't, so there is nothing to half-finish

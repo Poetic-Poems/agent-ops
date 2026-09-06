@@ -49,9 +49,10 @@
 #   a create either succeeds or it doesn't, and a repository that does not
 #   yet carry `pw::type:tech-debt` (the label-ensure pass has not reached it
 #   yet) gets one retry without the label rather than a lost filing — logged
-#   to errlog so the archive mirror's audit can flag the unlabelled issue for
-#   reconciliation, the same shape techdebt_file_issue's own
-#   `pw::owner-decision` retry already has.
+#   to errlog, the same shape techdebt_file_issue's own `pw::owner-decision`
+#   retry already has. Nothing reconciles the result: the unlabelled issue is
+#   invisible by construction to every label-based reader of this band,
+#   including the archive mirror's own audits (agent-ops#1223).
 #
 # TECHDEBT_RECORD_BRANCH_PREFIX — no longer minted by this file
 # (agent-ops#874 retired techdebt_file_debt's own td-record/<id> branch), but
@@ -275,8 +276,9 @@ techdebt_file_debt() {
   # has not reached yet fails the whole labelled create -- `gh` resolves a
   # label name to an id as part of it -- so this is retried once unlabelled
   # rather than losing the filing, exactly as techdebt_file_issue's own
-  # `pw::owner-decision` retry above. Logged so the archive mirror's audit can
-  # flag the unlabelled issue for reconciliation once the label does exist.
+  # `pw::owner-decision` retry above. Nothing reconciles the result: the
+  # unlabelled issue stays invisible to every label-based reader of this
+  # band, including the archive mirror's own audits (agent-ops#1223).
   if [[ -z "$raw" ]]; then
     printf 'techdebt_file_debt: labelled issue create failed for %s -- retrying unlabelled\n' \
       "$repo" >>"$errlog"
