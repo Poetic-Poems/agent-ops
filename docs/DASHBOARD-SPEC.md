@@ -738,9 +738,11 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                       //   `attributed_stage` names this row's
                                       //   own actor; `other_fate` sums
                                       //   blocked/open/superseded/unaccounted
-                   first_pass_yield,  // landed_unchanged / landed, null if
-                                      //   landed is 0 or the row is
-                                      //   insufficient-sample
+                   first_pass_yield,  // landed_unchanged / landed, null only
+                                      //   if landed is 0 — computed
+                                      //   whatever `sample` is, since a
+                                      //   consumer other than the renderer
+                                      //   below may want the raw figure
                    cost_per_landed_usd, wallclock_per_landed_ms,
                                       // summed from the landed item's own
                                       //   stage-end(s) `cost_usd`/
@@ -753,9 +755,14 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                    sample, status,    // sample = landed+voided+abandoned;
                                       //   status is "insufficient-sample"
                                       //   below `min_sample`, "ok" otherwise
-                                      //   — gates first_pass_yield/cost/
-                                      //   wall-clock above, D22's "stratify
-                                      //   or abstain"
+                                      //   — the renderer swaps first_pass_
+                                      //   yield/cost/wall-clock above for an
+                                      //   "insufficient evidence" badge on
+                                      //   this status, D22's "stratify or
+                                      //   abstain"; the gate is display-side
+                                      //   only, and the payload fields above
+                                      //   carry their computed figure either
+                                      //   way
                    measure            // this row's own actor-specific
                  } ] } ] },           //   measure, absent for no row (every
                                       //   actor below has one) — see below
