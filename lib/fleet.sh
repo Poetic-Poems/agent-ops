@@ -87,23 +87,26 @@ fleet_logs_healthy() {  # <state_dir> <peers_dir> <union_log>
 #     N seconds have passed since the shared state last held a publication
 #     from this node/peer; "stale" once N exceeds <threshold_s>
 #     (`node_stale_after_minutes * 60`).
+#
+# Built with `printf`, not `jq` (D14: called once per fleet-strip row, self
+# included, on both a full and a fast publish-dashboard.sh tick, so a jq fork
+# here counts directly against #798's fast/full cost ratio) — every field is
+# already known safe: <ts> is always machine-generated (`date -u`'s own
+# output or a git committer date), never free text, and <age>/verdict are
+# ours to choose.
 fleet_publication_status() {
   local ts="${1:-}" threshold="${2:-1800}" now="${3:-}" then_epoch age verdict
   [[ -n "$now" ]] || now="$(date -u +%s)"
-  if [[ -z "$ts" ]]; then
-    jq -nc '{ts: null, age_s: null, verdict: "unknown"}'
-    return 0
-  fi
-  if ! then_epoch="$(date -u -d "$ts" +%s 2>/dev/null)" || [[ -z "$then_epoch" ]]; then
-    jq -nc '{ts: null, age_s: null, verdict: "unknown"}'
+  if [[ -z "$ts" ]] || ! then_epoch="$(date -u -d "$ts" +%s 2>/dev/null)" \
+      || [[ -z "$then_epoch" ]]; then
+    printf '{"ts":null,"age_s":null,"verdict":"unknown"}'
     return 0
   fi
   age=$(( now - then_epoch ))
   (( age < 0 )) && age=0
   verdict="fresh"
   (( age > threshold )) && verdict="stale"
-  jq -nc --arg ts "$ts" --argjson age "$age" --arg v "$verdict" \
-    '{ts: $ts, age_s: $age, verdict: $v}'
+  printf '{"ts":"%s","age_s":%s,"verdict":"%s"}' "$ts" "$age" "$verdict"
 }
 
 # The fleet's event stream: this node's own log followed by every peer's,
