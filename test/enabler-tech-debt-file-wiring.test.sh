@@ -3,9 +3,9 @@
 # test/enabler-tech-debt-file-wiring.test.sh — regression test for the
 # file_debt/file_issue handling `maybe_run_enabler` adds in agent-cycle.sh
 # (agent-ops#631): an Enabler verdict may carry either field, alongside any
-# of the four verdicts, asking the Script to file a tech-debt record or a
-# plain GitHub issue on its behalf — the Enabler itself must never write to
-# GitHub or a branch (prompts/enabler.md).
+# of the four verdicts, asking the Script to file a `pw::type:tech-debt`-
+# labelled issue or a plain GitHub issue on its behalf — the Enabler itself
+# must never write to GitHub or a branch (prompts/enabler.md).
 #
 # This file complements test/enabler-verdicts.test.sh (the four-verdict
 # switch itself, untouched by this feature) and test/tech-debt-file.test.sh
@@ -134,7 +134,7 @@ create_escalation_issue() { echo "FAIL - unexpected create_escalation_issue call
 techdebt_file_debt() {
   record "techdebt_file_debt $*"
   [[ "${STUB_FILE_DEBT_RC:-0}" -eq 0 ]] || return 1
-  printf 'TD-PPtest-99999901\thttps://github.com/acme/widgets/pull/501'
+  printf '501\thttps://github.com/acme/widgets/issues/501'
 }
 # shellcheck disable=SC2317
 techdebt_file_issue() {
@@ -239,20 +239,15 @@ assert_eq "file_debt success: techdebt_file_debt called once" "1" \
   "$(grep -c '^techdebt_file_debt ' <<<"$out")"
 assert_eq "  ... with the repo, title, body and provenance" "1" \
   "$(grep -c 'techdebt_file_debt acme/widgets A gap worth filing The body text' <<<"$out")"
-# TD-PPagop-26082426: this stage never otherwise resolves config, so the
-# fleet's `pr_label` must be read from DEFAULTED_CONFIG and threaded through
-# rather than left for techdebt_file_debt's own fallback -- proven by using a
-# label here that does not match that fallback.
-assert_eq "  ... and the configured pr_label, not the bare fallback" "1" \
-  "$(grep -c '^techdebt_file_debt .*custom-agent-label' <<<"$out")"
-# agent-ops#938: default_fix and owner_decision are threaded through, in that
-# order, past pr_label.
-assert_eq "  ... and default_fix/owner_decision past pr_label" "1" \
-  "$(grep -c '^techdebt_file_debt .*custom-agent-label Do the smaller fix false$' <<<"$out")"
+# agent-ops#874: no clone_dir/pr_label reach the call any more -- filing is a
+# single labelled-issue create, not a branch-and-PR sequence, so
+# default_fix/owner_decision follow straight after the (empty) token.
+assert_eq "  ... and default_fix/owner_decision past the (empty) token" "1" \
+  "$(grep -c '^techdebt_file_debt .* Do the smaller fix false$' <<<"$out")"
 assert_eq "  ... tech-debt-filed event logged" "1" "$(events_named "$out" tech-debt-filed | grep -c .)"
 fields="$(events_named "$out" tech-debt-filed)"
 assert_eq "  ... event names by:enabler" "enabler" "$(jq -r '.by' <<<"$fields")"
-assert_eq "  ... event carries the returned id" "TD-PPtest-99999901" "$(jq -r '.id' <<<"$fields")"
+assert_eq "  ... event carries the returned issue number" "501" "$(jq -r '.issue_number' <<<"$fields")"
 assert_eq "  ... no warning" "0" "$(events_named "$out" warning | grep -c .)"
 
 # --- file_debt: owner_decision true, no default_fix -> passed through, no --
@@ -260,7 +255,7 @@ assert_eq "  ... no warning" "0" "$(events_named "$out" warning | grep -c .)"
 fd_owner='{"title":"A gap that is an owner call","body":"The body text.","owner_decision":true}'
 out="$(run_case "file_debt owner_decision" "$(still_blocked_verdict "$fd_owner" null)")"
 assert_eq "file_debt owner_decision: passed through as \"true\"" "1" \
-  "$(grep -c '^techdebt_file_debt .*custom-agent-label  true$' <<<"$out")"
+  "$(grep -c '^techdebt_file_debt .*  true$' <<<"$out")"
 assert_eq "  ... no warning" "0" "$(events_named "$out" warning | grep -c .)"
 
 # --- file_debt: neither default_fix nor owner_decision -> malformed, filed --

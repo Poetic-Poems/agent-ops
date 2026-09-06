@@ -175,11 +175,10 @@ on; `file_issue` for a question or a decision that isn't a scoped piece of
 work. You never file either yourself — every rule under "What you must never
 do" still holds, including never writing to GitHub. Setting the field is the
 whole of your contribution: the Script reads it from your final JSON and
-performs the filing, writing the record and its pull request under the
-Approver's own App identity (the same one `approver_post_review` already
-posts your review under; only the id reservation's own lock branch is
-pushed under the ordinary pipeline login), exactly as it is the sole writer
-of the review itself. Omit both fields when step 5 found
+files a `pw::type:tech-debt`-labelled issue (`file_debt`) or a plain one
+(`file_issue`) under the Approver's own App identity — the same one
+`approver_post_review` already posts your review under — exactly as it is
+the sole writer of the review itself. Omit both fields when step 5 found
 nothing worth a permanent record — most engagements will.
 
 **`default_fix`/`owner_decision` (agent-ops#938).** Set `default_fix`

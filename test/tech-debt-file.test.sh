@@ -1,45 +1,40 @@
 #!/usr/bin/env bash
 #
 # test/tech-debt-file.test.sh — regression tests for lib/tech-debt-file.sh
-# (agent-ops#631): filing a tech-debt record or a GitHub issue on the
-# Script's own behalf, for the Approver and Enabler stages, which must never
-# write to GitHub or a branch themselves.
+# (agent-ops#631, revised agent-ops#874): filing a tech-debt or plain GitHub
+# issue on the Script's own behalf, for the Approver and Enabler stages,
+# which must never write to GitHub or a branch themselves.
 #
 # Behaviours asserted:
 #
-#   - **techdebt_file_debt reserves a real id against origin/main**, via the
-#     genuine scripts/reserve-tech-debt-id.pl extracted from the fixture
-#     remote's own origin/main — never reimplemented, never read from
-#     GIT_DIR's checked-out branch (simulated here as a *different*,
-#     deliberately-broken copy, so a test that read the checkout by mistake
-#     would fail loudly instead of silently passing).
-#   - **... and opens exactly one pull request** carrying the new
-#     tech-debt/<id>.md, via the branch-then-contents-then-PR sequence, and
-#     prints "<id>\t<pr-url>".
-#   - **... without ever writing inside GIT_DIR** — the reservation script is
-#     extracted to a path outside it and merely *run* from a CWD within it,
-#     observed directly through an instrumented copy on the fixture remote,
-#     and nothing is left behind in its working tree. This is the invariant
-#     IMPLEMENTATION-PIPELINE-SPEC.md's 23d and 42a both assert.
-#   - **A TOKEN, given, is used for every gh call** (git/refs, contents, pr
+#   - **techdebt_file_debt dedups by normalised title** against REPO's own
+#     open `pw::type:tech-debt` issues before filing: an exact or (both
+#     titles at least eight normalized characters) containing match gets the
+#     new BODY/PROVENANCE as a comment instead of a second filing, and the
+#     matched issue's own number/url are returned. No dedup hit creates a
+#     fresh issue labelled `pw::type:tech-debt`.
+#   - **A TOKEN, given, is used for every gh call** (issue list, comment,
 #     create) — never the ordinary login.
-#   - **Any step failing (no reserve script on origin/main, the branch-create
-#     call, the contents-write call, the PR-create call) fails the whole
-#     call, returns 1, and prints nothing.**
-#   - **Any failure after the id is reserved additionally cleans up** — the
-#     td/<id> reservation, and the td-record/<id> branch where the
-#     branch-create call got that far, are deleted (best-effort) rather than
-#     left behind with no pull request ever carrying them, which no sweep
-#     would ever find again (TD-PPagop-26082203).
+#   - **A labelled create that fails is retried once unlabelled** (a
+#     repository whose `pw::type:tech-debt` label the ensure pass has not
+#     reached yet), exactly as techdebt_file_issue's own
+#     `pw::owner-decision` retry already does.
+#   - **DEFAULT_FIX/OWNER_DECISION (agent-ops#938)** land in the filed body
+#     (or the dedup comment) via techdebt_default_section, identically to
+#     techdebt_file_issue.
+#   - **No id reservation, no branch, no pull request** — filing (or the
+#     dedup comment) is the only GitHub write techndebt_file_debt makes;
+#     there is nothing left to half-finish, so a failed create simply
+#     returns 1 with no cleanup step to assert.
 #   - **techdebt_file_issue returns an existing issue that already covers
 #     ITEM_REF** rather than filing a duplicate, and creates one when none
-#     exists; a failed create returns 1 and prints nothing.
+#     exists; a failed create returns 1 and prints nothing. (Unchanged by
+#     agent-ops#874 — kept here as a regression guard since both functions
+#     share this file.)
 #
 # `gh` is stubbed through a fake executable on PATH, recording every
 # invocation to a file for assertions — the technique
-# test/merge-queue.test.sh's stub uses for its own `gh api` calls. Git
-# operations run for real against a local bare "remote", the technique
-# test/reserve-tech-debt-id.test.sh uses for reserve-tech-debt-id.pl itself.
+# test/merge-queue.test.sh's stub uses for its own `gh api` calls.
 #
 # No test framework is used (none exists elsewhere in this repo). Run it
 # directly:
@@ -51,7 +46,6 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RESERVE_SRC="$SCRIPT_DIR/scripts/reserve-tech-debt-id.pl"
 # shellcheck source=lib/tech-debt-file.sh
 . "$SCRIPT_DIR/lib/tech-debt-file.sh"
 
@@ -72,150 +66,25 @@ assert_eq() {
   fi
 }
 
-export GIT_CONFIG_GLOBAL=/dev/null
-export GIT_CONFIG_SYSTEM=/dev/null
-export GIT_AUTHOR_NAME="Agent-Ops Test"
-export GIT_AUTHOR_EMAIL="test@example.invalid"
-export GIT_COMMITTER_NAME="Agent-Ops Test"
-export GIT_COMMITTER_EMAIL="test@example.invalid"
-
-# make_remote [reserve-script:0|1|probe] -- a bare "origin" on main, carrying
-# a scoped policy and the real reserve-tech-debt-id.pl (or, with 1, a
-# deliberately-broken stand-in; with `probe`, an instrumented stand-in that
-# records the path it was run from and its CWD to $RESERVE_PROBE and prints a
-# fixed id) at scripts/. Prints the remote's path.
-make_remote() {
-  local broken="${1:-0}" root remote seed
-  root="$(mktemp -d "$tmp_dir/remote-XXXXXX")"
-  remote="$root/remote.git"
-  seed="$root/seed"
-  git init -q -b main --bare "$remote"
-  git init -q -b main "$seed"
-  cat > "$seed/TECH-DEBT.md" <<'EOF'
----
-scope: PPtest
----
-
-# Tech debt
-
-Policy only; items live in tech-debt/, one file each.
-EOF
-  mkdir -p "$seed/scripts"
-  if [[ "$broken" == "1" ]]; then
-    printf '#!/usr/bin/perl\ndie "should never run this copy\\n";\n' > "$seed/scripts/reserve-tech-debt-id.pl"
-  elif [[ "$broken" == "probe" ]]; then
-    cat > "$seed/scripts/reserve-tech-debt-id.pl" <<'PROBE'
-#!/usr/bin/perl
-# Instrumented stand-in: records where this copy was run from and with what
-# CWD, then prints a well-formed id so the rest of the filing path proceeds.
-use strict; use warnings; use Cwd qw(cwd);
-open my $fh, '>', $ENV{RESERVE_PROBE} or die "no RESERVE_PROBE: $!";
-print $fh "$0\n", cwd(), "\n";
-close $fh;
-print "TD-PPtest-26082201\n";
-PROBE
-  else
-    cp "$RESERVE_SRC" "$seed/scripts/reserve-tech-debt-id.pl"
-  fi
-  git -C "$seed" remote add origin "$remote"
-  git -C "$seed" add -A
-  git -C "$seed" commit -q -m fixture >/dev/null
-  git -C "$seed" push -q origin main
-  printf '%s\n' "$remote"
-}
-
-# a_git_dir REMOTE -- a fresh directory with `origin` pointed at REMOTE and,
-# deliberately, a *different*, broken reserve-tech-debt-id.pl checked out
-# locally, so techdebt_file_debt reading the working tree instead of
-# origin/main directly would fail loudly.
-a_git_dir() {
-  local remote="$1" dir
-  dir="$(mktemp -d "$tmp_dir/gitdir-XXXXXX")"
-  git -C "$dir" init -q -b main
-  git -C "$dir" remote add origin "$remote"
-  mkdir -p "$dir/scripts"
-  printf '#!/usr/bin/perl\ndie "must never run the checked-out copy\\n";\n' > "$dir/scripts/reserve-tech-debt-id.pl"
-  printf '%s\n' "$dir"
-}
-
 # --- The stub gh -------------------------------------------------------------
 # $tmp_dir/calls               every invocation's argv, one per line
-# $tmp_dir/pr-url               printed by `pr create` (empty -> fails)
 # $tmp_dir/issue-url            printed by `issue create` (empty -> fails)
 # $tmp_dir/issue-list-response  printed by `issue list --json ...`
-# $tmp_dir/fail-refs            present -> the git/refs POST fails
-# $tmp_dir/fail-contents        present -> the contents PUT fails
-# $tmp_dir/fail-delete-refs     branch-name glob patterns (one per line,
-#                                e.g. "td/*") whose git/refs/heads/<branch>
-#                                DELETE fails -- globs, since the real
-#                                reserve-tech-debt-id.pl decides the actual
-#                                id and a test cannot know it in advance
-# $tmp_dir/absent-refs          branch-name glob patterns (one per line)
-#                                whose git/ref/heads/<branch> GET 404s (the
-#                                confirmation _techdebt_release_ref makes
-#                                after a failed DELETE) -- anything not
-#                                matched reports the ref as existing
-# $tmp_dir/fail-marker-put      present -> the reservation-releases/ marker
-#                                PUT fails
+# $tmp_dir/last-issue-body      the last `issue create`/`issue comment`
+#                                --body-file's own content, captured before
+#                                the caller deletes the temp file
 # $tmp_dir/fail-labelled-issue-create
 #                               present -> an `issue create` carrying --label
 #                                fails, as `gh` does where the label does not
 #                                exist in the repository; an unlabelled create
 #                                still succeeds
+# $tmp_dir/fail-comment         present -> `issue comment` fails
 cat > "$tmp_dir/gh" <<'STUB'
 #!/usr/bin/env bash
 d="$(dirname "$0")"
 printf '%s %s\n' "${GH_TOKEN:-<none>}" "$*" >> "$d/calls"
 
-if [[ "$1" == "api" && "$2" == "-X" && "$3" == "POST" && "$4" == *"/git/refs" ]]; then
-  [[ -f "$d/fail-refs" ]] && exit 1
-  exit 0
-fi
-if [[ "$1" == "api" && "$2" == "-X" && "$3" == "PUT" && "$4" == *"/contents/reservation-releases/"* ]]; then
-  [[ -f "$d/fail-marker-put" ]] && exit 1
-  exit 0
-fi
-if [[ "$1" == "api" && "$2" == "-X" && "$3" == "PUT" && "$4" == *"/contents/"* ]]; then
-  [[ -f "$d/fail-contents" ]] && exit 1
-  exit 0
-fi
-if [[ "$1" == "api" && "$2" == "-X" && "$3" == "DELETE" && "$4" == *"/git/refs/heads/"* ]]; then
-  branch="${4##*/git/refs/heads/}"
-  if [[ -f "$d/fail-delete-refs" ]]; then
-    while IFS= read -r pat; do
-      [[ -n "$pat" ]] || continue
-      [[ "$branch" == $pat ]] && exit 1
-    done < "$d/fail-delete-refs"
-  fi
-  exit 0
-fi
-if [[ "$1" == "api" && "$2" == *"/git/ref/heads/"* ]]; then
-  branch="${2##*/git/ref/heads/}"
-  absent=0
-  if [[ -f "$d/absent-refs" ]]; then
-    while IFS= read -r pat; do
-      [[ -n "$pat" ]] || continue
-      [[ "$branch" == $pat ]] && { absent=1; break; }
-    done < "$d/absent-refs"
-  fi
-  if [[ "$absent" == "1" ]]; then
-    echo '{"message":"Not Found","status":"404"}'
-    echo "gh: Not Found (HTTP 404)" >&2
-    exit 1
-  fi
-  echo '{"object":{"sha":"deadbeef"}}'
-  exit 0
-fi
-if [[ "$1" == "pr" && "$2" == "create" ]]; then
-  [[ -s "$d/pr-url" ]] || exit 1
-  cat "$d/pr-url"
-  exit 0
-fi
 if [[ "$1" == "issue" && "$2" == "create" ]]; then
-  # Capture --body-file's own content before the caller deletes it
-  # (agent-ops#938: techdebt_file_issue's combined temp file), so a test can
-  # assert on the `## Default` section actually filed rather than only on the
-  # argv, which carries a throwaway path.
   shift 2
   labelled=0
   while [[ $# -gt 0 ]]; do
@@ -240,6 +109,19 @@ if [[ "$1" == "issue" && "$2" == "list" ]]; then
   cat "$d/issue-list-response" 2>/dev/null || echo '[]'
   exit 0
 fi
+if [[ "$1" == "issue" && "$2" == "comment" ]]; then
+  shift 2
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "--body-file" ]]; then
+      cat "$2" > "$d/last-issue-body" 2>/dev/null
+      shift 2
+      continue
+    fi
+    shift
+  done
+  [[ -f "$d/fail-comment" ]] && exit 1
+  exit 0
+fi
 exit 1
 STUB
 chmod +x "$tmp_dir/gh"
@@ -247,310 +129,154 @@ export PATH="$tmp_dir:$PATH"
 
 reset_stub() {
   : > "$tmp_dir/calls"
-  rm -f "$tmp_dir/fail-refs" "$tmp_dir/fail-contents" "$tmp_dir/fail-delete-refs" \
-    "$tmp_dir/absent-refs" "$tmp_dir/fail-marker-put" \
-    "$tmp_dir/fail-labelled-issue-create"
-  echo "https://github.com/o/r/pull/99" > "$tmp_dir/pr-url"
+  rm -f "$tmp_dir/fail-labelled-issue-create" "$tmp_dir/fail-comment" "$tmp_dir/last-issue-body"
   echo "https://github.com/o/r/issues/77" > "$tmp_dir/issue-url"
   echo '[]' > "$tmp_dir/issue-list-response"
 }
 
-# reserved_id -- the id the real reserve script handed this call, read back
-# off the branch-create attempt rather than guessed: the fixture runs the
-# genuine reserve-tech-debt-id.pl, so the id depends on the day and on what
-# the fixture register already holds. Recorded whether or not that call
-# succeeded, which is what makes it usable on every failure path below.
-reserved_id() {
-  grep -oE 'ref=refs/heads/td-record/[A-Za-z0-9-]+' "$tmp_dir/calls" \
-    | head -n1 | sed 's#.*/##'
-}
-
-# last_put_content -- the decoded body of the most recent contents PUT (the
-# record commit techdebt_file_debt just wrote), so a test can assert on the
-# `## Default`/`Owner decision:` section without re-deriving the base64
-# encoding the stub's own argv capture leaves it in.
-last_put_content() {
-  grep -oE '\-f content=[A-Za-z0-9+/=]+' "$tmp_dir/calls" | tail -n1 \
-    | sed 's/^-f content=//' | base64 -d
-}
-
-# assert_cleanup ID PREFIX -- both branches this filing could have created
-# were deleted before the function returned, the record branch and the
-# reservation alike (TD-PPagop-26082203). The record-branch DELETE is
-# asserted even where the branch-create call itself failed: the function
-# cannot tell a call that failed before writing the ref from one that wrote
-# it and failed to report so, and the redundant DELETE is a harmless 404.
-assert_cleanup() {
-  local id="$1" prefix="$2"
-  assert_eq "${prefix}an id was reserved to check cleanup against" "1" \
-    "$([[ -n "$id" ]] && echo 1 || echo 0)"
-  assert_eq "${prefix}td-record/<id> branch deleted" "1" \
-    "$(grep -c "api -X DELETE repos/o/r/git/refs/heads/td-record/$id" "$tmp_dir/calls")"
-  assert_eq "${prefix}td/<id> reservation released" "1" \
-    "$(grep -c "api -X DELETE repos/o/r/git/refs/heads/td/$id" "$tmp_dir/calls")"
+last_issue_body() {
+  cat "$tmp_dir/last-issue-body" 2>/dev/null || true
 }
 
 # ============================================================================
 # techdebt_file_debt
 # ============================================================================
 
-# --- Full success path -------------------------------------------------------
-remote="$(make_remote 0)"
-gd="$(a_git_dir "$remote")"
+# --- No dedup hit -> creates a labelled issue --------------------------------
 reset_stub
-out="$(techdebt_file_debt "o/r" "A finding worth filing" "The body." "while reviewing PR #618" "" "$gd")"
+out="$(techdebt_file_debt "o/r" "A finding worth filing" "The body." "while reviewing PR #618" "")"
 rc=$?
-assert_eq "file_debt success: exit 0" "0" "$rc"
-id="$(cut -f1 <<<"$out")"
-url="$(cut -f2 <<<"$out")"
-assert_eq "  ... id looks right" "1" "$([[ "$id" =~ ^TD-PPtest-[0-9]{6}[0-9a-z][0-9]$ ]] && echo 1 || echo 0)"
-assert_eq "  ... pr url returned" "https://github.com/o/r/pull/99" "$url"
-assert_eq "  ... exactly one git/refs POST" "1" \
-  "$(grep -c 'api -X POST repos/o/r/git/refs' "$tmp_dir/calls")"
-assert_eq "  ... exactly one contents PUT" "1" \
-  "$(grep -c "api -X PUT repos/o/r/contents/tech-debt/$id.md" "$tmp_dir/calls")"
-assert_eq "  ... exactly one pr create" "1" \
-  "$(grep -c '^<none> pr create ' "$tmp_dir/calls")"
-assert_eq "  ... branch is td-record/<id>, not td/<id>" "1" \
-  "$(grep -c "ref=refs/heads/td-record/$id" "$tmp_dir/calls")"
-# TD-PPagop-26082426: an unlabelled filing pull request is invisible to every
-# gatherer that filters on `pr_label`, silently in both directions -- the call
-# still succeeds and returns a URL -- so PR_LABEL omitted must still fall back
-# to a real label rather than none at all.
-assert_eq "  ... pr create carries the default label" "1" \
-  "$(grep -c '^<none> pr create .*--label autonomous-agent' "$tmp_dir/calls")"
-# DEFAULT_FIX/OWNER_DECISION omitted -> the record still carries a `##
-# Default` heading, filed as "not stated" rather than left out (agent-ops#938:
-# a malformed verdict is filed anyway, never lost).
+assert_eq "file_debt: no dedup hit, exit 0" "0" "$rc"
+assert_eq "  ... number/url returned" "77	https://github.com/o/r/issues/77" "$out"
+assert_eq "  ... exactly one issue list (the dedup search)" "1" \
+  "$(grep -c '^<none> issue list -R o/r --label pw::type:tech-debt --state open' "$tmp_dir/calls")"
+assert_eq "  ... exactly one issue create, labelled" "1" \
+  "$(grep -c -- '^<none> issue create -R o/r --title A finding worth filing .*--label pw::type:tech-debt$' "$tmp_dir/calls")"
+assert_eq "  ... no issue comment attempted" "0" "$(grep -c 'issue comment' "$tmp_dir/calls")"
+assert_eq "  ... the filed body carries BODY" "1" "$(last_issue_body | grep -c '^The body\.$')"
+assert_eq "  ... and the provenance line" "1" "$(last_issue_body | grep -c '^while reviewing PR #618$')"
+# No DEFAULT_FIX/OWNER_DECISION -> the body still carries a `## Default`
+# heading, filed as "not stated" rather than left out (agent-ops#938: a
+# malformed verdict is filed anyway, never lost).
 assert_eq "  ... no DEFAULT_FIX/OWNER_DECISION -> '## Default: not stated'" "1" \
-  "$(last_put_content | grep -c '^## Default: not stated$')"
-assert_eq "  ... and no 'Owner decision:' line" "0" \
-  "$(last_put_content | grep -c '^Owner decision:')"
+  "$(last_issue_body | grep -c '^## Default: not stated$')"
+assert_eq "  ... and no 'Owner decision:' line" "0" "$(last_issue_body | grep -c '^Owner decision:')"
 
 # --- DEFAULT_FIX/OWNER_DECISION (agent-ops#938) -----------------------------
-remote="$(make_remote 0)"
-gd="$(a_git_dir "$remote")"
 reset_stub
-techdebt_file_debt "o/r" "A finding with a default" "The body." "while reviewing PR #618" "" "$gd" \
-  "" "Do the smaller of the two fixes because it needs no schema change" >/dev/null
+techdebt_file_debt "o/r" "A finding with a default" "The body." "while reviewing PR #618" "" \
+  "Do the smaller of the two fixes because it needs no schema change" >/dev/null
 assert_eq "file_debt: DEFAULT_FIX alone -> heading carries it, no owner line" "1" \
-  "$(last_put_content | grep -c '^## Default: Do the smaller of the two fixes because it needs no schema change$')"
-assert_eq "  ... no 'Owner decision:' line" "0" \
-  "$(last_put_content | grep -c '^Owner decision:')"
+  "$(last_issue_body | grep -c '^## Default: Do the smaller of the two fixes because it needs no schema change$')"
+assert_eq "  ... no 'Owner decision:' line" "0" "$(last_issue_body | grep -c '^Owner decision:')"
 
-remote="$(make_remote 0)"
-gd="$(a_git_dir "$remote")"
 reset_stub
 techdebt_file_debt "o/r" "A finding that is an owner call" "The body." "while reviewing PR #618" \
-  "" "$gd" "" "Pick the vendor-locked option" "true" >/dev/null
+  "" "Pick the vendor-locked option" "true" >/dev/null
 assert_eq "file_debt: OWNER_DECISION true -> heading and 'Owner decision: yes' both present" "1" \
-  "$(last_put_content | grep -c '^## Default: Pick the vendor-locked option$')"
-assert_eq "  ... 'Owner decision: yes' beside it" "1" \
-  "$(last_put_content | grep -c '^Owner decision: yes$')"
+  "$(last_issue_body | grep -c '^## Default: Pick the vendor-locked option$')"
+assert_eq "  ... 'Owner decision: yes' beside it" "1" "$(last_issue_body | grep -c '^Owner decision: yes$')"
 
-remote="$(make_remote 0)"
-gd="$(a_git_dir "$remote")"
 reset_stub
 techdebt_file_debt "o/r" "An owner call with no stated default" "The body." "while reviewing PR #618" \
-  "" "$gd" "" "" "true" >/dev/null
+  "" "" "true" >/dev/null
 assert_eq "file_debt: OWNER_DECISION true alone -> still '## Default: not stated'" "1" \
-  "$(last_put_content | grep -c '^## Default: not stated$')"
+  "$(last_issue_body | grep -c '^## Default: not stated$')"
 assert_eq "  ... but 'Owner decision: yes' still present (verdict is not malformed)" "1" \
-  "$(last_put_content | grep -c '^Owner decision: yes$')"
-
-# --- An explicit PR_LABEL is passed through to `gh pr create` ---------------
-remote="$(make_remote 0)"
-gd="$(a_git_dir "$remote")"
-reset_stub
-techdebt_file_debt "o/r" "A labelled finding" "Body." "while reviewing PR #618" "" "$gd" \
-  "team-x-agent" >/dev/null
-assert_eq "file_debt: explicit PR_LABEL reaches pr create" "1" \
-  "$(grep -c '^<none> pr create .*--label team-x-agent' "$tmp_dir/calls")"
-# Nothing is left behind in GIT_DIR: its working tree still holds exactly the
-# deliberately-broken checked-out copy a_git_dir put there and nothing else.
-# That the extraction never lands there in the first place -- the invariant
-# IMPLEMENTATION-PIPELINE-SPEC.md's 23d and 42a both assert, which this
-# assertion alone cannot see, since a file written and then removed leaves the
-# same trace as one never written -- is asserted separately below.
-assert_eq "  ... no artefact left behind in GIT_DIR" "scripts/reserve-tech-debt-id.pl" \
-  "$( (cd "$gd" && find . -path ./.git -prune -o -type f -print) \
-      | sed 's|^\./||' | sort | paste -sd' ' - )"
+  "$(last_issue_body | grep -c '^Owner decision: yes$')"
 
 # --- A token is used for every gh call --------------------------------------
-remote="$(make_remote 0)"
-gd="$(a_git_dir "$remote")"
 reset_stub
-techdebt_file_debt "o/r" "Another finding" "Body." "while approving PR #7" "app-token-123" "$gd" >/dev/null
+techdebt_file_debt "o/r" "Another finding" "Body." "while approving PR #7" "app-token-123" >/dev/null
 assert_eq "file_debt with token: every call carries it" "0" \
   "$(grep -vc '^app-token-123 ' "$tmp_dir/calls")"
 
-# --- The reservation script is never extracted inside GIT_DIR ---------------
-# 23d/42a assert that GIT_DIR's checked-out branch and working tree are never
-# read or written -- only fetched into and run from. An extraction path inside
-# GIT_DIR would satisfy every other assertion here (the file is removed again
-# straight afterwards), so this is the one case that can see it: an
-# instrumented copy on the fixture remote reports the path it was actually run
-# from, which must be outside GIT_DIR, and its CWD, which must be inside.
-remote="$(make_remote probe)"
-gd="$(a_git_dir "$remote")"
+# --- Exact-title dedup hit -> comments on the existing issue, no create -----
 reset_stub
-export RESERVE_PROBE="$tmp_dir/reserve-probe"
-: > "$RESERVE_PROBE"
-out="$(techdebt_file_debt "o/r" "Probed finding" "Body." "while approving PR #9" "" "$gd")"
+jq -nc '[{number: 42, url: "https://github.com/o/r/issues/42", title: "A finding worth filing"}]' \
+  > "$tmp_dir/issue-list-response"
+out="$(techdebt_file_debt "o/r" "A finding worth filing" "New evidence." "while reviewing PR #900" "")"
 rc=$?
-probe_script="$(sed -n 1p "$RESERVE_PROBE")"
-probe_cwd="$(sed -n 2p "$RESERVE_PROBE")"
-unset RESERVE_PROBE
-# Perl's cwd() reports the physical path, so compare against GIT_DIR's own
-# resolved path rather than the (possibly symlinked) name mktemp handed back.
-gd_phys="$(cd "$gd" && pwd -P)"
-assert_eq "file_debt: instrumented reserve script ran, exit 0" "0" "$rc"
-assert_eq "  ... reserve script ran from outside GIT_DIR" "0" \
-  "$([[ -n "$probe_script" && "$probe_script" == "$gd_phys"/* ]] && echo 1 || echo 0)"
-assert_eq "  ... with a CWD inside GIT_DIR" "1" \
-  "$([[ "$probe_cwd" == "$gd_phys" || "$probe_cwd" == "$gd_phys"/* ]] && echo 1 || echo 0)"
+assert_eq "file_debt: exact-title dedup hit, exit 0" "0" "$rc"
+assert_eq "  ... existing number/url returned" "42	https://github.com/o/r/issues/42" "$out"
+assert_eq "  ... no issue create attempted" "0" "$(grep -c 'issue create' "$tmp_dir/calls")"
+assert_eq "  ... exactly one issue comment, on #42" "1" \
+  "$(grep -c '^<none> issue comment 42 -R o/r' "$tmp_dir/calls")"
+assert_eq "  ... the comment carries the new evidence" "1" "$(last_issue_body | grep -c '^New evidence\.$')"
+assert_eq "  ... and the new provenance line" "1" "$(last_issue_body | grep -c '^while reviewing PR #900$')"
 
-# --- No reserve script on origin/main -> fails cleanly ----------------------
-remote="$(make_remote 0)"
-# Overwrite the seed's remote with one whose origin/main carries no
-# scripts/ directory at all.
-root2="$(mktemp -d "$tmp_dir/noreserve-XXXXXX")"
-git init -q -b main --bare "$root2/remote.git"
-git init -q -b main "$root2/seed"
-echo "no policy here" > "$root2/seed/README.md"
-git -C "$root2/seed" remote add origin "$root2/remote.git"
-git -C "$root2/seed" add -A
-git -C "$root2/seed" commit -q -m fixture >/dev/null
-git -C "$root2/seed" push -q origin main
-gd="$(a_git_dir "$root2/remote.git")"
+# --- Case/punctuation-insensitive title match still dedups ------------------
 reset_stub
-out="$(techdebt_file_debt "o/r" "T" "B" "P" "" "$gd")"; rc=$?
-assert_eq "file_debt: no reserve script on origin/main -> exit 1" "1" "$rc"
+jq -nc '[{number: 43, url: "https://github.com/o/r/issues/43", title: "A Finding: Worth Filing!!"}]' \
+  > "$tmp_dir/issue-list-response"
+out="$(techdebt_file_debt "o/r" "a finding worth filing" "New evidence." "prov" "")"
+assert_eq "file_debt: normalised-title dedup hit (case/punctuation differ)" \
+  "43	https://github.com/o/r/issues/43" "$out"
+
+# --- Containment dedup, both titles >= 8 normalized characters -------------
+reset_stub
+jq -nc '[{number: 44, url: "https://github.com/o/r/issues/44", title: "lib/foo.sh leaks a file descriptor on the error path"}]' \
+  > "$tmp_dir/issue-list-response"
+out="$(techdebt_file_debt "o/r" "lib/foo.sh leaks a file descriptor" "New evidence." "prov" "")"
+assert_eq "file_debt: containment dedup hit (needle contained in existing title)" \
+  "44	https://github.com/o/r/issues/44" "$out"
+
+# --- Short titles never match by containment, only by exact equality -------
+reset_stub
+jq -nc '[{number: 45, url: "https://github.com/o/r/issues/45", title: "fix bug in the enormous legacy subsystem module"}]' \
+  > "$tmp_dir/issue-list-response"
+out="$(techdebt_file_debt "o/r" "fix bug" "New evidence." "prov" "")"
+rc=$?
+assert_eq "file_debt: a short needle does not match by containment, exit 0" "0" "$rc"
+assert_eq "  ... a fresh issue is filed instead (not the long unrelated one)" \
+  "77	https://github.com/o/r/issues/77" "$out"
+assert_eq "  ... no comment attempted" "0" "$(grep -c 'issue comment' "$tmp_dir/calls")"
+
+# --- A dedup hit still carries DEFAULT_FIX/OWNER_DECISION into the comment --
+reset_stub
+jq -nc '[{number: 46, url: "https://github.com/o/r/issues/46", title: "A repeatedly noticed gap"}]' \
+  > "$tmp_dir/issue-list-response"
+techdebt_file_debt "o/r" "A repeatedly noticed gap" "More evidence." "prov" "" \
+  "Pick the vendor-locked option" "true" >/dev/null
+assert_eq "file_debt: dedup comment carries the '## Default' heading" "1" \
+  "$(last_issue_body | grep -c '^## Default: Pick the vendor-locked option$')"
+assert_eq "  ... and 'Owner decision: yes'" "1" "$(last_issue_body | grep -c '^Owner decision: yes$')"
+
+# --- issue list fails (not an array) -> dedup skipped, files fresh ----------
+reset_stub
+printf 'not json' > "$tmp_dir/issue-list-response"
+out="$(techdebt_file_debt "o/r" "A finding" "Body." "prov" "")"
+rc=$?
+assert_eq "file_debt: dedup search unusable -> still files, exit 0" "0" "$rc"
+assert_eq "  ... number/url returned" "77	https://github.com/o/r/issues/77" "$out"
+
+# --- A repository with no pw::type:tech-debt label yet: labelled create ----
+# fails, retried unlabelled, exactly as techdebt_file_issue's own
+# pw::owner-decision retry (agent-ops#938/#1009).
+reset_stub
+: > "$tmp_dir/fail-labelled-issue-create"
+out="$(techdebt_file_debt "o/r" "A finding" "Body." "prov" "")"
+rc=$?
+assert_eq "file_debt: a refused labelled create is retried unlabelled, exit 0" "0" "$rc"
+assert_eq "  ... and the issue is still filed" "77	https://github.com/o/r/issues/77" "$out"
+assert_eq "  ... the labelled create was attempted first" "1" \
+  "$(grep -c -- '^<none> issue create .*--label pw::type:tech-debt' "$tmp_dir/calls")"
+assert_eq "  ... and the retry carried no label" "1" \
+  "$(grep -cE '^<none> issue create -R o/r --title A finding --body-file [^ ]+$' "$tmp_dir/calls")"
+
+# --- An unlabelled create that fails is not retried -> returns 1 -----------
+reset_stub
+: > "$tmp_dir/issue-url"
+out="$(techdebt_file_debt "o/r" "A finding" "Body." "prov" "")"
+rc=$?
+assert_eq "file_debt: create fails outright -> exit 1" "1" "$rc"
 assert_eq "  ... no output" "" "$out"
-assert_eq "  ... no gh calls made" "" "$(cat "$tmp_dir/calls")"
 
-# --- git/refs POST fails -> whole call fails, and releases the reservation --
-remote="$(make_remote 0)"
-gd="$(a_git_dir "$remote")"
+# --- No id reservation, no branch, no pull request are ever created --------
 reset_stub
-: > "$tmp_dir/fail-refs"
-out="$(techdebt_file_debt "o/r" "T" "B" "P" "" "$gd")"; rc=$?
-assert_eq "file_debt: branch-create fails -> exit 1" "1" "$rc"
-assert_eq "  ... no output" "" "$out"
-assert_eq "  ... no contents PUT attempted" "0" \
-  "$(grep -c 'contents/' "$tmp_dir/calls")"
-assert_cleanup "$(reserved_id)" "  ... "
-
-# --- contents PUT fails -> whole call fails, and cleans up both branches ----
-remote="$(make_remote 0)"
-gd="$(a_git_dir "$remote")"
-reset_stub
-: > "$tmp_dir/fail-contents"
-out="$(techdebt_file_debt "o/r" "T" "B" "P" "" "$gd")"; rc=$?
-assert_eq "file_debt: contents-write fails -> exit 1" "1" "$rc"
-assert_eq "  ... no output" "" "$out"
-assert_eq "  ... no pr create attempted" "0" "$(grep -c 'pr create' "$tmp_dir/calls")"
-assert_cleanup "$(reserved_id)" "  ... "
-
-# --- pr create fails -> whole call fails, and cleans up both branches -------
-remote="$(make_remote 0)"
-gd="$(a_git_dir "$remote")"
-reset_stub
-: > "$tmp_dir/pr-url"
-out="$(techdebt_file_debt "o/r" "T" "B" "P" "" "$gd")"; rc=$?
-assert_eq "file_debt: pr-create fails -> exit 1" "1" "$rc"
-assert_eq "  ... no output" "" "$out"
-assert_cleanup "$(reserved_id)" "  ... "
-
-# ============================================================================
-# _techdebt_unfile's own durability (TD-PPagop-26082427): a cleanup DELETE
-# that fails is not simply logged and swallowed -- it writes a marker into
-# the state repository, unless the branch is confirmed already gone.
-# ============================================================================
-
-# --- A cleanup DELETE fails and the branch is confirmed to still exist -----
-# -> a durable marker is written, under the ORDINARY login even though this
-# call itself carries a token (state_repo is a different repository than the
-# one the token was minted against). Glob patterns, not the id itself: the
-# real reserve-tech-debt-id.pl decides the id, unknowable before the call.
-remote="$(make_remote 0)"
-gd="$(a_git_dir "$remote")"
-reset_stub
-: > "$tmp_dir/pr-url"
-printf 'td/*\n' > "$tmp_dir/fail-delete-refs"
-state_repo="o/state"
-out="$(techdebt_file_debt "o/r" "T" "B" "P" "app-token-xyz" "$gd")"; rc=$?
-id="$(reserved_id)"
-unset state_repo
-assert_eq "unfile: pr-create fails, delete of td/<id> also fails -> exit 1" "1" "$rc"
-assert_eq "  ... a marker is written for the still-existing td/<id>" "1" \
-  "$(grep -c "api -X PUT repos/o/state/contents/reservation-releases/o__r/td__$id.json" "$tmp_dir/calls")"
-assert_eq "  ... the marker write used the ordinary login, not the token" "1" \
-  "$(grep -c "^<none> api -X PUT repos/o/state/contents/reservation-releases/o__r/td__$id.json" "$tmp_dir/calls")"
-assert_eq "  ... td-record/<id> (its delete succeeded) got no marker" "0" \
-  "$(grep -c "contents/reservation-releases/o__r/td-record__$id.json" "$tmp_dir/calls")"
-
-# --- A cleanup DELETE fails but the branch is confirmed already gone -------
-# (a peer already released it, or -- td-record/<id>'s own ordinary case --
-# the branch-create call itself never got that far) -> no marker.
-remote="$(make_remote 0)"
-gd="$(a_git_dir "$remote")"
-reset_stub
-: > "$tmp_dir/pr-url"
-printf 'td/*\ntd-record/*\n' > "$tmp_dir/fail-delete-refs"
-printf 'td/*\ntd-record/*\n' > "$tmp_dir/absent-refs"
-state_repo="o/state"
-out="$(techdebt_file_debt "o/r" "T" "B" "P" "" "$gd")"; rc=$?
-id="$(reserved_id)"
-unset state_repo
-assert_eq "unfile: both deletes fail but both branches confirmed absent -> exit 1" "1" "$rc"
-assert_eq "  ... td-record/<id> confirmed absent -> no marker" "0" \
-  "$(grep -c "contents/reservation-releases/o__r/td-record__$id.json" "$tmp_dir/calls")"
-assert_eq "  ... td/<id> confirmed absent -> no marker" "0" \
-  "$(grep -c "contents/reservation-releases/o__r/td__$id.json" "$tmp_dir/calls")"
-
-# --- No state_repo -> failed deletes still swallowed, no marker attempted --
-# Both cleanup DELETEs fail and neither branch is listed absent, so both
-# confirmations report the branch still there -- precisely the shape that
-# writes a marker in the first case above. The only thing keeping this pass
-# silent is `_techdebt_record_pending_release`'s own `state_repo` guard, so
-# the assertion below fails if that guard is ever dropped.
-remote="$(make_remote 0)"
-gd="$(a_git_dir "$remote")"
-reset_stub
-: > "$tmp_dir/pr-url"
-printf 'td/*\ntd-record/*\n' > "$tmp_dir/fail-delete-refs"
-out="$(techdebt_file_debt "o/r" "T" "B" "P" "" "$gd")"; rc=$?
-id="$(reserved_id)"
-assert_eq "unfile: no state_repo -> still exit 1 (function unaffected)" "1" "$rc"
-assert_eq "  ... the failing td/<id> delete was still attempted" "1" \
-  "$(grep -c "api -X DELETE repos/o/r/git/refs/heads/td/$id" "$tmp_dir/calls")"
-assert_eq "  ... no reservation-releases/ write attempted" "0" \
-  "$(grep -c 'contents/reservation-releases/' "$tmp_dir/calls")"
-
-# --- The confirmation's own 404 must not abort the cleanup under `set -e` --
-# This suite runs without `set -e`, but agent-cycle.sh -- the only real
-# caller -- does not, and there an assignment whose command substitution
-# fails aborts the shell outright. The 404 `_techdebt_release_ref` reads to
-# decide "this branch is already gone, no marker needed" is exactly such a
-# failure, and aborting on it would skip the `td/<id>` delete `_techdebt_unfile`
-# makes straight after -- leaking the very reservation the marker exists to
-# keep. So run the cleanup in its own strict shell and check both deletes are
-# still attempted.
-reset_stub
-printf 'td/*\ntd-record/*\n' > "$tmp_dir/fail-delete-refs"
-printf 'td/*\ntd-record/*\n' > "$tmp_dir/absent-refs"
-strict_out="$(bash -c '
-  set -euo pipefail
-  . "$1/lib/tech-debt-file.sh"
-  _techdebt_unfile "" "o/r" "TD-STRICT" /dev/null
-  echo survived
-' _ "$SCRIPT_DIR" 2>/dev/null)"
-assert_eq "unfile under set -e: survives the confirmation's own 404" "survived" "$strict_out"
-assert_eq "  ... td-record/<id> delete attempted" "1" \
-  "$(grep -c 'api -X DELETE repos/o/r/git/refs/heads/td-record/TD-STRICT' "$tmp_dir/calls")"
-assert_eq "  ... td/<id> reservation delete still reached" "1" \
-  "$(grep -c 'api -X DELETE repos/o/r/git/refs/heads/td/TD-STRICT' "$tmp_dir/calls")"
+techdebt_file_debt "o/r" "A finding" "Body." "prov" "" >/dev/null
+assert_eq "file_debt: never touches git/refs" "0" "$(grep -c 'git/refs' "$tmp_dir/calls")"
+assert_eq "  ... never calls pr create" "0" "$(grep -c 'pr create' "$tmp_dir/calls")"
 
 # ============================================================================
 # techdebt_file_issue

@@ -51,6 +51,17 @@
 #   reconciliation, the same shape techdebt_file_issue's own
 #   `pw::owner-decision` retry already has.
 #
+# TECHDEBT_RECORD_BRANCH_PREFIX — no longer minted by this file
+# (agent-ops#874 retired techdebt_file_debt's own td-record/<id> branch), but
+# kept here as a constant rather than deleted: scripts/sweep-orphan-branches.sh
+# and scripts/publish-tech-debt-archive.sh both source this file for it, to
+# sweep and audit any td-record/<id> branch/pull request a pre-#874 filing
+# already left behind, in a target repository this pipeline still gathers
+# from. Deleting the constant would break both scripts' own sourcing rather
+# than the (now dormant) minting it used to name.
+# shellcheck disable=SC2034  # read by scripts/sweep-orphan-branches.sh and scripts/publish-tech-debt-archive.sh, which source this file for it
+readonly TECHDEBT_RECORD_BRANCH_PREFIX="td-record/"
+
 # TOKEN, given to either function, files under that identity
 # (GH_TOKEN="$TOKEN") rather than the ordinary pipeline login — the
 # Approver's own posture never writes to GitHub under the pipeline's own
