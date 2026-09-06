@@ -434,7 +434,10 @@ R2c. **The fleet's memory and state publication.** After the lock and before
    `log.jsonl` unioned with every peer's, via `lib/fleet.sh`
    (`docs/IMPLEMENTATION-PIPELINE-SPEC.md`, requirement 2.5) — so the
    usage-limit checks below see a limit *any* node hit; the union is
-   re-snapshotted between repos. There is no lease: per-item claims
+   re-snapshotted between repos, and each snapshot is repaired on the terms of
+   that same requirement before anything reads it — a peer's NUL-holed line
+   costs this pipeline the records around it exactly as it costs a cycle's.
+   There is no lease: per-item claims
    (requirement 17a of the implementation spec) arbitrate work.
 
    Before the lock, reap `workspace_root` on the terms of the implementation

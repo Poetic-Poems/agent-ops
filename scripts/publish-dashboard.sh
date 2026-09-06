@@ -410,7 +410,18 @@ fi
 # below all show what the whole operation did, from any node's dashboard.
 # Events carry `node` (requirement 33); with no peers this reduces exactly
 # to the old local read.
-read_events() { fleet_logs "$state_dir" "$peers_dir" log.jsonl | jq -c -R 'fromjson? // empty' 2>/dev/null; }
+# read_events RAW — the union is materialised by its one caller and handed
+# here as a path rather than taken afresh, because what this parse drops is
+# only knowable by counting the same snapshot both before and after it
+# (agent-ops#794); a union read a second time counts what the pipelines
+# appended in between.
+read_events() { jq -c -R 'fromjson? // empty' "$1" 2>/dev/null; }
+
+# count_lines [PATH] — records present (stdin if PATH is omitted), whether or
+# not the last one ends in a newline (an unclean stop's own signature): `wc -l`
+# would silently undercount that line, which is exactly the kind of loss
+# agent-ops#794 exists to stop hiding.
+count_lines() { awk 'END{print NR}' "$@" 2>/dev/null || printf '0\n'; }
 
 gh_json() { timeout "$GH_TIMEOUT" "$DASHBOARD_GH_CMD" "$@" 2>/dev/null; }
 
@@ -784,7 +795,24 @@ JQDEFS
 # Consumers below still read `$ALL_EVENTS`; the ones on the per-tick hot path
 # read the file directly.
 events_jsonl="$work_tmp/events.jsonl"
-read_events > "$events_jsonl" 2>/dev/null || : > "$events_jsonl"
+raw_events_jsonl="$work_tmp/raw-events.jsonl"
+# The union lands raw first and is parsed *from the file*, rather than
+# `read_events` piping it straight through, because what `fromjson? // empty`
+# drops is only knowable by counting both sides — a NUL-holed line
+# `fleet_repair_log` hasn't reached yet (a peer not yet upgraded, or a race
+# between its repair and this read), or any other line malformed for some other
+# reason. Counted rather than left invisible (agent-ops#794). Both counts come
+# from the one snapshot, which is what makes the difference a fact about the
+# window rather than about how much the pipelines appended between two reads;
+# it also keeps this to a single `fleet_logs` — a second one is a whole extra
+# read-and-sort of the fleet's nine megabytes on the per-tick hot path, which
+# is the cost the file-not-a-pipe note above was written about in the first
+# place.
+fleet_logs "$state_dir" "$peers_dir" log.jsonl > "$raw_events_jsonl" 2>/dev/null \
+  || : > "$raw_events_jsonl"
+read_events "$raw_events_jsonl" > "$events_jsonl" 2>/dev/null || : > "$events_jsonl"
+dropped_log_lines=$(( $(count_lines "$raw_events_jsonl") - $(count_lines "$events_jsonl") ))
+(( dropped_log_lines >= 0 )) || dropped_log_lines=0
 # Only a full build still has consumers that want it as a string; filling it
 # costs a nine-megabyte read the fast path would never look at.
 ALL_EVENTS=""
@@ -3053,11 +3081,21 @@ fi  # FULL
 # — `{repo}` alone, no other keys — rather than silently vanishing from the
 # panel.
 revert_rate_repos_json="$(jq -c '[.repos[].slug]' <<<"$DEFAULTED_CONFIG" 2>/dev/null || printf '[]')"
-revert_rate_json="$(fleet_logs "$state_dir" "$peers_dir" revert-rate.jsonl \
-  | jq -c -R 'fromjson? // empty' | jq -s -c --argjson repos "$revert_rate_repos_json" '
+raw_revert_rate_jsonl="$work_tmp/raw-revert-rate.jsonl"
+fleet_logs "$state_dir" "$peers_dir" revert-rate.jsonl > "$raw_revert_rate_jsonl" 2>/dev/null \
+  || : > "$raw_revert_rate_jsonl"
+parsed_revert_rate_jsonl="$work_tmp/parsed-revert-rate.jsonl"
+jq -c -R 'fromjson? // empty' "$raw_revert_rate_jsonl" > "$parsed_revert_rate_jsonl" 2>/dev/null \
+  || : > "$parsed_revert_rate_jsonl"
+# What `fromjson? // empty` above dropped, same accounting as the log.jsonl
+# read (agent-ops#794).
+dropped_revert_rate_lines=$(( $(count_lines "$raw_revert_rate_jsonl") \
+    - $(count_lines "$parsed_revert_rate_jsonl") ))
+(( dropped_revert_rate_lines >= 0 )) || dropped_revert_rate_lines=0
+revert_rate_json="$(jq -s -c --argjson repos "$revert_rate_repos_json" '
       (group_by(.repo) | map(max_by(.ts))) as $latest
       | [ $repos[] as $slug | (($latest[] | select(.repo == $slug)) // {repo: $slug}) ]
-    ' 2>/dev/null)"
+    ' "$parsed_revert_rate_jsonl" 2>/dev/null)"
 jq -e 'type == "array"' <<<"$revert_rate_json" >/dev/null 2>&1 || revert_rate_json='null'
 
 # --- Assemble ----------------------------------------------------------------
@@ -3150,11 +3188,14 @@ data_json="$(jq -n \
   --argjson fleet_nodes "$fleet_nodes_json" \
   --argjson fleet_flags "$fleet_flags_json" \
   --arg max_prs "$max_open_agent_prs" \
+  --argjson dropped_log "$dropped_log_lines" \
+  --argjson dropped_rr "$dropped_revert_rate_lines" \
   '{generated_at: $generated_at, node: $self_node, config: $config, status: $status,
     counts: $counts[0], cycles: $cyc[0], noop_ticks: $noop, blocked: $blocked[0],
     void: $void[0], github: $gh[0], log_tail: $lt[0], landings: $landings[0],
     revert_rate: $rr[0], github_budget: $gb[0],
     cron_tail: $cron_tail, max_open_agent_prs: ($max_prs|tonumber),
+    log_repair: {dropped_log_lines: $dropped_log, dropped_revert_rate_lines: $dropped_rr},
     fleet: {nodes: $fleet_nodes, flags: $fleet_flags, claims: ($gh[0].claims // [])}}')"
 else
 # A fast build emits only the keys it actually recomputed and merges them over
@@ -3177,10 +3218,13 @@ fresh_json="$(jq -n \
   --argjson fleet_nodes "$fleet_nodes_json" \
   --argjson fleet_flags "$fleet_flags_json" \
   --arg max_prs "$max_open_agent_prs" \
+  --argjson dropped_log "$dropped_log_lines" \
+  --argjson dropped_rr "$dropped_revert_rate_lines" \
   '{generated_at: $generated_at, node: $self_node, status: $status,
     cycles: $cyc[0], noop_ticks: $noop, github: $gh[0], log_tail: $lt[0],
     revert_rate: $rr[0],
     cron_tail: $cron_tail, max_open_agent_prs: ($max_prs|tonumber),
+    log_repair: {dropped_log_lines: $dropped_log, dropped_revert_rate_lines: $dropped_rr},
     fleet: {nodes: $fleet_nodes, flags: $fleet_flags, claims: ($gh[0].claims // [])}}')"
 printf '%s' "$fresh_json" > "$work_tmp/fresh-payload.json"
 # `*` is jq's recursive merge: objects deepen, arrays and scalars are replaced

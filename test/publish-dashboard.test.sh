@@ -1031,6 +1031,47 @@ env HOME="$l" LAUNCHER_WINDOW=15 LAUNCHER_PUBLISH_CMD="$stub" \
 assert_lacks "an intact log gets no repair marker" "repaired: dropped" "$(cat "$launcher_log")"
 assert_contains "and keeps what it had" "nothing wrong here" "$(cat "$launcher_log")"
 
+# --- The same repair, generalised to state_dir's three JSONL logs (#794) ------
+# `dashboard.log` is plain text; these are `.jsonl`, so a repair record there
+# must itself be a JSON line — the same NUL run appended as a plain sentence
+# would be exactly what every `fromjson? // empty` reader silently drops,
+# reproducing the failure this exists to close.
+jsonl_dir="$l/.local/state/poetic-agents"
+for name in log.jsonl review-log.jsonl revert-rate.jsonl; do
+  target="$jsonl_dir/$name"
+  { printf '{"ts":"2026-08-08T16:36:00Z","event":"before"}\n'; printf '\0\0\0\0\0'; \
+    printf '{"ts":"2026-08-08T16:37:00Z","event":"after"}\n'; } > "$target"
+done
+env HOME="$l" LAUNCHER_WINDOW=15 LAUNCHER_PUBLISH_CMD="$stub" NODE_NAME=launcher-test-node \
+    TICK_LOG="$tick_log" GH_STAMP="$gh_stamp" "$LAUNCHER" >/dev/null 2>&1
+for name in log.jsonl review-log.jsonl revert-rate.jsonl; do
+  target="$jsonl_dir/$name"
+  assert_eq "$name: the hole is gone" "0" "$(tr -cd '\0' < "$target" | wc -c)"
+  assert_eq "$name: every line, including the repair record, is valid JSON" \
+    "3" "$(jq -s 'length' < "$target" 2>/dev/null)"
+  record="$(tail -n1 "$target")"
+  assert_eq "$name: the repair record is a JSON log-repaired event" "log-repaired" \
+    "$(jq -r '.event' <<<"$record")"
+  assert_eq "$name: the repair record counts the dropped bytes" "5" \
+    "$(jq -r '.dropped_nul_bytes' <<<"$record")"
+  assert_eq "$name: the repair record names this node" "launcher-test-node" \
+    "$(jq -r '.node' <<<"$record")"
+  assert_contains "$name: the lines around the hole survive" '"event":"before"' "$(cat "$target")"
+  assert_contains "$name: and after" '"event":"after"' "$(cat "$target")"
+done
+
+# An intact JSONL log is left exactly as it is too.
+: > "$tick_log"
+for name in log.jsonl review-log.jsonl revert-rate.jsonl; do
+  printf '{"ts":"2026-08-08T16:36:00Z","event":"fine"}\n' > "$jsonl_dir/$name"
+done
+env HOME="$l" LAUNCHER_WINDOW=15 LAUNCHER_PUBLISH_CMD="$stub" NODE_NAME=launcher-test-node \
+    TICK_LOG="$tick_log" GH_STAMP="$gh_stamp" "$LAUNCHER" >/dev/null 2>&1
+for name in log.jsonl review-log.jsonl revert-rate.jsonl; do
+  assert_eq "$name: an intact JSONL log gets no repair record appended" "1" \
+    "$(jq -s 'length' < "$jsonl_dir/$name")"
+done
+
 # --- The loop paces itself off what a tick actually costs (#799) ----------------
 # The loop used to sleep to the next 5-second boundary and no further, whatever
 # the tick before it had cost, on the assumption a tick fits in five seconds.
@@ -2792,6 +2833,50 @@ assert_eq "a repository with no revert-rate row yet still appears" \
   "1" "$(jq -c '[.revert_rate[] | select(.repo == "Poetic-Poems/poetic")] | length' <<<"$rrdata")"
 assert_eq "  ... with nothing but its own slug" \
   "true" "$(rr_row "Poetic-Poems/poetic" | jq 'keys == ["repo"]')"
+
+# --- Counting what fromjson? // empty silently drops (agent-ops#794) ----------
+# A NUL run the launcher hasn't reached yet (a peer not yet upgraded, or a race
+# between its repair and this read), or any other line malformed for some other
+# reason, is dropped by `fromjson? // empty` without a trace — until now. Both
+# reads that union a never-rotated log (log.jsonl via read_events, revert-
+# rate.jsonl below it) count what they drop and carry it as `log_repair` so a
+# human reading the page can tell "the log is short" from "nothing happened".
+dlg="$(new_home nodeDroppedLog)"
+{
+  printf '{"ts":"2026-08-08T16:36:00Z","node":"node-a","event":"cycle-start","cycle":"20260808T163600Z-node-a"}\n'
+  printf 'not valid json at all\n'
+  printf '{"ts":"2026-08-08T16:37:00Z","node":"node-a","event":"cycle-end","cycle":"20260808T163600Z-node-a"}\n'
+} > "$dlg/.local/state/poetic-agents/log.jsonl"
+run_publish "$dlg"
+dlgdata="$(data_of "$dlg")"
+assert_eq "one unparseable log.jsonl line is counted, not silently dropped" \
+  "1" "$(jq -r '.log_repair.dropped_log_lines' <<<"$dlgdata")"
+assert_eq "the valid events around it still reach the log tail (start)" \
+  "1" "$(jq -c '[.log_tail[] | select(.event == "cycle-start")] | length' <<<"$dlgdata")"
+assert_eq "  ... and (end)" \
+  "1" "$(jq -c '[.log_tail[] | select(.event == "cycle-end")] | length' <<<"$dlgdata")"
+assert_eq "revert-rate.jsonl's own count is independent and reads zero here" \
+  "0" "$(jq -r '.log_repair.dropped_revert_rate_lines' <<<"$dlgdata")"
+
+drr="$(new_home nodeDroppedRevertRate)"
+{
+  printf '{"ts":"%s","node":"node-a","event":"revert-rate","repo":"Poetic-Poems/agent-ops","window_days":14,"rolling":{"n":1,"reverts":0,"follow_up_fixes":0,"rate":null,"insufficient_samples":true,"min_samples":10},"cumulative":{"n":1,"reverts":0,"follow_up_fixes":0,"rate":0},"baseline":{"n":1,"reverts":0,"follow_up_fixes":1,"rate":1},"above_baseline":false}\n' "$rr_new"
+  printf 'garbage, not a revert-rate row\n'
+} > "$drr/.local/state/poetic-agents/revert-rate.jsonl"
+run_publish "$drr"
+drrdata="$(data_of "$drr")"
+assert_eq "one unparseable revert-rate.jsonl line is counted" \
+  "1" "$(jq -r '.log_repair.dropped_revert_rate_lines' <<<"$drrdata")"
+assert_eq "log.jsonl's own count is independent and reads zero here" \
+  "0" "$(jq -r '.log_repair.dropped_log_lines' <<<"$drrdata")"
+assert_eq "the valid revert-rate row still reaches the page" \
+  "1" "$(jq -c '[.revert_rate[] | select(.repo == "Poetic-Poems/agent-ops" and .node == "node-a")] | length' <<<"$drrdata")"
+
+# A clean window on both reads shows zero, not merely nothing.
+assert_eq "a clean log.jsonl reads zero dropped lines" \
+  "0" "$(jq -r '.log_repair.dropped_log_lines' <<<"$rrdata")"
+assert_eq "a clean revert-rate.jsonl reads zero dropped lines" \
+  "0" "$(jq -r '.log_repair.dropped_revert_rate_lines' <<<"$rrdata")"
 
 # --- The no-op short-circuit (#787) ----------------------------------------------
 # The heartbeat asks for a publish every five seconds. Before this, every one of

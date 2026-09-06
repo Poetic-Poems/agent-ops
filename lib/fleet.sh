@@ -81,3 +81,71 @@ fleet_logs() {  # <state_dir> <peers_dir> [log-basename]
   } 2>/dev/null | sort
   return 0
 }
+
+# fleet_repair_log <path> <node>
+# A container killed mid-append can leave a log's size recorded while the
+# data blocks behind the last few writes never reach disk: they read back as
+# NUL bytes. One NUL makes the whole file binary to grep, which then stops
+# printing matches for everything around it — so the damage is not the lost
+# lines but every later read of whatever survived. Strip the NUL run and
+# record what was dropped, rather than closing the gap silently: the loss is
+# a fact about the node worth keeping.
+#
+# A JSONL target (PATH ending `.jsonl`) gets a JSON repair record so every
+# `fromjson? // empty` reader still sees it; anything else (dashboard.log)
+# gets the plain-text line that predates this generalisation. A plain-text
+# line appended to a `.jsonl` file would be exactly what those readers
+# silently drop, reproducing the same "loss recorded nowhere" failure this
+# exists to close.
+#
+# A JSONL target needs more than the NUL bytes gone, because the run eats
+# whatever those blocks held — the newline separators inside it included. Strip
+# the bytes alone and what is left is the head of one record spliced onto the
+# whole of a later one, on one line: `jq -s` still aborts over the join
+# (`Expected separator between values` — the same refusal agent-ops#794 opened
+# on, in different words), and every `fromjson? // empty` reader still drops the
+# line with nothing saying so. Worse, a file whose tail was in flight when the
+# stop came ends mid-record with no closing newline, so the repair record itself
+# gets appended onto that stump and becomes the unparseable line — the one line
+# whose whole job is to say something was lost.
+#
+# So for a JSONL target the run becomes a line break rather than nothing, and
+# each resulting line survives only if it parses: the truncated stump goes, the
+# intact record the run ran into is recovered whole, and the file is left
+# something `jq -s` and an operator's grep can both read end to end. What went
+# is counted (`dropped_lines`) beside the bytes.
+#
+# Cost when there is nothing to do (the normal case) is one read of PATH and
+# no write; the rewrite is safe because every writer reopens by name per
+# append, so none holds a descriptor across the rename.
+fleet_repair_log() {
+  local target="$1" node="$2" size clean tmp split dropped lines
+  [[ -s "$target" ]] || return 0
+  size="$(stat -c %s "$target" 2>/dev/null)" || return 0
+  clean="$(tr -d '\0' < "$target" 2>/dev/null | wc -c)" || return 0
+  (( clean < size )) || return 0
+  dropped=$(( size - clean ))
+  tmp="$target.repair.$$"
+  if [[ "$target" == *.jsonl ]]; then
+    split="$target.split.$$"
+    # `-s` squeezes the run — and a newline the run happens to abut — down to
+    # the single separator the records either side of it are missing.
+    tr -s '\0' '\n' < "$target" > "$split" 2>/dev/null || { rm -f "$split"; return 0; }
+    jq -R -r 'select(try (fromjson | true) catch false)' "$split" > "$tmp" 2>/dev/null \
+      || { rm -f "$split" "$tmp"; return 0; }
+    lines=$(( $(awk '$0 != "" {n++} END{print n+0}' "$split" 2>/dev/null || echo 0) \
+        - $(awk 'END{print NR}' "$tmp" 2>/dev/null || echo 0) ))
+    (( lines >= 0 )) || lines=0
+    rm -f "$split"
+    jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg node "$node" \
+      --argjson dropped "$dropped" --argjson lines "$lines" \
+      '{ts: $ts, node: $node, event: "log-repaired", dropped_nul_bytes: $dropped,
+        dropped_lines: $lines}' >> "$tmp"
+  else
+    tr -d '\0' < "$target" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    printf '%(%Y-%m-%dT%H:%M:%S%z)T repaired: dropped %s NUL byte(s) — an unclean stop lost the log lines in flight\n' \
+      -1 "$dropped" >> "$tmp"
+  fi
+  mv -f "$tmp" "$target" 2>/dev/null || rm -f "$tmp"
+  return 0
+}

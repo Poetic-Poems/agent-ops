@@ -1343,6 +1343,16 @@
     return el("section", {}, [ el("h2", {text:title}), body ]);
   }
 
+  // A NUL run `fromjson? // empty` dropped from this window's read — either
+  // log.jsonl or revert-rate.jsonl — was, until now, lost with nothing
+  // anywhere saying so (agent-ops#794). Folded into the panel's own title
+  // rather than a separate badge: empty whenever the read that window was
+  // clean, which is the common case.
+  function droppedSuffix(n) {
+    if (!(n > 0)) return "";
+    return " — " + n + " corrupted line" + (n === 1 ? "" : "s") + " dropped this window";
+  }
+
   // Days' notice under which a fine-grained PAT's expiry earns an amber
   // badge (agent-ops#694) — must match TOKEN_EXPIRY_WARN_DAYS
   // (lib/token-expiry.sh), the same constant doctor.sh's own warn/ok split
@@ -3320,7 +3330,8 @@
     // ("revert rate ≤ baseline") is a fact this panel makes checkable at a
     // glance, on the day it stops holding, rather than only at a promotion
     // review.
-    app.appendChild(sectionOf("Revert rate by repository", revertRatePanel()));
+    app.appendChild(sectionOf("Revert rate by repository" +
+      droppedSuffix((D.log_repair || {}).dropped_revert_rate_lines), revertRatePanel()));
 
     // ---------- live claims ----------
     if (fleetVisible()) app.appendChild(sectionOf("Live claims", claimsPanel()));
@@ -3377,7 +3388,9 @@
     }
     app.appendChild(el("section", {}, [costWindowControl(), costgrid]));
 
-    app.appendChild(sectionOf(nodeFilter ? "Recent log events — " + nodeFilter + " only (click its card to clear)" : "Recent log events",
+    app.appendChild(sectionOf(
+      (nodeFilter ? "Recent log events — " + nodeFilter + " only (click its card to clear)" : "Recent log events") +
+        droppedSuffix((D.log_repair || {}).dropped_log_lines),
       logPanel()));
     app.appendChild(sectionOf("cron.log (tail)", cronPanel()));
 

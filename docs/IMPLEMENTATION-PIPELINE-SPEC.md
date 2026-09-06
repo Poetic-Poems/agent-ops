@@ -3363,7 +3363,15 @@ implements.
    union **once**, into `.fleet-log.jsonl` in its own record directory, so
    every reader downstream sees one consistent stream rather than a moving
    one; `union_log` names it, and requirement 39f's horizon is captured from
-   it immediately afterwards. The snapshot is scratch with a cycle's
+   it immediately afterwards. The snapshot is repaired the moment it is built
+   and before either of those (`fleet_repair_log`, `lib/fleet.sh`;
+   agent-ops#794): a peer that has not deployed that repair, or history it
+   replicated before it did, can still hand a NUL-holed line to a node whose
+   own logs are clean, and one such line costs every reader below the record
+   it fell in and the file's readability to `jq -s` and to grep along with it.
+   The repair is a no-op on an intact snapshot — the ordinary case — so the
+   repaired-record line it appends, and the horizon that line would then set,
+   arise only on a snapshot that was already damaged. The snapshot is scratch with a cycle's
    lifetime: it is read only through that variable, by the script that just
    wrote it, and never by a peer or by a later cycle. That is why it neither
    replicates nor outlives the derived-file retention above — it is a

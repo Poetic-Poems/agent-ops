@@ -154,6 +154,10 @@
     "inputs": {}
   },
   "log_tail": [],
+  "log_repair": {
+    "dropped_log_lines": 0,
+    "dropped_revert_rate_lines": 3
+  },
   "cron_tail": [
     "30 * * * *  /app/agent-cycle.sh"
   ],

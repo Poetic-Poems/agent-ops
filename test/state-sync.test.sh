@@ -708,6 +708,115 @@ assert_eq "a populated union with a peers directory never fetched (no marker at 
   "$(fleet_logs_healthy "$sb_state" "$no_marker_peers" "$union_log_file" >/dev/null 2>&1; echo $?)"
 
 # ==============================================================================
+# fleet_repair_log — NUL-run repair for the JSONL logs and dashboard.log alike
+# (agent-ops#794): a container killed mid-append leaves NUL bytes where the
+# last writes should be, which makes the whole file binary to grep/jq. The
+# repair clears them — for a `.jsonl` target, along with whatever record the
+# run left too truncated to parse, since the bytes alone gone still leaves a
+# join no reader can read — and records what was dropped, in a shape each
+# target format can actually still read: a JSON line for `.jsonl`, so no
+# `fromjson? // empty` reader silently swallows the record of its own repair,
+# and a plain-text line otherwise (the pre-existing dashboard.log behaviour).
+# ==============================================================================
+repair_text="$tmp_dir/repair-plain.log"
+{ printf 'before the hole\n'; printf '\0\0\0\0\0\0\0\0'; printf 'after the hole\n'; } > "$repair_text"
+fleet_repair_log "$repair_text" "repair-node"
+repaired_text="$(cat "$repair_text")"
+assert_eq "plain-text target: the hole is gone" "0" \
+  "$(tr -cd '\0' < "$repair_text" | wc -c)"
+assert_contains "plain-text target: the lines around it survive (before)" \
+  "before the hole" "$repaired_text"
+assert_contains "plain-text target: and after" "after the hole" "$repaired_text"
+assert_contains "plain-text target: the loss is recorded as a sentence, not JSON" \
+  "repaired: dropped 8 NUL byte(s)" "$repaired_text"
+
+repair_jsonl="$tmp_dir/repair-log.jsonl"
+{ printf '{"ts":"2026-08-08T16:36:00Z","event":"before"}\n'; printf '\0\0\0\0\0'; \
+  printf '{"ts":"2026-08-08T16:37:00Z","event":"after"}\n'; } > "$repair_jsonl"
+fleet_repair_log "$repair_jsonl" "repair-node"
+assert_eq "jsonl target: the hole is gone" "0" \
+  "$(tr -cd '\0' < "$repair_jsonl" | wc -c)"
+assert_eq "jsonl target: every line, including the repair record, is valid JSON" \
+  "3" "$(jq -s 'length' < "$repair_jsonl" 2>/dev/null)"
+repair_record="$(tail -n1 "$repair_jsonl")"
+assert_eq "jsonl target: the repair record itself parses as JSON" "1" \
+  "$(if jq -e . >/dev/null 2>&1 <<<"$repair_record"; then echo 1; else echo 0; fi)"
+assert_eq "jsonl target: the repair record names the event" "log-repaired" \
+  "$(jq -r '.event' <<<"$repair_record")"
+assert_eq "jsonl target: the repair record counts the dropped bytes" "5" \
+  "$(jq -r '.dropped_nul_bytes' <<<"$repair_record")"
+assert_eq "jsonl target: the repair record names the node" "repair-node" \
+  "$(jq -r '.node' <<<"$repair_record")"
+assert_eq "jsonl target: the repair record carries a ts" "true" \
+  "$(jq -r '(.ts | length) > 0' <<<"$repair_record")"
+assert_contains "jsonl target: the lines around the hole survive" \
+  '"event":"before"' "$(cat "$repair_jsonl")"
+assert_contains "jsonl target: and after" '"event":"after"' "$(cat "$repair_jsonl")"
+assert_eq "jsonl target: a hole that cost no whole record counts none dropped" "0" \
+  "$(jq -r '.dropped_lines' <<<"$repair_record")"
+
+# The shape agent-ops#794 was actually opened on: the run falls *inside* a
+# record, taking the newline that ended it with it. Removing the NUL bytes
+# alone would splice the truncated head onto the whole of the next record, on
+# one line — `jq -s` refuses that join exactly as it refused the NULs, which is
+# the abort the issue's own acceptance criterion names. The stump is
+# unrecoverable, so it goes and is counted; the intact record it ran into is
+# not, so it stays.
+mid_record="$tmp_dir/repair-mid-record.jsonl"
+{ printf '{"ts":"2026-08-08T16:00:00Z","cycle":"20260808T160000Z-node-a","event":"cycle-start"'
+  printf '\0%.0s' $(seq 60)
+  printf '{"ts":"2026-08-08T16:36:00Z","event":"cycle-end"}\n'
+  printf '{"ts":"2026-08-08T17:00:00Z","event":"later"}\n'; } > "$mid_record"
+assert_eq "jsonl target, run mid-record: jq -s refuses the file before repair" "refused" \
+  "$(if jq -s 'length' < "$mid_record" >/dev/null 2>&1; then echo read; else echo refused; fi)"
+fleet_repair_log "$mid_record" "repair-node"
+assert_eq "  ... and reads it whole afterwards" "3" \
+  "$(jq -s 'length' < "$mid_record" 2>/dev/null)"
+assert_eq "  ... the truncated head of the damaged record is gone" "0" \
+  "$(grep -c 'cycle-start' "$mid_record")"
+assert_eq "  ... the intact record the run ran into is kept, not dropped with it" "1" \
+  "$(jq -s '[.[] | select(.event == "cycle-end")] | length' < "$mid_record")"
+assert_eq "  ... and the record after it" "1" \
+  "$(jq -s '[.[] | select(.event == "later")] | length' < "$mid_record")"
+assert_eq "  ... the repair record counts the line that went" "1" \
+  "$(jq -r '.dropped_lines' <<<"$(tail -n1 "$mid_record")")"
+assert_eq "  ... alongside the bytes" "60" \
+  "$(jq -r '.dropped_nul_bytes' <<<"$(tail -n1 "$mid_record")")"
+
+# The commonest shape of all: the writes still in flight were the file's own
+# tail, so what survives ends mid-record with no closing newline. The repair
+# record has to start a line of its own — appended to the stump instead, the
+# one line whose job is to say something was lost would itself be the line no
+# reader can parse.
+tail_lost="$tmp_dir/repair-tail-lost.jsonl"
+{ printf '{"ts":"2026-08-08T16:36:00Z","event":"intact"}\n'
+  printf '{"ts":"2026-08-08T16:37:00Z","event":"tru'
+  printf '\0%.0s' $(seq 40); } > "$tail_lost"
+fleet_repair_log "$tail_lost" "repair-node"
+assert_eq "jsonl target, tail lost: jq -s reads the repaired file whole" "2" \
+  "$(jq -s 'length' < "$tail_lost" 2>/dev/null)"
+assert_eq "  ... the repair record is a line of its own, not appended to the stump" \
+  "log-repaired" "$(jq -r '.event' <<<"$(tail -n1 "$tail_lost")")"
+assert_eq "  ... and the intact record before it survives" "1" \
+  "$(jq -s '[.[] | select(.event == "intact")] | length' < "$tail_lost")"
+
+# An intact target of either format is left exactly as it is: no rewrite, no
+# repair record — repairing what was never holed would be its own false
+# report.
+intact_text="$tmp_dir/intact.log"
+printf 'nothing wrong here\n' > "$intact_text"
+fleet_repair_log "$intact_text" "repair-node"
+assert_eq "an intact plain-text target gets no repair marker" "0" \
+  "$(grep -c 'repaired: dropped' "$intact_text")"
+intact_jsonl="$tmp_dir/intact.jsonl"
+printf '{"ts":"2026-08-08T16:36:00Z","event":"fine"}\n' > "$intact_jsonl"
+fleet_repair_log "$intact_jsonl" "repair-node"
+assert_eq "an intact jsonl target gets no repair record" "1" \
+  "$(jq -s 'length' < "$intact_jsonl")"
+assert_eq "and no log-repaired event appears" "0" \
+  "$(jq -s '[.[] | select(.event == "log-repaired")] | length' < "$intact_jsonl")"
+
+# ==============================================================================
 # node identity in pipeline events (requirement 33, offline path)
 # ==============================================================================
 # The management switch logs through the same log_event as every pipeline

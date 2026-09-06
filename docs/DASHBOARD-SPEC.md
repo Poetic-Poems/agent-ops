@@ -72,9 +72,20 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   node's log unioned with every peer's fetched copy, via the same
   `lib/fleet.sh` read the pipelines use. Parsed line-by-line
   with `fromjson? // empty` so a half-written trailing line (the Script may be
-  appending) never aborts the parse. Blocked items use requirement 34's
-  semantics (most recent `attempt-failed`/`unblocked` per `repo`+`item`) *less*
-  the void set, which is requirement 34h's `open_blocked_items`; void items use
+  appending) never aborts the parse — and, separately, so a line a NUL run
+  (an unclean stop, "Integration" below) has made unparseable is dropped
+  rather than aborting the whole read. What that drop costs is not left
+  invisible: the union lands raw on disk once and is parsed from there, so both
+  line counts describe the one snapshot rather than two reads a pipeline's own
+  appends can separate, and the difference rides the payload as
+  `log_repair.dropped_log_lines`
+  (agent-ops#794) — the log tail panel's own title names it whenever it is
+  non-zero, "The Site" below. `revert-rate.jsonl`'s own read (below) is
+  counted the identical way, into `log_repair.dropped_revert_rate_lines`,
+  named the same way on the revert-rate panel's title. Blocked items use
+  requirement 34's semantics (most recent `attempt-failed`/`unblocked` per
+  `repo`+`item`) *less* the void set, which is requirement 34h's
+  `open_blocked_items`; void items use
   requirement 34c's (most recent `item-void`/`unvoided`). Both come
   from the shared library, never from a local copy of the rule. With no peers
   the union reduces exactly to the old local read. Each blocked row is joined
@@ -563,12 +574,12 @@ So a tick has two kinds, and `--fast` chooses:
   separate clock, and nothing that can drift out of step with the one cadence
   guaranteed to run.
 - A **fast build** recomputes only what moves between ticks — `status`,
-  `cycles`, `log_tail`, `cron_tail`, `fleet`, `revert_rate` — and merges those
-  keys over the last full payload. The history roll-ups (`counts` and its
-  verdict-quality, model-selection and classifier-escape enrichments, `blocked`,
-  `void`, `landings`, `github_budget`, and the stage budgets inside `config`)
-  are not computed at all: they read the fleet's whole history and change on
-  the scale of cycles, not ticks.
+  `cycles`, `log_tail`, `cron_tail`, `fleet`, `revert_rate`, `log_repair` —
+  and merges those keys over the last full payload. The history roll-ups
+  (`counts` and its verdict-quality, model-selection and classifier-escape
+  enrichments, `blocked`, `void`, `landings`, `github_budget`, and the stage
+  budgets inside `config`) are not computed at all: they read the fleet's
+  whole history and change on the scale of cycles, not ticks.
 
 A fast build emits only the keys it recomputed and merges them **over** the
 cached payload rather than assembling a whole object from variables the skipped
@@ -1765,13 +1776,33 @@ number's twins elsewhere on the page.
   (`LAUNCHER_WINDOW` shortens the window, `LAUNCHER_PUBLISH_CMD` swaps in a
   stub Publisher, and `LAUNCHER_DUTY_DIVISOR` sets the pacing ratio, for the
   test suite only — cron runs every default). Each window also opens by
-  repairing its own log: a container killed mid-append leaves the
-  file's size recorded with the last writes' data blocks missing, and they read
-  back as NULs. The lost lines are lost, but one NUL makes the whole file
-  binary, and grep then stops printing matches for every intact line around it
-  — GNU grep says "binary file matches", ugrep says nothing at all and exits 1.
-  The launcher strips them and appends a line recording how many bytes went, so
-  the loss stays on the record instead of being closed over silently.
+  repairing `dashboard.log` and, alongside it, `state_dir`'s three other
+  never-rotated logs — `log.jsonl`, `review-log.jsonl` and
+  `revert-rate.jsonl` (agent-ops#794, `fleet_repair_log`, `lib/fleet.sh`): a
+  container killed mid-append leaves the file's size recorded with the last
+  writes' data blocks missing, and they read back as NULs. The lost lines are
+  lost, but one NUL makes the whole file binary, and grep then stops printing
+  matches for every intact line around it — GNU grep says "binary file
+  matches", ugrep says nothing at all and exits 1. The repair clears them and
+  appends a record of what went, so the loss stays on the record
+  instead of being closed over silently — a plain-text line for
+  `dashboard.log`, and, since a plain-text line appended to a JSONL file is
+  exactly what every `fromjson? // empty` reader silently drops, a JSON line
+  (`{"ts", "node", "event": "log-repaired", "dropped_nul_bytes",
+  "dropped_lines"}`) for the other three. For a JSONL target the bytes alone
+  are not enough: the run takes the newline separators inside it too, so
+  deleting just the NULs splices the head of one record onto the whole of a
+  later one and `jq -s` still refuses the file over the join — and a file whose
+  own tail was in flight ends mid-record, which would make the appended repair
+  record itself the unparseable line. So the run becomes the line break it
+  destroyed, and each line either side survives only if it parses: the
+  truncated stump goes and is counted in `dropped_lines`, the intact record the
+  run ran into is recovered, and `jq -s` reads the whole file afterwards.
+  `agent-cycle.sh` and `review-cycle.sh` apply the identical
+  repair to their own per-cycle/per-review `.fleet-log.jsonl` union snapshot,
+  immediately after building it and before anything reads it — a peer that
+  has not deployed this repair yet, or history replicated before it did, can
+  still hand a NUL-holed line to a node whose own logs are already clean.
 
 ## Components (as built)
 
