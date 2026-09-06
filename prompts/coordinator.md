@@ -226,9 +226,10 @@ heading, the Script gives you one JSON object:
   (treat it exactly like a fresh repo with empty bands, not as evidence of
   anything). None of this changes what counts as a candidate or how you rank
   one: a non-fresh entry's arrays are exactly as real as a fresh one's. It
-  changes what you owe before you *select* one — see "Trimmed entries must be
-  read live before you select them" below, which this same obligation now
-  covers a second way.
+  changes what you owe before you *select* one — see "A non-fresh
+  `review-feedback`/`merge-conflicts`/`dequeued`/`abandoned-drafts` entry must
+  be read live before you select it" below, which is where staleness, rather
+  than shortness, is what a live read buys you.
 - Each entry's `issues_excluded` is the number and reason for every issue the
   Script's own deterministic filter just dropped from `issues` above —
   `{"number": 125, "reason": "assigned" | "blocked-label" | "blocked-by: <ref>"}`
@@ -1644,7 +1645,8 @@ the problem this change exists to close never applied to them.
   are Script-composed from a fresh live read of the whole thread (see
   above) — nothing to write for either, and no need to read the thread live
   yourself before selecting it purely to compose them (you may still want to,
-  for your own judgement about scope — see "Trimmed entries" below).
+  for your own judgement about scope — see "Trimmed entries" under "Tools and
+  constraints" above).
 - For a `project-review` recommendation, `item` is its ref
   (`review-<date>-R-NN`) and `context` must paste the recommendation's
   improvement prompt (from `04-improvement-prompts.md`) verbatim, plus the

@@ -870,7 +870,7 @@ item_text_supply() {  # <candidate-json> <trimmed-json>
 # `repos/<repo>/contents/tech-debt/<item>.md` content read): that path
 # predates the migration and treats `item` as a register filename rather
 # than an issue number, a pre-existing mismatch tracked separately
-# (TD-PPagop-26090603) rather than carried into this new call site.
+# (TD-PPagop-26090605) rather than carried into this new call site.
 #
 # Prints `{title, body, comments: [{author, created_at, body}]}` on success —
 # the same field names scripts/gather-issues.sh's own band entry uses, so the
@@ -927,9 +927,17 @@ CANDIDATE_ENTRY_LOOKUP_JQ='
 # (lib/stage-attempt.sh:478-579) — the working precedent agent-ops#769 names
 # — applied here to one live-or-pre-fetched entry instead of mapped across a
 # whole band. Wording is kept identical to that function's own strings except
-# where its "(script-fallback selection)" framing would be false of an
-# ordinary Co-Ordinator pick — `security`/`code-quality` are the only two
-# that said so.
+# in two places, both where copying it would state something false here:
+# `security`/`code-quality`'s "(script-fallback selection)" framing, which an
+# ordinary Co-Ordinator pick is not; and `tech-debt`, whose entry the fallback
+# reduces to its `body` alone. A tech-debt item has been a GitHub issue since
+# the register's D15 migration, `item_live_entry` above fetches its whole
+# thread, and a clarification or scope cut left in one of its comments is
+# exactly the text agent-ops#769 exists to stop losing — so it is composed
+# through `issue_ctx`, the same as `issues`, and its `acceptance` names the
+# current state of that thread rather than the record as originally filed.
+# The fallback keeps its own narrower wording because it composes from a band
+# entry it never re-reads, so it has no thread in hand to name.
 # shellcheck disable=SC2016  # jq's own $source/$item, bound via --arg below — not the shell's.
 CANDIDATE_TEMPLATE_JQ='
   def issue_ctx: "Issue #" + $item + ": " + (.title // "") + "\n\n"
@@ -939,8 +947,8 @@ CANDIDATE_TEMPLATE_JQ='
     {title: ("Issue #" + $item + ": " + (.title // "")), context: issue_ctx,
      acceptance: "Resolve per the current state of the issue thread above (body and every comment), not just the opening post."}
   elif $source == "tech-debt" then
-    {title: (.title // ""), context: (.body // ""),
-     acceptance: "Resolve per the tech-debt record verbatim above; standard tech-debt closing procedure applies."}
+    {title: (.title // ""), context: issue_ctx,
+     acceptance: "Resolve per the current state of the tech-debt issue thread above (body and every comment), not just the record as originally filed; standard tech-debt closing procedure applies."}
   elif $source == "security" then
     {title: (.title // ""),
      context: ("Security finding.\nkind: " + (.kind // "") + "\nseverity: " + (.severity // "")

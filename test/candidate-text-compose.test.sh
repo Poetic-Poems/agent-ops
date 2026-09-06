@@ -175,6 +175,35 @@ out_spec="$(compose_selected_candidate_text "$cand" "$repos" "$refinements_with_
 assert_contains "the recorded refinement spec is spliced into the freshly composed context" \
   "$(jq -r '.context' <<<"$out_spec")" "The Refiner's own specification for this item."
 
+# --- compose_selected_candidate_text: tech-debt is composed from the whole ---
+# --- live thread, not the body alone -----------------------------------------
+#
+# A tech-debt item has been a GitHub issue since the register's D15 migration,
+# so a clarification or scope cut left in one of its comments is exactly the
+# text agent-ops#769 exists to stop losing. `fallback_select_candidate`'s own
+# `td_cands` reduces the entry to its `body`, because it has only the band
+# entry to compose from; this path holds the whole thread and must use it.
+
+repos_td='[{"slug":"o/r","tech_debt":[{"number":42,"ref":"42","title":"TD title","body":"…[Script: elided 900 of 1000 bytes to fit the context window — read it whole at https://x]","comments":[]}]}]'
+cand_td='{"repo":"o/r","default_branch":"main","pr_label":"autonomous-agent","source":"tech-debt","item":"42","model":"claude-sonnet-5","model_reason":"stub"}'
+
+reset_gh_calls
+GH_RC=0
+GH_LIVE_JSON='{"title":"The real record title","body":"The real record body","comments":[{"author":"carol","created_at":"2026-08-03T00:00:00Z","body":"on reflection, only fix the first half"}]}'
+out_td="$(compose_selected_candidate_text "$cand_td" "$repos_td" "$refinements")"
+rc=$?
+assert_eq "compose_selected_candidate_text (tech-debt) succeeds" "0" "$rc"
+assert_eq "…exactly one gh call (the live fetch)" "1" "$(gh_calls)"
+assert_contains "…context carries the live, untrimmed body" "$(jq -r '.context' <<<"$out_td")" "The real record body"
+assert_contains "…and every comment, attributed — a scope cut left in one is not dropped" \
+  "$(jq -r '.context' <<<"$out_td")" "carol (2026-08-03T00:00:00Z):
+on reflection, only fix the first half"
+assert_eq "…never the trimmed band entry's elision marker" "" \
+  "$(jq -r '.context' <<<"$out_td" | grep -o 'Script: elided' || true)"
+assert_eq "…title is the record's own, unprefixed" "The real record title" "$(jq -r '.title' <<<"$out_td")"
+assert_contains "…acceptance names the current state of the thread, not the record as filed" \
+  "$(jq -r '.acceptance' <<<"$out_td")" "body and every comment"
+
 # --- compose_selected_candidate_text: a failed live fetch is fail-closed ---
 
 reset_gh_calls

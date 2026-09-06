@@ -38,6 +38,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a container can read its cgroup but never write it, so detection is the
   whole of what this repository can contribute.
 
+### Changed
+
+- **The Script, not the Co-Ordinator, now composes a work order's `context`,
+  `acceptance` and `title`** (requirement 17h, `compose_selected_candidate_text`
+  in `lib/candidate-select.sh`) — agent-ops#769, resolving the escalation at
+  agent-ops#844 with the owner's decision for option (b). For the ten sources
+  the Script already gathers as structured data (`security`, `code-quality`,
+  `review-feedback`, `merge-conflicts`, `dequeued`, `abandoned-drafts`,
+  `human-visibility`, `register-hygiene`, `tech-debt`, `issues`) the
+  Co-Ordinator now selects `{repo, source, item}` and nothing else: the Script
+  builds the three text fields itself immediately before the claim, from a
+  fresh `gh issue view` for `issues`/`tech-debt` — the only two bands the fit
+  ladder (requirement 4i) ever trims — and from the never-trimmed pre-fetched
+  band entry for the other eight, using the same per-source template
+  `fallback_select_candidate` (requirement 3v) already used. The recorded
+  refinement is spliced in unconditionally rather than checked for, generalising
+  agent-ops#767. A failed live read, or a candidate naming an item this cycle's
+  own gather no longer holds, is a fail-closed skip under requirement 17f's
+  existing `untraceable` cause — never a fallback to a trimmed or stale entry.
+  `coordinator_model` stays `claude-haiku-4-5-20251001`; its job narrows to
+  selection.
+
+  The arrangement this ends: the cheapest model in the fleet was asked to
+  reproduce kilobytes of text verbatim out of input its own fit ladder had
+  already trimmed, and requirements 17f/17g could only ever catch that failing
+  after the fact — agent-ops#821 measured one work order whose `context`
+  reproduced an issue to the truncation point and then continued into a section
+  that appears nowhere in the issue. The three sources the Co-Ordinator still
+  derives itself live — `project-review`, `failed-runs`, `implementation-plan`
+  — are unaffected: they have no pre-fetched band to compose from and were
+  never subject to the trimming.
+
 ### Fixed
 
 - `scripts/gather-source-state.sh` now pages its open-issue and open-PR

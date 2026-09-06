@@ -8439,7 +8439,15 @@ implements.
       `bot`/`rebase_requested` both true) is templated on its own terms —
       naming the replacement pull request and the bot's own closure — never
       the ordinary rebase instruction, since a takeover is fresh work on a new
-      branch, not a finish of the existing one.
+      branch, not a finish of the existing one. `tech-debt` is the one source
+      whose wording deliberately departs from the fallback's: the fallback
+      reduces a tech-debt entry to its `body` alone, having only the band
+      entry to compose from, where this requirement's live read holds the
+      whole issue thread — so it is composed through the same body-and-every-
+      comment shape as `issues`, and its `acceptance` names the current state
+      of that thread rather than the record as originally filed. A
+      clarification or scope cut left in a tech-debt issue's comments is
+      exactly the text this requirement exists to stop losing.
     - **The recorded refinement is spliced unconditionally, generalising
       agent-ops#767.** `refinement_traceability_repair` — the repair half of
       requirement 17f — is called on every freshly composed candidate,
