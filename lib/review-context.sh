@@ -59,16 +59,18 @@ review_context_resolve_path() {
 # Prints one `slug<TAB>field<TAB>configured<TAB>resolved` line per configured
 # review_instructions/review_context entry (from config_project_review_repos'
 # already-resolved, requirement-342-applied output) that does not resolve to
-# a readable file. Empty when every configured entry, across every
-# repository, is readable — including the vacuous case of nobody configuring
-# either key.
+# a readable *regular file* — a directory is readable and contributes nothing
+# but an empty entry, which is exactly the silent shortfall R1c exists to
+# refuse. Empty when every configured entry, across every repository,
+# resolves — including the vacuous case of nobody configuring either key.
 review_context_missing_configured() {
   local state_dir="$1" repos_json="$2"
   local slug field raw resolved
   while IFS=$'\t' read -r slug field raw; do
     [[ -n "$raw" ]] || continue
     resolved="$(review_context_resolve_path "$state_dir" "$raw")"
-    [[ -r "$resolved" ]] || printf '%s\t%s\t%s\t%s\n' "$slug" "$field" "$raw" "$resolved"
+    [[ -f "$resolved" && -r "$resolved" ]] \
+      || printf '%s\t%s\t%s\t%s\n' "$slug" "$field" "$raw" "$resolved"
   done < <(jq -r '
     .[] | .slug as $s |
     ((.review_instructions // [])[] | [$s, "review_instructions", .] | @tsv),
@@ -88,7 +90,7 @@ review_context_missing_configured() {
 # absence (repo_context_file, which is allowed to not exist).
 _review_context_entry() {
   local source="$1" origin="$2" file="$3" size truncated=false bytes digest
-  [[ -r "$file" ]] || return 0
+  [[ -f "$file" && -r "$file" ]] || return 0
   size="$(wc -c < "$file" 2>/dev/null || echo 0)"
   (( size > REVIEW_CONTEXT_SOURCE_MAX_BYTES )) && truncated=true
   local capped
@@ -98,6 +100,26 @@ _review_context_entry() {
   jq -n --arg source "$source" --arg origin "$origin" --arg text "$capped" \
     --argjson truncated "$truncated" --argjson bytes "$bytes" --arg digest "$digest" \
     '{source: $source, origin: $origin, text: $text, truncated: $truncated, bytes: $bytes, digest: $digest}'
+}
+
+# _review_context_within_clone CLONE_DIR PATH
+# True when PATH names a file whose bytes genuinely live inside CLONE_DIR:
+# PATH itself is not a symlink, and the directory holding it canonicalises
+# (`cd` + `pwd -P`, which resolves every symlinked component) to CLONE_DIR
+# itself or something under it. `cd`/`pwd -P` rather than `realpath` because
+# they are shell builtins and this repo depends on neither `realpath` nor
+# `readlink -f` outside scripts/gh-shim.sh. Applies only to
+# repo_context_file: the two configured keys name installation-held paths,
+# which are not inside a clone at all and are checked by
+# review_context_missing_configured instead.
+_review_context_within_clone() {
+  local clone_dir="$1" path="$2" clone_real dir_real
+  [[ ! -L "$path" ]] || return 1
+  clone_real="$(cd "$clone_dir" 2>/dev/null && pwd -P)" || return 1
+  [[ -n "$clone_real" ]] || return 1
+  dir_real="$(cd "$(dirname "$path")" 2>/dev/null && pwd -P)" || return 1
+  [[ -n "$dir_real" ]] || return 1
+  [[ "$dir_real" == "$clone_real" || "$dir_real" == "$clone_real"/* ]]
 }
 
 # review_context_build_json STATE_DIR CLONE_DIR ENTRY_JSON
@@ -141,8 +163,22 @@ review_context_build_json() {
   # absent file — repo_context_file is never a fail-fast key (D7).
   if [[ -n "$repo_context_file" && "$repo_context_file" != /* && "$repo_context_file" != *".."* ]]; then
     rp="$clone_dir/$repo_context_file"
-    one="$(_review_context_entry repository "$repo_context_file" "$rp")" || one=""
-    [[ -n "$one" ]] && context="$(jq -c --argjson e "$one" '. + [$e]' <<<"$context")"
+    # …and the *bytes* must come from inside the clone too, not merely the
+    # path naming them. The file at that path is under the reviewed
+    # repository's own control, so a contributor can commit it as a symlink
+    # — `.github/REVIEW-CONTEXT.md -> ../../../../.config/gh/hosts.yml` —
+    # and both `-r` and `head -c` follow it out of the clone and into
+    # whatever this process can read. That would turn D7's boundary
+    # ("repository-held text is context, never instruction") into a
+    # statement about the configured path rather than about the text
+    # actually read, and the reader is a model whose output lands in a
+    # public report in that same repository. `_review_context_within_clone`
+    # is what makes the boundary a fact about the bytes; failing it is
+    # treated exactly as `..` is, silently not configured.
+    if _review_context_within_clone "$clone_dir" "$rp"; then
+      one="$(_review_context_entry repository "$repo_context_file" "$rp")" || one=""
+      [[ -n "$one" ]] && context="$(jq -c --argjson e "$one" '. + [$e]' <<<"$context")"
+    fi
   fi
 
   jq -nc --argjson i "$instructions" --argjson c "$context" '{instructions: $i, context: $c}'

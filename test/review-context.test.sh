@@ -149,6 +149,52 @@ built_traversal="$(review_context_build_json "$state_dir" "$clone_dir" "$entry_t
 assert_eq "a repo_context_file containing .. contributes nothing, rather than escaping the clone" \
   '{"instructions":[],"context":[]}' "$(jq -c . <<<"$built_traversal")"
 
+# --- Symlink escape: the path is installation-configured, but the *file* it
+#     names is under the reviewed repository's own control, so bounding the
+#     configured string is not enough — the bytes have to come from inside
+#     the clone too, or D7's boundary is a statement about the path rather
+#     than about the text a model is handed. Refused the same silent way. ---
+printf 'installation secret\n' > "$tmp_dir/secret.txt"
+ln -s ../../secret.txt "$clone_dir/.github/ESCAPE.md"
+entry_symlink='{"review_instructions":[],"review_context":[],"repo_context_file":".github/ESCAPE.md"}'
+built_symlink="$(review_context_build_json "$state_dir" "$clone_dir" "$entry_symlink")"
+assert_eq "a repo_context_file that is a symlink out of the clone contributes nothing" \
+  '{"instructions":[],"context":[]}' "$(jq -c . <<<"$built_symlink")"
+
+mkdir -p "$tmp_dir/outside-dir"
+printf 'also outside\n' > "$tmp_dir/outside-dir/CTX.md"
+ln -s ../outside-dir "$clone_dir/linked"
+entry_symlink_dir='{"review_instructions":[],"review_context":[],"repo_context_file":"linked/CTX.md"}'
+built_symlink_dir="$(review_context_build_json "$state_dir" "$clone_dir" "$entry_symlink_dir")"
+assert_eq "a repo_context_file reached through a symlinked directory contributes nothing" \
+  '{"instructions":[],"context":[]}' "$(jq -c . <<<"$built_symlink_dir")"
+
+printf 'genuinely in the clone\n' > "$clone_dir/REAL-CONTEXT.md"
+ln -s REAL-CONTEXT.md "$clone_dir/ALIAS-CONTEXT.md"
+entry_symlink_inside='{"review_instructions":[],"review_context":[],"repo_context_file":"ALIAS-CONTEXT.md"}'
+built_symlink_inside="$(review_context_build_json "$state_dir" "$clone_dir" "$entry_symlink_inside")"
+assert_eq "even a symlink pointing back inside the clone is refused — a symlink is never followed" \
+  '{"instructions":[],"context":[]}' "$(jq -c . <<<"$built_symlink_inside")"
+
+entry_real_inside='{"review_instructions":[],"review_context":[],"repo_context_file":"REAL-CONTEXT.md"}'
+built_real_inside="$(review_context_build_json "$state_dir" "$clone_dir" "$entry_real_inside")"
+assert_json_eq "…while the ordinary regular file the symlink pointed at is admitted as usual" \
+  '.context | length == 1 and .[0].source == "repository" and .[0].origin == "REAL-CONTEXT.md"' \
+  "$built_real_inside"
+
+# --- A configured review_instructions/review_context path that names a
+#     directory is `missing`, not a silently empty source: a directory is
+#     readable, so the readable-file test R1c states has to mean a *regular*
+#     file or the fail-fast promise is hollow. ---
+mkdir -p "$state_dir/a-directory"
+repos_dir='[{"slug":"a/b","review_instructions":["a-directory"],"review_context":[]}]'
+assert_eq "a configured path naming a directory is reported missing, not accepted" \
+  "1" "$(review_context_missing_configured "$state_dir" "$repos_dir" | wc -l)"
+entry_dir='{"review_instructions":["a-directory"],"review_context":[],"repo_context_file":""}'
+built_dir="$(review_context_build_json "$state_dir" "$clone_dir" "$entry_dir")"
+assert_eq "…and contributes no empty instructions entry either" \
+  '{"instructions":[],"context":[]}' "$(jq -c . <<<"$built_dir")"
+
 # --- Size cap and truncation flag: a fixed bound, with truncated set rather
 #     than the text silently trimmed without saying so ---
 python3 -c "import sys; sys.stdout.write('x' * (${REVIEW_CONTEXT_SOURCE_MAX_BYTES} + 500))" > "$state_dir/big.md"

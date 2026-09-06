@@ -208,8 +208,8 @@ never a fault.
 Delivery: `review-cycle.sh` resolves every source for the repository about to
 be reviewed and appends two fields to the Reviewer-Agent's runtime input
 (R5 step 2a) — `instructions` and `context`, each an array of `{source,
-origin, text, truncated}` objects, `source` one of `"config"` or
-`"repository"` and `origin` the configured or repository-relative path the
+origin, text, truncated, bytes, digest}` objects, `source` one of `"config"`
+or `"repository"` and `origin` the configured or repository-relative path the
 text came from. Each source is capped at a fixed size
 (`REVIEW_CONTEXT_SOURCE_MAX_BYTES`, `lib/review-context.sh`), with `truncated`
 set rather than the text silently trimmed without saying so. The
@@ -378,7 +378,10 @@ R1c. **Review-instructions/context path validation (issue #589, D7).** Every
    position as the model check above: `lib/review-context.sh`'s
    `review_context_missing_configured` resolves each path against `state_dir`
    (on the same terms as `prompt_overrides`' `extend`, requirement 4a) and
-   names every one that is not readable. Unlike a `prompt_overrides` path,
+   names every one that is not a readable *regular file* — a directory is
+   readable and would contribute an empty source rather than the text the
+   operator configured, which is the same silent shortfall this check
+   exists to refuse. Unlike a `prompt_overrides` path,
    which a stage silently runs without when it does not resolve, a broken
    entry here refuses to start the whole cycle, naming the exact repository,
    field and path — this text changes how strictly a review judges (see
@@ -708,8 +711,20 @@ R5. **Per non-skipped repo** (processed **sequentially**, so a failure of one
       (requirement 342, already validated at R1c) plus `repo_context_file`
       read from this clone if it names a readable file — simply absent if it
       does not, never a fault — into `{"instructions": [...], "context":
-      [...]}`, each entry `{source, origin, text, truncated}` capped at
-      `REVIEW_CONTEXT_SOURCE_MAX_BYTES`. Both arrays are appended to the
+      [...]}`, each entry `{source, origin, text, truncated, bytes, digest}`
+      capped at `REVIEW_CONTEXT_SOURCE_MAX_BYTES`. `repo_context_file` must
+      resolve to a regular file whose bytes are genuinely inside the clone:
+      the configured path may be neither absolute nor contain `..`, the file
+      itself may not be a symbolic link, and the directory holding it must
+      canonicalise to the clone or something under it. The path is
+      installation-configured but the *file* is under the reviewed
+      repository's own control, so without this a committed symlink
+      (`.github/REVIEW-CONTEXT.md` → an installation credential) would read
+      whatever the cycle can read into the Reviewer-Agent's own input, and
+      D7's boundary below would be a statement about the configured path
+      rather than about the text a model is handed. A path that fails any of
+      these is treated exactly as an absent one — silently not configured,
+      never a fault. Both arrays are appended to the
       Reviewer-Agent's runtime input (the JSON object R5 step 3 hands it) as
       `instructions` and `context`, each source carrying its own `origin` so
       the agent — and `prompts/project-reviewer.md`'s "Untrusted external
