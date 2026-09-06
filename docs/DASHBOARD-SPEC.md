@@ -1570,7 +1570,12 @@ never letting an escape age out of a 24 h window. A payload the Publisher
 could not assemble sets every top-level field to `null`
 (`{how_much: null, whose: null, escape_ladder: null, clean_count: null}`),
 the same "outage, not a quiet log" distinction every other roll-up on this
-page makes.
+page makes — and so does a fold that aborted part-way, which
+`rework_panel_build` reports with that same shape rather than with the
+all-zero one. The two are opposite claims — nothing to report, versus nothing
+was computed — and never render alike. A missing, empty or unreadable log is
+the former: the fold runs to completion over an empty stream and its all-zero
+report is the true statement "no rework recorded."
 
 D23 is emphatic that rework is never a target of zero — a Reviewer catching
 a defect is the system working, not failing — so this panel never collapses
@@ -1601,7 +1606,20 @@ rework bad":
   severity are two different axes and this figure reads only the former.
   `how_much.rework_count` is the raw, deduped rework record count, reported
   once more explicitly for the same reason the escape ladder's own `caught`
-  figures are — see the signature below.
+  figures are — see the signature below. Every *count* on this panel
+  (`rework_count`, `whose`, the escape ladder) reads a stream reduced
+  first-wins-by-`ts` on the record's own stable identity, per
+  `docs/FLOW-SCHEMA.md`'s "Do not double-count": `{repo, item, class}`,
+  plus `evidence.by` for `post-merge-revert` (more than one corrective pull
+  request can be detected for the same original), plus `ts` and `evidence`
+  for the fleet-wide classes that carry neither `repo` nor `item` (crash-loop
+  escalation, a backstop `stage-rerun`) — which without that narrowing would
+  share one key across the whole log's history and collapse every occurrence
+  of the class, for all time, to the first ever recorded. The rework *spend*
+  in `how_much` reads the stream before that reduction, since each copy names
+  the cycle its own node really spent tokens in; deduping there would drop a
+  cycle that genuinely did rework and make the upper bound above an
+  undercount instead.
 - **Whose?** `whose.by_attributed_stage` — one `{stage, count}` row per
   non-null `attributed_stage` value actually present (today: `reviewer`,
   from `human-change-request`, and whichever stage names its own

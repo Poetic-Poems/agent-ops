@@ -305,9 +305,28 @@ REWORK_PANEL_JQ='
 # future caller passing one narrows which landed items this run reports
 # without changing how any one of them is classified.
 #
-# Always succeeds, printing the all-empty shape for a missing, empty or
-# unreadable log, on the same terms item_lifecycle_fold already does: a
-# caller running under `set -e` must not be killed by one.
+# Always succeeds, on the same terms item_lifecycle_fold already does: a
+# caller running under `set -e` must not be killed by one. It distinguishes
+# the two ways there can be nothing to report, because they mean opposite
+# things to a reader:
+#
+#   A missing, empty or unreadable log is not a failure — the fold runs to
+#   completion over an empty stream and reports the all-zero shape, which is
+#   the true statement "no rework recorded".
+#
+#   The fold itself failing is. jq aborts the whole program from inside a
+#   `def` on any field a record shapes differently than the fold expects, and
+#   nothing partial survives that — so the all-zero shape would be a
+#   confidently-stated falsehood, indistinguishable on the page from a fleet
+#   that genuinely repeated no work. This reports the outage shape instead
+#   (`{how_much: null, whose: null, escape_ladder: null, clean_count: null}`,
+#   docs/DASHBOARD-SPEC.md), the same "an outage is not a quiet zero"
+#   distinction every other roll-up on the page makes, and the same shape
+#   scripts/publish-dashboard.sh substitutes when it cannot assemble the
+#   payload at all. Guarding each individual index against every shape a
+#   malformed peer record could take is unbounded; keeping the fallback
+#   honest is not, and holds for the errors nobody anticipated as well as
+#   the ones they did.
 rework_panel_build() {
   local src="${1:--}" since="${2:-}" raw="" all_json="" lifecycle_json="" out=""
   if [[ "$src" == "-" ]]; then
@@ -324,6 +343,6 @@ rework_panel_build() {
 
   out="$(jq -nc 'input as $all | input as $lifecycle | ('"$REWORK_PANEL_JQ"')' \
       <<<"$all_json"$'\n'"$lifecycle_json" 2>/dev/null || true)"
-  [[ -n "$out" ]] || out='{"how_much":{"tokens":{"total":0,"rework":0,"rework_share":null},"elapsed_ms":{"total":0,"rework":0,"rework_share":null},"cost_usd":{"total":0,"rework":0,"rework_share":null},"first_pass_yield":{"landed_total":0,"first_pass":0,"yield":null},"rework_count":0},"whose":{"by_attributed_stage":[],"not_attributed":{"count":0,"by_class":[]}},"escape_ladder":[{"stage":"agent-review","population":0,"caught":0,"escaped":0,"escape_rate":null,"cost_to_catch_at_next":null,"cost_to_catch_at_next_note":"no human-gate catch with metered cycle spend in this window to measure"},{"stage":"human-gate","population":0,"caught":0,"escaped":0,"escape_rate":null,"cost_to_catch_at_next":null,"cost_to_catch_at_next_note":"not measurable: post-merge-revert records carry no cycle (mined after the fact, outside any cycle)"},{"stage":"post-merge","population":0,"caught":0,"escaped":null,"escape_rate":null,"cost_to_catch_at_next":null,"cost_to_catch_at_next_note":"terminal rung: nothing further to escape to"}],"clean_count":0}'
+  [[ -n "$out" ]] || out='{"how_much":null,"whose":null,"escape_ladder":null,"clean_count":null}'
   printf '%s' "$out"
 }

@@ -31,7 +31,10 @@
 #                         and a scalar (non-object) evidence on
 #                         post-merge-revert does not abort the fold.
 #   degradation           a malformed line and a missing log both yield a
-#                         conforming report rather than aborting the fold.
+#                         conforming all-zero report rather than aborting the
+#                         fold, while a fold that does abort internally yields
+#                         the outage shape instead — the two mean opposite
+#                         things and must never render alike.
 #
 # No test framework is used (none exists elsewhere in this repo). Run
 # directly:
@@ -354,6 +357,24 @@ assert_eq "a missing log reports zero rework, never null-crashes" \
   "0" "$(jq -c '.how_much.rework_count' <<<"$empty_report")"
 assert_eq "  ... and a conforming, empty escape ladder throughout" \
   "0" "$(jq -c '.escape_ladder | length - 3' <<<"$empty_report")"
+
+# A failure of the fold *itself* is the opposite case, and must not look like
+# either of the two above. jq aborts the whole program from inside a `def` on
+# any field a record shapes differently than the fold expects — here a
+# `stage-end` whose `tokens` is a scalar rather than the object
+# docs/METERING-SCHEMA.md's record describes, standing in for the general case
+# of a malformed peer record nobody anticipated. Reporting the all-zero shape
+# there would state "this fleet repeated no work" about a log that plainly
+# carries a rework record, so the fallback is the outage shape instead.
+internal_err="$tmp_dir/internal-error.jsonl"
+cat > "$internal_err" <<'EOF'
+{"ts":"2026-06-01T00:00:00Z","node":"n1","cycle":"c1","event":"stage-end","stage":"implementer","repo":"o/r","item":"1","cost_usd":1,"duration_ms":10,"tokens":"unexpected-scalar"}
+{"ts":"2026-06-01T00:00:01Z","node":"n1","cycle":"c1","event":"rework","class":"review-round-trip","detector":"d","evidence":{},"attributed_stage":null,"repo":"o/r","item":"1"}
+EOF
+internal_err_report="$(panel_of "$internal_err")"
+assert_eq "a fold that aborts internally reports the outage shape, never a quiet zero-rework fleet" \
+  '{"clean_count":null,"escape_ladder":null,"how_much":null,"whose":null}' \
+  "$(jq -Sc '.' <<<"$internal_err_report")"
 
 if (( failures > 0 )); then
   echo "$failures failure(s)"
