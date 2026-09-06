@@ -2074,7 +2074,7 @@ for entry in "$cycles_dir"/*; do
 done
 self_version_json="$(agent_ops_version "$SCRIPT_DIR")"
 if [[ -n "$state_repo" ]]; then
-  self_published_ts="$(jq -r '.ts // empty' "$state_dir/.state-sync-published.json" 2>/dev/null)"
+  self_published_ts="$(fleet_ts_field "$state_dir/.state-sync-published.json")"
   self_pub_json="$(fleet_publication_status "$self_published_ts" "$node_stale_after_seconds" "$now_epoch")"
 else
   self_pub_json="$(jq -nc --arg ts "$now_iso" '{ts: $ts, age_s: 0, verdict: "fresh"}')"
@@ -2097,7 +2097,7 @@ jq -nc --arg n "$self_node" --arg r "$(role_current)" --arg lc "$last_local_cycl
     provider_unreachable: (if $pu != null and (($pu.nodes // []) | index($n) != null) then $pu else null end)}' > "$nodes_rows"
 for hb in "$peers_dir"/*/heartbeat.json; do
   [[ -f "$hb" ]] || continue
-  hb_ts="$(jq -r '.ts // empty' "$hb" 2>/dev/null)"
+  hb_ts="$(fleet_ts_field "$hb")"
   pub_json="$(fleet_publication_status "$hb_ts" "$node_stale_after_seconds" "$now_epoch")"
   jq -c --argjson live "$node_live_json" \
     --argjson pu "$provider_unreachable_json" --argjson pub "$pub_json" '

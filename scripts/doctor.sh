@@ -1626,7 +1626,7 @@ if ((gh_ready)); then
     # past `node_stale_after_minutes` — is the fault this check exists to
     # catch: a push that has stopped working even while local cycles carry on.
     node_stale_after_seconds="$(cfg '.node_stale_after_minutes * 60 | floor')"
-    published_ts="$(jq -r '.ts // empty' "$state_dir/.state-sync-published.json" 2>/dev/null)"
+    published_ts="$(fleet_ts_field "$state_dir/.state-sync-published.json")"
     pub_status_json="$(fleet_publication_status "$published_ts" "$node_stale_after_seconds")"
     pub_verdict="$(jq -r '.verdict' <<<"$pub_status_json" 2>/dev/null)"
     pub_age_s="$(jq -r '.age_s // empty' <<<"$pub_status_json" 2>/dev/null)"

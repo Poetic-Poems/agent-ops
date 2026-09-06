@@ -63,6 +63,42 @@ fleet_logs_healthy() {  # <state_dir> <peers_dir> <union_log>
   return 0
 }
 
+# fleet_ts_field <file>
+#
+# A one-line JSON file's own top-level `.ts` string field — the shared read
+# behind `fleet_publication_status` below, for both call sites: self's
+# `.state-sync-published.json` (`{"ts":"…"}`, whole) and a peer's
+# `heartbeat.json` (`{"node":…,"role":…,"ts":…,…}`, `ts` mid-object). Every
+# writer of either file uses `jq -nc`, whose compact encoding is always one
+# line with no inserted whitespace, so a plain prefix match is exact for the
+# shape `jq -nc '{ts: $ts}'` itself produces — the fast path below, no fork —
+# falling back to an actual jq parse for any other shape (`ts` not first, a
+# hand-edited file, a future writer that pretty-prints) so correctness never
+# depends on which shape a caller happens to hold. D14: called once per
+# fleet-strip row, self included, on both a full and a fast
+# publish-dashboard.sh tick, so a jq fork saved here is saved on every tick.
+fleet_ts_field() {
+  local file="${1:-}" line stripped
+  [[ -s "$file" ]] || return 0
+  # Not `read ... || return 0`: `read` itself reports failure on a file with
+  # no trailing newline (every writer's `jq -nc` output has one; a test
+  # fixture built with a bare `printf` does not) even though `line` still
+  # holds the whole thing correctly — the read is genuinely done at EOF
+  # either way, so only an empty result (an empty file, already excluded
+  # above, or truly nothing readable) means bail.
+  IFS= read -r line < "$file" 2>/dev/null
+  [[ -n "$line" ]] || return 0
+  case "$line" in
+    '{"ts":"'*)
+      stripped="${line#\{\"ts\":\"}"
+      stripped="${stripped%%\"*}"
+      printf '%s' "$stripped"
+      return 0
+      ;;
+  esac
+  jq -r '.ts // empty' <<<"$line" 2>/dev/null
+}
+
 # fleet_publication_status <ts> <threshold_s> [now_epoch]
 #
 # The one verdict over a publication timestamp — self's or a peer's alike
