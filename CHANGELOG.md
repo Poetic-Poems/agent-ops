@@ -153,6 +153,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **A failed Priority write now names why it failed** (agent-ops#960,
+  requirement 39g). `issue_priority_apply` (`lib/issue-priority.sh`) sent its
+  `setIssueFieldValue` mutation with `>/dev/null 2>&1` and collapsed any
+  rejection to a bare `mutation-failed`, so GitHub's own explanation was
+  discarded at the pipe. It now captures the mutation's stderr, and a
+  `mutation-failed` result carries an `error` key — the first line of that
+  text, always present on this reason and empty rather than omitted when the
+  mutation produced no stderr at all, so a caller can log it unconditionally.
+  `maybe_run_refiner`'s (`lib/refinement.sh`) warning appends `— error:
+  <text>` when it is non-empty, alongside the repo, item and band(s) it
+  already named. The four documented reasons, the `requested` key and the
+  `applied`/`reason` shape are all unchanged; this is additive. What the
+  silence cost: the one-token schema mismatch fixed in agent-ops#737 —
+  `$optionId` declared `String!` against an argument GitHub types `ID` —
+  rejected every Priority write in the fleet for three days behind 14
+  identical, unactionable warnings, and the rejection itself named the defect
+  precisely the first time it was sent.
+
 - **The test suite no longer expects any particular value from
   `config.json`.** Changing a configured value — a threshold, a cadence, an
   autonomy rung, a repository added or removed — is a configuration change,
