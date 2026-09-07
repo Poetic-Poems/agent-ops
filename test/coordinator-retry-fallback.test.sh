@@ -124,6 +124,15 @@ log_event() { record "event $1 $2"; }
 # stage-end site calls lib/rework.sh's rework_stage_rerun_maybe — out of this
 # file's own scope (test/rework-record.test.sh covers it directly).
 rework_stage_rerun_maybe() { :; }
+# docs/FLOW-SCHEMA.md, requirement 50, issue #597: the same stage-end site,
+# and every none-selected site this file's own retry/fallback ladder
+# exercises, call lib/node-time-state.sh's log_node_state_transition/
+# set_node_state_terminal/node_time_state_idle_split. Sourced for real (pure
+# and cheap, and log_node_state_transition's own log_event call reaches the
+# stub above, same as every other event this harness records) rather than
+# stubbed, so this file keeps verifying the shipped wiring.
+# shellcheck source=lib/node-time-state.sh
+. "$SCRIPT_DIR/lib/node-time-state.sh"
 record_needs_refinement_block() { record "record_needs_refinement_block $(jq -r '.item' <<<"$1")"; return 0; }
 void_guard_reason() { record "void_guard_reason $(jq -r '.item' <<<"$1")"; return 0; }
 # The machine `obsolete` alternative's ctx (issue #413, WI-10) is lib/merge-

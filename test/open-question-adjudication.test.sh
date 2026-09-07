@@ -351,6 +351,10 @@ log_event() { printf '%s\t%s\n' "$1" "$2" >>"$T/events"; }
 # covers it directly). Stubbed to a no-op, the same "does not fire" shape
 # the real function takes whenever stage_kill_reason (set above) is empty.
 rework_stage_rerun_maybe() { :; }
+# docs/FLOW-SCHEMA.md, requirement 50, issue #597: the same stage-end site
+# also calls lib/node-time-state.sh's log_node_state_transition — out of
+# this file's own scope (test/node-time-state.test.sh covers it directly).
+log_node_state_transition() { :; }
 landing_open_question_latest() { printf '%s' '[{"question":"is CODEOWNERS in scope?"}]'; }
 stage_prompt_text() { printf '%s\n' "$3" >>"$T/prompt_actor_args"; printf 'THE PROMPT'; }
 stage_budget_apply() { :; }

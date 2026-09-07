@@ -739,6 +739,7 @@ $(jq . <<<"$input")
      + (if $r == "" then {} else {repo: $r} end) + (if $i == "" then {} else {item: $i} end)')"
   rework_stage_rerun_maybe "enabler-adjudicate" "$stage_kill_reason" "$repo" "$item" \
     "$(jq -r '.pr_url // ""' <<<"$claimed_entry")"
+  log_node_state_transition overhead
 
   result="$(jq -r '.result // empty' "$out" 2>/dev/null || true)"
   parsed="$(extract_json_result "$result" 2>/dev/null || true)"
@@ -853,6 +854,7 @@ $(jq . <<<"$input")
      + (if $r == "" then {} else {repo: $r} end) + (if $i == "" then {} else {item: $i} end)')"
   rework_stage_rerun_maybe "enabler-decide" "$stage_kill_reason" "$repo" "$item" \
     "$(jq -r '.pr_url // ""' <<<"$claimed_entry")"
+  log_node_state_transition overhead
 
   result="$(jq -r '.result // empty' "$out" 2>/dev/null || true)"
   parsed="$(extract_json_result "$result" 2>/dev/null || true)"
@@ -1069,6 +1071,7 @@ $(jq . <<<"$input")
     '{stage: "enabler", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m')"
   # No repo/item: the Enabler spans repositories by construction (see above).
   rework_stage_rerun_maybe "enabler" "$stage_kill_reason"
+  log_node_state_transition overhead
   # `if`, not `&&`: an empty warning is the common case, and a trailing
   # `&&` whose test fails is a non-zero status at exactly the place
   # `set -e` acts on — the same trap that cost a --once cycle its

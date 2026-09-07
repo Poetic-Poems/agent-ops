@@ -59,6 +59,14 @@ fi
 # shellcheck source=lib/stage-budget.sh
 . "$SCRIPT_DIR/lib/stage-budget.sh"
 stage_budget_overrides() { printf '{}'; }
+# docs/FLOW-SCHEMA.md, requirement 50, issue #597: stage_budget_apply's own
+# stage-start also calls lib/node-time-state.sh's node_state_for_stage and
+# log_node_state_transition. Sourced for real (pure and cheap) rather than
+# stubbed, so this file keeps verifying the shipped wiring; its own
+# `node-state` event never collides with the `stage-start` event this file
+# asserts on.
+# shellcheck source=lib/node-time-state.sh
+. "$SCRIPT_DIR/lib/node-time-state.sh"
 
 events_file="$(mktemp)"
 trap 'rm -f "$events_file"' EXIT

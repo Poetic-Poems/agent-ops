@@ -980,7 +980,11 @@ R16. **Streams.** Review *operational* events go to the review pipeline's own
    `review-stage-end`, `review-pr-raised`, `review-attempt-failed`,
    `review-end`, `labels-ensured` (R5.0b — the same event name and shape the
    implementation pipeline writes, since it is the same mechanism reporting
-   the same thing about the same repositories), and `warning`. Common fields:
+   the same thing about the same repositories), `node-state` (requirement 50
+   of `docs/IMPLEMENTATION-PIPELINE-SPEC.md`, `docs/FLOW-SCHEMA.md`'s "The
+   node time-state record" — the same event and shape `agent-cycle.sh`
+   writes to `log.jsonl`, since `scripts/node-time-state.sh` unions both
+   streams before folding), and `warning`. Common fields:
    ISO-8601 `ts`, a `review` id
    (`<UTC-timestamp>-<node>-<pid>`, pid last, exactly as requirement 33 shapes
    the cycle id), `node`, an `event`, and where applicable `repo`, `pr_url`,

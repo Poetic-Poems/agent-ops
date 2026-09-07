@@ -81,7 +81,8 @@ if (( github_min_core_budget > 0 || github_min_graphql_budget > 0 )); then
       "$gh_budget_resource" "$gh_budget_remaining" "$gh_budget_floor" "$gh_budget_reset_at")" \
       --arg res "$gh_budget_resource" --arg rem "$gh_budget_remaining" \
       --arg until "$gh_budget_reset_at" \
-      '{reason: $r, github_resource: $res, github_remaining: $rem, resume_at: $until}')"
+      '{reason: $r, github_resource: $res, github_remaining: $rem, resume_at: $until, cause: "github-budget"}')"
+    set_node_state_terminal externally-blocked github-budget
     exit 0
   fi
 fi
@@ -168,6 +169,7 @@ if [[ "$gh_auth_verdict" == "unauthorized" ]]; then
   fi
   log_event "stand-down" "$(jq -nc --arg r "$gh_auth_reason" --arg d "$gh_auth_detail" \
     '{reason: $r, cause: "unauthorized", detail: $d}')"
+  set_node_state_terminal externally-blocked unauthorized
   exit 0
 fi
 
@@ -202,6 +204,7 @@ if (( min_free_workspace_bytes > 0 )); then
       --arg r "$(disk_space_describe "$workspace_root" "$disk_free_kb" "$min_free_workspace_bytes")" \
       --arg cause "$disk_standdown_cause" --arg path "$workspace_root" --arg free_kb "$disk_free_kb" \
       '{reason: $r, cause: $cause, path: $path, free_kb: $free_kb}')"
+    set_node_state_terminal externally-blocked "$disk_standdown_cause"
     exit 0
   fi
 fi
@@ -234,6 +237,7 @@ if (( min_free_memory_bytes > 0 )); then
       --arg cause "memory-low" --arg free_kb "$memory_free_kb" \
       --arg total_kb "$(memory_total_kb)" \
       '{reason: $r, cause: $cause, free_kb: $free_kb, total_kb: $total_kb}')"
+    set_node_state_terminal externally-blocked memory-low
     exit 0
   fi
 fi
@@ -317,6 +321,10 @@ if (( resume_epoch > now_epoch )); then
         log_event "limit-cleared" "$(jq -nc --arg w "$resume_at" \
           --arg by "auto-probe@$node_name" --arg n "$node_name" \
           '{was: $w, reason: "probe answered: the limit behind this estimated stand-down is gone", by: $by, actor: $n, kind: "auto"}')"
+        # node-state (docs/FLOW-SCHEMA.md, D21): the fleet-wide block just
+        # lifted and this cycle continues past this point — an immediate
+        # transition, not a terminal one (this call does not exit).
+        log_node_state_transition overhead
         if [[ -n "$state_repo" ]]; then
           # >/dev/null: fleet_flag_delete now prints which of "deleted"/
           # "absent" it was (issue #426); this site only reads the return
@@ -395,7 +403,8 @@ if (( resume_epoch > now_epoch )); then
         fi
       fi
     fi
-    log_event "stand-down" "$(jq -nc --arg r "$standdown_reason" '{reason: $r}')"
+    log_event "stand-down" "$(jq -nc --arg r "$standdown_reason" '{reason: $r, cause: "usage-limit"}')"
+    set_node_state_terminal externally-blocked usage-limit
     exit 0
   fi
 fi
