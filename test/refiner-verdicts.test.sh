@@ -109,12 +109,17 @@ extract_fn() {
 }
 
 maybe_run_refiner_fn="$(extract_fn 'maybe_run_refiner() {' "$SCRIPT_DIR/lib/refinement.sh")"
+# maybe_run_refiner is an orchestration-only sequence of calls into the
+# _refiner_* helpers below it in lib/refinement.sh (agent-ops#964); the
+# "refiner-examined" marker this test lifts to prove it grabbed live code now
+# lives in _refiner_process_one_verdict, the helper that logs each verdict.
+refiner_process_one_verdict_fn="$(extract_fn '_refiner_process_one_verdict() {' "$SCRIPT_DIR/lib/refinement.sh")"
 record_needs_refinement_block_fn="$(extract_fn 'record_needs_refinement_block() {' "$SCRIPT_DIR/lib/candidate-select.sh")"
 refiner_claim_key_fn="$(extract_fn 'refiner_claim_key() {' "$SCRIPT_DIR/lib/refinement.sh")"
 extract_json_result_fn="$(extract_fn 'extract_json_result() {' "$SCRIPT_DIR/lib/stage-attempt.sh")"
 
-if [[ "$maybe_run_refiner_fn" != *"refiner-examined"* ]]; then
-  printf 'FAIL - maybe_run_refiner could not be found in agent-cycle.sh (renamed or moved?)\n'
+if [[ "$refiner_process_one_verdict_fn" != *"refiner-examined"* ]]; then
+  printf 'FAIL - _refiner_process_one_verdict could not be found in lib/refinement.sh (renamed or moved?)\n'
   exit 1
 fi
 if [[ "$record_needs_refinement_block_fn" != *"attempt-failed"* ]]; then
@@ -133,6 +138,7 @@ fi
 eval "$extract_json_result_fn"
 eval "$refiner_claim_key_fn"
 eval "$record_needs_refinement_block_fn"
+eval "$refiner_process_one_verdict_fn"
 eval "$maybe_run_refiner_fn"
 
 # --- A claim.sh stub that always wins, so the claim step needs no network ---
