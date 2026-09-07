@@ -39,6 +39,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # (requirement 3f) — agent-cycle.sh sources this file too.
 # shellcheck source=lib/pipeline-marker.sh
 . "$SCRIPT_DIR/lib/pipeline-marker.sh"
+# escalation_refile_suppressed/escalation_event_logged_since (the requirement
+# 8c re-filing guard, agent-ops#779) — real implementations, never stubbed,
+# the same way this file sources approver.sh itself for real; only
+# escalation_recent_close (a live GitHub read, lib/enabler.sh) is stubbed
+# below, the same relationship this file already has with
+# create_escalation_issue.
+# shellcheck source=lib/escalation-autonomy.sh
+. "$SCRIPT_DIR/lib/escalation-autonomy.sh"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -66,6 +74,17 @@ assert_contains() {
     printf 'ok   - %s\n' "$desc"
   else
     printf 'FAIL - %s\n     expected to contain: %s\n     actual:             %s\n' \
+      "$desc" "$needle" "$haystack"
+    failures=$(( failures + 1 ))
+  fi
+}
+
+assert_not_contains() {
+  local desc="$1" needle="$2" haystack="$3"
+  if [[ "$haystack" != *"$needle"* ]]; then
+    printf 'ok   - %s\n' "$desc"
+  else
+    printf 'FAIL - %s\n     expected NOT to contain: %s\n     actual:                 %s\n' \
       "$desc" "$needle" "$haystack"
     failures=$(( failures + 1 ))
   fi
@@ -488,11 +507,24 @@ enabler_escalation_label="escalation"
 cycle_id="test-cycle"
 # shellcheck disable=SC2034
 node_name="test-node"
+# shellcheck disable=SC2034  # Read by escalation_refile_suppressed via approver_escalate.
+escalation_refile_after_hours=24
+union_log="$esc_dir/union.jsonl"
+log_file="$esc_dir/log.jsonl"
+: >"$union_log"
+: >"$log_file"
 create_escalation_issue() {
   printf '%s\n' "$2" >"$esc_dir/item-ref"
   printf '%s\n' "$4" >"$esc_dir/title"
   printf '11\thttps://github.com/Poetic-Poems/agent-ops/issues/11'
 }
+# The requirement 8c re-filing guard's own live GitHub read (agent-ops#779) —
+# stubbed as a black box, the same relationship this file already has with
+# create_escalation_issue. RECENT_CLOSE, when non-empty, is
+# "<number>\t<url>\t<closedAt>"; empty (the default below) means no recent
+# close, so the pre-existing assertions below see the guard as a no-op.
+RECENT_CLOSE=""
+escalation_recent_close() { printf '%s' "$RECENT_CLOSE"; }
 run_escalate() {  # <condition-or-empty>
   events=()
   cycle_dir="$esc_dir"
@@ -529,6 +561,71 @@ assert_contains "a verdict the Script could not act on keeps the \"could not res
   "could not resolve the disagreement on its own" "$(esc_why)"
 assert_eq "  ... and logs the filing as approver-escalated" "approver-escalated" \
   "$(printf '%s\n' "${events[0]%%$'\t'*}")"
+assert_not_contains "no recent close: no \"why it's back\" section" \
+  "Why this is back" "$(esc_body)"
+RECENT_CLOSE=""
+
+# --- the requirement 8c re-filing guard (agent-ops#779, decided on #784) -----
+# The identical guard requirement 8f applies to open_question_escalate
+# (test/open-question-adjudication.test.sh), reusing the same two pure
+# comparators from lib/escalation-autonomy.sh. approver_escalate is only
+# ever called from the adjudicating branch of run_approver_stage, so
+# condition 3's "an adjudication pass ran this round" is always true here —
+# the only question the tests below distinguish is whether this close's one
+# owed re-escalation has already been spent.
+esc_recent_1h_ago="$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)"
+esc_recent_25h_ago="$(date -u -d '-25 hours' +%Y-%m-%dT%H:%M:%SZ)"
+esc_prior_issue=$'41\thttps://github.com/Poetic-Poems/agent-ops/issues/41\t'"$esc_recent_1h_ago"
+esc_prior_issue_lapsed=$'41\thttps://github.com/Poetic-Poems/agent-ops/issues/41\t'"$esc_recent_25h_ago"
+
+# closed 1h ago, no approver-escalated event since: the owed re-escalation
+# always files, window or not, and the body says why it's back.
+RECENT_CLOSE="$esc_prior_issue"
+run_escalate escalate
+assert_contains "the owed re-escalation still files" "approver-escalated" \
+  "$(printf '%s\n' "${events[0]%%$'\t'*}")"
+assert_contains "  ... naming the prior issue" \
+  "https://github.com/Poetic-Poems/agent-ops/issues/41" "$(esc_body)"
+assert_contains "  ... under a \"Why this is back\" section" \
+  "Why this is back" "$(esc_body)"
+assert_contains "  ... naming the pull request's own CHANGES_REQUESTED state as the releasing act" \
+  "review and merge are the releasing act" "$(esc_body)"
+
+# same close, but this close's one owed re-escalation was already spent
+# earlier the same round (an approver-escalated event already on the log at
+# or after the close): back under the ordinary window, suppressed.
+jq -nc --arg u "$URL" --arg t "$esc_recent_1h_ago" \
+  '{ts: $t, event: "approver-escalated", pr_url: $u, issue_number: 41,
+    issue_url: "https://github.com/Poetic-Poems/agent-ops/issues/41"}' > "$union_log"
+run_escalate escalate
+assert_eq "the owed re-escalation, once already spent, is suppressed like any other" \
+  "" "$(printf '%s\n' "${events[@]}" | awk -F'\t' '$1=="approver-escalated"{print $2}')"
+assert_contains "  ... its warning names the prior issue" \
+  "https://github.com/Poetic-Poems/agent-ops/issues/41" \
+  "$(printf '%s\n' "${events[@]}" | awk -F'\t' '$1=="warning"{print $2}')"
+: > "$union_log"
+
+# the most recent close is older than the window: files normally regardless
+# of condition 3, with the same "why it's back" body.
+RECENT_CLOSE="$esc_prior_issue_lapsed"
+run_escalate escalate
+assert_contains "a close older than the window files normally" "approver-escalated" \
+  "$(printf '%s\n' "${events[0]%%$'\t'*}")"
+assert_contains "  ... and still explains why it's back" "Why this is back" "$(esc_body)"
+
+# escalation_refile_after_hours: 0 is the explicit off switch — files
+# regardless of how recent the close or whether it was already spent.
+jq -nc --arg u "$URL" --arg t "$esc_recent_1h_ago" \
+  '{ts: $t, event: "approver-escalated", pr_url: $u, issue_number: 41,
+    issue_url: "https://github.com/Poetic-Poems/agent-ops/issues/41"}' > "$union_log"
+RECENT_CLOSE="$esc_prior_issue"
+escalation_refile_after_hours=0
+run_escalate escalate
+assert_contains "a window of 0 always files" "approver-escalated" \
+  "$(printf '%s\n' "${events[0]%%$'\t'*}")"
+escalation_refile_after_hours=24
+: > "$union_log"
+RECENT_CLOSE=""
 
 # --- approver_escalation_retire (requirement 8c, agent-ops#1215) --------------
 # The other half of `approver_escalate`'s own dedup lookup, read back: an open
