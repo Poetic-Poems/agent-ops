@@ -9621,6 +9621,21 @@ implements.
     complexity grading treats it accordingly (issue-only stays `low`). This
     is a **note**, never the fix: the actual work for a filed issue is left
     for a future item to pick up on its own merits.
+24c. **A large test suite is run in pieces, never as one invocation, when the
+    Implementer's own checks are this repo's suite too (agent-ops#962,
+    extending 29a's fix to this stage).** Requirement 21's ceiling binds the
+    Implementer exactly as it binds the Reviewer, and requirement 24's own
+    verification step runs the identical 140-file `test/*.test.sh` suite,
+    through the identical `scripts/run-tests.sh`, whenever the repo under
+    work is agent-ops itself — so a single unbatched invocation risks the
+    same silent loss of test evidence requirement 29a exists to prevent.
+    Requirement 24's check therefore lists the selected tests first
+    (`scripts/run-tests.sh --list`, host-side, no Docker, returns instantly),
+    splits that list into groups sized to finish comfortably inside the
+    ceiling, and invokes `scripts/run-tests.sh` once per group, reading each
+    group's own `PASS`/`FAIL` lines before the next group runs — the same
+    discipline requirement 29a already requires of the Reviewer over the
+    same suite.
 25. Updates the originating record: an issue — tech-debt or otherwise —
     linked with a real GitHub closing keyword (`Closes`/`Fixes`/`Resolves
     #N`) naming the same `N` as requirement 23b's marker; implementation-plan
