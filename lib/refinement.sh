@@ -1251,8 +1251,26 @@ _refiner_expire_claims() {
 
 _refiner_run_engagement() {
   # --- One engagement over every claimed item ---
+  #
+  # The verdict leaves through the global `refiner_parsed`, never through
+  # stdout, because this helper must run in its caller's own shell rather
+  # than in a command substitution. Three things here are visible only to
+  # the process that ran them:
+  #   - `stage_pid`/`stage_name`, which `run_claude_stage` advertises while
+  #     the stage is in flight and requirement 9c's signal handler reads to
+  #     kill the model's process group — a handler that cannot see them
+  #     leaves the `claude` run this cycle is paying for alive past a TERM,
+  #     and blames `cycle` rather than `refiner` for the failure;
+  #   - `limit_hit_this_cycle`, which `detect_and_log_limit_hit` sets and
+  #     which its own comment says is remembered for the rest of the cycle;
+  #   - `dump_stage_output`'s `--once` dump, which is a `cat` to stdout: a
+  #     caller capturing this function would swallow the operator's console
+  #     output into the verdict, and the two concatenated JSON values that
+  #     makes are what `_refiner_warn_unclaimed`'s own `--argjson` then
+  #     rejects, silently dropping every unclaimed-item warning.
   local claimed_json="$1" n_claimed="$2"
-  local input prompt out rc=0 result parsed detail items_named_json watchdog_warning
+  local input prompt out rc=0 result detail items_named_json watchdog_warning
+  refiner_parsed=""
 
   # The claimed items arrive on stdin, bound with `input as $items`
   # (requirement 4g) — never in argv, on the same terms as the Enabler's build
@@ -1293,11 +1311,11 @@ $(jq . <<<"$input")
   (( ONCE )) && dump_stage_output "$out"
 
   result="$(jq -r '.result // empty' "$out" 2>/dev/null || true)"
-  parsed="$(extract_json_result "$result" 2>/dev/null || true)"
-  if (( rc == 0 )) && [[ -z "$parsed" ]]; then
-    parsed="$(stage_salvage_result refiner "$out" "$refiner_model" "$cycle_dir" || true)"
+  refiner_parsed="$(extract_json_result "$result" 2>/dev/null || true)"
+  if (( rc == 0 )) && [[ -z "$refiner_parsed" ]]; then
+    refiner_parsed="$(stage_salvage_result refiner "$out" "$refiner_model" "$cycle_dir" || true)"
   fi
-  if (( rc != 0 )) || [[ -z "$parsed" ]]; then
+  if (( rc != 0 )) || [[ -z "$refiner_parsed" ]]; then
     if (( rc == 124 )); then
       detail="refiner timed out"
     elif (( rc != 0 )); then
@@ -1314,10 +1332,11 @@ $(jq . <<<"$input")
     log_event "warning" "$(jq -nc --arg d "$detail — no verdicts recorded; the claims stand until gc lets a later cycle retry" \
       'input as $items | {detail: $d, items: $items}' <<<"$items_named_json")"
     _refiner_expire_claims "$claimed_json" "$n_claimed"
+    refiner_parsed=""
     return 0
   fi
 
-  printf '%s' "$parsed"
+  return 0
 }
 
 _refiner_apply_priority() {
@@ -1530,7 +1549,7 @@ _refiner_warn_unclaimed() {
 
 maybe_run_refiner() {
   local cycle_rc="${1:-1}"
-  local engagement_json claimed_json n_eligible n_claimed parsed
+  local engagement_json claimed_json n_eligible n_claimed
 
   _refiner_guards_pass "$cycle_rc" || return 0
 
@@ -1544,10 +1563,12 @@ maybe_run_refiner() {
   n_claimed="$(_refiner_json_length "$claimed_json" "n_claimed")"
   (( n_claimed > 0 )) || return 0
 
-  parsed="$(_refiner_run_engagement "$claimed_json" "$n_claimed")"
-  [[ -n "$parsed" ]] || return 0
+  # Called bare, never captured — see this helper's own header for the three
+  # globals a command substitution here would confine to a subshell.
+  _refiner_run_engagement "$claimed_json" "$n_claimed"
+  [[ -n "$refiner_parsed" ]] || return 0
 
-  _refiner_apply_verdicts "$parsed" "$claimed_json"
-  _refiner_warn_unclaimed "$parsed" "$claimed_json"
+  _refiner_apply_verdicts "$refiner_parsed" "$claimed_json"
+  _refiner_warn_unclaimed "$refiner_parsed" "$claimed_json"
   return 0
 }
