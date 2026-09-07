@@ -181,6 +181,6 @@ memory_cgroup_describe() {
   max="$(memory_cgroup_field memory.max)"
   [[ "$current" =~ ^[0-9]+$ ]] || current=0
   [[ "$max" =~ ^[0-9]+$ ]] || max=0
-  printf 'this container holds %d MiB against a %d MiB ceiling with memory.high unset, so nothing reclaims until the hard limit — see deploy/docker/compose.yaml for the operator recipe' \
+  printf 'this container holds %d MiB of memory that never gets freed up as usage grows, against a %d MiB ceiling — once that ceiling is reached the container is killed outright, instead of memory being freed beforehand; see deploy/docker/compose.yaml to fix this' \
     $(( current / 1048576 )) $(( max / 1048576 ))
 }

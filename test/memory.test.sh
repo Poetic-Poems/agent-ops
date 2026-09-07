@@ -152,7 +152,7 @@ stub_cgroup max 1610612736
 desc="$(memory_cgroup_describe)"
 assert_contains "memory_cgroup_describe names the held MiB" "750 MiB" "$desc"
 assert_contains "memory_cgroup_describe names the ceiling in MiB" "1536 MiB" "$desc"
-assert_contains "memory_cgroup_describe points at the operator recipe" \
+assert_contains "memory_cgroup_describe points at the fix" \
   "compose.yaml" "$desc"
 
 # --- Result ------------------------------------------------------------------
