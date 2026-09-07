@@ -34,6 +34,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$SCRIPT_DIR/lib/github-limit.sh"
 # shellcheck source=lib/approver.sh
 . "$SCRIPT_DIR/lib/approver.sh"
+# approver_escalation_retire wraps its own close comment in the same
+# header/marker envelope every other comment this system posts carries
+# (requirement 3f) — agent-cycle.sh sources this file too.
+# shellcheck source=lib/pipeline-marker.sh
+. "$SCRIPT_DIR/lib/pipeline-marker.sh"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -524,6 +529,117 @@ assert_contains "a verdict the Script could not act on keeps the \"could not res
   "could not resolve the disagreement on its own" "$(esc_why)"
 assert_eq "  ... and logs the filing as approver-escalated" "approver-escalated" \
   "$(printf '%s\n' "${events[0]%%$'\t'*}")"
+
+# --- approver_escalation_retire (requirement 8c, agent-ops#1215) --------------
+# The other half of `approver_escalate`'s own dedup lookup, read back: an open
+# `enabler_escalation_label`-labelled issue whose body names this pull
+# request's own `pr-<n>-approver-adjudication` reference is closed with a
+# cause-specific comment — inside requirement 3f's own header/marker envelope
+# — and an `approver-escalation-retired` event; no match, and a match somebody
+# reopened, are both a no-op, logging nothing and never calling `gh issue
+# close` at all.
+ar_dir="$tmp_dir/escalation-retire"
+mkdir -p "$ar_dir/cycle"
+cat >"$ar_dir/gh" <<'STUB'
+#!/usr/bin/env bash
+d="$(dirname "$0")"
+if [[ "$1 $2" == "issue list" ]]; then
+  cat "$d/issues.json" 2>/dev/null || echo '[]'
+  exit 0
+fi
+if [[ "$1 $2" == "issue close" ]]; then
+  number="$3"
+  comment=""
+  shift 3
+  while (( $# )); do
+    case "$1" in
+      --comment) shift; comment="$1" ;;
+    esac
+    shift
+  done
+  if [[ -f "$d/close-fail" ]]; then
+    exit 1
+  fi
+  printf 'number=%s\tcomment=%s\n' "$number" "$comment" >>"$d/closes"
+  exit 0
+fi
+exit 1
+STUB
+chmod +x "$ar_dir/gh"
+ar_reset() {  # <issues-json>
+  printf '%s' "${1:-[]}" >"$ar_dir/issues.json"
+  : >"$ar_dir/closes"; rm -f "$ar_dir/close-fail"
+  events=()
+}
+ar_closes() { cat "$ar_dir/closes"; }
+ar_closes_count() { wc -l <"$ar_dir/closes" 2>/dev/null | tr -d ' '; }
+
+selected_repo="acme/widgets"
+enabler_escalation_label="enabler-escalation"
+cycle_dir="$ar_dir/cycle"
+node_name="node-7"
+cycle_id="20260906T221200Z-node-7-1"
+APPROVER_GH="$ar_dir/gh"
+AR_URL="https://github.com/acme/widgets/pull/77"
+
+ar_reset '[]'
+approver_escalation_retire "$AR_URL" land "abc123"
+assert_eq "no matching open issue is a no-op" "0" "$(ar_closes_count)"
+assert_eq "  ... and logs nothing at all" "0" "${#events[@]}"
+
+ar_reset "$(jq -nc --arg body 'Item: `pr-77-approver-adjudication` · pull request …' \
+  '[{number: 501, url: "https://github.com/acme/widgets/issues/501", body: $body}]')"
+approver_escalation_retire "$AR_URL" land "abc123"
+assert_contains "a matching open issue is closed, naming the right issue number" \
+  "number=501" "$(ar_closes)"
+assert_contains "  ... the land comment names the landing sha" "abc123" "$(ar_closes)"
+# shellcheck disable=SC2016  # the backticks are literal Markdown, not command substitution
+assert_contains "  ... opening with the visible pipeline header (requirement 3f)" \
+  '**Script** · autonomous pipeline · node `node-7`' "$(ar_closes)"
+assert_contains "  ... and closing with the invisible marker" \
+  "$PIPELINE_COMMENT_MARKER_PREFIX cycle=$cycle_id actor=script -->" "$(ar_closes)"
+assert_eq "  ... and logs exactly one event" "1" "${#events[@]}"
+assert_eq "  ... as approver-escalation-retired" "approver-escalation-retired" "$(cut -f1 <<<"${events[0]}")"
+retire_json="$(cut -f2- <<<"${events[0]}")"
+assert_eq "  ... carrying the pull request url" "\"$AR_URL\"" "$(jq -c '.pr_url' <<<"$retire_json")"
+assert_eq "  ... the issue number" "501" "$(jq -c '.issue_number' <<<"$retire_json")"
+assert_eq "  ... and cause \"land\"" '"land"' "$(jq -c '.cause' <<<"$retire_json")"
+
+ar_reset "$(jq -nc --arg body 'Item: `pr-77-approver-adjudication` · pull request …' \
+  '[{number: 502, url: "https://github.com/acme/widgets/issues/502", body: $body}]')"
+approver_escalation_retire "$AR_URL" merged "a-human at 2026-09-06T11:09:07Z"
+assert_contains "the merged comment names who merged it and when" \
+  "a-human at 2026-09-06T11:09:07Z" "$(ar_closes)"
+assert_eq "  ... cause \"merged\"" '"merged"' \
+  "$(jq -c '.cause' <<<"$(cut -f2- <<<"${events[0]}")")"
+
+ar_reset "$(jq -nc --arg body 'Item: `pr-77-approver-adjudication` · pull request …' \
+  '[{number: 503, url: "https://github.com/acme/widgets/issues/503", body: $body}]')"
+touch "$ar_dir/close-fail"
+approver_escalation_retire "$AR_URL" land "abc123"
+assert_eq "a close GitHub refuses is not silently treated as retired" "0" \
+  "$(ar_closes_count)"
+assert_eq "  ... and logs a warning instead" "1" "${#events[@]}"
+assert_eq "  ... never approver-escalation-retired" "warning" "$(cut -f1 <<<"${events[0]}")"
+
+ar_reset "$(jq -nc \
+  '[{number: 601, url: "https://github.com/acme/widgets/issues/601", body: "Item: `pr-99-approver-adjudication`"}]')"
+approver_escalation_retire "$AR_URL" land "abc123"
+assert_eq "an open issue for a different pull request is left alone" "0" \
+  "$(ar_closes_count)"
+assert_eq "  ... and logs nothing" "0" "${#events[@]}"
+
+# A human's own re-open wins, the same answer requirement 34k's one-shot rule
+# and scripts/sweep-closed-issues.sh's `state_reason: "reopened"` check give
+# everywhere else this system closes something: without it, somebody who
+# reopens a retired escalation has that undone the next time a retirement
+# path runs, with a fresh comment each time.
+ar_reset "$(jq -nc --arg body 'Item: `pr-77-approver-adjudication` · pull request …' \
+  '[{number: 504, url: "https://github.com/acme/widgets/issues/504", body: $body,
+     stateReason: "REOPENED"}]')"
+approver_escalation_retire "$AR_URL" land "abc123"
+assert_eq "an escalation a human reopened is left alone" "0" "$(ar_closes_count)"
+assert_eq "  ... and logs nothing" "0" "${#events[@]}"
 
 # --- Survives the caller's shell options ---------------------------------------
 # agent-cycle.sh runs under `set -euo pipefail`; every call site captures

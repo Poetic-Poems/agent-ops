@@ -7020,6 +7020,36 @@ implements.
    repeated rounds, so a persisting disagreement raises one issue, not one
    per cycle.
 
+   The escalation is retired — closed with a comment naming what ended the
+   disagreement, and an `approver-escalation-retired` event (`pr_url`,
+   `issue_number`, `issue_url`, `cause`) — the moment the pipeline can see
+   that disagreement is over, from either of the two places that can happen
+   without the human ever touching the issue (agent-ops#1215): `cause:
+   "land"`, the instant this round's own adjudication posts an `APPROVE` that
+   actually reaches GitHub (`approver_escalation_retire`, called from this
+   same `land` branch, gated on `approver_post_or_warn`'s own delivery
+   confirmation rather than the verdict alone); or `cause: "merged"`, when
+   `scripts/sweep-closed-issues.sh`'s fleet-wide merged-pull-request listing
+   (requirement 17c) finds the pull request merged some other way — a
+   human's own click, a later automatic landing, or a merge queue resolving
+   well after this round. Both read back the same dedup lookup
+   `create_escalation_issue` performs on the way in — an open issue carrying
+   `enabler_escalation_label` whose body quotes this `pr-<n>-approver-
+   adjudication` reference — and both are a no-op, logging nothing, when no
+   such issue is open, which is the common case: most pull requests never
+   escalate at all. Both close it inside the same
+   `pipeline_comment_header`/`pipeline_comment_marker` envelope every other
+   comment this system posts carries (requirement 3f), and both skip an issue
+   GitHub reports reopened (`stateReason`, read on the same listing): a
+   human's own re-open wins over either retirement, the same answer
+   requirement 34k's one-shot rule and requirement 17c's own
+   `state_reason: "reopened"` check give everywhere else this system closes
+   something. Left unretired before this, the escalation survived its
+   own disagreement indefinitely — agent-ops#1202 sat open for eight hours
+   after the adjudication that answered it, asking a human to review and
+   merge a pull request that had already merged, until they closed it by
+   hand.
+
    No *Approver* engagement merges, at any tier, at any `merge_autonomy`
    level. `agent-merges-routine` and `agent-merges-all` run the identical
    Approver review this requirement and 8b describe, but this stage never
@@ -9171,6 +9201,34 @@ implements.
     events, and every node may sweep concurrently: GitHub's own issue-close
     is idempotent, so the worst race outcome is two nodes both finding
     nothing left to do. Skipped on `--dry-run`.
+
+    The same pass also retires the requirement 8c `cause: "merged"` half of
+    an Approver-adjudication escalation (agent-ops#1215): one extra `gh issue
+    list` call per repo, never per pull request, for every open issue
+    carrying `enabler_escalation_label` whose body names a `pr-<n>-approver-
+    adjudication` reference, matched locally against the merged-pull-request
+    listing this sweep already fetched. A match closes the issue with a
+    comment naming who merged the pull request and when, and reports
+    `{"action":"approver-escalation-retired", …, "cause":"merged", …}` for
+    the caller to log as `approver-escalation-retired` — this is the only
+    fleet-wide site that ever notices a pull request merged some way other
+    than this pipeline's own arm (`lib/landing.sh`), so it is also the only
+    place a human's own merge click can retire one. Shares this pass's
+    `$max_actions`/deferred budget with the closing-keyword sweep above,
+    rather than a separate cap of its own. An escalation somebody reopened
+    (`stateReason`, read on the same listing rather than for a second call)
+    is left alone, for the identical reason the closing-keyword sweep above
+    refuses a `state_reason: "reopened"` issue: this pass re-lists the same
+    merged pull request every stand-down for as long as it stays inside
+    `pr_search_limit`, so without the check a re-open would be undone —
+    with a fresh comment — on the hour, every hour. A listing that fails
+    outright reports a `warning`, the same as the merged-pull-request
+    listing above: a successful call with nothing matching answers `[]`, so
+    an empty result means the call itself did not answer, and skipping that
+    silently would be indistinguishable from the common "nothing is
+    escalated" case while retiring nothing for as long as the failure
+    lasted. The rest of the pass runs regardless — the closing-keyword
+    sweep does not depend on this call.
 17g. **The reservation-release retry sweep.** A `td/<id>`/`td-record/<id>`
     tech-debt reservation branch a failed cleanup delete could not remove is
     not left orphaned for good: since TD-PPagop-26082427, that
@@ -10452,7 +10510,7 @@ implements.
     `merge-autonomy-killed`, `merge-autonomy-restored`,
     `merge-budget-hold`, `merge-budget-frozen`, `merge-budget-freeze-escalated`,
     `salvage`, `chained`,
-    `approver-verdict`, `approver-escalated`,
+    `approver-verdict`, `approver-escalated`, `approver-escalation-retired`,
     `landing-armed`, `landing-refused`, `classifier-escape`, `landing-audit`,
     `open-question-raised`, `open-question-adjudication`, `open-question-escalated`,
     `review-gate-checks-read`, `review-gate-checks-degraded`, `first-seen`,
@@ -10700,7 +10758,17 @@ implements.
     `approver-escalated` (requirement 8c) carries the same `pr_url` plus the
     `issue_number` and `issue_url` of the escalation an unsettled adjudication
     raised; a filing that failed is a `warning` instead, since
-    `create_escalation_issue`'s own dedup makes the retry next cycle free. A
+    `create_escalation_issue`'s own dedup makes the retry next cycle free. An
+    `approver-escalation-retired` (requirement 8c, agent-ops#1215) is that
+    escalation's own closing record, carrying `pr_url`, `issue_number`,
+    `issue_url` and `cause` — `land` when this pipeline's own adjudication
+    settled it, `merged` when requirement 17c's sweep found the pull request
+    merged some other way — so a page the owner answered (no event: they
+    closed the issue themselves) reads differently from one the pipeline
+    outgrew. A close GitHub refused is a `warning` instead, the same shape
+    the filing side already uses, since the next pass retries it for free.
+    The `merged` half carries `repo` as well, `lib/standdown.sh` stamping it
+    on every action `scripts/sweep-closed-issues.sh` reports. A
     `landing-armed` (requirement 8d, D18 WI-7) is written once per successful
     arm, carrying `pr_url`, `repo`, `source`, `complexity`, `level` — the
     *effective* `merge_autonomy` level gate 1 judged the arm against, kill
@@ -17081,7 +17149,10 @@ What exists, and the requirements each part answers to:
     (agent-ops#945), the same discipline `lib/tech-debt-file.sh`'s own
     `_techdebt_err_log` already applies. This file also
     carries the stage itself (moved from `agent-cycle.sh`, #771):
-    `run_approver_stage`, `approver_post_or_warn`, `approver_escalate` and
+    `run_approver_stage`, `approver_post_or_warn`, `approver_escalate`,
+    `approver_escalation_retire` — requirement 8c's `cause: "land"`
+    retirement, the read-back half of `approver_escalate`'s own dedup lookup
+    (agent-ops#1215) — and
     `approver_stage_complexity`, the sole callers of the primitives above,
     composing them with `merge_autonomy_effective_level`
     (`lib/merge-autonomy.sh`), `create_escalation_issue` (`lib/enabler.sh`,
@@ -17449,7 +17520,8 @@ What exists, and the requirements each part answers to:
     issue is still open and not `state_reason: "reopened"`, closes it with a
     `pipeline_comment_header`/
     `pipeline_comment_marker`-wrapped comment citing the merge as evidence,
-    printing one JSON action per outcome (`closed`, `deferred`, `warning`)
+    printing one JSON action per outcome (`closed`, `merge-observed`,
+    `approver-escalation-retired`, `deferred`, `warning`)
     for the Script to log. Capped at three actions per repo per call, the
     overflow reported rather than silent. `SWEEP_GH` stubs `gh` for tests.
     Unit-tested (`test/sweep-closed-issues.test.sh`); must pass `shellcheck`.
