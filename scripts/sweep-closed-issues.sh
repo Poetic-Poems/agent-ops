@@ -172,9 +172,21 @@ fi
 # must stay reopened. Without the check, the merged pull request stays in this
 # window for `pr_search_limit` entries, so the reopen would be undone — with a
 # fresh comment — on the next stand-down and every one after it.
+#
+# A listing that *failed* is warned about rather than skipped silently: a
+# successful call with nothing matching returns `[]`, so an empty $esc_json
+# means the call itself did not answer — a rate limit, or a token that cannot
+# read $enabler_escalation_label — and left unsaid that reads exactly like the
+# common "no escalation is open" case while retiring nothing, every
+# stand-down, indefinitely. The merged-pull-request listing above already
+# warns on its own failure; this is the same answer. The sweep carries on
+# either way: the closing-keyword pass below does not depend on this call.
 if [[ -n "$enabler_escalation_label" ]]; then
-  esc_json="$("$GH" issue list -R "$slug" --label "$enabler_escalation_label" --state open \
-    --search "approver-adjudication" --json number,url,body,stateReason --limit 100 2>/dev/null)" || esc_json=""
+  if ! esc_json="$("$GH" issue list -R "$slug" --label "$enabler_escalation_label" --state open \
+    --search "approver-adjudication" --json number,url,body,stateReason --limit 100 2>/dev/null)"; then
+    esc_json=""
+    warn "could not list open $enabler_escalation_label issues — no approver-adjudication escalation retired this pass"
+  fi
   if [[ -n "$esc_json" ]]; then
     while IFS=$'\t' read -r esc_number esc_url esc_pr_number; do
       [[ -n "$esc_number" && "$esc_pr_number" =~ ^[0-9]+$ ]] || continue

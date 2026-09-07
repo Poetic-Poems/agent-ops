@@ -9214,7 +9214,14 @@ implements.
     refuses a `state_reason: "reopened"` issue: this pass re-lists the same
     merged pull request every stand-down for as long as it stays inside
     `pr_search_limit`, so without the check a re-open would be undone —
-    with a fresh comment — on the hour, every hour.
+    with a fresh comment — on the hour, every hour. A listing that fails
+    outright reports a `warning`, the same as the merged-pull-request
+    listing above: a successful call with nothing matching answers `[]`, so
+    an empty result means the call itself did not answer, and skipping that
+    silently would be indistinguishable from the common "nothing is
+    escalated" case while retiring nothing for as long as the failure
+    lasted. The rest of the pass runs regardless — the closing-keyword
+    sweep does not depend on this call.
 17g. **The reservation-release retry sweep.** A `td/<id>`/`td-record/<id>`
     tech-debt reservation branch a failed cleanup delete could not remove is
     not left orphaned for good: since TD-PPagop-26082427, that

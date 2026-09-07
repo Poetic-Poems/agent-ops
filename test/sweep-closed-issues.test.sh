@@ -69,6 +69,7 @@ case "$args" in
   "pr list -R x/y --state merged --label autonomous-agent "*)
     cat "$S/prs.json" ;;
   "issue list -R x/y --label enabler-escalation --state open --search approver-adjudication "*)
+    [[ -f "$S/fail-esc-list" ]] && exit 1
     cat "$S/esc-issues.json" 2>/dev/null || echo '[]' ;;
   "api repos/x/y/issues/"*)
     n="${args##*issues/}"
@@ -307,6 +308,28 @@ calls="$(cat "$c/calls.log")"
 assert_eq "an escalation a human reopened is left to whoever reopened it" '' \
   "$(jq -c 'select(.action == "approver-escalation-retired")' <<<"$out" 2>/dev/null || true)"
 assert_not_contains "  ... and is never closed a second time" "issue close 1050" "$calls"
+
+# --- Case 11: the escalation listing itself fails ---------------------------------
+# A successful listing with nothing matching answers `[]`, so an empty result
+# means the call did not answer at all — and skipping that silently is
+# indistinguishable from the common "nothing is escalated" case, retiring
+# nothing for as long as the failure lasts. The merged-pull-request listing
+# above already warns on its own failure; so does this one.
+c="$tmp_dir/case11"; mkdir -p "$c"
+jq -n '[{number: 1100, url: "https://github.com/x/y/pull/1100",
+         body: "<!-- agent-ops:closes-issue item=1101 -->",
+         mergeCommit: {oid: "bcd123"},
+         mergedAt: "2026-09-06T14:00:00Z", mergedBy: {login: "a-human"}}]' > "$c/prs.json"
+jq -n '{state: "open"}' > "$c/issue-1101"
+: > "$c/fail-esc-list"
+
+out="$(run_sweep "$c")"
+assert_contains "a failed escalation listing is warned about, not read as \"nothing is escalated\"" \
+  "could not list open enabler-escalation issues" \
+  "$(jq -r 'select(.action == "warning") | .detail' <<<"$out")"
+assert_eq "  ... and the rest of the pass still runs, since it does not depend on that call" \
+  '{"action":"closed","issue":1101,"pr_number":1100,"pr_url":"https://github.com/x/y/pull/1100"}' \
+  "$(jq -c 'select(.action == "closed")' <<<"$out")"
 
 if (( failures > 0 )); then
   echo "$failures failure(s)"
