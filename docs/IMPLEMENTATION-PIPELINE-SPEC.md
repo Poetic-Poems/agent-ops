@@ -6935,10 +6935,13 @@ implements.
    Script asks `landing_protected_paths_hit` (`lib/landing.sh`, the one
    protected-path classifier requirement 8d's gate 2 already reads) whether
    this pull request's diff touches a protected path. A hit — or that
-   classifier's own exit 2, an unreadable or truncated changed-file list or
-   a `merge_autonomy_protected_paths` list it cannot evaluate against a
-   path at all, which routes *to* Critical rather than away from it, the
-   opposite fail-closed polarity from gate 2's own exit-2 handling —
+   classifier's own exit 2 (an unreadable or truncated changed-file list) or
+   exit 3 (a `merge_autonomy_protected_paths` list it cannot evaluate
+   against a path at all, TD-PPagop-26082320/TD-PPagop-26082325), either of
+   which routes *to* Critical rather than away from it, the opposite
+   fail-closed polarity from gate 2's own exit-2/3 handling — this call site
+   does not distinguish the two the way gate 2's own `unknown:` reason does,
+   since either cause forces the same tier here —
    routes to Critical regardless of `complexity`, including
    `complexity:low`, which alone would have short-circuited to the
    deterministic Trivial approval with no model call at all: a one-line
@@ -7136,9 +7139,13 @@ implements.
       cannot even evaluate against a path (a non-string entry, which raises
       rather than returns false; TD-PPagop-26082320) — never read as "no
       protected path touched" merely because the comparison itself failed.
-      `unknown` is treated as `ineligible` at this and every other call
-      site; an empty or unrecognised `source` or `complexity` is
-      `ineligible`, never eligible by omission. Widening
+      The two causes are distinct exit codes from `landing_protected_paths_hit`
+      (2 for the changed-file list, 3 for the protected-paths list) and
+      `landing_eligible` names which one fired in its own `unknown:` reason
+      text, rather than blaming the changed-file list regardless of cause
+      (TD-PPagop-26082325). `unknown` is treated as `ineligible` at this and
+      every other call site; an empty or unrecognised `source` or
+      `complexity` is `ineligible`, never eligible by omission. Widening
       `merge_autonomy_routine_complexity` to admit `high` interacts with
       requirement 26a, which already forces that grade onto anything
       touching concurrency/locking, security, CI/workflow machinery or
@@ -21719,15 +21726,18 @@ oblige anyone to edit a test.
     prefixes agent-ops's own `merge_autonomy_protected_paths` default names
     (`.github/*`, `deploy/*`, `prompts/*`, `lib/*`, `config.schema.json`,
     `config.json`, `agent-cycle.sh`, `review-cycle.sh`, `CODEOWNERS`) and
-    exits 0 when any is touched, 1 when none is, and 2 —
-    never trusted as a pass — on an unreadable or page-capped changed-file
-    listing or on a `merge_autonomy_protected_paths` entry
-    `_landing_is_protected`'s own jq program cannot compare against a path at
-    all (a non-string entry, which makes `jq -e` raise — its own exit 5 —
-    rather than merely return false; TD-PPagop-26082320, not reachable
-    through a schema-validated `config.json`, whose `items` are constrained
-    to non-empty strings, but still a contract the helper itself must hold);
-    a repo-level `merge_autonomy_protected_paths` override (the
+    exits 0 when any is touched, 1 when none is, 2 — never trusted as a
+    pass — on an unreadable or page-capped changed-file listing, and 3 —
+    also never trusted as a pass, but distinct from 2 — on a
+    `merge_autonomy_protected_paths` entry `_landing_is_protected`'s own jq
+    program cannot compare against a path at all (a non-string entry, which
+    makes `jq -e` raise — its own exit 5 — rather than merely return false;
+    TD-PPagop-26082320, not reachable through a schema-validated
+    `config.json`, whose `items` are constrained to non-empty strings, but
+    still a contract the helper itself must hold); `landing_eligible` names
+    which of the two fired in its own `unknown:` reason text rather than
+    blaming the changed-file list regardless of cause
+    (TD-PPagop-26082325); a repo-level `merge_autonomy_protected_paths` override (the
     same precedence `merge_autonomy_routine_sources` uses) wins over the
     top-level list, pinned against `scripts/detect-classifier-escapes.sh`'s
     own independent reimplementation (`test/detect-classifier-escapes.test.sh`,
@@ -21741,8 +21751,9 @@ oblige anyone to edit a test.
     `merge_autonomy_routine_sources` (a repo-level override taking
     precedence over the top-level list, the same precedence
     `merge_autonomy` itself uses) and for an empty source, `unknown` on an
-    unreadable protected-path read or an unevaluable protected-paths list,
-    and `eligible` only once every condition
+    unreadable protected-path read (naming the changed-file list) or an
+    unevaluable protected-paths list (naming `merge_autonomy_protected_paths`
+    instead, TD-PPagop-26082325), and `eligible` only once every condition
     clears — with a repo-level `merge_autonomy_routine_complexity` override
     admitting `complexity:high` for that repository alone while a repository
     without one still refuses it, and a top-level override admitting it
@@ -21916,8 +21927,11 @@ oblige anyone to edit a test.
     a protected-path pull request launches a real critical-tier engagement
     at every complexity grade, `complexity:low` included (which alone would
     have skipped the model entirely), logging `critical_reason: "protected-path"`;
-    the classifier's own exit 2 (an unreadable changed-file list) forces the
-    same critical tier rather than falling back to a cheaper one; a refuse
+    the classifier's own exit 2 (an unreadable changed-file list) and its
+    exit 3 (a `merge_autonomy_protected_paths` list it cannot evaluate
+    against a path, TD-PPagop-26082325) each force the same critical tier
+    rather than falling back to a cheaper one, pinned separately so the
+    exit-code split cannot silently drop one of them; a refuse
     streak of two still logs `critical_reason: "refuse-streak"`, so the two
     causes are pinned as distinguishable in the log; and a pull request
     touching no protected path is unaffected, keeping every tier exactly as
