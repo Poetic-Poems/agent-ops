@@ -21685,7 +21685,16 @@ oblige anyone to edit a test.
     reporting `0`, naming the rate limit distinguishably from a generic
     refusal and saying a retry was made; and a generic (non-rate-limit)
     refusal is not retried at all — one POST attempt only — and keeps the
-    original, unchanged "GitHub refused the write" wording.
+    original, unchanged "GitHub refused the write" wording. `approver_escalate`
+    composes the escalation issue's "Why the pipeline is blocked" paragraph
+    from the condition it was told fired (agent-ops#1214): the `escalate`
+    condition's body says the adjudication judged it a genuine judgement call,
+    the `recurring-refuse` condition's says the disagreement kept recurring and
+    never that the adjudication could not resolve it, and a condition it was
+    not given keeps the "could not resolve the disagreement" wording an
+    unparseable or unusable verdict earns — while the `pr-<n>-approver-
+    adjudication` item ref `create_escalation_issue` dedups on, and the
+    adjudication's own reasons, stay the same under every one of them.
     `test/approver-wiring.test.sh` lifts `run_approver_stage`,
     `approver_post_or_warn` and `approver_stage_complexity` verbatim out of
     `lib/approver.sh` and drives them with every GitHub call, model launch and
