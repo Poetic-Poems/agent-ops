@@ -239,6 +239,63 @@ assert_eq "three decide-tactical passes over three different reasons all count t
 assert_reason_seen "a fourth, genuinely new reason has not itself been seen" 1 \
   acme/widgets TD001 "key4" "$tmp_dir/three-decides.jsonl"
 
+# --- escalation_refile_suppressed (agent-ops#779, decided on #784) -----------
+# The per-close re-filing rate limit's own pure comparator: given a close
+# time, "now", and the configured window, is the window still active? Fails
+# *open* (never suppresses) on every malformed or disabling input — a
+# spurious extra escalation issue is cheap; a wrongly-suppressed one hides
+# the visibility requirement 38 exists to guarantee.
+
+now_ts="$(date -u -d "2026-08-30T00:00:00Z" +%s)"  # an arbitrary fixed "now"
+
+assert_eq "a close 1 hour ago, 24h window: still suppressed" "0" \
+  "$(rc=0; escalation_refile_suppressed "2026-08-29T23:00:00Z" "$now_ts" 24 || rc=$?; echo "$rc")"
+assert_eq "a close 25 hours ago, 24h window: window has lapsed" "1" \
+  "$(rc=0; escalation_refile_suppressed "2026-08-28T23:00:00Z" "$now_ts" 24 || rc=$?; echo "$rc")"
+assert_eq "a close exactly on the window boundary is no longer suppressed (strict less-than)" "1" \
+  "$(rc=0; escalation_refile_suppressed "2026-08-29T00:00:00Z" "$now_ts" 24 || rc=$?; echo "$rc")"
+assert_eq "a window of 0 never suppresses, however recent the close" "1" \
+  "$(rc=0; escalation_refile_suppressed "2026-08-29T23:59:59Z" "$now_ts" 0 || rc=$?; echo "$rc")"
+assert_eq "an empty CLOSED_AT fails open" "1" \
+  "$(rc=0; escalation_refile_suppressed "" "$now_ts" 24 || rc=$?; echo "$rc")"
+assert_eq "an unparseable CLOSED_AT fails open" "1" \
+  "$(rc=0; escalation_refile_suppressed "not a date" "$now_ts" 24 || rc=$?; echo "$rc")"
+assert_eq "an unparseable WINDOW_HOURS fails open" "1" \
+  "$(rc=0; escalation_refile_suppressed "2026-08-29T23:59:59Z" "$now_ts" "not a number" || rc=$?; echo "$rc")"
+assert_eq "a negative WINDOW_HOURS fails open" "1" \
+  "$(rc=0; escalation_refile_suppressed "2026-08-29T23:59:59Z" "$now_ts" "-1" || rc=$?; echo "$rc")"
+assert_eq "a fractional window is honoured (30 minutes = 0.5h, close 20 minutes ago: still suppressed)" "0" \
+  "$(rc=0; escalation_refile_suppressed "2026-08-29T23:40:00Z" "$now_ts" 0.5 || rc=$?; echo "$rc")"
+assert_eq "a fractional window (close 40 minutes ago, 0.5h window: lapsed)" "1" \
+  "$(rc=0; escalation_refile_suppressed "2026-08-29T23:20:00Z" "$now_ts" 0.5 || rc=$?; echo "$rc")"
+
+# --- escalation_event_logged_since (agent-ops#779) --------------------------
+# Condition 3's other half: has the one immediate re-escalation a failed
+# post-close adjudication owes already been spent for this close?
+
+pr_url="https://github.com/acme/widgets/pull/9"
+assert_logged_since() {  # assert_logged_since DESC EXPECTED_RC EVENT SINCE_TS LOG_FILE
+  local desc="$1" expected="$2" event="$3" since="$4" log="$5" rc=0
+  escalation_event_logged_since "$pr_url" "$event" "$since" < "$log" || rc=$?
+  assert_eq "$desc" "$expected" "$rc"
+}
+
+: > "$tmp_dir/empty2.jsonl"
+assert_logged_since "an empty log: nothing logged since" 1 "approver-escalated" "2026-08-29T00:00:00Z" \
+  "$tmp_dir/empty2.jsonl"
+
+jq -nc --arg u "$pr_url" '{ts: "2026-08-29T12:00:00Z", event: "approver-escalated", pr_url: $u,
+  issue_number: 55, issue_url: "https://github.com/acme/widgets/issues/55"}' \
+  > "$tmp_dir/escalated.jsonl"
+assert_logged_since "an approver-escalated event after the close: found" 0 "approver-escalated" \
+  "2026-08-29T00:00:00Z" "$tmp_dir/escalated.jsonl"
+assert_logged_since "...but not before the close" 1 "approver-escalated" "2026-08-30T00:00:00Z" \
+  "$tmp_dir/escalated.jsonl"
+assert_logged_since "...nor for a different pull request" 1 "approver-escalated" "2026-08-29T00:00:00Z" \
+  "$tmp_dir/empty2.jsonl"
+assert_logged_since "an open-question-escalated event does not count toward approver-escalated" 1 \
+  "open-question-escalated" "2026-08-29T00:00:00Z" "$tmp_dir/escalated.jsonl"
+
 # --- create_decision_log_issue (agent-ops#937): filing, dedup, and — unlike
 # create_escalation_issue — no retry without the label on a failed create
 # (agent-ops#1198). `gh` is stubbed to a small case dispatch over its own

@@ -7032,6 +7032,38 @@ implements.
    repeated rounds, so a persisting disagreement raises one issue, not one
    per cycle.
 
+   **The filing itself is rate-limited per close (agent-ops#779, decided on
+   #784 as behaviour (b)).** `create_escalation_issue`'s own dedup matches
+   *open* issues only, so a human who closes the escalation issue without
+   also reviewing and merging the pull request — closing is not the
+   releasing act — would otherwise get a fresh issue on every subsequent
+   adjudication round. Before filing, `approver_escalate` reads the most
+   recently closed `enabler_escalation_label` issue for this pull request's
+   own `pr-<n>-approver-adjudication` reference live from GitHub
+   (`escalation_recent_close`, `lib/enabler.sh`, never a log join — the same
+   "ask the thing that actually changed" reasoning `approver_refuse_streak`
+   already applies). Filing is suppressed — logged as a `warning` naming the
+   prior issue and the UTC instant the window lapses, with no GitHub write —
+   while `now − closedAt` is less than `escalation_refile_after_hours`
+   (`escalation_refile_suppressed`, `lib/escalation-autonomy.sh`, a pure
+   comparator), *unless* it is the one immediate re-escalation a failed
+   post-close adjudication owes: `approver_escalate` runs only from the
+   adjudicating branch, so "an adjudication pass ran this round" is always
+   true here, and the carve-out reduces to whether an `approver-escalated`
+   event for this pull request already exists on the log at or after that
+   close (`escalation_event_logged_since`). That first post-close filing
+   always proceeds, window or not — each human close buys at most one
+   immediate re-file plus whatever the window permits after it lapses.
+   Whenever a recent close is found and the filing proceeds regardless of
+   which of those two paths let it through, the issue body gains a "Why this
+   is back" section naming the prior issue, its close time, and that the
+   pull request's own `CHANGES_REQUESTED` state — not the closed issue — is
+   what still blocks it. `escalation_refile_after_hours: 0` disables the
+   guard outright, guarded explicitly rather than left to the arithmetic:
+   every refusing round files, exactly as before this guard existed. The
+   identical guard, sharing both functions, applies to requirement 8f's own
+   `open_question_escalate` below.
+
    The escalation is retired — closed with a comment naming what ended the
    disagreement, and an `approver-escalation-retired` event (`pr_url`,
    `issue_number`, `issue_url`, `cause`) — the moment the pipeline can see
@@ -7586,6 +7618,37 @@ implements.
       this pull request's `pr-<n>-open-question` reference means the next
       pass is the first since they did) — a question already carrying an
       `open-question-adjudication` event escalates without a second pass.
+
+    **Both rungs' own filing is rate-limited per close (agent-ops#779,
+    decided on #784 as behaviour (b)), the identical guard requirement 8c
+    applies to `approver_escalate`.** `create_escalation_issue`'s own dedup
+    matches *open* issues only, so a human who closes the escalation issue
+    without also removing the `open-question` label — closing is not the
+    releasing act — would otherwise get a fresh issue on every subsequent
+    refusing round. Before filing, `open_question_escalate` reads the most
+    recently closed `enabler_escalation_label` issue for this pull request's
+    own `pr-<n>-open-question` reference live from GitHub
+    (`escalation_recent_close`, `lib/enabler.sh`). Filing is suppressed —
+    logged as a `warning` naming the prior issue and the UTC instant the
+    window lapses, with no GitHub write — while `now − closedAt` is less
+    than `escalation_refile_after_hours` (`escalation_refile_suppressed`,
+    `lib/escalation-autonomy.sh`, a pure comparator), *unless* it is the one
+    immediate re-escalation a failed post-close adjudication owes: an
+    adjudication pass ran this very round (the `adjudicate-first` rung's own
+    `escalate` verdict reaching this call) *and* no `open-question-escalated`
+    event for this pull request already exists on the log at or after that
+    close (`escalation_event_logged_since`). That first post-close filing
+    always proceeds, window or not — each human close buys at most one
+    immediate re-file plus whatever the window permits after it lapses; the
+    `always-escalate` rung, which never runs an adjudication pass, therefore
+    always has this carve-out read false and is bound by the window alone.
+    Whenever a recent close is found and the filing proceeds regardless of
+    which of those two paths let it through, the issue body gains a "Why
+    this is back" section naming the prior issue, its close time, and that
+    removing the label — not closing the issue — is what still releases the
+    gate. `escalation_refile_after_hours: 0` disables the guard outright,
+    guarded explicitly rather than left to the arithmetic: every refusing
+    round files, exactly as before this guard existed.
 
     **Distinct from requirement 8c's own refuse-streak adjudication in every
     way that requirement's own text calls for**: different trigger (an open
