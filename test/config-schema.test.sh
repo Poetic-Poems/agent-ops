@@ -892,6 +892,27 @@ assert_valid "a project_review repo entry may override any of defaults' own keys
   '.project_review.repos[0] += {model: "claude-opus-5", pr_label: "custom-review", branch_prefix: "custom/", timeout_review: 30, inactivity_review: 5, min_days_between_reviews: 1, min_prs_between_reviews: 10, not_before: "2026-01-01T00:00:00Z", report_directory: "docs/reviews/project-review-%Y-%m-%d"}'
 assert_valid "a project_review repo entry carrying only slug inherits every default" \
   '.project_review.repos = [{slug: "Test-Org/first-repo"}]'
+assert_valid "review_instructions/review_context accept an array of strings, in defaults and per-repo" \
+  '.project_review.defaults.review_context = ["a.md", "b.md"] |
+   .project_review.repos[0].review_instructions = ["c.md", "d.md"]'
+assert_rejected "a bare-string review_instructions is rejected — always an array, like prompt_overrides' extend" \
+  '.project_review.defaults.review_instructions = "instructions.md"' \
+  'config.project_review.defaults.review_instructions: expected array, got string'
+assert_rejected "an empty review_instructions array is rejected (an absent key already says nothing configured)" \
+  '.project_review.defaults.review_instructions = []' \
+  'config.project_review.defaults.review_instructions'
+assert_rejected "an empty string inside a review_context array is rejected" \
+  '.project_review.defaults.review_context = [""]' \
+  'config.project_review.defaults.review_context'
+assert_rejected "a non-string, non-array review_instructions is rejected" \
+  '.project_review.defaults.review_instructions = 5' \
+  'config.project_review.defaults.review_instructions'
+assert_valid "repo_context_file accepts a bare string, in defaults and per-repo" \
+  '.project_review.defaults.repo_context_file = ".github/REVIEW-CONTEXT.md" |
+   .project_review.repos[0].repo_context_file = "docs/review-context.md"'
+assert_rejected "a non-string repo_context_file is rejected" \
+  '.project_review.defaults.repo_context_file = 5' \
+  'config.project_review.defaults.repo_context_file: expected string, got number'
 assert_rejected "a non-string report_directory is rejected" \
   '.project_review.defaults.report_directory = 5' \
   'config.project_review.defaults.report_directory: expected string, got number'
@@ -967,11 +988,48 @@ assert_project_review "a repo may override every key defaults carries" \
      pr_label: "custom-review", branch_prefix: "custom/", min_days_between_reviews: 1,
      min_prs_between_reviews: 2,
      not_before: "2026-01-01T00:00:00Z", report_directory: "docs/reviews/project-review-%Y-%m-%d",
-     timeout_review: 30, inactivity_review: 5}]' \
+     timeout_review: 30, inactivity_review: 5,
+     review_instructions: ["custom-instructions.md"], review_context: ["a.md", "b.md"],
+     repo_context_file: ".github/REVIEW-CONTEXT.md"}]' \
   '.[0] == {slug: "Test-Org/first-repo", model: "claude-opus-5", model_key: "project_review.repos[0].model",
      pr_label: "custom-review", branch_prefix: "custom/", min_days_between_reviews: 1, min_prs_between_reviews: 2,
      not_before: "2026-01-01T00:00:00Z",
-     report_directory: "docs/reviews/project-review-%Y-%m-%d", timeout_review: 30, inactivity_review: 5}'
+     report_directory: "docs/reviews/project-review-%Y-%m-%d", timeout_review: 30, inactivity_review: 5,
+     review_instructions: ["custom-instructions.md"], review_context: ["a.md", "b.md"],
+     repo_context_file: ".github/REVIEW-CONTEXT.md"}'
+
+# --- review_instructions/review_context/repo_context_file: requirement 342's
+#     resolution rule applied to issue #589/D7's own keys. review_instructions/
+#     review_context are always arrays (never a bare string, like
+#     prompt_overrides' extend) — config_project_review_repos only needs to
+#     turn an absent key into `[]`, never a scalar into a one-element list. ---
+assert_project_review "review_instructions/review_context/repo_context_file absent everywhere resolve to empty" \
+  '.project_review.repos = [{slug: "Test-Org/first-repo"}]' \
+  '.[0].review_instructions == [] and .[0].review_context == [] and .[0].repo_context_file == ""'
+assert_project_review "an array review_instructions in defaults is inherited in order" \
+  '.project_review.defaults.review_instructions = ["a.md", "b.md"] |
+   .project_review.repos = [{slug: "Test-Org/first-repo"}]' \
+  '.[0].review_instructions == ["a.md", "b.md"]'
+assert_project_review "an array review_context in defaults is passed through in order" \
+  '.project_review.defaults.review_context = ["a.md", "b.md"] |
+   .project_review.repos = [{slug: "Test-Org/first-repo"}]' \
+  '.[0].review_context == ["a.md", "b.md"]'
+assert_project_review "a repo's own review_instructions overrides defaults' entirely, not merged" \
+  '.project_review.defaults.review_instructions = ["a.md", "b.md"] |
+   .project_review.repos = [{slug: "Test-Org/first-repo", review_instructions: ["c.md"]}]' \
+  '.[0].review_instructions == ["c.md"]'
+assert_project_review "an explicit null review_context falls through to defaults" \
+  '.project_review.defaults.review_context = ["a.md"] |
+   .project_review.repos = [{slug: "Test-Org/first-repo", review_context: null}]' \
+  '.[0].review_context == ["a.md"]'
+assert_project_review "a repo's own repo_context_file overrides defaults'" \
+  '.project_review.defaults.repo_context_file = ".github/REVIEW-CONTEXT.md" |
+   .project_review.repos = [{slug: "Test-Org/first-repo", repo_context_file: "docs/review-context.md"}]' \
+  '.[0].repo_context_file == "docs/review-context.md"'
+assert_project_review "a repo with no repo_context_file override inherits defaults'" \
+  '.project_review.defaults.repo_context_file = ".github/REVIEW-CONTEXT.md" |
+   .project_review.repos = [{slug: "Test-Org/first-repo"}]' \
+  '.[0].repo_context_file == ".github/REVIEW-CONTEXT.md"'
 
 # --- min_prs_between_reviews: absent → 5, defaults-only, per-repo override,
 #     explicit null falls through — the same //-chain shape min_days_between_reviews
@@ -1055,6 +1113,21 @@ assert_doctor "doctor fails duplicate slugs in project_review.repos, as review-c
   "project_review.repos lists [$BASE_REPO_1] more than once"
 assert_doctor_shipped "doctor passes distinct project_review.repos slugs" \
   '.' 0 'every project_review.repos entry names a distinct repository'
+# --- issue #589/D7: a configured review_instructions/review_context path
+#     that does not resolve is a `fail`, not the `warn` a prompt_overrides
+#     path earns — this text changes how strictly a review judges. ---
+printf 'weigh security first\n' > "$tmp/review-instructions.md"
+assert_doctor "doctor fails a review_instructions path that does not resolve" \
+  '.project_review.defaults.review_instructions = ["'"$tmp"'/nope-instructions.md"]' 1 \
+  "review_instructions names \"$tmp/nope-instructions.md\""
+assert_doctor "doctor fails a per-repo review_context override that does not resolve" \
+  '.project_review.repos[0].review_context = ["'"$tmp"'/nope-context.md"]' 1 \
+  "review_context names \"$tmp/nope-context.md\""
+assert_doctor "doctor passes a review_instructions path that does resolve" \
+  '.project_review.defaults.review_instructions = ["'"$tmp"'/review-instructions.md"]' 0 \
+  "every configured review_instructions/review_context path resolves"
+assert_doctor_shipped "doctor passes with no review_instructions/review_context configured at all" \
+  '.' 0 'every configured review_instructions/review_context path resolves'
 # --- requirement 1c, "the floor" (agent-ops#822): refiner_model/enabler_model
 #     must never rank below either implementer tier they might author a
 #     specification for. ---

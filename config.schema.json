@@ -1684,6 +1684,34 @@
                 "spec": "Optional. The report directory, as a GNU `date`(1) format string resolved with `date -u +\"<format>\"` relative to the repository root, for the run's own `review_date` (R4a). Absent, and absent on a repository's own override too, `reviews/project-review-%Y-%m-%d` is used \u2014 today's layout, unchanged; the fallback lives in code, not this default, so a schema-only reader sees it as genuinely unset. Must be day-granular (R4a): a format carrying `%H`, `%M` or `%S` resolves differently at discovery time than it did at write time, and discovery silently finds nothing.",
                 "value": "*(unset)*"
               }
+            },
+            "review_instructions": {
+              "$ref": "#/$defs/reviewTextPaths",
+              "description": "Installation-held text appended to the Reviewer-Agent's runtime input as **instructions** — how to review this repository: what to weigh, what to ignore, which standards apply. The only channel that may carry instruction (D7, docs/ROADMAP.md): a repository under review cannot supply its own, since its contributors could otherwise steer how strictly it is judged. A configured path that does not resolve to a readable file is a fail-fast config error at cycle start and at `scripts/doctor.sh`, unlike `prompt_overrides`' tolerant paths, because this text changes a review's verdict rather than a stage's general guidance.",
+              "x-docs": {
+                "readme": "Optional. An array of paths, appended in order, of installation-held text added to the Reviewer-Agent's runtime input as *instructions* for this repository — see [Review instructions and context](#review-instructions-and-context). A relative path resolves against `state_dir`, exactly like `prompt_overrides`. A path that does not resolve is a fail-fast error, not a silent skip.",
+                "spec": "Optional. Installation-held instructions (R5 step 2a), resolved against `state_dir` on the same terms as `prompt_overrides`' `extend` (requirement 4a). A configured path that does not resolve is a fail-fast config error (R1c) — never tolerated the way a `prompt_overrides` path is, because this text changes how strictly a review judges. The only instruction channel D7 admits; a repository under review has none.",
+                "value": "*(unset)*"
+              }
+            },
+            "review_context": {
+              "$ref": "#/$defs/reviewTextPaths",
+              "description": "Installation-held text appended to the Reviewer-Agent's runtime input as **context** — what this repository is for, its domain, its relationships to other repositories, its consumers and deployment. Resolved the same way as `review_instructions`, but admissible alongside repository-supplied context (`repo_context_file`) rather than exclusively, since context describes the repository rather than changing how strictly it is judged.",
+              "x-docs": {
+                "readme": "Optional. An array of paths, appended in order, of installation-held background for this repository — what it is for, its domain, its relationships and consumers — added to the Reviewer-Agent's runtime input as *context*. Same path resolution and fail-fast-on-missing behaviour as `review_instructions`.",
+                "spec": "Optional. Installation-held context (R5 step 2a), resolved exactly as `review_instructions` and equally fail-fast on a missing configured path (R1c). Layered with `repo_context_file` below rather than replacing it — both reach the Reviewer-Agent as `context`, each with its own origin stated.",
+                "value": "*(unset)*"
+              }
+            },
+            "repo_context_file": {
+              "description": "A path, relative to the repository root, read from the ephemeral clone under review and appended to the Reviewer-Agent's runtime input as repository-supplied **context** — never instruction (D7's trust boundary, docs/ROADMAP.md: a reviewed repository's contributors can edit this file, so it is trustworthy only as far as a pull request into that repository is). Unset by default — a repository need not opt in. Absent from the clone is simply absent, unlike a missing `review_instructions`/`review_context` path: this file legitimately comes and goes with the repository's own history.",
+              "type": "string",
+              "default": "",
+              "x-docs": {
+                "readme": "Optional. A path *inside the repository under review* (e.g. `.github/REVIEW-CONTEXT.md`), read from the clone and added to the runtime input as repository-supplied context — never instruction, see [Review instructions and context](#review-instructions-and-context). Unset by default; a missing file is simply absent, not an error.",
+                "spec": "Optional. A repository-relative path read from the ephemeral clone (R5 step 2a) and added as `context`, attributed `source: \"repository\"`. Never treated as instruction (D7). Unset by default; absent from the clone is simply absent — never a fail-fast error, unlike `review_instructions`/`review_context`.",
+                "value": "*(unset)*"
+              }
             }
           }
         },
@@ -1738,6 +1766,18 @@
               "report_directory": {
                 "$ref": "#/$defs/reportDirectory",
                 "description": "Override for `defaults.report_directory`, for this repository alone."
+              },
+              "review_instructions": {
+                "$ref": "#/$defs/reviewTextPaths",
+                "description": "Override for `defaults.review_instructions`, for this repository alone."
+              },
+              "review_context": {
+                "$ref": "#/$defs/reviewTextPaths",
+                "description": "Override for `defaults.review_context`, for this repository alone."
+              },
+              "repo_context_file": {
+                "type": "string",
+                "description": "Override for `defaults.repo_context_file`, for this repository alone."
               }
             }
           },
@@ -1903,6 +1943,15 @@
         "code-quality",
         "register-hygiene"
       ]
+    },
+    "reviewTextPaths": {
+      "description": "An array of paths, appended in order, to installation-held text — the review pipeline's own analogue of `prompt_overrides`' `extend` (requirement 4a), and typed exactly like it: always an array, never a bare string, so the schema's own minimal validator (no `oneOf`/`anyOf`, `test/config-schema.test.sh`'s \"the schema uses only keywords the validator implements\") can actually constrain it. A relative path resolves against `state_dir`. Never empty: an empty list says nothing an absent key does not already say.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 1
     },
     "landingSourceToken": {
       "description": "One *landing* token, naming a work source `merge_autonomy_routine_sources` may arm automatically. Identical to `sourceToken` except that the four `issues:<band>` gathering ranks are replaced by the single plain `issues`, because that is the value a real issues work order carries by the time `landing_eligible` compares it (`scripts/gather-issues.sh` collapses all four bands to `\"source\": \"issues\"`, the same collapse requirement 33's `first-seen` vocabulary documents). Banding is a config-time selection rank, not a property landing can see, so `issues` is all-or-nothing here: an installation that wants only its low-band issues landed must narrow what it gathers, not what it arms. Listing a banded token is now a schema error rather than a silently unmatchable entry (agent-ops#558).",

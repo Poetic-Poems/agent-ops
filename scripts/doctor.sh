@@ -55,6 +55,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib/config-schema.sh
 source "$SCRIPT_DIR/lib/config-schema.sh"
+# shellcheck source=lib/review-context.sh
+source "$SCRIPT_DIR/lib/review-context.sh"
 # shellcheck source=lib/model-id.sh
 source "$SCRIPT_DIR/lib/model-id.sh"
 # shellcheck source=lib/labels.sh
@@ -695,6 +697,27 @@ done < <(cfg_json '.prompt_overrides' | jq -r '
   | .key as $stage
   | ((.value.extend // [])[] | [$stage, "extend", .] | @tsv),
     (select((.value.replace // "") != "") | [$stage, "replace", .value.replace] | @tsv)')
+
+# --- Review instructions & context (issue #589, D7) ---
+
+section "Review instructions & context"
+
+# Unlike a prompt_overrides path just above, a configured review_instructions/
+# review_context path is a `fail`, not a `warn`: this text changes how
+# strictly a review judges (D7's trust boundary, docs/ROADMAP.md), so a typo
+# here must be loud rather than let a review quietly run against less than
+# the operator configured. review_context_missing_configured is the same
+# function review-cycle.sh calls before its own lock (R1c), so the two can
+# never disagree about what counts as broken.
+missing_review_context_paths="$(review_context_missing_configured "$state_dir" "$project_review_repos_json")"
+if [[ -n "$missing_review_context_paths" ]]; then
+  while IFS=$'\t' read -r mrc_slug mrc_field mrc_configured mrc_resolved; do
+    [[ -n "$mrc_slug" ]] || continue
+    fail "$mrc_slug's $mrc_field names \"$mrc_configured\" ($mrc_resolved), which is not readable — review-cycle.sh refuses to start rather than review this repository against less than configured"
+  done <<<"$missing_review_context_paths"
+else
+  ok "every configured review_instructions/review_context path resolves to a readable file"
+fi
 
 # --- Toolchain ---
 

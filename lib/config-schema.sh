@@ -797,9 +797,18 @@ config_documented_value_mismatches() {
 # repository overrides it, `project_review.defaults.model` otherwise — so a
 # caller passing `model` to `resolve_model_id` can name that path rather than
 # the generic `project_review.model` in a resolution error.
+#
+# `review_instructions`/`review_context` (issue #589, D7) are arrays of
+# paths, always — never a bare string, the same convention `prompt_overrides`'
+# `extend` already uses (this schema's own minimal validator has no
+# `oneOf`/`anyOf` to constrain a "string or array" shape). Absent everywhere
+# resolves to `[]`, never `null`, so every reader can iterate it unconditionally.
+# `repo_context_file` stays a bare string: it names one file inside the
+# repository under review, never a list.
 config_project_review_repos() {
   local defaulted_config="$1"
   jq -c '
+    def to_path_array: if . == null then [] else . end;
     (.project_review.defaults // {}) as $d |
     [ range(0; (.project_review.repos // []) | length) as $i |
       (.project_review.repos[$i]) as $r |
@@ -815,6 +824,9 @@ config_project_review_repos() {
         not_before: ($r.not_before // $d.not_before // ""),
         report_directory: ($r.report_directory // $d.report_directory // ""),
         timeout_review: ($r.timeout_review // $d.timeout_review),
-        inactivity_review: ($r.inactivity_review // $d.inactivity_review) } ]
+        inactivity_review: ($r.inactivity_review // $d.inactivity_review),
+        review_instructions: (($r.review_instructions // $d.review_instructions) | to_path_array),
+        review_context: (($r.review_context // $d.review_context) | to_path_array),
+        repo_context_file: ($r.repo_context_file // $d.repo_context_file // "") } ]
   ' <<<"$defaulted_config" 2>/dev/null || printf '[]'
 }

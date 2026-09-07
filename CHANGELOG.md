@@ -8,6 +8,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Per-repository review instructions and context** (issue #589, D7): three
+  new `project_review.defaults`/`repos[]` keys, resolved on requirement 342's
+  usual rule, give a review the repository it is reviewing rather than the
+  same five facts everywhere. `review_instructions` and `review_context` are
+  arrays of installation-held paths, resolved against `state_dir` exactly
+  like `prompt_overrides`' `extend`, and reach the Reviewer-Agent's runtime
+  input as `instructions`/`context`; a configured path that does not resolve
+  to a readable file is a fail-fast error at cycle start and at
+  `scripts/doctor.sh`, not the silent skip a `prompt_overrides` path earns,
+  because this text changes how strictly a review judges.
+  `repo_context_file` additionally admits one file from the repository under
+  review's own clone — **context only, never instruction**: text a reviewed
+  repository's contributors can edit is trustworthy only as far as a pull
+  request into that repository is, so it reaches the model attributed
+  `"source": "repository"` and the prompt tells it to read that as evidence
+  rather than obey it. Unset by default, and absent from the clone is simply
+  absent. `review-stage-start` records every resolved source and a sha256 of
+  the text sent, never the text, so a past review's inputs are
+  reconstructable from the log. Closes D7's open question — both layered,
+  configuration winning.
+
 - **`--now <iso8601>` on `scripts/publish-dashboard.sh`** (issue #957):
   overrides the single instant every rolling window in the script measures
   from — `day_cut`/`today`/`recent_cut` and the WI-8 landing digest's
