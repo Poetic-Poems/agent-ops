@@ -247,19 +247,25 @@ _landing_is_protected() {
 
 # landing_protected_paths_hit CONFIG_JSON SLUG NUMBER
 # Print the offending paths, one per line. Exit 0 when at least one changed
-# path is protected, 1 when none is, 2 when the answer could not be
-# established at all (bad arguments, `gh` erroring, a listing that reached
-# LANDING_PR_FILES_LIMIT and so may be hiding more, or `_landing_is_protected`
-# raising — TD-PPagop-26082320 — because CONFIG_JSON's protected-paths list
-# holds a non-string entry `_landing_is_protected` cannot compare at all).
+# path is protected, 1 when none is, 2 when the changed-file list itself
+# could not be established (bad arguments, `gh` erroring, or a listing that
+# reached LANDING_PR_FILES_LIMIT and so may be hiding more), 3 when the
+# changed-file list was read fine but CONFIG_JSON's own protected-paths list
+# could not be evaluated against it at all — `_landing_is_protected` raising
+# (TD-PPagop-26082320) because it holds a non-string entry
+# `_landing_is_protected` cannot compare. Kept apart from exit 2 so a caller
+# can name which was true (TD-PPagop-26082325: `landing_eligible` blamed the
+# changed-file list even when this — the operator's own configured list —
+# was the unevaluable part); every call site still treats both the same way,
+# **never a pass**.
 # Reads the changed-file list fresh from GitHub — `gh api
 # repos/SLUG/pulls/N/files`, never the ephemeral clone, whose branch may have
 # moved since it was checked out. At the gate-4.5 call site this guards,
-# exit 2 is a refusal to arm: an unreadable or truncated list, or a protected-
-# paths list this cannot even evaluate, must never read as "nothing protected
-# was touched". The other call site — `_landing_stage_attempt`'s own
-# `landing-audit-record` write (requirement 8x) — runs after the arm has
-# already happened, so exit 2 there instead maps to a bare `unknown`
+# exit 2 or 3 is a refusal to arm: an unreadable or truncated list, or a
+# protected-paths list this cannot even evaluate, must never read as "nothing
+# protected was touched". The other call site — `_landing_stage_attempt`'s
+# own `landing-audit-record` write (requirement 8x) — runs after the arm has
+# already happened, so exit 2 or 3 there instead maps to a bare `unknown`
 # protected-path verdict in the record and proceeds; there is nothing left
 # to refuse.
 #
@@ -296,7 +302,7 @@ landing_protected_paths_hit() {
     case "$is_protected_rc" in
       0) printf '%s\n' "$path"; hit=1 ;;
       1) ;;
-      *) return 2 ;;
+      *) return 3 ;;
     esac
   done <<<"$raw"
   (( hit )) && return 0
@@ -479,15 +485,18 @@ landing_routine_eligible() {
 #     below.
 #
 # `unknown` is returned only for `landing_protected_paths_hit`'s own exit 2
-# (the changed-file list could not be read or was truncated, or the
-# configured protected-paths list could not be evaluated against a path at
-# all — TD-PPagop-26082320) — every other refusal above is a deterministic
-# `ineligible`, since COMPLEXITY, SOURCE and LEVEL are all already in the
-# caller's hand, nothing further to ask GitHub. Both words carry the same
-# instruction to every call site: **never a pass** — `unknown` is treated
-# as `ineligible` everywhere this is read, the distinction exists only so a
-# log can say whether the diff was genuinely disqualified or merely
-# unreadable.
+# or 3 — the changed-file list could not be read or was truncated (2), or the
+# configured protected-paths list could not be evaluated against a changed
+# path at all (3 — TD-PPagop-26082320) — every other refusal above is a
+# deterministic `ineligible`, since COMPLEXITY, SOURCE and LEVEL are all
+# already in the caller's hand, nothing further to ask GitHub. Both exit
+# codes carry the same instruction to every call site: **never a pass** —
+# `unknown` is treated as `ineligible` everywhere this is read; the
+# distinction exists so the `unknown:` reason names which was true
+# (TD-PPagop-26082325) — a malformed `merge_autonomy_protected_paths` sends
+# whoever reads it to their own `config.json`, an unreadable changed-file
+# list sends them to `gh` instead, and conflating the two into one wording
+# sent every reader to the wrong place.
 landing_eligible() {
   local config_json="$1" slug="$2" number="$3" complexity="$4" source="$5" level="$6"
 
@@ -530,6 +539,10 @@ landing_eligible() {
       ;;
     2)
       printf 'unknown:could not establish %s#%s'\''s changed-file list' "$slug" "$number"
+      return 0
+      ;;
+    3)
+      printf 'unknown:the protected-path list could not be evaluated against %s#%s'\''s changed files (a non-string entry in merge_autonomy_protected_paths)' "$slug" "$number"
       return 0
       ;;
   esac

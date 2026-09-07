@@ -607,6 +607,16 @@ assert_eq "an unreadable changed-file list (exit 2) also forces the critical tie
   "model-critical" "$(launches)"
 assert_eq "  ... logged as the critical tier" '"critical"' "$(jq -c '.tier' <<<"$(verdict_event)")"
 
+# TD-PPagop-26082325 split the unevaluable-protected-paths-list cause off
+# landing_protected_paths_hit's own exit 2 into its own exit 3 — this call
+# site only cares about the fail-closed direction, not which of the two
+# caused it, so exit 3 must force the critical tier exactly like exit 2 does.
+run_case agent-approves low 0 '{"verdict":"approve","reasons":["fine"]}' \
+  PROTECTED_RC=3 >/dev/null
+assert_eq "an unevaluable protected-paths list (exit 3) also forces the critical tier" \
+  "model-critical" "$(launches)"
+assert_eq "  ... logged as the critical tier" '"critical"' "$(jq -c '.tier' <<<"$(verdict_event)")"
+
 # An untouched protected path (the PROTECTED_RC=1 default every case above
 # this block already relied on) leaves every tier exactly as before —
 # regression-pinned directly rather than only implied by every other case's

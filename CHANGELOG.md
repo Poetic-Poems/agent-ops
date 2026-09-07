@@ -275,6 +275,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`landing_eligible`'s `unknown:` diagnostic now names which of
+  `landing_protected_paths_hit`'s two refusal causes actually fired**
+  (issue #961). `landing_protected_paths_hit` (`lib/landing.sh`) returns
+  exit 2 for an unreadable or truncated changed-file list and, since
+  TD-PPagop-26082320, a distinct exit 3 when a `merge_autonomy_protected_paths`
+  entry itself cannot be evaluated against a changed path — but
+  `landing_eligible` printed the same "could not establish …'s changed-file
+  list" wording for both, so a malformed protected-paths override sent
+  whoever debugged it to `gh` and pagination rather than to their own
+  `config.json` (agent-ops#718 held D18 arming shut for five days on exactly
+  this wording, for the changed-file-list cause). `landing_eligible` now
+  names the protected-paths list explicitly for the exit-3 cause, mirroring
+  `scripts/detect-classifier-escapes.sh`'s own wording for the same cause.
+  `lib/approver.sh`'s protected-path-forces-Critical check, the other caller
+  that reads this exit code, now also treats exit 3 the same fail-closed way
+  it already treated exit 2 — the split would otherwise have made a
+  malformed protected-paths list silently skip the critical tier there.
+  Diagnostics only: no change to which pull requests `landing_eligible`
+  admits or blocks.
+
 - **An adjudication `refuse` naming a concrete, unanswered defect no longer
   pages the owner** (agent-ops#1214). `prompts/approver.md` gives the model
   three adjudication verdicts — `land` (resolved), `refuse` (something real
