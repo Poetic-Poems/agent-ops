@@ -86,6 +86,11 @@ row_of() {  # <report-json> <stage>
 # item 4: one post-merge-revert (post-merge rung, no cycle — mined after the
 #         fact) on top of an earlier review-round-trip on the *same* item —
 #         its furthest rung is post-merge, not double-counted at agent-review.
+#         This is docs/DASHBOARD-SPEC.md's own reference case for why a
+#         per-rung `caught` figure is a floor, not a defect tally: item 4's
+#         agent-review round trip did catch something, but the item's
+#         furthest rung is post-merge, so agent-review's own `caught` count
+#         (below) is unaffected by that real catch (issue #1195).
 
 basic="$tmp_dir/basic.jsonl"
 cat > "$basic" <<'EOF'
