@@ -43,7 +43,7 @@ usage() {
 usage: check-node-image.sh
 
 Ask this node's own scheduler container whether it is running the newest
-image ghcr.io/poetic-poems/agent-ops:latest names, via lib/image-drift.sh —
+image ghcr.io/pullwright/agent-ops:latest names, via lib/image-drift.sh —
 run inside the container, where the toolchain and this node's own
 build-info.json actually live.
 
