@@ -212,6 +212,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **An adjudication `refuse` naming a concrete, unanswered defect no longer
+  pages the owner** (agent-ops#1214). `prompts/approver.md` gives the model
+  three adjudication verdicts — `land` (resolved), `refuse` (something real
+  the pull request still gets wrong) and `escalate` (a genuine judgement call
+  neither side is equipped to settle alone) — but `lib/approver.sh`'s
+  adjudicating `refuse)` branch escalated unconditionally, so a verdict that
+  explicitly disclaimed escalation paged a human anyway, under an
+  `approver_escalate` body that misstated what the engagement had concluded
+  ("could not resolve the disagreement"). A `refuse` now posts
+  `REQUEST_CHANGES` and returns to `review-feedback` next cycle like any
+  ordinary refusal, escalating only once it keeps recurring — the third
+  consecutive adjudication `refuse` on the same pull request — and the
+  escalation issue's body now names which of the three conditions
+  (`escalate`, an unparseable/failed verdict, or a recurring `refuse`)
+  actually triggered it, instead of one fixed sentence for all three.
+
 - **`prompts/implementer.md` and `prompts/reviewer.md` no longer tell a stage
   to POST a GitHub App's login for a review-feedback re-request**
   (agent-ops#959). Both prompts said `<login>` was "whoever's review blocks

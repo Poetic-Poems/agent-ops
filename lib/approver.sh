@@ -399,26 +399,54 @@ approver_post_or_warn() {
   return 0
 }
 
-# approver_escalate PR_URL REASONS_JSON
+# approver_escalate PR_URL REASONS_JSON [CONDITION]
 # File (or find already-filed, via create_escalation_issue's own dedup) the
 # escalation issue for a pull request an Approver adjudication engagement
-# could not settle — land it, or refuse it and let a human decide. Unlike
-# crash_loop_escalate and the Enabler's own escalations, there is no model
-# drafting this one: `reasons_json` already carries the adjudication's
-# structured findings (or the Script's own "could not settle" fallback), so
-# the Script composes the issue body directly.
+# raised to a human. Requirement 8c reserves this for three distinct
+# conditions, never an ordinary first `refuse` (which now returns to
+# `review-feedback` like any other refusal instead, agent-ops#1214):
+#   escalate          the adjudication itself judged the disagreement a
+#                     genuine judgement call neither side is equipped to
+#                     settle alone.
+#   recurring-refuse  the adjudication kept refusing past the recurrence
+#                     threshold — the disagreement never actually settled.
+#   (anything else,
+#    including no
+#    CONDITION at all) an unparseable/failed verdict, or a verdict the Script
+#                     could not act on (e.g. a token that could not be
+#                     re-minted) — "cannot settle" is not "nothing wrong".
+# CONDITION only selects the "Why the pipeline is blocked" wording below —
+# every other part of the issue (reasons, footer, dedup key) is unaffected.
+# Unlike crash_loop_escalate and the Enabler's own escalations, there is no
+# model drafting this one: `reasons_json` already carries the adjudication's
+# structured findings (or the Script's own synthetic reasons for an
+# unparseable verdict), so the Script composes the issue body directly.
 approver_escalate() {
-  local pr_url="$1" reasons_json="$2"
-  local number item_ref body_file reasons_text created
+  local pr_url="$1" reasons_json="$2" condition="${3:-}"
+  local number item_ref body_file reasons_text created issue_title why_text
   number="${pr_url##*/}"
   item_ref="pr-${number}-approver-adjudication"
   body_file="$cycle_dir/approver-escalation-${number}.md"
   reasons_text="$(jq -r 'if length == 0 then "(no reasons given)" else map("- " + .) | join("\n") end' <<<"$reasons_json")"
+  case "$condition" in
+    escalate)
+      issue_title="Approver adjudication could not settle $pr_url"
+      why_text="A critical-tier adjudication engagement read $pr_url and judged this disagreement a genuine judgement call neither side is equipped to settle alone."
+      ;;
+    recurring-refuse)
+      issue_title="Approver adjudication: refusal keeps recurring on $pr_url"
+      why_text="A critical-tier adjudication engagement has refused $pr_url again — the disagreement kept recurring across several adjudication rounds rather than being resolved by one."
+      ;;
+    *)
+      issue_title="Approver adjudication could not settle $pr_url"
+      why_text="The Approver App refused $pr_url twice in a row. A critical-tier adjudication engagement then read both the pull request and the prior refusals and could not resolve the disagreement on its own."
+      ;;
+  esac
   {
     printf '## What the autonomous pipeline needs from you\n\n'
     printf 'Review %s and either request further changes yourself or approve and merge it — the Approver could not settle its own disagreement about this pull request.\n\n' "$pr_url"
     printf '## Why the pipeline is blocked\n\n'
-    printf 'The Approver App refused %s twice in a row. A critical-tier adjudication engagement then read both the pull request and the prior refusals and could not resolve the disagreement on its own.\n\n' "$pr_url"
+    printf '%s\n\n' "$why_text"
     printf '## What has already been tried and established\n\n'
     printf '%s\n\n' "$reasons_text"
     cat <<APPROVER_ESC_BODY
@@ -435,7 +463,7 @@ APPROVER_ESC_BODY
   } > "$body_file"
   if created="$(create_escalation_issue "$selected_repo" "$item_ref" \
         "$enabler_escalation_label" \
-        "Approver adjudication could not settle $pr_url" \
+        "$issue_title" \
         "$body_file")" && [[ -n "$created" ]]; then
     log_event "approver-escalated" "$(jq -nc --arg u "$pr_url" \
       --arg n "${created%%$'\t'*}" --arg iu "${created#*$'\t'}" \
@@ -880,6 +908,17 @@ $node_name
   review_body="$(jq -r 'if length == 0 then "(no reasons given)" else map("- " + .) | join("\n") end' <<<"$reasons_json")"
 
   if (( adjudicating )); then
+    # agent-ops#1214: a lone adjudication `refuse` naming a concrete,
+    # unanswered defect is an ordinary refusal — it posts REQUEST_CHANGES and
+    # returns to `review-feedback` next cycle like any other, escalating
+    # nothing on its own. Escalation is reserved for a `refuse` that keeps
+    # recurring: the third *consecutive* adjudication `refuse` on this pull
+    # request. Adjudication itself only starts once `streak` (read fresh,
+    # before this round) already reaches 2 (two ordinary refusals), and each
+    # further adjudication round that refuses adds one more to it — so the
+    # first adjudication `refuse` is read at streak 2, the second at streak 3,
+    # and the third — the one this threshold catches — at streak 4.
+    local adjudication_recurring_refuse_streak=4
     case "$verdict" in
       land)
         posted_review="APPROVE"
@@ -888,10 +927,12 @@ $node_name
       refuse)
         posted_review="REQUEST_CHANGES"
         approver_post_or_warn "$pr_url" REQUEST_CHANGES "$review_body" "$token"
-        approver_escalate "$pr_url" "$reasons_json"
+        if (( streak >= adjudication_recurring_refuse_streak )); then
+          approver_escalate "$pr_url" "$reasons_json" recurring-refuse
+        fi
         ;;
       escalate)
-        approver_escalate "$pr_url" "$reasons_json"
+        approver_escalate "$pr_url" "$reasons_json" escalate
         ;;
       *)
         approver_escalate "$pr_url" \

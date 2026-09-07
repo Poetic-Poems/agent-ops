@@ -23,6 +23,13 @@
 #     disagreement, not the diff, chooses the adjudication tier, so a
 #     `complexity:low` pull request on a streak of two must reach Critical
 #     and not the deterministic path above.
+#   - **An adjudication `refuse` escalates only once it keeps recurring**
+#     (agent-ops#1214): below the recurrence threshold (a refuse streak of
+#     four — the third consecutive adjudication `refuse`) it posts
+#     `REQUEST_CHANGES` and nothing more, returning to `review-feedback` next
+#     cycle exactly like an ordinary refusal; at the threshold it also
+#     escalates. `escalate` and an unparseable/failed verdict escalate
+#     regardless of the streak, unchanged.
 #   - **The ordinary tiers pick their own model** — `medium` on
 #     `approver_model_default`, `high` on `approver_model_complex` — and a
 #     refusal's `reasons` become the `REQUEST_CHANGES` body a human and the
@@ -469,8 +476,18 @@ assert_eq "  ... and raises no escalation" "0" "$(count escalations)"
 assert_eq "  ... and is logged as posted:true" 'true' "$(jq -c '.posted' <<<"$(verdict_event)")"
 
 run_case agent-approves high 2 '{"verdict":"refuse","reasons":["the same defect, moved"]}' >/dev/null
-assert_contains 'an adjudication refuse posts REQUEST_CHANGES' "event=REQUEST_CHANGES" "$(posts)"
-assert_eq "  ... and also escalates" "1" "$(count escalations)"
+assert_contains 'an adjudication refuse below the recurrence threshold posts REQUEST_CHANGES' \
+  "event=REQUEST_CHANGES" "$(posts)"
+assert_eq "  ... and raises no escalation on its own (agent-ops#1214)" "0" "$(count escalations)"
+assert_eq "  ... and is logged as posted:true" 'true' "$(jq -c '.posted' <<<"$(verdict_event)")"
+
+run_case agent-approves high 4 '{"verdict":"refuse","reasons":["the same defect, still unanswered"]}' >/dev/null
+assert_contains 'an adjudication refuse at the recurrence threshold still posts REQUEST_CHANGES' \
+  "event=REQUEST_CHANGES" "$(posts)"
+assert_eq "  ... and also escalates — the third consecutive adjudication refuse (agent-ops#1214)" \
+  "1" "$(count escalations)"
+assert_contains "  ... carrying the adjudication's own reasons" \
+  "the same defect, still unanswered" "$(escalations)"
 assert_eq "  ... and is logged as posted:true" 'true' "$(jq -c '.posted' <<<"$(verdict_event)")"
 
 rc="$(run_case agent-approves medium 2 '')"
