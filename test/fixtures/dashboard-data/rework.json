@@ -1,0 +1,74 @@
+{
+  "generated_at": "@now",
+  "node": "poetic-1",
+  "config": {
+    "timeout_coordinator": 15,
+    "timeout_implementer": 90,
+    "timeout_reviewer": 30,
+    "timeout_enabler": 30,
+    "lock_stale_after": 4,
+    "dashboard_refresh_seconds": 5
+  },
+  "status": {
+    "switch": {"disabled": false},
+    "limit": {"active": false},
+    "running": false,
+    "lock": null,
+    "current": null,
+    "last_cycle": null
+  },
+  "counts": {
+    "spend_today_usd": 0, "spend_total_usd": 0,
+    "failures_shown": 0, "cycles_shown": 0, "prs_reached_ready": 0,
+    "by_day": [], "by_model": [], "by_actor": []
+  },
+  "cycles": [],
+  "blocked": [],
+  "void": [],
+  "github": {"ok": true, "fetched_at": "@ago:1m", "prs": [], "pr_index": {}, "inputs": {}},
+  "log_tail": [],
+  "cron_tail": ["30 * * * *  /app/agent-cycle.sh"],
+  "max_open_agent_prs": 3,
+  "rework": {
+    "how_much": {
+      "tokens": {"total": 1000, "rework": 700, "rework_share": 0.7},
+      "elapsed_ms": {"total": 300000, "rework": 200000, "rework_share": 0.6666666666666666},
+      "cost_usd": {"total": 10, "rework": 7, "rework_share": 0.7},
+      "first_pass_yield": {"landed_total": 4, "first_pass": 3, "yield": 0.75},
+      "rework_count": 4
+    },
+    "whose": {
+      "by_attributed_stage": [
+        {"stage": "reviewer", "count": 1}
+      ],
+      "not_attributed": {
+        "count": 3,
+        "by_class": [
+          {"class": "post-merge-revert", "count": 1},
+          {"class": "review-round-trip", "count": 2}
+        ]
+      }
+    },
+    "escape_ladder": [
+      {
+        "stage": "agent-review", "population": 3, "caught": 1, "escaped": 2,
+        "escape_rate": 0.6666666666666666,
+        "cost_to_catch_at_next": {"n": 1, "tokens": 400, "elapsed_ms": 120000, "cost_usd": 4},
+        "cost_to_catch_at_next_note": null
+      },
+      {
+        "stage": "human-gate", "population": 2, "caught": 1, "escaped": 1,
+        "escape_rate": 0.5,
+        "cost_to_catch_at_next": null,
+        "cost_to_catch_at_next_note": "not measurable: post-merge-revert records carry no cycle (mined after the fact, outside any cycle)"
+      },
+      {
+        "stage": "post-merge", "population": 1, "caught": 1, "escaped": null,
+        "escape_rate": null,
+        "cost_to_catch_at_next": null,
+        "cost_to_catch_at_next_note": "terminal rung: nothing further to escape to"
+      }
+    ],
+    "clean_count": 1
+  }
+}

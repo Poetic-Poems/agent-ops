@@ -2025,6 +2025,98 @@
     return tableOf(["Repo", "Rolling window", "Cumulative since baseline", "Baseline", "vs baseline"], trs);
   }
 
+  // ---------- rework panel (D23, issue #611) ----------
+  // Renders `D.rework` — lib/rework-panel.sh's own fold over the rework
+  // record and the item lifecycle record (docs/FLOW-SCHEMA.md). All-time,
+  // never windowed, on `escape_audits`' own precedent just above: a caught
+  // defect's rung is a permanent fact about it.
+  // pct() is defined once, further down (Co-Ordinator verdict quality) — reused here.
+  function num(x) { return x == null ? "—" : x; }
+  function reworkHowMuchLine(hm) {
+    var t = hm.tokens || {}, e = hm.elapsed_ms || {}, fp = hm.first_pass_yield || {};
+    return "Rework share: " + pct(t.rework_share) + " of tokens, " + pct(e.rework_share) +
+      " of elapsed time (" + num(hm.rework_count) + " rework record(s) recorded, all-time). " +
+      "First-pass yield: " + pct(fp.yield) + " (" + num(fp.first_pass) + " of " + num(fp.landed_total) +
+      " landed items carried zero rework records attributed to a stage).";
+  }
+  function reworkWhoseTable(whose) {
+    var rows = (whose.by_attributed_stage || []).map(function (r) {
+      return el("tr", {}, [el("td", {class:"mono", text: r.stage}), el("td", {class:"mono", text: r.count})]);
+    });
+    var na = whose.not_attributed || {count: 0, by_class: []};
+    rows.push(el("tr", {}, [
+      el("td", {class:"muted", text:"not attributed"}),
+      el("td", {class:"mono", text: num(na.count)})
+    ]));
+    var body = [tableOf(["Attributed stage", "Repetitions"], rows)];
+    if ((na.by_class || []).length) {
+      body.push(el("div", {class:"panel muted", text: "Not attributed, by class: " +
+        na.by_class.map(function (c) { return c["class"] + " ×" + c.count; }).join(" · ")}));
+    }
+    return el("div", {}, body);
+  }
+  function reworkEscapeLadderTable(ladder) {
+    var rows = ladder.map(function (row) {
+      var c = row.cost_to_catch_at_next;
+      var costText = c
+        ? (Math.round(c.tokens) + " tok, " + Math.round(c.elapsed_ms / 1000) + "s, $" +
+           c.cost_usd.toFixed(2) + " avg (n=" + c.n + ")")
+        : (row.cost_to_catch_at_next_note || "—");
+      return el("tr", {}, [
+        el("td", {class:"mono", text: row.stage}),
+        el("td", {class:"mono", text: num(row.population)}),
+        el("td", {class:"mono", text: num(row.caught)}),
+        el("td", {class:"mono", text: row.escaped == null ? "—" : row.escaped}),
+        el("td", {class:"mono", text: pct(row.escape_rate)}),
+        el("td", {class:"wrap muted", text: costText})
+      ]);
+    });
+    return tableOf(["Detection stage", "Population", "Caught here", "Escaped", "Escape rate",
+      "Cost to catch at next rung"], rows);
+  }
+  function reworkPanel() {
+    var r = D.rework;
+    if (!r || r.how_much == null) {
+      return el("div", {class:"panel"}, el("div", {class:"empty",
+        text: "The rework panel could not be assembled this tick. See cron.log."}));
+    }
+    var body = [];
+    body.push(el("div", {class:"panel", text: reworkHowMuchLine(r.how_much)}));
+    // The share is cycle-granular, and saying so here is the difference
+    // between an upper bound a reader can weigh and a measured split they
+    // cannot: `stage-end` meters a stage, and the rework record does not say
+    // which part of a cycle a repetition consumed, so a cycle carrying any
+    // rework record counts in full.
+    body.push(el("div", {class:"panel muted", text:
+      "Rework share is cycle-granular: a cycle carrying at least one rework record counts in full, " +
+      "since the record does not say which part of a cycle the repetition consumed. Read it as an " +
+      "upper bound on what repetition cost, not a measured split."}));
+    body.push(reworkWhoseTable(r.whose));
+    body.push(reworkEscapeLadderTable(r.escape_ladder));
+    body.push(el("div", {class:"panel muted", text:
+      num(r.clean_count) + " landed item(s) carried zero rework records of any class — excluded from " +
+      "the escape ladder above, since a clean pass and a defect nothing here ever caught look identical " +
+      "from this record alone."}));
+    // D23's own framing, restated on the panel's face rather than left to a
+    // reader's memory: rework is never a target of zero, and a falling catch
+    // count alongside a rising escape rate at the same rung is a Reviewer
+    // waving work through, not an improvement — the two figures are reported
+    // separately above for exactly this reason.
+    body.push(el("div", {class:"panel muted", text:
+      "Rework is never a target of zero — a Reviewer catching a defect is the system working, not " +
+      "failing. Read \"Caught here\" and \"Escape rate\" together: a falling catch count alongside a " +
+      "rising escape rate at the same rung is a Reviewer waving work through, not fewer defects."}));
+    // The residual detection gap docs/FLOW-SCHEMA.md documents: the human-gate
+    // rung can only see what the reconciliation gate itself observes.
+    body.push(el("div", {class:"panel muted", text:
+      "Coverage gap: the human-gate rung only catches a change request the reconciliation gate itself " +
+      "sees at the Reviewer's own ready handoff — one posted after a pull request is already ready, or " +
+      "acted on directly with no handoff ever running, is invisible to it. The Enabler's own handoff-" +
+      "recovery path shares the same check but only warns, never records, on a dirty verdict there " +
+      "(TD-PPagop-26082919) — so this ladder's human-gate row understates that rung's true catch rate."}));
+    return el("div", {}, body);
+  }
+
   // ---------- cycles panel ----------
   function cyclesPanel(cycles) {
     var body = cyclesTable(cycles);
@@ -3240,6 +3332,13 @@
     // review.
     app.appendChild(sectionOf("Revert rate by repository" +
       droppedSuffix((D.log_repair || {}).dropped_revert_rate_lines), revertRatePanel()));
+
+    // ---------- rework panel ----------
+    // Beside the revert rate it complements: that panel is the outcome after
+    // merge, this one is the whole cost ladder before and after it — how
+    // much rework cost, whose it is, and how far each caught defect got
+    // before something stopped it (D23, issue #611).
+    app.appendChild(sectionOf("Rework", reworkPanel()));
 
     // ---------- live claims ----------
     if (fleetVisible()) app.appendChild(sectionOf("Live claims", claimsPanel()));

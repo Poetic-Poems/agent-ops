@@ -1250,6 +1250,50 @@ assert_contains "a peer with no publication read back at all says so, rather tha
 assert_not_contains "  ... and never quotes a push age it does not have" \
   "STALE — last push" "$out"
 
+# --- rework.json / rework-outage.json: the rework panel (D23, issue #611) --
+# lib/rework-panel.sh's own fold is unit-tested directly in
+# test/rework-panel.test.sh; this only checks that `D.rework` renders as the
+# three sections and the three static caveats the panel's own text promises,
+# and that a Publisher-side assembly failure (every field `null`) reads as an
+# outage rather than as a quiet "nothing to report" — the same distinction
+# every other roll-up on this page makes.
+out="$(render rework.json)" || { printf 'FAIL - rework.json did not render:\n%s\n' "$out"; exit 1; }
+rework_section="$(awk '$0 == "  <section>" { on = 0 } on { print } $0 == "      Rework" { on = 1 }' <<<"$out")"
+assert_contains "how_much renders tokens/elapsed share and first-pass yield" \
+  "Rework share: 70% of tokens, 66.7% of elapsed time" "$rework_section"
+assert_contains "  ... and first-pass yield, with the literal zero-attributed definition stated" \
+  "First-pass yield: 75% (3 of 4 landed items carried zero rework records attributed to a stage)" \
+  "$rework_section"
+assert_contains "  ... and the share's own cycle granularity, so it never reads as a measured split" \
+  "Rework share is cycle-granular: a cycle carrying at least one rework record counts in full" \
+  "$rework_section"
+assert_contains "whose: the one attributed class lists its stage" \
+  '<td class="mono">
+                  reviewer
+                <td class="mono">
+                  1' "$rework_section"
+assert_contains "  ... and the not-attributed bucket is broken down by class" \
+  "Not attributed, by class: post-merge-revert ×1 · review-round-trip ×2" "$rework_section"
+assert_contains "escape ladder: agent-review's own row" \
+  '<td class="mono">
+                agent-review' "$rework_section"
+assert_contains "  ... post-merge is terminal: no escape rate, never a misleading 0" \
+  '<td class="mono">
+                post-merge' "$rework_section"
+assert_contains "  ... clean_count is stated, distinct from the escape ladder's own population" \
+  "1 landed item(s) carried zero rework records of any class" "$rework_section"
+assert_contains "the never-a-target-of-zero framing is stated on the panel's own face" \
+  "Rework is never a target of zero" "$rework_section"
+assert_contains "the human-gate coverage gap is stated on the panel's own face" \
+  "Coverage gap: the human-gate rung only catches a change request the reconciliation gate itself sees" \
+  "$rework_section"
+
+out="$(render rework-outage.json)" || { printf 'FAIL - rework-outage.json did not render:\n%s\n' "$out"; exit 1; }
+assert_contains "a rework payload the Publisher could not assemble reads as an outage" \
+  "The rework panel could not be assembled this tick." "$out"
+assert_not_contains "  ... never as a quiet zero-rework tick" \
+  "Rework share:" "$out"
+
 printf '\n'
 if (( failures > 0 )); then
   printf '%d assertion(s) failed\n' "$failures"

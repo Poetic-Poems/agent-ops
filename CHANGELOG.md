@@ -47,6 +47,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   order and every existing fate's assignment rule are unchanged;
   `docs/FLOW-SCHEMA.md`'s `landed` row and requirement 49's acceptance check
   in `docs/IMPLEMENTATION-PIPELINE-SPEC.md` document the new field.
+
+- A **Rework panel** on the monitoring dashboard (D23, issue #611),
+  answering exactly three questions from the rework record and the item
+  lifecycle record (`docs/FLOW-SCHEMA.md`) and nothing else: **how much** —
+  rework's share of tokens and of elapsed time against first-pass yield;
+  **whose** — repetitions grouped by `attributed_stage`, with an explicit
+  "not attributed" bucket for the seven classes the record's own attribution
+  rule leaves `null`; **how far did it get** — the escape ladder, one row
+  per detection stage (agent review, the human gate, post-merge) with each
+  rung's population, catch count, escape rate and the measured cost of
+  catching one at the next rung. Never presents rework as a quantity to
+  minimise (D23): `caught` and `escape_rate` are reported as two separate
+  figures on the same row precisely so a falling catch count alongside a
+  rising escape rate — the signature of a Reviewer waving work through —
+  stays legible as a regression rather than reading as an improvement.
+  States its own limits on the panel's face: the rework share is
+  cycle-granular (a cycle carrying any rework record counts in full, so the
+  share is an upper bound rather than a measured split), and the human-gate
+  rung only catches what the reconciliation gate observes at the Reviewer's
+  own ready handoff (`TD-PPagop-26082919`). New `lib/rework-panel.sh`,
+  wired into `scripts/publish-dashboard.sh` and `dashboard/index.html`.
+
 - A **`--drain` mode** (agent-ops#865, requirements 2.2c/2.3d/2.9): a third
   `disabled.json` `mode`, alongside the switch's original `"stop"`, that stops
   new work being picked up while letting the four finishing sources

@@ -47,6 +47,10 @@ TEMPLATE="$SCRIPT_DIR/dashboard/index.html"
 . "$SCRIPT_DIR/lib/limit-detect.sh"
 # shellcheck source=lib/cycle-state.sh
 . "$SCRIPT_DIR/lib/cycle-state.sh"
+# shellcheck source=lib/item-lifecycle.sh
+. "$SCRIPT_DIR/lib/item-lifecycle.sh"
+# shellcheck source=lib/rework-panel.sh
+. "$SCRIPT_DIR/lib/rework-panel.sh"
 # shellcheck source=lib/toggle.sh
 . "$SCRIPT_DIR/lib/toggle.sh"
 # shellcheck source=lib/fleet.sh
@@ -3173,6 +3177,27 @@ counts_with_escapes="$(jq -c --argjson e "$escape_audits_json" '. + {escape_audi
   <<<"$counts_json" 2>/dev/null)"
 [[ -n "$counts_with_escapes" ]] && counts_json="$counts_with_escapes"
 
+# --- Rework panel (D23, docs/ROADMAP.md; issue #611) -------------------------
+# The three questions D23 asks of the rework record and the item lifecycle
+# record (docs/FLOW-SCHEMA.md), folded by lib/rework-panel.sh's
+# `rework_panel_build`: how much (tokens'/elapsed time's rework share against
+# first-pass yield), whose (grouped by attributed_stage, an explicit
+# "not attributed" bucket for the seven classes docs/FLOW-SCHEMA.md's own
+# attribution rule leaves null) and how far (the escape ladder — one row per
+# detection stage in the pipeline's own rising cost order: agent review, the
+# human gate, post-merge). Read fleet-wide from the same event union
+# `escape_audits_json` above already reads, never windowed like `landings_json`
+# — a caught defect's rung is a permanent fact about it, on the same argument
+# `escape_audits_json`'s own header makes for never letting an escape age out
+# of a 24 h window.
+rework_json="$(printf '%s\n' "$ALL_EVENTS" | rework_panel_build - "" 2>/dev/null)"
+if ! jq -e 'type == "object" and has("escape_ladder")' <<<"$rework_json" >/dev/null 2>&1; then
+  # Same explicit-failure discipline as escape_audits_json's own degrade path:
+  # a payload this could not assemble must never render as "no rework this
+  # window" — every field null, not a real and reportable zero.
+  rework_json='{"how_much":null,"whose":null,"escape_ladder":null,"clean_count":null}'
+fi
+
 # --- GitHub API budget card (issue #1090) ------------------------------------
 # `github_budget`, folded from the fleet-wide `github-budget` events
 # `lib/github-limit.sh`'s `github_budget_record` logs (requirement 2.0d,
@@ -3357,6 +3382,7 @@ printf '%s' "$decisions_json" > "$work_tmp/decisions.json"
 printf '%s' "$blocked_json" > "$work_tmp/blocked.json"
 printf '%s' "$void_json"    > "$work_tmp/void.json"
 printf '%s' "$github_budget_json" > "$work_tmp/github-budget.json"
+printf '%s' "$rework_json" > "$work_tmp/rework.json"
 data_json="$(jq -n \
   --arg generated_at "$now_iso" \
   --arg self_node "$self_node" \
@@ -3371,6 +3397,7 @@ data_json="$(jq -n \
   --slurpfile decisions "$work_tmp/decisions.json" \
   --slurpfile rr "$work_tmp/revert-rate.json" \
   --slurpfile gb "$work_tmp/github-budget.json" \
+  --slurpfile rw "$work_tmp/rework.json" \
   --slurpfile gh "$work_tmp/github.json" \
   --slurpfile lt "$work_tmp/logtail.json" \
   --argjson cron_tail "$cron_tail_json" \
@@ -3383,7 +3410,7 @@ data_json="$(jq -n \
     counts: $counts[0], cycles: $cyc[0], noop_ticks: $noop, blocked: $blocked[0],
     void: $void[0], github: $gh[0], log_tail: $lt[0], landings: $landings[0],
     decisions: $decisions[0],
-    revert_rate: $rr[0], github_budget: $gb[0],
+    revert_rate: $rr[0], github_budget: $gb[0], rework: $rw[0],
     cron_tail: $cron_tail, max_open_agent_prs: ($max_prs|tonumber),
     log_repair: {dropped_log_lines: $dropped_log, dropped_revert_rate_lines: $dropped_rr},
     fleet: {nodes: $fleet_nodes, flags: $fleet_flags, claims: ($gh[0].claims // [])}}')"
