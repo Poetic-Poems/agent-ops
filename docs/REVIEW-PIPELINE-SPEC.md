@@ -1009,7 +1009,10 @@ What exists, and the requirements each part answers to:
 
 1. `review-cycle.sh` implementing R1–R8 and R16 (including the role guard,
    R2b, through `lib/role.sh`, the union snapshot and state push of R2c, through
-   `scripts/state-sync.sh`, and the metering record on `review-stage-end`
+   `scripts/state-sync.sh`, the per-repository instructions and context of
+   R1c and R5 step 2a through `lib/review-context.sh`, shared with
+   `scripts/doctor.sh` so the cycle's own refusal and doctor's `fail` read
+   one implementation, and the metering record on `review-stage-end`
    through `lib/metering.sh`, shared with `agent-cycle.sh` — see
    `docs/METERING-SCHEMA.md`). `shellcheck`-clean; sets its own `PATH`.
 2. `prompts/project-reviewer.md` implementing R9–R15. It must embed the
@@ -1138,6 +1141,47 @@ edit a test.
    every test above and fails only a sequential run crossing midnight UTC —
    where the second repository's report folder is dated a day after the
    branch, claim and PR title of the same review.
+4h. **Instructions and context reach the review, and a broken configured path
+   never silently narrows one (R1c, R5 step 2a).**
+   `test/review-context.test.sh` passes: `review_context_build_json` resolves
+   this repository's own `review_instructions`/`review_context` into
+   `instructions`/`context` entries attributed `source: "config"`, in
+   configured order and ahead of the `repo_context_file` entry attributed
+   `source: "repository"`; an oversized source is capped at
+   `REVIEW_CONTEXT_SOURCE_MAX_BYTES` and marked `truncated`; and
+   `review_context_sources_digest` reduces both arrays to a digest per source
+   carrying no `text` field. `review_context_missing_configured` reports a
+   configured path that names no readable *regular* file — a directory
+   included, which is readable and would otherwise contribute a silently
+   empty source — and reports nothing where neither key is configured.
+   `repo_context_file` is confined to the clone's own bytes: a `..` in the
+   configured path, a symbolic link (pointing out of the clone *or* back into
+   it), and a path reached through a symlinked directory each contribute
+   nothing, while the ordinary regular file the link pointed at is admitted
+   as usual. Check the symlink cases specifically: the configured path is the
+   installation's, but the file it names is under the reviewed repository's
+   own control, and both `-r` and `head -c` follow a link out of the clone —
+   a bound on the path alone leaves D7's boundary a statement about the path
+   rather than about the text a model is handed.
+
+   `test/review-context-wiring.test.sh` passes, which is what proves R1c is
+   wired rather than merely available: a broken `review_instructions` path
+   exits the real `review-cycle.sh` 1 before the lock and before any
+   repository is touched, naming the repository, the field, the configured
+   path and what it resolved to; a broken `review_context` override on one
+   repository's own `repos[]` entry refuses the same way, naming that
+   repository and not its neighbour (the sweep reads requirement 342's
+   resolved view, not `defaults` alone); and a path that does resolve, or
+   neither key configured at all, ends the tick 0 with no refusal. Check the
+   refusal against the *review script* and not by inference from
+   `scripts/doctor.sh` passing: a sweep written but never called, or called
+   after the lock, satisfies the unit test and doctor's assertions alike and
+   still reviews every configured repository against less than the operator
+   asked for. `test/config-schema.test.sh` covers the rest of the
+   configuration surface: both keys are arrays of non-empty strings, never a
+   bare string; `repo_context_file` is a bare string; all three resolve on
+   requirement 342's rule; and `scripts/doctor.sh` turns the same detector's
+   report into a `fail`, not the `warn` a `prompt_overrides` path earns.
 5. **Injected-skill isolation:** after a real `--once --repo poetic` run, the
    review PR's diff contains the new `reviews/...` folder but **never** a
    *new* `tech-debt/*.md` file (only an existing item's frontmatter, where
