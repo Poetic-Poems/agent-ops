@@ -114,9 +114,10 @@ on a node) or *fleet* (an ordinary pull request the pipeline can build).
       transfer the App to the Pullwright organisation; install it on
       Pullwright with `contents: write`, `metadata: read`,
       `pull_requests: write`; note the installation id. *owner act*
-- [ ] Mint four personal access tokens (classic) — `repo`, `workflow` — one
-      per node, each with an expiry; confirm Pullwright's organisation
-      settings allow classic tokens. *owner act*
+- [ ] Mint four personal access tokens (classic) — `repo`, `workflow`,
+      `read:org` — one per node, each with an expiry; confirm Pullwright's
+      organisation settings allow classic tokens. Check the first one against
+      "Credential model" below before minting the other three. *owner act*
 - [ ] The sweep PR (`chore: re-home under Pullwright — slug and image
       sweep`): opened against the old slug, kept green, **not merged**. Its
       `config.json` names a repository that does not exist until T0, and its
@@ -177,12 +178,71 @@ on a node) or *fleet* (an ordinary pull request the pipeline can build).
 ## Credential model
 
 Until D25's Forge App exists, each node's `GH_TOKEN` becomes a personal
-access token (classic) with `repo` and `workflow`. It reaches every owner
-the fleet writes to, needs no code change, and keeps "one token per node,
-so a single node can be revoked without disturbing the others". What it
-gives up is the fine-grained model's repository-level scoping: a classic
-`repo` token sees every repository its owner can. The alternative — two
-fine-grained tokens per node and a per-owner selection in front of every
+access token (classic) with `repo`, `workflow` and `read:org`. It reaches
+every owner the fleet writes to, needs no code change, and keeps "one token
+per node, so a single node can be revoked without disturbing the others".
+
+`repo` must be the full scope rather than `public_repo`: three of the four
+repositories are public, but the state repository
+`Poetic-Poems/agent-ops-state` is private. It carries the rest of the
+fine-grained set with it — contents, issues, pull requests, actions
+(dispatch, rerun, cancel) — and the security-alert read that `README.md`'s
+code-scanning section already notes `repo` satisfies on a classic token.
+`workflow` is separate and not implied by `repo`; it is what lets a cycle's
+pull request touch `.github/workflows/`.
+
+`read:org` is not wanted by any call the pipeline makes. It is wanted by
+`gh` itself, and only once the token is classic. `gh`'s minimum-scope check
+(`HeaderHasMinimumScopes`, `pkg/cmd/auth/shared/oauth_scopes.go`) returns
+early when the `X-Oauth-Scopes` response header is empty — which is exactly
+what a fine-grained PAT sends, so the check has never once run against this
+fleet. A classic token populates that header, the check runs for real, and
+it requires `repo` *and* one of `read:org`/`write:org`/`admin:org`. Without
+it `gh auth status` exits non-zero, so `scripts/doctor.sh` reports "gh is
+not authenticated — run 'gh auth login' or set GH_TOKEN" and leaves
+`gh_ready` clear, skipping the per-repository push-permission checks, the
+`Priority`-field probe and the token-expiry reading — the three checks T0
+step 4 leans on as its acceptance gate. The message would be wrong and the
+gate blind, on four nodes at once, at the one moment the doctor has to be
+believable.
+
+No `project` scope is needed: `Priority` is a repository/organisation
+`IssueFieldSingleSelect` reached through `repository.issueFields`
+(`lib/issue-priority.sh`), not a Projects v2 field, so `repo` covers both
+the read and `setIssueFieldValue`. `scripts/doctor.sh` probes it per
+repository and says so outright, rather than leaving it to be inferred.
+
+Mint each token with an expiry: GitHub states a classic token's expiry in
+the same `GitHub-Authentication-Token-Expiration` response header the
+fine-grained tokens carry, so requirement 2.7a's warning — the guard #694
+built after the 2026-08-22 fleet-wide expiry outage (#691) — survives the
+cutover unchanged. `lib/token-expiry.sh`'s own comment claims a classic PAT
+sends no such header; it is wrong, and #1233 tracks correcting it and the
+"fine-grained PAT" wording that follows from it.
+
+Check the first token before minting the other three — the two things most
+likely to surprise are one command apart:
+
+```bash
+GH_TOKEN=<the new token> bash -c '
+  gh auth status; echo "auth status exit: $?"
+  gh api rate_limit --include 2>/dev/null \
+    | grep -i "^github-authentication-token-expiration:"
+  for r in Poetic-Poems/poetic Poetic-Poems/poetic-fiddle \
+           Poetic-Poems/agent-ops-state Pullwright/agent-ops; do
+    printf "%-30s push=%s\n" "$r" \
+      "$(gh api "repos/$r" --jq .permissions.push 2>&1 | head -1)"
+  done'
+```
+
+Wanting: exit 0 from `auth status` with all three scopes listed, an
+expiration header, and `push=true` — `Pullwright/agent-ops` answers `404`
+until step 2 of T0 has run, and `push=true` from then on.
+
+What the interim gives up is the fine-grained model's repository-level
+scoping: a classic `repo` token sees every repository its owner can. The
+alternative — two fine-grained tokens per node and a per-owner selection in
+front of every
 `gh` call — touches every call site and the doctor's token checks, for a
 property D25 delivers anyway; it is not worth building twice. The Forge App
 (#607, D25) retires the interim: one installation per organisation, each
