@@ -14798,7 +14798,13 @@ implements.
     band; when it does carry `requested`, the warning names both the band
     the failed mutation actually targeted and the band the verdict asked
     for, since naming the requested band alone would blame a write that was
-    never attempted (agent-ops#551).
+    never attempted (agent-ops#551). `mutation-failed` additionally carries
+    an `error` key — the first line of the `setIssueFieldValue` mutation's
+    own stderr, captured rather than discarded — and the warning appends it
+    when non-empty (agent-ops#960): before this, a one-token schema mismatch
+    (`$optionId` declared `String!` against an `ID` argument) rejected every
+    Priority write fleet-wide for three days with nothing in the logs beyond
+    a bare `mutation-failed` to diagnose it from.
 
     `scripts/doctor.sh` warns, for every configured repository whose
     `sources` lists any of the four `issues:<band>` tokens, when its
@@ -20964,7 +20970,13 @@ oblige anyone to edit a test.
     warned, and never overwritten even by a verdict that would otherwise
     strictly outrank it (agent-ops#509); a field or issue read failure, and a
     failed mutation, are each a distinct failure reason, never silently
-    read as a skip. The cache directory's own lifecycle: sourcing the
+    read as a skip. A failed mutation additionally carries the `error` key
+    (agent-ops#960), asserted from both directions against a stubbed `gh`
+    that writes to stderr before it fails: a rejection carrying a
+    type-mismatch-shaped GraphQL error yields that error's first line and no
+    subsequent line, and a rejection with no stderr at all yields the key
+    still present and empty, never omitted. The cache directory's own
+    lifecycle: sourcing the
     library with `ISSUE_PRIORITY_CACHE_DIR` unset creates a directory and
     marks it owned, and `issue_priority_cache_cleanup` then removes it —
     fixture files inside it included, since an empty `rm -rf` proves nothing
@@ -21040,7 +21052,10 @@ oblige anyone to edit a test.
     failed band write is a `warning` that leaves the refinement or block
     already recorded untouched — naming both the band actually attempted and
     the band the verdict asked for when the failure followed a fallback, and
-    the verdict's own band alone when it did not (agent-ops#551) — while an
+    the verdict's own band alone when it did not (agent-ops#551), and
+    appending the mutation's own captured GraphQL error when the result
+    carries a non-empty `error` and no such clause at all when it is empty
+    (agent-ops#960) — while an
     unrankable current band is not — it logs `issue-prioritised-skipped`
     like any other ordinary skip, still carrying `requested` when a fallback
     ran; and

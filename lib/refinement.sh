@@ -1177,7 +1177,7 @@ maybe_run_refiner() {
   local ex e_repo e_item verdict e_reason claimed_entry e_source outcome extra
   local e_synthetic e_block_ok e_refined_fields e_number e_triage_only
   local e_priority priority_result priority_applied priority_reason
-  local priority_attempted priority_requested
+  local priority_attempted priority_requested priority_error
 
   # --- Guards, mirroring requirement 35's for the Enabler ---
   (( lock_acquired )) || return 0
@@ -1456,17 +1456,20 @@ $(jq . <<<"$input")
         # requested is present only for mutation-failed after a fallback
         # (issue_priority_apply's header comment) — the other reasons
         # reaching this branch never set it, so they fall through unchanged.
+        # error is present (possibly empty) only for mutation-failed too —
+        # GitHub's own GraphQL error, captured instead of discarded
+        # (agent-ops#960), appended so the warning names *why* the write
+        # failed, not just that it did.
         priority_attempted="$(jq -r '.priority // ""' <<<"$priority_result" 2>/dev/null || true)"
         priority_requested="$(jq -r '.requested // ""' <<<"$priority_result" 2>/dev/null || true)"
+        priority_error="$(jq -r '.error // ""' <<<"$priority_result" 2>/dev/null || true)"
         if [[ -n "$priority_requested" ]]; then
-          log_event "warning" "$(jq -nc \
-            --arg d "refiner: could not set Priority on $e_repo#$e_number to $priority_attempted ($priority_reason) — the verdict asked for $priority_requested; the refinement verdict above is recorded either way" \
-            '{detail: $d}')"
+          detail="refiner: could not set Priority on $e_repo#$e_number to $priority_attempted ($priority_reason) — the verdict asked for $priority_requested; the refinement verdict above is recorded either way"
         else
-          log_event "warning" "$(jq -nc \
-            --arg d "refiner: could not set Priority on $e_repo#$e_number to $e_priority ($priority_reason) — the refinement verdict above is recorded either way" \
-            '{detail: $d}')"
+          detail="refiner: could not set Priority on $e_repo#$e_number to $e_priority ($priority_reason) — the refinement verdict above is recorded either way"
         fi
+        [[ -n "$priority_error" ]] && detail="$detail — error: $priority_error"
+        log_event "warning" "$(jq -nc --arg d "$detail" '{detail: $d}')"
       fi
     fi
 
