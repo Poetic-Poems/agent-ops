@@ -23730,6 +23730,19 @@ requirements above, which state only what is.
   is what should catch a genuinely broken configuration, at a moment an
   operator is looking, rather than a pull request being silently starved of
   human review while it waits for a stage to hand back.
+- **A `REQUEST_CHANGES` write that keeps failing during adjudication cannot
+  advance the refuse streak, and that is accepted, not a gap (agent-ops#1226).**
+  Because `approver_refuse_streak` counts only `CHANGES_REQUESTED` reviews
+  GitHub actually recorded (the bullet above), a write that keeps being
+  refused — the App losing review rights, a sustained outage — cannot advance
+  the streak past whatever already posted, so a sustained Approver-App write
+  outage during adjudication cannot itself reach the recurrence threshold that
+  would otherwise escalate. Raised as a judgement worth a human confirming
+  rather than assuming when agent-ops#1225 introduced that threshold, and
+  confirmed here: it matches the bullet immediately above — an Approver that
+  cannot write already costs a missing review, never a blocked pull request —
+  each failed write already logs its own `warning`, and the pull request
+  keeps flowing through `review-feedback` on the refusals already standing.
 - **The Trivial tier's zero-token approval leans on the grading rubric that
   already exists, rather than duplicating it (requirement 8b).** The design
   (§5.2) frames this tier as "`complexity:low`, no protected paths,
