@@ -7125,13 +7125,20 @@ implements.
    Script asks `landing_protected_paths_hit` (`lib/landing.sh`, the one
    protected-path classifier requirement 8d's gate 2 already reads) whether
    this pull request's diff touches a protected path. A hit — or that
-   classifier's own exit 2 (an unreadable or truncated changed-file list) or
+   classifier's own exit 2 (an unreadable or truncated changed-file list),
    exit 3 (a `merge_autonomy_protected_paths` list it cannot evaluate
-   against a path at all, TD-PPagop-26082320/TD-PPagop-26082325), either of
-   which routes *to* Critical rather than away from it, the opposite
-   fail-closed polarity from gate 2's own exit-2/3 handling — this call site
-   does not distinguish the two the way gate 2's own `unknown:` reason does,
-   since either cause forces the same tier here —
+   against a path at all, TD-PPagop-26082320/TD-PPagop-26082325), or any
+   exit code outside its documented 0/1/2/3 contract (e.g. 128+n from the
+   command-substitution subshell being signal-killed mid-gate,
+   agent-ops#1232) — every one of which routes *to* Critical rather than
+   away from it, the opposite fail-closed polarity from gate 2's own
+   exit-2/3 handling — this call site does not distinguish any of them the
+   way gate 2's own `unknown:` reason does, since every cause forces the
+   same tier here: the condition guarding the forced tier names only the
+   legitimate exit 1 (no protected path touched) as an exemption, rather
+   than enumerating the fail-closed codes, so nothing outside the
+   documented contract can silently skip the forced tier the way an
+   enumerated `== 0 || == 2 || == 3` once did —
    routes to Critical regardless of `complexity`, including
    `complexity:low`, which alone would have short-circuited to the
    deterministic Trivial approval with no model call at all: a one-line
@@ -7395,8 +7402,14 @@ implements.
       (2 for the changed-file list, 3 for the protected-paths list) and
       `landing_eligible` names which one fired in its own `unknown:` reason
       text, rather than blaming the changed-file list regardless of cause
-      (TD-PPagop-26082325). `unknown` is treated as `ineligible` at this and
-      every other call site; an empty or unrecognised `source` or
+      (TD-PPagop-26082325). Any exit code outside `landing_protected_paths_hit`'s
+      documented 0/1/2/3 contract (e.g. 128+n from the command-substitution
+      subshell being signal-killed mid-gate, agent-ops#1232) is `unknown` too
+      — `landing_eligible`'s own `hit_rc` case names the legitimate exit 1
+      explicitly and fails every other unrecognised code closed, rather than
+      falling through to the same `eligible` arm exit 1 reaches. `unknown` is
+      treated as `ineligible` at this and every other call site; an empty or
+      unrecognised `source` or
       `complexity` is `ineligible`, never eligible by omission. Widening
       `merge_autonomy_routine_complexity` to admit `high` interacts with
       requirement 26a, which already forces that grade onto anything
@@ -22696,9 +22709,13 @@ oblige anyone to edit a test.
     `merge_autonomy_routine_sources` (a repo-level override taking
     precedence over the top-level list, the same precedence
     `merge_autonomy` itself uses) and for an empty source, `unknown` on an
-    unreadable protected-path read (naming the changed-file list) or an
+    unreadable protected-path read (naming the changed-file list), an
     unevaluable protected-paths list (naming `merge_autonomy_protected_paths`
-    instead, TD-PPagop-26082325), and `eligible` only once every condition
+    instead, TD-PPagop-26082325), or an exit code from
+    `landing_protected_paths_hit` outside its documented 0/1/2/3 contract
+    (agent-ops#1232, pinned by temporarily replacing the helper with one
+    that exits an out-of-contract code, since the real helper's own case
+    statement never produces one), and `eligible` only once every condition
     clears — with a repo-level `merge_autonomy_routine_complexity` override
     admitting `complexity:high` for that repository alone while a repository
     without one still refuses it, and a top-level override admitting it
@@ -22872,11 +22889,15 @@ oblige anyone to edit a test.
     a protected-path pull request launches a real critical-tier engagement
     at every complexity grade, `complexity:low` included (which alone would
     have skipped the model entirely), logging `critical_reason: "protected-path"`;
-    the classifier's own exit 2 (an unreadable changed-file list) and its
+    the classifier's own exit 2 (an unreadable changed-file list), its
     exit 3 (a `merge_autonomy_protected_paths` list it cannot evaluate
-    against a path, TD-PPagop-26082325) each force the same critical tier
-    rather than falling back to a cheaper one, pinned separately so the
-    exit-code split cannot silently drop one of them; a refuse
+    against a path, TD-PPagop-26082325), and any exit code outside its
+    documented 0/1/2/3 contract (agent-ops#1232) each force the same
+    critical tier rather than falling back to a cheaper one, pinned
+    separately so the exit-code split cannot silently drop one of them —
+    the guarding condition names only the legitimate exit 1 as an
+    exemption from the forced tier, rather than enumerating the fail-closed
+    codes, so an unrecognised code cannot silently join it; a refuse
     streak of two still logs `critical_reason: "refuse-streak"`, so the two
     causes are pinned as distinguishable in the log; and a pull request
     touching no protected path is unaffected, keeping every tier exactly as

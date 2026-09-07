@@ -490,6 +490,22 @@ out="$(landing_eligible "$malformed_cfg" acme/widgets 12 medium tech-debt agent-
 assert_eq "a non-string entry in the protected-paths list is unknown, never eligible, naming the protected-paths list itself" \
   "unknown:the protected-path list could not be evaluated against acme/widgets#12's changed files (a non-string entry in merge_autonomy_protected_paths)" "$out"
 
+# agent-ops#1232: landing_protected_paths_hit's own contract is exits
+# 0/1/2/3; an exit code outside that set (e.g. 128+n from the
+# command-substitution subshell being signal-killed mid-gate) must fail
+# closed too, never fall through to the legitimate 1's `eligible` arm. Not
+# reachable through the real helper — its own case statement never exits
+# anything else — so this pins landing_eligible's own hit_rc case directly,
+# temporarily replacing the helper with one that exits an out-of-contract
+# code.
+eval "$(declare -f landing_protected_paths_hit | sed '1s/.*/_orig_landing_protected_paths_hit()/')"
+landing_protected_paths_hit() { return 130; }
+out="$(landing_eligible "$base_cfg" acme/widgets 12 medium tech-debt agent-merges-routine)"
+assert_eq "an out-of-contract exit code from landing_protected_paths_hit is unknown, never a pass" \
+  "unknown:landing_protected_paths_hit exited 130 for acme/widgets#12, outside its documented 0/1/2/3 contract" "$out"
+eval "$(declare -f _orig_landing_protected_paths_hit | sed '1s/.*/landing_protected_paths_hit()/')"
+unset -f _orig_landing_protected_paths_hit
+
 override_cfg='{"repos":[{"slug":"acme/widgets","merge_autonomy_routine_sources":["register-hygiene"]}],"merge_autonomy_routine_sources":["tech-debt","register-hygiene"]}'
 out="$(landing_eligible "$override_cfg" acme/widgets 12 medium tech-debt agent-merges-routine)"
 assert_eq "a repo-level override wins over the top-level list" \
