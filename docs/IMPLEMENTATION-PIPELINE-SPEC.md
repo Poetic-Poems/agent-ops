@@ -21927,8 +21927,11 @@ oblige anyone to edit a test.
     a protected-path pull request launches a real critical-tier engagement
     at every complexity grade, `complexity:low` included (which alone would
     have skipped the model entirely), logging `critical_reason: "protected-path"`;
-    the classifier's own exit 2 (an unreadable changed-file list) forces the
-    same critical tier rather than falling back to a cheaper one; a refuse
+    the classifier's own exit 2 (an unreadable changed-file list) and its
+    exit 3 (a `merge_autonomy_protected_paths` list it cannot evaluate
+    against a path, TD-PPagop-26082325) each force the same critical tier
+    rather than falling back to a cheaper one, pinned separately so the
+    exit-code split cannot silently drop one of them; a refuse
     streak of two still logs `critical_reason: "refuse-streak"`, so the two
     causes are pinned as distinguishable in the log; and a pull request
     touching no protected path is unaffected, keeping every tier exactly as
