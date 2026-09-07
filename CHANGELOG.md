@@ -218,6 +218,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`maybe_run_refiner` is decomposed into named helpers** (agent-ops#964,
+  continuing agent-ops#771's split). The Refiner stage's 322-line function in
+  `lib/refinement.sh` is now a 23-line orchestration-only sequence of calls
+  into eleven `_refiner_*` helpers split along its existing guard-clause and
+  verdict-branch structure — `_refiner_guards_pass`,
+  `_refiner_engagement_json`, `_refiner_fleet_limit_active`,
+  `_refiner_claim_eligible`, `_refiner_expire_claims`,
+  `_refiner_run_engagement`, `_refiner_process_one_verdict`,
+  `_refiner_apply_priority`, `_refiner_apply_verdicts`,
+  `_refiner_warn_unclaimed` and the shared `_refiner_json_length` — matching
+  `lib/handoff.sh`'s style. Pure refactor, no behavioural change: the two
+  tests that lift the function out via `awk` now lift the helper carrying the
+  marker each one checks for, with their assertions untouched.
+  `_refiner_run_engagement` returns through the global `refiner_parsed` and
+  is called bare rather than in a command substitution, because the stage it
+  runs sets three globals its caller's own shell must see — `stage_pid` and
+  `stage_name` for requirement 9c's signal handler, and
+  `limit_hit_this_cycle` — and writes the `--once` stage dump to stdout. The
+  remaining five pieces of agent-ops#964 (`agent-cycle.sh`'s top-level script
+  and four larger functions) are tracked as agent-ops#1253-#1257.
+
 - **A failed Priority write now names why it failed** (agent-ops#960,
   requirement 39g). `issue_priority_apply` (`lib/issue-priority.sh`) sent its
   `setIssueFieldValue` mutation with `>/dev/null 2>&1` and collapsed any
