@@ -66,10 +66,20 @@ cat > "$tmp_dir/gh" <<'STUB'
 d="$(dirname "$0")"
 printf '%s\n' "$*" >> "$d/calls"
 
-has_body_at=0
+has_body_at=0 has_slurp=0 has_jq=0
 for a in "$@"; do
   [[ "$a" == body=@* ]] && has_body_at=1
+  [[ "$a" == "--slurp" ]] && has_slurp=1
+  [[ "$a" == "--jq" || "$a" == "-q" ]] && has_jq=1
 done
+
+# The real binary refuses this pair (gh 2.98.0), exiting 1 with empty stdout —
+# issue #1116, where a stub that accepted it kept two live call sites' silent
+# failure invisible for as long as the suite was the only thing reading them.
+if (( has_slurp && has_jq )); then
+  echo 'the `--slurp` option is not supported with `--jq` or `--template`' >&2
+  exit 1
+fi
 
 if [[ "$1" == "api" && "$has_body_at" == "1" ]]; then
   for a in "$@"; do
@@ -90,7 +100,11 @@ if [[ "$1" == "api" && "$2" == "graphql" ]]; then
 fi
 
 if [[ "$1" == "api" && "$2" == *"/comments" ]]; then
-  cat "$d/comments.json" 2>/dev/null || echo '[]'
+  # Answer in `--slurp`'s own shape — an array *of pages*, each itself the
+  # array of that page's comments — not the flat array a caller ultimately
+  # wants. A stub that flattened on the caller's behalf would hide whichever
+  # side of the pairing got it wrong.
+  jq -c '[.]' "$d/comments.json" 2>/dev/null || echo '[[]]'
   exit 0
 fi
 

@@ -93,8 +93,18 @@ owner="${slug%%/*}" repo_name="${slug#*/}"
 # `--paginate --slurp` wraps every page (each itself an array) in one outer
 # array; `add` (empty-safe) concatenates them into a single flat array of
 # comment objects, never an error on zero pages.
+#
+# The `add` runs in a *separate* `jq`, never `gh`'s own `--jq`: gh refuses the
+# two flags together ("the `--slurp` option is not supported with `--jq` or
+# `--template`", gh 2.98.0), exiting 1 with empty stdout, which this call's own
+# `[]` fallback would then read as "this issue has no comments at all" — issue
+# #1116, where the same pairing had been silently disarming `lib/claim.sh`'s
+# branch-claim listing. Here it would have cost both of requirement 25b's
+# guarantees at once: a close carrying a perfectly good resolution comment
+# would draw a guard comment anyway, and the idempotency check below, reading
+# the same empty list, would post a second one on every workflow re-run.
 comments_json="$("$GH" api "repos/$slug/issues/$number/comments" --paginate --slurp \
-  --jq 'add // []' 2>/dev/null)"
+  2>/dev/null | jq -c 'add // []' 2>/dev/null)"
 [[ -n "$comments_json" ]] || comments_json='[]'
 real_comment_count="$(jq --arg m "$MARKER_PREFIX" \
   '[.[] | select(((.body // "") | startswith($m)) | not)] | length' \
