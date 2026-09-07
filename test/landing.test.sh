@@ -31,7 +31,10 @@
 #     list by name, and a protected-paths list that cannot be evaluated at
 #     all (TD-PPagop-26082320) is also `unknown` but names
 #     `merge_autonomy_protected_paths` instead (TD-PPagop-26082325) — never a
-#     pass either way; the
+#     pass either way, and neither is an exit code outside
+#     `landing_protected_paths_hit`'s own documented 0/1/2/3 contract
+#     (agent-ops#1232), pinned against a temporarily substituted helper since
+#     the real one never produces one; the
 #     plain-string SOURCE comparison this file's own header documents is
 #     pinned directly — a plain `issues` entry in the routine list matches
 #     the word a real issues work order always carries, and an `issues:low`
