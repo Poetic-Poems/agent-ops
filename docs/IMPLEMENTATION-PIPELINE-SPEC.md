@@ -9795,13 +9795,14 @@ implements.
     advisory check — never a gate (issue #877; D15 as revised,
     #869/#875/#879's "close-guard").** Requirement 25's closing keyword and
     `td-record` are written only when the resolving change is a pull
-    request; a `pw::type:tech-debt` issue closed directly — by a human, or
-    `not_planned` — carries neither, and requirement 25a's deterministic
+    request; a `pw::type:tech-debt` issue closed directly — by a human, as
+    `not_planned` or as a `duplicate` — carries neither, and requirement 25a's
+    deterministic
     check has nothing to look at, since there is no pull request body for it
     to read. `.github/workflows/tech-debt-close-guard.yml`, filtered at the
     job level to a `closed` issue event carrying the `pw::type:tech-debt`
-    label, runs `scripts/tech-debt-close-guard.sh` against the two evidence
-    rules its own header states:
+    label, runs `scripts/tech-debt-close-guard.sh` against the evidence rules
+    its own header states, one per close reason GitHub records:
 
     - **`completed`** (or a close with no stated reason at all — GitHub's own
       default): a linked closing pull request (`closedByPullRequestsReferences`,
@@ -9818,8 +9819,21 @@ implements.
     - **`not_planned`**: a comment already on the issue, inheriting the
       retired register's own `not-debt` meaning (D15's revision) — a reason
       stated, not a fix.
+    - **`duplicate`**: a comment already on the issue, on the same rule and
+      for the same reason — a close that resolves nothing can have no closing
+      pull request to point at, so asking the `completed` rule's question here
+      would be asking for something that cannot exist. GitHub records nothing
+      else for it either: sampled live over the 29 most recent
+      `reason:duplicate` closes on github.com, not one carried a
+      `MarkedAsDuplicateEvent` on its timeline (that event belongs to the
+      older "mark as duplicate" action, not to the close reason) and 18 of the
+      29 carried no comment either, so a comment naming the original is the
+      only trace such a close can leave.
+    - **Any other reason GitHub may add later**: the `completed` rule, and the
+      comment names the reason verbatim rather than reporting a completed
+      close — `duplicate` was such a value until the rule above learnt it.
 
-    Either rule's "a comment" is satisfied by *any* comment already present —
+    Every rule's "a comment" is satisfied by *any* comment already present —
     content is never read, the same simplification requirement 25a's own
     checker makes about a closing keyword's wording — except the guard's own
     past comments on the same issue, which never count as one: without that
@@ -18307,11 +18321,18 @@ What exists, and the requirements each part answers to:
     a linked closing pull request (`closedByPullRequestsReferences`,
     `includeClosedPrs: true`) or commit (`timelineItems`'s
     `ClosedEvent.closer`) for a `completed` close, a comment already present
-    for either `completed` or `not_planned` — and posts exactly one comment
+    for any of them — and posts exactly one comment
     naming what is missing when neither is found, marked
     `<!-- agent-ops:td-close-guard closed_at=<issue's own closed_at> -->` so a
-    workflow re-run never double-posts for the same close. The guard's own
+    workflow re-run never double-posts for the same close. A `not_planned` or
+    `duplicate` close is judged on the comment alone and never asks GitHub for
+    a closing pull request it could not have. The guard's own
     past comments are excluded when counting "a comment already present".
+    That comment read pairs `--paginate --slurp` with a *separate* `jq`, never
+    `gh`'s own `--jq`, which `gh` refuses alongside `--slurp` (issue #1116):
+    the empty stdout that pairing returns would read as "no comments at all"
+    and cost requirement 25b both of its guarantees at once — a compliant
+    close guarded anyway, and a second comment on every workflow re-run.
     Always exits 0 except on malformed arguments (usage, exit 2, before any
     `gh` call): a comment-post failure is reported as a `warning`, never a
     failure of the run, the same "advisory, never fails its caller" contract
@@ -18319,8 +18340,13 @@ What exists, and the requirements each part answers to:
     Regression-tested in `test/tech-debt-close-guard.test.sh` (unlabelled
     issue skipped with no `gh` call at all; a linked pull request or commit,
     or an existing comment, each independently sufficient for `completed`; a
-    `not_planned` close needing only a comment; an empty `state_reason`
-    following the `completed` rule; the guard's own past comment excluded
+    `not_planned` or `duplicate` close needing only a comment, the
+    `duplicate` one asking GitHub nothing about a closing pull request; an
+    empty `state_reason` following the `completed` rule while an unknown one
+    is named verbatim rather than reported as completed; a stub that refuses
+    `--slurp` with `--jq` the way the real `gh` does, so the comment read
+    cannot silently regress to issue #1116's empty answer; the guard's own
+    past comment excluded
     from "a comment already present"; the same close's marker never posted
     twice while a different `closed_at` is judged fresh; a failed post
     reported as a warning; malformed arguments exiting 2); must pass
@@ -20738,7 +20764,7 @@ oblige anyone to edit a test.
    its prompt; an `unknown` one warns and hands the Reviewer nothing; a clean
    one does neither, and leaves the prompt byte-for-byte as it was before the
    section existed.
-25b. **The tech-debt close-guard finds exactly what requirement 25b's two
+25b. **The tech-debt close-guard finds exactly what requirement 25b's
    evidence rules say it should, posts once per close, and never fails its
    own run (issue #877).** `test/tech-debt-close-guard.test.sh` passes,
    against a stubbed `gh`: an issue not carrying `pw::type:tech-debt` is
@@ -20750,7 +20776,15 @@ oblige anyone to edit a test.
    kind of link but a comment already on the issue needs nothing further
    either; a `completed` close with none of the three draws exactly one
    comment naming what is missing; a `not_planned` close needs only a
-   comment, drawing its own guard comment when none is present; the guard's
+   comment, drawing its own guard comment when none is present; a
+   `duplicate` close follows that same comment rule without asking GitHub
+   about a closing pull request at all, and its comment names the duplicate
+   rather than reporting a completed close, while a `state_reason` this
+   script has never heard of is named verbatim under the `completed` rule;
+   the stubbed `gh` refuses `--slurp` alongside `--jq` exactly as the real
+   binary does (issue #1116), so a comment read that regressed to that
+   pairing fails here rather than silently reading every issue as
+   comment-less; the guard's
    own past comment on the same issue is excluded when counting "a comment
    already present", so an issue whose only comment is an earlier guard
    comment is still judged unguarded; a comment already carrying this

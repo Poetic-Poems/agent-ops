@@ -12,8 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   new `.github/workflows/tech-debt-close-guard.yml` posts one advisory
   comment when a `pw::type:tech-debt` issue closes with neither a linked
   pull request/commit nor an explanatory comment — `completed` without
-  either, or `not_planned` without a reason. Purely advisory: it never
-  reopens the issue, never relabels it, and never fails its own run.
+  either, or `not_planned`/`duplicate` without a reason. Purely advisory: it
+  never reopens the issue, never relabels it, and never fails its own run.
 
 - **Per-repository review instructions and context** (issue #589, D7): three
   new `project_review.defaults`/`repos[]` keys, resolved on requirement 342's

@@ -15,8 +15,13 @@
 #   - **A `completed` close with neither draws exactly one guard comment.**
 #   - **A `not_planned` close with a comment already present needs nothing
 #     else**; with none, draws exactly one guard comment.
+#   - **A `duplicate` close follows that same comment rule, never the
+#     `completed` one** — it asks GitHub nothing about a closing pull request,
+#     because a duplicate close cannot have one, and its comment names the
+#     duplicate rather than reporting a completed close.
 #   - **An empty/unset `state_reason` follows the `completed` rule** — GitHub's
-#     own default.
+#     own default — while an unknown one is named verbatim rather than
+#     re-reported as `completed`.
 #   - **The guard's own past comments never count as "a comment already
 #     present"** — otherwise the first guarded close would silently satisfy
 #     every later one.
@@ -189,6 +194,32 @@ reset_stub
 out="$(run "o/r" "6" "not_planned" "pw::type:tech-debt" "2026-09-07T11:00:00Z")"; rc=$?
 assert_eq "not_planned with no comment: guarded" "commented" "$(jq -r '.action' <<<"$out")"
 assert_eq "  ... reason names not planned" "not planned" "$(jq -r '.reason' <<<"$out" | grep -o 'not planned')"
+
+# --- duplicate follows the comment rule, never the completed one ---------------
+# A duplicate close cannot have a closing pull request, so the graphql answer
+# below (no linked closer) must not be what decides it.
+reset_stub
+comments_json "Duplicate of #900."
+out="$(run "o/r" "8" "duplicate" "pw::type:tech-debt" "2026-09-07T13:00:00Z")"; rc=$?
+assert_eq "duplicate with a comment: exit 0" "0" "$rc"
+assert_eq "  ... action none" "none" "$(jq -r '.action' <<<"$out")"
+assert_eq "  ... never asked graphql for a closing PR" "" \
+  "$(grep -F 'api graphql' "$tmp_dir/calls" || true)"
+
+reset_stub
+out="$(run "o/r" "8" "duplicate" "pw::type:tech-debt" "2026-09-07T13:00:00Z")"; rc=$?
+assert_eq "duplicate with no comment: guarded" "commented" "$(jq -r '.action' <<<"$out")"
+assert_eq "  ... reason names the duplicate, not a completed close" "a duplicate" \
+  "$(jq -r '.reason' <<<"$out" | grep -o 'a duplicate')"
+assert_eq "  ... and never calls it completed" "" \
+  "$(jq -r '.reason' <<<"$out" | grep -o 'completed' || true)"
+
+# --- An unknown future state_reason is named as itself, never as "completed" ---
+reset_stub
+out="$(run "o/r" "9" "obsoleted" "pw::type:tech-debt" "2026-09-07T14:00:00Z")"; rc=$?
+assert_eq "unknown reason: guarded under the completed rule" "commented" "$(jq -r '.action' <<<"$out")"
+assert_eq "  ... reason names it verbatim" "closed as obsoleted" \
+  "$(jq -r '.reason' <<<"$out" | grep -o 'closed as obsoleted')"
 
 # --- Empty state_reason follows the completed rule -----------------------------
 reset_stub

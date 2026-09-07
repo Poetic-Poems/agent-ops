@@ -17,10 +17,13 @@
 # closed issue, not one that gates a merge.
 #
 # Two kinds of evidence, by `state_reason`:
-#   - `completed` (or unset — GitHub's own default): a closing pull request
-#     or commit the issue's own timeline names (its most recent
-#     `ClosedEvent.closer`), or a comment already on the issue.
-#   - `not_planned`: a comment already on the issue, stating why.
+#   - `completed` (or unset — GitHub's own default, and any reason this script
+#     does not know): a closing pull request or commit the issue's own timeline
+#     names (its most recent `ClosedEvent.closer`), or a comment already on the
+#     issue.
+#   - `not_planned`, `duplicate`: a comment already on the issue, stating why.
+#     Neither close resolves anything, so neither can have a closing pull
+#     request to point at.
 # Either requirement is satisfied by *any* comment already present — this
 # does not read a comment's content, the same simplification
 # `check-closing-keyword.sh` makes about a closing keyword's own wording.
@@ -37,8 +40,11 @@
 # Usage:
 #   tech-debt-close-guard.sh <repo-slug> <issue-number> <state-reason> <labels-csv> <closed-at>
 #
-# <state-reason>: "completed", "not_planned", or empty (treated as
-#   "completed", GitHub's own default when a closer states none).
+# <state-reason>: GitHub's own `state_reason` — "completed", "not_planned",
+#   "duplicate", or empty (treated as "completed", GitHub's own default when a
+#   closer states none). Any other value GitHub may add later follows the
+#   "completed" rule and is named verbatim in the comment, never re-reported
+#   as a completed close.
 # <labels-csv>: the issue's label names, comma-separated; a labels list not
 #   carrying `pw::type:tech-debt` is not this guard's concern and exits 0
 #   without calling GitHub at all.
@@ -113,14 +119,33 @@ real_comment_count="$(jq --arg m "$MARKER_PREFIX" \
 has_comment=0
 (( real_comment_count > 0 )) && has_comment=1
 
-# --- the not_planned path: a comment is the whole requirement --------------
-if [[ "$state_reason" == "not_planned" ]]; then
+# --- the not_planned and duplicate paths: a comment is the whole requirement
+# Neither close resolves anything, so no pull request or commit could evidence
+# one; what is worth leaving behind is the reason itself.
+case "$state_reason" in
+not_planned)
   if (( has_comment )); then
     emit "none" "closed not planned with a reason comment present"
     exit 0
   fi
   missing_reason="closed as not planned with no comment explaining why"
-else
+  ;;
+duplicate)
+  # GitHub records nothing else for this close: sampled live over the 29 most
+  # recent `reason:duplicate` closes anywhere on github.com, not one carried a
+  # `MarkedAsDuplicateEvent` on its timeline (that event belongs to the older
+  # "mark as duplicate" action, not to the close reason), and 18 of the 29
+  # carried no comment either. So a comment naming the original is the only
+  # trace a duplicate close can leave, and asking the `completed` rule's
+  # question here — "which pull request closed this?" — would be asking for
+  # something that cannot exist.
+  if (( has_comment )); then
+    emit "none" "closed as a duplicate with a reason comment present"
+    exit 0
+  fi
+  missing_reason="closed as a duplicate with no comment naming what it duplicates"
+  ;;
+*)
   # --- the completed (or unset) path: a linked closer or a comment ---------
   # `closedByPullRequestsReferences` (`includeClosedPrs: true`, so a merged —
   # not just still-open — PR still counts) is the field GitHub itself keeps
@@ -173,8 +198,14 @@ else
     emit "none" "closed completed with a resolution comment present"
     exit 0
   fi
-  missing_reason="closed as completed with neither a linked pull request/commit nor a comment explaining the resolution"
-fi
+  # `${state_reason:-completed}` rather than the word "completed": an empty
+  # reason is GitHub's own default and reads as completed, but a reason this
+  # script has never heard of must be named as what it was, not mis-reported
+  # as a completed close — `duplicate` was exactly such a value until the
+  # branch above learnt it.
+  missing_reason="closed as ${state_reason:-completed} with neither a linked pull request/commit nor a comment explaining the resolution"
+  ;;
+esac
 
 # --- guarded: post once per close, never twice for the same one ------------
 marker="$MARKER_PREFIX closed_at=$closed_at -->"
