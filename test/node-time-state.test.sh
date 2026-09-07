@@ -43,10 +43,18 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-log_event() { :; }  # lib/node-time-state.sh's logging helpers call this; the
-                     # fold itself never does, but sourcing the file defines
-                     # log_node_state_transition/set_node_state_terminal too,
-                     # which this file's own cause-translation tests drive.
+# lib/node-time-state.sh's logging helpers call this; the fold itself never
+# does, but sourcing the file defines log_node_state_transition/
+# set_node_state_terminal/suppress_node_state_transitions too, which this
+# file's own cause-translation and suppression tests drive. Capturing rather
+# than discarding, so "emits nothing" is assertable as a fact about what
+# reached the log and not merely as the absence of a crash.
+logged_events=()
+log_event() { logged_events+=("$1 $2"); }
+reset_node_state() {
+  logged_events=()
+  unset _NODE_STATE_CURRENT _CYCLE_TERMINAL_STATE _CYCLE_TERMINAL_CAUSE _NODE_STATE_SUPPRESSED
+}
 
 # shellcheck source=lib/node-time-state.sh
 . "$SCRIPT_DIR/lib/node-time-state.sh"
@@ -101,6 +109,61 @@ assert_eq "idle_split: zero total -> the healthy idle-without-demand zero" \
   "idle-without-demand	no-demand" "$(node_time_state_idle_split 0 awaiting-tick)"
 assert_eq "idle_split: an unreadable total degrades to the healthy zero, never a guess" \
   "idle-without-demand	no-demand" "$(node_time_state_idle_split "" awaiting-tick)"
+
+# --- A tick that owns no node-second emits nothing ---------------------------
+#
+# The one pitfall #597's own refinement names by hand: "`cycle-skipped` is not
+# a state. A tick that found the lock held means the node is busy in the other
+# process, whose own events already own those seconds." The fold holds each
+# point's state until the next point's `ts`, and a running stage emits nothing
+# between its own `stage-start` and `stage-end`, so a single transition from a
+# skipped tick would relabel the rest of a live Implementer engagement as this
+# tick's idle. Asserted here rather than left to the emission sites' own
+# comments, because "logs nothing" is invisible in every other test.
+
+reset_node_state
+suppress_node_state_transitions
+finalize_node_state_for_cycle
+assert_eq "a suppressed cycle logs no terminal transition at all" \
+  "0" "${#logged_events[@]}"
+
+reset_node_state
+suppress_node_state_transitions
+set_node_state_terminal idle-with-demand back-pressure
+finalize_node_state_for_cycle
+assert_eq "  ... even when a terminal state was already recorded before it" \
+  "0" "${#logged_events[@]}"
+
+reset_node_state
+suppress_node_state_transitions
+finalize_node_state_for_review
+assert_eq "a suppressed review run logs no terminal transition either" \
+  "0" "${#logged_events[@]}"
+
+# The control: without suppression, both finalizers do log — so the assertions
+# above are testing the suppression and not a stub that never fires.
+reset_node_state
+finalize_node_state_for_cycle
+assert_eq "unsuppressed, a cycle with no gather settles into the healthy zero" \
+  "1" "${#logged_events[@]}"
+assert_eq "  ... naming idle-without-demand/no-demand" \
+  'node-state {"state":"idle-without-demand","prev_state":"down","cause":"no-demand"}' \
+  "${logged_events[0]}"
+
+reset_node_state
+eligible_items_total=4
+finalize_node_state_for_cycle
+assert_eq "unsuppressed, a positive eligible count minus this cycle's own claim is idle-with-demand" \
+  'node-state {"state":"idle-with-demand","prev_state":"down","cause":"awaiting-tick"}' \
+  "${logged_events[0]}"
+eligible_items_total=1
+reset_node_state
+finalize_node_state_for_cycle
+assert_eq "  ... and an eligible count of exactly one (the item just claimed) is the healthy zero" \
+  'node-state {"state":"idle-without-demand","prev_state":"down","cause":"no-demand"}' \
+  "${logged_events[0]}"
+unset eligible_items_total
+reset_node_state
 
 assert_eq "node_state_for_stage: implementer is producing" \
   "producing" "$(node_state_for_stage implementer)"

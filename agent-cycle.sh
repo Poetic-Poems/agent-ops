@@ -1353,9 +1353,6 @@ assert_in_workspace() {
 
 log_event "cycle-start" "$(jq -nc --argjson once "$([[ $ONCE == 1 ]] && echo true || echo false)" \
   --argjson dry_run "$([[ $DRY_RUN == 1 ]] && echo true || echo false)" '{once: $once, dry_run: $dry_run}')"
-# node-state (docs/FLOW-SCHEMA.md, D21): a live node emits the transition out
-# of `down` here — `down` is derived from absence and never emits its own.
-log_node_state_transition overhead
 
 # --- 0. The switch (requirement 2.3) ---
 # Checked before the lock and before any `gh` call, because a disabled pipeline
@@ -1473,6 +1470,11 @@ acquire_lock() {
         stale_after_sec="$lock_stale_after_sec"
         if kill -0 "$pid" 2>/dev/null && (( age_sec < stale_after_sec )); then
           log_event "cycle-skipped" "$(jq -nc --arg d "lock held by pid $pid, age ${age_sec}s" '{detail: $d}')"
+          # node-state (docs/FLOW-SCHEMA.md, D21): a skipped tick is not a
+          # state. The cycle holding this lock is the one occupying these
+          # node-seconds, and its own transitions already say so — see
+          # suppress_node_state_transitions' header.
+          suppress_node_state_transitions
           exit 0
         fi
         if kill -0 "$pid" 2>/dev/null; then
@@ -1585,6 +1587,17 @@ if [[ "$(jq -r '.reaped // 0' <<<"$workspace_reap_json" 2>/dev/null || printf 0)
 fi
 
 acquire_lock
+# node-state (docs/FLOW-SCHEMA.md, D21): a live node emits the transition out
+# of `down` here — `down` is derived from absence and never emits its own.
+# Here rather than beside `cycle-start` above, because everything between the
+# two can still end in a tick that owns no node-second at all: `cycle-skipped`
+# (this node is busy in the *other* process, whose events already own those
+# seconds) exits from inside `acquire_lock`, and a transition logged before it
+# would relabel that process's own live stage as this tick's overhead for as
+# long as the stage runs. The two switch stand-downs above exit before this
+# line too and want no `overhead` either — their own `down` is what
+# `finalize_node_state_for_cycle` logs at the end of `cleanup`.
+log_node_state_transition overhead
 
 # Shed a landed roll-pending marker before this cycle's own stages run
 # (requirement 39c amendment, agent-ops#1102): the marker a prior cycle's
@@ -2809,7 +2822,14 @@ if [[ -z "$claimed_json" ]]; then
   # untraceable are translated rather than renamed.
   nts_state=""; nts_cause=""
   IFS=$'\t' read -r nts_state nts_cause < <(node_time_state_for_cause "$standdown_cause")
-  [[ -n "$nts_state" ]] && set_node_state_terminal "$nts_state" "$nts_cause"
+  # `if`, not `&&`: an unrecognised cause is the expected degradation here
+  # (node_time_state_for_cause prints nothing rather than guessing a state),
+  # and a trailing `&&` whose test fails is a non-zero status at exactly the
+  # place `set -e` acts on — this stand-down would abort with 1 instead of
+  # reaching the `exit 0` below, recording an ordinary ending as a failure.
+  if [[ -n "$nts_state" ]]; then
+    set_node_state_terminal "$nts_state" "$nts_cause"
+  fi
   exit 0
 fi
 

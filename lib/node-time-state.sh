@@ -129,6 +129,33 @@ set_node_state_terminal() {
   _CYCLE_TERMINAL_CAUSE="${2:-}"
 }
 
+# suppress_node_state_transitions
+# This process owns no node-second at all, so it must leave the per-node
+# timeline exactly as it found it: `finalize_node_state_for_cycle` /
+# `finalize_node_state_for_review` log nothing once this is called.
+#
+# The one case it exists for is a tick that found the *other* process holding
+# the lock it wanted — `cycle-skipped`, `review-skipped`, and
+# `review-cycle.sh`'s "an implementation cycle is running" stand-down. The
+# refinement of issue #597 names it directly: "`cycle-skipped` is not a
+# state. A tick that found the lock held means the node is busy in the other
+# process, whose own events already own those seconds. Counting it as a state
+# of its own is the same double-count by another route." Worse than a
+# double-count, in fact: the fold holds each point's state until the *next*
+# point's `ts`, and a running stage emits nothing between its own
+# `stage-start` and `stage-end`, so one skipped tick's idle transition would
+# relabel the rest of a live Implementer engagement — up to the backstop — as
+# idle. Silence is the only reading that leaves the busy process's own record
+# intact.
+#
+# Suppression covers the terminal transition only, because it is the only one
+# these sites can still reach: the cycle-start/review-start transition is
+# logged *after* the lock is won (`agent-cycle.sh`, `review-cycle.sh`), so a
+# tick that never wins it has emitted nothing by the time it gets here.
+suppress_node_state_transitions() {
+  _NODE_STATE_SUPPRESSED=1
+}
+
 # finalize_node_state_for_cycle
 # Called once, at the very end of agent-cycle.sh's `cleanup`, after
 # `maybe_run_enabler`/`maybe_run_refiner` have had their chance to add real
@@ -142,6 +169,9 @@ set_node_state_terminal() {
 # 3u's gather, every one of which already calls `set_node_state_terminal`
 # itself) simply has nothing to finalize beyond what was already set.
 finalize_node_state_for_cycle() {
+  if [[ "${_NODE_STATE_SUPPRESSED:-0}" == "1" ]]; then
+    return 0
+  fi
   if [[ -n "${_CYCLE_TERMINAL_STATE:-}" ]]; then
     log_node_state_transition "$_CYCLE_TERMINAL_STATE" "${_CYCLE_TERMINAL_CAUSE:-}"
     return 0
@@ -166,6 +196,9 @@ finalize_node_state_for_cycle() {
 # demand shape is not part of D21's four idle-with-demand causes, all of
 # which name a *backlog* agent-cycle.sh's Co-Ordinator declines against.
 finalize_node_state_for_review() {
+  if [[ "${_NODE_STATE_SUPPRESSED:-0}" == "1" ]]; then
+    return 0
+  fi
   if [[ -n "${_CYCLE_TERMINAL_STATE:-}" ]]; then
     log_node_state_transition "$_CYCLE_TERMINAL_STATE" "${_CYCLE_TERMINAL_CAUSE:-}"
     return 0

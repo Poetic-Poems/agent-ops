@@ -689,7 +689,7 @@ coordinator_corroborate_retry_or_fallback() {
     # against its own eligible count — idle-with-demand/coordinator-declined
     # when that count is positive, the healthy idle-without-demand zero
     # otherwise.
-    nts_state=""; nts_cause=""
+    local nts_state="" nts_cause=""
     IFS=$'\t' read -r nts_state nts_cause < <(node_time_state_idle_split "$eligible_items_total" coordinator-declined)
     set_node_state_terminal "$nts_state" "$nts_cause"
     return 1
@@ -867,7 +867,7 @@ object, nothing else.
     log_event "none-selected" "$(jq -nc --arg r "$retry_reason" --arg f "$noop_fingerprint_value" \
       --argjson total "$eligible_items_total" --argjson m "$coord_model_json" \
       '{reason: $r} + (if $f == "" then {} else {fingerprint: $f} end) + {eligible_total: $total} + $m')"
-    nts_state=""; nts_cause=""
+    local nts_state="" nts_cause=""
     IFS=$'\t' read -r nts_state nts_cause < <(node_time_state_idle_split "$eligible_items_total" coordinator-declined)
     set_node_state_terminal "$nts_state" "$nts_cause"
     return 1
@@ -929,7 +929,7 @@ object, nothing else.
       --argjson total "$eligible_items_total" --argjson bands "$unaccounted_retry_bands_json" \
       --argjson m "$coord_model_json" \
       '{reason: $r, td_verdict_rejected: true, retried: true, eligible_total: $total, bands: $bands} + $m')"
-    nts_state=""; nts_cause=""
+    local nts_state="" nts_cause=""
     IFS=$'\t' read -r nts_state nts_cause < <(node_time_state_idle_split "$eligible_items_total" coordinator-declined)
     set_node_state_terminal "$nts_state" "$nts_cause"
     return 1

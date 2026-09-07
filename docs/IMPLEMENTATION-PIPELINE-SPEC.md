@@ -15718,7 +15718,9 @@ with the Reviewer's own.
     suggests:
 
     - **The transition itself**, emitted alongside an event that already
-      fires: `cycle-start`/`review-start` (`overhead`), every `stage-start`
+      fires: the cycle's opening `overhead`, logged once `acquire_lock`
+      returns (`review-cycle.sh`: once its implementation-cycle check has
+      passed), every `stage-start`
       (`stage_budget_apply`; `producing` for the Implementer and Reviewer
       only, `node_state_for_stage`, `overhead` for every other actor), every
       `stage-end` (`overhead` — `agent-cycle.sh`'s own two item-scoped sites,
@@ -15762,28 +15764,52 @@ with the Reviewer's own.
       or — for a cycle that ran a stage and ended normally, so nothing
       called it — the idle state `eligible_items_total` (minus the one item
       just claimed, floored at zero) implies.
-    - **`review-cycle.sh`'s own instrumentation**, on the same terms:
-      `review-start`/`review-end`, its one `review-stage-start`/
+    - **`review-cycle.sh`'s own instrumentation**, on the same terms: its
+      opening `overhead` and `review-end`, its one `review-stage-start`/
       `review-stage-end` pair, and a `cause` on every `review-stand-down`
-      site except "an implementation cycle is running" — deliberately silent
-      (docs/FLOW-SCHEMA.md's "Known limitations": this node is not idle, a
-      concurrent `agent-cycle.sh` process is actively producing on it, and a
-      competing transition from the pipeline that is *not* doing the work
-      would corrupt the shared per-node timeline rather than merely
-      approximate it).
+      site except "an implementation cycle is running".
+    - **Silence for a tick that owns no node-second.** The account is per
+      *node*, not per process, and the two pipelines have separate crontab
+      lines and separate locks — so a tick can start, find the node already
+      busy under the other process, and end having owned none of it. The
+      three sites that are exactly this (`cycle-skipped`, `review-skipped`,
+      and `review-cycle.sh`'s "an implementation cycle is running"
+      `review-stand-down`, whose `cause: "peer-pipeline-busy"` is
+      deliberately outside the `node-state` vocabulary) write their ordinary
+      event and no `node-state` transition at all: they call
+      `suppress_node_state_transitions`, which stops the deferred terminal
+      transition, and they exit before the opening `overhead` is reached —
+      which is why that one is logged after the lock is won rather than
+      beside `cycle-start`. This is #597's own named pitfall
+      ("`cycle-skipped` is not a state"), and it is not cosmetic: the fold
+      holds each point's state until the next point's `ts`, and a running
+      stage emits nothing between its own `stage-start` and `stage-end`, so
+      one skipped tick's transitions would relabel the rest of a live
+      Implementer engagement — up to its backstop — as overhead and then as
+      idle on the very timeline the busy process is writing. The maintenance
+      chores (`publish-dashboard-launcher.sh`, `state-sync.sh`, `doctor.sh`,
+      `rotate-logs.sh`) emit nothing for the related reason that they take
+      neither lock and never stop a cycle starting.
 
     `scripts/node-time-state.sh` unions `log.jsonl` and `review-log.jsonl`
     (`lib/fleet.sh`'s `fleet_logs`, once per basename) before folding, since
     a node can run either pipeline — briefly, both at once — and folding only
     one would misread a node running the other as `down`. Two known
     limitations are stated rather than modelled further (docs/FLOW-SCHEMA.md
-    has both in full): the node set the invariant's denominator uses is
+    has all of them in full, with the issues that carry them): the node set
+    the invariant's denominator uses is
     every node that has *ever* emitted a `node-state` event, not evaluated
     per second of the window the way a node truly joining or leaving the
-    fleet mid-window would need; and two pipelines' events on one node are
+    fleet mid-window would need (#1248); two pipelines' events on one node are
     merged by `ts` alone, with no `producing > overhead` precedence for a
-    genuine overlap, which is exactly why the one stand-down site that would
-    need it emits nothing instead.
+    genuine overlap (#1248), which is one reason the sites that would need it
+    emit nothing instead; a node that *stops* holds its last state for the
+    rest of the window rather than falling to `down`, so `down` covers a
+    node's leading absence but not a crash or a decommission (#1250); and
+    `balanced` is a self-check on the reduction's arithmetic — every node's
+    segments tile the window by construction — never evidence that the events
+    reduced described the fleet correctly, for which `skipped_events` and
+    `unaccounted` are the honest measures.
 
 ## Components
 

@@ -57,8 +57,8 @@ from a model asked to classify what happened:
 - **The node time-state record**, one `node-state` event per transition,
   emitted the instant a node's own state changes — at every `stage-start`
   and `stage-end`, every `stand-down`, every genuinely-nothing-selected
-  `none-selected`, every `limit-hit`/`limit-cleared`, and at `cycle-start`/
-  `cycle-end` (`review-start`/`review-end` in the review pipeline). Each
+  `none-selected`, every `limit-hit`/`limit-cleared`, once the cycle has won
+  the lock, and at `cycle-end` (`review-end` in the review pipeline). Each
   carries the state it is entering, the cause (for the four states that have
   one), and the state it is leaving. `lib/node-time-state.sh`'s
   `node_time_state_fold` (behind the read-only `scripts/node-time-state.sh`)
@@ -458,6 +458,46 @@ one of the six states, and — for the four `stand-down`/`none-selected` sites
 that previously carried no machine-readable reason at all — a `cause` field
 from the closed vocabulary below.
 
+### A tick that owns no node-second emits nothing
+
+The one exception to "alongside each one", and the reason the opening
+transition is logged where it is. A node's timeline is per *node*, not per
+process, and `agent-cycle.sh` and `review-cycle.sh` each have their own
+crontab line and their own lock — so a tick can start, discover the node is
+already busy under the other process, and end without ever having owned a
+second of it. Three sites are exactly that:
+
+- `cycle-skipped` — `agent-cycle.sh` found `lock.json` held by a live cycle;
+- `review-skipped` — `review-cycle.sh` found `review-lock.json` held;
+- `review-cycle.sh`'s "an implementation cycle is running" `review-stand-down`
+  (`cause: "peer-pipeline-busy"`, the one `stand-down` cause deliberately
+  outside the six-state vocabulary below, because it names a fact about the
+  *other* process rather than a state of this node).
+
+All three write their own ordinary event and **no `node-state` transition at
+all**: they call `suppress_node_state_transitions`, which is what stops
+`finalize_node_state_for_cycle`/`finalize_node_state_for_review` logging a
+terminal state on the way out, and they exit before the opening `overhead`
+transition is reached — which is why `agent-cycle.sh` logs that one just
+after `acquire_lock` rather than beside `cycle-start`, and `review-cycle.sh`
+just after the implementation-cycle check rather than beside `review-start`.
+
+Silence is not tidiness here. The fold holds each point's state until the
+next point's `ts`, and a running stage emits nothing between its own
+`stage-start` and `stage-end`, so a single skipped tick's transitions would
+relabel the rest of a live Implementer engagement — up to its backstop — as
+this tick's overhead and then as idle. The cycle holding the lock is the one
+occupying those node-seconds and its own events already say so; #597's
+refinement puts it as "`cycle-skipped` is not a state … counting it as a
+state of its own is the same double-count by another route."
+
+The maintenance chores are not node states either, for a related reason:
+`publish-dashboard-launcher.sh`, `state-sync.sh`, `doctor.sh` and
+`rotate-logs.sh` run on their own crontab lines, never take either cycle
+lock, and never stop a cycle starting — so they occupy no node-second of
+pipeline capacity and emit no `node-state` transition. They are not an
+omission.
+
 ### The six states
 
 | State | Meaning |
@@ -467,7 +507,7 @@ from the closed vocabulary below.
 | `externally-blocked` | A usage-limit cooldown, a GitHub API/credential/rate-limit guard, or a host resource guard (disk, memory) — something outside this node's own work that is stopping it. |
 | `idle-with-demand` | Eligible unclaimed work existed and this node did nothing about it this tick — split by cause below, because each cause has a different fix. |
 | `idle-without-demand` | Nothing eligible existed anywhere — the healthy zero, the state a scale-to-zero fleet should be free to sit in. |
-| `down` | The node was deliberately switched off (`disabled-node`/`disabled-fleet`), or produced no evidence at all for a stretch of the window (see "Absence is `down`" below) — a live node cannot emit its own transition *into* `down`, only out of it. |
+| `down` | The node was deliberately switched off (`disabled-node`/`disabled-fleet`), or produced no evidence at all before its first event in the window (see "Absence is `down`" below) — a live node cannot emit its own transition *into* `down`, only out of it. A node that *stops* mid-window holds its last state instead of falling to `down`; see "Known limitations". |
 
 ### The definitional pin
 
@@ -543,6 +583,16 @@ to `coordinator-declined` the same way. Every other cause in the table above
 `node-state` event beside it — there is only one vocabulary to remember for
 a newly-added site.
 
+One `stand-down` cause sits deliberately outside this table:
+`peer-pipeline-busy`, on `review-cycle.sh`'s "an implementation cycle is
+running" `review-stand-down`. It maps to no state because that site emits no
+`node-state` event at all (see "A tick that owns no node-second emits
+nothing" above) — it records why *this process* stopped, not what the node
+was doing, which its peer process's own transitions already say. It is a
+value of the pre-existing `stand-down` `cause` field, not a member of the
+`node-state` vocabulary, and `node_time_state_for_cause` maps it to nothing
+like any other token it does not recognise.
+
 `node_time_state_idle_split(total, cause)` is the other half of the
 classification, used at every site whose cause depends on a live count
 rather than being fixed: a `none-selected` outcome, the no-op fingerprint
@@ -613,11 +663,44 @@ document is, rather than hidden:
 - **The node set is not evaluated per second of the window.** It is every
   node that has *ever* logged a `node-state` event, over the fold's whole
   unwindowed input — not the roadmap's own "node-count is not a constant"
-  precision for a node truly joining or leaving the fleet mid-window. A
-  decommissioned node keeps scoring `down` for the rest of any window after
-  its last event, overstating `down` for an installation that shrinks its
-  fleet. A node that joins mid-window is handled correctly for free by the
-  general "absence is `down`" rule above.
+  precision for a node truly joining or leaving the fleet mid-window. A node
+  that joins mid-window is handled correctly for free by the general
+  "absence is `down`" rule above; a node that *leaves* stays in the
+  denominator for every later window, so the invariant keeps charging the
+  fleet for capacity it no longer has (issue #1248).
+- **A node that stops holds its last state for the rest of the window, so
+  `down` never covers a crash or a decommission** (issue #1250). "Absence is
+  `down`" governs the stretch *before* a node's first event, not the stretch
+  after its last: each point's state holds until the next point's `ts`, and a
+  node that stops has no next point. A node stopped cleanly therefore scores
+  whatever `finalize_node_state_for_cycle` last logged — normally
+  `idle-without-demand`/`no-demand` — indefinitely, and a node SIGKILLed
+  mid-Implementer (a container OOM or eviction, anything that outruns
+  `cleanup`'s TERM handler) scores `producing` indefinitely. Neither reaches
+  `down`, which is the state D21's own bullet leads with ("crashed,
+  crash-looping, heartbeat stale, container unscheduled"). Bounding a
+  trailing segment — against each node's own `heartbeat.json` age, which is
+  the derivation #597's refinement named, or against a multiple of
+  `schedule.cycle_interval_minutes` — is what would close it; #1250 carries
+  the choice.
+- **`balanced` checks the arithmetic, not the data.** Every node's segments
+  tile `[window.from, window.to]` exactly by construction, so
+  `expected_total_seconds` and the summed states agree for any input the
+  fold can parse at all. A `true` here means the fold did not lose or
+  duplicate a second while reducing; it is not evidence that the events it
+  reduced described the fleet correctly, and the two limitations above are
+  both invisible to it. Read it as a self-check on the reduction, and
+  `skipped_events` and `unaccounted` as the honest measures of what the
+  input could not say.
+- **A `--since` boundary cuts a node off from its own prior state.** The
+  synthetic `down` point sits at the window's own start, so a node that was
+  mid-`producing` when a windowed query begins scores `down` from
+  `--since` until its next transition, rather than continuing the state it
+  was actually in. The error is bounded by one transition — for a node
+  running cycles, at most one `schedule.cycle_interval_minutes`, the same
+  resolution floor `scripts/pickup-metrics.sh` records for pickup latency —
+  but it is real, and it is why a window narrower than a cycle interval
+  reports mostly `down`.
 - **Two pipelines' events on one node are merged, not precedence-ordered.**
   `agent-cycle.sh` and `review-cycle.sh` have separate crontab lines and
   separate locks, so both can run on one node at once. `scripts/node-time-
@@ -629,7 +712,8 @@ document is, rather than hidden:
   most recent event, rather than the documented `producing > overhead`
   precedence a fuller model would need. This is why `review-cycle.sh`'s own
   "an implementation cycle is running" stand-down logs no `node-state`
-  transition at all (see below) — the alternative, a competing idle
+  transition at all (see "A tick that owns no node-second emits nothing"
+  above) — the alternative, a competing idle
   transition from the pipeline that is *not* doing the work, would be
   actively wrong rather than merely imprecise.
 - **The review pipeline's own idle state is not modelled.** `review-
@@ -726,15 +810,19 @@ above — on the same terms:
   `stage_budget_apply` (`stage-start`) and every `stage-end` site
   (`agent-cycle.sh` itself for the Implementer/Reviewer, `lib/approver.sh`,
   `lib/enabler.sh` x3, `lib/landing.sh`, `lib/refinement.sh`,
-  `lib/stage-attempt.sh` for the Co-Ordinator), `cycle-start`/`cycle-end`,
+  `lib/stage-attempt.sh` for the Co-Ordinator), `acquire_lock` (the opening
+  `overhead`) and `cycle-end`,
   every `stand-down` site (`agent-cycle.sh` and `lib/standdown.sh`), every
   genuinely-nothing-selected `none-selected` site (`lib/stage-attempt.sh`),
   and `limit-hit`/`limit-cleared` (`lib/candidate-select.sh`,
   `lib/standdown.sh`). `review-cycle.sh` and the libraries it shares with
-  `agent-cycle.sh` emit the identical event at its own `review-start`/
-  `review-end`, its one `review-stage-start`/`review-stage-end` pair, and
+  `agent-cycle.sh` emit the identical event just past its own
+  implementation-cycle check and at `review-end`, at its one
+  `review-stage-start`/`review-stage-end` pair, and at
   every `review-stand-down` site except "an implementation cycle is
-  running" (deliberately silent — see "Known limitations" above). The fold
+  running". That site, `cycle-skipped` and `review-skipped` are the three
+  deliberately silent ones — see "A tick that owns no node-second emits
+  nothing" above. The fold
   itself: `lib/node-time-state.sh`'s `node_time_state_fold`, behind the
   read-only `scripts/node-time-state.sh`, which unions `log.jsonl` and
   `review-log.jsonl` before folding.

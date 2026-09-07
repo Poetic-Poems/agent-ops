@@ -481,10 +481,6 @@ assert_in_workspace() {
 
 log_event "review-start" "$(jq -nc --argjson once "$([[ $ONCE == 1 ]] && echo true || echo false)" \
   --argjson dry_run "$([[ $DRY_RUN == 1 ]] && echo true || echo false)" '{once: $once, dry_run: $dry_run}')"
-# node-state (docs/FLOW-SCHEMA.md, D21): see agent-cycle.sh's own cycle-start
-# comment — a live node's first transition of a fresh process is always
-# read as "out of down".
-log_node_state_transition overhead
 
 # --- The switch (R2a) ---
 # Shared with agent-cycle.sh via lib/toggle.sh and checked before the lock, for
@@ -648,6 +644,10 @@ acquire_lock() {
         stale_after_sec="$lock_stale_after_sec"
         if kill -0 "$pid" 2>/dev/null && (( age_sec < stale_after_sec )); then
           log_event "review-skipped" "$(jq -nc --arg d "review lock held by pid $pid, age ${age_sec}s" '{detail: $d}')"
+          # node-state (docs/FLOW-SCHEMA.md, D21): a skipped tick is not a
+          # state — see agent-cycle.sh's own `cycle-skipped` site and
+          # suppress_node_state_transitions' header.
+          suppress_node_state_transitions
           exit 0
         fi
         if kill -0 "$pid" 2>/dev/null; then
@@ -781,9 +781,15 @@ if [[ -f "$impl_lock_file" ]]; then
     # instant. Emitting a competing idle transition from this pipeline would
     # corrupt the shared per-node timeline the fold reconstructs.
     log_event "review-stand-down" "$(jq -nc --arg r "implementation cycle running (pid $impl_pid)" '{reason: $r, cause: "peer-pipeline-busy"}')"
+    suppress_node_state_transitions
     exit 0
   fi
 fi
+
+# node-state (docs/FLOW-SCHEMA.md, D21): here, past every ending that owns no
+# node-second — see agent-cycle.sh's own comment beside `acquire_lock`, and
+# the stand-down immediately above, which is silent for the same reason.
+log_node_state_transition overhead
 
 # --- Repo selection (--repo filter) ---
 if [[ -n "$REPO_FILTER" ]]; then
