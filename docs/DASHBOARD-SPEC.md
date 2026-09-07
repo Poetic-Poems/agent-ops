@@ -1643,7 +1643,27 @@ rework bad":
   and the two are indistinguishable from this record alone, so this panel
   does not guess which. That excluded population is `clean_count`, reported
   once, separately, rather than folded into a rate that would otherwise
-  overstate how much passed undetected. `escape_rate` at a rung is the share
+  overstate how much passed undetected. `caught` at a rung is
+  **item-granular, not defect-granular**: a rework record carries no defect
+  identity (`docs/FLOW-SCHEMA.md`), so every item is first collapsed to the
+  single furthest rung any of its own rework records reached, and only then
+  is `caught` tallied as the landed items whose furthest rung was this row —
+  never a count of the defects actually caught there. An item carrying two
+  independent defects — one bounced back at `agent-review`, a second nothing
+  caught until `post-merge` — credits only the `post-merge` row:
+  `agent-review`'s own `caught` count is unaffected by the round trip that
+  did catch something, despite that catch being real, and that same item
+  counts toward `agent-review`'s `escaped` instead. `test/rework-panel.test.sh`'s
+  item 4 is exactly this shape. Read every per-rung `caught` figure — and, by
+  extension, the `population` each later rung inherits from the rung before
+  its own `escaped` items, since that population is built from the same
+  furthest-rung collapse — as a **floor** on the defects actually caught or
+  outstanding there, never an exact count. The escape-rate signature itself
+  stays legible under this reading (see "The Reviewer-waving-work-through
+  signature" below): the collapse is pessimistic about an active Reviewer,
+  crediting it with nothing on exactly the item this paragraph describes, so
+  the direction of the bias only ever understates catches, never invents
+  them. `escape_rate` at a rung is the share
   of that rung's own population — items not yet caught when they reached
   it — that went on uncaught to a later rung; `post-merge` is terminal and
   reports `escaped`/`escape_rate` as `null`, never a `0` that would misread

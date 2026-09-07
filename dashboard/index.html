@@ -2071,7 +2071,7 @@
         el("td", {class:"wrap muted", text: costText})
       ]);
     });
-    return tableOf(["Detection stage", "Population", "Caught here", "Escaped", "Escape rate",
+    return tableOf(["Detection stage", "Population", "Caught here (furthest rung)", "Escaped", "Escape rate",
       "Cost to catch at next rung"], rows);
   }
   function reworkPanel() {
@@ -2104,8 +2104,11 @@
     // separately above for exactly this reason.
     body.push(el("div", {class:"panel muted", text:
       "Rework is never a target of zero — a Reviewer catching a defect is the system working, not " +
-      "failing. Read \"Caught here\" and \"Escape rate\" together: a falling catch count alongside a " +
-      "rising escape rate at the same rung is a Reviewer waving work through, not fewer defects."}));
+      "failing. Read \"Caught here (furthest rung)\" and \"Escape rate\" together: a falling catch " +
+      "count alongside a rising escape rate at the same rung is a Reviewer waving work through, not " +
+      "fewer defects. \"Caught here (furthest rung)\" counts items whose furthest rung was this one, " +
+      "never individual defects: an item carrying two defects caught at different rungs shows up only " +
+      "at the later one, so the figure is a floor on defects actually caught here, not an exact count."}));
     // The residual detection gap docs/FLOW-SCHEMA.md documents: the human-gate
     // rung can only see what the reconciliation gate itself observes.
     body.push(el("div", {class:"panel muted", text:
