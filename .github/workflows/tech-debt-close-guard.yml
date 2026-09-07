@@ -16,17 +16,22 @@ name: Tech-debt close guard
 # anything; a red run would mean the guard itself could not operate, not that
 # the close was irregular.
 #
-# `issues: write` only, never `contents`: this reads the issue's own timeline
-# and comments and writes a comment back, nothing else. Deliberately
-# unfiltered by `paths:` — an issue close carries no diff to gate on — and
-# filtered to the label at the job level so an unlabelled issue's close never
-# even checks out the repository.
+# `issues: write` to post the advisory comment, and `contents: read` for the
+# checkout that fetches the script — nothing else. Declaring either scope sets
+# every scope this block does not name to no access, so `contents: read` has to
+# be stated rather than assumed: `actions/checkout` is what puts
+# `scripts/tech-debt-close-guard.sh` on the runner, and every other workflow
+# here that checks out declares it for the same reason. Deliberately unfiltered
+# by `paths:` — an issue close carries no diff to gate on — and filtered to the
+# label at the job level so an unlabelled issue's close never even checks out
+# the repository.
 
 on:
   issues:
     types: [closed]
 
 permissions:
+  contents: read
   issues: write
 
 jobs:
