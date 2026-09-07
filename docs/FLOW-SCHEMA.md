@@ -255,17 +255,21 @@ the rework panel — is D23's Phase 2, out of this document's scope.
 This reduction is not particular to the rework record. `docs/IMPLEMENTATION-
 PIPELINE-SPEC.md` requirement 2.6d states it as the general property every
 analytics record retained under `analytics_retained_days` must honour before
-being counted: a record's identity is the emitting node's own event —
-`node`, `ts`, `event`, plus `repo`+`item` where the event carries them —
-reduced first-wins-by-`ts`. Because `fleet_logs` hands every node an
-identical union of the same underlying events regardless of which node does
-the reading, a fold built on that identity is idempotent under multiple
-publishers by construction: two nodes folding the same union produce
-identical record sets, and merging those two outputs by the same identity
-yields one copy of each record, never two. The rework record's own version
-of that proof is `test/rework-panel.test.sh`'s "first-wins" fixture; the
-item lifecycle record's is `test/item-lifecycle.test.sh`'s two-node fixture
-(below).
+being counted: a record's identity is its own natural key — `{repo, item}`
+for the item lifecycle record, `{repo, item, class[, evidence.by]}` for the
+rework record — reduced first-wins-by-`ts`, never the emitting node or the
+timestamp of the raw event that happened to produce a given copy: two nodes
+independently observing the same occurrence log it under their own,
+necessarily different `node` (and often `ts`), so including either in the
+identity would defeat the very dedup this property exists to guarantee.
+Because `fleet_logs` hands every node an identical union of the same
+underlying events regardless of which node does the reading, a fold built on
+that identity is idempotent under multiple publishers by construction: two
+nodes folding the same union produce identical record sets, and merging
+those two outputs by the same identity yields one copy of each record, never
+two. The rework record's own version of that proof is
+`test/rework-panel.test.sh`'s "first-wins" fixture; the item lifecycle
+record's is `test/item-lifecycle.test.sh`'s two-node fixture (below).
 
 ## The item lifecycle record
 

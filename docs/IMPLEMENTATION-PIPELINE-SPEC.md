@@ -3749,10 +3749,17 @@ implements.
    this for the rework record, reducing first-wins-by-`ts` on `{repo, item,
    class}` (`{…, evidence.by}` for `post-merge-revert`). This requirement
    generalises that property to bind every analytics record this policy
-   retains: a record's identity is the emitting node's own event — `node`,
-   `ts`, `event`, plus `repo`+`item` where the event carries them — reduced
-   first-wins-by-`ts`. A fold built this way is idempotent under multiple
-   publishers by construction: `fleet_logs` (requirement 2.5, `lib/fleet.sh`)
+   retains: a record's identity is its own natural key — `{repo, item}` for
+   the item-lifecycle record, `{repo, item, class[, evidence.by]}` for the
+   rework record, the equivalent stable key for any future one — reduced
+   first-wins-by-`ts`, never the emitting node or the timestamp of the raw
+   event that happened to produce a given copy: two nodes independently
+   observing the same occurrence log it under their own, necessarily
+   different `node` (and often `ts`), so including either in the identity
+   would defeat the very dedup this property exists to guarantee. `ts`
+   serves only to pick a survivor when more than one candidate shares that
+   key. A fold built this way is idempotent under multiple publishers by
+   construction: `fleet_logs` (requirement 2.5, `lib/fleet.sh`)
    hands every node an identical union of the same underlying events
    regardless of which node is doing the reading, so two nodes folding that
    union produce identical record sets, and merging those two outputs by

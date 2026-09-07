@@ -333,10 +333,11 @@ union_b="$tmp_dir/dedup-union-b.jsonl"
 fleet_logs "$node_a_home" "$node_a_home/peers" > "$union_a"
 fleet_logs "$node_b_home" "$node_b_home/peers" > "$union_b"
 
-# The identity requirement 2.6d states — node, ts, event, plus repo+item
-# where present — applied to the raw union: four distinct events went in
-# (two from each node), and the union each node computes carries exactly
-# those four, never a node's own doubled by its peer's copy of itself.
+# A prerequisite fact, distinct from the record-identity property proved
+# below: the raw union itself manufactures no duplicate events. Four
+# distinct events went in (two from each node), and the union each node
+# computes carries exactly those four, never a node's own doubled by its
+# peer's copy of itself.
 raw_event_count() {  # <union-file>
   jq -s '[.[] | {node, ts, event, repo, item}] | unique | length' "$1"
 }
