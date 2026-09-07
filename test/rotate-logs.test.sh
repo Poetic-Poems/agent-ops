@@ -12,7 +12,14 @@
 #                     still under it is left byte-identical.
 #   what never does   log.jsonl, review-log.jsonl and revert-rate.jsonl are
 #                     the fleet's memory (the union readers scan them whole);
-#                     no size, however large, may rotate them.
+#                     no size, however large, may rotate them. Since
+#                     requirement 2.6d this is a stated retention policy
+#                     (`analytics_retained_days`), not merely an omission
+#                     from the LOGS array below — the array's own exclusion
+#                     of these three names is a consequence of that policy,
+#                     and the shipped config's own default (`0`, retain
+#                     indefinitely) is asserted here alongside the
+#                     behavioural proof that the exclusion actually holds.
 #   how generations   a rotation renames the live file to `.1`; a second
 #   stack             rotation shifts a stale `.1` to `.2` rather than
 #                     clobbering it, and a generation beyond
@@ -35,6 +42,9 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROTATE="$SCRIPT_DIR/scripts/rotate-logs.sh"
+
+# shellcheck source=lib/config-schema.sh
+. "$SCRIPT_DIR/lib/config-schema.sh"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -154,6 +164,13 @@ assert_eq "revert-rate.jsonl keeps its full size" "5000" "$(stat -c%s "$d/revert
 assert_file_absent "log.jsonl gets no .1" "$d/log.jsonl.1"
 assert_file_absent "review-log.jsonl gets no .1" "$d/review-log.jsonl.1"
 assert_file_absent "revert-rate.jsonl gets no .1" "$d/revert-rate.jsonl.1"
+
+# --- The retention policy behind that exclusion (requirement 2.6d) ---------
+# The shipped config's own default preserves today's behaviour — indefinite
+# retention — rather than introducing an expiry no storage decision has been
+# made for yet.
+assert_eq "analytics_retained_days defaults to 0 (retain indefinitely)" "0" \
+  "$(config_defaults "$SCRIPT_DIR/config.json" "$SCRIPT_DIR/config.schema.json" | jq -r '.analytics_retained_days')"
 
 # --- The one-off cleanup ----------------------------------------------------
 d="$(new_home oneoff)"

@@ -252,6 +252,21 @@ et al., `docs/METERING-SCHEMA.md`) already reduces over the union rather than
 per-node. This document defines the record only; computing a rate from it —
 the rework panel — is D23's Phase 2, out of this document's scope.
 
+This reduction is not particular to the rework record. `docs/IMPLEMENTATION-
+PIPELINE-SPEC.md` requirement 2.6d states it as the general property every
+analytics record retained under `analytics_retained_days` must honour before
+being counted: a record's identity is the emitting node's own event —
+`node`, `ts`, `event`, plus `repo`+`item` where the event carries them —
+reduced first-wins-by-`ts`. Because `fleet_logs` hands every node an
+identical union of the same underlying events regardless of which node does
+the reading, a fold built on that identity is idempotent under multiple
+publishers by construction: two nodes folding the same union produce
+identical record sets, and merging those two outputs by the same identity
+yields one copy of each record, never two. The rework record's own version
+of that proof is `test/rework-panel.test.sh`'s "first-wins" fixture; the
+item lifecycle record's is `test/item-lifecycle.test.sh`'s two-node fixture
+(below).
+
 ## The item lifecycle record
 
 D21's flow account (`docs/ROADMAP.md`) states the invariant this record
@@ -376,10 +391,13 @@ exists to catch.
 `window.from`/`window.to` name the earliest and latest timestamp this run
 actually read, bounded by `--since` and by whatever the union log currently
 holds. `log.jsonl` is **never rotated** (`scripts/rotate-logs.sh`'s own
-header: "NEVER rotated — this is the fleet's memory") — unlike the metering
-schema's own roll-ups, which are bounded by `log_retained_bytes`, this
-record's only real bound is how far back this pipeline's own logging began,
-not a retention limit. That is still a bound worth stating: a fleet whose
+header: "NEVER rotated — this is the fleet's memory") and its analytics
+content is retained per `analytics_retained_days`
+(`docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement 2.6d) — `0` by default,
+meaning indefinitely, which is today's behaviour — so this record's only
+real bound in practice is how far back this pipeline's own logging began,
+not a size-based rotation: no `log_retained_bytes`-style cap ever applies to
+this file. That is still a bound worth stating: a fleet whose
 `state_dir` was reset, or whose oldest node joined after this record's own
 instants started emitting, reads a shorter history than the pipeline's true
 age, and `window.from` is how a reader tells the difference between "nothing

@@ -328,6 +328,16 @@
         "spec": "Rotated generations of each log kept beside the live file (`<name>.1` … `<name>.<log_generations>`), floored at one. `ROTATE_LOGS_GENERATIONS` overrides it for tests."
       }
     },
+    "analytics_retained_days": {
+      "description": "How long the analytics records log.jsonl and review-log.jsonl carry — the per-stage metering record, the rework record, and the events the item-lifecycle fold reads — are retained, independent of scripts/rotate-logs.sh's size-based rotation and of scripts/state-sync.sh's own pruning of cycles/ and reviews/, neither of which ever reaches either file (requirement 2.6d). 0 means retain indefinitely, which is today's behaviour: this key states the retention policy only, and nothing yet enforces an expiry against it — where these records should eventually live, and what a non-zero value should be, are open questions of their own (docs/ROADMAP.md's D21 open-questions table).",
+      "type": "integer",
+      "minimum": 0,
+      "default": 0,
+      "x-docs": {
+        "readme": "How long the analytics records in `log.jsonl`/`review-log.jsonl` are retained, independent of `scripts/rotate-logs.sh`'s size-based rotation (neither file is ever in its rotation set) and of `scripts/state-sync.sh`'s pruning of `cycles/`/`reviews/` (neither reaches either file). `0` (the default) means retain indefinitely — today's behaviour, unaffected by this key: nothing yet enforces an expiry against it.",
+        "spec": "How long the analytics records `log.jsonl`/`review-log.jsonl` carry are retained (requirement 2.6d), independent of requirement 2.6's rotation and requirement 2.5's `cycles/`/`reviews/` pruning — neither ever reaches either file. `0` (the default) means retain indefinitely, preserving today's behaviour: this key states the policy, not an enforced expiry, which nothing yet implements."
+      }
+    },
     "coordinator_model": {
       "$ref": "#/$defs/modelId",
       "description": "The Co-Ordinator's model. Selection is cheap triage.",

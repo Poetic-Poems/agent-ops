@@ -772,6 +772,7 @@ and the schema must carry every one of them.
 | `state_local_streams_retained` | *(unset)* | Cycle and review directories whose derived files are kept — the stage event streams (`<stage>.stream.jsonl`, requirement 4d) and the fleet-log snapshot (`.fleet-log.jsonl`, requirement 2.5); the push that replicates prunes to it (requirement 2.5). Far below `state_local_cycles_retained` because each is a different order of size from the record holding it — a cycle directory without them is kilobytes, one Reviewer stream megabytes, one snapshot the whole fleet's history to...[continued below](#extended-notes-state_local_streams_retained) |
 | `log_retained_bytes` | `2000000` | Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `doctor.log`, `revert-rate.log`, `tech-debt-archive.log`, `cron.log` and `review-cron.log` (requirement 2.6). `log.jsonl`, `review-log.jsonl` and `revert-rate.jsonl` are never rotated regardless of size. `ROTATE_LOGS_RETAINED_BYTES` overrides it for tests. |
 | `log_generations` | `3` | Rotated generations of each log kept beside the live file (`<name>.1` … `<name>.<log_generations>`), floored at one. `ROTATE_LOGS_GENERATIONS` overrides it for tests. |
+| `analytics_retained_days` | `0` | How long the analytics records `log.jsonl`/`review-log.jsonl` carry are retained (requirement 2.6d), independent of requirement 2.6's rotation and requirement 2.5's `cycles/`/`reviews/` pruning — neither ever reaches either file. `0` (the default) means retain indefinitely, preserving today's behaviour: this key states the policy, not an enforced expiry, which nothing yet implements. |
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
 | `implementer_model_default` | `claude-sonnet-5` | Any change that affects runtime behaviour. |
 | `implementer_model_trivial` | `claude-haiku-4-5-20251001` | Docs-, comment-, or register-only items. The Co-Ordinator classifies each item and records its reasoning in the work order. |
@@ -3711,6 +3712,54 @@ implements.
    next scheduled run rather than being fabricated or silently dropped. The
    crontab line's own `|| true` keeps a partial run from reading as a
    crashed script, the same reasoning 2.6b's own line uses.
+2.6d. **Analytics retention** (D21, agent-ops#598). `log.jsonl` and
+   `review-log.jsonl` already carry every analytics record this pipeline
+   produces — the per-stage metering record (requirement 33a,
+   `docs/METERING-SCHEMA.md`), the rework record (requirement 47,
+   `docs/FLOW-SCHEMA.md`) and the item-scoped events the item-lifecycle fold
+   reads (requirement 49, `docs/FLOW-SCHEMA.md`) — and requirement 2.6
+   already excludes both files from `scripts/rotate-logs.sh`'s size-based
+   rotation, for its own stated reason: the union readers scan them whole.
+   `analytics_retained_days` states that exclusion as a consequence of a
+   stated policy rather than a side effect of a different rule: these two
+   files' analytics content is retained for `analytics_retained_days` days,
+   independent of any transcript rotation or pruning — `0` (the default)
+   means retained indefinitely, which is today's behaviour, unchanged. No
+   pruner in this codebase may remove an analytics record inside that
+   window: requirement 2.5's `state-sync.sh` push already prunes only
+   `cycles/` and `reviews/`, directories neither file lives in, and
+   requirement 2.6's rotation already excludes both by name — both are
+   therefore already-conforming consequences of this policy rather than
+   independent decisions that happen to agree with it, and a future
+   compaction of either file has this requirement as the one place to
+   consult before removing anything. Where the records eventually live, and
+   what a non-zero `analytics_retained_days` should actually be once an
+   installation wants less than indefinite retention, are open questions of
+   their own (`docs/ROADMAP.md`'s D21 open-questions table, priced under
+   D14) — this requirement states the contract, not the number, and
+   enforcing it (actually expiring anything) is future work this key does
+   not yet perform.
+
+   **De-duplication.** A record two or more nodes might independently
+   produce for the same real-world occurrence — a claim race today, or,
+   going forward, any record derived by folding the fleet-wide union rather
+   than emitted once by the process that observed it — must never be
+   counted twice merely because more than one node holds a copy.
+   `docs/FLOW-SCHEMA.md`'s "Do not double-count" already states and tests
+   this for the rework record, reducing first-wins-by-`ts` on `{repo, item,
+   class}` (`{…, evidence.by}` for `post-merge-revert`). This requirement
+   generalises that property to bind every analytics record this policy
+   retains: a record's identity is the emitting node's own event — `node`,
+   `ts`, `event`, plus `repo`+`item` where the event carries them — reduced
+   first-wins-by-`ts`. A fold built this way is idempotent under multiple
+   publishers by construction: `fleet_logs` (requirement 2.5, `lib/fleet.sh`)
+   hands every node an identical union of the same underlying events
+   regardless of which node is doing the reading, so two nodes folding that
+   union produce identical record sets, and merging those two outputs by
+   the same identity yields one copy of each record, never two — proved
+   directly for the item-lifecycle fold by `test/item-lifecycle.test.sh`'s
+   two-node fixture, and for the rework record by
+   `test/rework-panel.test.sh`'s own "first-wins" fixture.
 2.7. **Crash-loop escalation.** A Co-Ordinator failure pins no repo/item
    (requirement 33's fields are set only after selection), so the entire
    blocked → Enabler → escalation ladder that covers item failures never
@@ -18692,7 +18741,9 @@ oblige anyone to edit a test.
    branch and never a peer's; the branch keeps
    `cycles_retained` cycles while the node's own `cycles/` and `reviews/` are
    pruned to the newest `state_local_cycles_retained` by the same push,
-   newest always kept; a fetch materialises a peer whole
+   newest always kept, and `log.jsonl` is byte-for-byte untouched by that
+   same local prune regardless of how many cycle/review directories it
+   removes (requirement 2.6d); a fetch materialises a peer whole
    under the peers directory, leaves the node's own `state_dir` alone, never
    includes the node itself, and prunes a peer whose branch is gone; the
    union read (`lib/fleet.sh`) carries both nodes' events in time order; and
@@ -18949,6 +19000,25 @@ oblige anyone to edit a test.
    `once-pr4-verify.log` is removed if present. `test/publish-dashboard.test.sh`
    passes its cron-panel case: with `cron.log` short and `cron.log.1` present,
    the panel's tail draws from both, newest last.
+1h-i. **Analytics retention is a stated policy, and rotation and pruning
+   both already conform to it (requirement 2.6d).**
+   `test/rotate-logs.test.sh` passes an added assertion: the shipped
+   config's own `analytics_retained_days` resolves to `0` (retain
+   indefinitely) through `config_defaults`, the same resolution the pipeline
+   itself uses, asserted beside the existing behavioural proof that
+   `log.jsonl`/`review-log.jsonl`/`revert-rate.jsonl` never rotate — the
+   policy and the exclusion that already conforms to it, pinned together.
+   `test/state-sync.test.sh` passes the assertion added to its own
+   local-retention case (1d): a push that prunes `cycles/`/`reviews/` to
+   `state_local_cycles_retained` leaves `log.jsonl`'s content exactly as it
+   was. `test/item-lifecycle.test.sh` passes its two-node fixture: two
+   independent unions built by `fleet_logs` for two different nodes over the
+   identical underlying events fold to identical `records[]`, and
+   concatenating both folds' records and reducing by `{repo, item}` yields
+   exactly one record per item, never two. `config.schema.json` declares
+   `analytics_retained_days`, `default: 0`, with `x-docs.readme`/
+   `x-docs.spec`, and `scripts/render-config-table.sh --check` passes with
+   it rendered into all four `config-table` regions.
 1i. **Per-installation prompt overrides extend or replace a stage's prompt,
    and the fingerprint tracks them (requirement 4a).**
    `test/prompt-overrides.test.sh` passes: with no `prompt_overrides`
@@ -22987,6 +23057,14 @@ oblige anyone to edit a test.
     scalar would. `test/pickup-metrics.test.sh` passes unchanged, exercising
     `item_lifecycle_pickup_pairs` indirectly through `scripts/pickup-
     metrics.sh`'s own unchanged CLI and output shape.
+    The same test file also proves the de-duplication property requirement
+    2.6d states: two nodes' own logs carrying overlapping events for the
+    same item are each unioned with the other's via `fleet_logs` (requirement
+    2.5, `lib/fleet.sh`), and the fold over each node's own resulting union
+    is asserted byte-identical to the other's — the general "two nodes
+    folding the same union produce identical record sets" property — and
+    concatenating both folds' `records[]` and reducing by `{repo, item}`
+    leaves exactly one record per item, never two.
     The join key itself — `{repo, item}`, present whenever the emitting site
     knows both and omitted, never `null`, otherwise — is pinned at each
     producing site by lifting the real code: `test/stage-budget-apply-join-

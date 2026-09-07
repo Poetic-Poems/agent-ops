@@ -1451,9 +1451,11 @@ recent_cut="$(date -u -d "$now_iso -3 days" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || e
 # derived from the same fleet-wide event union `$events_file` already holds
 # (`$ev` below) rather than from `$cycles_file` — `$cycles_file` is capped at
 # MAX_CYCLES (40) so a fleet running several cycles an hour loses the join for
-# all but the newest few hours, while the event union is bounded only by
-# `log_retained_bytes`, the same window the cost scan itself already outlives
-# (COST_SCAN_DAYS reaches 60 days back; the log rotates far sooner). Grouping
+# all but the newest few hours, while the event union is never rotated
+# (requirement 2.6 — `log.jsonl` is one of the two logs `scripts/rotate-
+# logs.sh` never touches) and outlives the cost scan's own COST_SCAN_DAYS
+# (60 days) by construction, retained per `analytics_retained_days`
+# (requirement 2.6d) rather than a size-based rotation. Grouping
 # the union by `.cycle` and re-deriving `repo`/`item`/`source`/`outcome` here
 # is deliberately the same expression `cycle_obj` (above) uses for its own
 # per-cycle rendering — one cycle's facts must read the same on both surfaces
@@ -1522,9 +1524,10 @@ counts_json="$(jq -n --slurpfile cyc "$cycles_file" --slurpfile costs_in "$costs
     # some other stage of the same cycle worked, not the one the
     # Enabler/Refiner/probe itself examined; a `project-reviewer` row (from
     # `reviews/`, never `cycles/`) never has a cycle in this index at all. A
-    # coordinator/implementer/reviewer row whose own cycle has rotated out of
-    # the log union attributes false too, rather than guessing — carrying
-    # nulls, exactly like a row that was never attributable.
+    # coordinator/implementer/reviewer row whose own cycle has no events in the
+    # union at all — rare, since the union is never rotated (requirement 2.6)
+    # — attributes false too, rather than guessing: carrying nulls, exactly
+    # like a row that was never attributable.
     cost_rows: ([$costs[] | . as $c | $c.models[] | . as $m
         | ($cycle_index[$c.cycle]) as $facts
         | (($c.actor == "coordinator" or $c.actor == "implementer" or $c.actor == "reviewer")

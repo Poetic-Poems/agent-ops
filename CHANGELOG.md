@@ -18,6 +18,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   repository and its configured level, on the model of its neighbouring
   `landing_cool_off_hours 0` warning.
 
+- **Analytics retention policy** (issue #598, D21): a new
+  `analytics_retained_days` config key states that `log.jsonl`/
+  `review-log.jsonl`'s analytics content — the per-stage metering record,
+  the rework record, and the events the item-lifecycle fold reads — is
+  retained independently of `scripts/rotate-logs.sh`'s size-based rotation
+  and `scripts/state-sync.sh`'s pruning of `cycles/`/`reviews/`, neither of
+  which has ever reached either file. Default `0` (retain indefinitely)
+  preserves today's behaviour; nothing yet enforces an expiry against a
+  non-zero value. `docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement 2.6d
+  also generalises the fleet-wide de-duplication rule `docs/FLOW-SCHEMA.md`'s
+  rework record already used (first-wins-by-`ts` on a record's own stable
+  identity) to bind every analytics record this policy retains, proved for
+  the item-lifecycle fold by a new two-node fixture in
+  `test/item-lifecycle.test.sh`. Corrects a since-inaccurate claim, repeated
+  in `docs/DASHBOARD-SPEC.md`, `docs/METERING-SCHEMA.md` and
+  `scripts/publish-dashboard.sh`'s own comments, that `log.jsonl` rotates or
+  can "rotate out of" the union — it never has: `log.jsonl` and
+  `review-log.jsonl` have always been excluded from rotation
+  (requirement 2.6).
+
 - **Per-close re-filing rate limit for escalation issues** (issue #779,
   decided on #784 as behaviour (b)): a human closing an escalation issue
   without performing the releasing act (removing the `open-question` label
