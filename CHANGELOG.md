@@ -335,6 +335,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   of the Reviewer. `docs/IMPLEMENTATION-PIPELINE-SPEC.md` gains requirement
   24c, mirroring 29a. No change to `prompts/reviewer.md`, requirement 29a, or
   `scripts/run-tests.sh` itself.
+
+- **The PAT-expiry warning no longer implies classic tokens are exempt from
+  it** (issue #1233). `lib/token-expiry.sh` and its callers described the
+  `GitHub-Authentication-Token-Expiration` response header as absent for "a
+  classic PAT" alongside an installation token — false: GitHub sends the
+  header for any personal access token, classic or fine-grained, that has an
+  expiry set, and has done since the header was introduced for classic PATs
+  in 2021. The mechanism itself never gated on token type and needed no
+  code change; only the wrong claim, and the "fine-grained" label the
+  warning's own user-facing text and comments carried, are corrected — this
+  node's PAT expires in N day(s) at `scripts/doctor.sh`'s warn/ok lines and
+  `agent-cycle.sh`'s escalation issue heading, and README.md's own
+  description. Matters now rather than eventually: #912 moves every node's
+  `GH_TOKEN` to a classic PAT, and a reader of the old wording would have
+  concluded the warning goes dark at that cutover and needed a manual
+  stand-in — it does not, and never did.
+
 - **`landing_eligible`'s `unknown:` diagnostic now names which of
   `landing_protected_paths_hit`'s two refusal causes actually fired**
   (issue #961). `landing_protected_paths_hit` (`lib/landing.sh`) returned a

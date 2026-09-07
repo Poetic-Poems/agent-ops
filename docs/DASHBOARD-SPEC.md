@@ -645,12 +645,12 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                     //   state_dir/.doctor-status.json —
                                     //   null until the first hourly pass
                                     //   has run. token_expiry (agent-ops#694)
-                                    //   is this node's fine-grained PAT's own
+                                    //   is this node's PAT's own
                                     //   expiry, read from GitHub's
                                     //   `GitHub-Authentication-Token-
                                     //   Expiration` response header; null
-                                    //   when that header was absent (a
-                                    //   classic PAT, or any credential
+                                    //   when that header was absent (an
+                                    //   installation token, or any credential
                                     //   GitHub states no expiry for)
              stage_health:{computed_at,threshold,idle_after_hours,
                            stages:{<stage>:{verdict,consecutive_failures,
@@ -1728,7 +1728,7 @@ misconfigured `Priority` field did before this existed is otherwise invisible
 between one operator-invoked `doctor.sh` and the next.
 
 Above the fail/warn table, a standing line (agent-ops#694) states this node's
-fine-grained PAT expiry once any unattended pass has recorded one:
+PAT expiry once any unattended pass has recorded one:
 `token_expiry.days_remaining` and `.expires_at`, read from GitHub's own
 `GitHub-Authentication-Token-Expiration` response header. Unlike the
 fail/warn rows, this line renders whenever `token_expiry` is non-null,
@@ -1736,7 +1736,7 @@ including on an otherwise-clean pass — it is a figure this node always has an
 answer for, not a message that only appears when something is wrong. A badge
 reads amber below `TOKEN_EXPIRY_WARN_DAYS` (7; `lib/token-expiry.sh`) and grey
 at or above it, with a rotate-`GH_TOKEN` nudge alongside the amber reading;
-`token_expiry: null` (a classic PAT, an installation token, or any other
+`token_expiry: null` (an installation token, or any other
 credential GitHub states no expiry for) renders nothing here at all. This is
 the dashboard half of the warning the 2026-08-22 fleet-wide outage
 (agent-ops#691) needed and never had — the expiry date was knowable a month

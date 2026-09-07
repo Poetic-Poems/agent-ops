@@ -213,12 +213,10 @@ the read and `setIssueFieldValue`. `scripts/doctor.sh` probes it per
 repository and says so outright, rather than leaving it to be inferred.
 
 Mint each token with an expiry: GitHub states a classic token's expiry in
-the same `GitHub-Authentication-Token-Expiration` response header the
-fine-grained tokens carry, so requirement 2.7a's warning — the guard #694
-built after the 2026-08-22 fleet-wide expiry outage (#691) — survives the
-cutover unchanged. `lib/token-expiry.sh`'s own comment claims a classic PAT
-sends no such header; it is wrong, and #1233 tracks correcting it and the
-"fine-grained PAT" wording that follows from it.
+the same `GitHub-Authentication-Token-Expiration` response header any other
+personal access token with an expiry carries, so requirement 2.7a's warning
+— the guard #694 built after the 2026-08-22 fleet-wide expiry outage (#691)
+— survives the cutover unchanged.
 
 Check the first token before minting the other three — the two things most
 likely to surprise are one command apart:

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # test/token-expiry.test.sh — regression test for lib/token-expiry.sh: the
-# fine-grained PAT expiry warning (agent-ops#694). Pure-function coverage
+# PAT expiry warning (agent-ops#694). Pure-function coverage
 # only; test/doctor.test.sh covers the header read and the artefact write,
 # and test/token-expiry-wiring.test.sh covers agent-cycle.sh's escalation.
 #

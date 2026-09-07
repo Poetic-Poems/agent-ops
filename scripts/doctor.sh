@@ -155,11 +155,12 @@ pending_section=""
 # structured rather than reparsing this script's own text output.
 fail_msgs=()
 warn_msgs=()
-# Set by the GitHub section's fine-grained-PAT-expiry check (agent-ops#694)
+# Set by the GitHub section's PAT-expiry check (agent-ops#694)
 # when the header is present and parseable; read by write_unattended_status
 # below. Declared here, ahead of that check, so a run that never reaches or
-# never sets them (--offline, gh unauthenticated, a classic PAT with no
-# expiry header) still has both bound under `set -u`.
+# never sets them (--offline, gh unauthenticated, an installation token or
+# other credential GitHub states no expiry for) still has both bound under
+# `set -u`.
 token_expiry_expires_at=""
 token_expiry_days_remaining=""
 
@@ -968,8 +969,8 @@ if ((gh_ready)); then
   # reads — a month before expiry is what the 2026-08-22 fleet-wide outage
   # (agent-ops#691) needed and never had: every node lost GitHub at once,
   # misdiagnosed as an outage, for hours before an operator noticed. Absent
-  # header (a classic PAT, or any credential GitHub states no expiry for) is
-  # not this check's concern — nothing to warn about, `null` in the
+  # header (an installation token, or any credential GitHub states no expiry
+  # for) is not this check's concern — nothing to warn about, `null` in the
   # artefact below — and an already-expired or rejected token is #691's own
   # territory (`gh_ready` would already be 0 above, in the common case).
   token_expiry_header_raw="$(token_expiry_header)"
@@ -982,9 +983,9 @@ if ((gh_ready)); then
       < <(token_expiry_parse "$token_expiry_header_raw") || true
     if [[ -n "$token_expiry_expires_at" ]]; then
       if (( token_expiry_days_remaining < TOKEN_EXPIRY_WARN_DAYS )); then
-        warn "this node's fine-grained PAT expires in ${token_expiry_days_remaining} day(s), at $token_expiry_expires_at — under the ${TOKEN_EXPIRY_WARN_DAYS}-day warning threshold; rotate GH_TOKEN before it expires"
+        warn "this node's PAT expires in ${token_expiry_days_remaining} day(s), at $token_expiry_expires_at — under the ${TOKEN_EXPIRY_WARN_DAYS}-day warning threshold; rotate GH_TOKEN before it expires"
       else
-        ok "this node's fine-grained PAT expires in ${token_expiry_days_remaining} day(s), at $token_expiry_expires_at"
+        ok "this node's PAT expires in ${token_expiry_days_remaining} day(s), at $token_expiry_expires_at"
       fi
     fi
   fi
@@ -1900,8 +1901,8 @@ write_unattended_status() {
   [[ -n "$fail_json" ]] || fail_json='[]'
   [[ -n "$warn_json" ]] || warn_json='[]'
   # null when the GitHub section never established a days_remaining figure —
-  # --offline, an unauthenticated token, or a credential (a classic PAT, an
-  # installation token) GitHub states no expiry for at all (agent-ops#694).
+  # --offline, an unauthenticated token, or a credential (an installation
+  # token, or any other) GitHub states no expiry for at all (agent-ops#694).
   if [[ "$token_expiry_days_remaining" =~ ^[0-9]+$ ]]; then
     token_expiry_json="$(jq -nc --arg e "$token_expiry_expires_at" --argjson d "$token_expiry_days_remaining" \
       '{expires_at: $e, days_remaining: $d}' 2>/dev/null)"

@@ -1023,7 +1023,7 @@ band, say) does not go unseen between one operator-invoked pass and the
 next. Its result reaches the **Doctor** section of the dashboard (see
 Monitoring below), not your terminal.
 
-That hourly pass also reads how many days remain on this node's fine-grained
+That hourly pass also reads how many days remain on this node's
 PAT — GitHub states its expiry on every authenticated response — and records
 it for the dashboard, amber under 7 days; a node whose own token falls under
 that threshold escalates once (an issue at the pipeline's configured

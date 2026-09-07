@@ -1152,7 +1152,7 @@ assert_contains "and the Doctor section says so, with when it last ran" \
 assert_not_contains "a clean pass with no recorded token_expiry shows no PAT-expiry line" \
   "PAT expires in" "$out"
 
-# --- doctor-token-expiry-*.json: the fine-grained PAT expiry line
+# --- doctor-token-expiry-*.json: the PAT expiry line
 # (agent-ops#694), rendered in the Doctor section alongside the fail/warn
 # table rather than only appearing when something is wrong.
 out="$(render doctor-token-expiry-warn.json)" || { printf 'FAIL - doctor-token-expiry-warn.json did not render:\n%s\n' "$out"; exit 1; }

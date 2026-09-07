@@ -1741,7 +1741,7 @@ if [[ "$token_expiry_days" =~ ^[0-9]+$ ]] && [[ -n "$token_expiry_expires_at" ]]
     token_expiry_body="$cycle_dir/token-expiry-issue.md"
     # shellcheck disable=SC2016  # the backticks are the issue body's Markdown, not expansions
     {
-      printf '## This node'"'"'s fine-grained PAT is expiring soon\n\n'
+      printf '## This node'"'"'s PAT is expiring soon\n\n'
       printf -- '- node: `%s`\n- expires: `%s`\n- days remaining: **%s**\n\n' \
         "$node_name" "$token_expiry_expires_at" "$token_expiry_days"
       printf 'GitHub states this on every authenticated API response; `doctor.sh --unattended` reads it hourly. Rotate this node'"'"'s `GH_TOKEN` before it expires — agent-ops#691 is what happens if it is not: every pipeline stands down at once, misread as an outage.\n\n'
