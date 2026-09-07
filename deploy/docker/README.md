@@ -30,7 +30,13 @@ README](../../README.md) and `docs/*-SPEC.md`.
   be revoked without disturbing the others. Those repositories now span two
   owners, and a fine-grained token reaches exactly one, so until D25's Forge
   App lands each node's token is a personal access token (classic) with
-  `repo` and `workflow`; the trade-off and the end state are recorded in
+  `repo`, `workflow` and `read:org` — full `repo` rather than `public_repo`,
+  because the state repository is private, and `read:org` because `gh`'s own
+  minimum-scope check skips an empty `X-Oauth-Scopes` header (what a
+  fine-grained token sends) but enforces `repo` plus one of
+  `read:org`/`write:org`/`admin:org` on a classic one, so without it
+  `gh auth status` and every `scripts/doctor.sh` GitHub check fail on a token
+  that is in fact working. The trade-off and the end state are recorded in
   `docs/PULLWRIGHT-REHOMING.md`.
 - A **git identity** — a name and an email — for the commits this node's
   cycles make. There is no default; an active node's cycles refuse to run
