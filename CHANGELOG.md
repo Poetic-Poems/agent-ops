@@ -8,6 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Per-close re-filing rate limit for escalation issues** (issue #779,
+  decided on #784 as behaviour (b)): a human closing an escalation issue
+  without performing the releasing act (removing the `open-question` label
+  for requirement 8f, reviewing and merging for requirement 8c) no longer
+  gets a fresh escalation issue on every subsequent refusing round.
+  `open_question_escalate` (`lib/landing.sh`) and `approver_escalate`
+  (`lib/approver.sh`) both now read the most recently closed escalation
+  issue for the item live (`escalation_recent_close`, `lib/enabler.sh`) and
+  suppress a re-filing within the new `escalation_refile_after_hours`
+  window (default 24h, pure comparator `escalation_refile_suppressed`,
+  `lib/escalation-autonomy.sh`) — unless it is the one immediate
+  re-escalation a failed post-close adjudication owes
+  (`escalation_event_logged_since`), which always files regardless of the
+  window. `escalation_refile_after_hours: 0` disables the guard outright.
+
 - **Tech-debt close-guard** (issue #877; D15 as revised, #869/#875/#879): a
   new `.github/workflows/tech-debt-close-guard.yml` posts one advisory
   comment when a `pw::type:tech-debt` issue closes with neither a linked
