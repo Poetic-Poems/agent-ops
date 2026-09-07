@@ -1,0 +1,55 @@
+name: Tech-debt close guard
+
+# The other half of requirement 25's resolution discipline (D15 as revised,
+# #869/#875/#879): a resolving pull request's closing keyword and its
+# `td-record` block are enforced by closing-keyword.yml, but not every
+# `pw::type:tech-debt` issue closes through a pull request — a human can close
+# one directly, "completed", "not planned" or "duplicate", with nothing else
+# attached. This leaves exactly one advisory comment when that happens with
+# neither a linked pull request/commit nor an explanatory comment already on
+# the issue — see scripts/tech-debt-close-guard.sh's own header for the
+# evidence each close reason is asked for, and why a comment's content is
+# never read, only its presence.
+#
+# ADVISORY ONLY, by design (issue #877): this workflow never reopens the
+# issue, never relabels it, and never fails its own run over a non-compliant
+# close — `tech-debt-close-guard.sh` always exits 0. Nothing here blocks
+# anything; a red run would mean the guard itself could not operate, not that
+# the close was irregular.
+#
+# `issues: write` to post the advisory comment, and `contents: read` for the
+# checkout that fetches the script — nothing else. Declaring either scope sets
+# every scope this block does not name to no access, so `contents: read` has to
+# be stated rather than assumed: `actions/checkout` is what puts
+# `scripts/tech-debt-close-guard.sh` on the runner, and every other workflow
+# here that checks out declares it for the same reason. Deliberately unfiltered
+# by `paths:` — an issue close carries no diff to gate on — and filtered to the
+# label at the job level so an unlabelled issue's close never even checks out
+# the repository.
+
+on:
+  issues:
+    types: [closed]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  guard:
+    if: contains(github.event.issue.labels.*.name, 'pw::type:tech-debt')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check the close carries a linked fix or an explanatory comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO_SLUG: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          STATE_REASON: ${{ github.event.issue.state_reason }}
+          LABELS_CSV: ${{ join(github.event.issue.labels.*.name, ',') }}
+          CLOSED_AT: ${{ github.event.issue.closed_at }}
+        run: |
+          scripts/tech-debt-close-guard.sh \
+            "$REPO_SLUG" "$ISSUE_NUMBER" "$STATE_REASON" "$LABELS_CSV" "$CLOSED_AT"
