@@ -182,8 +182,13 @@ landing_eligible() { printf '%s' "eligible"; }
 landing_open_question_hit() { return 1; }
 review_gate_verdict() { printf '%s' "clean"; return 0; }
 approver_token_identity_login() { printf 'pullwright-approver[bot]'; }
+# Overridable via STANDING — run_case's own default is APPROVED, left
+# untouched everywhere in the sweep below, so acceptance criterion 4's own
+# case, further down, can override it to something else and read the
+# App-approval refusal it actually produces, rather than assuming its
+# wording.
 landing_approver_standing_review_at() {
-  printf 'APPROVED\t2026-08-17T10:00:00Z\tsha-approved-head'
+  printf '%s\t%s\t%s' "${STANDING:-}" "2026-08-17T10:00:00Z" "sha-approved-head"
 }
 
 # The one stub in this file that differs from landing-wiring.test.sh's own:
@@ -257,6 +262,7 @@ run_case() {
   env -i PATH="$PATH" HOME="$HOME" \
     T="$tmp_dir" SCRIPT_DIR="$SCRIPT_DIR" PR_URL="$URL" COMPLEXITY="medium" \
     LEVEL="agent-merges-routine" ARM_METHOD="enqueued" BLOCKING="warwickallen" \
+    STANDING="APPROVED" \
     "$@" \
     bash "$tmp_dir/harness.sh" >"$tmp_dir/stdout" 2>"$tmp_dir/stderr"
   printf '%s' "$?"
@@ -305,11 +311,24 @@ done
 # every other refusal class, not merely "some prose blocked it" -----------
 # Textually contrasted against gate 4's own App-approval half, the refusal
 # immediately above the veto check in `_landing_stage_attempt` — the closest
-# neighbour a regression could most easily collapse it into.
+# neighbour a regression could most easily collapse it into. Both sides are
+# pinned against production: `veto_reason` against real `$(refusal)` output
+# in the sweep above, and `app_half_reason` here the same way — a real run of
+# the harness with the Approver's own standing review stubbed to something
+# other than APPROVED (STANDING=""), rather than a second hard-coded copy of
+# the wording `lib/landing.sh` actually produces. If that wording ever
+# changes, the assert_contains below catches it; the equality check further
+# down would otherwise keep passing regardless.
 
 rc="$(run_case LEVEL="agent-merges-routine" BLOCKING="")"
 assert_eq "with no human veto standing, the same level now arms" "1" "$(count arms)"
-app_half_reason="not standing APPROVED"
+
+rc="$(run_case LEVEL="agent-merges-routine" BLOCKING="" STANDING="")"
+assert_eq "  ... but an Approver review that never landed on GitHub arms nothing" \
+  "0" "$(count arms)"
+app_half_reason="$(refusal)"
+assert_contains "  ... naming the App-approval refusal" "not standing APPROVED" "$app_half_reason"
+
 veto_reason="a human CHANGES_REQUESTED stands"
 if [[ "$app_half_reason" == "$veto_reason" ]]; then
   printf 'FAIL - the App-approval refusal and the human-veto refusal share one string\n'
