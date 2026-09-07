@@ -993,7 +993,7 @@ $node_name
         if [[ "$approver_last_post_ok" == "1" ]]; then
           local land_sha
           land_sha="$("${APPROVER_GH:-gh}" pr view "$number" -R "$selected_repo" \
-            --json headRefOid --jq '.headRefOid' 2>/dev/null)"
+            --json headRefOid --jq '.headRefOid' 2>/dev/null || true)"
           approver_escalation_retire "$pr_url" "land" "${land_sha:-unknown}"
         fi
         ;;
