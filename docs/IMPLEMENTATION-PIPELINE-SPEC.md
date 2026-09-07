@@ -7034,7 +7034,14 @@ implements.
    `enabler_escalation_label` whose body quotes this `pr-<n>-approver-
    adjudication` reference — and both are a no-op, logging nothing, when no
    such issue is open, which is the common case: most pull requests never
-   escalate at all. Left unretired before this, the escalation survived its
+   escalate at all. Both close it inside the same
+   `pipeline_comment_header`/`pipeline_comment_marker` envelope every other
+   comment this system posts carries (requirement 3f), and both skip an issue
+   GitHub reports reopened (`stateReason`, read on the same listing): a
+   human's own re-open wins over either retirement, the same answer
+   requirement 34k's one-shot rule and requirement 17c's own
+   `state_reason: "reopened"` check give everywhere else this system closes
+   something. Left unretired before this, the escalation survived its
    own disagreement indefinitely — agent-ops#1202 sat open for eight hours
    after the adjudication that answered it, asking a human to review and
    merge a pull request that had already merged, until they closed it by
@@ -9201,7 +9208,13 @@ implements.
     than this pipeline's own arm (`lib/landing.sh`), so it is also the only
     place a human's own merge click can retire one. Shares this pass's
     `$max_actions`/deferred budget with the closing-keyword sweep above,
-    rather than a separate cap of its own.
+    rather than a separate cap of its own. An escalation somebody reopened
+    (`stateReason`, read on the same listing rather than for a second call)
+    is left alone, for the identical reason the closing-keyword sweep above
+    refuses a `state_reason: "reopened"` issue: this pass re-lists the same
+    merged pull request every stand-down for as long as it stays inside
+    `pr_search_limit`, so without the check a re-open would be undone —
+    with a fresh comment — on the hour, every hour.
 17g. **The reservation-release retry sweep.** A `td/<id>`/`td-record/<id>`
     tech-debt reservation branch a failed cleanup delete could not remove is
     not left orphaned for good: since TD-PPagop-26082427, that
@@ -10483,7 +10496,7 @@ implements.
     `merge-autonomy-killed`, `merge-autonomy-restored`,
     `merge-budget-hold`, `merge-budget-frozen`, `merge-budget-freeze-escalated`,
     `salvage`, `chained`,
-    `approver-verdict`, `approver-escalated`,
+    `approver-verdict`, `approver-escalated`, `approver-escalation-retired`,
     `landing-armed`, `landing-refused`, `classifier-escape`, `landing-audit`,
     `open-question-raised`, `open-question-adjudication`, `open-question-escalated`,
     `review-gate-checks-read`, `review-gate-checks-degraded`, `first-seen`,
@@ -10731,7 +10744,17 @@ implements.
     `approver-escalated` (requirement 8c) carries the same `pr_url` plus the
     `issue_number` and `issue_url` of the escalation an unsettled adjudication
     raised; a filing that failed is a `warning` instead, since
-    `create_escalation_issue`'s own dedup makes the retry next cycle free. A
+    `create_escalation_issue`'s own dedup makes the retry next cycle free. An
+    `approver-escalation-retired` (requirement 8c, agent-ops#1215) is that
+    escalation's own closing record, carrying `pr_url`, `issue_number`,
+    `issue_url` and `cause` — `land` when this pipeline's own adjudication
+    settled it, `merged` when requirement 17c's sweep found the pull request
+    merged some other way — so a page the owner answered (no event: they
+    closed the issue themselves) reads differently from one the pipeline
+    outgrew. A close GitHub refused is a `warning` instead, the same shape
+    the filing side already uses, since the next pass retries it for free.
+    The `merged` half carries `repo` as well, `lib/standdown.sh` stamping it
+    on every action `scripts/sweep-closed-issues.sh` reports. A
     `landing-armed` (requirement 8d, D18 WI-7) is written once per successful
     arm, carrying `pr_url`, `repo`, `source`, `complexity`, `level` — the
     *effective* `merge_autonomy` level gate 1 judged the arm against, kill
@@ -17112,7 +17135,10 @@ What exists, and the requirements each part answers to:
     (agent-ops#945), the same discipline `lib/tech-debt-file.sh`'s own
     `_techdebt_err_log` already applies. This file also
     carries the stage itself (moved from `agent-cycle.sh`, #771):
-    `run_approver_stage`, `approver_post_or_warn`, `approver_escalate` and
+    `run_approver_stage`, `approver_post_or_warn`, `approver_escalate`,
+    `approver_escalation_retire` — requirement 8c's `cause: "land"`
+    retirement, the read-back half of `approver_escalate`'s own dedup lookup
+    (agent-ops#1215) — and
     `approver_stage_complexity`, the sole callers of the primitives above,
     composing them with `merge_autonomy_effective_level`
     (`lib/merge-autonomy.sh`), `create_escalation_issue` (`lib/enabler.sh`,
@@ -17480,7 +17506,8 @@ What exists, and the requirements each part answers to:
     issue is still open and not `state_reason: "reopened"`, closes it with a
     `pipeline_comment_header`/
     `pipeline_comment_marker`-wrapped comment citing the merge as evidence,
-    printing one JSON action per outcome (`closed`, `deferred`, `warning`)
+    printing one JSON action per outcome (`closed`, `merge-observed`,
+    `approver-escalation-retired`, `deferred`, `warning`)
     for the Script to log. Capped at three actions per repo per call, the
     overflow reported rather than silent. `SWEEP_GH` stubs `gh` for tests.
     Unit-tested (`test/sweep-closed-issues.test.sh`); must pass `shellcheck`.

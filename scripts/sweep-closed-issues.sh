@@ -67,7 +67,7 @@
 # Output: one JSON object per action on stdout —
 #   {"action":"closed","issue":198,"pr_number":206,"pr_url":…}
 #   {"action":"merge-observed","pr_number":206,"pr_url":…,"item":"198","merge_sha":…}
-#   {"action":"approver-escalation-retired","issue":199,"issue_url":…,"pr_number":206,
+#   {"action":"approver-escalation-retired","pr_url":…,"issue_number":199,"issue_url":…,
 #    "cause":"merged","merged_by":…,"merged_at":…}
 #   {"action":"warning","detail":…}
 #   {"action":"deferred","remaining":N}
@@ -165,17 +165,25 @@ fi
 # the same $max_actions/$deferred budget the closing-keyword sweep below
 # shares this run with. Searched by $enabler_escalation_label, never
 # $pr_label: an escalation issue carries the former, not the latter.
+#
+# `stateReason` rides along on that same listing for the same reason the
+# closing-keyword loop below pays a whole `gh api` call to read
+# `state_reason`: an escalation somebody reopened after this sweep retired it
+# must stay reopened. Without the check, the merged pull request stays in this
+# window for `pr_search_limit` entries, so the reopen would be undone — with a
+# fresh comment — on the next stand-down and every one after it.
 if [[ -n "$enabler_escalation_label" ]]; then
   esc_json="$("$GH" issue list -R "$slug" --label "$enabler_escalation_label" --state open \
-    --search "approver-adjudication" --json number,url,body --limit 100 2>/dev/null)" || esc_json=""
+    --search "approver-adjudication" --json number,url,body,stateReason --limit 100 2>/dev/null)" || esc_json=""
   if [[ -n "$esc_json" ]]; then
     while IFS=$'\t' read -r esc_number esc_url esc_pr_number; do
       [[ -n "$esc_number" && "$esc_pr_number" =~ ^[0-9]+$ ]] || continue
       merged_fields="$(jq -r --argjson n "$esc_pr_number" \
-        '.[] | select(.number == $n) | [(.mergedBy.login // "someone"), (.mergedAt // "")] | @tsv' \
+        '.[] | select(.number == $n)
+             | [(.mergedBy.login // "someone"), (.mergedAt // ""), (.url // "")] | @tsv' \
         <<<"$prs_json" 2>/dev/null)"
       [[ -n "$merged_fields" ]] || continue
-      IFS=$'\t' read -r merged_by merged_at <<<"$merged_fields"
+      IFS=$'\t' read -r merged_by merged_at esc_pr_url <<<"$merged_fields"
 
       if (( actions >= max_actions )); then
         deferred=$(( deferred + 1 ))
@@ -194,15 +202,17 @@ is already done.
 $(pipeline_comment_marker "$cycle_id" script)"
 
       if "$GH" issue close "$esc_number" -R "$slug" --comment "$esc_comment_body" >/dev/null 2>&1; then
-        jq -nc --argjson issue "$esc_number" --arg issue_url "$esc_url" \
-          --argjson pr "$esc_pr_number" --arg by "$merged_by" --arg at "$merged_at" \
-          '{action: "approver-escalation-retired", issue: $issue, issue_url: $issue_url,
-            pr_number: $pr, cause: "merged", merged_by: $by, merged_at: $at}'
+        jq -nc --arg pr_url "$esc_pr_url" --argjson issue_number "$esc_number" \
+          --arg issue_url "$esc_url" --arg by "$merged_by" --arg at "$merged_at" \
+          '{action: "approver-escalation-retired", pr_url: $pr_url,
+            issue_number: $issue_number, issue_url: $issue_url,
+            cause: "merged", merged_by: $by, merged_at: $at}'
         actions=$(( actions + 1 ))
       else
         warn "could not close approver-adjudication escalation issue #$esc_number (pull request #$esc_pr_number merged)"
       fi
     done < <(jq -r '.[]
+      | select((.stateReason // "" | ascii_downcase) != "reopened")
       | ((.body // "") | capture("pr-(?<n>[0-9]+)-approver-adjudication")? // null) as $m
       | select($m != null)
       | [(.number|tostring), .url, $m.n] | @tsv' <<<"$esc_json" 2>/dev/null || true)

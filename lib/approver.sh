@@ -506,16 +506,21 @@ APPROVER_ESC_BODY
 # reusing that function directly: this finds and closes, never creates, so
 # there is no shared call to make. A no-op, logging nothing, when no open
 # issue matches — the common case, since most pull requests never escalate
-# at all.
+# at all — and equally when the only match is one somebody *reopened* after a
+# retirement (`stateReason`, read on the same listing): a human's re-open must
+# win, the same answer requirement 34k's own one-shot rule and
+# `scripts/sweep-closed-issues.sh`'s `state_reason: "reopened"` check give on
+# every other close this system performs.
 approver_escalation_retire() {
   local pr_url="$1" cause="$2" detail="$3" gh_bin="${APPROVER_GH:-gh}"
   local number item_ref existing issue_number issue_url comment
   number="${pr_url##*/}"
   item_ref="pr-${number}-approver-adjudication"
   existing="$("$gh_bin" issue list -R "$selected_repo" --label "$enabler_escalation_label" \
-                --state open --search "$item_ref" --json number,url,body 2>/dev/null \
+                --state open --search "$item_ref" --json number,url,body,stateReason 2>/dev/null \
               | jq -r --arg it "$item_ref" \
-                  'map(select(((.body // "") | contains($it)))) | first
+                  'map(select(((.body // "") | contains($it))
+                              and ((.stateReason // "" | ascii_downcase) != "reopened"))) | first
                    | if . == null then empty else "\(.number)\t\(.url)" end' 2>/dev/null || true)"
   [[ -n "$existing" ]] || return 0
   IFS=$'\t' read -r issue_number issue_url <<<"$existing"
@@ -524,10 +529,19 @@ approver_escalation_retire() {
     merged) comment="This pull request merged — $detail." ;;
     *)      comment="This pull request's disagreement has ended ($detail)." ;;
   esac
-  comment="$comment
+  # The same envelope every other pull-request or issue comment this system
+  # posts wraps its prose in (requirement 3f, lib/pipeline-marker.sh): every
+  # pipeline write lands under the owner's own GitHub account, so without the
+  # visible header a human reading this escalation thread cannot tell this
+  # close from one they wrote themselves.
+  comment="$(pipeline_comment_header script "$node_name")
 
----
-Retired automatically by agent-cycle.sh (requirement 8c)."
+$comment
+
+Retiring this escalation now: the disagreement it was raised to settle is
+over, so it is no longer asking you for anything.
+
+$(pipeline_comment_marker "$cycle_id" script)"
   if "$gh_bin" issue close "$issue_number" -R "$selected_repo" --comment "$comment" \
        >/dev/null 2>>"$cycle_dir/approver-escalation-retire.err"; then
     log_event "approver-escalation-retired" "$(jq -nc --arg u "$pr_url" \

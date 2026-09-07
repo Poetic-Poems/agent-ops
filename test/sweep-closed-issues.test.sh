@@ -251,7 +251,7 @@ jq -n '[{number: 850, url: "https://github.com/x/y/issues/850",
 out="$(run_sweep "$c")"
 calls="$(cat "$c/calls.log")"
 assert_eq "the escalation is retired" \
-  '{"action":"approver-escalation-retired","issue":850,"issue_url":"https://github.com/x/y/issues/850","pr_number":800,"cause":"merged","merged_by":"a-human","merged_at":"2026-09-06T11:09:07Z"}' \
+  '{"action":"approver-escalation-retired","pr_url":"https://github.com/x/y/pull/800","issue_number":850,"issue_url":"https://github.com/x/y/issues/850","cause":"merged","merged_by":"a-human","merged_at":"2026-09-06T11:09:07Z"}' \
   "$(jq -c 'select(.action == "approver-escalation-retired")' <<<"$out")"
 assert_contains "  ... with a real close call naming issue 850" \
   "issue close 850 -R x/y --comment" "$calls"
@@ -286,6 +286,27 @@ assert_eq "a close GitHub refuses is reported as a warning, not silently dropped
   "$(jq -c 'select(.action == "approver-escalation-retired")' <<<"$out" 2>/dev/null || true)"
 assert_contains "  ... naming the issue it could not close" "950" \
   "$(jq -r 'select(.action == "warning") | .detail' <<<"$out")"
+
+# --- Case 10: an escalation a human reopened after a retirement -------------------
+# The same rule case 4 asserts for the closing-keyword sweep: this pass re-lists
+# the same merged pull request every stand-down for as long as it stays inside
+# `pr_search_limit`, so without the `stateReason` check a re-open would be undone
+# — with a fresh comment — on the hour, every hour.
+c="$tmp_dir/case10"; mkdir -p "$c"
+jq -n '[{number: 1000, url: "https://github.com/x/y/pull/1000",
+         body: "<!-- agent-ops:closes-issue item=1001 -->",
+         mergeCommit: {oid: "yza890"},
+         mergedAt: "2026-09-06T13:00:00Z", mergedBy: {login: "a-human"}}]' > "$c/prs.json"
+jq -n '{state: "closed"}' > "$c/issue-1001"
+jq -n '[{number: 1050, url: "https://github.com/x/y/issues/1050",
+         body: "Item: `pr-1000-approver-adjudication` · pull request https://github.com/x/y/pull/1000",
+         stateReason: "REOPENED"}]' > "$c/esc-issues.json"
+
+out="$(run_sweep "$c")"
+calls="$(cat "$c/calls.log")"
+assert_eq "an escalation a human reopened is left to whoever reopened it" '' \
+  "$(jq -c 'select(.action == "approver-escalation-retired")' <<<"$out" 2>/dev/null || true)"
+assert_not_contains "  ... and is never closed a second time" "issue close 1050" "$calls"
 
 if (( failures > 0 )); then
   echo "$failures failure(s)"

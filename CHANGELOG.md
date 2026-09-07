@@ -305,7 +305,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   actually reaches GitHub, and `scripts/sweep-closed-issues.sh`'s fleet-wide
   merged-pull-request listing, for a pull request that merges some other way
   — a human's own click, a later automatic landing, or a merge queue
-  resolving after the fact.
+  resolving after the fact. Neither path touches an escalation somebody
+  *reopened* after a retirement: a human's own re-open wins, the same answer
+  every other close this system performs already gives.
 
 - **`prompts/implementer.md` and `prompts/reviewer.md` no longer tell a stage
   to POST a GitHub App's login for a review-feedback re-request**
