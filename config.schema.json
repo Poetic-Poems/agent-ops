@@ -537,6 +537,20 @@
         "value": "`3`"
       }
     },
+    "escalation_refile_after_hours": {
+      "description": "The re-filing guard for an escalation issue closed without the releasing act (agent-ops#779, decided on #784): a per-close rate limit on `open_question_escalate` (requirement 8f) and `approver_escalate` (requirement 8c) alike. Once a human closes an escalation issue for an item, the next filing for that same item is suppressed for this many hours from the close — unless it is the one immediate re-escalation a failed post-close adjudication owes (requirement 38), which always files regardless of the window. `0` disables the guard outright: every refusing round files, exactly as before this key existed.",
+      "type": "number",
+      "minimum": 0,
+      "default": 24,
+      "x-docs": {
+        "readme": "Hours a human's own close of an escalation issue suppresses the *next* filing for the same item (`open_question_escalate`/requirement 8f, `approver_escalate`/requirement 8c) — closing the issue is not the releasing act, so without this guard a human who closes without also releasing the gate gets a fresh issue every refusing round. `0` disables the guard: every refusing round files, as before this key existed. A re-escalation a failed post-close adjudication owes always files regardless of the window.",
+        "spec": "The per-close re-filing rate limit (agent-ops#779, decided on #784 as behaviour (b)): a filing from `open_question_escalate` or `approver_escalate` is suppressed when a `closed` issue carrying `enabler_escalation_label` and this item's own reference exists (read live via `escalation_recent_close`, never from the log) and `now − closedAt` is less than this many hours (`escalation_refile_suppressed`, `lib/escalation-autonomy.sh`) — *unless* it is the first post-close re-escalation owed by a failed adjudication this very round, which always files. `0` disables the guard explicitly rather than leaving it to the arithmetic: every refusing round files, byte for byte as before this key existed. Neither requirement 8f's own releasing act (removing the `open-question` label) nor requirement 8c's (a human's own review and merge) changes — only the *filing* is rate-limited.",
+        "value": {
+          "readme": "`24`",
+          "spec": "24 h"
+        }
+      }
+    },
     "needs_refinement_label": {
       "$ref": "#/$defs/label",
       "description": "Projected onto an issue-type item while its refinement block is open, and the label a human applies by hand to flag one themselves. Empty disables both directions. Must not be `blocked` nor `obsolete`.",

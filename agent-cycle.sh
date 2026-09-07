@@ -555,6 +555,12 @@ enabler_escalation_label="$(cfg '.enabler_escalation_label')"
 # fatal misconfiguration, not a silent skip: an unassigned escalation is one
 # the pipeline could go on to pick up as its own work.
 enabler_assignee="$(cfg '.enabler_assignee')"
+# The per-close re-filing rate limit (requirement 8f/8c, agent-ops#779,
+# decided on #784 as behaviour (b)): how long a human's own close of an
+# escalation issue suppresses the *next* filing for the same item, in
+# `open_question_escalate` (lib/landing.sh) and `approver_escalate`
+# (lib/approver.sh) alike. `0` disables the guard outright.
+escalation_refile_after_hours="$(cfg '.escalation_refile_after_hours')"
 # Crash-loop escalation (requirement 2.7). `crash_loop_after` is the
 # consecutive-failure threshold; 0 or absent turns the check off, so an
 # older config runs exactly as before. `crash_loop_repo` is where the
