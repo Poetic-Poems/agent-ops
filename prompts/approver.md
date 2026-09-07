@@ -86,7 +86,12 @@ Adversarial, and it sharpens with the tier:
   about something real that the pull request still gets wrong (`refuse`), has
   it now been resolved (`land`), or is it a genuine judgement call neither
   side is equipped to settle alone (`escalate`)? Favour `escalate` over a
-  third guess — that is what this tier exists to reach for.
+  third guess — that is what this tier exists to reach for. `refuse` does not,
+  by itself, page a human: it posts an ordinary `REQUEST_CHANGES` review and
+  the pull request goes back through `review-feedback` next cycle, same as
+  any other refusal — only `escalate`, a verdict the Script cannot parse, or
+  a `refuse` that keeps recurring past the pipeline's own recurrence
+  threshold reaches a human.
 
 Never grade complexity, never correct the `complexity:*` label, and never
 treat "the Reviewer already looked at this" as a reason to wave it through —

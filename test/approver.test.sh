@@ -463,6 +463,68 @@ assert_eq "  ... and is not posted" "0" "$approver_last_post_ok"
 assert_contains "  ... its warning keeps the original generic wording" \
   "GitHub refused the write" "$(warning_events)"
 
+# --- approver_escalate: the condition that fired (requirement 8c) --------------
+# agent-ops#1214: one fixed "could not resolve the disagreement" sentence used
+# to be filed for every condition, so #1202 told the owner an adjudication
+# "could not resolve" a disagreement whose own verdict had named concrete
+# remedies and explicitly disclaimed escalation. The optional third argument
+# now selects the "Why the pipeline is blocked" wording; nothing else about
+# the issue — the reasons, the footer, and above all the `pr-<n>-approver-
+# adjudication` item ref `create_escalation_issue` dedups on — may vary with
+# it, or a second condition on the same pull request would file a second
+# issue rather than finding the first.
+esc_dir="$tmp_dir/escalate"
+mkdir -p "$esc_dir"
+# shellcheck disable=SC2034  # Read by approver_escalate, which a real cycle calls with these in scope.
+selected_repo="Poetic-Poems/agent-ops"
+# shellcheck disable=SC2034
+enabler_escalation_label="escalation"
+# shellcheck disable=SC2034
+cycle_id="test-cycle"
+# shellcheck disable=SC2034
+node_name="test-node"
+create_escalation_issue() {
+  printf '%s\n' "$2" >"$esc_dir/item-ref"
+  printf '%s\n' "$4" >"$esc_dir/title"
+  printf '11\thttps://github.com/Poetic-Poems/agent-ops/issues/11'
+}
+run_escalate() {  # <condition-or-empty>
+  events=()
+  cycle_dir="$esc_dir"
+  if [[ -n "$1" ]]; then
+    approver_escalate "$URL" '["the same defect, unanswered"]' "$1"
+  else
+    approver_escalate "$URL" '["the same defect, unanswered"]'
+  fi
+  cycle_dir="$tmp_dir/cycle"
+}
+esc_body() { cat "$esc_dir/approver-escalation-${URL##*/}.md"; }
+esc_why() { sed -n '/^## Why the pipeline is blocked$/,/^## What has already/p' "$esc_dir/approver-escalation-${URL##*/}.md"; }
+
+run_escalate escalate
+assert_contains "an escalate verdict's body says the adjudication judged it a judgement call" \
+  "a genuine judgement call neither side is equipped to settle alone" "$(esc_why)"
+assert_eq "  ... under the standing \"could not settle\" title" \
+  "Approver adjudication could not settle $URL" "$(cat "$esc_dir/title")"
+
+run_escalate recurring-refuse
+assert_contains "a recurring refusal's body says the disagreement kept recurring" \
+  "kept recurring across several adjudication rounds" "$(esc_why)"
+assert_eq "  ... and does not claim the adjudication could not resolve it" "no" \
+  "$([[ "$(esc_why)" == *"could not resolve the disagreement"* ]] && printf 'yes' || printf 'no')"
+assert_eq "  ... under a title naming the recurrence, not \"could not settle\"" \
+  "Approver adjudication: refusal keeps recurring on $URL" "$(cat "$esc_dir/title")"
+assert_eq "  ... keeping the item ref create_escalation_issue dedups on unchanged" \
+  "pr-${URL##*/}-approver-adjudication" "$(cat "$esc_dir/item-ref")"
+assert_contains "  ... and still carrying the adjudication's own reasons" \
+  "- the same defect, unanswered" "$(esc_body)"
+
+run_escalate ""
+assert_contains "a verdict the Script could not act on keeps the \"could not resolve\" wording" \
+  "could not resolve the disagreement on its own" "$(esc_why)"
+assert_eq "  ... and logs the filing as approver-escalated" "approver-escalated" \
+  "$(printf '%s\n' "${events[0]%%$'\t'*}")"
+
 # --- Survives the caller's shell options ---------------------------------------
 # agent-cycle.sh runs under `set -euo pipefail`; every call site captures
 # these functions' output with `|| true`/`|| return 1` around it. A non-zero

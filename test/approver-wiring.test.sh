@@ -23,6 +23,15 @@
 #     disagreement, not the diff, chooses the adjudication tier, so a
 #     `complexity:low` pull request on a streak of two must reach Critical
 #     and not the deterministic path above.
+#   - **An adjudication `refuse` escalates only once it keeps recurring**
+#     (agent-ops#1214): below the recurrence threshold (a refuse streak of
+#     four — the third consecutive adjudication `refuse`) it posts
+#     `REQUEST_CHANGES` and nothing more, returning to `review-feedback` next
+#     cycle exactly like an ordinary refusal; at the threshold it also
+#     escalates. `escalate` and an unparseable/failed verdict escalate
+#     regardless of the streak, unchanged. Every escalating path reports
+#     *which* of the three conditions fired, since that is what the
+#     escalation issue's own "why" wording is chosen from.
 #   - **The ordinary tiers pick their own model** — `medium` on
 #     `approver_model_default`, `high` on `approver_model_complex` — and a
 #     refusal's `reasons` become the `REQUEST_CHANGES` body a human and the
@@ -275,8 +284,13 @@ approver_post_review() {
   return "${POST_RC:-0}"
 }
 
+# The third argument (agent-ops#1214) is the condition that fired — the one
+# thing `approver_escalate` turns into the escalation issue's own "Why the
+# pipeline is blocked" wording, so a case here can prove *which* of the three
+# this call site reported, not merely that it escalated. The wording each
+# condition selects is approver.test.sh's own assertion, not this file's.
 approver_escalate() {
-  printf 'url=%s\treasons=%s\n' "$1" "$2" >>"$T/escalations"
+  printf 'url=%s\treasons=%s\tcondition=%s\n' "$1" "$2" "${3:-}" >>"$T/escalations"
 }
 
 # The one model launch. Records the model it was asked for, and writes the
@@ -458,6 +472,8 @@ assert_eq "  ... an escalate verdict posts no review" "0" "$(count posts)"
 assert_eq "  ... and raises the escalation instead" "1" "$(count escalations)"
 assert_contains "  ... carrying the adjudication's own reasons" \
   "a genuine design call" "$(escalations)"
+assert_contains "  ... reported as the escalate condition, so the issue body says so (agent-ops#1214)" \
+  "condition=escalate" "$(escalations)"
 assert_eq "  ... still carries the model an escalate verdict actually launched (agent-ops#573)" \
   '"model-critical"' "$(jq -c '.model' <<<"$(verdict_event)")"
 assert_eq "  ... but posted:false — an escalate verdict reaches no GitHub review" \
@@ -469,8 +485,20 @@ assert_eq "  ... and raises no escalation" "0" "$(count escalations)"
 assert_eq "  ... and is logged as posted:true" 'true' "$(jq -c '.posted' <<<"$(verdict_event)")"
 
 run_case agent-approves high 2 '{"verdict":"refuse","reasons":["the same defect, moved"]}' >/dev/null
-assert_contains 'an adjudication refuse posts REQUEST_CHANGES' "event=REQUEST_CHANGES" "$(posts)"
-assert_eq "  ... and also escalates" "1" "$(count escalations)"
+assert_contains 'an adjudication refuse below the recurrence threshold posts REQUEST_CHANGES' \
+  "event=REQUEST_CHANGES" "$(posts)"
+assert_eq "  ... and raises no escalation on its own (agent-ops#1214)" "0" "$(count escalations)"
+assert_eq "  ... and is logged as posted:true" 'true' "$(jq -c '.posted' <<<"$(verdict_event)")"
+
+run_case agent-approves high 4 '{"verdict":"refuse","reasons":["the same defect, still unanswered"]}' >/dev/null
+assert_contains 'an adjudication refuse at the recurrence threshold still posts REQUEST_CHANGES' \
+  "event=REQUEST_CHANGES" "$(posts)"
+assert_eq "  ... and also escalates — the third consecutive adjudication refuse (agent-ops#1214)" \
+  "1" "$(count escalations)"
+assert_contains "  ... carrying the adjudication's own reasons" \
+  "the same defect, still unanswered" "$(escalations)"
+assert_contains "  ... reported as the recurring-refuse condition, never the \"could not settle\" one" \
+  "condition=recurring-refuse" "$(escalations)"
 assert_eq "  ... and is logged as posted:true" 'true' "$(jq -c '.posted' <<<"$(verdict_event)")"
 
 rc="$(run_case agent-approves medium 2 '')"
@@ -478,6 +506,8 @@ assert_eq "an unparseable adjudication verdict still returns 0" "0" "$rc"
 assert_eq "  ... posts no review" "0" "$(count posts)"
 assert_eq "  ... escalates, since \"cannot settle\" is not \"nothing wrong\"" \
   "1" "$(count escalations)"
+assert_eq "  ... under neither named condition, so it gets the unparseable wording" \
+  "" "$(sed -n 's/.*\tcondition=//p' <<<"$(escalations)")"
 
 # --- Every failure costs a review, never a pull request (requirements 8b/43) --
 

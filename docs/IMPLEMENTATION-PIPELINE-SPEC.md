@@ -6983,23 +6983,38 @@ implements.
    The adjudication prompt carries the pull request's prior refusal review
    bodies, oldest first (`approver_prior_refusal_bodies`), so the engagement
    judges whether those reasons were actually answered, not the diff cold a
-   third time. Its verdict is `land`, `refuse` or `escalate`: `land` posts an
-   `APPROVE` review; `refuse` posts a fresh `REQUEST_CHANGES` review *and*
-   raises an escalation issue (`approver_escalate`, reusing
-   `create_escalation_issue`, requirement 34a's shared identity for that
-   function, with the same `enabler_escalation_label` and `enabler_assignee`
-   every other escalation this pipeline raises uses); `escalate` raises the
-   same escalation issue without a fresh review, since the pull request
-   already sits at `CHANGES_REQUESTED` from the two refusals that triggered
-   this engagement. A stage failure or an unparseable verdict is treated the
-   same as an explicit `escalate` — "cannot settle" is not read as "nothing
-   wrong". The escalation issue's body states what a human should do (review
-   and merge the pull request themselves), why the pipeline stopped (two
-   Approver refusals an adjudication could not resolve), and the adjudication
-   engagement's own `reasons`; its footer names the pull request as
-   `pr-<n>-approver-adjudication`, which is what `create_escalation_issue`'s
-   own open-issue dedup matches on across repeated rounds, so a persisting
-   disagreement raises one issue, not one per cycle.
+   third time. Its verdict is `land`, `refuse` or `escalate`, and only
+   `escalate` pages a human on its own (agent-ops#1214 — the prompt gives the
+   model exactly this three-way meaning, and the Script's behaviour must
+   match it): `land` posts an `APPROVE` review; `refuse` posts a fresh
+   `REQUEST_CHANGES` review and is otherwise an ordinary refusal — the pull
+   request returns to `review-feedback` (requirement 3c) next cycle exactly
+   like any other refusal, raising no escalation on its own, *unless* the
+   refuse streak (the same counter this requirement already reads) has
+   reached the recurrence threshold of four — the third *consecutive*
+   adjudication `refuse` on this pull request, since adjudication itself only
+   starts once the streak already reads two — in which case it also raises
+   the escalation issue below: a `refuse` naming a concrete, unanswered
+   defect is work the next Implementer round can act on, but the same
+   disagreement recurring three adjudication rounds running is not settling
+   by itself. `escalate` raises the escalation issue
+   (`approver_escalate`, reusing `create_escalation_issue`, requirement 34a's
+   shared identity for that function, with the same `enabler_escalation_label`
+   and `enabler_assignee` every other escalation this pipeline raises uses)
+   without a fresh review, since the pull request already sits at
+   `CHANGES_REQUESTED` from the two refusals that triggered this engagement.
+   A stage failure or an unparseable verdict is treated the same as an
+   explicit `escalate` — "cannot settle" is not read as "nothing wrong". The
+   escalation issue's body states what a human should do (review and merge
+   the pull request themselves), why the pipeline stopped — naming whichever
+   of the three conditions actually triggered it (an explicit `escalate`, an
+   unparseable/failed verdict, or a `refuse` that kept recurring), never a
+   fixed "could not resolve the disagreement" sentence for all three — and
+   the adjudication engagement's own `reasons`; its footer names the pull
+   request as `pr-<n>-approver-adjudication`, which is what
+   `create_escalation_issue`'s own open-issue dedup matches on across
+   repeated rounds, so a persisting disagreement raises one issue, not one
+   per cycle.
 
    No *Approver* engagement merges, at any tier, at any `merge_autonomy`
    level. `agent-merges-routine` and `agent-merges-all` run the identical
@@ -21685,7 +21700,16 @@ oblige anyone to edit a test.
     reporting `0`, naming the rate limit distinguishably from a generic
     refusal and saying a retry was made; and a generic (non-rate-limit)
     refusal is not retried at all — one POST attempt only — and keeps the
-    original, unchanged "GitHub refused the write" wording.
+    original, unchanged "GitHub refused the write" wording. `approver_escalate`
+    composes the escalation issue's "Why the pipeline is blocked" paragraph
+    from the condition it was told fired (agent-ops#1214): the `escalate`
+    condition's body says the adjudication judged it a genuine judgement call,
+    the `recurring-refuse` condition's says the disagreement kept recurring and
+    never that the adjudication could not resolve it, and a condition it was
+    not given keeps the "could not resolve the disagreement" wording an
+    unparseable or unusable verdict earns — while the `pr-<n>-approver-
+    adjudication` item ref `create_escalation_issue` dedups on, and the
+    adjudication's own reasons, stay the same under every one of them.
     `test/approver-wiring.test.sh` lifts `run_approver_stage`,
     `approver_post_or_warn` and `approver_stage_complexity` verbatim out of
     `lib/approver.sh` and drives them with every GitHub call, model launch and
@@ -21714,8 +21738,14 @@ oblige anyone to edit a test.
     all. Each failure path returns 0 having posted nothing and logged a
     `warning`: the stage disabled (`approver_model_default` empty), the
     credential absent, a verdict that would not parse, a verdict the Script
-    does not recognise, and a review GitHub refused; only an adjudication
-    escalates. `approver_stage_complexity` (requirement 8b) is exercised
+    does not recognise, and a review GitHub refused. An adjudication `refuse`
+    below the recurrence threshold posts `REQUEST_CHANGES` and escalates
+    nothing on its own; at the threshold (a refuse streak of four — the third
+    consecutive adjudication `refuse`) it also escalates, and an adjudication
+    `escalate` (or an unparseable/failed verdict) escalates regardless of the
+    streak — the escalation issue's own body naming which of those three
+    conditions triggered it (agent-ops#1214). `approver_stage_complexity`
+    (requirement 8b) is exercised
     separately: given a pre-Reviewer `rev_complexity` of `medium` and a
     stubbed `gh pr view` reporting the PR now carries `complexity:high` — the
     Reviewer's own mid-round correction — it resolves `high`, and that `high`
