@@ -296,6 +296,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The Implementer no longer risks losing its own test evidence to the Bash
+  tool's 10-minute ceiling** (issue #962, extending agent-ops#734's Reviewer-
+  side fix). Requirement 24's "Verify like CI does" step runs the identical
+  140-odd-file `test/*.test.sh` suite as the Reviewer, through the identical
+  `scripts/run-tests.sh`, under the identical one-shot, no-resumption
+  constraint (requirement 21), whenever the repo under work is agent-ops
+  itself — so a single unbatched invocation risked the same silent loss of
+  test evidence #734 fixed for the Reviewer, and nothing in the Implementer's
+  own prompt or the spec said so. `prompts/implementer.md`'s "Long-running
+  commands" section now documents the ceiling in the same terms
+  `prompts/reviewer.md` already does, and step 4 now directs the Implementer
+  to list this repo's own suite via `scripts/run-tests.sh --list` and batch
+  it into groups sized to clear the ceiling, instead of one unbatched call or
+  a hand-rolled loop — the same discipline requirement 29a already requires
+  of the Reviewer. `docs/IMPLEMENTATION-PIPELINE-SPEC.md` gains requirement
+  24c, mirroring 29a. No change to `prompts/reviewer.md`, requirement 29a, or
+  `scripts/run-tests.sh` itself.
 - **`landing_eligible`'s `unknown:` diagnostic now names which of
   `landing_protected_paths_hit`'s two refusal causes actually fired**
   (issue #961). `landing_protected_paths_hit` (`lib/landing.sh`) returned a
