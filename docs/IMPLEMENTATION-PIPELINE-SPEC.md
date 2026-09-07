@@ -791,6 +791,7 @@ and the schema must carry every one of them.
 | `enabler_escalation_label` | `enabler-escalation` | Applied to every issue the Enabler raises, for the human's filter and for the duplicate guard of requirement 36a. It must not be `blocked`: that label is an exclusion criterion for the `issues` source (requirement 16.4) and would double-count with the assignment. Nor `obsolete`: that name is the human-only corroboration requirement 34k closes a draft pull request on, and no configured label may carry it — `scripts/doctor.sh` fails a config that does. |
 | `escalation_autonomy` | `decide-tactical` | The D18 escalation-autonomy ladder (agent-ops#627, agent-ops#936), fleet-wide default; a `repos[]` entry's own `escalation_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). At `adjudicate-first`, before the Script files the escalation issue for a refinement-disagreement item (requirement 36b: a `needs-refinement` block whose `refined_before` is set), one bounded adjudication pass runs at `enabler_model_critical` (falling...[continued below](#extended-notes-escalation_autonomy) |
 | `escalation_adjudication_max_passes` | `3` | The cap half of `decide-tactical`'s per-reason bound (requirement 36d): `escalation_autonomy_decide_pass_available` (lib/enabler.sh) refuses a fresh pass once this many decide-tactical passes — `enabler-adjudication` events tagged `pass: "decide-tactical"` — have run for the item over the whole log, regardless of reason key. A human touch (eligibility `reason: "issue-closed"`) short-circuits the check for that cycle, granting one further pass, but does not reset the count. An...[continued below](#extended-notes-escalation_adjudication_max_passes) |
+| `escalation_refile_after_hours` | 24 h | The per-close re-filing rate limit (agent-ops#779, decided on #784 as behaviour (b)): a filing from `open_question_escalate` or `approver_escalate` is suppressed when a `closed` issue carrying `enabler_escalation_label` and this item's own reference exists (read live via `escalation_recent_close`, never from the log) and `now − closedAt` is less than this many hours (`escalation_refile_suppressed`, `lib/escalation-autonomy.sh`) — *unless* it is the first post-close...[continued below](#extended-notes-escalation_refile_after_hours) |
 | `needs_refinement_label` | `needs-refinement` | The label the Script projects onto an issue-type item while its refinement block is open (requirement 34e), and removes when the block clears. Also the label a human applies by hand to flag an item themselves, which the Script scans every repo's issues for and records as the same kind of block (requirement 34g) — removing it while that block is open clears it the same way. Empty disables both directions: the log is the record, so the mechanism is unaffected and the item still...[continued below](#extended-notes-needs_refinement_label) |
 | `refinement_max_per_engagement` | `3` | How many refinement-class items one Enabler engagement takes on (requirement 35d); ordinary blocked items are uncapped and are never displaced by them. The cap exists because the backlog of items silently skipped before requirement 16a existed is unbounded, and an engagement spent entirely on old vagueness would delay the pull request nobody can see. `0` removes the class from engagements entirely — blocks are still recorded, and the items wait. |
 | `refiner_model` | `claude-sonnet-5` | The Refiner (requirement 39). Unlike the Enabler, eligibility carries no threshold, so it runs as often as there is unrefined work, and its frequency has to be weighed against the fact that what it produces is a specification rather than a ranking. Empty disables the stage. |
@@ -960,6 +961,10 @@ The same top-level (or per-repo) level also governs a second, independent consum
 ### Extended notes: `escalation_adjudication_max_passes`
 
 The cap half of `decide-tactical`'s per-reason bound (requirement 36d): `escalation_autonomy_decide_pass_available` (lib/enabler.sh) refuses a fresh pass once this many decide-tactical passes — `enabler-adjudication` events tagged `pass: "decide-tactical"` — have run for the item over the whole log, regardless of reason key. A human touch (eligibility `reason: "issue-closed"`) short-circuits the check for that cycle, granting one further pass, but does not reset the count. An unreadable value falls back to `3`, the same default this key ships.
+
+### Extended notes: `escalation_refile_after_hours`
+
+The per-close re-filing rate limit (agent-ops#779, decided on #784 as behaviour (b)): a filing from `open_question_escalate` or `approver_escalate` is suppressed when a `closed` issue carrying `enabler_escalation_label` and this item's own reference exists (read live via `escalation_recent_close`, never from the log) and `now − closedAt` is less than this many hours (`escalation_refile_suppressed`, `lib/escalation-autonomy.sh`) — *unless* it is the first post-close re-escalation owed by a failed adjudication this very round, which always files. `0` disables the guard explicitly rather than leaving it to the arithmetic: every refusing round files, byte for byte as before this key existed. Neither requirement 8f's own releasing act (removing the `open-question` label) nor requirement 8c's (a human's own review and merge) changes — only the *filing* is rate-limited.
 
 ### Extended notes: `needs_refinement_label`
 
@@ -7032,6 +7037,38 @@ implements.
    repeated rounds, so a persisting disagreement raises one issue, not one
    per cycle.
 
+   **The filing itself is rate-limited per close (agent-ops#779, decided on
+   #784 as behaviour (b)).** `create_escalation_issue`'s own dedup matches
+   *open* issues only, so a human who closes the escalation issue without
+   also reviewing and merging the pull request — closing is not the
+   releasing act — would otherwise get a fresh issue on every subsequent
+   adjudication round. Before filing, `approver_escalate` reads the most
+   recently closed `enabler_escalation_label` issue for this pull request's
+   own `pr-<n>-approver-adjudication` reference live from GitHub
+   (`escalation_recent_close`, `lib/enabler.sh`, never a log join — the same
+   "ask the thing that actually changed" reasoning `approver_refuse_streak`
+   already applies). Filing is suppressed — logged as a `warning` naming the
+   prior issue and the UTC instant the window lapses, with no GitHub write —
+   while `now − closedAt` is less than `escalation_refile_after_hours`
+   (`escalation_refile_suppressed`, `lib/escalation-autonomy.sh`, a pure
+   comparator), *unless* it is the one immediate re-escalation a failed
+   post-close adjudication owes: `approver_escalate` runs only from the
+   adjudicating branch, so "an adjudication pass ran this round" is always
+   true here, and the carve-out reduces to whether an `approver-escalated`
+   event for this pull request already exists on the log at or after that
+   close (`escalation_event_logged_since`). That first post-close filing
+   always proceeds, window or not — each human close buys at most one
+   immediate re-file plus whatever the window permits after it lapses.
+   Whenever a recent close is found and the filing proceeds regardless of
+   which of those two paths let it through, the issue body gains a "Why this
+   is back" section naming the prior issue, its close time, and that the
+   pull request's own `CHANGES_REQUESTED` state — not the closed issue — is
+   what still blocks it. `escalation_refile_after_hours: 0` disables the
+   guard outright, guarded explicitly rather than left to the arithmetic:
+   every refusing round files, exactly as before this guard existed. The
+   identical guard, sharing both functions, applies to requirement 8f's own
+   `open_question_escalate` below.
+
    The escalation is retired — closed with a comment naming what ended the
    disagreement, and an `approver-escalation-retired` event (`pr_url`,
    `issue_number`, `issue_url`, `cause`) — the moment the pipeline can see
@@ -7586,6 +7623,37 @@ implements.
       this pull request's `pr-<n>-open-question` reference means the next
       pass is the first since they did) — a question already carrying an
       `open-question-adjudication` event escalates without a second pass.
+
+    **Both rungs' own filing is rate-limited per close (agent-ops#779,
+    decided on #784 as behaviour (b)), the identical guard requirement 8c
+    applies to `approver_escalate`.** `create_escalation_issue`'s own dedup
+    matches *open* issues only, so a human who closes the escalation issue
+    without also removing the `open-question` label — closing is not the
+    releasing act — would otherwise get a fresh issue on every subsequent
+    refusing round. Before filing, `open_question_escalate` reads the most
+    recently closed `enabler_escalation_label` issue for this pull request's
+    own `pr-<n>-open-question` reference live from GitHub
+    (`escalation_recent_close`, `lib/enabler.sh`). Filing is suppressed —
+    logged as a `warning` naming the prior issue and the UTC instant the
+    window lapses, with no GitHub write — while `now − closedAt` is less
+    than `escalation_refile_after_hours` (`escalation_refile_suppressed`,
+    `lib/escalation-autonomy.sh`, a pure comparator), *unless* it is the one
+    immediate re-escalation a failed post-close adjudication owes: an
+    adjudication pass ran this very round (the `adjudicate-first` rung's own
+    `escalate` verdict reaching this call) *and* no `open-question-escalated`
+    event for this pull request already exists on the log at or after that
+    close (`escalation_event_logged_since`). That first post-close filing
+    always proceeds, window or not — each human close buys at most one
+    immediate re-file plus whatever the window permits after it lapses; the
+    `always-escalate` rung, which never runs an adjudication pass, therefore
+    always has this carve-out read false and is bound by the window alone.
+    Whenever a recent close is found and the filing proceeds regardless of
+    which of those two paths let it through, the issue body gains a "Why
+    this is back" section naming the prior issue, its close time, and that
+    removing the label — not closing the issue — is what still releases the
+    gate. `escalation_refile_after_hours: 0` disables the guard outright,
+    guarded explicitly rather than left to the arithmetic: every refusing
+    round files, exactly as before this guard existed.
 
     **Distinct from requirement 8c's own refuse-streak adjudication in every
     way that requirement's own text calls for**: different trigger (an open

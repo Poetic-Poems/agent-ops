@@ -423,11 +423,49 @@ approver_post_or_warn() {
 # unparseable verdict), so the Script composes the issue body directly.
 approver_escalate() {
   local pr_url="$1" reasons_json="$2" condition="${3:-}"
-  local number item_ref body_file reasons_text created issue_title why_text
+  local number item_ref body_file reasons_text created issue_title why_text reopen_section=""
+  local recent_close prev_number prev_url prev_closed_at owed=0
   number="${pr_url##*/}"
   item_ref="pr-${number}-approver-adjudication"
   body_file="$cycle_dir/approver-escalation-${number}.md"
   reasons_text="$(jq -r 'if length == 0 then "(no reasons given)" else map("- " + .) | join("\n") end' <<<"$reasons_json")"
+
+  # The requirement 8c re-filing guard (agent-ops#779, decided on #784): a
+  # human closing the escalation issue without reviewing and merging must not
+  # get a fresh one every refusing round. `approver_escalate` is only ever
+  # called from the adjudicating branch of `run_approver_stage` (a refuse
+  # streak of two or more already triggered the adjudication engagement this
+  # verdict came from), so condition 3's "an adjudication pass ran this
+  # round" is always true here by construction — the only question is
+  # whether this close has already had its one owed re-escalation.
+  recent_close="$(escalation_recent_close "$selected_repo" "$item_ref")"
+  if [[ -n "$recent_close" ]]; then
+    IFS=$'\t' read -r prev_number prev_url prev_closed_at <<<"$recent_close"
+    if ! escalation_event_logged_since "$pr_url" "approver-escalated" "$prev_closed_at" \
+         < "${union_log:-$log_file}"; then
+      owed=1
+    fi
+    if (( ! owed )) \
+       && escalation_refile_suppressed "$prev_closed_at" "$(date -u +%s)" "$escalation_refile_after_hours"; then
+      local closed_epoch lapse_epoch lapse_iso
+      closed_epoch="$(date -u -d "$prev_closed_at" +%s 2>/dev/null || echo 0)"
+      lapse_epoch="$(awk -v c="$closed_epoch" -v h="$escalation_refile_after_hours" 'BEGIN{printf "%d", c + h * 3600}')"
+      lapse_iso="$(date -u -d "@$lapse_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf 'unknown')"
+      log_event "warning" "$(jq -nc --arg u "$pr_url" --arg iu "$prev_url" --arg l "$lapse_iso" \
+        --arg d "$pr_url's approver adjudication was already escalated in $prev_url, closed $prev_closed_at — re-filing suppressed until $lapse_iso (escalation_refile_after_hours)" \
+        '{detail: $d, pr_url: $u, prior_issue_url: $iu, lapses_at: $l}')"
+      return 0
+    fi
+    reopen_section="
+## Why this is back
+
+The pipeline already escalated this adjudication once, in $prev_url, closed
+$prev_closed_at. Closing that issue did not release the gate — the pull
+request still sits at \`CHANGES_REQUESTED\` from the Approver's own refusals;
+your own review and merge are the releasing act.
+"
+  fi
+
   case "$condition" in
     escalate)
       issue_title="Approver adjudication could not settle $pr_url"
@@ -449,6 +487,7 @@ approver_escalate() {
     printf '%s\n\n' "$why_text"
     printf '## What has already been tried and established\n\n'
     printf '%s\n\n' "$reasons_text"
+    printf '%s' "$reopen_section"
     cat <<APPROVER_ESC_BODY
 ## When you're done: close this issue
 

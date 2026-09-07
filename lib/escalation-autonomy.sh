@@ -153,3 +153,50 @@ escalation_autonomy_decide_pass_count() {
   [[ "$n" =~ ^[0-9]+$ ]] || n=0
   printf '%s' "$n"
 }
+
+# escalation_refile_suppressed CLOSED_AT NOW_TS WINDOW_HOURS
+# The per-close re-filing rate limit (requirement 8f/8c, agent-ops#779,
+# decided on #784 as behaviour (b)): exit 0 while an escalation issue that
+# closed at CLOSED_AT (an ISO-8601 timestamp) still has its re-filing window
+# open as of NOW_TS (Unix epoch seconds) — WINDOW_HOURS
+# (`escalation_refile_after_hours`) has not yet elapsed since the close — and
+# 1 once it has, so `open_question_escalate`/`approver_escalate` should file
+# normally.
+#
+# Fails *open* — returns 1, never suppressing — on a WINDOW_HOURS of `0` (the
+# explicit off switch, guarded explicitly rather than left to the arithmetic
+# the same way `merge_queue_dequeue_notice_max_age_hours` guards its own
+# `0`), an empty or unparseable CLOSED_AT, or a `date -d` failure: the pull
+# request stays held by its own label or by `CHANGES_REQUESTED` regardless of
+# this guard, so a spurious extra escalation issue costs a human one click,
+# while a wrongly-suppressed one costs the visibility requirement 38 exists
+# to guarantee.
+escalation_refile_suppressed() {
+  local closed_at="$1" now_ts="$2" window_hours="$3" closed_epoch
+  [[ "$window_hours" =~ ^[0-9]+(\.[0-9]+)?$ ]] || return 1
+  awk -v h="$window_hours" 'BEGIN{exit !(h>0)}' || return 1
+  [[ -n "$closed_at" ]] || return 1
+  [[ "$now_ts" =~ ^[0-9]+$ ]] || return 1
+  closed_epoch="$(date -u -d "$closed_at" +%s 2>/dev/null)" || return 1
+  [[ "$closed_epoch" =~ ^[0-9]+$ ]] || return 1
+  awk -v c="$closed_epoch" -v n="$now_ts" -v h="$window_hours" \
+    'BEGIN{exit !((n - c) < h * 3600)}'
+}
+
+# escalation_event_logged_since PR_URL EVENT SINCE_TS < union.jsonl
+# Exit 0 when an EVENT (`open-question-escalated` or `approver-escalated`)
+# for PR_URL already exists in the log on stdin with `ts` at or after
+# SINCE_TS, and 1 otherwise. The condition-3 half of the requirement 8f/8c
+# re-filing guard (agent-ops#779): the one immediate re-escalation a failed
+# post-close adjudication owes (requirement 38) has already been spent for
+# this close once this is true, so a further filing this same close is back
+# under `escalation_refile_suppressed`'s ordinary window.
+escalation_event_logged_since() {
+  local pr_url="$1" event="$2" since_ts="$3" hits
+  hits="$(jq -r -R -n --arg u "$pr_url" --arg e "$event" --arg s "$since_ts" '
+    [ inputs | select(length > 0) | (fromjson? // empty)
+      | select(.event == $e and (.pr_url // "") == $u and (.ts // "") >= $s) ]
+    | length
+  ' 2>/dev/null || echo 0)"
+  [[ "$hits" =~ ^[0-9]+$ ]] && (( hits > 0 ))
+}

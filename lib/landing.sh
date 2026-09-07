@@ -1896,7 +1896,38 @@ $(jq . <<<"$input")
 # cycle selected.
 open_question_escalate() {
   local repo="$1" pr_url="$2" item_ref="$3" questions_json="$4" adjudication_json="${5:-}"
-  local body_file questions_text adj_section created
+  local body_file questions_text adj_section reopen_section created
+  local recent_close prev_number prev_url prev_closed_at pass_ran_this_round=0 owed=0
+
+  # The requirement 8f re-filing guard (agent-ops#779, decided on #784): a
+  # human closing the escalation issue without releasing the gate must not
+  # get a fresh one every refusing round. `escalation_recent_close` is a
+  # live GitHub read, so its own failure (empty output) reads as "no recent
+  # close" — never a reason to hold this filing back.
+  recent_close="$(escalation_recent_close "$repo" "$item_ref")"
+  if [[ -n "$recent_close" ]]; then
+    IFS=$'\t' read -r prev_number prev_url prev_closed_at <<<"$recent_close"
+    [[ -n "$adjudication_json" && "$adjudication_json" != "{}" ]] && pass_ran_this_round=1
+    if (( pass_ran_this_round )) \
+       && ! escalation_event_logged_since "$pr_url" "open-question-escalated" "$prev_closed_at" \
+            < "${union_log:-$log_file}"; then
+      # Condition 3: the one immediate re-escalation a failed post-close
+      # adjudication owes (requirement 38) always files, window or not.
+      owed=1
+    fi
+    if (( ! owed )) \
+       && escalation_refile_suppressed "$prev_closed_at" "$(date -u +%s)" "$escalation_refile_after_hours"; then
+      local closed_epoch lapse_epoch lapse_iso
+      closed_epoch="$(date -u -d "$prev_closed_at" +%s 2>/dev/null || echo 0)"
+      lapse_epoch="$(awk -v c="$closed_epoch" -v h="$escalation_refile_after_hours" 'BEGIN{printf "%d", c + h * 3600}')"
+      lapse_iso="$(date -u -d "@$lapse_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf 'unknown')"
+      log_event "warning" "$(jq -nc --arg u "$pr_url" --arg iu "$prev_url" --arg l "$lapse_iso" \
+        --arg d "$pr_url's open question was already escalated in $prev_url, closed $prev_closed_at — re-filing suppressed until $lapse_iso (escalation_refile_after_hours)" \
+        '{detail: $d, pr_url: $u, prior_issue_url: $iu, lapses_at: $l}')"
+      return 0
+    fi
+  fi
+
   body_file="$cycle_dir/open-question-escalation-${item_ref}.md"
   [[ -n "$questions_json" && "$questions_json" != "null" ]] || questions_json='[]'
   questions_text="$(jq -r 'if length == 0 then "(no question text recorded)" else
@@ -1911,12 +1942,24 @@ open_question_escalate() {
 $(jq -r '"- verdict: " + (.verdict // "escalate") + "\n- evidence: " + (.evidence // "(none given)")' <<<"$adjudication_json" 2>/dev/null)
 "
   fi
+  reopen_section=""
+  if [[ -n "${prev_url:-}" ]]; then
+    reopen_section="
+## Why this is back
+
+The pipeline already escalated this open question once, in $prev_url, closed
+$prev_closed_at. Closing that issue did not release the gate — removing the
+\`$LANDING_OPEN_QUESTION_LABEL\` label from $pr_url is what releases it, and
+it has not come off.
+"
+  fi
   {
     printf '## What the autonomous pipeline needs from you\n\n'
     printf 'Review %s and answer the question below yourself — the Reviewer found nothing wrong with the diff, but raised a question about the work order or its scope that only you can settle.\n\n' "$pr_url"
     printf '## The question\n\n'
     printf '%s\n\n' "$questions_text"
     printf '%s' "$adj_section"
+    printf '%s' "$reopen_section"
     cat <<OQ_ESC_BODY
 
 ## When you're done: answer, then take the label off

@@ -153,6 +153,26 @@ create_escalation_issue() {
   printf '%s\t%s' "$number" "$url"
 }
 
+# escalation_recent_close REPO ITEM_REF
+# The live-read half of the requirement 8f/8c re-filing guard (agent-ops#779,
+# decided on #784): prints "<number>\t<url>\t<closedAt>" for the most
+# recently closed issue in REPO carrying `enabler_escalation_label` whose
+# body contains ITEM_REF, and prints nothing (never a bare error) when there
+# is none or the read fails — "no recent close" is the safe reading of an
+# unreadable state, the same "ask the thing that actually changed" reasoning
+# `open_question_pass_available` already applies to its own closed-issue
+# read, mirrored here verbatim but for `closedAt` and `sort_by(...) | last`
+# rather than a bare count, since the caller needs to know *when* it closed,
+# not merely that one exists.
+escalation_recent_close() {
+  local repo="$1" item_ref="$2"
+  gh issue list -R "$repo" --label "$enabler_escalation_label" --state closed --search "$item_ref" \
+      --json number,url,body,closedAt 2>/dev/null \
+    | jq -r --arg it "$item_ref" \
+        'map(select(((.body // "") | contains($it)))) | sort_by(.closedAt) | last
+         | if . == null then empty else "\(.number)\t\(.url)\t\(.closedAt)" end' 2>/dev/null || true
+}
+
 # create_decision_log_issue REPO ITEM LABEL TITLE BODY_FILE REASON_KEY
 # File one decision-log issue (agent-ops#937): the durable record of a
 # `decide-tactical` `decide` verdict, filed closed and unassigned — a log, not

@@ -37,6 +37,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CYCLE="$SCRIPT_DIR/lib/landing.sh"
+ESCALATION_AUTONOMY="$SCRIPT_DIR/lib/escalation-autonomy.sh"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -64,8 +65,19 @@ assert_contains() {
   fi
 }
 
-extract() {  # <function name>
-  awk -v fn="^$1\\\\(\\\\) \\\\{" '$0 ~ fn { on = 1 } on { print } on && /^\}$/ { exit }' "$CYCLE"
+assert_not_contains() {
+  local desc="$1" needle="$2" haystack="$3"
+  if [[ "$haystack" != *"$needle"* ]]; then
+    printf 'ok   - %s\n' "$desc"
+  else
+    printf 'FAIL - %s\n     expected NOT to contain: %s\n     actual:                 %s\n' \
+      "$desc" "$needle" "$haystack"
+    failures=$(( failures + 1 ))
+  fi
+}
+
+extract() {  # <function name> [source file, default $CYCLE]
+  awk -v fn="^$1\\\\(\\\\) \\\\{" '$0 ~ fn { on = 1 } on { print } on && /^\}$/ { exit }' "${2:-$CYCLE}"
 }
 
 resolve_block="$(extract _landing_open_question_resolve)"
@@ -74,6 +86,12 @@ pass_available_block="$(extract open_question_pass_available)"
 adjudicated_before_block="$(extract open_question_adjudicated_before)"
 escalate_block="$(extract open_question_escalate)"
 adjudicate_block="$(extract run_open_question_adjudication)"
+# The requirement 8f re-filing guard (agent-ops#779) reuses these two pure
+# comparators verbatim from lib/escalation-autonomy.sh (they are `approver_
+# escalate`'s own guard too — see test/approver.test.sh) rather than
+# reimplementing the window/owed logic here.
+refile_suppressed_block="$(extract escalation_refile_suppressed "$ESCALATION_AUTONOMY")"
+event_logged_since_block="$(extract escalation_event_logged_since "$ESCALATION_AUTONOMY")"
 
 for pair in "resolve_block:_landing_open_question_resolve" "refuse_block:_landing_refuse" \
             "pass_available_block:open_question_pass_available" \
@@ -83,6 +101,14 @@ for pair in "resolve_block:_landing_open_question_resolve" "refuse_block:_landin
   var="${pair%%:*}" name="${pair#*:}"
   if [[ -z "${!var}" ]]; then
     echo "FAIL - could not extract $name from lib/landing.sh — has it moved?" >&2
+    exit 1
+  fi
+done
+for pair in "refile_suppressed_block:escalation_refile_suppressed" \
+            "event_logged_since_block:escalation_event_logged_since"; do
+  var="${pair%%:*}" name="${pair#*:}"
+  if [[ -z "${!var}" ]]; then
+    echo "FAIL - could not extract $name from lib/escalation-autonomy.sh — has it moved?" >&2
     exit 1
   fi
 done
@@ -411,9 +437,25 @@ LANDING_OPEN_QUESTION_LABEL="open-question"
 cycle_id="20260825T000000Z-test-1"
 node_name="test-node"
 cycle_dir="$T/cycle"
+union_log="$T/union.jsonl"
+log_file="$T/log.jsonl"
+escalation_refile_after_hours="${WINDOW_HOURS:-24}"
 mkdir -p "$cycle_dir"
+: >"$union_log"
+: >"$log_file"
+[[ -n "${UNION_LOG_SEED:-}" ]] && printf '%s\n' "$UNION_LOG_SEED" >>"$union_log"
 
 log_event() { printf '%s\t%s\n' "$1" "$2" >>"$T/events"; }
+
+# escalation_recent_close (lib/enabler.sh) is a live GitHub read — stubbed
+# here as a black box, the same relationship this harness already has with
+# create_escalation_issue. RECENT_CLOSE, when set, is
+# "<number>\t<url>\t<closedAt>"; unset/empty means no recent close.
+escalation_recent_close() {
+  printf '%s\n' "$*" >>"$T/recent_close_args"
+  [[ -n "${RECENT_CLOSE:-}" ]] && printf '%s' "$RECENT_CLOSE"
+  return 0
+}
 
 create_escalation_issue() {
   printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" >>"$T/create_args"
@@ -424,13 +466,15 @@ create_escalation_issue() {
 HARNESS
 
 {
+  printf '%s\n' "$refile_suppressed_block"
+  printf '%s\n' "$event_logged_since_block"
   printf '%s\n' "$escalate_block"
   printf 'open_question_escalate "Poetic-Poems/agent-ops" "%s" "pr-512-open-question" "$QUESTIONS_JSON" "${ADJUDICATION_JSON:-}"\n' \
     'https://github.com/Poetic-Poems/agent-ops/pull/512'
 } >>"$tmp_dir/harness_d.sh"
 
 run_case_d() {
-  : >"$tmp_dir/events"; : >"$tmp_dir/create_args"; rm -f "$tmp_dir/body.md"
+  : >"$tmp_dir/events"; : >"$tmp_dir/create_args"; : >"$tmp_dir/recent_close_args"; rm -f "$tmp_dir/body.md"
   env -i PATH="$PATH" HOME="$HOME" T="$tmp_dir" \
     CREATE_RC="0" \
     "$@" \
@@ -467,6 +511,71 @@ assert_eq "a failed filing logs a warning, never open-question-escalated" \
 assert_contains "... naming the pull request" \
   "the escalation issue could not be filed" \
   "$(awk -F'\t' '$1=="warning"{print $2}' "$tmp_dir/events")"
+
+# --- the requirement 8f re-filing guard (agent-ops#779, decided on #784) ----
+
+recent_1h_ago="$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)"
+recent_25h_ago="$(date -u -d '-25 hours' +%Y-%m-%dT%H:%M:%SZ)"
+PRIOR_ISSUE=$'41\thttps://github.com/Poetic-Poems/agent-ops/issues/41\t'"$recent_1h_ago"
+PRIOR_ISSUE_LAPSED=$'41\thttps://github.com/Poetic-Poems/agent-ops/issues/41\t'"$recent_25h_ago"
+
+# closed 1h ago, 24h window, no adjudication pass this round: suppressed —
+# no create call, no open-question-escalated, a warning naming the prior issue.
+run_case_d QUESTIONS_JSON="$QUESTIONS" RECENT_CLOSE="$PRIOR_ISSUE"
+assert_eq "within the window, no owed re-escalation: files nothing" "" "$(cat "$tmp_dir/create_args")"
+assert_eq "... and logs no open-question-escalated" "" \
+  "$(awk -F'\t' '$1=="open-question-escalated"{print $2}' "$tmp_dir/events")"
+assert_contains "... its warning names the prior issue" \
+  "https://github.com/Poetic-Poems/agent-ops/issues/41" \
+  "$(awk -F'\t' '$1=="warning"{print $2}' "$tmp_dir/events")"
+
+# closed 1h ago, an adjudication pass ran this round, and no
+# open-question-escalated logged for this pull request since that close: the
+# one owed re-escalation always files, window or not, and the body says why
+# it's back.
+run_case_d QUESTIONS_JSON="$QUESTIONS" RECENT_CLOSE="$PRIOR_ISSUE" \
+  ADJUDICATION_JSON='{"verdict":"escalate","evidence":"could not settle it"}'
+assert_contains "the owed re-escalation still files" \
+  $'Poetic-Poems/agent-ops\tpr-512-open-question\tagent-escalation' "$(cat "$tmp_dir/create_args")"
+assert_contains "... naming the prior issue" \
+  "https://github.com/Poetic-Poems/agent-ops/issues/41" "$(cat "$tmp_dir/body.md")"
+assert_contains "... under a \"Why this is back\" section" \
+  "Why this is back" "$(cat "$tmp_dir/body.md")"
+assert_contains "... naming removing the label as the releasing act, not the closed issue" \
+  "is what releases it" "$(cat "$tmp_dir/body.md")"
+
+# same as above, but this close's one owed re-escalation was already spent
+# earlier the same round (an open-question-escalated event already on the
+# log at or after the close): back under the ordinary window, suppressed.
+seeded_event="$(jq -nc --arg u 'https://github.com/Poetic-Poems/agent-ops/pull/512' --arg t "$recent_1h_ago" \
+  '{ts: $t, event: "open-question-escalated", pr_url: $u, issue_number: 41,
+    issue_url: "https://github.com/Poetic-Poems/agent-ops/issues/41"}')"
+run_case_d QUESTIONS_JSON="$QUESTIONS" RECENT_CLOSE="$PRIOR_ISSUE" \
+  ADJUDICATION_JSON='{"verdict":"escalate","evidence":"could not settle it"}' \
+  UNION_LOG_SEED="$seeded_event"
+assert_eq "the owed re-escalation, once already spent, is suppressed like any other" \
+  "" "$(cat "$tmp_dir/create_args")"
+
+# the most recent close is older than the window: no owed re-escalation is
+# even needed — it just files normally, with the same "why it's back" body.
+run_case_d QUESTIONS_JSON="$QUESTIONS" RECENT_CLOSE="$PRIOR_ISSUE_LAPSED"
+assert_contains "a close older than the window files normally" \
+  $'Poetic-Poems/agent-ops\tpr-512-open-question\tagent-escalation' "$(cat "$tmp_dir/create_args")"
+assert_contains "... and still explains why it's back" \
+  "Why this is back" "$(cat "$tmp_dir/body.md")"
+
+# escalation_refile_after_hours: 0 is the explicit off switch — every
+# refusing round files, exactly as before this guard existed, however recent
+# the close and however many were already filed this round.
+run_case_d QUESTIONS_JSON="$QUESTIONS" RECENT_CLOSE="$PRIOR_ISSUE" WINDOW_HOURS="0"
+assert_contains "a window of 0 always files" \
+  $'Poetic-Poems/agent-ops\tpr-512-open-question\tagent-escalation' "$(cat "$tmp_dir/create_args")"
+
+# no recent close at all: unchanged from before this guard existed — no
+# "why it's back" section, ordinary filing.
+run_case_d QUESTIONS_JSON="$QUESTIONS"
+assert_not_contains "no recent close: no 'why it's back' section" \
+  "Why this is back" "$(cat "$tmp_dir/body.md")"
 
 echo
 
