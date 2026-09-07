@@ -333,6 +333,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`escalate`, an unparseable/failed verdict, or a recurring `refuse`)
   actually triggered it, instead of one fixed sentence for all three.
 
+- **An Approver-adjudication escalation issue is now retired when the
+  pipeline itself resolves the disagreement it was raised for** (issue
+  #1215). Nothing previously read a `pr-<n>-approver-adjudication` escalation
+  back once `approver_escalate` filed it, so it stayed open long after the
+  disagreement ended without a human — issue #1202 sat open for eight hours
+  after its own adjudication `land`ed and merged, still asking a human to
+  review and merge a pull request that was already merged, until they closed
+  it by hand. `approver_escalation_retire` (`lib/approver.sh`) now closes it,
+  logging an `approver-escalation-retired` event (`cause: "land"` or
+  `"merged"`), from either of the two places the disagreement can end without
+  the human: `run_approver_stage`'s own `land` branch, once its `APPROVE`
+  actually reaches GitHub, and `scripts/sweep-closed-issues.sh`'s fleet-wide
+  merged-pull-request listing, for a pull request that merges some other way
+  — a human's own click, a later automatic landing, or a merge queue
+  resolving after the fact. Neither path touches an escalation somebody
+  *reopened* after a retirement: a human's own re-open wins, the same answer
+  every other close this system performs already gives.
+
 - **`prompts/implementer.md` and `prompts/reviewer.md` no longer tell a stage
   to POST a GitHub App's login for a review-feedback re-request**
   (agent-ops#959). Both prompts said `<login>` was "whoever's review blocks

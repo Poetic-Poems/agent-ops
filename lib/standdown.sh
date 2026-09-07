@@ -453,6 +453,12 @@ fi
 # construction: it only ever acts on an issue GitHub itself still reports
 # open. Fleet-wide like 2.1a/2.1b, regardless of --repo. Skipped on
 # --dry-run: the sweep closes issues.
+#
+# The same sweep also retires any open `pr-<n>-approver-adjudication`
+# escalation issue (requirement 8c) it finds merged — `approver-escalation-
+# retired` below, `cause: "merged"` — the other half of requirement 8c's own
+# `land`-path retirement in `lib/approver.sh`, for a pull request that merged
+# some other way (agent-ops#1215).
 if ! (( DRY_RUN )); then
   while IFS= read -r sweep_slug; do
     [[ -n "$sweep_slug" ]] || continue
@@ -463,6 +469,8 @@ if ! (( DRY_RUN )); then
           "$(jq -c --arg r "$sweep_slug" '{repo: $r, item: (.issue | tostring)} + del(.action)' <<<"$sweep_action")" ;;
         merge-observed) log_event "merge-observed" \
           "$(jq -c --arg r "$sweep_slug" '{repo: $r, stage: "sweep-closed-issues"} + del(.action)' <<<"$sweep_action")" ;;
+        approver-escalation-retired) log_event "approver-escalation-retired" \
+          "$(jq -c --arg r "$sweep_slug" '{repo: $r} + del(.action)' <<<"$sweep_action")" ;;
         deferred|warning) log_event "warning" "$(jq -c --arg r "$sweep_slug" \
           '{detail: ("closed-issue sweep (" + $r + "): " + (del(.repo) | tostring))}' \
           <<<"$sweep_action")" ;;

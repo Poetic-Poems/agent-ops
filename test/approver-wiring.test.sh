@@ -264,12 +264,24 @@ dump_stage_output() { :; }
 stage_salvage_result() { return 1; }
 extract_json_result() { [[ -n "${1// /}" ]] || return 1; jq -c . <<<"$1"; }
 
-# The only `gh` call `approver_stage_complexity` makes: reading the PR's
-# post-Reviewer `complexity:*` label. GH_LABEL_RC nonzero simulates an
-# unreadable label list (the best-effort read contributes nothing);
-# POST_REVIEW_LABEL, when set, stands in for the one grade word the real
-# `--jq` filter would have printed per matching label.
+# Two distinct `gh` calls share this one stub, told apart by their own argv:
+#
+#   - `approver_stage_complexity` reading the PR's post-Reviewer
+#     `complexity:*` label. GH_LABEL_RC nonzero simulates an unreadable
+#     label list (the best-effort read contributes nothing); POST_REVIEW_LABEL,
+#     when set, stands in for the one grade word the real `--jq` filter would
+#     have printed per matching label.
+#   - the adjudicating `land` branch's own `pr view --json headRefOid` read
+#     (agent-ops#1224 review). LAND_SHA_RC nonzero simulates that fetch
+#     failing outright — a transient rate-limit or network error, not merely
+#     an empty result — which the `|| true` on that command substitution
+#     must survive rather than aborting the stage under `set -e`.
 gh() {
+  if [[ "$*" == *"headRefOid"* ]]; then
+    [[ "${LAND_SHA_RC:-0}" == "0" ]] || return "$LAND_SHA_RC"
+    printf '%s\n' "${LAND_SHA:-deadbeef}"
+    return 0
+  fi
   if [[ "${GH_LABEL_RC:-0}" != "0" ]]; then
     return "$GH_LABEL_RC"
   fi
@@ -291,6 +303,10 @@ approver_post_review() {
 # condition selects is approver.test.sh's own assertion, not this file's.
 approver_escalate() {
   printf 'url=%s\treasons=%s\tcondition=%s\n' "$1" "$2" "${3:-}" >>"$T/escalations"
+}
+
+approver_escalation_retire() {
+  printf 'url=%s\tcause=%s\tdetail=%s\n' "$1" "$2" "$3" >>"$T/retirements"
 }
 
 # The one model launch. Records the model it was asked for, and writes the
@@ -340,7 +356,7 @@ run_case() {
   local level="$1" complexity="$2" streak="$3" verdict="$4"
   shift 4
   : >"$tmp_dir/events"; : >"$tmp_dir/posts"
-  : >"$tmp_dir/escalations"; : >"$tmp_dir/launches"
+  : >"$tmp_dir/escalations"; : >"$tmp_dir/launches"; : >"$tmp_dir/retirements"
   : >"$tmp_dir/resolved_complexity"; : >"$tmp_dir/prompt_override_args"
   : >"$tmp_dir/mal_calls"; : >"$tmp_dir/mks_calls"; : >"$tmp_dir/protected_calls"
   : >"$tmp_dir/token_calls"; rm -f "$tmp_dir/token_calls_count"
@@ -361,6 +377,7 @@ mks_calls() { cat "$tmp_dir/mks_calls"; }
 posts() { cat "$tmp_dir/posts"; }
 launches() { cat "$tmp_dir/launches"; }
 escalations() { cat "$tmp_dir/escalations"; }
+retirements() { cat "$tmp_dir/retirements"; }
 resolved_complexity() { cat "$tmp_dir/resolved_complexity"; }
 token_calls() { wc -l <"$tmp_dir/token_calls" | tr -d ' '; }
 token_call_args() { cat "$tmp_dir/token_call_args"; }
@@ -483,6 +500,32 @@ run_case agent-approves high 2 '{"verdict":"land","reasons":["both refusals are 
 assert_contains 'an adjudication land posts an APPROVE' "event=APPROVE" "$(posts)"
 assert_eq "  ... and raises no escalation" "0" "$(count escalations)"
 assert_eq "  ... and is logged as posted:true" 'true' "$(jq -c '.posted' <<<"$(verdict_event)")"
+assert_eq "  ... and retires the approver-adjudication escalation (agent-ops#1215)" \
+  "1" "$(count retirements)"
+assert_contains "  ... naming this pull request" "url=$URL" "$(retirements)"
+assert_contains "  ... with cause \"land\"" "cause=land" "$(retirements)"
+
+run_case agent-approves high 2 '{"verdict":"land","reasons":["both refusals are answered"]}' POST_RC=1 >/dev/null
+assert_contains "an adjudication land whose review GitHub refused still posts APPROVE" \
+  "event=APPROVE" "$(posts)"
+assert_eq "  ... but never retires the escalation — the disagreement is not confirmed resolved on GitHub" \
+  "0" "$(count retirements)"
+
+# --- agent-ops#1224 review: a failed SHA fetch on the land path must not
+#     abort the stage under `set -e` (lib/approver.sh's `land_sha=$(...)` now
+#     carries `|| true`, same as every other command substitution in this
+#     file) ------------------------------------------------------------------
+
+rc="$(run_case agent-approves high 2 '{"verdict":"land","reasons":["both refusals are answered"]}' \
+  LAND_SHA_RC=1)"
+assert_eq "a land verdict whose SHA fetch itself fails does not abort the stage" "0" "$rc"
+assert_contains "  ... and still posts the APPROVE" "event=APPROVE" "$(posts)"
+assert_eq "  ... and still retires the escalation rather than leaving it stranded" \
+  "1" "$(count retirements)"
+assert_contains "  ... naming this pull request" "url=$URL" "$(retirements)"
+assert_contains "  ... with cause \"land\"" "cause=land" "$(retirements)"
+assert_contains "  ... and detail \"unknown\", since the SHA itself could not be fetched" \
+  "detail=unknown" "$(retirements)"
 
 run_case agent-approves high 2 '{"verdict":"refuse","reasons":["the same defect, moved"]}' >/dev/null
 assert_contains 'an adjudication refuse below the recurrence threshold posts REQUEST_CHANGES' \
