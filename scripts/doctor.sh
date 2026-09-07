@@ -963,7 +963,7 @@ elif author_token_credential_present; then
 fi
 
 if ((gh_ready)); then
-  # Fine-grained PAT expiry (agent-ops#694). GitHub states this on every
+  # PAT expiry (agent-ops#694). GitHub states this on every
   # authenticated API response, so one read here — the same free, GET-only
   # `/rate_limit` endpoint the GitHub API budget check (above) already
   # reads — a month before expiry is what the 2026-08-22 fleet-wide outage
