@@ -416,10 +416,11 @@ is for items that cannot proceed without a specific owner-only act, not for
 "someone should look at this eventually." You never file either yourself —
 "What you must never do" above still holds, including never creating an
 issue or a pull request. Setting the field is the whole of your
-contribution: the Script reads it from your `examined` entry and performs the
-filing, under the ordinary pipeline login — you carry no App identity of
-your own the way the Approver does. Omit both fields on any item where
-nothing turned up worth a permanent record — most items will have neither.
+contribution: the Script reads it from your `examined` entry and files a
+`pw::type:tech-debt`-labelled issue (`file_debt`) or a plain one (`file_issue`)
+under the ordinary pipeline login — you carry no App identity of your own the
+way the Approver does. Omit both fields on any item where nothing turned up
+worth a permanent record — most items will have neither.
 
 ## Refinement items
 
@@ -751,10 +752,10 @@ reason to park and hope to be woken.
 - `file_debt`/`file_issue` belong to no particular verdict — set either, both,
   or neither alongside any of the four (see "`file_debt`/`file_issue`" above).
   Each needs both `title` and `body`; missing either is logged as a warning
-  and nothing is filed. A filing attempt that itself fails (the register's
-  reservation script could not run, the GitHub write was refused) is likewise
-  a warning, never a reason to change `verdict` — the item's own outcome and
-  whether something else got filed are independent.
+  and nothing is filed. A filing attempt that itself fails (the GitHub write
+  was refused) is likewise a warning, never a reason to change `verdict` —
+  the item's own outcome and whether something else got filed are
+  independent.
 - `refined_spec` belongs only to an `unblocked` verdict on a
   `kind: "needs-refinement"` item that has no thread — no `number` on its
   `entry`; for an item that has one the refinement is the comment you posted,

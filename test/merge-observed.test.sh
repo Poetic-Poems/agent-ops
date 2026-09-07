@@ -64,7 +64,7 @@ release_pr_claim() { printf 'x' >>"$tmp_dir/release-calls"; }
 techdebt_file_debt() {
   local IFS="$US"; printf '%s\n' "$*" >>"$tmp_dir/file-debt-calls"
   [[ "$(cat "$tmp_dir/file-debt-outcome" 2>/dev/null || echo ok)" == "ok" ]] || return 1
-  printf 'TD-PPagop-26082999\thttps://github.com/acme/widgets/pull/501'
+  printf '501\thttps://github.com/acme/widgets/issues/501'
 }
 techdebt_file_issue() {
   local IFS="$US"; printf '%s\n' "$*" >>"$tmp_dir/file-issue-calls"
@@ -93,12 +93,6 @@ issue_field() { cut -d "$US" -f"$1" "$tmp_dir/file-issue-calls"; }
 selected_repo="acme/widgets"
 selected_item="42"
 cycle_dir="$tmp_dir"
-# The cycle's own clone of $selected_repo, distinct from cycle_dir on purpose:
-# techdebt_file_debt's GIT_DIR must be the clone (it fetches origin/main there),
-# and cycle_dir is where this file writes the file_issue body. The two being
-# different values here is what lets the assertions below tell them apart.
-clone_dir="$tmp_dir/clone"
-DEFAULTED_CONFIG='{"pr_label":"autonomous-agent"}'
 URL="https://github.com/acme/widgets/pull/916"
 
 # --- No leftovers: just the completion and the claim release ------------------
@@ -122,8 +116,9 @@ assert_eq "an empty merge_sha is omitted from the event" "null" "$(jq -c '.merge
 assert_eq "the stage-start call site's own stage word is carried" '"reviewer-stage-start"' "$(jq -c '.stage' <<<"$mo")"
 
 # --- file_debt: filed under the pipeline login, by: reviewer ------------------
-# Argument order: repo, title, body, provenance, token, git_dir, pr_label,
-# default_fix, owner_decision.
+# Argument order (agent-ops#874): repo, title, body, provenance, token,
+# default_fix, owner_decision -- no git_dir/pr_label any more, since filing is
+# a single labelled-issue create.
 reset_stubs
 rev_json='{"status":"blocked","reason":"merged mid-pass","file_debt":{"title":"the gap","body":"body text","default_fix":"do X","owner_decision":false}}'
 reviewer_merge_observed "$URL" "" "$rev_json" "reviewer"
@@ -132,17 +127,11 @@ assert_eq "  ... the title" "the gap" "$(debt_field 2)"
 assert_eq "  ... the body" "body text" "$(debt_field 3)"
 assert_contains "  ... naming this pull request in the provenance" "$URL" "$(debt_field 4)"
 assert_eq "  ... with no TOKEN (the ordinary pipeline login)" "" "$(debt_field 5)"
-# GIT_DIR is the cycle's clone of the target repo, never cycle_dir: the latter
-# is a state directory with no `origin` to fetch, so techdebt_file_debt would
-# fail at its first `git fetch` and the leftovers would be lost with only a
-# warning to show for it.
-assert_eq "  ... the cycle's own clone as GIT_DIR" "$tmp_dir/clone" "$(debt_field 6)"
-assert_eq "  ... the configured pr_label" "autonomous-agent" "$(debt_field 7)"
-assert_eq "  ... the default_fix" "do X" "$(debt_field 8)"
-assert_eq "  ... and owner_decision false" "false" "$(debt_field 9)"
+assert_eq "  ... the default_fix" "do X" "$(debt_field 6)"
+assert_eq "  ... and owner_decision false" "false" "$(debt_field 7)"
 tdf="$(events_named tech-debt-filed)"
 assert_eq "tech-debt-filed names the reviewer" '"reviewer"' "$(jq -c '.by' <<<"$tdf")"
-assert_eq "  ... and the filed pull request" '"https://github.com/acme/widgets/pull/501"' "$(jq -c '.filed_pr_url' <<<"$tdf")"
+assert_eq "  ... and the filed issue url" '"https://github.com/acme/widgets/issues/501"' "$(jq -c '.issue_url' <<<"$tdf")"
 
 # --- file_debt missing a body: ignored, warned, never filed -------------------
 reset_stubs

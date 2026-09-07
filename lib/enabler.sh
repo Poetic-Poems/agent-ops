@@ -931,7 +931,7 @@ maybe_run_enabler() {
   local e_decided e_decision e_dec_verdict e_dec_evidence e_dec_reason_key e_refined_dec
   local e_dec_decision_text e_dec_rationale e_dec_options e_dec_comment_url
   local e_dec_log_number e_dec_log_url e_dec_log_title e_dec_log_body_file e_dec_log_created
-  local e_file_debt fd_title fd_body fd_pr_label fd_result fd_id fd_pr_url \
+  local e_file_debt fd_title fd_body fd_result fd_number fd_url \
     fd_default_fix fd_owner_decision
   local e_file_issue fi_title fi_body fi_body_file fi_result fi_number fi_url \
     fi_default_fix fi_owner_decision
@@ -1696,7 +1696,9 @@ $(jq . <<<"$input")
     # (prompts/enabler.md, "What you must never do"), so lib/tech-debt-file.sh
     # is what actually files it, here, under the ordinary pipeline login --
     # the Enabler carries no App identity of its own the way the Approver
-    # does, so every call omits TOKEN.
+    # does, so every call omits TOKEN. techdebt_file_debt (agent-ops#874)
+    # files straight to a `pw::type:tech-debt`-labelled issue, a single API
+    # call with no clone or branch involved.
     e_file_debt="$(jq -c '.file_debt // empty' <<<"$ex" 2>/dev/null || true)"
     if [[ -n "$e_file_debt" && "$e_file_debt" != "null" ]]; then
       fd_title="$(jq -r '.title // ""' <<<"$e_file_debt" 2>/dev/null || true)"
@@ -1710,13 +1712,6 @@ $(jq . <<<"$input")
         'if (.owner_decision // false) == true then "true" else "false" end' \
         <<<"$e_file_debt" 2>/dev/null || true)"
       [[ -n "$fd_owner_decision" ]] || fd_owner_decision="false"
-      # The fleet's configured `pr_label` (agent-ops TD-PPagop-26082426): this
-      # call site does not otherwise have it in hand, so it is read from
-      # `DEFAULTED_CONFIG` here and threaded through to techdebt_file_debt,
-      # which would otherwise open its filing pull request unlabelled and
-      # invisible to every gatherer that filters on it.
-      fd_pr_label="$(jq -r '.pr_label // empty' <<<"$DEFAULTED_CONFIG" 2>/dev/null || true)"
-      [[ -n "$fd_pr_label" ]] || fd_pr_label="autonomous-agent"
       if [[ -z "$fd_title" || -z "$fd_body" ]]; then
         log_event "warning" "$(jq -nc \
           --arg d "enabler set file_debt for $e_repo $e_item, but it carries no title or body — ignored" \
@@ -1732,13 +1727,13 @@ $(jq . <<<"$input")
             '{detail: $d}')"
         fi
         if fd_result="$(techdebt_file_debt "$e_repo" "$fd_title" "$fd_body" \
-               "during an Enabler engagement on $e_item (cycle $cycle_id)" "" "" "$fd_pr_label" \
+               "during an Enabler engagement on $e_item (cycle $cycle_id)" "" \
                "$fd_default_fix" "$fd_owner_decision")" \
                && [[ -n "$fd_result" ]]; then
-          IFS=$'\t' read -r fd_id fd_pr_url <<<"$fd_result"
+          IFS=$'\t' read -r fd_number fd_url <<<"$fd_result"
           log_event "tech-debt-filed" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" \
-            --arg id "$fd_id" --arg u "$fd_pr_url" \
-            '{repo: $r, item: $i, by: "enabler", id: $id, pr_url: $u}')"
+            --argjson n "$fd_number" --arg u "$fd_url" \
+            '{repo: $r, item: $i, by: "enabler", issue_number: $n, issue_url: $u}')"
         else
           log_event "warning" "$(jq -nc \
             --arg d "enabler: could not file the tech-debt record for $e_repo $e_item (see tech-debt-file.err)" \

@@ -3,20 +3,19 @@
 # test/approver-tech-debt-file-wiring.test.sh — regression test for the
 # file_debt/file_issue handling `run_approver_stage` adds in agent-cycle.sh
 # (agent-ops#631): the Approver's final JSON may carry either field, asking
-# the Script to file a tech-debt record (its own small pull request) or a
-# plain GitHub issue on its behalf — the Approver itself must never write to
-# GitHub or a branch (prompts/approver.md, "What you must never do").
+# the Script to file a `pw::type:tech-debt`-labelled issue or a plain GitHub
+# issue on its behalf — the Approver itself must never write to GitHub or a
+# branch (prompts/approver.md, "What you must never do").
 #
 # This file complements test/approver-wiring.test.sh (the tier/streak/verdict
 # wiring itself, untouched by this feature) and test/tech-debt-file.test.sh
 # (lib/tech-debt-file.sh's own filing logic). What this file proves is
 # narrower: that `run_approver_stage` calls `techdebt_file_debt`/
-# `techdebt_file_issue` with the Approver's own App token and its still-alive
-# `clone_dir`, logs the right event on success, and warns instead of silently
-# dropping a malformed or failed request — same lift-and-assemble technique
-# test/approver-wiring.test.sh uses, with `techdebt_file_debt`/
-# `techdebt_file_issue` stubbed as simple recorders rather than wired for
-# real.
+# `techdebt_file_issue` with the Approver's own App token, logs the right
+# event on success, and warns instead of silently dropping a malformed or
+# failed request — same lift-and-assemble technique test/approver-wiring.test.sh
+# uses, with `techdebt_file_debt`/`techdebt_file_issue` stubbed as simple
+# recorders rather than wired for real.
 #
 # No test framework is used (none exists elsewhere in this repo). Run
 # directly:
@@ -166,7 +165,7 @@ run_claude_stage() {
 techdebt_file_debt() {
   printf 'techdebt_file_debt %s\n' "$*" >>"$T/fd_calls"
   [[ "${FD_RC:-0}" -eq 0 ]] || return 1
-  printf 'TD-PPtest-99999902\thttps://github.com/Poetic-Poems/agent-ops/pull/701'
+  printf '701\thttps://github.com/Poetic-Poems/agent-ops/issues/701'
 }
 techdebt_file_issue() {
   printf 'techdebt_file_issue %s\n' "$*" >>"$T/fi_calls"
@@ -216,16 +215,11 @@ assert_contains "  ... with the repo" "Poetic-Poems/agent-ops" "$(fd_calls)"
 assert_contains "  ... the title and body" "A gap the Approver noticed The body." "$(fd_calls)"
 assert_contains "  ... and the Approver's own App token, not the ordinary login" \
   "a-minted-token" "$(fd_calls)"
-# TD-PPagop-26082426: this stage never otherwise resolves config, so the
-# fleet's `pr_label` must be read from DEFAULTED_CONFIG and threaded through
-# rather than left for techdebt_file_debt's own fallback -- proven by using a
-# label here that does not match that fallback.
-assert_contains "  ... and the configured pr_label, not the bare fallback" \
-  "custom-agent-label" "$(fd_calls)"
-# agent-ops#938: default_fix/owner_decision reach the call, in that order,
-# past pr_label.
-assert_contains "  ... and default_fix/owner_decision past pr_label" \
-  "custom-agent-label Do the smaller fix false" "$(fd_calls)"
+# agent-ops#874: no clone_dir/pr_label reach the call any more -- filing is a
+# single labelled-issue create, not a branch-and-PR sequence, so
+# default_fix/owner_decision follow straight after the token.
+assert_contains "  ... and default_fix/owner_decision past the token" \
+  "a-minted-token Do the smaller fix false" "$(fd_calls)"
 assert_contains "  ... a tech-debt-filed event, crediting the approver" \
   '"by":"approver"' "$(grep '^tech-debt-filed' "$tmp_dir/events" || true)"
 assert_eq "  ... no warning" "0" "$(warnings | grep -c .)"
@@ -235,7 +229,7 @@ assert_eq "  ... no warning" "0" "$(warnings | grep -c .)"
 verdict='{"verdict":"approve","reasons":["fine"],"file_debt":{"title":"An owner call","body":"The body.","owner_decision":true}}'
 run_case "$verdict" >/dev/null
 assert_contains "file_debt owner_decision: passed through as \"true\"" \
-  "custom-agent-label  true" "$(fd_calls)"
+  "a-minted-token  true" "$(fd_calls)"
 assert_eq "  ... no warning" "0" "$(warnings | grep -c .)"
 
 # --- file_debt: neither default_fix nor owner_decision -> malformed, filed -

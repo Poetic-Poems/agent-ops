@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 #
 # scripts/release-pending-reservations.sh — retry a tech-debt reservation
-# release lib/tech-debt-file.sh's `_techdebt_unfile` could not make land
-# (TD-PPagop-26082427).
+# release a failed cleanup could not make land (TD-PPagop-26082427).
 #
-# `_techdebt_unfile` runs once, on techdebt_file_debt's own failure path,
-# against the same GitHub API whose failure just put it there — a transient
-# window that fails a filing's branch-create or contents-write call is the
-# same window that can fail the DELETE meant to undo it. Nothing before this
-# script ever retried that DELETE: `scripts/sweep-orphan-branches.sh`
-# deliberately leaves a bare `td/<id>` reservation branch alone (issue #545,
-# since it cannot tell whether <id> has since been filed elsewhere), and
+# The cleanup in question was `lib/tech-debt-file.sh`'s `_techdebt_unfile`, on
+# `techdebt_file_debt`'s id-reservation filing path. It ran once, on that
+# function's own failure path, against the same GitHub API whose failure just
+# put it there — a transient window that failed a filing's branch-create or
+# contents-write call is the same window that could fail the DELETE meant to
+# undo it. Nothing before this script ever retried that DELETE:
+# `scripts/sweep-orphan-branches.sh` deliberately leaves a bare `td/<id>`
+# reservation branch alone (issue #545, since it cannot tell whether <id> has
+# since been filed elsewhere), and
 # `.github/workflows/release-td-branch.yml` only ever fires for a `td/<id>`
 # whose record actually reached `main` — an id that was reserved and then
 # abandoned never gets that push. Left uncovered, a reservation orphaned this
@@ -18,12 +19,14 @@
 # header used to concede before this script existed: observed for real on
 # this repository, fourteen consecutive reservations (TD-PPagop-26082407
 # through TD-PPagop-26082420) orphaned in one seventy-second window on
-# 2026-08-23, each one _techdebt_unfile's own failed DELETE.
+# 2026-08-23, each one that cleanup's own failed DELETE.
 #
-# Since TD-PPagop-26082427, a DELETE _techdebt_unfile could not make land
-# writes a durable marker instead of only logging and swallowing the
-# failure — `_techdebt_record_pending_release`, one JSON file per pending
-# release under `reservation-releases/<repo>/<branch>.json` in the state
+# agent-ops#874 retired the whole reservation path — `techdebt_file_debt`
+# files a `pw::type:tech-debt`-labelled issue now, with no id, no branch and
+# so no cleanup — so nothing writes a fresh marker any more and this sweep
+# only ever has pre-#874 ones left to drain (agent-ops#1219). A marker, while
+# any remains, is one JSON file per pending release under
+# `reservation-releases/<repo>/<branch>.json` in the state
 # repository (the same `state_repo` `lib/claim.sh`'s own claim registry
 # already lives in, under its own `claims/` tree). This script is the other
 # half: every cycle (lib/standdown.sh, step 2.1g), fleet-wide regardless of
@@ -103,7 +106,9 @@ release_one() {  # <dir> <file>
   if "$GH" api -X DELETE "repos/$e_repo/git/refs/heads/$e_branch" >/dev/null 2>&1; then
     action="released"
   else
-    # Same confirmation _techdebt_release_ref itself makes (lib/tech-debt-file.sh):
+    # The same confirmation `_techdebt_release_ref` made before agent-ops#874
+    # retired it along with the rest of that filing path
+    # (lib/tech-debt-file.sh):
     # a DELETE can fail because the branch is already gone — released by a
     # peer node's own concurrent retry, or by release-td-branch.yml's
     # ordinary path, since a marker is only ever cleared once, never

@@ -55,7 +55,7 @@
 # `merge-observed` event so a reader can tell which read caught it.
 reviewer_merge_observed() {
   local pr_url="${1:-}" merge_sha="${2:-}" rev_status_json="${3:-{\}}" stage="${4:-reviewer}"
-  local fd_json fd_title fd_body fd_pr_label fd_result fd_id fd_pr_url fd_default_fix fd_owner_decision
+  local fd_json fd_title fd_body fd_result fd_number fd_url fd_default_fix fd_owner_decision
   local fi_json fi_title fi_body fi_body_file fi_result fi_number fi_url fi_default_fix fi_owner_decision
 
   log_event "merge-observed" "$(jq -nc --arg r "$selected_repo" --arg i "$selected_item" \
@@ -76,8 +76,6 @@ reviewer_merge_observed() {
       'if (.owner_decision // false) == true then "true" else "false" end' \
       <<<"$fd_json" 2>/dev/null || true)"
     [[ -n "$fd_owner_decision" ]] || fd_owner_decision="false"
-    fd_pr_label="$(jq -r '.pr_label // empty' <<<"$DEFAULTED_CONFIG" 2>/dev/null || true)"
-    [[ -n "$fd_pr_label" ]] || fd_pr_label="autonomous-agent"
     if [[ -z "$fd_title" || -z "$fd_body" ]]; then
       log_event "warning" "$(jq -nc --arg u "$pr_url" \
         --arg d "reviewer set file_debt for $pr_url, but it carries no title or body — ignored" \
@@ -88,27 +86,17 @@ reviewer_merge_observed() {
           --arg d "reviewer set file_debt for $pr_url with no default_fix and no owner_decision — filed with '## Default: not stated'" \
           '{detail: $d, pr_url: $u}')"
       fi
-      # GIT_DIR is `clone_dir` — an actual clone of `$selected_repo`, which is
-      # what techdebt_file_debt fetches `origin/main` in and runs the id
-      # reservation against. The cycle's own `cycle_dir` is a state directory,
-      # not a repository, and passing it here would fail the filing outright at
-      # that fetch (returning 1, so the leftovers this whole path exists to
-      # save would be lost with only a warning to show for it). Reused as-is
-      # for the same reason `lib/approver.sh` reuses it: it is still on disk at
-      # this point in the cycle — torn down only in the EXIT trap — and
-      # techdebt_file_debt never reads or writes its checked-out branch or
-      # working tree, only `origin/main`, so whatever the merged pull request's
-      # own branch happens to be checked out to is immaterial. Empty (this file
-      # sourced standalone, as the test suite does) simply falls back to
-      # techdebt_file_debt's own throwaway directory, the Enabler's case.
+      # techdebt_file_debt (agent-ops#874) files straight to a
+      # `pw::type:tech-debt`-labelled issue, a single API call with no clone
+      # or branch involved, so this call needs no `clone_dir`.
       if fd_result="$(techdebt_file_debt "$selected_repo" "$fd_title" "$fd_body" \
-             "while the Reviewer was examining $pr_url, whose subject merged mid-pass" "" "${clone_dir:-}" "$fd_pr_label" \
+             "while the Reviewer was examining $pr_url, whose subject merged mid-pass" "" \
              "$fd_default_fix" "$fd_owner_decision")" \
              && [[ -n "$fd_result" ]]; then
-        IFS=$'\t' read -r fd_id fd_pr_url <<<"$fd_result"
+        IFS=$'\t' read -r fd_number fd_url <<<"$fd_result"
         log_event "tech-debt-filed" "$(jq -nc --arg u "$pr_url" --arg r "$selected_repo" \
-          --arg id "$fd_id" --arg fu "$fd_pr_url" \
-          '{pr_url: $u, repo: $r, by: "reviewer", id: $id, filed_pr_url: $fu}')"
+          --argjson n "$fd_number" --arg iu "$fd_url" \
+          '{pr_url: $u, repo: $r, by: "reviewer", issue_number: $n, issue_url: $iu}')"
       else
         log_event "warning" "$(jq -nc --arg u "$pr_url" \
           --arg d "reviewer: could not file the tech-debt record for $pr_url (see tech-debt-file.err)" \

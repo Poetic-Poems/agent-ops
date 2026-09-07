@@ -193,6 +193,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   identical, unactionable warnings, and the rejection itself named the defect
   precisely the first time it was sent.
 
+- **The Approver's and Enabler's `file_debt` verdict — and the Reviewer's own
+  leftover filing when its subject merges mid-pass — now files a
+  `pw::type:tech-debt`-labelled GitHub issue, not a register pull request**
+  (agent-ops#874, D15 as revised #869): `techdebt_file_debt()`
+  (`lib/tech-debt-file.sh`) dedups first against the target repository's own
+  open `pw::type:tech-debt` issues by normalised title — every one of them,
+  since that search states its own page cap rather than inheriting `gh issue
+  list`'s default of 30 — commenting new
+  evidence onto a match rather than filing a duplicate, and otherwise creates
+  a fresh labelled issue — retrying unlabelled where a fresh repository has
+  not had the label ensured yet. The id-reservation branch
+  (`scripts/reserve-tech-debt-id.pl`), the `td-record/<id>` filing branch, the
+  filing pull request, and their rollback (`_techdebt_unfile`) are retired
+  along with it: a single issue create either lands or degrades, with nothing
+  left to half-finish. This is the same labelled-issue move PR #919
+  (review-sourced debt) and PR #923 (the Co-Ordinator's `tech-debt` band)
+  already made for their own paths; `file_debt` was the one caller D15's
+  revision had not yet reached. `TECHDEBT_RECORD_BRANCH_PREFIX` stays defined
+  in `lib/tech-debt-file.sh` — unused there now, but still sourced by
+  `scripts/sweep-orphan-branches.sh` and `scripts/publish-tech-debt-archive.sh`
+  to recognise and drain any `td-record/<id>` branch a pre-#874 filing already
+  left behind.
+
 - **The test suite no longer expects any particular value from
   `config.json`.** Changing a configured value — a threshold, a cadence, an
   autonomy rung, a repository added or removed — is a configuration change,
