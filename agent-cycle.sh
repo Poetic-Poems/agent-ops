@@ -1691,8 +1691,8 @@ if ! (( DRY_RUN )) && (( crash_loop_after > 0 )) \
   fi
 fi
 
-# 1c. Token-expiry escalation (agent-ops#694). GitHub states a fine-grained
-# PAT's own expiry on every API response it authenticates
+# 1c. Token-expiry escalation (agent-ops#694). GitHub states a personal
+# access token's own expiry on every API response it authenticates
 # (`GitHub-Authentication-Token-Expiration`); on 2026-08-22 that date went
 # unread until it arrived, and every node lost GitHub at once, misdiagnosed
 # as an outage (agent-ops#691) for hours before an operator noticed. This is
