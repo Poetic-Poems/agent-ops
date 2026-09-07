@@ -20,7 +20,7 @@
   ],
   "properties": {
     "repos": {
-      "description": "The repositories the implementation pipeline works, each with its own ordered work sources. Adding a repository or a source is a config-only change.",
+      "description": "The repositories the implementation pipeline works, each with its own ordered work sources. Adding a repository or a source is a config-only change. Required, with no product default: every installation names its own repositories here.",
       "type": "array",
       "minItems": 1,
       "items": {
@@ -192,7 +192,7 @@
           },
           "The four `issues:<band>` tokens are the *same* source at four ranks, banded by each issue's `Priority` field — see \"Issue priority\" below; list a subset to have the pipeline see only those bands, or none to turn issues off for that repo. Adding a repo or source is a config-only change.",
           "At runtime, repos are ordered most-overdue first — each repo's default-branch staleness age scaled by `2^(-nice/3)` — ahead of this list order; with no `nice` set anywhere that is least-recently-updated first, exactly as before.",
-          "A repo entry that lists `implementation-plan` must also carry `implementation_plan_path` — the path, relative to that repo's root, of its plan document (poetic-fiddle's is `docs/IMPLEMENTATION-PLAN.md`); the Co-Ordinator reads whatever this says, so a repo with a differently named or located plan needs no prompt change, only its own path. The Script refuses to start a cycle if a repo lists the source without it — a repo that doesn't list `implementation-plan` needs no such key.",
+          "A repo entry that lists `implementation-plan` must also carry `implementation_plan_path` — the path, relative to that repo's root, of its plan document; the Co-Ordinator reads whatever this says, so a repo with a differently named or located plan needs no prompt change, only its own path. The Script refuses to start a cycle if a repo lists the source without it — a repo that doesn't list `implementation-plan` needs no such key. (This installation's own poetic-fiddle entry uses `docs/IMPLEMENTATION-PLAN.md`, shown below as a worked example — there is no product default for the path itself.)",
           "A repo entry may also carry `nice` — an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `2^(-nice/3)` (each three steps of `nice` is a 2x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo — the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range.",
           "A non-zero `nice` shows as a badge against that repo in the dashboard's work-sources panel, naming the value and the weighting it buys; a repo at `0` or with no key shows nothing there, so a fleet that has set none sees the panel unchanged.",
           "A repo entry may also carry `stage_timeouts` and `stage_inactivity` — the per-repo form of the `timeout_<actor>` and `inactivity_<actor>` keys below, each an object in minutes keyed `coordinator`, `implementer`, `reviewer`, `approver` and `enabler`, any subset of them. The Refiner spans repos, so it has no per-repo form and takes `timeout_refiner` / `inactivity_refiner` only. A repo's entry is the most specific level of the precedence — this entry, then the fleet-wide key, then the derived value — so set one only to insist on a number for one repo; omit them and both the backstop and the watchdog tune themselves. `scripts/doctor.sh`'s pinned-cap warning covers every level, naming the repo for a per-repo override.",
@@ -213,7 +213,7 @@
         "spec": [
           "Work-source lists per repo as in the table above (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `dequeued`, `human-visibility`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`); structure the config so a repo or source can be added without code changes.",
           "The `issues:<band>` tokens are the one source that appears more than once — the same `issues` source at four ranks (requirement 15e). A repo that lists none of them has the issues source off; one that lists a subset sees only issues in those bands.",
-          "A repo entry may also carry `implementation_plan_path` — the path, relative to that repo's root, of its plan document; required whenever `sources` lists `implementation-plan` (requirement 3k), since that source has no path of its own outside this config. poetic-fiddle's is `docs/IMPLEMENTATION-PLAN.md`.",
+          "A repo entry may also carry `implementation_plan_path` — the path, relative to that repo's root, of its plan document; required whenever `sources` lists `implementation-plan` (requirement 3k), since that source has no path of its own outside this config. This installation's own poetic-fiddle entry uses `docs/IMPLEMENTATION-PLAN.md`, a worked example rather than a value to copy.",
           "A repo entry may also carry `nice` — an optional integer from `-19` to `19` (absent means `0`). Inspired by Linux `nice`. Each repo's default-branch staleness age is multiplied by `2^(-nice/3)` (each three steps of `nice` is a 2x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo — the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range.",
           "A repo entry may also carry `stage_timeouts` and `stage_inactivity` — per-actor overrides in minutes, keyed `coordinator`, `implementer`, `reviewer`, `approver` and `enabler`, for that repository alone. They are the most specific level of requirement 4f's precedence, ahead of the plain `timeout_<actor>` / `inactivity_<actor>` key and ahead of the derivation; the Refiner, spanning repositories, has no per-repository form. Configuration is read, never written: requirement 4f's derivation never writes back to `config.json`.",
           "A repo entry may also carry `merge_autonomy` — the per-repository override of the top-level key of the same name (D18, requirement 2.3b), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
@@ -236,33 +236,37 @@
       }
     },
     "state_dir": {
-      "description": "Where the lock, the shared log and every per-cycle stage transcript live. A leading `~/` is expanded.",
+      "description": "Where the lock, the shared log and every per-cycle stage transcript live. A leading `~/` is expanded. Required, with no product default — every installation picks its own path.",
       "type": "string",
       "minLength": 1,
       "x-docs": {
-        "readme": "Lock, shared log, stage transcripts.",
-        "spec": "Lock, shared log, per-cycle stage transcripts.",
-        "value": "`~/.local/state/poetic-agents`"
+        "readme": "Lock, shared log, stage transcripts. Required — there is no default; this installation's own value is `~/.local/state/poetic-agents`, shown in the specification as a worked example.",
+        "spec": "Lock, shared log, per-cycle stage transcripts. Required — there is no product default; this installation's own value is below.",
+        "value": {
+          "spec": "`~/.local/state/poetic-agents`"
+        }
       }
     },
     "workspace_root": {
-      "description": "Where ephemeral clones live and die, including the state repository's mirror. A leading `~/` is expanded.",
+      "description": "Where ephemeral clones live and die, including the state repository's mirror. A leading `~/` is expanded. Required, with no product default — every installation picks its own path.",
       "type": "string",
       "minLength": 1,
       "x-docs": {
-        "readme": "Ephemeral clones. Each cycle gets its own subdirectory, and the state repository keeps its mirror here.",
-        "spec": "Ephemeral clones live and die here, including the state repository's mirror.",
-        "value": "`~/.cache/poetic-agents/workspaces`"
+        "readme": "Ephemeral clones. Each cycle gets its own subdirectory, and the state repository keeps its mirror here. Required — there is no default; this installation's own value is `~/.cache/poetic-agents/workspaces`, shown in the specification as a worked example.",
+        "spec": "Ephemeral clones live and die here, including the state repository's mirror. Required — there is no product default; this installation's own value is below.",
+        "value": {
+          "spec": "`~/.cache/poetic-agents/workspaces`"
+        }
       }
     },
     "state_repo": {
-      "description": "Private repository through which `state_dir` replicates between nodes, as `owner/name`. Empty or absent means single-node operation: every mode of scripts/state-sync.sh becomes a no-op and the fleet-flag reads and writes quietly do nothing.",
+      "description": "Private repository through which `state_dir` replicates between nodes, as `owner/name`. Empty or absent means single-node operation: every mode of scripts/state-sync.sh becomes a no-op and the fleet-flag reads and writes quietly do nothing. The product default is empty; there is no generic non-empty default an installation could ship with, since the repository has to be one the installation itself creates and controls.",
       "type": "string",
       "pattern": "^$|^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
       "default": "",
       "x-docs": {
-        "readme": "Private repository through which `state_dir` replicates between nodes. See [Keeping every node warm](#keeping-every-node-warm). Leave it out and nothing syncs — a single-node install behaves exactly as before.",
-        "spec": "The private repository through which `state_dir` replicates between nodes (requirement 2.5). Its `main` carries the small shared surface: the claim registry (requirement 17a) and the fleet flags `fleet/disabled.json` and `fleet/limit.json` (requirements 2.3a and 2.1). Unset means a single-node operation: every mode of `scripts/state-sync.sh` becomes a no-op, and the fleet-flag reads and writes quietly do nothing.",
+        "readme": "Private repository through which `state_dir` replicates between nodes. See [Keeping every node warm](#keeping-every-node-warm). Leave it out and nothing syncs — a single-node install behaves exactly as before. The value shown is this installation's own private repository, not a generic default — every installation names its own.",
+        "spec": "The private repository through which `state_dir` replicates between nodes (requirement 2.5). Its `main` carries the small shared surface: the claim registry (requirement 17a) and the fleet flags `fleet/disabled.json` and `fleet/limit.json` (requirements 2.3a and 2.1). Unset means a single-node operation: every mode of `scripts/state-sync.sh` becomes a no-op, and the fleet-flag reads and writes quietly do nothing. This installation's own value, `Poetic-Poems/agent-ops-state`, is documented below (and checked live by `scripts/doctor.sh`) because it differs from the empty product default — it is this installation's own repository, not a value to copy.",
         "value": "`Poetic-Poems/agent-ops-state`"
       }
     },
@@ -449,12 +453,12 @@
       }
     },
     "enabler_assignee": {
-      "description": "GitHub login assigned to every escalation issue the Enabler raises. Required whenever `enabler_model` is set: agent-cycle.sh exits at startup rather than raise an unassigned escalation, since the assignment is what stops the pipeline selecting its own SOS as work.",
+      "description": "GitHub login assigned to every escalation issue the Enabler raises. Required whenever `enabler_model` is set: agent-cycle.sh exits at startup rather than raise an unassigned escalation, since the assignment is what stops the pipeline selecting its own SOS as work. There is no generic default: it must name a real collaborator on the installation's own repositories.",
       "type": "string",
       "default": "",
       "x-docs": {
-        "readme": "GitHub login every Enabler escalation is assigned to. Required whenever `enabler_model` is set — the Script refuses to start a cycle rather than raise an unassigned escalation, since the assignment is what excludes the issue from the pipeline's own `issues` source (see [Issue priority](#issue-priority) and requirement 16.4 in the spec).",
-        "spec": "GitHub login assigned to every escalation issue the Enabler raises (requirement 36a). Required whenever `enabler_model` is set: the Script exits with an error at startup rather than run with it unset, since an unassigned escalation would not be excluded by requirement 16.4 and could be selected as work by the pipeline itself.",
+        "readme": "GitHub login every Enabler escalation is assigned to. Required whenever `enabler_model` is set — the Script refuses to start a cycle rather than raise an unassigned escalation, since the assignment is what excludes the issue from the pipeline's own `issues` source (see [Issue priority](#issue-priority) and requirement 16.4 in the spec). The login shown is this installation's own maintainer, not a generic default — every installation names its own.",
+        "spec": "GitHub login assigned to every escalation issue the Enabler raises (requirement 36a). Required whenever `enabler_model` is set: the Script exits with an error at startup rather than run with it unset, since an unassigned escalation would not be excluded by requirement 16.4 and could be selected as work by the pipeline itself. This installation's own value, `warwickallen`, is documented below (and checked live by `scripts/doctor.sh`) because it differs from the empty product default — it names this installation's own maintainer, not a value to copy.",
         "value": "`warwickallen`"
       }
     },
@@ -725,7 +729,7 @@
     },
     "pr_label": {
       "$ref": "#/$defs/label",
-      "description": "Applied to every pull request the implementation pipeline raises, and the label by which every gatherer, and the back-pressure limit, finds them again. It must not be empty: `gh pr list --label ''` matches every open pull request, so an empty value would hand the pipeline other people's work as its own. Nor `obsolete`: every draft the pipeline raises would then carry the human-only mark that corroborates closing it (requirement 34k). The claim loop stamps this value onto every claimed work order's own `pr_label` field unconditionally, guaranteeing it regardless of the Co-Ordinator's own model output; the Implementer labels its pull request with that field rather than a literal.",
+      "description": "Applied to every pull request the implementation pipeline raises, and the label by which every gatherer, and the back-pressure limit, finds them again. It must not be empty: `gh pr list --label ''` matches every open pull request, so an empty value would hand the pipeline other people's work as its own. Nor `obsolete`: every draft the pipeline raises would then carry the human-only mark that corroborates closing it (requirement 34k). The claim loop stamps this value onto every claimed work order's own `pr_label` field unconditionally, guaranteeing it regardless of the Co-Ordinator's own model output; the Implementer labels its pull request with that field rather than a literal. Required, with no product default — the value below is this installation's own choice of name, safe to reuse as-is.",
       "minLength": 1,
       "x-docs": {
         "readme": "Applied to every PR this system raises. Do not name it `obsolete`, which is reserved for a human to mark one of these PRs as unwanted. The claim loop stamps this value onto every work order's own `pr_label` field, guaranteed regardless of the Co-Ordinator's own output, and the Implementer labels its pull request with it.",
@@ -734,7 +738,7 @@
       }
     },
     "branch_prefix": {
-      "description": "Branch naming for the implementation pipeline: `<branch_prefix><item-slug>`. Branches outside it belong to humans — the Landing Gate reads this to tell ours from theirs, so it must not be empty.",
+      "description": "Branch naming for the implementation pipeline: `<branch_prefix><item-slug>`. Branches outside it belong to humans — the Landing Gate reads this to tell ours from theirs, so it must not be empty. Required, with no product default — the value below is this installation's own choice of prefix, safe to reuse as-is.",
       "type": "string",
       "minLength": 1,
       "x-docs": {
@@ -829,7 +833,7 @@
       "default": 24,
       "x-docs": {
         "readme": "Hours an approved, green pull request may sit idle — nothing left for the pipeline to do, only a merge click nobody was asked for — before `scripts/sweep-human-visibility.sh` posts one nudge comment naming `enabler_assignee`. `0` disables the nudge; the sweep still keeps a live review request on every such PR regardless (see [Configuration](#configuration) → `enabler_assignee`).",
-        "spec": "Hours an approved, mergeable, CI-green pull request this system raised may sit idle before `scripts/sweep-human-visibility.sh` posts a one-time nudge comment naming `enabler_assignee` (requirement 38c). `0` disables the nudge only — the sweep's self-healing review request (requirement 38a) is unconditional. poetic-fiddle #170 sat approved and green for 6.8 days with nothing asking anyone to look; this is the backstop for whatever the live review request itself does not catch.",
+        "spec": "Hours an approved, mergeable, CI-green pull request this system raised may sit idle before `scripts/sweep-human-visibility.sh` posts a one-time nudge comment naming `enabler_assignee` (requirement 38c). `0` disables the nudge only — the sweep's self-healing review request (requirement 38a) is unconditional. This installation's own history is the motivating incident, not a target value: poetic-fiddle #170 sat approved and green for 6.8 days with nothing asking anyone to look; this key is the backstop for whatever the live review request itself does not catch.",
         "value": {
           "readme": "`24`",
           "spec": "24 h"
@@ -980,13 +984,13 @@
       }
     },
     "crash_loop_repo": {
-      "description": "Where the crash-loop escalation issues are filed, as `owner/name` — the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks.",
+      "description": "Where the crash-loop escalation issues are filed, as `owner/name` — the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks. The product default is empty; there is no generic non-empty default, since every installation runs from a different repository (its own clone or fork of this one, most often).",
       "type": "string",
       "pattern": "^$|^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
       "default": "",
       "x-docs": {
-        "readme": "Where the crash-loop escalation issues are filed — the pipeline's own repository. Deduplicated like an Enabler escalation and assigned to `enabler_assignee`, so the pipeline never selects its own SOS as work. Empty disables both checks.",
-        "spec": "Where requirement 2.7's escalation issues are filed — the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks.",
+        "readme": "Where the crash-loop escalation issues are filed — the pipeline's own repository, i.e. whichever repository you run this pipeline from. Deduplicated like an Enabler escalation and assigned to `enabler_assignee`, so the pipeline never selects its own SOS as work. Empty disables both checks. The value shown is this installation's own repository, not a generic default — every installation names its own.",
+        "spec": "Where requirement 2.7's escalation issues are filed — the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks. This installation's own value, `Pullwright/agent-ops`, is documented below (and checked live by `scripts/doctor.sh`) because it differs from the empty product default — it names this installation's own repository, not a value to copy.",
         "value": "`Pullwright/agent-ops`"
       }
     },
@@ -1613,7 +1617,7 @@
             },
             "pr_label": {
               "$ref": "#/$defs/label",
-              "description": "Applied to every review pull request. Keep it distinct from the implementation pipeline's `pr_label`, so review PRs never count against `max_open_agent_prs`. It must not be empty, nor `obsolete`, for the reasons given there.",
+              "description": "Applied to every review pull request. Keep it distinct from the implementation pipeline's `pr_label`, so review PRs never count against `max_open_agent_prs`. It must not be empty, nor `obsolete`, for the reasons given there. Required, with no product default — the value below is this installation's own choice of name, safe to reuse as-is.",
               "minLength": 1,
               "x-docs": {
                 "readme": "Applied to every review PR. Distinct from `autonomous-agent`, so review PRs never count against `max_open_agent_prs`. Do not name it `obsolete`.",
@@ -1623,7 +1627,7 @@
             },
             "branch_prefix": {
               "$ref": "#/$defs/branchPrefix",
-              "description": "Branch naming for the review pipeline: `<branch_prefix><date>`. A branch is already scoped to its repository, so no slug is needed.",
+              "description": "Branch naming for the review pipeline: `<branch_prefix><date>`. A branch is already scoped to its repository, so no slug is needed. Required, with no product default — the value below is this installation's own choice of prefix, safe to reuse as-is.",
               "x-docs": {
                 "readme": "Branch name `review/<date>`.",
                 "spec": "Branch name `review/<date>`, e.g. `review/2026-07-20`. A branch is already scoped to its repository, so no slug is needed.",
@@ -1716,7 +1720,7 @@
           }
         },
         "repos": {
-          "description": "The repositories to review. Each entry's `slug` is required; every other key, when present and non-null, overrides the same-named key in `defaults` for that repository alone (requirement 342) — an entry carrying only `slug` inherits every default.",
+          "description": "The repositories to review. Each entry's `slug` is required; every other key, when present and non-null, overrides the same-named key in `defaults` for that repository alone (requirement 342) — an entry carrying only `slug` inherits every default. Required, with no product default: every installation names its own repositories here.",
           "type": "array",
           "items": {
             "type": "object",
@@ -1784,7 +1788,10 @@
           "x-docs": {
             "readme": "Repositories to review. Each entry is `{\"slug\": \"owner/name\"}`, plus any of `defaults`' own keys to override it for that repository alone.",
             "spec": "The repositories to review. Each entry's `slug` is required; every other key overrides the same-named key in `defaults` for that repository alone (requirement 342), and an entry carrying only `slug` inherits every default. A review has no per-repo work-source structure beyond these overrides. Adding a repo is a config-only change.",
-            "value": "`[{\"slug\": \"Poetic-Poems/poetic\"}, {\"slug\": \"Poetic-Poems/poetic-fiddle\"}]`"
+            "value": {
+              "readme": "see `config.json`",
+              "spec": "`[{\"slug\": \"Poetic-Poems/poetic\"}, {\"slug\": \"Poetic-Poems/poetic-fiddle\"}]`"
+            }
           }
         }
       }
