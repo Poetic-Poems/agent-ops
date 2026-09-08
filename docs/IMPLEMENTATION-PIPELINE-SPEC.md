@@ -7137,8 +7137,7 @@ implements.
    same tier here: the condition guarding the forced tier names only the
    legitimate exit 1 (no protected path touched) as an exemption, rather
    than enumerating the fail-closed codes, so nothing outside the
-   documented contract can silently skip the forced tier the way an
-   enumerated `== 0 || == 2 || == 3` once did —
+   documented contract can silently skip the forced tier —
    routes to Critical regardless of `complexity`, including
    `complexity:low`, which alone would have short-circuited to the
    deterministic Trivial approval with no model call at all: a one-line
