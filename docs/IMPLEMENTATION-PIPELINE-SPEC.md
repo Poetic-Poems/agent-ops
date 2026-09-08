@@ -23508,7 +23508,14 @@ oblige anyone to edit a test.
     logs `idle-without-demand`/`no-demand` as before; and with a `lock.json`
     naming a pid that is gone it logs it too — which is what proves the guard
     is suppressing on the peer rather than swallowing the transition
-    wholesale. `scripts/lint-shell.sh` is clean on every
+    wholesale. The live and gone readings are then repeated against
+    `review-lock.json`, for the peer *review* run the second probe answers
+    about, and a fourth case pins the one guarded site that runs after the
+    lock is won: with a usage-limit cooldown in force and this run's own pid
+    in `review-lock.json`, the cooldown stand-down still logs
+    `externally-blocked`/`usage-limit`, which is what proves that probe
+    excludes this process itself rather than reading its own lock as a peer.
+    `scripts/lint-shell.sh` is clean on every
     file this requirement touches.
 
 9. **An open question the Reviewer could not settle holds unattended landing,
