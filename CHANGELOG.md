@@ -421,6 +421,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `lib/memory.sh` reads the container's own `/sys/fs/cgroup`, which is the
   same path inside the container under either driver.
 
+- **`dashboard/index.html`'s `kv()` helper no longer builds markup by
+  string-concatenating into `innerHTML`** (issue #965, TD-PPagop-26082409):
+  its `esc()` helper performed no HTML-entity escaping despite its name, and
+  `kv()` trusted it to escape a value (`g.model`, `g.terminal_reason`, …)
+  before splicing it into an `innerHTML` string. No live XSS existed — every
+  value passed through it today is pipeline-internal — but the broken
+  abstraction invited a future stored-XSS regression the moment a call site
+  trusted `esc()`'s name with attacker-influenced content. `kv()` now builds
+  its `<span class="kv">` via `el()`-based DOM construction (a `<b>` element
+  with a `text:` child) instead of `innerHTML`, and the tech-debt/security-
+  findings count-summary site now renders via `text:` instead of `html:`
+  (it never actually carried markup). No `html:` attribute use remains in
+  `dashboard/index.html`.
+
 - **Recent cycles no longer reads as an idle fleet when the Publisher could
   not render it** (the 2026-08-29 blackout). Every dashboard in the fleet
   reported "No substantive cycles in the fleet window" for ten days while all
