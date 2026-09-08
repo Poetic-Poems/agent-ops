@@ -810,9 +810,14 @@ record_needs_refinement_block_fn="$(extract_fn 'record_needs_refinement_block() 
 refiner_claim_key_fn="$(extract_fn 'refiner_claim_key() {' "$SCRIPT_DIR/lib/refinement.sh")"
 extract_json_result_fn="$(extract_fn 'extract_json_result() {' "$SCRIPT_DIR/lib/stage-attempt.sh")"
 refiner_filter_unbandable_triage_fn="$(extract_fn 'refiner_filter_unbandable_triage() {' "$SCRIPT_DIR/lib/refinement.sh")"
+# maybe_run_refiner is an orchestration-only sequence of calls into the
+# _refiner_* helpers below it in lib/refinement.sh (agent-ops#964); the
+# "issue-prioritised" marker this test lifts to prove it grabbed live priority
+# wiring now lives in _refiner_apply_priority, the helper that writes it.
+refiner_apply_priority_fn="$(extract_fn '_refiner_apply_priority() {' "$SCRIPT_DIR/lib/refinement.sh")"
 
-if [[ "$maybe_run_refiner_fn" != *"issue-prioritised"* ]]; then
-  printf 'FAIL - maybe_run_refiner could not be found carrying the priority wiring (renamed or moved?)\n'
+if [[ "$refiner_apply_priority_fn" != *"issue-prioritised"* ]]; then
+  printf 'FAIL - _refiner_apply_priority could not be found carrying the priority wiring (renamed or moved?)\n'
   exit 1
 fi
 if [[ "$refiner_filter_unbandable_triage_fn" != *"refiner_drop_unbandable_triage"* ]]; then
@@ -824,6 +829,7 @@ eval "$extract_json_result_fn"
 eval "$refiner_claim_key_fn"
 eval "$record_needs_refinement_block_fn"
 eval "$refiner_filter_unbandable_triage_fn"
+eval "$refiner_apply_priority_fn"
 eval "$maybe_run_refiner_fn"
 
 fake_root="$tmp_dir/fake-root"
