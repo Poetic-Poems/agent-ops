@@ -43,17 +43,19 @@
 #                          — `.updater.seconds` already carries the
 #                          streak's own elapsed time (lib/updater-health.sh),
 #                          so no new bookkeeping is needed to test it.
-#   review-pipeline-failing  `review-log.jsonl`'s `review-attempt-failed`
-#                          streak, per node, at or above 3 (the same
+#   review-pipeline-failing  `review-log.jsonl`'s streak of failed review
+#                          *runs*, per node, at or above 3 (the same
 #                          threshold lib/stage-health.sh's own
 #                          `stage_health_verdicts` uses, not schema-backed
 #                          for the identical reason that file states: this
 #                          class has not yet seen a real incident to tune
-#                          it against) with no successful `review-end`
-#                          between. The interim reader: #996 stays the
-#                          proper fix, a verdict folded directly into the
-#                          heartbeat the way `stage_health`/`updater`/
-#                          `doctor` already are.
+#                          it against) with no completed review between —
+#                          a run, not an event, because `review-end` is
+#                          written on every run whatever happened (see the
+#                          function's own header). The interim reader: #996
+#                          stays the proper fix, a verdict folded directly
+#                          into the heartbeat the way `stage_health`/
+#                          `updater`/`doctor` already are.
 #   dashboard-unreadable   a node's `data.js` took longer than
 #                          `pager_dashboard_fetch_seconds` to fetch, or
 #                          failed to parse, from a *viewer's* vantage — a
@@ -375,19 +377,37 @@ pager_eval_updater_stuck() {
 }
 
 # pager_eval_review_pipeline_failing FLEET_NODES_JSON UNION_LOG_FILE
-# Fires when any node's `review-attempt-failed` streak (review-log.jsonl,
+# Fires when any node's streak of failed review *runs* (review-log.jsonl,
 # fleet-replicated like log.jsonl — scripts/state-sync.sh does not exclude
-# it) reaches 3 with no successful `review-end` (`exit_code == 0`) between —
-# the same reduce-and-reset-on-success shape lib/stage-health.sh's own
-# `stage_health_verdicts` already uses for the implementation pipeline's
-# `stage-end`/`attempt-failed`, applied here to the review pipeline's
-# analogous pair. 3 mirrors that file's own un-schema-backed default for the
-# identical reason it states: this class has not yet seen a real incident to
-# tune the number against. The interim reader — #996 stays the proper fix, a
-# verdict folded directly into the heartbeat. Reads
+# it) reaches 3 with no successful run between. 3 mirrors
+# lib/stage-health.sh's own un-schema-backed `THRESHOLD` default for the
+# identical reason that file states: this class has not yet seen a real
+# incident to tune the number against. The interim reader — #996 stays the
+# proper fix, a verdict folded directly into the heartbeat. Reads
 # PAGER_EVAL_REVIEW_UNION_LOG_FILE (lib/pager.sh's own documented exception
 # — see this file's header) rather than either of its own two arguments,
 # since review-log.jsonl's union is not the implementation union log.
+#
+# A *run*, grouped by the `review` id review-cycle.sh's own `log_event`
+# stamps on every line it writes, not a bare event: `review-end` is written
+# by that script's `cleanup()` EXIT trap on every run whatever happened, and
+# both ordinary `review-attempt-failed` sites (a clone that would not clone,
+# a Reviewer stage that exited non-zero, timed out or returned no usable
+# completion) `return 0`, so the run itself still exits 0. Reducing over raw
+# events and resetting on `review-end`'s own `exit_code == 0` therefore
+# resets the streak on the very run that just failed, and the streak can
+# never reach 3 at one repository per run — inert for exactly the case #996
+# describes and this invariant exists to read. So, per run:
+#
+#   any `review-attempt-failed`               the run failed          streak + 1
+#   none, and a `review-stage-end`            a review completed      streak → 0
+#   neither (stand-down, skip, nothing due)   carries no information  unchanged
+#
+# The third line is the whole point of grouping: a run that stood down or
+# had no repository due says nothing about whether the pipeline works, so it
+# must neither raise the alarm nor silence one — which is the very
+# indistinguishability #996 names, refused here rather than resolved (only
+# a verdict in the heartbeat can resolve it).
 pager_eval_review_pipeline_failing() {
   local _fleet_nodes_json="$1" _union_log_file="$2"
   local review_union_file="${PAGER_EVAL_REVIEW_UNION_LOG_FILE:-}"
@@ -395,21 +415,22 @@ pager_eval_review_pipeline_failing() {
   [[ -n "$review_union_file" && -f "$review_union_file" ]] || { printf '{"firing":false}'; return 0; }
   jq -c -R -n --argjson threshold "$threshold" '
     [ inputs | select(length > 0) | (fromjson? // empty)
-      | select(.event == "review-attempt-failed" or .event == "review-end") ] as $events
+      | select(.event == "review-attempt-failed" or .event == "review-stage-end") ] as $events
     | ([ $events[] | .node // "unknown" ] | unique) as $nodes
     | ( [ $nodes[] as $n
-          | ($events | map(select((.node // "unknown") == $n)) | sort_by(.ts)) as $node_events
-          | (reduce $node_events[] as $e (0;
-              if ($e.event == "review-end" and (($e.exit_code // 1) == 0)) then 0
-              elif ($e.event == "review-attempt-failed") then . + 1
-              else . end)) as $streak
+          | ($events | map(select((.node // "unknown") == $n))) as $node_events
+          | ( $node_events | group_by(.review // "")
+              | map({ts: (map(.ts) | min),
+                     failed: ((map(.event) | index("review-attempt-failed")) != null)})
+              | sort_by(.ts) ) as $runs
+          | (reduce $runs[] as $r (0; if $r.failed then . + 1 else 0 end)) as $streak
           | select($streak >= $threshold)
           | {node: $n, streak: $streak} ] ) as $hits
     | if ($hits | length) == 0 then {firing: false}
       else {firing: true, nodes: ($hits | map(.node)),
-            evidence: ("review-attempt-failed streak at/above " + ($threshold | tostring)
-              + " with no successful review-end between (the interim reader pending #996), on "
-              + (($hits | map("\(.node) (\(.streak) failures)")) | join(", ")))}
+            evidence: ("failed review runs at/above " + ($threshold | tostring)
+              + " consecutively, with no completed review between (the interim reader pending #996), on "
+              + (($hits | map("\(.node) (\(.streak) runs)")) | join(", ")))}
       end
   ' < "$review_union_file" 2>/dev/null || printf '{"firing":false}'
 }

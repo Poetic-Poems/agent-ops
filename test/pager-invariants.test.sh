@@ -305,27 +305,69 @@ assert_eq "  ... names exactly that node" "n2" "$(jq -r '.nodes | join(",")' <<<
 assert_eq "  ... a stale node's stuck streak is not trusted" "0" \
   "$(jq -r '.nodes | index("n3") != null' <<<"$verdict" | grep -c true)"
 
-# --- review-pipeline-failing (agent-ops#1282) ------------------------------------
+PAGER_EVAL_UPDATER_STUCK_AFTER_MINUTES=""
+assert_eq "no configured threshold: never fires" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_updater_stuck "$us_nodes" /dev/null)")"
+PAGER_EVAL_UPDATER_STUCK_AFTER_MINUTES=20
 
-review_ev() {  # review_ev TS NODE EVENT [EXTRA_JSON]
-  jq -nc --arg ts "$1" --arg n "$2" --arg e "$3" --argjson extra "${4:-{\}}" \
-    '{ts: $ts, node: $n, event: $e} + $extra'
+# --- review-pipeline-failing (agent-ops#1282) ------------------------------------
+# Every fixture run below carries the shape review-cycle.sh actually writes:
+# its `cleanup()` EXIT trap logs `review-end` on *every* run whatever
+# happened, and both ordinary `review-attempt-failed` sites `return 0`, so a
+# failed run's own `review-end` still reports `exit_code: 0`. A reader that
+# reduced over raw events and reset on that would reset on the very run that
+# just failed; these fixtures are what prove it does not.
+
+review_ev() {  # review_ev TS NODE REVIEW EVENT [EXTRA_JSON]
+  jq -nc --arg ts "$1" --arg n "$2" --arg r "$3" --arg e "$4" --argjson extra "${5:-{\}}" \
+    '{ts: $ts, node: $n, review: $r, event: $e} + $extra'
 }
 rv_log="$WORKDIR/review-log.jsonl"
 write_log "$rv_log" \
-  "$(review_ev 2026-09-09T09:00:00Z n1 review-attempt-failed)" \
-  "$(review_ev 2026-09-09T09:10:00Z n1 review-attempt-failed)" \
-  "$(review_ev 2026-09-09T09:20:00Z n1 review-attempt-failed)" \
-  "$(review_ev 2026-09-09T08:00:00Z n2 review-end '{"exit_code":0}')" \
-  "$(review_ev 2026-09-09T09:00:00Z n2 review-attempt-failed)" \
-  "$(review_ev 2026-09-09T09:10:00Z n2 review-attempt-failed)"
+  "$(review_ev 2026-09-09T09:00:00Z n1 r1 review-stage-end '{"rc":1}')" \
+  "$(review_ev 2026-09-09T09:01:00Z n1 r1 review-attempt-failed)" \
+  "$(review_ev 2026-09-09T09:02:00Z n1 r1 review-end '{"exit_code":0}')" \
+  "$(review_ev 2026-09-09T09:10:00Z n1 r2 review-attempt-failed)" \
+  "$(review_ev 2026-09-09T09:12:00Z n1 r2 review-end '{"exit_code":0}')" \
+  "$(review_ev 2026-09-09T09:20:00Z n1 r3 review-stage-end '{"rc":124}')" \
+  "$(review_ev 2026-09-09T09:21:00Z n1 r3 review-attempt-failed)" \
+  "$(review_ev 2026-09-09T09:22:00Z n1 r3 review-end '{"exit_code":0}')" \
+  "$(review_ev 2026-09-09T08:00:00Z n2 s1 review-attempt-failed)" \
+  "$(review_ev 2026-09-09T08:02:00Z n2 s1 review-end '{"exit_code":0}')" \
+  "$(review_ev 2026-09-09T08:30:00Z n2 s2 review-stage-end '{"rc":0}')" \
+  "$(review_ev 2026-09-09T08:32:00Z n2 s2 review-end '{"exit_code":0}')" \
+  "$(review_ev 2026-09-09T09:00:00Z n2 s3 review-attempt-failed)" \
+  "$(review_ev 2026-09-09T09:02:00Z n2 s3 review-end '{"exit_code":0}')" \
+  "$(review_ev 2026-09-09T09:30:00Z n2 s4 review-attempt-failed)" \
+  "$(review_ev 2026-09-09T09:32:00Z n2 s4 review-end '{"exit_code":0}')"
 PAGER_EVAL_REVIEW_UNION_LOG_FILE="$rv_log"
 verdict="$(pager_eval_review_pipeline_failing "" "")"
-assert_eq "a streak of 3 with no successful review-end between fires" "true" "$(jq -r '.firing' <<<"$verdict")"
+assert_eq "three failed runs, each ending review-end exit_code 0, still fire" "true" \
+  "$(jq -r '.firing' <<<"$verdict")"
 assert_eq "  ... names exactly the node with the streak" "n1" "$(jq -r '.nodes | join(",")' <<<"$verdict")"
-assert_eq "  ... a streak of 2, reset once already by review-end, does not fire" "0" \
+assert_eq "  ... the evidence counts runs, not the events within them" "1" \
+  "$(grep -c 'n1 (3 runs)' <<<"$(jq -r '.evidence' <<<"$verdict")")"
+assert_eq "  ... a run that completed a review resets: n2's own 2-run tail does not fire" "0" \
   "$(jq -r '.nodes | index("n2") != null' <<<"$verdict" | grep -c true)"
 assert_eq "  ... notes #996 as the interim's own proper fix" "1" "$(grep -c '#996' <<<"$(jq -r '.evidence' <<<"$verdict")")"
+
+# A run that stood down, was skipped, or had no repository due writes neither
+# a `review-attempt-failed` nor a `review-stage-end`: it says nothing about
+# whether the pipeline works, so it must neither raise the streak nor silence
+# it — the very indistinguishability #996 names, refused rather than guessed.
+rv_log_idle="$WORKDIR/review-log-idle.jsonl"
+write_log "$rv_log_idle" \
+  "$(review_ev 2026-09-09T09:00:00Z n1 r1 review-attempt-failed)" \
+  "$(review_ev 2026-09-09T09:02:00Z n1 r1 review-end '{"exit_code":0}')" \
+  "$(review_ev 2026-09-09T09:10:00Z n1 r2 review-stand-down '{"cause":"peer-pipeline-busy"}')" \
+  "$(review_ev 2026-09-09T09:12:00Z n1 r2 review-end '{"exit_code":0}')" \
+  "$(review_ev 2026-09-09T09:20:00Z n1 r3 review-attempt-failed)" \
+  "$(review_ev 2026-09-09T09:22:00Z n1 r3 review-end '{"exit_code":0}')" \
+  "$(review_ev 2026-09-09T09:30:00Z n1 r4 review-attempt-failed)" \
+  "$(review_ev 2026-09-09T09:32:00Z n1 r4 review-end '{"exit_code":0}')"
+PAGER_EVAL_REVIEW_UNION_LOG_FILE="$rv_log_idle"
+assert_eq "a stood-down run between failures neither resets nor counts" "true" \
+  "$(jq -r '.firing' <<<"$(pager_eval_review_pipeline_failing "" "")")"
 
 PAGER_EVAL_REVIEW_UNION_LOG_FILE=""
 assert_eq "no review union log configured: never fires" "false" \
@@ -352,6 +394,11 @@ assert_eq "  ... names both, never the node with no probe result at all" "n2,n3"
 df_nodes_ok="$(printf '%s\n' "$(df_row n1 5 true)" | jq -sc '.')"
 assert_eq "a fast, parsed fetch does not fire" "false" \
   "$(jq -r '.firing' <<<"$(pager_eval_dashboard_unreadable "$df_nodes_ok" /dev/null)")"
+
+PAGER_EVAL_DASHBOARD_FETCH_SECONDS=""
+assert_eq "no configured threshold: never fires" "false" \
+  "$(jq -r '.firing' <<<"$(pager_eval_dashboard_unreadable "$df_nodes" /dev/null)")"
+PAGER_EVAL_DASHBOARD_FETCH_SECONDS=30
 
 printf '\n'
 if (( failures )); then

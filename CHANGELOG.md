@@ -64,9 +64,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the framework's own filing hysteresis, `pager_register`'s new fifth
   argument). `updater-stuck` (`updater.status == "stuck"` for over 2×
   `updater_stuck_after_minutes`, reading `.updater.seconds`' own elapsed
-  time directly). `review-pipeline-failing` (`review-log.jsonl`'s
-  `review-attempt-failed` streak at 3 or more with no successful
-  `review-end` between — the interim reader pending #996's own heartbeat
+  time directly). `review-pipeline-failing` (`review-log.jsonl`'s streak of
+  failed review *runs* at 3 or more with no completed review between —
+  runs, not events, because `review-cycle.sh` writes `review-end` on every
+  run whatever happened, so a failed run's own `review-end` still reports
+  `exit_code: 0`; the interim reader pending #996's own heartbeat
   verdict). `dashboard-unreadable` (a node's `data.js` slower than the new
   `pager_dashboard_fetch_seconds`, default 30 s, or unparseable, from a
   viewer's vantage — reads the `dashboard_fetch` field #1283's own

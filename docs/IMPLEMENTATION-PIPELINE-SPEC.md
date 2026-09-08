@@ -16295,7 +16295,15 @@ with the Reviewer's own.
       *legitimate* cycle is never mistaken for a missed one.
       `schedule.cycle_interval_minutes` is fleet-wide config, identical on
       every node that reads it including the evaluating one, so no peer-
-      specific threshold needs to travel at all. Evidence carries each
+      specific threshold needs to travel at all. The threshold is that bare
+      interval, **not** requirement 1d's worst-case gap: an installation
+      that restricts `schedule.cycle_hours` or `schedule.excluded_minutes`
+      goes longer between firings than twice the interval by design, and
+      this invariant would read the quiet stretch as a dropped firing. The
+      shipped configuration restricts neither, where the two quantities
+      coincide; #1314 carries the derivation, which needs `cadence_gaps`
+      (requirement 1b) to surface a gap it currently only consumes.
+      Evidence carries each
       firing node's own recent cycle-duration histogram (up to five
       completed cycles, matched by the `cycle` id every start/end pair
       shares) — the acceptance's own "file, with the node's cycle-duration
@@ -16320,16 +16328,28 @@ with the Reviewer's own.
       age from the union log the way `firing-missed` has to for a fact that
       is never published at all.
     - **`review-pipeline-failing`** (owner-only). Fires when any node's
-      `review-attempt-failed` streak (`review-log.jsonl`, fleet-replicated
+      streak of failed review *runs* (`review-log.jsonl`, fleet-replicated
       like `log.jsonl` — `scripts/state-sync.sh` does not exclude it)
-      reaches 3 with no successful `review-end` (`exit_code == 0`) between —
-      the same reduce-and-reset-on-success shape `lib/stage-health.sh`'s own
-      `stage_health_verdicts` already uses for the implementation pipeline's
-      `stage-end`/`attempt-failed`, applied to the review pipeline's
-      analogous pair. 3 is not schema-backed, mirroring that file's own
-      un-schema-backed `THRESHOLD` default for the identical reason it
-      states: this class has not yet seen a real incident to tune the number
-      against. **This invariant is the interim reader: #996 stays the
+      reaches 3 with no completed review between. A run — grouped by the
+      `review` id `review-cycle.sh`'s own `log_event` stamps on every line —
+      rather than a bare event, because `review-end` is written by that
+      script's `cleanup()` EXIT trap on *every* run whatever happened, and
+      both of its ordinary `review-attempt-failed` sites return success, so
+      a run that just failed still reports `review-end` with `exit_code: 0`;
+      a reader resetting on that would reset on the very run it was counting
+      and could never reach 3 at one repository per run. So, per run: any
+      `review-attempt-failed` increments; none, plus a `review-stage-end`,
+      resets; neither — a stand-down, a skip, nothing due — leaves the streak
+      untouched, since such a run carries no information about the pipeline's
+      health in either direction. That last case is the indistinguishability
+      #996 names, refused here rather than resolved. 3 is not schema-backed,
+      mirroring `lib/stage-health.sh`'s own un-schema-backed `THRESHOLD`
+      default for the identical reason it states: this class has not yet
+      seen a real incident to tune the number against. (`stage_health_
+      verdicts` itself counts non-zero `stage-end` events and never counts
+      `attempt-failed` toward its streak — the threshold is shared, the
+      reduction is this invariant's own, because the two pipelines record
+      a failed attempt differently.) **This invariant is the interim reader: #996 stays the
       proper fix, a verdict folded directly into the heartbeat the way
       `stage_health`/`updater`/`doctor` already are** — without it, a
       review pipeline stalled or failing on every attempt looks identical,
@@ -23976,9 +23996,13 @@ oblige anyone to edit a test.
     `heartbeat_age_s` exceeds 2× the configured threshold; `updater-stuck`
     fires only on an active row reporting `updater.status: "stuck"` past 2×
     the configured threshold, never a stale row's; `review-pipeline-failing`
-    fires on a per-node `review-attempt-failed` streak of 3 or more with no
-    successful `review-end` between, resets on one that had a successful
-    `review-end`, and its evidence names #996; `dashboard-unreadable` fires
+    fires on a per-node streak of 3 or more failed review runs *each of
+    which ends in a `review-end` reporting `exit_code: 0`* — the shape
+    `review-cycle.sh` actually writes, and the one a reader reducing over
+    raw events would silence itself on — resets on a run that completed a
+    review, is left untouched by a stood-down run between two failures, and
+    its evidence names #996 and counts runs rather than events;
+    `dashboard-unreadable` fires
     on a row whose `dashboard_fetch` names a slow fetch or a failed parse,
     never on a row carrying no probe result at all. Each of the five also
     proves it never fires with its own threshold unconfigured (an empty

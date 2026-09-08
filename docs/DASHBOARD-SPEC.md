@@ -1117,6 +1117,21 @@ both without a second fetch of either. `pager_enabled` (default `true`)
 gates the whole call; `false` skips it outright, the same as `--no-github`
 does structurally.
 
+One invariant needs a third artefact, which this block therefore assembles
+itself: `review-pipeline-failing` (agent-ops#1282) reads the review
+pipeline's own log, not the implementation one, so the block runs
+`fleet_logs` a second time over `review-log.jsonl` — fleet-replicated like
+`log.jsonl`, and excluded from neither — and hands the result to
+`pager_evaluate` as `REVIEW_UNION_LOG_FILE`. It is assembled here rather
+than alongside `events_jsonl` above because it has exactly one reader, on a
+path already gated to `WITH_GITHUB`: an ordinary tick never pays for it.
+The block also reads the two config keys agent-ops#1282 added —
+`pager_stale_file_after_minutes`, passed to
+`pager_register_builtin_invariants` as `node-stale`'s own per-key filing
+hysteresis, and `pager_dashboard_fetch_seconds` — along with the raw
+(unconverted-to-seconds) `node_stale_after_minutes` and
+`updater_stuck_after_minutes` those invariants compare against directly.
+
 Because `pager_evaluate` may itself append `pager-*` transition events to
 this node's own `log.jsonl`, the payload's own `pager` array is read from a
 *fresh* re-union of the fleet log — `fleet_logs` run again, after
