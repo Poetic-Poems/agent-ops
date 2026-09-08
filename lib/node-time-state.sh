@@ -237,21 +237,23 @@ finalize_node_state_for_review() {
 # joins mid-window scores its own leading gap as `down` correctly (the
 # general rule above already gives this one for free).
 #
-# An event naming no `node`, no `ts`, or no `state` cannot be placed on any
-# timeline at all and is excluded, counted under `skipped_events` rather
-# than silently dropped. An event whose `state` is not one of the six names
-# below cannot be classified either, but *can* still be placed — its own
-# interval lands in `unaccounted_seconds` rather than being excluded, since
-# the instant it names is real even though the label on it is not one the
-# invariant recognises.
+# An event naming no `node`, no `state`, or a `ts` that is missing or fails
+# `fromdateiso8601` (not the strict %Y-%m-%dT%H:%M:%SZ form) cannot be placed
+# on any timeline at all and is excluded, counted under `skipped_events`
+# rather than silently dropped. An event whose `state` is not one of the six
+# names below cannot be classified either, but *can* still be placed — its
+# own interval lands in `unaccounted_seconds` rather than being excluded,
+# since the instant it names is real even though the label on it is not one
+# the invariant recognises.
 # shellcheck disable=SC2016  # jq's own $all/$since/$until, not the shell's.
 NODE_TIME_STATE_FOLD_JQ='
   def valid_states: ["producing","overhead","externally-blocked","idle-with-demand","idle-without-demand","down"];
   def idle_causes: ["awaiting-tick","back-pressure","peer-claimed","coordinator-declined"];
+  def ts_ok: (.ts // "") != "" and ((try (.ts | fromdateiso8601) catch null) != null);
 
   ($all | map(select(type == "object" and .event == "node-state"))) as $ns_candidates
-  | ([$ns_candidates[] | select(((.node // "") | tostring) == "" or (.ts // "") == "" or (.state // "") == "")] | length) as $skipped
-  | ($ns_candidates | map(select(((.node // "") | tostring) != "" and (.ts // "") != "" and (.state // "") != ""))) as $ns_all
+  | ([$ns_candidates[] | select(((.node // "") | tostring) == "" or (ts_ok | not) or (.state // "") == "")] | length) as $skipped
+  | ($ns_candidates | map(select(((.node // "") | tostring) != "" and ts_ok and (.state // "") != ""))) as $ns_all
   | ($ns_all | map(.node) | unique) as $nodes
   | ($ns_all | map(select($since == "" or .ts >= $since)) | map(select($until == "" or .ts <= $until))) as $ns
   | ($ns | map(.ts) | sort) as $ts_all

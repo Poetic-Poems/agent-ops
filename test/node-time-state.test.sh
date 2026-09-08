@@ -26,11 +26,13 @@
 #                        inflate that node's total past one window's worth
 #                        of seconds — every point lands on one merged,
 #                        chronologically-ordered timeline.
-#   degradations        a malformed raw line, an event naming no node, and a
-#                        `node-state` event with no `cause` (idle-with-demand
-#                        with an unrecognised or absent cause counts under
-#                        `unspecified` rather than being dropped) all yield a
-#                        conforming report rather than aborting the fold.
+#   degradations        a malformed raw line, an event naming no node, a
+#                        `node-state` event whose `ts` is present but fails
+#                        `fromdateiso8601`, and a `node-state` event with no
+#                        `cause` (idle-with-demand with an unrecognised or
+#                        absent cause counts under `unspecified` rather than
+#                        being dropped) all yield a conforming report rather
+#                        than aborting the fold.
 #
 # No test framework is used (none exists elsewhere in this repo). Run
 # directly:
@@ -304,6 +306,25 @@ assert_eq "an event naming no node is excluded from every node's timeline" \
   "1" "$(jq -c '.skipped_events' <<<"$degraded_report")"
 assert_eq "  ... and the invariant still balances over what remains" \
   "true" "$(jq -c '.balanced' <<<"$degraded_report")"
+
+# --- A node-state event whose ts is present but fails fromdateiso8601 (a
+#     +00:00 offset here, rather than the strict Z form) is excluded the
+#     same way a missing ts is, never aborting the fold to the fallback
+#     all-empty shape -----------------------------------------------------
+
+bad_ts_fixture="$tmp_dir/bad-ts.jsonl"
+cat > "$bad_ts_fixture" <<'EOF'
+{"ts":"2026-06-03T00:00:00Z","node":"n1","event":"node-state","state":"overhead"}
+{"ts":"2026-06-03T00:05:00+00:00","node":"n1","event":"node-state","state":"producing"}
+{"ts":"2026-06-03T00:10:00Z","node":"n1","event":"node-state","state":"overhead"}
+EOF
+bad_ts_report="$(fold_of "$bad_ts_fixture")"
+assert_eq "a node-state event with an unparseable ts does not abort the fold" \
+  "600" "$(jq -c '.window.seconds' <<<"$bad_ts_report")"
+assert_eq "  ... it is excluded from every node's timeline, counted under skipped_events" \
+  "1" "$(jq -c '.skipped_events' <<<"$bad_ts_report")"
+assert_eq "  ... and the invariant still balances over what remains" \
+  "true" "$(jq -c '.balanced' <<<"$bad_ts_report")"
 
 # --- An empty or unreadable log prints a conforming, all-zero report -------
 

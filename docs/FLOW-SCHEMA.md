@@ -932,6 +932,7 @@ that node — never double-counted — and the degradations requirement 50's
 own acceptance check names: an unrecognised `state` value (lands in
 `unaccounted_seconds`, not dropped and not misclassified), an
 `idle-with-demand` event with no recognised `cause` (counts under
-`unspecified`, never guessed at a real one), a malformed raw line, and an
-event naming no node (both excluded and counted under `skipped_events`,
-never fatal to the fold).
+`unspecified`, never guessed at a real one), a malformed raw line (dropped
+before it ever becomes a candidate event, uncounted), and an event naming no
+node or whose `ts` is present but fails `fromdateiso8601` (excluded and
+counted under `skipped_events`) — none of them fatal to the fold.

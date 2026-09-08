@@ -23180,8 +23180,11 @@ oblige anyone to edit a test.
     `unaccounted_seconds` rather than being dropped or misclassified, an
     `idle-with-demand` event with no recognised `cause` counts under
     `unspecified` rather than a guessed one, a malformed raw line does not
-    abort the fold, and an event naming no node is excluded and counted under
-    `skipped_events` rather than silently vanishing. Each of the four
+    abort the fold (dropped before it ever becomes a candidate event,
+    uncounted), and an event naming no node, or whose `ts` is present but
+    fails `fromdateiso8601`, is excluded and counted under `skipped_events`
+    rather than silently vanishing or aborting the whole fold to the
+    fallback all-empty shape. Each of the four
     translated-not-renamed causes' own assertions (`raced`/`pre-claimed` to
     `peer-claimed`, `fabricated`/`untraceable` to `coordinator-declined`)
     pins the translation's output distinctly from its input, which is what
