@@ -1048,9 +1048,9 @@
       "pattern": "^$|^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
       "default": "",
       "x-docs": {
-        "readme": "Where the pager framework's own `pw::pager` issues are filed. Empty falls back to `crash_loop_repo`, which itself falls back to filing nothing — the value shown is this installation's own repository, not a generic default.",
-        "spec": "Where requirement 51's filed issues land, falling back to `crash_loop_repo` (requirement 2.7) when empty. This installation's own value, `Pullwright/agent-ops`, is documented below because it differs from the empty product default.",
-        "value": "`Pullwright/agent-ops`"
+        "readme": "Where the pager framework's own `pw::pager` issues are filed. Empty (this installation's own choice, left unset) falls back to `crash_loop_repo` at read time — which for this installation already resolves to `Pullwright/agent-ops` — rather than repeating that value here for two config keys to keep in step.",
+        "spec": "Where requirement 51's filed issues land, falling back to `crash_loop_repo` (requirement 2.7) when empty. This installation leaves it unset by design, taking `crash_loop_repo`'s own documented value rather than duplicating it.",
+        "value": "*(unset)*"
       }
     },
     "pager_min_firing_minutes": {
