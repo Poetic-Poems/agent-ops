@@ -98,7 +98,7 @@ if author_token_credential_present; then
   export GH_TOKEN=""
   say "the forge authoring App is configured — GH_TOKEN resolves per call through the credential seam"
 elif [[ -n "${GH_TOKEN:-}" ]]; then
-  say "git credential helper configured from GH_TOKEN"
+  say "no forge authoring App configured — GH_TOKEN authenticates every git/gh call"
 else
   say "WARNING: neither GH_TOKEN nor the forge authoring App's credentials (PULLWRIGHT_AUTHOR_APP_ID/_INSTALLATION_ID/_PRIVATE_KEY_PATH) are set — this node can read nothing from GitHub and push nothing to it"
 fi
@@ -115,7 +115,17 @@ if author_token_credential_present || [[ -n "${GH_TOKEN:-}" ]]; then
   # ahead of it — on every single call.
   # `--replace-all`, not append: this runs on every container start and must
   # not stack a new helper entry on top of the last one.
-  git config --global --replace-all credential.https://github.com.helper '!gh auth git-credential'
+  #
+  # Guarded, because this file runs under `set -euo pipefail` and is PID 1's
+  # entrypoint: an unwritable $HOME or a malformed ~/.gitconfig must degrade
+  # to "pushes will not authenticate", exactly as the `gh auth setup-git`
+  # call this replaced already did, never to a container that refuses to
+  # start at all.
+  if git config --global --replace-all credential.https://github.com.helper '!gh auth git-credential'; then
+    say "git credential helper wired to the credential seam"
+  else
+    say "WARNING: could not configure the git credential helper — pushes will not authenticate"
+  fi
 fi
 
 # --- State and workspace ---
