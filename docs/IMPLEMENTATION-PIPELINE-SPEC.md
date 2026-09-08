@@ -3126,6 +3126,25 @@ implements.
    installed. Git stores no empty directories, so a cycle that stood down
    before its first stage replicates as its `log.jsonl` entry alone.
 
+   **Redaction.** Before `do_push()` commits, every file just staged by the
+   two rsyncs above, plus the heartbeat just written, is passed through
+   `redact_file()` (`lib/redact.sh`, agent-ops#966) in place: `/home/<user>`
+   and `/Users/<user>` → `~`, and `ghp_/gho_/github_pat_/sk-…/Bearer …`
+   token shapes → `[REDACTED-TOKEN]`. It is the same pattern set
+   `scripts/publish-dashboard.sh` applies to its own payload
+   (`docs/DASHBOARD-SPEC.md`), shared through `lib/redact.sh` rather than
+   reimplemented — the pattern only ever touches path- and
+   token-shaped substrings, never JSON syntax, so `log.jsonl` and the other
+   JSON/JSON-Lines files above stay parseable afterwards. Nothing upstream of
+   this point stops a token or a home path that reaches a stage's own
+   stdout/stderr — a verbose `git`/`curl` error, a stray `set -x`, a future
+   bug — from landing in a transcript or a log; unlike the dashboard's
+   published payload, the state repository is private, but it retains
+   everything indefinitely (`log.jsonl` is never rotated, requirement 2.6),
+   so this pass is the only backstop it has. Out of scope: anything already
+   committed to the state repository's history before this pass existed —
+   a one-off cleanup, not a push-time behaviour this requirement covers.
+
    **Mirror integrity.** Before either mode below touches the mirror,
    `mirror_init` (`scripts/state-sync.sh`) confirms it still deserves the
    trust a bare directory check used to hand it for free: a host whose disk
