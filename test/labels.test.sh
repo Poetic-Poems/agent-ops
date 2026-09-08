@@ -769,6 +769,11 @@ out="$(labels_mint "Owner/repo" issue "42" '[]' </dev/null)"
 assert_eq "an empty LABELS_JSON prints the all-empty object" \
   '{"created":[],"applied":[],"refused":[]}' "$(jq -c . <<<"$out")"
 
+reset_stub
+out="$(labels_mint "Owner/repo" merge-request "42" '[{"name":"x"}]' </dev/null)"
+assert_eq "an unusable KIND prints the all-empty object rather than erroring" \
+  '{"created":[],"applied":[],"refused":[]}' "$(jq -c . <<<"$out")"
+
 echo
 if (( failures == 0 )); then
   echo "All labels assertions passed."

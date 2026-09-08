@@ -17727,9 +17727,12 @@ What exists, and the requirements each part answers to:
     `refused`) — called from `agent-cycle.sh`'s Implementer handoff and
     `lib/refinement.sh`'s `_refiner_apply_labels`. `LABELS_GH`
     overrides the `gh` binary for tests. Sourced by `agent-cycle.sh`,
-    `review-cycle.sh`, `lib/refinement.sh` and `scripts/doctor.sh`;
-    regression-tested against a stubbed `gh` that records every invocation
-    (`test/labels.test.sh`, `test/refiner-verdicts.test.sh`,
+    `review-cycle.sh` and `scripts/doctor.sh`; component 3h's
+    `_refiner_apply_labels` calls `labels_mint`/`labels_reserved_names`
+    without sourcing this file itself, so `lib/labels.sh` must be sourced
+    first — `agent-cycle.sh` sources both, in that order, for exactly this
+    reason. Regression-tested against a stubbed `gh` that records every
+    invocation (`test/labels.test.sh`, `test/refiner-verdicts.test.sh`,
     `test/implementer-labels-wiring.test.sh`); must pass `shellcheck`.
 16. `scripts/render-config-table.sh` implementing requirement 1b's generated-
     table property: renders the Markdown table body rows of the three prose
