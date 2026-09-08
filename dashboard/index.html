@@ -291,6 +291,13 @@
     return Math.floor(s/60) + "m" + String(Math.round(s%60)).padStart(2,"0") + "s";
   }
   function usd(n) { return n == null ? "—" : "$" + Number(n).toFixed(Number(n) < 1 ? 4 : 2); }
+  // Despite the name, this escapes nothing: it is a null-safe String()
+  // coercion, and every one of its call sites is safe only because the value
+  // reaches the page through el()'s `text` attribute or its children list —
+  // textContent/createTextNode, which escape by construction. Never pair it
+  // with el()'s `html` attribute, which assigns innerHTML: that is exactly
+  // the pairing agent-ops#965 removed, and it needs a real HTML-entity
+  // escaper, not this.
   function esc(s) { return String(s == null ? "" : s); }
 
   // ---------- spend-mode: which "today" the token-cost card shows (#186) ----
