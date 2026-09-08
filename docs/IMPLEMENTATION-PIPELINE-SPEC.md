@@ -23965,8 +23965,30 @@ oblige anyone to edit a test.
     unanimity; `page-outlived-item` fires when a stubbed `gh issue
     list`/`gh pr view` shows an open page's own linked PR merged or closed,
     and its remedy closes exactly the pages found outlived, none still
-    open. `scripts/lint-shell.sh` is clean on every file this requirement
-    touches.
+    open. The same file also drives agent-ops#1282's five peer-vantage
+    invariants against fixture union logs and heartbeat sets:
+    `firing-missed` fires on an active node whose newest `cycle-start` is
+    past 2× a configured interval with no lock held, but not on a node that
+    recently cycled, not on one whose heartbeat is itself stale, and not on
+    one whose own last event is an unmatched `cycle-start` (still holds its
+    lock) however old — with evidence carrying the firing node's own
+    cycle-duration histogram; `node-stale` fires only on a row whose
+    `heartbeat_age_s` exceeds 2× the configured threshold; `updater-stuck`
+    fires only on an active row reporting `updater.status: "stuck"` past 2×
+    the configured threshold, never a stale row's; `review-pipeline-failing`
+    fires on a per-node `review-attempt-failed` streak of 3 or more with no
+    successful `review-end` between, resets on one that had a successful
+    `review-end`, and its evidence names #996; `dashboard-unreadable` fires
+    on a row whose `dashboard_fetch` names a slow fetch or a failed parse,
+    never on a row carrying no probe result at all. Each of the five also
+    proves it never fires with its own threshold unconfigured (an empty
+    `PAGER_EVAL_*` variable). `test/pager.test.sh` additionally proves
+    `pager_register`'s new, optional fifth argument records against the key
+    (empty when omitted) and that a key registered with an override ignores
+    `pager_evaluate`'s own shared `MIN_FIRING_MINUTES` entirely. `scripts/
+    render-config-table.sh --check` passes with `pager_stale_file_after_
+    minutes`/`pager_dashboard_fetch_seconds` added. `scripts/lint-shell.sh`
+    is clean on every file this requirement touches.
 
 9. **An open question the Reviewer could not settle holds unattended landing,
    resolves through the configured ladder, and never through a new commit
