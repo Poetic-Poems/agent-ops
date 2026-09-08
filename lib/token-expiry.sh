@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# lib/token-expiry.sh — the fine-grained PAT expiry warning (agent-ops#694).
+# lib/token-expiry.sh — the PAT expiry warning (agent-ops#694).
 #
-# GitHub states a fine-grained personal access token's own expiry on every
+# GitHub states a personal access token's own expiry on every
 # API response it authenticates, in the `GitHub-Authentication-Token-
 # Expiration` response header (e.g. "2026-08-22 09:35:00 UTC"). On
 # 2026-08-22 ~09:35Z the fleet's tokens expired with zero warning: every
@@ -37,8 +37,8 @@ TOKEN_EXPIRY_WARN_DAYS="${TOKEN_EXPIRY_WARN_DAYS:-7}"
 # endpoint requirement 2.0/2.0b already read (`github_limit_snapshot`,
 # `github_auth_probe`; lib/github-limit.sh) — and prints the raw
 # `GitHub-Authentication-Token-Expiration` header value, or nothing if the
-# call failed or the header is absent: a classic PAT, an installation token,
-# or any other credential GitHub states no expiry for. A caller must read
+# call failed or the header is absent: an installation token, or any other
+# credential GitHub states no expiry for. A caller must read
 # nothing the same "no evidence" way an unreadable `/rate_limit` snapshot
 # already is elsewhere in this file's sibling, never as "expires now".
 #
@@ -96,7 +96,7 @@ token_expiry_parse() {
 #
 # Keyed on the expiry timestamp itself rather than a run-start marker the
 # way `crash_loop_escalated_since` needs one (lib/crash-loop.sh): a
-# fine-grained PAT's expiry is a fixed fact about one credential, not a
+# personal access token's expiry is a fixed fact about one credential, not a
 # recurring failure with no natural id. A human closing the escalation issue
 # without actually rotating the token must not reopen the gate — every
 # cycle would then refile it until the token is rotated. The gate reopens

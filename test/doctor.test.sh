@@ -119,10 +119,11 @@ case "$1" in
     done
     case "$endpoint" in
       rate_limit)
-        # The fine-grained-PAT-expiry read (agent-ops#694,
+        # The PAT-expiry read (agent-ops#694,
         # token_expiry_header, lib/token-expiry.sh): `--include` dumps raw
         # HTTP headers ahead of the JSON body, exactly as the real `gh`
-        # does. STUB_TOKEN_EXPIRY_HEADER unset reproduces a classic PAT (no
+        # does. STUB_TOKEN_EXPIRY_HEADER unset reproduces an installation
+        # token, or any personal access token minted with no expiry (no
         # such header at all); STUB_RATE_LIMIT_FAIL=1 reproduces a call that
         # cannot be read.
         [[ "${STUB_RATE_LIMIT_FAIL:-0}" != "1" ]] || exit 1
@@ -1876,7 +1877,7 @@ assert_eq "its timestamp is a real UTC instant" "1" \
 assert_eq "no GitHub-Authentication-Token-Expiration header (this fixture's stub sends none) leaves token_expiry null" \
   "null" "$(jq -c '.token_expiry' "$status_file" 2>/dev/null)"
 
-# --- Fine-grained PAT expiry (agent-ops#694) --------------------------------
+# --- PAT expiry (agent-ops#694) ----------------------------------------------
 
 rm -f "$status_file"
 # "+12 hours" of slack past the 3-day mark absorbs the few seconds between
@@ -1889,7 +1890,7 @@ out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID 
   STUB_TOKEN_EXPIRY_HEADER="$future_header" \
   bash "$DOCTOR" --config "$unattended_config" --unattended 2>&1)"
 assert_contains "a token under the 7-day threshold is reported as a warning" \
-  "this node's fine-grained PAT expires in 3 day(s)" "$out"
+  "this node's PAT expires in 3 day(s)" "$out"
 assert_contains "  ... naming the warning threshold" \
   "under the 7-day warning threshold" "$out"
 assert_eq "  ... and the artefact carries the same day count" \
@@ -1897,7 +1898,7 @@ assert_eq "  ... and the artefact carries the same day count" \
 assert_eq "  ... and its own verdict is (at least) warn" \
   "true" "$(jq -r '.verdict == "warn" or .verdict == "fail"' "$status_file" 2>/dev/null)"
 assert_eq "  ... and the same message rides in the artefact's warns[], same as any other warn()" \
-  "true" "$(jq '.warns | any(test("fine-grained PAT expires in 3 day"))' "$status_file" 2>/dev/null)"
+  "true" "$(jq '.warns | any(test("PAT expires in 3 day"))' "$status_file" 2>/dev/null)"
 
 rm -f "$status_file"
 far_future_header="$(date -u -d '+90 days +12 hours' '+%Y-%m-%d %H:%M:%S UTC')"
@@ -1906,7 +1907,7 @@ out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID 
   STUB_TOKEN_EXPIRY_HEADER="$far_future_header" \
   bash "$DOCTOR" --config "$unattended_config" --unattended 2>&1)"
 assert_contains "a token well above the threshold is reported ok, not as a warning" \
-  "[ ok ] this node's fine-grained PAT expires in 90 day(s)" "$out"
+  "[ ok ] this node's PAT expires in 90 day(s)" "$out"
 assert_not_contains "  ... and never mentions the warning threshold" \
   "under the 7-day warning threshold" "$out"
 assert_eq "  ... and the artefact still records the day count" \
@@ -1918,7 +1919,7 @@ out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID 
   STUB_RATE_LIMIT_FAIL=1 \
   bash "$DOCTOR" --config "$unattended_config" --unattended 2>&1)"; rc=$?
 assert_not_contains "an unreadable /rate_limit call is not reported as a failure or warning" \
-  "fine-grained PAT expires" "$out"
+  "PAT expires" "$out"
 assert_eq "  ... and doctor.sh still exits 0 (this fixture's only other finding is a warning)" \
   "0" "$rc"
 assert_eq "  ... and the artefact's token_expiry stays null" \

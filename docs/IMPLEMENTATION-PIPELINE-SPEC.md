@@ -3531,12 +3531,12 @@ implements.
    own Publisher ever reads it.
 
    `token_expiry` — `{expires_at, days_remaining} | null` — is the
-   fine-grained-PAT-expiry warning (requirement 2.7a, agent-ops#694): read
+   PAT-expiry warning (requirement 2.7a, agent-ops#694): read
    from the same GitHub section, the same free `/rate_limit` call requirement
    2.0 already reads, `--include`d for the `GitHub-Authentication-Token-
    Expiration` response header GitHub states on every authenticated request.
-   `null` when that header is absent (a classic PAT, an installation token,
-   or any other credential GitHub states no expiry for) — never a warning or
+   `null` when that header is absent (an installation token, or any other
+   credential GitHub states no expiry for) — never a warning or
    a failure, since an absent header says nothing about the token's health.
 2.6b. **The revert-rate publishing tick** (D18 issue #579, a WI of umbrella
    #402). `scripts/publish-revert-rate.sh`, on its own daily crontab line,
@@ -3904,8 +3904,8 @@ implements.
    the Script does with a verdict that already fired, never whether one
    fires.
 2.7a. **Token-expiry escalation** (agent-ops#694). GitHub states a
-   fine-grained PAT's own expiry on every authenticated API response, in the
-   `GitHub-Authentication-Token-Expiration` response header. On 2026-08-22
+   personal access token's own expiry on every authenticated API response,
+   in the `GitHub-Authentication-Token-Expiration` response header. On 2026-08-22
    that date arrived unread and every node lost GitHub at once — requirement
    2.0b's `github_auth_probe` classifies the resulting 401 and escalates,
    but only once the token is already dead. This requirement is the warning
@@ -3937,8 +3937,8 @@ implements.
 
    Deduplicated on the expiry timestamp itself
    (`token_expiry_escalated_for`, keyed on node and `expires_at`), not on
-   whether an open issue currently exists: a fine-grained PAT's expiry is a
-   fixed fact about one credential, so a human closing the issue without
+   whether an open issue currently exists: a personal access token's expiry
+   is a fixed fact about one credential, so a human closing the issue without
    rotating the token must not reopen the gate on the very next cycle — it
    reopens only once the token is actually rotated, which is exactly when
    `expires_at` changes. This is a stricter dedup than crash-loop's own
@@ -19827,8 +19827,8 @@ oblige anyone to edit a test.
    does not, and a different detail never matches.
    back-pressure, and the logged reason states the count's composition
    (`N ready + N draft + N unraised claim(s)`).
-5b. **A fine-grained PAT's own expiry is read, recorded, and escalated once
-   per credential (requirement 2.7a).** `test/token-expiry.test.sh` passes:
+5b. **A personal access token's own expiry is read, recorded, and escalated
+   once per credential (requirement 2.7a).** `test/token-expiry.test.sh` passes:
    `token_expiry_parse` turns a `GitHub-Authentication-Token-Expiration`
    header value into an ISO-8601 UTC instant and a day count that floors
    toward zero — a fractional remainder rounds down, six hours out reads 0
