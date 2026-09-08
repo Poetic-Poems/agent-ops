@@ -496,6 +496,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (it never actually carried markup). No `html:` attribute use remains in
   `dashboard/index.html`.
 
+- **`review-cycle.sh`'s five pre-lock stand-down sites now suppress their
+  node-state transition against a live peer review run, not just a live
+  implementation cycle** (issue #1275). An operator config change
+  (`--disable`, or `project_review.defaults.not_before`) landing while a peer
+  `review-cycle.sh` was mid-Reviewer let the next tick's terminal `down`/
+  `idle-without-demand` transition overwrite that live run's own `producing`
+  on the shared per-node timeline — `suppress_node_state_if_peer_owns_node`
+  probed only `lock.json` (a live `agent-cycle.sh`), never
+  `review-lock.json`. It now also probes `review-lock.json` for a live peer
+  pid, on the same "err toward not-running" terms as the existing probe.
+
 - **Recent cycles no longer reads as an idle fleet when the Publisher could
   not render it** (the 2026-08-29 blackout). Every dashboard in the fleet
   reported "No substantive cycles in the fleet window" for ten days while all

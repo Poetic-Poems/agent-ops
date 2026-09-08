@@ -16007,13 +16007,18 @@ with the Reviewer's own.
       stand-downs, the tier-two every-repository-held one and the usage-limit
       cooldown each call `suppress_node_state_if_peer_owns_node` beside their
       own `set_node_state_terminal`. That helper runs `impl_cycle_running`,
-      the same `lock.json` pid probe the check below it uses, and suppresses
-      only when a live implementation cycle owns the node — a node genuinely
-      idle under both pipelines still records its idle state from these
-      sites. `agent-cycle.sh`'s own two switch stand-downs are the one known
-      gap in this rule and are documented as such
-      (`docs/FLOW-SCHEMA.md`, "Known limitations"; issue #1268). This is
-      #597's own named pitfall
+      the same `lock.json` pid probe the check below it uses, and
+      `review_cycle_running`, the equivalent probe of `review-lock.json`,
+      which ignores a lock naming this process's own pid — five of the six
+      sites run ahead of this process's own lock acquisition, where any live
+      pid is a peer by construction, but the usage-limit cooldown runs after
+      it, over a lock file this run has just written its own pid into — and
+      suppresses when either probe finds a live peer, implementation cycle or
+      peer review run, owning the node; a node genuinely idle under both
+      pipelines still records its idle state from these sites.
+      `agent-cycle.sh`'s own two switch stand-downs are the one known gap in
+      this rule and are documented as such (`docs/FLOW-SCHEMA.md`, "Known
+      limitations"; issue #1268). This is #597's own named pitfall
       ("`cycle-skipped` is not a state"), and it is not cosmetic: the fold
       holds each point's state until the next point's `ts`, and a running
       stage emits nothing between its own `stage-start` and `stage-end`, so
@@ -23525,7 +23530,14 @@ oblige anyone to edit a test.
     logs `idle-without-demand`/`no-demand` as before; and with a `lock.json`
     naming a pid that is gone it logs it too — which is what proves the guard
     is suppressing on the peer rather than swallowing the transition
-    wholesale. `scripts/lint-shell.sh` is clean on every
+    wholesale. The live and gone readings are then repeated against
+    `review-lock.json`, for the peer *review* run the second probe answers
+    about, and a fourth case pins the one guarded site that runs after the
+    lock is won: with a usage-limit cooldown in force and this run's own pid
+    in `review-lock.json`, the cooldown stand-down still logs
+    `externally-blocked`/`usage-limit`, which is what proves that probe
+    excludes this process itself rather than reading its own lock as a peer.
+    `scripts/lint-shell.sh` is clean on every
     file this requirement touches.
 
 9. **An open question the Reviewer could not settle holds unattended landing,
