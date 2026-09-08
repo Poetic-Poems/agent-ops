@@ -120,14 +120,22 @@ assert_contains "memory_describe names the floor in MiB" "512 MiB" "$desc"
 
 # --- memory_cgroup_verdict ---------------------------------------------------
 
-# stub_cgroup HIGH MAX — a cgroup v2 memory directory holding just the two
-# files the verdict reads.
+# stub_cgroup HIGH MAX [PARENT_HIGH] — a cgroup v2 memory directory holding
+# just the files the verdict reads, plus the parent window compose mounts.
+#
+# PARENT_HIGH defaults to the empty file `/dev/null` reads as, which is the
+# unopted-in default and must be pinned rather than inherited: without it
+# these assertions would read the *real* /run/cgroup-parent/memory.high and
+# so pass or fail depending on whether the host running the suite happens to
+# be a scheduler with a parent ceiling of its own.
 stub_cgroup() {
   MEMORY_CGROUP_ROOT="$fixture_dir/cgroup"
   mkdir -p "$MEMORY_CGROUP_ROOT"
   printf '%s\n' "$1" > "$MEMORY_CGROUP_ROOT/memory.high"
   printf '%s\n' "$2" > "$MEMORY_CGROUP_ROOT/memory.max"
   printf '%s\n' "786432000" > "$MEMORY_CGROUP_ROOT/memory.current"
+  MEMORY_CGROUP_PARENT_HIGH="$fixture_dir/parent-memory.high"
+  printf '%s' "${3-}" > "$MEMORY_CGROUP_PARENT_HIGH"
 }
 
 stub_cgroup max 1610612736
@@ -146,6 +154,44 @@ MEMORY_CGROUP_ROOT="$fixture_dir/no-such-cgroup"
 assert_eq "an unreadable cgroup is unknown, never a verdict" \
   "unknown" "$(memory_cgroup_verdict)"
 
+# --- memory_cgroup_verdict: a ceiling on the parent --------------------------
+#
+# The state `cgroup_parent` produces, and the one the container cannot infer:
+# its own memory.high reads `max` exactly as an unbounded cgroup's does, and
+# only the mounted parent window tells the two apart. Getting this wrong in
+# either direction is a live failure — `unbounded` here is a warning nobody
+# can act on, `parented` in the case below is a node quietly ratcheting while
+# doctor calls it healthy.
+
+stub_cgroup max 1610612736 805306368
+assert_eq "a ceiling on the parent is parented, not unbounded" \
+  "parented" "$(memory_cgroup_verdict)"
+
+stub_cgroup max 1610612736 max
+assert_eq "a parent with no ceiling of its own bounds nothing" \
+  "unbounded" "$(memory_cgroup_verdict)"
+
+stub_cgroup max 1610612736 1610612736
+assert_eq "a parent ceiling at the hard limit reclaims nothing first" \
+  "unbounded" "$(memory_cgroup_verdict)"
+
+stub_cgroup max 1610612736 2147483648
+assert_eq "a parent ceiling above the hard limit is not a ceiling" \
+  "unbounded" "$(memory_cgroup_verdict)"
+
+stub_cgroup max 1610612736 ""
+assert_eq "an unmounted parent window (the /dev/null default) is unbounded" \
+  "unbounded" "$(memory_cgroup_verdict)"
+
+stub_cgroup 805306368 1610612736 805306368
+assert_eq "this cgroup's own ceiling wins the verdict over the parent's" \
+  "bounded" "$(memory_cgroup_verdict)"
+
+stub_cgroup max 1610612736 805306368
+MEMORY_CGROUP_PARENT_HIGH="$fixture_dir/no-such-parent-window"
+assert_eq "a missing parent window is unbounded, never parented" \
+  "unbounded" "$(memory_cgroup_verdict)"
+
 # --- memory_cgroup_describe --------------------------------------------------
 
 stub_cgroup max 1610612736
@@ -154,6 +200,19 @@ assert_contains "memory_cgroup_describe names the held MiB" "750 MiB" "$desc"
 assert_contains "memory_cgroup_describe names the ceiling in MiB" "1536 MiB" "$desc"
 assert_contains "memory_cgroup_describe points at the fix" \
   "compose.yaml" "$desc"
+
+# --- memory_cgroup_parent_describe -------------------------------------------
+
+stub_cgroup max 1610612736 805306368
+desc="$(memory_cgroup_parent_describe)"
+assert_contains "memory_cgroup_parent_describe names the parent's ceiling" \
+  "768 MiB" "$desc"
+assert_contains "memory_cgroup_parent_describe names the hard ceiling" \
+  "1536 MiB" "$desc"
+assert_contains "memory_cgroup_parent_describe names what is held now" \
+  "750 MiB" "$desc"
+assert_contains "memory_cgroup_parent_describe says it survives a roll" \
+  "after a roll" "$desc"
 
 # --- Result ------------------------------------------------------------------
 

@@ -404,6 +404,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A scheduler's memory ceiling now survives being recreated**
+  (TD-PPagop-26090401, following issue #1266). `memory.high` — the soft
+  ceiling that has the kernel reclaim a ratcheting cgroup instead of
+  OOM-killing whatever stage reaches the hard limit — was previously written
+  onto the container itself by an operator recipe, and every `docker compose
+  up -d`, watchtower roll and reboot wiped it. Measured across this fleet on
+  2026-09-08, after the recipe was applied by hand to all four schedulers:
+  three had lost it again within 90 minutes to ordinary rolls, and one had hit
+  its hard ceiling 23,995 times in the 92 minutes since being recreated. The
+  register item filed against this in September predicted it; what was new was
+  the half-life.
+
+  The ceiling now goes on the scheduler's **parent** cgroup, selected with
+  Compose's `cgroup_parent`, because the parent is not what gets recreated.
+  `scripts/cgroup-parent-setup.sh` creates it and prints the two `.env` lines
+  that put it to use — `AGENT_OPS_SCHEDULER_CGROUP_PARENT` and
+  `AGENT_OPS_SCHEDULER_CGROUP_HIGH`. Both are unset by default and both are
+  genuinely inert unset: Compose renders no `cgroup_parent` key at all, and
+  the parent window mounts `/dev/null`, so a node that has not opted in
+  behaves exactly as before. Under the `systemd` driver the parent is a slice
+  unit, so systemd re-applies `MemoryHigh=` on every start and reboots are
+  covered; under `cgroupfs` the directory survives recreation but not a
+  reboot, so the script installs a boot hook — a unit where systemd is PID 1,
+  a root `@reboot` crontab entry where it is not, which on the ockham node it
+  is not.
+
+  Nothing here is a hardcoded path, which is the lesson #1266 paid for. The
+  driver comes from `docker info`; the slice path is derived from systemd's
+  own naming rule and cross-checked against `systemctl show`, because systemd
+  reads `-` in a slice name as a hierarchy separator and so puts
+  `agentops-1.slice` under `agentops.slice` — one level deeper than its name
+  suggests, and the same class of wrong assumption as #1266's, one layer up.
+
+  `doctor.sh`'s "container memory" line changes with it. A ceiling on the
+  parent is the new `parented` verdict and reads `[ ok ]`; a ceiling on the
+  container itself still reads `bounded` but now **warns**, naming itself as
+  something the next roll will wipe — a state that is correct today and gone
+  tomorrow should not report as healthy. The parent's ceiling cannot be
+  inferred from inside a cgroup namespace (verified on the poetic node: a
+  container held to 64 MiB by its parent read its own `memory.high` as `max`
+  and its own `memory.events` `high` as `0` while the parent counted 250
+  reclaim events), so it is bind-mounted read-only as a single file — a
+  measurement rather than an inference, and narrower than giving the
+  egress-fenced scheduler a view of the host's whole cgroup tree.
+
 - **The `memory.high` operator recipe now works on a host whose Docker uses
   the `systemd` cgroup driver** (issue #1266). The recipe in
   `deploy/docker/compose.yaml`'s `scheduler:` block — the documented remedy
