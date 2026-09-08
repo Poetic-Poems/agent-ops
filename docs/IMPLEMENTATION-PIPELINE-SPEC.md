@@ -135,14 +135,26 @@ a node updates by pulling a new image rather than by pulling a branch.
   idempotent: it seeds `$CLAUDE_CONFIG_DIR/settings.json` from
   `deploy/docker/claude-settings.json` **only when absent** (that directory is a
   persistent volume holding refreshing OAuth credentials, and the seed carries
-  model/effort defaults only — no plugins and no local marketplaces), runs
-  `gh auth setup-git` so https pushes authenticate — whenever `GH_TOKEN` is
-  present, or, since D25/agent-ops#607, whenever the forge authoring App's
-  credential is (component 14g's `author_token_credential_present`), minting
-  one token here purely so the call has something to configure the
-  credential helper against; every cycle mints its own fresh token later
-  (component 14h) — creates `state_dir` and `workspace_root`, and then execs
-  the service it was given. It refuses to start if `state_dir` is not writable, rather than
+  model/effort defaults only — no plugins and no local marketplaces); wires
+  authentication — since agent-ops#1021, no token is minted here at all. When
+  the forge authoring App's credential is present (component 14g's
+  `author_token_credential_present`), it moves whatever ambient `GH_TOKEN` a
+  PAT-carrying node already held into `PW_GH_DEGRADE_TOKEN` (component 14h
+  owns the name) and leaves `GH_TOKEN` explicitly empty — exported, not
+  merely unset — so every process this entrypoint execs inherits an empty
+  `GH_TOKEN` and resolves its own credential through the on-demand seam
+  (component 22c) rather than a token that may be hours from expiry by the
+  time it authenticates anything; either way (App configured or not) it then
+  configures `git`'s own credential helper directly —
+  `git config --global --replace-all credential.https://github.com.helper
+  '!gh auth git-credential'` — rather than through `gh auth setup-git`, whose
+  own behaviour would bake the *absolute path* of the real `gh` binary into
+  the config (`os.Executable()`, read inside the process the shim execs
+  through to) and so bypass the shim, and therefore the seam, on every future
+  credential fill; the unqualified `gh` re-resolves through `PATH` — the
+  shim, ahead of the real binary — on every call — creates `state_dir` and
+  `workspace_root`, and then execs the service it was given. It refuses to
+  start if `state_dir` is not writable, rather than
   letting a mis-owned volume become a silent failure to record anything. It
   does *not* set the git identity: every container this image runs — including
   the dashboard services and every command a `docker run` might be given —
@@ -1777,18 +1789,30 @@ implements.
    the log is written to.
 2. **Stand-down checks.** Each check logs its reason and exits cleanly:
 
-   Before check 0 below, and before every other check in this list: the
-   effective GitHub credential for this cycle is resolved once
-   (`forge_auth_effective_gh_token`, component 14h, D25/agent-ops#607) and
-   exported as `GH_TOKEN` for the rest of the process — the forge authoring
-   App's own minted installation token when it is configured and a mint (or
-   a cache hit) succeeds, the node's own ambient `GH_TOKEN` in every other
-   case. This has no number of its own in the list below because it never
-   itself stands the cycle down — it only decides *which* credential 0b's
-   probe two steps later, and everything after it, actually authenticates
-   with. Unnumbered rather than "0aa" or similar, since renumbering 0a–0c
-   would touch every cross-reference those letters already have elsewhere in
-   this document, and this step changes no stand-down behaviour of its own.
+   Before check 0 below, and before every other check in this list: which
+   GitHub credential this cycle *would* currently use is logged
+   (`forge_auth_effective_gh_token`, component 14h, D25/agent-ops#607 as
+   amended by agent-ops#1021) — but, since agent-ops#1021, nothing here
+   resolves or exports one. A forge authoring App installation token carries
+   GitHub's ~1 h lifetime, and a cycle routinely outlives that, so no single
+   point in the process can resolve a credential once for its whole life
+   without risking a stale one reaching whichever call comes after expiry.
+   The credential is instead resolved on demand, per call, by the on-demand
+   seam (component 22c): every `gh` invocation reaches `lib/gh-shim.sh`'s `gh`
+   transport shim, installed ahead of the real binary on `PATH`, before
+   dispatch, and plain `git` reaches the same shim through its own
+   credential helper (`deploy/docker/entrypoint.sh`, component 7). Both mint
+   only when `GH_TOKEN` is already
+   empty — an explicit `GH_TOKEN` always passes through untouched, which is
+   what keeps `lib/approver.sh`'s own
+   `GH_TOKEN="$(approver_token_get)" gh …` posting as the Approver rather
+   than being re-minted as the author. This step has no number of its own in
+   the list below because it never itself stands the cycle down and changes
+   nothing any check after it reads — it only logs which path 0b's probe two
+   steps later, and every later call in the process, would resolve through
+   the seam. Unnumbered rather than "0aa" or similar, since renumbering
+   0a–0c would touch every cross-reference those letters already have
+   elsewhere in this document.
    0. *GitHub API budget*: before any other check, read the meter — the
       `x-ratelimit-*` headers of one metered `GET /meta` for `core`, and the
       GraphQL `rateLimit` object for `graphql`, assembled into one snapshot by
@@ -18040,34 +18064,54 @@ What exists, and the requirements each part answers to:
     cross-identity cache-isolation case component 14b's own tests do not
     need. Must pass `shellcheck`.
 14h. `lib/forge-auth.sh` — which identity a cycle authors as (D25,
-    agent-ops#607). `forge_auth_effective_gh_token [NOW_EPOCH]` is the one
-    decision point: print `SOURCE<TAB>TOKEN` on stdout (never a bare token —
-    a caller must read the two apart with `IFS=$'\t' read -r source token
-    < <(...)`, the same shape `lib/github-limit.sh`'s `github_auth_probe`
-    already uses, and for the same reason a plain `x="$(...)"` command
-    substitution cannot hand a side-effect global back to its caller through
-    a subshell boundary). `SOURCE` is `forge-app` when component 14g's
-    `author_token_credential_present` is true and a mint (or a cache hit)
-    actually succeeds, `gh-token-degraded` when the credential is configured
-    but a mint attempt just failed, and `gh-token` when no forge authoring
-    App is configured at all — the last two both resolve `TOKEN` to whatever
-    the node's own ambient `GH_TOKEN` already held, which may itself be
-    empty (the pre-existing "no credential" case this file does not change).
-    **Never fails.** An absent, unreadable or momentarily unreachable App
-    identity always degrades to `GH_TOKEN` rather than blocking a cycle —
-    the D25 requirement that this identity never brick a node that has
-    always worked fine on its PAT alone.
-    Called from `lib/standdown.sh`'s `run_standdown_checks`, first, ahead of
-    every check that authenticates against GitHub as this cycle — including
-    2.0's `/rate_limit` budget probe and 2.0b's credential-fault probe two
-    steps later — so both validate whichever credential this cycle will
-    actually use, resolved once and exported as `GH_TOKEN` for the rest of
-    the process (`gh` reads the variable directly; plain `git` reads it
-    through `deploy/docker/entrypoint.sh`'s credential-helper wiring,
-    component 3). A `gh-token-degraded` resolution logs a `warning` once per
-    cycle; every resolution logs a `forge-auth` event naming its `source`,
-    for `scripts/publish-dashboard.sh` and any operator reading the log to
-    see which identity authored a given cycle's work.
+    agent-ops#607), and the name of the on-demand credential seam's
+    degrade-path variable (D25 as amended, agent-ops#1021, component 22c). No
+    single point in a cycle's process resolves a credential once for the
+    process's whole life any more: a forge authoring App installation token
+    carries GitHub's ~1 h lifetime, and a cycle routinely outlives that
+    (`lib/stage-budget.sh`'s own priors put the Implementer alone at 150
+    minutes), so the credential is resolved on demand, per call, by
+    component 22c's `gh` transport shim (every `gh` invocation) and, for
+    plain `git`, the same shim reached through `git`'s own credential helper
+    (`!gh auth git-credential`, `deploy/docker/entrypoint.sh`, component 7).
+    Both mint only when `GH_TOKEN` is already empty in their own
+    environment — "explicit wins; empty resolves" — so a human's own exported
+    token, or `lib/approver.sh`'s own
+    `GH_TOKEN="$(approver_token_get)" gh …`, always passes through untouched;
+    the seam must never re-identify the Approver's own calls as the author,
+    which is the point of D18's two-identity separation. `PW_GH_DEGRADE_TOKEN`
+    is this file's own contribution to that seam: the name
+    `deploy/docker/entrypoint.sh` stashes the node's ambient PAT under, when
+    the forge authoring App is configured, before it leaves `GH_TOKEN` itself
+    empty for every process it execs — the seam's fallback whenever no App is
+    configured, or a mint attempt fails, which is the degrade path
+    agent-ops#607 requires: an unset, unreadable or momentarily unreachable
+    App identity must never brick a node that has always worked fine on its
+    PAT alone, and a token that ages out mid-cycle must never present a stale
+    one to the call that needed it.
+    `forge_auth_effective_gh_token [NOW_EPOCH]` no longer sets anything a
+    cycle authenticates with — it is diagnostic only, called once from
+    `lib/standdown.sh`'s `run_standdown_checks`, purely to log which path a
+    call made right now would take: print `SOURCE<TAB>TOKEN` on stdout (never
+    a bare token — a caller must read the two apart with `IFS=$'\t' read -r
+    source token < <(...)`, the same shape `lib/github-limit.sh`'s
+    `github_auth_probe` already uses, and for the same reason a plain
+    `x="$(...)"` command substitution cannot hand a side-effect global back
+    to its caller through a subshell boundary). `SOURCE` is `forge-app` when
+    component 14g's `author_token_credential_present` is true and a mint (or
+    a cache hit) actually succeeds, `gh-token-degraded` when the credential
+    is configured but a mint attempt just failed, and `gh-token` when no
+    forge authoring App is configured at all — the last two both resolve
+    `TOKEN` to whatever `PW_GH_DEGRADE_TOKEN`, or (absent that) the node's own
+    ambient `GH_TOKEN`, already held, which may itself be empty (the
+    pre-existing "no credential" case this file does not change). **Never
+    fails.**
+    `lib/standdown.sh` logs the `forge-auth` event naming `SOURCE`, and a
+    `warning` once per cycle for a `gh-token-degraded` resolution, so
+    `scripts/publish-dashboard.sh` and any operator reading the log can see
+    which identity a cycle would author under; 2.0b's credential-fault probe
+    two steps later validates the identity the cycle actually uses, because
+    its own `gh` call goes through the seam too.
     Sourced, never executed; requires component 14g already sourced.
     Regression-tested in `test/forge-auth.test.sh`: the plain-`GH_TOKEN` path
     with and without one set, the App path (fresh mint and a cached reuse),
@@ -18725,11 +18769,35 @@ What exists, and the requirements each part answers to:
     (`test/github-budget-report.test.sh`); must pass `shellcheck`.
 
 22c. `lib/gh-shim.sh` and `scripts/gh-shim.sh` — the `gh` transport shim
-    (requirement 2.0e, agent-ops#1084): the executable, installed on `PATH`
-    ahead of the real binary (`deploy/docker/Dockerfile`), is a thin entry
-    point that sources the library and calls `gh_shim_main "$@"`; every
+    (requirement 2.0e, agent-ops#1084), and, since agent-ops#1021, the front
+    door for the forge authoring App's on-demand credential seam (D18
+    decision 1 as amended, component 14h): the executable, installed on
+    `PATH` ahead of the real binary (`deploy/docker/Dockerfile`), is a thin
+    entry point that sources the library and calls `gh_shim_main "$@"`; every
     other function lives in the library and is unit-tested by sourcing it
-    directly. `gh_shim_classify` (built on `gh_shim_parse`) is the one place
+    directly. `gh_shim_main` calls `gh_shim_resolve_token` first, ahead of
+    classification and every transport pathway below: "explicit wins; empty
+    resolves" — a non-empty `GH_TOKEN` is never touched (which is what keeps
+    `lib/approver.sh`'s own `GH_TOKEN="$(approver_token_get)" gh …` posting
+    as the Approver rather than being re-minted as the author); an empty one
+    mints a forge authoring App installation token (`lib/author-token.sh`,
+    component 14g) — a cache hit costs nothing, so this runs unconditionally
+    on every single invocation, the one place that guarantees every
+    `git`/`gh` authoring act this node makes starts with at least
+    `lib/github-app-token.sh`'s own `refresh_buffer=300` seconds of token
+    life left, however long the cycle or the stage running it has been
+    alive — and falls back to `PW_GH_DEGRADE_TOKEN` (component 14h owns the
+    name) when no App is configured or a mint attempt fails, leaving
+    `GH_TOKEN` empty when neither is available (the pre-existing "nothing
+    configured" case). This is the seam's *first* front door; the second is
+    the same shim reached through `git`'s own credential helper
+    (`!gh auth git-credential`, `deploy/docker/entrypoint.sh`, component 7)
+    — an unqualified `gh` there resolves through `PATH` to this file exactly
+    as any other caller's does, so `gh_shim_resolve_token` mints for `git`
+    too, and `gh auth git-credential`'s own protocol answer
+    (`username=x-access-token`, `password=<token>`) reflects whatever this
+    file just resolved.
+    `gh_shim_classify` (built on `gh_shim_parse`) is the one place
     a call is sorted into `read` (a plain `gh api` GET — the only class ever
     conditioned), `paginate` (a `gh api` GET carrying `--paginate`/`--slurp`
     — stored and served last-known-good like a `read`, but never conditioned
@@ -18756,14 +18824,21 @@ What exists, and the requirements each part answers to:
     through a shell variable); `gh_shim_ledger_line` and `gh_shim_budget_update`
     write `state_dir/gh-shim/ledger.ndjson` and `budget.json` under `flock`.
     `gh_shim_identity` hashes `GH_TOKEN`/`GITHUB_TOKEN` (or the fixed
-    `no-token` tag) so the App and the PAT never share a cache entry or a
-    budget reading. `PW_GH_REAL_BIN`, `PW_GH_STATE_DIR`, `PW_GH_NO_CACHE`,
-    `PW_GH_STALE_CEILING_SECONDS` and `PW_GH_STALE_EXIT_CODE` are its test
-    seams and operator knobs, documented in the library's own header rather
-    than in `config.schema.json` — the same convention `lib/github-limit.sh`'s
+    `no-token` tag) — read after `gh_shim_resolve_token` has already run, so
+    a minted App token and the PAT it may have replaced never share a cache
+    entry or a budget reading either. `PW_GH_REAL_BIN`, `PW_GH_STATE_DIR`,
+    `PW_GH_NO_CACHE`, `PW_GH_STALE_CEILING_SECONDS` and `PW_GH_STALE_EXIT_CODE`
+    are its transport test seams and operator knobs; `PW_GH_DEGRADE_TOKEN`
+    (component 14h owns the name) and `PW_GH_NOW_EPOCH` (a test seam only,
+    the clock `gh_shim_resolve_token` mints against) are the credential
+    seam's own — documented in the library's own header rather than in
+    `config.schema.json` — the same convention `lib/github-limit.sh`'s
     own `GITHUB_LIMIT_*` variables already use. Unit- and integration-tested
     against a stub "real gh" binary answering from a per-call JSON plan
-    (`test/gh-shim.test.sh`); must pass `shellcheck`.
+    (`test/gh-shim.test.sh`) and, for the credential seam specifically —
+    stubbed `curl`/`openssl` and `PW_GH_NOW_EPOCH` advanced past a minted
+    token's `expires_at` — `test/gh-shim-auth.test.sh` (acceptance check 2q);
+    must pass `shellcheck`.
 
 23c. `scripts/find-similar-tech-debt.sh` implementing the dedup half of
     requirements 24b/30d/36c/42a: given a working title, normalises it
@@ -19879,6 +19954,31 @@ oblige anyone to edit a test.
    through unmodified; and `PW_GH_NO_CACHE=1` forces the same unmodified
    passthrough for an otherwise-cacheable read, still ledgered as `bypass`.
    `lib/gh-shim.sh` and `scripts/gh-shim.sh` pass `shellcheck -x`.
+2q. **The on-demand credential seam mints a fresh token once the previous
+   one is within `refresh_buffer` of expiry, never re-identifies an
+   explicit `GH_TOKEN`, and degrades exactly like the identity it fronts for
+   (D18 decision 1 as amended, agent-ops#1021).** `test/gh-shim-auth.test.sh`
+   passes, end to end against a stub "real gh" binary and stubbed
+   `curl`/`openssl` (never a live App or network call): with `GH_TOKEN`
+   empty and the forge authoring App configured, both `gh auth
+   git-credential` (standing in for the credential helper `git push` calls)
+   and an ordinary `gh` call present a freshly-minted token, and a second
+   call within the token's lifetime reuses it — no second mint; with
+   `PW_GH_NOW_EPOCH` advanced past that token's `expires_at`, the next call
+   of either kind presents a *different*, freshly-minted token, not the
+   stale one — the contract `TD-PPagop-26082833` named and this item exists
+   to close; a non-empty `GH_TOKEN` in the calling environment (including the
+   shape `GH_TOKEN="$(approver_token_get)" gh …` uses) reaches the stub
+   unchanged and mints nothing; with no forge authoring App configured, an
+   ambient `GH_TOKEN` authenticates every call exactly as before this item;
+   and, App configured but a mint refused, the call presents
+   `PW_GH_DEGRADE_TOKEN` rather than failing or reaching the real binary with
+   no credential at all. `test/forge-auth.test.sh` continues to pass
+   unmodified — `PW_GH_DEGRADE_TOKEN` unset in every one of its cases, so
+   `forge_auth_effective_gh_token`'s `gh-token-degraded` path still falls
+   back to `GH_TOKEN` exactly as before — and `test/forge-auth.test.sh`,
+   `test/gh-shim.test.sh` and `test/gh-shim-auth.test.sh` all pass
+   `shellcheck`.
 2l. **A rejected or missing credential is classified apart from an outage,
    and stands the cycle down before the Co-Ordinator ever runs (requirement
    2.0b, agent-ops#691, TD-PPagop-26082306).** `test/github-limit.test.sh`

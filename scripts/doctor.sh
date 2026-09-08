@@ -398,8 +398,10 @@ fi
 # purely so an operator sees which credential this node actually authors
 # with; absence never warns or fails — landing this identity with its values
 # unset (an owner act, out of this item's scope) is the expected steady
-# state until it is provisioned, and lib/forge-auth.sh's degrade to GH_TOKEN
-# means the node works exactly as it always has either way. The one live
+# state until it is provisioned, and the credential seam's degrade path
+# (lib/forge-auth.sh's PW_GH_DEGRADE_TOKEN, or GH_TOKEN itself where the
+# entrypoint's stash never ran) means the node works exactly as it always has
+# either way. The one live
 # check — a mint attempt, which does cost a network call — is below, in the
 # GitHub section.
 author_app_id_env="${PULLWRIGHT_AUTHOR_APP_ID:-}"
