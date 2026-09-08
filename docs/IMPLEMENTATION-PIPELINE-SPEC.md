@@ -19066,7 +19066,11 @@ oblige anyone to edit a test.
    pruned to the newest `state_local_cycles_retained` by the same push,
    newest always kept, and `log.jsonl` is byte-for-byte untouched by that
    same local prune regardless of how many cycle/review directories it
-   removes (requirement 2.6d); a fetch materialises a peer whole
+   removes (requirement 2.6d); everything the push commits is redacted first
+   (requirement 2.5, `lib/redact.sh`) — a token- and home-path-shaped
+   fixture planted in `cron.log` and in a cycle transcript reaches the
+   branch as `[REDACTED-TOKEN]` and `~`, neither raw form survives, and the
+   redacted transcript still parses as JSON; a fetch materialises a peer whole
    under the peers directory, leaves the node's own `state_dir` alone, never
    includes the node itself, and prunes a peer whose branch is gone; the
    union read (`lib/fleet.sh`) carries both nodes' events in time order; and
