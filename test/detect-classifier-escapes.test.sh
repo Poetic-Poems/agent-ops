@@ -61,6 +61,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DETECTOR="$SCRIPT_DIR/scripts/detect-classifier-escapes.sh"
+DOCTOR="$SCRIPT_DIR/scripts/doctor.sh"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -112,12 +113,18 @@ routine_complexity_block="$(extract _escape_audit_routine_complexity "$DETECTOR"
 [[ -n "$routine_complexity_block" ]] || { echo "FAIL - could not extract _escape_audit_routine_complexity from $DETECTOR — has it moved?" >&2; exit 1; }
 eval "$routine_complexity_block"
 
+doctor_protected_paths_block="$(extract _doctor_protected_paths "$DOCTOR")"
+[[ -n "$doctor_protected_paths_block" ]] || { echo "FAIL - could not extract _doctor_protected_paths from $DOCTOR — has it moved?" >&2; exit 1; }
+eval "$doctor_protected_paths_block"
+
 # shellcheck source=lib/github-limit.sh
 . "$SCRIPT_DIR/lib/github-limit.sh"
 # shellcheck source=lib/merge-queue.sh
 . "$SCRIPT_DIR/lib/merge-queue.sh"
 # shellcheck source=lib/landing.sh
 . "$SCRIPT_DIR/lib/landing.sh"
+# shellcheck source=lib/config-schema.sh
+. "$SCRIPT_DIR/lib/config-schema.sh"
 
 default_protected='[".github/*","deploy/*","prompts/*","lib/*","config.schema.json","config.json","agent-cycle.sh","review-cycle.sh","CODEOWNERS"]'
 for path in ".github/workflows/ci.yml" "deploy/docker/Dockerfile" "prompts/implementer.md" \
@@ -186,6 +193,29 @@ assert_eq "the shipped protected-paths fallback matches config.schema.json's dec
   "$schema_default" "$(_landing_protected_paths '{}' "acme/widgets")"
 assert_eq "  ... and so does the detector's own" \
   "$schema_default" "$(_escape_audit_protected_paths '{}' "acme/widgets")"
+
+# ... and scripts/doctor.sh's own reimplementation (issue #1259), pinned over
+# the same battery — but each config first run through config_defaults, since
+# doctor.sh only ever calls _doctor_protected_paths against $DEFAULTED_CONFIG
+# (its own header comment in scripts/doctor.sh), the same input lib/landing.sh's
+# own _landing_protected_paths receives from agent-cycle.sh. Feeding either
+# function a raw, undefaulted config here (the way the detector pin above
+# does, since the detector is handed a raw --config file) would exercise a
+# branch neither ever actually takes in production and could fail on a
+# mismatch — lib/landing.sh's hardcoded schema-default literal against
+# doctor's own `// []` — that never happens there.
+for cfg in '{"repos":[]}' \
+           '{"repos":[{"slug":"acme/widgets","merge_autonomy_protected_paths":["scripts/*"]}]}' \
+           '{"merge_autonomy_protected_paths":["lib/*","CODEOWNERS"]}' \
+           '{}'; do
+  doctor_pp_cfg_file="$tmp_dir/doctor-pp-cfg.json"
+  printf '%s' "$cfg" > "$doctor_pp_cfg_file"
+  defaulted_cfg="$(config_defaults "$doctor_pp_cfg_file" "$SCRIPT_DIR/config.schema.json")"
+  landing_out="$(_landing_protected_paths "$defaulted_cfg" "acme/widgets")"
+  doctor_out="$(_doctor_protected_paths "$defaulted_cfg" "acme/widgets")"
+  assert_eq "doctor.sh's protected-paths resolution for defaulted config '$cfg' matches lib/landing.sh's own" \
+    "$landing_out" "$doctor_out"
+done
 
 # ... and the same pin for merge_autonomy_routine_sources: lib/landing.sh's
 # fallback is fed $DEFAULTED_CONFIG (already schema-defaulted, so this branch
