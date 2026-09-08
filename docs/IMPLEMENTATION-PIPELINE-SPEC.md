@@ -15795,11 +15795,16 @@ with the Reviewer's own.
       stand-downs, the tier-two every-repository-held one and the usage-limit
       cooldown each call `suppress_node_state_if_peer_owns_node` beside their
       own `set_node_state_terminal`. That helper runs `impl_cycle_running`,
-      the same `lock.json` pid probe the check below it uses, and suppresses
-      only when a live implementation cycle owns the node — a node genuinely
-      idle under both pipelines still records its idle state from these
-      sites. `agent-cycle.sh`'s own two switch stand-downs are the one known
-      gap in this rule and are documented as such
+      the same `lock.json` pid probe the check below it uses, and
+      `review_cycle_running`, the equivalent probe of `review-lock.json` —
+      every one of these six sites runs ahead of this process's own lock
+      acquisition, so a live pid found there is necessarily a peer
+      `review-cycle.sh`, never this run itself — and suppresses when either
+      probe finds a live peer, implementation cycle or peer review run,
+      owning the node; a node genuinely idle under both pipelines still
+      records its idle state from these sites. `agent-cycle.sh`'s own two
+      switch stand-downs are the one known gap in this rule and are
+      documented as such
       (`docs/FLOW-SCHEMA.md`, "Known limitations"; issue #1268). This is
       #597's own named pitfall
       ("`cycle-skipped` is not a state"), and it is not cosmetic: the fold
