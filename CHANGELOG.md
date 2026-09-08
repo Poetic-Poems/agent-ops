@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`doctor.sh` warns when an empty `merge_autonomy_protected_paths` disarms
+  gate 4 for a routine-tier repository** (issue #963, TD-PPagop-26082403):
+  a resolved `merge_autonomy_protected_paths` of `[]` — schema-valid, since
+  neither the top-level key nor the `repos[]` override carries a `minItems`
+  — was silently disabling the protected-path landing gate for any
+  repository trusted at `agent-merges-routine` or above, with nothing
+  reporting it was off. `scripts/doctor.sh` now warns, naming the
+  repository and its configured level, on the model of its neighbouring
+  `landing_cool_off_hours 0` warning.
+
 - **Per-close re-filing rate limit for escalation issues** (issue #779,
   decided on #784 as behaviour (b)): a human closing an escalation issue
   without performing the releasing act (removing the `open-question` label

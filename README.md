@@ -621,7 +621,7 @@ D18 WI-7: which work sources may be armed automatically at `agent-merges-routine
 
 ### Extended notes: `merge_autonomy_protected_paths`
 
-D18 Stage 3: the whole-path prefixes a routine-tier landing must touch none of — below `agent-merges-all` a hit refuses outright; at `agent-merges-all` it is deferred to the critical-tier and `landing_cool_off_hours` controls instead. An entry ending `/*` matches a whole-path prefix; any other entry matches an exact path. A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Defaults to agent-ops's own gate paths, which govern nothing outside agent-ops itself.
+D18 Stage 3: the whole-path prefixes a routine-tier landing must touch none of — below `agent-merges-all` a hit refuses outright; at `agent-merges-all` it is deferred to the critical-tier and `landing_cool_off_hours` controls instead. An entry ending `/*` matches a whole-path prefix; any other entry matches an exact path. A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Defaults to agent-ops's own gate paths, which govern nothing outside agent-ops itself. A resolved `[]` is valid — a repository whose gate code lives elsewhere may legitimately want it — but `scripts/doctor.sh` warns when it reaches a repository trusted at `agent-merges-routine` or above, since that repository's routine landings would otherwise have no path able to refuse one.
 
 ### Extended notes: `merge_autonomy_routine_complexity`
 

@@ -483,6 +483,37 @@ while IFS= read -r lc_slug; do
   fi
 done < <(cfg '.repos[]?.slug // empty')
 
+# D18 Stage 3 (agent-ops#724, TD-PPagop-26082403): merge_autonomy_protected_paths
+# resolved to an empty list disables gate 4 (the protected-path refusal)
+# entirely for that repository — _landing_is_protected's any(.[]; …) over []
+# is false for every path, so it is the same shape of configured-off
+# compensating control as landing_cool_off_hours 0 above, and worth the same
+# warning. Resolved the same way _landing_protected_paths (lib/landing.sh)
+# resolves it — a repo's own repos[] override when it is an array, else the
+# top-level key, which $DEFAULTED_CONFIG has already schema-defaulted to
+# agent-ops's own nine paths when the operator set neither — but reimplemented
+# here rather than sourced, the same isolation
+# scripts/detect-classifier-escapes.sh's own reimplementation already
+# documents. Judged against the *configured* level, not the kill-switch/
+# freeze-adjusted effective one, the same reason the merge_autonomy pairing
+# checks above are.
+while IFS= read -r pp_slug; do
+  [[ -n "$pp_slug" ]] || continue
+  pp_level="$(merge_autonomy_configured_level "$DEFAULTED_CONFIG" "$pp_slug")"
+  pp_rank="$(merge_autonomy_rank "$pp_level" 2>/dev/null || printf 0)"
+  pp_routine_rank="$(merge_autonomy_rank agent-merges-routine)"
+  pp_list="$(jq -c --arg slug "$pp_slug" \
+    '(.repos // [])[] | select(.slug == $slug) | .merge_autonomy_protected_paths // empty' \
+    <<<"$DEFAULTED_CONFIG" 2>/dev/null | head -1)"
+  if [[ -z "$pp_list" ]] || ! jq -e 'type == "array"' <<<"$pp_list" >/dev/null 2>&1; then
+    pp_list="$(jq -c '.merge_autonomy_protected_paths // []' <<<"$DEFAULTED_CONFIG" 2>/dev/null)"
+  fi
+  pp_count="$(jq 'length' <<<"$pp_list" 2>/dev/null || printf 1)"
+  if (( pp_rank >= pp_routine_rank )) && [[ "$pp_count" == "0" ]]; then
+    warn "$pp_slug's merge_autonomy is \"$pp_level\" with merge_autonomy_protected_paths empty ([]) — no path can refuse a routine landing there (D18 Stage 3)"
+  fi
+done < <(cfg '.repos[]?.slug // empty')
+
 # D18 WI-7 (requirement 8d): merge_autonomy_routine_sources names which work
 # sources the arming step may land automatically at agent-merges-routine and
 # above. An entry naming a source this repository's own `sources` list never

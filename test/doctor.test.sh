@@ -1480,6 +1480,42 @@ out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID 
 assert_not_contains "below agent-merges-all, landing_cool_off_hours 0 draws no warning — the control does not bind there" \
   "landing_cool_off_hours 0 —" "$out"
 
+# --- D18 Stage 3 (agent-ops#724, TD-PPagop-26082403): merge_autonomy_protected_paths
+#     resolved to an empty list disables gate 4 (the protected-path refusal)
+#     entirely for a repository trusted at agent-merges-routine or above —
+#     the same shape of configured-off compensating control as
+#     landing_cool_off_hours 0 above, and worth the same warning. -----------
+pp_config="$tmp/pp-config.json"
+jq --arg slug "$slug" \
+  '.merge_autonomy = "agent-merges-routine" | .approver_app_id = "123456" | .approver_model_default = "claude-sonnet-5"
+   | .repos = [{slug: $slug, sources: ["security", "abandoned-drafts"]}]' \
+  "$base_config" > "$pp_config"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_INSTALLATION_IDS -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$pp_config" 2>&1)"
+assert_not_contains "the shipped nine-path default draws no warning at agent-merges-routine" \
+  "merge_autonomy_protected_paths empty" "$out"
+
+pp_empty_config="$tmp/pp-empty-config.json"
+jq '.merge_autonomy_protected_paths = []' "$pp_config" > "$pp_empty_config"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_INSTALLATION_IDS -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$pp_empty_config" 2>&1)"
+assert_contains "a top-level merge_autonomy_protected_paths: [] at agent-merges-routine draws the warning" \
+  "[warn] $slug's merge_autonomy is \"agent-merges-routine\" with merge_autonomy_protected_paths empty ([]) — no path can refuse a routine landing there (D18 Stage 3)" \
+  "$out"
+
+pp_repo_override_config="$tmp/pp-repo-override-config.json"
+jq --arg slug "$slug" \
+  '.repos = [{slug: $slug, sources: ["security", "abandoned-drafts"], merge_autonomy_protected_paths: []}]' \
+  "$pp_config" > "$pp_repo_override_config"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_INSTALLATION_IDS -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$pp_repo_override_config" 2>&1)"
+assert_contains "a repos[]-level override to [] warns for that repository, resolved through its own override" \
+  "[warn] $slug's merge_autonomy is \"agent-merges-routine\" with merge_autonomy_protected_paths empty ([])" \
+  "$out"
+
+pp_below_config="$tmp/pp-below-config.json"
+jq '.merge_autonomy = "agent-approves" | .merge_autonomy_protected_paths = []' "$pp_config" > "$pp_below_config"
+out="$(env -u PULLWRIGHT_APPROVER_APP_ID -u PULLWRIGHT_APPROVER_INSTALLATION_ID -u PULLWRIGHT_APPROVER_INSTALLATION_IDS -u PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH -u PULLWRIGHT_AUTHOR_APP_ID -u PULLWRIGHT_AUTHOR_INSTALLATION_ID -u PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$pp_below_config" 2>&1)"
+assert_not_contains "below agent-merges-routine, merge_autonomy_protected_paths: [] draws no warning — the control does not bind there" \
+  "merge_autonomy_protected_paths empty" "$out"
+
 # --- The kill switch's own live state (requirement 2.3b), reported once per
 #     run alongside state_repo's own access check ---------------------------
 run_doctor

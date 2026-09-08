@@ -1040,7 +1040,7 @@ D18 WI-7 (requirement 8d, `lib/landing.sh`'s `landing_eligible`): which work sou
 
 ### Extended notes: `merge_autonomy_protected_paths`
 
-D18 Stage 3 (agent-ops#724, `lib/landing.sh`'s `landing_eligible`/`_landing_is_protected`): the whole-path prefixes a routine-tier landing must touch none of, fleet-wide default; a `repos[]` entry's own `merge_autonomy_protected_paths` overrides it for that repository, the same precedence `merge_autonomy_routine_sources` uses (requirement 4f). Below `agent-merges-all` a hit is an outright `ineligible`; at `agent-merges-all` it is deferred to requirement 8d's own gate 4.5 (D18 WI-12) rather than refused. An entry ending `/*` matches as a whole-path prefix (`lib/*` matches `lib/landing.sh`, never `libfoo.sh`); any other entry matches only that exact path. Defaults to agent-ops's own nine paths byte-for-byte, so nothing changes for any repository until it names its own list. `scripts/detect-classifier-escapes.sh` resolves this same key, via its own reimplementation (never sourced from `lib/landing.sh`, by design — see that script's header), and `test/detect-classifier-escapes.test.sh` pins the two identical over a battery of configs and paths, so a change to one that is not mirrored in the other fails CI rather than drifting silently.
+D18 Stage 3 (agent-ops#724, `lib/landing.sh`'s `landing_eligible`/`_landing_is_protected`): the whole-path prefixes a routine-tier landing must touch none of, fleet-wide default; a `repos[]` entry's own `merge_autonomy_protected_paths` overrides it for that repository, the same precedence `merge_autonomy_routine_sources` uses (requirement 4f). Below `agent-merges-all` a hit is an outright `ineligible`; at `agent-merges-all` it is deferred to requirement 8d's own gate 4.5 (D18 WI-12) rather than refused. An entry ending `/*` matches as a whole-path prefix (`lib/*` matches `lib/landing.sh`, never `libfoo.sh`); any other entry matches only that exact path. Defaults to agent-ops's own nine paths byte-for-byte, so nothing changes for any repository until it names its own list. `scripts/detect-classifier-escapes.sh` resolves this same key, via its own reimplementation (never sourced from `lib/landing.sh`, by design — see that script's header), and `test/detect-classifier-escapes.test.sh` pins the two identical over a battery of configs and paths, so a change to one that is not mirrored in the other fails CI rather than drifting silently. A resolved `[]` is schema-valid (no `minItems`) and disables this gate for that repository at every level; `scripts/doctor.sh` (component 14, TD-PPagop-26082403) warns, naming the repository and its configured level, when that reaches a repository at `agent-merges-routine` or above, on the model of its neighbouring `landing_cool_off_hours 0` warning.
 
 ### Extended notes: `merge_autonomy_routine_complexity`
 
@@ -7236,7 +7236,20 @@ implements.
       is deliberately reported `eligible` instead (D18 WI-12, Stage 4,
       agent-ops#415) — this classifier alone cannot see the two
       compensating controls §7 risk 1 requires, so it defers rather than
-      refuses, and gate 4.5 below is what actually decides.
+      refuses, and gate 4.5 below is what actually decides. A resolved
+      `merge_autonomy_protected_paths` of `[]` — schema-valid, since the
+      schema constrains each entry to a non-empty string but sets no
+      `minItems` — disables this gate for that repository at every level: an
+      operator may legitimately want that for a repository whose own gate
+      code lives elsewhere, so this classifier honours the empty list
+      exactly as any other, but reaching it silently would leave a
+      repository at `agent-merges-routine` or above with its deadliest
+      landing gate off with nothing to show for it; `scripts/doctor.sh`
+      (component 14, D18 Stage 3, TD-PPagop-26082403) warns, naming the
+      repository and its configured level, when its resolved list is empty
+      and its configured `merge_autonomy` is `agent-merges-routine` or
+      above, the same shape as its neighbouring `landing_cool_off_hours 0`
+      warning.
    3. `review_gate_verdict` (`lib/review-gate.sh`) — must read `clean`.
       Stricter than the ready-gate handoff's own use of this function
       (requirement 31a): there, an alerts-only `unknown` still lets the
@@ -22241,6 +22254,17 @@ oblige anyone to edit a test.
     its effective `landing_cool_off_hours` resolves to `0` — the cool-off
     control disabled entirely, the residual risk §7 risk 1 accepts only with
     both controls in force (`test/doctor.test.sh`).
+
+    `scripts/doctor.sh` also warns, separately, when a repository's own
+    configured `merge_autonomy` is `agent-merges-routine` or above and its
+    resolved `merge_autonomy_protected_paths` (its own `repos[]` override
+    when present, else the top-level key) is `[]` — schema-valid, since
+    neither carries a `minItems` — naming the repository and its level, on
+    the model of the `landing_cool_off_hours 0` warning above
+    (TD-PPagop-26082403, `test/doctor.test.sh`): the shipped nine-path
+    default draws no warning, a top-level or `repos[]`-level `[]` each draw
+    it at `agent-merges-routine` or above, and the same `[]` below that tier
+    draws none, since the gate does not bind there either.
 
     `scripts/doctor.sh` warns when
     a repository's effective `merge_autonomy_routine_sources` names a source
