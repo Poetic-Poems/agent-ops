@@ -11156,7 +11156,8 @@ implements.
     `repo`, `item`, `actor` (`"refiner"` or `"implementer"`), and the names
     `created`, `applied` and `refused` — one per item that named at least one
     label, whatever the outcome; unlike `labels-ensured` it is never
-    rate-limited, since minting is per-verdict rather than per-repository. A `claim-lost` names the repo, item and branch of
+    rate-limited, since minting is per-verdict rather than per-repository.
+    A `claim-lost` names the repo, item and branch of
     the candidate the Script failed to claim, plus a `cause` — `held` when a
     peer node won it, `pr-held` when a peer holds the pull request it targets
     under some other item ref (and then also `pr_claim_key`, the `pr-<number>`
