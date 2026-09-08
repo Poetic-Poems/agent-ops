@@ -295,10 +295,24 @@ services:
     # carry:
     #
     #   for c in agent-ops-scheduler-1 agent-ops-2-scheduler-1; do
-    #     id=$(docker inspect -f '{{.Id}}' "$c") || continue
+    #     pid=$(docker inspect -f '{{.State.Pid}}' "$c") || continue
     #     echo $((768*1024*1024)) | sudo tee \
-    #       "/sys/fs/cgroup/docker/$id/memory.high" >/dev/null
+    #       "/sys/fs/cgroup$(sed -n 's|^0::||p' "/proc/$pid/cgroup")/memory.high" \
+    #       >/dev/null
     #   done
+    #
+    # Ask the kernel where the cgroup is rather than assuming a path. The
+    # layout depends on Docker's cgroup driver, and this fleet's own hosts
+    # disagree: under `cgroupfs` (the ockham node) it is
+    # `/sys/fs/cgroup/docker/<id>`, under `systemd` (the poetic node) it is
+    # `/sys/fs/cgroup/system.slice/docker-<id>.scope`. An earlier version of
+    # this recipe hardcoded the first, so on the second it failed with `No
+    # such file or directory`, wrote nothing, and left the node unbounded
+    # until its schedulers began OOM-killing every stage (agent-ops#1266).
+    # `/proc/<pid>/cgroup` read from the host names the live path under
+    # either driver, because the host reads it from the root cgroup
+    # namespace; `docker info | grep 'Cgroup Driver'` says which driver a
+    # host is on, if you want to know why the path looks the way it does.
     #
     # Measured effect on the ockham node, same 25-minute window shape before
     # and after: combined scheduler peak 2490 MiB -> 1476 MiB, with peak
