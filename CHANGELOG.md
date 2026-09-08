@@ -386,6 +386,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The `memory.high` operator recipe now works on a host whose Docker uses
+  the `systemd` cgroup driver** (issue #1266). The recipe in
+  `deploy/docker/compose.yaml`'s `scheduler:` block — the documented remedy
+  for a scheduler cgroup that ratchets page cache to its hard ceiling and is
+  then OOM-killed — hardcoded `/sys/fs/cgroup/docker/<id>/memory.high`, the
+  path Docker's `cgroupfs` driver uses. The poetic host runs the `systemd`
+  driver, where the cgroup is `/sys/fs/cgroup/system.slice/docker-<id>.scope`
+  instead, so the recipe failed there with `No such file or directory`, wrote
+  nothing, and left both schedulers unbounded — which is what was killing
+  every Implementer stage on `poetic-1` with exit 137. The recipe now derives
+  the cgroup from `/proc/<pid>/cgroup` rather than assuming a layout, which
+  resolves correctly under either driver (verified on both this fleet's
+  `cgroupfs` and `systemd` hosts), and the comment states the difference and
+  how to tell which driver a host is on. Detection is unaffected:
+  `lib/memory.sh` reads the container's own `/sys/fs/cgroup`, which is the
+  same path inside the container under either driver.
+
 - **Recent cycles no longer reads as an idle fleet when the Publisher could
   not render it** (the 2026-08-29 blackout). Every dashboard in the fleet
   reported "No substantive cycles in the fleet window" for ten days while all
