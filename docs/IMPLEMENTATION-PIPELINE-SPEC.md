@@ -571,6 +571,16 @@ file and carries placeholders only; `.env` itself is never committed.
   warns `No blkio throttle.read_bps_device support`), and Compose has no
   per-container egress cap at all. Disk and bandwidth are therefore bounded
   only by what the pipeline itself does.
+  A scheduler's own `mem_limit` is not the whole of what bounds it: an
+  opted-in node also creates it under a parent cgroup
+  (`scripts/cgroup-parent-setup.sh`) carrying `memory.high` (the proactive
+  reclaim `mem_limit` alone cannot express), `memory.max` and
+  `memory.swap.max` — the latter two added by agent-ops#1305 after a parent
+  with `memory.high` set and `memory.max` left at `max` proved to be a
+  livelock, not a mitigation: throttling that never disengages because
+  nothing anywhere is a hard enough ceiling to reclaim past, or to kill (see
+  requirement 2.0f above for the full mechanism and `memory_cgroup_verdict`'s
+  `livelocked`/`unconfirmed` verdicts).
 
 ### Target repositories
 
@@ -2151,6 +2161,44 @@ implements.
       `memory.high` reads `max` either way — so it is bind-mounted read-only
       at `/run/cgroup-parent/memory.high`, defaulting to `/dev/null`, which
       reads as "no parent ceiling" rather than as a guess.
+
+      A ceiling on the parent is not, by itself, enough: `memory.high` only
+      throttles, and throttling that never disengages because nothing
+      anywhere is a hard enough wall to reclaim past — or to kill — is a
+      livelock, not a mitigation (agent-ops#1305). `ockham-container` wedged
+      75 minutes in exactly this band: `memory.current` sat above the
+      parent's `memory.high` and below both cgroups' `memory.max`, 2,788,595
+      throttle events accumulated at ~96/second, and every allocating task
+      parked in uninterruptible `D` state — `docker exec` into the node
+      included, which is what made the node undiagnosable remotely while it
+      lasted. `doctor.sh`'s own `parented` verdict read this exact state as
+      `[ ok ]` throughout, because `parented` only ever checked that the
+      parent's `memory.high` sat below the child's own `memory.max`, never
+      that the parent had a `memory.max` of its own for the kernel to
+      reclaim past. `scripts/cgroup-parent-setup.sh` therefore also sets the
+      parent's `memory.max` (`--max`, defaulting to the sum of what runs
+      under it — `1536m`, matching `AGENT_OPS_SCHEDULER_MEMORY`'s own
+      default) and `memory.swap.max` (`--swap`, defaulting to `0` — the
+      incident also took 100% of host swap on a memory-capped WSL2 VM), and
+      `--check` now exits 2 for a parent whose `memory.high` is set but whose
+      `memory.max` is not. Two more mounts alongside `/run/cgroup-parent/
+      memory.high` — `AGENT_OPS_SCHEDULER_CGROUP_MAX` at `/run/cgroup-parent/
+      memory.max` and `AGENT_OPS_SCHEDULER_CGROUP_EVENTS` at
+      `/run/cgroup-parent/memory.events`, the same `/dev/null`-default idiom
+      — let `memory_cgroup_verdict` read the parent's own hard ceiling and let
+      `doctor.sh` read the parent's raw throttle counter. `memory_cgroup_verdict`
+      gains two verdicts from this: `livelocked` (a real parent `memory.high`
+      with the parent's own `memory.max` left at `max` — warns, and is never
+      `[ ok ]`) and `unconfirmed` (the same real parent `memory.high`, but the
+      parent's own `memory.max` window cannot be read — an un-migrated
+      `compose.yaml`, or a node not yet re-run through `cgroup-parent-setup.sh`
+      — warns rather than guessing `parented`, since a guess given as `[ ok ]`
+      is exactly what left this incident's node wedged for 75 minutes).
+      `doctor.sh` additionally reads the parent's `memory.events` `high`
+      counter every run, persists one sample to `state_dir`, and warns on any
+      rising delta since the last one — a signal that needs no ceiling to be
+      correctly configured first, so it still fires on a `livelocked` or
+      `unconfirmed` node, which is the exact gap this incident fell through.
 
    1. *Usage-limit cooldown*: the same signal arrives on two carriers, and
       the **later** `resume_at` wins. The log union's most recent `limit-hit`
@@ -19495,54 +19543,69 @@ oblige anyone to edit a test.
    request against a pinned shellcheck (component 10).
    `test/lint-shell.test.sh` passes.
 1g-i. **A script too large to lint in the memory available is degraded,
-   never skipped and never allowed to kill the cycle.** What "too large"
-   measures is the **union `-x` actually parses** — the file plus every file
-   it names in a `# shellcheck source=` directive, transitively, each counted
-   once (`analysed_lines`, `scripts/lint-shell.sh`) — and never the file's own
-   length. #771 is why the distinction matters: splitting `agent-cycle.sh`
-   moved its bulk into the `lib/*.sh` modules it sources, and `-x` re-inlines
-   every one of them, so the file's own `wc -l` fell from 10,136 to 2,865
-   while the union it costs stayed at 26,262. A guard reading the file's own
-   length would have declared the problem solved and gone on to OOM-kill the
-   node it ran on. The unions in this tree are 26,262 lines for
-   `agent-cycle.sh` and 7,522 for the next largest,
-   `scripts/publish-dashboard.sh`, so `LINT_SHELL_LARGE_LINES` (10,000) picks
-   out one file and only one.
+   never skipped and never allowed to kill the cycle — and this is judged
+   against every file, not only ones above some fixed line count
+   (agent-ops#1305).** What "too large" measures is the **union `-x` actually
+   parses** — the file plus every file it names in a `# shellcheck source=`
+   directive, transitively, each counted once (`analysed_lines`,
+   `scripts/lint-shell.sh`) — and never the file's own length. #771 is why
+   the distinction matters: splitting `agent-cycle.sh` moved its bulk into
+   the `lib/*.sh` modules it sources, and `-x` re-inlines every one of them,
+   so the file's own `wc -l` fell from 10,136 to 2,865 while the union it
+   costs stayed at 26,262. A guard reading the file's own length would have
+   declared the problem solved and gone on to OOM-kill the node it ran on.
+   The unions in this tree are 26,262 lines for `agent-cycle.sh` and 7,522
+   for the next largest, `scripts/publish-dashboard.sh`.
    The GHC runtime shellcheck is built on ignores `+RTS -M` (the release
    binary is not linked with `-rtsopts`) and reserves a 1 TB address space, so
    neither a heap cap nor `ulimit -v` can bound it; the only thing that can is
-   not running it. So `scripts/lint-shell.sh` reads the smaller of its cgroup
-   ceiling and `MemAvailable`, and for a file at or above
-   `LINT_SHELL_LARGE_LINES` it follows sources when at least
-   `LINT_SHELL_FOLLOW_MIB` (6,144) is free, and otherwise — down to
-   `LINT_SHELL_PLAIN_MIB` (1,024) — drops `-x` and suppresses SC1091, SC2154
-   and SC2034 for that file. All three are artefacts of the degradation rather
-   than findings about the code: without `-x` shellcheck sees none of the
-   modules the file sources, so a `source` line raises SC1091 and every
-   variable crossing the boundary reads as unassigned (SC2154) or as assigned
-   and never read (SC2034), which after #771 is 25 of them in `agent-cycle.sh`
-   with nothing wrong with any of them. Below `LINT_SHELL_PLAIN_MIB` the file
-   is not linted at all — reachable in principle, and after #771 no longer
-   reachable in practice: `agent-cycle.sh` without `-x` completes in 634 MiB,
-   comfortably inside a scheduler container's entire 1,536 MiB ceiling, where
-   before the split it was killed at that ceiling and skipped outright. What
-   the split cannot buy is following the sources *inside* that ceiling, and
-   nothing else can either: a 172-line entry point over the same modules —
-   23,569 lines of union — already costs 1,983 MiB, against `agent-cycle.sh`'s
-   own 26,262 passing 4,543 MiB before the kernel stops it. The cost is the
-   union, the union is this pipeline's whole codebase, and following it from
-   an entry point is a CI-sized job by construction. So the guard's degraded
-   mode is permanent for the two entry points rather than a stage on the way
-   to something better, and the checks it gives up are recovered in CI rather
+   not running it. So `scripts/lint-shell.sh` reads the smallest of its own
+   cgroup ceiling, the *parent* cgroup's `memory.high`
+   (`LINT_SHELL_PARENT_HIGH_FILE`, defaulting to `/run/cgroup-parent/
+   memory.high` — the same read-only window `deploy/docker/compose.yaml`
+   mounts for `lib/memory.sh`'s own parent-ceiling reads) and `MemAvailable`,
+   names whichever of the three actually bound it, and estimates **every**
+   file's own cost to follow with `-x` by interpolating/extrapolating between
+   three measured points (`estimated_follow_mib`: 4,945 union lines at 396
+   MiB, 23,569 at 1,983 MiB, 26,262 at 4,543 MiB, the last of these a floor
+   rather than a peak since that run never finished) rather than gating on a
+   fixed line count first. This is what closes agent-ops#1305's own reading of
+   the guard: `scripts/publish-dashboard.sh`'s 7,522-line union sat under the
+   guard's former 10,000-line gate and so ran `shellcheck -x` uncosted even on
+   a node whose actual, parent-bound budget was far below what following it
+   needed. A file whose estimate fits the budget follows with `-x`; one whose
+   estimate exceeds it but whose budget is still at least `LINT_SHELL_PLAIN_MIB`
+   (1,024, a roughly constant cost regardless of the file's own size) is linted
+   without `-x`, suppressing SC1091, SC2154 and SC2034 for that file — all
+   three artefacts of the degradation rather than findings about the code:
+   without `-x` shellcheck sees none of the modules the file sources, so a
+   `source` line raises SC1091 and every variable crossing the boundary reads
+   as unassigned (SC2154) or as assigned and never read (SC2034), which after
+   #771 is 25 of them in `agent-cycle.sh` with nothing wrong with any of them.
+   Below `LINT_SHELL_PLAIN_MIB` the file is not linted at all — reachable in
+   principle, and after #771 no longer reachable in practice for
+   `agent-cycle.sh` itself: without `-x` it completes in 634 MiB, comfortably
+   inside a scheduler container's entire 1,536 MiB ceiling, where before the
+   split it was killed at that ceiling and skipped outright. What the split
+   cannot buy is following the sources *inside* that ceiling, and nothing else
+   can either: a 172-line entry point over the same modules — 23,569 lines of
+   union — already costs 1,983 MiB, against `agent-cycle.sh`'s own 26,262
+   passing 4,543 MiB before the kernel stops it. The cost is the union, the
+   union is this pipeline's whole codebase, and following it from an entry
+   point is a CI-sized job by construction. So the guard's degraded mode is
+   permanent for the two entry points rather than a stage on the way to
+   something better, and the checks it gives up are recovered in CI rather
    than one day locally.
    Degrading and skipping are both announced on stderr naming the file, its
-   own length, its union and the shortfall, because silence would read as
-   coverage that did not happen; a skip alone does not fail the run, since CI
-   has the memory and does check it — `.github/workflows/shellcheck.yml` sets
-   `LINT_SHELL_FOLLOW_MIB: 0` so the guard cannot apply there at all, and the
-   gate's coverage does not quietly track how much memory a runner happens to
-   have, which is also what keeps the three suppressed checks checked in full
-   on every pull request.
+   own length, its union, the estimated cost, and which ceiling bound the
+   budget, because silence would read as coverage that did not happen; a skip
+   alone does not fail the run, since CI has the memory and does check it —
+   `.github/workflows/shellcheck.yml` sets `LINT_SHELL_FOLLOW_MIB: 0`, which
+   disables the guard outright (every file follows with `-x` whatever the
+   estimate says) rather than merely raising a threshold, so the gate's
+   coverage does not quietly track how much memory a runner happens to have,
+   which is also what keeps the three suppressed checks checked in full on
+   every pull request.
 1g-ii. **Every GraphQL document this repository sends still validates
    against GitHub's live schema, checked nightly rather than at merge time.**
    `.github/workflows/graphql-drift.yml` runs
@@ -20104,22 +20167,44 @@ oblige anyone to edit a test.
    at or above it; `memory_describe` names both the available MiB and the
    floor; `memory_cgroup_verdict` reads `unbounded` for a real `memory.max`
    with `memory.high` unset on both this cgroup and its parent, `bounded`
-   once `memory.high` is set on this cgroup, `parented` when this cgroup's is
-   unset but the mounted parent window carries a real one, `unlimited`
-   when there is no ceiling at all, and `unknown` — never a verdict — when
-   the cgroup files cannot be read; a parent window that is absent, empty
-   (the `/dev/null` default), itself `max`, or at or above `memory.max` leaves
-   the verdict `unbounded` rather than `parented` — so neither an un-opted-in
+   once `memory.high` is set on this cgroup, `unlimited` when there is no
+   ceiling at all, and `unknown` — never a verdict — when the cgroup files
+   cannot be read; a parent window that is absent, empty (the `/dev/null`
+   default), itself `max`, or at or above `memory.max` leaves the verdict
+   `unbounded` rather than any of the three below — so neither an un-opted-in
    node nor one whose parent ceiling sits at the hard limit and would reclaim
-   nothing before it is ever reported bounded. `parented` is the only verdict
-   here that reads `[ ok ]` on a container with a real `memory.max`, which is
-   why it is the one carrying that guard; `bounded` warns either way. `test/memory-wiring.test.sh` passes
+   nothing before it is ever reported anything but plainly unbounded.
+   Where this cgroup's own `memory.high` is unset but the mounted parent
+   window carries a real one below `memory.max`, the verdict depends on the
+   parent's *own* `memory.max` (agent-ops#1305, read via the
+   `AGENT_OPS_SCHEDULER_CGROUP_MAX` mount, `MEMORY_CGROUP_PARENT_MAX`):
+   `parented` when the parent's own `memory.max` is a real ceiling above the
+   parent's `memory.high` (a hard wall exists somewhere, so `memory.high`'s
+   throttling eventually disengages); `livelocked` when the parent's own
+   `memory.max` is `max` (no wall anywhere, so throttling never disengages —
+   the exact band that wedged `ockham-container` for 75 minutes with 2,788,595
+   throttle events); `unconfirmed` when the parent's own `memory.max` window
+   cannot be read (an un-migrated `compose.yaml`, or a node that has not
+   re-run `cgroup-parent-setup.sh` since it started mounting that window) —
+   never reported `parented` on an unmeasured guess. `parented` is the only
+   one of these three that reads `[ ok ]`; `livelocked` and `unconfirmed` both
+   warn, exactly as `bounded` does, and for the same reason: a state that
+   might not still be true tomorrow — or was never actually measured — is not
+   a healthy one to report as such. `test/memory-wiring.test.sh` passes
    against the block lifted verbatim from `lib/standdown.sh`: memory below
    the floor exits 0 without falling through to the rest of the cycle, the
    logged `stand-down` event carries `cause: "memory-low"` and both the
    available and total KiB; memory at or above the floor, an unreadable
    `/proc/meminfo`, and `min_free_memory_bytes: 0` all fall through
-   untouched, standing nothing down.
+   untouched, standing nothing down. `test/doctor.test.sh` passes: the
+   container-memory line always reports one of these verdicts' own wording;
+   and, separately, a rising delta in the parent's own `memory.events` `high`
+   counter (`MEMORY_CGROUP_PARENT_EVENTS`, persisted between runs at
+   `state_dir/.doctor-memory-events-high`) warns naming the delta and the
+   elapsed time since the prior sample, a flat delta reads `[ ok ]`, and a
+   first sample establishes the baseline silently — this check needs no
+   ceiling to be correctly configured first, so it still fires on a
+   `livelocked` or `unconfirmed` node.
 2c. `scripts/gather-merge-conflicts.sh Poetic-Poems/does-not-exist autonomous-agent agent/`
    prints `[]` and exits 0 — a missing repo, a disabled feature, or an API error
    never aborts the cycle. Its candidate rule, including the `bot`,
