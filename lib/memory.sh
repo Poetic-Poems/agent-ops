@@ -123,6 +123,30 @@ memory_describe() {
 # the tests can point it at a fixture rather than the live one.
 : "${MEMORY_CGROUP_ROOT:=/sys/fs/cgroup}"
 
+# MEMORY_CGROUP_PARENT_HIGH is a read-only window onto the *parent* cgroup's
+# `memory.high` — the one number a container cannot otherwise learn about
+# itself.
+#
+# Under `cgroup_parent` (deploy/docker/compose.yaml) the ceiling that governs
+# this container is set on an ancestor, because an ancestor is the only place
+# it can be set that a container recreation does not wipe. The kernel does not
+# expose an effective, hierarchy-wide `memory.high` anywhere, and a cgroup
+# namespace makes the container's own cgroup the root of what it can see, so
+# ancestors are invisible from in here: measured on the poetic node
+# 2026-09-08, a container held to 64 MiB by its parent read its own
+# `memory.high` as `max` and its own `memory.events` `high` as `0` while the
+# parent counted 250 reclaim events. The only trace in the child was
+# `pgscan`/`pgsteal`, which rise under ordinary host pressure too and so
+# cannot distinguish a configured ceiling from a busy machine.
+#
+# Hence one file, bind-mounted read-only, rather than an inference. It reads
+# empty when the variable is unset, because compose mounts `/dev/null` there
+# — the same no-op-mount idiom the Approver key uses in that file — so the
+# default is provably "no parent ceiling" rather than a guess. The mount
+# cannot go stale beneath us: a cgroup cannot be removed while a process lives
+# in it, so this container's own existence pins the parent it points at.
+: "${MEMORY_CGROUP_PARENT_HIGH:=/run/cgroup-parent/memory.high}"
+
 # memory_cgroup_field FIELD
 # One cgroup memory file's contents (`memory.current`, `memory.high`,
 # `memory.max`, ...), or empty when it cannot be read.
@@ -145,29 +169,59 @@ memory_cgroup_stat() {
   printf '%s' "$value"
 }
 
+# memory_cgroup_parent_high
+# The parent cgroup's `memory.high` in bytes, or empty when there is no parent
+# window, when it reads `max` (a parent with no ceiling bounds nothing), or
+# when it is unreadable. Empty means "no parent ceiling known", never "no
+# ceiling" — the same refusal to assert an unmeasured verdict as
+# `memory_available_kb`'s.
+memory_cgroup_parent_high() {
+  local value
+  value="$(cat "$MEMORY_CGROUP_PARENT_HIGH" 2>/dev/null)" || return 0
+  [[ "$value" =~ ^[0-9]+$ ]] || return 0
+  printf '%s' "$value"
+}
+
 # memory_cgroup_verdict
 # Whether anything will reclaim this container's memory before it reaches its
 # hard ceiling:
 #
-#   unbounded  `memory.max` is a real ceiling but `memory.high` is `max`, so
-#              nothing throttles or reclaims until the hard limit. The cgroup
-#              ratchets: page cache accumulates to the ceiling and is given
-#              back only under pressure, which on a memory-capped VM means
-#              the whole host is already in trouble.
-#   bounded    `memory.high` is set — the kernel reclaims proactively.
+#   unbounded  `memory.max` is a real ceiling but `memory.high` is `max` here
+#              and on the parent, so nothing throttles or reclaims until the
+#              hard limit. The cgroup ratchets: page cache accumulates to the
+#              ceiling and is given back only under pressure, which on a
+#              memory-capped VM means the whole host is already in trouble.
+#   bounded    `memory.high` is set on this cgroup — the kernel reclaims
+#              proactively. This is what the one-shot operator recipe leaves
+#              behind, and it lasts until the container is next recreated.
+#   parented   this cgroup's own `memory.high` is `max`, but an ancestor
+#              carries a real one, so the kernel still reclaims before the
+#              hard limit — and unlike `bounded` it survives a roll, because
+#              the ceiling does not live on the container. Distinguished from
+#              `bounded` rather than folded into it because the two differ in
+#              exactly the property this check exists to report: whether the
+#              node will still be bounded tomorrow.
 #   unlimited  no `memory.max` either; nothing to say, and nothing to fix.
 #   unknown    the files cannot be read (not cgroup v2, or not a container).
 memory_cgroup_verdict() {
-  local high max
+  local high max parent_high
   high="$(memory_cgroup_field memory.high)"
   max="$(memory_cgroup_field memory.max)"
   [[ -n "$high" && -n "$max" ]] || { printf 'unknown'; return 0; }
+  parent_high="$(memory_cgroup_parent_high)"
   if [[ "$max" == "max" ]]; then
     printf 'unlimited'
-  elif [[ "$high" == "max" ]]; then
-    printf 'unbounded'
-  else
+  elif [[ "$high" != "max" ]]; then
     printf 'bounded'
+  elif [[ -n "$parent_high" ]] && (( parent_high < max )); then
+    # Only below the hard ceiling. A parent set at or above `memory.max`
+    # reclaims nothing before the kill and is `unbounded` in every sense that
+    # matters — and `parented` is the one verdict here that reads `[ ok ]`,
+    # so it is the one that must not be given away on an unchecked number.
+    # `bounded` needs no equivalent guard: it warns either way.
+    printf 'parented'
+  else
+    printf 'unbounded'
   fi
 }
 
@@ -183,4 +237,20 @@ memory_cgroup_describe() {
   [[ "$max" =~ ^[0-9]+$ ]] || max=0
   printf 'this container holds %d MiB of memory that never gets freed up as usage grows, against a %d MiB ceiling — once that ceiling is reached the container is killed outright, instead of memory being freed beforehand; see deploy/docker/compose.yaml to fix this' \
     $(( current / 1048576 )) $(( max / 1048576 ))
+}
+
+# memory_cgroup_parent_describe
+# The `parented` counterpart of `memory_cgroup_describe`: the same measured
+# shape, reporting the ancestor's ceiling rather than this cgroup's absent one,
+# so the ok line carries its evidence exactly as the warning does.
+memory_cgroup_parent_describe() {
+  local current max parent_high
+  current="$(memory_cgroup_field memory.current)"
+  max="$(memory_cgroup_field memory.max)"
+  parent_high="$(memory_cgroup_parent_high)"
+  [[ "$current" =~ ^[0-9]+$ ]] || current=0
+  [[ "$max" =~ ^[0-9]+$ ]] || max=0
+  [[ "$parent_high" =~ ^[0-9]+$ ]] || parent_high=0
+  printf 'memory.high is set to %d MiB on this container'"'"'s parent cgroup, so the kernel reclaims before the %d MiB hard ceiling and keeps doing so after a roll; holding %d MiB now' \
+    $(( parent_high / 1048576 )) $(( max / 1048576 )) $(( current / 1048576 ))
 }

@@ -2097,12 +2097,33 @@ implements.
 
       What this check does **not** do is make the container give memory back.
       It cannot: Docker exposes no `memory.high` setting, and a container can
-      read its own cgroup v2 files but never write them, so nothing in this
-      repository can set the one knob that stops a cgroup ratcheting up to
-      its hard ceiling and holding there. That remains an operator recipe,
-      documented in `deploy/docker/compose.yaml`; what the pipeline
-      contributes is the detection that tells an operator to run it —
-      `memory_cgroup_verdict`, reported by `doctor.sh` (component 14).
+      read its own cgroup v2 files but never write them. What Compose *can*
+      choose is the cgroup the container is created **under**, and a ceiling
+      on that parent governs the container while outliving it — so the knob
+      that stops a cgroup ratcheting up to its hard ceiling is set once, on a
+      parent, rather than re-applied to each new container after every roll.
+      `AGENT_OPS_SCHEDULER_CGROUP_PARENT` selects it and
+      `scripts/cgroup-parent-setup.sh` creates it; both are documented in
+      `deploy/docker/compose.yaml`. The parent is the mechanism precisely
+      because it is not what gets recreated: a ceiling written onto the
+      container itself is wiped by the next `up -d`, watchtower roll or
+      reboot, which on the measured fleet is a median of under an hour — and
+      on a `systemd`-driver host by any `systemctl daemon-reload`, on a live
+      container, since systemd re-applies the properties a unit declares and a
+      `docker-<id>.scope` declares none (TD-PPagop-26090401). A slice parent
+      declares `MemoryHigh`, so the same reload re-asserts it.
+
+      What the pipeline contributes is still the detection —
+      `memory_cgroup_verdict`, reported by `doctor.sh` (component 14) — and
+      it draws the distinction the remedy turns on. A ceiling on the parent
+      reads `parented` and is `[ ok ]`; a ceiling on the container itself
+      reads `bounded` and now **warns**, naming itself as something the next
+      roll will remove, because a state that is correct today and gone by
+      tomorrow is not a healthy one to report as such. The parent's ceiling
+      is not inferable from inside a cgroup namespace — the container's own
+      `memory.high` reads `max` either way — so it is bind-mounted read-only
+      at `/run/cgroup-parent/memory.high`, defaulting to `/dev/null`, which
+      reads as "no parent ceiling" rather than as a guess.
 
    1. *Usage-limit cooldown*: the same signal arrives on two carriers, and
       the **later** `resume_at` wins. The log union's most recent `limit-hit`
@@ -19761,9 +19782,17 @@ oblige anyone to edit a test.
    `ok` for a `0` floor, an unreadable meter, a non-numeric floor, or memory
    at or above it; `memory_describe` names both the available MiB and the
    floor; `memory_cgroup_verdict` reads `unbounded` for a real `memory.max`
-   with `memory.high` unset, `bounded` once `memory.high` is set, `unlimited`
+   with `memory.high` unset on both this cgroup and its parent, `bounded`
+   once `memory.high` is set on this cgroup, `parented` when this cgroup's is
+   unset but the mounted parent window carries a real one, `unlimited`
    when there is no ceiling at all, and `unknown` — never a verdict — when
-   the cgroup files cannot be read. `test/memory-wiring.test.sh` passes
+   the cgroup files cannot be read; a parent window that is absent, empty
+   (the `/dev/null` default), itself `max`, or at or above `memory.max` leaves
+   the verdict `unbounded` rather than `parented` — so neither an un-opted-in
+   node nor one whose parent ceiling sits at the hard limit and would reclaim
+   nothing before it is ever reported bounded. `parented` is the only verdict
+   here that reads `[ ok ]` on a container with a real `memory.max`, which is
+   why it is the one carrying that guard; `bounded` warns either way. `test/memory-wiring.test.sh` passes
    against the block lifted verbatim from `lib/standdown.sh`: memory below
    the floor exits 0 without falling through to the rest of the cycle, the
    logged `stand-down` event carries `cause: "memory-low"` and both the

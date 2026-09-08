@@ -181,6 +181,33 @@ x-agent-ops: &agent-ops
     # /dev/null no-op fallback that keeps an unset variable reading as
     # "not configured" rather than a confusing runtime error.
     - ${PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH:-/dev/null}:${PULLWRIGHT_AUTHOR_PRIVATE_KEY_PATH:-/dev/null}:ro
+    # A read-only window onto the parent cgroup's `memory.high`, the one knob
+    # governing this container that it cannot otherwise read: a cgroup
+    # namespace makes the container's own cgroup the root of what it can see,
+    # and the kernel exposes no effective hierarchy-wide value anywhere, so an
+    # ancestor's ceiling is invisible from inside. Without this, a scheduler
+    # correctly bounded by `cgroup_parent` below would still report itself
+    # `unbounded` every cycle — a permanent warning nobody could act on, which
+    # is worse than the warning it replaced.
+    #
+    # One file, not the directory and not `cgroup: host`: this is the whole of
+    # what the verdict needs, and the scheduler is the container whose egress
+    # is deliberately fenced, so it is not the one to hand a view of the host's
+    # cgroup tree. `/dev/null` when unset — the same no-op-mount idiom the two
+    # keys above use — reads as empty, so a node that has not opted in
+    # measures "no parent ceiling" rather than guessing at one. The mount
+    # cannot go stale: a cgroup cannot be removed while a process lives in it,
+    # so the container pins the parent for as long as it is running, and the
+    # slice is enabled so the source exists from boot even before one does.
+    #
+    # It rides the shared block, so the dashboard and egress-proxy mount it
+    # too, and for them it names a cgroup they are not in — harmless because
+    # `cgroup_parent` is set on the scheduler alone and `memory_cgroup_verdict`
+    # is read only there (doctor.sh runs in the scheduler; the dashboard reads
+    # the JSON it writes). Splitting the list to scope one entry would mean
+    # maintaining two copies of six mounts, which is the more likely thing to
+    # go wrong.
+    - ${AGENT_OPS_SCHEDULER_CGROUP_HIGH:-/dev/null}:/run/cgroup-parent/memory.high:ro
   labels:
     # Only containers carrying this label are watchtower's business — the
     # laptop runs unrelated containers that are none of it.
@@ -278,7 +305,7 @@ services:
     # swaps rather than dying, and on a memory-capped VM that swap file is
     # exactly what freezes the host. See the recipe below.
     #
-    # --- Operator recipe: bounding a scheduler that ratchets ----------------
+    # --- Bounding a scheduler that ratchets ---------------------------------
     #
     # A `mem_limit` is a hard ceiling and nothing else. Below it, nothing
     # reclaims: the cgroup accumulates page cache up to `memory.max` and
@@ -288,11 +315,54 @@ services:
     #
     # The knob that fixes this is cgroup v2's `memory.high`: a soft ceiling
     # above which the kernel reclaims proactively and throttles the allocator
-    # rather than killing anything. Compose cannot express it and Docker has
-    # no flag for it, so it has to be written to the cgroup directly, and it
-    # is reset whenever a container is recreated (`up -d`, a watchtower roll,
-    # a reboot) — so this is a host-level habit, not a setting this file can
-    # carry:
+    # rather than killing anything. Compose cannot express it and Docker has no
+    # flag for it. What Compose *can* express is which cgroup this container is
+    # created under — and a ceiling on that parent governs the container while
+    # outliving it, which a ceiling written onto the container itself does not.
+    # That is the whole of the mechanism: not where the number is easiest to
+    # write, but the only place it survives being recreated.
+    #
+    # Set both variables in this node's .env, then `docker compose up -d`:
+    #
+    #   AGENT_OPS_SCHEDULER_CGROUP_PARENT=agentops-1.slice
+    #   AGENT_OPS_SCHEDULER_CGROUP_HIGH=/sys/fs/cgroup/agentops.slice/agentops-1.slice/memory.high
+    #
+    # `scripts/cgroup-parent-setup.sh` creates the parent and prints exactly
+    # those two lines for this host; do not hand-write them, and in particular
+    # do not hand-write the second. A node holds this file and its .env, not a
+    # clone, so lift the script out of the image it already runs:
+    #
+    #   docker compose exec -T scheduler cat /app/scripts/cgroup-parent-setup.sh \
+    #     > cgroup-parent-setup.sh
+    #   sudo bash cgroup-parent-setup.sh --name agentops-1 --limit 768m
+    #
+    # One parent per scheduler, never one shared by both stacks on a host: a
+    # ceiling on a parent bounds the *aggregate* of everything beneath it, so a
+    # shared 768 MiB would be 768 MiB between the two, not each.
+    #
+    # Pick a value comfortably above the *anonymous* peak, not the total: the
+    # cache above it is what you are asking the kernel to keep trimming.
+    # Measured on the ockham node, same 25-minute window shape before and
+    # after: combined scheduler peak 2490 MiB -> 1476 MiB, peak anonymous
+    # memory ~170 MiB, no new `memory.events` `max` hits and no OOM kills.
+    #
+    # Two paths, and neither is guessable — ask, never assume. Docker's cgroup
+    # driver decides the layout and this fleet's own hosts disagree: under
+    # `cgroupfs` (the ockham node) the parent is `/sys/fs/cgroup/<name>`, under
+    # `systemd` (the poetic node) it is a slice, and systemd reads `-` in a
+    # slice name as a *hierarchy separator*, so `agentops-1.slice` lives at
+    # `/sys/fs/cgroup/agentops.slice/agentops-1.slice`, one level deeper than
+    # its name suggests. `docker info | grep 'Cgroup Driver'` says which driver
+    # a host is on; `systemctl show -p ControlGroup --value <slice>` says where
+    # an active slice actually is. The setup script asks both. An earlier
+    # revision of this recipe assumed the cgroupfs path, so on the poetic node
+    # it failed with `No such file or directory`, wrote nothing, and left that
+    # node unbounded until its schedulers began OOM-killing every stage
+    # (agent-ops#1266) — the same assumption, one layer up, is the one mistake
+    # to avoid repeating here.
+    #
+    # In an emergency, the ceiling can be written straight onto a running
+    # container, which takes effect immediately and needs no restart:
     #
     #   for c in agent-ops-scheduler-1 agent-ops-2-scheduler-1; do
     #     pid=$(docker inspect -f '{{.State.Pid}}' "$c") || continue
@@ -301,31 +371,39 @@ services:
     #       >/dev/null
     #   done
     #
-    # Ask the kernel where the cgroup is rather than assuming a path. The
-    # layout depends on Docker's cgroup driver, and this fleet's own hosts
-    # disagree: under `cgroupfs` (the ockham node) it is
-    # `/sys/fs/cgroup/docker/<id>`, under `systemd` (the poetic node) it is
-    # `/sys/fs/cgroup/system.slice/docker-<id>.scope`. An earlier version of
-    # this recipe hardcoded the first, so on the second it failed with `No
-    # such file or directory`, wrote nothing, and left the node unbounded
-    # until its schedulers began OOM-killing every stage (agent-ops#1266).
-    # `/proc/<pid>/cgroup` read from the host names the live path under
-    # either driver, because the host reads it from the root cgroup
-    # namespace; `docker info | grep 'Cgroup Driver'` says which driver a
-    # host is on, if you want to know why the path looks the way it does.
+    # That is a stopgap and nothing more. It is wiped by the next `up -d`,
+    # watchtower roll or reboot — measured on this fleet 2026-09-08, a median
+    # of well under an hour: three of four schedulers lost it within 90
+    # minutes of it being applied, one of them going on to hit its hard
+    # ceiling 23,995 times before anyone noticed (TD-PPagop-26090401).
     #
-    # Measured effect on the ockham node, same 25-minute window shape before
-    # and after: combined scheduler peak 2490 MiB -> 1476 MiB, with peak
-    # anonymous memory ~170 MiB (far below the 768 MiB threshold), no new
-    # `memory.events` `max` hits and no OOM kills. Pick a value comfortably
-    # above the anonymous peak, not the total: the cache above it is what you
-    # are asking the kernel to keep trimming.
+    # On a `systemd`-driver host it is weaker still, and in a way worth
+    # knowing: **any `systemctl daemon-reload` erases it**, on a live
+    # container, with nothing recreated and nothing restarted. Verified on the
+    # poetic node 2026-09-08 — written, read back, one unrelated reload, back
+    # to `max` while the container kept running. systemd re-applies the
+    # properties a unit *declares* on every reload, and a `docker-<id>.scope`
+    # declares no `MemoryHigh`, so re-applying means resetting it. A package
+    # upgrade touching any unit on the host is enough. That is also exactly
+    # why the parent below is durable rather than merely longer-lived: a slice
+    # unit does declare `MemoryHigh`, so the same reload re-asserts the
+    # ceiling instead of clearing it.
     #
-    # `scripts/doctor.sh` reports whether this is in force — its "container
-    # memory" line reads `unbounded` on a cgroup whose `memory.high` is unset
-    # against a real ceiling, which is the state this recipe fixes.
+    # Use the stopgap to stop a node dying now, then set the parent so it
+    # stays stopped.
+    #
+    # `scripts/doctor.sh` reports which of the two is in force — its "container
+    # memory" line reads `unbounded` with no ceiling at all, warns that a
+    # container-level `memory.high` will not survive the next roll, and is
+    # `[ ok ]` only for a ceiling on the parent.
     mem_limit: ${AGENT_OPS_SCHEDULER_MEMORY:-1536m}
     cpus: ${AGENT_OPS_SCHEDULER_CPUS:-2.0}
+    # Empty unless the node opts in, and an empty value is not merely tolerated
+    # but genuinely inert: Compose renders no key at all for it and the
+    # container lands in the daemon's default parent, verified on both drivers.
+    # So this line changes nothing for a node that has not run the setup
+    # script, and everything for one that has.
+    cgroup_parent: ${AGENT_OPS_SCHEDULER_CGROUP_PARENT:-}
     # --- The egress fence (D24) -------------------------------------------
     # The scheduler is the container that runs `claude` over text anyone on
     # GitHub can author, with live credentials in its environment, so it is

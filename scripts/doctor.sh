@@ -859,7 +859,8 @@ fi
 # `memory.high` was set.
 case "$(memory_cgroup_verdict)" in
   unbounded) warn "container memory: $(memory_cgroup_describe)" ;;
-  bounded)   ok "container memory: memory.high is set, so the kernel reclaims before the hard ceiling" ;;
+  parented)  ok "container memory: $(memory_cgroup_parent_describe)" ;;
+  bounded)   warn "container memory: memory.high is set on this container, so the kernel reclaims before the hard ceiling — but it is set on the container, so the next roll will wipe it; see deploy/docker/compose.yaml for the parent cgroup that survives one" ;;
   unlimited) ok "container memory: no cgroup ceiling, so there is nothing to reclaim against" ;;
   *)         ok "container memory: no cgroup v2 memory files to read (not a cgroup v2 container)" ;;
 esac
