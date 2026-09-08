@@ -595,8 +595,10 @@ labels_validate_name() {
 # name's own words), `cap`, `create-failed` or `apply-failed` for everything
 # else. Never fails the caller: an unusable REPO/KIND/NUMBER, or an empty or
 # malformed LABELS_JSON, still prints the (all-empty) object rather than
-# raising an error — minting is advisory by design (requirement 6c), and a
-# stage's own verdict or PR must never turn on whether it succeeded.
+# raising an error, and an entry that is not an object at all is refused
+# `empty` on its own rather than costing the entries around it — minting is
+# advisory by design (requirement 6c), and a stage's own verdict or PR must
+# never turn on whether it succeeded.
 labels_mint() {
   local repo="$1" kind="$2" number="$3" labels_json="${4:-[]}" cap="${5:-3}" \
     gh_bin="${LABELS_GH:-gh}"
@@ -608,9 +610,18 @@ labels_mint() {
 
   local created="" applied="" refused="" applied_count=0
   if [[ -n "$repo" && ( "$kind" == "issue" || "$kind" == "pr" ) && -n "$number" ]]; then
-    local name colour description reason ensure_result
-    while IFS=$'\t' read -r name colour description; do
-      [[ -n "$name" ]] || continue
+    local entry name colour description reason ensure_result
+    # Split each `@tsv` line explicitly rather than with `IFS=$'\t' read -r
+    # name colour description`: tab is an IFS *whitespace* character, so bash
+    # collapses the run of two tabs an entry with a description but no colour
+    # of its own emits and reads that description as the colour — which
+    # `labels_ensure_one` would then hand GitHub as a hex code, refusing a
+    # perfectly good label whose only sin was leaving `colour` out. `@tsv`
+    # escapes any tab inside a field, so every line carries exactly the two
+    # separators this expects.
+    while IFS= read -r entry; do
+      name="${entry%%$'\t'*}"; entry="${entry#*$'\t'}"
+      colour="${entry%%$'\t'*}"; description="${entry#*$'\t'}"
       if (( applied_count >= cap )); then
         refused+="$name"$'\t'"cap"$'\n'
         continue
@@ -634,7 +645,8 @@ labels_mint() {
           refused+="$name"$'\t'"create-failed"$'\n'
           ;;
       esac
-    done < <(jq -r '.[]? | [(.name // ""), (.colour // ""), (.description // "")] | @tsv' \
+    done < <(jq -r '.[]? | (if type == "object" then . else {} end)
+                    | [(.name // ""), (.colour // ""), (.description // "")] | @tsv' \
                 <<<"$labels_json" 2>/dev/null)
   fi
 

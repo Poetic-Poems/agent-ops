@@ -21781,7 +21781,11 @@ oblige anyone to edit a test.
     entry case-insensitively — by exact name or by prefix glob — while
     passing an ordinary name and one at exactly the 50-character limit;
     `labels_mint` creates and applies an accepted entry with its own colour
-    and description, applies without creating a name already present,
+    and description, carries the description of an entry that names one but
+    no colour through intact under the neutral-grey default rather than
+    confusing the two fields, refuses an entry that is not an object at all
+    without costing the well-formed entries beside it,
+    applies without creating a name already present,
     refuses a reserved name without ever reaching `gh`, enforces its own
     per-item cap (the default 3, and a smaller explicit one) by refusing the
     surplus `cap` while the accepted entries still land, and reports

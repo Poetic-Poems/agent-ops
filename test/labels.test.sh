@@ -669,6 +669,31 @@ assert_eq "  ... created with its own colour and description" \
 assert_eq "  ... and applied via gh issue edit --add-label" \
   "issue	Owner/repo	42	good-one" "$(cat "$tmp/apply-log")"
 
+# An entry naming a description but no colour of its own: the description must
+# reach GitHub as the description and the colour default to the neutral grey.
+# Reading these fields with `IFS=$'\t' read` silently swaps them — tab is an
+# IFS *whitespace* character, so bash collapses the two adjacent separators
+# such an entry emits — and the description then reaches GitHub as a hex
+# colour, refusing a label whose only sin was leaving `colour` out.
+reset_stub
+out="$(labels_mint "Owner/repo" issue "42" \
+  '[{"name":"described-one","description":"a human-readable description"}]' </dev/null)"
+assert_eq "an entry with a description but no colour is still created" '["described-one"]' \
+  "$(jq -c '.created' <<<"$out")"
+assert_eq "  ... with its description intact and the neutral-grey default colour" \
+  "api -X POST repos/Owner/repo/labels -f name=described-one -f color=ededed -f description=a human-readable description" \
+  "$(grep '^api -X POST' "$tmp/log")"
+assert_eq "  ... and applied" '["described-one"]' "$(jq -c '.applied' <<<"$out")"
+
+# A stage naming a bare string where an object belongs is refused on its own,
+# without costing the well-formed entries either side of it.
+reset_stub
+out="$(labels_mint "Owner/repo" issue "42" '["bare-string",{"name":"ok-two"}]' </dev/null)"
+assert_eq "an entry that is not an object at all is refused empty" "empty" \
+  "$(jq -r '.refused[] | select(.name=="") | .reason' <<<"$out")"
+assert_eq "  ... and the well-formed entry beside it still lands" '["ok-two"]' \
+  "$(jq -c '.applied' <<<"$out")"
+
 reset_stub good-one
 out="$(labels_mint "Owner/repo" issue "42" "$labels_json" < <(printf '%s\n' blocked))"
 assert_eq "a name that already exists as a label is applied without a create" '[]' \
