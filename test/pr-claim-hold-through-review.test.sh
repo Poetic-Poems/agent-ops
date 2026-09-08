@@ -260,6 +260,13 @@ else
     issue_priority_cache_cleanup() { :; }
     # shellcheck disable=SC2317
     log_event() { :; }
+    # docs/FLOW-SCHEMA.md, requirement 50, issue #597: cleanup's own last act
+    # is finalize_node_state_for_cycle. Sourced for real (it is pure, cheap,
+    # and its only side effect is the log_event stub above) rather than
+    # stubbed — which also keeps this case checking what it exists to check,
+    # that nothing in cleanup swallows or replaces the abort's own status.
+    # shellcheck source=lib/node-time-state.sh
+    . "$SCRIPT_DIR/lib/node-time-state.sh"
     eval "$cleanup_src"
     trap cleanup EXIT
     false  # the unhandled abort: errexit ends the cycle between statements
