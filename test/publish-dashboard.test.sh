@@ -195,6 +195,12 @@ data_of() {  # the JSON inside data.js, wrapper stripped
     | sed -e '1s/^window\.DASHBOARD_DATA = //' -e '$ s/;$//'
 }
 
+stamp_of() {  # the JSON inside stamp.js, wrapper stripped
+  local home="$1"
+  sed -e '1s/^window\.DASHBOARD_STAMP = //' -e '$ s/;$//' \
+    "$home/.local/state/poetic-agents/dashboard/stamp.js"
+}
+
 today="$(date -u +%Y%m%dT%H%M%SZ)"
 today_day="${today:0:8}"
 
@@ -3444,6 +3450,60 @@ assert_eq "changing only --now still rebuilds, even though nothing on disk moved
   "2026-08-24T05:00:00Z" "$(jq -r '.landings.generated_at' <<<"$ldata")"
 assert_eq "--now pins the landing digest: 2 days after the arm, it has aged out of the 24h window" \
   "0" "$(jq -r '.landings.armed | length' <<<"$ldata")"
+
+# --- stamp.js: the client-visible fingerprint dashboard tabs poll (#1288) ------
+# Before this, every open tab re-downloaded the whole multi-MB data.js on
+# every refresh tick, unconditionally — roughly 45 GB/day per tab left open.
+# stamp.js is the fix's entire client-visible surface: a few dozen bytes a tab
+# can compare to know whether data.js is worth fetching at all. Checked
+# directly here, rather than only through the SPA logic that reads it.
+sp="$(new_home nodeStamp)"
+sp_state="$sp/.local/state/poetic-agents"
+sp_stamp="$sp_state/dashboard/stamp.js"
+sp_fp_file="$sp_state/.dashboard-fingerprint"
+make_cycle "$sp" "${today_day}T110000Z-1" 1 model-a
+
+sp_publish() { env HOME="$sp" NODE_NAME=nodeStamp "$PUBLISH" --no-github >/dev/null 2>&1; }
+
+sp_publish
+assert_eq "the first publish writes a stamp beside data.js" "1" \
+  "$(( $(wc -c < "$sp_stamp" 2>/dev/null || echo 0) > 0 ))"
+sdata="$(stamp_of "$sp")"
+assert_eq "the stamp carries a non-empty generated_at" "true" \
+  "$(jq -r '.generated_at | (type == "string" and length > 0)' <<<"$sdata")"
+assert_eq "  ... and a 64-hex-character fingerprint" "true" \
+  "$(jq -r '.fingerprint | test("^[0-9a-f]{64}$")' <<<"$sdata")"
+assert_eq "  ... which is exactly the no-op skip's own fingerprint" \
+  "$(cat "$sp_fp_file")" "$(jq -r '.fingerprint' <<<"$sdata")"
+assert_eq "  ... and agrees with data.js's own generated_at" \
+  "$(jq -r '.generated_at' <<<"$(data_of "$sp")")" "$(jq -r '.generated_at' <<<"$sdata")"
+
+# A no-op tick must leave the stamp exactly as it found it — the same proof
+# the no-op skip's own test (above) holds data.js to: "skipped" means
+# untouched, not "rewritten with the same bytes". A stale stamp a tab could
+# poll forever without ever refetching would be a worse bug than the one this
+# whole feature exists to fix.
+before_mtime="$(stat -c %Y "$sp_stamp")"
+before_stamp="$(cat "$sp_stamp")"
+sp_publish
+assert_eq "a no-op tick leaves the stamp untouched" \
+  "$before_mtime" "$(stat -c %Y "$sp_stamp")"
+assert_eq "  ... byte for byte" "$before_stamp" "$(cat "$sp_stamp")"
+
+# A real change must move the fingerprint — the one field a tab actually
+# compares before deciding whether to pay for data.js.
+before_fp="$(jq -r '.fingerprint' <<<"$(stamp_of "$sp")")"
+printf '{"ts":"%s","cycle":"%sT110000Z-1","node":"nodeStamp","event":"pr-raised","repo":"Poetic-Poems/poetic","pr_url":"https://github.com/Poetic-Poems/poetic/pull/1"}\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$today_day" >> "$sp_state/log.jsonl"
+sp_publish
+after_fp="$(jq -r '.fingerprint' <<<"$(stamp_of "$sp")")"
+assert_eq "a real change moves the stamp's fingerprint" "1" \
+  "$([[ "$before_fp" != "$after_fp" ]] && echo 1 || echo 0)"
+
+# The page template itself must actually load the new sibling, or a tab would
+# never poll it in the first place.
+assert_contains "the copied page references stamp.js" \
+  "stamp.js" "$(cat "$sp_state/dashboard/index.html")"
 
 # ---------------------------------------------------------------------------------
 if (( failures > 0 )); then

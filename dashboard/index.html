@@ -8,8 +8,17 @@
      A plain script tag (not a module) is used so this works from a file:// URL
      with no server. The page then refreshes itself in place (see the SPA
      loader at the foot of the script) by re-fetching this same file — it never
-     does a full navigation, so expanded rows and scroll position survive. -->
+     does a full navigation, so expanded rows and scroll position survive.
+
+     stamp.js is a second, few-dozen-byte sibling carrying only
+     {generated_at, fingerprint}; each refresh tick fetches it first and
+     re-fetches data.js only when its fingerprint no longer matches the one
+     last loaded, so an unchanged tab pays a fraction of a kilobyte per tick
+     instead of the whole payload (issue #1288). Loaded here too, alongside
+     data.js, so the very first tick already knows the fingerprint the page
+     opened with. -->
 <script src="data.js"></script>
+<script src="stamp.js"></script>
 <style>
   :root {
     --bg: #f6f7f9; --panel: #ffffff; --ink: #1c2024; --muted: #656d76;
@@ -3532,17 +3541,19 @@
   }
 
   // ---------- SPA refresh ----------
-  // Re-fetch data.js in place rather than reloading the page. A fresh <script>
-  // element is injected (not fetch()) so this keeps working from a file:// URL
-  // with no server and no CORS; a cache-busting query defeats HTTP caching so
-  // each tick sees what the Publisher just wrote.
-  function loadData(cb) {
+  // Fetch a sibling file in place rather than reloading the page. A fresh
+  // <script> element is injected (not fetch()) so this keeps working from a
+  // file:// URL with no server and no CORS; a cache-busting query defeats
+  // HTTP caching so each tick sees what the Publisher just wrote.
+  function loadScript(src, prop, cb) {
     var s = document.createElement("script");
-    s.src = "data.js?_=" + Date.now();
-    s.onload = function () { if (s.parentNode) s.parentNode.removeChild(s); cb(window.DASHBOARD_DATA); };
+    s.src = src + "?_=" + Date.now();
+    s.onload = function () { if (s.parentNode) s.parentNode.removeChild(s); cb(window[prop]); };
     s.onerror = function () { if (s.parentNode) s.parentNode.removeChild(s); cb(null); };
     document.head.appendChild(s);
   }
+  function loadStamp(cb) { loadScript("stamp.js", "DASHBOARD_STAMP", cb); }
+  function loadData(cb)  { loadScript("data.js", "DASHBOARD_DATA", cb); }
 
   // Signature of everything except generated_at (which changes every publish
   // even when nothing else did). Lets us skip the body rebuild — and so keep
@@ -3562,20 +3573,42 @@
     renderBody();
   }
 
+  // The Publisher's own no-op-skip fingerprint (issue #1288), reused
+  // client-side: data.js is only ever rewritten when this changes, so a tab
+  // whose last-loaded fingerprint still matches the stamp's knows without
+  // asking that the multi-MB payload behind it cannot have moved either.
+  // stamp.js is a few dozen bytes; data.js is not fetched at all on a tick
+  // where the two agree.
+  var lastFingerprint = (window.DASHBOARD_STAMP && window.DASHBOARD_STAMP.fingerprint) || null;
+
   var loading = false;
   function tick() {
     if (loading) return;           // don't stack fetches if one is slow
     loading = true;
-    loadData(function (nd) {
-      loading = false;
-      if (nd) applyData(nd);
-      renderHeaderStatus();        // tick the clock even when the body didn't change
+    loadStamp(function (stamp) {
+      if (!stamp) { loading = false; renderHeaderStatus(); return; }
+      if (stamp.fingerprint !== lastFingerprint) {
+        lastFingerprint = stamp.fingerprint;
+        loadData(function (nd) {
+          loading = false;
+          if (nd) applyData(nd);
+          renderHeaderStatus();      // tick the clock even when the body didn't change
+        });
+      } else {
+        loading = false;
+        // generated_at still ticks the header clock every refresh, whether
+        // or not data.js itself was worth re-fetching.
+        D.generated_at = stamp.generated_at;
+        renderHeaderStatus();
+      }
     });
   }
 
   // ---------- refresh scheduling ----------
   // Interval is configurable via config.json's dashboard_refresh_seconds
-  // (default 5s), matching the cadence publish-dashboard-launcher.sh writes at.
+  // (default 5s), matching the cadence publish-dashboard-launcher.sh writes
+  // at — every tick polls stamp.js at this cadence; data.js itself follows
+  // only when the fingerprint says it has to.
   var refreshMs = Math.max(1, (D.config && +D.config.dashboard_refresh_seconds) || 5) * 1000;
   var timer = null;
   function schedule() {

@@ -35,6 +35,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `pager-firing` page-top banner and a node-card badge naming a firing
   invariant on the node(s) its evidence names.
 
+- **The dashboard polls a stamp instead of re-downloading `data.js` every
+  tick** (issue #1288): every open dashboard tab was re-fetching the whole
+  payload — 2.7–2.9 MB measured on real nodes — unconditionally on every
+  `dashboard_refresh_seconds` tick, whether or not anything had changed;
+  about 45 GB/day per tab left open, and over a slow enough path a single
+  tick took longer than the interval it was fired at, so a tab there never
+  caught up. `scripts/publish-dashboard.sh` now writes a `stamp.js` sibling
+  beside `data.js` on every run — `window.DASHBOARD_STAMP =
+  {generated_at, fingerprint}`, a few dozen bytes, atomically, from the same
+  no-op-skip fingerprint that already governs whether `data.js` itself gets
+  rewritten. `dashboard/index.html` fetches `stamp.js` every tick and
+  `data.js` only when its `fingerprint` no longer matches the one last
+  loaded; `generated_at` still ticks the header's staleness clock every
+  tick regardless. With unchanged data a tick now costs bytes, not
+  megabytes.
+
 - **Labels a stage asks for** (issue #714, requirement 6c): the Refiner's
   per-item verdict and the Implementer's summary may each name up to 3
   descriptive labels of their own — `{name, colour?, description?}` — for

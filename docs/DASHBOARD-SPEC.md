@@ -49,6 +49,7 @@ pipeline state (this machine)            GitHub (public repos, via gh)
                      ▼
         scripts/publish-dashboard.sh   (the Publisher)
           → <state_dir>/dashboard/data.js   (redacted JSON, generated)
+          → <state_dir>/dashboard/stamp.js  ({generated_at, fingerprint})
           → <state_dir>/dashboard/index.html (copied from repo)
                      │
                      ▼
@@ -59,9 +60,9 @@ Refresh triggers:  end-of-cycle hook in agent-cycle.sh
 ```
 
 The page (`dashboard/index.html`, the source of truth, committed) loads its
-sibling `data.js` with a plain `<script src>` tag — which works from a
-`file://` URL with no server. The Publisher rewrites `data.js` and copies the
-page next to it each run. Opening the page needs nothing else.
+siblings `data.js` and `stamp.js` with plain `<script src>` tags — which work
+from a `file://` URL with no server. The Publisher rewrites both and copies
+the page next to them each run. Opening the page needs nothing else.
 
 ## State it reads (verified 2026-07-14)
 
@@ -480,9 +481,15 @@ treating its absence as "reset known".
 ## The Publisher (`scripts/publish-dashboard.sh`)
 
 Reads the state above, assembles one JSON object, redacts it, and writes it
-as `window.DASHBOARD_DATA = {…}` to `data.js` (atomically: temp file + `mv`).
-It is `set -uo pipefail` (not `-e`) because most reads are best-effort, and
-ends `exit 0`. It sets its own `PATH` for cron and is `shellcheck`-clean.
+as `window.DASHBOARD_DATA = {…}` to `data.js` (atomically: temp file + `mv`),
+then writes `window.DASHBOARD_STAMP = {generated_at, fingerprint}` the same
+way to a `stamp.js` sibling — the fingerprint is the no-op skip's own (below),
+computed once data.js is written and reused as-is, so client and skip logic
+never disagree about what "changed" means. Both writes happen back to back,
+with nothing state-changing between them, so a reader can never observe a
+stamp/data pair spanning two different publishes. It is `set -uo pipefail`
+(not `-e`) because most reads are best-effort, and ends `exit 0`. It sets its
+own `PATH` for cron and is `shellcheck`-clean.
 Several measures keep a *rebuild* proportional to the window rather than to
 the whole history: the
 transcript cost scan reads envelopes in batches (one `jq` per 25 files, the
@@ -1125,10 +1132,16 @@ no external network requests (works fully offline). Renders from
 Theme-aware (light/dark via `prefers-color-scheme`); wide tables scroll
 inside their own container. Refreshes in place rather than reloading: on a
 configurable interval (`config.json`'s `dashboard_refresh_seconds`, default
-5s) it re-fetches `data.js` by injecting a cache-busted `<script>` — not
-`fetch()`, so it keeps working from a `file://` URL with no server or CORS —
-and re-renders the body **only when the data actually changed** (a signature
-compare that ignores the always-moving `generated_at`). Expanded cycle rows,
+5s) it injects a cache-busted `<script>` — not `fetch()`, so it keeps working
+from a `file://` URL with no server or CORS — fetching `stamp.js` (a few dozen
+bytes: `{generated_at, fingerprint}`) first, and `data.js` itself only when
+`stamp.js`'s `fingerprint` no longer matches the one the page last loaded
+(issue #1288: every open tab was re-downloading the multi-megabyte `data.js`
+on every tick, unconditionally, regardless of whether the underlying data had
+moved). It re-renders the body **only when the data actually changed** (a
+signature compare that ignores the always-moving `generated_at`); the header's
+own staleness clock still ticks every refresh, from `stamp.js`'s own
+`generated_at`, whether or not `data.js` was worth re-fetching. Expanded cycle rows,
 opened void rows and a void list showing past its cap, open transcript panels
 and scroll position survive the re-render — both the page's own scroll
 position and, independently, the position scrolled to within any transcript
@@ -2271,8 +2284,8 @@ number's twins elsewhere on the page.
   `.github/workflows/build-image.yml` that supplies them (with a check that the
   built image reads its own stamp back — the failure mode is otherwise silent).
 - The cleanup hook in `agent-cycle.sh`; `.gitignore` and `.dockerignore`
-  entries for `dashboard/data.js` and `build-info.json`; the README
-  "Monitoring" section's "Dashboard" subsection.
+  entries for `dashboard/data.js`, `dashboard/stamp.js` and `build-info.json`;
+  the README "Monitoring" section's "Dashboard" subsection.
 
 ## Verifying a change
 
@@ -3415,6 +3428,21 @@ number's twins elsewhere on the page.
   consequence of only-on-change: the relative "3m ago" cells stop advancing
   while the pipeline is idle and catch up the moment new data lands — the
   header's own staleness clock keeps ticking, so freshness is never in doubt.
+- **`data.js` itself is only fetched when it might have changed** (issue
+  #1288). "Cheap and non-disruptive" above was still true only *after*
+  paying to download `data.js` on every tick — 2.7–2.9 MB measured on real
+  nodes, continuously, whether or not the underlying state had moved: about
+  45 GB/day per tab left open, and over a slow enough path (agent-ops#1286)
+  a single tick took longer than the interval it was fired at, so the tab
+  never caught up at all. The fix keeps the cache-busted `<script>`
+  injection (a tab still needs no server) but adds a second, few-dozen-byte
+  sibling, `stamp.js`, carrying `{generated_at, fingerprint}` — the
+  Publisher's own no-op-skip fingerprint (below), which by construction
+  changes exactly when `data.js`'s content might have. Every tick fetches
+  `stamp.js`; `data.js` follows only when its `fingerprint` differs from the
+  one the tab last loaded. `generated_at` still ticks the header clock on
+  every tick regardless, so the staleness display is exactly as live as
+  before — only the multi-megabyte fetch became conditional.
 - **The dequeued warning is the Publisher's own memory, not GitHub's timeline**
   (agent-ops#375, D17). The obvious first design reads `merge_queue_probe`'s
   `dequeued_at`/`dequeue_reason` straight through — the same fields
