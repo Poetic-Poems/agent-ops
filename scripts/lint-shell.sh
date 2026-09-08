@@ -56,15 +56,15 @@
 #
 # THE GUARD APPLIES TO EVERY FILE, not only ones above some fixed line count —
 # this used to gate on a 10,000-line threshold (`LARGE_LINES`) and let every
-# smaller file run unconditionally, which is how `scripts/publish-dashboard.sh`
-# (union 7,522 lines) ran `shellcheck -x` uncosted on a node whose *actual*
-# available memory, once bound by a parent cgroup's `memory.high`
-# (deploy/docker/compose.yaml, `scripts/cgroup-parent-setup.sh`), was nowhere
-# near free (agent-ops#1305). What "large enough to matter" means depends on
-# what the node running this actually has, not on a line count picked in
-# advance — so every file's estimated cost is compared against the budget, and
-# a small file on a small enough budget degrades exactly like a large one on a
-# starved one.
+# smaller file run unconditionally, whatever the budget. `scripts/doctor.sh` is
+# what that costs: a 9,367-line union, comfortably under the old gate, and an
+# estimated 772 MiB to follow — against the 768 MiB a node bound by a parent
+# cgroup's `memory.high` (deploy/docker/compose.yaml,
+# `scripts/cgroup-parent-setup.sh`) actually has (agent-ops#1305). What "large
+# enough to matter" means depends on what the node running this actually has,
+# not on a line count picked in advance — so every file's estimated cost is
+# compared against the budget, and a small file on a small enough budget
+# degrades exactly like a large one on a starved one.
 #
 # This is still a real reduction in coverage, so it is announced on every run
 # rather than left to be discovered. What the guard can no longer say is that
@@ -112,9 +112,13 @@ COST_P3_LINES="${LINT_SHELL_COST_P3_LINES:-26262}";  COST_P3_MIB="${LINT_SHELL_C
 # file is followed with `-x` whatever the estimate above says. This is CI's
 # own escape hatch (.github/workflows/shellcheck.yml) — a runner has the
 # memory, and the gate's coverage should not quietly track how much RAM GitHub
-# happens to give it this month. Any other value is not read here at all: the
+# happens to give it this month. Any other value never decides a tier — the
 # estimator above is what a real run compares the budget against, and the
-# `LINT_SHELL_COST_P*` pairs are how a test moves that estimate instead.
+# `LINT_SHELL_COST_P*` pairs are how a test moves that estimate instead. It is
+# read in one other place only, as `budget_mib`'s "nothing readable anywhere"
+# fallback: on a host with neither a cgroup nor a `/proc/meminfo` to read, the
+# budget becomes this number so the run assumes room rather than degrading
+# every file on an accounting scheme we simply cannot read.
 FOLLOW_MIB="${LINT_SHELL_FOLLOW_MIB:-6144}"
 # What running shellcheck on any one file WITHOUT `-x` costs, in MiB — roughly
 # constant regardless of that file's own size, unlike the union-scaled

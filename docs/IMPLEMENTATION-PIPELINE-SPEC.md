@@ -19542,10 +19542,10 @@ oblige anyone to edit a test.
    `.github/workflows/shellcheck.yml` runs the same script on every pull
    request against a pinned shellcheck (component 10).
    `test/lint-shell.test.sh` passes.
-1g-i. **A script too large to lint in the memory available is degraded,
-   never skipped and never allowed to kill the cycle — and this is judged
-   against every file, not only ones above some fixed line count
-   (agent-ops#1305).** What "too large" measures is the **union `-x` actually
+1g-i. **A script too large to lint in the memory available is degraded, or —
+   where not even that fits — skipped, and never allowed to kill the cycle;
+   and this is judged against every file, not only ones above some fixed line
+   count (agent-ops#1305).** What "too large" measures is the **union `-x` actually
    parses** — the file plus every file it names in a `# shellcheck source=`
    directive, transitively, each counted once (`analysed_lines`,
    `scripts/lint-shell.sh`) — and never the file's own length. #771 is why
@@ -19554,8 +19554,11 @@ oblige anyone to edit a test.
    so the file's own `wc -l` fell from 10,136 to 2,865 while the union it
    costs stayed at 26,262. A guard reading the file's own length would have
    declared the problem solved and gone on to OOM-kill the node it ran on.
-   The unions in this tree are 26,262 lines for `agent-cycle.sh` and 7,522
-   for the next largest, `scripts/publish-dashboard.sh`.
+   The largest unions in this tree are 35,674 lines for `agent-cycle.sh`,
+   12,953 for `scripts/publish-dashboard.sh`, 9,367 for `scripts/doctor.sh`
+   and 7,196 for `review-cycle.sh` — every one of them a whole entry point's
+   worth of `lib/*.sh`, and every one of them growing with the tree, which is
+   the reason the guard costs a union rather than compares it to a constant.
    The GHC runtime shellcheck is built on ignores `+RTS -M` (the release
    binary is not linked with `-rtsopts`) and reserves a 1 TB address space, so
    neither a heap cap nor `ulimit -v` can bound it; the only thing that can is
@@ -19570,10 +19573,14 @@ oblige anyone to edit a test.
    MiB, 23,569 at 1,983 MiB, 26,262 at 4,543 MiB, the last of these a floor
    rather than a peak since that run never finished) rather than gating on a
    fixed line count first. This is what closes agent-ops#1305's own reading of
-   the guard: `scripts/publish-dashboard.sh`'s 7,522-line union sat under the
-   guard's former 10,000-line gate and so ran `shellcheck -x` uncosted even on
-   a node whose actual, parent-bound budget was far below what following it
-   needed. A file whose estimate fits the budget follows with `-x`; one whose
+   the guard: a line count picked to isolate one file says nothing about what
+   the node running it can afford, and the former 10,000-line gate let
+   everything below it follow sources unconditionally, whatever the budget.
+   `scripts/doctor.sh` is the clearest case — 9,367 union lines, under that
+   gate, and an estimated 772 MiB to follow, against the 768 MiB a parented
+   node actually has. That is an uncosted `shellcheck -x` sized at the
+   incident's own first measured kill (964 MB anon-rss), on a node the guard
+   was reporting nothing about. A file whose estimate fits the budget follows with `-x`; one whose
    estimate exceeds it but whose budget is still at least `LINT_SHELL_PLAIN_MIB`
    (1,024, a roughly constant cost regardless of the file's own size) is linted
    without `-x`, suppressing SC1091, SC2154 and SC2034 for that file — all
@@ -19582,20 +19589,31 @@ oblige anyone to edit a test.
    `source` line raises SC1091 and every variable crossing the boundary reads
    as unassigned (SC2154) or as assigned and never read (SC2034), which after
    #771 is 25 of them in `agent-cycle.sh` with nothing wrong with any of them.
-   Below `LINT_SHELL_PLAIN_MIB` the file is not linted at all — reachable in
-   principle, and after #771 no longer reachable in practice for
-   `agent-cycle.sh` itself: without `-x` it completes in 634 MiB, comfortably
-   inside a scheduler container's entire 1,536 MiB ceiling, where before the
-   split it was killed at that ceiling and skipped outright. What the split
-   cannot buy is following the sources *inside* that ceiling, and nothing else
-   can either: a 172-line entry point over the same modules — 23,569 lines of
-   union — already costs 1,983 MiB, against `agent-cycle.sh`'s own 26,262
-   passing 4,543 MiB before the kernel stops it. The cost is the union, the
-   union is this pipeline's whole codebase, and following it from an entry
-   point is a CI-sized job by construction. So the guard's degraded mode is
-   permanent for the two entry points rather than a stage on the way to
-   something better, and the checks it gives up are recovered in CI rather
-   than one day locally.
+   Below `LINT_SHELL_PLAIN_MIB` the file is not linted at all, and which of
+   the two reduced modes a node lands in is a property of that node's budget
+   rather than of the file. An un-parented scheduler container has its whole
+   1,536 MiB, which is above `LINT_SHELL_PLAIN_MIB`, so nothing there is ever
+   skipped: `agent-cycle.sh` without `-x` completes in 634 MiB, comfortably
+   inside that ceiling, where before #771's split it was killed at that
+   ceiling and skipped outright. A **parented** node has the parent's
+   `memory.high` instead — 768 MiB at `scripts/cgroup-parent-setup.sh`'s own
+   default, which is *below* `LINT_SHELL_PLAIN_MIB` — so on one of those the
+   skip path is reached in practice, for every file whose estimate exceeds
+   the budget: `agent-cycle.sh`, `scripts/publish-dashboard.sh` and
+   `scripts/doctor.sh` as the tree stands. That is the trade agent-ops#1305
+   accepted deliberately — reduced local coverage, announced on stderr, is
+   strictly better than an invocation the node cannot afford — and it is
+   another reason the skip does not fail the run: CI has the memory and
+   checks all three in full. What no local ceiling can buy is following the
+   sources *inside* it, and nothing else can either: a 172-line entry point
+   over the same modules — 23,569 lines of union — already costs 1,983 MiB,
+   against `agent-cycle.sh`'s 26,262-line union at the time of that
+   measurement passing 4,543 MiB before the kernel stops it. The cost is the
+   union, the union is this pipeline's whole codebase, and following it from
+   an entry point is a CI-sized job by construction. So the guard's reduced
+   modes are permanent for the largest entry points rather than a stage on
+   the way to something better, and the checks they give up are recovered in
+   CI rather than one day locally.
    Degrading and skipping are both announced on stderr naming the file, its
    own length, its union, the estimated cost, and which ceiling bound the
    budget, because silence would read as coverage that did not happen; a skip

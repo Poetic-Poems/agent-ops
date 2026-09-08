@@ -201,11 +201,11 @@ assert_contains "the warning reports the union, not only the file's own length" 
 # --- The budget is consulted for every file, not only ones above some fixed
 #     line count (agent-ops#1305) --------------------------------------------
 #
-# scripts/publish-dashboard.sh's real union (7,522 lines) sat comfortably under
-# the old 10,000-line LARGE_LINES gate and so was never costed at all — on a
-# node bound by a parent cgroup's memory.high (deploy/docker/compose.yaml),
-# that meant `shellcheck -x` ran uncosted against whatever the parent ceiling
-# actually left free. This exercises the *real*, un-overridden cost estimator
+# scripts/doctor.sh's real union (9,367 lines) sits comfortably under the old
+# 10,000-line LARGE_LINES gate and so was never costed at all — on a node
+# bound by a parent cgroup's memory.high (deploy/docker/compose.yaml), that
+# meant `shellcheck -x` ran uncosted, at an estimated 772 MiB, against a
+# ceiling of 768. This exercises the *real*, un-overridden cost estimator
 # (no LINT_SHELL_COST_P* here) against a fixture file well short of the old
 # threshold, with the budget itself pinned to a heavily parented node via
 # LINT_SHELL_PARENT_HIGH_FILE — the same read-only window
