@@ -435,6 +435,34 @@ run_shim_review "$d"
 assert_eq "a lock.json naming a pid that is gone does not suppress the transition" \
   "idle-without-demand/no-demand" "$(node_states_of "$d")"
 
+# --- review-cycle.sh: the same five sites also suppress against a live peer
+#     *review* run, not just a live implementation cycle (issue #1275) -------
+#
+# Same shape as the agent-cycle.sh case above, but the peer is another
+# review-cycle.sh holding review-lock.json rather than agent-cycle.sh holding
+# lock.json. Every site under test here runs before this process's own
+# acquire_lock (R2) ever writes review-lock.json, so a live pid found there
+# is necessarily a peer, never this run itself.
+
+sleep 60 &
+live_pid=$!
+d="$(shim_node busy-review-peer)"
+jq -nc --argjson p "$live_pid" '{pid: $p}' > "$d/home/.local/state/poetic-agents/review-lock.json"
+run_shim_review "$d"
+assert_eq "a not_before stand-down logs no node-state while a peer review-cycle.sh holds the node" \
+  "" "$(node_states_of "$d")"
+assert_eq "  ... and still stands down for its own reason, unchanged" \
+  "no-demand" "$(jq -r 'select(.event == "review-stand-down") | .cause' \
+    "$d/home/.local/state/poetic-agents/review-log.jsonl" 2>/dev/null)"
+kill "$live_pid" 2>/dev/null
+wait "$live_pid" 2>/dev/null
+
+d="$(shim_node stale-review-peer)"
+jq -nc '{pid: 2147483646}' > "$d/home/.local/state/poetic-agents/review-lock.json"
+run_shim_review "$d"
+assert_eq "a review-lock.json naming a pid that is gone does not suppress the transition" \
+  "idle-without-demand/no-demand" "$(node_states_of "$d")"
+
 if (( failures > 0 )); then
   echo "$failures failure(s)"
   exit 1

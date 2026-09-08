@@ -286,12 +286,31 @@ impl_cycle_running() {
   [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null
 }
 
+# review_cycle_running — is a peer `review-cycle.sh` holding this node right
+# now? The same question as `impl_cycle_running` above, asked of our own
+# lock file instead of the implementation pipeline's. Every one of this
+# function's five callers below runs before this process's own `acquire_lock`
+# (R2) ever writes `review-lock.json`, so a live pid found there at that point
+# is necessarily a peer process, never this one — no self-exclusion check is
+# needed. Same "err toward not-running" reasoning as `impl_cycle_running`,
+# and for the same reason: over-reporting "running" loses a transition
+# permanently, under-reporting merely restores today's behaviour.
+review_cycle_running() {
+  local pid
+  [[ -f "$lock_file" ]] || return 1
+  pid="$(jq -r '.pid // empty' "$lock_file" 2>/dev/null || true)"
+  [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null
+}
+
 # suppress_node_state_if_peer_owns_node — the one line every stand-down that
 # exits before the implementation-cycle check runs beside its own
 # `set_node_state_terminal`. Cheap enough to call unconditionally: it opens
-# one file that is usually absent.
+# one or two files that are usually absent. Suppresses against either peer —
+# a live `agent-cycle.sh` or a live peer `review-cycle.sh` — since both write
+# node-state onto the same shared per-node timeline this tick would otherwise
+# clobber.
 suppress_node_state_if_peer_owns_node() {
-  if impl_cycle_running; then
+  if impl_cycle_running || review_cycle_running; then
     suppress_node_state_transitions
   fi
 }
