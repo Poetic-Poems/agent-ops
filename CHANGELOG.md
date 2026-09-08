@@ -431,6 +431,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The forge authoring App's token is now minted on demand, not once per
+  cycle** (issue #1021, TD-PPagop-26082833). `lib/standdown.sh` used to
+  resolve the App's installation token once, at stand-down, and export it
+  as `GH_TOKEN` for the rest of the cycle's process — but the token carries
+  GitHub's ~1 h lifetime, and a cycle routinely outlives that (the
+  Implementer alone budgets 150 minutes), so a long-running stage's
+  `git push`/`gh pr create` could present an expired credential after all
+  its work was already paid for. `lib/gh-shim.sh`'s `gh` transport shim now
+  mints (or reuses a cached token) immediately before every `gh` call, and
+  the same shim, reached through `git`'s own credential helper
+  (`deploy/docker/entrypoint.sh`), does the same for plain `git` — both
+  minting only when `GH_TOKEN` is already empty, so an explicit token (a
+  human's own, or the Approver's) always passes through untouched.
+
 - **`state-sync.sh` now redacts tokens and home paths before pushing state**
   (issue #966): its push committed `log.jsonl`, `review-log.jsonl`, cron
   logs, and cycle/review transcripts to the private state-mirror
