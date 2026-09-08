@@ -250,6 +250,20 @@ while (( EPOCHSECONDS < endat - tick_margin )); do
   tick_end_ms="$(now_ms)"
   last_cost_ms=$(( tick_end_ms - tick_start_ms ))
   next_tick_ms=$(( tick_end_ms + last_cost_ms * duty_divisor ))
+  # Clamped to the window's own remaining time: an unclamped backoff scales
+  # with `last_cost_ms`, which scales with whatever wedged the tick, and
+  # nothing upstream bounds that. agent-ops#1305 measured a 4,511,835 ms tick
+  # — a node livelocked under a memory cgroup's throttling, not a publish
+  # merely running long — which this loop turned into a computed "next tick
+  # in 40606s" (11.3 hours): harmless only because the window's own `endat`
+  # guard below breaks out of the loop first, and worth clamping regardless,
+  # since the raw figure is what a later `pacing:` line would otherwise log as
+  # this tick's backoff. Never below `tick_end_ms`: a window already past its
+  # reserve owes no backoff, not a negative one.
+  max_next_tick_ms=$(( (endat - tick_margin) * 1000 ))
+  (( max_next_tick_ms < tick_end_ms )) && max_next_tick_ms=$tick_end_ms
+  (( next_tick_ms > max_next_tick_ms )) && next_tick_ms=$max_next_tick_ms
+  backoff_ms=$(( next_tick_ms - tick_end_ms ))
 
   # A backoff worth naming. The defect behind this loop was invisible for as
   # long as it was deployed because nothing anywhere recorded what a tick cost
@@ -262,9 +276,12 @@ while (( EPOCHSECONDS < endat - tick_margin )); do
   # The threshold is on the backoff rather than the tick because the backoff is
   # what an operator is looking for: it says the heartbeat is deliberately
   # idling and for how long, which is the question `top` was needed to answer.
-  if (( last_cost_ms * duty_divisor >= 5000 )); then
+  # Logged as the clamped figure, never the raw `last_cost_ms * duty_divisor`:
+  # the whole point of the clamp above is that the backoff actually applied is
+  # never longer than the window has left, so the log must not claim otherwise.
+  if (( backoff_ms >= 5000 )); then
     printf '%(%Y-%m-%dT%H:%M:%S%z)T pacing: tick cost %sms — next tick in %ss (duty cycle 1:%s)\n' \
-      -1 "$last_cost_ms" "$(( last_cost_ms * duty_divisor / 1000 ))" "$duty_divisor" >>"$log"
+      -1 "$last_cost_ms" "$(( backoff_ms / 1000 ))" "$duty_divisor" >>"$log"
   fi
   # Remember what this kind of tick costs, for the tail reserve at the top of
   # the loop — and for the next window, which is a different process.
