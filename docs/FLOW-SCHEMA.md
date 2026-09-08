@@ -465,7 +465,7 @@ transition is logged where it is. A node's timeline is per *node*, not per
 process, and `agent-cycle.sh` and `review-cycle.sh` each have their own
 crontab line and their own lock — so a tick can start, discover the node is
 already busy under the other process, and end without ever having owned a
-second of it. Three sites are exactly that:
+second of it. Three sites are unconditionally that:
 
 - `cycle-skipped` — `agent-cycle.sh` found `lock.json` held by a live cycle;
 - `review-skipped` — `review-cycle.sh` found `review-lock.json` held;
@@ -482,14 +482,33 @@ transition is reached — which is why `agent-cycle.sh` logs that one just
 after `acquire_lock` rather than beside `cycle-start`, and `review-cycle.sh`
 just after the implementation-cycle check rather than beside `review-start`.
 
+Six further `review-stand-down` sites are *conditionally* that, and are
+silent on the same terms whenever the condition holds. The
+implementation-cycle check is the last ending in `review-cycle.sh` that can
+fire while `agent-cycle.sh` is mid-stage, but it is not the first: both
+switch stand-downs, both `project_review.defaults.not_before` stand-downs,
+the tier-two every-repository-held one (requirement 342) and the usage-limit
+cooldown all `exit 0` before it is reached, and each records a terminal state
+of its own. Each therefore calls `suppress_node_state_if_peer_owns_node`
+beside its `set_node_state_terminal`, which runs `review-cycle.sh`'s own
+`impl_cycle_running` — the same `lock.json` pid probe the check below it uses,
+with no staleness test, so a lock naming a pid that is gone reads as
+not-running — and suppresses the terminal transition only when a live
+implementation cycle owns the node. A node genuinely idle under both
+pipelines still records its idle state from these sites, unchanged.
+
 Silence is not tidiness here. The fold holds each point's state until the
 next point's `ts`, and a running stage emits nothing between its own
-`stage-start` and `stage-end`, so a single skipped tick's transitions would
+`stage-start` and `stage-end`, so a single unguarded tick's transitions would
 relabel the rest of a live Implementer engagement — up to its backstop — as
 this tick's overhead and then as idle. The cycle holding the lock is the one
 occupying those node-seconds and its own events already say so; #597's
 refinement puts it as "`cycle-skipped` is not a state … counting it as a
-state of its own is the same double-count by another route."
+state of its own is the same double-count by another route." The `not_before`
+stand-downs are the reason the conditional half matters as much as the
+unconditional one: holding reviews off until a date is a steady state, not a
+race, so on an installation using it every review tick reaches one of those
+endings — including the ticks that land inside a live Implementer stage.
 
 The maintenance chores are not node states either, for a related reason:
 `publish-dashboard-launcher.sh`, `state-sync.sh`, `doctor.sh` and
@@ -710,21 +729,42 @@ document is, rather than hidden:
   interval is still, in truth, running underneath it. A genuine overlap is
   read as the later-logged pipeline's own state for as long as it is the
   most recent event, rather than the documented `producing > overhead`
-  precedence a fuller model would need. This is why `review-cycle.sh`'s own
-  "an implementation cycle is running" stand-down logs no `node-state`
-  transition at all (see "A tick that owns no node-second emits nothing"
-  above) — the alternative, a competing idle
+  precedence a fuller model would need. This is why every `review-cycle.sh`
+  ending that can fire while `agent-cycle.sh` owns the node logs no
+  `node-state` transition when it does (see "A tick that owns no node-second
+  emits nothing" above) — the alternative, a competing idle
   transition from the pipeline that is *not* doing the work, would be
-  actively wrong rather than merely imprecise.
+  actively wrong rather than merely imprecise. The converse is not covered:
+  `agent-cycle.sh` never probes `review-lock.json`, so one of *its*
+  stand-downs landing during a live project review writes its own idle state
+  over that review's `producing`, which is the plain last-writer-wins case
+  this bullet describes.
+- **`agent-cycle.sh`'s two switch stand-downs log `down` without owning the
+  node** (issue #1268). They record their terminal state and `exit 0` ahead
+  of `acquire_lock`, so a `--disable` issued while a cycle is mid-stage means
+  the next tick writes `down` over that cycle's own `producing`, until its
+  next transition. `review-cycle.sh` guards the equivalent endings with
+  `impl_cycle_running`; `agent-cycle.sh` cannot reuse that shape as it
+  stands, because the value `acquire_lock` decides staleness from
+  (`lock_stale_after_sec`) is not derived until after both stand-downs — and
+  a probe that guessed wrong in the other direction would suppress a
+  disabled node's `down` permanently, which is the only transition such a
+  node ever emits. #1268 carries the choice.
 - **The review pipeline's own idle state is not modelled.** `review-
   cycle.sh` has no per-run eligible-item count the way `agent-cycle.sh`'s
   Co-Ordinator gather does — it reviews one configured repository on a
   dated cadence, not against a backlog — so `finalize_node_state_for_review`
   settles unconditionally into `idle-without-demand`/`no-demand` whenever no
   `review-stand-down` site called `set_node_state_terminal` itself. None of
-  D21's four idle-with-demand causes name a backlog this pipeline has; a
-  `review-stand-down` for "an implementation cycle is running" logs no
-  transition at all, for the overlap reason immediately above.
+  D21's four idle-with-demand causes name a backlog this pipeline has. Where
+  this matters most is not the review pipeline's own reading but what it
+  overwrites: on a node running both pipelines, a review tick settling into
+  `no-demand` replaces whatever `agent-cycle.sh` last settled into, so a real
+  `idle-with-demand`/`awaiting-tick` verdict can be relabelled as the healthy
+  zero by a review tick that knows nothing about the implementation backlog.
+  Only the overlap with a *running* implementation cycle is guarded (the
+  `impl_cycle_running` probe above); an overlap with a sleeping one is the
+  last-writer-wins case #1248 carries.
 
 ## Stability policy
 

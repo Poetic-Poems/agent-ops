@@ -314,6 +314,101 @@ assert_eq "  ... balanced true, window seconds 0" \
 assert_eq "  ... and an empty by_node object, never a missing key" \
   '{}' "$(jq -c '.by_node' <<<"$empty_out")"
 
+# --- review-cycle.sh: a stand-down that exits while agent-cycle.sh owns the
+#     node emits no node-state transition -----------------------------------
+#
+# The rule docs/FLOW-SCHEMA.md states as "A tick that owns no node-second
+# emits nothing", checked at the sites most likely to break it silently.
+# review-cycle.sh's implementation-cycle stand-down is only the *last* ending
+# that can fire while agent-cycle.sh is mid-stage on this node; six others —
+# both switch stand-downs, both `not_before` stand-downs, the tier-two
+# all-repos-held one and the usage-limit cooldown — exit before it is ever
+# reached, and each records a terminal state. Left unsuppressed they log the
+# competing idle/`down` transition the same section calls actively wrong, and
+# because the fold holds each point until the next point's `ts`, one such tick
+# relabels the rest of a live Implementer engagement.
+#
+# First structurally, over every one of them at once, so a seventh site added
+# later cannot slip through: every `set_node_state_terminal` call that appears
+# before the implementation-cycle check must be followed immediately by
+# `suppress_node_state_if_peer_owns_node`.
+
+review_cycle="$SCRIPT_DIR/review-cycle.sh"
+unguarded="$(awk '
+  /^if impl_cycle_running; then/ { past = 1 }
+  past { next }
+  prev ~ /^[[:space:]]*set_node_state_terminal / && $0 !~ /^[[:space:]]*suppress_node_state_if_peer_owns_node$/ {
+    printf "%d:%s\n", NR - 1, prev
+  }
+  { prev = $0 }
+' "$review_cycle")"
+assert_eq "every terminal state recorded before the implementation-cycle check is guarded" \
+  "" "$unguarded"
+assert_eq "  ... and there is at least one such site, so the scan is not vacuous" \
+  "6" "$(awk '/^if impl_cycle_running; then/ { exit } /^[[:space:]]*suppress_node_state_if_peer_owns_node$/ { n++ } END { print n + 0 }' "$review_cycle")"
+
+# Then behaviourally, end to end, against the real script — the routine case,
+# since `project_review.defaults.not_before` in force is a steady state rather
+# than a race: on an installation using it *every* review tick reaches this
+# ending, including the ones landing inside a live Implementer stage.
+
+shim_node() {  # shim_node <name> -> prints its directory
+  # Separate statements on purpose: `local a=… b="$a"` expands every argument
+  # before assigning any, so the second would read an unset `name` under
+  # `set -u` — the same note test/review-not-before.test.sh carries at its own
+  # copy of this shim.
+  local name="$1"
+  local dir="$tmp_dir/$name"
+  local item
+  mkdir -p "$dir" "$dir/home/.local/state/poetic-agents"
+  for item in lib prompts scripts .claude review-cycle.sh agent-cycle.sh config.schema.json; do
+    [[ -e "$SCRIPT_DIR/$item" ]] && ln -s "$SCRIPT_DIR/$item" "$dir/$item"
+  done
+  # `repos: []` and `state_repo: ""` keep the run offline; the stand-down
+  # under test fires long before either would matter anyway.
+  jq '.project_review.repos = [] | .state_repo = ""
+      | .project_review.defaults.not_before = "2099-01-01T00:00:00Z"' \
+    "$SCRIPT_DIR/config.json" > "$dir/config.json"
+  printf '%s' "$dir"
+}
+
+node_states_of() {  # node_states_of <dir> -> one "state/cause" per line
+  jq -r 'select(.event == "node-state") | "\(.state)/\(.cause)"' \
+    "$1/home/.local/state/poetic-agents/review-log.jsonl" 2>/dev/null || true
+}
+
+run_shim_review() {  # run_shim_review <dir>
+  env HOME="$1/home" AGENT_OPS_ROLE=active timeout 60 "$1/review-cycle.sh" --once >/dev/null 2>&1
+}
+
+# A live holder of lock.json: any process this test can prove is running.
+sleep 60 &
+live_pid=$!
+d="$(shim_node busy)"
+jq -nc --argjson p "$live_pid" '{pid: $p}' > "$d/home/.local/state/poetic-agents/lock.json"
+run_shim_review "$d"
+assert_eq "a not_before stand-down logs no node-state while agent-cycle.sh holds the node" \
+  "" "$(node_states_of "$d")"
+assert_eq "  ... and still stands down for its own reason, unchanged" \
+  "no-demand" "$(jq -r 'select(.event == "review-stand-down") | .cause' \
+    "$d/home/.local/state/poetic-agents/review-log.jsonl" 2>/dev/null)"
+kill "$live_pid" 2>/dev/null
+wait "$live_pid" 2>/dev/null
+
+# The two negatives that matter: silence must be caused by the peer, not by
+# the guard swallowing the transition wholesale. A node with no lock at all,
+# and a node whose lock.json names a pid that is gone, both still emit.
+d="$(shim_node idle)"
+run_shim_review "$d"
+assert_eq "with no implementation cycle running, the same stand-down still logs its idle state" \
+  "idle-without-demand/no-demand" "$(node_states_of "$d")"
+
+d="$(shim_node stale)"
+jq -nc '{pid: 2147483646}' > "$d/home/.local/state/poetic-agents/lock.json"
+run_shim_review "$d"
+assert_eq "a lock.json naming a pid that is gone does not suppress the transition" \
+  "idle-without-demand/no-demand" "$(node_states_of "$d")"
+
 if (( failures > 0 )); then
   echo "$failures failure(s)"
   exit 1
