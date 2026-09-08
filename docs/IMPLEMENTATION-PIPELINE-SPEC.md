@@ -825,6 +825,9 @@ and the schema must carry every one of them.
 | `crash_loop_after` | `4` | Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue (requirement 2.7) — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. At four nodes each hitting the same deterministic failure once per cycle, this crosses within about one `schedule.cycle_interval_minutes` interval. `0` (or absent) disables both checks. |
 | `crash_loop_repo` | `Pullwright/agent-ops` | Where requirement 2.7's escalation issues are filed — the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks. This installation's own value, `Pullwright/agent-ops`, is documented below (and checked live by `scripts/doctor.sh`) because it differs from the empty product default — it names this installation's own repository, not a value to copy. |
 | `escalation_webhook_url` | *(unset)* | A URL POSTed to as a best-effort, `GH_TOKEN`-independent fallback whenever `create_escalation_issue` cannot file (requirement 2m). Empty disables it: the call is skipped rather than attempted, so an installation with none configured is unaffected. Must be `https://` when set — a plain-text channel is not a fit substitute for the credential it stands in for. Fleet-wide like every key here, and inert on a node whose `EGRESS_EXTRA_ALLOW` does not name the webhook's host — see...[continued below](#extended-notes-escalation_webhook_url) |
+| `pager_enabled` | `true` | Requirement 51's own master switch. `false` skips evaluation outright — no claim, no invariant run, nothing logged — rather than evaluating with nowhere to file, which `pager_repo` empty already covers on its own. |
+| `pager_repo` | *(unset)* | Where requirement 51's filed issues land, falling back to `crash_loop_repo` (requirement 2.7) when empty. This installation leaves it unset by design, taking `crash_loop_repo`'s own documented value rather than duplicating it. |
+| `pager_min_firing_minutes` | 15 min | Requirement 51's own hysteresis threshold: an invariant must be observed firing, with no intervening clear, for at least this many minutes before `pager_file` runs. `0` disables the hysteresis, filing on the first firing evaluation. |
 | `timeout_coordinator` | *(unset)* | An override for the wall-clock backstop of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case and the intended one: a configured value wins permanently, so setting it turns the self-tuning off for that actor. |
 | `timeout_implementer` | *(unset)* | As `timeout_coordinator`, for the Implementer. The interim raise to 120 this key carried (#203, #209) has gone with the fixed cap it belonged to: the shipped prior is 150 and the derivation moves from there. |
 | `timeout_reviewer` | *(unset)* | As `timeout_coordinator`, for the Reviewer. This is the key #203 was opened about: it was raised 30 → 45 → 60 in two days, and 45 lasted six hours before a complex-model review of a 16-file diff consumed all of it. Complex-model reviews are killed roughly six times as often as default-model ones, so a single fixed number spans two quite different populations — which is why the derivation keys on the model. |
@@ -16057,6 +16060,171 @@ with the Reviewer's own.
     reduced described the fleet correctly, for which `skipped_events` and
     `unaccounted` are the honest measures.
 
+51. **Fleet-level invariants (the pager).** Issue #1126's own four-week
+    incident table named fourteen fleet-wide failures, none surfaced by a
+    pipeline-filed ticket: the silent ones sat four days to a month while
+    the repair loop that does escalate closes what it catches at a 2.0 h
+    median. Ten of the fourteen turned out to be one-line invariants once
+    named, and every one of those ten is a fact already readable from what
+    every node replicates — the union fleet log, every peer's heartbeat, this
+    node's own doctor verdict. `lib/pager.sh` is where that reading happens.
+
+    `pager_register KEY EVAL_FN REMEDY_CLASS REMEDY_ARG` builds a registry —
+    `PAGER_KEYS`/`PAGER_EVAL_FN`/`PAGER_REMEDY_CLASS`/`PAGER_REMEDY_ARG`, four
+    associative structures rather than a config file, so a repository's own
+    `scripts/publish-dashboard.sh` decides at source time which invariants
+    exist. EVAL_FN is a pure function, `EVAL_FN FLEET_NODES_JSON
+    UNION_LOG_FILE`, printing one line — `{firing, evidence}`, plus an
+    optional `nodes` array the dashboard's own node-card badge reads — with
+    one documented exception (`page-outlived-item`, below) that reads GitHub
+    directly rather than a replicated fact, since an issue's own terminal
+    state is not something any heartbeat carries. REMEDY_CLASS is one of
+    `pipeline-act` (REMEDY_ARG names a shell function, `REMEDY_ARG KEY
+    EVIDENCE`, run before filing — it performs the fix directly, never
+    asking, and its one-line return value is recorded in the issue body),
+    `config-lever` (REMEDY_ARG is prose; the tracking issue is filed
+    alongside a second, separate `pw::decision` record through the same
+    filed-closed-immediately convention `create_decision_log_issue`
+    (requirement 36a) uses, so a config-lever remedy inherits #937's veto
+    window — reopen the decision record to veto), or `owner-only` (REMEDY_ARG
+    is prose naming what the owner must decide; the tracking issue is
+    assigned to `enabler_assignee`, the load-bearing half that excludes it
+    from the `issues` source, requirement 16.4, exactly as an ordinary
+    Enabler escalation).
+
+    `pager_evaluate` runs every registered invariant once, from
+    `scripts/publish-dashboard.sh`'s own `WITH_GITHUB` tick of the Publisher
+    (`docs/DASHBOARD-SPEC.md`'s "The Publisher" section) — the point where
+    this node's own union log and every peer's heartbeat have already
+    converged for this tick, and the one tick allowed to touch GitHub at all.
+    Exactly one node evaluates a given invariant in a given five-minute
+    window: a claim on `<key>__<window>` (`window` the epoch second divided
+    by 300) through `lib/claim.sh`'s `claim file pager <key>__<window>` — the
+    same pseudo-slug pattern the Enabler's own `claims/enabler/` claims use
+    (requirement 35c) — so a claim lost or unreachable skips this node's own
+    evaluation for the window rather than risk two nodes filing the same
+    invariant twice.
+
+    An invariant's lifecycle is event-sourced over the union log,
+    transition-only on the same terms requirement 2.7's crash-loop escalation
+    and #937's decision log already settled — a firing invariant
+    re-evaluated every five minutes writes nothing new — via four event
+    names: `pager-candidate {key, first_seen}` the first evaluation seen
+    firing; `pager-candidate-cleared {key}` a candidate that stopped firing
+    before `pager_min_firing_minutes` elapsed, never having been filed, so
+    nothing to retract, only a reset; `pager-fired {key, first_seen,
+    evidence, issue_number, issue_url, remedy_class, nodes}` once the
+    hysteresis threshold is reached and the tracking issue is filed;
+    `pager-cleared {key, cleared_at, evidence}` once a fired invariant
+    evaluates clear and its issue is closed. `pager_state_for`/
+    `pager_last_event` derive the current state (`clear`/`candidate`/`fired`)
+    purely from the latest of these four for a key, on the same no-state-file
+    terms `token_expiry_escalated_for` (requirement 2m) already uses for a
+    single-shot escalation — any node, in any window, agrees with every
+    other about what has already happened.
+
+    `pager_file`/`pager_close` are the filing and auto-close primitives.
+    Every firing invariant that reaches the hysteresis threshold gets one
+    issue per key, in `pager_repo` (empty falls back to `crash_loop_repo`;
+    both empty disables filing — invariants still evaluate and `pager_file`
+    still logs `pager-fired`, with `issue_number`/`issue_url` null, so the
+    transition still reaches the dashboard and the key can still return to
+    `clear` later; nothing is filed on GitHub and nothing is assigned),
+    carrying the fixed `pw::pager` label (`lib/labels.sh`'s `escalation` role
+    catalogue, fixed for the identical reason `pw::decision` is: a renamed
+    label would silently stop being found by this framework's own dedup and
+    auto-close search), deduped on the item reference `pager:<key>` exactly
+    as `create_escalation_issue` dedupes — a body-contains-item-ref search,
+    never a second index.
+
+    The label is *ensured* in `pager_repo` on the create path, and only
+    there, exactly as `create_escalation_issue` does it (requirement 6a's
+    `labels_ensure_role`, the `escalation` role) and for the reason that
+    function states: an escalation repository is by construction not one any
+    cycle otherwise touches, so its labels have nowhere else to be created.
+    Here the label is load-bearing rather than cosmetic — both the dedup
+    above and the auto-close below find a page *by* it — so a page filed
+    through the retry-without-label fallback would be re-filed on every later
+    fire and never auto-closed, leaving on the owner's open list precisely
+    the stale page this requirement exists to prevent. Both dedup searches
+    and the auto-close search state `--limit 200` rather than inheriting
+    `gh`'s undeclared default of 30, on `lib/tech-debt-file.sh`'s own
+    `TECHDEBT_DEDUP_LIST_LIMIT` reasoning: a truncated listing is
+    indistinguishable from a complete one, and the direction of harm is a
+    duplicate filed against an issue the dedup could not see.
+
+    `pager_close` closes it with a one-line comment
+    naming that the fact cleared, on `approver_escalation_retire`'s own
+    established pattern (requirement 8f's #1215 retirement), and logs
+    `pager-cleared` regardless of whether an open issue was actually found to
+    close — a human who already closed it by hand, or a webhook-only filing
+    that never became a real issue, must still let the key return to
+    `clear`. Deliberately independent of `lib/enabler.sh`: its
+    `create_escalation_issue`/`create_decision_log_issue` read cycle-scoped
+    globals (`cycle_dir`, `enabler_assignee`, `node_name`, `cycle_id`) that
+    exist only inside `agent-cycle.sh`'s own per-item cycle, which the
+    Publisher never runs as — `lib/pager.sh` mirrors their dedup search, their
+    retry-without-label, and `escalation_webhook_notify`'s webhook fallback,
+    parameterised, rather than reaching into a stage it is not.
+
+    Configuration: `pager_enabled` (default `true`) gates evaluation
+    outright — the first boolean-typed key in this schema, needed because
+    unlike `crash_loop_repo`'s own empty-disables convention, an invariant's
+    fired/cleared transitions are worth having on the dashboard even with no
+    `pager_repo` configured to file into, so `pager_repo` empty cannot double
+    as this framework's off switch the way it does for crash-loop escalation.
+    `pager_repo` (default empty, falls back to `crash_loop_repo`) and
+    `pager_min_firing_minutes` (default 15) are described above.
+
+    Two invariants ship with the framework (`lib/pager-invariants.sh`),
+    chosen to exercise the whole of it:
+
+    - **`verdict-unanimous`** (pipeline-act). Fires when every *active* node
+      (`.stale | not`; fewer than two active nodes can never be "unanimous")
+      reports the identical failing verdict at once — the #1071 signature,
+      where all four nodes read `updater: stuck` because the *reader's* rule
+      was wrong, not because every node had independently failed the same
+      way at the same instant. Checks, first hit wins: a `stage_health` stage
+      `failing` on every active node (`stage_health.stages` folds into every
+      heartbeat already, requirement 2.8), `updater.status == "stuck"` on
+      every active node (requirement 2.6), or `doctor.verdict == "fail"` on
+      every active node — the last of these needed a heartbeat change of its
+      own: `.doctor-status.json`'s `{timestamp, verdict}` (never the full
+      record — `fails`/`warns`/`skips` are unbounded diagnostic prose and
+      `token_expiry` has no reader off the node holding the credential, so
+      all four stay local) now folds into `heartbeat.json` as `doctor`, the
+      same way `stage_health`'s does, since this invariant is the first
+      reader anywhere that needs a peer's doctor verdict rather than only
+      this node's own. `publish-dashboard.sh` projects this node's own fleet
+      row identically, so every row in the fleet answers to one shape. Its
+      pipeline-act remedy files a
+      `pw::type:tech-debt` issue against this pipeline's own repository (the
+      reader lives here, never in a target repo), never asking.
+    - **`page-outlived-item`** (pipeline-act). Fires when any open issue
+      carrying `enabler_escalation_label` or `pw::pager` in `pager_repo`
+      links a PR or issue (the first `github.com/…/pull/<n>` or
+      `github.com/…/issues/<n>` its body names) that has already gone
+      terminal — merged, closed. "Or" is a union of two listings, one per
+      label, merged and deduped on the issue number, because `gh issue
+      list`'s own `--label "a,b"` is an *intersection* — it filters for
+      issues carrying every name given — and no page ever carries both, so a
+      single comma-joined listing would be empty in every real case and leave
+      this invariant permanently clear. The one documented exception to "pure
+      over replicated facts": an issue's own live state is the fact in question,
+      so its EVAL_FN reads GitHub directly, through
+      `PAGER_EVAL_REPO`/`PAGER_EVAL_ESCALATION_LABEL`, plain shell variables
+      `pager_evaluate` sets before calling it — deliberately not threaded
+      through EVAL_FN's own two-argument contract, so an ordinary invariant's
+      signature never has to know these exist. Its pipeline-act remedy closes
+      every outlived page it finds, generalising #1215's
+      `approver_escalation_retire` from the single adjudication page to
+      every page this framework or the Enabler files.
+
+    `docs/DASHBOARD-SPEC.md`'s "The Publisher" section documents the
+    evaluation site and the `WITH_GITHUB`-not-merely-`FULL` gate; its own
+    page-rendering section documents the `pager-firing` banner and node-card
+    badge this requirement's `nodes` field feeds.
+
 ## Components
 
 What exists, and the requirements each part answers to:
@@ -16802,6 +16970,13 @@ What exists, and the requirements each part answers to:
    `lib/crash-loop.sh` (requirement 2.7's `crash_loop_verdict`,
    `crash_loop_preselection_verdict` and `crash_loop_escalated_since`, all
    pure readers of the union stream),
+   `lib/pager.sh` and `lib/pager-invariants.sh` (requirement 51's fleet-level
+   invariant framework — `pager_register`/`pager_evaluate`/`pager_file`/
+   `pager_close`, and the two invariants, `verdict-unanimous` and
+   `page-outlived-item`, it ships with — sourced by
+   `scripts/publish-dashboard.sh` alone, never by `agent-cycle.sh`, since it
+   evaluates on the Publisher's own tick, not a cycle's. Unit-tested,
+   `test/pager.test.sh` and `test/pager-invariants.test.sh`),
    `lib/token-expiry.sh` (requirement 2.7a's `TOKEN_EXPIRY_WARN_DAYS`,
    `token_expiry_header`, `token_expiry_parse` and
    `token_expiry_escalated_for` — the one place the warning threshold and
@@ -23539,6 +23714,35 @@ oblige anyone to edit a test.
     excludes this process itself rather than reading its own lock as a peer.
     `scripts/lint-shell.sh` is clean on every
     file this requirement touches.
+
+51. **The pager framework files once per firing key, closes once the fact
+    clears, and never twice for the same transition (requirement 51).**
+    `test/pager.test.sh` drives `lib/pager.sh` directly, against fixture
+    union logs built inline the same way `test/crash-loop-escalate.test.sh`
+    does, with `gh`/`lib/claim.sh` stubbed as shell functions: a fire →
+    re-evaluate → clear sequence over one `pipeline-act` invariant asserts
+    exactly one `pager-fired` and, once the stub's eval function reports
+    clear, exactly one `pager-cleared` — never a second of either on a
+    third, fourth or fifth re-evaluation while the state is unchanged; a
+    candidate that stops firing before `pager_min_firing_minutes` elapses
+    logs `pager-candidate-cleared` and never reaches `pager-fired` at all;
+    and one test per remedy class confirms what each one actually does —
+    `pipeline-act` calls the registered remedy function and embeds its
+    return value in the issue body, `config-lever` files a second, separate
+    `pw::decision` issue via the closed-immediately convention alongside the
+    ordinary tracking issue, and `owner-only` assigns the tracking issue to
+    the configured assignee and no other class does. `test/pager-invariants.
+    test.sh` drives `lib/pager-invariants.sh`'s two built-ins against fixture
+    heartbeat sets: `verdict-unanimous` fires on a `stage_health` stage
+    failing on every active (non-stale) node, on `updater.status: "stuck"`
+    fleet-wide, and on `doctor.verdict: "fail"` fleet-wide, but not when
+    only some nodes agree, not when fewer than two nodes are active, and not
+    when a stale node's own disagreement would otherwise break the
+    unanimity; `page-outlived-item` fires when a stubbed `gh issue
+    list`/`gh pr view` shows an open page's own linked PR merged or closed,
+    and its remedy closes exactly the pages found outlived, none still
+    open. `scripts/lint-shell.sh` is clean on every file this requirement
+    touches.
 
 9. **An open question the Reviewer could not settle holds unattended landing,
    resolves through the configured ladder, and never through a new commit

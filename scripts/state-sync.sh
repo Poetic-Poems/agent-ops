@@ -181,14 +181,25 @@ peers_dir="$(fleet_peers_dir "$workspace_root")"
 #   health snapshot  is excluded as a raw file for the same reason
 #                   `.doctor-status.json` is — a peer's copy of the file
 #                   itself would answer for a computation nobody there ran —
-#                   but unlike doctor's status this verdict does need to
-#                   reach peers, which is the whole point of #662: a fleet
-#                   dashboard that can only see this node's own stages is no
-#                   better than `--status` run locally. So its *content*
-#                   travels a different way, the same one `compose`/`image`/
-#                   `switch` already use below: folded into `heartbeat.json`,
-#                   this node's own verdict about itself, published like any
-#                   other fact only this node can state.
+#                   but this verdict does need to reach peers, which is the
+#                   whole point of #662: a fleet dashboard that can only see
+#                   this node's own stages is no better than `--status` run
+#                   locally. So its *content* travels a different way, the
+#                   same one `compose`/`image`/`switch` already use below:
+#                   folded into `heartbeat.json`, this node's own verdict
+#                   about itself, published like any other fact only this
+#                   node can state. `.doctor-status.json`'s own *verdict*
+#                   travels the identical way as of agent-ops#1278:
+#                   lib/pager.sh's `verdict-unanimous` invariant is the first
+#                   reader anywhere that needs a peer's doctor verdict, not
+#                   only this node's own. `{timestamp, verdict}` and nothing
+#                   else — `fails`/`warns`/`skips` stay local on the same
+#                   reasoning as `.stage-health.json`'s own raw file, and
+#                   they are unbounded arrays of diagnostic prose in a file
+#                   the whole fleet re-fetches every
+#                   `schedule.state_sync_fetch_minutes`; `token_expiry`
+#                   stays local because a credential's expiry date has no
+#                   reader off the node that holds the credential.
 #   the stage       `*.stream.jsonl` is a stage's whole event stream, every
 #   streams          message and every tool result (lib/stage-run.sh). It is
 #                   local forensics and, while the stage runs, its liveness
@@ -231,7 +242,10 @@ EXCLUDES=(
   # doctor.log and its structured sibling (scripts/doctor.sh --unattended,
   # agent-ops#543): the hourly pass is local to this node the same way
   # dashboard.log and .image-drift-cache.json below are — nothing reads
-  # either from a peer, so neither travels.
+  # either file itself from a peer, so neither travels as a raw file. Its
+  # own verdict does now reach peers (agent-ops#1278), the same way
+  # .stage-health.json's does: folded into heartbeat.json, not published as
+  # this file.
   --exclude=doctor.log
   --exclude=.doctor-status.json
   --exclude=.stage-health.json
@@ -604,9 +618,11 @@ do_push() {
     --argjson mirror_rebuild "$(mirror_rebuild_verdict "$state_dir")" \
     --argjson updater "$(updater_status "$state_dir/updater-ledger" "$updater_stuck_after_seconds" \
       "$updater_defer_stuck_after_seconds" "${HOSTNAME:-}" "${AGENT_OPS_SERVICE:-}" || echo null)" \
+    --argjson doctor "$(jq -c '{timestamp, verdict}' "$state_dir/.doctor-status.json" 2>/dev/null || echo null)" \
     '{node: $node, role: $role, ts: $ts, last_cycle: $lc, version: $version,
       compose: $compose, image: $image, switch: $switch,
-      stage_health: $stage_health, mirror: $mirror_rebuild, updater: $updater}' > "$mirror/heartbeat.json"
+      stage_health: $stage_health, mirror: $mirror_rebuild, updater: $updater,
+      doctor: $doctor}' > "$mirror/heartbeat.json"
 
   # Redact before committing (agent-ops#966): nothing above stops a token or
   # a home path that reaches a stage's stdout/stderr — a verbose git/curl

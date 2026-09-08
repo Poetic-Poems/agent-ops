@@ -444,6 +444,9 @@ Keys:
 | `crash_loop_after` | `4` | Consecutive fleet-wide failures, with no intervening recovery, before the Script files a crash-loop escalation issue — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. Neither class blames a repo or an item, so without this nothing ever surfaces a deterministic fleet-wide failure — the dashboard shows a healthy idle fleet. `0` (or absent) disables both checks. |
 | `crash_loop_repo` | `Pullwright/agent-ops` | Where the crash-loop escalation issues are filed — the pipeline's own repository, i.e. whichever repository you run this pipeline from. Deduplicated like an Enabler escalation and assigned to `enabler_assignee`, so the pipeline never selects its own SOS as work. Empty disables both checks. The value shown is this installation's own repository, not a generic default — every installation names its own. |
 | `escalation_webhook_url` | *(unset)* | A webhook URL, POSTed to as a fallback whenever the pipeline cannot file an escalation issue on GitHub — most often a dead `GH_TOKEN`, which also blocks the filing call itself. Carries the same `reason`/`detail` the issue would have. Empty (the default) disables it: nothing is attempted, and a node with no webhook configured behaves exactly as before. Setting it takes a second edit each node: the webhook's host must also be named in that node's `EGRESS_EXTRA_ALLOW`, or the...[continued below](#extended-notes-escalation_webhook_url) |
+| `pager_enabled` | `true` | Whether the pager framework evaluates its fleet-level invariants at all. `true` by default — the dashboard's own fired/cleared history and banner are worth having even on an installation with no `pager_repo` configured to file into. |
+| `pager_repo` | *(unset)* | Where the pager framework's own `pw::pager` issues are filed. Empty (this installation's own choice, left unset) falls back to `crash_loop_repo` at read time — which for this installation already resolves to `Pullwright/agent-ops` — rather than repeating that value here for two config keys to keep in step. |
+| `pager_min_firing_minutes` | `15` | Minutes. How long a fleet-level invariant must stay firing before the pager framework files anything — hysteresis against a blip that clears on its own. `0` files on the first firing evaluation. |
 | `timeout_coordinator` | *(unset)* | Minutes, and an override. Leave it out — the backstop tunes itself, and a key set here outranks the derivation for as long as it is there. A repo entry's own `stage_timeouts` outranks this key in turn, for that repo alone — see [`repos`](#extended-notes-repos). |
 | `timeout_implementer` | *(unset)* | Minutes, and an override. As above. |
 | `timeout_reviewer` | *(unset)* | Minutes, and an override. As above. |
@@ -1911,7 +1914,13 @@ consecutive, last success 8h ago)` and the like — with a page-top banner and
 a fleet-strip badge naming which stage: the reading a plain `cycle:
 RUNNING`/idle state cannot give, since that state stays green while a
 stage's own attempts keep failing and the cycle process itself keeps
-completing), how often the Script rejects a Co-Ordinator verdict — by day
+completing), any fleet-level invariant currently firing (a **pager-firing**
+banner naming the invariant and its evidence, with a badge on every node
+card the evidence names — the same failing verdict on every node at once is
+almost always the reader being wrong, not every node failing alike; the
+Publisher files one deduped `pw::pager`-labelled issue per firing invariant
+in `pager_repo`, closing it with a one-line comment the moment the fact
+clears), how often the Script rejects a Co-Ordinator verdict — by day
 and by the model that produced it, with what
 the fleet spent recovering, so it is visible whether the cheap Co-Ordinator
 model is paying for itself — estimated token cost by day, by

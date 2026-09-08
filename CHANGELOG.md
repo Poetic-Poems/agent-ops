@@ -8,6 +8,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The pager: fleet-level invariant evaluation, filing and auto-close**
+  (issue #1278, requirement 51): `lib/pager.sh`, a registry of named
+  invariants evaluated once per Publisher GitHub tick, each a function over
+  facts every node already holds fleet-wide (the union log, every peer's
+  heartbeat, this node's own doctor verdict). A firing invariant claims its
+  evaluation window through `lib/claim.sh`, waits out `pager_min_firing_
+  minutes`' hysteresis, then files one deduped `pw::pager`-labelled issue in
+  `pager_repo` (default: falls back to `crash_loop_repo`) — a *pipeline-act*
+  remedy performs the fix directly and records it, a *config-lever* remedy
+  additionally files a `pw::decision` record under `escalation_autonomy:
+  decide-tactical`, an *owner-only* remedy assigns the issue to
+  `enabler_assignee` — and auto-closes it with a one-line comment the
+  moment the fact clears. Ships with two invariants
+  (`lib/pager-invariants.sh`): `verdict-unanimous` (the #1071 signature — the
+  identical failing verdict on every active node at once, almost always the
+  reader being wrong rather than a real fleet-wide failure; files a
+  `pw::type:tech-debt` issue against this pipeline's own repository), and
+  `page-outlived-item` (closes an open page whose own linked PR or issue has
+  already gone terminal, generalising #1215's `approver_escalation_retire`
+  to every page this framework or the Enabler files). `.doctor-status.json`'s
+  own verdict now folds into every heartbeat, the same way `stage_health`'s
+  does, so `verdict-unanimous` can see a peer's doctor verdict, not only its
+  own. New config: `pager_enabled` (default `true`), `pager_repo`,
+  `pager_min_firing_minutes` (default 15). The dashboard gains a
+  `pager-firing` page-top banner and a node-card badge naming a firing
+  invariant on the node(s) its evidence names.
+
 - **Labels a stage asks for** (issue #714, requirement 6c): the Refiner's
   per-item verdict and the Implementer's summary may each name up to 3
   descriptive labels of their own — `{name, colour?, description?}` — for
