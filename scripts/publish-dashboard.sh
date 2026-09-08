@@ -8,9 +8,13 @@
 # index.html under <state_dir>/dashboard/. Open that index.html in a browser
 # to view the dashboard — no server, no open port, nothing leaves the machine.
 #
-# Safe to run any time: it only reads the pipeline's state, never writes into
-# it, never touches the lock, and cannot disturb a running cycle. Costs
-# nothing to run (no model calls). Companion doc: docs/DASHBOARD-SPEC.md.
+# Safe to run any time: it never touches the lock and cannot disturb a
+# running cycle. Costs no model calls. Almost entirely read-only, with one
+# deliberate exception (agent-ops#1278): a WITH_GITHUB (full) tick also
+# evaluates lib/pager.sh's fleet-level invariants, which may file or close a
+# GitHub issue and append a `pager-*` transition event to this node's own
+# log.jsonl — the one write this script makes to the pipeline's own state.
+# Companion doc: docs/DASHBOARD-SPEC.md.
 
 set -uo pipefail
 
@@ -92,6 +96,15 @@ TEMPLATE="$SCRIPT_DIR/dashboard/index.html"
 # strip an `anthropic/`-qualified tier config value before comparing it
 # against the bare id every stage-end's own `model` field already carries.
 . "$SCRIPT_DIR/lib/model-id.sh"
+# shellcheck source=lib/labels.sh
+# `labels_ensure_role` alone — lib/pager.sh's own filing primitives call it
+# before creating a `pw::pager`/`pw::decision` issue, on the identical
+# precedent lib/enabler.sh's create_escalation_issue already sets.
+. "$SCRIPT_DIR/lib/labels.sh"
+# shellcheck source=lib/pager.sh
+. "$SCRIPT_DIR/lib/pager.sh"
+# shellcheck source=lib/pager-invariants.sh
+. "$SCRIPT_DIR/lib/pager-invariants.sh"
 
 MAX_CYCLES=40        # recent substantive cycles shown in detail (with
                      # transcripts); no-op ticks aggregate instead (#271)
@@ -161,6 +174,19 @@ repos_json="$(cfg_json '.repos')"
 github_budget_min_core="$(cfg '.github_min_core_budget')"
 github_budget_min_graphql="$(cfg '.github_min_graphql_budget')"
 github_budget_cycle_interval_minutes="$(cfg '.schedule.cycle_interval_minutes')"
+
+# lib/pager.sh's own config (agent-ops#1278). `pager_repo` empty falls back
+# to `crash_loop_repo` — both name "the pipeline's own repository", and an
+# installation that has already set the one for crash-loop escalations wants
+# the same repository for pager pages absent a reason to split them.
+pager_enabled="$(cfg '.pager_enabled')"
+pager_repo="$(cfg '.pager_repo')"
+[[ -n "$pager_repo" ]] || pager_repo="$(cfg '.crash_loop_repo')"
+pager_min_firing_minutes="$(cfg '.pager_min_firing_minutes')"
+[[ "$pager_min_firing_minutes" =~ ^[0-9]+$ ]] || pager_min_firing_minutes=15
+enabler_assignee="$(cfg '.enabler_assignee')"
+enabler_escalation_label="$(cfg '.enabler_escalation_label')"
+escalation_webhook_url="$(cfg '.escalation_webhook_url')"
 
 out_dir="$state_dir/dashboard"
 data_file="$out_dir/data.js"
@@ -2163,13 +2189,14 @@ jq -nc --arg n "$self_node" --arg r "$(role_current)" --arg lc "$last_local_cycl
   --argjson switch "$switch_json" \
   --argjson stage_health "$stage_health_json" \
   --argjson updater "$updater_json" \
+  --argjson doctor "$doctor_status_json" \
   --argjson pu "$provider_unreachable_json" \
   --argjson pub "$self_pub_json" \
   '{node: $n, role: $r, heartbeat_ts: $pub.ts, heartbeat_age_s: $pub.age_s,
     last_cycle: (if $lc == "" then null else $lc end), self: true,
     stale: ($pub.verdict != "fresh"),
     live: $live, version: $version, compose: $compose, image: $image, switch: $switch,
-    stage_health: $stage_health, updater: $updater,
+    stage_health: $stage_health, updater: $updater, doctor: $doctor,
     provider_unreachable: (if $pu != null and (($pu.nodes // []) | index($n) != null) then $pu else null end)}' > "$nodes_rows"
 for hb in "$peers_dir"/*/heartbeat.json; do
   [[ -f "$hb" ]] || continue
@@ -2215,6 +2242,11 @@ for hb in "$peers_dir"/*/heartbeat.json; do
        # container had its first poll — yields null rather than this node
        # guessing at a peer it never ran.
        updater: ($h.updater // null),
+       # And for the doctor verdict (scripts/doctor.sh, agent-ops#543): only
+       # the peer itself ran its own hourly unattended pass, so a heartbeat
+       # built before this travelled (agent-ops#1278) yields null rather
+       # than this node guessing at a doctor run it never made.
+       doctor: ($h.doctor // null),
        # Unlike the fields above, `provider_unreachable` is not a report from
        # the peer about itself — it is this node reading the fleet-wide
        # union directly (issue #1073), computed once above and applied to
@@ -2339,7 +2371,45 @@ if [[ -s "$td_cache" ]] && jq -e 'type == "object"' "$td_cache" >/dev/null 2>&1;
 else
   printf '{}' > "$td_cache_json"
 fi
+# Default for a build that never reaches the WITH_GITHUB block below (a fast
+# tick, or a full local-only one run with --no-github): the FULL-build
+# assemble further down always needs this defined, and "no pager section
+# this tick" is exactly what null already means for every FULL-only key a
+# fast build carries forward instead.
+pager_json='null'
+
 if (( WITH_GITHUB )); then
+  # lib/pager.sh (agent-ops#1278): fleet-level invariants, evaluated once per
+  # GitHub tick — the point where this node's own union log (events_jsonl)
+  # and every peer's heartbeat (fleet_nodes_json) have already converged.
+  # WITH_GITHUB-gated, not merely FULL: firing/clearing may create or close a
+  # GitHub issue, which a --no-github (test or local-only) tick must never do.
+  if [[ "$pager_enabled" == "true" ]]; then
+    pager_register_builtin_invariants
+    export CLAIM_GH="$DASHBOARD_GH_CMD"
+    export PAGER_GH="$DASHBOARD_GH_CMD"
+    pager_evaluate "$SCRIPT_DIR/lib/claim.sh" "$pager_repo" "pw::pager" \
+      "$enabler_escalation_label" "$enabler_assignee" "$escalation_webhook_url" \
+      "$pager_min_firing_minutes" "$state_dir/log.jsonl" "$events_jsonl" "$fleet_nodes_json" \
+      "$self_node" "publisher-$self_node-$now_epoch" || true
+    # Re-read the union: pager_evaluate may just have appended to this node's
+    # own log.jsonl, which $events_jsonl (built before this block) cannot
+    # reflect yet — and the dashboard banner (docs/DASHBOARD-SPEC.md) needs
+    # this tick's own answer, not the previous one.
+    pager_union="$work_tmp/pager-union.jsonl"
+    fleet_logs "$state_dir" "$peers_dir" log.jsonl > "$pager_union" 2>/dev/null || : > "$pager_union"
+    pager_json="$(
+      { while IFS= read -r pk; do
+          [[ -n "$pk" ]] || continue
+          [[ "$(pager_state_for "$pk" < "$pager_union")" == "fired" ]] || continue
+          pager_last_event "$pk" < "$pager_union"
+        done < <(pager_registered_keys)
+      } | jq -sc '[.[] | {key, first_seen, evidence, nodes: (.nodes // []),
+                           issue_number: (.issue_number // null), issue_url: (.issue_url // null)}]' \
+        2>/dev/null)"
+    [[ -n "$pager_json" ]] || pager_json='[]'
+  fi
+
   gh_ok=true
   while IFS= read -r slug; do
     [[ -n "$slug" ]] || continue
@@ -3455,6 +3525,7 @@ data_json="$(jq -n \
   --argjson dropped_log "$dropped_log_lines" \
   --argjson dropped_rr "$dropped_revert_rate_lines" \
   --argjson cycle_render "$cycle_render_json" \
+  --argjson pager "$pager_json" \
   '{generated_at: $generated_at, node: $self_node, config: $config, status: $status,
     counts: $counts[0], cycles: $cyc[0], cycle_render: $cycle_render,
     noop_ticks: $noop, blocked: $blocked[0],
@@ -3463,6 +3534,7 @@ data_json="$(jq -n \
     revert_rate: $rr[0], github_budget: $gb[0], rework: $rw[0],
     cron_tail: $cron_tail, max_open_agent_prs: ($max_prs|tonumber),
     log_repair: {dropped_log_lines: $dropped_log, dropped_revert_rate_lines: $dropped_rr},
+    pager: $pager,
     fleet: {nodes: $fleet_nodes, flags: $fleet_flags, claims: ($gh[0].claims // [])}}')"
 else
 # A fast build emits only the keys it actually recomputed and merges them over

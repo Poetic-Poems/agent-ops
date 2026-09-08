@@ -1080,6 +1080,38 @@ it and one per claim.) Every node renders the same fleet, so any node's URL
 answers "what is the operation doing" — `node` (header: "· <name>") is what
 tells two otherwise identical tabs apart.
 
+### Fleet-level invariants (the pager)
+
+`lib/pager.sh`'s registry of fleet-level invariants (implementation spec
+requirement 51) is evaluated from inside this script's own `WITH_GITHUB`
+block — gated on `WITH_GITHUB` specifically, not merely `FULL`: firing or
+clearing an invariant may create or close a GitHub issue, which a
+`--no-github` tick (the test suite, or a local-only refresh) must never do.
+By the time that block runs, this node's own union log
+(`events_jsonl`) and every peer's heartbeat (`fleet_nodes_json`) have
+already been assembled earlier in this same run, so `pager_evaluate` reads
+both without a second fetch of either. `pager_enabled` (default `true`)
+gates the whole call; `false` skips it outright, the same as `--no-github`
+does structurally.
+
+Because `pager_evaluate` may itself append `pager-*` transition events to
+this node's own `log.jsonl`, the payload's own `pager` array is read from a
+*fresh* re-union of the fleet log — `fleet_logs` run again, after
+`pager_evaluate` returns — rather than the `events_jsonl` snapshot taken
+before it: that snapshot cannot see what this tick itself just wrote. This
+is the one place in the script that reads the union log twice in a single
+run, and deliberately so.
+
+The `pager` key of the payload (present on a `FULL` build, carried forward
+by a fast one on the same terms every other `FULL`-only key already is) is
+an array of the invariants currently in the `fired` state:
+`{key, first_seen, evidence, nodes, issue_number, issue_url}` — `nodes`,
+when the invariant supplied one, is which fleet nodes the evidence names,
+for the node-card badge below; `issue_number`/`issue_url` are `null` for a
+filing that failed and fell back to `escalation_webhook_notify`'s own
+webhook-only path, so a page can still be firing on the dashboard with
+nothing to click through to.
+
 ## The Site (`dashboard/index.html`)
 
 One self-contained file: inline CSS + vanilla JS, no framework, no build step,
@@ -1787,10 +1819,14 @@ the dashboard half of the warning the 2026-08-22 fleet-wide outage
 out, and every node lost GitHub at once, misdiagnosed as an outage, before an
 operator noticed hours later.
 
-Local to this node only: unlike the compose/image/switch verdicts the fleet heartbeat carries,
-nothing here replicates a peer's `status.doctor` to this page — a repository's
-configuration and this node's own GitHub access are this node's alone to
-report.
+This panel itself renders only this node's own `status.doctor` — a
+repository's configuration and this node's own GitHub access are this
+node's alone to report, so a peer's doctor pass has nothing to add here.
+`doctor`'s own *verdict* (never the fail/warn/skip detail) does now travel
+in `fleet.nodes[].doctor`, the same way `compose`/`image`/`switch` already
+did — but that is for `lib/pager.sh`'s own `verdict-unanimous` invariant
+(implementation spec requirement 51) to read fleet-wide, not for this
+panel, which stays node-local by design.
 
 The **Stage health** panel (agent-ops#662) renders `status.stage_health`: the
 most recent per-stage verdict computed on *this* node, read from
@@ -1809,6 +1845,18 @@ this is the reading that was missing entirely during the 2026-08-21
 incident (issue #662): `cycle: RUNNING` and a clean Doctor pass both stayed
 true while every stage failed for 10.5 hours, because neither reads a
 stage's own `exit_code`.
+
+A non-empty `pager` array (implementation spec requirement 51) raises its
+own page-top banner, `.banner.pager-firing` — a fourth colour modifier
+alongside `.amber`/`.green`/`.red`, since a firing invariant is neither an
+ordinary warning nor a clean pass — naming every firing key and its
+evidence, each linking `issue_url` when the tracking issue exists. For each
+entry that carries a `nodes` array, every node card named in it gets a
+badge (the same `b-red` style the Stage health failing-row badge above
+uses) reading the invariant's own key, titled with its evidence — so a
+`verdict-unanimous` page naming every active node marks every one of their
+cards, while an invariant with no `nodes` (most of `page-outlived-item`'s
+own firings, which are about an issue, not a node) raises the banner alone.
 
 Unlike `status.doctor`, this verdict is not local to the node that computed
 it: `scripts/state-sync.sh`'s heartbeat carries it as `stage_health`, on the
@@ -2144,7 +2192,10 @@ number's twins elsewhere on the page.
   writes `<state_dir>/.doctor-status.json`
   (`{timestamp, verdict, fails[], warns[], skips}`). This Publisher reads
   that file verbatim into `status.doctor`; `null` until the first hourly
-  pass has run. Local to this node only — nothing replicates it to peers.
+  pass has run. The raw file itself stays local — nothing replicates it to
+  peers — but its own `verdict` now does, folded into the heartbeat's
+  `doctor` field (agent-ops#1278) the same way `stage_health`'s does below,
+  for `lib/pager.sh`'s `verdict-unanimous` invariant to read fleet-wide.
 - `lib/stage-health.sh` (agent-ops#662,
   `docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement 2.8) — not read live by
   this Publisher either, on `doctor.sh --unattended`'s own precedent just
@@ -2162,6 +2213,15 @@ number's twins elsewhere on the page.
   raw file itself is excluded from `scripts/state-sync.sh`'s general
   replication, since a peer's copy of the raw file would answer for a
   computation nobody there ran.
+- `lib/pager.sh` and `lib/pager-invariants.sh` (agent-ops#1278,
+  `docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement 51) — unlike every
+  component above, not a read: `pager_evaluate`, called from this
+  Publisher's own `WITH_GITHUB` block, is the one place this script writes —
+  a `pager-*` transition event to this node's own `log.jsonl`, and possibly a
+  created or closed GitHub issue. `PAGER_GH`/`CLAIM_GH` are set to
+  `DASHBOARD_GH_CMD` before the call, so the test suite's `gh` stub covers
+  pager's own GitHub calls on the same terms as every other one this script
+  makes.
 - `scripts/publish-revert-rate.sh` (D18 issue #579,
   `docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement 2.6b) — not read live by
   this Publisher either, on the identical reasoning as `doctor.sh

@@ -221,8 +221,8 @@ assert_eq "the review role wants nothing when no label is passed (project_review
 assert_eq "the review role reflects whatever resolved label the caller passes, e.g. a repo's own project_review override" \
   "custom-review-label" \
   "$(labels_catalogue "$tmp/config.json" "$SCHEMA" review "custom-review-label" | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
-assert_eq "the escalation role wants the escalation label and the decision-log label" \
-  "enabler-escalation pw::decision" \
+assert_eq "the escalation role wants the escalation label, the decision-log label and the pager label" \
+  "enabler-escalation pw::decision pw::pager" \
   "$(labels_catalogue "$tmp/config.json" "$SCHEMA" escalation | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
 assert_eq "an unknown role wants nothing" "" \
   "$(labels_catalogue "$tmp/config.json" "$SCHEMA" nonsense)"
@@ -394,7 +394,7 @@ stamp_file="$stamp_root/labels-ensured/Owner_repo.escalation"
 rm -rf "$stamp_root"
 reset_stub
 out="$(labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 24)"
-assert_eq "a first call with no stamp ensures the catalogue" $'created\ncreated' "$(cut -f1 <<<"$out")"
+assert_eq "a first call with no stamp ensures the catalogue" $'created\ncreated\ncreated' "$(cut -f1 <<<"$out")"
 assert_eq "  ... and leaves a stamp behind" "1" \
   "$([[ -f "$stamp_file" ]] && echo 1 || echo 0)"
 
@@ -416,7 +416,7 @@ assert_eq "  ... and refreshes the stamp" "1" \
 rm -rf "$stamp_root"
 reset_stub
 out="$(labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 0)"
-assert_eq "an interval of 0 always ensures, stamp or no stamp" $'created\ncreated' "$(cut -f1 <<<"$out")"
+assert_eq "an interval of 0 always ensures, stamp or no stamp" $'created\ncreated\ncreated' "$(cut -f1 <<<"$out")"
 rm -rf "$stamp_root"
 touch_dummy="$stamp_root/labels-ensured"
 mkdir -p "$touch_dummy" && touch "$touch_dummy/Owner_repo.escalation"
@@ -456,7 +456,7 @@ rm -rf "$stamp_root"
 # with nothing to say so.
 reset_stub
 out="$(labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 24.0)"
-assert_eq "a decimal interval ensures on the first call" $'created\ncreated' "$(cut -f1 <<<"$out")"
+assert_eq "a decimal interval ensures on the first call" $'created\ncreated\ncreated' "$(cut -f1 <<<"$out")"
 : > "$tmp/log"
 out="$(labels_ensure_stamped "$stamp_root" "$tmp/config.json" "$SCHEMA" "Owner/repo" escalation 24.0)"
 assert_eq "  ... and still rate-limits the second, rather than falling through" "" "$out"
