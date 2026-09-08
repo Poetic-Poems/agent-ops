@@ -1860,6 +1860,7 @@ $(jq . <<<"$input")
     '{stage: "approver-adjudicate-open-question", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m
      + (if $r == "" then {} else {repo: $r} end) + (if $i == "" then {} else {item: $i} end)')"
   rework_stage_rerun_maybe "approver-adjudicate-open-question" "$stage_kill_reason" "$slug" "$item" "$pr_url"
+  log_node_state_transition overhead
 
   result="$(jq -r '.result // empty' "$out" 2>/dev/null || true)"
   parsed="$(extract_json_result "$result" 2>/dev/null || true)"

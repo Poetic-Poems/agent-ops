@@ -1804,6 +1804,11 @@ detect_and_log_limit_hit() {
     --arg n "$node_name" --arg e "$evidence" \
     '{resume_at: $r, class: $c, reset_known: $k, kind: "auto", actor: $n,
       evidence: (if $e == "" then null else $e end)}')"
+  # node-state (docs/FLOW-SCHEMA.md, D21): this is discovered mid-stage, not
+  # at a cycle-ending stand-down, so it logs immediately rather than through
+  # set_node_state_terminal — this cycle's own remaining overhead (failure
+  # handling, cleanup) still lands on the timeline after it.
+  log_node_state_transition externally-blocked usage-limit
   # Tell the fleet now, not a fetch interval from now: publish the stand-down
   # as fleet/limit.json (extend-only; requirement 2.1). Best-effort — the
   # limit-hit event above is already in this node's log, and the union carries

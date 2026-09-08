@@ -360,6 +360,7 @@ run_coordinator_stage_attempt() {  # <attempt-out-file> <prompt> [extra-budget-j
   # No repo/item: the Co-Ordinator runs ahead of selection, over every
   # configured repository at once (docs/FLOW-SCHEMA.md's "where applicable").
   rework_stage_rerun_maybe "coordinator" "$stage_kill_reason"
+  log_node_state_transition overhead
   # `if`, not `&&` — see the identical comment at the original call site below.
   watchdog_warning="$(stage_watchdog_warning coordinator || true)"
   if [[ -n "$watchdog_warning" ]]; then
@@ -684,6 +685,13 @@ coordinator_corroborate_retry_or_fallback() {
     log_event "none-selected" "$(jq -nc --arg r "$reason" --arg f "$noop_fingerprint_value" \
       --argjson total "$eligible_items_total" --argjson m "$coord_model_json" \
       '{reason: $r} + (if $f == "" then {} else {fingerprint: $f} end) + {eligible_total: $total} + $m')"
+    # node-state (docs/FLOW-SCHEMA.md, D21): the Co-Ordinator ran and declined
+    # against its own eligible count — idle-with-demand/coordinator-declined
+    # when that count is positive, the healthy idle-without-demand zero
+    # otherwise.
+    local nts_state="" nts_cause=""
+    IFS=$'\t' read -r nts_state nts_cause < <(node_time_state_idle_split "$eligible_items_total" coordinator-declined)
+    set_node_state_terminal "$nts_state" "$nts_cause"
     return 1
   fi
 
@@ -859,6 +867,9 @@ object, nothing else.
     log_event "none-selected" "$(jq -nc --arg r "$retry_reason" --arg f "$noop_fingerprint_value" \
       --argjson total "$eligible_items_total" --argjson m "$coord_model_json" \
       '{reason: $r} + (if $f == "" then {} else {fingerprint: $f} end) + {eligible_total: $total} + $m')"
+    local nts_state="" nts_cause=""
+    IFS=$'\t' read -r nts_state nts_cause < <(node_time_state_idle_split "$eligible_items_total" coordinator-declined)
+    set_node_state_terminal "$nts_state" "$nts_cause"
     return 1
   fi
 
@@ -918,6 +929,9 @@ object, nothing else.
       --argjson total "$eligible_items_total" --argjson bands "$unaccounted_retry_bands_json" \
       --argjson m "$coord_model_json" \
       '{reason: $r, td_verdict_rejected: true, retried: true, eligible_total: $total, bands: $bands} + $m')"
+    local nts_state="" nts_cause=""
+    IFS=$'\t' read -r nts_state nts_cause < <(node_time_state_idle_split "$eligible_items_total" coordinator-declined)
+    set_node_state_terminal "$nts_state" "$nts_cause"
     return 1
   fi
   candidates_json="$(jq -c '[.]' <<<"$fallback_candidate_json")"

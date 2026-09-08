@@ -10742,10 +10742,11 @@ implements.
     `landing-armed`, `landing-refused`, `classifier-escape`, `landing-audit`,
     `open-question-raised`, `open-question-adjudication`, `open-question-escalated`,
     `review-gate-checks-read`, `review-gate-checks-degraded`, `first-seen`,
-    `issues-excluded`, `rework`,
+    `issues-excluded`, `rework`, `node-state`,
     `warning`, `cycle-end`. `rework` is requirement 47's own record, one
-    entry per repetition, whose field-by-field contract is
-    `docs/FLOW-SCHEMA.md` rather than this list.
+    entry per repetition, and `node-state` is requirement 50's own
+    transition, one entry per node-state change, whose field-by-field
+    contracts are `docs/FLOW-SCHEMA.md` rather than this list.
     `classifier-escape` and `landing-audit`
     (requirement 8e, `scripts/detect-classifier-escapes.sh`) are the D18
     Stage 2 escape-audit's own two outcomes for a merged pull request the
@@ -15749,6 +15750,151 @@ with the Reviewer's own.
     same fold — `lib/item-lifecycle.sh`'s `item_lifecycle_pickup_pairs`, the
     identical reduction moved rather than duplicated — with its CLI contract,
     output field names and its own test unchanged.
+
+50. **Node time-state record.** D21 of `docs/ROADMAP.md` names the time
+    account's own invariant — every node-second in a window falls into
+    exactly one of six states (producing, overhead, externally-blocked,
+    idle-with-demand, idle-without-demand, down), and the states sum to
+    node-count x window — and this requirement is where it is made
+    checkable: a `node-state` transition event, logged the instant a node's
+    own state changes, carrying the state it is entering, its cause (for the
+    four states that have one, from a closed fourteen-token vocabulary), and
+    the state it was in a moment before; and a pure fold,
+    `lib/node-time-state.sh`'s `node_time_state_fold` (behind the read-only
+    `scripts/node-time-state.sh`), reconstructing seconds per state from
+    those events alone. `docs/FLOW-SCHEMA.md`'s "The node time-state record"
+    section is the field-by-field contract — the six states, the definitional
+    pin for what counts as `producing` versus `overhead`, the closed cause
+    vocabulary and its mapping to states, how absence resolves to `down`, and
+    the documented known limitations — under the same stability policy
+    `docs/METERING-SCHEMA.md` already established.
+
+    Most of the instants this record rides on already existed as ordinary
+    events; what this requirement adds is narrower than D21's own list
+    suggests:
+
+    - **The transition itself**, emitted alongside an event that already
+      fires: the cycle's opening `overhead`, logged once `acquire_lock`
+      returns (`review-cycle.sh`: once its implementation-cycle check has
+      passed), every `stage-start`
+      (`stage_budget_apply`; `producing` for the Implementer and Reviewer
+      only, `node_state_for_stage`, `overhead` for every other actor), every
+      `stage-end` (`overhead` — `agent-cycle.sh`'s own two item-scoped sites,
+      `lib/approver.sh`, `lib/enabler.sh`'s three, `lib/landing.sh`,
+      `lib/refinement.sh`, `lib/stage-attempt.sh`'s Co-Ordinator site, and
+      `review-cycle.sh`'s one `review-stage-end`), `limit-hit`
+      (`externally-blocked`/`usage-limit`, `lib/candidate-select.sh`) and the
+      automatic-probe `limit-cleared` (`overhead`, `lib/standdown.sh`).
+    - **A `cause` field, from the closed vocabulary, on every `stand-down`
+      site that previously carried none** — the two switch stand-downs
+      (`disabled-node`/`disabled-fleet`), the two draining stand-downs
+      (`no-demand`/`peer-claimed`), back-pressure, the no-op fingerprint
+      short-circuit (`awaiting-tick`/`no-demand`, by
+      `node_time_state_idle_split` over `eligible_items_total`), the GitHub
+      API budget guard (`github-budget`) and the usage-limit cooldown
+      (`usage-limit`), both in `lib/standdown.sh`. Four sites already carried
+      a `cause` before this requirement (`unauthorized`, `disk-low`/
+      `disk-full`, `memory-low`) and are unchanged; the claim-race
+      stand-down's own five causes (`raced`, `unreachable`, `pre-claimed`,
+      `fabricated`, `untraceable`) are unchanged too, since renaming an
+      existing field's values is breaking (docs/FLOW-SCHEMA.md's stability
+      policy) — `node_time_state_for_cause` translates the four of those five
+      this requirement's own vocabulary does not already share
+      (`unreachable` needed no translation) onto `peer-claimed`/
+      `coordinator-declined` only on the `node-state` event beside it, never
+      on the `stand-down` event itself.
+    - **The genuinely-nothing-selected `none-selected` sites**
+      (`lib/stage-attempt.sh`, all three) classified by
+      `node_time_state_idle_split` over that same cycle's own
+      `eligible_items_total`: `idle-with-demand`/`coordinator-declined` when
+      positive, the healthy `idle-without-demand`/`no-demand` zero otherwise.
+    - **Deferred emission for a cycle's own terminal state**
+      (`set_node_state_terminal`/`finalize_node_state_for_cycle`,
+      `finalize_node_state_for_review`): every stand-down/none-selected site
+      above records intent rather than logging immediately, because
+      `agent-cycle.sh`'s exit trap can still run the Enabler and the Refiner
+      afterward (requirement 35), and their own `stage-start`/`stage-end`
+      pairs are real `overhead` that must land on the timeline before the
+      node settles into the state the stand-down named. The deferred call,
+      once at the true end of `cleanup`, logs whichever state was recorded,
+      or — for a cycle that ran a stage and ended normally, so nothing
+      called it — the idle state `eligible_items_total` (minus the one item
+      just claimed, floored at zero) implies.
+    - **`review-cycle.sh`'s own instrumentation**, on the same terms: its
+      opening `overhead` and `review-end`, its one `review-stage-start`/
+      `review-stage-end` pair, and a `cause` from the closed vocabulary on
+      every one of its eight `review-stand-down` sites — including the
+      usage-limit cooldown re-checked between repositories inside the review
+      loop, which records `externally-blocked`/`usage-limit` rather than
+      letting `finalize_node_state_for_review` file a node a limit stopped
+      mid-sweep as the healthy `idle-without-demand` zero. The one exception
+      is the `cause` value at "an implementation cycle is running":
+      `peer-pipeline-busy`, deliberately outside the `node-state`
+      vocabulary, since that site emits no transition to carry it.
+    - **Silence for a tick that owns no node-second.** The account is per
+      *node*, not per process, and the two pipelines have separate crontab
+      lines and separate locks — so a tick can start, find the node already
+      busy under the other process, and end having owned none of it. The
+      three sites that are unconditionally this (`cycle-skipped`,
+      `review-skipped`, and `review-cycle.sh`'s "an implementation cycle is
+      running" `review-stand-down`, whose `cause: "peer-pipeline-busy"` is
+      deliberately outside the `node-state` vocabulary) write their ordinary
+      event and no `node-state` transition at all: they call
+      `suppress_node_state_transitions`, which stops the deferred terminal
+      transition, and they exit before the opening `overhead` is reached —
+      which is why that one is logged after the lock is won rather than
+      beside `cycle-start`. Six further `review-stand-down` sites are
+      conditionally this and are silent on the same terms when the condition
+      holds: the implementation-cycle check is the last ending in
+      `review-cycle.sh` that can fire while `agent-cycle.sh` is mid-stage,
+      not the first, so both switch stand-downs, both `not_before`
+      stand-downs, the tier-two every-repository-held one and the usage-limit
+      cooldown each call `suppress_node_state_if_peer_owns_node` beside their
+      own `set_node_state_terminal`. That helper runs `impl_cycle_running`,
+      the same `lock.json` pid probe the check below it uses, and suppresses
+      only when a live implementation cycle owns the node — a node genuinely
+      idle under both pipelines still records its idle state from these
+      sites. `agent-cycle.sh`'s own two switch stand-downs are the one known
+      gap in this rule and are documented as such
+      (`docs/FLOW-SCHEMA.md`, "Known limitations"; issue #1268). This is
+      #597's own named pitfall
+      ("`cycle-skipped` is not a state"), and it is not cosmetic: the fold
+      holds each point's state until the next point's `ts`, and a running
+      stage emits nothing between its own `stage-start` and `stage-end`, so
+      one skipped tick's transitions would relabel the rest of a live
+      Implementer engagement — up to its backstop — as overhead and then as
+      idle on the very timeline the busy process is writing. The maintenance
+      chores (`publish-dashboard-launcher.sh`, `state-sync.sh`, `doctor.sh`,
+      `rotate-logs.sh`) emit nothing for the related reason that they take
+      neither lock and never stop a cycle starting.
+
+    `scripts/node-time-state.sh` unions `log.jsonl` and `review-log.jsonl`
+    (`lib/fleet.sh`'s `fleet_logs`, once per basename) before folding, since
+    a node can run either pipeline — briefly, both at once — and folding only
+    one would misread a node running the other as `down`. Five known
+    limitations are stated rather than modelled further (docs/FLOW-SCHEMA.md
+    has all of them in full, with the issues that carry them): the node set
+    the invariant's denominator uses is
+    every node that has *ever* emitted a `node-state` event, not evaluated
+    per second of the window the way a node truly joining or leaving the
+    fleet mid-window would need (#1248); two pipelines' events on one node are
+    merged by `ts` alone, with no `producing > overhead` precedence for a
+    genuine overlap (#1248), which is one reason the sites that would need it
+    emit nothing instead; a node that *stops* holds its last state for the
+    rest of the window rather than falling to `down`, so `down` covers a
+    node's leading absence but not a crash or a decommission (#1250);
+    `agent-cycle.sh`'s two switch stand-downs record their `down` from a tick
+    that never won the lock, so a `--disable` issued mid-cycle relabels that
+    cycle's own `producing` seconds until its next transition (#1268), the
+    one ending in either script not covered by the silence rule above; a
+    `--since`/`--until` bound that fails `fromdateiso8601` aborts the fold's
+    one jq program and falls through to the conforming all-zero report
+    rather than being rejected, unlike an event's own unparseable `ts`,
+    which is skipped and counted (#1273); and
+    `balanced` is a self-check on the reduction's arithmetic — every node's
+    segments tile the window by construction — never evidence that the events
+    reduced described the fleet correctly, for which `skipped_events` and
+    `unaccounted` are the honest measures.
 
 ## Components
 
@@ -23096,6 +23242,63 @@ oblige anyone to edit a test.
     a seen-file write the sweep cannot perform reporting a `warning` action
     rather than losing the memo silently).
     `scripts/lint-shell.sh` is clean on every file this requirement touches.
+
+50. **The node time-state record matches `docs/FLOW-SCHEMA.md`, a `node-state`
+    transition reaches every site requirement 50 names, and the invariant
+    balances (requirement 50).** `test/node-time-state.test.sh` drives
+    `lib/node-time-state.sh` directly: `node_time_state_for_cause` against
+    every one of the fourteen closed-vocabulary tokens, including the four
+    translated rather than renamed (`raced`/`pre-claimed` to `peer-claimed`,
+    `fabricated`/`untraceable` to `coordinator-declined`) and an unrecognised
+    cause (maps to nothing, never a guess); `node_time_state_idle_split`
+    against a positive eligible count, a zero count and an unreadable one;
+    `node_state_for_stage` against the Implementer and Reviewer (`producing`)
+    and every other actor (`overhead`); and `node_time_state_fold` directly
+    against a fixture exercising all six states across two nodes at once,
+    asserting: the flow invariant (`balanced`, `expected_total_seconds`,
+    node-count x window) holds; a node absent for part of the window, and one
+    absent for the whole of it, both score `down` for exactly the ungoverned
+    stretch, never more or less; widening the window with `--until` extends
+    the last transition's own interval rather than truncating it; two
+    overlapping event streams for one node — an `agent-cycle.sh` run and a
+    `review-cycle.sh` run, unioned exactly as `scripts/node-time-state.sh`
+    unions `log.jsonl` and `review-log.jsonl` — still sum to exactly one
+    window's worth of seconds for that node, never double-counted, however
+    the two streams interleave; and the degradations this requirement's own
+    acceptance names: an unrecognised `state` value lands in
+    `unaccounted_seconds` rather than being dropped or misclassified, an
+    `idle-with-demand` event with no recognised `cause` counts under
+    `unspecified` rather than a guessed one, a malformed raw line does not
+    abort the fold (dropped before it ever becomes a candidate event,
+    uncounted), and an event naming no node, or whose `ts` is present but
+    fails `fromdateiso8601`, is excluded and counted under `skipped_events`
+    rather than silently vanishing or aborting the whole fold to the
+    fallback all-empty shape. Each of the four
+    translated-not-renamed causes' own assertions (`raced`/`pre-claimed` to
+    `peer-claimed`, `fabricated`/`untraceable` to `coordinator-declined`)
+    pins the translation's output distinctly from its input, which is what
+    proves the original `stand-down`/`claim-lost` event's own field stays
+    untouched — the translation happens only on the `node-state` event
+    beside it, never in place.
+
+    The same test also pins the silence rule at the sites most able to break
+    it quietly, both structurally and end to end. Structurally, it scans
+    `review-cycle.sh` for every `set_node_state_terminal` call appearing
+    ahead of the implementation-cycle check and asserts each is followed
+    immediately by `suppress_node_state_if_peer_owns_node`, plus that exactly
+    six such sites exist — so the scan cannot pass vacuously, and a seventh
+    ending added later cannot slip through unguarded. Behaviourally, it runs
+    the real `review-cycle.sh` against a shim node (symlinks back into the
+    tree with a `config.json` of its own, the harness
+    `test/review-not-before.test.sh` established) held off by
+    `project_review.defaults.not_before`, and asserts all three readings:
+    with a live process named in `lock.json` the stand-down logs its own
+    event and **no** `node-state` transition at all; with no `lock.json` it
+    logs `idle-without-demand`/`no-demand` as before; and with a `lock.json`
+    naming a pid that is gone it logs it too — which is what proves the guard
+    is suppressing on the peer rather than swallowing the transition
+    wholesale. `scripts/lint-shell.sh` is clean on every
+    file this requirement touches.
 
 9. **An open question the Reviewer could not settle holds unattended landing,
    resolves through the configured ladder, and never through a new commit

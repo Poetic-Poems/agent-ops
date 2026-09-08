@@ -72,6 +72,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/metering.sh"
 # shellcheck source=lib/rework.sh
 . "$SCRIPT_DIR/lib/rework.sh"
+# shellcheck source=lib/node-time-state.sh
+. "$SCRIPT_DIR/lib/node-time-state.sh"
 # shellcheck source=lib/stage-run.sh
 . "$SCRIPT_DIR/lib/stage-run.sh"
 # shellcheck source=lib/stage-budget.sh
@@ -789,6 +791,9 @@ stage_budget_apply() {
     '{stage: $s, model: $m} + (if ($e | type) == "object" then $e else {} end) + $b
      + (if $r == "" or $r == "*" then {} else {repo: $r} end)
      + (if $i == "" then {} else {item: $i} end)')"
+  # node-state (docs/FLOW-SCHEMA.md, D21): every stage-start is a transition,
+  # producing only for the Implementer/Reviewer (node_state_for_stage).
+  log_node_state_transition "$(node_state_for_stage "$actor")"
 }
 limit_cooldown_default_hours="$(cfg '.limit_cooldown_default')"
 disable_default_ttl_hours="$(cfg '.disable_default_ttl')"
@@ -1179,6 +1184,14 @@ cleanup() {
   if [[ "${GITHUB_BUDGET_CYCLE_OPEN:-0}" == "1" ]]; then
     github_budget_record cycle-end || true
   fi
+  # node-state (docs/FLOW-SCHEMA.md, D21): the state this node settles into
+  # once this process exits, logged last of all — after maybe_run_enabler/
+  # maybe_run_refiner above, whose own stage-start/stage-end pairs are real
+  # overhead that must land on the timeline before this cycle's own idle/
+  # down/externally-blocked verdict does (see set_node_state_terminal's
+  # header for why logging it earlier, at the stand-down site itself, would
+  # let a later Enabler engagement silently overwrite it).
+  finalize_node_state_for_cycle
   log_event "cycle-end" "$(jq -nc --argjson rc "$exit_code" '{exit_code: $rc}')"
   if [[ "$lock_acquired" == "1" ]]; then
     rm -f "$lock_file"
@@ -1378,7 +1391,8 @@ case "$(jq -r '.state' <<<"$switch_state")" in
     else
       log_event "stand-down" "$(jq -nc \
         --arg r "disabled: $(toggle_describe "$switch_record")" \
-        '{reason: $r}')"
+        '{reason: $r, cause: "disabled-node"}')"
+      set_node_state_terminal down disabled-node
       (( ONCE )) && echo "agent-cycle: the pipeline is disabled — run --status for detail, --enable to resume" >&2
       exit 0
     fi
@@ -1423,7 +1437,8 @@ case "$(jq -r '.state' <<<"$fleet_switch_state")" in
     else
       log_event "stand-down" "$(jq -nc \
         --arg r "fleet switch: $(toggle_describe "$fleet_switch_record")" \
-        '{reason: $r}')"
+        '{reason: $r, cause: "disabled-fleet"}')"
+      set_node_state_terminal down disabled-fleet
       (( ONCE )) && echo "agent-cycle: the fleet switch is set — agent-cycle.sh --enable clears it everywhere" >&2
       exit 0
     fi
@@ -1455,6 +1470,11 @@ acquire_lock() {
         stale_after_sec="$lock_stale_after_sec"
         if kill -0 "$pid" 2>/dev/null && (( age_sec < stale_after_sec )); then
           log_event "cycle-skipped" "$(jq -nc --arg d "lock held by pid $pid, age ${age_sec}s" '{detail: $d}')"
+          # node-state (docs/FLOW-SCHEMA.md, D21): a skipped tick is not a
+          # state. The cycle holding this lock is the one occupying these
+          # node-seconds, and its own transitions already say so — see
+          # suppress_node_state_transitions' header.
+          suppress_node_state_transitions
           exit 0
         fi
         if kill -0 "$pid" 2>/dev/null; then
@@ -1567,6 +1587,17 @@ if [[ "$(jq -r '.reaped // 0' <<<"$workspace_reap_json" 2>/dev/null || printf 0)
 fi
 
 acquire_lock
+# node-state (docs/FLOW-SCHEMA.md, D21): a live node emits the transition out
+# of `down` here — `down` is derived from absence and never emits its own.
+# Here rather than beside `cycle-start` above, because everything between the
+# two can still end in a tick that owns no node-second at all: `cycle-skipped`
+# (this node is busy in the *other* process, whose events already own those
+# seconds) exits from inside `acquire_lock`, and a transition logged before it
+# would relabel that process's own live stage as this tick's overhead for as
+# long as the stage runs. The two switch stand-downs above exit before this
+# line too and want no `overhead` either — their own `down` is what
+# `finalize_node_state_for_cycle` logs at the end of `cleanup`.
+log_node_state_transition overhead
 
 # Shed a landed roll-pending marker before this cycle's own stages run
 # (requirement 39c amendment, agent-ops#1102): the marker a prior cycle's
@@ -1883,17 +1914,20 @@ if (( backpressure_tripped )) || (( DRAINING )); then
         fi
         log_event "stand-down" "$(jq -nc \
           --arg r "draining: at rest — no finishing-source pull request waiting and no live claim on one; waiting for --enable or the drain's own expiry" \
-          '{reason: $r}')"
+          '{reason: $r, cause: "no-demand"}')"
+        set_node_state_terminal idle-without-demand no-demand
       else
         log_event "stand-down" "$(jq -nc \
           --arg r "draining: no finishing-source pull request waiting, but $drain_remaining live claim(s) on a finishing-source ref elsewhere have not yet resolved" \
-          '{reason: $r}')"
+          '{reason: $r, cause: "peer-claimed"}')"
+        set_node_state_terminal idle-with-demand peer-claimed
       fi
       exit 0
     fi
     log_event "stand-down" "$(jq -nc \
       --arg r "back-pressure: $adjusted_open_count open agent PRs with a pipeline-side next action >= $max_open_agent_prs ($open_composition), and no review feedback, merge conflict, dequeued pull request, or abandoned draft is waiting to be finished" \
-      '{reason: $r}')"
+      '{reason: $r, cause: "back-pressure"}')"
+    set_node_state_terminal idle-with-demand back-pressure
     exit 0
   fi
   # `issues` and `tech_debt` are emptied along with the narrowing, not merely
@@ -2319,8 +2353,11 @@ if [[ -n "$noop_fingerprint_value" ]] && ! (( DRY_RUN || ONCE )); then
   noop_skip="$(noop_skip_reason "$noop_fingerprint_value" "$union_log" "$none_selected_recheck_hours")"
 fi
 if [[ -n "$noop_skip" ]]; then
-  log_event "stand-down" "$(jq -nc --arg r "$noop_skip" --arg f "$noop_fingerprint_value" \
-    '{reason: $r, fingerprint: $f}')"
+  noop_state=""; noop_cause=""
+  IFS=$'\t' read -r noop_state noop_cause < <(node_time_state_idle_split "$eligible_items_total" awaiting-tick)
+  log_event "stand-down" "$(jq -nc --arg r "$noop_skip" --arg f "$noop_fingerprint_value" --arg c "$noop_cause" \
+    '{reason: $r, fingerprint: $f, cause: $c}')"
+  set_node_state_terminal "$noop_state" "$noop_cause"
   exit 0
 fi
 
@@ -2779,6 +2816,20 @@ if [[ -z "$claimed_json" ]]; then
      + (if $sk > 0 then {claim_skips: $sk} else {} end)
      + (if $tf > 0 then {trace_faults: $tf} else {} end)
      + (if $ff > 0 then {fab_faults: $ff} else {} end)')"
+  # node-state (docs/FLOW-SCHEMA.md, D21): translates this stand-down's own
+  # (unchanged) cause vocabulary onto the six-state one — see
+  # node_time_state_for_cause's header for why raced/pre-claimed/fabricated/
+  # untraceable are translated rather than renamed.
+  nts_state=""; nts_cause=""
+  IFS=$'\t' read -r nts_state nts_cause < <(node_time_state_for_cause "$standdown_cause")
+  # `if`, not `&&`: an unrecognised cause is the expected degradation here
+  # (node_time_state_for_cause prints nothing rather than guessing a state),
+  # and a trailing `&&` whose test fails is a non-zero status at exactly the
+  # place `set -e` acts on — this stand-down would abort with 1 instead of
+  # reaching the `exit 0` below, recording an ordinary ending as a failure.
+  if [[ -n "$nts_state" ]]; then
+    set_node_state_terminal "$nts_state" "$nts_cause"
+  fi
   exit 0
 fi
 
@@ -2953,6 +3004,7 @@ log_event "stage-end" "$(jq -nc --argjson rc "$impl_rc" --arg kr "$stage_kill_re
   '{stage: "implementer", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m
    + (if $r == "" then {} else {repo: $r} end) + (if $i == "" then {} else {item: $i} end)')"
 rework_stage_rerun_maybe "implementer" "$stage_kill_reason" "$selected_repo" "$selected_item"
+log_node_state_transition overhead
 # `if`, not `&&`: an empty warning is the common case, and a trailing
 # `&&` whose test fails is a non-zero status at exactly the place
 # `set -e` acts on — the same trap that cost a --once cycle its
@@ -3229,6 +3281,7 @@ log_event "stage-end" "$(jq -nc --argjson rc "$rev_rc" --arg kr "$stage_kill_rea
   '{stage: "reviewer", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m
    + (if $r == "" then {} else {repo: $r} end) + (if $i == "" then {} else {item: $i} end)')"
 rework_stage_rerun_maybe "reviewer" "$stage_kill_reason" "$selected_repo" "$selected_item" "$impl_pr_url"
+log_node_state_transition overhead
 # `if`, not `&&`: an empty warning is the common case, and a trailing
 # `&&` whose test fails is a non-zero status at exactly the place
 # `set -e` acts on — the same trap that cost a --once cycle its

@@ -455,7 +455,7 @@ Poetic-Poems, with no pipeline code in it.
       invisible. Carry `{repo, item, source, cycle, outcome}` on each cost
       row, and surface the token and gap series — both additive under the
       metering schema's own stability policy. *[fleet]*
-- [ ] Fix the flow-and-outcome event contract now, for the reason the metering
+- [x] Fix the flow-and-outcome event contract now, for the reason the metering
       schema was fixed now (D21): an analytic can only ever be computed from
       what was recorded while the work happened, so every month the contract
       is deferred is a month of history no later panel can reconstruct. Extend
@@ -677,7 +677,7 @@ induced outage rather than only over a quiet afternoon.
       CPU and GitHub traffic. The suite stays whole (D7) — the dashboard
       just becomes separately deployable (D14) — and the raw-data feed
       never leaves the installation's private boundary. *[interactive]*
-- [ ] Account for every node-second, and name the idleness (D21). The fleet
+- [x] Account for every node-second, and name the idleness (D21). The fleet
       today can say a node is running or idle, and for a no-op tick whether it
       stood down or found the lock held (`noop_ticks.{standdown,skipped}`); it
       cannot say why a node that was idle stayed idle, which is the

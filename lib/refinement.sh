@@ -1304,6 +1304,7 @@ $(jq . <<<"$input")
     '{stage: "refiner", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m')"
   # No repo/item: the Refiner spans repositories by construction (see above).
   rework_stage_rerun_maybe "refiner" "$stage_kill_reason"
+  log_node_state_transition overhead
   watchdog_warning="$(stage_watchdog_warning refiner || true)"
   if [[ -n "$watchdog_warning" ]]; then
     log_event "warning" "$watchdog_warning"

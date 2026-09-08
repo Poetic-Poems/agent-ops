@@ -147,6 +147,10 @@ set -euo pipefail
 # real (it is pure and cheap) rather than stubbed, so this file keeps
 # verifying the shipped wiring rather than a stand-in for it.
 . "$SCRIPT_DIR/lib/rework.sh"
+# docs/FLOW-SCHEMA.md, requirement 50, issue #597: the same stage-end site
+# also calls lib/node-time-state.sh's log_node_state_transition. Sourced for
+# real for the same reason as lib/rework.sh immediately above.
+. "$SCRIPT_DIR/lib/node-time-state.sh"
 # agent-ops#1081: run_approver_stage's own fail-closed warning reads
 # fleet_cache_file (lib/toggle.sh) and MERGE_AUTONOMY_KILL_FLAG
 # (lib/merge-autonomy.sh) directly — sourced for real, cheaply, purely for

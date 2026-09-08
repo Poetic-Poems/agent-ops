@@ -875,6 +875,7 @@ $node_name
       '{stage: "approver", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m
        + (if $r == "" then {} else {repo: $r} end) + (if $i == "" then {} else {item: $i} end)')"
     rework_stage_rerun_maybe "approver" "$stage_kill_reason" "$selected_repo" "$selected_item" "$pr_url"
+    log_node_state_transition overhead
     approver_watchdog_warning="$(stage_watchdog_warning approver || true)"
     [[ -n "$approver_watchdog_warning" ]] && log_event "warning" "$approver_watchdog_warning"
     (( ONCE )) && dump_stage_output "$out"

@@ -68,6 +68,8 @@ SKILL_SRC="$SCRIPT_DIR/.claude/skills/project-review"
 . "$SCRIPT_DIR/lib/review-context.sh"
 # shellcheck source=lib/metering.sh
 . "$SCRIPT_DIR/lib/metering.sh"
+# shellcheck source=lib/node-time-state.sh
+. "$SCRIPT_DIR/lib/node-time-state.sh"
 # shellcheck source=lib/stage-run.sh
 . "$SCRIPT_DIR/lib/stage-run.sh"
 # shellcheck source=lib/stage-budget.sh
@@ -259,6 +261,41 @@ review_log_file="$state_dir/review-log.jsonl"   # this pipeline's own operationa
 lock_file="$state_dir/review-lock.json"         # our own lock, not the cycle's lock.json
 impl_lock_file="$state_dir/lock.json"           # the implementation pipeline's lock
 
+# impl_cycle_running — is `agent-cycle.sh` holding this node right now?
+#
+# One definition, read by two callers with different jobs. The stand-down at
+# "an implementation cycle is running" below uses it to decide whether to run
+# at all; every stand-down *above* it uses it to decide whether this tick owns
+# a node-second worth logging a `node-state` transition for (docs/FLOW-
+# SCHEMA.md, "A tick that owns no node-second emits nothing"). Those earlier
+# ones exit before that check is ever reached, and each records a terminal
+# state, so without this they would write the competing idle/`down` transition
+# the same section calls actively wrong — over a timeline `agent-cycle.sh` is
+# writing `producing` onto. `project_review.defaults.not_before` in force is a
+# steady state, not a race: on an installation using it, every review tick
+# would do this, including the ones landing inside a live Implementer stage.
+#
+# Deliberately no staleness test, matching the check below it was lifted from:
+# a lock whose pid is gone fails `kill -0` and reads as not-running, which is
+# the only direction that matters here — over-reporting "running" would lose a
+# transition permanently, under-reporting it merely restores today's behaviour.
+impl_cycle_running() {
+  local pid
+  [[ -f "$impl_lock_file" ]] || return 1
+  pid="$(jq -r '.pid // empty' "$impl_lock_file" 2>/dev/null || true)"
+  [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null
+}
+
+# suppress_node_state_if_peer_owns_node — the one line every stand-down that
+# exits before the implementation-cycle check runs beside its own
+# `set_node_state_terminal`. Cheap enough to call unconditionally: it opens
+# one file that is usually absent.
+suppress_node_state_if_peer_owns_node() {
+  if impl_cycle_running; then
+    suppress_node_state_transitions
+  fi
+}
+
 # Node identity, exactly as agent-cycle.sh stamps it: the id carries the
 # machine's name (sanitised — it is also a directory name) with the pid last,
 # and every event names the node, so multi-node records stay combinable.
@@ -395,6 +432,11 @@ cleanup() {
   if [[ -n "$clone_dir" && -d "$clone_dir" ]]; then
     rm -rf "$clone_dir"
   fi
+  # node-state (docs/FLOW-SCHEMA.md, D21): logged last, same reasoning as
+  # agent-cycle.sh's own finalize_node_state_for_cycle — nothing in this
+  # pipeline's own cleanup runs after this point, but the call is placed
+  # here rather than at the exit sites for symmetry with that one.
+  finalize_node_state_for_review
   log_event "review-end" "$(jq -nc --argjson rc "$exit_code" '{exit_code: $rc}')"
   if [[ "$lock_acquired" == "1" ]]; then
     rm -f "$lock_file"
@@ -509,7 +551,9 @@ if [[ "$(jq -r '.state' <<<"$review_switch_state")" == "disabled" ]]; then
   review_switch_record="$(jq -c '.record' <<<"$review_switch_state")"
   log_event "review-stand-down" "$(jq -nc \
     --arg r "$(toggle_mode "$review_switch_record") mode: $(toggle_describe "$review_switch_record")" \
-    '{reason: $r}')"
+    '{reason: $r, cause: "disabled-node"}')"
+  set_node_state_terminal down disabled-node
+  suppress_node_state_if_peer_owns_node
   (( ONCE )) && echo "review-cycle: the pipeline is disabled or draining — agent-cycle.sh --status for detail" >&2
   exit 0
 fi
@@ -524,7 +568,9 @@ if [[ "$(jq -r '.state' <<<"$fleet_review_switch")" == "disabled" ]]; then
   fleet_review_switch_record="$(jq -c '.record' <<<"$fleet_review_switch")"
   log_event "review-stand-down" "$(jq -nc \
     --arg r "fleet switch, $(toggle_mode "$fleet_review_switch_record") mode: $(toggle_describe "$fleet_review_switch_record")" \
-    '{reason: $r}')"
+    '{reason: $r, cause: "disabled-fleet"}')"
+  set_node_state_terminal down disabled-fleet
+  suppress_node_state_if_peer_owns_node
   (( ONCE )) && echo "review-cycle: the fleet switch is set (disabled or draining) — agent-cycle.sh --enable clears it everywhere" >&2
   exit 0
 fi
@@ -559,13 +605,17 @@ if [[ -n "$review_not_before" ]]; then
   if [[ -z "$not_before_epoch" ]]; then
     log_event "review-stand-down" "$(jq -nc --arg r \
       "project_review.defaults.not_before is set to an unparseable value ($review_not_before) — standing down rather than guessing" \
-      '{reason: $r}')"
+      '{reason: $r, cause: "no-demand"}')"
+    set_node_state_terminal idle-without-demand no-demand
+    suppress_node_state_if_peer_owns_node
     (( ONCE )) && echo "review-cycle: project_review.defaults.not_before ($review_not_before) is not a date this system can parse" >&2
     exit 0
   fi
   if (( now_epoch < not_before_epoch )); then
     log_event "review-stand-down" "$(jq -nc --arg r "project_review.defaults.not_before: no review before $review_not_before" \
-      --arg nb "$review_not_before" '{reason: $r, not_before: $nb}')"
+      --arg nb "$review_not_before" '{reason: $r, not_before: $nb, cause: "no-demand"}')"
+    set_node_state_terminal idle-without-demand no-demand
+    suppress_node_state_if_peer_owns_node
     (( ONCE )) && echo "review-cycle: standing down until $review_not_before (project_review.defaults.not_before)" >&2
     exit 0
   fi
@@ -602,7 +652,9 @@ if [[ "$(jq 'length' <<<"$project_review_repos_json")" != "0" ]]; then
   if (( all_repos_held )); then
     log_event "review-stand-down" "$(jq -nc --argjson repos \
       "$(jq -c '[.[] | {slug, not_before}]' <<<"$project_review_repos_json")" \
-      '{reason: "every configured repository'"'"'s own not_before holds it off (requirement 342)", repos: $repos}')"
+      '{reason: "every configured repository'"'"'s own not_before holds it off (requirement 342)", repos: $repos, cause: "no-demand"}')"
+    set_node_state_terminal idle-without-demand no-demand
+    suppress_node_state_if_peer_owns_node
     (( ONCE )) && echo "review-cycle: standing down — every configured repository's own not_before (requirement 342) holds it off" >&2
     exit 0
   fi
@@ -632,6 +684,10 @@ acquire_lock() {
         stale_after_sec="$lock_stale_after_sec"
         if kill -0 "$pid" 2>/dev/null && (( age_sec < stale_after_sec )); then
           log_event "review-skipped" "$(jq -nc --arg d "review lock held by pid $pid, age ${age_sec}s" '{detail: $d}')"
+          # node-state (docs/FLOW-SCHEMA.md, D21): a skipped tick is not a
+          # state — see agent-cycle.sh's own `cycle-skipped` site and
+          # suppress_node_state_transitions' header.
+          suppress_node_state_transitions
           exit 0
         fi
         if kill -0 "$pid" 2>/dev/null; then
@@ -748,19 +804,33 @@ now_epoch="$(date +%s)"
 if (( resume_epoch > now_epoch )); then
   log_event "review-stand-down" "$(jq -nc --arg r "usage-limit cooldown $(limit_describe "$resume_at" \
     "$(jq -r '.class // "other"' <<<"$governing" 2>/dev/null || echo other)" \
-    "$(limit_reset_known "$governing")")" '{reason: $r}')"
+    "$(limit_reset_known "$governing")")" '{reason: $r, cause: "usage-limit"}')"
+  set_node_state_terminal externally-blocked usage-limit
+  suppress_node_state_if_peer_owns_node
   exit 0
 fi
 
 # 3.2 Defer to a running implementation cycle: if lock.json is held by a LIVE
 #     process, stand down (two heavy claude runs must not overlap on one quota).
-if [[ -f "$impl_lock_file" ]]; then
+if impl_cycle_running; then
   impl_pid="$(jq -r '.pid // empty' "$impl_lock_file" 2>/dev/null || true)"
-  if [[ "$impl_pid" =~ ^[0-9]+$ ]] && kill -0 "$impl_pid" 2>/dev/null; then
-    log_event "review-stand-down" "$(jq -nc --arg r "implementation cycle running (pid $impl_pid)" '{reason: $r}')"
-    exit 0
-  fi
+  # No node-state transition here, deliberately (docs/FLOW-SCHEMA.md,
+  # "Node time-state record", "A tick that owns no node-second emits
+  # nothing"): this node is not idle — agent-cycle.sh is actively running on
+  # it right now, and that process's own node-state events are already the
+  # authoritative record for this instant. Emitting a competing idle
+  # transition from this pipeline would corrupt the shared per-node timeline
+  # the fold reconstructs. Every stand-down above exits before reaching here
+  # and calls `suppress_node_state_if_peer_owns_node` for the same reason.
+  log_event "review-stand-down" "$(jq -nc --arg r "implementation cycle running (pid $impl_pid)" '{reason: $r, cause: "peer-pipeline-busy"}')"
+  suppress_node_state_transitions
+  exit 0
 fi
+
+# node-state (docs/FLOW-SCHEMA.md, D21): here, past every ending that owns no
+# node-second — see agent-cycle.sh's own comment beside `acquire_lock`, and
+# the stand-down immediately above, which is silent for the same reason.
+log_node_state_transition overhead
 
 # --- Repo selection (--repo filter) ---
 if [[ -n "$REPO_FILTER" ]]; then
@@ -1092,6 +1162,7 @@ $(jq . <<<"$reviewer_input")
     '{repo: $r, model: $m}
      + (if ($b | type) == "object" then $b else {} end)
      + {backstop_min: $bs, inactivity_min: $is, review_context_sources: $rcs}')"
+  log_node_state_transition producing
   if run_claude_stage reviewer "$(( review_backstop_min * 60 ))" "$model" "$reviewer_prompt" "$out_file" "$clone_dir" "$(( review_inactivity_min * 60 ))"; then
     rc=0
   else
@@ -1099,6 +1170,7 @@ $(jq . <<<"$reviewer_input")
   fi
   log_event "review-stage-end" "$(jq -nc --arg r "$slug" --argjson rc "$rc" --arg kr "$stage_kill_reason" \
     --argjson m "$(metering_fields "$model" "$out_file" "$stage_gaps_json")" '{repo: $r, exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m')"
+  log_node_state_transition overhead
   # `if`, not `&&`: an empty warning is the common case, and a trailing
   # `&&` whose test fails is a non-zero status at exactly the place
   # `set -e` acts on — the same trap that cost a --once cycle its
@@ -1167,7 +1239,14 @@ while IFS= read -r entry; do
   if (( resume_epoch > $(date +%s) )); then
     log_event "review-stand-down" "$(jq -nc --arg r "usage-limit cooldown $(limit_describe "$resume_at" \
       "$(jq -r '.class // "other"' <<<"$governing" 2>/dev/null || echo other)" \
-      "$(limit_reset_known "$governing")")" '{reason: $r}')"
+      "$(limit_reset_known "$governing")")" '{reason: $r, cause: "usage-limit"}')"
+    # node-state (docs/FLOW-SCHEMA.md, D21): the same terminal state its
+    # sibling at the top of this script records, for the same reason. Without
+    # it this `break` falls through to finalize_node_state_for_review's
+    # unconditional `idle-without-demand`/`no-demand`, filing a node a usage
+    # limit stopped mid-sweep as the healthy zero — the one reading D21's own
+    # question ("more nodes, or fix something?") most needs kept apart.
+    set_node_state_terminal externally-blocked usage-limit
     break
   fi
 

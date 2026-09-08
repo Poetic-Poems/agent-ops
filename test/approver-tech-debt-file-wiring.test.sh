@@ -89,6 +89,12 @@ set -euo pipefail
 # real (it is pure and cheap) rather than stubbed, so this file keeps
 # verifying the shipped wiring rather than a stand-in for it.
 . "$SCRIPT_DIR/lib/rework.sh"
+# docs/FLOW-SCHEMA.md, requirement 50, issue #597: the same stage-end site
+# also calls lib/node-time-state.sh's log_node_state_transition. Sourced for
+# real for the same reason as lib/rework.sh immediately above — and its own
+# `node-state` event lands in this file's `log_event` stub harmlessly, since
+# every assertion here names the event it is looking for.
+. "$SCRIPT_DIR/lib/node-time-state.sh"
 
 selected_repo="Poetic-Poems/agent-ops"
 selected_item="631"

@@ -53,6 +53,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`escalation_event_logged_since`), which always files regardless of the
   window. `escalation_refile_after_hours: 0` disables the guard outright.
 
+- **Node time-state record** (issue #597, D21): a `node-state` transition
+  event, logged the instant a node's own state changes, classifying every
+  node-second into one of six states — producing, overhead,
+  externally-blocked, idle-with-demand, idle-without-demand, down — with
+  idle-with-demand split by cause (`awaiting-tick`, `back-pressure`,
+  `peer-claimed`, `coordinator-declined`). Emitted at every stage-start/
+  stage-end, every `stand-down` (now carrying a `cause` from a closed
+  fourteen-token vocabulary at the sites that previously carried none),
+  every genuinely-nothing-selected `none-selected`, `limit-hit`/
+  `limit-cleared`, and cycle-start/cycle-end, in both `agent-cycle.sh` and
+  `review-cycle.sh`. `lib/node-time-state.sh`'s `node_time_state_fold`
+  (behind the read-only `scripts/node-time-state.sh`) reconstructs seconds
+  per state from these events alone, asserting the invariant (states sum to
+  node-count x window) rather than merely trusting it. Documented under
+  `docs/FLOW-SCHEMA.md`'s new "Node time-state record" section, alongside
+  the rework and item-lifecycle records it joins.
+
 - **Tech-debt close-guard** (issue #877; D15 as revised, #869/#875/#879): a
   new `.github/workflows/tech-debt-close-guard.yml` posts one advisory
   comment when a `pw::type:tech-debt` issue closes with neither a linked
