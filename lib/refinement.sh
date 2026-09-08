@@ -1389,6 +1389,7 @@ _refiner_process_one_verdict() {
   local ex="$1" claimed_json="$2"
   local e_repo e_item verdict e_reason claimed_entry e_source outcome extra
   local e_synthetic e_block_ok e_refined_fields e_number e_triage_only e_priority
+  local e_labels_json
 
   e_repo="$(jq -r '.repo // ""' <<<"$ex")"
   e_item="$(jq -r '.item // ""' <<<"$ex")"
@@ -1518,14 +1519,60 @@ _refiner_process_one_verdict() {
     _refiner_apply_priority "$e_repo" "$e_item" "$e_number" "$e_priority"
   fi
 
+  # Requirement 39h/6c (issue #714): the Refiner's own channel for a
+  # stage-minted label, independent of `verdict` itself — an ordinary item,
+  # a `needs-refinement` decline, or a `triage_only` band-only verdict may
+  # all carry one, exactly as `priority` above does. Only issue-backed items
+  # (`e_number` set) have anything to apply it to.
+  e_labels_json="$(jq -c '.labels // []' <<<"$ex" 2>/dev/null || echo '[]')"
+  if [[ -n "$e_number" ]] && ! (( DRY_RUN )) \
+       && [[ "$(jq 'length' <<<"$e_labels_json" 2>/dev/null || echo 0)" -gt 0 ]]; then
+    _refiner_apply_labels "$e_repo" "$e_number" "$e_labels_json"
+  fi
+
   log_event "refiner-examined" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" --arg s "$e_source" \
     --arg o "$outcome" --arg d "$e_reason" --argjson x "$extra" \
     '{repo: $r, item: $i, source: $s, outcome: $o, detail: $d} + $x')"
 }
 
+# _refiner_apply_labels REPO NUMBER LABELS_JSON
+# Requirement 39h/6c (issue #714): mint and apply one verdict's own `labels`
+# suggestion onto the issue behind it. Draws from
+# `_refiner_labels_engagement_remaining`, a `local` its caller's caller
+# (`_refiner_apply_verdicts`) declares before the verdict loop starts and
+# this function updates by dynamic scope rather than a parameter — the
+# per-*engagement* half of requirement 6c's cap, shared across every item in
+# one Refiner engagement rather than reset per item the way `labels_mint`'s
+# own per-item cap of 3 is. Once the pool is empty, every further item's own
+# suggestions are refused `engagement-cap` without spending a `labels_mint`
+# call — a mint that could only ever refuse everything it was given.
+_refiner_apply_labels() {
+  local e_repo="$1" e_number="$2" labels_json="$3"
+  if (( _refiner_labels_engagement_remaining <= 0 )); then
+    log_event "labels-minted" "$(jq -nc --arg r "$e_repo" --arg i "$e_number" --arg by "refiner" \
+      --argjson refused "$(jq -c '[.[] | {name: (.name // ""), reason: "engagement-cap"}]' \
+        <<<"$labels_json" 2>/dev/null || echo '[]')" \
+      '{repo: $r, item: $i, actor: $by, created: [], applied: [], refused: $refused}')"
+    return 0
+  fi
+  local item_cap=3
+  (( item_cap > _refiner_labels_engagement_remaining )) && item_cap=$_refiner_labels_engagement_remaining
+  local report applied_count
+  report="$(labels_mint "$e_repo" issue "$e_number" "$labels_json" "$item_cap" \
+    < <(labels_reserved_names "$CONFIG_FILE" "$SCHEMA_FILE"))"
+  applied_count="$(jq '.applied | length' <<<"$report" 2>/dev/null || echo 0)"
+  _refiner_labels_engagement_remaining=$(( _refiner_labels_engagement_remaining - applied_count ))
+  log_event "labels-minted" "$(jq -nc --arg r "$e_repo" --arg i "$e_number" --arg by "refiner" \
+    --argjson x "$report" '{repo: $r, item: $i, actor: $by} + $x')"
+}
+
 _refiner_apply_verdicts() {
   # --- Verdict loop (requirement 39c/39d) ---
   local parsed="$1" claimed_json="$2" ex
+  # Requirement 6c's per-engagement label cap (10) — see
+  # `_refiner_apply_labels`'s own header for why this lives here rather than
+  # as a parameter threaded through every call.
+  local _refiner_labels_engagement_remaining=10
   while IFS= read -r ex; do
     [[ -n "$ex" ]] || continue
     _refiner_process_one_verdict "$ex" "$claimed_json"

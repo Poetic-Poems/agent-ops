@@ -6892,6 +6892,72 @@ implements.
    already, but that is inert until that item wires a call site onto
    `labels_reconcile_role`; until then it takes the create-only path every
    other catalogue entry does.
+6c. **Labels a stage asks for (issue #714).** Beyond the catalogue above,
+   which the Script alone decides, the Refiner and the Implementer may each
+   *name* a small number of descriptive labels of their own on their final
+   message — the Refiner's per-item verdict (requirement 39h) and the
+   Implementer's summary (requirement 26b) — for the Script to create and
+   apply. The Script remains the only writer, exactly as requirement 6a
+   already holds for every catalogue label: a stage names, it never creates
+   or applies one itself.
+
+   **The invariant that makes this safe: a minted label is inert.** Nothing
+   in this pipeline may read a stage-minted label to decide anything —
+   selection, exclusion, voiding, corroboration, tiering or landing all stay
+   exactly as they are, blind to whatever a stage chose to name. Its
+   corollary: a future gate that wants to read a label adds that name to the
+   reserved set below in the same change, since from that point on the name
+   is no longer inert.
+
+   **Reserved names, refused case-insensitively (GitHub matches label names
+   that way), and never created or applied under any circumstance:**
+   `blocked` (selection exclusion, requirement 16.4), `blocked:*` (the
+   `blocked:needs-refinement` reason pair requirement 38b projects alongside
+   it, and any future reason label in that namespace), `obsolete` (void
+   corroboration, requirement 34k), `complexity:*` (Reviewer/Approver
+   tiering, requirement 8a), `pw::type:tech-debt` (D24's tech-debt trust
+   anchor), `pw::owner-decision` (the Refiner's own default-first rule,
+   requirement 39d), `pw::decision` (`scripts/sweep-decision-vetoes.sh`'s own
+   sweep target), `open-question` (the landing gate's open-scope-question
+   hold, requirement 8f), and every non-empty configured label name —
+   `pr_label`, `enabler_escalation_label`, `needs_refinement_label`,
+   `refined_label`, `unvoid_label`. `lib/labels.sh`'s `labels_reserved_names`
+   is the one place this set is declared; every one of these names is read
+   somewhere in this pipeline today to make a decision, not only the smaller
+   set issue #714's own body named as illustration — the inertness invariant
+   has to hold against what the pipeline actually reads, not a partial
+   accounting of it, so the reserved set is the complete one rather than a
+   literal copy of the issue's own list. `scripts/doctor.sh`'s existing
+   reserved-name check (requirement 6a) extends the same way: a configured
+   label may not claim `blocked:*` either, not only the exact word `blocked`.
+
+   **Validation, entirely Script-side and never fatal to the stage's own
+   verdict or PR:** a candidate name must be non-empty, at most 50
+   characters, and match `config.schema.json`'s own `$defs.label` pattern
+   (no comma — `gh --add-label` accepts a comma-joined list, so a name
+   carrying one could silently apply as several labels instead of the one
+   requested) — `lib/labels.sh`'s `labels_validate_name`. A name failing any
+   check, or matching the reserved set above, is refused rather than
+   created; colour is optional (a neutral grey default, `labels_ensure_one`'s
+   own), description is optional. **Capped**, so a verbose model cannot turn
+   one item into a label-creation spree: at most 3 per item
+   (`lib/labels.sh`'s `labels_mint`, its own `CAP` parameter), and at most 10
+   per Refiner engagement — the per-item cap resets with every claimed item,
+   the per-engagement one is a single pool `_refiner_apply_labels` shares
+   across every item the engagement processes (only the Refiner spans more
+   than one item per engagement; the Implementer's own call is always for
+   its one PR, so its per-item cap of 3 is the only one that can ever bind).
+   A refusal — reserved, over a cap, or a create/apply GitHub itself
+   refused — is recorded and dropped, never a failed cycle.
+
+   **No lifecycle.** The Script creates (`labels_ensure_one`) and applies a
+   minted label once and then forgets it: it is never removed, never
+   recorded as an own-label action (`label_own_action_fields`, requirement
+   34g — nothing reads a minted label back the way that record exists to let
+   a projection be undone), and `release_refinement_label` must not touch
+   one. One `labels-minted` event per item (requirement 33) carries `repo`,
+   `item`, `actor` (`"refiner"` or `"implementer"`), and the names created,
+   applied and refused.
 7. **Implementer stage.** Launch the Implementer in the clone (model from
    the work order, `--dangerously-skip-permissions`, stage timeout), passing
    the implementer prompt plus the work order, and this cycle's `cycle` id and
@@ -10056,8 +10122,19 @@ implements.
     authoritative carrier for this cycle's model choice (requirement 8a); the
     label is the durable mirror that survives for later finishing rounds and
     tells the Human Reviewer how carefully to read.
+26b. **May name labels for its own pull request (requirement 6c, issue
+    #714).** The summary's optional `labels` field
+    (`[{name, colour?, description?}, …]`, requirement 27) is a suggestion,
+    not a write: the Script mints and applies each accepted entry to the
+    Implementer's own PR through `lib/labels.sh`'s `labels_mint`, capped at 3
+    and refusing anything named in requirement 6c's reserved set. This is a
+    different channel from requirement 26a's own `complexity:*` label, which
+    the Implementer applies itself, by its own `gh label create`/`gh pr
+    edit` calls — `labels` is descriptive only, and nothing in this pipeline
+    may read one back to decide anything, exactly as requirement 6c's
+    inertness invariant states.
 27. Ends with a single JSON object as its entire final message:
-    `{"status": "complete", "pr_url": …, "branch": …, "complexity": "low" | "medium" | "high", "notes": …}`,
+    `{"status": "complete", "pr_url": …, "branch": …, "complexity": "low" | "medium" | "high", "labels": […, optional], "notes": …}`,
     `{"status": "blocked", "reason": …, "unblock_condition": …}`, or
     `{"status": "void", "reason": …, "evidence": …}`. The Implementer is the
     only component positioned to tell `blocked` from `void` (requirement 9b) —
@@ -10730,7 +10807,7 @@ implements.
     `enabler-examined`, `refiner-examined`, `own-label-action`, `escalated`,
     `enabler-adjudication`,
     `crash-loop-escalated`, `provider-unreachable`,
-    `labels-ensured`, `limit-hit`, `limit-cleared`,
+    `labels-ensured`, `labels-minted`, `limit-hit`, `limit-cleared`,
     `orphan-branch-recovered`, `orphan-branch-released`,
     `issue-closed-post-merge`, `void-object-closed`, `void-retired`,
     `dependabot-rebase-requested`,
@@ -11067,7 +11144,11 @@ implements.
     only when there was something to report, so it appears the first cycle a
     repository is gathered and then not again until a full
     `labels_ensure_interval_hours` has elapsed, unless a label is deleted or
-    the token cannot create one. A `claim-lost` names the repo, item and branch of
+    the token cannot create one. A `labels-minted` (requirement 6c) carries
+    `repo`, `item`, `actor` (`"refiner"` or `"implementer"`), and the names
+    `created`, `applied` and `refused` — one per item that named at least one
+    label, whatever the outcome; unlike `labels-ensured` it is never
+    rate-limited, since minting is per-verdict rather than per-repository. A `claim-lost` names the repo, item and branch of
     the candidate the Script failed to claim, plus a `cause` — `held` when a
     peer node won it, `pr-held` when a peer holds the pull request it targets
     under some other item ref (and then also `pr_claim_key`, the `pr-<number>`
@@ -15144,6 +15225,32 @@ implements.
     `sources` never carries the bare name, so an equality test against it
     would match no valid configuration and the check would never run.
 
+39h. **May name labels for the item behind its verdict (requirement 6c, issue
+    #714).** A verdict entry's optional `labels` field
+    (`[{name, colour?, description?}, …]`), independent of `verdict` itself —
+    an ordinary `refined` item, a `needs-refinement` decline, or a
+    `triage_only` band-only verdict may all carry one, on the same
+    independence-from-outcome terms `priority` above already has. Only an
+    issue-backed item (`e_number` set, the same carrier test requirement 39c
+    uses for `refined_spec` vs. a comment pointer) has anything to apply it
+    to; a threadless item's own `labels` is silently unusable, the same as an
+    unbanded non-`issues` item's `priority`.
+
+    `_refiner_apply_labels` (`lib/refinement.sh`) is this verdict field's own
+    consumer, `_refiner_apply_verdicts`'s per-engagement counterpart to
+    `_refiner_apply_priority`. Requirement 6c's per-*item* cap of 3 is
+    `labels_mint`'s own; the per-*engagement* cap of 10 is enforced here,
+    because only the Refiner processes more than one item per engagement — a
+    `local` (`_refiner_labels_engagement_remaining`) `_refiner_apply_verdicts`
+    declares once before its verdict loop starts and every call updates by
+    dynamic scope, shared across every item the engagement claims rather than
+    reset per item. Once the pool is spent, a further item's own suggestions
+    are refused `engagement-cap` — a `labels-minted` event still fires for it,
+    `refused` naming every entry that reason, `created`/`applied` both
+    empty — without a `labels_mint` call even being attempted, since a call
+    given a zero-or-negative cap could only ever refuse everything it was
+    handed.
+
 ### The Approver
 
 D18 WI-5 (agent-ops#408; design `docs/reviews/2026-08-14-autonomy-investigation.md`
@@ -17602,11 +17709,19 @@ What exists, and the requirements each part answers to:
     argument the caller (already holding that repository's own resolved
     value) passes through — and `labels_ensure` (create what is absent in
     one repository, reporting `created` or `failed` per label and nothing at
-    all for those already there, so the steady state is silent). `LABELS_GH`
+    all for those already there, so the steady state is silent). Also
+    implementing requirement 6c: `labels_reserved_names` (the complete set a
+    stage-minted label may never claim), `labels_validate_name` (one
+    candidate against that set plus length/comma/emptiness), and
+    `labels_mint` (create and apply a stage's own suggested labels onto one
+    issue or pull request, capped and reporting `created`/`applied`/
+    `refused`) — called from `agent-cycle.sh`'s Implementer handoff and
+    `lib/refinement.sh`'s `_refiner_apply_labels`. `LABELS_GH`
     overrides the `gh` binary for tests. Sourced by `agent-cycle.sh`,
-    `review-cycle.sh` and `scripts/doctor.sh`; regression-tested against a
-    stubbed `gh` that records every invocation
-    (`test/labels.test.sh`); must pass `shellcheck`.
+    `review-cycle.sh`, `lib/refinement.sh` and `scripts/doctor.sh`;
+    regression-tested against a stubbed `gh` that records every invocation
+    (`test/labels.test.sh`, `test/refiner-verdicts.test.sh`,
+    `test/implementer-labels-wiring.test.sh`); must pass `shellcheck`.
 16. `scripts/render-config-table.sh` implementing requirement 1b's generated-
     table property: renders the Markdown table body rows of the three prose
     configuration tables (this document's, `docs/REVIEW-PIPELINE-SPEC.md`'s,
@@ -21654,6 +21769,47 @@ oblige anyone to edit a test.
     and returns 0, an unlistable repository returns 1 having created nothing
     and claimed no failures it did not observe, and a guarded call survives a
     total failure under `set -e`.
+
+6j. **Labels a stage asks for are minted safely, and only within the caps
+    (requirement 6c, issue #714).** `test/labels.test.sh` passes:
+    `labels_reserved_names` lists the fixed set (`blocked`, `blocked:*`,
+    `obsolete`, `complexity:*`, `pw::type:tech-debt`, `pw::owner-decision`,
+    `pw::decision`, `open-question`) ahead of every non-empty configured
+    label name, and a name switched off by an empty configured value
+    contributes nothing; `labels_validate_name` refuses an empty name, one
+    over 50 characters, one carrying a comma, and one matching a reserved
+    entry case-insensitively — by exact name or by prefix glob — while
+    passing an ordinary name and one at exactly the 50-character limit;
+    `labels_mint` creates and applies an accepted entry with its own colour
+    and description, applies without creating a name already present,
+    refuses a reserved name without ever reaching `gh`, enforces its own
+    per-item cap (the default 3, and a smaller explicit one) by refusing the
+    surplus `cap` while the accepted entries still land, and reports
+    `create-failed`/`apply-failed` distinctly for a `gh` refusal at each
+    step — neither ever escalating past the returned report, and an empty
+    repository, empty `LABELS_JSON` or unusable `KIND` printing the
+    all-empty object rather than erroring.
+    `test/refiner-verdicts.test.sh` passes: a verdict's own `labels` mints
+    and applies onto the issue behind it regardless of `verdict` itself, a
+    reserved name is refused and never reaches `gh`, and the per-engagement
+    pool of 10 is shared across items claimed in the same engagement — the
+    fourth of five items that each request labels within a shared budget
+    still lands on an exactly-exhausted pool, and the fifth's own suggestion
+    is refused `engagement-cap` before any `labels_mint` call is even
+    attempted.
+    `test/implementer-labels-wiring.test.sh` passes: a summary with no
+    `labels` field, or an empty one, calls `labels_mint` not at all; a
+    non-empty one calls it exactly once, against the pull request's own repo
+    and number (parsed from its URL) with `kind` `pr`, reserved names drawn
+    from `labels_reserved_names(CONFIG_FILE, SCHEMA_FILE)`, and the result
+    logged as one `labels-minted` event naming `repo`, `item` and
+    `actor: "implementer"`.
+    `test/config-schema.test.sh` passes: `scripts/doctor.sh` fails a
+    configured label set to `blocked:<anything>`, case-insensitively, the
+    same as the pre-existing exact-`blocked` check.
+    Grep assertion for the inertness invariant's own corollary: nothing in
+    `agent-cycle.sh`, `lib/` or `scripts/` branches on a label name that is
+    not in `labels_reserved_names`'s own list.
 
 38. **Human-visibility (requirements 38a–38c).** `test/handoff.test.sh` passes:
     `_handoff_pr_approved` reads `true` for a standing `APPROVED` review with

@@ -1163,6 +1163,14 @@ assert_doctor "doctor fails a label named Obsolete case-insensitively, as the vo
   '.project_review.defaults.pr_label = "Obsolete"' 1 'project_review pr_label is "Obsolete"'
 assert_doctor "doctor fails an obsolete label on a repo's own project_review override too" \
   '.project_review.repos[0].pr_label = "Obsolete"' 1 'project_review pr_label is "Obsolete"'
+# --- issue #714: the exact-"blocked" check above extends to the whole
+#     blocked:* reason-label namespace requirement 38b's own
+#     blocked:needs-refinement lives in, so a configured label cannot claim a
+#     reason label's name either. ---
+assert_doctor "doctor fails a label set to blocked:anything, the reason-label namespace" \
+  '.unvoid_label = "blocked:custom"' 1 'unvoid_label is "blocked:custom"'
+assert_doctor "doctor fails a blocked:* collision case-insensitively too" \
+  '.refined_label = "Blocked:Custom"' 1 'refined_label is "Blocked:Custom"'
 assert_doctor "doctor fails an excluded_minutes that leaves the renderer no minute" \
   '.schedule.excluded_minutes = [range(60)]' 1 'excludes every minute of the hour'
 # The stale-lock assertion this used to make is gone, and deliberately: the

@@ -50,6 +50,10 @@ repo_root="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/void-guard.sh"
 # shellcheck source=lib/dependency-gate.sh
 . "$SCRIPT_DIR/lib/dependency-gate.sh"
+# shellcheck source=lib/config-schema.sh
+. "$SCRIPT_DIR/lib/config-schema.sh"
+# shellcheck source=lib/labels.sh
+. "$SCRIPT_DIR/lib/labels.sh"
 # shellcheck source=lib/refinement.sh
 . "$SCRIPT_DIR/lib/refinement.sh"
 # shellcheck source=lib/label-marker.sh
@@ -170,6 +174,25 @@ if [[ "$1" == "issue" && "$2" == "view" ]]; then
   cat "$d/issue-labels" 2>/dev/null
   exit 0
 fi
+# labels_mint's own two calls, reached through LABELS_GH (requirement 6c,
+# issue #714): a listing (every repository starts with no minted labels of
+# its own) and a create, recorded to $d/minted-labels so a second mint of the
+# same name in the same test case is served as already-present rather than a
+# duplicate create GitHub would refuse.
+if [[ "$1" == "api" && "$2" == repos/*/labels ]]; then
+  cut -f1 "$d/minted-labels" 2>/dev/null
+  exit 0
+fi
+if [[ "$1" == "api" && "$2" == "-X" && "$3" == "POST" ]]; then
+  name=""
+  for arg in "$@"; do
+    case "$arg" in
+      name=*) name="${arg#name=}" ;;
+    esac
+  done
+  printf '%s\n' "$name" >> "$d/minted-labels"
+  exit 0
+fi
 [[ "$1" == "issue" && "$2" == "edit" ]] || exit 1
 number="$3"; shift 3
 repo=""; action=""; label=""; assignee=""
@@ -188,6 +211,9 @@ done
 exit 0
 STUB
 chmod +x "$tmp_dir/gh"
+export LABELS_GH="$tmp_dir/gh"
+CONFIG_FILE="$repo_root/config.json"
+SCHEMA_FILE="$repo_root/config.schema.json"
 export REFINEMENT_GH="$tmp_dir/gh"
 
 # --- Stubs for every dependency whose own correctness is not this test's job -
@@ -297,7 +323,7 @@ run_case() {
   cycle_dir="$(mktemp -d "$tmp_dir/case.XXXXXX")"
   calls_log="$cycle_dir/calls.log"
   : > "$calls_log"
-  rm -f "$tmp_dir/label-calls" "$tmp_dir/assignee-calls"
+  rm -f "$tmp_dir/label-calls" "$tmp_dir/assignee-calls" "$tmp_dir/minted-labels"
   # shellcheck disable=SC2034  # read only by the eval'd maybe_run_refiner
   refiner_candidates_json="$candidates_json"
   STUB_REFINED_JSON="$(jq -nc --argjson v "$verdicts_json" '{refined: $v}')"
@@ -707,6 +733,63 @@ assert_eq "tech-debt with no thread: still recorded, and as the spec" "SPEC-FOR-
   "$(jq -r '.spec' <<<"$ir_evt")"
 assert_eq "tech-debt with no thread: no pointer is invented for it" "absent" \
   "$(jq -r '.comment_url // "absent"' <<<"$ir_evt")"
+
+# ============================================================================
+# (j) labels — the Refiner's own channel for a stage-minted label
+# (requirements 39h/6c, issue #714), independent of `verdict` itself.
+# ============================================================================
+verdicts='[{"repo":"o/r","item":"55","verdict":"refined","reason":"specified, and named a label",
+            "comments_posted":["https://github.com/o/r/issues/55#issuecomment-1"],
+            "labels":[{"name":"good-topic","colour":"112233","description":"a topic"}]}]'
+calls="$(run_case "refined with a minted label" "$issue_candidates" "$verdicts")"
+
+assert_eq "minted label: exactly one labels-minted event" "1" \
+  "$(grep -cE '^event labels-minted ' <<<"$calls")"
+lm_evt="$(events_named "$calls" labels-minted | head -n1)"
+assert_eq "  ... attributed to the refiner" "refiner" "$(jq -r '.actor' <<<"$lm_evt")"
+assert_eq "  ... naming the item" "o/r 55" "$(jq -r '"\(.repo) \(.item)"' <<<"$lm_evt")"
+assert_eq "  ... the label applied" '["good-topic"]' "$(jq -c '.applied' <<<"$lm_evt")"
+assert_contains "  ... and it reached gh" "gh-label add o/r 55 good-topic" "$calls"
+
+# A reserved name is refused, and never reaches gh at all — the inertness
+# invariant (requirement 6c) holds even though this verdict's own `refined`
+# outcome is recorded normally.
+verdicts='[{"repo":"o/r","item":"55","verdict":"refined","reason":"named a reserved label",
+            "comments_posted":["https://github.com/o/r/issues/55#issuecomment-2"],
+            "labels":[{"name":"blocked"}]}]'
+calls="$(run_case "refined naming a reserved label" "$issue_candidates" "$verdicts")"
+lm_evt="$(events_named "$calls" labels-minted | head -n1)"
+assert_eq "reserved label: refused, never applied" "reserved" \
+  "$(jq -r '.refused[0].reason' <<<"$lm_evt")"
+assert_eq "  ... nothing reached gh for it" "0" \
+  "$(grep -cE 'gh-label (add|remove) o/r 55 blocked$' <<<"$calls")"
+
+# The engagement-wide pool (10, requirement 6c) is shared across every item in
+# one engagement, not reset per item: five items, the first three taking
+# their own per-item cap of 3 (9 of the pool spent), the fourth taking the
+# last one (pool now exactly spent), and the fifth's own suggestion refused
+# `engagement-cap` — a reason distinct from labels_mint's own per-item `cap`,
+# because this one never even reaches labels_mint.
+five_issue_candidates="$(jq -nc '[range(1;6) | {repo: "o/r", source: "issues", item: (. | tostring)}]')"
+verdicts="$(jq -nc '
+  def mk(n; labels): {repo: "o/r", item: (n | tostring), verdict: "refined",
+    reason: "engagement cap probe",
+    comments_posted: [("https://github.com/o/r/issues/" + (n | tostring) + "#issuecomment-1")],
+    labels: labels};
+  [ mk(1; [{name:"a1"},{name:"a2"},{name:"a3"}]),
+    mk(2; [{name:"b1"},{name:"b2"},{name:"b3"}]),
+    mk(3; [{name:"c1"},{name:"c2"},{name:"c3"}]),
+    mk(4; [{name:"d1"}]),
+    mk(5; [{name:"e1"}]) ]')"
+calls="$(run_case "engagement-wide label cap exhausts across items" "$five_issue_candidates" "$verdicts")"
+lm_evts="$(events_named "$calls" labels-minted)"
+assert_eq "engagement cap: five labels-minted events, one per item" "5" "$(wc -l <<<"$lm_evts")"
+assert_eq "  ... the fourth item exactly exhausts the pool and still lands its own label" \
+  '["d1"]' "$(jq -c '.applied' <<<"$(sed -n '4p' <<<"$lm_evts")")"
+assert_eq "  ... the fifth item's suggestion is refused engagement-cap" "engagement-cap" \
+  "$(jq -r '.refused[0].reason' <<<"$(sed -n '5p' <<<"$lm_evts")")"
+assert_eq "  ... with nothing created or applied for it" '{"created":[],"applied":[]}' \
+  "$(jq -c '{created, applied}' <<<"$(sed -n '5p' <<<"$lm_evts")")"
 
 # --- One home per refinement (agent-ops#1128) ---------------------------------
 #
